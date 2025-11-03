@@ -59,3 +59,7 @@ scipy
 cryptography>=42.0.8,<45.0.0
 
 APScheduler==3.11.0
+
+# 테스트 관련
+pytest>=7.0.0
+pytest-asyncio>=0.21.0

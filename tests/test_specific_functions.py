@@ -5,6 +5,7 @@
 import asyncio
 import json
 import logging
+import pytest
 
 from stock_tracking_enhanced_agent import EnhancedStockTrackingAgent as StockTrackingAgent
 from stock_tracking_agent import app
@@ -16,6 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@pytest.mark.asyncio
 async def test_specific_functions():
     """특정 기능 테스트 함수"""
 
@@ -25,7 +27,7 @@ async def test_specific_functions():
         await agent.initialize()
 
         # 테스트할 보고서 파일
-        report_path = "../reports/013700_까뮤이앤씨_20250311_morning_gpt4o.md"
+        report_path = "../reports/307950_현대오토에버_20251102_morning_gpt4.1.md"
 
         # 1. 종목 정보 추출 테스트
         ticker, company_name = await agent._extract_ticker_info(report_path)

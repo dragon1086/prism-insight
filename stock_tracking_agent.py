@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
+from mcp_agent.workflows.llm.augmented_llm_anthropic import AnthropicAugmentedLLM
 from telegram import Bot
 from telegram.error import TelegramError
 
@@ -253,7 +254,7 @@ class StockTrackingAgent:
                 "rationale": "핵심 투자 근거 (3줄 이내)",
                 "sector": "산업군/섹터",
                 "market_condition": "시장 추세 분석 (상승추세/하락추세/횡보)",
-                "max_portfolio_size": "시장 상태 분석 결과 추론된 최대 보유 종목수",
+                "max_portfolio_size": "시장 상태 분석 결과 추론된 최대 보유 종목수 (단일 숫자. 범위X)",
                 "trading_scenarios": {
                     "key_levels": {
                         "primary_support": 주요 지지선,
@@ -634,7 +635,7 @@ class StockTrackingAgent:
             """
 
             # LLM 호출하여 매매 시나리오 생성
-            llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
+            llm = await self.trading_agent.attach_llm(AnthropicAugmentedLLM)
 
             response = await llm.generate_str(
                 message=f"""
@@ -650,7 +651,7 @@ class StockTrackingAgent:
                 {report_content}
                 """,
                 request_params=RequestParams(
-                    model="gpt-5",
+                    model="claude-sonnet-4-5-20250929",
                     maxTokens=10000
                 )
             )

@@ -1,4 +1,5 @@
 import numpy as np
+from mcp_agent.workflows.llm.augmented_llm_anthropic import AnthropicAugmentedLLM
 from scipy import stats
 from typing import List, Tuple, Dict, Any
 from datetime import datetime, timedelta
@@ -804,7 +805,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             """
 
             # LLM 호출하여 매도 의사결정 생성
-            llm = await self.sell_decision_agent.attach_llm(OpenAIAugmentedLLM)
+            llm = await self.sell_decision_agent.attach_llm(AnthropicAugmentedLLM)
 
             response = await llm.generate_str(
                 message=f"""
@@ -832,7 +833,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 매도할지 계속 보유할지 결정해주세요.
                 """,
                 request_params=RequestParams(
-                    model="gpt-5",
+                    model="claude-sonnet-4-5-20250929",
                     maxTokens=6000
                 )
             )
