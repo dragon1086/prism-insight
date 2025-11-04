@@ -1,6 +1,6 @@
 "use client"
 
-import { TrendingUp, TrendingDown, Wallet, DollarSign, BarChart3, Zap, Clock, Target } from "lucide-react"
+import { TrendingUp, TrendingDown, Wallet, DollarSign, BarChart3, Zap, Clock } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import type { Summary } from "@/types/dashboard"
 
@@ -52,6 +52,10 @@ export function MetricsCards({
   const totalAssets = (summary.real_trading.total_eval_amount || 0) + 
                       (summary.real_trading.available_amount || 0)
 
+  // Season2 시작 금액
+  const season2StartAmount = 9969801
+  const totalAssetsReturn = totalAssets > 0 ? ((totalAssets - season2StartAmount) / season2StartAmount) * 100 : 0
+
   // 실전 포트폴리오 손익 분포 계산
   const profitStocks = realPortfolio.filter(stock => (stock.profit_rate || 0) > 0)
   const lossStocks = realPortfolio.filter(stock => (stock.profit_rate || 0) < 0)
@@ -64,10 +68,10 @@ export function MetricsCards({
     {
       label: "실전 총 자산",
       value: formatCurrency(totalAssets),
-      change: `${summary.real_trading.total_stocks || 0}개 종목 보유`,
+      change: `시작금액 ${formatCurrency(season2StartAmount)} (${formatPercent(totalAssetsReturn)})`,
       changeValue: summary.real_trading.available_amount > 0 
-        ? `예수금 ${formatCurrency(summary.real_trading.available_amount)}`
-        : "전액 투자중",
+        ? `예수금 ${formatCurrency(summary.real_trading.available_amount)} | ${summary.real_trading.total_stocks || 0}개 종목`
+        : `전액 투자중 | ${summary.real_trading.total_stocks || 0}개 종목`,
       description: "평가금액 + 예수금",
       isPositive: true,
       icon: Wallet,

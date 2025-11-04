@@ -108,7 +108,12 @@ export default function Page() {
             />
             
             {/* 시장 지수 차트 - 하단 배치 */}
-            <PerformanceChart data={data.market_condition} />
+            <PerformanceChart 
+              data={data.market_condition}
+              tradingHistory={data.trading_history}
+              holdings={data.holdings}
+              summary={data.summary}
+            />
           </div>
         )}
 
