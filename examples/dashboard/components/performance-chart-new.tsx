@@ -25,7 +25,7 @@ export function PerformanceChart({ data, tradingHistory = [], holdings = [], sum
   // Season2 시작 금액 및 시작 시점 설정
   const season2StartAmount = 9969801
   const season2StartDate = '2025-09-29'
-
+  
   // 데이터를 날짜 기준으로 오름차순 정렬
   const sortedData = [...data].sort((a, b) => {
     return new Date(a.date).getTime() - new Date(b.date).getTime()
@@ -33,7 +33,7 @@ export function PerformanceChart({ data, tradingHistory = [], holdings = [], sum
 
   // Season2 시작 시점 이후 데이터만 필터링
   const filteredData = sortedData.filter(d => d.date >= season2StartDate)
-
+  
   if (filteredData.length === 0) {
     return (
       <Card className="border-border/50">
@@ -53,52 +53,56 @@ export function PerformanceChart({ data, tradingHistory = [], holdings = [], sum
   const startKospi = filteredData[0]?.kospi_index || 0
   const startKosdaq = filteredData[0]?.kosdaq_index || 0
 
-  // 날짜별 누적 실현 수익률 계산 (trading_history 기반)
-  const calculateCumulativeReturn = (date: string): number => {
-    // 해당 날짜까지 매도된 거래들만 필터링
-    const completedTrades = tradingHistory.filter(trade => {
-      const sellDate = trade.sell_date?.split(' ')[0] || trade.sell_date // 날짜 부분만 추출
-      return sellDate && sellDate <= date
-    })
+  // 매도종목 누적수익률 계산
+  const tradingTotalProfit = tradingHistory.reduce((sum, trade) => sum + trade.profit_rate, 0)
+  
+  // 보유종목 평가수익률 계산
+  const holdingsTotalProfit = summary?.portfolio?.total_profit || 0
+  
+  // 프리즘 시뮬레이터 수익률 (10개 슬롯 기준)
+  const prismSimulatorReturn = (tradingTotalProfit + holdingsTotalProfit) / 10
 
-    // 누적 수익률 합계를 10으로 나눔 (10개 슬롯 기준)
-    const totalReturn = completedTrades.reduce((sum, trade) => sum + (trade.profit_rate || 0), 0)
-    return totalReturn / 10
-  }
+  // 실전 투자 수익률
+  const realTotalAssets = (summary?.real_trading?.total_eval_amount || 0) + 
+                          (summary?.real_trading?.available_amount || 0)
+  const realReturn = season2StartAmount > 0 
+    ? ((realTotalAssets - season2StartAmount) / season2StartAmount) * 100 
+    : 0
 
   // KOSPI 기준 차트 데이터
   const kospiChartData = filteredData.map((item) => {
     const kospiReturn = startKospi > 0 ? ((item.kospi_index - startKospi) / startKospi) * 100 : 0
-    const prismReturn = calculateCumulativeReturn(item.date)
-
+    
     return {
       date: item.date,
       market_return: kospiReturn,
-      prism_return: prismReturn,
+      prism_return: prismSimulatorReturn,
+      real_return: realReturn,
     }
   })
 
   // KOSDAQ 기준 차트 데이터
   const kosdaqChartData = filteredData.map((item) => {
     const kosdaqReturn = startKosdaq > 0 ? ((item.kosdaq_index - startKosdaq) / startKosdaq) * 100 : 0
-    const prismReturn = calculateCumulativeReturn(item.date)
-
+    
     return {
       date: item.date,
       market_return: kosdaqReturn,
-      prism_return: prismReturn,
+      prism_return: prismSimulatorReturn,
+      real_return: realReturn,
     }
   })
 
   // 최신 값 계산
   const latestKospi = kospiChartData[kospiChartData.length - 1]
   const latestKosdaq = kosdaqChartData[kosdaqChartData.length - 1]
-
+  
   // Y축 도메인 계산
   const getAllValues = (chartData: typeof kospiChartData) => {
     return chartData.flatMap(d => [
-      d.market_return,
-      d.prism_return
+      d.market_return, 
+      d.prism_return, 
+      d.real_return
     ])
   }
   
@@ -135,7 +139,10 @@ export function PerformanceChart({ data, tradingHistory = [], holdings = [], sum
                 시장: <span style={{ color: marketColor }} className="font-semibold">{formatPercent(latestData.market_return)}</span>
               </span>
               <span className="text-muted-foreground">
-                프리즘: <span className={`font-semibold ${latestData.prism_return >= 0 ? 'text-purple-600 dark:text-purple-400' : 'text-destructive'}`}>{formatPercent(latestData.prism_return)}</span>
+                프리즘: <span className={`font-semibold ${prismSimulatorReturn >= 0 ? 'text-purple-600 dark:text-purple-400' : 'text-destructive'}`}>{formatPercent(prismSimulatorReturn)}</span>
+              </span>
+              <span className="text-muted-foreground">
+                실전: <span className={`font-semibold ${realReturn >= 0 ? 'text-amber-600 dark:text-amber-400' : 'text-destructive'}`}>{formatPercent(realReturn)}</span>
               </span>
             </div>
           </div>
@@ -179,7 +186,8 @@ export function PerformanceChart({ data, tradingHistory = [], holdings = [], sum
               formatter={(value: number, name: string) => {
                 const labels: Record<string, string> = {
                   market_return: `${title.includes('KOSPI') ? 'KOSPI' : 'KOSDAQ'} 수익률`,
-                  prism_return: "프리즘 시뮬레이터 (누적 실현)"
+                  prism_return: "프리즘 시뮬레이터",
+                  real_return: "실전 투자"
                 }
                 return [formatPercent(value), labels[name] || name]
               }}
@@ -189,7 +197,8 @@ export function PerformanceChart({ data, tradingHistory = [], holdings = [], sum
               formatter={(value: string) => {
                 const labels: Record<string, string> = {
                   market_return: `${title.includes('KOSPI') ? 'KOSPI' : 'KOSDAQ'} 수익률`,
-                  prism_return: "프리즘 시뮬레이터 (누적 실현)"
+                  prism_return: "프리즘 시뮬레이터",
+                  real_return: "실전 투자"
                 }
                 return labels[value] || value
               }}
@@ -208,6 +217,14 @@ export function PerformanceChart({ data, tradingHistory = [], holdings = [], sum
               stroke="#a855f7"
               strokeWidth={3.5}
               strokeDasharray="8 4"
+              dot={false}
+              activeDot={{ r: 6 }}
+            />
+            <Line
+              type="monotone"
+              dataKey="real_return"
+              stroke="#f59e0b"
+              strokeWidth={3.5}
               dot={false}
               activeDot={{ r: 6 }}
             />
@@ -254,17 +271,17 @@ function IndexCharts({ data }: { data: MarketCondition[] }) {
   // Y축 도메인 계산 함수
   const getYAxisDomain = (values: number[]) => {
     if (values.length === 0) return [0, 3000]
-
+    
     const min = Math.min(...values)
     const max = Math.max(...values)
     const padding = (max - min) * 0.05
-
+    
     return [Math.floor(min - padding), Math.ceil(max + padding)]
   }
 
   const kospiValues = data.map(d => d.kospi_index).filter(v => v > 0)
   const kosdaqValues = data.map(d => d.kosdaq_index).filter(v => v > 0)
-
+  
   const [kospiMin, kospiMax] = getYAxisDomain(kospiValues)
   const [kosdaqMin, kosdaqMax] = getYAxisDomain(kosdaqValues)
 
@@ -281,14 +298,14 @@ function IndexCharts({ data }: { data: MarketCondition[] }) {
   const kospiStats = getLatestChange(kospiValues)
   const kosdaqStats = getLatestChange(kosdaqValues)
 
-  const IndexCard = ({
-    title,
-    dataKey,
-    color,
+  const IndexCard = ({ 
+    title, 
+    dataKey, 
+    color, 
     yMin,
     yMax,
     stats
-  }: {
+  }: { 
     title: string
     dataKey: "kospi_index" | "kosdaq_index"
     color: string
