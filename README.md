@@ -501,9 +501,39 @@ AI 에이전트가 생성하는 종합 애널리스트 리포트는 다음 섹�
 
 프로젝트 관련 문의사항이나 버그 리포트는 [GitHub Issues](https://github.com/dragon1086/prism-insight/issues)를 통해 제출해 주세요.
 
-## 💝 후원하기
+## 💝 프로젝트 지속 가능성을 위한 후원
 
-이 프로젝트가 도움이 되었다면 커피 한 잔 값으로 후원해주세요!
+### 🥇 Gold Sponsor를 찾습니다 (단 1곳, 모집 중)
+
+**월 $500로 PRISM-INSIGHT의 영구적 운영을 도와주실 파트너를 모십니다.**
+
+✨ **Gold Sponsor 전용 혜택:**
+- 🏆 **독점 노출**: GitHub README 최상단 + [대시보드](https://analysis.stocksimulation.kr/) 메인에 로고 단독 배치
+- 📊 **사용자 도달**: 450+ 텔레그램 구독자 + 매일 증가하는 GitHub 방문자에게 지속적 브랜드 노출
+- 💎 **명예**: 완전 오픈소스 AI 주식 분석 시스템의 유일한 공식 후원 파트너
+- 🛡️ **안정성 보장**: 육아로 시간이 부족한 개발자가 시스템 유지보수에 전념할 수 있는 환경 제공
+- 🤝 **직접 소통**: 프로젝트 로드맵 및 우선순위에 대한 의견 제시 기회
+
+---
+**월 $500 상세**
+
+1. AI 운영비 충당: GPT-5 등 최고급 AI 모델 API 비용 전액
+2. 안정화 보상금: 핵심 시스템의 긴급 유지보수 및 안정화 작업에 대한 보상
+---
+
+📧 **Gold Sponsor 파트너십 문의**:
+- **이메일**: dragon1086@naver.com
+- **GitHub Issues**: [Partnership Inquiry](https://github.com/dragon1086/prism-insight/issues/new?labels=sponsorship&template=partnership.md)
+- **텔레그램**: @stock_ai_ko
+- 또는 [GitHub Sponsors](https://github.com/sponsors/dragon1086)에서 $500 티어 선택
+
+> 💡 **기업 맞춤 제안이 필요하신가요?** 이메일로 먼저 상담해 드립니다.
+
+---
+
+### 💙 개인 후원자 분들께
+
+작은 응원도 큰 힘이 됩니다! 커피 한 잔 값으로 프로젝트를 응원해주세요.
 
 <div align="center">
   <a href="https://github.com/sponsors/dragon1086">
@@ -522,10 +552,16 @@ AI 에이전트가 생성하는 종합 애널리스트 리포트는 다음 섹�
 
 현재 450명이 무료로 사용하고 있습니다.
 
-### ✨ 후원해주신 분들
+### ✨ 현재 후원 현황
 
 정말 감사합니다! 여러분의 응원으로 프리즘 인사이트가 계속 운영됩니다.
 
+#### 🥇 Gold Sponsor
+<!-- gold-sponsor -->
+**자리가 비어있습니다!** 첫 번째 파트너가 되어주세요.
+<!-- gold-sponsor -->
+
+#### 💙 개인 후원자 분들
 <!-- sponsors -->
 아직 후원자가 없습니다. 첫 번째 후원자가 되어주세요! 💙
 <!-- sponsors -->
