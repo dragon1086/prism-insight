@@ -100,13 +100,13 @@ Only return the translated text without any explanations or metadata.
     return agent
 
 
-async def translate_telegram_message(message: str, model: str = "gpt-4o-mini") -> str:
+async def translate_telegram_message(message: str, model: str = "gpt-5-nano") -> str:
     """
     Translate a Korean telegram message to English
 
     Args:
         message: Korean telegram message to translate
-        model: OpenAI model to use (default: gpt-4o-mini for cost efficiency)
+        model: OpenAI model to use (default: gpt-5-nano for cost efficiency)
 
     Returns:
         str: Translated English message

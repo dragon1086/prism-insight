@@ -310,7 +310,7 @@ class StockAnalysisOrchestrator:
                 try:
                     logger.info("Translating trigger alert message to English")
                     from cores.agents.telegram_translator_agent import translate_telegram_message
-                    message = await translate_telegram_message(message, model="gpt-4o-mini")
+                    message = await translate_telegram_message(message, model="gpt-5-nano")
                     logger.info("Translation complete")
                 except Exception as e:
                     logger.error(f"Translation failed: {str(e)}. Using original Korean message.")
