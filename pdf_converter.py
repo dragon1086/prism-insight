@@ -334,75 +334,6 @@ def markdown_to_html(md_file_path, add_css=True, add_theme=False, logo_path=None
         logger.error(f"Error during HTML conversion: {str(e)}")
         raise
 
-def compress_pdf(input_pdf_path, output_pdf_path=None, compression_level='medium'):
-    """
-    Compress PDF file to reduce size
-
-    Args:
-        input_pdf_path (str): Input PDF file path
-        output_pdf_path (str): Output PDF file path (overwrites input if None)
-        compression_level (str): Compression level ('low', 'medium', 'high')
-                                 'low': minimal compression, best quality
-                                 'medium': balanced (recommended)
-                                 'high': maximum compression, may reduce quality
-
-    Returns:
-        tuple: (original_size, compressed_size, compression_ratio)
-    """
-    import os
-
-    if output_pdf_path is None:
-        output_pdf_path = input_pdf_path
-
-    try:
-        # Get original file size
-        original_size = os.path.getsize(input_pdf_path)
-
-        # Read PDF
-        reader = PyPDF2.PdfReader(input_pdf_path)
-        writer = PyPDF2.PdfWriter()
-
-        # Copy pages with compression
-        for page in reader.pages:
-            # Compress page content
-            page.compress_content_streams()
-            writer.add_page(page)
-
-        # Set compression level
-        if compression_level == 'high':
-            # Maximum compression
-            for page in writer.pages:
-                if '/Contents' in page:
-                    page.compress_content_streams()
-        elif compression_level == 'medium':
-            # Balanced compression (already done above)
-            pass
-        # 'low' level: minimal compression (no additional processing)
-
-        # Write compressed PDF to temporary file
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-            temp_path = tmp_file.name
-            writer.write(tmp_file)
-
-        # Replace original file
-        import shutil
-        shutil.move(temp_path, output_pdf_path)
-
-        # Get compressed file size
-        compressed_size = os.path.getsize(output_pdf_path)
-        compression_ratio = (1 - compressed_size / original_size) * 100
-
-        logger.info(f"PDF compressed: {original_size:,} bytes -> {compressed_size:,} bytes "
-                   f"({compression_ratio:.1f}% reduction)")
-
-        return original_size, compressed_size, compression_ratio
-
-    except Exception as e:
-        logger.error(f"Error during PDF compression: {str(e)}")
-        # If compression fails, keep original file
-        return None, None, 0
-
 def _ensure_playwright_browser():
     """
     Check if Playwright browser is installed, and auto-install if not
@@ -571,9 +502,7 @@ async def _markdown_to_pdf_playwright_async(md_file_path, pdf_file_path, add_the
                 'bottom': '20mm',
                 'left': '20mm'
             },
-            print_background=True,  # Include background colors/images
-            scale=0.9,  # Slightly reduce page scale to decrease file size
-            prefer_css_page_size=True  # Use CSS page size if specified
+            print_background=True  # Include background colors/images
         )
 
         await browser.close()
@@ -582,12 +511,6 @@ async def _markdown_to_pdf_playwright_async(md_file_path, pdf_file_path, add_the
     os.unlink(temp_html)
 
     logger.info(f"PDF conversion complete with Playwright: {pdf_file_path}")
-
-    # Compress PDF to reduce file size
-    try:
-        compress_pdf(pdf_file_path, compression_level='medium')
-    except Exception as e:
-        logger.warning(f"PDF compression failed (file kept as-is): {str(e)}")
 
 def _markdown_to_pdf_playwright_sync(md_file_path, pdf_file_path, add_theme, logo_path, enable_watermark, watermark_opacity):
     """PDF conversion using Playwright Sync API (for regular environments)"""
@@ -635,9 +558,7 @@ def _markdown_to_pdf_playwright_sync(md_file_path, pdf_file_path, add_theme, log
                 'bottom': '20mm',
                 'left': '20mm'
             },
-            print_background=True,  # Include background colors/images
-            scale=0.9,  # Slightly reduce page scale to decrease file size
-            prefer_css_page_size=True  # Use CSS page size if specified
+            print_background=True  # Include background colors/images
         )
 
         browser.close()
@@ -646,12 +567,6 @@ def _markdown_to_pdf_playwright_sync(md_file_path, pdf_file_path, add_theme, log
     os.unlink(temp_html)
 
     logger.info(f"PDF conversion complete with Playwright: {pdf_file_path}")
-
-    # Compress PDF to reduce file size
-    try:
-        compress_pdf(pdf_file_path, compression_level='medium')
-    except Exception as e:
-        logger.warning(f"PDF compression failed (file kept as-is): {str(e)}")
 
 def markdown_to_pdf_pdfkit(md_file_path, pdf_file_path, add_theme=False, logo_path=None, enable_watermark=False, watermark_opacity=0.02):
     """
