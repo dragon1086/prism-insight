@@ -337,52 +337,69 @@ def markdown_to_html(md_file_path, add_css=True, add_theme=False, logo_path=None
 def _ensure_playwright_browser():
     """
     Playwright 브라우저가 설치되어 있는지 확인하고, 없으면 자동 설치
-    
+
+    asyncio 이벤트 루프와 관계없이 안전하게 작동하도록 subprocess만 사용
+
     Returns:
         bool: 브라우저 설치 성공 여부
     """
+    import subprocess
+    import sys
+
     try:
-        from playwright.sync_api import sync_playwright
-        
-        # 브라우저가 설치되어 있는지 확인
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch()
-                browser.close()
+        # subprocess로 브라우저 정보 확인 (sync API 사용 안함)
+        # playwright show 명령어로 설치된 브라우저 확인
+        check_result = subprocess.run(
+            [sys.executable, "-m", "playwright", "show"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        # chromium이 설치되어 있는지 확인
+        if "chromium" in check_result.stdout.lower() and "executable" in check_result.stdout.lower():
+            logger.debug("Playwright Chromium 브라우저가 이미 설치되어 있습니다.")
             return True
-        except Exception as e:
-            if "Executable doesn't exist" in str(e):
-                logger.warning("Playwright 브라우저가 설치되지 않았습니다. 자동 설치를 시도합니다...")
-                
-                # 자동 설치 시도
-                import subprocess
-                import sys
-                
-                try:
-                    # playwright install chromium 실행
-                    result = subprocess.run(
-                        [sys.executable, "-m", "playwright", "install", "chromium"],
-                        capture_output=True,
-                        text=True,
-                        timeout=300  # 5분 타임아웃
-                    )
-                    
-                    if result.returncode == 0:
-                        logger.info("Playwright 브라우저 설치 완료")
-                        return True
-                    else:
-                        logger.error(f"Playwright 브라우저 설치 실패: {result.stderr}")
-                        return False
-                        
-                except subprocess.TimeoutExpired:
-                    logger.error("Playwright 브라우저 설치 타임아웃")
-                    return False
-                except Exception as install_error:
-                    logger.error(f"Playwright 브라우저 자동 설치 중 오류: {str(install_error)}")
-                    return False
+
+        # 설치되어 있지 않으면 자동 설치 시도
+        logger.warning("Playwright 브라우저가 설치되지 않았습니다. 자동 설치를 시도합니다...")
+
+        try:
+            # playwright install chromium 실행
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5분 타임아웃
+            )
+
+            if result.returncode == 0:
+                logger.info("Playwright 브라우저 설치 완료")
+                return True
             else:
-                raise
-                
+                logger.error(f"Playwright 브라우저 설치 실패: {result.stderr}")
+                return False
+
+        except subprocess.TimeoutExpired:
+            logger.error("Playwright 브라우저 설치 타임아웃")
+            return False
+        except Exception as install_error:
+            logger.error(f"Playwright 브라우저 자동 설치 중 오류: {str(install_error)}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Playwright 브라우저 확인 타임아웃 - 설치를 시도합니다...")
+        # 타임아웃 발생 시에도 설치 시도
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
     except Exception as e:
         logger.error(f"Playwright 브라우저 확인 중 오류: {str(e)}")
         return False
@@ -459,12 +476,22 @@ async def _markdown_to_pdf_playwright_async(md_file_path, pdf_file_path, add_the
 
     # Playwright Async로 PDF 생성
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        # Chromium 브라우저 실행 옵션
+        # headless 모드 및 안정성을 위한 추가 args
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-dev-shm-usage',  # 공유 메모리 부족 문제 방지
+                '--no-sandbox',  # 샌드박스 비활성화 (컨테이너 환경용)
+                '--disable-setuid-sandbox',
+                '--disable-gpu',  # GPU 가속 비활성화 (headless에서 불필요)
+            ]
+        )
         page = await browser.new_page()
-        
+
         # 파일 URL로 로드 (로컬 파일 접근 허용)
-        await page.goto(f'file://{os.path.abspath(temp_html)}')
-        
+        await page.goto(f'file://{os.path.abspath(temp_html)}', wait_until='networkidle')
+
         # PDF 생성 옵션
         await page.pdf(
             path=pdf_file_path,
@@ -477,7 +504,7 @@ async def _markdown_to_pdf_playwright_async(md_file_path, pdf_file_path, add_the
             },
             print_background=True  # 배경색/이미지 포함
         )
-        
+
         await browser.close()
 
     # 임시 파일 삭제
@@ -505,12 +532,22 @@ def _markdown_to_pdf_playwright_sync(md_file_path, pdf_file_path, add_theme, log
 
     # Playwright Sync로 PDF 생성
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        # Chromium 브라우저 실행 옵션
+        # headless 모드 및 안정성을 위한 추가 args
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-dev-shm-usage',  # 공유 메모리 부족 문제 방지
+                '--no-sandbox',  # 샌드박스 비활성화 (컨테이너 환경용)
+                '--disable-setuid-sandbox',
+                '--disable-gpu',  # GPU 가속 비활성화 (headless에서 불필요)
+            ]
+        )
         page = browser.new_page()
-        
+
         # 파일 URL로 로드 (로컬 파일 접근 허용)
-        page.goto(f'file://{os.path.abspath(temp_html)}')
-        
+        page.goto(f'file://{os.path.abspath(temp_html)}', wait_until='networkidle')
+
         # PDF 생성 옵션
         page.pdf(
             path=pdf_file_path,
@@ -523,7 +560,7 @@ def _markdown_to_pdf_playwright_sync(md_file_path, pdf_file_path, add_theme, log
             },
             print_background=True  # 배경색/이미지 포함
         )
-        
+
         browser.close()
 
     # 임시 파일 삭제
