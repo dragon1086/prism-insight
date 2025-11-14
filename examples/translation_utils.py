@@ -204,7 +204,7 @@ Return the translations in the same numbered format.""",
     
     def _translate_fixed_values(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """고정 값 매핑 (섹터, 기간 등)"""
-        
+
         # 정적 매핑 테이블
         STATIC_MAPPINGS = {
             # 섹터 (산업군)
@@ -229,20 +229,20 @@ Return the translations in the same numbered format.""",
             "에너지": "Energy",
             "통신": "Telecom",
             "기타": "Others",
-            
+
             # 투자 기간
             "단기": "Short-term",
             "중기": "Mid-term",
             "장기": "Long-term",
             "해당없음": "N/A",
-            
+
             # 결정 타입
             "매수": "Buy",
             "진입": "Entry",
             "매도": "Sell",
             "보류": "Hold",
             "관망": "Watch",
-            
+
             # 시장 상태
             "횡보": "Sideways",
             "상승": "Uptrend",
@@ -251,29 +251,55 @@ Return the translations in the same numbered format.""",
             "안정": "Stable",
             "과매수": "Overbought",
             "과매도": "Oversold",
+
+            # 기술적 추세 (holding_decisions용)
+            "상승 - 강": "Uptrend - Strong",
+            "상승 - 약": "Uptrend - Weak",
+            "하락 - 강": "Downtrend - Strong",
+            "하락 - 약": "Downtrend - Weak",
+            "횡보 - 강": "Sideways - Strong",
+            "횡보 - 약": "Sideways - Weak",
         }
-        
-        def replace_in_dict(obj):
-            """재귀적으로 딕셔너리 탐색하며 교체"""
+
+        def replace_in_dict(obj, parent=None, parent_key=None):
+            """재귀적으로 딕셔너리 탐색하며 값과 키를 모두 교체"""
             if isinstance(obj, dict):
-                for key, value in list(obj.items()):  # list()로 복사해서 순회
+                # 먼저 키를 교체할 새 딕셔너리 생성
+                new_dict = {}
+                for key, value in obj.items():
+                    # 키 교체
+                    new_key = STATIC_MAPPINGS.get(key, key)
+
+                    # 값이 문자열이면 교체
                     if isinstance(value, str):
-                        # 정확한 매칭만 교체
-                        if value in STATIC_MAPPINGS:
-                            obj[key] = STATIC_MAPPINGS[value]
+                        new_value = STATIC_MAPPINGS.get(value, value)
                     elif isinstance(value, (dict, list)):
-                        replace_in_dict(value)
+                        # 재귀적으로 처리
+                        new_value = replace_in_dict(value)
+                    else:
+                        new_value = value
+
+                    new_dict[new_key] = new_value
+
+                # 부모가 있으면 부모의 해당 키를 업데이트
+                if parent is not None and parent_key is not None:
+                    parent[parent_key] = new_dict
+
+                return new_dict
+
             elif isinstance(obj, list):
                 for i, item in enumerate(obj):
                     if isinstance(item, str):
                         # 리스트 항목도 교체
-                        if item in STATIC_MAPPINGS:
-                            obj[i] = STATIC_MAPPINGS[item]
+                        obj[i] = STATIC_MAPPINGS.get(item, item)
                     elif isinstance(item, (dict, list)):
-                        replace_in_dict(item)
-        
-        replace_in_dict(data)
-        return data
+                        obj[i] = replace_in_dict(item)
+                return obj
+
+            return obj
+
+        # 데이터 전체를 재귀적으로 처리
+        return replace_in_dict(data)
     
     async def _translate_free_text_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """자유 텍스트 필드 AI 번역"""
@@ -298,6 +324,12 @@ Return the translations in the same numbered format.""",
             'secondary_support',
             'primary_resistance',
             'secondary_resistance',
+            # holding_decisions 필드 (AI 매도 판단)
+            'technical_trend',  # 기술적 추세 (일부는 STATIC_MAPPINGS에서 처리)
+            'volume_analysis',  # 거래량 분석
+            'market_condition_impact',  # 시장 상황 영향
+            'time_factor',  # 시간 요소
+            'reason',  # portfolio_adjustment.reason 등
             # 최상위 필드
             'company_name',
             'name',  # real_portfolio의 name
