@@ -1,0 +1,47 @@
+# GitHub Sponsors Telegram Request - Crontab Examples
+# ========================================================
+#
+# ⚠️ IMPORTANT: Best practice is to send sponsor requests 1-2 times per MONTH, not daily!
+#
+# Format: minute hour day month day_of_week command
+#
+# Copy the desired schedule to your crontab:
+#   crontab -e
+#
+# ========================================================
+
+# === RECOMMENDED: Monthly (1 time per month) ===
+
+# Send monthly report on the 1st of each month at 10:00 AM
+0 10 1 * * cd /home/user/prism-insight && python3 sponsors/telegram_sponsor_request.py --type monthly >> sponsors/sponsor_request.log 2>&1
+
+
+# === OPTIONAL: Twice per month ===
+
+# Send monthly report on the 1st at 10:00 AM
+0 10 1 * * cd /home/user/prism-insight && python3 sponsors/telegram_sponsor_request.py --type monthly >> sponsors/sponsor_request.log 2>&1
+
+# Send simple reminder on the 15th at 10:00 AM
+0 10 15 * * cd /home/user/prism-insight && python3 sponsors/telegram_sponsor_request.py --type simple >> sponsors/sponsor_request.log 2>&1
+
+
+# === ALTERNATIVE: Weekly (use with caution) ===
+# ⚠️ Warning: Weekly messages may feel too frequent!
+
+# Send simple reminder every Sunday at 10:00 AM
+# 0 10 * * 0 cd /home/user/prism-insight && python3 sponsors/telegram_sponsor_request.py --type simple >> sponsors/sponsor_request.log 2>&1
+
+
+# === MULTI-LANGUAGE BROADCAST ===
+
+# Send to multiple language channels simultaneously
+# 0 10 1 * * cd /home/user/prism-insight && python3 sponsors/telegram_sponsor_request.py --type monthly --broadcast-languages en,ja,zh >> sponsors/sponsor_request.log 2>&1
+
+
+# ========================================================
+# Notes:
+# - Replace /home/user/prism-insight with your actual project path
+# - Logs are appended to sponsors/sponsor_request.log
+# - Test first with --dry-run before scheduling:
+#   python3 sponsors/telegram_sponsor_request.py --type simple --dry-run
+# ========================================================
