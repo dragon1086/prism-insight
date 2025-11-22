@@ -20,6 +20,7 @@ import json
 import logging
 import asyncio
 import yaml
+import argparse
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -468,6 +469,48 @@ class YouTubeEventFundCrawler:
             # Always cleanup temporary files
             self.cleanup_temp_files()
 
+    async def process_single_video_url(self, video_url: str):
+        """
+        Process a single video URL directly (for testing)
+
+        Args:
+            video_url: YouTube video URL
+        """
+        logger.info("="*80)
+        logger.info("YouTube Event Fund Crawler - Single Video Mode")
+        logger.info("="*80)
+
+        try:
+            # Create video info from URL
+            video_info = {
+                'title': 'Manual Video Input',
+                'published': datetime.now().isoformat(),
+                'link': video_url,
+                'id': video_url.split('=')[-1] if '=' in video_url else video_url.split('/')[-1]
+            }
+
+            logger.info(f"Processing video: {video_url}")
+
+            analysis = await self.process_new_video(video_info)
+
+            if analysis:
+                # Print analysis to console
+                print("\n" + "="*80)
+                print("ANALYSIS RESULT")
+                print("="*80)
+                print(analysis)
+                print("="*80 + "\n")
+            else:
+                logger.warning("Failed to analyze video")
+
+            logger.info("="*80)
+            logger.info("YouTube Event Fund Crawler - Completed")
+            logger.info("="*80)
+
+        except Exception as e:
+            logger.error(f"Fatal error processing video: {e}", exc_info=True)
+            raise
+
     async def run(self):
         """Main execution workflow"""
         logger.info("="*80)
@@ -483,6 +526,23 @@ class YouTubeEventFundCrawler:
 
             # Step 2: Load previous video history
             previous_videos = self.load_previous_videos()
+
+            # Check if this is first run
+            is_first_run = len(previous_videos) == 0
+
+            if is_first_run:
+                logger.info("🎬 First run detected - initializing video history")
+                logger.info(f"Found {len(current_videos)} videos in channel")
+                logger.info("Saving video history without processing...")
+
+                # Save current videos and exit
+                self.save_video_history(current_videos)
+
+                logger.info("="*80)
+                logger.info("✅ Video history initialized successfully")
+                logger.info("💡 Run again to detect and process new videos")
+                logger.info("="*80)
+                return
 
             # Step 3: Find new videos
             new_videos = self.find_new_videos(current_videos, previous_videos)
@@ -523,9 +583,37 @@ class YouTubeEventFundCrawler:
 
 async def main():
     """Entry point"""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="YouTube Event Fund Crawler - 전인구경제연구소 역발상 투자 분석",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Normal mode (monitor RSS feed for new videos)
+  python youtube_event_fund_crawler.py
+
+  # Test mode (process specific video URL)
+  python youtube_event_fund_crawler.py --video-url "https://www.youtube.com/watch?v=VIDEO_ID"
+        """
+    )
+    parser.add_argument(
+        '--video-url',
+        type=str,
+        help='Process a specific YouTube video URL (test mode)'
+    )
+
+    args = parser.parse_args()
+
     try:
         crawler = YouTubeEventFundCrawler()
-        await crawler.run()
+
+        if args.video_url:
+            # Single video mode
+            logger.info(f"🎯 Test mode: Processing single video")
+            await crawler.process_single_video_url(args.video_url)
+        else:
+            # Normal RSS monitoring mode
+            await crawler.run()
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

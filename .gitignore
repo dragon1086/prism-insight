@@ -7,7 +7,8 @@ mcp_agent.secrets.yaml
 config.py
 
 # YouTube Event Fund Crawler 출력 파일
-events/
+events/*
+!events/YOUTUBE_EVENT_FUND_CRAWLER.md
 
 # Python cache files
 __pycache__/

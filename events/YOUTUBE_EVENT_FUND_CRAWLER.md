@@ -94,22 +94,52 @@ chmod +x youtube_event_fund_crawler.py
 
 ## 🚀 사용법
 
-### 기본 실행
+### 기본 실행 (RSS 모니터링 모드)
 
 ```bash
 python youtube_event_fund_crawler.py
 ```
 
+### 테스트 실행 (특정 영상 URL 직접 입력)
+
+```bash
+python youtube_event_fund_crawler.py --video-url "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
+**예시**:
+```bash
+python youtube_event_fund_crawler.py --video-url "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+### 도움말 보기
+
+```bash
+python youtube_event_fund_crawler.py --help
+```
+
 ### 동작 방식
 
-#### 첫 실행
-- 채널의 최신 영상 목록을 가져와서 `youtube_video_history.json`에 저장
-- 새로운 영상이 없으므로 분석하지 않음
+#### 첫 실행 (초기화)
+- 채널의 최신 영상 목록을 가져와서 `events/youtube_video_history.json`에 저장
+- **영상은 처리하지 않고** 히스토리만 초기화
+- 다음 메시지 출력:
+  ```
+  🎬 First run detected - initializing video history
+  Found 15 videos in channel
+  Saving video history without processing...
+  ✅ Video history initialized successfully
+  💡 Run again to detect and process new videos
+  ```
 
-#### 두 번째 이후 실행
+#### 두 번째 이후 실행 (자동 감지)
 - 새로운 영상이 올라온 경우 자동으로 감지
 - 오디오 추출 → 자막 생성 → AI 분석 수행
 - 결과를 콘솔 및 파일로 출력
+
+#### 테스트 모드 (`--video-url` 사용)
+- RSS 피드를 확인하지 않고 특정 영상만 처리
+- 히스토리와 무관하게 즉시 분석 시작
+- 빠른 테스트 및 디버깅에 유용
 
 ### 출력 파일
 

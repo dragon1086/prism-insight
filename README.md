@@ -263,7 +263,7 @@ PRISM-INSIGHT is a **multi-agent system where 13 specialized AI agents collabora
   - Audio extraction and transcription using OpenAI Whisper API
   - AI-powered content analysis for market sentiment detection
   - Contrarian investment recommendations (inverse/leveraged ETF suggestions)
-  - 📖 See [YOUTUBE_EVENT_FUND_CRAWLER.md](YOUTUBE_EVENT_FUND_CRAWLER.md) for details
+  - 📖 See [YOUTUBE_EVENT_FUND_CRAWLER.md](events/YOUTUBE_EVENT_FUND_CRAWLER.md) for details
 
 ## 🧠 AI Model Usage
 
