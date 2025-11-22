@@ -176,9 +176,13 @@ class YouTubeEventFundCrawler:
         """
         logger.info(f"Extracting audio from: {video_url}")
 
-        # Remove existing audio file if present
-        if AUDIO_FILE.exists():
-            AUDIO_FILE.unlink()
+        # Remove all existing temp_audio files (including intermediates)
+        for temp_file in EVENTS_DIR.glob('temp_audio.*'):
+            try:
+                temp_file.unlink()
+                logger.debug(f"Removed existing file: {temp_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove {temp_file}: {e}")
 
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -187,6 +191,7 @@ class YouTubeEventFundCrawler:
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
             }],
+            'keepvideo': False,  # Delete original file after conversion
             'quiet': True,
             'no_warnings': True,
         }
@@ -410,12 +415,19 @@ class YouTubeEventFundCrawler:
 
     def cleanup_temp_files(self):
         """Remove temporary audio files"""
-        if AUDIO_FILE.exists():
+        # Remove all temp_audio files (including any remaining intermediates)
+        cleaned_files = []
+        for temp_file in EVENTS_DIR.glob('temp_audio.*'):
             try:
-                AUDIO_FILE.unlink()
-                logger.info("Cleaned up temporary audio file")
+                temp_file.unlink()
+                cleaned_files.append(temp_file.name)
             except Exception as e:
-                logger.warning(f"Failed to clean up audio file: {e}")
+                logger.warning(f"Failed to clean up {temp_file}: {e}")
+
+        if cleaned_files:
+            logger.info(f"Cleaned up temporary audio files: {', '.join(cleaned_files)}")
+        else:
+            logger.debug("No temporary audio files to clean up")
 
     async def process_new_video(self, video_info: Dict) -> Optional[str]:
         """
