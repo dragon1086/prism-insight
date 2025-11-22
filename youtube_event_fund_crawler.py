@@ -214,6 +214,7 @@ class YouTubeEventFundCrawler:
     def transcribe_audio(self, audio_file: str) -> Optional[str]:
         """
         Transcribe audio using OpenAI Whisper API
+        Handles files larger than 25MB by splitting into chunks
 
         Args:
             audio_file: Path to audio file
@@ -224,19 +225,103 @@ class YouTubeEventFundCrawler:
         logger.info(f"Transcribing audio file: {audio_file}")
 
         try:
-            with open(audio_file, "rb") as f:
-                result = self.openai_client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=f,
-                    language="ko"
-                )
+            # Check file size
+            file_size = Path(audio_file).stat().st_size
+            max_size = 25 * 1024 * 1024  # 25MB in bytes
 
-            transcript = result.text
-            logger.info(f"Transcription successful ({len(transcript)} characters)")
-            return transcript
+            logger.info(f"Audio file size: {file_size / (1024*1024):.2f} MB")
+
+            if file_size <= max_size:
+                # File is small enough, transcribe directly
+                logger.info("File size is within limit, transcribing directly")
+                with open(audio_file, "rb") as f:
+                    result = self.openai_client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=f,
+                        language="ko"
+                    )
+                transcript = result.text
+                logger.info(f"Transcription successful ({len(transcript)} characters)")
+                return transcript
+
+            else:
+                # File is too large, split and transcribe in chunks
+                logger.info("File exceeds 25MB limit, splitting into chunks")
+                return self._transcribe_large_file(audio_file)
 
         except Exception as e:
             logger.error(f"Error transcribing audio: {e}", exc_info=True)
+            return None
+
+    def _transcribe_large_file(self, audio_file: str) -> Optional[str]:
+        """
+        Split large audio file and transcribe in chunks
+
+        Args:
+            audio_file: Path to audio file
+
+        Returns:
+            Combined transcript text
+        """
+        try:
+            from pydub import AudioSegment
+
+            # Load audio file
+            logger.info("Loading audio file for splitting")
+            audio = AudioSegment.from_mp3(audio_file)
+            duration_ms = len(audio)
+            duration_min = duration_ms / 60000
+
+            logger.info(f"Audio duration: {duration_min:.2f} minutes")
+
+            # Split into 10-minute chunks (adjust as needed)
+            chunk_length_ms = 10 * 60 * 1000  # 10 minutes
+            chunks = []
+            transcripts = []
+
+            for i in range(0, duration_ms, chunk_length_ms):
+                chunk = audio[i:i + chunk_length_ms]
+                chunk_file = EVENTS_DIR / f"temp_audio_chunk_{i//chunk_length_ms}.mp3"
+                chunk.export(chunk_file, format="mp3")
+                chunks.append(chunk_file)
+                logger.info(f"Created chunk {len(chunks)}: {chunk_file.name}")
+
+            # Transcribe each chunk
+            for idx, chunk_file in enumerate(chunks, 1):
+                logger.info(f"Transcribing chunk {idx}/{len(chunks)}")
+                try:
+                    with open(chunk_file, "rb") as f:
+                        result = self.openai_client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=f,
+                            language="ko"
+                        )
+                    transcripts.append(result.text)
+                    logger.info(f"Chunk {idx} transcribed ({len(result.text)} characters)")
+                except Exception as e:
+                    logger.error(f"Error transcribing chunk {idx}: {e}")
+                    transcripts.append(f"[청크 {idx} 변환 실패]")
+
+            # Combine transcripts
+            full_transcript = " ".join(transcripts)
+            logger.info(f"Combined transcript: {len(full_transcript)} characters from {len(chunks)} chunks")
+
+            # Cleanup chunk files
+            for chunk_file in chunks:
+                try:
+                    chunk_file.unlink()
+                    logger.debug(f"Removed chunk file: {chunk_file}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove chunk file {chunk_file}: {e}")
+
+            return full_transcript
+
+        except ImportError:
+            logger.error("pydub is not installed. Please install it: pip install pydub")
+            logger.error("Also ensure ffmpeg is installed for audio processing")
+            return None
+        except Exception as e:
+            logger.error(f"Error splitting/transcribing large file: {e}", exc_info=True)
             return None
 
     def create_analysis_agent(self, video_info: Dict, transcript: str) -> Agent:
@@ -414,15 +499,25 @@ class YouTubeEventFundCrawler:
             return f"분석 실패: {str(e)}"
 
     def cleanup_temp_files(self):
-        """Remove temporary audio files"""
-        # Remove all temp_audio files (including any remaining intermediates)
+        """Remove temporary audio files including chunks"""
+        # Remove all temp_audio files (including intermediates and chunks)
         cleaned_files = []
+
+        # Clean up main audio files
         for temp_file in EVENTS_DIR.glob('temp_audio.*'):
             try:
                 temp_file.unlink()
                 cleaned_files.append(temp_file.name)
             except Exception as e:
                 logger.warning(f"Failed to clean up {temp_file}: {e}")
+
+        # Clean up chunk files
+        for chunk_file in EVENTS_DIR.glob('temp_audio_chunk_*.mp3'):
+            try:
+                chunk_file.unlink()
+                cleaned_files.append(chunk_file.name)
+            except Exception as e:
+                logger.warning(f"Failed to clean up {chunk_file}: {e}")
 
         if cleaned_files:
             logger.info(f"Cleaned up temporary audio files: {', '.join(cleaned_files)}")
