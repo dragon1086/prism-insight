@@ -113,22 +113,25 @@ python youtube_event_fund_crawler.py
 
 ### 출력 파일
 
-스크립트 실행 시 다음 파일들이 생성됩니다:
+스크립트 실행 시 `events/` 디렉토리에 다음 파일들이 생성됩니다:
 
-1. **`youtube_video_history.json`**
+1. **`events/youtube_video_history.json`**
    - 채널의 영상 목록 히스토리
    - 다음 실행 시 비교 기준으로 사용
 
-2. **`transcript_{video_id}_{timestamp}.txt`**
+2. **`events/transcript_{video_id}_{timestamp}.txt`**
    - Whisper API로 생성된 자막 원문
    - 디버깅 및 검토용
 
-3. **`analysis_{video_id}_{timestamp}.md`**
+3. **`events/analysis_{video_id}_{timestamp}.md`**
    - AI Agent의 분석 결과
    - 역발상 투자 전략 포함
 
-4. **`youtube_crawler_{date}.log`**
+4. **`events/youtube_crawler_{date}.log`**
    - 실행 로그 파일
+
+5. **`events/temp_audio.mp3`**
+   - 임시 오디오 파일 (처리 후 자동 삭제)
 
 ---
 

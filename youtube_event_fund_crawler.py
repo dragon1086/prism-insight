@@ -31,13 +31,18 @@ from openai import OpenAI
 from mcp_agent.agents.agent import Agent
 from mcp_agent.app import App
 
+# Setup directories
+EVENTS_DIR = Path("events")
+EVENTS_DIR.mkdir(exist_ok=True)
+
 # Configure logging
+log_file = EVENTS_DIR / f"youtube_crawler_{datetime.now().strftime('%Y%m%d')}.log"
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(f"youtube_crawler_{datetime.now().strftime('%Y%m%d')}.log")
+        logging.FileHandler(log_file)
     ]
 )
 logger = logging.getLogger(__name__)
@@ -45,8 +50,8 @@ logger = logging.getLogger(__name__)
 # Constants
 CHANNEL_ID = "UCznImSIaxZR7fdLCICLdgaQ"  # 전인구경제연구소
 RSS_URL = f"https://www.youtube.com/feeds/videos.xml?channel_id={CHANNEL_ID}"
-VIDEO_HISTORY_FILE = "youtube_video_history.json"
-AUDIO_FILE = "temp_audio.mp3"
+VIDEO_HISTORY_FILE = EVENTS_DIR / "youtube_video_history.json"
+AUDIO_FILE = EVENTS_DIR / "temp_audio.mp3"
 
 
 class YouTubeEventFundCrawler:
@@ -169,12 +174,12 @@ class YouTubeEventFundCrawler:
         logger.info(f"Extracting audio from: {video_url}")
 
         # Remove existing audio file if present
-        if Path(AUDIO_FILE).exists():
-            Path(AUDIO_FILE).unlink()
+        if AUDIO_FILE.exists():
+            AUDIO_FILE.unlink()
 
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': 'temp_audio.%(ext)s',
+            'outtmpl': str(EVENTS_DIR / 'temp_audio.%(ext)s'),
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
@@ -187,9 +192,9 @@ class YouTubeEventFundCrawler:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([video_url])
 
-            if Path(AUDIO_FILE).exists():
+            if AUDIO_FILE.exists():
                 logger.info("Audio extraction successful")
-                return AUDIO_FILE
+                return str(AUDIO_FILE)
             else:
                 logger.error("Audio file not found after extraction")
                 return None
@@ -394,9 +399,9 @@ class YouTubeEventFundCrawler:
 
     def cleanup_temp_files(self):
         """Remove temporary audio files"""
-        if Path(AUDIO_FILE).exists():
+        if AUDIO_FILE.exists():
             try:
-                Path(AUDIO_FILE).unlink()
+                AUDIO_FILE.unlink()
                 logger.info("Cleaned up temporary audio file")
             except Exception as e:
                 logger.warning(f"Failed to clean up audio file: {e}")
@@ -425,7 +430,7 @@ class YouTubeEventFundCrawler:
                 return None
 
             # Save transcript for debugging
-            transcript_file = f"transcript_{video_info['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            transcript_file = EVENTS_DIR / f"transcript_{video_info['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             with open(transcript_file, 'w', encoding='utf-8') as f:
                 f.write(f"Video: {video_info['title']}\n")
                 f.write(f"URL: {video_info['link']}\n")
@@ -438,7 +443,7 @@ class YouTubeEventFundCrawler:
             analysis = await self.analyze_video(video_info, transcript)
 
             # Save analysis result
-            analysis_file = f"analysis_{video_info['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+            analysis_file = EVENTS_DIR / f"analysis_{video_info['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
             with open(analysis_file, 'w', encoding='utf-8') as f:
                 f.write(analysis)
             logger.info(f"Analysis saved to: {analysis_file}")
