@@ -62,3 +62,7 @@ cryptography>=42.0.8,<45.0.0
 APScheduler==3.11.0
 
 upstash-redis>=1.0.0
+
+# YouTube Event Fund Crawler
+yt-dlp>=2024.0.0  # YouTube video/audio downloader
+feedparser>=6.0.0  # RSS feed parser

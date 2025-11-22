@@ -249,7 +249,7 @@ PRISM-INSIGHT is a **multi-agent system where 13 specialized AI agents collabora
 
 - **💱 Automated Trading**: Automatic trading according to trading simulation results through Korea Investment & Securities API
 
-- **🎨 Realtime Dashboard**: We transparently disclose all information on the AI-traded portfolio, its performance relative to the market, the AI’s trading rationale, full trading history, watchlist, and system maintenance costs.
+- **🎨 Realtime Dashboard**: We transparently disclose all information on the AI-traded portfolio, its performance relative to the market, the AI's trading rationale, full trading history, watchlist, and system maintenance costs.
   <img src="docs/images/dashboard1-en.png" alt="Dashboard 1" width="500">
   <img src="docs/images/dashboard2-en.png" alt="Dashboard 2" width="500">
   <img src="docs/images/dashboard3-en.png" alt="Dashboard 3" width="500">
@@ -257,6 +257,13 @@ PRISM-INSIGHT is a **multi-agent system where 13 specialized AI agents collabora
   <img src="docs/images/dashboard5-en.png" alt="Dashboard 5" width="500">
   <img src="docs/images/dashboard6-en.png" alt="Dashboard 6" width="500">
   <img src="docs/images/dashboard7-en.png" alt="Dashboard 7" width="500">
+
+- **🎬 YouTube Event Fund Crawler** (NEW): Contrarian investment strategy based on '전인구경제연구소' YouTube channel analysis
+  - Automatic monitoring of new videos via RSS feed
+  - Audio extraction and transcription using OpenAI Whisper API
+  - AI-powered content analysis for market sentiment detection
+  - Contrarian investment recommendations (inverse/leveraged ETF suggestions)
+  - 📖 See [YOUTUBE_EVENT_FUND_CRAWLER.md](YOUTUBE_EVENT_FUND_CRAWLER.md) for details
 
 ## 🧠 AI Model Usage
 
