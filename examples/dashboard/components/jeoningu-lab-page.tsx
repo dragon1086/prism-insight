@@ -13,6 +13,10 @@ interface JeoninguLabData {
         losing_trades: number
         win_rate: number
         cumulative_return: number
+        realized_pl?: number
+        unrealized_pl?: number
+        total_pl?: number
+        total_assets?: number
         avg_return_per_trade: number
         initial_capital: number
         current_balance: number
@@ -23,6 +27,10 @@ interface JeoninguLabData {
         quantity: number
         buy_price: number
         buy_amount: number
+        current_price?: number
+        current_value?: number
+        unrealized_pl?: number
+        unrealized_pl_pct?: number
         buy_date: string
         video_id: string
         video_title: string
@@ -181,7 +189,7 @@ export function JeoninguLabPage({ data }: JeoninguLabPageProps) {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <Card className="border-purple-200 bg-gradient-to-br from-purple-50 to-white">
                     <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium text-muted-foreground">누적 수익률</CardTitle>
+                        <CardTitle className="text-sm font-medium text-muted-foreground">총 수익률</CardTitle>
                     </CardHeader>
                     <CardContent>
                         <div className="flex items-center justify-between">
@@ -191,7 +199,11 @@ export function JeoninguLabPage({ data }: JeoninguLabPageProps) {
                             </div>
                             <div className="text-3xl">📈</div>
                         </div>
-                        {hasNoData && <p className="text-xs text-muted-foreground mt-1">데이터 대기 중</p>}
+                        <div className="text-xs text-muted-foreground mt-1">
+                            {summary?.total_pl !== undefined 
+                                ? `${(summary.total_pl || 0) >= 0 ? "+" : ""}${(summary.total_pl || 0).toLocaleString()}원`
+                                : "데이터 대기 중"}
+                        </div>
                     </CardContent>
                 </Card>
 
@@ -205,40 +217,50 @@ export function JeoninguLabPage({ data }: JeoninguLabPageProps) {
                             <div className="text-3xl">🎯</div>
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">
-                            {summary ? `${summary.winning_trades}승 ${summary.losing_trades}패` : "데이터 대기 중"}
+                            {summary && summary.total_trades > 0 
+                                ? `${summary.winning_trades}승 ${summary.losing_trades}패 (${summary.total_trades}건)` 
+                                : "청산 거래 없음"}
                         </div>
                     </CardContent>
                 </Card>
 
                 <Card className="border-blue-200 bg-gradient-to-br from-blue-50 to-white">
                     <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium text-muted-foreground">총 거래</CardTitle>
+                        <CardTitle className="text-sm font-medium text-muted-foreground">손익 현황</CardTitle>
                     </CardHeader>
                     <CardContent>
-                        <div className="flex items-center justify-between">
-                            <div className="text-2xl font-bold text-blue-600">{summary?.total_trades || 0}건</div>
-                            <div className="text-3xl">💼</div>
+                        <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs text-muted-foreground">실현</span>
+                                <span className={`text-sm font-semibold ${(summary?.realized_pl || 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                                    {(summary?.realized_pl || 0) >= 0 ? "+" : ""}{(summary?.realized_pl || 0).toLocaleString()}원
+                                </span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs text-muted-foreground">미실현</span>
+                                <span className={`text-sm font-semibold ${(summary?.unrealized_pl || 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                                    {(summary?.unrealized_pl || 0) >= 0 ? "+" : ""}{(summary?.unrealized_pl || 0).toLocaleString()}원
+                                </span>
+                            </div>
                         </div>
-                        <div className="text-xs text-muted-foreground mt-1">
-                            {summary && summary.total_trades > 0
-                                ? `평균 ${summary.avg_return_per_trade >= 0 ? "+" : ""}${summary.avg_return_per_trade.toFixed(2)}%`
-                                : "데이터 대기 중"}
-                        </div>
+                        <div className="text-3xl absolute top-4 right-4">💹</div>
                     </CardContent>
                 </Card>
 
                 <Card className="border-yellow-200 bg-gradient-to-br from-yellow-50 to-white">
                     <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium text-muted-foreground">현재 잔액</CardTitle>
+                        <CardTitle className="text-sm font-medium text-muted-foreground">총 자산</CardTitle>
                     </CardHeader>
                     <CardContent>
                         <div className="flex items-center justify-between">
                             <div className="text-2xl font-bold text-yellow-600">
-                                {summary ? `${((summary.current_balance || 10000000) / 10000).toFixed(0)}만원` : "1,000만원"}
+                                {summary?.total_assets 
+                                    ? `${(summary.total_assets / 10000).toFixed(0)}만원`
+                                    : "1,000만원"}
                             </div>
                             <div className="text-3xl">💰</div>
                         </div>
-                        <div className="text-xs text-muted-foreground mt-1">초기 1천만원</div>
+                        <div className="text-xs text-muted-foreground mt-1">초기 1,000만원</div>
                     </CardContent>
                 </Card>
             </div>
@@ -262,10 +284,44 @@ export function JeoninguLabPage({ data }: JeoninguLabPageProps) {
                                         <div className="text-right">
                                             <div className="text-lg font-semibold">{current_position.quantity.toLocaleString()}주</div>
                                             <div className="text-sm text-muted-foreground">
-                                                @ {current_position.buy_price.toLocaleString()}원
+                                                매수 @ {current_position.buy_price.toLocaleString()}원
                                             </div>
                                         </div>
                                     </div>
+                                    
+                                    {/* 실시간 평가 정보 */}
+                                    <div className="p-4 rounded-lg bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-100">
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <div className="text-xs text-muted-foreground">현재가</div>
+                                                <div className="text-lg font-bold text-purple-700">
+                                                    {(current_position.current_price || current_position.buy_price).toLocaleString()}원
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <div className="text-xs text-muted-foreground">평가금액</div>
+                                                <div className="text-lg font-bold text-purple-700">
+                                                    {(current_position.current_value || current_position.buy_amount).toLocaleString()}원
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="mt-3 pt-3 border-t border-purple-200">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-sm text-muted-foreground">평가손익</span>
+                                                <div className={`text-xl font-bold ${
+                                                    (current_position.unrealized_pl || 0) >= 0 ? "text-green-600" : "text-red-600"
+                                                }`}>
+                                                    {(current_position.unrealized_pl || 0) >= 0 ? "+" : ""}
+                                                    {(current_position.unrealized_pl || 0).toLocaleString()}원
+                                                    <span className="text-sm ml-1">
+                                                        ({(current_position.unrealized_pl_pct || 0) >= 0 ? "+" : ""}
+                                                        {(current_position.unrealized_pl_pct || 0).toFixed(2)}%)
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     <div className="grid grid-cols-2 gap-4 pt-3 border-t">
                                         <div>
                                             <div className="text-xs text-muted-foreground">매수금액</div>

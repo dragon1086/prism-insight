@@ -415,6 +415,15 @@ class DashboardDataGenerator:
         try:
             logger.info("전인구 실험실 데이터 수집 중...")
             
+            # 실시간 가격 조회를 위한 import
+            try:
+                sys.path.insert(0, str(PROJECT_ROOT / "events"))
+                from jeoningu_price_fetcher import get_current_price
+                PRICE_FETCHER_AVAILABLE = True
+            except ImportError:
+                PRICE_FETCHER_AVAILABLE = False
+                logger.warning("jeoningu_price_fetcher를 찾을 수 없습니다. 실시간 가격 조회가 비활성화됩니다.")
+            
             # 1. 전체 거래 이력 조회
             cursor = conn.cursor()
             cursor.execute("""
@@ -432,6 +441,7 @@ class DashboardDataGenerator:
             # 2. 현재 포지션 확인
             current_position = None
             latest_balance = 10000000  # 기본값
+            initial_capital = 10000000
             
             if trade_history:
                 # 마지막 BUY 찾기
@@ -450,19 +460,44 @@ class DashboardDataGenerator:
                     )
                     
                     if not has_sell:
+                        # 실시간 현재가 조회
+                        stock_code = last_buy.get('stock_code')
+                        buy_price = last_buy.get('price', 0)
+                        quantity = last_buy.get('quantity', 0)
+                        buy_amount = last_buy.get('amount', 0)
+                        
+                        if PRICE_FETCHER_AVAILABLE and stock_code:
+                            try:
+                                current_price = get_current_price(stock_code)
+                                logger.info(f"실시간 현재가 조회: {stock_code} = {current_price:,}원")
+                            except Exception as e:
+                                logger.warning(f"현재가 조회 실패: {e}, 매수가 사용")
+                                current_price = buy_price
+                        else:
+                            current_price = buy_price
+                        
+                        # 평가금액 및 손익 계산
+                        current_value = quantity * current_price
+                        unrealized_pl = current_value - buy_amount
+                        unrealized_pl_pct = (unrealized_pl / buy_amount * 100) if buy_amount > 0 else 0
+                        
                         current_position = {
-                            'stock_code': last_buy.get('stock_code'),
+                            'stock_code': stock_code,
                             'stock_name': last_buy.get('stock_name'),
-                            'quantity': last_buy.get('quantity'),
-                            'buy_price': last_buy.get('price'),
-                            'buy_amount': last_buy.get('amount'),
+                            'quantity': quantity,
+                            'buy_price': buy_price,
+                            'buy_amount': buy_amount,
+                            'current_price': current_price,
+                            'current_value': current_value,
+                            'unrealized_pl': unrealized_pl,
+                            'unrealized_pl_pct': unrealized_pl_pct,
                             'buy_date': last_buy.get('analyzed_date'),
                             'video_id': last_buy.get('video_id'),
                             'video_title': last_buy.get('video_title')
                         }
                 
                 # 최신 잔액
-                latest_balance = trade_history[-1].get('balance_after', 10000000)
+                latest_balance = trade_history[-1].get('balance_after', initial_capital)
             
             # 3. 성과 지표 계산
             sell_trades = [t for t in trade_history if t.get('trade_type') == 'SELL']
@@ -473,9 +508,21 @@ class DashboardDataGenerator:
             
             win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
             
-            cumulative_return = 0
-            if trade_history:
-                cumulative_return = trade_history[-1].get('cumulative_return_pct', 0)
+            # 실현손익 계산
+            realized_pl = sum(t.get('profit_loss', 0) for t in sell_trades)
+            
+            # 미실현손익 (현재 포지션)
+            unrealized_pl = current_position.get('unrealized_pl', 0) if current_position else 0
+            
+            # 총 손익 = 실현 + 미실현
+            total_pl = realized_pl + unrealized_pl
+            cumulative_return = (total_pl / initial_capital * 100) if initial_capital > 0 else 0
+            
+            # 총 자산
+            if current_position:
+                total_assets = realized_pl + current_position.get('current_value', 0)
+            else:
+                total_assets = latest_balance
             
             avg_return_per_trade = 0
             if sell_trades:
@@ -520,8 +567,12 @@ class DashboardDataGenerator:
                     'losing_trades': losing_trades,
                     'win_rate': win_rate,
                     'cumulative_return': cumulative_return,
+                    'realized_pl': realized_pl,
+                    'unrealized_pl': unrealized_pl,
+                    'total_pl': total_pl,
+                    'total_assets': total_assets,
                     'avg_return_per_trade': avg_return_per_trade,
-                    'initial_capital': 10000000,
+                    'initial_capital': initial_capital,
                     'current_balance': latest_balance
                 },
                 'current_position': current_position,
