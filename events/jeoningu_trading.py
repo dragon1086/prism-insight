@@ -196,8 +196,22 @@ class JeoninguTrading:
                 'preferredcodec': 'mp3',
             }],
             'keepvideo': False,
-            'quiet': True,
-            'no_warnings': True,
+            'quiet': False,  # 디버깅을 위해 출력 활성화
+            'no_warnings': False,
+            # 봇 탐지 우회 옵션들
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],  # Android 클라이언트 우선 시도
+                    'player_skip': ['webpage', 'configs'],  # 불필요한 요청 스킵
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            },
+            'socket_timeout': 30,
+            'retries': 3,
         }
         
         # 쿠키 파일이 있으면 사용
@@ -214,7 +228,51 @@ class JeoninguTrading:
                 return str(AUDIO_FILE)
             return None
         except Exception as e:
-            logger.error(f"Audio extraction error: {e}")
+            error_msg = str(e)
+            logger.error(f"Audio extraction error: {error_msg}")
+            
+            # Android 클라이언트도 실패하면 iOS 클라이언트로 재시도
+            if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
+                logger.info("Retrying with iOS client...")
+                return self._extract_audio_fallback(video_url, cookies_file)
+            
+            return None
+    
+    def _extract_audio_fallback(self, video_url: str, cookies_file: Optional[Path] = None) -> Optional[str]:
+        """Fallback: iOS 클라이언트로 재시도"""
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': str(AUDIO_TEMP_DIR / 'temp_audio.%(ext)s'),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+            }],
+            'keepvideo': False,
+            'quiet': False,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'mweb'],  # iOS와 모바일 웹 클라이언트
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)',
+                'Accept-Language': 'ko-KR,ko;q=0.9',
+            },
+        }
+        
+        if cookies_file and cookies_file.exists():
+            ydl_opts['cookiefile'] = str(cookies_file)
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([video_url])
+            
+            if AUDIO_FILE.exists():
+                logger.info("Audio extraction successful (iOS fallback)")
+                return str(AUDIO_FILE)
+            return None
+        except Exception as e:
+            logger.error(f"iOS fallback also failed: {e}")
             return None
 
     def transcribe_audio(self, audio_file: str) -> Optional[str]:
