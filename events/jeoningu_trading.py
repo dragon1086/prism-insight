@@ -163,7 +163,21 @@ class JeoninguTrading:
         logger.info(f"Found {len(new_videos)} new videos")
         return new_videos
 
-    def extract_audio(self, video_url: str) -> Optional[str]:
+    async def ensure_youtube_cookies(self) -> Optional[Path]:
+        """YouTube 쿠키 파일이 있는지 확인하고, 없거나 오래되면 Playwright로 생성"""
+        cookies_file = SECRETS_DIR / "youtube_cookies.txt"
+        
+        try:
+            from events.youtube_cookie_generator import refresh_cookies_if_needed
+            return await refresh_cookies_if_needed(cookies_file, max_age_hours=12)
+        except ImportError:
+            logger.warning("youtube_cookie_generator not available")
+            return cookies_file if cookies_file.exists() else None
+        except Exception as e:
+            logger.error(f"Failed to generate cookies: {e}")
+            return cookies_file if cookies_file.exists() else None
+
+    def extract_audio(self, video_url: str, cookies_file: Optional[Path] = None) -> Optional[str]:
         """Extract audio from YouTube"""
         logger.info(f"Extracting audio: {video_url}")
 
@@ -185,6 +199,11 @@ class JeoninguTrading:
             'quiet': True,
             'no_warnings': True,
         }
+        
+        # 쿠키 파일이 있으면 사용
+        if cookies_file and cookies_file.exists():
+            ydl_opts['cookiefile'] = str(cookies_file)
+            logger.info(f"Using cookies file: {cookies_file}")
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -761,8 +780,11 @@ https://stocksimulation.kr/ 접속 후
         logger.info(f"Processing: {video_info['title']}")
 
         try:
-            # Extract audio
-            audio_file = self.extract_audio(video_info['link'])
+            # 먼저 YouTube 쿠키 확보 (없거나 오래되면 Playwright로 생성)
+            cookies_file = await self.ensure_youtube_cookies()
+            
+            # Extract audio (쿠키 파일 전달)
+            audio_file = self.extract_audio(video_info['link'], cookies_file)
             if not audio_file:
                 return None
 
