@@ -641,6 +641,7 @@ AI 에이전트가 생성하는 종합 애널리스트 리포트는 다음 섹�
 
 **서포터**
 - [@ddkerty](https://github.com/ddkerty) 💙
+- [@jk5745](https://github.com/jk5745) 💙
 <!-- sponsors -->
 
 ---
