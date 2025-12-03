@@ -955,8 +955,13 @@ https://stocksimulation.kr/ 접속 후
                 logger.info("No new videos")
                 return
 
+            # Process in chronological order (oldest first)
+            # RSS returns newest first, so reverse for time-sequential analysis
+            new_videos_chronological = list(reversed(new_videos))
+            logger.info(f"Processing {len(new_videos_chronological)} videos in chronological order")
+
             # Process each new video
-            for video in new_videos:
+            for video in new_videos_chronological:
                 analysis = await self.process_new_video(video)
                 if analysis:
                     print(json.dumps(analysis, ensure_ascii=False, indent=2))
