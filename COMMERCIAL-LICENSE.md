@@ -54,10 +54,10 @@ Commercial licensing fees are negotiated based on:
 - Enterprise (>500 employees): Custom pricing
 
 **Exclusive Licensing:**
-- Exclusive rights for SaaS providers: $500/month minimum
+- Exclusive rights for SaaS providers
 - 12-month initial commitment
 - Annual renewal with performance review
-- Flexible pricing based on mutual growth
+- Flexible pricing based on mutual growth and agreement
 
 ### 5. Support and Maintenance
 
@@ -131,7 +131,7 @@ To obtain a Commercial License:
 
 **AI3 (웍스AI)**
 - Status: Active Exclusive Commercial License
-- Term: 2025.11.28 - 2026.11.27
+- Term: 2025.12.02 - 2026.12.01
 - Territory: SaaS AI assistant services in South Korea
 - Contact: support@wrks.ai
 
