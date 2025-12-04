@@ -598,7 +598,7 @@ For SaaS companies and commercial use, a separate **Commercial License** is requ
 - Startups (<50 employees): $500/month
 - SME (50-500 employees): $2,000/month
 - Enterprise (>500 employees): Custom pricing
-- **Exclusive SaaS License:** Starting from $500/month (1-year commitment)
+- **Exclusive SaaS License:** Flexible pricing based on discussion (1-year commitment)
 
 📧 **Contact for Commercial Licensing:** dragon1086@naver.com  
 📄 **[Commercial License Details](LICENSE-COMMERCIAL.md)**
@@ -640,34 +640,6 @@ For project inquiries or bug reports, please submit through [GitHub Issues](http
 
 ## 💝 Sponsorship for Project Sustainability
 
-### 🥇 Seeking Gold Sponsor (1 spot only, now recruiting)
-
-**Help PRISM-INSIGHT run permanently for $500/month.**
-
-✨ **Gold Sponsor Exclusive Benefits:**
-- 🏆 **Exclusive Exposure**: Logo placed exclusively at the top of GitHub README + [Dashboard](https://analysis.stocksimulation.kr/) main
-- 📊 **User Reach**: Continuous brand exposure to 450+ Telegram subscribers + daily growing GitHub visitors
-- 💎 **Honor**: The only official sponsorship partner of a completely open-source AI stock analysis system
-- 🛡️ **Stability Guarantee**: Provide an environment where a developer short on time due to parenting can focus on system maintenance
-- 🤝 **Direct Communication**: Opportunity to provide input on project roadmap and priorities
-
----
-**$500/month Details**
-
-1. AI Operation Cost Coverage: Full API cost for premium AI models like GPT-5
-2. Stabilization Compensation: Compensation for emergency maintenance and stabilization work on core systems
----
-
-📧 **Gold Sponsor Partnership Inquiry**:
-- **Email**: dragon1086@naver.com
-- **GitHub Issues**: [Partnership Inquiry](https://github.com/dragon1086/prism-insight/issues/new?labels=sponsorship&template=partnership.md)
-- **Telegram**: @stock_ai_ko
-- Or select $500 tier on [GitHub Sponsors](https://github.com/sponsors/dragon1086)
-
-> 💡 **Need a customized proposal for your company?** Contact us via email for consultation first.
-
----
-
 ### 💙 To Individual Sponsors
 
 Even small support gives great strength! Support the project with the cost of a cup of coffee.
@@ -680,23 +652,18 @@ Even small support gives great strength! Support the project with the cost of a 
 
 ### 💰 Transparent Operations
 
-Monthly costs of approximately ₩260,000 for API and server expenses (as of October '25):
-- OpenAI API (GPT-4.1, GPT-5): ~₩140,000/month
+Monthly costs of approximately ₩290,000 for API and server expenses (as of November '25):
+- OpenAI API (GPT-4.1, GPT-5.1): ~₩170,000/month
 - Anthropic API (Claude Sonnet 4.5): ~₩30,000/month
 - Firecrawl API (MCP Server): ~₩30,000/month
 - Perplexity API (MCP Server): ~₩15,000/month
 - Server and Infrastructure: ~₩45,000/month
 
-Currently used by 450 people for free.
+Currently used by 450+ people for free.
 
 ### ✨ Current Sponsorship Status
 
 Thank you so much! PRISM-INSIGHT continues to operate with your support.
-
-#### 🥇 Gold Sponsor
-<!-- gold-sponsor -->
-**Spot available!** Be our first partner.
-<!-- gold-sponsor -->
 
 #### 💙 Individual Sponsors
 <!-- sponsors -->
