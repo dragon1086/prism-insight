@@ -235,6 +235,38 @@ export function StockDetailModal({ stock, onClose, isRealTrading = false }: Stoc
                   </div>
                 )}
 
+                {/* Risk/Reward Ratio */}
+                {scenario.risk_reward_ratio && (
+                  <div className="p-4 rounded-lg bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border border-blue-200/50 dark:border-blue-800/50">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <TrendingUp className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                        <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">{t("modal.riskRewardRatio")}</p>
+                      </div>
+                      <Badge 
+                        variant={scenario.risk_reward_ratio >= 3 ? "default" : scenario.risk_reward_ratio >= 2 ? "secondary" : "destructive"}
+                        className="text-xs"
+                      >
+                        {scenario.risk_reward_ratio.toFixed(1)}
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 mt-2">
+                      {scenario.expected_return_pct && (
+                        <div>
+                          <p className="text-xs text-muted-foreground">{t("modal.expectedReturn")}</p>
+                          <p className="text-sm font-semibold text-success">+{scenario.expected_return_pct.toFixed(1)}%</p>
+                        </div>
+                      )}
+                      {scenario.expected_loss_pct && (
+                        <div>
+                          <p className="text-xs text-muted-foreground">{t("modal.expectedLoss")}</p>
+                          <p className="text-sm font-semibold text-destructive">-{scenario.expected_loss_pct.toFixed(1)}%</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* 포트폴리오 분석 */}
                 {scenario.portfolio_analysis && (
                   <div className="p-4 rounded-lg bg-muted/30 border border-border/30">

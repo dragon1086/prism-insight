@@ -246,6 +246,35 @@ export function WatchlistPage({ watchlist }: WatchlistPageProps) {
                             </div>
                           </div>
 
+                          {/* Risk/Reward Ratio */}
+                          {stock.scenario?.risk_reward_ratio && (
+                            <div className="p-3 rounded-lg bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border border-blue-200/50 dark:border-blue-800/50">
+                              <div className="flex items-center justify-between">
+                                <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">{t("modal.riskRewardRatio")}</p>
+                                <Badge 
+                                  variant={stock.scenario.risk_reward_ratio >= 3 ? "default" : stock.scenario.risk_reward_ratio >= 2 ? "secondary" : "destructive"}
+                                  className="text-xs"
+                                >
+                                  {stock.scenario.risk_reward_ratio.toFixed(1)}
+                                </Badge>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 mt-2">
+                                {stock.scenario.expected_return_pct && (
+                                  <div>
+                                    <p className="text-xs text-muted-foreground">{t("modal.expectedReturn")}</p>
+                                    <p className="text-xs font-semibold text-success">+{stock.scenario.expected_return_pct.toFixed(1)}%</p>
+                                  </div>
+                                )}
+                                {stock.scenario.expected_loss_pct && (
+                                  <div>
+                                    <p className="text-xs text-muted-foreground">{t("modal.expectedLoss")}</p>
+                                    <p className="text-xs font-semibold text-destructive">-{stock.scenario.expected_loss_pct.toFixed(1)}%</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
                           {/* 결정 & 사유 */}
                           <div className={`p-4 rounded-lg border ${
                             stock.decision === t("watchlist.entry")
