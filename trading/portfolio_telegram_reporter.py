@@ -140,17 +140,19 @@ class PortfolioTelegramReporter:
             total_eval = account_summary.get('total_eval_amount', 0)
             total_profit = account_summary.get('total_profit_amount', 0)
             total_profit_rate = account_summary.get('total_profit_rate', 0)
-            available = account_summary.get('available_amount', 0)
+            deposit = account_summary.get('deposit', 0)  # 예수금 (현금)
+            available = account_summary.get('available_amount', 0)  # 주문가능금액
 
-            # Calculate total assets (evaluation + available cash)
-            total_assets = total_eval + available
+            # Note: total_eval (tot_evlu_amt) already includes deposit in KIS API
+            # So total_assets = total_eval (not total_eval + deposit)
+            total_assets = total_eval
 
             # Calculate season 2 profit rate (from start amount)
             season_profit = total_assets - self.SEASON2_START_AMOUNT
             season_profit_rate = (season_profit / self.SEASON2_START_AMOUNT) * 100 if self.SEASON2_START_AMOUNT > 0 else 0
 
-            # Calculate cash ratio
-            cash_ratio = (available / total_assets * 100) if total_assets > 0 else 0
+            # Calculate cash ratio (using deposit as cash)
+            cash_ratio = (deposit / total_assets * 100) if total_assets > 0 else 0
 
             # Total assets and season profit
             season_profit_emoji = "📈" if season_profit >= 0 else "📉"
@@ -167,8 +169,8 @@ class PortfolioTelegramReporter:
             message += f"📊 *보유종목 평가손익*: `{holdings_profit_sign}{self.format_currency(total_profit)}` "
             message += f"({self.format_percentage(total_profit_rate)})\n"
 
-            # Cash info
-            message += f"💳 현금: `{self.format_currency(available)}` (현금비율: {cash_ratio:.1f}%)\n"
+            # Cash info (deposit = 예수금, available = 주문가능금액)
+            message += f"💳 현금(예수금): `{self.format_currency(deposit)}` (현금비율: {cash_ratio:.1f}%)\n"
             message += "\n"
         else:
             message += "❌ 계좌 정보를 가져올 수 없습니다\n\n"
