@@ -632,7 +632,15 @@ class StockTrackingAgent:
             is_holding = await self._is_ticker_in_holdings(ticker)
             if is_holding:
                 logger.info(f"{ticker}({company_name}) already in holdings")
-                return {"success": True, "decision": "보유 중", "ticker": ticker, "company_name": company_name}
+                # Get current price for the stock even when already holding
+                holding_current_price = await self._get_current_stock_price(ticker)
+                return {
+                    "success": True,
+                    "decision": "보유 중",
+                    "ticker": ticker,
+                    "company_name": company_name,
+                    "current_price": holding_current_price
+                }
 
             # Get current stock price
             current_price = await self._get_current_stock_price(ticker)

@@ -354,8 +354,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     logger.error(f"Report analysis failed: {pdf_report_path} - {analysis_result.get('error', 'Unknown error')}")
                     continue
 
-                # Skip if already holding this stock
-                if analysis_result.get("decision") == "Hold 중":
+                # Skip if already holding this stock (no telegram message for already held stocks)
+                if analysis_result.get("decision") == "보유 중":
                     logger.info(f"Skipping stock already in holdings: {analysis_result.get('ticker')} - {analysis_result.get('company_name')}")
                     continue
 
