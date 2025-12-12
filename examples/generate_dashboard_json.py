@@ -20,13 +20,20 @@ from typing import Dict, List, Any
 import logging
 import os
 
+# 로깅 설정 (다른 import 전에 먼저 설정)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # pykrx import for market index data
 try:
     from pykrx import stock
     PYKRX_AVAILABLE = True
 except ImportError:
     PYKRX_AVAILABLE = False
-    logging.warning("pykrx 패키지가 설치되어 있지 않습니다. 시장 지수 데이터를 가져올 수 없습니다.")
+    logger.warning("pykrx 패키지가 설치되어 있지 않습니다. 시장 지수 데이터를 가져올 수 없습니다.")
 
 # 번역 유틸리티 import
 try:
@@ -34,7 +41,7 @@ try:
     TRANSLATION_AVAILABLE = True
 except ImportError:
     TRANSLATION_AVAILABLE = False
-    logging.warning("번역 유틸리티를 찾을 수 없습니다. 영어 번역이 비활성화됩니다.")
+    logger.warning("번역 유틸리티를 찾을 수 없습니다. 영어 번역이 비활성화됩니다.")
 
 # 경로 설정
 SCRIPT_DIR = Path(__file__).parent
@@ -50,7 +57,7 @@ try:
         _cfg = yaml.load(f, Loader=yaml.FullLoader)
 except FileNotFoundError:
     _cfg = {"default_mode": "demo"}
-    logging.warning(f"설정 파일을 찾을 수 없습니다: {CONFIG_FILE}. 기본 모드(demo)를 사용합니다.")
+    logger.warning(f"설정 파일을 찾을 수 없습니다: {CONFIG_FILE}. 기본 모드(demo)를 사용합니다.")
 
 # 한국투자증권 API 모듈 import
 try:
@@ -58,13 +65,7 @@ try:
     KIS_AVAILABLE = True
 except ImportError:
     KIS_AVAILABLE = False
-    logging.warning("한국투자증권 API 모듈을 찾을 수 없습니다. 실전투자 데이터를 가져올 수 없습니다.")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+    logger.warning("한국투자증권 API 모듈을 찾을 수 없습니다. 실전투자 데이터를 가져올 수 없습니다.")
 
 
 class DashboardDataGenerator:
