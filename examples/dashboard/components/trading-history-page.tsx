@@ -2,7 +2,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { History, TrendingUp, TrendingDown, Award, Calendar, Target, Brain, Trophy, AlertCircle } from "lucide-react"
+import { History, TrendingUp, TrendingDown, Award, Calendar, Target, Brain, Trophy, AlertCircle, Scale, Percent, Flame, Zap } from "lucide-react"
 import type { Trade, Summary } from "@/types/dashboard"
 import { useLanguage } from "@/components/language-provider"
 
@@ -62,17 +62,80 @@ export function TradingHistoryPage({ history, summary }: TradingHistoryPageProps
     .sort(([, a], [, b]) => b.avgProfit - a.avgProfit)
     .slice(0, 3)
 
-  // 투자기간별 수익률
+  // 투자기간별 수익률 (수익/손실 분리)
   const periodPerformance = history.reduce((acc, trade) => {
     const period = trade.scenario?.investment_period || t("common.unclassified")
     if (!acc[period]) {
-      acc[period] = { total: 0, count: 0, avgProfit: 0 }
+      acc[period] = {
+        total: 0, count: 0, avgProfit: 0,
+        winTotal: 0, winCount: 0, avgWin: 0,
+        lossTotal: 0, lossCount: 0, avgLoss: 0
+      }
     }
     acc[period].total += trade.profit_rate
     acc[period].count += 1
     acc[period].avgProfit = acc[period].total / acc[period].count
+
+    if (trade.profit_rate >= 0) {
+      acc[period].winTotal += trade.profit_rate
+      acc[period].winCount += 1
+      acc[period].avgWin = acc[period].winTotal / acc[period].winCount
+    } else {
+      acc[period].lossTotal += trade.profit_rate
+      acc[period].lossCount += 1
+      acc[period].avgLoss = acc[period].lossTotal / acc[period].lossCount
+    }
     return acc
-  }, {} as Record<string, { total: number; count: number; avgProfit: number }>)
+  }, {} as Record<string, {
+    total: number; count: number; avgProfit: number;
+    winTotal: number; winCount: number; avgWin: number;
+    lossTotal: number; lossCount: number; avgLoss: number;
+  }>)
+
+  // 수익 거래와 손실 거래 분리
+  const winningTrades = history.filter(t => t.profit_rate >= 0)
+  const losingTrades = history.filter(t => t.profit_rate < 0)
+
+  // 평균 수익률 (수익 거래만)
+  const avgWinRate = winningTrades.length > 0
+    ? winningTrades.reduce((sum, t) => sum + t.profit_rate, 0) / winningTrades.length
+    : 0
+
+  // 평균 손실률 (손실 거래만)
+  const avgLossRate = losingTrades.length > 0
+    ? losingTrades.reduce((sum, t) => sum + t.profit_rate, 0) / losingTrades.length
+    : 0
+
+  // Profit Factor (총 수익 / 총 손실의 절대값)
+  const totalProfit = winningTrades.reduce((sum, t) => sum + t.profit_rate, 0)
+  const totalLoss = Math.abs(losingTrades.reduce((sum, t) => sum + t.profit_rate, 0))
+  const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : totalProfit > 0 ? Infinity : 0
+
+  // 손익비 (Risk/Reward Ratio) - 평균 수익 / 평균 손실의 절대값
+  const riskRewardRatio = Math.abs(avgLossRate) > 0 ? avgWinRate / Math.abs(avgLossRate) : avgWinRate > 0 ? Infinity : 0
+
+  // 최대 연속 승/패 계산
+  let maxConsecutiveWins = 0
+  let maxConsecutiveLosses = 0
+  let currentWinStreak = 0
+  let currentLossStreak = 0
+
+  // 날짜순 정렬
+  const sortedHistory = [...history].sort((a, b) =>
+    new Date(a.sell_date).getTime() - new Date(b.sell_date).getTime()
+  )
+
+  sortedHistory.forEach(trade => {
+    if (trade.profit_rate >= 0) {
+      currentWinStreak++
+      currentLossStreak = 0
+      maxConsecutiveWins = Math.max(maxConsecutiveWins, currentWinStreak)
+    } else {
+      currentLossStreak++
+      currentWinStreak = 0
+      maxConsecutiveLosses = Math.max(maxConsecutiveLosses, currentLossStreak)
+    }
+  })
 
   return (
     <div className="space-y-6">
@@ -123,12 +186,71 @@ export function TradingHistoryPage({ history, summary }: TradingHistoryPageProps
         <Card className="border-border/50">
           <CardContent className="p-6">
             <div className="flex items-center gap-3 mb-2">
-              <TrendingUp className="w-5 h-5 text-chart-3" />
-              <span className="text-sm text-muted-foreground">{t("trading.avgProfit")}</span>
+              <TrendingUp className="w-5 h-5 text-success" />
+              <span className="text-sm text-muted-foreground">{t("trading.avgWinRate")}</span>
             </div>
-            <p className="text-3xl font-bold text-chart-3">{formatPercent(avg_profit_rate || 0)}</p>
+            <p className="text-3xl font-bold text-success">{formatPercent(avgWinRate)}</p>
             <p className="text-xs text-muted-foreground mt-1">
-              {t("trading.avgPerformancePerTrade")}
+              {winningTrades.length}{t("trading.winningTradesAvg")}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/50">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3 mb-2">
+              <TrendingDown className="w-5 h-5 text-destructive" />
+              <span className="text-sm text-muted-foreground">{t("trading.avgLossRate")}</span>
+            </div>
+            <p className="text-3xl font-bold text-destructive">{formatPercent(avgLossRate)}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {losingTrades.length}{t("trading.losingTradesAvg")}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* 성과 지표 카드 */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card className="border-border/50">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3 mb-2">
+              <Scale className="w-5 h-5 text-primary" />
+              <span className="text-sm text-muted-foreground">{t("trading.profitFactor")}</span>
+            </div>
+            <p className={`text-3xl font-bold ${profitFactor >= 1 ? "text-success" : "text-destructive"}`}>
+              {profitFactor === Infinity ? "∞" : profitFactor.toFixed(2)}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {t("trading.profitFactorDesc")}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/50">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3 mb-2">
+              <Percent className="w-5 h-5 text-chart-3" />
+              <span className="text-sm text-muted-foreground">{t("trading.riskRewardRatio")}</span>
+            </div>
+            <p className={`text-3xl font-bold ${riskRewardRatio >= 1 ? "text-success" : "text-chart-3"}`}>
+              {riskRewardRatio === Infinity ? "∞" : riskRewardRatio.toFixed(2)}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {t("trading.riskRewardDesc")}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/50">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3 mb-2">
+              <Flame className="w-5 h-5 text-orange-500" />
+              <span className="text-sm text-muted-foreground">{t("trading.maxWinStreak")}</span>
+            </div>
+            <p className="text-3xl font-bold text-orange-500">{maxConsecutiveWins}{t("trading.consecutive")}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {t("trading.maxWinStreakDesc")}
             </p>
           </CardContent>
         </Card>
@@ -261,14 +383,34 @@ export function TradingHistoryPage({ history, summary }: TradingHistoryPageProps
               <CardContent>
                 <div className="space-y-3">
                   {Object.entries(periodPerformance).map(([period, data]) => (
-                    <div key={period} className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
-                      <div>
-                        <p className="font-medium text-foreground">{period}</p>
-                        <p className="text-xs text-muted-foreground">{data.count}{t("trading.tradeCount")}</p>
+                    <div key={period} className="p-3 rounded-lg bg-muted/30">
+                      <div className="flex items-center justify-between mb-2">
+                        <div>
+                          <p className="font-medium text-foreground">{period}</p>
+                          <p className="text-xs text-muted-foreground">{data.count}{t("trading.tradeCount")}</p>
+                        </div>
+                        <p className={`text-lg font-bold ${data.avgProfit >= 0 ? "text-success" : "text-destructive"}`}>
+                          {formatPercent(data.avgProfit)}
+                        </p>
                       </div>
-                      <p className={`text-lg font-bold ${data.avgProfit >= 0 ? "text-success" : "text-destructive"}`}>
-                        {formatPercent(data.avgProfit)}
-                      </p>
+                      <div className="flex gap-4 text-xs">
+                        <div className="flex items-center gap-1">
+                          <span className="text-success">▲</span>
+                          <span className="text-muted-foreground">{t("trading.avgWinShort")}:</span>
+                          <span className="font-medium text-success">
+                            {data.winCount > 0 ? formatPercent(data.avgWin) : "-"}
+                          </span>
+                          <span className="text-muted-foreground">({data.winCount}{t("trading.tradeCountShort")})</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span className="text-destructive">▼</span>
+                          <span className="text-muted-foreground">{t("trading.avgLossShort")}:</span>
+                          <span className="font-medium text-destructive">
+                            {data.lossCount > 0 ? formatPercent(data.avgLoss) : "-"}
+                          </span>
+                          <span className="text-muted-foreground">({data.lossCount}{t("trading.tradeCountShort")})</span>
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
