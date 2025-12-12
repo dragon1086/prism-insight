@@ -30,6 +30,7 @@ export interface RealTradingSummary {
   total_eval_amount: number
   total_profit_amount: number
   total_profit_rate: number
+  deposit: number
   available_amount: number
 }
 

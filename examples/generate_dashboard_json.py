@@ -444,13 +444,14 @@ class DashboardDataGenerator:
         }
     
     def calculate_real_trading_summary(self, real_portfolio: List[Dict], account_summary: Dict) -> Dict:
-        """실전투자 요약 통계 계산"""
+        """실전투자 요약 통계 계산 (현금 정보 포함)"""
         if not real_portfolio and not account_summary:
             return {
                 'total_stocks': 0,
                 'total_eval_amount': 0,
                 'total_profit_amount': 0,
                 'total_profit_rate': 0,
+                'deposit': 0,
                 'available_amount': 0
             }
 
@@ -459,6 +460,7 @@ class DashboardDataGenerator:
             'total_eval_amount': account_summary.get('total_eval_amount', 0),
             'total_profit_amount': account_summary.get('total_profit_amount', 0),
             'total_profit_rate': account_summary.get('total_profit_rate', 0),
+            'deposit': account_summary.get('deposit', 0),
             'available_amount': account_summary.get('available_amount', 0)
         }
 

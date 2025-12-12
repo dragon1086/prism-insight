@@ -1,6 +1,6 @@
 "use client"
 
-import { TrendingUp, TrendingDown, Wallet, DollarSign, BarChart3, Zap, Clock } from "lucide-react"
+import { TrendingUp, TrendingDown, Wallet, DollarSign, PiggyBank, Zap, Clock } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { useLanguage } from "@/components/language-provider"
 import type { Summary } from "@/types/dashboard"
@@ -59,13 +59,10 @@ export function MetricsCards({
   const season2StartAmount = 9969801
   const totalAssetsReturn = totalAssets > 0 ? ((totalAssets - season2StartAmount) / season2StartAmount) * 100 : 0
 
-  // 실전 포트폴리오 손익 분포 계산
-  const profitStocks = realPortfolio.filter(stock => (stock.profit_rate || 0) > 0)
-  const lossStocks = realPortfolio.filter(stock => (stock.profit_rate || 0) < 0)
-  const breakEvenStocks = realPortfolio.filter(stock => (stock.profit_rate || 0) === 0)
-  const winRateReal = realPortfolio.length > 0 
-    ? (profitStocks.length / realPortfolio.length) * 100 
-    : 0
+  // 현금 비율 계산 (deposit 사용, KIS API의 tot_evlu_amt가 이미 예수금 포함)
+  const deposit = summary.real_trading.deposit || 0
+  const cashRatio = totalAssets > 0 ? (deposit / totalAssets) * 100 : 0
+  const investmentRatio = 100 - cashRatio
 
   const realMetrics = [
     {
@@ -94,18 +91,18 @@ export function MetricsCards({
           : "from-destructive/20 to-destructive/5",
     },
     {
-      label: t("metrics.realProfitDist"),
-      value: `${profitStocks.length}${t("metrics.wins")} ${lossStocks.length}${t("metrics.losses")}`,
-      change: `${t("metrics.winRate")} ${winRateReal.toFixed(0)}%`,
-      changeValue: breakEvenStocks.length > 0
-        ? `${t("metrics.breakEven")} ${breakEvenStocks.length}${t("metrics.stocks")}`
-        : `${t("metrics.totalStocks")} ${realPortfolio.length}${t("metrics.stocks")}`,
-      description: t("metrics.profitDistDesc"),
-      isPositive: profitStocks.length >= lossStocks.length,
-      icon: BarChart3,
-      gradient: profitStocks.length >= lossStocks.length
+      label: t("metrics.cashAndStability"),
+      value: formatCurrency(deposit),
+      change: `${t("metrics.cashRatio")} ${cashRatio.toFixed(1)}%`,
+      changeValue: `${t("metrics.investmentRatio")} ${investmentRatio.toFixed(1)}% | ${summary.real_trading.total_stocks || 0}${t("metrics.stocks")}`,
+      description: t("metrics.cashStabilityDesc"),
+      isPositive: cashRatio >= 10,
+      icon: PiggyBank,
+      gradient: cashRatio >= 20
         ? "from-emerald-500/20 to-emerald-500/5"
-        : "from-orange-500/20 to-orange-500/5",
+        : cashRatio >= 10
+          ? "from-yellow-500/20 to-yellow-500/5"
+          : "from-orange-500/20 to-orange-500/5",
     },
   ]
 
