@@ -31,6 +31,7 @@ export interface RealTradingSummary {
   total_profit_amount: number
   total_profit_rate: number
   deposit: number
+  total_cash: number  // D+2 포함 총 현금
   available_amount: number
 }
 

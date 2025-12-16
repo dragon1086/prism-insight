@@ -59,9 +59,9 @@ export function MetricsCards({
   const season2StartAmount = 9969801
   const totalAssetsReturn = totalAssets > 0 ? ((totalAssets - season2StartAmount) / season2StartAmount) * 100 : 0
 
-  // 현금 비율 계산 (deposit 사용, KIS API의 tot_evlu_amt가 이미 예수금 포함)
-  const deposit = summary.real_trading.deposit || 0
-  const cashRatio = totalAssets > 0 ? (deposit / totalAssets) * 100 : 0
+  // 현금 비율 계산 (total_cash 사용: D+2 포함 총 현금, fallback으로 deposit)
+  const totalCash = summary.real_trading.total_cash || summary.real_trading.deposit || 0
+  const cashRatio = totalAssets > 0 ? (totalCash / totalAssets) * 100 : 0
   const investmentRatio = 100 - cashRatio
 
   const realMetrics = [
@@ -92,7 +92,7 @@ export function MetricsCards({
     },
     {
       label: t("metrics.cashAndStability"),
-      value: formatCurrency(deposit),
+      value: formatCurrency(totalCash),
       change: `${t("metrics.cashRatio")} ${cashRatio.toFixed(1)}%`,
       changeValue: `${t("metrics.investmentRatio")} ${investmentRatio.toFixed(1)}% | ${summary.real_trading.total_stocks || 0}${t("metrics.stocks")}`,
       description: t("metrics.cashStabilityDesc"),

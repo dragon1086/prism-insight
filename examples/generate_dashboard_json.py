@@ -27,6 +27,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 경로 설정 (다른 모듈 import 전에 먼저 설정)
+SCRIPT_DIR = Path(__file__).parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+TRADING_DIR = PROJECT_ROOT / "trading"
+sys.path.insert(0, str(SCRIPT_DIR))  # examples/ 폴더 추가 (translation_utils용)
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(TRADING_DIR))
+
 # pykrx import for market index data
 try:
     from pykrx import stock
@@ -35,20 +43,13 @@ except ImportError:
     PYKRX_AVAILABLE = False
     logger.warning("pykrx 패키지가 설치되어 있지 않습니다. 시장 지수 데이터를 가져올 수 없습니다.")
 
-# 번역 유틸리티 import
+# 번역 유틸리티 import (경로 설정 후에 import)
 try:
     from translation_utils import DashboardTranslator
     TRANSLATION_AVAILABLE = True
 except ImportError:
     TRANSLATION_AVAILABLE = False
     logger.warning("번역 유틸리티를 찾을 수 없습니다. 영어 번역이 비활성화됩니다.")
-
-# 경로 설정
-SCRIPT_DIR = Path(__file__).parent
-PROJECT_ROOT = SCRIPT_DIR.parent
-TRADING_DIR = PROJECT_ROOT / "trading"
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(TRADING_DIR))
 
 # 설정파일 로딩
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
