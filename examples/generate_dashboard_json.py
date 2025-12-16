@@ -47,9 +47,9 @@ except ImportError:
 try:
     from translation_utils import DashboardTranslator
     TRANSLATION_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     TRANSLATION_AVAILABLE = False
-    logger.warning("번역 유틸리티를 찾을 수 없습니다. 영어 번역이 비활성화됩니다.")
+    logger.warning(f"번역 유틸리티를 찾을 수 없습니다. 영어 번역이 비활성화됩니다. (원인: {e})")
 
 # 설정파일 로딩
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
