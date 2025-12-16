@@ -140,7 +140,9 @@ class PortfolioTelegramReporter:
             total_eval = account_summary.get('total_eval_amount', 0)
             total_profit = account_summary.get('total_profit_amount', 0)
             total_profit_rate = account_summary.get('total_profit_rate', 0)
-            deposit = account_summary.get('deposit', 0)  # 예수금 (현금)
+            deposit = account_summary.get('deposit', 0)  # 예수금 (D+0, 당일 출금가능)
+            # total_cash (D+2 포함)를 사용하고, 없으면 deposit으로 fallback
+            total_cash = account_summary.get('total_cash', deposit)
             available = account_summary.get('available_amount', 0)  # 주문가능금액
 
             # Note: total_eval (tot_evlu_amt) already includes deposit in KIS API
@@ -151,8 +153,8 @@ class PortfolioTelegramReporter:
             season_profit = total_assets - self.SEASON2_START_AMOUNT
             season_profit_rate = (season_profit / self.SEASON2_START_AMOUNT) * 100 if self.SEASON2_START_AMOUNT > 0 else 0
 
-            # Calculate cash ratio (using deposit as cash)
-            cash_ratio = (deposit / total_assets * 100) if total_assets > 0 else 0
+            # Calculate cash ratio (using total_cash which includes D+2)
+            cash_ratio = (total_cash / total_assets * 100) if total_assets > 0 else 0
 
             # Total assets and season profit
             season_profit_emoji = "📈" if season_profit >= 0 else "📉"
@@ -169,8 +171,8 @@ class PortfolioTelegramReporter:
             message += f"📊 *보유종목 평가손익*: `{holdings_profit_sign}{self.format_currency(total_profit)}` "
             message += f"({self.format_percentage(total_profit_rate)})\n"
 
-            # Cash info (deposit = 예수금, available = 주문가능금액)
-            message += f"💳 현금(예수금): `{self.format_currency(deposit)}` (현금비율: {cash_ratio:.1f}%)\n"
+            # Cash info (total_cash = D+2 포함 총 현금, deposit = 예수금)
+            message += f"💳 현금(D+2포함): `{self.format_currency(total_cash)}` (현금비율: {cash_ratio:.1f}%)\n"
             message += "\n"
         else:
             message += "❌ 계좌 정보를 가져올 수 없습니다\n\n"

@@ -1365,17 +1365,28 @@ class DomesticStockTrading:
                 if output2:
                     pchs_amt = float(output2.get('pchs_amt_smtl_amt', 0)) or 1  # 0이면 1로 대체
 
+                    # 총평가금액과 유가증권평가금액
+                    tot_evlu_amt = float(output2.get('tot_evlu_amt', 0))
+                    scts_evlu_amt = float(output2.get('scts_evlu_amt', 0))
+                    dnca_tot_amt = float(output2.get('dnca_tot_amt', 0))
+
+                    # 총 현금 (D+2 포함) = 총평가금액 - 유가증권평가금액
+                    # 이는 예수금(D+0) + D+1 + D+2 미수금을 모두 포함
+                    total_cash = tot_evlu_amt - scts_evlu_amt
+
                     account_summary = {
-                        'total_eval_amount': float(output2.get('tot_evlu_amt', 0)),
+                        'total_eval_amount': tot_evlu_amt,
                         'total_profit_amount': float(output2.get('evlu_pfls_smtl_amt', 0)),
                         'total_profit_rate': round(float(output2.get('evlu_pfls_smtl_amt', 0)) / pchs_amt * 100, 2),
-                        'deposit': float(output2.get('dnca_tot_amt', 0)),
+                        'deposit': dnca_tot_amt,  # 예수금 (D+0, 당일 출금가능)
+                        'total_cash': total_cash,  # 총 현금 (D+2 포함)
                         'available_amount': float(output2.get('ord_psbl_cash', 0))
                     }
 
                     logger.info(f"계좌 요약: 총평가 {account_summary['total_eval_amount']:,.0f}원, "
                                 f"손익 {account_summary['total_profit_amount']:+,.0f}원 "
-                                f"({account_summary['total_profit_rate']:+.2f}%)")
+                                f"({account_summary['total_profit_rate']:+.2f}%), "
+                                f"총현금(D+2포함) {account_summary['total_cash']:,.0f}원")
 
                     return account_summary
 

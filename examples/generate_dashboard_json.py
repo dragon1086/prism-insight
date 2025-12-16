@@ -453,15 +453,20 @@ class DashboardDataGenerator:
                 'total_profit_amount': 0,
                 'total_profit_rate': 0,
                 'deposit': 0,
+                'total_cash': 0,
                 'available_amount': 0
             }
+
+        # total_cash (D+2 포함)를 사용하고, 없으면 deposit으로 fallback
+        total_cash = account_summary.get('total_cash', account_summary.get('deposit', 0))
 
         return {
             'total_stocks': len(real_portfolio),
             'total_eval_amount': account_summary.get('total_eval_amount', 0),
             'total_profit_amount': account_summary.get('total_profit_amount', 0),
             'total_profit_rate': account_summary.get('total_profit_rate', 0),
-            'deposit': account_summary.get('deposit', 0),
+            'deposit': account_summary.get('deposit', 0),  # 예수금 (D+0)
+            'total_cash': total_cash,  # 총 현금 (D+2 포함)
             'available_amount': account_summary.get('available_amount', 0)
         }
 

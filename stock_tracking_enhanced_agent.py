@@ -675,14 +675,22 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             investment_periods = {"단기": 0, "중기": 0, "장기": 0}
 
             for holding in holdings:
-                scenario_str = holding.get('scenario', '{}')
+                holding_scenario_str = holding.get('scenario', '{}')
                 try:
-                    # Collect sector information
-                    sector_distribution[sector] = sector_distribution.get(sector, 0) + 1
-                    # Collect investment period information
-                    investment_periods[period] = investment_periods.get(period, 0) + 1
+                    if isinstance(holding_scenario_str, str):
+                        holding_scenario = json.loads(holding_scenario_str)
+                    else:
+                        holding_scenario = holding_scenario_str
+                    # Collect sector information from each holding's scenario
+                    holding_sector = holding_scenario.get('sector', '기타')
+                    sector_distribution[holding_sector] = sector_distribution.get(holding_sector, 0) + 1
+                    # Collect investment period information from each holding's scenario
+                    holding_period = holding_scenario.get('investment_period', '중기')
+                    investment_periods[holding_period] = investment_periods.get(holding_period, 0) + 1
                 except:
-                    pass
+                    # If parsing fails, use default values
+                    sector_distribution['기타'] = sector_distribution.get('기타', 0) + 1
+                    investment_periods['중기'] = investment_periods.get('중기', 0) + 1
 
             # Portfolio information string
             portfolio_info = f"""
@@ -690,6 +698,12 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             산업군 분포: {json.dumps(sector_distribution, ensure_ascii=False)}
             투자 기간 분포: {json.dumps(investment_periods, ensure_ascii=False)}
             """
+
+            # Log portfolio_info for debugging sell decision agent's sector analysis
+            logger.info(f"[_analyze_sell_decision] {ticker}({company_name}) portfolio_info for sell decision:")
+            logger.info(f"  - Holdings count: {len(holdings)}/{self.max_slots}")
+            logger.info(f"  - Sector distribution: {json.dumps(sector_distribution, ensure_ascii=False)}")
+            logger.info(f"  - Investment periods: {json.dumps(investment_periods, ensure_ascii=False)}")
 
             # LLM call to generate sell decision
             llm = await self.sell_decision_agent.attach_llm(OpenAIAugmentedLLM)
