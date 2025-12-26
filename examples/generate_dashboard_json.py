@@ -642,7 +642,9 @@ class DashboardDataGenerator:
             draw_trades = sum(1 for t in sell_trades if t.get('profit_loss', 0) == 0)
             total_trades = len(sell_trades)
             
-            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+            # 승률 계산: 무승부 제외하고 승/(승+패)
+            decided_trades = winning_trades + losing_trades
+            win_rate = (winning_trades / decided_trades * 100) if decided_trades > 0 else 0
             
             # 실현손익 계산
             realized_pl = sum(t.get('profit_loss', 0) for t in sell_trades)
