@@ -244,6 +244,7 @@ class JeoninguTradingDB:
                     "total_trades": 0,
                     "winning_trades": 0,
                     "losing_trades": 0,
+                    "draw_trades": 0,
                     "win_rate": 0.0,
                     "cumulative_return": 0.0,
                     "avg_return_per_trade": 0.0
@@ -251,7 +252,8 @@ class JeoninguTradingDB:
 
             total_trades = len(sell_trades)
             winning_trades = sum(1 for t in sell_trades if t['profit_loss'] > 0)
-            losing_trades = sum(1 for t in sell_trades if t['profit_loss'] <= 0)
+            losing_trades = sum(1 for t in sell_trades if t['profit_loss'] < 0)
+            draw_trades = sum(1 for t in sell_trades if t['profit_loss'] == 0)
 
             # Get latest cumulative return
             async with db.execute("""
@@ -271,6 +273,7 @@ class JeoninguTradingDB:
                 "total_trades": total_trades,
                 "winning_trades": winning_trades,
                 "losing_trades": losing_trades,
+                "draw_trades": draw_trades,
                 "win_rate": (winning_trades / total_trades * 100) if total_trades > 0 else 0.0,
                 "cumulative_return": cumulative_return,
                 "avg_return_per_trade": avg_return,

@@ -638,7 +638,8 @@ class DashboardDataGenerator:
             sell_trades = [t for t in trade_history if t.get('trade_type') == 'SELL']
             
             winning_trades = sum(1 for t in sell_trades if t.get('profit_loss', 0) > 0)
-            losing_trades = sum(1 for t in sell_trades if t.get('profit_loss', 0) <= 0)
+            losing_trades = sum(1 for t in sell_trades if t.get('profit_loss', 0) < 0)
+            draw_trades = sum(1 for t in sell_trades if t.get('profit_loss', 0) == 0)
             total_trades = len(sell_trades)
             
             win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
@@ -700,6 +701,7 @@ class DashboardDataGenerator:
                     'total_trades': total_trades,
                     'winning_trades': winning_trades,
                     'losing_trades': losing_trades,
+                    'draw_trades': draw_trades,
                     'win_rate': win_rate,
                     'cumulative_return': cumulative_return,
                     'realized_pl': realized_pl,

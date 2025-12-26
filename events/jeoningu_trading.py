@@ -598,7 +598,13 @@ https://stocksimulation.kr/ 접속 후
             if metrics['total_trades'] > 0:
                 message_parts.append(f"\n🎲 **트레이딩 기록**")
                 message_parts.append(f"┣ 완료: {metrics['total_trades']}건")
-                message_parts.append(f"┣ 승/패: {metrics['winning_trades']}승 {metrics['losing_trades']}패")
+                
+                # 무승부가 있으면 표시
+                if metrics.get('draw_trades', 0) > 0:
+                    message_parts.append(f"┣ 승/무/패: {metrics['winning_trades']}승 {metrics['draw_trades']}무 {metrics['losing_trades']}패")
+                else:
+                    message_parts.append(f"┣ 승/패: {metrics['winning_trades']}승 {metrics['losing_trades']}패")
+                
                 message_parts.append(f"┣ 승률: {metrics['win_rate']:.0f}%")
                 message_parts.append(f"┗ 건당 평균: {metrics['avg_return_per_trade']:+.1f}%")
 
@@ -618,7 +624,15 @@ https://stocksimulation.kr/ 접속 후
                     elif trade_type == 'SELL':
                         pl = trade.get('profit_loss', 0)
                         pl_pct = trade.get('profit_loss_pct', 0)
-                        pl_emoji = "✅" if pl > 0 else "❌"
+                        
+                        # 손익에 따라 이모지 선택
+                        if pl > 0:
+                            pl_emoji = "✅"  # 승
+                        elif pl < 0:
+                            pl_emoji = "❌"  # 패
+                        else:
+                            pl_emoji = "➖"  # 무승부
+                        
                         message_parts.append(f"• {trade_date} 매도 {short_name} {pl_emoji}{pl_pct:+.1f}%")
 
             message_text = "\n".join(message_parts)
@@ -703,6 +717,8 @@ https://stocksimulation.kr/ 접속 후
                         'profit_loss': profit_loss,
                         'profit_loss_pct': profit_loss_pct,
                         'balance_before': current_balance,
+                        # balance_after = balance_before + profit_loss for SELL
+                        # Reason: 실현 손익만큼 자산이 증감 (주식 → 현금 전환 + 손익 반영)
                         'balance_after': new_balance,
                         'cumulative_return_pct': cumulative_return_pct,
                         'notes': f"중립 기조로 전량 매도 (손익: {profit_loss:,.0f}원, {profit_loss_pct:+.2f}%)"
@@ -828,7 +844,10 @@ https://stocksimulation.kr/ 접속 후
                     'price': buy_price,
                     'amount': buy_amount,
                     'balance_before': current_balance,
-                    'balance_after': current_balance,  # Balance unchanged (cash→stock)
+                    # balance_after = balance_before for BUY
+                    # Reason: 현금 → 주식 전환이므로 총 자산 평가액은 변하지 않음
+                    # (실제 현금은 차감되고 주식이 증가하지만, 평가액 기준으로는 동일)
+                    'balance_after': current_balance,
                     'cumulative_return_pct': ((current_balance - INITIAL_CAPITAL) / INITIAL_CAPITAL) * 100,
                     'notes': f"{sentiment} 기조 → 역발상 {target_name} 전액 매수 ({buy_amount:,.0f}원)"
                 }
