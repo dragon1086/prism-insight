@@ -163,6 +163,99 @@ class JeoninguTrading:
         logger.info(f"Found {len(new_videos)} new videos")
         return new_videos
 
+    def create_title_filter_agent(self, title: str) -> Agent:
+        """Create AI agent for filtering video titles"""
+        instruction = f"""당신은 유튜브 영상 제목을 분석하는 전문가입니다.
+전인구경제연구소 채널의 영상 제목을 보고, 전인구 본인의 의견인지 인터뷰인지 판단합니다.
+
+## 영상 제목
+{title}
+
+## 판단 기준
+
+1. **인터뷰 영상** - 다음 패턴이 있으면 인터뷰입니다:
+   - "ft. [사람 이름]" + "(2부)", "(3부)", "(1부)" 같은 숫자
+   - 예시:
+     * "일본이 금리를 올리는 이유(ft. 김경원 교수 2부)" → 인터뷰
+     * "미국 경제 전망(ft. 홍길동 박사 1부)" → 인터뷰
+     * "부동산 시장 분석(ft. 박철수 애널리스트 3부)" → 인터뷰
+
+2. **본인 의견 영상** - 다음 경우는 전인구 본인 의견입니다:
+   - "ft. [토픽/주제]" (사람 이름 아님)
+   - "ft." 자체가 없음
+   - 예시:
+     * "내년에 저는 여기에 투자할 겁니다(ft. 1개 오픈)" → 본인 의견
+     * "지금 주식 사면 안 되는 이유" → 본인 의견
+     * "12월 투자 전략(ft. 급등주 공개)" → 본인 의견
+
+## 출력 형식
+
+반드시 다음 중 하나만 출력하세요:
+- 본인의견
+- 인터뷰
+
+다른 설명이나 부연 없이 위 두 단어 중 하나만 출력하세요.
+"""
+        return Agent(
+            name="title_filter",
+            instruction=instruction,
+            server_names=[]
+        )
+
+    async def filter_jeoningu_own_videos(self, videos: List[Dict]) -> List[Dict]:
+        """
+        Filter videos to only include Jeon Ingu's own opinions (not interviews)
+        
+        Uses mcp-agent with GPT-4o-mini to classify video titles quickly and cheaply.
+        
+        Patterns:
+        - "ft. [person name]" (2부, 3부 etc.) → Interview (skip)
+        - "ft. [topic]" or no "ft." → Jeon's own opinion (analyze)
+        """
+        if not videos:
+            return []
+        
+        logger.info(f"Filtering {len(videos)} videos by title...")
+        
+        filtered_videos = []
+        
+        for video in videos:
+            title = video['title']
+            
+            try:
+                agent = self.create_title_filter_agent(title)
+                app = MCPApp(name="title_filter")
+
+                async with app.run() as _:
+                    llm = await agent.attach_llm(OpenAIAugmentedLLM)
+                    result = await llm.generate_str(
+                        message="위 제목을 분석하고 '본인의견' 또는 '인터뷰' 중 하나만 출력하세요.",
+                        request_params=RequestParams(
+                            model="gpt-4.1-nano",  # Fastest and cheapest model ($0.10/1M in, $0.40/1M out)
+                            maxTokens=10,
+                            max_iterations=1,
+                            parallel_tool_calls=False,
+                            use_history=False
+                        )
+                    )
+                
+                classification = result.strip()
+                
+                if classification == "본인의견":
+                    filtered_videos.append(video)
+                    logger.info(f"✅ [{classification}] {title}")
+                else:
+                    logger.info(f"⏭️  [{classification}] {title} - Skipping")
+                    
+            except Exception as e:
+                logger.error(f"Title classification error for '{title}': {e}")
+                # On error, include the video (safer to analyze than skip)
+                filtered_videos.append(video)
+                logger.warning(f"⚠️  Error occurred, including video: {title}")
+        
+        logger.info(f"Filtered: {len(filtered_videos)}/{len(videos)} videos are Jeon's own opinions")
+        return filtered_videos
+
     def extract_audio(self, video_url: str) -> Optional[str]:
         """Extract audio from YouTube using Docker"""
         logger.info(f"Extracting audio: {video_url}")
@@ -982,9 +1075,17 @@ https://stocksimulation.kr/ 접속 후
                 logger.info("No new videos")
                 return
 
+            # Filter to only include Jeon's own opinion videos (skip interviews)
+            filtered_videos = await self.filter_jeoningu_own_videos(new_videos)
+            if not filtered_videos:
+                logger.info("No videos to analyze after filtering")
+                # Still save history even if all were filtered out
+                self.save_video_history(current_videos)
+                return
+
             # Process in chronological order (oldest first)
             # RSS returns newest first, so reverse for time-sequential analysis
-            new_videos_chronological = list(reversed(new_videos))
+            new_videos_chronological = list(reversed(filtered_videos))
             logger.info(f"Processing {len(new_videos_chronological)} videos in chronological order")
 
             # Process each new video
