@@ -625,8 +625,14 @@ https://stocksimulation.kr/ 접속 후
             metrics = await self.db.calculate_performance_metrics()
             trade_history = await self.db.get_trade_history(limit=10)
 
-            # Calculate realized P&L from completed trades
-            realized_pl = sum(t.get('profit_loss', 0) for t in trade_history if t.get('trade_type') == 'SELL')
+            # Calculate total realized P&L from ALL completed trades (not just recent 10)
+            all_sells_query = """
+                SELECT COALESCE(SUM(profit_loss), 0) as total_realized_pl
+                FROM jeoningu_trades
+                WHERE trade_type = 'SELL'
+            """
+            result = await self.db.execute_read_query(all_sells_query)
+            total_realized_pl = result[0]['total_realized_pl'] if result else 0
 
             # Build message
             message_parts = []
@@ -637,10 +643,6 @@ https://stocksimulation.kr/ 접속 후
                 current_value = position['quantity'] * current_price
                 unrealized_pl = current_value - position['buy_amount']
                 unrealized_pl_pct = (unrealized_pl / position['buy_amount']) * 100 if position['buy_amount'] > 0 else 0
-                
-                # 총 자산 = 실현손익 + 현재 평가액
-                total_assets = realized_pl + current_value
-                total_return_pct = ((total_assets - INITIAL_CAPITAL) / INITIAL_CAPITAL) * 100
                 
                 # 보유 기간 계산
                 buy_date = datetime.fromisoformat(position['buy_date'].replace('Z', '+00:00')) if position.get('buy_date') else None
@@ -662,23 +664,20 @@ https://stocksimulation.kr/ 접속 후
                     message_parts.append(f"\n⏱ 오늘 진입")
             else:
                 # 현금 보유 중
-                total_assets = balance if balance > 0 else INITIAL_CAPITAL
                 unrealized_pl = 0  # 현금 보유 시 미실현 손익 없음
                 
                 message_parts.append("📊 **현재 포지션**\n")
-                message_parts.append(f"💵 현금 보유 중: {total_assets:,.0f}원")
+                message_parts.append(f"💵 현금 보유 중: {balance:,.0f}원")
 
             # 구분선
             message_parts.append("\n━━━━━━━━━━━━━━━━━━━━\n")
 
-            # 누적 성과 - 실현손익 기준으로 계산
-            # 총 자산 = 실현손익 + 현재 평가액 (또는 현금)
+            # 누적 성과 계산
+            # 총 손익 = 전체 실현손익 + 현재 미실현손익
             if position:
-                # 포지션 보유 중: 실현손익 + 미실현손익
-                total_pl = realized_pl + unrealized_pl
+                total_pl = total_realized_pl + unrealized_pl
             else:
-                # 현금 보유 중: 실현손익만
-                total_pl = realized_pl
+                total_pl = total_realized_pl
             
             total_assets_actual = INITIAL_CAPITAL + total_pl
             total_return_pct_actual = (total_pl / INITIAL_CAPITAL) * 100
