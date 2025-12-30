@@ -563,7 +563,7 @@ class ModernStockAnalysisApp:
                         'stock_code': request.stock_code,
                         'company_name': request.company_name,
                         'reference_date': request.reference_date,
-                        'output_file': f"reports/{request.stock_code}_{request.company_name}_{request.reference_date}_gpt4.1.md",
+                        'output_file': f"reports/{request.stock_code}_{request.company_name}_{request.reference_date}_gpt5.2.md",
                         'email': request.email
                     }
                     json.dump(request_info, f)

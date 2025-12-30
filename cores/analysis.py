@@ -1,10 +1,15 @@
 import os
+import asyncio
 from datetime import datetime
+from dotenv import load_dotenv
 
 from mcp_agent.app import MCPApp
 
 from cores.agents import get_agent_directory
 from cores.report_generation import generate_report, generate_summary, generate_investment_strategy, get_disclaimer, generate_market_report
+
+# Load environment variables
+load_dotenv()
 from cores.stock_chart import (
     create_price_chart,
     create_trading_volume_chart,
@@ -52,29 +57,70 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         # 4. Get agents
         agents = get_agent_directory(company_name, company_code, reference_date, base_sections, language)
 
-        # 5. Execute base analysis sequentially (sequential execution instead of parallel to handle rate limits)
-        for section in base_sections:
-            if section in agents:
-                logger.info(f"Processing {section} for {company_name}...")
+        # 5. Execute base analysis
+        # 병렬 처리 옵션: .env 파일에서 PRISM_PARALLEL_REPORT=true 설정 시 활성화
+        # ⚠️ 주의: 병렬 처리는 속도를 크게 향상시키지만, OpenAI API rate limit에 걸릴 수 있습니다.
+        # GPT-5.2 등 고급 모델 사용 시 rate limit이 더 엄격할 수 있으므로 주의하세요.
+        parallel_enabled = os.getenv("PRISM_PARALLEL_REPORT", "false").lower() == "true"
 
+        if parallel_enabled:
+            # Parallel execution mode
+            logger.info(f"Running analysis in PARALLEL mode for {company_name}...")
+
+            async def process_section(section):
+                """Process a single section and return (section_name, report)"""
+                if section not in agents:
+                    return section, None
+
+                logger.info(f"Processing {section} for {company_name}...")
                 try:
                     agent = agents[section]
                     if section == "market_index_analysis":
-                        # Check if data exists in cache
                         if "report" in _market_analysis_cache:
                             logger.info(f"Using cached market analysis")
-                            report = _market_analysis_cache["report"]
+                            return section, _market_analysis_cache["report"]
                         else:
                             logger.info(f"Generating new market analysis")
                             report = await generate_market_report(agent, section, reference_date, logger, language)
-                            # Save to cache
                             _market_analysis_cache["report"] = report
+                            return section, report
                     else:
                         report = await generate_report(agent, section, company_name, company_code, reference_date, logger, language)
-                    section_reports[section] = report
+                        return section, report
                 except Exception as e:
                     logger.error(f"Final failure processing {section}: {e}")
-                    section_reports[section] = f"Analysis failed: {section}"
+                    return section, f"Analysis failed: {section}"
+
+            # Execute all sections in parallel
+            results = await asyncio.gather(*[process_section(section) for section in base_sections])
+            for section, report in results:
+                if report is not None:
+                    section_reports[section] = report
+        else:
+            # Sequential execution mode (default - rate limit friendly)
+            logger.info(f"Running analysis in SEQUENTIAL mode for {company_name}...")
+            for section in base_sections:
+                if section in agents:
+                    logger.info(f"Processing {section} for {company_name}...")
+
+                    try:
+                        agent = agents[section]
+                        if section == "market_index_analysis":
+                            # Check if data exists in cache
+                            if "report" in _market_analysis_cache:
+                                logger.info(f"Using cached market analysis")
+                                report = _market_analysis_cache["report"]
+                            else:
+                                logger.info(f"Generating new market analysis")
+                                report = await generate_market_report(agent, section, reference_date, logger, language)
+                                # Save to cache
+                                _market_analysis_cache["report"] = report
+                        else:
+                            report = await generate_report(agent, section, company_name, company_code, reference_date, logger, language)
+                        section_reports[section] = report
+                    except Exception as e:
+                        logger.error(f"Final failure processing {section}: {e}")
+                        section_reports[section] = f"Analysis failed: {section}"
 
         # 6. Integrate content from other reports
         combined_reports = ""

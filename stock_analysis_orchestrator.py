@@ -858,7 +858,7 @@ class StockAnalysisOrchestrator:
 
             # Set output file path
             reference_date = datetime.now().strftime("%Y%m%d")
-            output_file = str(REPORTS_DIR / f"{ticker}_{company_name}_{reference_date}_{mode}_gpt4.1.md")
+            output_file = str(REPORTS_DIR / f"{ticker}_{company_name}_{reference_date}_{mode}_gpt5.2.md")
 
             try:
                 # Import function directly from main.py

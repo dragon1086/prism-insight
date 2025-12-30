@@ -1124,10 +1124,12 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
         '은행': 'Banks',
         '기타금융': 'Other Finance',
         '연기금등': 'Pension Funds',
+        '연기금 등': 'Pension Funds',  # pykrx 띄어쓰기 버전
         # 기타
         '전체': 'Total',
         '외국인': 'Foreigners',
         '기관': 'Institutions',
+        '기타외국인': 'Other Foreigners',  # pykrx 추가 투자자 유형
     }
 
     # 순매수량 컬럼 선택
