@@ -59,6 +59,7 @@ async def generate_report(agent, section, company_name, company_code, reference_
 - 불필요한 bullet point 사용을 금지합니다. 나열이 꼭 필요한 경우에만 사용하세요.
 - 하나의 문단은 완결된 문장들로 구성하세요.
 - 표 데이터가 아닌 일반 설명은 반드시 문장 형태로 작성하세요.
+- ⚠️ 본문 중간에 ##(h2 헤더)를 임의로 사용하지 마세요. 소제목이 필요하면 **굵은 글씨**나 ###를 사용하세요.
 
 ## ⚠️ 글자수 제한: 반드시 3000자 이내로 작성하세요. 핵심만 간결하게!
 
@@ -86,6 +87,7 @@ async def generate_report(agent, section, company_name, company_code, reference_
 - Do not use unnecessary bullet points. Use them only when listing is absolutely necessary.
 - Each paragraph should consist of complete sentences.
 - General explanations (not table data) must be written in sentence form.
+- ⚠️ Do NOT use ## (h2 headers) arbitrarily in the middle of content. Use **bold text** or ### for sub-sections.
 
 ## ⚠️ CHARACTER LIMIT: Keep the report under 3000 characters. Be concise and focus on key insights!
 
@@ -141,6 +143,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
 - 불필요한 bullet point 사용을 금지합니다. 나열이 꼭 필요한 경우에만 사용하세요.
 - 하나의 문단은 완결된 문장들로 구성하세요.
 - 표 데이터가 아닌 일반 설명은 반드시 문장 형태로 작성하세요.
+- ⚠️ 본문 중간에 ##(h2 헤더)를 임의로 사용하지 마세요. 소제목이 필요하면 **굵은 글씨**나 ###를 사용하세요.
 
 ## ⚠️ 글자수 제한: 반드시 3000자 이내로 작성하세요. 핵심만 간결하게!
 
@@ -168,6 +171,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
 - Do not use unnecessary bullet points. Use them only when listing is absolutely necessary.
 - Each paragraph should consist of complete sentences.
 - General explanations (not table data) must be written in sentence form.
+- ⚠️ Do NOT use ## (h2 headers) arbitrarily in the middle of content. Use **bold text** or ### for sub-sections.
 
 ## ⚠️ CHARACTER LIMIT: Keep the report under 3000 characters. Be concise and focus on key insights!
 
@@ -371,6 +375,7 @@ async def generate_investment_strategy(section_reports, combined_reports, compan
 - 불필요한 bullet point 사용을 금지합니다. 나열이 꼭 필요한 경우에만 사용하세요.
 - 하나의 문단은 완결된 문장들로 구성하세요.
 - 표 데이터가 아닌 일반 설명은 반드시 문장 형태로 작성하세요.
+- ⚠️ 본문 중간에 ##(h2 헤더)를 임의로 추가하지 마세요. 정해진 섹션 구조만 사용하세요.
 
 ## 보고서 형식
 - 보고서 시작 시 개행문자 2번 삽입(\\n\\n)
@@ -463,6 +468,7 @@ async def generate_investment_strategy(section_reports, combined_reports, compan
 - Do not use unnecessary bullet points. Use them only when listing is absolutely necessary.
 - Each paragraph should consist of complete sentences.
 - General explanations (not table data) must be written in sentence form.
+- ⚠️ Do NOT add arbitrary ## (h2 headers) in the middle of content. Use only the defined section structure.
 
 ## Report Format
 - Insert 2 newline characters at the start of the report (\\n\\n)
