@@ -60,6 +60,41 @@ def clean_markdown(text: str) -> str:
         i += 1
     text = '\n'.join(cleaned_lines)
 
+    # 5. 본문 중간의 ## 헤더를 볼드체로 변환 (GPT-5.2가 강조용으로 사용한 경우)
+    # 정상적인 섹션 제목은 짧고 (30자 이하), 특정 키워드 포함
+    valid_section_keywords = [
+        '분석', '현황', '개요', '전략', '요약', '지표', '동향', '차트',
+        'Analysis', 'Overview', 'Status', 'Strategy', 'Summary', 'Chart'
+    ]
+
+    def is_valid_section_header(header_text):
+        """정상적인 섹션 헤더인지 확인"""
+        header_text = header_text.strip()
+        # 30자 이하이고, 키워드 포함시 정상 헤더로 간주
+        if len(header_text) <= 30:
+            for keyword in valid_section_keywords:
+                if keyword in header_text:
+                    return True
+        return False
+
+    lines = text.split('\n')
+    processed_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # ## 로 시작하는 라인 처리
+        if stripped.startswith('## '):
+            header_content = stripped[3:]  # "## " 이후 텍스트
+            if is_valid_section_header(header_content):
+                # 정상 섹션 헤더는 유지
+                processed_lines.append(line)
+            else:
+                # 강조용으로 사용된 ##는 볼드체로 변환
+                indent = line[:len(line) - len(line.lstrip())]
+                processed_lines.append(f"{indent}**{header_content}**")
+        else:
+            processed_lines.append(line)
+    text = '\n'.join(processed_lines)
+
     return text
 
 
