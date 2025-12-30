@@ -88,9 +88,9 @@ def clean_markdown(text: str) -> str:
                 # 정상 섹션 헤더는 유지
                 processed_lines.append(line)
             else:
-                # 강조용으로 사용된 ##는 볼드체로 변환
+                # 강조용으로 사용된 ##는 제거하고 일반 텍스트로 변환
                 indent = line[:len(line) - len(line.lstrip())]
-                processed_lines.append(f"{indent}**{header_content}**")
+                processed_lines.append(f"{indent}{header_content}")
         else:
             processed_lines.append(line)
     text = '\n'.join(processed_lines)
