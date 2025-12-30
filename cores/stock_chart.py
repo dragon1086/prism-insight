@@ -1057,7 +1057,7 @@ def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=Non
     else:
         return fig
 
-def create_trading_volume_chart(ticker, company_name=None, days=730, save_path=None):
+def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=None):
     """
     투자자별 거래량 차트 생성
 
@@ -1068,7 +1068,7 @@ def create_trading_volume_chart(ticker, company_name=None, days=730, save_path=N
     company_name : str, optional
         회사명 (제목용)
     days : int, optional
-        조회 기간 (일)
+        조회 기간 (일) - 수급 분석을 위해 기본값 30일
     save_path : str, optional
         차트 저장 경로 (None이면 화면에 표시)
 
@@ -1109,12 +1109,25 @@ def create_trading_volume_chart(ticker, company_name=None, days=730, save_path=N
     # 주요 투자자 선택 (Korean names used for data access)
     investor_types = ['기관합계', '외국인합계', '개인', '기타법인']
 
-    # English mapping for display
+    # English mapping for display (pykrx 반환값 전체 매핑)
     investor_names_en = {
+        # 주요 투자자
         '기관합계': 'Institutions',
         '외국인합계': 'Foreigners',
         '개인': 'Individuals',
-        '기타법인': 'Other Corps'
+        '기타법인': 'Other Corps',
+        # 기관 세부
+        '금융투자': 'Securities',
+        '보험': 'Insurance',
+        '투신': 'Mutual Funds',
+        '사모': 'Private Equity',
+        '은행': 'Banks',
+        '기타금융': 'Other Finance',
+        '연기금등': 'Pension Funds',
+        # 기타
+        '전체': 'Total',
+        '외국인': 'Foreigners',
+        '기관': 'Institutions',
     }
 
     # 순매수량 컬럼 선택
@@ -1348,10 +1361,10 @@ def create_comprehensive_report(ticker, company_name=None, days=730, output_dir=
     except Exception as e:
         logger.info(f"기본 지표 차트 생성 오류: {e}")
 
-    # 거래량 차트 생성 (더 짧은 기간 사용)
+    # 거래량 차트 생성 (수급 분석을 위해 30일 고정)
     volume_path = os.path.join(report_dir, f"{ticker}_volume.png")
     try:
-        create_trading_volume_chart(ticker, company_name, min(60, days), save_path=volume_path)
+        create_trading_volume_chart(ticker, company_name, days=30, save_path=volume_path)
         report_paths['trading_volume_chart'] = volume_path
     except Exception as e:
         logger.info(f"거래량 차트 생성 오류: {e}")
