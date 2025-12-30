@@ -171,7 +171,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
             volume_chart_html = get_chart_as_base64_html(
                 company_code, company_name, create_trading_volume_chart, 'Trading Volume Chart', width=900, dpi=80, image_format='jpg', compress=True,
-                days=730
+                days=30  # 수급 분석은 1개월 기준
             )
 
             market_cap_chart_html = get_chart_as_base64_html(
