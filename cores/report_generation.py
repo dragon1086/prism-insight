@@ -60,7 +60,7 @@ async def generate_report(agent, section, company_name, company_code, reference_
 - 하나의 문단은 완결된 문장들로 구성하세요.
 - 표 데이터가 아닌 일반 설명은 반드시 문장 형태로 작성하세요.
 
-## ⚠️ 글자수 제한: 반드시 4000자 이내로 작성하세요. 핵심만 간결하게!
+## ⚠️ 글자수 제한: 반드시 3000자 이내로 작성하세요. 핵심만 간결하게!
 
 ##분석일: {reference_date}(YYYYMMDD 형식)
 """
@@ -87,7 +87,7 @@ async def generate_report(agent, section, company_name, company_code, reference_
 - Each paragraph should consist of complete sentences.
 - General explanations (not table data) must be written in sentence form.
 
-## ⚠️ CHARACTER LIMIT: Keep the report under 4000 characters. Be concise and focus on key insights!
+## ⚠️ CHARACTER LIMIT: Keep the report under 3000 characters. Be concise and focus on key insights!
 
 ##Analysis Date: {reference_date} (YYYYMMDD format)
 """
@@ -142,7 +142,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
 - 하나의 문단은 완결된 문장들로 구성하세요.
 - 표 데이터가 아닌 일반 설명은 반드시 문장 형태로 작성하세요.
 
-## ⚠️ 글자수 제한: 반드시 4000자 이내로 작성하세요. 핵심만 간결하게!
+## ⚠️ 글자수 제한: 반드시 3000자 이내로 작성하세요. 핵심만 간결하게!
 
 ##분석일: {reference_date}(YYYYMMDD 형식)
 """
@@ -169,7 +169,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
 - Each paragraph should consist of complete sentences.
 - General explanations (not table data) must be written in sentence form.
 
-## ⚠️ CHARACTER LIMIT: Keep the report under 4000 characters. Be concise and focus on key insights!
+## ⚠️ CHARACTER LIMIT: Keep the report under 3000 characters. Be concise and focus on key insights!
 
 ##Analysis Date: {reference_date} (YYYYMMDD format)
 """
@@ -415,7 +415,7 @@ async def generate_investment_strategy(section_reports, combined_reports, compan
 - 앞서 설정된 형식(제목, 구조, 스타일)을 그대로 따르세요
 - 투자자가 행동으로 옮길 수 있는 실질적인 전략 제시에 초점을 맞추세요
 
-## ⚠️ 글자수 제한: 반드시 4000자 이내로 작성하세요. 핵심만 간결하게!
+## ⚠️ 글자수 제한: 반드시 3000자 이내로 작성하세요. 핵심만 간결하게!
 """
         else:  # English or other languages
             instruction = f"""You are an investment strategy expert. Synthesize the previously analyzed technical analysis, company information, financial analysis, news trends, and market analysis to present investment strategies and opinions.
@@ -509,7 +509,7 @@ Please present a consistent and executable investment strategy that investors ca
 - Follow the previously set format (title, structure, style) as is
 - Focus on presenting practical strategies that investors can act on
 
-## ⚠️ CHARACTER LIMIT: Keep the report under 4000 characters. Be concise and focus on key insights!
+## ⚠️ CHARACTER LIMIT: Keep the report under 3000 characters. Be concise and focus on key insights!
 """
 
         investment_strategy_agent = Agent(
