@@ -19,6 +19,12 @@ URLS = {
 def clean_markdown(text: str) -> str:
     """마크다운 텍스트 정리"""
 
+    # 0. GPT-5.2 artifact 제거
+    # Tool call JSON 패턴 제거 (예: {"name":"kospi_kosdaq-get_stock_ohlcv","arguments":{...}})
+    text = re.sub(r'\{"name":\s*"[^"]+",\s*"arguments":\s*\{[^}]*\}\}', '', text)
+    # 내부 토큰 제거 (예: <|ipynb_marker|>, <|endoftext|> 등)
+    text = re.sub(r'<\|[^|]+\|>', '', text)
+
     # 1. 백틱 블록 제거
     text = re.sub(r'```[^\n]*\n(.*?)\n```', r'\1', text, flags=re.DOTALL)
 
