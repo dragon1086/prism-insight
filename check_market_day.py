@@ -38,6 +38,11 @@ def is_market_day():
         logger.debug(f"{today}은 노동절(근로자의 날)입니다.")
         return False
 
+    # 연말(12월 31일) 체크 - 증권시장 휴장
+    if today.month == 12 and today.day == 31:
+        logger.debug(f"{today}은 연말 휴장일입니다.")
+        return False
+
     # 2025년 특별 공휴일/대체휴일 체크
     if today.year == 2025:
         # 임시공휴일
