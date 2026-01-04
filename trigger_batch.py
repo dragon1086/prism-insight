@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+from dotenv import load_dotenv
+load_dotenv()  # .env 파일에서 환경변수 로드 (krx_data_client import 전에 필요)
+
 import sys
 import datetime
 import pandas as pd

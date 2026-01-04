@@ -4,6 +4,8 @@ elegant_stock_charts.py - 전문 주식 시각화 도구 for AI 주식 리포팅
 프로페셔널 퀄리티의 주식 차트를 생성합니다.
 투자 전문가 수준의 시각화를 제공하고 데이터 인사이트를 강조합니다.
 """
+from dotenv import load_dotenv
+load_dotenv()  # .env 파일에서 환경변수 로드
 
 import pandas as pd
 import numpy as np

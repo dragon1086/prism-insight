@@ -4,6 +4,9 @@
 
 매일 주기적으로 실행하여 주식 종목 정보(코드, 이름)를 최신화
 """
+from dotenv import load_dotenv
+load_dotenv()  # .env 파일에서 환경변수 로드
+
 import os
 import json
 import logging

@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()  # .env 파일에서 환경변수 로드
+
 import numpy as np
 from scipy import stats
 from typing import List, Tuple, Dict, Any

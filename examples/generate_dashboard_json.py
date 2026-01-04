@@ -9,6 +9,8 @@ Usage:
 Output:
     ./dashboard/public/dashboard_data.json - 대시보드에서 사용할 모든 데이터
 """
+from dotenv import load_dotenv
+load_dotenv()  # .env 파일에서 환경변수 로드
 
 import sqlite3
 import json

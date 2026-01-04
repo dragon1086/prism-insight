@@ -3,6 +3,8 @@ Jeon Ingu Trading - Real-time price fetcher using krx_data_client
 
 Fetches current prices for KODEX Leverage and KODEX Inverse 2X
 """
+from dotenv import load_dotenv
+load_dotenv()  # .env 파일에서 환경변수 로드
 
 from krx_data_client import (
     get_index_ohlcv_by_date,
