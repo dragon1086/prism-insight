@@ -14,17 +14,7 @@ import argparse
 from datetime import datetime
 
 try:
-    from krx_data_client import get_market_ticker_list, get_market_ticker_name
-
-    # pykrx 호환 래퍼
-    class stock:
-        @staticmethod
-        def get_market_ticker_list(market="KOSPI"):
-            return get_market_ticker_list(market=market)
-
-        @staticmethod
-        def get_market_ticker_name(ticker):
-            return get_market_ticker_name(ticker)
+    from krx_data_client import _get_client
 except ImportError:
     print("krx_data_client 패키지가 설치되어 있지 않습니다. 'pip install kospi-kosdaq-stock-server'로 설치하세요.")
     exit(1)
@@ -55,18 +45,15 @@ def update_stock_data(output_file="stock_map.json"):
         today = datetime.now().strftime("%Y%m%d")
         logger.info(f"종목 데이터 업데이트 시작: {today}")
 
-        # KOSPI 종목 정보 가져오기
-        kospi_tickers = stock.get_market_ticker_list(market="KOSPI")
-        kospi_map = {ticker: stock.get_market_ticker_name(ticker) for ticker in kospi_tickers}
-        logger.info(f"KOSPI 종목 {len(kospi_map)}개 로드")
+        # 클라이언트 초기화
+        client = _get_client()
 
-        # KOSDAQ 종목 정보 가져오기
-        kosdaq_tickers = stock.get_market_ticker_list(market="KOSDAQ")
-        kosdaq_map = {ticker: stock.get_market_ticker_name(ticker) for ticker in kosdaq_tickers}
-        logger.info(f"KOSDAQ 종목 {len(kosdaq_map)}개 로드")
+        # 전체 종목 코드-이름 매핑을 한 번에 가져오기 (효율적!)
+        logger.info("전체 종목 정보 조회 중...")
+        code_to_name = client.get_market_ticker_name(market="ALL")
+        logger.info(f"전체 종목 {len(code_to_name)}개 로드 완료")
 
-        # 결합
-        code_to_name = {**kospi_map, **kosdaq_map}
+        # 역매핑 생성
         name_to_code = {name: code for code, name in code_to_name.items()}
 
         # 데이터 저장
@@ -83,6 +70,8 @@ def update_stock_data(output_file="stock_map.json"):
         return True
     except Exception as e:
         logger.error(f"종목 데이터 업데이트 실패: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 def main():
