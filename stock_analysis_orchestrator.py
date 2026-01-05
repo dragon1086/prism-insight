@@ -899,6 +899,19 @@ async def main():
     """
     Main function - command line interface
     """
+    # Pre-warm KRX session inside async context to avoid event loop conflicts
+    try:
+        from krx_data_client import ensure_session_valid
+        logger.info("KRX 세션 프리워밍 시작...")
+        if ensure_session_valid():
+            logger.info("KRX 세션 프리워밍 완료 (이후 5분간 재검증 생략)")
+        else:
+            logger.warning("KRX 세션 프리워밍 실패 - 개별 호출 시 로그인 시도됨")
+    except ImportError:
+        logger.warning("krx_data_client 모듈을 찾을 수 없음 - 세션 프리워밍 생략")
+    except Exception as e:
+        logger.warning(f"KRX 세션 프리워밍 중 오류: {e}")
+
     parser = argparse.ArgumentParser(description="Stock analysis and telegram transmission orchestrator")
     parser.add_argument("--mode", choices=["morning", "afternoon", "both"], default="both",
                         help="Execution mode (morning, afternoon, both)")
@@ -947,19 +960,6 @@ if __name__ == "__main__":
         current_date = datetime.now().date()  # Use datetime.now()
         logger.info(f"Today ({current_date}) is a stock market holiday. Not executing batch job.")
         sys.exit(0)
-
-    # Pre-warm KRX session to minimize login attempts (single login at start)
-    try:
-        from krx_data_client import ensure_session_valid
-        logger.info("KRX 세션 프리워밍 시작...")
-        if ensure_session_valid():
-            logger.info("KRX 세션 프리워밍 완료 (이후 5분간 재검증 생략)")
-        else:
-            logger.warning("KRX 세션 프리워밍 실패 - 개별 호출 시 로그인 시도됨")
-    except ImportError:
-        logger.warning("krx_data_client 모듈을 찾을 수 없음 - 세션 프리워밍 생략")
-    except Exception as e:
-        logger.warning(f"KRX 세션 프리워밍 중 오류: {e}")
 
     # Start timer thread and execute main function only on business days
     import threading
