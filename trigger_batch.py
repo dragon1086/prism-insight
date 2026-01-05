@@ -409,7 +409,7 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_s
         return pd.DataFrame()
 
     logger.debug(f"거래량 급증 포착 종목 수: {len(result)}")
-    return enhance_dataframe(result.sort_values("복합점수", ascending=False).head(3))
+    return enhance_dataframe(result.sort_values("복합점수", ascending=False).head(10))
 
 def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame, prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame = None, top_n: int = 15) -> pd.DataFrame:
     """
@@ -478,7 +478,7 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame, pre
     result["종합모멘텀"] = result["갭상승률"] + result["장중등락률"]
 
     logger.debug(f"갭 상승 모멘텀 포착 종목 수: {len(result)}")
-    return enhance_dataframe(result.sort_values("복합점수", ascending=False).head(3))
+    return enhance_dataframe(result.sort_values("복합점수", ascending=False).head(10))
 
 
 def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame, prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
@@ -596,7 +596,7 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame, 
             return pd.DataFrame()
 
         logger.info(f"분석 완료: {len(result)}개 종목 선별")
-        return enhance_dataframe(result.sort_values("복합점수", ascending=False).head(3))
+        return enhance_dataframe(result.sort_values("복합점수", ascending=False).head(10))
 
     except Exception as e:
         logger.error(f"함수 실행 중 예외 발생: {e}")
@@ -651,7 +651,7 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame, pr
     result = scored.head(top_n).copy()
 
     logger.debug(f"일중 상승률 상위 포착 종목 수: {len(result)}")
-    return enhance_dataframe(result.head(3))
+    return enhance_dataframe(result.head(10))
 
 def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame, prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame = None, top_n: int = 15) -> pd.DataFrame:
     """
@@ -724,7 +724,7 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame, 
         return pd.DataFrame()
 
     logger.debug(f"마감 강도 상위 포착 종목 수: {len(result)}")
-    return enhance_dataframe(result.sort_values("복합점수", ascending=False).head(3))
+    return enhance_dataframe(result.sort_values("복합점수", ascending=False).head(10))
 
 def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame, prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame = None, top_n: int = 20) -> pd.DataFrame:
     """
@@ -789,7 +789,7 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
                      f"거래량 {result.loc[ticker, '거래량']:,}주, 전일거래량 {prev.loc[ticker, '거래량']:,}주")
 
     logger.debug(f"거래량 증가 횡보 포착 종목 수: {len(result)}")
-    return enhance_dataframe(result.sort_values("복합점수", ascending=False).head(3))
+    return enhance_dataframe(result.sort_values("복합점수", ascending=False).head(10))
 
 # --- 종합 선별 함수 ---
 def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: bool = True, lookback_days: int = 10) -> dict:
@@ -797,7 +797,7 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
     각 트리거에서 선별된 종목들을 종합하여 최종 종목을 선택합니다.
 
     하이브리드 방식 (use_hybrid=True):
-    1. 각 트리거에서 상위 3개 후보 수집
+    1. 각 트리거에서 상위 10개 후보 수집
     2. 모든 후보에 대해 에이전트 기준 점수 계산 (10~20일 데이터 분석)
     3. 복합점수(40%) + 에이전트점수(60%)로 최종 점수 계산
     4. 각 트리거에서 최종 점수 1위 선택
@@ -819,7 +819,7 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
 
     for name, df in triggers.items():
         if not df.empty:
-            # 각 트리거에서 최대 3개 후보 (이미 head(3)으로 반환됨)
+            # 각 트리거에서 최대 10개 후보 (이미 head(10)으로 반환됨)
             candidates = df.copy()
             trigger_candidates[name] = candidates
             all_tickers.update(candidates.index.tolist())
