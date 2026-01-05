@@ -5,6 +5,12 @@ KRX API 테스트 스크립트
 """
 import datetime
 import sys
+from pathlib import Path
+
+# Load .env from project root
+from dotenv import load_dotenv
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(env_path)
 
 def main():
     print("=" * 60)
