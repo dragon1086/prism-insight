@@ -14,8 +14,11 @@ Usage:
 
 import argparse
 import sqlite3
+import json
+import glob
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Dict
 import logging
 
 # Setup logging
@@ -32,6 +35,73 @@ try:
 except ImportError:
     PYKRX_AVAILABLE = False
     logger.warning("pykrx not available. Price tracking will be skipped.")
+
+
+# Global trigger map (loaded once)
+_TRIGGER_MAP: Dict[tuple, str] = {}
+
+
+def load_trigger_results_map(project_root: Path) -> Dict[tuple, str]:
+    """
+    trigger_results JSON 파일에서 (ticker, date) -> trigger_type 매핑 생성
+    """
+    global _TRIGGER_MAP
+
+    if _TRIGGER_MAP:
+        return _TRIGGER_MAP
+
+    trigger_map = {}
+
+    # Find all trigger_results files
+    pattern = str(project_root / "trigger_results_*.json")
+    files = glob.glob(pattern)
+
+    for filepath in files:
+        try:
+            # Extract date from filename: trigger_results_afternoon_20251103.json
+            filename = Path(filepath).name
+            parts = filename.replace('.json', '').split('_')
+            if len(parts) >= 4:
+                date_str = parts[3]  # YYYYMMDD
+
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                for trigger_type, stocks in data.items():
+                    if not isinstance(stocks, list):
+                        continue
+                    # Map trigger types to simplified names
+                    simplified = simplify_trigger_type(trigger_type)
+                    for stock_info in stocks:
+                        ticker = stock_info.get('code')
+                        if ticker:
+                            # Format date as YYYY-MM-DD
+                            formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+                            key = (ticker, formatted_date)
+                            if key not in trigger_map:
+                                trigger_map[key] = simplified
+
+        except Exception as e:
+            logger.warning(f"Failed to load {filepath}: {e}")
+
+    logger.info(f"Loaded {len(trigger_map)} trigger mappings from {len(files)} files")
+    _TRIGGER_MAP = trigger_map
+    return trigger_map
+
+
+def simplify_trigger_type(trigger_type: str) -> str:
+    """
+    trigger_batch.py의 트리거 이름을 간소화
+    """
+    mapping = {
+        '거래량 급증 상위주': '거래량 급증',
+        '갭 상승 모멘텀 상위주': '갭 상승',
+        '시총 대비 집중 자금 유입 상위주': '자금 유입',
+        '일중 상승률 상위주': '일중 상승',
+        '마감 강도 상위주': '마감 강도',
+        '거래량 증가 상위 횡보주': '횡보 거래량',
+    }
+    return mapping.get(trigger_type, trigger_type)
 
 
 def get_db_path() -> Path:
@@ -174,25 +244,58 @@ def calculate_tracking_data(analyzed_date: str, analyzed_price: float, ticker: s
     return result
 
 
-def determine_trigger_type(record: dict) -> str:
+def determine_trigger_type(record: dict, trigger_map: Dict[tuple, str] = None) -> str:
     """
     기존 데이터에서 trigger_type 결정
+
+    우선순위:
+    1. 기존 trigger_type 필드
+    2. trigger_results JSON 매핑
+    3. rationale 텍스트 분석
+
+    트리거 유형:
+    - 오전: 거래량 급증, 갭 상승, 자금 유입
+    - 오후: 일중 상승, 마감 강도, 횡보 거래량
     """
-    # Use existing trigger_type if available
+    # 1. Use existing trigger_type if available
     if record.get('trigger_type') and record['trigger_type'].strip():
         return record['trigger_type']
 
-    # Otherwise, derive from context
+    # 2. Look up from trigger_results JSON map
+    if trigger_map:
+        ticker = record.get('ticker', '')
+        analyzed_date = record.get('analyzed_date', '')
+        if analyzed_date:
+            # Extract date part only (YYYY-MM-DD)
+            date_part = analyzed_date[:10] if len(analyzed_date) >= 10 else analyzed_date
+            key = (ticker, date_part)
+            if key in trigger_map:
+                return trigger_map[key]
+
+    # 3. Fall back to text analysis
     rationale = record.get('rationale', '') or ''
     skip_reason = record.get('skip_reason', '') or ''
 
     # Heuristics based on rationale/skip_reason
     combined = (rationale + ' ' + skip_reason).lower()
 
-    if '급등' in combined or 'surge' in combined or '거래량' in combined:
+    # 오전 트리거
+    if '급등' in combined or 'surge' in combined or ('거래량' in combined and '급증' in combined):
         return '거래량 급증'
     elif '갭' in combined or 'gap' in combined:
         return '갭 상승'
+    elif '자금' in combined and '유입' in combined:
+        return '자금 유입'
+
+    # 오후 트리거
+    elif '일중' in combined or ('장중' in combined and '상승' in combined):
+        return '일중 상승'
+    elif '마감' in combined or '강도' in combined:
+        return '마감 강도'
+    elif '횡보' in combined:
+        return '횡보 거래량'
+
+    # 기타
     elif '돌파' in combined or 'breakout' in combined:
         return '기술적 돌파'
     elif '뉴스' in combined or 'news' in combined:
@@ -256,6 +359,10 @@ def migrate_data(conn: sqlite3.Connection, dry_run: bool = True, reset: bool = F
     기간 통일: watchlist_history의 최소 날짜를 기준으로 trading 데이터도 필터링
     """
     cursor = conn.cursor()
+
+    # Load trigger_results map for accurate trigger type detection
+    project_root = Path(__file__).parent.parent
+    trigger_map = load_trigger_results_map(project_root)
 
     # Reset option: 기존 데이터 삭제 후 다시 마이그레이션
     if reset and not dry_run:
@@ -420,7 +527,7 @@ def migrate_data(conn: sqlite3.Connection, dry_run: bool = True, reset: bool = F
             continue
 
         # Determine trigger info
-        trigger_type = determine_trigger_type(record)
+        trigger_type = determine_trigger_type(record, trigger_map)
         trigger_mode = record.get('trigger_mode') or determine_trigger_mode(record['analyzed_date'] or '')
 
         # Use was_traded from record
