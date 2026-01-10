@@ -199,6 +199,7 @@ export interface DashboardData {
   prism_performance?: PrismPerformance[]
   holding_decisions?: HoldingDecision[]
   jeoningu_lab?: JeoninguLabData
+  trading_insights?: TradingInsightsData
 }
 
 export interface JeoninguLabData {
@@ -270,4 +271,73 @@ export interface HoldingDecision {
   adjustment_urgency: string
   full_json_data?: any
   created_at: string
+}
+
+// Trading Insights Types
+export interface TradingLesson {
+  content: string
+  priority: 'high' | 'medium' | 'low'
+  category?: string
+}
+
+export interface TradingJournal {
+  id: number
+  ticker: string
+  company_name: string
+  trade_date: string
+  trade_type: string
+  entry_price: number
+  exit_price: number
+  profit_rate: number
+  holding_days: number
+  one_line_summary: string
+  situation_analysis: string
+  judgment_evaluation: string
+  lessons: TradingLesson[]
+  pattern_tags: string[]
+  compression_layer: number
+}
+
+export interface TradingPrinciple {
+  id: number
+  scope: 'universal' | 'sector' | 'market'
+  scope_context: string | null
+  condition: string
+  action: string
+  reason: string | null
+  priority: 'high' | 'medium' | 'low'
+  confidence: number
+  supporting_trades: number
+  is_active: boolean
+  created_at: string
+  last_validated_at: string | null
+}
+
+export interface TradingIntuition {
+  id: number
+  category: string
+  condition: string
+  insight: string
+  confidence: number
+  success_rate: number
+  times_applied: number
+  is_active: boolean
+  scope?: string
+}
+
+export interface InsightsSummary {
+  total_principles: number
+  active_principles: number
+  high_priority_count: number
+  total_journal_entries: number
+  avg_profit_rate: number
+  total_intuitions: number
+  avg_confidence: number
+}
+
+export interface TradingInsightsData {
+  summary: InsightsSummary
+  principles: TradingPrinciple[]
+  journal_entries: TradingJournal[]
+  intuitions: TradingIntuition[]
 }

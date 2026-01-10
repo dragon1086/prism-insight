@@ -554,6 +554,131 @@ class DashboardDataGenerator:
             'month': '2025-11'
         }
     
+    def get_trading_insights(self, conn) -> Dict:
+        """매매 인사이트 데이터 가져오기 (trading_journal, trading_principles, trading_intuitions)"""
+        try:
+            cursor = conn.cursor()
+
+            # 1. trading_principles 조회
+            cursor.execute("""
+                SELECT id, scope, scope_context, condition, action, reason,
+                       priority, confidence, supporting_trades, is_active,
+                       created_at, last_validated_at
+                FROM trading_principles
+                WHERE is_active = 1
+                ORDER BY
+                    CASE priority
+                        WHEN 'high' THEN 1
+                        WHEN 'medium' THEN 2
+                        WHEN 'low' THEN 3
+                    END,
+                    confidence DESC
+            """)
+
+            principles = []
+            for row in cursor.fetchall():
+                principle = self.dict_from_row(row, cursor)
+                principle['is_active'] = bool(principle.get('is_active', 0))
+                principles.append(principle)
+
+            logger.info(f"Trading principles 조회 완료: {len(principles)}개")
+
+            # 2. trading_journal 조회
+            cursor.execute("""
+                SELECT id, ticker, company_name, trade_date, trade_type,
+                       entry_price, exit_price, profit_rate, holding_days,
+                       one_line_summary, situation_analysis, judgment_evaluation,
+                       lessons, pattern_tags, compression_layer
+                FROM trading_journal
+                ORDER BY trade_date DESC
+                LIMIT 50
+            """)
+
+            journal_entries = []
+            for row in cursor.fetchall():
+                entry = self.dict_from_row(row, cursor)
+                # JSON 필드 파싱
+                entry['lessons'] = self.parse_json_field(entry.get('lessons', '[]'))
+                entry['pattern_tags'] = self.parse_json_field(entry.get('pattern_tags', '[]'))
+                journal_entries.append(entry)
+
+            logger.info(f"Trading journal 조회 완료: {len(journal_entries)}개")
+
+            # 3. trading_intuitions 조회
+            cursor.execute("""
+                SELECT id, category, condition, insight, confidence,
+                       success_rate, times_applied, is_active, scope
+                FROM trading_intuitions
+                WHERE is_active = 1
+                ORDER BY confidence DESC
+            """)
+
+            intuitions = []
+            for row in cursor.fetchall():
+                intuition = self.dict_from_row(row, cursor)
+                intuition['is_active'] = bool(intuition.get('is_active', 0))
+                intuitions.append(intuition)
+
+            logger.info(f"Trading intuitions 조회 완료: {len(intuitions)}개")
+
+            # 4. 요약 통계 계산
+            high_priority_count = sum(1 for p in principles if p.get('priority') == 'high')
+            avg_profit_rate = sum(e.get('profit_rate', 0) for e in journal_entries) / len(journal_entries) if journal_entries else 0
+            avg_confidence = sum(p.get('confidence', 0) for p in principles) / len(principles) if principles else 0
+
+            summary = {
+                'total_principles': len(principles),
+                'active_principles': len(principles),  # 이미 is_active=1로 필터링됨
+                'high_priority_count': high_priority_count,
+                'total_journal_entries': len(journal_entries),
+                'avg_profit_rate': avg_profit_rate,
+                'total_intuitions': len(intuitions),
+                'avg_confidence': avg_confidence
+            }
+
+            return {
+                'summary': summary,
+                'principles': principles,
+                'journal_entries': journal_entries,
+                'intuitions': intuitions
+            }
+
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                logger.warning(f"Trading insights 테이블이 없습니다: {str(e)}")
+                return {
+                    'summary': {
+                        'total_principles': 0,
+                        'active_principles': 0,
+                        'high_priority_count': 0,
+                        'total_journal_entries': 0,
+                        'avg_profit_rate': 0,
+                        'total_intuitions': 0,
+                        'avg_confidence': 0
+                    },
+                    'principles': [],
+                    'journal_entries': [],
+                    'intuitions': []
+                }
+            else:
+                raise
+        except Exception as e:
+            logger.error(f"Trading insights 데이터 수집 중 오류: {str(e)}")
+            return {
+                'summary': {
+                    'total_principles': 0,
+                    'active_principles': 0,
+                    'high_priority_count': 0,
+                    'total_journal_entries': 0,
+                    'avg_profit_rate': 0,
+                    'total_intuitions': 0,
+                    'avg_confidence': 0
+                },
+                'principles': [],
+                'journal_entries': [],
+                'intuitions': []
+            }
+
     def get_jeoningu_data(self, conn) -> Dict:
         """전인구 역발상 투자 실험실 데이터 가져오기"""
         try:
@@ -777,7 +902,10 @@ class DashboardDataGenerator:
             
             # 전인구 실험실 데이터 수집
             jeoningu_lab = self.get_jeoningu_data(conn)
-            
+
+            # 매매 인사이트 데이터 수집
+            trading_insights = self.get_trading_insights(conn)
+
             # 요약 통계 계산
             portfolio_summary = self.calculate_portfolio_summary(holdings)
             trading_summary = self.calculate_trading_summary(trading_history)
@@ -810,7 +938,8 @@ class DashboardDataGenerator:
                 'market_condition': market_condition,
                 'prism_performance': prism_performance,  # 날짜별 프리즘 시뮬레이터 수익률 추가
                 'holding_decisions': holding_decisions,
-                'jeoningu_lab': jeoningu_lab  # 전인구 실험실 데이터 추가
+                'jeoningu_lab': jeoningu_lab,  # 전인구 실험실 데이터 추가
+                'trading_insights': trading_insights  # 매매 인사이트 데이터 추가
             }
             
             conn.close()

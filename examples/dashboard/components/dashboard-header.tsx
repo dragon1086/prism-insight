@@ -12,8 +12,8 @@ import {
 } from "@/components/ui/tooltip"
 
 interface DashboardHeaderProps {
-  activeTab: "dashboard" | "ai-decisions" | "trading" | "watchlist" | "jeoningu-lab"
-  onTabChange: (tab: "dashboard" | "ai-decisions" | "trading" | "watchlist" | "jeoningu-lab") => void
+  activeTab: "dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "jeoningu-lab"
+  onTabChange: (tab: "dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "jeoningu-lab") => void
   lastUpdated?: string
 }
 
@@ -107,6 +107,13 @@ export function DashboardHeader({ activeTab, onTabChange, lastUpdated }: Dashboa
               className="font-medium"
             >
               {t("header.watchlist")}
+            </Button>
+            <Button
+              variant={activeTab === "insights" ? "secondary" : "ghost"}
+              onClick={() => onTabChange("insights")}
+              className="font-medium"
+            >
+              💡 {t("header.insights")}
             </Button>
             <Button
               variant={activeTab === "jeoningu-lab" ? "secondary" : "ghost"}
@@ -237,6 +244,14 @@ export function DashboardHeader({ activeTab, onTabChange, lastUpdated }: Dashboa
             className="font-medium whitespace-nowrap"
           >
             {t("header.watchlist")}
+          </Button>
+          <Button
+            variant={activeTab === "insights" ? "secondary" : "ghost"}
+            onClick={() => onTabChange("insights")}
+            size="sm"
+            className="font-medium whitespace-nowrap"
+          >
+            💡 {t("header.insights")}
           </Button>
           <Button
             variant={activeTab === "jeoningu-lab" ? "secondary" : "ghost"}

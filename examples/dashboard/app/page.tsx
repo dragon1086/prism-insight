@@ -9,6 +9,7 @@ import { PerformanceChart } from "@/components/performance-chart"
 import { AIDecisionsPage } from "@/components/ai-decisions-page"
 import { TradingHistoryPage } from "@/components/trading-history-page"
 import { WatchlistPage } from "@/components/watchlist-page"
+import { TradingInsightsPage } from "@/components/trading-insights-page"
 import { JeoninguLabPage } from "@/components/jeoningu-lab-page"
 import { StockDetailModal } from "@/components/stock-detail-modal"
 import { ProjectFooter } from "@/components/project-footer"
@@ -18,7 +19,7 @@ import type { DashboardData, Holding } from "@/types/dashboard"
 export default function Page() {
   const { language, t } = useLanguage()
   const [data, setData] = useState<DashboardData | null>(null)
-  const [activeTab, setActiveTab] = useState<"dashboard" | "ai-decisions" | "trading" | "watchlist" | "jeoningu-lab">("dashboard")
+  const [activeTab, setActiveTab] = useState<"dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "jeoningu-lab">("dashboard")
   const [selectedStock, setSelectedStock] = useState<Holding | null>(null)
   const [isRealTrading, setIsRealTrading] = useState(false)
 
@@ -130,6 +131,8 @@ export default function Page() {
         {activeTab === "trading" && <TradingHistoryPage history={data.trading_history} summary={data.summary} prismPerformance={data.prism_performance} marketCondition={data.market_condition} />}
 
         {activeTab === "watchlist" && <WatchlistPage watchlist={data.watchlist} />}
+
+        {activeTab === "insights" && data.trading_insights && <TradingInsightsPage data={data.trading_insights} />}
 
         {activeTab === "jeoningu-lab" && data.jeoningu_lab && <JeoninguLabPage data={data.jeoningu_lab} />}
       </main>
