@@ -607,7 +607,7 @@ class DashboardDataGenerator:
             # 3. trading_intuitions 조회
             cursor.execute("""
                 SELECT id, category, condition, insight, confidence,
-                       success_rate, times_applied, is_active, scope
+                       success_rate, supporting_trades, is_active, subcategory
                 FROM trading_intuitions
                 WHERE is_active = 1
                 ORDER BY confidence DESC

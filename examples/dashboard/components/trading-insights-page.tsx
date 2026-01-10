@@ -397,9 +397,9 @@ export function TradingInsightsPage({ data }: TradingInsightsPageProps) {
                         <Badge variant="outline" className="bg-cyan-500/10 text-cyan-600 dark:text-cyan-400">
                           {intuition.category}
                         </Badge>
-                        {intuition.scope && (
-                          <Badge variant="outline" className={getScopeColor(intuition.scope)}>
-                            {t(`insights.scope.${intuition.scope}`)}
+                        {intuition.subcategory && (
+                          <Badge variant="outline" className="bg-gray-500/10 text-gray-600 dark:text-gray-400">
+                            {intuition.subcategory}
                           </Badge>
                         )}
                       </div>
@@ -419,7 +419,7 @@ export function TradingInsightsPage({ data }: TradingInsightsPageProps) {
                       </div>
                       <div className="flex items-center justify-end gap-4 text-xs text-muted-foreground">
                         <span>{t("insights.successRate")}: {(intuition.success_rate * 100).toFixed(0)}%</span>
-                        <span>{t("insights.timesApplied")}: {intuition.times_applied}</span>
+                        <span>{t("insights.supportingTrades")}: {intuition.supporting_trades}</span>
                       </div>
                     </div>
                   </div>

@@ -320,9 +320,9 @@ export interface TradingIntuition {
   insight: string
   confidence: number
   success_rate: number
-  times_applied: number
+  supporting_trades: number
   is_active: boolean
-  scope?: string
+  subcategory?: string
 }
 
 export interface InsightsSummary {
