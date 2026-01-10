@@ -119,6 +119,10 @@ def create_trading_journal_agent(language: str = "ko"):
         3. Consider both what went wrong AND what went right
         4. Tag patterns consistently for future retrieval
         5. The one_line_summary should capture the essence for long-term memory
+        6. **Lesson Priority Classification**:
+           - **high**: Universal principles applicable to ALL trades (e.g., "Never hold positions with stop-loss beyond 7%")
+           - **medium**: Sector or market-condition specific lessons
+           - **low**: Stock-specific observations
         """
     else:  # Korean (default)
         instruction = """## 🎯 당신의 정체성
@@ -208,6 +212,10 @@ def create_trading_journal_agent(language: str = "ko"):
         3. 잘못된 점뿐 아니라 잘한 점도 고려
         4. 일관된 태그 부여로 미래 검색 용이하게
         5. one_line_summary는 장기 기억용 핵심 요약
+        6. **교훈 우선순위 분류**:
+           - **high**: 모든 매매에 적용되는 범용 원칙 (예: "손절가 7% 초과 시 보유 금지")
+           - **medium**: 섹터/시장상황별 교훈
+           - **low**: 종목 특화 관찰
         """
 
     return Agent(

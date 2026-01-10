@@ -144,7 +144,7 @@ class TestJournalContext:
     @pytest.mark.asyncio
     async def test_context_with_entries(self):
         """Test context retrieval when journal entries exist"""
-        agent = StockTrackingAgent(db_path=self.db_path)
+        agent = StockTrackingAgent(db_path=self.db_path, enable_journal=True)
         agent.trading_agent = MagicMock()
         await agent.initialize(language="ko")
 
@@ -372,7 +372,7 @@ class TestCompression:
     @pytest.mark.asyncio
     async def test_compression_stats_empty(self):
         """Test compression stats with no entries"""
-        agent = StockTrackingAgent(db_path=self.db_path)
+        agent = StockTrackingAgent(db_path=self.db_path, enable_journal=True)
         agent.trading_agent = MagicMock()
         await agent.initialize(language="ko")
 
@@ -387,7 +387,7 @@ class TestCompression:
     @pytest.mark.asyncio
     async def test_compression_stats_with_entries(self):
         """Test compression stats with entries"""
-        agent = StockTrackingAgent(db_path=self.db_path)
+        agent = StockTrackingAgent(db_path=self.db_path, enable_journal=True)
         agent.trading_agent = MagicMock()
         await agent.initialize(language="ko")
 
@@ -647,6 +647,486 @@ def run_quick_test():
                 pass
 
     return asyncio.run(async_test())
+
+
+class TestTradingPrinciples:
+    """Test trading principles table and extraction"""
+
+    def setup_method(self):
+        """Set up test fixtures"""
+        self.temp_db = tempfile.NamedTemporaryFile(suffix='.sqlite', delete=False)
+        self.db_path = self.temp_db.name
+        self.temp_db.close()
+
+    def teardown_method(self):
+        """Clean up test fixtures"""
+        try:
+            os.unlink(self.db_path)
+        except:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_trading_principles_table_exists(self):
+        """Test that trading_principles table is created correctly"""
+        agent = StockTrackingAgent(db_path=self.db_path)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Check that trading_principles table exists
+        agent.cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='trading_principles'
+        """)
+        result = agent.cursor.fetchone()
+        assert result is not None, "trading_principles table should exist"
+
+        # Check table columns
+        agent.cursor.execute("PRAGMA table_info(trading_principles)")
+        columns = {row[1] for row in agent.cursor.fetchall()}
+
+        expected_columns = {
+            'id', 'scope', 'scope_context', 'condition', 'action', 'reason',
+            'priority', 'confidence', 'supporting_trades', 'source_journal_ids',
+            'created_at', 'last_validated_at', 'is_active'
+        }
+
+        assert expected_columns.issubset(columns), f"Missing columns: {expected_columns - columns}"
+        agent.conn.close()
+
+    @pytest.mark.asyncio
+    async def test_trading_intuitions_has_scope_column(self):
+        """Test that trading_intuitions has scope column"""
+        agent = StockTrackingAgent(db_path=self.db_path)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Check scope column exists
+        agent.cursor.execute("PRAGMA table_info(trading_intuitions)")
+        columns = {row[1] for row in agent.cursor.fetchall()}
+
+        assert 'scope' in columns, "scope column should exist in trading_intuitions"
+        agent.conn.close()
+
+    @pytest.mark.asyncio
+    async def test_extract_principles_from_lessons(self):
+        """Test extracting principles from lessons"""
+        agent = StockTrackingAgent(db_path=self.db_path)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Test lessons
+        lessons = [
+            {
+                "condition": "대량거래 급락 시",
+                "action": "즉시 전량 정리",
+                "reason": "시나리오 무효 가능성",
+                "priority": "high"
+            },
+            {
+                "condition": "반등 매수 시",
+                "action": "비중 조절",
+                "reason": "과열 신호",
+                "priority": "medium"
+            }
+        ]
+
+        # Extract principles
+        count = agent._extract_principles_from_lessons(lessons, 1)
+
+        assert count == 2, f"Expected 2 principles, got {count}"
+
+        # Verify principles were saved
+        agent.cursor.execute("SELECT * FROM trading_principles ORDER BY id")
+        saved = agent.cursor.fetchall()
+
+        assert len(saved) == 2
+        assert saved[0]['scope'] == 'universal'  # high priority -> universal
+        assert saved[0]['priority'] == 'high'
+        assert saved[1]['scope'] == 'sector'  # medium priority -> sector
+        assert saved[1]['priority'] == 'medium'
+
+        agent.conn.close()
+
+    @pytest.mark.asyncio
+    async def test_high_priority_lessons_become_universal(self):
+        """Test that high priority lessons are classified as universal"""
+        agent = StockTrackingAgent(db_path=self.db_path)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        lessons = [
+            {
+                "condition": "손절가 7% 초과 시",
+                "action": "해당 종목 보유 금지",
+                "reason": "회복 확률 낮음",
+                "priority": "high"
+            }
+        ]
+
+        agent._extract_principles_from_lessons(lessons, 1)
+
+        agent.cursor.execute("""
+            SELECT scope, priority FROM trading_principles
+            WHERE priority = 'high'
+        """)
+        result = agent.cursor.fetchone()
+
+        assert result['scope'] == 'universal', "High priority should be universal scope"
+        agent.conn.close()
+
+    @pytest.mark.asyncio
+    async def test_get_universal_principles(self):
+        """Test retrieving universal principles"""
+        agent = StockTrackingAgent(db_path=self.db_path)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Insert test principles
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        agent.cursor.execute("""
+            INSERT INTO trading_principles
+            (scope, condition, action, reason, priority, confidence, supporting_trades, created_at, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            'universal',
+            '대량거래 급락 시',
+            '즉시 전량 정리',
+            '시나리오 무효',
+            'high',
+            0.8,
+            3,
+            now,
+            1
+        ))
+        agent.cursor.execute("""
+            INSERT INTO trading_principles
+            (scope, condition, action, reason, priority, confidence, supporting_trades, created_at, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            'sector',
+            '반도체 3일 고점 후',
+            '조정 대비',
+            '패턴',
+            'medium',
+            0.6,
+            2,
+            now,
+            1
+        ))
+        agent.conn.commit()
+
+        # Get universal principles
+        principles = agent._get_universal_principles()
+
+        assert len(principles) == 1, "Should only return universal scope principles"
+        assert "대량거래 급락 시" in principles[0]
+        assert "🔴" in principles[0]  # High priority emoji
+
+        agent.conn.close()
+
+    @pytest.mark.asyncio
+    async def test_context_includes_universal_principles(self):
+        """Test that context includes universal principles section"""
+        agent = StockTrackingAgent(db_path=self.db_path, enable_journal=True)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Insert universal principle
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        agent.cursor.execute("""
+            INSERT INTO trading_principles
+            (scope, condition, action, reason, priority, confidence, supporting_trades, created_at, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            'universal',
+            '테스트 조건',
+            '테스트 행동',
+            '테스트 이유',
+            'high',
+            0.9,
+            5,
+            now,
+            1
+        ))
+        agent.conn.commit()
+
+        # Get context
+        context = agent._get_relevant_journal_context(
+            ticker="005930",
+            sector="반도체"
+        )
+
+        assert "핵심 매매 원칙" in context, "Context should include principles section"
+        assert "테스트 조건" in context, "Context should include principle content"
+
+        agent.conn.close()
+
+    @pytest.mark.asyncio
+    async def test_save_principle_updates_existing(self):
+        """Test that saving duplicate principle updates existing one"""
+        agent = StockTrackingAgent(db_path=self.db_path)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Save first principle
+        agent._save_principle(
+            scope='universal',
+            scope_context=None,
+            condition='테스트 조건',
+            action='테스트 행동',
+            reason='테스트 이유',
+            priority='high',
+            source_journal_id=1
+        )
+
+        # Save duplicate
+        agent._save_principle(
+            scope='universal',
+            scope_context=None,
+            condition='테스트 조건',
+            action='테스트 행동',
+            reason='테스트 이유',
+            priority='high',
+            source_journal_id=2
+        )
+
+        # Should have only 1 entry with updated evidence
+        agent.cursor.execute("SELECT COUNT(*) FROM trading_principles")
+        count = agent.cursor.fetchone()[0]
+        assert count == 1, "Should have only 1 principle"
+
+        agent.cursor.execute("SELECT supporting_trades, source_journal_ids FROM trading_principles")
+        result = agent.cursor.fetchone()
+        assert result['supporting_trades'] == 2, "Supporting trades should be 2"
+        assert "1" in result['source_journal_ids'] and "2" in result['source_journal_ids']
+
+        agent.conn.close()
+
+
+class TestMigrationScript:
+    """Test migration script functionality"""
+
+    def setup_method(self):
+        """Set up test fixtures"""
+        self.temp_db = tempfile.NamedTemporaryFile(suffix='.sqlite', delete=False)
+        self.db_path = self.temp_db.name
+        self.temp_db.close()
+
+    def teardown_method(self):
+        """Clean up test fixtures"""
+        try:
+            os.unlink(self.db_path)
+        except:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_migration_extracts_existing_lessons(self):
+        """Test that migration extracts lessons from existing journals"""
+        agent = StockTrackingAgent(db_path=self.db_path)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Insert test journal entries with lessons (simulating 카카오, 삼성전자 data)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        lessons1 = json.dumps([
+            {"condition": "대량거래 급락 시", "action": "즉시 정리", "reason": "무효", "priority": "high"},
+            {"condition": "반등 매수 시", "action": "비중 조절", "reason": "과열", "priority": "medium"}
+        ], ensure_ascii=False)
+
+        lessons2 = json.dumps([
+            {"condition": "3주 급등 시", "action": "수익 확정", "reason": "조정 위험", "priority": "high"}
+        ], ensure_ascii=False)
+
+        agent.cursor.execute("""
+            INSERT INTO trading_journal
+            (ticker, company_name, trade_date, trade_type, lessons, compression_layer, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, ('035720', '카카오', now, 'sell', lessons1, 1, now))
+
+        agent.cursor.execute("""
+            INSERT INTO trading_journal
+            (ticker, company_name, trade_date, trade_type, lessons, compression_layer, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, ('005930', '삼성전자', now, 'sell', lessons2, 1, now))
+        agent.conn.commit()
+
+        # Simulate migration
+        agent.cursor.execute("""
+            SELECT id, lessons FROM trading_journal
+            WHERE lessons IS NOT NULL AND lessons != '[]'
+        """)
+        journals = agent.cursor.fetchall()
+
+        for journal in journals:
+            lessons = json.loads(journal['lessons'])
+            agent._extract_principles_from_lessons(lessons, journal['id'])
+
+        # Verify migration results
+        agent.cursor.execute("SELECT COUNT(*) FROM trading_principles")
+        total = agent.cursor.fetchone()[0]
+        assert total == 3, f"Expected 3 principles, got {total}"
+
+        agent.cursor.execute("""
+            SELECT COUNT(*) FROM trading_principles
+            WHERE scope = 'universal' AND priority = 'high'
+        """)
+        universal_count = agent.cursor.fetchone()[0]
+        assert universal_count == 2, f"Expected 2 universal high-priority, got {universal_count}"
+
+        agent.conn.close()
+
+
+class TestCleanupStaleData:
+    """Test cleanup_stale_data functionality"""
+
+    def setup_method(self):
+        """Set up test fixtures"""
+        self.temp_db = tempfile.NamedTemporaryFile(suffix='.sqlite', delete=False)
+        self.db_path = self.temp_db.name
+        self.temp_db.close()
+
+    def teardown_method(self):
+        """Clean up test fixtures"""
+        try:
+            os.unlink(self.db_path)
+        except:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_cleanup_low_confidence_principles(self):
+        """Test that low confidence principles are deactivated"""
+        agent = StockTrackingAgent(db_path=self.db_path, enable_journal=True)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Insert principles with varying confidence
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for i, conf in enumerate([0.1, 0.2, 0.5, 0.8]):
+            agent.cursor.execute("""
+                INSERT INTO trading_principles
+                (scope, condition, action, priority, confidence, created_at, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, ('universal', f'조건{i}', f'행동{i}', 'high', conf, now, 1))
+        agent.conn.commit()
+
+        # Run cleanup with dry_run first
+        dry_stats = agent.cleanup_stale_data(min_confidence_threshold=0.3, dry_run=True)
+        assert dry_stats["low_confidence_principles"] == 2  # 0.1 and 0.2
+
+        # Run actual cleanup
+        stats = agent.cleanup_stale_data(min_confidence_threshold=0.3, dry_run=False)
+        assert stats["principles_deactivated"] >= 2
+
+        # Verify only high-confidence principles remain active
+        agent.cursor.execute("SELECT COUNT(*) FROM trading_principles WHERE is_active = 1")
+        active = agent.cursor.fetchone()[0]
+        assert active == 2  # 0.5 and 0.8
+
+        agent.conn.close()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_enforces_max_limit(self):
+        """Test that max_principles limit is enforced"""
+        agent = StockTrackingAgent(db_path=self.db_path, enable_journal=True)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Insert 10 principles
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for i in range(10):
+            agent.cursor.execute("""
+                INSERT INTO trading_principles
+                (scope, condition, action, priority, confidence, created_at, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, ('universal', f'조건{i}', f'행동{i}', 'high', 0.5 + i * 0.05, now, 1))
+        agent.conn.commit()
+
+        # Run cleanup with max_principles=5
+        stats = agent.cleanup_stale_data(max_principles=5, dry_run=False)
+
+        # Verify only top 5 remain active
+        agent.cursor.execute("SELECT COUNT(*) FROM trading_principles WHERE is_active = 1")
+        active = agent.cursor.fetchone()[0]
+        assert active == 5
+
+        # Verify highest confidence ones are kept
+        agent.cursor.execute("""
+            SELECT confidence FROM trading_principles
+            WHERE is_active = 1
+            ORDER BY confidence DESC
+        """)
+        confidences = [row[0] for row in agent.cursor.fetchall()]
+        assert min(confidences) >= 0.7  # Top 5 should have conf >= 0.7
+
+        agent.conn.close()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_archives_old_layer3(self):
+        """Test that old Layer 3 entries are archived (deleted)"""
+        agent = StockTrackingAgent(db_path=self.db_path, enable_journal=True)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Insert journal entries with different dates
+        old_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d %H:%M:%S")
+        recent_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Old Layer 3 entry (should be archived)
+        agent.cursor.execute("""
+            INSERT INTO trading_journal
+            (ticker, company_name, trade_date, trade_type, profit_rate,
+             one_line_summary, compression_layer, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, ("005930", "삼성전자", old_date, "sell", 5.0, "오래된 거래", 3, old_date))
+
+        # Recent Layer 3 entry (should NOT be archived)
+        agent.cursor.execute("""
+            INSERT INTO trading_journal
+            (ticker, company_name, trade_date, trade_type, profit_rate,
+             one_line_summary, compression_layer, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, ("035720", "카카오", recent_date, "sell", 3.0, "최근 거래", 3, recent_date))
+
+        agent.conn.commit()
+
+        # Run cleanup
+        stats = agent.cleanup_stale_data(archive_layer3_days=365, dry_run=False)
+        assert stats["journal_entries_archived"] == 1
+
+        # Verify only recent entry remains
+        agent.cursor.execute("SELECT COUNT(*) FROM trading_journal WHERE compression_layer = 3")
+        remaining = agent.cursor.fetchone()[0]
+        assert remaining == 1
+
+        agent.conn.close()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_dry_run_no_changes(self):
+        """Test that dry_run mode doesn't modify data"""
+        agent = StockTrackingAgent(db_path=self.db_path, enable_journal=True)
+        agent.trading_agent = MagicMock()
+        await agent.initialize(language="ko")
+
+        # Insert low confidence principle
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        agent.cursor.execute("""
+            INSERT INTO trading_principles
+            (scope, condition, action, priority, confidence, created_at, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, ('universal', '테스트', '테스트', 'high', 0.1, now, 1))
+        agent.conn.commit()
+
+        # Run dry_run cleanup
+        stats = agent.cleanup_stale_data(min_confidence_threshold=0.3, dry_run=True)
+        assert stats["low_confidence_principles"] == 1
+        assert stats["dry_run"] is True
+
+        # Verify data is unchanged
+        agent.cursor.execute("SELECT COUNT(*) FROM trading_principles WHERE is_active = 1")
+        active = agent.cursor.fetchone()[0]
+        assert active == 1  # Still active because dry_run
+
+        agent.conn.close()
 
 
 if __name__ == "__main__":

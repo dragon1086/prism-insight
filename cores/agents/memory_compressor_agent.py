@@ -142,6 +142,10 @@ def create_memory_compressor_agent(language: str = "ko"):
         3. Group related trades for stronger pattern detection
         4. Keep compressed summaries under 100 characters
         5. Intuitions should be immediately actionable
+        6. **Scope Classification for Intuitions**:
+           - **universal**: Core principles applicable to ALL trades
+           - **sector**: Sector-specific patterns (e.g., semiconductor, bio)
+           - **market**: Market condition-specific (bull/bear/sideways)
         """
     else:  # Korean (default)
         instruction = """## 🎯 당신의 정체성
@@ -250,6 +254,10 @@ def create_memory_compressor_agent(language: str = "ko"):
         3. 관련 거래 그룹화로 강한 패턴 감지
         4. 압축 요약은 100자 이내
         5. 직관은 즉시 실행 가능해야 함
+        6. **직관 범위 분류**:
+           - **universal**: 모든 매매에 적용되는 핵심 원칙
+           - **sector**: 섹터별 패턴 (예: 반도체, 바이오)
+           - **market**: 시장 상황별 (강세장/약세장/횡보장)
         """
 
     return Agent(

@@ -1,27 +1,39 @@
 #!/usr/bin/env python3
 """
-Trading Memory Compression Script
+Trading Memory Compression & Cleanup Script
 
-This script compresses old trading journal entries into summarized insights
-and extracts trading intuitions for future reference.
+This script compresses old trading journal entries into summarized insights,
+extracts trading intuitions, and cleans up stale data to prevent unbounded growth.
 
 Compression Strategy:
 - Layer 1 (0-7 days): Full detail retention
 - Layer 2 (8-30 days): Summarized records
 - Layer 3 (31+ days): Compressed intuitions
 
+Cleanup Strategy:
+- Deactivate low-confidence principles/intuitions (< 0.3)
+- Deactivate stale items (not validated in 90 days)
+- Enforce max count limits (50 principles, 50 intuitions)
+- Archive (delete) Layer 3 entries older than 365 days
+
 Usage:
-    # Run compression with default settings
+    # Run compression and cleanup with default settings
     python compress_trading_memory.py
 
     # Run with custom age thresholds
     python compress_trading_memory.py --layer1-age 7 --layer2-age 30
 
-    # Dry run (show what would be compressed)
+    # Dry run (show what would be compressed/cleaned)
     python compress_trading_memory.py --dry-run
 
     # Force compression regardless of minimum entry count
     python compress_trading_memory.py --force
+
+    # Skip cleanup phase (only run compression)
+    python compress_trading_memory.py --skip-cleanup
+
+    # Custom cleanup settings
+    python compress_trading_memory.py --max-principles 30 --max-intuitions 30 --stale-days 60
 
 Recommended Cron Schedule:
     # Run every Sunday at 3:00 AM
@@ -58,10 +70,15 @@ async def run_compression(
     min_entries: int = 3,
     dry_run: bool = False,
     force: bool = False,
-    language: str = "ko"
+    language: str = "ko",
+    skip_cleanup: bool = False,
+    max_principles: int = 50,
+    max_intuitions: int = 50,
+    stale_days: int = 90,
+    archive_layer3_days: int = 365
 ) -> dict:
     """
-    Run the compression process.
+    Run the compression and cleanup process.
 
     Args:
         db_path: Path to SQLite database
@@ -71,9 +88,14 @@ async def run_compression(
         dry_run: If True, only show what would be compressed
         force: If True, compress even with fewer than min_entries
         language: Language for agent prompts ("ko" or "en")
+        skip_cleanup: If True, skip the cleanup phase
+        max_principles: Maximum active principles to keep (default: 50)
+        max_intuitions: Maximum active intuitions to keep (default: 50)
+        stale_days: Days without validation before deactivation (default: 90)
+        archive_layer3_days: Days after which to archive Layer 3 entries (default: 365)
 
     Returns:
-        dict: Compression results
+        dict: Compression and cleanup results
     """
     from stock_tracking_agent import StockTrackingAgent
     from unittest.mock import MagicMock
@@ -207,11 +229,49 @@ async def run_compression(
                 logger.info(f"  [{intuition['category']}] {intuition['condition']}")
                 logger.info(f"    → {intuition['insight']} ({conf_bar})")
 
+        # Phase 2: Cleanup stale data
+        cleanup_results = {}
+        if not skip_cleanup:
+            logger.info("\n🧹 Running Cleanup...")
+            cleanup_results = agent.cleanup_stale_data(
+                max_principles=max_principles,
+                max_intuitions=max_intuitions,
+                stale_days=stale_days,
+                archive_layer3_days=archive_layer3_days,
+                dry_run=dry_run
+            )
+
+            if dry_run:
+                logger.info("\n🔍 CLEANUP DRY RUN - No changes will be made")
+                logger.info(f"  Low-confidence principles: {cleanup_results.get('low_confidence_principles', 0)}")
+                logger.info(f"  Stale principles: {cleanup_results.get('stale_principles', 0)}")
+                logger.info(f"  Low-confidence intuitions: {cleanup_results.get('low_confidence_intuitions', 0)}")
+                logger.info(f"  Stale intuitions: {cleanup_results.get('stale_intuitions', 0)}")
+                logger.info(f"  Old Layer 3 entries: {cleanup_results.get('old_layer3_entries', 0)}")
+            else:
+                logger.info("\n✅ Cleanup Complete:")
+                logger.info(f"  Principles deactivated: {cleanup_results.get('principles_deactivated', 0)}")
+                logger.info(f"  Intuitions deactivated: {cleanup_results.get('intuitions_deactivated', 0)}")
+                logger.info(f"  Journal entries archived: {cleanup_results.get('journal_entries_archived', 0)}")
+
+            # Show final counts after cleanup
+            agent.cursor.execute("SELECT COUNT(*) FROM trading_principles WHERE is_active = 1")
+            active_principles = agent.cursor.fetchone()[0]
+            agent.cursor.execute("SELECT COUNT(*) FROM trading_intuitions WHERE is_active = 1")
+            active_intuitions = agent.cursor.fetchone()[0]
+
+            logger.info(f"\n📊 Final Active Counts:")
+            logger.info(f"  Active Principles: {active_principles}")
+            logger.info(f"  Active Intuitions: {active_intuitions}")
+        else:
+            logger.info("\n⏭️  Cleanup skipped (--skip-cleanup)")
+
         agent.conn.close()
 
         return {
             "status": "success",
             "results": results,
+            "cleanup_results": cleanup_results,
             "stats_before": stats_before,
             "stats_after": stats_after
         }
@@ -278,10 +338,39 @@ Examples:
         choices=["ko", "en"],
         help="Language for agent prompts (default: ko)"
     )
+    parser.add_argument(
+        "--skip-cleanup",
+        action="store_true",
+        help="Skip the cleanup phase (only run compression)"
+    )
+    parser.add_argument(
+        "--max-principles",
+        type=int,
+        default=50,
+        help="Maximum active principles to keep (default: 50)"
+    )
+    parser.add_argument(
+        "--max-intuitions",
+        type=int,
+        default=50,
+        help="Maximum active intuitions to keep (default: 50)"
+    )
+    parser.add_argument(
+        "--stale-days",
+        type=int,
+        default=90,
+        help="Days without validation before deactivation (default: 90)"
+    )
+    parser.add_argument(
+        "--archive-days",
+        type=int,
+        default=365,
+        help="Days after which to archive Layer 3 entries (default: 365)"
+    )
 
     args = parser.parse_args()
 
-    # Run compression
+    # Run compression and cleanup
     result = asyncio.run(run_compression(
         db_path=args.db_path,
         layer1_age_days=args.layer1_age,
@@ -289,7 +378,12 @@ Examples:
         min_entries=args.min_entries,
         dry_run=args.dry_run,
         force=args.force,
-        language=args.language
+        language=args.language,
+        skip_cleanup=args.skip_cleanup,
+        max_principles=args.max_principles,
+        max_intuitions=args.max_intuitions,
+        stale_days=args.stale_days,
+        archive_layer3_days=args.archive_days
     ))
 
     # Print final summary

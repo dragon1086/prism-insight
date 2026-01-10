@@ -24,7 +24,7 @@ import sys
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 from telegram import Bot
 from telegram.error import TelegramError
@@ -223,6 +223,44 @@ class StockTrackingAgent:
                     -- Management
                     created_at TEXT NOT NULL,
                     last_validated_at TEXT,
+                    is_active INTEGER DEFAULT 1,
+
+                    -- Scope classification (universal/market/sector/ticker)
+                    scope TEXT DEFAULT 'universal'
+                )
+            """)
+
+            # Add scope column to existing trading_intuitions table if not exists
+            try:
+                self.cursor.execute("ALTER TABLE trading_intuitions ADD COLUMN scope TEXT DEFAULT 'universal'")
+                self.conn.commit()
+                logger.info("Added scope column to trading_intuitions table")
+            except Exception:
+                pass  # Column already exists
+
+            # Create trading_principles table for universal trading lessons
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS trading_principles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    -- Scope classification
+                    scope TEXT NOT NULL DEFAULT 'universal',  -- universal/market/sector
+                    scope_context TEXT,  -- market='bull/bear', sector='반도체' 등
+
+                    -- Principle content
+                    condition TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    reason TEXT,
+                    priority TEXT DEFAULT 'medium',  -- high/medium/low
+
+                    -- Evidence
+                    confidence REAL DEFAULT 0.5,
+                    supporting_trades INTEGER DEFAULT 1,
+                    source_journal_ids TEXT,
+
+                    -- Metadata
+                    created_at TEXT NOT NULL,
+                    last_validated_at TEXT,
                     is_active INTEGER DEFAULT 1
                 )
             """)
@@ -243,6 +281,18 @@ class StockTrackingAgent:
             self.cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_intuitions_category
                 ON trading_intuitions(category)
+            """)
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_intuitions_scope
+                ON trading_intuitions(scope)
+            """)
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_principles_scope
+                ON trading_principles(scope)
+            """)
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_principles_priority
+                ON trading_principles(priority)
             """)
 
             # Save changes
@@ -1372,12 +1422,155 @@ Please review the following completed trade:
             )
             self.conn.commit()
 
+            # Get the journal entry ID for source tracking
+            journal_id = self.cursor.lastrowid
+
             logger.info(f"Journal entry created for {ticker}: {journal_data.get('one_line_summary', '')}")
+
+            # Extract principles from lessons and save to trading_principles table
+            lessons = journal_data.get('lessons', [])
+            if lessons:
+                extracted_count = self._extract_principles_from_lessons(lessons, journal_id)
+                logger.info(f"Extracted {extracted_count} principles from journal entry {journal_id}")
+
             return True
 
         except Exception as e:
             logger.error(f"Error creating journal entry: {str(e)}")
             logger.error(traceback.format_exc())
+            return False
+
+    def _extract_principles_from_lessons(
+        self,
+        lessons: List[Dict[str, Any]],
+        source_journal_id: int
+    ) -> int:
+        """
+        Extract universal principles from lessons and save to trading_principles table.
+
+        Args:
+            lessons: List of lesson dictionaries with condition, action, reason, priority
+            source_journal_id: ID of the source trading_journal entry
+
+        Returns:
+            int: Number of principles extracted and saved
+        """
+        extracted_count = 0
+
+        for lesson in lessons:
+            if not isinstance(lesson, dict):
+                continue
+
+            condition = lesson.get('condition', '')
+            action = lesson.get('action', '')
+            reason = lesson.get('reason', '')
+            priority = lesson.get('priority', 'medium')
+
+            if not condition or not action:
+                continue
+
+            # Determine scope based on lesson content
+            # High priority lessons are considered universal principles
+            scope = 'universal' if priority == 'high' else 'sector'
+            scope_context = None
+
+            # Save the principle
+            saved = self._save_principle(
+                scope=scope,
+                scope_context=scope_context,
+                condition=condition,
+                action=action,
+                reason=reason,
+                priority=priority,
+                source_journal_id=source_journal_id
+            )
+
+            if saved:
+                extracted_count += 1
+
+        return extracted_count
+
+    def _save_principle(
+        self,
+        scope: str,
+        scope_context: Optional[str],
+        condition: str,
+        action: str,
+        reason: str,
+        priority: str,
+        source_journal_id: int
+    ) -> bool:
+        """
+        Save a new principle to the trading_principles table.
+
+        If a similar principle exists, update its supporting evidence.
+
+        Args:
+            scope: Principle scope (universal/market/sector)
+            scope_context: Context for the scope (e.g., sector name)
+            condition: When this principle applies
+            action: What to do
+            reason: Why this principle works
+            priority: Priority level (high/medium/low)
+            source_journal_id: Source journal entry ID
+
+        Returns:
+            bool: True if saved successfully
+        """
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Check for existing similar principle
+            self.cursor.execute("""
+                SELECT id, supporting_trades, source_journal_ids
+                FROM trading_principles
+                WHERE condition = ? AND action = ? AND is_active = 1
+            """, (condition, action))
+
+            existing = self.cursor.fetchone()
+
+            if existing:
+                # Update existing principle with new evidence
+                existing_ids = existing['source_journal_ids'] or ''
+                new_ids = f"{existing_ids},{source_journal_id}" if existing_ids else str(source_journal_id)
+
+                self.cursor.execute("""
+                    UPDATE trading_principles
+                    SET supporting_trades = supporting_trades + 1,
+                        confidence = MIN(1.0, confidence + 0.1),
+                        source_journal_ids = ?,
+                        last_validated_at = ?
+                    WHERE id = ?
+                """, (new_ids, now, existing['id']))
+                self.conn.commit()
+                logger.debug(f"Updated existing principle (id={existing['id']})")
+                return True
+            else:
+                # Insert new principle
+                self.cursor.execute("""
+                    INSERT INTO trading_principles
+                    (scope, scope_context, condition, action, reason, priority,
+                     confidence, supporting_trades, source_journal_ids, created_at, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    scope,
+                    scope_context,
+                    condition,
+                    action,
+                    reason,
+                    priority,
+                    0.5,  # Initial confidence
+                    1,  # First supporting trade
+                    str(source_journal_id),
+                    now,
+                    1  # is_active
+                ))
+                self.conn.commit()
+                logger.debug(f"Saved new principle: {condition[:50]}...")
+                return True
+
+        except Exception as e:
+            logger.error(f"Error saving principle: {e}")
             return False
 
     def _parse_journal_response(self, response: str) -> Dict[str, Any]:
@@ -1461,6 +1654,13 @@ Please review the following completed trade:
 
         try:
             context_parts = []
+
+            # 0. Universal trading principles (MOST IMPORTANT - shown first)
+            universal_principles = self._get_universal_principles()
+            if universal_principles:
+                context_parts.append("### 🎯 핵심 매매 원칙 (모든 거래에 적용)")
+                context_parts.extend(universal_principles)
+                context_parts.append("")
 
             # 1. Same stock history
             self.cursor.execute(
@@ -1604,6 +1804,48 @@ Please review the following completed trade:
         except Exception as e:
             logger.warning(f"Failed to get journal context: {e}")
             return ""
+
+    def _get_universal_principles(self, limit: int = 10) -> List[str]:
+        """
+        Retrieve universal trading principles from trading_principles table.
+
+        These are core principles that apply to ALL trading decisions,
+        extracted from past lessons with high priority.
+
+        Args:
+            limit: Maximum number of principles to retrieve
+
+        Returns:
+            List[str]: Formatted principle strings for context
+        """
+        try:
+            self.cursor.execute("""
+                SELECT condition, action, reason, priority, confidence, supporting_trades
+                FROM trading_principles
+                WHERE is_active = 1 AND scope = 'universal'
+                ORDER BY priority DESC, confidence DESC, supporting_trades DESC
+                LIMIT ?
+            """, (limit,))
+
+            principles = self.cursor.fetchall()
+            result = []
+
+            for p in principles:
+                priority_emoji = "🔴" if p['priority'] == 'high' else "🟡" if p['priority'] == 'medium' else "⚪"
+                confidence_bar = "●" * int((p['confidence'] or 0.5) * 5) + "○" * (5 - int((p['confidence'] or 0.5) * 5))
+
+                principle_text = f"{priority_emoji} **{p['condition']}** → {p['action']}"
+                if p['reason']:
+                    principle_text += f" (이유: {p['reason'][:50]}...)" if len(p['reason'] or '') > 50 else f" (이유: {p['reason']})"
+                principle_text += f" [신뢰도: {confidence_bar}, 거래수: {p['supporting_trades']}]"
+
+                result.append(f"- {principle_text}")
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"Failed to get universal principles: {e}")
+            return []
 
     def _get_score_adjustment_from_context(
         self,
@@ -2197,6 +2439,205 @@ Please respond in JSON format.
         except Exception as e:
             logger.error(f"Error getting compression stats: {e}")
             return {}
+
+    def cleanup_stale_data(
+        self,
+        max_principles: int = 50,
+        max_intuitions: int = 50,
+        min_confidence_threshold: float = 0.3,
+        stale_days: int = 90,
+        archive_layer3_days: int = 365,
+        dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Clean up stale and low-quality data to prevent unbounded growth.
+
+        This method:
+        1. Deactivates low-confidence principles/intuitions
+        2. Deactivates items not validated in stale_days
+        3. Enforces max count limits (keeps top N by confidence)
+        4. Optionally archives old Layer 3 journal entries
+
+        Args:
+            max_principles: Maximum active principles to keep (default: 50)
+            max_intuitions: Maximum active intuitions to keep (default: 50)
+            min_confidence_threshold: Deactivate items below this (default: 0.3)
+            stale_days: Days without validation before deactivation (default: 90)
+            archive_layer3_days: Days after which to archive Layer 3 entries (default: 365)
+            dry_run: If True, only report what would be cleaned (default: False)
+
+        Returns:
+            Dict: Cleanup statistics
+        """
+        if not self.enable_journal:
+            return {"skipped": True, "reason": "journal_disabled"}
+
+        try:
+            stats = {
+                "principles_deactivated": 0,
+                "intuitions_deactivated": 0,
+                "journal_entries_archived": 0,
+                "dry_run": dry_run
+            }
+
+            now = datetime.now()
+            stale_cutoff = (now - timedelta(days=stale_days)).strftime("%Y-%m-%d")
+            archive_cutoff = (now - timedelta(days=archive_layer3_days)).strftime("%Y-%m-%d")
+
+            # 1. Deactivate low-confidence principles
+            self.cursor.execute("""
+                SELECT COUNT(*) FROM trading_principles
+                WHERE is_active = 1 AND confidence < ?
+            """, (min_confidence_threshold,))
+            low_conf_principles = self.cursor.fetchone()[0]
+            stats["low_confidence_principles"] = low_conf_principles
+
+            if not dry_run and low_conf_principles > 0:
+                self.cursor.execute("""
+                    UPDATE trading_principles
+                    SET is_active = 0
+                    WHERE is_active = 1 AND confidence < ?
+                """, (min_confidence_threshold,))
+                stats["principles_deactivated"] += low_conf_principles
+
+            # 2. Deactivate stale principles (not validated recently)
+            self.cursor.execute("""
+                SELECT COUNT(*) FROM trading_principles
+                WHERE is_active = 1
+                  AND (last_validated_at IS NULL OR last_validated_at < ?)
+                  AND created_at < ?
+            """, (stale_cutoff, stale_cutoff))
+            stale_principles = self.cursor.fetchone()[0]
+            stats["stale_principles"] = stale_principles
+
+            if not dry_run and stale_principles > 0:
+                self.cursor.execute("""
+                    UPDATE trading_principles
+                    SET is_active = 0
+                    WHERE is_active = 1
+                      AND (last_validated_at IS NULL OR last_validated_at < ?)
+                      AND created_at < ?
+                """, (stale_cutoff, stale_cutoff))
+                stats["principles_deactivated"] += stale_principles
+
+            # 3. Enforce max_principles limit (keep top N by confidence)
+            self.cursor.execute("""
+                SELECT COUNT(*) FROM trading_principles WHERE is_active = 1
+            """)
+            active_principles = self.cursor.fetchone()[0]
+
+            if active_principles > max_principles:
+                excess = active_principles - max_principles
+                stats["excess_principles"] = excess
+
+                if not dry_run:
+                    # Deactivate lowest confidence principles beyond limit
+                    self.cursor.execute("""
+                        UPDATE trading_principles
+                        SET is_active = 0
+                        WHERE id IN (
+                            SELECT id FROM trading_principles
+                            WHERE is_active = 1
+                            ORDER BY confidence ASC, supporting_trades ASC
+                            LIMIT ?
+                        )
+                    """, (excess,))
+                    stats["principles_deactivated"] += excess
+
+            # 4. Deactivate low-confidence intuitions
+            self.cursor.execute("""
+                SELECT COUNT(*) FROM trading_intuitions
+                WHERE is_active = 1 AND confidence < ?
+            """, (min_confidence_threshold,))
+            low_conf_intuitions = self.cursor.fetchone()[0]
+            stats["low_confidence_intuitions"] = low_conf_intuitions
+
+            if not dry_run and low_conf_intuitions > 0:
+                self.cursor.execute("""
+                    UPDATE trading_intuitions
+                    SET is_active = 0
+                    WHERE is_active = 1 AND confidence < ?
+                """, (min_confidence_threshold,))
+                stats["intuitions_deactivated"] += low_conf_intuitions
+
+            # 5. Deactivate stale intuitions
+            self.cursor.execute("""
+                SELECT COUNT(*) FROM trading_intuitions
+                WHERE is_active = 1
+                  AND (last_validated_at IS NULL OR last_validated_at < ?)
+                  AND created_at < ?
+            """, (stale_cutoff, stale_cutoff))
+            stale_intuitions = self.cursor.fetchone()[0]
+            stats["stale_intuitions"] = stale_intuitions
+
+            if not dry_run and stale_intuitions > 0:
+                self.cursor.execute("""
+                    UPDATE trading_intuitions
+                    SET is_active = 0
+                    WHERE is_active = 1
+                      AND (last_validated_at IS NULL OR last_validated_at < ?)
+                      AND created_at < ?
+                """, (stale_cutoff, stale_cutoff))
+                stats["intuitions_deactivated"] += stale_intuitions
+
+            # 6. Enforce max_intuitions limit
+            self.cursor.execute("""
+                SELECT COUNT(*) FROM trading_intuitions WHERE is_active = 1
+            """)
+            active_intuitions = self.cursor.fetchone()[0]
+
+            if active_intuitions > max_intuitions:
+                excess = active_intuitions - max_intuitions
+                stats["excess_intuitions"] = excess
+
+                if not dry_run:
+                    self.cursor.execute("""
+                        UPDATE trading_intuitions
+                        SET is_active = 0
+                        WHERE id IN (
+                            SELECT id FROM trading_intuitions
+                            WHERE is_active = 1
+                            ORDER BY confidence ASC, success_rate ASC
+                            LIMIT ?
+                        )
+                    """, (excess,))
+                    stats["intuitions_deactivated"] += excess
+
+            # 7. Archive (delete) old Layer 3 journal entries
+            self.cursor.execute("""
+                SELECT COUNT(*) FROM trading_journal
+                WHERE compression_layer = 3
+                  AND trade_date < ?
+            """, (archive_cutoff,))
+            old_layer3 = self.cursor.fetchone()[0]
+            stats["old_layer3_entries"] = old_layer3
+
+            if not dry_run and old_layer3 > 0:
+                self.cursor.execute("""
+                    DELETE FROM trading_journal
+                    WHERE compression_layer = 3
+                      AND trade_date < ?
+                """, (archive_cutoff,))
+                stats["journal_entries_archived"] = old_layer3
+
+            if not dry_run:
+                self.conn.commit()
+
+            # Log summary
+            logger.info(
+                f"Cleanup {'(dry-run) ' if dry_run else ''}complete: "
+                f"principles={stats['principles_deactivated']}, "
+                f"intuitions={stats['intuitions_deactivated']}, "
+                f"journal_archived={stats['journal_entries_archived']}"
+            )
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"error": str(e)}
 
     async def update_holdings(self) -> List[Dict[str, Any]]:
         """
