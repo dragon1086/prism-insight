@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, Suspense } from "react"
+import { useSearchParams, useRouter } from "next/navigation"
 import { DashboardHeader } from "@/components/dashboard-header"
 import { OperatingCostsCard } from "@/components/operating-costs-card"
 import { MetricsCards } from "@/components/metrics-cards"
@@ -16,12 +17,45 @@ import { ProjectFooter } from "@/components/project-footer"
 import { useLanguage } from "@/components/language-provider"
 import type { DashboardData, Holding } from "@/types/dashboard"
 
-export default function Page() {
+type TabType = "dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "jeoningu-lab"
+const VALID_TABS: TabType[] = ["dashboard", "ai-decisions", "trading", "watchlist", "insights", "jeoningu-lab"]
+
+// Suspense 경계를 위한 로딩 컴포넌트
+function LoadingSpinner() {
+  return (
+    <div className="flex items-center justify-center min-h-screen">
+      <div className="text-center">
+        <div className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+        <p className="text-muted-foreground">Loading...</p>
+      </div>
+    </div>
+  )
+}
+
+// 메인 대시보드 컴포넌트 (useSearchParams 사용)
+function DashboardContent() {
   const { language, t } = useLanguage()
+  const searchParams = useSearchParams()
+  const router = useRouter()
   const [data, setData] = useState<DashboardData | null>(null)
-  const [activeTab, setActiveTab] = useState<"dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "jeoningu-lab">("dashboard")
   const [selectedStock, setSelectedStock] = useState<Holding | null>(null)
   const [isRealTrading, setIsRealTrading] = useState(false)
+
+  // URL에서 탭 파라미터 읽기
+  const tabParam = searchParams.get("tab") as TabType | null
+  const activeTab: TabType = tabParam && VALID_TABS.includes(tabParam) ? tabParam : "dashboard"
+
+  // 탭 변경 시 URL 업데이트
+  const handleTabChange = (tab: TabType) => {
+    const params = new URLSearchParams(searchParams.toString())
+    if (tab === "dashboard") {
+      params.delete("tab")
+    } else {
+      params.set("tab", tab)
+    }
+    const queryString = params.toString()
+    router.push(queryString ? `?${queryString}` : "/", { scroll: false })
+  }
 
   useEffect(() => {
     const fetchData = async () => {
@@ -59,7 +93,7 @@ export default function Page() {
 
   return (
     <div className="min-h-screen bg-background">
-      <DashboardHeader activeTab={activeTab} onTabChange={setActiveTab} lastUpdated={data.generated_at} />
+      <DashboardHeader activeTab={activeTab} onTabChange={handleTabChange} lastUpdated={data.generated_at} />
 
       <main className="container mx-auto px-4 py-6 max-w-[1600px]">
         {activeTab === "dashboard" && (
@@ -148,5 +182,14 @@ export default function Page() {
         />
       )}
     </div>
+  )
+}
+
+// 메인 페이지 컴포넌트 - Suspense 경계로 래핑
+export default function Page() {
+  return (
+    <Suspense fallback={<LoadingSpinner />}>
+      <DashboardContent />
+    </Suspense>
   )
 }
