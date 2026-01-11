@@ -185,7 +185,7 @@ class PerformanceTrackerBatch:
 
     def update_tracking_record(
         self,
-        record_id: int,
+        record: Dict[str, Any],
         days_elapsed: int,
         current_price: float,
         analyzed_price: float
@@ -193,7 +193,7 @@ class PerformanceTrackerBatch:
         """추적 기록 업데이트
 
         Args:
-            record_id: 레코드 ID
+            record: 기존 레코드 정보 (이미 기록된 값 확인용)
             days_elapsed: 경과 일수
             current_price: 현재 가격
             analyzed_price: 분석 시점 가격
@@ -204,28 +204,29 @@ class PerformanceTrackerBatch:
         updates = {}
         return_rate = self.calculate_return(analyzed_price, current_price)
 
-        # 7일차 업데이트
-        if days_elapsed >= 7:
+        # 7일차 업데이트 (아직 기록되지 않았고, 7일 이상 경과한 경우)
+        if days_elapsed >= 7 and record.get('tracked_7d_return') is None:
             updates['tracked_7d_date'] = self.today
             updates['tracked_7d_price'] = current_price
             updates['tracked_7d_return'] = return_rate
 
-        # 14일차 업데이트
-        if days_elapsed >= 14:
+        # 14일차 업데이트 (아직 기록되지 않았고, 14일 이상 경과한 경우)
+        if days_elapsed >= 14 and record.get('tracked_14d_return') is None:
             updates['tracked_14d_date'] = self.today
             updates['tracked_14d_price'] = current_price
             updates['tracked_14d_return'] = return_rate
 
-        # 30일차 업데이트
-        if days_elapsed >= 30:
+        # 30일차 업데이트 (아직 기록되지 않았고, 30일 이상 경과한 경우)
+        if days_elapsed >= 30 and record.get('tracked_30d_return') is None:
             updates['tracked_30d_date'] = self.today
             updates['tracked_30d_price'] = current_price
             updates['tracked_30d_return'] = return_rate
             updates['tracking_status'] = 'completed'
-        elif days_elapsed >= 7:
+        elif days_elapsed >= 7 and record.get('tracking_status') == 'pending':
             updates['tracking_status'] = 'in_progress'
 
-        updates['updated_at'] = self.today
+        if updates:
+            updates['updated_at'] = self.today
 
         return updates
 
@@ -336,7 +337,7 @@ class PerformanceTrackerBatch:
 
             # 업데이트 내용 결정
             updates = self.update_tracking_record(
-                record['id'],
+                record,
                 days_elapsed,
                 current_price,
                 analyzed_price
@@ -519,9 +520,11 @@ class PerformanceTrackerBatch:
                     was_traded = "매매" if row['was_traded'] else "관망"
 
                     ret_str = f"{return_rate*100:+.1f}%" if return_rate else "N/A"
+                    final_str = f"{final_price:,.0f}" if final_price else "N/A"
+                    analyzed_str = f"{analyzed_price:,.0f}" if analyzed_price else "N/A"
                     report.append(f"  [{ticker}] {name}")
                     report.append(f"    트리거: {trigger}, 결정: {was_traded}")
-                    report.append(f"    분석가: {analyzed_price:,.0f} → 30일 후: {final_price:,.0f} ({ret_str})")
+                    report.append(f"    분석가: {analyzed_str} → 30일 후: {final_str} ({ret_str})")
             else:
                 report.append("  완료된 추적 데이터가 없습니다.")
             report.append("")
