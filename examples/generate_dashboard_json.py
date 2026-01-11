@@ -791,7 +791,9 @@ class DashboardDataGenerator:
                 pass
 
             # 4. 실제 매매 종목의 트리거 유형별 성과 (trading_history에서)
+            # 2026-01-12부터 trigger_type 저장 시작 - 이전 데이터는 trigger_type이 없음
             actual_trading_by_trigger = []
+            TRIGGER_TRACKING_START_DATE = '2026-01-12'
             try:
                 cursor.execute("""
                     SELECT
@@ -806,9 +808,10 @@ class DashboardDataGenerator:
                         AVG(CASE WHEN profit_rate > 0 THEN profit_rate END) as avg_profit,
                         AVG(CASE WHEN profit_rate <= 0 THEN profit_rate END) as avg_loss
                     FROM trading_history
+                    WHERE sell_date >= ?
                     GROUP BY trigger_type
                     ORDER BY count DESC
-                """)
+                """, (TRIGGER_TRACKING_START_DATE,))
 
                 for row in cursor.fetchall():
                     trigger_type = row[0] or 'AI분석'

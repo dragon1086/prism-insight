@@ -531,20 +531,20 @@ export function TradingInsightsPage({ data }: TradingInsightsPageProps) {
                   </div>
                 )}
 
-                {/* Actual Trading by Trigger Type - 실제 매매 종목의 트리거 유형별 성과 */}
+                {/* Actual Trading by Trigger Type - 실제 매매 종목의 트리거 유형별 성과 (2026.01.12~) */}
                 {data.performance_analysis.actual_trading_by_trigger && data.performance_analysis.actual_trading_by_trigger.length > 0 && (
                   <div className="space-y-3">
                     <h4 className="text-sm font-medium flex items-center gap-2">
                       <Filter className="w-4 h-4 text-purple-500" />
-                      {language === "ko" ? "실제 매매 종목의 트리거 유형별 성과" : "Actual Trading by Trigger Type"}
+                      {language === "ko" ? "실제 매매 종목의 트리거 유형별 성과 (2026.01.12~)" : "Actual Trading by Trigger Type (Since 2026.01.12)"}
                       <Tooltip>
                         <TooltipTrigger>
                           <HelpCircle className="w-3 h-3 text-muted-foreground" />
                         </TooltipTrigger>
                         <TooltipContent className="max-w-xs">
                           <p>{language === "ko"
-                            ? "전체 매매 이력 기준 (기간 제한 없음). 어떤 트리거로 진입한 매매가 성과가 좋은지 비교."
-                            : "Based on all trading history (no time limit). Compare performance by entry trigger type."}</p>
+                            ? "2026.01.12부터 트리거 유형 추적 시작. 어떤 트리거로 진입한 매매가 성과가 좋은지 비교."
+                            : "Trigger type tracking started from 2026.01.12. Compare performance by entry trigger type."}</p>
                         </TooltipContent>
                       </Tooltip>
                     </h4>
