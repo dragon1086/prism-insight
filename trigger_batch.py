@@ -196,9 +196,11 @@ def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: s
     """
     매수/매도 에이전트 기준에 맞는 지표를 계산합니다.
 
-    trading_agents.py 기준:
-    - 손익비 (Risk/Reward) >= 2.0
-    - 손절폭 <= 7%
+    trading_agents.py 기준 (시장 적응형):
+    - 강세장: 손익비 >= 1.5, 손절폭 <= 10%
+    - 약세장: 손익비 >= 2.0, 손절폭 <= 7%
+
+    트리거 단계에서는 강세장 기준으로 완화하여 후보를 넓게 선정합니다.
 
     Args:
         ticker: 종목 코드
@@ -270,15 +272,17 @@ def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: s
     else:
         risk_reward_ratio = 0
 
-    # 에이전트 적합도 점수 계산
-    # 손익비 점수: 2.0 이상이면 만점, 낮을수록 감점
-    rr_score = min(risk_reward_ratio / 2.0, 1.0) if risk_reward_ratio > 0 else 0
+    # 에이전트 적합도 점수 계산 (시장 적응형)
+    # 기준 완화: 강세장에서 손익비 1.5, 손절폭 10%도 허용하므로 점수 기준도 완화
 
-    # 손절폭 점수: 7% 이하면 만점, 높을수록 감점
-    if stop_loss_pct <= 0.07:
-        sl_score = 1.0 - (stop_loss_pct / 0.07)  # 0~7%: 1.0~0.0
+    # 손익비 점수: 1.5 이상이면 만점, 낮을수록 감점 (기존 2.0 → 1.5)
+    rr_score = min(risk_reward_ratio / 1.5, 1.0) if risk_reward_ratio > 0 else 0
+
+    # 손절폭 점수: 10% 이하면 만점 기준 (기존 7% → 10%)
+    if stop_loss_pct <= 0.10:
+        sl_score = 1.0 - (stop_loss_pct / 0.10)  # 0~10%: 1.0~0.0
     else:
-        sl_score = max(0, 0.5 - (stop_loss_pct - 0.07) * 5)  # 7% 초과: 빠르게 감점
+        sl_score = max(0, 0.5 - (stop_loss_pct - 0.10) * 5)  # 10% 초과: 빠르게 감점
 
     # 최종 점수 (손익비 60%, 손절폭 40%)
     agent_fit_score = rr_score * 0.6 + sl_score * 0.4

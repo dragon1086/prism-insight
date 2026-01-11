@@ -436,7 +436,9 @@ perf: Performance improvements
 - **File**: `cores/agents/trading_agents.py`
 - **Purpose**: Buy decision-making and entry strategy
 - **Evaluates**: Valuation, momentum, portfolio constraints
-- **Scores**: 1-10 point system (6+ = buy)
+- **Market-Adaptive Criteria**:
+  - Bull Market: Min score 6, Risk/Reward ≥ 1.5, Stop loss ≤ 10%
+  - Bear/Sideways: Min score 7, Risk/Reward ≥ 2.0, Stop loss ≤ 7%
 - **Output**: JSON trading scenario with entry/exit strategy
 
 **9-2. Sell Specialist** (`create_sell_decision_agent`)

@@ -749,7 +749,7 @@ class DashboardDataGenerator:
 
             logger.info(f"트리거 유형별 성과 조회 완료: {len(trigger_performance)}개 유형")
 
-            # 3. 매매 vs 관망 비교
+            # 3. 매매 vs 관망 비교 (상세 수익/손실 분석 포함)
             cursor.execute("""
                 SELECT
                     was_traded,
@@ -757,7 +757,14 @@ class DashboardDataGenerator:
                     AVG(tracked_7d_return) as avg_7d,
                     AVG(tracked_14d_return) as avg_14d,
                     AVG(tracked_30d_return) as avg_30d,
-                    SUM(CASE WHEN tracked_30d_return > 0 THEN 1 ELSE 0 END) * 1.0 / COUNT(*) as win_rate
+                    SUM(CASE WHEN tracked_30d_return > 0 THEN 1 ELSE 0 END) as win_count,
+                    SUM(CASE WHEN tracked_30d_return <= 0 THEN 1 ELSE 0 END) as loss_count,
+                    AVG(CASE WHEN tracked_30d_return > 0 THEN tracked_30d_return END) as avg_profit,
+                    AVG(CASE WHEN tracked_30d_return <= 0 THEN tracked_30d_return END) as avg_loss,
+                    MAX(tracked_30d_return) as max_profit,
+                    MIN(tracked_30d_return) as max_loss,
+                    SUM(CASE WHEN tracked_30d_return > 0 THEN tracked_30d_return ELSE 0 END) as total_profit,
+                    SUM(CASE WHEN tracked_30d_return < 0 THEN ABS(tracked_30d_return) ELSE 0 END) as total_loss
                 FROM analysis_performance_tracker
                 WHERE tracking_status = 'completed'
                 GROUP BY was_traded
@@ -766,13 +773,73 @@ class DashboardDataGenerator:
             traded_vs_watched = {'traded': {}, 'watched': {}}
             for row in cursor.fetchall():
                 key = 'traded' if row[0] else 'watched'
+                count = row[1]
+                win_count = row[5] or 0
+                loss_count = row[6] or 0
+                total_profit = row[11] or 0
+                total_loss = row[12] or 0
+
+                # Profit Factor 계산 (총수익 / 총손실)
+                profit_factor = total_profit / total_loss if total_loss > 0 else None
+
                 traded_vs_watched[key] = {
-                    'count': row[1],
+                    'count': count,
                     'avg_7d': row[2],
                     'avg_14d': row[3],
                     'avg_30d': row[4],
-                    'win_rate': row[5]
+                    'win_rate': win_count / count if count > 0 else 0,
+                    # 상세 수익/손실 분석
+                    'win_count': win_count,
+                    'loss_count': loss_count,
+                    'avg_profit': row[7],  # 수익 건만의 평균 수익률
+                    'avg_loss': row[8],    # 손실 건만의 평균 손실률
+                    'max_profit': row[9],  # 최대 수익
+                    'max_loss': row[10],   # 최대 손실
+                    'profit_factor': profit_factor  # 총수익/총손실
                 }
+
+            # 3-1. 실제 매매 수익률 (trading_history 테이블에서, 최근 30일)
+            try:
+                cursor.execute("""
+                    SELECT
+                        COUNT(*) as count,
+                        AVG(profit_rate) as avg_profit_rate,
+                        SUM(CASE WHEN profit_rate > 0 THEN 1 ELSE 0 END) as win_count,
+                        SUM(CASE WHEN profit_rate <= 0 THEN 1 ELSE 0 END) as loss_count,
+                        AVG(CASE WHEN profit_rate > 0 THEN profit_rate END) as avg_profit,
+                        AVG(CASE WHEN profit_rate <= 0 THEN profit_rate END) as avg_loss,
+                        MAX(profit_rate) as max_profit,
+                        MIN(profit_rate) as max_loss,
+                        SUM(CASE WHEN profit_rate > 0 THEN profit_rate ELSE 0 END) as total_profit,
+                        SUM(CASE WHEN profit_rate < 0 THEN ABS(profit_rate) ELSE 0 END) as total_loss
+                    FROM trading_history
+                    WHERE sell_date >= date('now', '-30 days')
+                """)
+                row = cursor.fetchone()
+                if row and row[0] > 0:
+                    count = row[0]
+                    win_count = row[2] or 0
+                    loss_count = row[3] or 0
+                    total_profit = row[8] or 0
+                    total_loss = row[9] or 0
+                    profit_factor = total_profit / total_loss if total_loss > 0 else None
+
+                    # 실제 매매 데이터 추가 (profit_rate는 이미 퍼센트 값이므로 100으로 나눔)
+                    traded_vs_watched['actual_trading'] = {
+                        'count': count,
+                        'avg_profit_rate': (row[1] or 0) / 100,  # 퍼센트 → 소수
+                        'win_rate': win_count / count if count > 0 else 0,
+                        'win_count': win_count,
+                        'loss_count': loss_count,
+                        'avg_profit': (row[4] or 0) / 100,  # 퍼센트 → 소수
+                        'avg_loss': (row[5] or 0) / 100,    # 퍼센트 → 소수
+                        'max_profit': (row[6] or 0) / 100,  # 퍼센트 → 소수
+                        'max_loss': (row[7] or 0) / 100,    # 퍼센트 → 소수
+                        'profit_factor': profit_factor
+                    }
+            except sqlite3.OperationalError:
+                # trading_history 테이블이 없는 경우
+                pass
 
             # 4. 손익비 구간별 분석
             rr_ranges = [

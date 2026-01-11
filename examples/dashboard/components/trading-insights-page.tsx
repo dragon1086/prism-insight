@@ -67,6 +67,15 @@ export function TradingInsightsPage({ data }: TradingInsightsPageProps) {
 
   const formatPercent = (value: number) => {
     if (value === null || value === undefined) return "-"
+    // value is in decimal form (0.07 = 7%), multiply by 100 for display
+    const percentage = value * 100
+    const sign = percentage >= 0 ? "+" : ""
+    return `${sign}${percentage.toFixed(2)}%`
+  }
+
+  // For values already in percent form (e.g., 35.57 = 35.57%)
+  const formatPercentDirect = (value: number) => {
+    if (value === null || value === undefined) return "-"
     const sign = value >= 0 ? "+" : ""
     return `${sign}${value.toFixed(2)}%`
   }
@@ -392,39 +401,165 @@ export function TradingInsightsPage({ data }: TradingInsightsPageProps) {
                   </div>
                 )}
 
-                {/* Traded vs Watched Comparison */}
-                {data.performance_analysis.traded_vs_watched && (
+                {/* Actual Trading Performance - 실제 매매 성과 */}
+                {data.performance_analysis.traded_vs_watched?.actual_trading && (
                   <div className="space-y-3">
                     <h4 className="text-sm font-medium flex items-center gap-2">
-                      <Target className="w-4 h-4 text-purple-500" />
-                      {t("insights.performance.tradedVsWatched")}
+                      <TrendingUp className="w-4 h-4 text-green-500" />
+                      {language === "ko" ? "실제 매매 성과 (최근 30일)" : "Actual Trading (Last 30 Days)"}
                     </h4>
+                    <div className="p-4 rounded-lg bg-gradient-to-r from-green-500/10 to-emerald-500/10 border border-green-500/20">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="font-medium text-green-700 dark:text-green-400">
+                          {data.performance_analysis.traded_vs_watched.actual_trading.count || 0}{language === "ko" ? "건 완료" : " trades"}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                        {/* 평균 수익률 */}
+                        <div>
+                          <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 수익률" : "Avg Return"}</span>
+                          <p className={`font-bold text-lg ${
+                            (data.performance_analysis.traded_vs_watched.actual_trading.avg_profit_rate || 0) >= 0 ? "text-green-600" : "text-red-600"
+                          }`}>
+                            {formatPercent(data.performance_analysis.traded_vs_watched.actual_trading.avg_profit_rate)}
+                          </p>
+                        </div>
+                        {/* 승률 */}
+                        <div>
+                          <span className="text-muted-foreground text-xs">{language === "ko" ? "승률" : "Win Rate"}</span>
+                          <p className="font-bold text-lg">
+                            {data.performance_analysis.traded_vs_watched.actual_trading.win_rate !== null
+                              ? `${(data.performance_analysis.traded_vs_watched.actual_trading.win_rate * 100).toFixed(0)}%`
+                              : "-"}
+                            <span className="text-xs font-normal text-muted-foreground ml-1">
+                              ({data.performance_analysis.traded_vs_watched.actual_trading.win_count || 0}W/{data.performance_analysis.traded_vs_watched.actual_trading.loss_count || 0}L)
+                            </span>
+                          </p>
+                        </div>
+                        {/* 평균 수익 (수익건) */}
+                        <div>
+                          <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 수익 (수익건)" : "Avg Profit (wins)"}</span>
+                          <p className="font-bold text-green-600">
+                            {formatPercent(data.performance_analysis.traded_vs_watched.actual_trading.avg_profit)}
+                          </p>
+                        </div>
+                        {/* 평균 손실 (손실건) */}
+                        <div>
+                          <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 손실 (손실건)" : "Avg Loss (losses)"}</span>
+                          <p className="font-bold text-red-600">
+                            {formatPercent(data.performance_analysis.traded_vs_watched.actual_trading.avg_loss)}
+                          </p>
+                        </div>
+                        {/* 최대 수익 */}
+                        <div>
+                          <span className="text-muted-foreground text-xs">{language === "ko" ? "최대 수익" : "Max Profit"}</span>
+                          <p className="font-bold text-green-600">
+                            {formatPercent(data.performance_analysis.traded_vs_watched.actual_trading.max_profit)}
+                          </p>
+                        </div>
+                        {/* 최대 손실 */}
+                        <div>
+                          <span className="text-muted-foreground text-xs">{language === "ko" ? "최대 손실" : "Max Loss"}</span>
+                          <p className="font-bold text-red-600">
+                            {formatPercent(data.performance_analysis.traded_vs_watched.actual_trading.max_loss)}
+                          </p>
+                        </div>
+                        {/* Profit Factor */}
+                        <div>
+                          <span className="text-muted-foreground text-xs">Profit Factor</span>
+                          <p className={`font-bold ${
+                            data.performance_analysis.traded_vs_watched.actual_trading.profit_factor !== null &&
+                            data.performance_analysis.traded_vs_watched.actual_trading.profit_factor >= 1 ? "text-green-600" : "text-red-600"
+                          }`}>
+                            {data.performance_analysis.traded_vs_watched.actual_trading.profit_factor !== null
+                              ? data.performance_analysis.traded_vs_watched.actual_trading.profit_factor.toFixed(2)
+                              : "-"}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Traded vs Watched Comparison - 분석 후 가격 추적 */}
+                {data.performance_analysis.traded_vs_watched && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-medium flex items-center gap-2">
+                        <Target className="w-4 h-4 text-purple-500" />
+                        {t("insights.performance.tradedVsWatched")}
+                      </h4>
+                      <span className="text-xs text-muted-foreground">
+                        ({language === "ko" ? "분석일 기준 가격 변동" : "Price change from analysis date"})
+                      </span>
+                    </div>
                     <div className="grid md:grid-cols-2 gap-4">
                       {/* Traded */}
                       <div className="p-4 rounded-lg bg-purple-500/5 border border-purple-500/20">
                         <div className="flex items-center gap-2 mb-3">
                           <ShoppingCart className="w-5 h-5 text-purple-600" />
                           <span className="font-medium text-purple-700 dark:text-purple-400">
-                            {t("insights.performance.traded")} ({data.performance_analysis.traded_vs_watched.traded.count})
+                            {t("insights.performance.traded")} ({data.performance_analysis.traded_vs_watched.traded.count || 0})
                           </span>
                         </div>
                         <div className="grid grid-cols-2 gap-3 text-sm">
-                          <div>
-                            <span className="text-muted-foreground">{t("insights.performance.day30")} {t("insights.performance.avgReturn")}</span>
-                            <p className={`font-bold ${
-                              data.performance_analysis.traded_vs_watched.traded.avg_30d !== null &&
-                              data.performance_analysis.traded_vs_watched.traded.avg_30d >= 0 ? "text-green-600" : "text-red-600"
-                            }`}>
-                              {data.performance_analysis.traded_vs_watched.traded.avg_30d !== null
-                                ? formatPercent(data.performance_analysis.traded_vs_watched.traded.avg_30d)
-                                : "-"}
-                            </p>
-                          </div>
+                          {/* 승률 */}
                           <div>
                             <span className="text-muted-foreground">{t("insights.performance.winRate")}</span>
                             <p className="font-bold">
                               {data.performance_analysis.traded_vs_watched.traded.win_rate !== null
                                 ? `${(data.performance_analysis.traded_vs_watched.traded.win_rate * 100).toFixed(0)}%`
+                                : "-"}
+                              <span className="text-xs font-normal text-muted-foreground ml-1">
+                                ({data.performance_analysis.traded_vs_watched.traded.win_count || 0}/{data.performance_analysis.traded_vs_watched.traded.loss_count || 0})
+                              </span>
+                            </p>
+                          </div>
+                          {/* Profit Factor */}
+                          <div>
+                            <span className="text-muted-foreground">Profit Factor</span>
+                            <p className={`font-bold ${
+                              data.performance_analysis.traded_vs_watched.traded.profit_factor !== null &&
+                              data.performance_analysis.traded_vs_watched.traded.profit_factor >= 1 ? "text-green-600" : "text-red-600"
+                            }`}>
+                              {data.performance_analysis.traded_vs_watched.traded.profit_factor !== null
+                                ? data.performance_analysis.traded_vs_watched.traded.profit_factor.toFixed(2)
+                                : "-"}
+                            </p>
+                          </div>
+                          {/* 평균 수익률 (수익건) */}
+                          <div>
+                            <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 수익 (수익건)" : "Avg Profit (wins)"}</span>
+                            <p className="font-bold text-green-600">
+                              {data.performance_analysis.traded_vs_watched.traded.avg_profit !== null
+                                ? formatPercent(data.performance_analysis.traded_vs_watched.traded.avg_profit)
+                                : "-"}
+                            </p>
+                          </div>
+                          {/* 평균 손실률 (손실건) */}
+                          <div>
+                            <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 손실 (손실건)" : "Avg Loss (losses)"}</span>
+                            <p className="font-bold text-red-600">
+                              {data.performance_analysis.traded_vs_watched.traded.avg_loss !== null
+                                ? formatPercent(data.performance_analysis.traded_vs_watched.traded.avg_loss)
+                                : "-"}
+                            </p>
+                          </div>
+                          {/* 최대 수익 */}
+                          <div>
+                            <span className="text-muted-foreground text-xs">{language === "ko" ? "최대 수익" : "Max Profit"}</span>
+                            <p className="font-bold text-green-600">
+                              {data.performance_analysis.traded_vs_watched.traded.max_profit !== null
+                                ? formatPercent(data.performance_analysis.traded_vs_watched.traded.max_profit)
+                                : "-"}
+                            </p>
+                          </div>
+                          {/* 최대 손실 */}
+                          <div>
+                            <span className="text-muted-foreground text-xs">{language === "ko" ? "최대 손실" : "Max Loss"}</span>
+                            <p className="font-bold text-red-600">
+                              {data.performance_analysis.traded_vs_watched.traded.max_loss !== null
+                                ? formatPercent(data.performance_analysis.traded_vs_watched.traded.max_loss)
                                 : "-"}
                             </p>
                           </div>
@@ -435,26 +570,67 @@ export function TradingInsightsPage({ data }: TradingInsightsPageProps) {
                         <div className="flex items-center gap-2 mb-3">
                           <Eye className="w-5 h-5 text-cyan-600" />
                           <span className="font-medium text-cyan-700 dark:text-cyan-400">
-                            {t("insights.performance.watched")} ({data.performance_analysis.traded_vs_watched.watched.count})
+                            {t("insights.performance.watched")} ({data.performance_analysis.traded_vs_watched.watched.count || 0})
                           </span>
                         </div>
                         <div className="grid grid-cols-2 gap-3 text-sm">
-                          <div>
-                            <span className="text-muted-foreground">{t("insights.performance.day30")} {t("insights.performance.avgReturn")}</span>
-                            <p className={`font-bold ${
-                              data.performance_analysis.traded_vs_watched.watched.avg_30d !== null &&
-                              data.performance_analysis.traded_vs_watched.watched.avg_30d >= 0 ? "text-green-600" : "text-red-600"
-                            }`}>
-                              {data.performance_analysis.traded_vs_watched.watched.avg_30d !== null
-                                ? formatPercent(data.performance_analysis.traded_vs_watched.watched.avg_30d)
-                                : "-"}
-                            </p>
-                          </div>
+                          {/* 승률 */}
                           <div>
                             <span className="text-muted-foreground">{t("insights.performance.winRate")}</span>
                             <p className="font-bold">
                               {data.performance_analysis.traded_vs_watched.watched.win_rate !== null
                                 ? `${(data.performance_analysis.traded_vs_watched.watched.win_rate * 100).toFixed(0)}%`
+                                : "-"}
+                              <span className="text-xs font-normal text-muted-foreground ml-1">
+                                ({data.performance_analysis.traded_vs_watched.watched.win_count || 0}/{data.performance_analysis.traded_vs_watched.watched.loss_count || 0})
+                              </span>
+                            </p>
+                          </div>
+                          {/* Profit Factor */}
+                          <div>
+                            <span className="text-muted-foreground">Profit Factor</span>
+                            <p className={`font-bold ${
+                              data.performance_analysis.traded_vs_watched.watched.profit_factor !== null &&
+                              data.performance_analysis.traded_vs_watched.watched.profit_factor >= 1 ? "text-green-600" : "text-red-600"
+                            }`}>
+                              {data.performance_analysis.traded_vs_watched.watched.profit_factor !== null
+                                ? data.performance_analysis.traded_vs_watched.watched.profit_factor.toFixed(2)
+                                : "-"}
+                            </p>
+                          </div>
+                          {/* 평균 수익률 (수익건) */}
+                          <div>
+                            <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 수익 (수익건)" : "Avg Profit (wins)"}</span>
+                            <p className="font-bold text-green-600">
+                              {data.performance_analysis.traded_vs_watched.watched.avg_profit !== null
+                                ? formatPercent(data.performance_analysis.traded_vs_watched.watched.avg_profit)
+                                : "-"}
+                            </p>
+                          </div>
+                          {/* 평균 손실률 (손실건) */}
+                          <div>
+                            <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 손실 (손실건)" : "Avg Loss (losses)"}</span>
+                            <p className="font-bold text-red-600">
+                              {data.performance_analysis.traded_vs_watched.watched.avg_loss !== null
+                                ? formatPercent(data.performance_analysis.traded_vs_watched.watched.avg_loss)
+                                : "-"}
+                            </p>
+                          </div>
+                          {/* 최대 수익 */}
+                          <div>
+                            <span className="text-muted-foreground text-xs">{language === "ko" ? "최대 수익" : "Max Profit"}</span>
+                            <p className="font-bold text-green-600">
+                              {data.performance_analysis.traded_vs_watched.watched.max_profit !== null
+                                ? formatPercent(data.performance_analysis.traded_vs_watched.watched.max_profit)
+                                : "-"}
+                            </p>
+                          </div>
+                          {/* 최대 손실 */}
+                          <div>
+                            <span className="text-muted-foreground text-xs">{language === "ko" ? "최대 손실" : "Max Loss"}</span>
+                            <p className="font-bold text-red-600">
+                              {data.performance_analysis.traded_vs_watched.watched.max_loss !== null
+                                ? formatPercent(data.performance_analysis.traded_vs_watched.watched.max_loss)
                                 : "-"}
                             </p>
                           </div>
@@ -720,7 +896,7 @@ export function TradingInsightsPage({ data }: TradingInsightsPageProps) {
                         <span className={`font-medium ${
                           entry.profit_rate >= 0 ? "text-green-600" : "text-red-600"
                         }`}>
-                          {formatPercent(entry.profit_rate)}
+                          {formatPercentDirect(entry.profit_rate)}
                         </span>
                         <span className="text-sm text-muted-foreground">
                           {formatDate(entry.trade_date)}
@@ -753,7 +929,7 @@ export function TradingInsightsPage({ data }: TradingInsightsPageProps) {
                         <div>
                           <span className="text-muted-foreground">{t("insights.profitRate")}</span>
                           <p className={`font-medium ${entry.profit_rate >= 0 ? "text-green-600" : "text-red-600"}`}>
-                            {formatPercent(entry.profit_rate)}
+                            {formatPercentDirect(entry.profit_rate)}
                           </p>
                         </div>
                         <div>

@@ -31,22 +31,34 @@ def create_trading_scenario_agent(language: str = "ko"):
 
         ### ⚠️ Risk Management Priority (Cut Losses Short!)
 
+        **Step 0: Market Environment Assessment (Entry Criteria Differentiation)**
+        Check KOSPI last 20 days with kospi_kosdaq-get_index_ohlcv:
+        - **Bull Market**: KOSPI above 20-day MA + rose 5%+ in last 2 weeks
+        - **Bear/Sideways Market**: Above conditions not met
+
+        | Criteria | Bull Market | Bear/Sideways |
+        |----------|-------------|---------------|
+        | Min Risk/Reward | 1.5 | 2.0 |
+        | Max Stop Loss | -10% | -7% |
+        | Min Entry Score | 6 | 7 |
+
         **Stop Loss Setting Rules:**
-        - Stop loss should be within **-5% ~ -7%** from purchase price
-        - When stop loss is reached: **Immediate full exit in principle** (sell agent decides)
+        - **Bear/Sideways**: Stop loss within **-5% ~ -7%** from purchase price
+        - **Bull Market**: Allow **-7% ~ -10%** to ride trends (min risk/reward 1.5 required)
+        - When stop loss reached: **Immediate full exit in principle** (sell agent decides)
         - **Exception allowed**: 1-day grace period with strong bounce + volume spike (only when loss < -7%)
 
-        **Risk/Reward Ratio Required:**
-        - Target return 10% → Stop loss max -5%
-        - Target return 15% → Stop loss max -7%
-        - **Stop loss width should not exceed -7% in principle**
+        **Risk/Reward Ratio (Market-Adaptive):**
+        - **Bear/Sideways**: Risk/Reward ≥ 2.0 required (keep existing)
+        - **Bull Market**: Risk/Reward ≥ 1.5 allowed (trend compensates for risk)
+        - Example: Target 15%, Stop 10% → Risk/Reward 1.5 (entry allowed in bull market only)
 
-        **When support is beyond -7%:**
+        **When support is beyond threshold:**
         - **Priority**: Reconsider entry or lower score
         - **Alternative**: Use support as stop loss, but must meet:
-          * Risk/Reward Ratio ≥ 2:1 (higher target price)
+          * Minimum risk/reward for the market environment
           * Clearly strong support (box bottom, long-term MA, etc.)
-          * Stop loss width not exceeding -10%
+          * Stop loss width not exceeding -10% (bull) or -7% (bear/sideways)
 
         **Risks of 100% All-in/All-out:**
         - One large loss (-15%) requires +17.6% to recover
@@ -54,8 +66,8 @@ def create_trading_scenario_agent(language: str = "ko"):
         - Therefore, **better not to enter if stop loss is far**
 
         **Example:**
-        - Purchase 18,000 won, support 15,500 won → Loss -13.9% (❌ Entry unsuitable)
-        - In this case: Give up entry, or raise target to 30,000+ won (+67%)
+        - Purchase 18,000, support 15,500 → Loss -13.9% (❌ Unsuitable even in bull market)
+        - Purchase 10,000, support 9,000, target 11,500 → Loss -10%, Risk/Reward 1.5 (✅ Entry OK in bull market)
 
         ## Analysis Process
 
@@ -87,13 +99,16 @@ def create_trading_scenario_agent(language: str = "ko"):
         Expected Loss (%) = (Entry - Stop Loss) ÷ Entry × 100
         Risk/Reward Ratio = Expected Return ÷ Expected Loss
         ```
-        
-        **Entry Requirements:**
-        - Risk/Reward Ratio ≥ 2.0 (MINIMUM)
-        - Expected Loss ≤ 7%
-        
-        **Unsuitable:** Entry 18,000, Target 21,000(+16.7%), Stop 15,500(-13.9%) → Ratio 1.2 ❌ → "Wait"
-        **Suitable:** Entry 10,000, Target 13,000(+30%), Stop 9,300(-7%) → Ratio 4.3 ✅ → "Enter"
+
+        **Entry Requirements (Market-Adaptive):**
+        | Market | Min Risk/Reward | Max Expected Loss |
+        |--------|-----------------|-------------------|
+        | Bull Market | ≥ 1.5 | ≤ 10% |
+        | Bear/Sideways | ≥ 2.0 | ≤ 7% |
+
+        **Unsuitable:** Entry 18,000, Target 21,000(+16.7%), Stop 15,500(-13.9%) → Ratio 1.2, Loss 13.9% ❌ → "Wait" (unsuitable even in bull)
+        **Bull OK:** Entry 10,000, Target 11,500(+15%), Stop 9,000(-10%) → Ratio 1.5 ✅ → "Enter" (bull market only)
+        **All Markets OK:** Entry 10,000, Target 13,000(+30%), Stop 9,300(-7%) → Ratio 4.3 ✅ → "Enter" (all markets)
         
         #### 3-2.2. Basic Checklist
         - Financial health (debt ratio, cash flow)
@@ -142,7 +157,15 @@ def create_trading_scenario_agent(language: str = "ko"):
         - Undervalued vs peers
         - Positive industry-wide outlook
 
-        ### 5. Final Entry Guide
+        ### 5. Final Entry Guide (Market-Adaptive)
+
+        **Bull Market:**
+        - 6 points + uptrend confirmed → Consider entry
+        - 7 points + momentum confirmed → Active entry
+        - 8+ points → Active entry
+        - Trust the trend, but stop loss within -10% mandatory
+
+        **Bear/Sideways Market:**
         - 7 points + strong momentum + undervalued → Consider entry
         - 8 points + normal conditions + positive outlook → Consider entry
         - 9+ points + valuation attractive → Active entry
@@ -184,7 +207,7 @@ def create_trading_scenario_agent(language: str = "ko"):
             "valuation_analysis": "Peer valuation comparison results",
             "sector_outlook": "Industry outlook and trends",
             "buy_score": Score between 1~10,
-            "min_score": Minimum required entry score,
+            "min_score": Market-adaptive minimum entry score (Bull: 6, Bear/Sideways: 7),
             "decision": "Enter" or "Wait",
             "target_price": Target price (won, number only),
             "stop_loss": Stop loss (won, number only),
@@ -249,22 +272,34 @@ def create_trading_scenario_agent(language: str = "ko"):
 
         ### ⚠️ 리스크 관리 최우선 원칙 (손실은 짧게!)
 
+        **0단계: 시장 환경 판단 (진입 기준 차별화)**
+        kospi_kosdaq-get_index_ohlcv로 KOSPI 최근 20일 데이터 확인 후:
+        - **강세장**: KOSPI 20일 이동평균선 위 + 최근 2주 +5% 이상 상승
+        - **약세장/횡보장**: 위 조건 미충족
+
+        | 기준 | 강세장 | 약세장/횡보장 |
+        |------|--------|--------------|
+        | 손익비 최소 | 1.5 | 2.0 |
+        | 손절폭 최대 | -10% | -7% |
+        | 최소 진입 점수 | 6점 | 7점 |
+
         **손절가 설정 철칙:**
-        - 손절가는 매수가 기준 **-5% ~ -7% 이내** 우선 적용
+        - **약세장/횡보장**: 손절가는 매수가 기준 **-5% ~ -7% 이내** 우선 적용
+        - **강세장**: 추세 우선으로 **-7% ~ -10% 이내** 허용 (단, 손익비 1.5 이상 필수)
         - 손절가 도달 시 **원칙적으로 즉시 전량 매도** (매도 에이전트가 판단)
         - **예외 허용**: 당일 강한 반등 + 거래량 급증 시 1일 유예 가능 (단, 손실 -7% 미만일 때만)
 
-        **Risk/Reward Ratio 필수:**
-        - 목표 수익률이 10%면 → 손절은 최대 -5%
-        - 목표 수익률이 15%면 → 손절은 최대 -7%
-        - **손절폭은 원칙적으로 -7%를 넘지 않도록 설정**
+        **Risk/Reward Ratio (시장 환경별 차별화):**
+        - **약세장/횡보장**: 손익비 ≥ 2.0 필수 (기존 유지)
+        - **강세장**: 손익비 ≥ 1.5 허용 (추세가 수익을 보완)
+        - 예시: 목표 15%, 손절 10% → 손익비 1.5 (강세장에서만 진입 가능)
 
-        **지지선이 -7% 밖에 있는 경우:**
+        **지지선이 기준 밖에 있는 경우:**
         - **우선 선택**: 진입을 재검토하거나 점수를 하향 조정
         - **차선 선택**: 지지선을 손절가로 하되, 다음 조건 충족 필수:
-          * Risk/Reward Ratio 2:1 이상 확보 (목표가를 더 높게)
+          * 시장 환경에 맞는 최소 손익비 확보
           * 지지선의 강력함을 명확히 확인 (박스권 하단, 장기 이평선 등)
-          * 손절폭이 -10%를 초과하지 않도록 제한
+          * 손절폭이 강세장 -10%, 약세장 -7%를 초과하지 않도록 제한
 
         **100% 올인/올아웃의 위험성:**
         - 한 번의 큰 손실(-15%)은 복구에 +17.6% 필요
@@ -272,8 +307,8 @@ def create_trading_scenario_agent(language: str = "ko"):
         - 따라서 **손절이 멀면 진입하지 않는 게 낫다**
 
         **예시:**
-        - 매수가 18,000원, 지지선 15,500원 → 손실폭 -13.9% (❌ 진입 부적합)
-        - 이 경우: 진입을 포기하거나, 목표가를 30,000원 이상(+67%)으로 상향
+        - 매수가 18,000원, 지지선 15,500원 → 손실폭 -13.9% (❌ 강세장에서도 진입 부적합)
+        - 매수가 10,000원, 지지선 9,000원, 목표 11,500원 → 손실폭 -10%, 손익비 1.5 (✅ 강세장에서 진입 가능)
 
         ## 분석 프로세스
 
@@ -308,13 +343,16 @@ def create_trading_scenario_agent(language: str = "ko"):
         예상 손실률(%) = (진입가 - 손절가) ÷ 진입가 × 100
         손익비 = 목표 수익률 ÷ 예상 손실률
         ```
-        
-        **진입 가능 조건:**
-        - 손익비 ≥ 2.0 (최소 기준)
-        - 예상 손실률 ≤ 7%
-        
-        **부적합 예시:** 진입 18,000원, 목표 21,000원(+16.7%), 손절 15,500원(-13.9%) → 손익비 1.2 ❌ → decision: "관망"
-        **적합 예시:** 진입 10,000원, 목표 13,000원(+30%), 손절 9,300원(-7%) → 손익비 4.3 ✅ → decision: "진입"
+
+        **진입 가능 조건 (시장 환경별):**
+        | 시장 | 손익비 최소 | 예상 손실률 최대 |
+        |------|------------|-----------------|
+        | 강세장 | ≥ 1.5 | ≤ 10% |
+        | 약세장/횡보장 | ≥ 2.0 | ≤ 7% |
+
+        **부적합 예시:** 진입 18,000원, 목표 21,000원(+16.7%), 손절 15,500원(-13.9%) → 손익비 1.2, 손실폭 13.9% ❌ → decision: "관망" (강세장에서도 부적합)
+        **강세장 적합 예시:** 진입 10,000원, 목표 11,500원(+15%), 손절 9,000원(-10%) → 손익비 1.5 ✅ → decision: "진입" (강세장에서만)
+        **약세장 적합 예시:** 진입 10,000원, 목표 13,000원(+30%), 손절 9,300원(-7%) → 손익비 4.3 ✅ → decision: "진입" (모든 시장)
         
         #### 3-2.2. 기본 체크리스트 (보고서 참고)
         - **재무 건전성**: 보고서 '2-1. 기업 현황 분석' 참고 (부채비율, ROE/ROA, 현금흐름, 영업이익률 종합 판단)
@@ -367,7 +405,15 @@ def create_trading_scenario_agent(language: str = "ko"):
         - 동종업계 대비 저평가
         - 업종 전반 긍정적 전망
 
-        ### 5. 최종 진입 가이드
+        ### 5. 최종 진입 가이드 (시장 환경별)
+
+        **강세장:**
+        - 6점 + 상승 추세 확인 → 진입 고려
+        - 7점 + 모멘텀 확인 → 적극 진입
+        - 8점 이상 → 적극 진입
+        - 추세를 믿되, 손절은 -10% 이내 필수
+
+        **약세장/횡보장:**
         - 7점 + 강한 모멘텀 + 저평가 → 진입 고려
         - 8점 + 보통 조건 + 긍정적 전망 → 진입 고려
         - 9점 이상 + 밸류에이션 매력 → 적극 진입
@@ -405,7 +451,7 @@ def create_trading_scenario_agent(language: str = "ko"):
             "valuation_analysis": "동종업계 밸류에이션 비교 결과",
             "sector_outlook": "업종 전망 및 동향",
             "buy_score": 1~10 사이의 점수,
-            "min_score": 최소 진입 요구 점수,
+            "min_score": 시장 환경에 따른 최소 진입 요구 점수 (강세장: 6, 약세장: 7),
             "decision": "진입" 또는 "관망",
             "target_price": 목표가 (원, 숫자만),
             "stop_loss": 손절가 (원, 숫자만),
