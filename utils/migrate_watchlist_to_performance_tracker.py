@@ -210,7 +210,7 @@ def calculate_tracking_data(analyzed_date: str, analyzed_price: float, ticker: s
             if price:
                 result['tracked_7d_date'] = target_date
                 result['tracked_7d_price'] = price
-                result['tracked_7d_return'] = ((price - analyzed_price) / analyzed_price) * 100
+                result['tracked_7d_return'] = (price - analyzed_price) / analyzed_price  # 소수점 형태 (0.078 = 7.8%)
 
         # 14-day tracking
         if days_passed >= 14:
@@ -219,7 +219,7 @@ def calculate_tracking_data(analyzed_date: str, analyzed_price: float, ticker: s
             if price:
                 result['tracked_14d_date'] = target_date
                 result['tracked_14d_price'] = price
-                result['tracked_14d_return'] = ((price - analyzed_price) / analyzed_price) * 100
+                result['tracked_14d_return'] = (price - analyzed_price) / analyzed_price  # 소수점 형태
 
         # 30-day tracking
         if days_passed >= 30:
@@ -228,7 +228,7 @@ def calculate_tracking_data(analyzed_date: str, analyzed_price: float, ticker: s
             if price:
                 result['tracked_30d_date'] = target_date
                 result['tracked_30d_price'] = price
-                result['tracked_30d_return'] = ((price - analyzed_price) / analyzed_price) * 100
+                result['tracked_30d_return'] = (price - analyzed_price) / analyzed_price  # 소수점 형태
 
         # Determine tracking status
         if result['tracked_30d_return'] is not None:
