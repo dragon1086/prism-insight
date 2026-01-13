@@ -192,21 +192,33 @@ def enhance_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: str, lookback_days: int = 10) -> dict:
+# v1.16.6: 트리거 유형별 에이전트 기준 (trading_agents.py와 동기화)
+TRIGGER_CRITERIA = {
+    "거래량 급증 상위주": {"rr_target": 1.2, "sl_max": 0.05},
+    "갭 상승 모멘텀 상위주": {"rr_target": 1.2, "sl_max": 0.05},
+    "일중 상승률 상위주": {"rr_target": 1.2, "sl_max": 0.05},
+    "마감 강도 상위주": {"rr_target": 1.3, "sl_max": 0.05},
+    "시총 대비 집중 자금 유입 상위주": {"rr_target": 1.3, "sl_max": 0.05},
+    "거래량 증가 상위 횡보주": {"rr_target": 1.5, "sl_max": 0.07},
+    "default": {"rr_target": 1.5, "sl_max": 0.07}
+}
+
+
+def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: str, lookback_days: int = 10, trigger_type: str = None) -> dict:
     """
     매수/매도 에이전트 기준에 맞는 지표를 계산합니다.
 
-    trading_agents.py 기준 (시장 적응형):
-    - 강세장: 손익비 >= 1.5, 손절폭 <= 10%
-    - 약세장: 손익비 >= 2.0, 손절폭 <= 7%
-
-    트리거 단계에서는 강세장 기준으로 완화하여 후보를 넓게 선정합니다.
+    v1.16.6: 트리거 유형별 차별화된 기준 적용 (trading_agents.py와 동기화)
+    - 거래량 급증/갭 상승/일중 상승률: 손익비 1.2+, 손절폭 5%
+    - 마감 강도/자금 유입: 손익비 1.3+, 손절폭 5%
+    - 횡보주: 손익비 1.5+, 손절폭 7%
 
     Args:
         ticker: 종목 코드
         current_price: 현재가
         trade_date: 기준 거래일
         lookback_days: 조회할 과거 영업일 수
+        trigger_type: 트리거 유형 (기준 차별화에 사용)
 
     Returns:
         dict with keys: stop_loss_price, target_price, stop_loss_pct, risk_reward_ratio, agent_fit_score
@@ -272,17 +284,19 @@ def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: s
     else:
         risk_reward_ratio = 0
 
-    # 에이전트 적합도 점수 계산 (시장 적응형)
-    # 기준 완화: 강세장에서 손익비 1.5, 손절폭 10%도 허용하므로 점수 기준도 완화
+    # v1.16.6: 트리거 유형별 차별화된 에이전트 적합도 점수 계산
+    criteria = TRIGGER_CRITERIA.get(trigger_type, TRIGGER_CRITERIA["default"])
+    rr_target = criteria["rr_target"]
+    sl_max = criteria["sl_max"]
 
-    # 손익비 점수: 1.5 이상이면 만점, 낮을수록 감점 (기존 2.0 → 1.5)
-    rr_score = min(risk_reward_ratio / 1.5, 1.0) if risk_reward_ratio > 0 else 0
+    # 손익비 점수: 트리거 기준 충족 시 만점
+    rr_score = min(risk_reward_ratio / rr_target, 1.0) if risk_reward_ratio > 0 else 0
 
-    # 손절폭 점수: 10% 이하면 만점 기준 (기존 7% → 10%)
-    if stop_loss_pct <= 0.10:
-        sl_score = 1.0 - (stop_loss_pct / 0.10)  # 0~10%: 1.0~0.0
+    # 손절폭 점수: 기준 이하면 높은 점수, 초과 시 급격히 감점
+    if stop_loss_pct <= sl_max:
+        sl_score = 1.0 - (stop_loss_pct / sl_max) * 0.5  # 기준 이하: 0.5~1.0
     else:
-        sl_score = max(0, 0.5 - (stop_loss_pct - 0.10) * 5)  # 10% 초과: 빠르게 감점
+        sl_score = max(0, 0.5 - (stop_loss_pct - sl_max) * 10)  # 기준 초과: 급격히 감점
 
     # 최종 점수 (손익비 60%, 손절폭 40%)
     agent_fit_score = rr_score * 0.6 + sl_score * 0.4
@@ -302,14 +316,17 @@ def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: s
     return result
 
 
-def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: str, lookback_days: int = 10) -> pd.DataFrame:
+def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: str, lookback_days: int = 10, trigger_type: str = None) -> pd.DataFrame:
     """
     후보 종목들에 대해 에이전트 기준 점수를 계산하여 DataFrame에 추가합니다.
+
+    v1.16.6: 트리거 유형별 차별화된 기준 적용
 
     Args:
         candidates_df: 후보 종목 DataFrame (index: 종목코드, Close 컬럼 필수)
         trade_date: 기준 거래일
         lookback_days: 조회할 과거 영업일 수
+        trigger_type: 트리거 유형 (기준 차별화에 사용)
 
     Returns:
         에이전트 기준 점수가 추가된 DataFrame
@@ -328,7 +345,7 @@ def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: 
 
     for ticker in result_df.index:
         current_price = result_df.loc[ticker, "Close"]
-        metrics = calculate_agent_fit_metrics(ticker, current_price, trade_date, lookback_days)
+        metrics = calculate_agent_fit_metrics(ticker, current_price, trade_date, lookback_days, trigger_type)
 
         result_df.loc[ticker, "손절가"] = metrics["stop_loss_price"]
         result_df.loc[ticker, "목표가"] = metrics["target_price"]
@@ -354,11 +371,11 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_s
     snap = snapshot.loc[common].copy()
     prev = prev_snapshot.loc[common].copy()
     
-    # 시가총액 데이터 병합 및 동전주 필터링
+    # 시가총액 데이터 병합 및 필터링 (v1.16.6: 1조 이상으로 상향)
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["시가총액"]], left_index=True, right_index=True, how="inner")
-        # 시가총액 3000억원 이상만 선별 (소형주/동전주 제외, 스윙트레이딩에 적합한 중형주 이상)
-        snap = snap[snap["시가총액"] >= 300000000000]
+        # 시가총액 1조원 이상만 선별 (에이전트 손절 기준(-5%~-7%) 충족 가능한 종목)
+        snap = snap[snap["시가총액"] >= 1000000000000]
         logger.debug(f"시가총액 필터링 후 종목 수: {len(snap)}")
         if snap.empty:
             logger.warning("시가총액 필터링 후 종목이 없습니다")
@@ -368,8 +385,8 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_s
     logger.debug(f"전일 종가 데이터 샘플: {prev['Close'].head()}")
     logger.debug(f"당일 종가 데이터 샘플: {snap['Close'].head()}")
 
-    # 절대적 기준 적용 (최소 거래대금, 거래량)
-    snap = apply_absolute_filters(snap)
+    # 절대적 기준 적용 (거래대금 100억 이상으로 상향)
+    snap = apply_absolute_filters(snap, min_value=10000000000)
 
     # 거래량 비율 계산
     snap["거래량비율"] = snap["Volume"] / prev["Volume"].replace(0, np.nan)
@@ -381,6 +398,9 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_s
 
     # 전일대비등락률 계산 - 변경된 방식으로
     snap["전일대비등락률"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100
+
+    # v1.16.6: 등락률 상한선 추가 (15% 이하만 선별, 상한가 종목 제외)
+    snap = snap[snap["전일대비등락률"] <= 15.0]
 
     # 첫 10개 종목의 전일대비등락률 계산 과정 디버깅
     for ticker in snap.index[:5]:
@@ -428,18 +448,18 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame, pre
     snap = snapshot.loc[common].copy()
     prev = prev_snapshot.loc[common].copy()
     
-    # 시가총액 데이터 병합 및 동전주 필터링
+    # 시가총액 데이터 병합 및 필터링 (v1.16.6: 1조 이상으로 상향)
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["시가총액"]], left_index=True, right_index=True, how="inner")
-        # 시가총액 3000억원 이상만 선별 (소형주/동전주 제외, 스윙트레이딩에 적합한 중형주 이상)
-        snap = snap[snap["시가총액"] >= 300000000000]
+        # 시가총액 1조원 이상만 선별 (에이전트 손절 기준(-5%~-7%) 충족 가능한 종목)
+        snap = snap[snap["시가총액"] >= 1000000000000]
         logger.debug(f"시가총액 필터링 후 종목 수: {len(snap)}")
         if snap.empty:
             logger.warning("시가총액 필터링 후 종목이 없습니다")
             return pd.DataFrame()
 
-    # 절대적 기준 적용
-    snap = apply_absolute_filters(snap)
+    # 절대적 기준 적용 (거래대금 100억 이상으로 상향)
+    snap = apply_absolute_filters(snap, min_value=10000000000)
 
     # 갭 상승률 계산
     snap["갭상승률"] = (snap["Open"] / prev["Close"] - 1) * 100
@@ -447,8 +467,8 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame, pre
     snap["전일대비등락률"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100  # 전일 종가 대비 등락률
     snap["상승지속"] = snap["Close"] > snap["Open"]
 
-    # 1차 필터링: 갭상승률 1% 이상인 종목만 선택
-    snap = snap[snap["갭상승률"] >= 1.0]
+    # 1차 필터링: 갭상승률 1% 이상, 등락률 15% 이하 (v1.16.6: 상한가 종목 제외)
+    snap = snap[(snap["갭상승률"] >= 1.0) & (snap["전일대비등락률"] <= 15.0)]
 
     # 점수 계산 (커스텀 복합 점수)
     if not snap.empty:
@@ -538,9 +558,9 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame, 
         prev = prev_snapshot.loc[common].copy()
         logger.debug(f"전일 데이터 병합 완료 - 공통 종목: {len(common)}개")
 
-        # 절대적 기준 적용
+        # 절대적 기준 적용 (거래대금 100억 이상으로 상향)
         logger.debug("절대적 기준 필터링 시작")
-        merged = apply_absolute_filters(merged)
+        merged = apply_absolute_filters(merged, min_value=10000000000)
         if merged.empty:
             logger.warning("절대적 기준 필터링 후 종목이 없습니다")
             return pd.DataFrame()
@@ -563,8 +583,14 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame, 
         merged["전일대비등락률"] = ((merged["Close"] - prev["Close"]) / prev["Close"]) * 100  # 증권사 앱과 동일
         merged["상승여부"] = merged["Close"] > merged["Open"]
 
-        # 시총 필터링 - 최소 3000억원 이상 종목 (소형주/동전주 제외, 스윙트레이딩에 적합한 중형주 이상)
-        merged = merged[merged["시가총액"] >= 300000000000]
+        # v1.16.6: 등락률 상한선 추가 (15% 이하만 선별, 상한가 종목 제외)
+        merged = merged[merged["전일대비등락률"] <= 15.0]
+        if merged.empty:
+            logger.warning("등락률 상한선 필터링 후 종목이 없습니다")
+            return pd.DataFrame()
+
+        # 시총 필터링 - 최소 1조원 이상 종목 (v1.16.6: 에이전트 손절 기준 충족 가능한 종목)
+        merged = merged[merged["시가총액"] >= 1000000000000]
         if merged.empty:
             logger.warning("시총 필터링 후 종목이 없습니다")
             return pd.DataFrame()
@@ -624,25 +650,25 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame, pr
     snap = snapshot.loc[common].copy()
     prev = prev_snapshot.loc[common].copy()
     
-    # 시가총액 데이터 병합 및 동전주 필터링
+    # 시가총액 데이터 병합 및 필터링 (v1.16.6: 1조 이상으로 상향)
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["시가총액"]], left_index=True, right_index=True, how="inner")
-        # 시가총액 3000억원 이상만 선별 (소형주/동전주 제외, 스윙트레이딩에 적합한 중형주 이상)
-        snap = snap[snap["시가총액"] >= 300000000000]
+        # 시가총액 1조원 이상만 선별 (에이전트 손절 기준(-5%~-7%) 충족 가능한 종목)
+        snap = snap[snap["시가총액"] >= 1000000000000]
         logger.debug(f"시가총액 필터링 후 종목 수: {len(snap)}")
         if snap.empty:
             logger.warning("시가총액 필터링 후 종목이 없습니다")
             return pd.DataFrame()
 
-    # 절대적 기준 적용 (최소 거래대금 10억 이상)
-    snap = apply_absolute_filters(snap.copy(), min_value=1000000000)
+    # 절대적 기준 적용 (거래대금 100억 이상으로 상향)
+    snap = apply_absolute_filters(snap.copy(), min_value=10000000000)
 
     # 두 가지 등락률 계산
     snap["장중등락률"] = (snap["Close"] / snap["Open"] - 1) * 100  # 시가 대비 현재가
     snap["전일대비등락률"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100  # 증권사 앱과 동일
 
-    # 추가 필터: 장중등락률 3% 이상
-    snap = snap[snap["장중등락률"] >= 3.0]
+    # 등락률 필터: 3% 이상 15% 이하 (v1.16.6: 상한가 종목 제외)
+    snap = snap[(snap["전일대비등락률"] >= 3.0) & (snap["전일대비등락률"] <= 15.0)]
 
     if snap.empty:
         logger.debug("trigger_afternoon_daily_rise_top: 조건 충족 종목 없음")
@@ -670,18 +696,18 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame, 
     snap = snapshot.loc[common].copy()
     prev = prev_snapshot.loc[common].copy()
     
-    # 시가총액 데이터 병합 및 동전주 필터링
+    # 시가총액 데이터 병합 및 필터링 (v1.16.6: 1조 이상으로 상향)
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["시가총액"]], left_index=True, right_index=True, how="inner")
-        # 시가총액 3000억원 이상만 선별 (소형주/동전주 제외, 스윙트레이딩에 적합한 중형주 이상)
-        snap = snap[snap["시가총액"] >= 300000000000]
+        # 시가총액 1조원 이상만 선별 (에이전트 손절 기준(-5%~-7%) 충족 가능한 종목)
+        snap = snap[snap["시가총액"] >= 1000000000000]
         logger.debug(f"시가총액 필터링 후 종목 수: {len(snap)}")
         if snap.empty:
             logger.warning("시가총액 필터링 후 종목이 없습니다")
             return pd.DataFrame()
 
-    # 절대적 기준 적용
-    snap = apply_absolute_filters(snap)
+    # 절대적 기준 적용 (거래대금 100억 이상으로 상향)
+    snap = apply_absolute_filters(snap, min_value=10000000000)
 
     # 마감 강도 계산 (종가가 고가에 가까울수록 1에 가까움)
     snap["마감강도"] = 0.0  # 기본값 설정
@@ -743,18 +769,18 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
     snap = snapshot.loc[common].copy()
     prev = prev_snapshot.loc[common].copy()
     
-    # 시가총액 데이터 병합 및 동전주 필터링
+    # 시가총액 데이터 병합 및 필터링 (v1.16.6: 1조 이상으로 상향)
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["시가총액"]], left_index=True, right_index=True, how="inner")
-        # 시가총액 3000억원 이상만 선별 (소형주/동전주 제외, 스윙트레이딩에 적합한 중형주 이상)
-        snap = snap[snap["시가총액"] >= 300000000000]
+        # 시가총액 1조원 이상만 선별 (에이전트 손절 기준(-5%~-7%) 충족 가능한 종목)
+        snap = snap[snap["시가총액"] >= 1000000000000]
         logger.debug(f"시가총액 필터링 후 종목 수: {len(snap)}")
         if snap.empty:
             logger.warning("시가총액 필터링 후 종목이 없습니다")
             return pd.DataFrame()
 
-    # 절대적 기준 적용
-    snap = apply_absolute_filters(snap)
+    # 절대적 기준 적용 (거래대금 100억 이상으로 상향)
+    snap = apply_absolute_filters(snap, min_value=10000000000)
 
     # 거래량 증가율 계산
     snap["거래량증가율"] = (snap["Volume"] / prev["Volume"].replace(0, np.nan) - 1) * 100
@@ -763,8 +789,8 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
     snap["장중등락률"] = (snap["Close"] / snap["Open"] - 1) * 100  # 시가 대비 현재가
     snap["전일대비등락률"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100  # 증권사 앱과 동일
 
-    # 횡보주 여부 판단 (장중등락률 ±5% 이내)
-    snap["횡보여부"] = (snap["장중등락률"].abs() <= 5)
+    # 횡보주 여부 판단 (등락률 ±5% 이내) - v1.16.6: 전일대비등락률 기준으로 변경
+    snap["횡보여부"] = (snap["전일대비등락률"].abs() <= 5)
 
     # 추가 필터: 전일 대비 거래량 50% 이상 증가한 종목만
     snap = snap[snap["거래량증가율"] >= 50]
@@ -837,10 +863,11 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
         logger.info(f"하이브리드 선별 모드 - {lookback_days}일 데이터로 에이전트 점수 계산")
 
         for name, candidates_df in trigger_candidates.items():
-            # 에이전트 점수 계산
-            scored_df = score_candidates_by_agent_criteria(candidates_df, trade_date, lookback_days)
+            # v1.16.6: 트리거 유형별 에이전트 점수 계산
+            scored_df = score_candidates_by_agent_criteria(candidates_df, trade_date, lookback_days, trigger_type=name)
 
-            # 최종 점수 계산: 복합점수(40%) + 에이전트점수(60%)
+            # v1.16.6: 최종 점수 계산: 복합점수(30%) + 에이전트점수(70%)
+            # 에이전트 점수 비중 상향으로 에이전트가 실제 승인할 가능성이 높은 종목 우선 선별
             if "복합점수" in scored_df.columns and "에이전트점수" in scored_df.columns:
                 # 복합점수 정규화 (0~1)
                 cp_max = scored_df["복합점수"].max()
@@ -848,10 +875,10 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
                 cp_range = cp_max - cp_min if cp_max > cp_min else 1
                 scored_df["복합점수_norm"] = (scored_df["복합점수"] - cp_min) / cp_range
 
-                # 최종 점수 계산
+                # 최종 점수 계산 (v1.16.6: 가중치 조정)
                 scored_df["최종점수"] = (
-                    scored_df["복합점수_norm"] * 0.4 +
-                    scored_df["에이전트점수"] * 0.6
+                    scored_df["복합점수_norm"] * 0.3 +
+                    scored_df["에이전트점수"] * 0.7
                 )
 
                 # 최종 점수 기준 정렬
