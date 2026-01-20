@@ -7,6 +7,8 @@ import copy
 import json
 import logging
 import os
+import shutil
+import tempfile
 import time
 from base64 import b64decode
 from collections import namedtuple
@@ -16,9 +18,10 @@ from io import StringIO
 import stat
 import hashlib
 from pathlib import Path
-
+from typing import Optional, Tuple
 
 import pandas as pd
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # pip install requests (패키지설치)
 import requests
@@ -38,6 +41,30 @@ from cryptography.fernet import Fernet
 class SecurityError(Exception):
     """보안 관련 오류"""
     pass
+
+
+# ============== KIS Authentication Exception Classes ==============
+class KISAuthError(Exception):
+    """Base exception for KIS authentication errors"""
+    pass
+
+
+class TokenFileError(KISAuthError):
+    """Token file read/write errors"""
+    pass
+
+
+class CredentialMismatchError(KISAuthError):
+    """Credential and mode mismatch detected (e.g., demo key with real mode)"""
+    pass
+
+
+class TokenRequestError(KISAuthError):
+    """Failed to request new token from KIS API"""
+    def __init__(self, message, status_code=None, response_text=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_text = response_text
 
 clearConsole = lambda: os.system("cls" if os.name in ("nt", "dos") else "clear")
 
@@ -75,10 +102,9 @@ def get_token_filename():
 
 token_tmp = get_token_filename()
 
-# 접근토큰 관리하는 파일 존재여부 체크, 없으면 생성
-if not os.path.exists(token_tmp):
-    with open(token_tmp, "w+") as f:
-        pass  # 그냥 빈 파일 생성
+# NOTE: Removed empty file creation at module import time (Bug #1)
+# Empty token files cause authentication failures and should only be created
+# when saving a valid token via save_token()
 
 # 앱키, 앱시크리트, 토큰, 계좌번호 등 저장관리, 자신만의 경로와 파일명으로 설정하시기 바랍니다.
 # pip install PyYAML (패키지설치)
@@ -127,11 +153,36 @@ def _get_or_create_encryption_key():
     return key
 
 # 토큰 발급 받아 저장 (토큰값, 토큰 유효시간,1일, 6시간 이내 발급신청시는 기존 토큰값과 동일, 발급시 알림톡 발송)
-def save_token(my_token, my_expired):
-    """토큰을 암호화해서 안전하게 저장"""
-    valid_date = datetime.strptime(my_expired, "%Y-%m-%d %H:%M:%S")
+def save_token(my_token: str, my_expired: str):
+    """
+    Save token securely with encryption and atomic write.
 
-    # 토큰 데이터 준비
+    Improvements:
+    - Validates token data before saving (prevents empty token files)
+    - Uses atomic write (temp file + rename) to prevent corruption
+    - File locking prevents race conditions in multi-process scenarios
+    - Cross-platform compatible (Windows and Unix)
+
+    Args:
+        my_token: The access token string
+        my_expired: Token expiry datetime string (format: "YYYY-MM-DD HH:MM:SS")
+
+    Raises:
+        TokenFileError: If token data is invalid or write fails
+    """
+    # Validate token data BEFORE any file operations
+    if not my_token or len(my_token) < 10:
+        raise TokenFileError("Cannot save empty or invalid token")
+
+    if not my_expired:
+        raise TokenFileError("Cannot save token without expiry date")
+
+    try:
+        valid_date = datetime.strptime(my_expired, "%Y-%m-%d %H:%M:%S")
+    except ValueError as e:
+        raise TokenFileError(f"Invalid expiry date format: {my_expired}") from e
+
+    # Prepare token data
     token_data = {
         "token": my_token,
         "valid_date": valid_date.strftime("%Y-%m-%d %H:%M:%S"),
@@ -139,121 +190,172 @@ def save_token(my_token, my_expired):
         "pid": os.getpid()
     }
 
-    # 암호화 키 로드
+    # Encrypt token data
     key = _get_or_create_encryption_key()
     fernet = Fernet(key)
-
-    # JSON을 문자열로 변환 후 암호화
     json_string = json.dumps(token_data, indent=2)
     encrypted_data = fernet.encrypt(json_string.encode('utf-8'))
 
-    # 암호화된 토큰 파일 작성
-    with open(token_tmp, 'wb') as f:  # 바이너리 모드로 저장
-        f.write(encrypted_data)
+    # Atomic write with file locking (prevents race conditions)
+    lock_file = os.path.join(config_root, ".token_write.lock")
 
-    # 강화된 파일 권한 설정
-    _set_secure_file_permissions(token_tmp)
+    try:
+        with CrossPlatformFileLock(lock_file, timeout=30):
+            # Use atomic write (temp file + rename)
+            _atomic_write(token_tmp, encrypted_data)
 
-    # 오래된 토큰 파일 정리
-    cleanup_old_tokens()
+            # Set secure file permissions
+            _set_secure_file_permissions(token_tmp)
 
-    logging.info(f"Encrypted token saved: {token_tmp}")
+            # Clean up old token files
+            cleanup_old_tokens()
+
+            logging.info(f"✅ Encrypted token saved atomically: {token_tmp}")
+
+    except TokenFileError:
+        raise
+    except Exception as e:
+        raise TokenFileError(f"Failed to save token: {e}") from e
 
 
 
 # 토큰 확인 (토큰값, 토큰 유효시간_1일, 6시간 이내 발급신청시는 기존 토큰값과 동일, 발급시 알림톡 발송)
-def read_token():
-    """암호화된 토큰을 안전하게 읽기"""
+def read_token() -> Optional[str]:
+    """
+    Read and validate token with auto-recovery.
+
+    Improvements:
+    - Auto-cleanup of empty token files (Issue #137 root cause)
+    - Auto-cleanup of corrupted/unreadable token files
+    - Auto-cleanup of expired tokens
+    - Sorted by modification time (newest first)
+    - Cross-platform compatible file deletion
+
+    Returns:
+        Valid token string or None if no valid token found
+    """
     try:
-        # 토큰 파일 찾기 (기존 로직 유지)
+        # Find all token files (multiple patterns for compatibility)
         token_files = list(Path(config_root).glob("KIS*.token")) + \
-                      list(Path(config_root).glob("KIS*[!.token]"))
+                      list(Path(config_root).glob("KIS20*"))
+
+        # Also check current token_tmp path
+        if os.path.exists(token_tmp) and Path(token_tmp) not in token_files:
+            token_files.append(Path(token_tmp))
 
         if not token_files:
-            if os.path.exists(token_tmp):
-                token_files = [Path(token_tmp)]
-            else:
-                return None
-
-        # 가장 최근 파일 선택
-        latest_file = max(token_files, key=lambda f: f.stat().st_mtime)
-
-        # 파일이 비어있는지 확인
-        if latest_file.stat().st_size == 0:
+            logging.debug("No token files found")
             return None
 
-        # 암호화 키 로드
-        key = _get_or_create_encryption_key()
-        fernet = Fernet(key)
+        # Sort by modification time (newest first)
+        token_files = sorted(token_files, key=lambda f: f.stat().st_mtime, reverse=True)
 
-        # 암호화된 토큰 파일 읽기 및 복호화
-        try:
-            with open(latest_file, 'rb') as f:  # 바이너리 모드로 읽기
-                encrypted_data = f.read()
-                if not encrypted_data:
-                    return None
-                decrypted_data = fernet.decrypt(encrypted_data)
-                token_data = json.loads(decrypted_data.decode('utf-8'))
-
-            # 안전한 데이터 접근
-            if not token_data or 'valid_date' not in token_data or 'token' not in token_data:
-                return None
-
-            valid_date_str = token_data['valid_date']
-            token = token_data['token']
-
-        except Exception as decrypt_error:
-            # 암호화되지 않은 기존 파일 지원 (하위 호환성)
-            logging.warning(f"Failed to decrypt token, trying legacy format: {decrypt_error}")
+        # Try each token file, clean up invalid ones
+        for token_file in token_files:
             try:
-                with open(latest_file, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                    if not content:
-                        return None
-                    token_data = json.loads(content)
-                    
-                    # 안전한 데이터 접근
-                    if not token_data or 'valid_date' not in token_data or 'token' not in token_data:
-                        return None
-                        
-                    valid_date_str = token_data['valid_date']
-                    token = token_data['token']
-            except:
-                # YAML 형식도 시도
+                file_size = token_file.stat().st_size
+
+                # AUTO-RECOVERY: Delete empty files (Issue #137 fix)
+                if file_size == 0:
+                    logging.warning(f"⚠️  Found empty token file, deleting: {token_file}")
+                    _safe_delete(token_file)
+                    continue
+
+                # Try to read and decrypt
+                key = _get_or_create_encryption_key()
+                fernet = Fernet(key)
+
+                token_data = None
+                valid_date_str = None
+                token = None
+
+                # Try encrypted format first
                 try:
-                    with open(latest_file, 'r', encoding='UTF-8') as f:
-                        content = f.read().strip()
-                        if not content:
-                            return None
-                        import yaml
-                        tkg_tmp = yaml.safe_load(content)  # safe_load로 변경!
-                        
-                        # 안전한 데이터 접근
-                        if not tkg_tmp or 'valid-date' not in tkg_tmp or 'token' not in tkg_tmp:
-                            return None
-                            
-                        valid_date_str = datetime.strftime(tkg_tmp['valid-date'], "%Y-%m-%d %H:%M:%S")
-                        token = tkg_tmp['token']
-                except:
-                    return None
+                    with open(token_file, 'rb') as f:
+                        encrypted_data = f.read()
+                        if not encrypted_data:
+                            logging.warning(f"⚠️  Empty token data, deleting: {token_file}")
+                            _safe_delete(token_file)
+                            continue
+                        decrypted_data = fernet.decrypt(encrypted_data)
+                        token_data = json.loads(decrypted_data.decode('utf-8'))
 
-        # 만료 시간 확인 (기존 로직)
-        valid_date = datetime.strptime(valid_date_str, "%Y-%m-%d %H:%M:%S")
-        now = datetime.now()
+                    if token_data and 'valid_date' in token_data and 'token' in token_data:
+                        valid_date_str = token_data['valid_date']
+                        token = token_data['token']
 
-        if valid_date > now:
-            logging.info(f"Valid token found (expires: {valid_date})")
-            return token
-        else:
-            logging.info(f"Token expired at {valid_date}")
-            try:
-                os.remove(latest_file)
-            except:
-                pass
-            return None
+                except Exception as decrypt_error:
+                    # Try legacy JSON format
+                    logging.debug(f"Trying legacy format for {token_file}: {decrypt_error}")
+                    try:
+                        with open(token_file, 'r', encoding='utf-8') as f:
+                            content = f.read().strip()
+                            if not content:
+                                logging.warning(f"⚠️  Empty legacy token, deleting: {token_file}")
+                                _safe_delete(token_file)
+                                continue
+                            token_data = json.loads(content)
+
+                            if token_data and 'valid_date' in token_data and 'token' in token_data:
+                                valid_date_str = token_data['valid_date']
+                                token = token_data['token']
+                    except:
+                        # Try YAML format (oldest format)
+                        try:
+                            with open(token_file, 'r', encoding='UTF-8') as f:
+                                content = f.read().strip()
+                                if not content:
+                                    logging.warning(f"⚠️  Empty YAML token, deleting: {token_file}")
+                                    _safe_delete(token_file)
+                                    continue
+                                tkg_tmp = yaml.safe_load(content)
+
+                                if tkg_tmp and 'valid-date' in tkg_tmp and 'token' in tkg_tmp:
+                                    valid_date_str = datetime.strftime(tkg_tmp['valid-date'], "%Y-%m-%d %H:%M:%S")
+                                    token = tkg_tmp['token']
+                        except Exception as yaml_error:
+                            # AUTO-RECOVERY: Delete corrupted files
+                            logging.warning(f"⚠️  Corrupted token file, deleting: {token_file} ({yaml_error})")
+                            _safe_delete(token_file)
+                            continue
+
+                # Validate token data
+                if not valid_date_str or not token:
+                    logging.warning(f"⚠️  Invalid token data (missing fields), deleting: {token_file}")
+                    _safe_delete(token_file)
+                    continue
+
+                # Check expiry
+                try:
+                    valid_date = datetime.strptime(valid_date_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    logging.warning(f"⚠️  Invalid date format in token, deleting: {token_file}")
+                    _safe_delete(token_file)
+                    continue
+
+                now = datetime.now()
+
+                if valid_date > now:
+                    logging.info(f"✅ Valid token found (expires: {valid_date})")
+                    return token
+                else:
+                    # AUTO-RECOVERY: Delete expired tokens
+                    logging.info(f"⏰ Token expired at {valid_date}, deleting: {token_file}")
+                    _safe_delete(token_file)
+                    continue
+
+            except Exception as file_error:
+                # AUTO-RECOVERY: Delete unreadable files
+                logging.warning(f"⚠️  Error reading token file, deleting: {token_file} ({file_error})")
+                _safe_delete(token_file)
+                continue
+
+        # No valid token found after checking all files
+        logging.info("No valid token found after checking all files")
+        return None
 
     except Exception as e:
-        logging.error(f"Error reading token: {e}")
+        logging.error(f"Error in read_token: {e}")
         return None
 
 def _set_secure_file_permissions(file_path):
@@ -325,6 +427,221 @@ def cleanup_old_tokens():
 
     except Exception as e:
         logging.error(f"Error during token cleanup: {e}")
+
+
+# ============== Credential Validation ==============
+def validate_credentials(app_key: str, mode: str) -> Tuple[bool, str]:
+    """
+    Validate app key matches the trading mode to prevent credential mismatch errors.
+
+    - Real mode (prod): App key should start with 'PS' but NOT 'PSVT'
+    - Demo mode (vps): App key should start with 'PSVT'
+
+    Args:
+        app_key: The KIS app key
+        mode: 'prod' for real trading, 'vps' for paper trading
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not app_key or len(app_key) < 10:
+        return False, "App key is empty or too short"
+
+    is_demo_key = app_key.startswith('PSVT')
+
+    if mode == 'prod' and is_demo_key:
+        return False, (
+            "CREDENTIAL MISMATCH! Using DEMO app key (PSVT*) in REAL mode.\n"
+            "Check kis_devlp.yaml - 'my_app' should be your real trading key (PS*, not PSVT*).\n"
+            "This is the most common cause of 'Error Code: 500' authentication failures."
+        )
+
+    if mode == 'vps' and not is_demo_key and app_key.startswith('PS'):
+        return False, (
+            "CREDENTIAL MISMATCH! Using REAL app key (PS*) in DEMO mode.\n"
+            "Check kis_devlp.yaml - 'paper_app' should be your demo key (PSVT*).\n"
+            "Using real credentials in demo mode may cause unexpected behavior."
+        )
+
+    return True, ""
+
+
+# ============== Cross-Platform File Lock ==============
+class CrossPlatformFileLock:
+    """Cross-platform file lock using atomic file creation (works on Windows and Unix)"""
+
+    def __init__(self, lock_path: str, timeout: float = 30.0):
+        self.lock_path = Path(lock_path)
+        self.timeout = timeout
+        self._lock_fd = None
+
+    def acquire(self) -> bool:
+        """Attempt to acquire lock within timeout"""
+        start_time = time.time()
+
+        while time.time() - start_time < self.timeout:
+            try:
+                # O_CREAT | O_EXCL: Only create if file doesn't exist (atomic)
+                self._lock_fd = os.open(
+                    str(self.lock_path),
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                )
+                os.write(self._lock_fd, str(os.getpid()).encode())
+                return True
+            except FileExistsError:
+                # Lock file exists - check if stale (older than 5 minutes)
+                try:
+                    lock_age = time.time() - self.lock_path.stat().st_mtime
+                    if lock_age > 300:  # 5 minutes
+                        logging.warning(f"Removing stale lock file: {self.lock_path}")
+                        self.lock_path.unlink()
+                        continue
+                except FileNotFoundError:
+                    continue
+                time.sleep(0.1)
+            except OSError as e:
+                logging.warning(f"Lock acquisition error: {e}")
+                time.sleep(0.1)
+        return False
+
+    def release(self):
+        """Release the lock"""
+        if self._lock_fd is not None:
+            try:
+                os.close(self._lock_fd)
+            except:
+                pass
+            self._lock_fd = None
+        try:
+            self.lock_path.unlink()
+        except:
+            pass
+
+    def __enter__(self):
+        if not self.acquire():
+            raise TokenFileError(f"Could not acquire file lock: {self.lock_path}")
+        return self
+
+    def __exit__(self, *args):
+        self.release()
+
+
+# ============== Retry Logic for Token Request ==============
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=5, max=60),
+    retry=retry_if_exception_type((requests.RequestException,)),
+    reraise=True
+)
+def _request_token_with_retry(url: str, params: dict, headers: dict) -> dict:
+    """
+    Request token from KIS API with retry logic for transient failures.
+
+    - Retries up to 3 times with exponential backoff (5s, 10s, 20s)
+    - Does NOT retry on 401/403 (authentication failures)
+    - Raises TokenRequestError on failure
+    """
+    try:
+        res = requests.post(url, data=json.dumps(params), headers=headers, timeout=30)
+    except requests.RequestException as e:
+        logging.warning(f"Token request network error (will retry): {e}")
+        raise
+
+    if res.status_code == 200:
+        return res.json()
+
+    # Non-retryable authentication errors
+    if res.status_code in (401, 403):
+        error_msg = f"Authentication failed: HTTP {res.status_code}"
+        logging.error(f"{error_msg} - {res.text}")
+        raise TokenRequestError(error_msg, res.status_code, res.text)
+
+    # Retryable server errors (500, 502, 503, 504)
+    if res.status_code >= 500:
+        error_msg = f"Server error: HTTP {res.status_code}"
+        logging.warning(f"{error_msg} (will retry) - {res.text}")
+        # Raise requests exception to trigger retry
+        raise requests.RequestException(error_msg)
+
+    # Other client errors - don't retry
+    error_msg = f"Token request failed: HTTP {res.status_code}"
+    logging.error(f"{error_msg} - {res.text}")
+    raise TokenRequestError(error_msg, res.status_code, res.text)
+
+
+# ============== Safe File Delete (Windows compatible) ==============
+def _safe_delete(file_path: Path, max_retries: int = 3) -> bool:
+    """Safely delete a file with retries (handles Windows locked files)"""
+    for attempt in range(max_retries):
+        try:
+            file_path.unlink()
+            return True
+        except PermissionError:
+            if os.name == 'nt':
+                # Windows: File may be locked by another process
+                time.sleep(0.2 * (attempt + 1))
+            else:
+                raise
+        except FileNotFoundError:
+            return True  # Already deleted
+
+    logging.warning(f"Could not delete file (may be in use): {file_path}")
+    return False
+
+
+# ============== Atomic Write (Cross-platform) ==============
+def _atomic_write(file_path_str: str, data: bytes) -> bool:
+    """
+    Write data to file atomically (write to temp, then rename).
+    Works on both Windows and Unix.
+    """
+    file_path = Path(file_path_str)
+    temp_path = None
+
+    try:
+        # Write to temp file first
+        fd, temp_path = tempfile.mkstemp(
+            dir=str(file_path.parent),
+            prefix=".tmp_token_"
+        )
+        try:
+            os.write(fd, data)
+            os.fsync(fd)  # Ensure data is written to disk
+        finally:
+            os.close(fd)
+
+        # Set Unix permissions (ignored on Windows)
+        if os.name != 'nt':
+            os.chmod(temp_path, 0o600)
+
+        # Windows: Must delete target file before rename
+        if os.name == 'nt' and file_path.exists():
+            for attempt in range(3):
+                try:
+                    file_path.unlink()
+                    break
+                except PermissionError:
+                    time.sleep(0.1 * (attempt + 1))
+            else:
+                # If can't delete, try moving to backup
+                backup_path = file_path.with_suffix('.old')
+                try:
+                    shutil.move(str(file_path), str(backup_path))
+                except:
+                    raise TokenFileError(f"Cannot replace locked file: {file_path}")
+
+        # Atomic rename
+        shutil.move(temp_path, str(file_path))
+        return True
+
+    except Exception as e:
+        # Clean up temp file on failure
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+        raise TokenFileError(f"Atomic write failed: {e}")
 
 
 # 토큰 유효시간 체크해서 만료된 토큰이면 재발급처리
@@ -420,51 +737,106 @@ def _getResultObject(json_data):
 # Token 발급, 유효기간 1일, 6시간 이내 발급시 기존 token값 유지, 발급시 알림톡 무조건 발송
 # 모의투자인 경우  svr='vps', 투자계좌(01)이 아닌경우 product='XX' 변경하세요 (계좌번호 뒤 2자리)
 def auth(svr="prod", product=_cfg["my_prod"], url=None):
+    """
+    Authenticate with KIS API and obtain access token.
+
+    Improvements in this version:
+    - Credential validation (detects demo/real key mismatch)
+    - Retry logic for transient network failures
+    - Raises exceptions instead of silent failure
+    - Auto-cleanup of empty/corrupted token files
+
+    Args:
+        svr: 'prod' for real trading, 'vps' for paper trading
+        product: Account product code (default from config)
+        url: API URL (optional, auto-generated from svr)
+
+    Raises:
+        CredentialMismatchError: App key doesn't match trading mode
+        TokenRequestError: Failed to obtain token from KIS API
+        TokenFileError: Failed to save token to file
+    """
     p = {
         "grant_type": "client_credentials",
     }
-    # 개인 환경파일 "kis_devlp.yaml" 파일을 참조하여 앱키, 앱시크리트 정보 가져오기
-    # 개인 환경파일명과 위치는 고객님만 아는 위치로 설정 바랍니다.
+
+    # Determine which keys to use based on server type
     if svr == "prod":  # 실전투자
         ak1 = "my_app"  # 앱키 (실전투자용)
         ak2 = "my_sec"  # 앱시크리트 (실전투자용)
     elif svr == "vps":  # 모의투자
         ak1 = "paper_app"  # 앱키 (모의투자용)
         ak2 = "paper_sec"  # 앱시크리트 (모의투자용)
-
-    # 앱키, 앱시크리트 가져오기
-    p["appkey"] = _cfg[ak1]
-    p["appsecret"] = _cfg[ak2]
-
-    # 기존 발급된 토큰이 있는지 확인
-    saved_token = read_token()  # 기존 발급 토큰 확인
-    # print("saved_token: ", saved_token)
-    if saved_token is None:  # 기존 발급 토큰 확인이 안되면 발급처리
-        url = f"{_cfg[svr]}/oauth2/tokenP"
-        res = requests.post(
-            url, data=json.dumps(p), headers=_getBaseHeader()
-        )  # 토큰 발급
-        rescode = res.status_code
-        if rescode == 200:  # 토큰 정상 발급
-            my_token = _getResultObject(res.json()).access_token  # 토큰값 가져오기
-            my_expired = _getResultObject(
-                res.json()
-            ).access_token_token_expired  # 토큰값 만료일시 가져오기
-            save_token(my_token, my_expired)  # 새로 발급 받은 토큰 저장
-        else:
-            print("Get Authentification token fail!\nYou have to restart your app!!!")
-            # 토큰 발급 실패 시에도 기본 환경 설정 (빈 토큰으로)
-            changeTREnv("", svr, product)
-            return
     else:
-        my_token = saved_token  # 기존 발급 토큰 확인되어 기존 토큰 사용
+        raise ValueError(f"Invalid server type: {svr}. Must be 'prod' or 'vps'")
 
-    # 발급토큰 정보 포함해서 헤더값 저장 관리, API 호출시 필요
+    # Get app key and secret from config
+    app_key = _cfg.get(ak1)
+    app_secret = _cfg.get(ak2)
+
+    if not app_key or not app_secret:
+        raise CredentialMismatchError(
+            f"Missing credentials in kis_devlp.yaml: {ak1}={app_key is not None}, {ak2}={app_secret is not None}"
+        )
+
+    # CRITICAL: Validate credential/mode match (Issue #137 root cause)
+    is_valid, error_msg = validate_credentials(app_key, svr)
+    if not is_valid:
+        logging.error(f"❌ {error_msg}")
+        raise CredentialMismatchError(error_msg)
+
+    p["appkey"] = app_key
+    p["appsecret"] = app_secret
+
+    # Check for existing valid token
+    saved_token = read_token()
+
+    if saved_token is None:
+        # No valid token - request new one
+        token_url = f"{_cfg[svr]}/oauth2/tokenP"
+        logging.info(f"Requesting new token from KIS API ({svr} mode)...")
+
+        try:
+            # Use retry logic for transient failures
+            result = _request_token_with_retry(token_url, p, _getBaseHeader())
+
+            my_token = result.get("access_token")
+            my_expired = result.get("access_token_token_expired")
+
+            if not my_token or not my_expired:
+                raise TokenRequestError(
+                    "Invalid response from KIS API: missing token or expiry",
+                    status_code=200,
+                    response_text=str(result)
+                )
+
+            # Save the new token
+            save_token(my_token, my_expired)
+            logging.info(f"✅ New token obtained and saved (expires: {my_expired})")
+
+        except TokenRequestError as e:
+            logging.error(f"❌ Token request failed: {e}")
+            logging.error(f"   Status Code: {e.status_code}")
+            logging.error(f"   Response: {e.response_text}")
+            # Re-raise with clear error message
+            raise
+
+        except Exception as e:
+            logging.error(f"❌ Unexpected error during token request: {e}")
+            raise TokenRequestError(f"Unexpected error: {e}")
+
+    else:
+        my_token = saved_token
+        logging.info("✅ Using existing valid token")
+
+    # Set up environment with token
     changeTREnv(my_token, svr, product)
 
-    _base_headers["authorization"] = f"Bearer {my_token}"
-    _base_headers["appkey"] = _TRENV.my_app
-    _base_headers["appsecret"] = _TRENV.my_sec
+    # Update base headers
+    if _TRENV is not None:
+        _base_headers["authorization"] = f"Bearer {my_token}"
+        _base_headers["appkey"] = _TRENV.my_app
+        _base_headers["appsecret"] = _TRENV.my_sec
 
     global _last_auth_time
     _last_auth_time = datetime.now()
@@ -477,7 +849,12 @@ def auth(svr="prod", product=_cfg["my_prod"], url=None):
 # 프로그램 실행시 _last_auth_time에 저장하여 유효시간 체크, 유효시간 만료시 토큰 발급 처리
 def reAuth(svr="prod", product=_cfg["my_prod"]):
     n2 = datetime.now()
-    if (n2 - _last_auth_time).seconds >= 86400:  # 유효시간 1일
+    # BUG FIX: Changed .seconds to .total_seconds()
+    # .seconds only returns seconds within the current day (0-86399)
+    # .total_seconds() returns the total duration in seconds
+    # Also reduced to 23 hours (82800s) for safety margin before 24h expiry
+    if (n2 - _last_auth_time).total_seconds() >= 82800:  # 23시간 (안전 마진)
+        logging.info("Token approaching expiry, re-authenticating...")
         auth(svr, product)
 
 

@@ -68,3 +68,8 @@ google-cloud-pubsub>=2.18.0
 yt-dlp>=2024.0.0  # YouTube video/audio downloader
 feedparser>=6.0.0  # RSS feed parser
 pydub>=0.25.1  # Audio file manipulation (for splitting large files)
+
+# US Stock Market (prism-us module)
+yfinance>=0.2.0  # Yahoo Finance data
+pandas-market-calendars>=4.0.0  # US market holidays
+pytz>=2024.1  # Timezone support

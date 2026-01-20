@@ -22,6 +22,12 @@ TRADING_DIR = Path(__file__).parent
 import sys
 sys.path.insert(0, str(TRADING_DIR))
 import kis_auth as ka
+from kis_auth import (
+    KISAuthError,
+    TokenFileError,
+    CredentialMismatchError,
+    TokenRequestError
+)
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -51,21 +57,82 @@ class DomesticStockTrading:
             mode: 'demo' (simulated investment) or 'real' (real investment)
             buy_amount: Buy amount per stock (default: refer to yaml file)
             auto_trading: Whether to execute auto trading
+
+        Raises:
+            RuntimeError: Authentication failed with detailed error message
         """
         self.mode = mode
         self.env = "vps" if mode == "demo" else "prod"
         self.buy_amount = buy_amount if buy_amount else self.DEFAULT_BUY_AMOUNT
         self.auto_trading = auto_trading
 
-        # Authentication
-        ka.auth(svr=self.env, product="01")
+        # Authentication with improved error handling
+        try:
+            ka.auth(svr=self.env, product="01")
+        except CredentialMismatchError as e:
+            logger.error("=" * 60)
+            logger.error("❌ CREDENTIAL MISMATCH DETECTED!")
+            logger.error("=" * 60)
+            logger.error(f"Mode: {self.mode} (env: {self.env})")
+            logger.error(f"Error: {e}")
+            logger.error("")
+            logger.error("📋 HOW TO FIX:")
+            logger.error("   1. Open trading/config/kis_devlp.yaml")
+            logger.error(f"   2. For {self.mode} mode:")
+            if self.mode == "real":
+                logger.error("      - 'my_app' should start with 'PS' (NOT 'PSVT')")
+                logger.error("      - 'my_acct_stock' should be your real account number")
+            else:
+                logger.error("      - 'paper_app' should start with 'PSVT'")
+                logger.error("      - 'my_paper_stock' should be your paper trading account")
+            logger.error("=" * 60)
+            raise RuntimeError(f"Credential mismatch for {self.mode} mode: {e}") from e
 
+        except TokenRequestError as e:
+            logger.error("=" * 60)
+            logger.error("❌ TOKEN REQUEST FAILED!")
+            logger.error("=" * 60)
+            logger.error(f"Mode: {self.mode} (env: {self.env})")
+            logger.error(f"Status Code: {e.status_code}")
+            logger.error(f"Error: {e}")
+            logger.error("")
+            logger.error("📋 POSSIBLE CAUSES:")
+            logger.error("   - KIS API server is temporarily unavailable (try again later)")
+            logger.error("   - App key/secret are incorrect in kis_devlp.yaml")
+            logger.error("   - Network connectivity issue")
+            logger.error("   - Rate limit exceeded (wait a few minutes)")
+            logger.error("=" * 60)
+            raise RuntimeError(f"Token request failed for {self.mode} mode: {e}") from e
+
+        except TokenFileError as e:
+            logger.error("=" * 60)
+            logger.error("❌ TOKEN FILE ERROR!")
+            logger.error("=" * 60)
+            logger.error(f"Error: {e}")
+            logger.error("")
+            logger.error("📋 POSSIBLE CAUSES:")
+            logger.error("   - trading/config/ directory permission issue")
+            logger.error("   - Disk full")
+            logger.error("   - Token file locked by another process")
+            logger.error("=" * 60)
+            raise RuntimeError(f"Token file error for {self.mode} mode: {e}") from e
+
+        except KISAuthError as e:
+            logger.error("=" * 60)
+            logger.error("❌ KIS AUTHENTICATION ERROR!")
+            logger.error("=" * 60)
+            logger.error(f"Mode: {self.mode}, Error: {e}")
+            logger.error("📋 Please check kis_devlp.yaml settings.")
+            logger.error("=" * 60)
+            raise RuntimeError(f"{self.mode} mode authentication failed: {e}") from e
+
+        # Get trading environment
         try:
             self.trenv = ka.getTREnv()
         except RuntimeError as e:
-            print("❌ KIS API authentication failed!")
-            print(f"Mode: {self.mode}, Error: {e}")
-            print("📋 Please check kis_devlp.yaml settings.")
+            logger.error("❌ KIS API environment not initialized!")
+            logger.error(f"Mode: {self.mode}, Error: {e}")
+            logger.error("📋 This usually means authentication failed silently.")
             raise RuntimeError(f"{self.mode} mode authentication failed") from e
 
         # Additional setup for asynchronous processing
@@ -73,9 +140,9 @@ class DomesticStockTrading:
         self._semaphore = asyncio.Semaphore(3)  # Maximum 3 concurrent requests
         self._stock_locks = {}  # Per-stock locks
 
-        logger.info(f"DomesticStockTrading initialized (Async Enabled)")
-        logger.info(f"Mode: {mode}, Buy Amount: {self.buy_amount:,} KRW")
-        logger.info(f"Account: {self.trenv.my_acct}-{self.trenv.my_prod}")
+        logger.info(f"✅ DomesticStockTrading initialized (Async Enabled)")
+        logger.info(f"   Mode: {mode}, Buy Amount: {self.buy_amount:,} KRW")
+        logger.info(f"   Account: {self.trenv.my_acct}-{self.trenv.my_prod}")
 
     def get_current_price(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
