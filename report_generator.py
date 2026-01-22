@@ -234,8 +234,15 @@ def generate_report_response_sync(stock_code: str, company_name: str) -> str:
     """
     종목 상세 보고서를 동기 방식으로 생성 (백그라운드 스레드에서 호출됨)
     """
+    # subprocess 로그 파일 경로 설정
+    log_dir = Path(os.path.dirname(os.path.abspath(__file__))) / "logs" / "subprocess"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"report_{stock_code}_{timestamp}.log"
+
     try:
         logger.info(f"동기식 보고서 생성 시작: {stock_code} ({company_name})")
+        logger.info(f"Subprocess 로그 파일: {log_file}")
 
         # 현재 날짜를 YYYYMMDD 형식으로 변환
         reference_date = datetime.now().strftime("%Y%m%d")
@@ -249,20 +256,35 @@ def generate_report_response_sync(stock_code: str, company_name: str) -> str:
 import asyncio
 import json
 import sys
+import logging
+from datetime import datetime
+
+# subprocess 내부 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stderr)]
+)
+subprocess_logger = logging.getLogger("subprocess_report")
+subprocess_logger.info("Subprocess 시작: {stock_code} ({company_name})")
+
 from cores.analysis import analyze_stock
 
 async def run():
     try:
+        subprocess_logger.info("analyze_stock 호출 시작")
         result = await analyze_stock(
-            company_code="{stock_code}", 
-            company_name="{company_name}", 
+            company_code="{stock_code}",
+            company_name="{company_name}",
             reference_date="{reference_date}"
         )
+        subprocess_logger.info(f"analyze_stock 완료: {{len(result) if result else 0}} 글자")
         # 구분자를 사용하여 결과 출력의 시작과 끝을 표시
         print("RESULT_START")
         print(json.dumps({{"success": True, "result": result}}))
         print("RESULT_END")
     except Exception as e:
+        subprocess_logger.error(f"analyze_stock 오류: {{str(e)}}", exc_info=True)
         # 구분자를 사용하여 에러 출력의 시작과 끝을 표시
         print("RESULT_START")
         print(json.dumps({{"success": False, "error": str(e)}}))
@@ -277,23 +299,59 @@ if __name__ == "__main__":
         project_root = os.path.dirname(os.path.abspath(__file__))
 
         logger.info(f"외부 프로세스 실행: {stock_code} (cwd: {project_root})")
-        process = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=project_root)  # 30분 타임아웃
+
+        # Popen으로 실행하여 실시간 로그 저장
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write(f"=== Subprocess Log for {stock_code} ({company_name}) ===\n")
+            f.write(f"Started at: {datetime.now().isoformat()}\n")
+            f.write(f"Timeout: 1800 seconds (30분)\n")
+            f.write("=" * 60 + "\n\n")
+            f.flush()
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=project_root
+            )
+
+            try:
+                stdout, stderr = process.communicate(timeout=1800)  # 30분 타임아웃
+
+                # 로그 파일에 기록
+                f.write("\n=== STDOUT ===\n")
+                f.write(stdout or "(empty)")
+                f.write("\n\n=== STDERR ===\n")
+                f.write(stderr or "(empty)")
+                f.write(f"\n\n=== Completed at: {datetime.now().isoformat()} ===\n")
+
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+
+                # 타임아웃 시에도 로그 저장
+                f.write("\n=== TIMEOUT OCCURRED ===\n")
+                f.write(f"Timeout at: {datetime.now().isoformat()}\n")
+                f.write("\n=== STDOUT (before timeout) ===\n")
+                f.write(stdout or "(empty)")
+                f.write("\n\n=== STDERR (before timeout) ===\n")
+                f.write(stderr or "(empty)")
+
+                logger.error(f"외부 프로세스 타임아웃: {stock_code}, 로그 파일: {log_file}")
+                return f"분석 시간이 초과되었습니다. 로그 파일을 확인하세요: {log_file}"
 
         # stderr 로깅 (디버깅용)
-        if process.stderr:
-            logger.warning(f"외부 프로세스 stderr: {process.stderr[:500]}")
-
-        # 출력 초기화 - 경고 방지를 위해 변수 미리 선언
-        output = ""
+        if stderr:
+            logger.warning(f"외부 프로세스 stderr (전체 로그: {log_file}): {stderr[:500]}")
 
         # 출력 파싱 - 구분자를 사용하여 실제 JSON 출력 부분만 추출
         try:
-            output = process.stdout
             # 로그 출력에서 RESULT_START와 RESULT_END 사이의 JSON 데이터만 추출
-            if "RESULT_START" in output and "RESULT_END" in output:
-                result_start = output.find("RESULT_START") + len("RESULT_START")
-                result_end = output.find("RESULT_END")
-                json_str = output[result_start:result_end].strip()
+            if "RESULT_START" in stdout and "RESULT_END" in stdout:
+                result_start = stdout.find("RESULT_START") + len("RESULT_START")
+                result_end = stdout.find("RESULT_END")
+                json_str = stdout[result_start:result_end].strip()
 
                 # JSON 파싱
                 parsed_output = json.loads(json_str)
@@ -304,23 +362,19 @@ if __name__ == "__main__":
                     return result
                 else:
                     error = parsed_output.get('error', '알 수 없는 오류')
-                    logger.error(f"외부 프로세스 오류: {error}")
+                    logger.error(f"외부 프로세스 오류: {error}, 로그 파일: {log_file}")
                     return f"분석 중 오류가 발생했습니다: {error}"
             else:
                 # 구분자를 찾을 수 없는 경우 - 프로세스 실행 자체에 문제가 있을 수 있음
-                logger.error(f"외부 프로세스 출력에서 결과 구분자를 찾을 수 없습니다: {output[:500]}")
-                # stderr에 에러 로그가 있는지 확인
-                if process.stderr:
-                    logger.error(f"외부 프로세스 에러 출력: {process.stderr[:500]}")
-                return f"분석 결과를 찾을 수 없습니다. 로그를 확인하세요."
+                logger.error(f"외부 프로세스 출력에서 결과 구분자를 찾을 수 없습니다. 로그 파일: {log_file}")
+                logger.error(f"stdout 일부: {stdout[:500] if stdout else '(empty)'}")
+                if stderr:
+                    logger.error(f"stderr 일부: {stderr[:500]}")
+                return f"분석 결과를 찾을 수 없습니다. 로그 파일: {log_file}"
         except json.JSONDecodeError as e:
-            logger.error(f"외부 프로세스 출력 파싱 실패: {e}")
-            logger.error(f"출력 내용: {output[:1000]}")
-            return f"분석 결과 파싱 중 오류가 발생했습니다. 로그를 확인하세요."
-
-    except subprocess.TimeoutExpired:
-        logger.error(f"외부 프로세스 타임아웃: {stock_code}")
-        return f"분석 시간이 초과되었습니다. 다시 시도해주세요."
+            logger.error(f"외부 프로세스 출력 파싱 실패: {e}, 로그 파일: {log_file}")
+            logger.error(f"출력 내용: {stdout[:1000] if stdout else '(empty)'}")
+            return f"분석 결과 파싱 중 오류가 발생했습니다. 로그 파일: {log_file}"
     except Exception as e:
         logger.error(f"동기식 보고서 생성 중 오류: {str(e)}")
         import traceback
