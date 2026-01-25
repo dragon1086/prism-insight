@@ -68,9 +68,12 @@ try:
         create_us_tables,
         create_us_indexes,
         add_sector_column_if_missing,
+        add_market_column_to_shared_tables,
         is_us_ticker_in_holdings,
         get_us_holdings_count,
     )
+    from tracking.journal import USJournalManager
+    from tracking.compression import USCompressionManager
 except ImportError:
     # Fallback to package import
     from prism_us.cores.agents.trading_agents import create_us_trading_scenario_agent
@@ -78,9 +81,12 @@ except ImportError:
         create_us_tables,
         create_us_indexes,
         add_sector_column_if_missing,
+        add_market_column_to_shared_tables,
         is_us_ticker_in_holdings,
         get_us_holdings_count,
     )
+    from prism_us.tracking.journal import USJournalManager
+    from prism_us.tracking.compression import USCompressionManager
 
 # Create MCPApp instance
 app = MCPApp(name="us_stock_tracking")
@@ -339,13 +345,19 @@ class USStockTrackingAgent:
     SCORE_CONSIDER = 7  # Consider buying
     SCORE_UNSUITABLE = 6  # Unsuitable for buying
 
-    def __init__(self, db_path: str = "stock_tracking_db.sqlite", telegram_token: str = None):
+    def __init__(
+        self,
+        db_path: str = "stock_tracking_db.sqlite",
+        telegram_token: str = None,
+        enable_journal: bool = False
+    ):
         """
         Initialize US Stock Tracking Agent.
 
         Args:
             db_path: SQLite database file path
             telegram_token: Telegram bot token
+            enable_journal: Whether to enable trading journal feature
         """
         self.max_slots = self.MAX_SLOTS
         self.message_queue = []
@@ -354,6 +366,11 @@ class USStockTrackingAgent:
         self.conn = None
         self.cursor = None
         self.language = "en"  # Default to English for US
+        self.enable_journal = enable_journal
+
+        # Journal and compression managers (initialized in initialize())
+        self.journal_manager = None
+        self.compression_manager = None
 
         # Set Telegram bot token
         self.telegram_token = telegram_token or os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -383,7 +400,21 @@ class USStockTrackingAgent:
         # Create US database tables
         await self._create_tables()
 
-        logger.info("US tracking agent initialization complete")
+        # Initialize journal manager
+        self.journal_manager = USJournalManager(
+            cursor=self.cursor,
+            conn=self.conn,
+            language=language,
+            enable_journal=self.enable_journal
+        )
+
+        # Initialize compression manager
+        self.compression_manager = USCompressionManager(
+            cursor=self.cursor,
+            conn=self.conn
+        )
+
+        logger.info(f"US tracking agent initialization complete (journal: {self.enable_journal})")
         return True
 
     async def _create_tables(self):
@@ -391,6 +422,32 @@ class USStockTrackingAgent:
         create_us_tables(self.cursor, self.conn)
         create_us_indexes(self.cursor, self.conn)
         add_sector_column_if_missing(self.cursor, self.conn)
+        # Add market column to shared tables for KR/US distinction
+        add_market_column_to_shared_tables(self.cursor, self.conn)
+
+    def _normalize_decision(self, decision: str) -> str:
+        """
+        Normalize decision string for comparison.
+
+        The agent prompt uses "Enter" or "No Entry" but code checks may use
+        lowercase variants. This method normalizes all variants to a consistent format.
+
+        Args:
+            decision: Raw decision string from agent
+
+        Returns:
+            str: Normalized decision ("entry" or "no_entry")
+        """
+        if not decision:
+            return "no_entry"
+        d = decision.lower().strip()
+        # Handle various entry formats
+        if d in ("enter", "entry", "진입", "yes", "buy"):
+            return "entry"
+        # Handle various no-entry formats
+        elif d in ("no entry", "no_entry", "no-entry", "미진입", "no", "skip", "pass"):
+            return "no_entry"
+        return d
 
     async def _extract_ticker_info(self, report_path: str) -> Tuple[str, str]:
         """Extract ticker and company name from report path."""
@@ -625,13 +682,18 @@ class USStockTrackingAgent:
             sector = scenario.get("sector", "Unknown")
             is_sector_diverse = await self._check_sector_diversity(sector)
 
+            # Normalize decision for consistent comparison
+            raw_decision = scenario.get("decision", "no_entry")
+            normalized_decision = self._normalize_decision(raw_decision)
+
             return {
                 "success": True,
                 "ticker": ticker,
                 "company_name": company_name,
                 "current_price": current_price,
                 "scenario": scenario,
-                "decision": scenario.get("decision", "no_entry"),
+                "decision": normalized_decision,  # Normalized: "entry" or "no_entry"
+                "raw_decision": raw_decision,  # Original from agent for logging
                 "sector": sector,
                 "sector_diverse": is_sector_diverse,
                 "rank_change_percentage": rank_change_percentage,
@@ -868,6 +930,20 @@ class USStockTrackingAgent:
 
             self.message_queue.append(message)
             logger.info(f"{ticker} ({company_name}) sell complete (return: {profit_rate:.2f}%)")
+
+            # Create trading journal entry (if enabled)
+            if self.enable_journal and self.journal_manager:
+                try:
+                    await self.journal_manager.create_entry(
+                        stock_data=stock_data,
+                        sell_price=current_price,
+                        profit_rate=profit_rate,
+                        holding_days=holding_days,
+                        sell_reason=sell_reason
+                    )
+                    logger.info(f"US Journal entry created for {ticker}")
+                except Exception as journal_err:
+                    logger.warning(f"Failed to create US journal entry: {journal_err}")
 
             return True
 
@@ -1123,9 +1199,32 @@ class USStockTrackingAgent:
 
                 buy_score = scenario.get("buy_score", 0)
                 min_score = scenario.get("min_score", 0)
-                logger.info(f"Buy score: {company_name} ({ticker}) - Score: {buy_score}")
+                sector = analysis_result.get("sector", "Unknown")
 
-                if analysis_result.get("decision") == "entry":
+                # Apply score adjustment from journal if enabled
+                score_adjustment = 0
+                adjustment_reasons = []
+                if self.enable_journal and ticker:
+                    score_adjustment, adjustment_reasons = self.get_score_adjustment(ticker, sector)
+                    if score_adjustment != 0:
+                        logger.info(
+                            f"Journal score adjustment for {ticker}: {score_adjustment:+d} "
+                            f"(reasons: {', '.join(adjustment_reasons)})"
+                        )
+
+                adjusted_score = buy_score + score_adjustment
+                logger.info(
+                    f"Buy score: {company_name} ({ticker}) - Original: {buy_score}, "
+                    f"Adjusted: {adjusted_score}, Min: {min_score}"
+                )
+
+                # Log decision normalization for debugging
+                raw_decision = analysis_result.get("raw_decision", "")
+                normalized_decision = analysis_result.get("decision", "no_entry")
+                if raw_decision and raw_decision.lower() != normalized_decision:
+                    logger.debug(f"Decision normalized: '{raw_decision}' -> '{normalized_decision}'")
+
+                if normalized_decision == "entry":
                     buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
 
                     if buy_success:
@@ -1148,10 +1247,10 @@ class USStockTrackingAgent:
                         logger.warning(f"Purchase failed: {company_name} ({ticker})")
                 else:
                     reason = ""
-                    if buy_score < min_score:
-                        reason = f"Score insufficient ({buy_score} < {min_score})"
+                    if adjusted_score < min_score:
+                        reason = f"Score insufficient ({adjusted_score} < {min_score})"
                     else:
-                        reason = f"No entry decision (decision: {analysis_result.get('decision')})"
+                        reason = f"No entry decision (raw: '{raw_decision}', normalized: '{normalized_decision}')"
                     logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
 
             logger.info(f"Report processing complete - Bought: {buy_count}, Sold: {sell_count}")
@@ -1234,6 +1333,103 @@ class USStockTrackingAgent:
         except Exception as e:
             logger.error(f"Error sending Telegram message: {str(e)}")
             return False
+
+    def get_compression_stats(self) -> Dict[str, Any]:
+        """
+        Get current compression statistics for US market.
+
+        Returns:
+            Dict with compression layer counts and stats
+        """
+        if self.compression_manager:
+            return self.compression_manager.get_compression_stats()
+        return {"error": "Compression manager not initialized"}
+
+    async def compress_old_journal_entries(
+        self,
+        layer1_age_days: int = 7,
+        layer2_age_days: int = 30,
+        min_entries_for_compression: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Compress old journal entries for US market.
+
+        Args:
+            layer1_age_days: Days before Layer 1 entries are compressed
+            layer2_age_days: Days before Layer 2 entries are compressed
+            min_entries_for_compression: Minimum entries to trigger compression
+
+        Returns:
+            Dict with compression results
+        """
+        if self.compression_manager:
+            return await self.compression_manager.compress_old_journal_entries(
+                layer1_age_days=layer1_age_days,
+                layer2_age_days=layer2_age_days,
+                min_entries_for_compression=min_entries_for_compression
+            )
+        return {"error": "Compression manager not initialized"}
+
+    def cleanup_stale_data(
+        self,
+        max_principles: int = 50,
+        max_intuitions: int = 50,
+        stale_days: int = 90,
+        archive_layer3_days: int = 365,
+        dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Clean up stale data for US market.
+
+        Args:
+            max_principles: Maximum active principles to keep
+            max_intuitions: Maximum active intuitions to keep
+            stale_days: Days without validation before deactivation
+            archive_layer3_days: Days after which to archive Layer 3 entries
+            dry_run: If True, only count what would be cleaned
+
+        Returns:
+            Dict with cleanup results
+        """
+        if self.compression_manager:
+            return self.compression_manager.cleanup_stale_data(
+                max_principles=max_principles,
+                max_intuitions=max_intuitions,
+                stale_days=stale_days,
+                archive_layer3_days=archive_layer3_days,
+                dry_run=dry_run
+            )
+        return {"error": "Compression manager not initialized"}
+
+    def get_journal_context(self, ticker: str, sector: str = None) -> str:
+        """
+        Get trading journal context for buy decisions.
+
+        Args:
+            ticker: Stock ticker symbol
+            sector: Stock sector (optional)
+
+        Returns:
+            str: Context string with past trading experiences
+        """
+        if self.journal_manager and self.enable_journal:
+            return self.journal_manager.get_context_for_ticker(ticker, sector)
+        return ""
+
+    def get_score_adjustment(self, ticker: str, sector: str = None) -> Tuple[int, List[str]]:
+        """
+        Calculate score adjustment based on past experiences.
+
+        Args:
+            ticker: Stock ticker symbol
+            sector: Stock sector (optional)
+
+        Returns:
+            Tuple[int, List[str]]: Adjustment value (-2 to +2) and reasons
+        """
+        if self.journal_manager and self.enable_journal:
+            return self.journal_manager.get_score_adjustment(ticker, sector)
+        return 0, []
 
     async def run(self, pdf_report_paths: List[str], chat_id: str = None,
                   language: str = "en", trigger_results_file: str = None) -> bool:
@@ -1323,6 +1519,11 @@ async def main():
     parser.add_argument("--chat-id", help="Telegram channel ID")
     parser.add_argument("--telegram-token", help="Telegram bot token")
     parser.add_argument("--language", default="en", help="Language (default: en)")
+    parser.add_argument(
+        "--enable-journal",
+        action="store_true",
+        help="Enable trading journal for retrospective analysis"
+    )
 
     args = parser.parse_args()
 
@@ -1331,7 +1532,10 @@ async def main():
         return False
 
     async with app.run():
-        agent = USStockTrackingAgent(telegram_token=args.telegram_token)
+        agent = USStockTrackingAgent(
+            telegram_token=args.telegram_token,
+            enable_journal=args.enable_journal
+        )
         success = await agent.run(args.reports, args.chat_id, args.language)
         return success
 

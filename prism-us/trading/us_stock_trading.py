@@ -559,15 +559,301 @@ class USStockTrading:
 
         return market_open <= current_time <= market_close
 
+    def is_reserved_order_available(self) -> bool:
+        """
+        Check if reserved order is available (Korean time window)
+
+        Reserved order available: 10:00 ~ 23:20 KST (winter) / 10:00 ~ 22:20 KST (summer)
+        System maintenance: 16:30 ~ 16:45 KST (not available)
+
+        Returns:
+            True if reserved order can be placed, False otherwise
+        """
+        import pytz
+        KST = pytz.timezone('Asia/Seoul')
+        now_kst = datetime.datetime.now(KST)
+        current_time = now_kst.time()
+
+        # System maintenance window: 16:30 ~ 16:45
+        if datetime.time(16, 30) <= current_time <= datetime.time(16, 45):
+            return False
+
+        # Reserved order window: 10:00 ~ 23:20 (using conservative winter time)
+        resv_start = datetime.time(10, 0)
+        resv_end = datetime.time(23, 20)
+
+        return resv_start <= current_time <= resv_end
+
+    def buy_reserved_order(self, ticker: str, limit_price: float, buy_amount: float = None,
+                           exchange: str = None) -> Dict[str, Any]:
+        """
+        Reserved order buy for US stock (executed at next market open)
+        예약주문 매수 - 다음 장 시작시 자동 실행
+
+        Note: US reserved orders only support LIMIT orders (지정가주문만 가능)
+
+        Args:
+            ticker: Stock ticker symbol
+            limit_price: Limit price in USD (REQUIRED - market order not supported)
+            buy_amount: Buy amount in USD
+            exchange: Exchange code
+
+        Returns:
+            Order result dict
+        """
+        if not self.auto_trading:
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'limit_price': limit_price,
+                'message': 'Auto trading is disabled (AUTO_TRADING=False)'
+            }
+
+        if not limit_price or limit_price <= 0:
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'limit_price': 0,
+                'message': 'Limit price is required for US reserved orders (market order not supported)'
+            }
+
+        if not self.is_reserved_order_available():
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'limit_price': limit_price,
+                'message': 'Reserved order not available at this time (available 10:00-23:20 KST, except 16:30-16:45)'
+            }
+
+        if exchange is None:
+            exchange = get_exchange_code(ticker)
+        else:
+            exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
+
+        amount = buy_amount if buy_amount else self.buy_amount
+
+        # Calculate quantity based on limit price
+        buy_quantity = math.floor(amount / limit_price)
+
+        if buy_quantity == 0:
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'limit_price': limit_price,
+                'message': f'Buy quantity is 0 (limit ${limit_price:.2f} > amount ${amount:.2f})'
+            }
+
+        # Reserved order API
+        api_url = "/uapi/overseas-stock/v1/trading/order-resv"
+
+        # TR ID for US reserved order buy
+        if self.mode == "real":
+            tr_id = "TTTT3014U"  # Real US reserved buy
+        else:
+            tr_id = "VTTT3014U"  # Demo US reserved buy
+
+        params = {
+            "CANO": self.trenv.my_acct,
+            "ACNT_PRDT_CD": self.trenv.my_prod,
+            "OVRS_EXCG_CD": exchange,
+            "PDNO": ticker.upper(),
+            "FT_ORD_QTY": str(buy_quantity),
+            "FT_ORD_UNPR3": str(limit_price),
+            "ORD_SVR_DVSN_CD": "0"
+        }
+
+        try:
+            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+
+            if res.isOK():
+                output = res.getBody().output
+                order_no = output.get('ODNO', '') or output.get('RSVN_ORD_SEQ', '')
+
+                logger.info(f"[{ticker}] Reserved buy order success: {buy_quantity} shares x ${limit_price:.2f}, Order#: {order_no}")
+
+                return {
+                    'success': True,
+                    'order_no': order_no,
+                    'ticker': ticker,
+                    'quantity': buy_quantity,
+                    'limit_price': limit_price,
+                    'order_type': 'reserved_limit',
+                    'message': f'Reserved buy order completed ({buy_quantity} shares x ${limit_price:.2f})'
+                }
+            else:
+                error_msg = f"{res.getErrorCode()} - {res.getErrorMessage()}"
+                logger.error(f"Reserved buy order failed: {error_msg}")
+
+                return {
+                    'success': False,
+                    'order_no': None,
+                    'ticker': ticker,
+                    'quantity': buy_quantity,
+                    'limit_price': limit_price,
+                    'message': f'Reserved buy order failed: {error_msg}'
+                }
+
+        except Exception as e:
+            logger.error(f"Error during reserved buy order: {str(e)}")
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': buy_quantity,
+                'limit_price': limit_price,
+                'message': f'Reserved buy order error: {str(e)}'
+            }
+
+    def sell_reserved_order(self, ticker: str, limit_price: float = None,
+                            use_moo: bool = False, exchange: str = None) -> Dict[str, Any]:
+        """
+        Reserved order sell for US stock (executed at next market open)
+        예약주문 매도 - 다음 장 시작시 자동 실행
+
+        Note: US reserved sell orders support LIMIT or MOO (Market On Open)
+
+        Args:
+            ticker: Stock ticker symbol
+            limit_price: Limit price in USD (required if use_moo is False)
+            use_moo: Use Market On Open order (default: False)
+            exchange: Exchange code
+
+        Returns:
+            Order result dict
+        """
+        if not self.auto_trading:
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'message': 'Auto trading is disabled (AUTO_TRADING=False)'
+            }
+
+        if not use_moo and (not limit_price or limit_price <= 0):
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'message': 'Limit price is required for reserved sell (or use use_moo=True for Market On Open)'
+            }
+
+        if not self.is_reserved_order_available():
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'message': 'Reserved order not available at this time (available 10:00-23:20 KST, except 16:30-16:45)'
+            }
+
+        if exchange is None:
+            exchange = get_exchange_code(ticker)
+        else:
+            exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
+
+        # Check holding quantity
+        quantity = self.get_holding_quantity(ticker)
+
+        if quantity == 0:
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'message': 'No holdings to sell'
+            }
+
+        # Reserved order API
+        api_url = "/uapi/overseas-stock/v1/trading/order-resv"
+
+        # TR ID for US reserved order sell
+        if self.mode == "real":
+            tr_id = "TTTT3016U"  # Real US reserved sell
+        else:
+            tr_id = "VTTT3016U"  # Demo US reserved sell
+
+        # Set price based on order type
+        if use_moo:
+            order_price = "0"
+            order_type_str = "MOO (Market On Open)"
+        else:
+            order_price = str(limit_price)
+            order_type_str = f"Limit ${limit_price:.2f}"
+
+        params = {
+            "CANO": self.trenv.my_acct,
+            "ACNT_PRDT_CD": self.trenv.my_prod,
+            "OVRS_EXCG_CD": exchange,
+            "PDNO": ticker.upper(),
+            "FT_ORD_QTY": str(quantity),
+            "FT_ORD_UNPR3": order_price,
+            "ORD_SVR_DVSN_CD": "0"
+        }
+
+        try:
+            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+
+            if res.isOK():
+                output = res.getBody().output
+                order_no = output.get('ODNO', '') or output.get('RSVN_ORD_SEQ', '')
+
+                logger.info(f"[{ticker}] Reserved sell order success: {quantity} shares, {order_type_str}, Order#: {order_no}")
+
+                return {
+                    'success': True,
+                    'order_no': order_no,
+                    'ticker': ticker,
+                    'quantity': quantity,
+                    'limit_price': limit_price if not use_moo else None,
+                    'order_type': 'reserved_moo' if use_moo else 'reserved_limit',
+                    'message': f'Reserved sell order completed ({quantity} shares, {order_type_str})'
+                }
+            else:
+                error_msg = f"{res.getErrorCode()} - {res.getErrorMessage()}"
+                logger.error(f"Reserved sell order failed: {error_msg}")
+
+                return {
+                    'success': False,
+                    'order_no': None,
+                    'ticker': ticker,
+                    'quantity': quantity,
+                    'message': f'Reserved sell order failed: {error_msg}'
+                }
+
+        except Exception as e:
+            logger.error(f"Error during reserved sell order: {str(e)}")
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': quantity,
+                'message': f'Reserved sell order error: {str(e)}'
+            }
+
     def smart_buy(self, ticker: str, buy_amount: float = None,
-                  exchange: str = None) -> Dict[str, Any]:
+                  exchange: str = None, limit_price: float = None) -> Dict[str, Any]:
         """
         Smart buy - automatically choose best method based on market hours
+
+        - Market open: Execute market price buy immediately
+        - Market closed + limit_price provided: Place reserved order (지정가 예약주문)
+        - Market closed + no limit_price: Return error (reserved order requires limit price)
 
         Args:
             ticker: Stock ticker symbol
             buy_amount: Buy amount in USD
             exchange: Exchange code
+            limit_price: Limit price for reserved order when market is closed
 
         Returns:
             Order result dict
@@ -585,22 +871,35 @@ class USStockTrading:
             logger.info(f"[{ticker}] Market is open - executing market buy")
             return self.buy_market_price(ticker, buy_amount, exchange)
         else:
-            logger.warning(f"[{ticker}] Market is closed - cannot execute buy order")
-            return {
-                'success': False,
-                'order_no': None,
-                'ticker': ticker,
-                'quantity': 0,
-                'message': 'US market is currently closed. Order not executed.'
-            }
+            # Market is closed - use reserved order if limit_price provided
+            if limit_price and limit_price > 0:
+                logger.info(f"[{ticker}] Market is closed - placing reserved order (limit: ${limit_price:.2f})")
+                return self.buy_reserved_order(ticker, limit_price, buy_amount, exchange)
+            else:
+                logger.warning(f"[{ticker}] Market is closed and no limit_price provided - cannot place reserved order")
+                return {
+                    'success': False,
+                    'order_no': None,
+                    'ticker': ticker,
+                    'quantity': 0,
+                    'message': 'US market is closed. Provide limit_price for reserved order.'
+                }
 
-    def smart_sell_all(self, ticker: str, exchange: str = None) -> Dict[str, Any]:
+    def smart_sell_all(self, ticker: str, exchange: str = None,
+                       limit_price: float = None, use_moo: bool = False) -> Dict[str, Any]:
         """
         Smart sell - automatically choose best method based on market hours
+
+        - Market open: Execute market price sell immediately
+        - Market closed + limit_price provided: Place reserved order (지정가 예약주문)
+        - Market closed + use_moo=True: Place reserved MOO order (시장가 예약주문)
+        - Market closed + no limit_price + no use_moo: Return error
 
         Args:
             ticker: Stock ticker symbol
             exchange: Exchange code
+            limit_price: Limit price for reserved order when market is closed
+            use_moo: Use Market On Open for reserved order (default: False)
 
         Returns:
             Order result dict
@@ -618,14 +917,22 @@ class USStockTrading:
             logger.info(f"[{ticker}] Market is open - executing market sell")
             return self.sell_all_market_price(ticker, exchange)
         else:
-            logger.warning(f"[{ticker}] Market is closed - cannot execute sell order")
-            return {
-                'success': False,
-                'order_no': None,
-                'ticker': ticker,
-                'quantity': 0,
-                'message': 'US market is currently closed. Order not executed.'
-            }
+            # Market is closed - use reserved order
+            if limit_price and limit_price > 0:
+                logger.info(f"[{ticker}] Market is closed - placing reserved sell order (limit: ${limit_price:.2f})")
+                return self.sell_reserved_order(ticker, limit_price, use_moo=False, exchange=exchange)
+            elif use_moo:
+                logger.info(f"[{ticker}] Market is closed - placing reserved MOO sell order")
+                return self.sell_reserved_order(ticker, limit_price=None, use_moo=True, exchange=exchange)
+            else:
+                logger.warning(f"[{ticker}] Market is closed and no limit_price/use_moo provided")
+                return {
+                    'success': False,
+                    'order_no': None,
+                    'ticker': ticker,
+                    'quantity': 0,
+                    'message': 'US market is closed. Provide limit_price or use_moo=True for reserved order.'
+                }
 
     async def _get_stock_lock(self, ticker: str) -> asyncio.Lock:
         """Get per-stock lock (prevent concurrent trades on same stock)"""
@@ -634,7 +941,8 @@ class USStockTrading:
         return self._stock_locks[ticker]
 
     async def async_buy_stock(self, ticker: str, buy_amount: float = None,
-                              exchange: str = None, timeout: float = 30.0) -> Dict[str, Any]:
+                              exchange: str = None, timeout: float = 30.0,
+                              limit_price: float = None) -> Dict[str, Any]:
         """
         Async buy API with timeout
 
@@ -643,13 +951,14 @@ class USStockTrading:
             buy_amount: Buy amount in USD
             exchange: Exchange code
             timeout: Timeout in seconds
+            limit_price: Limit price for reserved order when market is closed
 
         Returns:
             Order result dict
         """
         try:
             return await asyncio.wait_for(
-                self._execute_buy_stock(ticker, buy_amount, exchange),
+                self._execute_buy_stock(ticker, buy_amount, exchange, limit_price),
                 timeout=timeout
             )
         except asyncio.TimeoutError:
@@ -665,7 +974,7 @@ class USStockTrading:
             }
 
     async def _execute_buy_stock(self, ticker: str, buy_amount: float = None,
-                                 exchange: str = None) -> Dict[str, Any]:
+                                 exchange: str = None, limit_price: float = None) -> Dict[str, Any]:
         """Execute buy stock logic"""
         amount = buy_amount if buy_amount else self.buy_amount
 
@@ -714,7 +1023,7 @@ class USStockTrading:
                         # Execute buy
                         await asyncio.sleep(0.5)
                         buy_result = await asyncio.to_thread(
-                            self.smart_buy, ticker, amount, exchange
+                            self.smart_buy, ticker, amount, exchange, limit_price
                         )
 
                         if buy_result['success']:
@@ -733,7 +1042,8 @@ class USStockTrading:
         return result
 
     async def async_sell_stock(self, ticker: str, exchange: str = None,
-                               timeout: float = 30.0) -> Dict[str, Any]:
+                               timeout: float = 30.0, limit_price: float = None,
+                               use_moo: bool = False) -> Dict[str, Any]:
         """
         Async sell API with timeout
 
@@ -741,13 +1051,15 @@ class USStockTrading:
             ticker: Stock ticker symbol
             exchange: Exchange code
             timeout: Timeout in seconds
+            limit_price: Limit price for reserved order when market is closed
+            use_moo: Use Market On Open for reserved order
 
         Returns:
             Order result dict
         """
         try:
             return await asyncio.wait_for(
-                self._execute_sell_stock(ticker, exchange),
+                self._execute_sell_stock(ticker, exchange, limit_price, use_moo),
                 timeout=timeout
             )
         except asyncio.TimeoutError:
@@ -762,7 +1074,8 @@ class USStockTrading:
                 'timestamp': datetime.datetime.now().isoformat()
             }
 
-    async def _execute_sell_stock(self, ticker: str, exchange: str = None) -> Dict[str, Any]:
+    async def _execute_sell_stock(self, ticker: str, exchange: str = None,
+                                  limit_price: float = None, use_moo: bool = False) -> Dict[str, Any]:
         """Execute sell stock logic with portfolio verification"""
         result = {
             'success': False,
@@ -812,7 +1125,7 @@ class USStockTrading:
 
                         # Execute sell
                         sell_result = await asyncio.to_thread(
-                            self.smart_sell_all, ticker, exchange
+                            self.smart_sell_all, ticker, exchange, limit_price, use_moo
                         )
 
                         if sell_result['success']:

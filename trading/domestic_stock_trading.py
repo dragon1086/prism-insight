@@ -446,17 +446,18 @@ class DomesticStockTrading:
                 'message': f'매수 주문 중 오류: {str(e)}'
             }
 
-    def smart_buy(self, stock_code: str, buy_amount: int = None) -> Dict[str, Any]:
+    def smart_buy(self, stock_code: str, buy_amount: int = None, limit_price: int = None) -> Dict[str, Any]:
         """
         시간대에 따라 자동으로 최적의 방법으로 매수 (시간외 단일가 매매는 미체결 가능성이 높으므로 고려하지 않음)
 
         - 09:00~15:30: 시장가 매수
         - 15:40~16:00: 시간외 종가매매
-        - 그외 시간: 예약주문 (다음날 시장가)
+        - 그외 시간: 예약주문 (다음날 지정가, limit_price가 있으면)
 
         Args:
             stock_code: 종목코드
             buy_amount: 매수 금액 (기본값: 초기화시 설정한 금액)
+            limit_price: 예약주문 시 지정가 (None이면 시장가 주문)
 
         Returns:
             매수 결과
@@ -486,9 +487,12 @@ class DomesticStockTrading:
             return self.buy_closing_price(stock_code, buy_amount)
 
         else:
-            # 예약주문
-            logger.info(f"[{stock_code}] 장외 시간 - 예약주문 실행")
-            return self.buy_reserved_order(stock_code, buy_amount)
+            # 예약주문 (지정가 또는 시장가)
+            if limit_price:
+                logger.info(f"[{stock_code}] 장외 시간 - 예약주문 실행 (지정가: {limit_price:,}원)")
+            else:
+                logger.info(f"[{stock_code}] 장외 시간 - 예약주문 실행 (시장가)")
+            return self.buy_reserved_order(stock_code, buy_amount, limit_price=limit_price)
 
     def buy_closing_price(self, stock_code: str, buy_amount: int = None) -> Dict[str, Any]:
         """
@@ -582,7 +586,7 @@ class DomesticStockTrading:
                 'message': f'매수 주문 중 오류: {str(e)}'
             }
 
-    def buy_reserved_order(self, stock_code: str, buy_amount: int = None, end_date: str = None) -> Dict[str, Any]:
+    def buy_reserved_order(self, stock_code: str, buy_amount: int = None, end_date: str = None, limit_price: int = None) -> Dict[str, Any]:
         """
         예약주문으로 매수 (다음 거래일 자동 실행)
         예약주문 가능시간: 15:40~다음 영업일 07:30 (23:40~00:10 제외)
@@ -591,6 +595,7 @@ class DomesticStockTrading:
             stock_code: 종목코드
             buy_amount: 매수 금액 (기본값: 초기화시 설정한 금액)
             end_date: 기간예약 종료일 (YYYYMMDD 형식, None이면 일반예약주문)
+            limit_price: 지정가 (None이면 시장가 주문)
 
         Returns:
             매수 결과
@@ -608,10 +613,17 @@ class DomesticStockTrading:
         amount = buy_amount if buy_amount else self.buy_amount
 
         # 주문 구분 및 단가 설정
-        ord_dvsn_cd = "01"  # 시장가
-        ord_unpr = "0"
-        # 시장가의 경우 현재가 기준으로 수량 계산
-        buy_quantity = self.calculate_buy_quantity(stock_code, amount)
+        if limit_price and limit_price > 0:
+            ord_dvsn_cd = "00"  # 지정가
+            ord_unpr = str(int(limit_price))
+            # 지정가 기준으로 수량 계산
+            buy_quantity = amount // limit_price
+            logger.info(f"[{stock_code}] 예약주문 지정가: {limit_price:,}원, 수량: {buy_quantity}주")
+        else:
+            ord_dvsn_cd = "01"  # 시장가
+            ord_unpr = "0"
+            # 시장가의 경우 현재가 기준으로 수량 계산
+            buy_quantity = self.calculate_buy_quantity(stock_code, amount)
 
         if buy_quantity == 0:
             return {
@@ -803,16 +815,17 @@ class DomesticStockTrading:
                 'message': f'매도 주문 중 오류: {str(e)}'
             }
 
-    def smart_sell_all(self, stock_code: str) -> Dict[str, Any]:
+    def smart_sell_all(self, stock_code: str, limit_price: int = None) -> Dict[str, Any]:
         """
         시간대에 따라 자동으로 최적의 방법으로 전량매도 (시간외 단일가 매매는 미체결 가능성이 높으므로 고려하지 않음)
 
         - 09:00~15:30: 시장가 매도
         - 15:40~16:00: 시간외 종가매매
-        - 그외 시간: 예약주문 (다음날 시장가)
+        - 그외 시간: 예약주문 (다음날 지정가, limit_price가 있으면)
 
         Args:
             stock_code: 종목코드
+            limit_price: 예약주문 시 지정가 (None이면 시장가 주문)
 
         Returns:
             매도 결과
@@ -842,9 +855,12 @@ class DomesticStockTrading:
             return self.sell_all_closing_price(stock_code)
 
         else:
-            # 예약주문 (다음날 시장가) - 수정된 함수 호출
-            logger.info(f"[{stock_code}] 장외 시간 - 예약주문 실행")
-            return self.sell_all_reserved_order(stock_code)
+            # 예약주문 (지정가 또는 시장가)
+            if limit_price:
+                logger.info(f"[{stock_code}] 장외 시간 - 예약주문 실행 (지정가: {limit_price:,}원)")
+            else:
+                logger.info(f"[{stock_code}] 장외 시간 - 예약주문 실행 (시장가)")
+            return self.sell_all_reserved_order(stock_code, limit_price=limit_price)
 
     def sell_all_closing_price(self, stock_code: str) -> Dict[str, Any]:
         """
@@ -927,7 +943,7 @@ class DomesticStockTrading:
                 'message': f'매도 중 오류: {str(e)}'
             }
 
-    def sell_all_reserved_order(self, stock_code: str, end_date: str = None) -> Dict[str, Any]:
+    def sell_all_reserved_order(self, stock_code: str, end_date: str = None, limit_price: int = None) -> Dict[str, Any]:
         """
         예약주문으로 전량매도 (다음 거래일 자동 실행)
         예약주문 가능시간: 15:40~다음 영업일 07:30 (23:40~00:10 제외)
@@ -935,6 +951,7 @@ class DomesticStockTrading:
         Args:
             stock_code: 종목코드
             end_date: 기간예약 종료일 (YYYYMMDD 형식, None이면 일반예약주문)
+            limit_price: 지정가 (None이면 시장가 주문)
 
         Returns:
             매도 결과
@@ -961,8 +978,13 @@ class DomesticStockTrading:
             }
 
         # 주문 구분 및 단가 설정
-        ord_dvsn_cd = "01"  # 시장가
-        ord_unpr = "0"
+        if limit_price and limit_price > 0:
+            ord_dvsn_cd = "00"  # 지정가
+            ord_unpr = str(int(limit_price))
+            logger.info(f"[{stock_code}] 예약주문 매도 지정가: {limit_price:,}원, 수량: {buy_quantity}주")
+        else:
+            ord_dvsn_cd = "01"  # 시장가
+            ord_unpr = "0"
 
         # 예약주문 API 호출
         api_url = "/uapi/domestic-stock/v1/trading/order-resv"
@@ -1052,7 +1074,7 @@ class DomesticStockTrading:
             self._stock_locks[stock_code] = asyncio.Lock()
         return self._stock_locks[stock_code]
 
-    async def async_buy_stock(self, stock_code: str, buy_amount: int = None, timeout: float = 30.0) -> Dict[str, Any]:
+    async def async_buy_stock(self, stock_code: str, buy_amount: int = None, timeout: float = 30.0, limit_price: int = None) -> Dict[str, Any]:
         """
         비동기 매수 API (타임아웃 포함)
         현재가 조회 → 매수 가능 수량 계산 → 시장가 매수
@@ -1061,6 +1083,7 @@ class DomesticStockTrading:
             stock_code: 종목코드 (6자리)
             buy_amount: 매수 금액 (기본값: 초기화시 설정한 금액)
             timeout: 타임아웃 시간(초)
+            limit_price: 예약주문 시 지정가 (None이면 시장가 주문)
 
         Returns:
             {
@@ -1076,7 +1099,7 @@ class DomesticStockTrading:
         """
         try:
             return await asyncio.wait_for(
-                self._execute_buy_stock(stock_code, buy_amount),
+                self._execute_buy_stock(stock_code, buy_amount, limit_price),
                 timeout=timeout
             )
         except asyncio.TimeoutError:
@@ -1091,7 +1114,7 @@ class DomesticStockTrading:
                 'timestamp': datetime.datetime.now().isoformat()
             }
 
-    async def _execute_buy_stock(self, stock_code: str, buy_amount: int = None) -> Dict[str, Any]:
+    async def _execute_buy_stock(self, stock_code: str, buy_amount: int = None, limit_price: int = None) -> Dict[str, Any]:
         # buy_amount가 None이면 클래스 기본값 사용
         amount = buy_amount if buy_amount else self.buy_amount
 
@@ -1141,12 +1164,15 @@ class DomesticStockTrading:
                         result['quantity'] = buy_quantity
                         result['total_amount'] = buy_quantity * current_price_info['current_price']
 
-                        # 3단계: 시장가 매수 실행 (amount 사용)
+                        # 3단계: 매수 실행 (amount 사용, limit_price가 있으면 지정가)
                         # Rate Limit 방지
                         await asyncio.sleep(0.5)
-                        logger.info(f"[비동기 매수 API] {stock_code} 시장가 매수 실행: {buy_quantity}주 x {amount:,}원")
+                        if limit_price:
+                            logger.info(f"[비동기 매수 API] {stock_code} 예약주문 매수 실행: {buy_quantity}주 x {limit_price:,}원 (지정가)")
+                        else:
+                            logger.info(f"[비동기 매수 API] {stock_code} 시장가 매수 실행: {buy_quantity}주 x {amount:,}원")
                         buy_result = await asyncio.to_thread(
-                            self.smart_buy, stock_code, amount  # amount 사용
+                            self.smart_buy, stock_code, amount, limit_price
                         )
 
                         if buy_result['success']:
@@ -1167,7 +1193,7 @@ class DomesticStockTrading:
 
         return result
 
-    async def async_sell_stock(self, stock_code: str, timeout: float = 30.0) -> Dict[str, Any]:
+    async def async_sell_stock(self, stock_code: str, timeout: float = 30.0, limit_price: int = None) -> Dict[str, Any]:
         """
         비동기 매도 API (타임아웃 포함)
         보유 수량 전량 시장가 매도
@@ -1175,6 +1201,7 @@ class DomesticStockTrading:
         Args:
             stock_code: 종목코드 (6자리)
             timeout: 타임아웃 시간(초)
+            limit_price: 예약주문 시 지정가 (None이면 시장가 주문)
 
         Returns:
             {
@@ -1190,7 +1217,7 @@ class DomesticStockTrading:
         """
         try:
             return await asyncio.wait_for(
-                self._execute_sell_stock(stock_code),
+                self._execute_sell_stock(stock_code, limit_price),
                 timeout=timeout
             )
         except asyncio.TimeoutError:
@@ -1205,7 +1232,7 @@ class DomesticStockTrading:
                 'timestamp': datetime.datetime.now().isoformat()
             }
 
-    async def _execute_sell_stock(self, stock_code: str) -> Dict[str, Any]:
+    async def _execute_sell_stock(self, stock_code: str, limit_price: int = None) -> Dict[str, Any]:
         """실제 매도 실행 로직 (포트폴리오 확인 방어로직 포함)"""
         result = {
             'success': False,
@@ -1270,9 +1297,12 @@ class DomesticStockTrading:
                             return result
 
                         # 전량 매도 실행
-                        logger.info(f"[비동기 매도 API] {stock_code} 전량 매도 실행 (보유: {holding_quantity}주)")
+                        if limit_price:
+                            logger.info(f"[비동기 매도 API] {stock_code} 전량 매도 실행 (보유: {holding_quantity}주, 지정가: {limit_price:,}원)")
+                        else:
+                            logger.info(f"[비동기 매도 API] {stock_code} 전량 매도 실행 (보유: {holding_quantity}주)")
                         all_sell_result = await asyncio.to_thread(
-                            self.smart_sell_all, stock_code
+                            self.smart_sell_all, stock_code, limit_price
                         )
 
                         if all_sell_result['success']:
