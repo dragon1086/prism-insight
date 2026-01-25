@@ -16,23 +16,39 @@ from mcp_agent.app import MCPApp
 
 # Set up import paths
 import sys
+import importlib.util
 _prism_us_dir = Path(__file__).parent.parent
 _project_root = Path(__file__).parent.parent.parent
 
-# Add project root FIRST (higher priority) so main project's cores is found
-sys.path.insert(0, str(_project_root))
-# Add prism-us directory for local imports
-sys.path.insert(1, str(_prism_us_dir))
+# Import from main project's cores using direct file import to avoid namespace collision
+# This is necessary because prism-us/cores/ shadows the main project's cores/
+def _import_from_project_root(module_name: str, file_path: Path):
+    """Import a module directly from a specific file path."""
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-# Import from main project's cores (report_generation, utils)
-from cores.report_generation import (
-    generate_report,
-    generate_summary,
-    generate_investment_strategy,
-    get_disclaimer,
-    generate_market_report
+# Import report_generation from main project's cores
+_report_gen_module = _import_from_project_root(
+    "main_report_generation",
+    _project_root / "cores" / "report_generation.py"
 )
-from cores.utils import clean_markdown
+generate_report = _report_gen_module.generate_report
+generate_summary = _report_gen_module.generate_summary
+generate_investment_strategy = _report_gen_module.generate_investment_strategy
+get_disclaimer = _report_gen_module.get_disclaimer
+generate_market_report = _report_gen_module.generate_market_report
+
+# Import utils from main project's cores
+_utils_module = _import_from_project_root(
+    "main_utils",
+    _project_root / "cores" / "utils.py"
+)
+clean_markdown = _utils_module.clean_markdown
+
+# Add prism-us directory for local imports
+sys.path.insert(0, str(_prism_us_dir))
 
 # Import from prism-us local cores.agents using relative import path
 # We need to import the local agents module directly

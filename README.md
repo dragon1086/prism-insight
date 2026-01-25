@@ -3,8 +3,7 @@
   <br><br>
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/OpenAI-GPT--4.1-green.svg" alt="OpenAI">
-  <img src="https://img.shields.io/badge/OpenAI-GPT--5.1-green.svg" alt="OpenAI">
+  <img src="https://img.shields.io/badge/OpenAI-GPT--5-green.svg" alt="OpenAI">
   <img src="https://img.shields.io/badge/Anthropic-Claude--Sonnet--4.5-green.svg" alt="Anthropic">
 </div>
 
@@ -63,7 +62,44 @@ PRISM-INSIGHT is a **completely open-source free project** specializing in **Kor
 
 **✨ All features are provided 100% free!**
 
-## 📈 Trading Simulator and Real Account Performance as of '25.12.07
+## 🇺🇸 US Stock Market Module (NEW)
+
+PRISM-INSIGHT now supports **US stock market (NYSE, NASDAQ)** analysis with the same AI-powered workflow as the Korean market version.
+
+### Key Features
+- **Same AI Agent Architecture**: 13 specialized agents for comprehensive US stock analysis
+- **MCP Server Integration**: yahoo-finance-mcp (OHLCV, financials), sec-edgar-mcp (SEC filings, insider trading)
+- **KIS Overseas Trading API**: Automated trading via Korea Investment & Securities overseas stock API
+- **Multi-language Support**: Reports in English, Korean, Japanese, Chinese
+
+### Directory Structure
+```
+prism-us/
+├── us_stock_analysis_orchestrator.py  # Main orchestrator
+├── us_trigger_batch.py                # Surge stock detection
+├── us_stock_tracking_agent.py         # Trading simulation
+├── us_telegram_summary_agent.py       # Telegram summary
+├── cores/
+│   ├── us_data_client.py              # Unified data client (yfinance + finnhub)
+│   ├── us_surge_detector.py           # Surge detection module
+│   ├── us_analysis.py                 # Core analysis module
+│   └── agents/                        # US-specific agents
+└── trading/config/                    # KIS overseas trading config
+```
+
+### Quick Start
+```bash
+# Run US stock analysis pipeline (Korean default - same as Korean stock version)
+python prism-us/us_stock_analysis_orchestrator.py --mode morning
+
+# Run with English reports and messages
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
+
+# Test without Telegram
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
+```
+
+## 📈 Trading Simulator and Real Account Performance as of '26.01.25
 ### ⭐ Season 1 (Ended '25.09.28. No real account trading)
 **Simulator Performance**
 - Start Date: 2025.03.15
@@ -77,13 +113,13 @@ PRISM-INSIGHT is a **completely open-source free project** specializing in **Kor
 ### ⭐⭐ Season 2 (In Progress)
 **Simulator Performance**
 - Start Date: 2025.09.29
-- Total Trades: 28
-- Profitable Trades: 14
-- Loss Trades: 15
-- Win Rate: 48.28%
-- **Total Cumulative Return from Sold Stocks: 79.88%**
-- **Realized Portfolio Return: 7.99%** (managed across 10 slots, 79.88% ÷ 10)
-- Market Benchmark (from Season 2 start): KOSPI +19.49%, KOSDAQ +9.22%
+- Total Trades: 50
+- Profitable Trades: 21
+- Loss Trades: 29
+- Win Rate: 42.00%
+- **Total Cumulative Return from Sold Stocks: 127.34%**
+- **Realized Portfolio Return: 12.73%** (managed across 10 slots, 127.34% ÷ 10)
+- Market Benchmark (from Season 2 start): KOSPI +45.43%, KOSDAQ +17.39%
 - **[Trading Performance Summary Dashboard](https://analysis.stocksimulation.kr/)**
 
 **Real Account Performance**
@@ -96,7 +132,7 @@ PRISM-INSIGHT is a **completely open-source free project** specializing in **Kor
 
 PRISM-INSIGHT is a **multi-agent system where 13 specialized AI agents collaborate**. Each agent specializes in a specific analysis domain and works organically together to deliver expert-level comprehensive analysis and trading.
 
-### 📊 Analysis Team (6 Agents) - GPT-4.1 Based
+### 📊 Analysis Team (6 Agents) - GPT-5 Based
 
 #### 1. Technical Analyst
 <img src="docs/images/aiagent/technical_analyst.jpeg" alt="Technical Analyst" width="300"/>
@@ -153,7 +189,7 @@ PRISM-INSIGHT is a **multi-agent system where 13 specialized AI agents collabora
 
 ---
 
-### 💡 Strategy Team (1 Agent) - GPT-4.1 Based
+### 💡 Strategy Team (1 Agent) - GPT-5 Based
 
 #### 7. Investment Strategist
 <img src="docs/images/aiagent/investment_strategist.jpeg" alt="Investment Strategist" width="300"/>
@@ -166,7 +202,7 @@ PRISM-INSIGHT is a **multi-agent system where 13 specialized AI agents collabora
 
 ---
 
-### 💬 Communication Team (3 Agents) - GPT-4.1 / GPT-5-nano
+### 💬 Communication Team (3 Agents) - GPT-5 Based
 
 #### 8-1. Summary Specialist
 <img src="docs/images/aiagent/summary_specialist.jpeg" alt="Summary Specialist" width="300"/>
@@ -197,7 +233,7 @@ PRISM-INSIGHT is a **multi-agent system where 13 specialized AI agents collabora
 
 ---
 
-### 📈 Trading Simulation Team (2 Agents) - GPT-5.1 Based
+### 📈 Trading Simulation Team (3 Agents) - GPT-5 Based
 
 #### 9-1. Buy Specialist
 <img src="docs/images/aiagent/buy_specialist.jpeg" alt="Buy Specialist" width="300"/>
@@ -262,7 +298,7 @@ PRISM-INSIGHT is a **multi-agent system where 13 specialized AI agents collabora
 
 ## 🎯 Key Features
 
-- **🤖 AI Comprehensive Analysis (Core)**: Expert-level stock analysis through GPT-4.1 based multi-agent system
+- **🤖 AI Comprehensive Analysis (Core)**: Expert-level stock analysis through GPT-5 based multi-agent system
   [![Analysis Report Demo](https://img.youtube.com/vi/4WNtaaZug74/maxresdefault.jpg)](https://youtu.be/4WNtaaZug74)
 
 - **📊 Automatic Surge Stock Detection**: Watchlist selection through hourly (morning/afternoon) market trend analysis
@@ -271,7 +307,7 @@ PRISM-INSIGHT is a **multi-agent system where 13 specialized AI agents collabora
 - **📱 Automatic Telegram Transmission**: Real-time transmission of analysis results to Telegram channel
   <img src="docs/images/summary-en.png" alt="Summary Transmission" width="500">
 
-- **📈 Trading Simulation**: Investment strategy simulation using GPT-5.1 based generated reports
+- **📈 Trading Simulation**: Investment strategy simulation using GPT-5 based generated reports
   <img src="docs/images/simulation1-en.png" alt="Simulation 1" width="500">
   <img src="docs/images/simulation2-en.png" alt="Simulation 2" width="500">
   <img src="docs/images/season1_dashboard.png" alt="Simulation Performance" width="500">
@@ -296,25 +332,29 @@ PRISM-INSIGHT is a **multi-agent system where 13 specialized AI agents collabora
 
 ## 🧠 AI Model Usage
 
-- **Core Analysis**: OpenAI GPT-4.1 (Comprehensive stock analysis agent)
-- **Trading Simulation**: OpenAI GPT-5.1 (Investment strategy simulation)
+- **Core Analysis & Trading**: OpenAI GPT-5 (Comprehensive stock analysis and trading simulation)
 - **Telegram Conversation**: Anthropic Claude Sonnet 4.5 (Bot interaction)
-- **Translation**: OpenAI GPT-5-NANO (Multilingual broadcasting on a Telegram channel)
+- **Translation**: OpenAI GPT-5 (Multilingual broadcasting on a Telegram channel)
 
 ## 💡 MCP Servers Used
 
+### Korean Market (KR)
 - **[kospi_kosdaq](https://github.com/dragon1086/kospi-kosdaq-stock-server)**: MCP server for KRX (Korea Exchange) stock data in report generation
 - **[firecrawl](https://github.com/mendableai/firecrawl-mcp-server)**: Web crawling specialized MCP server for report generation
 - **[perplexity](https://github.com/perplexityai/modelcontextprotocol/tree/main)**: Web search specialized MCP server for report generation
 - **[sqlite](https://github.com/modelcontextprotocol/servers-archived/tree/HEAD/src/sqlite)**: MCP server specialized in internal DB storage for trading simulation records
 - **[time](https://github.com/modelcontextprotocol/servers/tree/main/src/time)**: MCP server for current time retrieval
 
+### US Market (NEW)
+- **[yahoo-finance-mcp](https://pypi.org/project/yahoo-finance-mcp/)**: OHLCV, company info, financials, institutional holders (PyPI, uvx remote execution)
+- **[sec-edgar-mcp](https://pypi.org/project/sec-edgar-mcp/)**: SEC filings, XBRL financials, insider trading data (PyPI, uvx remote execution)
+
 ## 🚀 Getting Started
 
 ### Prerequisites
 
 - Python 3.10+
-- OpenAI API Key (GPT-4.1, GPT-5.1)
+- OpenAI API Key (GPT-5, GPT-5)
 - Anthropic API Key (Claude-Sonnet-4.5)
 - Telegram Bot Token and Channel ID
 - Playwright (for PDF conversion)
@@ -544,7 +584,7 @@ python telegram_bot_agent.py
 
 ```
 prism-insight/
-├── 📂 cores/                     # 🤖 Core AI Analysis Engine
+├── 📂 cores/                     # 🤖 Core AI Analysis Engine (Korean Market)
 │   ├── 📂 agents/               # AI Agent Modules
 │   │   ├── company_info_agents.py        # Company Information Analysis Agent
 │   │   ├── news_strategy_agents.py       # News and Investment Strategy Agent
@@ -557,6 +597,18 @@ prism-insight/
 │   ├── report_generation.py     # Report Generation
 │   ├── stock_chart.py           # Chart Generation
 │   └── utils.py                 # Utility Functions
+├── 📂 prism-us/                  # 🇺🇸 US Stock Market Module (NEW)
+│   ├── us_stock_analysis_orchestrator.py  # US Main Orchestrator
+│   ├── us_trigger_batch.py                # US Surge Stock Detection
+│   ├── us_stock_tracking_agent.py         # US Trading Simulation
+│   ├── us_telegram_summary_agent.py       # US Telegram Summary
+│   ├── check_market_day.py                # US Market Holiday Checker
+│   ├── 📂 cores/                          # US Core Analysis
+│   │   ├── us_data_client.py              # Unified Data Client (yfinance + finnhub)
+│   │   ├── us_surge_detector.py           # Surge Detection Module
+│   │   ├── us_analysis.py                 # Core Analysis Module
+│   │   └── 📂 agents/                     # US-specific Agents
+│   └── 📂 tracking/                       # US Database Schema
 ├── 📂 examples/streamlit/        # Web Interface
 ├── 📂 trading/                   # 💱 Automated Trading System (Korea Investment & Securities API)
 │   ├── kis_auth.py              # KIS API Authentication and Token Management
@@ -568,12 +620,14 @@ prism-insight/
 │   └── 📂 samples/              # API Sample Code
 ├── 📂 utils/                     # Utility Scripts
 ├── 📂 tests/                     # Test Code
-├── stock_analysis_orchestrator.py # 🎯 Main Orchestrator
+├── stock_analysis_orchestrator.py # 🎯 Main Orchestrator (Korean Market)
 ├── telegram_config.py           # Telegram Configuration Management Class
 ├── trigger_batch.py             # Surge Stock Detection Batch
 ├── telegram_bot_agent.py        # Telegram Bot (Claude Based)
-├── stock_tracking_agent.py      # Trading Simulation (GPT-5.1)
+├── stock_tracking_agent.py      # Trading Simulation (GPT-5)
 ├── stock_tracking_enhanced_agent.py # Enhanced Trading Simulation
+├── compress_trading_memory.py   # Trading Memory Compression & Cleanup
+├── performance_tracker_batch.py # Daily Performance Tracking
 ├── pdf_converter.py             # PDF Conversion
 ├── requirements.txt             # Dependency List
 ├── .env.example                 # Environment Variable Example
@@ -709,7 +763,7 @@ Even small support gives great strength! Support the project with the cost of a 
 ### 💰 Transparent Operations
 
 Monthly costs of approximately ₩290,000 for API and server expenses (as of November '25):
-- OpenAI API (GPT-4.1, GPT-5.1): ~₩170,000/month
+- OpenAI API (GPT-5, GPT-5): ~₩170,000/month
 - Anthropic API (Claude Sonnet 4.5): ~₩30,000/month
 - Firecrawl API (MCP Server): ~₩30,000/month
 - Perplexity API (MCP Server): ~₩15,000/month

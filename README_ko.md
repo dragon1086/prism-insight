@@ -3,8 +3,7 @@
   <br><br>
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/OpenAI-GPT--4.1-green.svg" alt="OpenAI">
-  <img src="https://img.shields.io/badge/OpenAI-GPT--5.1-green.svg" alt="OpenAI">
+  <img src="https://img.shields.io/badge/OpenAI-GPT--5-green.svg" alt="OpenAI">
   <img src="https://img.shields.io/badge/Anthropic-Claude--Sonnet--4.5-green.svg" alt="Anthropic">
 </div>
 
@@ -59,7 +58,44 @@ PRISM-INSIGHT는 **한국 주식시장(코스피/코스닥) 전문** **AI 분석
 
 **✨ 모든 기능이 100% 무료로 제공됩니다!**
 
-## 📈 '25.12.07 기준 매매 시뮬레이터 및 실제 계좌 실적
+## 🇺🇸 미국 주식 모듈 (NEW)
+
+PRISM-INSIGHT가 이제 **미국 주식시장(NYSE, NASDAQ)** 분석을 지원합니다. 한국 주식 버전과 동일한 AI 기반 워크플로우를 사용합니다.
+
+### 주요 기능
+- **동일한 AI 에이전트 아키텍처**: 13개 전문 에이전트를 통한 종합 미국 주식 분석
+- **MCP 서버 통합**: yahoo-finance-mcp (OHLCV, 재무제표), sec-edgar-mcp (SEC 공시, 내부자 거래)
+- **KIS 해외주식 API**: 한국투자증권 해외주식 API를 통한 자동매매
+- **다국어 지원**: 영어, 한국어, 일본어, 중국어 리포트
+
+### 디렉토리 구조
+```
+prism-us/
+├── us_stock_analysis_orchestrator.py  # 메인 오케스트레이터
+├── us_trigger_batch.py                # 급등주 포착
+├── us_stock_tracking_agent.py         # 매매 시뮬레이션
+├── us_telegram_summary_agent.py       # 텔레그램 요약
+├── cores/
+│   ├── us_data_client.py              # 통합 데이터 클라이언트 (yfinance + finnhub)
+│   ├── us_surge_detector.py           # 급등주 탐지 모듈
+│   ├── us_analysis.py                 # 핵심 분석 모듈
+│   └── agents/                        # 미국 전용 에이전트
+└── trading/config/                    # KIS 해외주식 설정
+```
+
+### 빠른 시작
+```bash
+# 미국 주식 분석 파이프라인 실행 (한국어 기본 - 국내주식과 동일)
+python prism-us/us_stock_analysis_orchestrator.py --mode morning
+
+# 영어 리포트 및 메시지로 실행
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
+
+# 텔레그램 없이 테스트
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
+```
+
+## 📈 '26.01.25 기준 매매 시뮬레이터 및 실제 계좌 실적
 ### ⭐ 시즌1 ('25.09.28 종료. 실계좌 매매 없음)
 **시뮬레이터 실적**
 - 최초 시작일 : 2025.03.15
@@ -73,13 +109,13 @@ PRISM-INSIGHT는 **한국 주식시장(코스피/코스닥) 전문** **AI 분석
 ### ⭐⭐ 시즌2 (진행 중)
 **시뮬레이터 실적**
 - 최초 시작일 : 2025.09.29
-- 총 거래 건수: 28건
-- 수익 거래: 14건
-- 손실 거래: 15건
-- 승률: 48.28%
-- **매도 종목 누적 수익률: 79.88%**
-- **포트폴리오 실현 수익률: 7.99%** (10개 슬롯으로 분산 관리, 79.88% ÷ 10)
-- 시장 수익률(시즌2 시작 대비): KOSPI +19.49%, KOSDAQ +9.22%
+- 총 거래 건수: 50건
+- 수익 거래: 21건
+- 손실 거래: 29건
+- 승률: 42.00%
+- **매도 종목 누적 수익률: 127.34%**
+- **포트폴리오 실현 수익률: 12.73%** (10개 슬롯으로 분산 관리, 127.34% ÷ 10)
+- 시장 수익률(시즌2 시작 대비): KOSPI +45.43%, KOSDAQ +17.39%
 - **[매매 성과 요약 대시보드](https://analysis.stocksimulation.kr/)**
 
 **실제계좌 실적**
@@ -92,7 +128,7 @@ PRISM-INSIGHT는 **한국 주식시장(코스피/코스닥) 전문** **AI 분석
 
 PRISM-INSIGHT는 **13개의 전문화된 AI 에이전트들이 협업하는 다중 에이전트 시스템**입니다. 각 에이전트는 특정 분석 영역에 특화되어 있으며, 서로 유기적으로 협력하여 전문가 수준의 종합 분석 및 매매를 이행합니다.
 
-### 📊 분석 팀 (6개 에이전트) - GPT-4.1 기반
+### 📊 분석 팀 (6개 에이전트) - GPT-5 기반
 
 #### 1. 기술적 분석가 (Technical Analyst)
 <img src="docs/images/aiagent/technical_analyst.jpeg" alt="Technical Analyst" width="300"/>
@@ -149,7 +185,7 @@ PRISM-INSIGHT는 **13개의 전문화된 AI 에이전트들이 협업하는 다�
 
 ---
 
-### 💡 전략 팀 (1개 에이전트) - GPT-4.1 기반
+### 💡 전략 팀 (1개 에이전트) - GPT-5 기반
 
 #### 7. 투자 전략가 (Investment Strategist)
 <img src="docs/images/aiagent/investment_strategist.jpeg" alt="Investment Strategist" width="300"/>
@@ -162,7 +198,7 @@ PRISM-INSIGHT는 **13개의 전문화된 AI 에이전트들이 협업하는 다�
 
 ---
 
-### 💬 커뮤니케이션 팀 (3개 에이전트) - GPT-4.1 / GPT-5-nano
+### 💬 커뮤니케이션 팀 (3개 에이전트) - GPT-5 기반
 
 #### 8-1. 요약 전문가 (Summary Specialist)
 <img src="docs/images/aiagent/summary_specialist.jpeg" alt="Summary Specialist" width="300"/>
@@ -193,7 +229,7 @@ PRISM-INSIGHT는 **13개의 전문화된 AI 에이전트들이 협업하는 다�
 
 ---
 
-### 📈 매매 시뮬레이션 팀 (2개 에이전트) - GPT-5.1 기반
+### 📈 매매 시뮬레이션 팀 (3개 에이전트) - GPT-5 기반
 
 #### 9-1. 매수 전문가 (Buy Specialist)
 <img src="docs/images/aiagent/buy_specialist.jpeg" alt="Buy Specialist" width="300"/>
@@ -259,7 +295,7 @@ PRISM-INSIGHT는 **13개의 전문화된 AI 에이전트들이 협업하는 다�
 
 ## 🎯 주요 기능
 
-- **🤖 AI 종합 분석 (핵심)**: GPT-4.1 기반 다중 에이전트 시스템을 통한 전문가급 주식 분석
+- **🤖 AI 종합 분석 (핵심)**: GPT-5 기반 다중 에이전트 시스템을 통한 전문가급 주식 분석
   [![분석 리포트 데모](https://img.youtube.com/vi/4WNtaaZug74/maxresdefault.jpg)](https://youtu.be/4WNtaaZug74)
 
 
@@ -272,7 +308,7 @@ PRISM-INSIGHT는 **13개의 전문화된 AI 에이전트들이 협업하는 다�
   <img src="docs/images/summary.png" alt="요약 전송" width="500">
 
 
-- **📈 매매 시뮬레이션**: GPT-5.1 기반 생성된 리포트를 활용한 투자 전략 시뮬레이션
+- **📈 매매 시뮬레이션**: GPT-5 기반 생성된 리포트를 활용한 투자 전략 시뮬레이션
   <img src="docs/images/simulation1.png" alt="시뮬레이션1" width="500">
 
   <img src="docs/images/simulation2.png" alt="시뮬레이션2" width="500">
@@ -293,18 +329,22 @@ PRISM-INSIGHT는 **13개의 전문화된 AI 에이전트들이 협업하는 다�
 
 ## 🧠 AI 모델 활용
 
-- **핵심 분석**: OpenAI GPT-4.1 (종합 주식 분석 에이전트)
-- **매매 시뮬레이션**: OpenAI GPT-5.1 (투자 전략 시뮬레이션)
+- **핵심 분석 및 매매**: OpenAI GPT-5 (종합 주식 분석 및 매매 시뮬레이션)
 - **텔레그램 대화**: Anthropic Claude Sonnet 4.5 (봇과의 상호작용)
-- **번역**: OpenAI GPT-5-NANO (텔레그램 채널 다중 언어 송출)
+- **번역**: OpenAI GPT-5 (텔레그램 채널 다중 언어 송출)
 
 ## 💡 사용한 MCP Servers
 
+### 한국 시장 (KR)
 - **[kospi_kosdaq](https://github.com/dragon1086/kospi-kosdaq-stock-server)**: 주식 보고서 작성 시 KRX(한국거래소) 주식 데이터 담당 MCP 서버
 - **[firecrawl](https://github.com/mendableai/firecrawl-mcp-server)**: 주식 보고서 작성 시 웹크롤링 전문 MCP 서버
 - **[perplexity](https://github.com/perplexityai/modelcontextprotocol/tree/main)**: 주식 보고서 작성 시 웹검색 전문 MCP 서버
 - **[sqlite](https://github.com/modelcontextprotocol/servers-archived/tree/HEAD/src/sqlite)**: 매매 시뮬레이션 내역 내부 DB 저장 전문 MCP 서버
 - **[time](https://github.com/modelcontextprotocol/servers/tree/main/src/time)**: 현재 시간 불러오는 MCP 서버
+
+### 미국 시장 (NEW)
+- **[yahoo-finance-mcp](https://pypi.org/project/yahoo-finance-mcp/)**: OHLCV, 기업 정보, 재무제표, 기관 보유 현황 (PyPI, uvx 원격 실행)
+- **[sec-edgar-mcp](https://pypi.org/project/sec-edgar-mcp/)**: SEC 공시, XBRL 재무제표, 내부자 거래 데이터 (PyPI, uvx 원격 실행)
 
 
 ## 🚀 시작하기
@@ -312,7 +352,7 @@ PRISM-INSIGHT는 **13개의 전문화된 AI 에이전트들이 협업하는 다�
 ### 사전 요구사항
 
 - Python 3.10+
-- OpenAI API 키 (GPT-4.1, GPT-5.1)
+- OpenAI API 키 (GPT-5, GPT-5)
 - Anthropic API 키 (Claude-Sonnet-4.5)
 - 텔레그램 봇 토큰 및 채널 ID
 - Playwright (PDF 변환용)
@@ -542,7 +582,7 @@ python telegram_bot_agent.py
 
 ```
 prism-insight/
-├── 📂 cores/                     # 🤖 핵심 AI 분석 엔진
+├── 📂 cores/                     # 🤖 핵심 AI 분석 엔진 (한국 시장)
 │   ├── 📂 agents/               # AI 에이전트 모듈
 │   │   ├── company_info_agents.py        # 기업 정보 분석 에이전트
 │   │   ├── news_strategy_agents.py       # 뉴스 및 투자 전략 에이전트
@@ -555,6 +595,18 @@ prism-insight/
 │   ├── report_generation.py     # 보고서 생성
 │   ├── stock_chart.py           # 차트 생성
 │   └── utils.py                 # 유틸리티 함수
+├── 📂 prism-us/                  # 🇺🇸 미국 주식 모듈 (NEW)
+│   ├── us_stock_analysis_orchestrator.py  # 미국 메인 오케스트레이터
+│   ├── us_trigger_batch.py                # 미국 급등주 포착
+│   ├── us_stock_tracking_agent.py         # 미국 매매 시뮬레이션
+│   ├── us_telegram_summary_agent.py       # 미국 텔레그램 요약
+│   ├── check_market_day.py                # 미국 시장 휴일 체커
+│   ├── 📂 cores/                          # 미국 핵심 분석
+│   │   ├── us_data_client.py              # 통합 데이터 클라이언트 (yfinance + finnhub)
+│   │   ├── us_surge_detector.py           # 급등주 탐지 모듈
+│   │   ├── us_analysis.py                 # 핵심 분석 모듈
+│   │   └── 📂 agents/                     # 미국 전용 에이전트
+│   └── 📂 tracking/                       # 미국 데이터베이스 스키마
 ├── 📂 examples/streamlit/        # 웹 인터페이스
 ├── 📂 trading/                   # 💱 자동매매 시스템 (한국투자증권 API)
 │   ├── kis_auth.py              # KIS API 인증 및 토큰 관리
@@ -566,12 +618,14 @@ prism-insight/
 │   └── 📂 samples/              # API 샘플 코드
 ├── 📂 utils/                     # 유틸리티 스크립트
 ├── 📂 tests/                     # 테스트 코드
-├── stock_analysis_orchestrator.py # 🎯 메인 오케스트레이터
+├── stock_analysis_orchestrator.py # 🎯 메인 오케스트레이터 (한국 시장)
 ├── telegram_config.py           # 텔레그램 설정 관리 클래스
 ├── trigger_batch.py             # 급등주 포착 배치
 ├── telegram_bot_agent.py        # 텔레그램 봇 (Claude 기반)
-├── stock_tracking_agent.py      # 매매 시뮬레이션 (GPT-5.1)
+├── stock_tracking_agent.py      # 매매 시뮬레이션 (GPT-5)
 ├── stock_tracking_enhanced_agent.py # 향상된 매매 시뮬레이션
+├── compress_trading_memory.py   # 매매 메모리 압축 및 정리
+├── performance_tracker_batch.py # 일일 성과 추적
 ├── pdf_converter.py             # PDF 변환
 ├── requirements.txt             # 의존성 목록
 ├── .env.example                 # 환경 변수 예시
@@ -707,7 +761,7 @@ SaaS 기업 및 상업적 사용의 경우 별도 **상업 라이선스**가 필
 ### 💰 투명한 운영
 
 매월 약 ₩290,000의 API 비용과 서버 비용이 발생합니다 ('25.10월 기준) :
-- OpenAI API (GPT-4.1, GPT-5.1): ~₩170,000/월
+- OpenAI API (GPT-5, GPT-5): ~₩170,000/월
 - Anthropic API (Claude Sonnet 4.5): ~₩30,000/월
 - Firecrawl API (MCP Server): ~₩30,000/월
 - Perplexity API (MCP Server): ~₩15,000/월

@@ -286,8 +286,8 @@ class USStockAnalysisOrchestrator:
 
         logger.info(f"Starting US telegram message transmission for {len(message_paths)} messages")
 
-        # Use English channel by default for US stocks
-        chat_id = self.telegram_config.get_broadcast_channel_id("en") or self.telegram_config.channel_id
+        # Use main channel (Korean) by default - same as Korean stock version
+        chat_id = self.telegram_config.channel_id
         if not chat_id:
             logger.error("Telegram channel ID is not configured for US stocks.")
             return
@@ -317,14 +317,14 @@ class USStockAnalysisOrchestrator:
         except Exception as e:
             logger.error(f"Error during telegram message transmission: {str(e)}")
 
-    async def send_trigger_alert(self, mode: str, trigger_results_file: str, language: str = "en"):
+    async def send_trigger_alert(self, mode: str, trigger_results_file: str, language: str = "ko"):
         """
         Send trigger execution result to telegram channel immediately
 
         Args:
             mode: 'morning' or 'afternoon'
             trigger_results_file: Path to trigger results JSON file
-            language: Message language (default: "en")
+            language: Message language (default: "ko")
         """
         if not self.telegram_config.use_telegram:
             logger.info(f"Telegram disabled - skipping US Prism Signal alert (mode: {mode})")
@@ -348,10 +348,21 @@ class USStockAnalysisOrchestrator:
                 logger.warning(f"No US trigger results found.")
                 return False
 
+            # Generate message in Korean (same as Korean stock version)
             message = self._create_trigger_alert_message(mode, all_results, trade_date)
 
-            # Use English channel
-            chat_id = self.telegram_config.get_broadcast_channel_id("en") or self.telegram_config.channel_id
+            # Translate message if English is requested
+            if language == "en":
+                try:
+                    logger.info("Translating US trigger alert message to English")
+                    from cores.agents.telegram_translator_agent import translate_telegram_message
+                    message = await translate_telegram_message(message, model="gpt-5-nano")
+                    logger.info("Translation complete")
+                except Exception as e:
+                    logger.error(f"Translation failed: {str(e)}. Using original Korean message.")
+
+            # Use main channel (Korean) by default
+            chat_id = self.telegram_config.channel_id
             if not chat_id:
                 logger.error("Telegram channel ID is not configured for US stocks.")
                 return False
@@ -379,19 +390,20 @@ class USStockAnalysisOrchestrator:
 
     def _create_trigger_alert_message(self, mode: str, results: dict, trade_date: str) -> str:
         """
-        Generate telegram alert message based on US trigger results
+        Generate telegram alert message based on US trigger results (Korean template - same as KR version)
         """
         formatted_date = f"{trade_date[:4]}.{trade_date[4:6]}.{trade_date[6:8]}"
 
+        # Korean template (same as Korean stock version)
         if mode == "morning":
-            title = "US Morning Prism Signal Alert"
-            time_desc = "10 minutes after market open"
+            title = "🔔 미국주식 오전 프리즘 시그널 얼럿"
+            time_desc = "장 시작 후 10분 시점"
         else:
-            title = "US Afternoon Prism Signal Alert"
-            time_desc = "After market close"
+            title = "🔔 미국주식 오후 프리즘 시그널 얼럿"
+            time_desc = "장 마감 후"
 
         message = f"{title}\n"
-        message += f"{formatted_date} {time_desc} - Stocks of Interest\n\n"
+        message += f"📅 {formatted_date} {time_desc} 포착된 관심종목\n\n"
 
         for trigger_type, stocks in results.items():
             emoji = self._get_trigger_emoji(trigger_type)
@@ -403,49 +415,52 @@ class USStockAnalysisOrchestrator:
                 current_price = stock.get("current_price", 0)
                 change_rate = stock.get("change_rate", 0)
 
-                arrow = "up" if change_rate > 0 else "down" if change_rate < 0 else "flat"
+                # Arrow based on change rate (same as KR version)
+                arrow = "⬆️" if change_rate > 0 else "⬇️" if change_rate < 0 else "➖"
 
-                message += f"- *{name}* ({ticker})\n"
+                message += f"· *{name}* ({ticker})\n"
                 message += f"  ${current_price:.2f} {arrow} {abs(change_rate):.2f}%\n"
 
-                if "volume_increase" in stock and "Volume" in trigger_type:
+                # Additional information based on trigger type
+                if "volume_increase" in stock and ("Volume" in trigger_type or "거래량" in trigger_type):
                     volume_increase = stock.get("volume_increase", 0)
-                    message += f"  Volume increase: {volume_increase:.2f}%\n"
-                elif "gap_rate" in stock and "Gap" in trigger_type:
+                    message += f"  거래량 증가: {volume_increase:.2f}%\n"
+                elif "gap_rate" in stock and ("Gap" in trigger_type or "갭" in trigger_type):
                     gap_rate = stock.get("gap_rate", 0)
-                    message += f"  Gap up: {gap_rate:.2f}%\n"
+                    message += f"  갭상승: {gap_rate:.2f}%\n"
 
                 message += "\n"
 
-        message += "Detailed analysis reports will be available in 10-30 minutes\n"
-        message += "This information is for reference only. Investment decisions are your responsibility."
+        message += "📋 10~30분 후 상세 분석 리포트가 제공됩니다\n"
+        message += "※ 본 정보는 투자 참고용이며, 투자 결정은 본인 책임입니다."
 
         return message
 
     def _get_trigger_emoji(self, trigger_type: str) -> str:
         """Return emoji matching trigger type"""
-        if "Volume" in trigger_type:
+        # Support both Korean and English trigger type names
+        if "Volume" in trigger_type or "거래량" in trigger_type:
             return "📊"
-        elif "Gap" in trigger_type:
+        elif "Gap" in trigger_type or "갭" in trigger_type:
             return "📈"
-        elif "Value" in trigger_type or "Cap" in trigger_type:
+        elif "Value" in trigger_type or "Cap" in trigger_type or "시총" in trigger_type:
             return "💰"
-        elif "Rise" in trigger_type or "Intraday" in trigger_type:
+        elif "Rise" in trigger_type or "Intraday" in trigger_type or "상승" in trigger_type:
             return "🚀"
-        elif "Closing" in trigger_type or "Strength" in trigger_type:
+        elif "Closing" in trigger_type or "Strength" in trigger_type or "마감" in trigger_type:
             return "🔨"
-        elif "Sideways" in trigger_type:
+        elif "Sideways" in trigger_type or "횡보" in trigger_type:
             return "↔️"
         else:
             return "🔎"
 
-    async def run_full_pipeline(self, mode: str, language: str = "en"):
+    async def run_full_pipeline(self, mode: str, language: str = "ko"):
         """
         Execute full US pipeline
 
         Args:
             mode: 'morning' or 'afternoon'
-            language: Analysis language (default: "en")
+            language: Analysis language (default: "ko" - same as Korean stock version)
         """
         logger.info(f"Starting US full pipeline - mode: {mode}")
 
@@ -509,7 +524,8 @@ class USStockAnalysisOrchestrator:
                             telegram_token=self.telegram_config.bot_token if self.telegram_config.use_telegram else None
                         )
 
-                        chat_id = self.telegram_config.get_broadcast_channel_id("en") if self.telegram_config.use_telegram else None
+                        # Use main channel (Korean) by default - same as Korean stock version
+                        chat_id = self.telegram_config.channel_id if self.telegram_config.use_telegram else None
 
                         trigger_results_file = f"trigger_results_us_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
                         tracking_success = await tracking_agent.run(
@@ -542,10 +558,12 @@ async def main():
     parser = argparse.ArgumentParser(description="US stock analysis and telegram transmission orchestrator")
     parser.add_argument("--mode", choices=["morning", "afternoon", "both"], default="both",
                         help="Execution mode (morning, afternoon, both)")
-    parser.add_argument("--language", choices=["en", "ko"], default="en",
-                        help="Analysis language (en: English, ko: Korean)")
+    parser.add_argument("--language", choices=["ko", "en"], default="ko",
+                        help="Analysis language (ko: Korean, en: English)")
     parser.add_argument("--no-telegram", action="store_true",
                         help="Disable telegram message transmission")
+    parser.add_argument("--force", action="store_true",
+                        help="Force execution even on market holidays (for testing)")
 
     args = parser.parse_args()
 
@@ -572,13 +590,19 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Check US market holiday
+    # Check for --force flag before market day check
+    force_execution = "--force" in sys.argv
+
+    # Check US market holiday (skip if --force is used)
     from check_market_day import is_us_market_day
 
-    if not is_us_market_day():
+    if not force_execution and not is_us_market_day():
         current_date = datetime.now().date()
         logger.info(f"Today ({current_date}) is a US stock market holiday. Not executing batch job.")
         sys.exit(0)
+
+    if force_execution:
+        logger.warning("Force execution enabled - ignoring market holiday check")
 
     # Start timer thread and execute main function only on business days
     import threading
