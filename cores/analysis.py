@@ -160,9 +160,29 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             executive_summary = await generate_summary(
                 section_reports, company_name, company_code, reference_date, logger, language
             )
+            # Remove duplicate title/date if the agent added them
+            import re
+            executive_summary = executive_summary.lstrip('\n')
+            # Remove any leading H1 title that matches the report title pattern
+            executive_summary = re.sub(
+                r'^#\s*' + re.escape(company_name) + r'\s*\(' + re.escape(company_code) + r'\)[^\n]*\n+',
+                '',
+                executive_summary,
+                flags=re.IGNORECASE
+            )
+            # Remove any publication date line right after title removal
+            executive_summary = re.sub(
+                r'^\*{0,2}(Publication Date|발행일)\*{0,2}\s*:\s*[^\n]+\n+',
+                '',
+                executive_summary,
+                flags=re.IGNORECASE
+            )
+            # Remove leading separators (---)
+            executive_summary = re.sub(r'^-{3,}\s*\n+', '', executive_summary)
+            executive_summary = executive_summary.lstrip('\n')
         except Exception as e:
             logger.error(f"Error generating executive summary: {e}")
-            executive_summary = "# Key Investment Points\n\nProblem occurred while generating analysis summary."
+            executive_summary = "## 핵심 요약\n\n요약 생성 중 오류가 발생했습니다." if language == "ko" else "## Executive Summary\n\nProblem occurred while generating analysis summary."
 
         # 10. Generate charts
         charts_dir = os.path.join("../charts", f"{company_code}_{reference_date}")
@@ -196,38 +216,99 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             market_cap_chart_html = None
             fundamentals_chart_html = None
 
-        # 11. Compose final report
+        # 11. Compose final report with proper heading hierarchy
         disclaimer = get_disclaimer(language)
-        final_report = disclaimer + "\n\n" + executive_summary + "\n\n"
 
-        all_sections = base_sections + ["investment_strategy"]
-        for section in all_sections:
-            if section in section_reports:
-                final_report += section_reports[section] + "\n\n"
+        # Format reference date for display
+        formatted_date = f"{reference_date[:4]}.{reference_date[4:6]}.{reference_date[6:]}"
 
-                # Add price and volume charts after price_volume_analysis section
-                if section == "price_volume_analysis" and (price_chart_html or volume_chart_html):
-                    final_report += "\n## Price and Volume Charts\n\n"
+        # Define main section headers by language
+        if language == "ko":
+            main_headers = {
+                "title": f"# {company_name} ({company_code}) 분석 보고서",
+                "pub_date": "발행일",
+                "tech_analysis": f"## 1. 기술적 분석\n\n",
+                "fundamental": f"## 2. 펀더멘털 분석\n\n",
+                "news": f"## 3. 뉴스 분석\n\n",
+                "market": f"## 4. 시장 분석\n\n",
+                "strategy": f"## 5. 투자 전략\n\n"
+            }
+        else:
+            main_headers = {
+                "title": f"# {company_name} ({company_code}) Analysis Report",
+                "pub_date": "Publication Date",
+                "tech_analysis": f"## 1. Technical Analysis\n\n",
+                "fundamental": f"## 2. Fundamental Analysis\n\n",
+                "news": f"## 3. News Analysis\n\n",
+                "market": f"## 4. Market Analysis\n\n",
+                "strategy": f"## 5. Investment Strategy\n\n"
+            }
 
+        # Build final report with title first (disclaimer at the end like US version)
+        final_report = f"""{main_headers["title"]}
+
+**{main_headers["pub_date"]}:** {formatted_date}
+
+---
+
+{executive_summary}
+
+"""
+
+        # Add sections with proper main headers
+        # Technical Analysis section (price_volume + investor_trading)
+        if "price_volume_analysis" in section_reports or "investor_trading_analysis" in section_reports:
+            final_report += main_headers["tech_analysis"]
+            if "price_volume_analysis" in section_reports:
+                final_report += section_reports["price_volume_analysis"] + "\n\n"
+                # Add price and volume charts
+                if price_chart_html or volume_chart_html:
+                    chart_title = "### 가격 및 거래량 차트\n\n" if language == "ko" else "### Price and Volume Charts\n\n"
+                    final_report += chart_title
                     if price_chart_html:
-                        final_report += f"### Price Chart\n\n"
-                        final_report += price_chart_html + "\n\n"
-
+                        chart_subtitle = "#### 가격 차트\n\n" if language == "ko" else "#### Price Chart\n\n"
+                        final_report += chart_subtitle + price_chart_html + "\n\n"
                     if volume_chart_html:
-                        final_report += f"### Trading Volume Chart\n\n"
-                        final_report += volume_chart_html + "\n\n"
+                        chart_subtitle = "#### 거래량 차트\n\n" if language == "ko" else "#### Trading Volume Chart\n\n"
+                        final_report += chart_subtitle + volume_chart_html + "\n\n"
+            if "investor_trading_analysis" in section_reports:
+                final_report += section_reports["investor_trading_analysis"] + "\n\n"
 
-                # Add market cap and fundamental indicator charts after company_status section
-                elif section == "company_status" and (market_cap_chart_html or fundamentals_chart_html):
-                    final_report += "\n## Market Cap and Fundamental Indicator Charts\n\n"
-
+        # Fundamental Analysis section (company_status + company_overview)
+        if "company_status" in section_reports or "company_overview" in section_reports:
+            final_report += main_headers["fundamental"]
+            if "company_status" in section_reports:
+                final_report += section_reports["company_status"] + "\n\n"
+                # Add market cap and fundamental indicator charts
+                if market_cap_chart_html or fundamentals_chart_html:
+                    chart_title = "### 시가총액 및 펀더멘털 차트\n\n" if language == "ko" else "### Market Cap and Fundamental Charts\n\n"
+                    final_report += chart_title
                     if market_cap_chart_html:
-                        final_report += f"### Market Cap Trend\n\n"
-                        final_report += market_cap_chart_html + "\n\n"
-
+                        chart_subtitle = "#### 시가총액 추이\n\n" if language == "ko" else "#### Market Cap Trend\n\n"
+                        final_report += chart_subtitle + market_cap_chart_html + "\n\n"
                     if fundamentals_chart_html:
-                        final_report += f"### Fundamental Indicator Analysis\n\n"
-                        final_report += fundamentals_chart_html + "\n\n"
+                        chart_subtitle = "#### 펀더멘털 지표 분석\n\n" if language == "ko" else "#### Fundamental Indicator Analysis\n\n"
+                        final_report += chart_subtitle + fundamentals_chart_html + "\n\n"
+            if "company_overview" in section_reports:
+                final_report += section_reports["company_overview"] + "\n\n"
+
+        # News Analysis section
+        if "news_analysis" in section_reports:
+            final_report += main_headers["news"]
+            final_report += section_reports["news_analysis"] + "\n\n"
+
+        # Market Analysis section
+        if "market_index_analysis" in section_reports:
+            final_report += main_headers["market"]
+            final_report += section_reports["market_index_analysis"] + "\n\n"
+
+        # Investment Strategy section
+        if "investment_strategy" in section_reports:
+            final_report += main_headers["strategy"]
+            final_report += section_reports["investment_strategy"] + "\n\n"
+
+        # Add disclaimer at the end
+        final_report += "---\n\n" + disclaimer + "\n"
 
         # 12. Final markdown cleanup
         final_report = clean_markdown(final_report)

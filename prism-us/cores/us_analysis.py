@@ -62,217 +62,14 @@ get_us_agent_directory = _us_agents_module.get_us_agent_directory
 # Market analysis cache storage (global variable)
 _us_market_analysis_cache = {}
 
-
-def figure_to_base64_html(fig, chart_name: str = "chart", width: int = 900,
-                          dpi: int = 80, image_format: str = 'jpg') -> str:
-    """
-    Convert a matplotlib figure to base64 HTML img tag.
-
-    Args:
-        fig: matplotlib figure object
-        chart_name: name for the chart (used in alt text)
-        width: image width in pixels
-        dpi: image resolution
-        image_format: 'jpg' or 'png'
-
-    Returns:
-        HTML img tag with embedded base64 image
-    """
-    import base64
-    from io import BytesIO
-    import matplotlib.pyplot as plt
-
-    try:
-        buffer = BytesIO()
-
-        save_kwargs = {
-            'format': image_format,
-            'bbox_inches': 'tight',
-            'dpi': dpi
-        }
-
-        if image_format.lower() == 'png':
-            save_kwargs['transparent'] = False
-            save_kwargs['facecolor'] = 'white'
-
-        fig.savefig(buffer, **save_kwargs)
-        plt.close(fig)
-        buffer.seek(0)
-
-        # Optional JPEG compression
-        if image_format.lower() in ['jpg', 'jpeg']:
-            try:
-                from PIL import Image
-                img = Image.open(buffer)
-                new_buffer = BytesIO()
-                img.save(new_buffer, format='JPEG', quality=85, optimize=True)
-                buffer = new_buffer
-                buffer.seek(0)
-            except ImportError:
-                pass
-
-        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
-
-        content_type = f"image/{image_format.lower()}"
-        if image_format.lower() == 'jpg':
-            content_type = 'image/jpeg'
-
-        return f'<img src="data:{content_type};base64,{img_str}" alt="{chart_name}" width="{width}" />'
-
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Failed to convert figure to base64: {e}")
-        return None
-
-
-def create_us_price_chart(ticker: str, company_name: str, hist_df) -> object:
-    """
-    Create price chart for US stocks using yfinance historical data.
-
-    Args:
-        ticker: Stock ticker symbol (e.g., "AAPL")
-        company_name: Company name for chart title
-        hist_df: pandas DataFrame with OHLCV data from yfinance
-
-    Returns:
-        matplotlib figure object or None if failed
-    """
-    try:
-        import pandas as pd
-        import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
-        import mplfinance as mpf
-
-        # Ensure DataFrame has required columns
-        if hist_df is None or hist_df.empty:
-            return None
-
-        # yfinance returns: Open, High, Low, Close, Volume, Dividends, Stock Splits
-        # We need: Open, High, Low, Close, Volume
-        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-        for col in required_cols:
-            if col not in hist_df.columns:
-                return None
-
-        # Create a copy and ensure proper index
-        df = hist_df[required_cols].copy()
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-
-        # Sort by date
-        df = df.sort_index()
-
-        # Calculate moving averages
-        df['MA20'] = df['Close'].rolling(window=20).mean()
-        df['MA60'] = df['Close'].rolling(window=60).mean()
-        df['MA120'] = df['Close'].rolling(window=120).mean()
-
-        # Create OHLCV DataFrame for mplfinance
-        ohlc_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-
-        # Create chart style
-        mc = mpf.make_marketcolors(
-            up='#26a69a',
-            down='#ef5350',
-            edge='inherit',
-            wick='inherit',
-            volume={'up': '#26a69a', 'down': '#ef5350'}
-        )
-        s = mpf.make_mpf_style(
-            marketcolors=mc,
-            gridstyle=':',
-            gridcolor='#e0e0e0'
-        )
-
-        # Chart title
-        title = f"{company_name} ({ticker}) - Price Chart"
-
-        # Additional plot settings for moving averages
-        additional_plots = []
-        if not df['MA20'].isna().all():
-            additional_plots.append(mpf.make_addplot(df['MA20'], color='#ff9500', width=1))
-        if not df['MA60'].isna().all():
-            additional_plots.append(mpf.make_addplot(df['MA60'], color='#0066cc', width=1.5))
-        if not df['MA120'].isna().all():
-            additional_plots.append(mpf.make_addplot(df['MA120'], color='#cc3300', width=1.5, linestyle='--'))
-
-        # Create chart
-        fig, axes = mpf.plot(
-            ohlc_df,
-            type='candle',
-            style=s,
-            title=title,
-            ylabel='Price ($)',
-            volume=True,
-            figsize=(12, 8),
-            tight_layout=True,
-            addplot=additional_plots if additional_plots else None,
-            panel_ratios=(4, 1),
-            returnfig=True
-        )
-
-        # Add annotations for key price points
-        max_idx = df['Close'].idxmax()
-        min_idx = df['Close'].idxmin()
-        last_idx = df.index[-1]
-
-        ax1 = axes[0]
-        bbox_props = dict(boxstyle="round,pad=0.3", fc="#f8f9fa", ec="none", alpha=0.9)
-
-        # High point annotation
-        ax1.annotate(
-            f"High: ${df.loc[max_idx, 'Close']:,.2f}",
-            xy=(max_idx, df.loc[max_idx, 'Close']),
-            xytext=(0, 15),
-            textcoords='offset points',
-            ha='center',
-            va='bottom',
-            bbox=bbox_props,
-            fontsize=9
-        )
-
-        # Low point annotation
-        ax1.annotate(
-            f"Low: ${df.loc[min_idx, 'Close']:,.2f}",
-            xy=(min_idx, df.loc[min_idx, 'Close']),
-            xytext=(0, -15),
-            textcoords='offset points',
-            ha='center',
-            va='top',
-            bbox=bbox_props,
-            fontsize=9
-        )
-
-        # Current price annotation
-        ax1.annotate(
-            f"Current: ${df.loc[last_idx, 'Close']:,.2f}",
-            xy=(last_idx, df.loc[last_idx, 'Close']),
-            xytext=(15, 0),
-            textcoords='offset points',
-            ha='left',
-            va='center',
-            bbox=bbox_props,
-            fontsize=9
-        )
-
-        # Add legend for moving averages
-        if additional_plots:
-            legend_labels = []
-            if not df['MA20'].isna().all():
-                legend_labels.append('MA20')
-            if not df['MA60'].isna().all():
-                legend_labels.append('MA60')
-            if not df['MA120'].isna().all():
-                legend_labels.append('MA120')
-            if legend_labels:
-                ax1.legend(legend_labels, loc='upper left', fontsize=8)
-
-        return fig
-
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Failed to create US price chart: {e}")
-        return None
+# Import chart functions from us_stock_chart module
+_chart_module = _import_from_project_root(
+    "us_stock_chart",
+    _prism_us_dir / "cores" / "us_stock_chart.py"
+)
+get_us_price_chart_html = _chart_module.get_us_price_chart_html
+get_us_institutional_chart_html = _chart_module.get_us_institutional_chart_html
+get_us_technical_chart_html = _chart_module.get_us_technical_chart_html
 
 
 async def analyze_us_stock(
@@ -425,6 +222,26 @@ async def analyze_us_stock(
             summary = await generate_summary(
                 section_reports, company_name, ticker, reference_date, logger, language
             )
+            # Remove duplicate title/date if the agent added them
+            # Pattern: "# Company Name (TICKER) Analysis Report\n**Publication Date:** ..."
+            import re
+            summary = summary.lstrip('\n')
+            # Remove any leading H1 title that matches the report title pattern
+            summary = re.sub(
+                r'^#\s*' + re.escape(company_name) + r'\s*\(' + re.escape(ticker) + r'\)[^\n]*\n+',
+                '',
+                summary,
+                flags=re.IGNORECASE
+            )
+            # Remove any publication date line right after title removal
+            summary = re.sub(
+                r'^\*{0,2}(Publication Date|발행일)\*{0,2}\s*:\s*[^\n]+\n+',
+                '',
+                summary,
+                flags=re.IGNORECASE
+            )
+            # Remove leading separators (---)
+            summary = re.sub(r'^-{3,}\s*\n+', '', summary)
             section_reports["summary"] = summary.lstrip('\n')
             logger.info(f"Completed summary - {len(summary)} characters")
         except Exception as e:
@@ -432,7 +249,14 @@ async def analyze_us_stock(
             section_reports["summary"] = "Summary generation failed"
 
         # 9. Generate charts (optional - may fail if yfinance data unavailable)
-        chart_section = ""
+        # Charts are inserted into specific sections:
+        # - Price chart → 1-1. Price and Volume Analysis
+        # - Institutional chart → 1-2. Institutional Ownership Analysis
+        # - Technical indicators chart → 4. Market Analysis
+        price_chart_html = ""
+        institutional_chart_html = ""
+        technical_chart_html = ""
+
         try:
             import yfinance as yf
 
@@ -441,77 +265,121 @@ async def analyze_us_stock(
             hist = stock.history(period="1y")
 
             if not hist.empty:
-                # Create US price chart using yfinance data
-                price_chart = create_us_price_chart(ticker, company_name, hist)
-                if price_chart:
-                    chart_html = figure_to_base64_html(
-                        price_chart,
-                        chart_name=f"{company_name} ({ticker}) Price Chart",
-                        width=900,
-                        dpi=80,
-                        image_format='jpg'
-                    )
-                    if chart_html:
-                        chart_section = f"\n\n## Price Chart\n\n{chart_html}"
-                        logger.info(f"Generated price chart for {ticker}")
+                # 1. Price Chart (Candlestick with MA and Volume)
+                price_chart_html = get_us_price_chart_html(
+                    ticker, company_name, hist, width=900, dpi=80
+                )
+                if price_chart_html:
+                    logger.info(f"Generated price chart for {ticker}")
+                else:
+                    logger.warning(f"Failed to generate price chart for {ticker}")
+
+                # 2. Institutional Holdings Chart
+                major_holders = stock.major_holders
+                institutional_holders = stock.institutional_holders
+                institutional_chart_html = get_us_institutional_chart_html(
+                    ticker, company_name, major_holders, institutional_holders, width=900, dpi=80
+                )
+                if institutional_chart_html:
+                    logger.info(f"Generated institutional chart for {ticker}")
+                else:
+                    logger.warning(f"Failed to generate institutional chart for {ticker}")
+
+                # 3. Technical Indicators Chart (RSI + MACD)
+                technical_chart_html = get_us_technical_chart_html(
+                    ticker, company_name, hist, width=900, dpi=80
+                )
+                if technical_chart_html:
+                    logger.info(f"Generated technical indicators chart for {ticker}")
+                else:
+                    logger.warning(f"Failed to generate technical indicators chart for {ticker}")
+
         except Exception as e:
             logger.warning(f"Chart generation skipped: {e}")
 
         # 10. Compile final report
         # Header
         formatted_date = f"{reference_date[:4]}.{reference_date[4:6]}.{reference_date[6:]}"
-        final_report = f"""# {company_name} ({ticker}) Analysis Report
 
-**Publication Date:** {formatted_date}
+        # Build chart sections with fallback messages
+        price_chart_section = ""
+        if price_chart_html:
+            price_chart_section = f"\n\n#### Price Chart\n\n{price_chart_html}\n"
+
+        institutional_chart_section = ""
+        if institutional_chart_html:
+            institutional_chart_section = f"\n\n#### Institutional Holdings Chart\n\n{institutional_chart_html}\n"
+
+        technical_chart_section = ""
+        if technical_chart_html:
+            technical_chart_section = f"\n\n#### Technical Indicators (RSI & MACD)\n\n{technical_chart_html}\n"
+
+        # Language-specific headers
+        if language == "ko":
+            headers = {
+                "title": f"# {company_name} ({ticker}) 분석 보고서",
+                "pub_date": "발행일",
+                "exec_summary": "## 핵심 요약",
+                "tech_analysis": "## 1. 기술적 분석",
+                "fundamental": "## 2. 펀더멘털 분석",
+                "news": "## 3. 최근 주요 뉴스 요약",
+                "market": "## 4. 시장 분석",
+                "strategy": "## 5. 투자 전략 및 의견",
+            }
+        else:
+            headers = {
+                "title": f"# {company_name} ({ticker}) Analysis Report",
+                "pub_date": "Publication Date",
+                "exec_summary": "## Executive Summary",
+                "tech_analysis": "## 1. Technical Analysis",
+                "fundamental": "## 2. Fundamental Analysis",
+                "news": "## 3. Recent Major News Summary",
+                "market": "## 4. Market Analysis",
+                "strategy": "## 5. Investment Strategy and Opinion",
+            }
+
+        final_report = f"""{headers["title"]}
+
+**{headers["pub_date"]}:** {formatted_date}
 
 ---
 
-## Executive Summary
-
-{section_reports.get("summary", "Summary not available")}
+{section_reports.get("summary", headers["exec_summary"] + "\n\nSummary not available")}
 
 ---
 
-## 1. Technical Analysis
-
-### 1-1. Price and Volume Analysis
+{headers["tech_analysis"]}
 
 {section_reports.get("price_volume_analysis", "Analysis not available")}
-
-### 1-2. Institutional Ownership Analysis
-
+{price_chart_section}
 {section_reports.get("institutional_holdings_analysis", "Analysis not available")}
-
+{institutional_chart_section}
 ---
 
-## 2. Fundamental Analysis
-
-### 2-1. Company Status Analysis
+{headers["fundamental"]}
 
 {section_reports.get("company_status", "Analysis not available")}
-
-### 2-2. Company Overview Analysis
 
 {section_reports.get("company_overview", "Analysis not available")}
 
 ---
 
-## 3. Recent Major News Summary
+{headers["news"]}
 
 {section_reports.get("news_analysis", "Analysis not available")}
 
 ---
 
-## 4. Market Analysis
+{headers["market"]}
 
 {section_reports.get("market_index_analysis", "Analysis not available")}
-
+{technical_chart_section}
 ---
 
-## 5. Investment Strategy and Opinion
+{headers["strategy"]}
 
 {section_reports.get("investment_strategy", "Strategy not available")}
-{chart_section}
+
 ---
 
 {get_disclaimer(language)}
