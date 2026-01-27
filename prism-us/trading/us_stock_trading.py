@@ -1230,60 +1230,73 @@ class USStockTrading:
 
     def get_account_summary(self) -> Optional[Dict[str, Any]]:
         """
-        Get account summary for US stocks
+        Get account summary for US stocks including USD cash balance
 
         Returns:
             {
-                'total_eval_amount': Total evaluation in USD,
+                'total_eval_amount': Total stock evaluation in USD,
                 'total_profit_amount': Total P/L in USD,
                 'total_profit_rate': Total P/L rate (%),
-                'available_amount': Available for trading in USD
+                'available_amount': Available USD for trading,
+                'usd_cash': USD cash balance,
+                'exchange_rate': USD/KRW exchange rate
             }
         """
-        api_url = "/uapi/overseas-stock/v1/trading/inquire-psamount"
-
-        if self.mode == "real":
-            tr_id = "TTTS3007R"
-        else:
-            tr_id = "VTTS3007R"
+        # Use inquire-present-balance API for accurate USD cash info
+        api_url = "/uapi/overseas-stock/v1/trading/inquire-present-balance"
+        tr_id = "CTRP6504R"  # 해외주식 체결기준 현재잔고
 
         params = {
             "CANO": self.trenv.my_acct,
             "ACNT_PRDT_CD": self.trenv.my_prod,
-            "OVRS_EXCG_CD": "NASD",
-            "OVRS_ORD_UNPR": "0",
-            "ITEM_CD": ""
+            "WCRC_FRCR_DVSN_CD": "02",  # 02: 외화
+            "NATN_CD": "840",  # 미국
+            "TR_MKET_CD": "00",  # 전체
+            "INQR_DVSN_CD": "00"  # 전체
         }
 
         try:
             res = ka._url_fetch(api_url, tr_id, "", params)
 
             if res.isOK():
-                output = res.getBody().output
+                body = res.getBody()
+                output2 = body.output2 if hasattr(body, 'output2') else []
+                output3 = body.output3 if hasattr(body, 'output3') else {}
 
-                if output:
-                    summary = {
-                        'total_eval_amount': float(output.get('tot_evlu_pfls_amt', 0) or 0),
-                        'available_amount': float(output.get('ord_psbl_frcr_amt', 0) or 0),
-                        'max_buy_amount': float(output.get('max_ord_psbl_amt', 0) or 0),
-                    }
+                # Extract USD info from output2
+                usd_cash = 0.0
+                exchange_rate = 0.0
 
-                    # Calculate from portfolio for totals
-                    portfolio = self.get_portfolio()
-                    total_eval = sum(s['eval_amount'] for s in portfolio)
-                    total_profit = sum(s['profit_amount'] for s in portfolio)
-                    total_cost = sum(s['avg_price'] * s['quantity'] for s in portfolio)
+                if output2 and isinstance(output2, list):
+                    for item in output2:
+                        if item.get('crcy_cd') == 'USD':
+                            usd_cash = float(item.get('frcr_dncl_amt_2', 0) or 0)
+                            exchange_rate = float(item.get('frst_bltn_exrt', 0) or 0)
+                            break
 
-                    summary['total_eval_amount'] = total_eval
-                    summary['total_profit_amount'] = total_profit
-                    summary['total_profit_rate'] = (total_profit / total_cost * 100) if total_cost > 0 else 0
+                # Calculate from portfolio for stock totals
+                portfolio = self.get_portfolio()
+                total_eval = sum(s['eval_amount'] for s in portfolio)
+                total_profit = sum(s['profit_amount'] for s in portfolio)
+                total_cost = sum(s['avg_price'] * s['quantity'] for s in portfolio)
 
-                    logger.info(f"Account Summary: Eval ${summary['total_eval_amount']:.2f}, "
-                               f"P/L ${summary['total_profit_amount']:+.2f} "
-                               f"({summary['total_profit_rate']:+.2f}%)")
+                summary = {
+                    'total_eval_amount': total_eval,
+                    'total_profit_amount': total_profit,
+                    'total_profit_rate': (total_profit / total_cost * 100) if total_cost > 0 else 0,
+                    'available_amount': usd_cash,  # USD cash available for trading
+                    'usd_cash': usd_cash,
+                    'exchange_rate': exchange_rate,
+                }
 
-                    return summary
+                logger.info(f"Account Summary: Stock Eval ${summary['total_eval_amount']:.2f}, "
+                           f"P/L ${summary['total_profit_amount']:+.2f} "
+                           f"({summary['total_profit_rate']:+.2f}%), "
+                           f"USD Cash ${summary['usd_cash']:.2f}")
 
+                return summary
+
+            logger.error(f"Account summary API failed: {res.getErrorCode()} - {res.getErrorMessage()}")
             return None
 
         except Exception as e:
