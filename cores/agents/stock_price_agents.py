@@ -47,8 +47,8 @@ def create_price_volume_analysis_agent(company_name, company_code, reference_dat
 
                         ## Report Format
                         - Insert 2 newline characters at the start of the report (\\n\\n)
-                        - Title: "# 1-1. Stock Price and Trading Volume Analysis"
-                        - Subtitles in ## format, sub-subtitles in ### format
+                        - Title: "### 1-1. Stock Price and Trading Volume Analysis"
+                        - Sub-sections MUST use "#### Sub-section Title" format (markdown #### required)
                         - Emphasize important information in **bold**
                         - Present major data summaries in table format
                         - Present key support/resistance levels, trading points, and other important price levels as specific figures
@@ -107,8 +107,8 @@ def create_price_volume_analysis_agent(company_name, company_code, reference_dat
 
                         ## 보고서 형식
                         - 보고서 시작 시 개행문자 2번 삽입(\\n\\n)
-                        - 제목: "# 1-1. 주가 및 거래량 분석"
-                        - 부제목은 ## 형식으로, 소제목은 ### 형식으로 구성
+                        - 제목: "### 1-1. 주가 및 거래량 분석"
+                        - 소제목은 반드시 "#### 소제목명" 형식 사용 (마크다운 #### 필수)
                         - 중요 정보는 **굵은 글씨**로 강조
                         - 표 형식으로 주요 데이터 요약 제시
                         - 주요 지지선/저항선, 매매 포인트 등 중요 가격대는 구체적 수치로 제시
@@ -187,8 +187,8 @@ def create_investor_trading_analysis_agent(company_name, company_code, reference
 
                         ## Report Format
                         - Insert 2 newline characters at the start of the report (\\n\\n)
-                        - Title: "# 1-2. Investor Trading Trend Analysis"
-                        - Subtitles in ## format, sub-subtitles in ### format
+                        - Title: "### 1-2. Investor Trading Trend Analysis"
+                        - Sub-sections MUST use "#### Sub-section Title" format (markdown #### required)
                         - Emphasize important information in **bold**
                         - Present major data summaries in table format
                         - Present key trading patterns and time points as specific dates and figures
@@ -244,8 +244,8 @@ def create_investor_trading_analysis_agent(company_name, company_code, reference
 
                         ## 보고서 형식
                         - 보고서 시작 시 개행문자 2번 삽입(\\n\\n)
-                        - 제목: "# 1-2. 투자자 거래 동향 분석"
-                        - 부제목은 ## 형식으로, 소제목은 ### 형식으로 구성
+                        - 제목: "### 1-2. 투자자 거래 동향 분석"
+                        - 소제목은 반드시 "#### 소제목명" 형식 사용 (마크다운 #### 필수)
                         - 중요 정보는 **굵은 글씨**로 강조
                         - 표 형식으로 주요 데이터 요약 제시
                         - 주요 매매 패턴과 시점은 구체적 날짜와 수치로 제시

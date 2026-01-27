@@ -11,9 +11,10 @@ Run Ubuntu 24.04-based AI stock analysis system easily with Docker.
 2. [Prerequisites](#-prerequisites)
 3. [Installation and Execution](#-installation-and-execution)
 4. [Configuration Files](#-configuration-files)
-5. [Testing](#-testing)
-6. [Usage](#-usage)
-7. [Troubleshooting](#-troubleshooting)
+5. [Cron Automation](#-cron-automation)
+6. [Testing](#-testing)
+7. [Usage](#-usage)
+8. [Troubleshooting](#-troubleshooting)
 
 ---
 
@@ -28,6 +29,7 @@ Run Ubuntu 24.04-based AI stock analysis system easily with Docker.
 - **UV**: Python package manager
 - **Playwright**: Chromium-based PDF generation (modern HTML to PDF converter)
 - **Korean Fonts**: Nanum font family
+- **Cron**: Built-in scheduled task automation (KR/US stock analysis)
 
 #### Python Packages
 - OpenAI API (GPT-4.1, GPT-5.1)
@@ -230,6 +232,104 @@ cat .gitignore | grep -E "\.env|secrets"
 
 ---
 
+## ⏰ Cron Automation
+
+The Docker container includes **built-in cron** for automated stock analysis. Cron starts automatically when the container starts.
+
+### Cron Schedule Overview
+
+#### Korean Stock Market (KST)
+
+| Time | Job | Days |
+|------|-----|------|
+| 02:00 | Config backup | Daily |
+| 03:00 | Log cleanup | Daily |
+| 03:00 | Memory compression | Sunday |
+| 07:00 | Stock data update | Mon-Fri |
+| 09:30 | **KR Morning batch** | Mon-Fri |
+| 15:40 | **KR Afternoon batch** | Mon-Fri |
+| 11:05 | Dashboard refresh | Mon-Fri |
+| 17:00 | Performance tracker | Mon-Fri |
+| 17:10 | Dashboard refresh | Mon-Fri |
+
+#### US Stock Market (KST, based on EST)
+
+| Time (KST) | US Time (EST) | Job | Days |
+|------------|---------------|-----|------|
+| 00:15 | 10:15 | **US Morning batch** | Tue-Sat |
+| 02:30 | 12:30 | **US Midday batch** | Tue-Sat |
+| 06:30 | 16:30 | **US Afternoon batch** | Tue-Sat |
+| 07:30 | 17:30 | US Performance tracker | Tue-Sat |
+| 08:00 | 18:00 | US Dashboard refresh | Tue-Sat |
+| 03:30 | - | US log cleanup (30 days) | Daily |
+| 04:00 | - | US memory compression | Sunday |
+
+> **Note**: US market runs 3 times daily (no price limits). Tue-Sat in KST = Mon-Fri in US time.
+> Yahoo Finance data has 15-20 min delay, so schedules are adjusted accordingly.
+
+### Cron Management Commands
+
+```bash
+# Check cron service status
+docker exec prism-insight-container service cron status
+
+# View installed crontab
+docker exec prism-insight-container crontab -l
+
+# View cron logs
+docker exec prism-insight-container tail -f /var/log/cron.log
+
+# Disable cron (start container without cron)
+docker-compose run -e ENABLE_CRON=false prism-insight /bin/bash
+```
+
+### Modifying Cron Schedule
+
+The crontab file is located at `docker/crontab`. You can modify it on the host and apply changes:
+
+```bash
+# Edit crontab on host
+nano docker/crontab
+
+# Apply changes to running container
+docker exec prism-insight-container crontab /app/prism-insight/docker/crontab
+
+# Verify changes
+docker exec prism-insight-container crontab -l
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_CRON` | `true` | Enable/disable cron service |
+| `TZ` | `Asia/Seoul` | Timezone for cron jobs |
+
+### Log Files
+
+Cron job outputs are saved to `/app/prism-insight/logs/`:
+
+| Log File | Description |
+|----------|-------------|
+| `kr_morning_YYYYMMDD.log` | KR morning batch output |
+| `kr_afternoon_YYYYMMDD.log` | KR afternoon batch output |
+| `us_morning_YYYYMMDD.log` | US morning batch output |
+| `us_afternoon_YYYYMMDD.log` | US afternoon batch output |
+| `backup.log` | Config backup logs |
+| `cleanup.log` | Log cleanup logs |
+| `compression.log` | Memory compression logs |
+
+### Cleanup Policy
+
+| File Type | Retention | Frequency |
+|-----------|-----------|-----------|
+| KR log files | **7 days** | Daily 03:00 |
+| US log files | **30 days** | Daily 03:30 |
+| Trigger JSON | 7 days | Daily 03:00 |
+| Config backups | **7 days** | Daily 02:00 |
+
+---
+
 ## 🧪 Testing
 
 Test with the following commands after accessing the container.
@@ -357,14 +457,6 @@ python3 stock_analysis_orchestrator.py --mode afternoon
 
 # Both morning + afternoon
 python3 stock_analysis_orchestrator.py --mode both
-```
-
-### Crontab Automation Setup
-
-```bash
-# Inside container
-chmod +x utils/setup_crontab_simple.sh
-./utils/setup_crontab_simple.sh
 ```
 
 ### Data Backup (on Host/Local)

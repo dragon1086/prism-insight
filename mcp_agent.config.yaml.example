@@ -69,6 +69,28 @@ mcp:
           "mcp-server-time"
         ]
 
+    # ==========================================================================
+    # US Stock Market Servers (prism-us module)
+    # ==========================================================================
+
+    # Yahoo Finance MCP server for US stock data (PyPI: yahoo-finance-mcp)
+    # Python-based, uses stable yfinance library (not deprecated yahoo-finance2)
+    # Provides: OHLCV, company info, financials, institutional holders, news, recommendations
+    yahoo_finance:
+      command: "uvx"
+      args: ["yahoo-finance-mcp"]
+      read_timeout_seconds: 120
+
+    # SEC EDGAR MCP server for official SEC filings and financial data (PyPI: sec-edgar-mcp)
+    # FREE - no API key required, just user agent for rate limiting
+    # Provides: 10-K/10-Q/8-K filings, XBRL financials, insider trading
+    sec_edgar:
+      command: "uvx"
+      args: ["sec-edgar-mcp"]
+      env:
+        SEC_EDGAR_USER_AGENT: "YourCompany (your-email@example.com)"
+      read_timeout_seconds: 120
+
 openai:
   # Secrets (API keys, etc.) are stored in an mcp_agent.secrets.yaml file which can be gitignored
   default_model: gpt-5.1

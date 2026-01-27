@@ -60,40 +60,96 @@ def clean_markdown(text: str) -> str:
         i += 1
     text = '\n'.join(cleaned_lines)
 
-    # 5. 본문 중간의 ## 헤더를 볼드체로 변환 (GPT-5.2가 강조용으로 사용한 경우)
-    # 정상적인 섹션 제목은 짧고 (30자 이하), 특정 키워드 포함
+    # 5. 마크다운 헤딩 보존 및 정리
+    # 정상적인 섹션 제목 키워드 (길이 제한 완화: 50자까지 허용)
     valid_section_keywords = [
-        '분석', '현황', '개요', '전략', '요약', '지표', '동향', '차트',
-        'Analysis', 'Overview', 'Status', 'Strategy', 'Summary', 'Chart'
+        # Korean keywords
+        '분석', '현황', '개요', '전략', '요약', '지표', '동향', '차트', '투자',
+        '기술적', '펀더멘털', '뉴스', '시장', '핵심', '포인트', '의견',
+        # English keywords
+        'Analysis', 'Overview', 'Status', 'Strategy', 'Summary', 'Chart',
+        'Technical', 'Fundamental', 'News', 'Market', 'Investment', 'Key', 'Point', 'Opinion',
+        # Numbered section patterns
+        '1.', '2.', '3.', '4.', '5.', '1-1', '1-2', '2-1', '2-2', '3-1', '4-1', '5-1',
+        'Executive'
     ]
 
     def is_valid_section_header(header_text):
         """정상적인 섹션 헤더인지 확인"""
         header_text = header_text.strip()
-        # 30자 이하이고, 키워드 포함시 정상 헤더로 간주
-        if len(header_text) <= 30:
+        # 50자 이하이고, 키워드 포함시 정상 헤더로 간주
+        if len(header_text) <= 50:
             for keyword in valid_section_keywords:
                 if keyword in header_text:
                     return True
+        # 숫자로 시작하는 짧은 제목 (예: "1. 기술적 분석")
+        if len(header_text) <= 50 and header_text and header_text[0].isdigit():
+            return True
         return False
 
     lines = text.split('\n')
     processed_lines = []
-    for line in lines:
+    for i, line in enumerate(lines):
         stripped = line.strip()
-        # ## 로 시작하는 라인 처리
-        if stripped.startswith('## '):
-            header_content = stripped[3:]  # "## " 이후 텍스트
+        # # ~ #### 헤딩 처리 (모든 유효한 마크다운 헤딩 레벨 보존)
+        heading_match = re.match(r'^(#{1,4})\s+(.+)$', stripped)
+        if heading_match:
+            heading_level = heading_match.group(1)  # #, ##, ###, or ####
+            header_content = heading_match.group(2)
             if is_valid_section_header(header_content):
-                # 정상 섹션 헤더는 유지
-                processed_lines.append(line)
+                # 유효한 섹션 헤더는 그대로 유지
+                processed_lines.append(stripped)
             else:
-                # 강조용으로 사용된 ##는 제거하고 일반 텍스트로 변환
-                indent = line[:len(line) - len(line.lstrip())]
-                processed_lines.append(f"{indent}{header_content}")
+                # 50자 초과 또는 키워드 없는 경우 ## 이상은 텍스트로 변환
+                if len(heading_level) >= 2:
+                    # 강조용으로 사용된 헤딩은 제거
+                    processed_lines.append(header_content)
+                else:
+                    # # (h1)은 그대로 유지 (보고서 제목)
+                    processed_lines.append(stripped)
         else:
             processed_lines.append(line)
     text = '\n'.join(processed_lines)
+
+    # 5-1. 헤딩 전후에 빈 줄 보장
+    # 헤딩 앞에 빈 줄이 없으면 추가
+    text = re.sub(r'([^\n])\n(#{1,4}\s)', r'\1\n\n\2', text)
+    # 헤딩 뒤에 빈 줄이 없으면 추가
+    text = re.sub(r'(#{1,4}\s[^\n]+)\n([^\n#])', r'\1\n\n\2', text)
+
+    # 5-2. 테이블 전후에 빈 줄 보장 (마크다운 테이블 파싱을 위해 필수)
+    lines = text.split('\n')
+    result_lines = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        is_table_line = stripped.startswith('|')
+        prev_line = lines[i - 1].strip() if i > 0 else ''
+        prev_is_table = prev_line.startswith('|')
+        prev_is_empty = prev_line == ''
+
+        # 테이블 시작 전에 빈 줄 추가 (이전 줄이 테이블이 아니고 빈 줄도 아닌 경우)
+        if is_table_line and not prev_is_table and not prev_is_empty:
+            result_lines.append('')
+
+        result_lines.append(line)
+
+        # 테이블 끝 후에 빈 줄 추가 (다음 줄이 테이블이 아니고 빈 줄도 아닌 경우)
+        # 이 부분은 다음 iteration에서 처리됨
+
+    # 테이블 끝 후 빈 줄 추가
+    final_lines = []
+    for i, line in enumerate(result_lines):
+        final_lines.append(line)
+        stripped = line.strip()
+        is_table_line = stripped.startswith('|')
+        if is_table_line and i + 1 < len(result_lines):
+            next_line = result_lines[i + 1].strip()
+            next_is_table = next_line.startswith('|')
+            next_is_empty = next_line == ''
+            if not next_is_table and not next_is_empty:
+                final_lines.append('')
+
+    text = '\n'.join(final_lines)
 
     # 6. 헤더/소제목 뒤에 누락된 개행 추가 (GPT-5.2가 개행 없이 붙여쓴 경우)
     # 패턴: "관점본" -> "관점\n\n본", "계획다음" -> "계획\n\n다음"

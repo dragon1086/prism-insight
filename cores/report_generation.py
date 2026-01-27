@@ -235,7 +235,7 @@ async def generate_summary(section_reports, company_name, company_code, referenc
 500-800자 정도의 간결하면서도 통찰력 있는 요약을 작성해주세요.
 
 ## 형식 가이드라인:
-- 제목: "# 핵심 투자 포인트"
+- 제목: "## 핵심 요약" (마크다운 ## 필수)
 - 첫 문단: 기업 현재 상황 및 투자 관점 개요
 - 불릿 포인트: 3-5개의 핵심 투자 포인트
 - 마지막 문단: 적합한 투자자 유형 및 접근법 제안
@@ -266,7 +266,7 @@ The summary should include the company's current situation, investment attractio
 Write a concise yet insightful summary of about 500-800 characters.
 
 ## Format Guidelines:
-- Title: "# Key Investment Points"
+- Title: "## Executive Summary" (markdown ## required)
 - First paragraph: Overview of the company's current situation and investment perspective
 - Bullet points: 3-5 key investment points
 - Last paragraph: Suggested investor types and approaches
@@ -303,9 +303,9 @@ Comprehensive Analysis Report:
     except Exception as e:
         logger.error(f"Error generating executive summary: {e}")
         if language == "ko":
-            return "# 핵심 투자 포인트\n\n분석 요약을 생성하는 데 문제가 발생했습니다."
+            return "## 핵심 요약\n\n분석 요약을 생성하는 데 문제가 발생했습니다."
         else:
-            return "# Key Investment Points\n\nA problem occurred while generating the analysis summary."
+            return "## Executive Summary\n\nA problem occurred while generating the analysis summary."
 
 
 async def generate_investment_strategy(section_reports, combined_reports, company_name, company_code, reference_date, logger, language="ko"):
@@ -379,8 +379,8 @@ async def generate_investment_strategy(section_reports, combined_reports, compan
 
 ## 보고서 형식
 - 보고서 시작 시 개행문자 2번 삽입(\\n\\n)
-- 제목: "# 5. 투자 전략 및 의견"
-- 부제목은 ## 형식으로, 소제목은 ### 형식으로 구성
+- 제목: "### 5-1. 투자 전략 및 의견" (마크다운 ### 필수 - 메인 섹션 제목은 별도 추가됨)
+- 소제목은 반드시 "#### 소제목명" 형식 사용 (마크다운 #### 필수)
 - 투자자 유형별 전략은 명확히 구분하여 제시
 - 주요 매매 포인트는 구체적인 가격대와 조건으로 표현
 - 리스크 요소는 중요도에 따라 구분하여 설명
@@ -472,8 +472,8 @@ async def generate_investment_strategy(section_reports, combined_reports, compan
 
 ## Report Format
 - Insert 2 newline characters at the start of the report (\\n\\n)
-- Title: "# 5. Investment Strategy and Opinion"
-- Subtitles in ## format, sub-subtitles in ### format
+- Title: "### 5-1. Investment Strategy and Opinion" (markdown ### required - main section header is added separately)
+- Sub-sections MUST use "#### Sub-section Title" format (markdown #### required)
 - Clearly distinguish strategies by investor type
 - Express key trading points with specific price ranges and conditions
 - Explain risk factors according to importance
@@ -556,24 +556,20 @@ def get_disclaimer(language="ko"):
         Disclaimer text in specified language
     """
     if language == "ko":
-        return """
-# 투자 유의사항
+        return """## 투자 유의사항
 
 본 보고서는 정보 제공을 목적으로 작성되었으며, 투자 권유를 목적으로 하지 않습니다.
 본 보고서에 기재된 내용은 작성 시점 기준으로 신뢰할 수 있는 자료에 근거하여 AI로 작성되었으나,
 그 정확성과 완전성을 보장하지 않습니다.
 
 투자는 본인의 판단과 책임 하에 신중하게 이루어져야 하며,
-본 보고서를 참고하여 발생하는 투자 결과에 대한 책임은 투자자 본인에게 있습니다.
-"""
+본 보고서를 참고하여 발생하는 투자 결과에 대한 책임은 투자자 본인에게 있습니다."""
     else:  # English or other languages
-        return """
-# Investment Disclaimer
+        return """## Investment Disclaimer
 
 This report is provided for informational purposes only and is not intended as investment advice.
 The content in this report is AI-generated based on reliable sources as of the time of writing,
 but its accuracy and completeness are not guaranteed.
 
 Investments should be made carefully at your own judgment and risk,
-and you are solely responsible for any investment results based on this report.
-"""
+and you are solely responsible for any investment results based on this report."""

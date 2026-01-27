@@ -99,8 +99,9 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
                         5. References - Source URLs
                         
                         **Format**:
-                        - Start: \\n\\n# 3. Recent Major News Summary
-                        - First section: ## Analysis of Same-day Stock Price Fluctuation Factors
+                        - Start: \\n\\n### 3. Recent Major News Summary
+                        - First section: #### Analysis of Same-day Stock Price Fluctuation Factors
+                        - Sub-sections MUST use "#### Sub-section Title" format (markdown #### required)
                         - Use formal language
                         - Include date and source for each news
                         - No tool usage mentions
@@ -216,9 +217,9 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
 
                         ## 보고서 형식
                         - 보고서 시작 시 개행문자 2번 삽입(\\n\\n)
-                        - 제목: "# 3. 최근 주요 뉴스 요약"
-                        - 첫 번째 섹션은 반드시 "## 당일 주가 변동 요인 분석"으로 시작하여 분석일 기준 주가 변동의 직접적 원인 분석
-                        - 각 주요 섹션은 ## 형식으로, 소제목은 ### 형식으로 구성
+                        - 제목: "### 3. 최근 주요 뉴스 요약"
+                        - 첫 번째 섹션은 반드시 "#### 당일 주가 변동 요인 분석"으로 시작하여 분석일 기준 주가 변동의 직접적 원인 분석
+                        - 소제목은 반드시 "#### 소제목명" 형식 사용 (마크다운 #### 필수)
                         - 주요 뉴스는 불릿 포인트로 요약하고 출처 번호 표기 (예: "현대차, 신형 전기차 출시 계획 발표 [2]")
                         - 언급하는 모든 뉴스에는 발생 날짜 명시 (예: "2025년 3월 15일, 현대차는...")
                         - 핵심 정보는 표 형식으로 요약 제시

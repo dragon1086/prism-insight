@@ -115,9 +115,9 @@ def create_market_index_analysis_agent(reference_date, max_years_ago, max_years,
 
                         ## Report Format
                         - Insert 2 newline characters at the start of the report (\\n\\n)
-                        - Title: "# 4. Market Analysis"
-                        - The first section must start with "## Same-day Market Fluctuation Factor Analysis" to analyze direct causes of market fluctuations on the analysis date
-                        - Subtitles in ## format, sub-subtitles in ### format
+                        - Title: "### 4. Market Analysis"
+                        - The first section must start with "#### Same-day Market Fluctuation Factor Analysis" to analyze direct causes of market fluctuations on the analysis date
+                        - Sub-sections MUST use "#### Sub-section Title" format (markdown #### required)
                         - Emphasize important information in **bold**
                         - Organize key indicators in table format
                         - Present market situation assessments with clear grades/scores (e.g., bullish/neutral/bearish or 1-10 scale)
@@ -252,9 +252,9 @@ def create_market_index_analysis_agent(reference_date, max_years_ago, max_years,
 
                         ## 보고서 형식
                         - 보고서 시작 시 개행문자 2번 삽입(\\n\\n)
-                        - 제목: "# 4. 시장 분석"
-                        - 첫 번째 섹션은 반드시 "## 당일 시장 변동 요인 분석"으로 시작하여 분석일 기준 시장 변동의 직접적 원인 분석
-                        - 부제목은 ## 형식으로, 소제목은 ### 형식으로 구성
+                        - 제목: "### 4. 시장 분석"
+                        - 첫 번째 섹션은 반드시 "#### 당일 시장 변동 요인 분석"으로 시작하여 분석일 기준 시장 변동의 직접적 원인 분석
+                        - 소제목은 반드시 "#### 소제목명" 형식 사용 (마크다운 #### 필수)
                         - 중요 정보는 **굵은 글씨**로 강조
                         - 핵심 지표는 표 형식으로 정리
                         - 시장 상황 평가는 명확한 등급/점수로 제시 (예: 강세/중립/약세 또는 1-10점 스케일)

@@ -171,6 +171,46 @@ class DashboardDataGenerator:
         except json.JSONDecodeError as e:
             logger.warning(f"JSON 파싱 실패: {str(e)}")
             return {}
+
+    def normalize_lessons(self, lessons_data) -> List[Dict]:
+        """L1/L2/L3 lessons 데이터를 일관된 구조로 정규화
+
+        L1 (상세): [{condition, action, reason, priority}] - 완전한 객체 배열
+        L2 (압축): ["문자열 교훈1", ...] 또는 [{action}] - priority 필드 누락 가능
+        L3 (최소): 더 간략한 형태
+
+        모든 형태를 {condition, action, reason, priority} 구조로 통일
+        """
+        if not lessons_data:
+            return []
+
+        normalized = []
+        for item in lessons_data:
+            if isinstance(item, str):
+                # L2 문자열 교훈: "교훈 내용" → {action: "교훈 내용", priority: "medium"}
+                normalized.append({
+                    'condition': '',
+                    'action': item,
+                    'reason': '',
+                    'priority': 'medium'
+                })
+            elif isinstance(item, dict):
+                # L1 또는 부분 객체: 누락된 필드 기본값 채움
+                normalized.append({
+                    'condition': item.get('condition', ''),
+                    'action': item.get('action', str(item)),
+                    'reason': item.get('reason', ''),
+                    'priority': item.get('priority', 'medium')
+                })
+            else:
+                # 기타 타입: 문자열로 변환
+                normalized.append({
+                    'condition': '',
+                    'action': str(item),
+                    'reason': '',
+                    'priority': 'medium'
+                })
+        return normalized
     
     def dict_from_row(self, row, cursor) -> Dict:
         """SQLite Row를 Dictionary로 변환"""
@@ -597,8 +637,9 @@ class DashboardDataGenerator:
             journal_entries = []
             for row in cursor.fetchall():
                 entry = self.dict_from_row(row, cursor)
-                # JSON 필드 파싱
-                entry['lessons'] = self.parse_json_field(entry.get('lessons', '[]'))
+                # JSON 필드 파싱 및 lessons 정규화 (L1/L2/L3 호환)
+                raw_lessons = self.parse_json_field(entry.get('lessons', '[]'))
+                entry['lessons'] = self.normalize_lessons(raw_lessons)
                 entry['pattern_tags'] = self.parse_json_field(entry.get('pattern_tags', '[]'))
                 journal_entries.append(entry)
 

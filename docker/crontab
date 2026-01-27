@@ -1,0 +1,72 @@
+# =============================================================================
+# PRISM-INSIGHT Docker Crontab Configuration
+# Timezone: Asia/Seoul (KST)
+# =============================================================================
+
+# Environment variables
+SHELL=/bin/bash
+PATH=/app/venv/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PYTHONPATH=/app/prism-insight
+
+# -----------------------------------------------------------------------------
+# KR Stock Market (Korean Stock)
+# Market Hours: 09:00-15:30 KST
+# -----------------------------------------------------------------------------
+
+# Daily config backup at 02:00 KST
+0 2 * * * cd /app/prism-insight && chmod +x utils/backup_configs.sh && ./utils/backup_configs.sh >> /app/prism-insight/logs/backup.log 2>&1
+
+# Weekly memory compression at 03:00 KST (Sunday only)
+0 3 * * 0 cd /app/prism-insight && python3 compress_trading_memory.py >> /app/prism-insight/logs/compression.log 2>&1
+
+# Daily log cleanup at 03:00 KST
+0 3 * * * cd /app/prism-insight && chmod +x utils/cleanup_logs.sh && ./utils/cleanup_logs.sh >> /app/prism-insight/logs/cleanup.log 2>&1
+
+# Stock data update at 07:00 KST (Mon-Fri)
+0 7 * * 1-5 cd /app/prism-insight && python3 update_stock_data.py >> /app/prism-insight/logs/stock_update_$(date +\%Y\%m\%d).log 2>&1
+
+# KR Morning batch at 09:30 KST (Mon-Fri)
+30 9 * * 1-5 cd /app/prism-insight && python3 stock_analysis_orchestrator.py --mode morning >> /app/prism-insight/logs/kr_morning_$(date +\%Y\%m\%d).log 2>&1
+
+# KR Afternoon batch at 15:40 KST (Mon-Fri)
+40 15 * * 1-5 cd /app/prism-insight && python3 stock_analysis_orchestrator.py --mode afternoon >> /app/prism-insight/logs/kr_afternoon_$(date +\%Y\%m\%d).log 2>&1
+
+# Dashboard refresh at 11:05 KST (Mon-Fri)
+5 11 * * 1-5 cd /app/prism-insight/examples && python3 generate_dashboard_json.py >> /app/prism-insight/logs/dashboard.log 2>&1
+
+# Performance tracker at 17:00 KST (Mon-Fri)
+0 17 * * 1-5 cd /app/prism-insight && python3 performance_tracker_batch.py >> /app/prism-insight/logs/performance.log 2>&1
+
+# Dashboard refresh at 17:10 KST (Mon-Fri)
+10 17 * * 1-5 cd /app/prism-insight/examples && python3 generate_dashboard_json.py >> /app/prism-insight/logs/dashboard.log 2>&1
+
+# -----------------------------------------------------------------------------
+# US Stock Market (American Stock)
+# Market Hours: 09:30-16:00 EST (23:30-06:00 KST)
+# Note: Uses EST times. Adjust 1 hour earlier during EDT (Mar-Nov).
+# Yahoo Finance data delay: 15-20 min (schedule adjusted accordingly)
+# -----------------------------------------------------------------------------
+
+# US Morning batch at 00:15 KST (10:15 EST) - Tue-Sat (Mon-Fri US)
+15 0 * * 2-6 cd /app/prism-insight && python3 prism-us/us_stock_analysis_orchestrator.py --mode morning >> /app/prism-insight/logs/us_morning_$(date +\%Y\%m\%d).log 2>&1
+
+# US Midday batch at 02:30 KST (12:30 EST) - Tue-Sat (Mon-Fri US)
+30 2 * * 2-6 cd /app/prism-insight && python3 prism-us/us_stock_analysis_orchestrator.py --mode midday >> /app/prism-insight/logs/us_midday_$(date +\%Y\%m\%d).log 2>&1
+
+# US Afternoon batch at 06:30 KST (16:30 EST) - Tue-Sat (Mon-Fri US)
+30 6 * * 2-6 cd /app/prism-insight && python3 prism-us/us_stock_analysis_orchestrator.py --mode afternoon >> /app/prism-insight/logs/us_afternoon_$(date +\%Y\%m\%d).log 2>&1
+
+# US Performance tracker at 07:30 KST (17:30 EST) - Tue-Sat (Mon-Fri US)
+30 7 * * 2-6 cd /app/prism-insight && python3 prism-us/us_performance_tracker_batch.py >> /app/prism-insight/logs/us_performance_$(date +\%Y\%m\%d).log 2>&1
+
+# US Dashboard refresh at 08:00 KST (18:00 EST) - Tue-Sat (Mon-Fri US)
+0 8 * * 2-6 cd /app/prism-insight/examples && python3 generate_us_dashboard_json.py >> /app/prism-insight/logs/us_dashboard.log 2>&1
+
+# US log cleanup at 03:30 KST (daily) - keep 30 days
+30 3 * * * find /app/prism-insight/logs -name "us_*.log" -mtime +30 -delete
+
+# US memory compression at 04:00 KST (Sunday only)
+0 4 * * 0 cd /app/prism-insight && python3 prism-us/compress_us_trading_memory.py >> /app/prism-insight/logs/us_compression.log 2>&1 || true
+
+# =============================================================================
+# Empty line required at the end of crontab file

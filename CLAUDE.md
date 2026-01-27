@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Last Updated**: 2026-01-14
-> **Version**: 1.3
+> **Last Updated**: 2026-01-28
+> **Version**: 1.8
 > **Purpose**: Comprehensive guide for AI assistants working on the PRISM-INSIGHT codebase
 
 ---
@@ -9,7 +9,8 @@
 ## Table of Contents
 
 1. [Project Overview](#1-project-overview)
-2. [Architecture](#2-architecture)
+2. [US Stock Market Module (NEW)](#2-us-stock-market-module)
+3. [Architecture](#3-architecture)
 3. [Codebase Structure](#3-codebase-structure)
 4. [Development Workflows](#4-development-workflows)
 5. [AI Agent System](#5-ai-agent-system)
@@ -65,7 +66,186 @@ Messaging: Redis (Upstash), Google Cloud Pub/Sub (optional)
 
 ---
 
-## 2. Architecture
+## 2. US Stock Market Module (COMPLETED)
+
+> **Status**: Phase 1-8 완료 ✅
+> **Location**: `prism-us/`
+> **Documentation**: `docs/US_STOCK_PLAN.md`, `prism-us/IMPLEMENTATION_STATUS.md`
+
+### Overview
+
+PRISM-US는 한국 주식 분석 시스템과 동일한 워크플로우를 가진 **미국 주식 버전**입니다.
+
+```yaml
+Market: US (NYSE, NASDAQ)
+Data Sources (MCP Servers - uvx remote execution):
+  - yahoo-finance-mcp: OHLCV, company info, financials, institutional holders (FREE, PyPI)
+  - sec-edgar-mcp: SEC filings, XBRL financials, insider trading (FREE, PyPI)
+  - Firecrawl: Web scraping (Yahoo Finance pages)
+  - Finnhub: Company news (supplementary)
+Trading API: KIS 해외주식 API (Korea Investment & Securities Overseas)
+Database: SQLite (shared with KR, us_* prefix tables)
+```
+
+### Directory Structure
+
+```
+prism-us/
+├── __init__.py                    # Module init (v0.1.0)
+├── check_market_day.py            # US 휴일 체커 (pandas-market-calendars)
+├── IMPLEMENTATION_STATUS.md       # 진행 상황 추적
+├── us_trigger_batch.py            # 트리거 배치 (surge stock detection)
+├── us_stock_tracking_agent.py     # 트레이딩 시뮬레이션 에이전트
+├── us_stock_analysis_orchestrator.py  # 메인 오케스트레이터
+├── us_telegram_summary_agent.py   # 텔레그램 요약 생성
+├── us_performance_tracker_batch.py # ✅ 7/14/30일 성과 추적 배치
+├── cores/
+│   ├── __init__.py
+│   ├── us_data_client.py          # ✅ 통합 데이터 클라이언트 (yfinance + finnhub)
+│   ├── us_surge_detector.py       # ✅ Surge stock detection 모듈
+│   ├── us_analysis.py             # ✅ Core analysis 모듈
+│   └── agents/                    # ✅ US 에이전트 (6개 섹션)
+├── trading/
+│   └── config/                    # KIS 해외주식 설정 (Phase 6)
+└── tracking/
+    └── db_schema.py               # ✅ US 테이블 스키마 (tracking_status, was_traded 추가)
+```
+
+### Key Differences from Korean Version
+
+| 항목 | 한국 (KR) | 미국 (US) |
+|------|----------|----------|
+| 데이터 소스 | pykrx, kospi_kosdaq MCP | yahoo-finance-mcp, sec-edgar-mcp (uvx) |
+| Trading API | KIS 국내주식 API | KIS 해외주식 API |
+| 시장 시간 | 09:00-15:30 KST | 09:30-16:00 EST (23:30-06:00 KST) |
+| 시총 필터 | 5000억 KRW | $5B USD |
+| DB 테이블 | stock_holdings | us_stock_holdings |
+| 통화 | KRW | USD |
+
+### Implementation Progress
+
+| Phase | Name | Status | LOC |
+|-------|------|--------|-----|
+| 1 | Foundation Setup | ✅ Completed | - |
+| 2 | MCP Server Integration | ✅ Completed | - |
+| 3 | Database Schema | ✅ Completed | - |
+| 4 | Core Agents Adaptation | ✅ Completed | 1,405 |
+| 5 | Trigger Batch System | ✅ Completed | - |
+| 6 | Trading System | ✅ Completed | 2,406 |
+| 7 | Orchestrator & Pipeline | ✅ Completed | 13,377 |
+| 8 | Testing & Documentation | ✅ Completed | - |
+
+**Total: ~16,000+ LOC, 221 tests (97% pass rate)**
+
+### Quick Start (Development)
+
+```bash
+# Test US market day checker
+python prism-us/check_market_day.py --verbose
+
+# Test US data client
+FINNHUB_API_KEY=your_key python prism-us/cores/us_data_client.py
+
+# Initialize US database tables
+python -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('db_schema', 'prism-us/tracking/db_schema.py')
+db_schema = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(db_schema)
+db_schema.initialize_us_database()
+"
+
+### Testing Individual Pipeline Steps
+
+The `us_stock_analysis_orchestrator.py` pipeline can be tested step-by-step:
+
+```bash
+# === Step 1: Trigger Batch (Surge Stock Detection) ===
+# Test morning trigger batch
+python prism-us/us_trigger_batch.py morning INFO --output test_trigger.json
+
+# Test afternoon trigger batch
+python prism-us/us_trigger_batch.py afternoon INFO --output test_trigger.json
+
+# === Step 2: Report Generation (Single Stock) ===
+# Test analysis for a specific ticker (auto-detects last trading day)
+python -c "
+import asyncio
+import sys
+sys.path.insert(0, 'prism-us')
+from cores.us_analysis import analyze_us_stock
+from check_market_day import get_reference_date
+
+async def test():
+    ref_date = get_reference_date()  # Auto-detect last trading day
+    print(f'Reference date: {ref_date}')
+    report = await analyze_us_stock(
+        ticker='AAPL',
+        company_name='Apple Inc.',
+        reference_date=ref_date,
+        language='en'
+    )
+    print(f'Report length: {len(report)} chars')
+    with open('test_report_AAPL.md', 'w') as f:
+        f.write(report)
+    print('Saved to test_report_AAPL.md')
+
+asyncio.run(test())
+"
+
+# === Step 3: PDF Conversion ===
+# Test PDF conversion for a markdown report
+python -c "
+from pdf_converter import markdown_to_pdf
+markdown_to_pdf('test_report_AAPL.md', 'test_report_AAPL.pdf', 'playwright', add_theme=True)
+print('PDF created: test_report_AAPL.pdf')
+"
+
+# === Step 4: Telegram Summary Generation ===
+# Test summary generation (requires PDF)
+python -c "
+import asyncio
+import sys
+sys.path.insert(0, 'prism-us')
+from us_telegram_summary_agent import USTelegramSummaryGenerator
+
+async def test():
+    generator = USTelegramSummaryGenerator()
+    await generator.process_report('test_report_AAPL.pdf', '.', language='en')
+    print('Telegram summary generated')
+
+asyncio.run(test())
+"
+
+# === Step 5: Trading Simulation (Dry Run) ===
+# Test trading agent without actual trades
+python -c "
+import asyncio
+import sys
+sys.path.insert(0, 'prism-us')
+from us_stock_tracking_agent import USStockTrackingAgent, app
+
+async def test():
+    async with app.run():
+        agent = USStockTrackingAgent(telegram_token=None)
+        # Test with existing PDF reports
+        result = await agent.run(['test_report_AAPL.pdf'], None, 'en')
+        print(f'Trading simulation result: {result}')
+
+asyncio.run(test())
+"
+
+# === Full Pipeline Test (No Telegram) ===
+# Run complete pipeline without telegram
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
+
+# Run with telegram (requires .env configuration)
+python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
+```
+
+---
+
+## 3. Architecture
 
 ### High-Level System Architecture
 
@@ -236,7 +416,7 @@ prism-insight/
 | `stock_tracking_enhanced_agent.py` | Enhanced trading with stats | Advanced trading signals |
 | `trigger_batch.py` | Stock screening (v1.16.6: 고정 손절폭, 시총 5000억, 등락률 20%) | Changing detection criteria |
 | `telegram_config.py` | Telegram configuration | Telegram settings |
-| `pdf_converter.py` | PDF generation | PDF styling/formatting |
+| `pdf_converter.py` | PDF generation (Prism Light 테마, 차트 렌더링) | PDF styling/formatting |
 | `cores/language_config.py` | Multi-language templates | Adding/modifying languages |
 | `examples/messaging/*.py` | Event-driven trading signals | Redis/GCP integration |
 | `compress_trading_memory.py` | Memory compression & cleanup | Token optimization |
@@ -1067,14 +1247,19 @@ logging.basicConfig(level=logging.DEBUG)
 
 ---
 
-**Document Version**: 1.3
-**Last Updated**: 2026-01-14
+**Document Version**: 1.7
+**Last Updated**: 2026-01-27
 **Maintained By**: PRISM-INSIGHT Development Team
 
 ### Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.8 | 2026-01-28 | **US Performance Tracker** - us_performance_tracker_batch.py 생성 (7/14/30일 성과 추적), db_schema.py에 tracking_status/was_traded/risk_reward_ratio 컬럼 추가, generate_us_dashboard_json.py 성과 분석 로직 완성 |
+| 1.7 | 2026-01-27 | **PDF Prism Light 테마** - 독창적인 스펙트럼 컬러 테마 적용, 차트 렌더링 수정, 마크다운 제목 계층 구조 통일 (KR/US), 회사명/날짜 추출 로직 개선 |
+| 1.6 | 2026-01-19 | **MCP Server 개선** - yahoo-finance-mcp (PyPI), sec-edgar-mcp (PyPI) 추가, uvx 원격 실행 방식으로 변경, SEC EDGAR XBRL 재무제표/내부자 거래 데이터 지원 |
+| 1.5 | 2026-01-18 | **US Stock Module 완료** - Phase 4-8 완료: Core Agents (1,405 LOC), Trading System (2,406 LOC), Orchestrator (13,377 LOC), 221 tests (97% pass). Pipeline 단계별 테스트 가이드 추가 |
+| 1.4 | 2026-01-17 | **US Stock Module (prism-us)** - Phase 1-3 완료: Foundation Setup, MCP Server Integration (yfinance), Database Schema (us_* tables) |
 | 1.3 | 2026-01-14 | Trigger Batch Algorithm v3.0 (v1.16.6) - 고정 손절폭 방식, 시총 필터 5000억, 등락률 필터 20%, 에이전트 적합도 점수 시스템 |
 | 1.2 | 2026-01-11 | Trading Journal Memory system (v1.16.0), Universal Principles, Token Cleanup, Trading Insights Dashboard, Performance Tracker |
 | 1.1 | 2026-01-03 | GPT-5 upgrade, Redis/GCP Pub/Sub integration, new files documentation |

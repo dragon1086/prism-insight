@@ -1071,40 +1071,50 @@ export function TradingInsightsPage({ data }: TradingInsightsPageProps) {
                             {t("insights.lessons")}
                           </h4>
                           <div className="space-y-3">
-                            {entry.lessons.map((lesson, idx) => (
-                              <div key={idx} className="p-3 rounded-lg border bg-card">
-                                <div className="flex items-center gap-2 mb-2">
-                                  <Badge
-                                    variant="outline"
-                                    className={`${getPriorityColor(lesson.priority)} text-xs`}
-                                  >
-                                    {t(`insights.priority.${lesson.priority}`)}
-                                  </Badge>
-                                </div>
-                                <div className="space-y-2 text-sm">
-                                  <div>
-                                    <span className="text-muted-foreground font-medium">
-                                      {language === "ko" ? "조건" : "Condition"}:
-                                    </span>
-                                    <p className="mt-0.5">{lesson.condition}</p>
+                            {entry.lessons.map((lesson, idx) => {
+                              // L2 압축 데이터 호환: 문자열이면 객체로 변환, priority 기본값 'medium'
+                              const normalizedLesson = typeof lesson === 'string'
+                                ? { condition: '', action: lesson, reason: '', priority: 'medium' as const }
+                                : lesson
+                              const priority = normalizedLesson.priority || 'medium'
+
+                              return (
+                                <div key={idx} className="p-3 rounded-lg border bg-card">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Badge
+                                      variant="outline"
+                                      className={`${getPriorityColor(priority)} text-xs`}
+                                    >
+                                      {t(`insights.priority.${priority}`)}
+                                    </Badge>
                                   </div>
-                                  <div>
-                                    <span className="text-muted-foreground font-medium">
-                                      {language === "ko" ? "행동" : "Action"}:
-                                    </span>
-                                    <p className="mt-0.5 text-primary">{lesson.action}</p>
-                                  </div>
-                                  {lesson.reason && (
+                                  <div className="space-y-2 text-sm">
+                                    {normalizedLesson.condition && (
+                                      <div>
+                                        <span className="text-muted-foreground font-medium">
+                                          {language === "ko" ? "조건" : "Condition"}:
+                                        </span>
+                                        <p className="mt-0.5">{normalizedLesson.condition}</p>
+                                      </div>
+                                    )}
                                     <div>
                                       <span className="text-muted-foreground font-medium">
-                                        {language === "ko" ? "이유" : "Reason"}:
+                                        {language === "ko" ? "행동" : "Action"}:
                                       </span>
-                                      <p className="mt-0.5 text-muted-foreground text-xs">{lesson.reason}</p>
+                                      <p className="mt-0.5 text-primary">{normalizedLesson.action}</p>
                                     </div>
-                                  )}
+                                    {normalizedLesson.reason && (
+                                      <div>
+                                        <span className="text-muted-foreground font-medium">
+                                          {language === "ko" ? "이유" : "Reason"}:
+                                        </span>
+                                        <p className="mt-0.5 text-muted-foreground text-xs">{normalizedLesson.reason}</p>
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                            ))}
+                              )
+                            })}
                           </div>
                         </div>
                       )}

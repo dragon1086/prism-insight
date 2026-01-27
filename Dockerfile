@@ -10,12 +10,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANGUAGE=ko_KR:ko \
     LC_ALL=ko_KR.UTF-8 \
     PYTHONUNBUFFERED=1 \
-    PYTHON_VERSION=3.12
+    PYTHON_VERSION=3.12 \
+    ENABLE_CRON=true
 
 # 작업 디렉토리 설정
 WORKDIR /app
 
-# 시스템 패키지 업데이트 및 기본 도구 설치
+# 시스템 패키지 업데이트 및 기본 도구 설치 (cron 포함)
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
     python3=${PYTHON_VERSION}* \
@@ -34,6 +35,7 @@ RUN apt-get update && apt-get upgrade -y && \
     fonts-nanum-extra \
     vim \
     nano \
+    cron \
     && locale-gen ko_KR.UTF-8 \
     && update-locale LANG=ko_KR.UTF-8 \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
@@ -61,14 +63,14 @@ RUN python3 -m venv /app/venv
 # 가상환경 활성화
 ENV PATH="/app/venv/bin:$PATH"
 
-# Git 리포지토리 클론
-RUN git clone https://github.com/dragon1086/prism-insight.git /app/prism-insight
+# Git 리포지토리 클론 (feature/prism-us 브랜치)
+RUN git clone -b feature/prism-us https://github.com/dragon1086/prism-insight.git /app/prism-insight
 
 # 작업 디렉토리 변경
 WORKDIR /app/prism-insight
 
-# Python 의존성 설치
-RUN pip install --no-cache-dir --upgrade pip && \
+# Python 의존성 설치 (setuptools for pykrx compatibility)
+RUN pip install --no-cache-dir --upgrade pip setuptools && \
     pip install --no-cache-dir -r requirements.txt
 
 # Playwright 브라우저 설치 (Chromium만)
@@ -103,17 +105,35 @@ RUN mkdir -p /app/prism-insight/reports \
              /app/prism-insight/pdf_reports \
              /app/prism-insight/html_reports \
              /app/prism-insight/charts \
+             /app/prism-insight/logs \
              /app/prism-insight/telegram_messages/sent
+
+# Docker 설정 디렉토리 생성 및 파일 복사
+RUN mkdir -p /app/prism-insight/docker
+
+# Crontab 및 Entrypoint 스크립트 복사 (이미지 빌드 시)
+COPY docker/crontab /app/prism-insight/docker/crontab
+COPY docker/entrypoint.sh /app/prism-insight/docker/entrypoint.sh
+
+# Entrypoint 스크립트 실행 권한 부여
+RUN chmod +x /app/prism-insight/docker/entrypoint.sh && \
+    chmod 644 /app/prism-insight/docker/crontab
 
 # 권한 설정
 RUN chmod -R 755 /app/prism-insight
 
+# Cron 로그 파일 생성 (cron 출력 확인용)
+RUN touch /var/log/cron.log
+
 # 헬스체크
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python3 -c "import sys; sys.exit(0)"
+    CMD python3 -c "import sys; sys.exit(0)" && service cron status || exit 1
 
 # 기본 셸 변경
 SHELL ["/bin/bash", "-c"]
 
-# 기본 명령어 (대화형 셸)
-CMD ["/bin/bash"]
+# Entrypoint 설정
+ENTRYPOINT ["/app/prism-insight/docker/entrypoint.sh"]
+
+# 기본 명령어 (없으면 entrypoint가 컨테이너를 유지)
+CMD []

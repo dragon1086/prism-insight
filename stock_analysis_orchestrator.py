@@ -61,6 +61,98 @@ class StockAnalysisOrchestrator:
         self.telegram_config = telegram_config or TelegramConfig(use_telegram=True)
 
     @staticmethod
+    def _parse_report_filename(filename_stem: str) -> dict:
+        """
+        Parse report filename to extract components.
+
+        Expected format: {ticker}_{company_name}_{date}_{mode}_gpt5.2
+        Example: 005930_삼성전자_20250127_morning_gpt5.2
+
+        Args:
+            filename_stem: Filename without extension
+
+        Returns:
+            dict with keys: ticker, company_name, date, mode, suffix, valid
+        """
+        result = {
+            'ticker': '',
+            'company_name': '',
+            'date': '',
+            'mode': '',
+            'suffix': '',
+            'valid': False
+        }
+
+        try:
+            parts = filename_stem.split('_')
+            if len(parts) < 4:
+                return result
+
+            # Find date position (8-digit number)
+            date_idx = -1
+            for i, part in enumerate(parts):
+                if len(part) == 8 and part.isdigit():
+                    date_idx = i
+                    break
+
+            if date_idx < 2:
+                return result
+
+            # Extract components
+            result['ticker'] = parts[0]
+            result['company_name'] = '_'.join(parts[1:date_idx])  # Handle company names with underscores
+            result['date'] = parts[date_idx]
+            result['mode'] = parts[date_idx + 1] if date_idx + 1 < len(parts) else ''
+            result['suffix'] = '_'.join(parts[date_idx + 2:]) if date_idx + 2 < len(parts) else ''
+            result['valid'] = True
+
+        except Exception as e:
+            logger.warning(f"Failed to parse filename '{filename_stem}': {str(e)}")
+
+        return result
+
+    async def _create_translated_filename(self, original_path: Path, target_lang: str) -> Path:
+        """
+        Create translated filename with English company name.
+
+        Args:
+            original_path: Original file path
+            target_lang: Target language code (e.g., "en")
+
+        Returns:
+            Path with translated filename
+        """
+        from cores.company_name_translator import translate_company_name
+
+        # Parse original filename
+        parsed = self._parse_report_filename(original_path.stem)
+
+        if not parsed['valid']:
+            # Fallback: just append language code
+            logger.warning(f"Could not parse filename, using fallback: {original_path.stem}")
+            return original_path.parent / f"{original_path.stem}_{target_lang}.md"
+
+        # Translate company name (only for English)
+        if target_lang == "en":
+            translated_name = await translate_company_name(parsed['company_name'])
+        else:
+            # For other languages, keep original (sanitized)
+            translated_name = parsed['company_name']
+
+        # Reconstruct filename
+        # Format: {ticker}_{translated_company}_{date}_{mode}_{suffix}_{lang}.md
+        new_stem_parts = [parsed['ticker'], translated_name, parsed['date'], parsed['mode']]
+        if parsed['suffix']:
+            new_stem_parts.append(parsed['suffix'])
+        new_stem_parts.append(target_lang)
+
+        new_stem = '_'.join(filter(None, new_stem_parts))
+        new_path = original_path.parent / f"{new_stem}.md"
+
+        logger.info(f"Translated filename: {original_path.name} → {new_path.name}")
+        return new_path
+
+    @staticmethod
     def _extract_base64_images(markdown_text: str) -> tuple[str, dict]:
         """
         Extract base64 images from markdown and replace with placeholders
@@ -465,9 +557,9 @@ class StockAnalysisOrchestrator:
                             translated_report = self._restore_base64_images(translated_report, images)
                             logger.info(f"Restored images to translated report: {len(translated_report)} chars")
 
-                            # Create translated markdown file path
+                            # Create translated markdown file path with translated company name
                             report_file = Path(report_path)
-                            translated_report_path = report_file.parent / f"{report_file.stem}_{lang}.md"
+                            translated_report_path = await self._create_translated_filename(report_file, lang)
 
                             # Save translated markdown
                             with open(translated_report_path, 'w', encoding='utf-8') as f:

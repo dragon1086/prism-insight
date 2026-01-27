@@ -275,10 +275,10 @@ export interface HoldingDecision {
 
 // Trading Insights Types
 export interface TradingLesson {
-  condition: string
+  condition?: string  // optional for L2 compressed entries
   action: string
   reason?: string
-  priority: 'high' | 'medium' | 'low'
+  priority?: 'high' | 'medium' | 'low'  // optional for L2 compressed entries (defaults to 'medium')
 }
 
 export interface SituationAnalysis {

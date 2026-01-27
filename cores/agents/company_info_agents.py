@@ -66,8 +66,8 @@ def create_company_status_agent(company_name, company_code, reference_date, urls
 
                         ## Report Structure
                         - Insert 2 newline characters at the start of the report (\\n\\n)
-                        - Title: "# 2-1. Company Status Analysis: {company_name}"
-                        - Major sections in ## format, subsections in ### format
+                        - Title: "### 2-1. Company Status Analysis: {company_name}"
+                        - Sub-sections MUST use "#### Sub-section Title" format (markdown #### required)
                         - Present key information summaries in table format
                         - Clearly emphasize important indicators and trends with bullet points
                         - Use clear language that general investors can understand
@@ -146,8 +146,8 @@ def create_company_status_agent(company_name, company_code, reference_date, urls
 
                         ## 보고서 구성
                         - 보고서 시작 시 개행문자 2번 삽입(\\n\\n)
-                        - 제목: "# 2-1. 기업 현황 분석: {company_name}"
-                        - 각 주요 섹션은 ## 형식으로, 소제목은 ### 형식으로 구성
+                        - 제목: "### 2-1. 기업 현황 분석: {company_name}"
+                        - 소제목은 반드시 "#### 소제목명" 형식 사용 (마크다운 #### 필수)
                         - 핵심 정보는 표 형식으로 요약 제시
                         - 중요 지표와 추세는 불릿 포인트로 명확하게 강조
                         - 일반 투자자도 이해할 수 있는 명확한 언어 사용
@@ -242,8 +242,8 @@ def create_company_overview_agent(company_name, company_code, reference_date, ur
 
                         ## Report Structure
                         - Insert 2 newline characters at the start of the report (\\n\\n)
-                        - Title: "# 2-2. Company Overview Analysis: {company_name}"
-                        - Major sections in ## format, subsections in ### format
+                        - Title: "### 2-2. Company Overview Analysis: {company_name}"
+                        - Sub-sections MUST use "#### Sub-section Title" format (markdown #### required)
                         - Present key information summaries in table format
                         - Clearly emphasize important business areas and characteristics with bullet points
                         - Use clear language that general investors can understand
@@ -316,8 +316,8 @@ def create_company_overview_agent(company_name, company_code, reference_date, ur
 
                         ## 보고서 구성
                         - 보고서 시작 시 개행문자 2번 삽입(\\n\\n)
-                        - 제목: "# 2-2. 기업 개요 분석: {company_name}"
-                        - 각 주요 섹션은 ## 형식으로, 소제목은 ### 형식으로 구성
+                        - 제목: "### 2-2. 기업 개요 분석: {company_name}"
+                        - 소제목은 반드시 "#### 소제목명" 형식 사용 (마크다운 #### 필수)
                         - 핵심 정보는 표 형식으로 요약 제시
                         - 중요 사업 영역과 특징은 불릿 포인트로 명확하게 강조
                         - 일반 투자자도 이해할 수 있는 명확한 언어 사용

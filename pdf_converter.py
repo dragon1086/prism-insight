@@ -24,120 +24,547 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# CSS styles
-DEFAULT_CSS = """
-body {
-    font-family: Arial, sans-serif;
-    line-height: 1.6;
-    margin: 40px;
-    color: #333;
-    max-width: 900px;
-    margin: 0 auto;
-    padding: 20px;
-}
-h1 {
-    color: #0056b3;
-    border-bottom: 2px solid #ddd;
-    padding-bottom: 5px;
-}
-h2 {
-    color: #0056b3;
-    border-bottom: 1px solid #eee;
-    padding-bottom: 3px;
-}
-h3 {
-    color: #0056b3;
-}
-table {
-    border-collapse: collapse;
-    width: 100%;
-    margin: 20px 0;
-}
-th, td {
-    border: 1px solid #ddd;
-    padding: 8px;
-    text-align: left;
-}
-th {
-    background-color: #f2f2f2;
-}
-tr:nth-child(even) {
-    background-color: #f9f9f9;
-}
-code {
-    background-color: #f5f5f5;
-    padding: 2px 4px;
-    border-radius: 4px;
-    font-family: Consolas, monospace;
-}
-blockquote {
-    border-left: 4px solid #ddd;
-    padding-left: 10px;
-    margin-left: 10px;
-    color: #555;
-}
-pre {
-    background-color: #f5f5f5;
-    padding: 10px;
-    border-radius: 4px;
-    overflow-x: auto;
-}
-"""
+# Logo path (relative to project root)
+LOGO_PATH = os.path.join(os.path.dirname(__file__), "docs", "images", "prism-insight-logo.jpeg")
 
-# Theme-related CSS
-THEME_CSS = """
-/* Prism Insight Theme */
+# Prism Light Theme - Original Design inspired by light refraction
+# Unique design with spectrum colors representing data analysis through different perspectives
+DEFAULT_CSS = """
+/* ===== Prism Light Theme - CSS Variables ===== */
+:root {
+    --prism-dark: #0f172a;         /* Deep Slate */
+    --prism-mid: #334155;          /* Slate */
+    --prism-light: #64748b;        /* Light Slate */
+    --spectrum-violet: #8b5cf6;    /* Violet */
+    --spectrum-indigo: #6366f1;    /* Indigo */
+    --spectrum-blue: #3b82f6;      /* Blue */
+    --spectrum-cyan: #06b6d4;      /* Cyan */
+    --spectrum-emerald: #10b981;   /* Emerald */
+    --spectrum-amber: #f59e0b;     /* Amber */
+    --spectrum-rose: #f43f5e;      /* Rose */
+    --positive-color: #10b981;     /* Emerald (positive) */
+    --negative-color: #ef4444;     /* Red (negative) */
+    --bg-cream: #fafaf9;           /* Warm White */
+    --bg-white: #ffffff;
+    --border-soft: #e2e8f0;
+    --text-dark: #0f172a;
+    --text-muted: #64748b;
+}
+
+@page {
+    size: A4;
+    margin: 12mm 15mm;
+}
+
 body {
-    background-color: #f0f8ff;  /* Light blue background */
+    font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "Noto Sans KR", sans-serif;
+    font-size: 10pt;
+    line-height: 1.7;
+    color: var(--text-dark);
+    background-color: var(--bg-white);
+    margin: 0;
+    padding: 0;
+}
+
+/* ===== Prism Header - Geometric Light Refraction ===== */
+.report-header {
+    position: relative;
+    background: var(--prism-dark);
+    color: white;
+    padding: 20px 32px 28px 32px;
+    overflow: hidden;
+}
+
+/* Header logo section */
+.header-logo-section {
+    margin-bottom: 8px;
+}
+
+.header-logo {
+    height: 16px;
+    width: auto;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    max-height: 16px;
+    opacity: 0.85;
+}
+
+.header-logo-text {
+    font-size: 8pt;
+    font-weight: 600;
+    letter-spacing: 1px;
+    opacity: 0.85;
+}
+
+/* Prism spectrum bar - rainbow gradient accent */
+.report-header::before {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: linear-gradient(90deg,
+        var(--spectrum-violet) 0%,
+        var(--spectrum-indigo) 16%,
+        var(--spectrum-blue) 33%,
+        var(--spectrum-cyan) 50%,
+        var(--spectrum-emerald) 66%,
+        var(--spectrum-amber) 83%,
+        var(--spectrum-rose) 100%
+    );
+}
+
+/* Geometric prism shape */
+.report-header::after {
+    content: "";
+    position: absolute;
+    right: 32px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 60px;
+    height: 60px;
+    background: linear-gradient(135deg,
+        rgba(139, 92, 246, 0.3) 0%,
+        rgba(6, 182, 212, 0.3) 50%,
+        rgba(16, 185, 129, 0.3) 100%
+    );
+    clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+}
+
+.report-header .title-section {
+    position: relative;
+    z-index: 1;
+}
+
+.report-header .report-title {
+    font-size: 20pt;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: -0.3px;
+}
+
+.report-header .report-subtitle {
+    font-size: 9pt;
+    color: rgba(255, 255, 255, 0.7);
+    margin-top: 6px;
+    font-weight: 400;
+}
+
+/* ===== Main Content Area ===== */
+.report-content {
+    padding: 32px 28px 40px 28px;
+}
+
+.report-content > h1:first-child {
+    margin-top: 0;
+}
+
+/* ===== Heading Styles - Spectrum Accents ===== */
+h1 {
+    color: var(--prism-dark);
+    font-size: 16pt;
+    font-weight: 700;
+    margin-top: 32px;
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--border-soft);
     position: relative;
 }
 
-/* Background watermark style (dynamically added by create_watermark function) */
+/* Spectrum underline for h1 */
+h1::after {
+    content: "";
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 80px;
+    height: 2px;
+    background: linear-gradient(90deg, var(--spectrum-violet), var(--spectrum-cyan));
+}
 
-/* Header style */
-.report-header {
+h2 {
+    color: var(--prism-dark);
+    font-size: 13pt;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 14px;
+    padding-left: 14px;
+    border-left: 3px solid var(--spectrum-indigo);
+    background: linear-gradient(90deg, rgba(99, 102, 241, 0.06) 0%, transparent 100%);
+    padding-top: 6px;
+    padding-bottom: 6px;
+}
+
+h3 {
+    color: var(--prism-mid);
+    font-size: 11pt;
+    font-weight: 600;
+    margin-top: 22px;
+    margin-bottom: 10px;
+    padding-left: 10px;
+    border-left: 2px solid var(--spectrum-cyan);
+}
+
+h4 {
+    color: var(--prism-light);
+    font-size: 10pt;
+    font-weight: 600;
+    margin-top: 16px;
+    margin-bottom: 8px;
+}
+
+/* ===== Table Styles - Clean & Modern ===== */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    max-width: 100%;
+    margin: 16px 0;
+    font-size: 8.5pt;
+    border: 1px solid var(--border-soft);
+    table-layout: fixed;
+}
+
+thead {
+    background: linear-gradient(180deg, var(--prism-dark) 0%, var(--prism-mid) 100%);
+}
+
+th {
+    color: white;
+    font-weight: 600;
+    padding: 10px 8px;
+    text-align: left;
+    font-size: 8.5pt;
+    border: none;
+    word-wrap: break-word;
+}
+
+td {
+    padding: 8px;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: top;
+    text-align: left;
+    font-variant-numeric: tabular-nums;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+tr:nth-child(even) {
+    background-color: var(--bg-cream);
+}
+
+/* ===== Blockquote - Soft Highlight ===== */
+blockquote {
+    background: linear-gradient(90deg, rgba(99, 102, 241, 0.08) 0%, transparent 100%);
+    border-left: 3px solid var(--spectrum-indigo);
+    padding: 12px 16px;
+    margin: 18px 0;
+    color: var(--prism-mid);
+    font-size: 9pt;
+    border-radius: 0 4px 4px 0;
+}
+
+/* ===== Code Blocks ===== */
+code {
+    background-color: var(--bg-cream);
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+    font-size: 8.5pt;
+    color: var(--spectrum-indigo);
+}
+
+pre {
+    background: var(--prism-dark);
+    color: #e2e8f0;
+    padding: 14px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 8.5pt;
+}
+
+/* ===== Images (Charts) - Contained within report ===== */
+img {
+    max-width: 100% !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: 380px;
+    margin: 16px auto;
+    display: block;
+    border-radius: 6px;
+    border: 1px solid var(--border-soft);
+    object-fit: contain;
+    box-sizing: border-box;
+}
+
+/* Chart container for proper sizing */
+.chart-container {
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    margin: 20px 0;
+    text-align: center;
+    page-break-inside: avoid;
+}
+
+.chart-container img {
+    max-width: 100% !important;
+    max-height: 360px !important;
+    width: auto !important;
+    height: auto !important;
+}
+
+/* ===== Horizontal Rule - Spectrum Fade ===== */
+hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        var(--spectrum-violet) 20%,
+        var(--spectrum-cyan) 50%,
+        var(--spectrum-emerald) 80%,
+        transparent 100%
+    );
+    margin: 28px 0;
+    opacity: 0.5;
+}
+
+/* ===== List Styles ===== */
+ul, ol {
+    margin: 10px 0;
+    padding-left: 22px;
+}
+
+li {
+    margin-bottom: 5px;
+    line-height: 1.6;
+}
+
+li::marker {
+    color: var(--spectrum-indigo);
+}
+
+/* ===== Strong/Bold Text ===== */
+strong {
+    color: var(--prism-dark);
+    font-weight: 600;
+}
+
+/* ===== Footer - Minimal & Clean ===== */
+.report-footer {
+    margin: 32px 28px 24px 28px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-soft);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 7.5pt;
+    color: var(--text-muted);
+}
+
+.report-footer .powered-by {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    border-bottom: 3px solid #0056b3;
-    margin-bottom: 30px;
-    padding-bottom: 10px;
+    gap: 8px;
 }
 
-.report-header .title-area {
-    flex: 1;
+.report-footer .powered-by img {
+    height: 20px;
+    width: auto;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    max-height: 20px;
 }
 
-.report-header .logo {
-    width: 120px;
-    height: auto;
+.report-footer .disclaimer {
+    text-align: right;
+    max-width: 55%;
+    line-height: 1.4;
+    font-size: 7pt;
 }
 
-.report-date {
-    color: #666;
-    font-size: 0.9em;
-    margin-top: 5px;
+/* ===== Link Styles ===== */
+a {
+    color: var(--spectrum-indigo);
+    text-decoration: none;
 }
 
-/* Container style */
-.report-container {
-    border-left: 5px solid #0056b3;  /* Blue similar to Prism logo */
-    padding-left: 20px;
-    background: linear-gradient(to right, rgba(240, 248, 255, 0.7), rgba(255, 255, 255, 1));
-    padding: 20px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+a:hover {
+    text-decoration: underline;
 }
 
-/* Footer style */
-.report-footer {
-    margin-top: 40px;
-    padding-top: 10px;
-    border-top: 1px solid #ddd;
-    color: #666;
-    font-size: 0.9em;
-    text-align: center;
+/* ===== Page Break ===== */
+.page-break {
+    page-break-after: always;
+}
+
+/* ===== Print Styles ===== */
+@media print {
+    body {
+        font-size: 10pt;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    .report-header, .report-header::before, .report-header::after {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    thead {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    tr:nth-child(even) {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    img {
+        max-width: 100% !important;
+        max-height: 380px !important;
+        page-break-inside: avoid;
+    }
+
+    h1, h2, h3, h4 {
+        page-break-after: avoid;
+    }
+
+    table {
+        page-break-inside: auto;
+    }
+
+    tr {
+        page-break-inside: avoid;
+    }
 }
 """
+
+# Theme-related CSS (additional styles when add_theme=True)
+THEME_CSS = """
+/* Prism Light Theme - Additional styles */
+
+/* Logo text fallback with spectrum gradient */
+.logo-text {
+    font-size: 14pt;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    background: linear-gradient(90deg, var(--spectrum-violet), var(--spectrum-cyan));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.footer-logo {
+    height: 20px;
+    width: auto;
+    margin: 0;
+    box-shadow: none;
+    border: none;
+    border-radius: 0;
+}
+
+/* Ensure all images stay within bounds */
+.report-content img {
+    max-width: 100% !important;
+    height: auto !important;
+    box-sizing: border-box;
+}
+"""
+
+
+def _extract_report_info(md_content: str) -> dict:
+    """
+    Extract report information from markdown content
+
+    Args:
+        md_content: Markdown content
+
+    Returns:
+        {"company_name": "Samsung Electronics", "report_date": "2025-12-27", ...}
+    """
+    import re
+
+    info = {
+        "company_name": "",
+        "company_code": "",
+        "report_date": datetime.now().strftime("%Y-%m-%d"),
+        "report_type": "Analysis Report"
+    }
+
+    # Skip titles to ignore (disclaimers, etc.)
+    skip_titles = ["투자 유의사항", "Investment Disclaimer", "핵심 요약", "Executive Summary"]
+
+    # Method 1: Extract from H1 title like "# 삼성전자 (005930) 분석 보고서"
+    h1_matches = re.findall(r'^#\s+(.+?)$', md_content, re.MULTILINE)
+    for h1_text in h1_matches:
+        h1_clean = h1_text.strip()
+        # Skip disclaimer/summary titles
+        if any(skip in h1_clean for skip in skip_titles):
+            continue
+        # Try to extract company name and code from title
+        title_match = re.match(r'(.+?)[\s]*[\(\（]([A-Z0-9]{4,6}|\d{6})[\)\）]', h1_clean)
+        if title_match:
+            info["company_name"] = title_match.group(1).strip()
+            info["company_code"] = title_match.group(2)
+            break
+        # If no code in parentheses, use the whole title
+        if not any(skip in h1_clean for skip in skip_titles):
+            info["company_name"] = h1_clean.replace("분석 보고서", "").replace("Analysis Report", "").strip()
+            break
+
+    # Method 2: Extract from content pattern like "기준 삼성전자는" or "삼성전자(005930)"
+    if not info["company_name"]:
+        # Korean pattern: "YYYY-MM-DD 기준 회사명은" or "회사명(종목코드)"
+        kr_pattern = re.search(r'기준\s+([가-힣A-Za-z\s]+?)(?:는|은|이|가|\()', md_content)
+        if kr_pattern:
+            info["company_name"] = kr_pattern.group(1).strip()
+
+    # Method 3: Extract stock code from content like "삼성전자(005930)" or "(AAPL)"
+    if not info["company_code"]:
+        # Korean stock code (6 digits)
+        code_match = re.search(r'[\(\（](\d{6})[\)\）]', md_content)
+        if code_match:
+            info["company_code"] = code_match.group(1)
+        else:
+            # US ticker (1-5 uppercase letters)
+            us_match = re.search(r'[\(\（]([A-Z]{1,5})[\)\）]', md_content)
+            if us_match:
+                info["company_code"] = us_match.group(1)
+
+    # Extract date from content like "2025-01-24 기준" or "발행일: 2025-01-24"
+    date_patterns = [
+        r'(\d{4}-\d{2}-\d{2})\s*기준',  # "2025-01-24 기준"
+        r'(?:발행일|Publication Date|생성 일시)[:\s]*(\d{4}[-./]\d{2}[-./]\d{2})',
+        r'(\d{4}[-./]\d{2}[-./]\d{2})\s*(?:기준|현재|as of)',
+    ]
+    for pattern in date_patterns:
+        date_match = re.search(pattern, md_content, re.IGNORECASE)
+        if date_match:
+            info["report_date"] = date_match.group(1).replace('.', '-').replace('/', '-')
+            break
+
+    return info
+
+
+def _get_logo_base64() -> str:
+    """Encode logo image to Base64"""
+    logo_path = os.path.abspath(LOGO_PATH)
+
+    if os.path.exists(logo_path):
+        try:
+            with open(logo_path, 'rb') as f:
+                logo_data = f.read()
+            return base64.b64encode(logo_data).decode('utf-8')
+        except Exception as e:
+            logger.warning(f"Failed to load logo: {e}")
+
+    return ""
 
 def create_watermark(html_content, logo_path, opacity=0.02):
     """
@@ -188,12 +615,12 @@ def create_watermark(html_content, logo_path, opacity=0.02):
 
 def markdown_to_html(md_file_path, add_css=True, add_theme=False, logo_path=None, enable_watermark=False, watermark_opacity=0.02):
     """
-    Convert Markdown file to HTML
+    Convert Markdown file to HTML with modern professional design
 
     Args:
         md_file_path (str): Markdown file path
         add_css (bool): Whether to add CSS styles
-        add_theme (bool): Whether to add theme and logo
+        add_theme (bool): Whether to add theme with header and footer
         logo_path (str): Logo image path (uses default logo if None)
         enable_watermark (bool): Whether to apply logo watermark to background
         watermark_opacity (float): Watermark opacity (0.0-1.0)
@@ -209,24 +636,33 @@ def markdown_to_html(md_file_path, add_css=True, add_theme=False, logo_path=None
         with open(md_file_path, 'r', encoding='utf-8') as f:
             md_content = f.read()
 
+        # Extract report information for header
+        report_info = _extract_report_info(md_content)
+
         # Convert image paths to absolute paths (using regex)
         import re
 
-        # Find HTML image tags
-        img_tags_pattern = r'<img\s+src="data:image/png;base64,[^"]+"\s+[^>]+>'
-        img_tags = re.findall(img_tags_pattern, md_content)
+        # Find HTML image tags (base64 encoded)
+        img_tags_pattern = r'<img\s+src="data:image/[^"]+"\s*[^>]*>'
+        img_tags = re.findall(img_tags_pattern, md_content, re.IGNORECASE)
 
-        # Replace with temporary placeholders
+        # Replace with temporary placeholders (using HTML comments to survive markdown parsing)
         for i, tag in enumerate(img_tags):
-            placeholder = f"___HTML_IMG_TAG_{i}___"
+            placeholder = f"<!--PRISM_IMG_PLACEHOLDER_{i}-->"
             md_content = md_content.replace(tag, placeholder)
 
         # Process remaining images (existing code)
         def replace_image_path(match):
+            img_alt = match.group(1)
             img_path = match.group(2)
-            if not os.path.isabs(img_path):
-                img_path = os.path.abspath(os.path.join(base_dir, img_path))
-            return f'![{match.group(1)}]({img_path})'
+
+            # Keep absolute paths and URLs as is
+            if os.path.isabs(img_path) or img_path.startswith(('http://', 'https://')):
+                return f'![{img_alt}]({img_path})'
+
+            # Convert relative path to absolute
+            abs_path = os.path.abspath(os.path.join(base_dir, img_path))
+            return f'![{img_alt}]({abs_path})'
 
         # Find markdown image link patterns and convert to absolute paths
         md_content = re.sub(r'!\[(.*?)]\((.*?)\)', replace_image_path, md_content)
@@ -247,47 +683,63 @@ def markdown_to_html(md_file_path, add_css=True, add_theme=False, logo_path=None
 
         # Restore HTML image tags
         for i, tag in enumerate(img_tags):
-            placeholder = f"___HTML_IMG_TAG_{i}___"
-            html = html.replace(placeholder, tag)
-
-        # Attempt to extract markdown title
-        title = "Report"
-        for line in md_content.split('\n'):
-            if line.startswith('# '):
-                title = line[2:].strip()
-                break
-
-        # Format date
-        today = datetime.now().strftime("%Y-%m-%d")
+            placeholder = f"<!--PRISM_IMG_PLACEHOLDER_{i}-->"
+            # Wrap in div for proper sizing
+            wrapped_tag = f'<div class="chart-container">{tag}</div>'
+            html = html.replace(placeholder, wrapped_tag)
 
         # Set logo path
-        if logo_path is None and (add_theme or enable_watermark):
-            # Default logo path (assumed to be in project assets folder)
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            logo_path = os.path.join(script_dir, "assets", "prism_insight_logo.png")
+        if logo_path is None:
+            logo_path = LOGO_PATH
 
-        # HTML header and footer templates
+        # Get logo as Base64 for embedding
+        logo_base64 = _get_logo_base64()
+        logo_img = f'<img src="data:image/jpeg;base64,{logo_base64}" alt="Prism-Insight">' if logo_base64 else '<span class="logo-text">PRISM-INSIGHT</span>'
+
+        # Company display name
+        company_display = report_info["company_name"]
+        if report_info["company_code"]:
+            company_display += f" ({report_info['company_code']})"
+        if not company_display:
+            company_display = "Stock Analysis Report"
+
+        # Determine report type based on language
+        is_korean = any(ord(c) >= 0xAC00 and ord(c) <= 0xD7A3 for c in report_info["company_name"])
+        report_type = "기업 분석 보고서" if is_korean else "Analysis Report"
+        footer_disclaimer_line1 = "본 보고서는 AI 기반 자동 분석 시스템에 의해 생성되었습니다." if is_korean else "This report was generated by an AI-based automated analysis system."
+        footer_disclaimer_line2 = "투자 결정은 반드시 추가적인 검토와 전문가 상담 후 진행하시기 바랍니다." if is_korean else "Please consult with experts before making investment decisions."
+
+        # HTML header and footer templates (modern design)
+        header_html = ""
+        footer_html = ""
+
         if add_theme:
-            header_template = f"""
-            <div class="report-container">
-                <div class="report-header">
-                    <div class="title-area">
-                        <h1>{title}</h1>
-                        <div class="report-date">Publication date: {today}</div>
-                    </div>
-                    <img src="{logo_path}" alt="Prism Insight Logo" class="logo">
-                </div>
+            # Create header logo (small, top-left)
+            header_logo = f'<img src="data:image/jpeg;base64,{logo_base64}" class="header-logo" alt="Prism-Insight">' if logo_base64 else '<span class="header-logo-text">PRISM</span>'
+
+            header_html = f"""
+    <div class="report-header">
+        <div class="header-logo-section">
+            {header_logo}
+        </div>
+        <div class="title-section">
+            <div class="report-title">{company_display}</div>
+            <div class="report-subtitle">{report_type} · {report_info['report_date']}</div>
+        </div>
+    </div>
             """
 
-            footer_template = """
-                <div class="report-footer">
-                    <p>© 2025 Prism Insight. All rights reserved.</p>
-                </div>
-            </div>
+            footer_html = f"""
+    <div class="report-footer">
+        <div class="powered-by">
+            <span>Powered by <strong>Prism-Insight</strong></span>
+        </div>
+        <div class="disclaimer">
+            {footer_disclaimer_line1}<br>
+            {footer_disclaimer_line2}
+        </div>
+    </div>
             """
-        else:
-            header_template = ""
-            footer_template = ""
 
         # Create complete HTML document
         if add_css:
@@ -295,33 +747,35 @@ def markdown_to_html(md_file_path, add_css=True, add_theme=False, logo_path=None
             if add_theme:
                 css_content += THEME_CSS
 
-            full_html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <style>
-                {css_content}
-                </style>
-            </head>
-            <body>
-                {header_template}
-                {html}
-                {footer_template}
-            </body>
-            </html>
+            full_html = f"""<!DOCTYPE html>
+<html lang="{'ko' if is_korean else 'en'}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{company_display} {report_type}</title>
+    <style>
+    {css_content}
+    </style>
+</head>
+<body>
+    {header_html}
+    <main class="report-content">
+    {html}
+    </main>
+    {footer_html}
+</body>
+</html>
             """
         else:
-            full_html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-            </head>
-            <body>
-                {html}
-            </body>
-            </html>
+            full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+</head>
+<body>
+    {html}
+</body>
+</html>
             """
 
         # Apply logo watermark to background
