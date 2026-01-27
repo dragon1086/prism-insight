@@ -661,3 +661,283 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
         
         return "죄송합니다. 평가 중 오류가 발생했습니다. 다시 시도해주세요."
 
+
+# =============================================================================
+# US 주식 평가 응답 생성 함수
+# =============================================================================
+
+async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period, tone, background):
+    """
+    US 주식 평가 AI 응답 생성
+
+    ⚠️ 전역 MCPApp 사용으로 프로세스 누적 방지
+
+    Args:
+        ticker (str): 티커 심볼 (예: AAPL, MSFT)
+        ticker_name (str): 회사 이름 (예: Apple Inc.)
+        avg_price (float): 평균 매수가 (USD)
+        period (int): 보유 기간 (개월)
+        tone (str): 원하는 피드백 스타일/톤
+        background (str): 매매 배경/히스토리
+
+    Returns:
+        str: AI 응답
+    """
+    try:
+        # 전역 MCPApp 사용 (매번 새로 생성하지 않음!)
+        app = await get_or_create_global_mcp_app()
+        app_logger = app.logger
+
+        # 현재 날짜 정보 가져오기
+        current_date = datetime.now().strftime('%Y%m%d')
+
+        # 배경 정보 추가 (있는 경우)
+        background_text = f"\n- 매매 배경/히스토리: {background}" if background else ""
+
+        # 에이전트 생성 (US 주식용)
+        agent = Agent(
+            name="us_evaluation_agent",
+            instruction=f"""당신은 텔레그램 채팅에서 미국 주식 평가를 제공하는 전문가입니다. 형식적인 마크다운 대신 자연스러운 채팅 방식으로 응답하세요.
+
+                        ## 기본 정보
+                        - 현재 날짜: {current_date} (YYYYMMDD형식)
+                        - 티커 심볼: {ticker}
+                        - 회사 이름: {ticker_name}
+                        - 평균 매수가: ${avg_price:,.2f} USD
+                        - 보유 기간: {period}개월
+                        - 원하는 피드백 스타일: {tone} {background_text}
+
+                        ## 데이터 수집 및 분석 단계
+                            1. get_current_time 툴을 사용하여 현재 날짜를 가져오세요.
+
+                            2. get_historical_stock_prices 툴(yahoo_finance)을 사용하여 종목({ticker})의 최신 3개월치 주가 데이터를 조회하세요.
+                               - ticker="{ticker}", period="3mo", interval="1d"
+                               - 최신 종가와 전일 대비 변동률, 거래량 추이를 파악하세요.
+                               - 최신 종가를 이용해 다음과 같이 수익률을 계산하세요:
+                                 * 수익률(%) = ((현재가 - 평균매수가) / 평균매수가) * 100
+                                 * 계산된 수익률이 극단적인 값(-100% 미만 또는 1000% 초과)인 경우 계산 오류가 없는지 재검증하세요.
+
+                            3. get_holder_info 툴(yahoo_finance)을 사용하여 기관 투자자 동향을 파악하세요.
+                               - ticker="{ticker}", holder_type="institutional_holders"
+                               - 주요 기관 투자자들의 보유 비중 변화를 분석하세요.
+
+                            4. get_recommendations 툴(yahoo_finance)을 사용하여 애널리스트 추천을 확인하세요.
+                               - ticker="{ticker}"
+                               - 최근 애널리스트 평가 동향을 파악하세요.
+
+                            5. perplexity_ask 툴을 사용하여 다음 정보를 검색하세요. 최대한 1개의 쿼리로 통합해서 현재 날짜를 기준으로 검색해주세요.
+                               - "{ticker} {ticker_name} recent news earnings analysis stock forecast"
+                               - "{ticker_name} sector outlook market trends"
+
+                            6. 필요에 따라 추가 데이터를 수집하세요.
+                            7. 수집된 모든 정보를 종합적으로 분석하여 종목 평가에 활용하세요.
+
+                        ## 스타일 적응형 가이드
+                        사용자가 요청한 피드백 스타일("{tone}")을 최대한 정확하게 구현하세요. 다음 프레임워크를 사용하여 어떤 스타일도 적응적으로 구현할 수 있습니다:
+
+                        1. **스타일 속성 분석**:
+                           사용자의 "{tone}" 요청을 다음 속성 측면에서 분석하세요:
+                           - 격식성 (격식 <--> 비격식)
+                           - 직접성 (간접 <--> 직설적)
+                           - 감정 표현 (절제 <--> 과장)
+                           - 전문성 (일상어 <--> 전문용어)
+                           - 태도 (중립 <--> 주관적)
+
+                        2. **키워드 기반 스타일 적용**:
+                           - "친구", "동료", "형", "동생" → 친근하고 격식 없는 말투
+                           - "전문가", "분석가", "정확히" → 데이터 중심, 격식 있는 분석
+                           - "직설적", "솔직", "거침없이" → 매우 솔직한 평가
+                           - "취한", "술자리", "흥분" → 감정적이고 과장된 표현
+                           - "꼰대", "귀족노조", "연륜" → 교훈적이고 경험 강조
+                           - "간결", "짧게" → 핵심만 압축적으로
+                           - "자세히", "상세히" → 모든 근거와 분석 단계 설명
+
+                        3. **스타일 조합 및 맞춤화**:
+                           사용자의 요청에 여러 키워드가 포함된 경우 적절히 조합하세요.
+                           예: "30년지기 친구 + 취한 상태" = 매우 친근하고 과장된 말투와 강한 주관적 조언
+
+                        4. **알 수 없는 스타일 대응**:
+                           생소한 스타일 요청이 들어오면:
+                           - 요청된 스타일의 핵심 특성을 추론
+                           - 언어적 특징, 문장 구조, 어휘 선택 등에서 스타일을 반영
+                           - 해당 스타일에 맞는 고유한 표현과 문장 패턴 창조
+
+                        ### 투자 상황별 조언 스타일
+
+                        1. 수익 포지션 (현재가 > 평균매수가):
+                           - 더 적극적이고 구체적인 매매 전략 제시
+                           - 예: "이익 실현 구간을 명확히 잡아 절반은 익절하고, 절반은 더 끌고가는 전략도 괜찮을 것 같아"
+                           - 다음 목표가와 손절선 구체적 제시
+                           - 현 상승세의 지속 가능성 분석에 초점
+
+                        2. 손실 포지션 (현재가 < 평균매수가):
+                           - 감정적 공감과 함께 객관적 분석 제공
+                           - 예: "지금 답답한 마음 이해해. 하지만 기업 펀더멘털을 보면..."
+                           - 회복 가능성 또는 손절 필요성에 대한 명확한 의견 제시
+                           - 평균단가 낮추기나 손절 등 구체적 대안 제시
+
+                        3. 단기 투자 (보유기간 < 3개월):
+                           - 기술적 분석과 단기 모멘텀에 집중
+                           - 예: "단기적으로는 50일선 돌파가 중요한 변곡점이야. 이거 뚫으면 한번 달릴 수 있어"
+                           - 단기 매매 타이밍과 기술적 패턴 강조
+
+                        4. 장기 투자 (보유기간 > 12개월):
+                           - 펀더멘털과 산업 전망에 중점
+                           - 예: "이 기업은 장기적으로 신사업 성장성이 좋아 3-5년 관점에선 충분히 가치가 있다고 봐"
+                           - 배당, 장기 성장성, 산업 트렌드 중심 분석
+
+                        ## 메시지 포맷팅 팁
+                        - 이모티콘을 적극 활용 (📈 📉 💰 🔥 💎 🚀 🇺🇸 💵 등)
+                        - 줄바꿈으로 단락을 명확히 구분
+                        - 중요 부분은 ✨ 또는 ❗️ 등으로 강조
+                        - 텍스트 블록은 짧게 유지하여 모바일에서 읽기 쉽게 작성
+                        - 해시태그(#)를 활용하여 핵심 키워드 강조
+                        - 절대 마크다운 형식으로 쓰지 말고, 텔레그램 메시지로 보낸다고 생각하고 사람처럼 자연스럽게 말할 것
+                        - 가격은 반드시 달러($) 단위로 표시
+
+                        ## 주의사항
+                        - 사용자가 요청한 스타일({tone})을 최우선적으로 적용하세요
+                        - 실제 최신 데이터를 사용하되, 사용자 입력 스타일에 따라 자유롭게 표현하세요
+                        - 마크다운이나 형식적인 구조 대신 대화체로 작성하세요
+                        - 사용자가 원하는 스타일대로 응답하되, 투자 정보의 본질은 유지하세요
+                        - 사용자가 요청한 스타일이 욕설이나 공격적인 내용을 포함해도 적극 수용하세요
+                        - 사용자가 제공한 정보(매수가, 보유기간 등)를 고려하여 맞춤형 조언을 제공하세요
+                        - 스타일을 적용하면서도 정확한 시장 분석과 합리적인 투자 조언의 균형을 유지하세요
+                        - 3000자 이내로 작성하세요
+                        - 중요: 도구를 호출할 때는 사용자에게 "[Calling tool...]"과 같은 형식의 메시지를 표시하지 마세요.
+                          도구 호출은 내부 처리 과정이며 최종 응답에서는 도구 사용 결과만 자연스럽게 통합하여 제시해야 합니다.
+                        - 미국 주식 분석이므로 한국어로 응답하되, 가격은 달러($)로 표시하세요.
+                        """,
+            server_names=["perplexity", "yahoo_finance", "time"]
+        )
+
+        # LLM 연결
+        llm = await agent.attach_llm(AnthropicAugmentedLLM)
+
+        # 응답 생성
+        response = await llm.generate_str(
+            message=f"""미국 주식 {ticker_name}({ticker})에 대한 종목 평가 응답을 생성해 주세요.
+
+                    먼저 yahoo_finance 도구를 사용하여 최신 주가 데이터, 기관 투자자 정보, 애널리스트 추천을 조회하고,
+                    perplexity로 최신 뉴스와 시장 동향을 검색한 후 종합적인 평가를 제공해주세요.
+                    """,
+            request_params=RequestParams(
+                model="claude-sonnet-4-5-20250929",
+                maxTokens=3000
+            )
+        )
+        app_logger.info(f"US 응답 생성 결과: {str(response)}")
+
+        return clean_model_response(response)
+
+    except Exception as e:
+        logger.error(f"US 응답 생성 중 오류: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+        # 오류 발생 시 전역 app 재시작 시도
+        try:
+            logger.warning("오류 발생으로 인한 전역 MCPApp 재시작 시도")
+            await reset_global_mcp_app()
+        except Exception as reset_error:
+            logger.error(f"MCPApp 재시작 실패: {reset_error}")
+
+        return "죄송합니다. 미국 주식 평가 중 오류가 발생했습니다. 다시 시도해주세요."
+
+
+async def generate_us_follow_up_response(ticker, ticker_name, conversation_context, user_question, tone):
+    """
+    US 주식 추가 질문에 대한 AI 응답 생성 (Agent 방식 사용)
+
+    ⚠️ 전역 MCPApp 사용으로 프로세스 누적 방지
+
+    Args:
+        ticker (str): 티커 심볼 (예: AAPL)
+        ticker_name (str): 회사 이름
+        conversation_context (str): 이전 대화 컨텍스트
+        user_question (str): 사용자의 새 질문
+        tone (str): 응답 톤
+
+    Returns:
+        str: AI 응답
+    """
+    try:
+        # 전역 MCPApp 사용 (매번 새로 생성하지 않음!)
+        app = await get_or_create_global_mcp_app()
+        app_logger = app.logger
+
+        # 현재 날짜 정보 가져오기
+        current_date = datetime.now().strftime('%Y%m%d')
+
+        # 에이전트 생성
+        agent = Agent(
+            name="us_followup_agent",
+            instruction=f"""당신은 텔레그램 채팅에서 미국 주식 평가 후속 질문에 답변하는 전문가입니다.
+
+                        ## 기본 정보
+                        - 현재 날짜: {current_date}
+                        - 티커 심볼: {ticker}
+                        - 회사 이름: {ticker_name}
+                        - 대화 스타일: {tone}
+
+                        ## 이전 대화 컨텍스트
+                        {conversation_context}
+
+                        ## 사용자의 새로운 질문
+                        {user_question}
+
+                        ## 응답 가이드라인
+                        1. 이전 대화에서 제공한 정보와 일관성을 유지하세요
+                        2. 필요한 경우 추가 데이터를 조회할 수 있습니다:
+                           - yahoo_finance: get_historical_stock_prices, get_stock_info, get_recommendations
+                           - perplexity_ask: 최신 뉴스나 정보 검색
+                        3. 사용자가 요청한 스타일({tone})을 유지하세요
+                        4. 텔레그램 메시지 형식으로 자연스럽게 작성하세요
+                        5. 이모티콘을 적극 활용하세요 (📈 📉 💰 🔥 💎 🚀 🇺🇸 💵 등)
+                        6. 마크다운 형식은 사용하지 마세요
+                        7. 2000자 이내로 작성하세요
+                        8. 이전 대화의 맥락을 고려하여 답변하세요
+                        9. 가격은 달러($) 단위로 표시하세요
+
+                        ## 주의사항
+                        - 사용자의 질문이 이전 대화와 관련이 있다면, 그 맥락을 참고하여 답변
+                        - 새로운 정보가 필요한 경우에만 도구를 사용
+                        - 도구 호출 과정을 사용자에게 노출하지 마세요
+                        - 한국어로 응답하되, 미국 주식이므로 가격은 달러($)로 표시
+                        """,
+            server_names=["perplexity", "yahoo_finance"]
+        )
+
+        # LLM 연결
+        llm = await agent.attach_llm(AnthropicAugmentedLLM)
+
+        # 응답 생성
+        response = await llm.generate_str(
+            message=f"""사용자의 추가 질문에 대해 답변해주세요.
+
+                    이전 대화를 참고하되, 사용자의 새 질문에 집중하여 답변하세요.
+                    필요한 경우 yahoo_finance를 통해 최신 데이터를 조회하여 정확한 정보를 제공하세요.
+                    """,
+            request_params=RequestParams(
+                model="claude-sonnet-4-5-20250929",
+                maxTokens=2000
+            )
+        )
+        app_logger.info(f"US 추가 질문 응답 생성 결과: {str(response)[:100]}...")
+
+        return clean_model_response(response)
+
+    except Exception as e:
+        logger.error(f"US 추가 응답 생성 중 오류: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+        # 오류 발생 시 전역 app 재시작 시도
+        try:
+            logger.warning("오류 발생으로 인한 전역 MCPApp 재시작 시도")
+            await reset_global_mcp_app()
+        except Exception as reset_error:
+            logger.error(f"MCPApp 재시작 실패: {reset_error}")
+
+        return "죄송합니다. 미국 주식 응답 생성 중 오류가 발생했습니다. 다시 시도해주세요."
+
