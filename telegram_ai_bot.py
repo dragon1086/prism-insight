@@ -227,7 +227,8 @@ class TelegramAIBot:
         # 기본 명령어
         self.application.add_handler(CommandHandler("start", self.handle_start))
         self.application.add_handler(CommandHandler("help", self.handle_help))
-        
+        self.application.add_handler(CommandHandler("cancel", self.handle_cancel_standalone))
+
         # 답장(Reply) 핸들러 - ConversationHandler보다 먼저 등록
         self.application.add_handler(MessageHandler(
             filters.REPLY & filters.TEXT & ~filters.COMMAND,
@@ -976,14 +977,25 @@ class TelegramAIBot:
 
     @staticmethod
     async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """대화 취소 처리"""
+        """대화 취소 처리 (ConversationHandler 내부에서 호출)"""
         # 사용자 데이터 초기화
         context.user_data.clear()
 
         await update.message.reply_text(
-            "요청이 취소되었습니다. 다시 시작하려면 /evaluate, /report 또는 /history 명령어를 입력해주세요."
+            "요청이 취소되었습니다.\n\n"
+            "🇰🇷 한국 주식: /evaluate, /report, /history\n"
+            "🇺🇸 미국 주식: /us_evaluate, /us_report"
         )
         return ConversationHandler.END
+
+    @staticmethod
+    async def handle_cancel_standalone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """대화 취소 처리 (대화 밖에서 호출)"""
+        await update.message.reply_text(
+            "현재 진행 중인 대화가 없습니다.\n\n"
+            "🇰🇷 한국 주식: /evaluate, /report, /history\n"
+            "🇺🇸 미국 주식: /us_evaluate, /us_report"
+        )
 
     @staticmethod
     async def handle_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
