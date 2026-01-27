@@ -5,12 +5,13 @@ services:
       dockerfile: Dockerfile
     container_name: prism-insight-container
     image: prism-insight:latest
-    
+
     # 환경 변수
     environment:
       - TZ=Asia/Seoul
       - PYTHONUNBUFFERED=1
-    
+      - ENABLE_CRON=true  # Set to 'false' to disable cron jobs
+
     # 볼륨 마운트
     volumes:
       # 데이터 영속성을 위한 볼륨
@@ -31,22 +32,25 @@ services:
 
       # SQLite DB (파일 단위 마운트)
       - ./stock_tracking_db.sqlite:/app/prism-insight/stock_tracking_db.sqlite
-    
+
+      # Crontab 설정 (호스트에서 수정 가능)
+      - ./docker/crontab:/app/prism-insight/docker/crontab:ro
+
     # 작업 디렉토리
     working_dir: /app/prism-insight
-    
-    # 컨테이너 시작 시 실행할 명령어 (백그라운드 유지)
-    command: tail -f /dev/null
-    
+
+    # Entrypoint가 컨테이너를 유지 (cron 서비스 실행)
+    # 수동 실행 시: docker-compose run prism-insight python3 script.py
+
     # 재시작 정책
     restart: unless-stopped
-    
+
     # 네트워크 모드
     network_mode: bridge
-    
+
     # 헬스체크
     healthcheck:
-      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD-SHELL", "python3 -c 'import sys; sys.exit(0)' && service cron status"]
       interval: 30s
       timeout: 10s
       retries: 3
