@@ -96,8 +96,8 @@ class TestDataToTriggerFlow:
         """Test market cap filter is applied in trigger."""
         from us_trigger_batch import MIN_MARKET_CAP
 
-        # Verify constant is set correctly
-        assert MIN_MARKET_CAP == 5_000_000_000
+        # Verify constant is set correctly ($20B)
+        assert MIN_MARKET_CAP == 20_000_000_000
 
 
 # =============================================================================

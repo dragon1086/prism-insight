@@ -123,7 +123,7 @@ def test_data(ticker="AAPL"):
     print(f"\n[5] Convenience Methods:")
     print(f"    get_current_price({ticker}): ${client.get_current_price(ticker):.2f}")
     print(f"    get_market_cap({ticker}): ${client.get_market_cap(ticker):,.0f}")
-    print(f"    is_large_cap({ticker}, $5B): {client.is_large_cap(ticker, 5e9)}")
+    print(f"    is_large_cap({ticker}, $20B): {client.is_large_cap(ticker, 20e9)}")
 
     print("\n✓ Data client test completed")
     return True

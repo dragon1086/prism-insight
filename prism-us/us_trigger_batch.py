@@ -8,7 +8,7 @@ Adapted from Korean trigger_batch.py for US market characteristics.
 
 Key Differences from Korean Version:
 - Data source: yfinance (vs pykrx)
-- Market cap filter: $5B USD (vs 5000억 KRW)
+- Market cap filter: $20B USD (vs 5000억 KRW)
 - Trading value filter: $100M USD (vs 100억 KRW)
 - Change rate filter: 20% max (same)
 - Market hours: 09:30-16:00 EST (vs 09:00-15:30 KST)
@@ -67,8 +67,8 @@ TRIGGER_CRITERIA = {
     "default": {"rr_target": 1.5, "sl_max": 0.07}
 }
 
-# Market cap filter: $5B USD
-MIN_MARKET_CAP = 5_000_000_000
+# Market cap filter: $20B USD (S&P 500 inclusion level)
+MIN_MARKET_CAP = 20_000_000_000
 
 # Trading value filter: $100M USD
 MIN_TRADING_VALUE = 100_000_000
@@ -242,7 +242,7 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame,
     - Additional filter: Volume increase >= 30%
     - Composite score: Volume increase rate (60%) + Absolute volume (40%)
     - Secondary filter: Only rising stocks (current > open)
-    - Market cap filter: >= $5B USD
+    - Market cap filter: >= $20B USD
     """
     logger.debug("trigger_morning_volume_surge started")
 
@@ -305,7 +305,7 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame,
     - Absolute criteria: Min trading value $100M
     - Composite score: Gap up rate (50%) + Intraday change (30%) + Trading value (20%)
     - Secondary filter: Only stocks maintaining momentum (close > open)
-    - Market cap filter: >= $5B USD
+    - Market cap filter: >= $20B USD
     """
     logger.debug("trigger_morning_gap_up_momentum started")
 
@@ -415,7 +415,7 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame,
         # v1.16.6: Max change rate filter (20%)
         merged = merged[merged["DailyChange"] <= 20.0]
 
-        # Market cap filter ($5B+)
+        # Market cap filter ($20B+)
         merged = merged[merged["MarketCap"] >= MIN_MARKET_CAP]
         if merged.empty:
             return pd.DataFrame()
@@ -461,7 +461,7 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame,
     - Absolute criteria: Min trading value $100M
     - Composite score: Intraday change (60%) + Trading value (40%)
     - Additional filter: Change rate >= 3%
-    - Market cap filter: >= $5B USD
+    - Market cap filter: >= $20B USD
     """
     logger.debug("trigger_afternoon_daily_rise_top started")
 
@@ -506,7 +506,7 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame,
     - Absolute criteria: Min trading value $100M + Volume increase from previous day
     - Composite score: Closing strength (50%) + Volume increase (30%) + Trading value (20%)
     - Secondary filter: Only rising stocks (close > open)
-    - Market cap filter: >= $5B USD
+    - Market cap filter: >= $20B USD
     """
     logger.debug("trigger_afternoon_closing_strength started")
 
@@ -583,7 +583,7 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
     - Absolute criteria: Min trading value $100M + Market average volume
     - Composite score: Volume increase rate (60%) + Trading value (40%)
     - Secondary filter: Sideways stocks only (change within +-5%)
-    - Market cap filter: >= $5B USD
+    - Market cap filter: >= $20B USD
     """
     logger.debug("trigger_afternoon_volume_surge_flat started")
 

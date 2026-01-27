@@ -118,7 +118,7 @@ prism-us/
 | 데이터 소스 | pykrx, kospi_kosdaq MCP | yahoo-finance-mcp, sec-edgar-mcp (uvx) |
 | Trading API | KIS 국내주식 API | KIS 해외주식 API |
 | 시장 시간 | 09:00-15:30 KST | 09:30-16:00 EST (23:30-06:00 KST) |
-| 시총 필터 | 5000억 KRW | $5B USD |
+| 시총 필터 | 5000억 KRW | $20B USD |
 | DB 테이블 | stock_holdings | us_stock_holdings |
 | 통화 | KRW | USD |
 

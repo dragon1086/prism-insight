@@ -267,8 +267,8 @@ class TestTriggerCriteria:
             assert 'sl_max' in criteria, f"{trigger} missing sl_max"
 
     def test_min_market_cap_value(self):
-        """Test MIN_MARKET_CAP is $5B."""
-        assert MIN_MARKET_CAP == 5_000_000_000
+        """Test MIN_MARKET_CAP is $20B."""
+        assert MIN_MARKET_CAP == 20_000_000_000
 
     def test_min_trading_value(self):
         """Test MIN_TRADING_VALUE is $100M."""

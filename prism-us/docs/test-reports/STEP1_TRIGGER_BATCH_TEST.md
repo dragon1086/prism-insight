@@ -135,8 +135,8 @@ current_price = float(current_price)
 
 ```
 503개 (S&P 500)
-  ↓ 시총 필터 ($5B)
-503개 (100%) - S&P 500은 대부분 대형주
+  ↓ 시총 필터 ($20B)
+~300개 (60%) - S&P 500 편입 기준 수준만 선별
   ↓ 거래대금 필터 ($100M)
 ~450개 (~90%)
   ↓ 등락률 필터 (20%)
@@ -206,7 +206,7 @@ current_price = float(current_price)
     "trade_date": "20260116",
     "selection_mode": "hybrid",
     "market": "US",
-    "min_market_cap_usd": 5000000000
+    "min_market_cap_usd": 20000000000
   }
 }
 ```

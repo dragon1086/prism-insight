@@ -179,11 +179,11 @@ class TestCompanyInfo:
     def test_is_large_cap(self, sample_ticker):
         """Test is_large_cap method."""
         client = USDataClient()
-        is_large = client.is_large_cap(sample_ticker, threshold=5e9)
+        is_large = client.is_large_cap(sample_ticker, threshold=20e9)
 
         assert isinstance(is_large, bool)
         # AAPL should definitely be large cap
-        assert is_large is True, "AAPL should be large cap (>$5B)"
+        assert is_large is True, "AAPL should be large cap (>$20B)"
 
 
 # =============================================================================

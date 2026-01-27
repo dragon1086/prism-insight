@@ -671,13 +671,13 @@ class USDataClient:
         info = self.get_company_info(ticker)
         return info.get("market_cap", 0.0)
 
-    def is_large_cap(self, ticker: str, threshold: float = 5e9) -> bool:
+    def is_large_cap(self, ticker: str, threshold: float = 20e9) -> bool:
         """
-        Check if stock is large cap (default: $5B+).
+        Check if stock is large cap (default: $20B+).
 
         Args:
             ticker: Stock ticker symbol
-            threshold: Market cap threshold (default: $5B)
+            threshold: Market cap threshold (default: $20B)
 
         Returns:
             True if large cap
