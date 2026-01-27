@@ -34,7 +34,7 @@ from report_generator import (
     generate_evaluation_response, get_cached_report, generate_follow_up_response,
     get_or_create_global_mcp_app, cleanup_global_mcp_app,
     generate_us_evaluation_response, generate_us_follow_up_response,
-    get_cached_us_report
+    get_cached_us_report, generate_journal_conversation_response
 )
 from tracking.user_memory import UserMemoryManager
 from datetime import datetime, timedelta
@@ -1743,12 +1743,13 @@ class TelegramAIBot:
 
         sent_message = await update.message.reply_text(confirm_msg)
 
-        # 저널 컨텍스트 저장 (답장용)
+        # 저널 컨텍스트 저장 (답장용 - AI 대화 지원)
         self.journal_contexts[sent_message.message_id] = {
             'user_id': user_id,
             'ticker': ticker,
             'ticker_name': ticker_name,
             'market_type': market_type,
+            'conversation_history': [],  # AI 대화 히스토리
             'created_at': datetime.now()
         }
 
@@ -1757,18 +1758,18 @@ class TelegramAIBot:
         return ConversationHandler.END
 
     async def _handle_journal_reply(self, update: Update, journal_ctx: Dict):
-        """저널 메시지에 대한 답장 처리 - 추가 저널 기록 또는 대화"""
+        """저널 메시지에 대한 답장 처리 - AI 대화 기능"""
         user_id = update.effective_user.id
         text = update.message.text.strip()
 
-        logger.info(f"[JOURNAL_REPLY] 저널 답장 처리 - user_id: {user_id}, text: {text[:50]}...")
+        logger.info(f"[JOURNAL_REPLY] 저널 대화 처리 - user_id: {user_id}, text: {text[:50]}...")
 
-        # 컨텍스트 만료 확인 (5분)
+        # 컨텍스트 만료 확인 (30분으로 연장 - 대화 지속성)
         created_at = journal_ctx.get('created_at')
-        if created_at and (datetime.now() - created_at).total_seconds() > 300:
+        if created_at and (datetime.now() - created_at).total_seconds() > 1800:
             await update.message.reply_text(
-                "이전 저널 세션이 만료되었습니다.\n"
-                "새 저널을 작성하려면 /journal 명령어를 사용해주세요."
+                "이전 대화 세션이 만료되었습니다.\n"
+                "새 대화를 시작하려면 /journal 명령어를 사용해주세요. 💭"
             )
             return
 
@@ -1776,44 +1777,73 @@ class TelegramAIBot:
         ticker = journal_ctx.get('ticker')
         ticker_name = journal_ctx.get('ticker_name')
         market_type = journal_ctx.get('market_type', 'kr')
+        conversation_history = journal_ctx.get('conversation_history', [])
 
-        # 추가 저널로 저장
-        memory_id = self.memory_manager.save_journal(
-            user_id=user_id,
-            text=text,
-            ticker=ticker,
-            ticker_name=ticker_name,
-            market_type=market_type,
-            message_id=update.message.message_id
+        # 대기 메시지
+        waiting_message = await update.message.reply_text(
+            "💭 생각 중입니다..."
         )
 
-        # 확인 메시지
-        if ticker:
-            confirm_msg = (
-                f"✅ 추가 기록 완료!\n\n"
-                f"📝 종목: {ticker_name} ({ticker})\n"
-                f"💭 \"{text[:80]}{'...' if len(text) > 80 else ''}\"\n\n"
-                f"💡 계속 답장하여 추가 기록 가능!"
-            )
-        else:
-            confirm_msg = (
-                f"✅ 추가 기록 완료!\n\n"
-                f"💭 \"{text[:80]}{'...' if len(text) > 80 else ''}\"\n\n"
-                f"💡 계속 답장하여 추가 기록 가능!"
+        try:
+            # 사용자 기억 컨텍스트 빌드
+            memory_context = self.memory_manager.build_llm_context(
+                user_id=user_id,
+                ticker=ticker,
+                max_tokens=2000
             )
 
-        sent_message = await update.message.reply_text(confirm_msg)
+            # 대화 히스토리에 사용자 메시지 추가
+            conversation_history.append({'role': 'user', 'content': text})
 
-        # 새 메시지 ID로 컨텍스트 업데이트
-        self.journal_contexts[sent_message.message_id] = {
-            'user_id': user_id,
-            'ticker': ticker,
-            'ticker_name': ticker_name,
-            'market_type': market_type,
-            'created_at': datetime.now()
-        }
+            # AI 응답 생성
+            response = await generate_journal_conversation_response(
+                user_id=user_id,
+                user_message=text,
+                memory_context=memory_context,
+                ticker=ticker,
+                ticker_name=ticker_name,
+                conversation_history=conversation_history
+            )
 
-        logger.info(f"[JOURNAL_REPLY] 추가 저널 저장 완료: user={user_id}, ticker={ticker}, memory_id={memory_id}")
+            # 대기 메시지 삭제
+            await waiting_message.delete()
+
+            # 응답 전송
+            sent_message = await update.message.reply_text(
+                response + "\n\n💡 답장으로 대화를 이어가세요!"
+            )
+
+            # 대화 히스토리에 AI 응답 추가
+            conversation_history.append({'role': 'assistant', 'content': response})
+
+            # 새 메시지 ID로 컨텍스트 업데이트
+            self.journal_contexts[sent_message.message_id] = {
+                'user_id': user_id,
+                'ticker': ticker,
+                'ticker_name': ticker_name,
+                'market_type': market_type,
+                'conversation_history': conversation_history,
+                'created_at': datetime.now()
+            }
+
+            # 사용자 메시지를 저널로 저장 (선택적)
+            self.memory_manager.save_journal(
+                user_id=user_id,
+                text=text,
+                ticker=ticker,
+                ticker_name=ticker_name,
+                market_type=market_type,
+                message_id=update.message.message_id
+            )
+
+            logger.info(f"[JOURNAL_REPLY] AI 대화 응답 완료: user={user_id}, response_len={len(response)}")
+
+        except Exception as e:
+            logger.error(f"[JOURNAL_REPLY] 오류: {e}")
+            await waiting_message.delete()
+            await update.message.reply_text(
+                "죄송해요, 응답 생성 중 문제가 생겼어요. 다시 말씀해주시겠어요? 💭"
+            )
 
     def _extract_ticker_from_text(self, text: str) -> tuple:
         """

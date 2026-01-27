@@ -1235,3 +1235,119 @@ async def generate_us_follow_up_response(ticker, ticker_name, conversation_conte
 
         return "죄송합니다. 미국 주식 응답 생성 중 오류가 발생했습니다. 다시 시도해주세요."
 
+
+async def generate_journal_conversation_response(
+    user_id: int,
+    user_message: str,
+    memory_context: str,
+    ticker: str = None,
+    ticker_name: str = None,
+    conversation_history: list = None
+) -> str:
+    """
+    저널/일기 대화에 대한 AI 응답 생성
+
+    Args:
+        user_id: 사용자 ID
+        user_message: 사용자의 메시지
+        memory_context: 사용자의 기억 컨텍스트 (저널, 평가 기록 등)
+        ticker: 관련 종목 코드 (선택)
+        ticker_name: 관련 종목명 (선택)
+        conversation_history: 이전 대화 히스토리 (선택)
+
+    Returns:
+        str: AI 응답
+    """
+    try:
+        # 전역 MCPApp 사용
+        app = await get_or_create_global_mcp_app()
+        app_logger = app.logger
+
+        # 현재 날짜
+        current_date = datetime.now().strftime('%Y년 %m월 %d일')
+
+        # 종목 컨텍스트
+        ticker_context = ""
+        if ticker and ticker_name:
+            ticker_context = f"\n현재 대화 중인 종목: {ticker_name} ({ticker})"
+
+        # 대화 히스토리
+        history_text = ""
+        if conversation_history:
+            history_items = []
+            for item in conversation_history[-5:]:  # 최근 5개만
+                role = "사용자" if item.get('role') == 'user' else "AI"
+                content = item.get('content', '')[:200]
+                history_items.append(f"[{role}] {content}")
+            if history_items:
+                history_text = "\n\n## 최근 대화 히스토리\n" + "\n".join(history_items)
+
+        # 에이전트 생성
+        agent = Agent(
+            name="journal_conversation_agent",
+            instruction=f"""당신은 사용자의 투자 파트너이자 친구입니다. 텔레그램에서 자유로운 대화를 나눕니다.
+
+## 현재 날짜
+{current_date}
+{ticker_context}
+
+## 사용자의 투자 기록과 과거 대화
+{memory_context if memory_context else "(아직 기록된 내용이 없습니다)"}
+{history_text}
+
+## 역할과 성격
+1. 사용자의 오랜 투자 친구처럼 대화하세요
+2. 사용자가 과거에 기록한 저널과 평가 내용을 기억하고 활용하세요
+3. 자연스럽고 친근한 대화체로 응답하세요
+4. 필요하다면 주식 관련 질문에 답변할 수 있습니다
+
+## 주식 데이터 조회 (필요한 경우에만)
+- perplexity_ask: 최신 뉴스나 정보 검색
+- kospi_kosdaq: 한국 주식 정보 (get_stock_ohlcv, get_stock_trading_volume)
+사용자가 특정 종목에 대해 물어보면 도구를 사용해 최신 정보를 제공할 수 있습니다.
+
+## 응답 가이드
+1. 자연스러운 대화체로 응답하세요
+2. 이모티콘을 적절히 사용하세요 (📈 💭 🤔 💡 😊 등)
+3. 마크다운을 사용하지 마세요
+4. 2000자 이내로 작성하세요
+5. 사용자의 과거 기록을 자연스럽게 언급할 수 있습니다
+6. 투자 조언을 할 때는 항상 "의견"임을 명시하세요
+
+## 중요
+- 사용자가 일반적인 대화를 원하면 주식 얘기를 강요하지 마세요
+- "나에 대해 알아?" 같은 질문에는 기록된 내용을 바탕으로 답하세요
+- 사용자를 존중하고 공감하는 태도를 유지하세요
+""",
+            server_names=["perplexity", "kospi_kosdaq"]
+        )
+
+        # LLM 연결
+        llm = await agent.attach_llm(AnthropicAugmentedLLM)
+
+        # 응답 생성
+        response = await llm.generate_str(
+            message=f"""사용자 메시지: {user_message}
+
+위 메시지에 자연스럽게 응답해주세요. 사용자의 과거 기록(저널, 평가 등)을 참고하여 개인화된 답변을 제공하세요.""",
+            request_params=RequestParams(
+                model="claude-sonnet-4-5-20250929",
+                maxTokens=2000
+            )
+        )
+        app_logger.info(f"저널 대화 응답 생성 완료: user_id={user_id}, response_len={len(response)}")
+
+        return clean_model_response(response)
+
+    except Exception as e:
+        logger.error(f"저널 대화 응답 생성 중 오류: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+        # 오류 발생 시 전역 app 재시작 시도
+        try:
+            await reset_global_mcp_app()
+        except Exception:
+            pass
+
+        return "죄송해요, 응답 생성 중 문제가 생겼어요. 다시 말씀해주시겠어요? 💭"
