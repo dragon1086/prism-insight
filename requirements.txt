@@ -73,3 +73,4 @@ pydub>=0.25.1  # Audio file manipulation (for splitting large files)
 yfinance>=0.2.0  # Yahoo Finance data
 pandas-market-calendars>=4.0.0  # US market holidays
 pytz>=2024.1  # Timezone support
+lxml>=4.9.0  # HTML/XML parsing for pandas read_html
