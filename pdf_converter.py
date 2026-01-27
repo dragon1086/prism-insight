@@ -732,7 +732,6 @@ def markdown_to_html(md_file_path, add_css=True, add_theme=False, logo_path=None
             footer_html = f"""
     <div class="report-footer">
         <div class="powered-by">
-            {logo_img.replace('alt="Prism-Insight"', 'class="footer-logo" alt="Prism-Insight"')}
             <span>Powered by <strong>Prism-Insight</strong></span>
         </div>
         <div class="disclaimer">
