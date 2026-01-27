@@ -35,6 +35,7 @@ from report_generator import (
     generate_us_evaluation_response, generate_us_follow_up_response,
     get_cached_us_report
 )
+from tracking.user_memory import UserMemoryManager
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -73,6 +74,9 @@ HISTORY_CHOOSING_TICKER = 0  # /history 명령어를 위한 상태
 # US 주식용 대화 상태 정의
 US_CHOOSING_TICKER, US_ENTERING_AVGPRICE, US_ENTERING_PERIOD, US_ENTERING_TONE, US_ENTERING_BACKGROUND = range(5, 10)
 US_REPORT_CHOOSING_TICKER = 10  # /us_report 명령어를 위한 상태
+
+# 저널 대화 상태 정의
+JOURNAL_ENTERING = 20  # /journal 명령어를 위한 상태
 
 # 채널 ID
 CHANNEL_ID = int(os.getenv("TELEGRAM_CHANNEL_ID", "0"))
@@ -167,6 +171,12 @@ class TelegramAIBot:
         # 대화 컨텍스트 저장소 추가
         self.conversation_contexts: Dict[int, ConversationContext] = {}
 
+        # 저널 컨텍스트 저장소 (답장용)
+        self.journal_contexts: Dict[int, Dict] = {}
+
+        # 사용자 기억 관리자 초기화
+        self.memory_manager = UserMemoryManager("stock_tracking_db.sqlite")
+
         # 봇 어플리케이션 생성
         self.application = Application.builder().token(self.token).build()
         self.setup_handlers()
@@ -178,6 +188,8 @@ class TelegramAIBot:
         self.scheduler.add_job(self.load_stock_map, "interval", hours=12)
         # 만료된 컨텍스트 정리 작업 추가
         self.scheduler.add_job(self.cleanup_expired_contexts, "interval", hours=1)
+        # 사용자 기억 압축 작업 추가 (매일 오전 3시)
+        self.scheduler.add_job(self.compress_user_memories, "cron", hour=3, minute=0)
         self.scheduler.start()
     
     def cleanup_expired_contexts(self):
@@ -186,10 +198,30 @@ class TelegramAIBot:
         for msg_id, context in self.conversation_contexts.items():
             if context.is_expired(hours=24):
                 expired_keys.append(msg_id)
-        
+
         for key in expired_keys:
             del self.conversation_contexts[key]
             logger.info(f"만료된 컨텍스트 삭제: 메시지 ID {key}")
+
+        # 저널 컨텍스트도 정리 (24시간 이상 된 것)
+        journal_expired = []
+        now = datetime.now()
+        for msg_id, ctx in self.journal_contexts.items():
+            if (now - ctx.get('created_at', now)).total_seconds() > 86400:  # 24시간
+                journal_expired.append(msg_id)
+
+        for key in journal_expired:
+            del self.journal_contexts[key]
+            logger.info(f"만료된 저널 컨텍스트 삭제: 메시지 ID {key}")
+
+    def compress_user_memories(self):
+        """사용자 기억 압축 (야간 배치)"""
+        if self.memory_manager:
+            try:
+                stats = self.memory_manager.compress_old_memories()
+                logger.info(f"사용자 기억 압축 완료: {stats}")
+            except Exception as e:
+                logger.error(f"사용자 기억 압축 중 오류: {e}")
 
     def load_stock_map(self):
         """
@@ -371,6 +403,30 @@ class TelegramAIBot:
         )
         self.application.add_handler(us_report_handler)
 
+        # ==========================================================================
+        # 저널(투자 일기) 대화 핸들러 (/journal)
+        # ==========================================================================
+        journal_conv_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("journal", self.handle_journal_start),
+                MessageHandler(filters.Regex(r'^/journal(@\w+)?$'), self.handle_journal_start)
+            ],
+            states={
+                JOURNAL_ENTERING: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_journal_input)
+                ]
+            },
+            fallbacks=[
+                CommandHandler("cancel", self.handle_cancel),
+                CommandHandler("start", self.handle_cancel),
+                CommandHandler("help", self.handle_cancel)
+            ],
+            per_chat=False,
+            per_user=True,
+            conversation_timeout=300,
+        )
+        self.application.add_handler(journal_conv_handler)
+
         # 일반 텍스트 메시지 - /help 또는 /start 안내
         self.application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, self.handle_default_message
@@ -541,6 +597,8 @@ class TelegramAIBot:
             "🇺🇸 <b>미국 주식</b>\n"
             "/us_evaluate - 미국 주식 평가 시작\n"
             "/us_report - 미국 주식 보고서 요청\n\n"
+            "📝 <b>투자 일기</b>\n"
+            "/journal - 투자 일기 기록\n\n"
             "💡 평가 응답에 답장(Reply)하여 추가 질문을 할 수 있습니다!\n\n"
             "이 봇은 '프리즘 인사이트' 채널 구독자만 사용할 수 있습니다.\n"
             "채널에서는 장 시작과 마감 시 AI가 선별한 특징주 3개를 소개하고,\n"
@@ -565,6 +623,10 @@ class TelegramAIBot:
             "🇺🇸 <b>미국 주식 명령어:</b>\n"
             "/us_evaluate - 미국 주식 평가 시작\n"
             "/us_report - 미국 주식 보고서 요청\n\n"
+            "📝 <b>투자 일기:</b>\n"
+            "/journal - 투자 생각 기록\n"
+            "  • 종목 코드/티커와 함께 입력 가능\n"
+            "  • 과거 평가 시 기억으로 활용됨\n\n"
             "<b>보유 종목 평가 방법 (한국/미국 동일):</b>\n"
             "1. /evaluate 또는 /us_evaluate 명령어 입력\n"
             "2. 종목 코드/티커 입력 (예: 005930 또는 AAPL)\n"
@@ -930,11 +992,23 @@ class TelegramAIBot:
         tone = context.user_data['tone']
         background = context.user_data['background']
         chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
 
         try:
-            # AI 응답 생성
+            # 사용자 기억 컨텍스트 조회
+            memory_context = ""
+            if self.memory_manager:
+                memory_context = self.memory_manager.build_llm_context(
+                    user_id=user_id,
+                    ticker=ticker
+                )
+                if memory_context:
+                    logger.info(f"사용자 기억 컨텍스트 로드됨: {len(memory_context)} chars")
+
+            # AI 응답 생성 (memory_context 포함)
             response = await generate_evaluation_response(
-                ticker, ticker_name, avg_price, period, tone, background
+                ticker, ticker_name, avg_price, period, tone, background,
+                memory_context=memory_context
             )
 
             # 응답이 비어있는지 확인
@@ -966,6 +1040,28 @@ class TelegramAIBot:
             # 컨텍스트 저장
             self.conversation_contexts[sent_message.message_id] = conv_context
             logger.info(f"대화 컨텍스트 저장: 메시지 ID {sent_message.message_id}")
+
+            # 평가 결과를 사용자 기억에 저장
+            if self.memory_manager:
+                self.memory_manager.save_memory(
+                    user_id=user_id,
+                    memory_type=self.memory_manager.MEMORY_EVALUATION,
+                    content={
+                        'ticker': ticker,
+                        'ticker_name': ticker_name,
+                        'avg_price': avg_price,
+                        'period': period,
+                        'tone': tone,
+                        'background': background,
+                        'response_summary': response[:500]  # 응답 요약 저장
+                    },
+                    ticker=ticker,
+                    ticker_name=ticker_name,
+                    market_type='kr',
+                    command_source='/evaluate',
+                    message_id=sent_message.message_id
+                )
+                logger.info(f"평가 결과 기억에 저장: user={user_id}, ticker={ticker}")
 
         except Exception as e:
             logger.error(f"응답 생성 또는 전송 중 오류: {str(e)}, {traceback.format_exc()}")
@@ -1322,11 +1418,23 @@ class TelegramAIBot:
         tone = context.user_data['us_tone']
         background = context.user_data['us_background']
         chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
 
         try:
-            # US AI 응답 생성
+            # 사용자 기억 컨텍스트 조회
+            memory_context = ""
+            if self.memory_manager:
+                memory_context = self.memory_manager.build_llm_context(
+                    user_id=user_id,
+                    ticker=ticker
+                )
+                if memory_context:
+                    logger.info(f"US 사용자 기억 컨텍스트 로드됨: {len(memory_context)} chars")
+
+            # US AI 응답 생성 (memory_context 포함)
             response = await generate_us_evaluation_response(
-                ticker, ticker_name, avg_price, period, tone, background
+                ticker, ticker_name, avg_price, period, tone, background,
+                memory_context=memory_context
             )
 
             # 응답이 비어있는지 확인
@@ -1358,6 +1466,28 @@ class TelegramAIBot:
             # 컨텍스트 저장
             self.conversation_contexts[sent_message.message_id] = conv_context
             logger.info(f"US 대화 컨텍스트 저장: 메시지 ID {sent_message.message_id}")
+
+            # 평가 결과를 사용자 기억에 저장
+            if self.memory_manager:
+                self.memory_manager.save_memory(
+                    user_id=user_id,
+                    memory_type=self.memory_manager.MEMORY_EVALUATION,
+                    content={
+                        'ticker': ticker,
+                        'ticker_name': ticker_name,
+                        'avg_price': avg_price,
+                        'period': period,
+                        'tone': tone,
+                        'background': background,
+                        'response_summary': response[:500]  # 응답 요약 저장
+                    },
+                    ticker=ticker,
+                    ticker_name=ticker_name,
+                    market_type='us',
+                    command_source='/us_evaluate',
+                    message_id=sent_message.message_id
+                )
+                logger.info(f"US 평가 결과 기억에 저장: user={user_id}, ticker={ticker}")
 
         except Exception as e:
             logger.error(f"US 응답 생성 또는 전송 중 오류: {str(e)}, {traceback.format_exc()}")
@@ -1454,6 +1584,141 @@ class TelegramAIBot:
             analysis_queue.put(request)
 
         return ConversationHandler.END
+
+    # ==========================================================================
+    # 저널(투자 일기) 핸들러 (/journal)
+    # ==========================================================================
+
+    async def handle_journal_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """저널 명령어 처리 - 첫 단계"""
+        user_id = update.effective_user.id
+        user_name = update.effective_user.first_name
+
+        # 채널 구독 여부 확인
+        is_subscribed = await self.check_channel_subscription(user_id)
+
+        if not is_subscribed:
+            await update.message.reply_text(
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
+                "https://t.me/stock_ai_agent"
+            )
+            return ConversationHandler.END
+
+        # 그룹 채팅인지 개인 채팅인지 확인
+        is_group = update.effective_chat.type in ["group", "supergroup"]
+        greeting = f"{user_name}님, " if is_group else ""
+
+        await update.message.reply_text(
+            f"{greeting}📝 투자 일기를 작성해주세요.\n\n"
+            "종목 코드/티커와 함께 입력하면 해당 종목에 연결됩니다:\n"
+            "예: \"AAPL 170달러까지 홀딩 예정\"\n"
+            "예: \"005930 반도체 바닥으로 판단\"\n\n"
+            "또는 그냥 생각을 자유롭게 적어주세요."
+        )
+
+        return JOURNAL_ENTERING
+
+    async def handle_journal_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """저널 입력 처리"""
+        user_id = update.effective_user.id
+        text = update.message.text.strip()
+
+        logger.info(f"저널 입력 받음 - 사용자: {user_id}, 입력: {text[:50]}...")
+
+        # 티커 추출 (정규식)
+        ticker, ticker_name, market_type = self._extract_ticker_from_text(text)
+
+        # 기억 저장
+        memory_id = self.memory_manager.save_journal(
+            user_id=user_id,
+            text=text,
+            ticker=ticker,
+            ticker_name=ticker_name,
+            market_type=market_type,
+            message_id=update.message.message_id
+        )
+
+        # 확인 메시지 구성
+        if ticker:
+            confirm_msg = (
+                f"✅ 저널에 기록했습니다!\n\n"
+                f"📝 종목: {ticker_name} ({ticker})\n"
+                f"💭 \"{text[:100]}{'...' if len(text) > 100 else ''}\"\n"
+                f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"💡 이 메시지에 답장하여 추가 기록 가능!"
+            )
+        else:
+            confirm_msg = (
+                f"✅ 저널에 기록했습니다!\n\n"
+                f"💭 \"{text[:100]}{'...' if len(text) > 100 else ''}\"\n"
+                f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"💡 이 메시지에 답장하여 추가 기록 가능!"
+            )
+
+        sent_message = await update.message.reply_text(confirm_msg)
+
+        # 저널 컨텍스트 저장 (답장용)
+        self.journal_contexts[sent_message.message_id] = {
+            'user_id': user_id,
+            'ticker': ticker,
+            'ticker_name': ticker_name,
+            'market_type': market_type,
+            'created_at': datetime.now()
+        }
+
+        logger.info(f"저널 저장 완료: user={user_id}, ticker={ticker}, memory_id={memory_id}")
+
+        return ConversationHandler.END
+
+    def _extract_ticker_from_text(self, text: str) -> tuple:
+        """
+        텍스트에서 티커/종목코드 추출
+
+        Args:
+            text: 입력 텍스트
+
+        Returns:
+            tuple: (ticker, ticker_name, market_type)
+        """
+        # US 티커 패턴 (1-5자리 대문자, 단어 경계)
+        us_pattern = r'\b([A-Z]{1,5})\b'
+        # 한국 종목 코드 패턴 (6자리 숫자)
+        kr_pattern = r'\b(\d{6})\b'
+
+        # US 티커 찾기
+        us_matches = re.findall(us_pattern, text)
+        for ticker in us_matches:
+            # 일반적인 단어 제외
+            common_words = {'I', 'A', 'AN', 'THE', 'IN', 'ON', 'AT', 'TO', 'FOR', 'OF', 'AND', 'OR', 'IS', 'IT', 'AI'}
+            if ticker not in common_words:
+                # 캐시 확인
+                if ticker in self._us_ticker_cache:
+                    return ticker, self._us_ticker_cache[ticker]['name'], 'us'
+                # yfinance로 검증
+                try:
+                    import yfinance as yf
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
+                    company_name = info.get('longName') or info.get('shortName')
+                    if company_name:
+                        self._us_ticker_cache[ticker] = {'name': company_name}
+                        return ticker, company_name, 'us'
+                except Exception:
+                    pass
+
+        # 한국 종목 코드 찾기
+        kr_matches = re.findall(kr_pattern, text)
+        for code in kr_matches:
+            if code in self.stock_map:
+                return code, self.stock_map[code], 'kr'
+
+        # 한국 종목명 찾기 (stock_name_map에서 검색)
+        for name, code in self.stock_name_map.items():
+            if name in text:
+                return code, name, 'kr'
+
+        return None, None, 'kr'
 
     async def process_results(self):
         """결과 큐에서 처리할 항목 확인"""

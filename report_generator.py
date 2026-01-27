@@ -691,10 +691,10 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
         return "죄송합니다. 응답 생성 중 오류가 발생했습니다. 다시 시도해주세요."
 
 
-async def generate_evaluation_response(ticker, ticker_name, avg_price, period, tone, background, report_path=None):
+async def generate_evaluation_response(ticker, ticker_name, avg_price, period, tone, background, report_path=None, memory_context: str = ""):
     """
     종목 평가 AI 응답 생성
-    
+
     ⚠️ 전역 MCPApp 사용으로 프로세스 누적 방지
 
     Args:
@@ -705,6 +705,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
         tone (str): 원하는 피드백 스타일/톤
         background (str): 매매 배경/히스토리
         report_path (str, optional): 보고서 파일 경로
+        memory_context (str, optional): 사용자 기억 컨텍스트
 
     Returns:
         str: AI 응답
@@ -719,6 +720,18 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
 
         # 배경 정보 추가 (있는 경우)
         background_text = f"\n- 매매 배경/히스토리: {background}" if background else ""
+
+        # 사용자 기억 컨텍스트 추가
+        memory_section = ""
+        if memory_context:
+            memory_section = f"""
+
+                        ## 사용자 과거 기록 (참고용)
+                        다음은 이 사용자가 과거에 기록한 투자 일기와 평가 내역입니다.
+                        현재 평가에 참고하되, 이 기록에 너무 의존하지 마세요:
+
+                        {memory_context}
+                        """
 
         # 에이전트 생성
         agent = Agent(
@@ -828,8 +841,9 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                         - 사용자가 제공한 정보(매수가, 보유기간 등)를 고려하여 맞춤형 조언을 제공하세요
                         - 스타일을 적용하면서도 정확한 시장 분석과 합리적인 투자 조언의 균형을 유지하세요
                         - 3000자 이내로 작성하세요
-                        - 중요: 도구를 호출할 때는 사용자에게 "[Calling tool...]"과 같은 형식의 메시지를 표시하지 마세요. 
+                        - 중요: 도구를 호출할 때는 사용자에게 "[Calling tool...]"과 같은 형식의 메시지를 표시하지 마세요.
                           도구 호출은 내부 처리 과정이며 최종 응답에서는 도구 사용 결과만 자연스럽게 통합하여 제시해야 합니다.
+                        {memory_section}
                         """,
             server_names=["perplexity", "kospi_kosdaq", "time"]
         )
@@ -878,7 +892,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
 # US 주식 평가 응답 생성 함수
 # =============================================================================
 
-async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period, tone, background):
+async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period, tone, background, memory_context: str = ""):
     """
     US 주식 평가 AI 응답 생성
 
@@ -891,6 +905,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
         period (int): 보유 기간 (개월)
         tone (str): 원하는 피드백 스타일/톤
         background (str): 매매 배경/히스토리
+        memory_context (str, optional): 사용자 기억 컨텍스트
 
     Returns:
         str: AI 응답
@@ -902,6 +917,18 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
 
         # 현재 날짜 정보 가져오기
         current_date = datetime.now().strftime('%Y%m%d')
+
+        # 사용자 기억 컨텍스트 추가
+        memory_section = ""
+        if memory_context:
+            memory_section = f"""
+
+                        ## 사용자 과거 기록 (참고용)
+                        다음은 이 사용자가 과거에 기록한 투자 일기와 평가 내역입니다.
+                        현재 평가에 참고하되, 이 기록에 너무 의존하지 마세요:
+
+                        {memory_context}
+                        """
 
         # 배경 정보 추가 (있는 경우)
         background_text = f"\n- 매매 배경/히스토리: {background}" if background else ""
@@ -1019,6 +1046,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                         - 중요: 도구를 호출할 때는 사용자에게 "[Calling tool...]"과 같은 형식의 메시지를 표시하지 마세요.
                           도구 호출은 내부 처리 과정이며 최종 응답에서는 도구 사용 결과만 자연스럽게 통합하여 제시해야 합니다.
                         - 미국 주식 분석이므로 한국어로 응답하되, 가격은 달러($)로 표시하세요.
+                        {memory_section}
                         """,
             server_names=["perplexity", "yahoo_finance", "time"]
         )

@@ -141,6 +141,41 @@ CREATE TABLE IF NOT EXISTS trading_principles (
 )
 """
 
+# Table: user_memories (사용자별 기억 저장)
+TABLE_USER_MEMORIES = """
+CREATE TABLE IF NOT EXISTS user_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    memory_type TEXT NOT NULL,          -- 'journal', 'evaluation', 'report', 'conversation'
+    content TEXT NOT NULL,              -- JSON: 상세 내용
+    summary TEXT,                       -- 압축된 요약 (장기기억용)
+    ticker TEXT,
+    ticker_name TEXT,
+    market_type TEXT DEFAULT 'kr',      -- 'kr' or 'us'
+    importance_score REAL DEFAULT 0.5,
+    compression_layer INTEGER DEFAULT 1, -- 1=상세, 2=요약, 3=압축
+    created_at TEXT NOT NULL,
+    last_accessed_at TEXT,
+    command_source TEXT,
+    message_id INTEGER,
+    tags TEXT                           -- JSON array
+)
+"""
+
+# Table: user_preferences (사용자 선호 설정)
+TABLE_USER_PREFERENCES = """
+CREATE TABLE IF NOT EXISTS user_preferences (
+    user_id INTEGER PRIMARY KEY,
+    preferred_tone TEXT DEFAULT 'neutral',
+    investment_style TEXT,
+    favorite_tickers TEXT,              -- JSON array
+    total_evaluations INTEGER DEFAULT 0,
+    total_journals INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_active_at TEXT
+)
+"""
+
 # Indexes
 INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_journal_ticker ON trading_journal(ticker)",
@@ -150,6 +185,11 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_intuitions_scope ON trading_intuitions(scope)",
     "CREATE INDEX IF NOT EXISTS idx_principles_scope ON trading_principles(scope)",
     "CREATE INDEX IF NOT EXISTS idx_principles_priority ON trading_principles(priority)",
+    # User memory indexes
+    "CREATE INDEX IF NOT EXISTS idx_memories_user ON user_memories(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_type ON user_memories(user_id, memory_type)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_ticker ON user_memories(user_id, ticker)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_created ON user_memories(user_id, created_at DESC)",
 ]
 
 
@@ -167,6 +207,8 @@ def create_all_tables(cursor, conn):
         TABLE_TRADING_JOURNAL,
         TABLE_TRADING_INTUITIONS,
         TABLE_TRADING_PRINCIPLES,
+        TABLE_USER_MEMORIES,
+        TABLE_USER_PREFERENCES,
     ]
 
     for table_sql in tables:
