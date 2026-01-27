@@ -793,8 +793,9 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     cap_df = None
     logger.debug("Market cap filter skipped (S&P 500/NASDAQ-100 already large-cap)")
 
-    if trigger_time == "morning":
-        logger.info("=== Morning Batch Execution ===")
+    if trigger_time == "morning" or trigger_time == "midday":
+        label = "Midday" if trigger_time == "midday" else "Morning"
+        logger.info(f"=== {label} Batch Execution ===")
         res1 = trigger_morning_volume_surge(trade_date, snapshot, prev_snapshot, cap_df)
         res2 = trigger_morning_gap_up_momentum(trade_date, snapshot, prev_snapshot, cap_df)
         res3 = trigger_morning_value_to_cap_ratio(trade_date, snapshot, prev_snapshot, cap_df)
@@ -814,7 +815,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "Volume Surge Sideways": res3
         }
     else:
-        logger.error("Invalid trigger_time. Use 'morning' or 'afternoon'.")
+        logger.error("Invalid trigger_time. Use 'morning', 'midday', or 'afternoon'.")
         return
 
     # Log trigger results
