@@ -1225,8 +1225,17 @@ class USStockTrading:
                 logger.error(f"Error getting portfolio for {exchange}: {str(e)}")
                 continue
 
-        logger.info(f"Portfolio: {len(portfolio)} US stocks held")
-        return portfolio
+        # Deduplicate by ticker (KIS API may return same stock from multiple exchanges)
+        seen_tickers = set()
+        unique_portfolio = []
+        for stock in portfolio:
+            ticker = stock.get('ticker')
+            if ticker and ticker not in seen_tickers:
+                seen_tickers.add(ticker)
+                unique_portfolio.append(stock)
+
+        logger.info(f"Portfolio: {len(unique_portfolio)} US stocks held")
+        return unique_portfolio
 
     def get_account_summary(self) -> Optional[Dict[str, Any]]:
         """
