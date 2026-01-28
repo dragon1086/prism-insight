@@ -176,7 +176,7 @@ class TelegramAIBot:
         self.journal_contexts: Dict[int, Dict] = {}
 
         # 사용자 기억 관리자 초기화
-        self.memory_manager = UserMemoryManager("stock_tracking_db.sqlite")
+        self.memory_manager = UserMemoryManager("user_memories.sqlite")
 
         # 일일 사용 제한 (user_id:command -> date)
         self.daily_report_usage: Dict[str, str] = {}
