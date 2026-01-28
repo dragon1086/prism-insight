@@ -91,36 +91,35 @@ def is_market_hours(market: str = "KR") -> bool:
 
 
 def is_us_market_hours() -> bool:
-    """현재 시간이 미국 정규 장 시간(09:30~16:00 EST, 평일만)인지 확인"""
+    """현재 시간이 미국 정규 장 시간(09:30~16:00 EST, 영업일만)인지 확인"""
     try:
-        import pytz
-        us_eastern = pytz.timezone('US/Eastern')
-        now_est = datetime.now(us_eastern)
-
-        # 주말 체크 (EST 기준)
-        if now_est.weekday() >= 5:  # Saturday = 5, Sunday = 6
-            return False
-
-        current_time = now_est.time()
-        market_open = time(9, 30)
-        market_close = time(16, 0)
-        return market_open <= current_time <= market_close
+        # prism-us/check_market_day.py 활용 (NYSE 캘린더 기반)
+        import sys
+        sys.path.insert(0, str(PROJECT_ROOT / "prism-us"))
+        from check_market_day import is_market_open
+        return is_market_open()
     except ImportError:
-        # pytz 없으면 KST 기준으로 대략 계산 (EST = KST - 14시간)
-        now = datetime.now()
+        # fallback: pytz로 직접 계산
+        try:
+            import pytz
+            us_eastern = pytz.timezone('US/Eastern')
+            now_est = datetime.now(us_eastern)
 
-        # 주말 체크 (KST 기준 - 대략적)
-        # KST 토요일 14:00 이후 ~ 월요일 06:00 이전은 US 주말
-        if now.weekday() == 5 and now.time() >= time(14, 0):  # 토요일 오후
-            return False
-        if now.weekday() == 6:  # 일요일 전체
-            return False
-        if now.weekday() == 0 and now.time() < time(6, 0):  # 월요일 새벽
-            return False
+            # 주말 체크 (EST 기준)
+            if now_est.weekday() >= 5:
+                return False
 
-        # KST 23:30 ~ 06:00 (다음날) 이 US 장 시간
-        now_time = now.time()
-        return now_time >= time(23, 30) or now_time <= time(6, 0)
+            current_time = now_est.time()
+            market_open = time(9, 30)
+            market_close = time(16, 0)
+            return market_open <= current_time <= market_close
+        except ImportError:
+            # pytz도 없으면 KST 기준으로 대략 계산
+            now = datetime.now()
+            if now.weekday() >= 5:  # 주말
+                return False
+            now_time = now.time()
+            return now_time >= time(23, 30) or now_time <= time(6, 0)
 
 
 def is_market_day_check() -> bool:
@@ -189,6 +188,27 @@ def get_next_us_market_open() -> datetime:
         datetime: 다음 미국 영업일 장 시작 시간 (KST)
     """
     try:
+        # prism-us/check_market_day.py 활용 (NYSE 캘린더 기반)
+        import sys
+        sys.path.insert(0, str(PROJECT_ROOT / "prism-us"))
+        from check_market_day import get_next_trading_day, EST, KST
+
+        next_trading_day = get_next_trading_day()
+        if next_trading_day:
+            import pytz
+            # 09:35 EST 설정 (장 시작 후 안정화 시간)
+            market_open_est = datetime.combine(next_trading_day, time(9, 35))
+            market_open_est = EST.localize(market_open_est)
+
+            # KST로 변환
+            market_open_kst = market_open_est.astimezone(KST)
+            return market_open_kst.replace(tzinfo=None)  # naive datetime 반환
+
+    except ImportError:
+        pass
+
+    # fallback: pytz로 직접 계산
+    try:
         import pytz
         us_eastern = pytz.timezone('US/Eastern')
         kst = pytz.timezone('Asia/Seoul')
@@ -196,35 +216,20 @@ def get_next_us_market_open() -> datetime:
         now_est = datetime.now(us_eastern)
         next_day_est = now_est + timedelta(days=1)
 
-        # 다음 미국 영업일 찾기 (최대 7일까지 탐색)
+        # 다음 영업일 찾기 (최대 7일까지 탐색)
         for _ in range(7):
-            # 주말 스킵
             if next_day_est.weekday() >= 5:
                 next_day_est += timedelta(days=1)
                 continue
-
-            # 미국 공휴일 체크
-            try:
-                from holidays.countries import US
-                us_holidays = US()
-                if next_day_est.date() in us_holidays:
-                    next_day_est += timedelta(days=1)
-                    continue
-            except ImportError:
-                pass
-
-            # 영업일 발견
             break
 
-        # 09:35 EST 설정 (장 시작 후 안정화 시간)
+        # 09:35 EST 설정
         market_open_est = next_day_est.replace(hour=9, minute=35, second=0, microsecond=0)
-
-        # KST로 변환
         market_open_kst = market_open_est.astimezone(kst)
-        return market_open_kst.replace(tzinfo=None)  # naive datetime 반환
+        return market_open_kst.replace(tzinfo=None)
 
     except ImportError:
-        # pytz 없으면 대략 계산 (EST + 14시간 = KST)
+        # pytz도 없으면 대략 계산 (EST + 14시간 = KST)
         now = datetime.now()
         next_day = now + timedelta(days=1)
 
