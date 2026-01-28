@@ -63,8 +63,8 @@ RUN python3 -m venv /app/venv
 # 가상환경 활성화
 ENV PATH="/app/venv/bin:$PATH"
 
-# Git 리포지토리 클론 (feature/prism-us 브랜치)
-RUN git clone -b feature/prism-us https://github.com/dragon1086/prism-insight.git /app/prism-insight
+# Git 리포지토리 클론
+RUN git clone -b main https://github.com/dragon1086/prism-insight.git /app/prism-insight
 
 # 작업 디렉토리 변경
 WORKDIR /app/prism-insight
@@ -94,7 +94,8 @@ RUN fc-cache -fv && \
 # 설정 파일 복사 (예시 파일들)
 RUN cp .env.example .env && \
     cp mcp_agent.config.yaml.example mcp_agent.config.yaml && \
-    cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
+    cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml && \
+    cp trading/config/kis_devlp.yaml.example trading/config/kis_devlp.yaml
 
 # SQLite 데이터베이스 디렉토리 생성
 RUN mkdir -p /app/prism-insight/sqlite && \
@@ -125,9 +126,16 @@ RUN chmod -R 755 /app/prism-insight
 # Cron 로그 파일 생성 (cron 출력 확인용)
 RUN touch /var/log/cron.log
 
-# 헬스체크
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python3 -c "import sys; sys.exit(0)" && service cron status || exit 1
+# 헬스체크 - DB 테이블 존재 여부 및 cron 상태 확인
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python3 -c "\
+import sqlite3; \
+conn = sqlite3.connect('/app/prism-insight/stock_tracking_db.sqlite'); \
+c = conn.cursor(); \
+c.execute(\"SELECT COUNT(*) FROM sqlite_master WHERE type='table'\"); \
+tables = c.fetchone()[0]; \
+assert tables >= 5, f'Only {tables} tables found'; \
+" && service cron status || exit 1
 
 # 기본 셸 변경
 SHELL ["/bin/bash", "-c"]

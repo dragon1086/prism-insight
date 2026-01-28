@@ -220,6 +220,10 @@ def generate_us_report_response_sync(ticker: str, company_name: str) -> str:
     try:
         logger.info(f"US 동기식 보고서 생성 시작: {ticker} ({company_name})")
 
+        # 프로젝트 루트 디렉토리 설정 (절대 경로)
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        prism_us_dir = os.path.join(project_root, 'prism-us')
+
         # 별도의 프로세스로 US 분석 수행
         # prism-us/cores/us_analysis.py의 analyze_us_stock 함수 사용
         cmd = [
@@ -229,7 +233,14 @@ def generate_us_report_response_sync(ticker: str, company_name: str) -> str:
 import asyncio
 import json
 import sys
-sys.path.insert(0, 'prism-us')
+import os
+
+# 절대 경로 사용 (Docker 호환성)
+project_root = r'{project_root}'
+prism_us_dir = r'{prism_us_dir}'
+sys.path.insert(0, prism_us_dir)
+os.chdir(project_root)
+
 from cores.us_analysis import analyze_us_stock
 from check_market_day import get_reference_date
 
@@ -257,9 +268,6 @@ if __name__ == "__main__":
     asyncio.run(run())
             """
         ]
-
-        # 프로젝트 루트 디렉토리 설정
-        project_root = os.path.dirname(os.path.abspath(__file__))
 
         logger.info(f"US 외부 프로세스 실행: {ticker} (cwd: {project_root})")
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=1200, cwd=project_root)  # 20분 타임아웃

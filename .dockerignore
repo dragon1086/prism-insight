@@ -1,0 +1,49 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*.so
+.Python
+*.egg-info
+.eggs
+dist
+build
+.venv
+venv
+
+# Node
+node_modules
+perplexity-ask/node_modules
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Logs & Data (will be created at runtime)
+*.log
+*.sqlite
+logs/
+pdf_reports/
+reports/
+charts/
+telegram_messages/
+
+# Secrets (should be mounted)
+.env
+mcp_agent.secrets.yaml
+trading/config/kis_devlp.yaml
+
+# Test artifacts
+tests/*.sqlite
+tests/*.log
+
+# macOS
+.DS_Store
+
+# Docker test file (not needed in image)
+Dockerfile.test

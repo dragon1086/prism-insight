@@ -69,24 +69,30 @@ try:
         create_us_indexes,
         add_sector_column_if_missing,
         add_market_column_to_shared_tables,
+        migrate_us_performance_tracker_columns,
         is_us_ticker_in_holdings,
         get_us_holdings_count,
     )
     from tracking.journal import USJournalManager
     from tracking.compression import USCompressionManager
-except ImportError:
-    # Fallback to package import
-    from prism_us.cores.agents.trading_agents import create_us_trading_scenario_agent
-    from prism_us.tracking.db_schema import (
+except ImportError as e:
+    logger.warning(f"Direct import failed: {e}, trying fallback...")
+    # Fallback: try adding parent directory
+    _prism_us_fallback = Path(__file__).parent
+    if str(_prism_us_fallback) not in sys.path:
+        sys.path.insert(0, str(_prism_us_fallback))
+    from cores.agents.trading_agents import create_us_trading_scenario_agent
+    from tracking.db_schema import (
         create_us_tables,
         create_us_indexes,
         add_sector_column_if_missing,
         add_market_column_to_shared_tables,
+        migrate_us_performance_tracker_columns,
         is_us_ticker_in_holdings,
         get_us_holdings_count,
     )
-    from prism_us.tracking.journal import USJournalManager
-    from prism_us.tracking.compression import USCompressionManager
+    from tracking.journal import USJournalManager
+    from tracking.compression import USCompressionManager
 
 # Create MCPApp instance
 app = MCPApp(name="us_stock_tracking")
@@ -424,6 +430,8 @@ class USStockTrackingAgent:
         add_sector_column_if_missing(self.cursor, self.conn)
         # Add market column to shared tables for KR/US distinction
         add_market_column_to_shared_tables(self.cursor, self.conn)
+        # Migrate performance tracker columns (tracking_status, was_traded, etc.)
+        migrate_us_performance_tracker_columns(self.cursor, self.conn)
 
     def _normalize_decision(self, decision: str) -> str:
         """
