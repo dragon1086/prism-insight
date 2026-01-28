@@ -24,7 +24,8 @@ TRADING_DIR = SCRIPT_DIR
 # IMPORTANT: Order matters! PARENT_DIR must come BEFORE prism-us
 # because prism-us/trading/ exists and would shadow the main trading/ package
 PARENT_DIR = SCRIPT_DIR.parent
-sys.path.insert(0, str(PARENT_DIR / "prism-us"))  # prism-us for US trading modules
+sys.path.insert(0, str(PARENT_DIR / "prism-us" / "trading"))  # prism-us/trading for us_stock_trading
+sys.path.insert(0, str(PARENT_DIR / "prism-us"))  # prism-us for US modules
 sys.path.insert(0, str(TRADING_DIR))              # trading/ for local imports
 sys.path.insert(0, str(PARENT_DIR))               # project root - MUST be first for 'from trading.xxx'
 
@@ -39,9 +40,9 @@ from telegram_bot_agent import TelegramBotAgent
 
 # Import US trading module (optional - may not be available)
 try:
-    from trading.us_stock_trading import USStockTrading
+    from us_stock_trading import USStockTrading
     US_TRADING_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     US_TRADING_AVAILABLE = False
 
 # Logging configuration
