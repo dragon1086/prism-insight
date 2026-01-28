@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS stock_holdings (
     target_price REAL,
     stop_loss REAL,
     trigger_type TEXT,
-    trigger_mode TEXT
+    trigger_mode TEXT,
+    sector TEXT
 )
 """
 
@@ -40,7 +41,8 @@ CREATE TABLE IF NOT EXISTS trading_history (
     holding_days INTEGER NOT NULL,
     scenario TEXT,
     trigger_type TEXT,
-    trigger_mode TEXT
+    trigger_mode TEXT,
+    sector TEXT
 )
 """
 
@@ -270,3 +272,25 @@ def add_trigger_columns_if_missing(cursor, conn):
                 logger.info(f"Added {col_name} column to {table} table")
             except Exception:
                 pass  # Column already exists
+
+
+def add_sector_column_if_missing(cursor, conn):
+    """
+    Add sector column to stock_holdings and trading_history if missing.
+
+    This migration ensures the sector column exists for AI agents that
+    need to analyze sector concentration in portfolios.
+
+    Args:
+        cursor: SQLite cursor
+        conn: SQLite connection
+    """
+    tables = ["stock_holdings", "trading_history"]
+
+    for table in tables:
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN sector TEXT")
+            conn.commit()
+            logger.info(f"Added sector column to {table} table")
+        except Exception:
+            pass  # Column already exists
