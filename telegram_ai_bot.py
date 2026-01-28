@@ -303,6 +303,7 @@ class TelegramAIBot:
         self.application.add_handler(CommandHandler("start", self.handle_start))
         self.application.add_handler(CommandHandler("help", self.handle_help))
         self.application.add_handler(CommandHandler("cancel", self.handle_cancel_standalone))
+        self.application.add_handler(CommandHandler("memories", self.handle_memories))
 
         # 답장(Reply) 핸들러 - group=1로 등록하여 ConversationHandler(group=0)보다 낮은 우선순위
         # ConversationHandler가 먼저 처리하고, 매칭되지 않은 답장만 이 핸들러가 처리
@@ -660,7 +661,8 @@ class TelegramAIBot:
             "/us_evaluate - 미국 주식 평가 시작\n"
             "/us_report - 미국 주식 보고서 요청\n\n"
             "📝 <b>투자 일기</b>\n"
-            "/journal - 투자 일기 기록\n\n"
+            "/journal - 투자 일기 기록\n"
+            "/memories - 내 기억 저장소 확인\n\n"
             "💡 평가 응답에 답장(Reply)하여 추가 질문을 할 수 있습니다!\n\n"
             "이 봇은 '프리즘 인사이트' 채널 구독자만 사용할 수 있습니다.\n"
             "채널에서는 장 시작과 마감 시 AI가 선별한 특징주 3개를 소개하고,\n"
@@ -687,6 +689,7 @@ class TelegramAIBot:
             "/us_report - 미국 주식 보고서 요청\n\n"
             "📝 <b>투자 일기:</b>\n"
             "/journal - 투자 생각 기록\n"
+            "/memories - 내 기억 저장소 확인\n"
             "  • 종목 코드/티커와 함께 입력 가능\n"
             "  • 과거 평가 시 기억으로 활용됨\n\n"
             "<b>보유 종목 평가 방법 (한국/미국 동일):</b>\n"
@@ -709,6 +712,89 @@ class TelegramAIBot:
             "이 봇은 채널 구독자만 사용할 수 있습니다.",
             parse_mode="HTML"
         )
+
+    async def handle_memories(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """내 기억 조회 명령어 처리"""
+        user_id = update.effective_user.id
+        user_name = update.effective_user.first_name
+
+        try:
+            # 기억 통계 조회
+            stats = self.memory_manager.get_memory_stats(user_id)
+
+            if not stats or stats.get('total', 0) == 0:
+                await update.message.reply_text(
+                    f"📭 {user_name}님의 저장된 기억이 없습니다.\n\n"
+                    "/journal 명령어로 투자 일기를 기록해보세요!",
+                    parse_mode="HTML"
+                )
+                return
+
+            # 기억 목록 조회
+            memories = self.memory_manager.get_memories(user_id, limit=20)
+
+            # 응답 메시지 생성
+            msg_parts = [f"🧠 <b>{user_name}님의 기억 저장소</b>\n"]
+
+            # 통계
+            by_type = stats.get('by_type', {})
+            msg_parts.append(f"\n📊 <b>저장된 기억: {stats.get('total', 0)}개</b>")
+            if by_type:
+                type_labels = {
+                    'journal': '📝 저널',
+                    'evaluation': '📈 평가',
+                    'report': '📋 보고서',
+                    'conversation': '💬 대화'
+                }
+                for mem_type, count in by_type.items():
+                    label = type_labels.get(mem_type, mem_type)
+                    msg_parts.append(f"  • {label}: {count}개")
+
+            # 종목별 통계
+            by_ticker = stats.get('by_ticker', {})
+            if by_ticker:
+                msg_parts.append(f"\n🏷️ <b>종목별 기록:</b>")
+                for ticker, count in list(by_ticker.items())[:5]:
+                    msg_parts.append(f"  • {ticker}: {count}개")
+
+            # 최근 기억 상세
+            msg_parts.append(f"\n\n📜 <b>최근 기억 (최대 10개):</b>\n")
+            for i, mem in enumerate(memories[:10], 1):
+                created = mem.get('created_at', '')[:10]
+                mem_type = mem.get('memory_type', '')
+                ticker = mem.get('ticker', '')
+                ticker_name = mem.get('ticker_name', '')
+                content = mem.get('content', {})
+
+                # 내용 미리보기 (100자)
+                text = content.get('text', content.get('response_summary', ''))[:100]
+                if len(text) >= 100:
+                    text = text[:97] + "..."
+
+                # 종목 표시
+                ticker_str = f" [{ticker_name or ticker}]" if ticker else ""
+
+                # 타입 이모지
+                type_emoji = {'journal': '📝', 'evaluation': '📈', 'report': '📋', 'conversation': '💬'}.get(mem_type, '💭')
+
+                msg_parts.append(f"{i}. {type_emoji} {created}{ticker_str}")
+                if text:
+                    msg_parts.append(f"   <i>{text}</i>")
+                msg_parts.append("")
+
+            response = "\n".join(msg_parts)
+
+            # 메시지 길이 제한 (4096자)
+            if len(response) > 4000:
+                response = response[:3997] + "..."
+
+            await update.message.reply_text(response, parse_mode="HTML")
+
+        except Exception as e:
+            logger.error(f"Error in handle_memories: {e}", exc_info=True)
+            await update.message.reply_text(
+                "⚠️ 기억 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+            )
 
     async def handle_report_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """보고서 명령어 처리 - 첫 단계"""
