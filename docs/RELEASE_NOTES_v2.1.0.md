@@ -1,21 +1,90 @@
-# PRISM-INSIGHT v2.0.2
+# PRISM-INSIGHT v2.1.0
 
 발표일: 2026년 1월 28일
 
 ## 개요
 
-PRISM-INSIGHT v2.0.2는 **GCP Pub/Sub 미국 시장 지원**, **저널 시스템 안정화**, **다수의 버그 수정**을 포함한 패치 버전입니다. v2.0.0에서 추가된 prism-us 모듈의 안정성을 크게 향상시켰습니다.
+PRISM-INSIGHT v2.1.0은 **US Watchlist 성과 추적 기능**, **GCP Pub/Sub 미국 시장 지원**, **저널 시스템 안정화**, **다수의 버그 수정**을 포함한 마이너 버전입니다. v2.0.0에서 추가된 prism-us 모듈의 분석 성과 추적 기능이 완성되었습니다.
 
 **주요 수치:**
-- 총 32개 커밋
-- 54개 파일 변경
-- +4,181 / -1,780 라인
+- 총 33개 커밋
+- 56개 파일 변경
+- +4,400 / -1,800 라인
 
 ---
 
 ## 주요 변경사항
 
-### 1. GCP Pub/Sub 미국 시장 지원 ⭐ NEW
+### 1. US Watchlist 성과 추적 기능 ⭐ NEW
+
+미국 주식 분석 결과의 7/14/30일 성과를 추적하는 기능이 추가되었습니다. 한국 버전과 동일하게 미진입 종목도 watchlist에 저장하여 분석 정확도를 측정할 수 있습니다.
+
+#### 1.1 us_watchlist_history 테이블 확장
+
+분석 결과를 저장하는 테이블에 새로운 컬럼들이 추가되었습니다:
+
+```sql
+-- 새로운 컬럼들
+min_score INTEGER,           -- 최소 요구 점수
+target_price REAL,           -- 목표가 (USD)
+stop_loss REAL,              -- 손절가 (USD)
+investment_period TEXT,      -- 투자 기간 (short/medium/long)
+portfolio_analysis TEXT,     -- 포트폴리오 분석
+valuation_analysis TEXT,     -- 밸류에이션 분석
+sector_outlook TEXT,         -- 섹터 전망
+market_condition TEXT,       -- 시장 상황
+rationale TEXT,              -- 진입/미진입 사유
+risk_reward_ratio REAL,      -- 리스크/리워드 비율
+was_traded INTEGER           -- 실제 매매 여부 (0=관망, 1=매매)
+```
+
+#### 1.2 _save_watchlist_item() 메서드 추가
+
+미진입 종목을 자동으로 저장하는 메서드가 `USStockTrackingAgent`에 추가되었습니다:
+
+```python
+# prism-us/us_stock_tracking_agent.py
+await self._save_watchlist_item(
+    ticker=ticker,
+    company_name=company_name,
+    current_price=current_price,
+    buy_score=buy_score,
+    min_score=min_score,
+    decision=normalized_decision,
+    skip_reason=reason,
+    scenario=scenario,
+    sector=sector,
+    was_traded=False
+)
+```
+
+#### 1.3 성과 추적기 연동
+
+`us_analysis_performance_tracker` 테이블과 연동하여 7/14/30일 성과를 추적합니다:
+
+```python
+# 자동으로 us_analysis_performance_tracker에도 저장
+INSERT INTO us_analysis_performance_tracker (
+    ticker, company_name, analysis_date, analysis_price,
+    predicted_direction, target_price, stop_loss, buy_score,
+    decision, skip_reason, risk_reward_ratio,
+    trigger_type, trigger_mode, sector,
+    tracking_status, was_traded, created_at
+) VALUES (...)
+```
+
+#### 1.4 마이그레이션 함수
+
+기존 데이터베이스에 새 컬럼을 추가하는 마이그레이션 함수가 포함되었습니다:
+
+```python
+# prism-us/tracking/db_schema.py
+migrate_us_watchlist_history_columns(cursor, conn)
+```
+
+---
+
+### 2. GCP Pub/Sub 미국 시장 지원 ⭐ NEW
 
 GCP Pub/Sub 메시징 시스템에 미국 시장 지원을 추가했습니다.
 
@@ -67,7 +136,7 @@ from prism_us.check_market_day import is_us_market_day, get_reference_date
 
 ---
 
-### 2. 텔레그램 봇 개선
+### 3. 텔레그램 봇 개선
 
 #### 2.1 /memories 명령어 추가
 
@@ -117,7 +186,7 @@ Bot:  ⚠️ 저널이 500자를 초과했습니다 (현재: 723자).
 
 ---
 
-### 3. prism-us 모듈 안정화
+### 4. prism-us 모듈 안정화
 
 #### 3.1 midday 모드 추가
 
@@ -166,7 +235,7 @@ portfolio = deduplicate_by_ticker(raw_portfolio)
 
 ---
 
-### 4. 대시보드 개선
+### 5. 대시보드 개선
 
 #### 4.1 KR/US 마켓 선택기
 
@@ -192,7 +261,7 @@ formatCurrency(100, "US")    // "$100.00"
 
 ---
 
-### 5. 버그 수정
+### 6. 버그 수정
 
 #### 5.1 Docker 관련
 
@@ -252,10 +321,11 @@ yahoo_finance:
 
 | 파일 | 주요 변경 |
 |------|----------|
+| `prism-us/us_stock_tracking_agent.py` | **_save_watchlist_item() 추가**, Redis/GCP 시그널 발행 |
+| `prism-us/tracking/db_schema.py` | **us_watchlist_history 컬럼 확장**, 마이그레이션 함수 추가 |
 | `examples/messaging/gcp_pubsub_subscriber_example.py` | US 시장 지원, SELL 스케줄링 |
 | `telegram_ai_bot.py` | /memories 명령어, 저널 답장 AI 대화 |
 | `prism-us/us_trigger_batch.py` | midday 모드 지원 |
-| `prism-us/us_stock_tracking_agent.py` | Redis/GCP 시그널 발행 |
 | `prism-us/us_stock_analysis_orchestrator.py` | midday 모드 지원 |
 | `prism-us/check_market_day.py` | US 시장 영업일 체크 통합 |
 | `tracking/db_schema.py` | sector 컬럼 추가 |
@@ -318,7 +388,7 @@ print(mgr.get_memories(user_id=123, limit=10))
 
 ---
 
-**Document Version**: 2.0.2
+**Document Version**: 2.1.0
 **Last Updated**: 2026-01-28
 
 ---
@@ -329,27 +399,32 @@ print(mgr.get_memories(user_id=123, limit=10))
 
 ---
 
-### 📢 PRISM-INSIGHT v2.0.2 업데이트 안내
+### 📢 PRISM-INSIGHT v2.1.0 업데이트 안내
 
 **발표일**: 2026년 1월 28일
 
 안녕하세요, 프리즘 인사이트 구독자 여러분!
 
-v2.0.2 패치 버전이 출시되었습니다. 🛠️
+v2.1.0 마이너 버전이 출시되었습니다. 🎉
 
 ---
 
 #### 🆕 신규 기능
 
-**1. /memories 명령어**
+**1. 📈 US 분석 성과 추적 (NEW!)**
+- 미국 주식 분석 결과의 7/14/30일 성과를 자동 추적
+- 분석 정확도 측정으로 AI 분석 품질 검증 가능
+- 대시보드에서 성과 확인 가능
+
+**2. /memories 명령어**
 - 저장된 투자 일기, 평가 기록을 한눈에 조회
 - `/memories` 입력으로 최근 기록 확인!
 
-**2. 저널 답장 AI 대화**
+**3. 저널 답장 AI 대화**
 - 저널 메시지에 답장하면 AI가 해당 종목 추가 상담
 - "오늘 어떻게 됐어?" → AI가 현재 상황 분석 제공
 
-**3. 미국 시장 시그널 개선**
+**4. 미국 시장 시그널 개선**
 - 장외시간 매도 주문도 예약 주문으로 처리
 - 더 정확한 영업일 계산
 
@@ -359,6 +434,7 @@ v2.0.2 패치 버전이 출시되었습니다. 🛠️
 
 - 📊 **대시보드 KR/US 선택** - 한국/미국 시장 전환 가능
 - 🕐 **midday 모드** - 미국장 중간 점검 추가
+- 📋 **Watchlist DB 확장** - 더 상세한 분석 데이터 저장
 
 ---
 

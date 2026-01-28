@@ -70,6 +70,7 @@ try:
         add_sector_column_if_missing,
         add_market_column_to_shared_tables,
         migrate_us_performance_tracker_columns,
+        migrate_us_watchlist_history_columns,
         is_us_ticker_in_holdings,
         get_us_holdings_count,
     )
@@ -88,6 +89,7 @@ except ImportError as e:
         add_sector_column_if_missing,
         add_market_column_to_shared_tables,
         migrate_us_performance_tracker_columns,
+        migrate_us_watchlist_history_columns,
         is_us_ticker_in_holdings,
         get_us_holdings_count,
     )
@@ -432,6 +434,8 @@ class USStockTrackingAgent:
         add_market_column_to_shared_tables(self.cursor, self.conn)
         # Migrate performance tracker columns (tracking_status, was_traded, etc.)
         migrate_us_performance_tracker_columns(self.cursor, self.conn)
+        # Migrate watchlist history columns for 7/14/30-day performance tracking
+        migrate_us_watchlist_history_columns(self.cursor, self.conn)
 
     def _normalize_decision(self, decision: str) -> str:
         """
@@ -799,6 +803,140 @@ class USStockTrackingAgent:
 
         except Exception as e:
             logger.error(f"{ticker} Error during purchase: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
+
+    async def _save_watchlist_item(
+        self,
+        ticker: str,
+        company_name: str,
+        current_price: float,
+        buy_score: int,
+        min_score: int,
+        decision: str,
+        skip_reason: str,
+        scenario: Dict[str, Any],
+        sector: str,
+        was_traded: bool = False
+    ) -> bool:
+        """
+        Save stocks not purchased to us_watchlist_history table and us_analysis_performance_tracker.
+
+        This enables 7/14/30-day performance tracking for analyzed but not entered stocks.
+
+        Args:
+            ticker: Stock ticker symbol (e.g., "AAPL")
+            company_name: Company name
+            current_price: Current price in USD
+            buy_score: Buy score from agent
+            min_score: Minimum required score
+            decision: Decision (entry/no_entry)
+            skip_reason: Reason for not entering
+            scenario: Complete scenario information
+            sector: GICS sector
+            was_traded: Whether the stock was actually traded
+
+        Returns:
+            bool: Save success status
+        """
+        try:
+            # Current time
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Extract necessary information from scenario
+            target_price = scenario.get('target_price', 0)
+            stop_loss = scenario.get('stop_loss', 0)
+            investment_period = scenario.get('investment_period', 'short')
+            portfolio_analysis = scenario.get('portfolio_analysis', '')
+            valuation_analysis = scenario.get('valuation_analysis', '')
+            sector_outlook = scenario.get('sector_outlook', '')
+            market_condition = scenario.get('market_condition', '')
+            rationale = scenario.get('rationale', '')
+
+            # Get trigger info from parent's trigger_info_map
+            trigger_info = getattr(self, 'trigger_info_map', {}).get(ticker, {})
+            trigger_type = trigger_info.get('trigger_type', '')
+            trigger_mode = trigger_info.get('trigger_mode', '')
+            risk_reward_ratio = trigger_info.get('risk_reward_ratio', scenario.get('risk_reward_ratio', 0))
+
+            # Save to us_watchlist_history with trigger info
+            self.cursor.execute(
+                """
+                INSERT INTO us_watchlist_history
+                (ticker, company_name, current_price, analyzed_date, buy_score, min_score,
+                 decision, skip_reason, target_price, stop_loss, investment_period, sector,
+                 scenario, portfolio_analysis, valuation_analysis, sector_outlook,
+                 market_condition, rationale, trigger_type, trigger_mode, risk_reward_ratio, was_traded)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticker,
+                    company_name,
+                    current_price,
+                    now,
+                    buy_score,
+                    min_score,
+                    decision,
+                    skip_reason,
+                    target_price,
+                    stop_loss,
+                    investment_period,
+                    sector,
+                    json.dumps(scenario, ensure_ascii=False),
+                    portfolio_analysis,
+                    valuation_analysis,
+                    sector_outlook,
+                    market_condition,
+                    rationale,
+                    trigger_type,
+                    trigger_mode,
+                    risk_reward_ratio,
+                    1 if was_traded else 0
+                )
+            )
+
+            # Also save to us_analysis_performance_tracker for 7/14/30-day tracking
+            # Note: US version doesn't use watchlist_id FK (independent design)
+            self.cursor.execute(
+                """
+                INSERT INTO us_analysis_performance_tracker
+                (ticker, company_name, analysis_date, analysis_price,
+                 predicted_direction, target_price, stop_loss, buy_score,
+                 decision, skip_reason, risk_reward_ratio,
+                 trigger_type, trigger_mode, sector,
+                 tracking_status, was_traded, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    ticker,
+                    company_name,
+                    now,
+                    current_price,
+                    'UP' if target_price > current_price else 'DOWN' if target_price < current_price else 'NEUTRAL',
+                    target_price,
+                    stop_loss,
+                    buy_score,
+                    decision,
+                    skip_reason,
+                    risk_reward_ratio,
+                    trigger_type,
+                    trigger_mode,
+                    sector,
+                    1 if was_traded else 0,
+                    now
+                )
+            )
+
+            self.conn.commit()
+
+            logger.info(
+                f"{ticker}({company_name}) Watchlist save complete - "
+                f"Score: {buy_score}/{min_score}, Reason: {skip_reason}, Trigger: {trigger_type}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"{ticker} Error saving watchlist: {str(e)}")
             logger.error(traceback.format_exc())
             return False
 
@@ -1350,6 +1488,20 @@ class USStockTrackingAgent:
                     else:
                         reason = f"No entry decision (raw: '{raw_decision}', normalized: '{normalized_decision}')"
                     logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
+
+                    # Save to watchlist for 7/14/30-day performance tracking
+                    await self._save_watchlist_item(
+                        ticker=ticker,
+                        company_name=company_name,
+                        current_price=current_price,
+                        buy_score=buy_score,
+                        min_score=min_score,
+                        decision=normalized_decision,
+                        skip_reason=reason,
+                        scenario=scenario,
+                        sector=sector,
+                        was_traded=False
+                    )
 
             logger.info(f"Report processing complete - Bought: {buy_count}, Sold: {sell_count}")
             return buy_count, sell_count

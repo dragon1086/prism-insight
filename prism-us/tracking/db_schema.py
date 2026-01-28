@@ -63,14 +63,25 @@ CREATE TABLE IF NOT EXISTS us_watchlist_history (
     company_name TEXT NOT NULL,
     analyzed_date TEXT NOT NULL,
     buy_score INTEGER,                 -- 0-100 score
-    decision TEXT NOT NULL,            -- 진입, 미진입, 관망
+    min_score INTEGER,                 -- Minimum required score
+    decision TEXT NOT NULL,            -- entry, no_entry, watch
     skip_reason TEXT,                  -- Reason for not entering
     scenario TEXT,                     -- JSON trading scenario
     trigger_type TEXT,
     trigger_mode TEXT,
     sector TEXT,                       -- GICS sector
     market_cap REAL,                   -- Market cap in USD
-    current_price REAL                 -- Price at analysis time
+    current_price REAL,                -- Price at analysis time
+    target_price REAL,                 -- Target price in USD
+    stop_loss REAL,                    -- Stop loss price in USD
+    investment_period TEXT,            -- short, medium, long
+    portfolio_analysis TEXT,           -- Portfolio fit analysis
+    valuation_analysis TEXT,           -- Valuation analysis
+    sector_outlook TEXT,               -- Sector outlook
+    market_condition TEXT,             -- Market condition assessment
+    rationale TEXT,                    -- Entry/skip rationale
+    risk_reward_ratio REAL,            -- Risk/Reward ratio
+    was_traded INTEGER DEFAULT 0       -- 0=watched, 1=traded
 )
 """
 
@@ -289,6 +300,53 @@ def migrate_us_performance_tracker_columns(cursor, conn):
         logger.warning(f"Error updating tracking_status: {e}")
 
 
+def migrate_us_watchlist_history_columns(cursor, conn):
+    """
+    Migrate us_watchlist_history table to add new columns for 7/14/30-day tracking.
+
+    Adds columns that align with Korean version:
+    - min_score: Minimum required score
+    - target_price: Target price in USD
+    - stop_loss: Stop loss price in USD
+    - investment_period: short, medium, long
+    - portfolio_analysis: Portfolio fit analysis
+    - valuation_analysis: Valuation analysis
+    - sector_outlook: Sector outlook
+    - market_condition: Market condition assessment
+    - rationale: Entry/skip rationale
+    - risk_reward_ratio: Risk/Reward ratio
+    - was_traded: 0=watched, 1=traded
+
+    Args:
+        cursor: SQLite cursor
+        conn: SQLite connection
+    """
+    migrations = [
+        ("us_watchlist_history", "min_score INTEGER"),
+        ("us_watchlist_history", "target_price REAL"),
+        ("us_watchlist_history", "stop_loss REAL"),
+        ("us_watchlist_history", "investment_period TEXT"),
+        ("us_watchlist_history", "portfolio_analysis TEXT"),
+        ("us_watchlist_history", "valuation_analysis TEXT"),
+        ("us_watchlist_history", "sector_outlook TEXT"),
+        ("us_watchlist_history", "market_condition TEXT"),
+        ("us_watchlist_history", "rationale TEXT"),
+        ("us_watchlist_history", "risk_reward_ratio REAL"),
+        ("us_watchlist_history", "was_traded INTEGER DEFAULT 0"),
+    ]
+
+    for table_name, column_def in migrations:
+        try:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
+            conn.commit()
+            logger.info(f"Added column to {table_name}: {column_def}")
+        except Exception as e:
+            if "duplicate column name" in str(e).lower():
+                logger.debug(f"Column already exists in {table_name}: {column_def}")
+            else:
+                logger.warning(f"Migration warning for {table_name}: {e}")
+
+
 def initialize_us_database(db_path: Optional[str] = None):
     """
     Initialize the US database with all tables and indexes.
@@ -322,6 +380,9 @@ def initialize_us_database(db_path: Optional[str] = None):
 
     # Migrate US performance tracker columns (for existing databases)
     migrate_us_performance_tracker_columns(cursor, conn)
+
+    # Migrate US watchlist history columns (for existing databases)
+    migrate_us_watchlist_history_columns(cursor, conn)
 
     logger.info(f"US database initialized: {db_path}")
 
