@@ -78,7 +78,7 @@ mcp:
     # Provides: OHLCV, company info, financials, institutional holders, news, recommendations
     yahoo_finance:
       command: "uvx"
-      args: ["yahoo-finance-mcp"]
+      args: ["--from", "yahoo-finance-mcp", "yahoo-finance-mcp"]
       read_timeout_seconds: 120
 
     # SEC EDGAR MCP server for official SEC filings and financial data (PyPI: sec-edgar-mcp)
@@ -86,7 +86,7 @@ mcp:
     # Provides: 10-K/10-Q/8-K filings, XBRL financials, insider trading
     sec_edgar:
       command: "uvx"
-      args: ["sec-edgar-mcp"]
+      args: ["--from", "sec-edgar-mcp", "sec-edgar-mcp"]
       env:
         SEC_EDGAR_USER_AGENT: "YourCompany (your-email@example.com)"
       read_timeout_seconds: 120
