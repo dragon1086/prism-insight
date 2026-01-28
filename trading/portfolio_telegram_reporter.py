@@ -17,14 +17,16 @@ from typing import Dict, Any, List, Optional, Tuple
 from dotenv import load_dotenv
 
 # Set paths based on current script directory
-SCRIPT_DIR = Path(__file__).parent
+SCRIPT_DIR = Path(__file__).parent.resolve()
 TRADING_DIR = SCRIPT_DIR
 
 # Add paths for importing trading module
+# IMPORTANT: Order matters! PARENT_DIR must come BEFORE prism-us
+# because prism-us/trading/ exists and would shadow the main trading/ package
 PARENT_DIR = SCRIPT_DIR.parent
-sys.path.insert(0, str(PARENT_DIR))
-sys.path.insert(0, str(TRADING_DIR))
-sys.path.insert(0, str(PARENT_DIR / "prism-us"))
+sys.path.insert(0, str(PARENT_DIR / "prism-us"))  # prism-us for US trading modules
+sys.path.insert(0, str(TRADING_DIR))              # trading/ for local imports
+sys.path.insert(0, str(PARENT_DIR))               # project root - MUST be first for 'from trading.xxx'
 
 # Load configuration file
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
