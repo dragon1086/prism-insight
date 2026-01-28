@@ -1,12 +1,16 @@
 # AI Agent System - PRISM-INSIGHT
 
 > **Note**: This is a detailed reference for the AI Agent System. For quick overview, see main [CLAUDE.md](../CLAUDE.md).
+>
+> **Language**: [English](CLAUDE_AGENTS.md) | [한국어](CLAUDE_AGENTS_ko.md)
 
 ---
 
-## The 13 Specialized Agents
+## The 13+ Specialized Agents
 
 ### Analysis Team (6 Agents) - GPT-5 Based
+
+<img src="images/aiagent/technical_analyst.jpeg" alt="Technical Analyst" width="150" align="right"/>
 
 **1. Technical Analyst** (`create_price_volume_analysis_agent`)
 - **File**: `cores/agents/stock_price_agents.py`
@@ -14,11 +18,19 @@
 - **Analyzes**: Trends, moving averages, support/resistance, RSI, MACD, Bollinger Bands
 - **Output**: Technical analysis section of report
 
+<br clear="both"/>
+
+<img src="images/aiagent/tranding_flow_analyst.jpeg" alt="Trading Flow Analyst" width="150" align="right"/>
+
 **2. Trading Flow Analyst** (`create_investor_trading_analysis_agent`)
 - **File**: `cores/agents/stock_price_agents.py`
 - **Purpose**: Investor trading pattern analysis
 - **Analyzes**: Institutional/foreign/individual trading flows, volume patterns
 - **Output**: Trading flow section
+
+<br clear="both"/>
+
+<img src="images/aiagent/financial_analyst.jpeg" alt="Financial Analyst" width="150" align="right"/>
 
 **3. Financial Analyst** (`create_company_status_agent`)
 - **File**: `cores/agents/company_info_agents.py`
@@ -26,17 +38,29 @@
 - **Analyzes**: PER, PBR, ROE, debt ratio, target prices, consensus
 - **Output**: Company status section
 
+<br clear="both"/>
+
+<img src="images/aiagent/industry_analyst.jpeg" alt="Industry Analyst" width="150" align="right"/>
+
 **4. Industry Analyst** (`create_company_overview_agent`)
 - **File**: `cores/agents/company_info_agents.py`
 - **Purpose**: Business model and competitive position
 - **Analyzes**: Business portfolio, market share, competitors, R&D, growth drivers
 - **Output**: Company overview section
 
+<br clear="both"/>
+
+<img src="images/aiagent/information_analyst.jpeg" alt="Information Analyst" width="150" align="right"/>
+
 **5. Information Analyst** (`create_news_analysis_agent`)
 - **File**: `cores/agents/news_strategy_agents.py`
 - **Purpose**: News and catalyst identification
 - **Analyzes**: Recent news, disclosures, industry trends, political/economic issues
 - **Output**: News analysis section
+
+<br clear="both"/>
+
+<img src="images/aiagent/market_analyst.jpeg" alt="Market Analyst" width="150" align="right"/>
 
 **6. Market Analyst** (`create_market_index_analysis_agent`)
 - **File**: `cores/agents/market_index_agents.py`
@@ -45,7 +69,11 @@
 - **Output**: Market analysis section
 - **Note**: Results are cached to reduce API calls
 
+<br clear="both"/>
+
 ### Strategy Team (1 Agent) - GPT-5 Based
+
+<img src="images/aiagent/investment_strategist.jpeg" alt="Investment Strategist" width="150" align="right"/>
 
 **7. Investment Strategist** (`create_investment_strategy_agent`)
 - **File**: `cores/agents/news_strategy_agents.py`
@@ -53,7 +81,11 @@
 - **Integrates**: All 6 analysis reports
 - **Output**: Investment strategy with recommendations for different investor types
 
+<br clear="both"/>
+
 ### Communication Team (3 Agents)
+
+<img src="images/aiagent/summary_specialist.jpeg" alt="Summary Optimizer" width="150" align="right"/>
 
 **8-1. Summary Optimizer** (`telegram_summary_optimizer_agent`)
 - **File**: `cores/agents/telegram_summary_optimizer_agent.py`
@@ -62,12 +94,20 @@
 - **Constraints**: 400 characters max, key points extraction
 - **Output**: Concise Telegram message
 
+<br clear="both"/>
+
+<img src="images/aiagent/quality_inspector.jpeg" alt="Quality Evaluator" width="150" align="right"/>
+
 **8-2. Quality Evaluator** (`telegram_summary_evaluator_agent`)
 - **File**: `cores/agents/telegram_summary_evaluator_agent.py`
 - **Model**: GPT-5
 - **Purpose**: Evaluate summary quality and suggest improvements
 - **Checks**: Accuracy, clarity, format compliance, hallucination detection
 - **Process**: Iterative improvement loop until EXCELLENT rating
+
+<br clear="both"/>
+
+<img src="images/aiagent/translator_specialist.png" alt="Translation Specialist" width="150" align="right"/>
 
 **8-3. Translation Specialist** (`translate_telegram_message`)
 - **File**: `cores/agents/telegram_translator_agent.py`
@@ -76,9 +116,13 @@
 - **Languages**: en, ja, zh, es, fr, de
 - **Preserves**: Technical terms, market context, formatting
 
-### Trading Simulation Team (2 Agents) - GPT-5 Based
+<br clear="both"/>
+
+### Trading Simulation Team (3 Agents) - GPT-5 Based
 
 > **Note**: All agents now use GPT-5 (gpt-5) as the default model. GPT-5 output formatting requires additional cleanup in `cores/utils.py` (tool artifacts, headers).
+
+<img src="images/aiagent/buy_specialist.jpeg" alt="Buy Specialist" width="150" align="right"/>
 
 **9-1. Buy Specialist** (`create_trading_scenario_agent`)
 - **File**: `cores/agents/trading_agents.py`
@@ -89,13 +133,33 @@
   - Bear/Sideways: Min score 7, Risk/Reward ≥ 2.0, Stop loss ≤ 7%
 - **Output**: JSON trading scenario with entry/exit strategy
 
+<br clear="both"/>
+
+<img src="images/aiagent/sell_specialist.jpeg" alt="Sell Specialist" width="150" align="right"/>
+
 **9-2. Sell Specialist** (`create_sell_decision_agent`)
 - **File**: `cores/agents/trading_agents.py`
 - **Purpose**: Monitor holdings and determine sell timing
 - **Monitors**: Stop-loss, profit targets, technical trends, market conditions
 - **Output**: JSON sell decision with confidence score
 
+<br clear="both"/>
+
+**9-3. Trading Journal Agent** (Optional)
+- **File**: `stock_tracking_agent.py`
+- **Purpose**: Retrospective trade analysis and long-term memory accumulation
+- **Features**:
+  - Buy/sell context comparison and lesson extraction
+  - Hierarchical memory compression (detailed → summary → intuition)
+  - Buy score adjustment based on past experience
+- **Activation**: Set `ENABLE_TRADING_JOURNAL=true` in `.env`
+- **Details**: [TRADING_JOURNAL.md](TRADING_JOURNAL.md)
+
+<br clear="both"/>
+
 ### User Consultation Team (2 Agents) - Claude Sonnet 4.5
+
+<img src="images/aiagent/portfolio_consultant.jpeg" alt="Portfolio Consultant" width="150" align="right"/>
 
 **10-1. Portfolio Consultant**
 - **File**: `telegram_ai_bot.py`
@@ -103,10 +167,16 @@
 - **Features**: Custom advice based on user's positions, market data, latest news
 - **Adapts**: Response style to user preferences
 
+<br clear="both"/>
+
+<img src="images/aiagent/dialogue_manager.jpeg" alt="Dialogue Manager" width="150" align="right"/>
+
 **10-2. Dialogue Manager**
 - **File**: `telegram_ai_bot.py`
 - **Purpose**: Maintain conversation context
 - **Features**: Context memory, follow-up handling, data lookup
+
+<br clear="both"/>
 
 ---
 
