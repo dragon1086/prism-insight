@@ -137,13 +137,13 @@ PYTHONPATH=/path/to/prism-insight
 # -----------------------------------------------------------------------------
 
 # Dashboard JSON refresh - Morning (Mon-Fri 11:05 AM)
-5 11 * * 1-5 cd /path/to/prism-insight/examples && python generate_dashboard_json.py >> logs/generate_dashboard_json.log 2>&1
+5 11 * * 1-5 cd /path/to/prism-insight && python examples/generate_dashboard_json.py >> logs/generate_dashboard_json.log 2>&1
 
 # Performance tracker daily update (Mon-Fri 5 PM) - must run before evening dashboard refresh
 0 17 * * 1-5 cd /path/to/prism-insight && python performance_tracker_batch.py >> logs/performance_tracker.log 2>&1
 
 # Dashboard JSON refresh - Afternoon (Mon-Fri 5:10 PM)
-10 17 * * 1-5 cd /path/to/prism-insight/examples && python generate_dashboard_json.py >> logs/generate_dashboard_json.log 2>&1
+10 17 * * 1-5 cd /path/to/prism-insight && python examples/generate_dashboard_json.py >> logs/generate_dashboard_json.log 2>&1
 ```
 
 ## 🔧 Environment-Specific Setup

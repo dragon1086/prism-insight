@@ -32,13 +32,13 @@ PYTHONPATH=/app/prism-insight
 40 15 * * 1-5 cd /app/prism-insight && python3 stock_analysis_orchestrator.py --mode afternoon >> /app/prism-insight/logs/kr_afternoon_$(date +\%Y\%m\%d).log 2>&1
 
 # Dashboard refresh at 11:05 KST (Mon-Fri)
-5 11 * * 1-5 cd /app/prism-insight/examples && python3 generate_dashboard_json.py >> /app/prism-insight/logs/dashboard.log 2>&1
+5 11 * * 1-5 cd /app/prism-insight && python3 examples/generate_dashboard_json.py >> /app/prism-insight/logs/dashboard.log 2>&1
 
 # Performance tracker at 17:00 KST (Mon-Fri)
 0 17 * * 1-5 cd /app/prism-insight && python3 performance_tracker_batch.py >> /app/prism-insight/logs/performance.log 2>&1
 
 # Dashboard refresh at 17:10 KST (Mon-Fri)
-10 17 * * 1-5 cd /app/prism-insight/examples && python3 generate_dashboard_json.py >> /app/prism-insight/logs/dashboard.log 2>&1
+10 17 * * 1-5 cd /app/prism-insight && python3 examples/generate_dashboard_json.py >> /app/prism-insight/logs/dashboard.log 2>&1
 
 # -----------------------------------------------------------------------------
 # US Stock Market (American Stock)
@@ -60,7 +60,7 @@ PYTHONPATH=/app/prism-insight
 30 7 * * 2-6 cd /app/prism-insight && python3 prism-us/us_performance_tracker_batch.py >> /app/prism-insight/logs/us_performance_$(date +\%Y\%m\%d).log 2>&1
 
 # US Dashboard refresh at 08:00 KST (18:00 EST) - Tue-Sat (Mon-Fri US)
-0 8 * * 2-6 cd /app/prism-insight/examples && python3 generate_us_dashboard_json.py >> /app/prism-insight/logs/us_dashboard.log 2>&1
+0 8 * * 2-6 cd /app/prism-insight && python3 examples/generate_us_dashboard_json.py >> /app/prism-insight/logs/us_dashboard.log 2>&1
 
 # US log cleanup at 03:30 KST (daily) - keep 30 days
 30 3 * * * find /app/prism-insight/logs -name "us_*.log" -mtime +30 -delete

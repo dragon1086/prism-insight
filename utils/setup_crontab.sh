@@ -197,13 +197,13 @@ $AFTERNOON_BATCH_TIME * * 1-5 cd $PROJECT_DIR && $PYTHON_PATH stock_analysis_orc
 # -----------------------------------------------------------------------------
 
 # 매일 오전 11시 5분에 대시보드 데이터 갱신 (월-금)
-$DASHBOARD_REFRESH_AM_TIME * * 1-5 cd $PROJECT_DIR/examples && $PYTHON_PATH generate_dashboard_json.py >> $LOG_DIR/generate_dashboard_json.log 2>&1
+$DASHBOARD_REFRESH_AM_TIME * * 1-5 cd $PROJECT_DIR && $PYTHON_PATH examples/generate_dashboard_json.py >> $LOG_DIR/generate_dashboard_json.log 2>&1
 
 # 매일 오후 5시에 성과 추적 업데이트 (월-금) - 대시보드 갱신 전 실행
 $PERFORMANCE_TRACKER_TIME * * 1-5 cd $PROJECT_DIR && $PYTHON_PATH performance_tracker_batch.py >> $LOG_DIR/performance_tracker.log 2>&1
 
 # 매일 오후 5시 10분에 대시보드 데이터 갱신 (월-금)
-$DASHBOARD_REFRESH_PM_TIME * * 1-5 cd $PROJECT_DIR/examples && $PYTHON_PATH generate_dashboard_json.py >> $LOG_DIR/generate_dashboard_json.log 2>&1
+$DASHBOARD_REFRESH_PM_TIME * * 1-5 cd $PROJECT_DIR && $PYTHON_PATH examples/generate_dashboard_json.py >> $LOG_DIR/generate_dashboard_json.log 2>&1
 
 # -----------------------------------------------------------------------------
 # 포트폴리오 리포트 (선택사항 - 필요시 주석 해제)

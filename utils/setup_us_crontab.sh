@@ -244,7 +244,7 @@ $US_PERFORMANCE_TRACKER_TIME * * 2-6 cd $PROJECT_DIR && $PYTHON_PATH prism-us/us
 
 # US Dashboard refresh: After performance tracking
 # EST: 18:00 EST = 08:00 KST | EDT: 18:00 EDT = 07:00 KST
-$US_DASHBOARD_TIME * * 2-6 cd $PROJECT_DIR/examples && $PYTHON_PATH generate_us_dashboard_json.py >> $LOG_DIR/us_dashboard.log 2>&1
+$US_DASHBOARD_TIME * * 2-6 cd $PROJECT_DIR && $PYTHON_PATH examples/generate_us_dashboard_json.py >> $LOG_DIR/us_dashboard.log 2>&1
 
 # -----------------------------------------------------------------------------
 # Maintenance (US Module)
