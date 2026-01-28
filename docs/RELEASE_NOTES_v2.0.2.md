@@ -119,18 +119,7 @@ Bot:  ⚠️ 저널이 500자를 초과했습니다 (현재: 723자).
 
 ### 3. prism-us 모듈 안정화
 
-#### 3.1 시총 필터 강화 ($5B → $20B)
-
-시가총액 필터를 S&P 500 편입 수준인 $20B로 강화했습니다:
-
-```python
-# prism-us/us_trigger_batch.py
-MIN_MARKET_CAP_USD = 20_000_000_000  # $20B (이전: $5B)
-```
-
-이로써 대형 우량주 위주의 분석이 가능합니다.
-
-#### 3.2 midday 모드 추가
+#### 3.1 midday 모드 추가
 
 미국 장 중간 점검을 위한 midday 모드를 추가했습니다:
 
@@ -145,7 +134,7 @@ python prism-us/us_stock_analysis_orchestrator.py --mode midday
 python prism-us/us_stock_analysis_orchestrator.py --mode afternoon
 ```
 
-#### 3.3 Redis/GCP 시그널 발행
+#### 3.2 Redis/GCP 시그널 발행
 
 US 트래킹 에이전트에서 매수/매도 시그널을 Redis/GCP로 발행합니다:
 
@@ -160,13 +149,13 @@ await publish_signal({
 })
 ```
 
-#### 3.4 Python 3.11 호환성 수정
+#### 3.3 Python 3.11 호환성 수정
 
 Python 3.11에서 발생하던 호환성 이슈를 수정했습니다:
 - timezone 처리 개선
 - asyncio 관련 수정
 
-#### 3.5 포트폴리오 중복 제거
+#### 3.4 포트폴리오 중복 제거
 
 동일 티커의 중복 보유 문제를 수정했습니다:
 
@@ -265,7 +254,7 @@ yahoo_finance:
 |------|----------|
 | `examples/messaging/gcp_pubsub_subscriber_example.py` | US 시장 지원, SELL 스케줄링 |
 | `telegram_ai_bot.py` | /memories 명령어, 저널 답장 AI 대화 |
-| `prism-us/us_trigger_batch.py` | 시총 필터 $20B, midday 모드 |
+| `prism-us/us_trigger_batch.py` | midday 모드 지원 |
 | `prism-us/us_stock_tracking_agent.py` | Redis/GCP 시그널 발행 |
 | `prism-us/us_stock_analysis_orchestrator.py` | midday 모드 지원 |
 | `prism-us/check_market_day.py` | US 시장 영업일 체크 통합 |
@@ -369,7 +358,6 @@ v2.0.2 패치 버전이 출시되었습니다. 🛠️
 #### ✨ 개선 사항
 
 - 📊 **대시보드 KR/US 선택** - 한국/미국 시장 전환 가능
-- 💰 **시총 필터 강화** - $20B 이상 대형주 위주 분석
 - 🕐 **midday 모드** - 미국장 중간 점검 추가
 
 ---
