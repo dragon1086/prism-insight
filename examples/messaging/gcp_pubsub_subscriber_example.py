@@ -91,17 +91,33 @@ def is_market_hours(market: str = "KR") -> bool:
 
 
 def is_us_market_hours() -> bool:
-    """현재 시간이 미국 정규 장 시간(09:30~16:00 EST)인지 확인"""
+    """현재 시간이 미국 정규 장 시간(09:30~16:00 EST, 평일만)인지 확인"""
     try:
         import pytz
         us_eastern = pytz.timezone('US/Eastern')
-        now_est = datetime.now(us_eastern).time()
+        now_est = datetime.now(us_eastern)
+
+        # 주말 체크 (EST 기준)
+        if now_est.weekday() >= 5:  # Saturday = 5, Sunday = 6
+            return False
+
+        current_time = now_est.time()
         market_open = time(9, 30)
         market_close = time(16, 0)
-        return market_open <= now_est <= market_close
+        return market_open <= current_time <= market_close
     except ImportError:
         # pytz 없으면 KST 기준으로 대략 계산 (EST = KST - 14시간)
         now = datetime.now()
+
+        # 주말 체크 (KST 기준 - 대략적)
+        # KST 토요일 14:00 이후 ~ 월요일 06:00 이전은 US 주말
+        if now.weekday() == 5 and now.time() >= time(14, 0):  # 토요일 오후
+            return False
+        if now.weekday() == 6:  # 일요일 전체
+            return False
+        if now.weekday() == 0 and now.time() < time(6, 0):  # 월요일 새벽
+            return False
+
         # KST 23:30 ~ 06:00 (다음날) 이 US 장 시간
         now_time = now.time()
         return now_time >= time(23, 30) or now_time <= time(6, 0)
