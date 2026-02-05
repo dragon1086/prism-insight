@@ -1,6 +1,6 @@
 "use client"
 
-import { Github, Send } from "lucide-react"
+import { Github, Send, Globe } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { useLanguage } from "@/components/language-provider"
 
@@ -107,6 +107,26 @@ export function ProjectFooter() {
                       </div>
                       <div className="text-xs text-muted-foreground">
                         {t("footer.telegramDesc")}
+                      </div>
+                    </div>
+                  </a>
+
+                  {/* Landing Page */}
+                  <a
+                    href="https://prism-insight-landing.vercel.app"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="group flex items-center gap-3 p-3 rounded-lg bg-background/60 hover:bg-background/80 border border-border/50 hover:border-border transition-all duration-200 hover:shadow-md"
+                  >
+                    <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500/20 to-emerald-500/5 group-hover:from-emerald-500/30 group-hover:to-emerald-500/10 transition-all">
+                      <Globe className="h-5 w-5 text-emerald-500" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-sm font-medium text-foreground group-hover:text-emerald-500 transition-colors">
+                        About PRISM-INSIGHT
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {t("footer.landingDesc") || "Project introduction & features"}
                       </div>
                     </div>
                   </a>
