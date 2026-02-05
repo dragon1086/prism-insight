@@ -88,3 +88,31 @@ prism-us/*.log
 
 # tests generated files
 tests/*.log
+
+# Sensitive files - NEVER commit these
+*_cookies.txt
+*cookies*.txt
+*.cookies
+youtube_cookies.txt
+
+# Generated trigger results
+trigger_results_*.json
+
+# SQLite MCP server data files (keep Dockerfile, README, pyproject.toml, src/)
+sqlite/stock_tracking_db
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# SSH keys and certificates
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+
+# Local development files
+.vscode/
+*.local
