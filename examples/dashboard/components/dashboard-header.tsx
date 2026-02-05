@@ -1,6 +1,6 @@
 "use client"
 
-import { Moon, Sun, TrendingUp, Github, Send, Languages } from "lucide-react"
+import { Moon, Sun, TrendingUp, Github, Send, Languages, Sparkles } from "lucide-react"
 import { useTheme } from "next-themes"
 import { useLanguage } from "@/components/language-provider"
 import { Button } from "@/components/ui/button"
@@ -43,6 +43,39 @@ export function DashboardHeader({ activeTab, onTabChange, lastUpdated, market = 
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      {/* Platinum Sponsor Bar - Premium separated placement */}
+      <div className="hidden sm:block border-b border-border/20 bg-gradient-to-r from-slate-50/50 via-blue-50/30 to-indigo-50/50 dark:from-slate-900/50 dark:via-blue-950/30 dark:to-indigo-950/50">
+        <div className="container mx-auto px-4 max-w-[1600px]">
+          <div className="flex items-center justify-center py-1.5 gap-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-3 h-3 text-amber-500" />
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-600/90 dark:text-amber-400/90">
+                Platinum Sponsor
+              </span>
+            </div>
+            <div className="w-px h-3 bg-border/50" />
+            <a
+              href="https://wrks.ai/en"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group flex items-center gap-2 px-3 py-1 rounded-full bg-white/60 dark:bg-white/5 border border-blue-200/50 dark:border-blue-500/20 hover:border-blue-400/50 dark:hover:border-blue-400/40 hover:bg-white/80 dark:hover:bg-white/10 transition-all duration-200 shadow-sm hover:shadow-md"
+            >
+              <img
+                src="/wrks_ai_logo.png"
+                alt="WrksAI"
+                className="h-5 w-auto transition-transform duration-200 group-hover:scale-105"
+              />
+              <span className="text-xs font-medium text-slate-700 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                WrksAI
+              </span>
+              <svg className="w-3 h-3 text-slate-400 group-hover:text-blue-500 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </a>
+          </div>
+        </div>
+      </div>
+
       <div className="container mx-auto px-4 max-w-[1600px]">
         {/* Top Row: Logo + Market Tabs + Utils */}
         <div className="flex h-16 items-center justify-between">
@@ -69,28 +102,9 @@ export function DashboardHeader({ activeTab, onTabChange, lastUpdated, market = 
                   </Tooltip>
                 </TooltipProvider>
               </div>
-              <div className="flex items-center gap-2">
-                <p className="text-xs text-muted-foreground">
-                  {t("header.updated")}: {formatLastUpdated()}
-                </p>
-                {/* Platinum Sponsor Badge */}
-                <span className="hidden sm:flex items-center text-[10px] text-muted-foreground/50">•</span>
-                <a
-                  href="https://wrks.ai/en"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="hidden sm:flex items-center gap-1.5 group"
-                >
-                  <span className="text-[10px] text-muted-foreground/50 group-hover:text-muted-foreground transition-colors uppercase tracking-wide">
-                    Powered by
-                  </span>
-                  <img
-                    src="/wrks_ai_logo.png"
-                    alt="WrksAI"
-                    className="h-3 w-auto opacity-60 group-hover:opacity-100 transition-opacity"
-                  />
-                </a>
-              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("header.updated")}: {formatLastUpdated()}
+              </p>
             </div>
           </div>
 
@@ -216,7 +230,7 @@ export function DashboardHeader({ activeTab, onTabChange, lastUpdated, market = 
 
         {/* Mobile Market Selector */}
         {onMarketChange && (
-          <div className="sm:hidden flex justify-center pb-3">
+          <div className="sm:hidden flex flex-col items-center gap-2 pb-3">
             <div className="flex bg-muted/50 rounded-xl p-1 gap-1 w-full max-w-sm">
               <button
                 onClick={() => onMarketChange("KR")}
@@ -245,6 +259,23 @@ export function DashboardHeader({ activeTab, onTabChange, lastUpdated, market = 
                 <span>{language === "ko" ? "미국주식" : "US"}</span>
               </button>
             </div>
+            {/* Mobile Sponsor Badge */}
+            <a
+              href="https://wrks.ai/en"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gradient-to-r from-slate-100/80 to-blue-50/80 dark:from-slate-800/80 dark:to-blue-950/80 border border-blue-200/40 dark:border-blue-700/30"
+            >
+              <Sparkles className="w-3 h-3 text-amber-500" />
+              <span className="text-[9px] font-semibold uppercase tracking-wider text-amber-600/90 dark:text-amber-400/90">
+                Sponsor
+              </span>
+              <img
+                src="/wrks_ai_logo.png"
+                alt="WrksAI"
+                className="h-4 w-auto"
+              />
+            </a>
           </div>
         )}
 
