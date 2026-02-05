@@ -252,6 +252,38 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 
 ---
 
+## 🎨 프론트엔드 예제
+
+### 랜딩 페이지
+Next.js와 Tailwind CSS로 구축된 모던하고 반응형 랜딩 페이지입니다.
+
+👉 **[라이브 데모](https://prism-insight-landing.vercel.app/)**
+
+```bash
+cd examples/landing
+npm install
+npm run dev
+# http://localhost:3000 접속
+```
+
+**기능**: 매트릭스 레인 애니메이션, 타이프라이터 효과, GitHub 스타 카운터, 반응형 디자인
+
+### 대시보드
+실시간 포트폴리오 추적 및 성과 대시보드입니다.
+
+```bash
+cd examples/dashboard
+npm install
+npm run dev
+# http://localhost:3000 접속
+```
+
+**기능**: 포트폴리오 개요, 매매 내역, 성과 지표, 마켓 선택기 (한국/미국)
+
+📖 **대시보드 설정 가이드**: [examples/dashboard/DASHBOARD_README_ko.md](examples/dashboard/DASHBOARD_README_ko.md)
+
+---
+
 ## 💡 MCP 서버
 
 ### 한국 시장

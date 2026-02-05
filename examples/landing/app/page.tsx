@@ -320,6 +320,56 @@ python demo.py AAPL`
         </div>
       </section>
 
+      {/* Platinum Sponsor Section */}
+      <section className="relative py-16 px-4 border-t border-zinc-800/50">
+        <div className="max-w-2xl mx-auto text-center">
+          <Badge className="mb-4 bg-amber-500/10 text-amber-400 border-amber-500/30">
+            🏆 Platinum Sponsor
+          </Badge>
+          <a
+            href="https://wrks.ai/en"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block group"
+          >
+            <div className="relative inline-block mb-6">
+              <div className="absolute -inset-2 bg-gradient-to-r from-amber-500/20 via-yellow-500/20 to-amber-500/20 rounded-2xl blur-lg opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+              <div className="relative bg-white/5 p-6 rounded-2xl border border-zinc-800 group-hover:border-amber-500/50 transition-colors duration-300">
+                <Image
+                  src="/wrks_ai_logo.png"
+                  alt="WrksAI Logo"
+                  width={200}
+                  height={60}
+                  className="h-12 w-auto"
+                />
+              </div>
+            </div>
+          </a>
+          <p className="text-zinc-400 leading-relaxed">
+            <a
+              href="https://www.ai3.kr/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-emerald-400 hover:text-emerald-300 transition-colors font-medium"
+            >
+              AI3
+            </a>
+            , creator of{' '}
+            <a
+              href="https://wrks.ai/en"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-emerald-400 hover:text-emerald-300 transition-colors font-medium"
+            >
+              WrksAI
+            </a>
+            {' '}- the AI assistant for professionals, proudly sponsors{' '}
+            <span className="text-zinc-200 font-semibold">PRISM-INSIGHT</span>
+            {' '}- the AI assistant for investors.
+          </p>
+        </div>
+      </section>
+
       {/* Features Section */}
       <section className="relative py-32 px-4">
         <div className="max-w-6xl mx-auto">
