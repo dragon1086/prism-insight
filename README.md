@@ -252,6 +252,38 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 
 ---
 
+## 🎨 Frontend Examples
+
+### Landing Page
+A modern, responsive landing page built with Next.js and Tailwind CSS.
+
+👉 **[Live Demo](https://prism-insight-landing.vercel.app/)**
+
+```bash
+cd examples/landing
+npm install
+npm run dev
+# Visit http://localhost:3000
+```
+
+**Features**: Matrix rain animation, typewriter effects, GitHub star counter, responsive design
+
+### Dashboard
+Real-time portfolio tracking and performance dashboard.
+
+```bash
+cd examples/dashboard
+npm install
+npm run dev
+# Visit http://localhost:3000
+```
+
+**Features**: Portfolio overview, trading history, performance metrics, market selector (KR/US)
+
+📖 **Dashboard Setup Guide**: [examples/dashboard/DASHBOARD_README.md](examples/dashboard/DASHBOARD_README.md)
+
+---
+
 ## 💡 MCP Servers
 
 ### Korean Market

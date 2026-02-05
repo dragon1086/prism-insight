@@ -144,6 +144,30 @@ export function ProjectFooter() {
                   </span>
                 </div>
               </div>
+
+              {/* Platinum Sponsor */}
+              <div className="mt-4 pt-4 border-t border-border/20 flex justify-center">
+                <a
+                  href="https://wrks.ai/en"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-background/60 transition-all duration-200"
+                >
+                  <span className="text-[10px] text-muted-foreground/60 uppercase tracking-wider">
+                    Platinum Sponsor
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <img
+                      src="/wrks_ai_logo.png"
+                      alt="WrksAI"
+                      className="h-4 w-auto opacity-70 group-hover:opacity-100 transition-opacity"
+                    />
+                    <span className="text-xs text-muted-foreground/70 group-hover:text-muted-foreground transition-colors">
+                      WrksAI
+                    </span>
+                  </div>
+                </a>
+              </div>
             </div>
 
             {/* 면책 조항 */}
