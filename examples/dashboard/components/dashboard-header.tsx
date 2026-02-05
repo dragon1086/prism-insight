@@ -69,9 +69,28 @@ export function DashboardHeader({ activeTab, onTabChange, lastUpdated, market = 
                   </Tooltip>
                 </TooltipProvider>
               </div>
-              <p className="text-xs text-muted-foreground">
-                {t("header.updated")}: {formatLastUpdated()}
-              </p>
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-muted-foreground">
+                  {t("header.updated")}: {formatLastUpdated()}
+                </p>
+                {/* Platinum Sponsor Badge */}
+                <span className="hidden sm:flex items-center text-[10px] text-muted-foreground/50">•</span>
+                <a
+                  href="https://wrks.ai/en"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hidden sm:flex items-center gap-1.5 group"
+                >
+                  <span className="text-[10px] text-muted-foreground/50 group-hover:text-muted-foreground transition-colors uppercase tracking-wide">
+                    Powered by
+                  </span>
+                  <img
+                    src="/wrks_ai_logo.png"
+                    alt="WrksAI"
+                    className="h-3 w-auto opacity-60 group-hover:opacity-100 transition-opacity"
+                  />
+                </a>
+              </div>
             </div>
           </div>
 
