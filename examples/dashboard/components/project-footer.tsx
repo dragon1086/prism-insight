@@ -130,10 +130,36 @@ export function ProjectFooter() {
             {/* 하단 구분선 및 저작권 */}
             <div className="mt-6 pt-6 border-t border-border/30">
               <div className="flex flex-col md:flex-row justify-between items-center gap-4 text-xs text-muted-foreground">
-                <div className="flex items-center gap-2">
-                  <span>© 2025 PRISM-INSIGHT</span>
-                  <span className="hidden md:inline">•</span>
-                  <span className="text-xs">All rights reserved</span>
+                <div className="flex flex-col md:flex-row items-center gap-2">
+                  <div className="flex items-center gap-2">
+                    <span>© 2025 PRISM-INSIGHT</span>
+                    <span className="hidden md:inline">•</span>
+                    <span className="text-xs">All rights reserved</span>
+                  </div>
+                  {/* Platinum Sponsor - Inline */}
+                  <div className="flex items-center gap-2">
+                    <span className="hidden md:inline text-muted-foreground/40">•</span>
+                    <a
+                      href="https://wrks.ai/en"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="group flex items-center gap-2 px-2.5 py-1 rounded-md bg-gradient-to-r from-amber-500/5 to-yellow-500/5 hover:from-amber-500/10 hover:to-yellow-500/10 border border-amber-500/20 transition-all duration-200"
+                    >
+                      <span className="text-[10px] text-amber-600/80 dark:text-amber-400/80 font-medium uppercase tracking-wider">
+                        Platinum Sponsor
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <img
+                          src="/wrks_ai_logo.png"
+                          alt="WrksAI"
+                          className="h-3.5 w-auto opacity-80 group-hover:opacity-100 transition-opacity"
+                        />
+                        <span className="text-xs text-muted-foreground/90 group-hover:text-foreground transition-colors font-medium">
+                          WrksAI
+                        </span>
+                      </div>
+                    </a>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="px-2 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium">
@@ -143,30 +169,6 @@ export function ProjectFooter() {
                     MIT License
                   </span>
                 </div>
-              </div>
-
-              {/* Platinum Sponsor */}
-              <div className="mt-4 pt-4 border-t border-border/20 flex justify-center">
-                <a
-                  href="https://wrks.ai/en"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="group flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-background/60 transition-all duration-200"
-                >
-                  <span className="text-[10px] text-muted-foreground/60 uppercase tracking-wider">
-                    Platinum Sponsor
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <img
-                      src="/wrks_ai_logo.png"
-                      alt="WrksAI"
-                      className="h-4 w-auto opacity-70 group-hover:opacity-100 transition-opacity"
-                    />
-                    <span className="text-xs text-muted-foreground/70 group-hover:text-muted-foreground transition-colors">
-                      WrksAI
-                    </span>
-                  </div>
-                </a>
               </div>
             </div>
 
