@@ -126,7 +126,7 @@ export function ProjectFooter() {
                         About PRISM-INSIGHT
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        {t("footer.landingDesc") || "Project introduction & features"}
+                        {t("footer.landingDesc")}
                       </div>
                     </div>
                   </a>
