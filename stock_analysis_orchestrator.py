@@ -757,15 +757,15 @@ class StockAnalysisOrchestrator:
 
         # Set title based on mode
         if mode == "morning":
-            title = "🔔 Morning PRISM Signal Alert"
-            time_desc = "10 minutes after market open"
+            title = "🔔 오전 프리즘 시그널 얼럿"
+            time_desc = "장 시작 후 10분 시점"
         else:
-            title = "🔔 Afternoon PRISM Signal Alert"
-            time_desc = "After market close"
+            title = "🔔 오후 프리즘 시그널 얼럿"
+            time_desc = "장 마감 후"
 
         # Message header
         message = f"{title}\n"
-        message += f"📅 {formatted_date} Watchlist detected at {time_desc}\n\n"
+        message += f"📅 {formatted_date} {time_desc} 포착된 관심종목\n\n"
 
         # Add stock information by trigger
         for trigger_type, stocks in results.items():
@@ -786,32 +786,32 @@ class StockAnalysisOrchestrator:
 
                 # Basic information
                 message += f"· *{name}* ({code})\n"
-                message += f"  {current_price:,.0f} KRW {arrow} {abs(change_rate):.2f}%\n"
+                message += f"  {current_price:,.0f}원 {arrow} {abs(change_rate):.2f}%\n"
 
                 # Additional information based on trigger type
                 if "volume_increase" in stock and ("Volume" in trigger_type or "거래량" in trigger_type):
                     volume_increase = stock.get("volume_increase", 0)
-                    message += f"  Volume increase: {volume_increase:.2f}%\n"
+                    message += f"  거래량 증가율: {volume_increase:.2f}%\n"
 
                 elif "gap_rate" in stock and ("Gap" in trigger_type or "갭 상승" in trigger_type):
                     gap_rate = stock.get("gap_rate", 0)
-                    message += f"  Gap up rate: {gap_rate:.2f}%\n"
+                    message += f"  갭 상승률: {gap_rate:.2f}%\n"
 
                 elif "trade_value_ratio" in stock and ("Market Cap" in trigger_type or "시총 대비" in trigger_type):
                     trade_value_ratio = stock.get("trade_value_ratio", 0)
                     market_cap = stock.get("market_cap", 0) / 100000000  # Convert to hundred million won units
-                    message += f"  Trade value/market cap ratio: {trade_value_ratio:.2f}%\n"
-                    message += f"  Market cap: {market_cap:.2f}B KRW\n"
+                    message += f"  거래대금/시총 비율: {trade_value_ratio:.2f}%\n"
+                    message += f"  시가총액: {market_cap:.2f}억원\n"
 
                 elif "closing_strength" in stock and ("Closing Strength" in trigger_type or "마감 강도" in trigger_type):
                     closing_strength = stock.get("closing_strength", 0) * 100
-                    message += f"  Closing strength: {closing_strength:.2f}%\n"
+                    message += f"  마감 강도: {closing_strength:.2f}%\n"
 
                 message += "\n"
 
         # Footer message
-        message += "💡 Detailed analysis reports will be provided within 10-30 minutes\n"
-        message += "⚠️ This information is for reference only. Investment decisions and responsibility lie with the investor."
+        message += "💡 상세 분석 보고서는 약 10-30분 내 제공 예정\n"
+        message += "⚠️ 본 정보는 투자 참고용이며, 투자 결정과 책임은 투자자에게 있습니다."
 
         return message
 

@@ -194,12 +194,12 @@ def enhance_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 # v1.16.6: Agent criteria by trigger type (synchronized with trading_agents.py)
 TRIGGER_CRITERIA = {
-    "Volume Surge Top": {"rr_target": 1.2, "sl_max": 0.05},
-    "Gap Up Momentum Top": {"rr_target": 1.2, "sl_max": 0.05},
-    "Intraday Rise Top": {"rr_target": 1.2, "sl_max": 0.05},
-    "Closing Strength Top": {"rr_target": 1.3, "sl_max": 0.05},
-    "Concentrated Fund Inflow vs Market Cap Top": {"rr_target": 1.3, "sl_max": 0.05},
-    "Volume Increase Sideways Top": {"rr_target": 1.5, "sl_max": 0.07},
+    "거래량 급증 상위주": {"rr_target": 1.2, "sl_max": 0.05},
+    "갭 상승 모멘텀 상위주": {"rr_target": 1.2, "sl_max": 0.05},
+    "일중 상승률 상위주": {"rr_target": 1.2, "sl_max": 0.05},
+    "마감 강도 상위주": {"rr_target": 1.3, "sl_max": 0.05},
+    "시총 대비 집중 자금 유입 상위주": {"rr_target": 1.3, "sl_max": 0.05},
+    "거래량 증가 상위 횡보주": {"rr_target": 1.5, "sl_max": 0.07},
     "default": {"rr_target": 1.5, "sl_max": 0.07}
 }
 
@@ -980,14 +980,14 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         res1 = trigger_morning_volume_surge(trade_date, snapshot, prev_snapshot, cap_df)
         res2 = trigger_morning_gap_up_momentum(trade_date, snapshot, prev_snapshot, cap_df)
         res3 = trigger_morning_value_to_cap_ratio(trade_date, snapshot, prev_snapshot, cap_df)
-        triggers = {"Volume Surge Top": res1, "Gap Up Momentum Top": res2, "Concentrated Fund Inflow vs Market Cap Top": res3}
+        triggers = {"거래량 급증 상위주": res1, "갭 상승 모멘텀 상위주": res2, "시총 대비 집중 자금 유입 상위주": res3}
     elif trigger_time == "afternoon":
         logger.info("=== Afternoon batch execution ===")
         # Execute afternoon triggers - pass cap_df
         res1 = trigger_afternoon_daily_rise_top(trade_date, snapshot, prev_snapshot, cap_df)
         res2 = trigger_afternoon_closing_strength(trade_date, snapshot, prev_snapshot, cap_df)
         res3 = trigger_afternoon_volume_surge_flat(trade_date, snapshot, prev_snapshot, cap_df)
-        triggers = {"Intraday Rise Top": res1, "Closing Strength Top": res2, "Volume Increase Sideways Top": res3}
+        triggers = {"일중 상승률 상위주": res1, "마감 강도 상위주": res2, "거래량 증가 상위 횡보주": res3}
     else:
         logger.error("Invalid trigger_time value. Please enter 'morning' or 'afternoon'.")
         return
@@ -1032,7 +1032,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                     }
 
                     # Add trigger type specific data
-                    if "volume_increase_rate" in stocks_df.columns and trigger_type == "Volume Surge Top":
+                    if "volume_increase_rate" in stocks_df.columns and trigger_type == "거래량 급증 상위주":
                         stock_info["volume_increase"] = float(stocks_df.loc[ticker, "volume_increase_rate"])
                     elif "gap_up_rate" in stocks_df.columns:
                         stock_info["gap_rate"] = float(stocks_df.loc[ticker, "gap_up_rate"])
