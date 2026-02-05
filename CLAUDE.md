@@ -179,6 +179,7 @@ For comprehensive guides, see:
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.2.1 | 2026-02-06 | **문서화 & 스폰서 개선** - README에 Landing/Dashboard 섹션 추가, AI3 Platinum Sponsor 배지 (랜딩+대시보드), 프리미엄 스폰서 바 디자인, 쌍방향 링크 (Landing↔Dashboard) |
 | 2.2.0 | 2026-02-04 | **코드베이스 영문화 + 텔레그램 한글 복구** - i18n (코드 주석/로그 영문화, 텔레그램 메시지 한글 유지), US holding decisions, demo.py, Product Hunt 랜딩, 다수 버그 수정 (31커밋, 155파일) |
 | 2.1.1 | 2026-01-31 | KIS API 빈 문자열 버그 수정 - `_safe_float()`, `_safe_int()` 헬퍼, 예약주문 limit_price fallback |
 | 2.1 | 2026-01-30 | 영문 PDF 회사명 누락 수정, gpt-5-mini 업그레이드 |
