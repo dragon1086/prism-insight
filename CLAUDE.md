@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.2 | **Updated**: 2026-01-31
+> **Version**: 2.2.0 | **Updated**: 2026-02-04
 
 ## Quick Overview
 
@@ -37,6 +37,8 @@ prism-insight/
 | `python prism-us/us_stock_analysis_orchestrator.py --mode morning` | US morning analysis |
 | `python trigger_batch.py morning INFO` | KR surge detection only |
 | `python prism-us/us_trigger_batch.py morning INFO` | US surge detection only |
+| `python demo.py 005930` | Single stock report (KR) |
+| `python demo.py AAPL --market us` | Single stock report (US) |
 
 ## Configuration Files
 
@@ -123,6 +125,7 @@ result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price
 | `trading_history` / `us_trading_history` | Trade records |
 | `watchlist_history` / `us_watchlist_history` | Analyzed but not entered |
 | `analysis_performance_tracker` / `us_analysis_performance_tracker` | 7/14/30-day tracking |
+| `us_holding_decisions` | US AI holding analysis (v2.2.0) |
 
 ## Quick Troubleshooting
 
@@ -133,6 +136,22 @@ result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price
 | Korean fonts missing | `sudo dnf install google-nanum-fonts && fc-cache -fv` |
 | KIS auth fails | Check `trading/config/kis_devlp.yaml` |
 | prism-us import error | Use `_import_from_main_cores()` helper |
+| Telegram message in English | v2.2.0 restored Korean templates - pull latest |
+| Broadcast translation empty | gpt-5-mini fallback added in v2.2.0 |
+
+## i18n Strategy (v2.2.0)
+
+- **Code comments/logs**: English (for international collaboration)
+- **Telegram messages**: Korean templates (default channel is KR)
+- **Broadcast channels**: Translation agent converts to target language
+
+```bash
+# Default channel (Korean)
+python stock_analysis_orchestrator.py --mode morning
+
+# Broadcast to English channel
+python stock_analysis_orchestrator.py --mode morning --broadcast-languages en
+```
 
 ## Commit Convention
 
@@ -147,6 +166,7 @@ test: Tests
 ## Detailed Documentation
 
 For comprehensive guides, see:
+- `docs/RELEASE_NOTES_v2.2.0.md` - Latest release notes
 - `docs/US_STOCK_PLAN.md` - US module implementation details
 - `docs/CLAUDE_AGENTS.md` - AI agent system documentation
 - `docs/CLAUDE_TASKS.md` - Common development tasks
@@ -159,7 +179,8 @@ For comprehensive guides, see:
 
 | Ver | Date | Changes |
 |-----|------|---------|
-| 2.2 | 2026-01-31 | **KIS API 빈 문자열 버그 수정** - `_safe_float()`, `_safe_int()` 헬퍼 추가, 예약주문 limit_price fallback, CLAUDE.md 토큰 최적화 (1272→600줄) |
+| 2.2.0 | 2026-02-04 | **코드베이스 영문화 + 텔레그램 한글 복구** - i18n (코드 주석/로그 영문화, 텔레그램 메시지 한글 유지), US holding decisions, demo.py, Product Hunt 랜딩, 다수 버그 수정 (31커밋, 155파일) |
+| 2.1.1 | 2026-01-31 | KIS API 빈 문자열 버그 수정 - `_safe_float()`, `_safe_int()` 헬퍼, 예약주문 limit_price fallback |
 | 2.1 | 2026-01-30 | 영문 PDF 회사명 누락 수정, gpt-5-mini 업그레이드 |
 | 2.0 | 2026-01-29 | US Telegram 메시지 형식 통일 |
 | 1.9 | 2026-01-28 | US 시총 필터 $20B, 대시보드 마켓 선택기 |

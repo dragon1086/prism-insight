@@ -59,12 +59,12 @@ def create_telegram_summary_evaluator_agent(
 
 **중요: 반드시 아래 JSON 형식으로 응답해야 합니다:**
 ```json
-{
+{{
     "rating": <0=POOR, 1=FAIR, 2=GOOD, 3=EXCELLENT 중 숫자>,
     "feedback": "<상세한 피드백 문자열>",
     "needs_improvement": <rating이 3 미만이면 true, 3이면 false>,
     "focus_areas": ["<개선영역1>", "<개선영역2>", ...]
-}
+}}
 ```
 """
 
@@ -98,12 +98,12 @@ Provide the final evaluation in the following structure:
 
 **IMPORTANT: You MUST respond with a JSON object in the following exact format:**
 ```json
-{
+{{
     "rating": <0=POOR, 1=FAIR, 2=GOOD, 3=EXCELLENT as integer>,
     "feedback": "<detailed feedback string>",
     "needs_improvement": <true if rating < 3, false if rating == 3>,
     "focus_areas": ["<area1>", "<area2>", ...]
-}
+}}
 ```
 """
 
