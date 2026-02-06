@@ -401,7 +401,7 @@ Layer 1 (상세 복기)  ──압축──→  Layer 2 (요약) ──압축─
 
 이들은 Performance Tracker 통계(트리거 승률, 순위)와 함께 하나의 context 문자열로 합쳐져 `_extract_trading_scenario`의 LLM 프롬프트에 주입됩니다.
 
-### LLM에 주입되는 정보 (v2.2.1)
+### LLM에 주입되는 정보 (v2.3.0)
 
 | 항목 | 기억 출처 | 내용 | 매수 결정 영향 |
 |------|----------|------|---------------|
@@ -409,10 +409,10 @@ Layer 1 (상세 복기)  ──압축──→  Layer 2 (요약) ──압축─
 | **Trigger Ranking** | Performance Tracker | 전체 트리거 유형 성과 순위 (상위 5개) | 상대적 위치 참고 |
 | **Score Adjustment** | Performance Tracker + Journal | 경험 기반 점수 조정 제안 (-3 ~ +3) | LLM 참고 (강제 아님) |
 | **Same Stock History** | Layer 1 (단기기억) | 동일 종목 최근 3건 거래 결과 및 교훈 | 실수 반복 방지 |
-| **Universal Principles** | Layer 2→3 (중기→장기기억) | 전체 매매에서 추출된 보편적 원칙 | 일반적 의사결정 보조 |
+| **Universal Principles** | Layer 2→3 (중기→장기기억) | 전체 매매에서 추출된 보편적 원칙 (supporting_trades>=2, 상위 5개) | 일반적 의사결정 보조 |
 | **Trading Intuitions** | Layer 3 (장기기억) | 축적된 패턴 인식 (조건→인사이트) | 경험적 직관 참고 |
 
-> **v2.2.1에서 제거된 항목**: `missed_opportunities`(놓친 기회)와 `traded_vs_watched`(매수 vs 관망 비교)는 개별 매수 판단에 무관한 시스템 메트릭으로, FOMO 유발 및 판단 편향 위험이 있어 제거되었습니다.
+> **v2.3.0 변경사항**: `missed_opportunities`(놓친 기회)와 `traded_vs_watched`(매수 vs 관망 비교)는 개별 매수 판단에 무관한 시스템 메트릭으로, FOMO 유발 및 판단 편향 위험이 있어 제거되었습니다. Universal Principles는 `supporting_trades >= 2` 필터로 검증된 원칙만 주입하며, 상위 5개로 제한됩니다.
 
 ### 예상 시나리오별 효과
 
@@ -425,7 +425,7 @@ Layer 1 (상세 복기)  ──압축──→  Layer 2 (요약) ──압축─
 
 ### KR/US 동일 구현
 
-v2.2.1부터 KR과 US 모두 동일한 피드백 루프가 적용됩니다:
+v2.3.0부터 KR과 US 모두 동일한 피드백 루프가 적용됩니다:
 
 | 구성 요소 | KR | US |
 |-----------|----|----|

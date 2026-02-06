@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.2.2 | **Updated**: 2026-02-07
+> **Version**: 2.3.0 | **Updated**: 2026-02-07
 
 ## Quick Overview
 
@@ -172,12 +172,11 @@ test: Tests
 ## Detailed Documentation
 
 For comprehensive guides, see:
-- `docs/RELEASE_NOTES_v2.2.0.md` - Latest release notes
+- `docs/RELEASE_NOTES_v2.3.0.md` - Latest release notes
 - `docs/US_STOCK_PLAN.md` - US module implementation details
 - `docs/CLAUDE_AGENTS.md` - AI agent system documentation
 - `docs/CLAUDE_TASKS.md` - Common development tasks
 - `docs/CLAUDE_TROUBLESHOOTING.md` - Full troubleshooting guide
-- `prism-us/IMPLEMENTATION_STATUS.md` - US module status
 
 ---
 
@@ -185,6 +184,7 @@ For comprehensive guides, see:
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.3.0 | 2026-02-07 | **자기개선 매매 피드백 루프 완성** - Performance Tracker 데이터 KR/US 공통 반영, LLM 노이즈 제거, US 대시보드 AI보유 분석 수정, 보편 원칙 필터 강화 (supporting_trades>=2, LIMIT 5), 보안 강화, 스폰서 배지 |
 | 2.2.2 | 2026-02-07 | **Performance Tracker 피드백 루프 정리** - LLM 프롬프트에서 missed_opportunities/traded_vs_watched 제거 (편향 방지), US _extract_trading_scenario에 journal context 주입, KR trigger_type 전달 수정, 자기개선 매매 문서화 |
 | 2.2.0 | 2026-02-04 | **코드베이스 영문화 + 텔레그램 한글 복구** - i18n (코드 주석/로그 영문화, 텔레그램 메시지 한글 유지), US holding decisions, demo.py, Product Hunt 랜딩, 다수 버그 수정 (31커밋, 155파일) |
 | 2.1.1 | 2026-01-31 | KIS API 빈 문자열 버그 수정 - `_safe_float()`, `_safe_int()` 헬퍼, 예약주문 limit_price fallback |
