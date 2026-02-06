@@ -328,13 +328,166 @@ Please review the following completed trade:
             logger.error(f"Error saving principle: {e}")
             return False
 
-    def get_context_for_ticker(self, ticker: str, sector: str = None) -> str:
+    def get_performance_tracker_stats(self, trigger_type: str = None) -> Dict[str, Any]:
+        """
+        Get performance statistics from analysis_performance_tracker.
+
+        Queries actual 7/14/30-day returns for all analyzed stocks (both traded and watched)
+        to provide ground-truth performance data for buy decisions.
+
+        Args:
+            trigger_type: Filter by trigger type (optional)
+
+        Returns:
+            Dict with trigger stats, missed opportunities, and overall stats
+        """
+        stats = {}
+        try:
+            # Check if table exists
+            self.cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='analysis_performance_tracker'"
+            )
+            if not self.cursor.fetchone():
+                return stats
+
+            # 1. Stats for the current trigger type (if provided)
+            if trigger_type:
+                self.cursor.execute("""
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN tracked_30d_return > 0 THEN 1 ELSE 0 END) as wins,
+                        AVG(tracked_7d_return) as avg_7d,
+                        AVG(tracked_14d_return) as avg_14d,
+                        AVG(tracked_30d_return) as avg_30d
+                    FROM analysis_performance_tracker
+                    WHERE trigger_type = ? AND tracking_status = 'completed'
+                """, (trigger_type,))
+                row = self.cursor.fetchone()
+                if row and row[0] > 0:
+                    stats['current_trigger'] = {
+                        'trigger_type': trigger_type,
+                        'total': row[0],
+                        'win_rate': row[1] / row[0] if row[0] > 0 else 0,
+                        'avg_7d': row[2],
+                        'avg_14d': row[3],
+                        'avg_30d': row[4],
+                    }
+
+            # 2. Missed opportunities: stocks we skipped but went up
+            self.cursor.execute("""
+                SELECT
+                    COUNT(*) as total_skipped,
+                    SUM(CASE WHEN tracked_30d_return > 5 THEN 1 ELSE 0 END) as missed_gains,
+                    AVG(CASE WHEN tracked_30d_return > 5 THEN tracked_30d_return END) as avg_missed_gain
+                FROM analysis_performance_tracker
+                WHERE was_traded = 0 AND tracking_status = 'completed'
+                    AND tracked_30d_return IS NOT NULL
+            """)
+            row = self.cursor.fetchone()
+            if row and row[0] > 0:
+                stats['missed_opportunities'] = {
+                    'total_skipped': row[0],
+                    'missed_gains_count': row[1] or 0,
+                    'avg_missed_gain': row[2],
+                }
+
+            # 3. Traded vs watched comparison
+            self.cursor.execute("""
+                SELECT
+                    was_traded,
+                    COUNT(*) as count,
+                    AVG(tracked_30d_return) as avg_30d
+                FROM analysis_performance_tracker
+                WHERE tracking_status = 'completed' AND tracked_30d_return IS NOT NULL
+                GROUP BY was_traded
+            """)
+            traded_vs_watched = {}
+            for row in self.cursor.fetchall():
+                key = 'traded' if row[0] else 'watched'
+                traded_vs_watched[key] = {
+                    'count': row[1],
+                    'avg_30d': row[2],
+                }
+            if traded_vs_watched:
+                stats['traded_vs_watched'] = traded_vs_watched
+
+            # 4. All trigger types performance ranking
+            self.cursor.execute("""
+                SELECT
+                    trigger_type,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN tracked_30d_return > 0 THEN 1 ELSE 0 END) as wins,
+                    AVG(tracked_30d_return) as avg_30d
+                FROM analysis_performance_tracker
+                WHERE tracking_status = 'completed' AND tracked_30d_return IS NOT NULL
+                    AND trigger_type IS NOT NULL
+                GROUP BY trigger_type
+                HAVING total >= 3
+                ORDER BY avg_30d DESC
+            """)
+            trigger_ranking = []
+            for row in self.cursor.fetchall():
+                trigger_ranking.append({
+                    'trigger_type': row[0],
+                    'total': row[1],
+                    'win_rate': row[2] / row[1] if row[1] > 0 else 0,
+                    'avg_30d': row[3],
+                })
+            if trigger_ranking:
+                stats['trigger_ranking'] = trigger_ranking
+
+        except Exception as e:
+            logger.warning(f"Failed to get performance tracker stats: {e}")
+
+        return stats
+
+    def _format_performance_context(self, stats: Dict[str, Any]) -> List[str]:
+        """Format performance tracker stats into context strings for the trading agent."""
+        parts = []
+        if not stats:
+            return parts
+
+        parts.append("#### 📈 Analysis Performance Tracker (Actual Results)")
+
+        # Current trigger type stats
+        if 'current_trigger' in stats:
+            t = stats['current_trigger']
+            win_pct = t['win_rate'] * 100
+            avg_30d = t['avg_30d']
+            avg_30d_str = f"{avg_30d * 100:+.1f}%" if avg_30d is not None else "N/A"
+            parts.append(
+                f"- **This trigger ({t['trigger_type']})**: "
+                f"Win rate {win_pct:.0f}% (n={t['total']}), "
+                f"30d avg return {avg_30d_str}"
+            )
+
+        # Trigger ranking
+        if 'trigger_ranking' in stats:
+            parts.append("- **Trigger Performance Ranking (30d, n>=3):**")
+            for rank, t in enumerate(stats['trigger_ranking'][:5], 1):
+                avg_30d_str = f"{t['avg_30d'] * 100:+.1f}%" if t['avg_30d'] is not None else "N/A"
+                win_pct = t['win_rate'] * 100
+                parts.append(
+                    f"  {rank}. {t['trigger_type']}: "
+                    f"{avg_30d_str} avg, {win_pct:.0f}% win (n={t['total']})"
+                )
+
+        parts.append("")
+        return parts
+
+    def get_context_for_ticker(self, ticker: str, sector: str = None, trigger_type: str = None) -> str:
         """Retrieve relevant trading journal context for buy decisions."""
         if not self.enable_journal:
             return ""
 
         try:
             context_parts = []
+
+            # Performance tracker stats (ground truth data, no LLM cost)
+            perf_stats = self.get_performance_tracker_stats(trigger_type)
+            perf_context = self._format_performance_context(perf_stats)
+            if perf_context:
+                context_parts.extend(perf_context)
 
             # Universal principles
             principles = self.get_universal_principles()
@@ -427,13 +580,13 @@ Please review the following completed trade:
             logger.warning(f"Failed to get universal principles: {e}")
             return []
 
-    def get_score_adjustment(self, ticker: str, sector: str = None) -> Tuple[int, List[str]]:
-        """Calculate score adjustment based on past experiences."""
+    def get_score_adjustment(self, ticker: str, sector: str = None, trigger_type: str = None) -> Tuple[int, List[str]]:
+        """Calculate score adjustment based on past experiences and performance tracker data."""
         try:
             adjustment = 0
             reasons = []
 
-            # Same stock history
+            # Same stock history (from journal)
             self.cursor.execute("""
                 SELECT profit_rate FROM trading_journal
                 WHERE ticker = ? ORDER BY trade_date DESC LIMIT 3
@@ -449,7 +602,7 @@ Please review the following completed trade:
                     adjustment += 1
                     reasons.append(f"Same stock historical avg profit {avg_profit:.1f}%")
 
-            # Sector performance
+            # Sector performance (from journal)
             if sector and sector != "Unknown":
                 self.cursor.execute("""
                     SELECT AVG(profit_rate), COUNT(*)
@@ -465,7 +618,26 @@ Please review the following completed trade:
                         adjustment += 1
                         reasons.append(f"{sector} sector avg profit {sector_stats[0]:.1f}%")
 
-            return max(-2, min(2, adjustment)), reasons
+            # Trigger type performance (from performance_tracker - ground truth)
+            if trigger_type:
+                perf_stats = self.get_performance_tracker_stats(trigger_type)
+                if 'current_trigger' in perf_stats:
+                    t = perf_stats['current_trigger']
+                    if t['total'] >= 5:  # Require minimum sample size
+                        if t['win_rate'] < 0.35:
+                            adjustment -= 1
+                            reasons.append(
+                                f"Trigger '{trigger_type}' low win rate "
+                                f"{t['win_rate']*100:.0f}% (n={t['total']}, actual 30d data)"
+                            )
+                        elif t['win_rate'] > 0.65:
+                            adjustment += 1
+                            reasons.append(
+                                f"Trigger '{trigger_type}' high win rate "
+                                f"{t['win_rate']*100:.0f}% (n={t['total']}, actual 30d data)"
+                            )
+
+            return max(-3, min(3, adjustment)), reasons
 
         except Exception as e:
             logger.warning(f"Failed to calculate score adjustment: {e}")
