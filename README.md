@@ -198,6 +198,7 @@ PRISM-INSIGHT is a **completely open-source, free** AI-powered stock analysis sy
 | **📈 Trading Sim** | AI-driven investment strategy simulation |
 | **💱 Auto Trading** | Execution via Korea Investment & Securities API |
 | **🎨 Dashboard** | Transparent portfolio, trades, and performance tracking |
+| **🧠 Self-Improving** | Trading journal feedback loop — past trigger win rates automatically inform future buy decisions ([details](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)) |
 | **🇺🇸 US Markets** | Full support for NYSE/NASDAQ analysis |
 
 <details>
