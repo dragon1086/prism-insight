@@ -296,10 +296,14 @@ class USDashboardDataGenerator:
         return history
 
     def get_us_holding_decisions(self, conn) -> List[Dict]:
-        """Get US holding decisions data (today only, with company name)"""
+        """Get US holding decisions data (latest per ticker, with company name)
+
+        Uses the most recent decision_date available instead of filtering by today only,
+        to handle KST/EST timezone differences where US analysis may run on a different
+        calendar date than the dashboard generation.
+        """
         try:
             cursor = conn.cursor()
-            today = datetime.now().strftime("%Y-%m-%d")
 
             # Check if table exists
             cursor.execute("""
@@ -308,6 +312,17 @@ class USDashboardDataGenerator:
             """)
             if not cursor.fetchone():
                 logger.warning("us_holding_decisions table not found")
+                return []
+
+            # Get the most recent decision_date
+            cursor.execute("""
+                SELECT MAX(decision_date) FROM us_holding_decisions
+            """)
+            latest_date_row = cursor.fetchone()
+            latest_date = latest_date_row[0] if latest_date_row else None
+
+            if not latest_date:
+                logger.info("US holding decisions: no records found")
                 return []
 
             # LEFT JOIN with us_stock_holdings to get company_name
@@ -323,7 +338,7 @@ class USDashboardDataGenerator:
                 LEFT JOIN us_stock_holdings sh ON hd.ticker = sh.ticker
                 WHERE hd.decision_date = ?
                 ORDER BY hd.created_at DESC
-            """, (today,))
+            """, (latest_date,))
 
             decisions = []
             for row in cursor.fetchall():
@@ -334,12 +349,37 @@ class USDashboardDataGenerator:
 
                 decisions.append(decision)
 
-            logger.info(f"US holding decisions: {len(decisions)} records for today")
+            logger.info(f"US holding decisions: {len(decisions)} records for {latest_date}")
             return decisions
 
         except Exception as e:
             logger.warning(f"us_holding_decisions query failed (table may not exist): {str(e)}")
             return []
+
+    def get_ai_decision_summary(self, decisions: List[Dict]) -> Dict:
+        """AI decision summary statistics"""
+        if not decisions:
+            return {
+                'total_decisions': 0,
+                'sell_signals': 0,
+                'hold_signals': 0,
+                'adjustment_needed': 0,
+                'avg_confidence': 0
+            }
+
+        sell_signals = sum(1 for d in decisions if d.get('should_sell', False))
+        hold_signals = len(decisions) - sell_signals
+        adjustment_needed = sum(1 for d in decisions if d.get('portfolio_adjustment_needed', False))
+
+        avg_confidence = sum(d.get('confidence', 0) for d in decisions) / len(decisions) if decisions else 0
+
+        return {
+            'total_decisions': len(decisions),
+            'sell_signals': sell_signals,
+            'hold_signals': hold_signals,
+            'adjustment_needed': adjustment_needed,
+            'avg_confidence': avg_confidence
+        }
 
     def get_us_watchlist_history(self, conn) -> List[Dict]:
         """Get US watchlist (not entered stocks) data"""
@@ -1066,13 +1106,7 @@ class USDashboardDataGenerator:
                 'summary': {
                     'portfolio': portfolio_summary,
                     'trading': trading_summary,
-                    'ai_decisions': {
-                        'total_decisions': 0,
-                        'sell_signals': 0,
-                        'hold_signals': 0,
-                        'adjustment_needed': 0,
-                        'avg_confidence': 0
-                    },
+                    'ai_decisions': self.get_ai_decision_summary(holding_decisions),
                     'real_trading': real_trading_summary
                 },
                 'holdings': holdings,
