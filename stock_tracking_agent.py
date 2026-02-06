@@ -263,10 +263,11 @@ class StockTrackingAgent:
                 journal_context = self._get_relevant_journal_context(
                     ticker=ticker,
                     sector=sector,
-                    market_condition=None
+                    market_condition=None,
+                    trigger_type=trigger_type
                 )
                 # Get score adjustment suggestion
-                adjustment, reasons = self._get_score_adjustment_from_context(ticker, sector)
+                adjustment, reasons = self._get_score_adjustment_from_context(ticker, sector, trigger_type)
                 if adjustment != 0 or reasons:
                     if self.language == "ko":
                         score_adjustment_info = f"""
@@ -906,20 +907,21 @@ class StockTrackingAgent:
         return self.journal_manager._parse_response(response)
 
     def _get_relevant_journal_context(
-        self, ticker: str, sector: str = None, market_condition: str = None
+        self, ticker: str, sector: str = None, market_condition: str = None,
+        trigger_type: str = None
     ) -> str:
         """Get journal context for buy decisions (delegates to tracking.journal.JournalManager)"""
-        return self.journal_manager.get_context_for_ticker(ticker, sector)
+        return self.journal_manager.get_context_for_ticker(ticker, sector, trigger_type)
 
     def _get_universal_principles(self, limit: int = 10) -> List[str]:
         """Get universal principles (delegates to tracking.journal.JournalManager)"""
         return self.journal_manager.get_universal_principles(limit)
 
     def _get_score_adjustment_from_context(
-        self, ticker: str, sector: str = None
+        self, ticker: str, sector: str = None, trigger_type: str = None
     ) -> Tuple[int, List[str]]:
         """Calculate score adjustment (delegates to tracking.journal.JournalManager)"""
-        return self.journal_manager.get_score_adjustment(ticker, sector)
+        return self.journal_manager.get_score_adjustment(ticker, sector, trigger_type)
 
     async def compress_old_journal_entries(
         self,

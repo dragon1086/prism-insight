@@ -303,6 +303,113 @@ pytest tests/test_trading_journal.py -v
 python tests/test_trading_journal.py
 ```
 
+## Performance Tracker 피드백 루프 (Self-Improving Trading)
+
+Trading Journal의 핵심 가치는 **과거 매매 결과가 미래 매수 결정에 자동으로 반영**되는 자기개선 루프입니다.
+
+### 전체 자기개선 사이클
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Self-Improving Trading Cycle                      │
+│                                                                      │
+│   ① 매수 결정                        ② 매도 완료                    │
+│   ┌──────────┐                      ┌──────────┐                    │
+│   │ LLM이     │  ──── 보유 ────>    │ AI 복기   │                    │
+│   │ buy_score │                      │ 분석      │                    │
+│   │ 산출      │                      └────┬─────┘                    │
+│   └────┬─────┘                           │                           │
+│        ▲                                 ▼                           │
+│        │                          ③ 기억 저장/압축                   │
+│        │                          ┌──────────────┐                   │
+│        │                          │ Layer 1 (상세)│                   │
+│        │                          │ Layer 2 (요약)│                   │
+│        │                          │ Layer 3 (직관)│                   │
+│        │                          └──────┬───────┘                   │
+│        │                                 │                           │
+│        │         ④ 피드백 루프           │                           │
+│        │         ┌───────────────────────┘                           │
+│        │         ▼                                                   │
+│        │  ┌─────────────────┐                                        │
+│        │  │ Performance     │                                        │
+│        │  │ Tracker         │                                        │
+│        │  │ (실적 추적)     │                                        │
+│        │  └────────┬────────┘                                        │
+│        │           │                                                 │
+│        │           ▼                                                 │
+│        │  ┌─────────────────┐                                        │
+│        │  │ Journal Context │                                        │
+│        │  │ + Score Adj.    │                                        │
+│        └──│ → LLM 프롬프트  │                                        │
+│           └─────────────────┘                                        │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Performance Tracker → 매수 결정 피드백
+
+Performance Tracker(`analysis_performance_tracker` 테이블)는 과거 분석 결과의 7/14/30일 후 실제 수익률을 추적합니다. 이 데이터가 다음 매수 결정에 주입되는 경로:
+
+```python
+# 1. Journal Manager가 트리거별 승률 조회
+stats = journal_manager._get_performance_tracker_stats(trigger_type="intraday_surge")
+# → {"win_rate": 0.72, "total": 15, "avg_30d": 0.032}
+
+# 2. Context 문자열로 포맷
+context = journal_manager.get_context_for_ticker(ticker, sector, trigger_type)
+# → "This trigger (intraday_surge): Win rate 72% (n=15), 30d avg return +3.2%"
+
+# 3. Score 조정 제안 계산
+adjustment, reasons = journal_manager.get_score_adjustment(ticker, sector, trigger_type)
+# → (2, ["trigger win rate 72% above 65% threshold"])
+
+# 4. _extract_trading_scenario에서 LLM 프롬프트에 주입
+prompt = f"""
+### Current Portfolio Status:
+{portfolio_info}
+### Trading Value Analysis:
+{rank_change_msg}
+{score_adjustment_info}    ← Score 조정 제안
+{journal_context}          ← 트리거 승률 + 과거 경험
+
+### Report Content:
+{report_content}
+"""
+```
+
+### LLM에 주입되는 정보 (v2.2.1)
+
+| 항목 | 내용 | 매수 결정 영향 |
+|------|------|---------------|
+| **Trigger Win Rate** | 현재 트리거 유형의 과거 승률 (n>=3) | 높으면 장려, 낮으면 억제 |
+| **Trigger Ranking** | 전체 트리거 유형 성과 순위 (상위 5개) | 상대적 위치 참고 |
+| **Score Adjustment** | 경험 기반 점수 조정 제안 (-3 ~ +3) | LLM 참고 (강제 아님) |
+| **Past Lessons** | 동일 종목/섹터 과거 교훈 | 실수 반복 방지 |
+| **Universal Principles** | 전체 매매에서 추출된 보편적 원칙 | 일반적 의사결정 보조 |
+
+> **v2.2.1에서 제거된 항목**: `missed_opportunities`(놓친 기회)와 `traded_vs_watched`(매수 vs 관망 비교)는 개별 매수 판단에 무관한 시스템 메트릭으로, FOMO 유발 및 판단 편향 위험이 있어 제거되었습니다.
+
+### 예상 시나리오별 효과
+
+| 트리거 승률 | LLM이 보는 정보 | 예상 효과 |
+|------------|----------------|-----------|
+| >65% (좋은 트리거) | "Win rate 72% (n=15)" | 매수 장려 |
+| 35-65% (보통) | "Win rate 48% (n=20)" | 중립 (LLM 자체 판단) |
+| <35% (나쁜 트리거) | "Win rate 28% (n=8)" | 매수 억제 |
+| n<3 (데이터 부족) | (표시 안함) | 변화 없음 |
+
+### KR/US 동일 구현
+
+v2.2.1부터 KR과 US 모두 동일한 피드백 루프가 적용됩니다:
+
+| 구성 요소 | KR | US |
+|-----------|----|----|
+| Journal Manager | `tracking/journal.py` | `prism-us/tracking/journal.py` |
+| 프롬프트 주입 | `stock_tracking_agent.py` | `us_stock_tracking_agent.py` |
+| Performance Tracker | `analysis_performance_tracker` | `us_analysis_performance_tracker` |
+| Score Adjustment | `get_score_adjustment()` | `get_score_adjustment()` |
+
+---
+
 ## 향후 계획
 
 1. **Intuition Validator Agent**: 직관을 최근 거래 결과와 대조하여 신뢰도 자동 조정

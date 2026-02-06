@@ -578,6 +578,25 @@ class USStockTrackingAgent:
             Investment period distribution: {json.dumps(investment_periods, ensure_ascii=False)}
             """
 
+            # Get trading journal context for informed decisions
+            journal_context = ""
+            score_adjustment_info = ""
+            if ticker:
+                journal_context = self.get_journal_context(
+                    ticker=ticker,
+                    sector=sector,
+                    trigger_type=trigger_type
+                )
+                # Get score adjustment suggestion
+                adjustment, reasons = self.get_score_adjustment(ticker, sector, trigger_type)
+                if adjustment != 0 or reasons:
+                    score_adjustment_info = f"""
+                ### 📊 Score Adjustment Suggestion (Experience-Based)
+                - Recommended Adjustment: {'+' if adjustment > 0 else ''}{adjustment} points
+                - Reason: {', '.join(reasons) if reasons else 'N/A'}
+                - ⚠️ This adjustment is a reference based on past experience.
+                """
+
             # LLM call to generate trading scenario
             llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
 
@@ -598,6 +617,8 @@ class USStockTrackingAgent:
             {trigger_info_section}
             ### Trading Value Analysis:
             {rank_change_msg}
+            {score_adjustment_info}
+            {journal_context}
 
             ### Report Content:
             {report_content}
@@ -1659,8 +1680,10 @@ class USStockTrackingAgent:
                 # Apply score adjustment from journal if enabled
                 score_adjustment = 0
                 adjustment_reasons = []
+                trigger_info = getattr(self, 'trigger_info_map', {}).get(ticker, {})
+                trigger_type = trigger_info.get('trigger_type', '')
                 if self.enable_journal and ticker:
-                    score_adjustment, adjustment_reasons = self.get_score_adjustment(ticker, sector)
+                    score_adjustment, adjustment_reasons = self.get_score_adjustment(ticker, sector, trigger_type=trigger_type)
                     if score_adjustment != 0:
                         logger.info(
                             f"Journal score adjustment for {ticker}: {score_adjustment:+d} "
@@ -2036,34 +2059,36 @@ class USStockTrackingAgent:
             )
         return {"error": "Compression manager not initialized"}
 
-    def get_journal_context(self, ticker: str, sector: str = None) -> str:
+    def get_journal_context(self, ticker: str, sector: str = None, trigger_type: str = None) -> str:
         """
         Get trading journal context for buy decisions.
 
         Args:
             ticker: Stock ticker symbol
             sector: Stock sector (optional)
+            trigger_type: Trigger type for performance tracker lookup (optional)
 
         Returns:
             str: Context string with past trading experiences
         """
         if self.journal_manager and self.enable_journal:
-            return self.journal_manager.get_context_for_ticker(ticker, sector)
+            return self.journal_manager.get_context_for_ticker(ticker, sector, trigger_type=trigger_type)
         return ""
 
-    def get_score_adjustment(self, ticker: str, sector: str = None) -> Tuple[int, List[str]]:
+    def get_score_adjustment(self, ticker: str, sector: str = None, trigger_type: str = None) -> Tuple[int, List[str]]:
         """
-        Calculate score adjustment based on past experiences.
+        Calculate score adjustment based on past experiences and performance tracker data.
 
         Args:
             ticker: Stock ticker symbol
             sector: Stock sector (optional)
+            trigger_type: Trigger type for performance tracker lookup (optional)
 
         Returns:
-            Tuple[int, List[str]]: Adjustment value (-2 to +2) and reasons
+            Tuple[int, List[str]]: Adjustment value (-3 to +3) and reasons
         """
         if self.journal_manager and self.enable_journal:
-            return self.journal_manager.get_score_adjustment(ticker, sector)
+            return self.journal_manager.get_score_adjustment(ticker, sector, trigger_type=trigger_type)
         return 0, []
 
     async def run(self, pdf_report_paths: List[str], chat_id: str = None,
