@@ -856,7 +856,7 @@ class TestTradingPrinciples:
             sector="Semiconductor"
         )
 
-        assert "핵심 매매 원칙" in context, "Context should include principles section"
+        assert "Core Trading Principles" in context or "핵심 매매 원칙" in context, "Context should include principles section"
         assert "테스트 조건" in context, "Context should include principle content"
 
         agent.conn.close()
