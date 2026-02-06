@@ -172,7 +172,6 @@ test: Tests
 ## Detailed Documentation
 
 For comprehensive guides, see:
-- `docs/RELEASE_NOTES_v2.3.0.md` - Latest release notes
 - `docs/US_STOCK_PLAN.md` - US module implementation details
 - `docs/CLAUDE_AGENTS.md` - AI agent system documentation
 - `docs/CLAUDE_TASKS.md` - Common development tasks
