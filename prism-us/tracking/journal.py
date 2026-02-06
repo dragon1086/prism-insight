@@ -591,13 +591,18 @@ Please review the following completed US stock trade:
             logger.warning(f"Failed to get US journal context: {e}")
             return ""
 
-    def get_universal_principles(self, limit: int = 10) -> List[str]:
-        """Retrieve universal trading principles for US market."""
+    def get_universal_principles(self, limit: int = 5) -> List[str]:
+        """Retrieve universal trading principles for US market.
+
+        Only includes principles with supporting_trades >= 2 to avoid injecting
+        unverified rules into LLM prompts. Limited to top 5 to reduce token usage.
+        """
         try:
             self.cursor.execute("""
                 SELECT condition, action, reason, priority, confidence, supporting_trades
                 FROM trading_principles
                 WHERE is_active = 1 AND scope = 'universal' AND market = ?
+                  AND supporting_trades >= 2
                 ORDER BY priority DESC, confidence DESC
                 LIMIT ?
             """, (self.MARKET, limit))

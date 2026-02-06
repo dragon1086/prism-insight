@@ -376,15 +376,41 @@ prompt = f"""
 """
 ```
 
+### 기억 계층과 프롬프트 주입의 관계
+
+Layer 1/2/3 기억은 **저장 구조**이며, LLM 프롬프트에 직접 주입되지 않습니다. 대신 이 기억들이 **가공된 형태**로 변환되어 주입됩니다:
+
+```
+Layer 1 (상세 복기)  ──압축──→  Layer 2 (요약) ──압축──→  Layer 3 (직관)
+       │                              │                          │
+       ▼                              ▼                          ▼
+  Same Stock History          Universal Principles        Trading Intuitions
+  (동일 종목 과거 거래)       (보편적 매매 원칙)         (축적된 직관)
+       │                              │                          │
+       └──────────────────────────────┼──────────────────────────┘
+                                      ▼
+                      get_context_for_ticker() 에서 합산
+                                      ▼
+                      "### Past Trading Experience Reference"
+                         로 LLM 프롬프트에 주입
+```
+
+- **Same Stock History**: Layer 1에서 직접 조회 — 동일 종목의 최근 3건 거래(수익률, 보유일, 교훈)
+- **Universal Principles**: Layer 2→3 압축 과정에서 추출된 보편 원칙 (scope='universal')
+- **Trading Intuitions**: Layer 3에서 축적된 패턴 인식 (카테고리별 조건→인사이트)
+
+이들은 Performance Tracker 통계(트리거 승률, 순위)와 함께 하나의 context 문자열로 합쳐져 `_extract_trading_scenario`의 LLM 프롬프트에 주입됩니다.
+
 ### LLM에 주입되는 정보 (v2.2.1)
 
-| 항목 | 내용 | 매수 결정 영향 |
-|------|------|---------------|
-| **Trigger Win Rate** | 현재 트리거 유형의 과거 승률 (n>=3) | 높으면 장려, 낮으면 억제 |
-| **Trigger Ranking** | 전체 트리거 유형 성과 순위 (상위 5개) | 상대적 위치 참고 |
-| **Score Adjustment** | 경험 기반 점수 조정 제안 (-3 ~ +3) | LLM 참고 (강제 아님) |
-| **Past Lessons** | 동일 종목/섹터 과거 교훈 | 실수 반복 방지 |
-| **Universal Principles** | 전체 매매에서 추출된 보편적 원칙 | 일반적 의사결정 보조 |
+| 항목 | 기억 출처 | 내용 | 매수 결정 영향 |
+|------|----------|------|---------------|
+| **Trigger Win Rate** | Performance Tracker | 현재 트리거 유형의 과거 승률 (n>=3) | 높으면 장려, 낮으면 억제 |
+| **Trigger Ranking** | Performance Tracker | 전체 트리거 유형 성과 순위 (상위 5개) | 상대적 위치 참고 |
+| **Score Adjustment** | Performance Tracker + Journal | 경험 기반 점수 조정 제안 (-3 ~ +3) | LLM 참고 (강제 아님) |
+| **Same Stock History** | Layer 1 (단기기억) | 동일 종목 최근 3건 거래 결과 및 교훈 | 실수 반복 방지 |
+| **Universal Principles** | Layer 2→3 (중기→장기기억) | 전체 매매에서 추출된 보편적 원칙 | 일반적 의사결정 보조 |
+| **Trading Intuitions** | Layer 3 (장기기억) | 축적된 패턴 인식 (조건→인사이트) | 경험적 직관 참고 |
 
 > **v2.2.1에서 제거된 항목**: `missed_opportunities`(놓친 기회)와 `traded_vs_watched`(매수 vs 관망 비교)는 개별 매수 판단에 무관한 시스템 메트릭으로, FOMO 유발 및 판단 편향 위험이 있어 제거되었습니다.
 
