@@ -153,8 +153,14 @@ python stock_analysis_orchestrator.py --mode morning
 python stock_analysis_orchestrator.py --mode morning --broadcast-languages en
 ```
 
-## Commit Convention
+## Branch & Commit Convention
 
+### Branch Rule
+- **코드 파일 변경** (`.py`, `.ts`, `.tsx`, `.js`, `.jsx` 등): 반드시 feature 브랜치에서 작업 후 PR 생성
+- **문서만 변경** (`.md` 등): main 직접 커밋 허용
+- 브랜치 네이밍: `feat/`, `fix/`, `refactor/`, `test/` + 설명 (예: `fix/us-dashboard-ai-holding`)
+
+### Commit Message
 ```
 feat: New feature
 fix: Bug fix
