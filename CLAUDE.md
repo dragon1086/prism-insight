@@ -138,6 +138,8 @@ result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price
 | prism-us import error | Use `_import_from_main_cores()` helper |
 | Telegram message in English | v2.2.0 restored Korean templates - pull latest |
 | Broadcast translation empty | gpt-5-mini fallback added in v2.2.0 |
+| US dashboard "App key is empty" | Fixed in v2.3.0 - config path corrected to `kis_devlp.yaml` |
+| US AI 보유 분석 탭 빈 데이터 | Fixed in v2.3.0 - `us_holding_decisions` table added to DB schema |
 
 ## i18n Strategy (v2.2.0)
 

@@ -228,7 +228,45 @@ print('Import successful:', translate_telegram_message is not None)
 
 ---
 
-### Issue 9: Out of Memory During Analysis
+### Issue 9: US Dashboard "App key is empty or too short"
+
+**Symptoms**:
+```
+ERROR - App key is empty or too short (length: 0). Please check kis_devlp.yaml
+```
+
+**Cause**: `generate_us_dashboard_json.py` was referencing a non-existent `kis_overseas.yaml` config file. When the file is not found, it falls back to `{"default_mode": "demo"}`, which uses the `paper_app` key (empty) instead of the real `my_app` key.
+
+**Solution**: Fixed in v2.3.0. The US dashboard now shares `kis_devlp.yaml` with the KR dashboard (same KIS credentials).
+
+```python
+# Correct config path (shared with KR)
+CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
+```
+
+---
+
+### Issue 10: US AI Holding Analysis Tab Shows No Data
+
+**Symptoms**: US dashboard 'AI 보유 분석' tab is empty, no holding decision records displayed.
+
+**Cause**: The `us_holding_decisions` table was missing from `prism-us/tracking/db_schema.py`. INSERT operations in `us_stock_tracking_agent.py` silently failed in except blocks, resulting in no data being saved.
+
+**Solution**: Fixed in v2.3.0. Added `us_holding_decisions` table definition, indexes, and registration in `create_us_tables()`.
+
+**Verification**:
+```bash
+python -c "
+import sqlite3
+conn = sqlite3.connect('stock_tracking_db.sqlite')
+tables = [r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='us_holding_decisions'\").fetchall()]
+print('us_holding_decisions exists:', len(tables) > 0)
+"
+```
+
+---
+
+### Issue 11: Out of Memory During Analysis
 
 **Symptoms**: Process killed during large batch analysis
 

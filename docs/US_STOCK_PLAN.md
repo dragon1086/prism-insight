@@ -269,20 +269,21 @@ Market Indices: S&P 500 $6,949, Dow $49,424, NASDAQ $23,537
 
 ---
 
-### Phase 3: Database Schema (Day 2) ✅ COMPLETED (2026-01-17)
+### Phase 3: Database Schema (Day 2) ✅ COMPLETED (2026-01-17, updated 2026-02-07)
 **목표**: US 테이블 정의 및 마이그레이션
 
 **완료된 작업**:
 1. ✅ `prism-us/tracking/db_schema.py` 생성
-2. ✅ US 테이블 4개 생성: us_stock_holdings, us_trading_history, us_watchlist_history, us_analysis_performance_tracker
-3. ✅ US 인덱스 10개 생성
+2. ✅ US 테이블 5개 생성: us_stock_holdings, us_trading_history, us_watchlist_history, us_analysis_performance_tracker, us_holding_decisions
+3. ✅ US 인덱스 12개 생성
 4. ✅ 공유 테이블 market 컬럼 마이그레이션 (trading_journal, trading_principles, trading_intuitions)
 5. ✅ Production DB 테스트 완료
+6. ✅ `us_holding_decisions` 테이블 추가 (v2.3.0 - AI 보유 분석 데이터 저장)
 
 **검증 완료**:
 ```
-US Tables: 4개 생성 완료
-US Indexes: 10개 생성 완료
+US Tables: 5개 생성 완료 (us_holding_decisions 포함)
+US Indexes: 12개 생성 완료
 Shared Tables: market 컬럼 추가 완료
 ```
 
