@@ -64,8 +64,8 @@ except ImportError:
     TRANSLATION_AVAILABLE = False
     logger.warning("Translation utility not found. English translation will be disabled.")
 
-# Config file loading
-CONFIG_FILE = PROJECT_ROOT / "prism-us" / "trading" / "config" / "kis_overseas.yaml"
+# Config file loading (same as KR dashboard - shared KIS credentials)
+CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
 try:
     with open(CONFIG_FILE, encoding="UTF-8") as f:
         _cfg = yaml.load(f, Loader=yaml.FullLoader)
