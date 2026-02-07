@@ -128,6 +128,37 @@ CREATE TABLE IF NOT EXISTS us_analysis_performance_tracker (
 )
 """
 
+# Table: us_holding_decisions - AI holding/selling decisions for current positions
+TABLE_US_HOLDING_DECISIONS = """
+CREATE TABLE IF NOT EXISTS us_holding_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    decision_date TEXT NOT NULL,
+    decision_time TEXT NOT NULL,
+
+    current_price REAL NOT NULL,
+    should_sell BOOLEAN NOT NULL,
+    sell_reason TEXT,
+    confidence INTEGER,
+
+    technical_trend TEXT,
+    volume_analysis TEXT,
+    market_condition_impact TEXT,
+    time_factor TEXT,
+
+    portfolio_adjustment_needed BOOLEAN,
+    adjustment_reason TEXT,
+    new_target_price REAL,
+    new_stop_loss REAL,
+    adjustment_urgency TEXT,
+
+    full_json_data TEXT NOT NULL,
+
+    created_at TEXT DEFAULT (datetime('now', 'localtime')),
+    FOREIGN KEY (ticker) REFERENCES us_stock_holdings(ticker)
+)
+"""
+
 # =============================================================================
 # Indexes for US Tables
 # =============================================================================
@@ -151,6 +182,10 @@ US_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_us_perf_ticker ON us_analysis_performance_tracker(ticker)",
     "CREATE INDEX IF NOT EXISTS idx_us_perf_date ON us_analysis_performance_tracker(analysis_date)",
     "CREATE INDEX IF NOT EXISTS idx_us_perf_status ON us_analysis_performance_tracker(tracking_status)",
+
+    # us_holding_decisions indexes
+    "CREATE INDEX IF NOT EXISTS idx_us_holding_dec_ticker ON us_holding_decisions(ticker)",
+    "CREATE INDEX IF NOT EXISTS idx_us_holding_dec_date ON us_holding_decisions(decision_date)",
 ]
 
 # =============================================================================
@@ -177,6 +212,7 @@ def create_us_tables(cursor, conn):
         ("us_trading_history", TABLE_US_TRADING_HISTORY),
         ("us_watchlist_history", TABLE_US_WATCHLIST_HISTORY),
         ("us_analysis_performance_tracker", TABLE_US_PERFORMANCE_TRACKER),
+        ("us_holding_decisions", TABLE_US_HOLDING_DECISIONS),
     ]
 
     for table_name, table_sql in tables:
