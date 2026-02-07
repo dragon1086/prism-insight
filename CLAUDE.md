@@ -70,6 +70,19 @@ from trading.us_stock_trading import _safe_float, _safe_int
 price = _safe_float(data.get('last'))  # Handles '', None, invalid strings
 ```
 
+### Korean Report Tone (v2.3.0)
+All Korean (ko) report sections must use formal polite style (합쇼체):
+```python
+# ✅ Correct - 높임말
+"상승세를 보이고 있습니다"
+"주목할 필요가 있습니다"
+
+# ❌ Wrong - 반말
+"상승세를 보인다"
+"주목할 필요가 있다"
+```
+Rule is enforced in `cores/report_generation.py` (common prompts) and each agent's instruction.
+
 ### Sequential Agent Execution
 ```python
 # ✅ Correct - respects rate limits
