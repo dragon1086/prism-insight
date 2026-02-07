@@ -80,7 +80,17 @@ class TelegramSender:
     async def _send_single_message(self, chat_id: str, message: str):
         """Send a single message, splitting if too long."""
         if len(message) <= MAX_MESSAGE_LENGTH:
-            await self.bot.send_message(chat_id=chat_id, text=message)
+            result = await self.bot.send_message(chat_id=chat_id, text=message)
+            # Firebase Bridge
+            try:
+                from firebase_bridge import notify
+                await notify(
+                    message=message,
+                    telegram_message_id=result.message_id,
+                    channel_id=chat_id,
+                )
+            except Exception as e:
+                logger.debug(f"Firebase bridge: {e}")
         else:
             parts = self._split_message(message)
             for i, part in enumerate(parts, 1):
