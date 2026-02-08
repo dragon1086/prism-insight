@@ -56,12 +56,22 @@ class TelegramBotAgent:
         """
         try:
             # Attempt to send with specified parse_mode
-            await self.bot.send_message(
+            result = await self.bot.send_message(
                 chat_id=chat_id,
                 text=message,
                 parse_mode=parse_mode
             )
             logger.info(f"Message sent successfully ({parse_mode}): {chat_id}")
+            # Firebase Bridge - save metadata + push notification
+            try:
+                from firebase_bridge import notify
+                await notify(
+                    message=message,
+                    telegram_message_id=result.message_id,
+                    channel_id=chat_id,
+                )
+            except Exception as e:
+                logger.debug(f"Firebase bridge: {e}")
             return True
         except RetryAfter as e:
             # Rate limit hit, wait and retry
@@ -89,11 +99,20 @@ class TelegramBotAgent:
             if parse_mode and "parse" in str(e).lower():
                 try:
                     logger.info("Retrying with plain text.")
-                    await self.bot.send_message(
+                    result = await self.bot.send_message(
                         chat_id=chat_id,
                         text=message
                     )
                     logger.info(f"Message sent successfully (plain text): {chat_id}")
+                    try:
+                        from firebase_bridge import notify
+                        await notify(
+                            message=message,
+                            telegram_message_id=result.message_id,
+                            channel_id=chat_id,
+                        )
+                    except Exception as e:
+                        logger.debug(f"Firebase bridge: {e}")
                     return True
                 except TelegramError as e2:
                     logger.error(f"Plain text message send also failed: {e2}")
@@ -116,13 +135,25 @@ class TelegramBotAgent:
         """
         try:
             with open(document_path, 'rb') as document:
-                await self.bot.send_document(
+                result = await self.bot.send_document(
                     chat_id=chat_id,
                     document=document,
                     caption=caption,
                     parse_mode="Markdown"  # Markdown format support
                 )
             logger.info(f"File sent successfully: {document_path}")
+            try:
+                from firebase_bridge import notify
+                telegram_link = f"https://t.me/{os.environ.get('TELEGRAM_CHANNEL_USERNAME', 'stock_ai_agent')}/{result.message_id}"
+                await notify(
+                    message=caption or str(document_path),
+                    telegram_message_id=result.message_id,
+                    channel_id=chat_id,
+                    has_pdf=True,
+                    pdf_telegram_link=telegram_link,
+                )
+            except Exception as e:
+                logger.debug(f"Firebase bridge: {e}")
             return True
         except RetryAfter as e:
             # Rate limit hit, wait and retry
