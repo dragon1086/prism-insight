@@ -79,8 +79,8 @@ services:
               read_timeout_seconds: 120
 
             perplexity:
-              command: "node"
-              args: ["perplexity-ask/dist/index.js"]
+              command: "npx"
+              args: ["-y", "@perplexity-ai/mcp-server"]
               env:
                 PERPLEXITY_API_KEY: "${PERPLEXITY_API_KEY:-optional}"
 
