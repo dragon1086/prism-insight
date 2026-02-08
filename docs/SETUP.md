@@ -26,7 +26,7 @@
 | Component | Version | Purpose |
 |-----------|---------|---------|
 | Python | 3.10+ | Core runtime |
-| Node.js | 18+ | MCP servers (Perplexity, Firecrawl) |
+| Node.js | 18+ | MCP servers (perplexity-ask) |
 | pip | Latest | Package management |
 
 ### API Keys (Required for Full Features)
@@ -181,7 +181,7 @@ mcp:
         KAKAO_PW: "your_kakao_password"
 
     firecrawl: firecrawl-mcp
-    perplexity: npx -y @perplexity-ai/mcp-server
+    perplexity: node perplexity-ask/dist/index.js
     sqlite: uv run mcp-server-sqlite --directory sqlite stock_tracking_db.sqlite
     time: uvx mcp-server-time
 
@@ -206,14 +206,12 @@ python3 -m playwright install chromium
 
 See [Platform-Specific Setup](#platform-specific-setup) for detailed instructions.
 
-### Step 7: Install Perplexity MCP Server
+### Step 7: Install perplexity-ask MCP Server
 
 ```bash
-# Option A: Global install (recommended)
-npm install -g @perplexity-ai/mcp-server
-
-# Option B: Use npx (no install needed, runs on demand)
-# The mcp_agent.config.yaml.example already uses npx
+cd perplexity-ask
+npm install
+cd ..
 ```
 
 ### Step 8: Install Korean Fonts (Linux Only)

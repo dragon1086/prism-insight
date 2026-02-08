@@ -26,7 +26,7 @@
 | 구성요소 | 버전 | 용도 |
 |----------|------|------|
 | Python | 3.10+ | 코어 런타임 |
-| Node.js | 18+ | MCP 서버 (Perplexity, Firecrawl) |
+| Node.js | 18+ | MCP 서버 (perplexity-ask) |
 | pip | 최신 | 패키지 관리 |
 
 ### API 키 (전체 기능에 필요)
@@ -181,7 +181,7 @@ mcp:
         KAKAO_PW: "your_kakao_password"
 
     firecrawl: firecrawl-mcp
-    perplexity: npx -y @perplexity-ai/mcp-server
+    perplexity: node perplexity-ask/dist/index.js
     sqlite: uv run mcp-server-sqlite --directory sqlite stock_tracking_db.sqlite
     time: uvx mcp-server-time
 
@@ -206,14 +206,12 @@ python3 -m playwright install chromium
 
 자세한 내용은 [플랫폼별 설치](#플랫폼별-설치)를 참조하세요.
 
-### 7단계: Perplexity MCP 서버 설치
+### 7단계: perplexity-ask MCP 서버 설치
 
 ```bash
-# 방법 A: 글로벌 설치 (권장)
-npm install -g @perplexity-ai/mcp-server
-
-# 방법 B: npx 사용 (설치 불필요, 필요시 자동 실행)
-# mcp_agent.config.yaml.example에서 이미 npx 방식을 사용합니다
+cd perplexity-ask
+npm install
+cd ..
 ```
 
 ### 8단계: 한글 폰트 설치 (Linux만 해당)
