@@ -16,6 +16,7 @@ import { StockDetailModal } from "@/components/stock-detail-modal"
 import { ProjectFooter } from "@/components/project-footer"
 import { useLanguage } from "@/components/language-provider"
 import { useMarket } from "@/components/market-selector"
+import { TriggerReliabilityBadge } from "@/components/trigger-reliability-badge"
 import type { DashboardData, Holding, Market } from "@/types/dashboard"
 
 type TabType = "dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "jeoningu-lab"
@@ -177,6 +178,14 @@ function DashboardContent() {
           <div className="space-y-6">
             {/* 운영 비용 카드 - 최상단 배치 */}
             <OperatingCostsCard costs={data.operating_costs} />
+
+            {/* 트리거 신뢰도 미니 배지 */}
+            {data.trading_insights?.trigger_reliability && (
+              <TriggerReliabilityBadge
+                data={data.trading_insights.trigger_reliability}
+                onNavigateToInsights={() => handleTabChange("insights")}
+              />
+            )}
 
             {/* 핵심 지표 카드 */}
             <MetricsCards

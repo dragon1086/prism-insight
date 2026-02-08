@@ -1034,6 +1034,213 @@ class DashboardDataGenerator:
             'recommendations': []
         }
 
+    def _empty_trigger_reliability(self) -> Dict:
+        """빈 트리거 신뢰도 데이터 반환"""
+        return {
+            'trigger_reliability': [],
+            'best_trigger': None,
+            'last_updated': datetime.now().isoformat()
+        }
+
+    def get_trigger_reliability(self, conn) -> Dict:
+        """트리거 유형별 신뢰도 교차 분석 (분석 정확도 + 실매매 + 원칙)"""
+        try:
+            logger.info("트리거 신뢰도 데이터 수집 중...")
+            cursor = conn.cursor()
+
+            # 트리거 키워드 매칭 맵 (원칙 condition 텍스트에서 매칭)
+            TRIGGER_KEYWORDS = {
+                "거래량 급증": ["거래량", "volume", "수급"],
+                "거래량 급증 상위주": ["거래량", "volume", "수급"],
+                "갭 상승 모멘텀 상위주": ["갭", "gap", "모멘텀", "momentum"],
+                "갭 상승": ["갭", "gap", "모멘텀", "momentum"],
+                "기술적 돌파": ["돌파", "breakout", "저항", "지지"],
+                "일중 상승률 상위주": ["급등", "상승률", "intraday"],
+                "일중 상승": ["급등", "상승률", "intraday"],
+                "마감 강도 상위주": ["마감", "장 마감", "closing"],
+                "마감 강도": ["마감", "장 마감", "closing"],
+                "거래량 증가 상위 횡보주": ["횡보", "sideways", "레인지"],
+                "횡보 거래량": ["횡보", "sideways", "레인지"],
+                "시총 대비 집중 자금 유입 상위주": ["자금 유입", "시총"],
+                "자금 유입": ["자금 유입", "시총"],
+                "뉴스 촉발": ["뉴스", "news", "공시"],
+            }
+
+            # 1. 분석 성과 추적 데이터 (analysis_performance_tracker)
+            analysis_data = {}
+            try:
+                cursor.execute("""
+                    SELECT
+                        trigger_type,
+                        COUNT(*) as total_tracked,
+                        SUM(CASE WHEN tracking_status = 'completed' THEN 1 ELSE 0 END) as completed,
+                        AVG(CASE WHEN tracking_status = 'completed' THEN tracked_30d_return END) as avg_30d_return,
+                        SUM(CASE WHEN tracking_status = 'completed' AND tracked_30d_return > 0 THEN 1 ELSE 0 END) * 1.0 /
+                            NULLIF(SUM(CASE WHEN tracking_status = 'completed' AND tracked_30d_return IS NOT NULL THEN 1 ELSE 0 END), 0) as win_rate_30d
+                    FROM analysis_performance_tracker
+                    WHERE trigger_type IS NOT NULL AND trigger_type != ''
+                    GROUP BY trigger_type
+                    ORDER BY total_tracked DESC
+                """)
+                for row in cursor.fetchall():
+                    analysis_data[row[0]] = {
+                        'total_tracked': row[1],
+                        'completed': row[2] or 0,
+                        'avg_30d_return': row[3],
+                        'win_rate_30d': row[4]
+                    }
+                logger.info(f"분석 데이터: {len(analysis_data)}개 트리거 유형")
+            except sqlite3.OperationalError:
+                pass
+
+            # 2. 실제 매매 데이터 (trading_history)
+            trading_data = {}
+            try:
+                cursor.execute("""
+                    SELECT
+                        COALESCE(trigger_type, 'AI분석') as trigger_type,
+                        COUNT(*) as count,
+                        SUM(CASE WHEN profit_rate > 0 THEN 1 ELSE 0 END) * 1.0 / COUNT(*) as win_rate,
+                        AVG(profit_rate) / 100.0 as avg_profit_rate,
+                        SUM(CASE WHEN profit_rate > 0 THEN profit_rate ELSE 0 END) as total_profit,
+                        SUM(CASE WHEN profit_rate < 0 THEN ABS(profit_rate) ELSE 0 END) as total_loss
+                    FROM trading_history
+                    WHERE sell_date IS NOT NULL
+                    GROUP BY trigger_type
+                    ORDER BY count DESC
+                """)
+                for row in cursor.fetchall():
+                    total_profit = row[4] or 0
+                    total_loss = row[5] or 0
+                    trading_data[row[0]] = {
+                        'count': row[1],
+                        'win_rate': row[2],
+                        'avg_profit_rate': row[3],
+                        'profit_factor': total_profit / total_loss if total_loss > 0 else None
+                    }
+                logger.info(f"실매매 데이터: {len(trading_data)}개 트리거 유형")
+            except sqlite3.OperationalError:
+                pass
+
+            # 3. 매매 원칙 데이터 (trading_principles)
+            principles = []
+            try:
+                cursor.execute("""
+                    SELECT condition, action, confidence, supporting_trades
+                    FROM trading_principles
+                    WHERE scope = 'universal' AND is_active = 1
+                    ORDER BY confidence DESC
+                """)
+                principles = [
+                    {'condition': r[0], 'action': r[1], 'confidence': r[2], 'supporting_trades': r[3]}
+                    for r in cursor.fetchall()
+                ]
+            except sqlite3.OperationalError:
+                pass
+
+            # 원칙을 트리거에 매칭
+            def match_principles(trigger_type):
+                keywords = TRIGGER_KEYWORDS.get(trigger_type, [])
+                if not keywords:
+                    return []
+                matched = []
+                for p in principles:
+                    cond = p['condition'].lower()
+                    if any(kw.lower() in cond for kw in keywords):
+                        matched.append(p)
+                return sorted(matched, key=lambda x: x['confidence'], reverse=True)[:3]
+
+            principle_match_count = 0
+
+            # 4. 교차 결합 — 모든 트리거 유형 수집
+            all_triggers = set(analysis_data.keys()) | set(trading_data.keys())
+            trigger_reliability = []
+
+            for trigger_type in all_triggers:
+                analysis = analysis_data.get(trigger_type, {})
+                trading = trading_data.get(trigger_type, {})
+                matched_principles = match_principles(trigger_type)
+                if matched_principles:
+                    principle_match_count += 1
+
+                completed = analysis.get('completed', 0)
+                analysis_win = analysis.get('win_rate_30d')
+                trading_count = trading.get('count', 0)
+                trading_win = trading.get('win_rate')
+
+                # 등급 산정
+                if completed < 3:
+                    grade = 'D'
+                elif analysis_win is not None and analysis_win >= 0.6 and trading_win is not None and trading_win >= 0.6 and trading_count >= 5:
+                    grade = 'A'
+                elif analysis_win is not None and analysis_win >= 0.5 and (trading_win is None or trading_win >= 0.5 or trading_count < 5):
+                    grade = 'B'
+                else:
+                    grade = 'C'
+
+                # 추천 문구 생성
+                if grade == 'A':
+                    rec = f"높은 신뢰도. 적극 검토 대상."
+                elif grade == 'B':
+                    win_pct = f"{analysis_win*100:.0f}%" if analysis_win else "N/A"
+                    rec = f"분석 정확도 양호 ({win_pct}). 실매매 데이터 축적 필요."
+                elif grade == 'C':
+                    win_pct = f"{analysis_win*100:.0f}%" if analysis_win else "N/A"
+                    rec = f"분석 정확도 낮음 ({win_pct}). 신중한 접근 필요."
+                else:
+                    rec = "데이터 부족. 최소 3건 이상 추적 완료 필요."
+
+                trigger_reliability.append({
+                    'trigger_type': trigger_type,
+                    'grade': grade,
+                    'analysis_accuracy': {
+                        'total_tracked': analysis.get('total_tracked', 0),
+                        'completed': completed,
+                        'avg_30d_return': analysis.get('avg_30d_return'),
+                        'win_rate_30d': analysis_win
+                    },
+                    'actual_trading': {
+                        'count': trading_count,
+                        'win_rate': trading_win,
+                        'avg_profit_rate': trading.get('avg_profit_rate'),
+                        'profit_factor': trading.get('profit_factor')
+                    },
+                    'related_principles': matched_principles,
+                    'recommendation': rec
+                })
+
+            # 등급순 정렬 (A > B > C > D), 같은 등급 내에서는 completed 수 내림차순
+            grade_order = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
+            trigger_reliability.sort(key=lambda x: (
+                grade_order.get(x['grade'], 4),
+                -(x['analysis_accuracy'].get('completed', 0)),
+                -(x['actual_trading'].get('count', 0) or 0)
+            ))
+
+            # best_trigger 선정
+            best_trigger = None
+            if trigger_reliability:
+                best_trigger = trigger_reliability[0]['trigger_type']
+
+            logger.info(f"원칙 매칭: {principle_match_count}개 트리거에 원칙 연결")
+            logger.info(f"트리거 신뢰도 분석 완료: {len(trigger_reliability)}개 트리거")
+
+            return {
+                'trigger_reliability': trigger_reliability,
+                'best_trigger': best_trigger,
+                'last_updated': datetime.now().isoformat()
+            }
+
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                logger.warning(f"트리거 신뢰도 분석 테이블 없음: {str(e)}")
+                return self._empty_trigger_reliability()
+            else:
+                raise
+        except Exception as e:
+            logger.error(f"트리거 신뢰도 분석 중 오류: {str(e)}")
+            return self._empty_trigger_reliability()
+
     def get_jeoningu_data(self, conn) -> Dict:
         """전인구 역발상 투자 실험실 데이터 가져오기"""
         try:
@@ -1264,6 +1471,10 @@ class DashboardDataGenerator:
             # 성과 분석 데이터 수집 및 trading_insights에 추가
             performance_analysis = self.get_performance_analysis(conn)
             trading_insights['performance_analysis'] = performance_analysis
+
+            # 트리거 신뢰도 교차 분석
+            trigger_reliability = self.get_trigger_reliability(conn)
+            trading_insights['trigger_reliability'] = trigger_reliability
 
             # 요약 통계 계산
             portfolio_summary = self.calculate_portfolio_summary(holdings)

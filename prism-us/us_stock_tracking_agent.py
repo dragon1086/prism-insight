@@ -842,6 +842,11 @@ class USStockTrackingAgent:
                       f"Period: {scenario.get('investment_period', 'short')}\n" \
                       f"Sector: {scenario.get('sector', 'Unknown')}\n"
 
+            # Add trigger win rate
+            trigger_win_rate = self._get_trigger_win_rate(trigger_type)
+            if trigger_win_rate:
+                message += f"{trigger_win_rate}\n"
+
             # Add valuation analysis
             if scenario.get('valuation_analysis'):
                 message += f"Valuation: {scenario.get('valuation_analysis')}\n"
@@ -1071,6 +1076,11 @@ class USStockTrackingAgent:
                            f"Sector: {sector}\n" \
                            f"Skip Reason: {skip_reason}\n" \
                            f"Analysis: {rationale if rationale else 'No information'}"
+
+            # Add trigger win rate
+            trigger_win_rate = self._get_trigger_win_rate(trigger_type)
+            if trigger_win_rate:
+                skip_message += f"\n{trigger_win_rate}"
 
             self.message_queue.append(skip_message)
 
@@ -1336,6 +1346,12 @@ class USStockTrackingAgent:
                       f"Return: {arrow} {abs(profit_rate):.2f}%\n" \
                       f"Holding Period: {holding_days} days\n" \
                       f"Sell Reason: {sell_reason}"
+
+            # Add trigger win rate
+            trigger_type = stock_data.get('trigger_type', '')
+            trigger_win_rate = self._get_trigger_win_rate(trigger_type)
+            if trigger_win_rate:
+                message += f"\n{trigger_win_rate}"
 
             self.message_queue.append(message)
             logger.info(f"{ticker} ({company_name}) sell complete (return: {profit_rate:.2f}%)")
@@ -2090,6 +2106,32 @@ class USStockTrackingAgent:
         if self.journal_manager and self.enable_journal:
             return self.journal_manager.get_score_adjustment(ticker, sector, trigger_type=trigger_type)
         return 0, []
+
+    def _get_trigger_win_rate(self, trigger_type: str) -> str:
+        """Get trigger win rate string from us_analysis_performance_tracker.
+        Returns a formatted string like '(Trigger Win Rate: 63%)' or empty string if no data."""
+        if not trigger_type or not self.conn:
+            return ""
+        try:
+            cursor = self.conn.cursor()
+            # Check table exists
+            table_check = cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='us_analysis_performance_tracker'"
+            ).fetchone()
+            if not table_check:
+                return ""
+            row = cursor.execute("""
+                SELECT COUNT(*) as completed,
+                       SUM(CASE WHEN return_30d > 0 THEN 1 ELSE 0 END) as wins
+                FROM us_analysis_performance_tracker
+                WHERE trigger_type = ? AND return_30d IS NOT NULL
+            """, (trigger_type,)).fetchone()
+            if row and row[0] >= 3:
+                win_rate = int(row[1] / row[0] * 100)
+                return f"📡 Trigger Win Rate: {win_rate}% ({row[0]} trades)"
+            return ""
+        except Exception:
+            return ""
 
     async def run(self, pdf_report_paths: List[str], chat_id: str = None,
                   language: str = "ko", telegram_config=None, trigger_results_file: str = None) -> bool:

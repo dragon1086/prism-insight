@@ -532,6 +532,26 @@ class StockTrackingAgent:
         """Parse price value and convert to number (delegates to tracking.helpers)"""
         return parse_price_value(value)
 
+    def _get_trigger_win_rate(self, trigger_type: str) -> str:
+        """Get trigger win rate string from analysis_performance_tracker.
+        Returns a formatted string like '(이 트리거 과거 승률: 63%)' or empty string if no data."""
+        if not trigger_type or not self.conn:
+            return ""
+        try:
+            cursor = self.conn.cursor()
+            row = cursor.execute("""
+                SELECT COUNT(*) as completed,
+                       SUM(CASE WHEN tracked_30d_return > 0 THEN 1 ELSE 0 END) as wins
+                FROM analysis_performance_tracker
+                WHERE trigger_type = ? AND tracking_status = 'completed'
+            """, (trigger_type,)).fetchone()
+            if row and row[0] >= 3:
+                win_rate = int(row[1] / row[0] * 100)
+                return f"📡 이 트리거 과거 승률: {win_rate}% ({row[0]}건)"
+            return ""
+        except Exception:
+            return ""
+
     async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "") -> bool:
         """
         Process stock purchase
@@ -608,6 +628,11 @@ class StockTrackingAgent:
                       f"손절가: {scenario.get('stop_loss', 0):,.0f}원\n" \
                       f"투자기간: {scenario.get('investment_period', '단기')}\n" \
                       f"산업군: {scenario.get('sector', '알 수 없음')}\n"
+
+            # Add trigger win rate
+            trigger_win_rate = self._get_trigger_win_rate(trigger_type)
+            if trigger_win_rate:
+                message += f"{trigger_win_rate}\n"
 
             # Add valuation analysis if available
             if scenario.get('valuation_analysis'):
@@ -859,6 +884,12 @@ class StockTrackingAgent:
                       f"수익률: {arrow} {abs(profit_rate):.2f}%\n" \
                       f"보유기간: {holding_days}일\n" \
                       f"매도이유: {sell_reason}"
+
+            # Add trigger win rate
+            trigger_type = stock_data.get('trigger_type', '')
+            trigger_win_rate = self._get_trigger_win_rate(trigger_type)
+            if trigger_win_rate:
+                message += f"\n{trigger_win_rate}"
 
             self.message_queue.append(message)
             logger.info(f"{ticker}({company_name}) sell complete (return: {profit_rate:.2f}%)")

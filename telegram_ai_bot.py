@@ -82,6 +82,216 @@ JOURNAL_ENTERING = 20  # State for /journal command
 # Channel ID
 CHANNEL_ID = int(os.getenv("TELEGRAM_CHANNEL_ID", "0"))
 
+
+def generate_triggers_message(db_path: str) -> str:
+    """
+    Generate trigger reliability report message from database.
+
+    Args:
+        db_path: Path to SQLite database
+
+    Returns:
+        Formatted message string with trigger reliability data
+    """
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Query KR analysis data
+        kr_analysis = {}
+        try:
+            cursor.execute("""
+                SELECT trigger_type,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN tracking_status = 'completed' THEN 1 ELSE 0 END) as completed,
+                       AVG(CASE WHEN tracking_status = 'completed' THEN tracked_30d_return ELSE NULL END) as avg_return,
+                       SUM(CASE WHEN tracking_status = 'completed' AND tracked_30d_return > 0 THEN 1 ELSE 0 END) as wins,
+                       SUM(CASE WHEN tracking_status = 'completed' AND tracked_30d_return <= 0 THEN 1 ELSE 0 END) as losses
+                FROM analysis_performance_tracker
+                WHERE trigger_type IS NOT NULL
+                GROUP BY trigger_type
+                ORDER BY completed DESC
+            """)
+            for row in cursor.fetchall():
+                kr_analysis[row['trigger_type']] = dict(row)
+        except sqlite3.Error:
+            pass
+
+        # Query KR trading data
+        kr_trading = {}
+        try:
+            cursor.execute("""
+                SELECT COALESCE(trigger_type, 'AI분석') as trigger_type,
+                       COUNT(*) as count,
+                       SUM(CASE WHEN profit_rate > 0 THEN 1 ELSE 0 END) as wins,
+                       AVG(profit_rate) as avg_profit
+                FROM trading_history
+                GROUP BY COALESCE(trigger_type, 'AI분석')
+            """)
+            for row in cursor.fetchall():
+                kr_trading[row['trigger_type']] = dict(row)
+        except sqlite3.Error:
+            pass
+
+        # Query US analysis data
+        us_analysis = {}
+        try:
+            # Check if table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='us_analysis_performance_tracker'
+            """)
+            if cursor.fetchone():
+                cursor.execute("""
+                    SELECT trigger_type,
+                           COUNT(*) as total,
+                           SUM(CASE WHEN return_30d IS NOT NULL THEN 1 ELSE 0 END) as completed,
+                           AVG(CASE WHEN return_30d IS NOT NULL THEN return_30d ELSE NULL END) as avg_return,
+                           SUM(CASE WHEN return_30d IS NOT NULL AND return_30d > 0 THEN 1 ELSE 0 END) as wins,
+                           SUM(CASE WHEN return_30d IS NOT NULL AND return_30d <= 0 THEN 1 ELSE 0 END) as losses
+                    FROM us_analysis_performance_tracker
+                    WHERE trigger_type IS NOT NULL
+                    GROUP BY trigger_type
+                    ORDER BY completed DESC
+                """)
+                for row in cursor.fetchall():
+                    us_analysis[row['trigger_type']] = dict(row)
+        except sqlite3.Error:
+            pass
+
+        # Query US trading data
+        us_trading = {}
+        try:
+            cursor.execute("""
+                SELECT COALESCE(trigger_type, 'AI Analysis') as trigger_type,
+                       COUNT(*) as count,
+                       SUM(CASE WHEN profit_rate > 0 THEN 1 ELSE 0 END) as wins,
+                       AVG(profit_rate) as avg_profit
+                FROM us_trading_history
+                GROUP BY COALESCE(trigger_type, 'AI Analysis')
+            """)
+            for row in cursor.fetchall():
+                us_trading[row['trigger_type']] = dict(row)
+        except sqlite3.Error:
+            pass
+
+        conn.close()
+
+        # Compute grades and format message
+        def compute_grade(trigger_type, analysis_data, trading_data):
+            """Compute grade for a trigger"""
+            completed = analysis_data.get('completed', 0) or 0
+
+            if completed < 3:
+                return 'D'
+
+            # Analysis win rate
+            wins = analysis_data.get('wins', 0) or 0
+            analysis_win_rate = (wins / completed * 100) if completed > 0 else 0
+
+            # Trading win rate
+            trade_count = trading_data.get('count', 0) or 0
+            trade_wins = trading_data.get('wins', 0) or 0
+            trading_win_rate = (trade_wins / trade_count * 100) if trade_count > 0 else 0
+
+            if analysis_win_rate >= 60 and trading_win_rate >= 60 and trade_count >= 5:
+                return 'A'
+            elif analysis_win_rate >= 50:
+                return 'B'
+            else:
+                return 'C'
+
+        grade_emoji = {'A': '🟢', 'B': '🔵', 'C': '🟡', 'D': '⚪'}
+
+        # Build message
+        msg_parts = ["📡 트리거 신뢰도 리포트\n"]
+
+        # KR section
+        msg_parts.append("\n🇰🇷 한국시장")
+        kr_triggers = []
+        for trigger_type, analysis_data in kr_analysis.items():
+            trading_data = kr_trading.get(trigger_type, {})
+            completed = analysis_data.get('completed', 0) or 0
+            total = analysis_data.get('total', 0) or 0
+            wins = analysis_data.get('wins', 0) or 0
+            trade_count = trading_data.get('count', 0) or 0
+            trade_wins = trading_data.get('wins', 0) or 0
+
+            grade = compute_grade(trigger_type, analysis_data, trading_data)
+            emoji = grade_emoji[grade]
+
+            if completed == 0:
+                line = f"{emoji} {trigger_type} — 추적 중 ({total}건)"
+            elif completed < 3:
+                line = f"{emoji} {trigger_type} — 데이터 부족 ({completed}건)"
+            elif trade_count > 0:
+                analysis_win_rate = int(wins / completed * 100)
+                trading_win_rate = int(trade_wins / trade_count * 100)
+                line = f"{emoji} {trigger_type} — 분석 {analysis_win_rate}% ({completed}건), 매매 {trading_win_rate}% ({trade_count}건)"
+            else:
+                analysis_win_rate = int(wins / completed * 100)
+                line = f"{emoji} {trigger_type} — 분석 {analysis_win_rate}% ({completed}건)"
+
+            kr_triggers.append((grade, completed, line))
+
+        # Sort by grade (A > B > C > D) then by completed count
+        grade_order = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
+        kr_triggers.sort(key=lambda x: (grade_order[x[0]], -x[1]))
+
+        for _, _, line in kr_triggers:
+            msg_parts.append(line)
+
+        # US section
+        msg_parts.append("\n🇺🇸 미국시장")
+        us_triggers = []
+        for trigger_type, analysis_data in us_analysis.items():
+            trading_data = us_trading.get(trigger_type, {})
+            completed = analysis_data.get('completed', 0) or 0
+            total = analysis_data.get('total', 0) or 0
+            wins = analysis_data.get('wins', 0) or 0
+            trade_count = trading_data.get('count', 0) or 0
+            trade_wins = trading_data.get('wins', 0) or 0
+
+            grade = compute_grade(trigger_type, analysis_data, trading_data)
+            emoji = grade_emoji[grade]
+
+            if completed == 0:
+                line = f"{emoji} {trigger_type} — 추적 중 ({total}건)"
+            elif completed < 3:
+                line = f"{emoji} {trigger_type} — 데이터 부족 ({completed}건)"
+            elif trade_count > 0:
+                analysis_win_rate = int(wins / completed * 100)
+                trading_win_rate = int(trade_wins / trade_count * 100)
+                line = f"{emoji} {trigger_type} — 분석 {analysis_win_rate}% ({completed}건), 매매 {trading_win_rate}% ({trade_count}건)"
+            else:
+                analysis_win_rate = int(wins / completed * 100)
+                line = f"{emoji} {trigger_type} — 분석 {analysis_win_rate}% ({completed}건)"
+
+            us_triggers.append((grade, completed, line))
+
+        us_triggers.sort(key=lambda x: (grade_order[x[0]], -x[1]))
+
+        for _, _, line in us_triggers:
+            msg_parts.append(line)
+
+        # Find best trigger
+        all_triggers = kr_triggers + us_triggers
+        if all_triggers:
+            best_trigger = all_triggers[0]
+            best_grade = best_trigger[0]
+            best_name = best_trigger[2].split(' — ')[0].replace('🟢 ', '').replace('🔵 ', '').replace('🟡 ', '').replace('⚪ ', '')
+            msg_parts.append(f"\n💡 최고 신뢰 트리거: {best_name} ({best_grade}등급)")
+
+        return '\n'.join(msg_parts)
+
+    except Exception as e:
+        logger.error(f"Error generating triggers message: {e}")
+        return "⚠️ 트리거 신뢰도 데이터를 불러오는 중 오류가 발생했습니다."
+
+
 class ConversationContext:
     """Conversation context management"""
     def __init__(self, market_type: str = "kr"):
@@ -304,6 +514,7 @@ class TelegramAIBot:
         self.application.add_handler(CommandHandler("help", self.handle_help))
         self.application.add_handler(CommandHandler("cancel", self.handle_cancel_standalone))
         self.application.add_handler(CommandHandler("memories", self.handle_memories))
+        self.application.add_handler(CommandHandler("triggers", self.handle_triggers))
 
         # Reply handler - registered with group=1 for lower priority than ConversationHandler(group=0)
         # ConversationHandler processes first, this handler only processes unmatched replies
@@ -663,6 +874,8 @@ class TelegramAIBot:
             "📝 <b>Investment Journal</b>\n"
             "/journal - Record investment journal\n"
             "/memories - Check my memory storage\n\n"
+            "📡 <b>Trigger Reliability</b>\n"
+            "/triggers - View trigger reliability report\n\n"
             "💡 You can ask additional questions by replying to the evaluation response!\n\n"
             "This bot is available only to subscribers of the 'Prism Insight' channel.\n"
             "The channel introduces 3 featured stocks selected by AI at market open and close,\n"
@@ -692,6 +905,8 @@ class TelegramAIBot:
             "/memories - Check my memory storage\n"
             "  • Can be entered with stock code/ticker\n"
             "  • Used as memory in past evaluations\n\n"
+            "📡 <b>Trigger Reliability:</b>\n"
+            "/triggers - View trigger reliability report for KR & US\n\n"
             "<b>How to Evaluate Holdings (Same for Korea/US):</b>\n"
             "1. Enter /evaluate or /us_evaluate command\n"
             "2. Enter stock code/ticker (e.g., 005930 or AAPL)\n"
@@ -795,6 +1010,16 @@ class TelegramAIBot:
             await update.message.reply_text(
                 "⚠️ An error occurred while retrieving memories. Please try again later."
             )
+
+    async def handle_triggers(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /triggers command — show trigger reliability report"""
+        try:
+            db_path = str(Path(__file__).parent / "stock_tracking_db.sqlite")
+            message = generate_triggers_message(db_path)
+            await update.message.reply_text(message, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Error in /triggers: {e}")
+            await update.message.reply_text("트리거 신뢰도 데이터를 불러오는 중 오류가 발생했습니다.")
 
     async def handle_report_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle report command - first step"""

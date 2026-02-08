@@ -921,6 +921,167 @@ class USDashboardDataGenerator:
             'recommendations': []
         }
 
+    def _empty_us_trigger_reliability(self) -> Dict:
+        """Return empty US trigger reliability data"""
+        return {
+            'trigger_reliability': [],
+            'best_trigger': None,
+            'last_updated': datetime.now().isoformat()
+        }
+
+    def get_us_trigger_reliability(self, conn) -> Dict:
+        """US trigger reliability cross-analysis (analysis accuracy + actual trading)"""
+        try:
+            logger.info("Collecting US trigger reliability data...")
+            cursor = conn.cursor()
+
+            # Check if table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='us_analysis_performance_tracker'
+            """)
+            if not cursor.fetchone():
+                logger.warning("us_analysis_performance_tracker table not found")
+                return self._empty_us_trigger_reliability()
+
+            # 1. Analysis performance tracking (us_analysis_performance_tracker)
+            analysis_data = {}
+            cursor.execute("""
+                SELECT
+                    trigger_type,
+                    COUNT(*) as total_tracked,
+                    SUM(CASE WHEN return_30d IS NOT NULL THEN 1 ELSE 0 END) as completed,
+                    AVG(CASE WHEN return_30d IS NOT NULL THEN return_30d END) as avg_30d_return,
+                    SUM(CASE WHEN return_30d > 0 THEN 1 ELSE 0 END) * 1.0 /
+                        NULLIF(SUM(CASE WHEN return_30d IS NOT NULL THEN 1 ELSE 0 END), 0) as win_rate_30d
+                FROM us_analysis_performance_tracker
+                WHERE trigger_type IS NOT NULL AND trigger_type != ''
+                GROUP BY trigger_type
+                ORDER BY total_tracked DESC
+            """)
+            for row in cursor.fetchall():
+                analysis_data[row[0]] = {
+                    'total_tracked': row[1],
+                    'completed': row[2] or 0,
+                    'avg_30d_return': row[3],
+                    'win_rate_30d': row[4]
+                }
+
+            # 2. Actual trading data (us_trading_history)
+            trading_data = {}
+            US_TRIGGER_TRACKING_START_DATE = '2026-01-20'
+            try:
+                cursor.execute("""
+                    SELECT
+                        COALESCE(trigger_type, 'AI Analysis') as trigger_type,
+                        COUNT(*) as count,
+                        SUM(CASE WHEN profit_rate > 0 THEN 1 ELSE 0 END) * 1.0 / COUNT(*) as win_rate,
+                        AVG(profit_rate) / 100.0 as avg_profit_rate,
+                        SUM(CASE WHEN profit_rate > 0 THEN profit_rate ELSE 0 END) as total_profit,
+                        SUM(CASE WHEN profit_rate < 0 THEN ABS(profit_rate) ELSE 0 END) as total_loss
+                    FROM us_trading_history
+                    WHERE sell_date IS NOT NULL AND sell_date >= ?
+                    GROUP BY trigger_type
+                    ORDER BY count DESC
+                """, (US_TRIGGER_TRACKING_START_DATE,))
+                for row in cursor.fetchall():
+                    total_profit = row[4] or 0
+                    total_loss = row[5] or 0
+                    trading_data[row[0]] = {
+                        'count': row[1],
+                        'win_rate': row[2],
+                        'avg_profit_rate': row[3],
+                        'profit_factor': total_profit / total_loss if total_loss > 0 else None
+                    }
+            except sqlite3.OperationalError:
+                pass
+
+            # 3. No US trading principles table — skip principles matching
+
+            # 4. Combine all trigger types
+            all_triggers = set(analysis_data.keys()) | set(trading_data.keys())
+            trigger_reliability = []
+
+            for trigger_type in all_triggers:
+                analysis = analysis_data.get(trigger_type, {})
+                trading = trading_data.get(trigger_type, {})
+
+                completed = analysis.get('completed', 0)
+                analysis_win = analysis.get('win_rate_30d')
+                trading_count = trading.get('count', 0)
+                trading_win = trading.get('win_rate')
+
+                # Grade calculation
+                if completed < 3:
+                    grade = 'D'
+                elif analysis_win is not None and analysis_win >= 0.6 and trading_win is not None and trading_win >= 0.6 and trading_count >= 5:
+                    grade = 'A'
+                elif analysis_win is not None and analysis_win >= 0.5 and (trading_win is None or trading_win >= 0.5 or trading_count < 5):
+                    grade = 'B'
+                else:
+                    grade = 'C'
+
+                # Recommendation text
+                total_tracked = analysis.get('total_tracked', 0)
+                tracking_info = f" ({completed} of {total_tracked} tracked)" if total_tracked > 0 else ""
+                if grade == 'A':
+                    rec = f"High confidence signal. Actively consider.{tracking_info}"
+                elif grade == 'B':
+                    win_pct = f"{analysis_win*100:.0f}%" if analysis_win else "N/A"
+                    rec = f"Good analysis accuracy ({win_pct}). More trading data needed.{tracking_info}"
+                elif grade == 'C':
+                    win_pct = f"{analysis_win*100:.0f}%" if analysis_win else "N/A"
+                    rec = f"Below average ({win_pct}). Use with caution.{tracking_info}"
+                else:
+                    rec = f"Insufficient data. Tracking in progress.{tracking_info}"
+
+                trigger_reliability.append({
+                    'trigger_type': trigger_type,
+                    'grade': grade,
+                    'analysis_accuracy': {
+                        'total_tracked': total_tracked,
+                        'completed': completed,
+                        'avg_30d_return': analysis.get('avg_30d_return'),
+                        'win_rate_30d': analysis_win
+                    },
+                    'actual_trading': {
+                        'count': trading_count,
+                        'win_rate': trading_win,
+                        'avg_profit_rate': trading.get('avg_profit_rate'),
+                        'profit_factor': trading.get('profit_factor')
+                    },
+                    'related_principles': [],
+                    'recommendation': rec
+                })
+
+            # Sort by grade (A > B > C > D), then completed count desc
+            grade_order = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
+            trigger_reliability.sort(key=lambda x: (
+                grade_order.get(x['grade'], 4),
+                -(x['analysis_accuracy'].get('completed', 0)),
+                -(x['actual_trading'].get('count', 0) or 0)
+            ))
+
+            best_trigger = trigger_reliability[0]['trigger_type'] if trigger_reliability else None
+
+            logger.info(f"US trigger reliability: {len(trigger_reliability)} triggers analyzed")
+
+            return {
+                'trigger_reliability': trigger_reliability,
+                'best_trigger': best_trigger,
+                'last_updated': datetime.now().isoformat()
+            }
+
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                logger.warning(f"US trigger reliability table not found: {str(e)}")
+                return self._empty_us_trigger_reliability()
+            else:
+                raise
+        except Exception as e:
+            logger.error(f"Error in US trigger reliability analysis: {str(e)}")
+            return self._empty_us_trigger_reliability()
+
     def calculate_portfolio_summary(self, holdings: List[Dict]) -> Dict:
         """Calculate portfolio summary statistics"""
         if not holdings:
@@ -1068,6 +1229,10 @@ class USDashboardDataGenerator:
             # Get US performance analysis and add to trading_insights
             performance_analysis = self.get_us_performance_analysis(conn)
             trading_insights['performance_analysis'] = performance_analysis
+
+            # US trigger reliability cross-analysis
+            trigger_reliability = self.get_us_trigger_reliability(conn)
+            trading_insights['trigger_reliability'] = trigger_reliability
 
             # Get KIS US real trading data
             kis_data = self.get_kis_us_trading_data()
