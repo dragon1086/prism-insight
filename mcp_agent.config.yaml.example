@@ -42,10 +42,11 @@ mcp:
         # KRX_LOGIN_METHOD: "kakao"
 
     perplexity:
-      command: "node"
+      command: "npx"
       args:
         [
-          "perplexity-ask/dist/index.js"
+          "-y",
+          "@perplexity-ai/mcp-server"
         ]
       env:
         PERPLEXITY_API_KEY: "example key"
