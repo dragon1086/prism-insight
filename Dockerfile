@@ -76,7 +76,11 @@ RUN pip install --no-cache-dir --upgrade pip setuptools && \
 # Playwright 브라우저 설치 (Chromium만)
 RUN playwright install --with-deps chromium
 
-# perplexity-ask MCP 서버 설치
+# perplexity-ask MCP 서버 설치 (gitignore 대상이므로 MCP 공식 저장소에서 가져옴)
+RUN git clone --depth 1 https://github.com/modelcontextprotocol/servers.git /tmp/mcp-servers && \
+    cp -r /tmp/mcp-servers/src/perplexity-ask /app/prism-insight/perplexity-ask && \
+    rm -rf /tmp/mcp-servers
+
 WORKDIR /app/prism-insight/perplexity-ask
 RUN npm install && \
     npm run build
