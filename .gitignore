@@ -53,6 +53,7 @@ trading/config/kis_*.yaml
 .next/
 dist/
 node_modules/
+*.tsbuildinfo
 
 # examples/.gitignore
 examples/dashboard/build/
