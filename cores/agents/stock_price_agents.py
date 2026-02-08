@@ -1,6 +1,6 @@
 from mcp_agent.agents.agent import Agent
 
-def create_price_volume_analysis_agent(company_name, company_code, reference_date, max_years_ago, max_years, language: str = "ko"):
+def create_price_volume_analysis_agent(company_name, company_code, reference_date, max_years_ago, max_years, language: str = "ko", prefetched_data: str = None):
     """Create stock price and trading volume analysis agent
 
     Args:
@@ -10,6 +10,7 @@ def create_price_volume_analysis_agent(company_name, company_code, reference_dat
         max_years_ago: Analysis start date (YYYYMMDD)
         max_years: Analysis period (years)
         language: Language code ("ko" or "en")
+        prefetched_data: Pre-collected OHLCV data (optional)
 
     Returns:
         Agent: Stock price and trading volume analysis agent
@@ -136,14 +137,31 @@ def create_price_volume_analysis_agent(company_name, company_code, reference_dat
                         ##분석일: {reference_date}(YYYYMMDD 형식)
                         """
 
+    # Inject prefetched data if available
+    if prefetched_data:
+        # Replace data collection instructions with pre-collected data
+        if language == "en":
+            instruction = instruction.replace(
+                f"## Data to Collect\n                        1. Stock Price/Volume Data: Use tool call(name: kospi_kosdaq-get_stock_ohlcv) to collect data from {max_years_ago} to {reference_date} (collection period (years): {max_years})",
+                f"## Pre-collected Data (OHLCV)\nThe following data has been pre-collected. Use this data directly for your analysis - DO NOT make any tool calls for OHLCV data.\n\n{prefetched_data}"
+            )
+        else:
+            instruction = instruction.replace(
+                f"## 수집해야 할 데이터\n                        1. 주가/거래량 데이터: tool call(name : kospi_kosdaq-get_stock_ohlcv)을 사용하여 {max_years_ago}~{reference_date} 기간의 데이터 수집 (수집 기간(년) : {max_years})",
+                f"## 사전 수집된 데이터 (OHLCV)\n다음 데이터가 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요 - OHLCV 데이터를 위한 도구 호출을 하지 마세요.\n\n{prefetched_data}"
+            )
+        # Also update precautions to not require tool calls
+        instruction = instruction.replace("- 반드시 tool call을 해야 합니다", "- 사전 수집된 데이터를 기반으로 분석합니다")
+        instruction = instruction.replace("- You must make a tool call", "- Analyze based on the pre-collected data provided above")
+
     return Agent(
         name="price_volume_analysis_agent",
         instruction=instruction,
-        server_names=["kospi_kosdaq"]
+        server_names=[] if prefetched_data else ["kospi_kosdaq"]
     )
 
 
-def create_investor_trading_analysis_agent(company_name, company_code, reference_date, max_years_ago, max_years, language: str = "ko"):
+def create_investor_trading_analysis_agent(company_name, company_code, reference_date, max_years_ago, max_years, language: str = "ko", prefetched_data: str = None):
     """Create investor trading trend analysis agent
 
     Args:
@@ -153,6 +171,7 @@ def create_investor_trading_analysis_agent(company_name, company_code, reference
         max_years_ago: Analysis start date (YYYYMMDD)
         max_years: Analysis period (years)
         language: Language code ("ko" or "en")
+        prefetched_data: Pre-collected investor trading volume data (optional)
 
     Returns:
         Agent: Investor trading trend analysis agent
@@ -273,8 +292,23 @@ def create_investor_trading_analysis_agent(company_name, company_code, reference
                         ##분석일: {reference_date}(YYYYMMDD 형식)
                         """
 
+    # Inject prefetched data if available
+    if prefetched_data:
+        if language == "en":
+            instruction = instruction.replace(
+                f"## Data to Collect\n                        1. Trading Data by Investor Type: Use tool call(name: kospi_kosdaq-get_stock_trading_volume) to collect data from {max_years_ago} to {reference_date} (collection period (years): {max_years})",
+                f"## Pre-collected Data (Investor Trading Volume)\nThe following data has been pre-collected. Use this data directly for your analysis - DO NOT make any tool calls for trading volume data.\n\n{prefetched_data}"
+            )
+        else:
+            instruction = instruction.replace(
+                f"## 수집해야 할 데이터\n                        1. 투자자별 거래 데이터: tool call(name : kospi_kosdaq-get_stock_trading_volume)을 사용하여 {max_years_ago}~{reference_date} 기간의 데이터 수집 (수집 기간(년) : {max_years})",
+                f"## 사전 수집된 데이터 (투자자별 거래량)\n다음 데이터가 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요 - 거래량 데이터를 위한 도구 호출을 하지 마세요.\n\n{prefetched_data}"
+            )
+        instruction = instruction.replace("- 반드시 tool call을 해야 합니다", "- 사전 수집된 데이터를 기반으로 분석합니다")
+        instruction = instruction.replace("- You must make a tool call", "- Analyze based on the pre-collected data provided above")
+
     return Agent(
         name="investor_trading_analysis_agent",
         instruction=instruction,
-        server_names=["kospi_kosdaq"]
+        server_names=[] if prefetched_data else ["kospi_kosdaq"]
     )

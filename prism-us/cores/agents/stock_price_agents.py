@@ -14,7 +14,8 @@ def create_us_price_volume_analysis_agent(
     reference_date: str,
     max_years_ago: str,
     max_years: int,
-    language: str = "en"
+    language: str = "en",
+    prefetched_data: str = None
 ):
     """Create US stock price and trading volume analysis agent
 
@@ -166,10 +167,25 @@ Company: {company_name} ({ticker})
 ##Analysis Date: {reference_date}(YYYYMMDD format)
 """
 
+    # Inject prefetched data if available
+    if prefetched_data:
+        if language == "ko":
+            instruction = instruction.replace(
+                "## 수집할 데이터\n1. 주가/거래량 데이터: 도구 호출(name: yahoo_finance-get_historical_stock_prices)로 데이터 수집\n   - 파라미터: ticker=\"" + ticker + "\", period=\"1y\", interval=\"1d\"",
+                f"## 사전 수집된 데이터 (OHLCV)\n다음 데이터가 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요 - OHLCV 데이터를 위한 도구 호출을 하지 마세요.\n\n{prefetched_data}"
+            )
+        else:
+            instruction = instruction.replace(
+                "## Data to Collect\n1. Stock Price/Volume Data: Use tool call(name: yahoo_finance-get_historical_stock_prices) to collect data\n   - Parameters: ticker=\"" + ticker + "\", period=\"1y\", interval=\"1d\"",
+                f"## Pre-collected Data (OHLCV)\nThe following data has been pre-collected. Use this data directly for your analysis - DO NOT make any tool calls for OHLCV data.\n\n{prefetched_data}"
+            )
+        instruction = instruction.replace("- 반드시 도구 호출 수행", "- 사전 수집된 데이터를 기반으로 분석합니다")
+        instruction = instruction.replace("- You must make a tool call", "- Analyze based on the pre-collected data provided above")
+
     return Agent(
         name="us_price_volume_analysis_agent",
         instruction=instruction,
-        server_names=["yahoo_finance"]
+        server_names=[] if prefetched_data else ["yahoo_finance"]
     )
 
 
@@ -179,7 +195,8 @@ def create_us_institutional_holdings_analysis_agent(
     reference_date: str,
     max_years_ago: str,
     max_years: int,
-    language: str = "en"
+    language: str = "en",
+    prefetched_data: str = None
 ):
     """Create US institutional holdings analysis agent
 
@@ -354,8 +371,23 @@ Company: {company_name} ({ticker})
 ##Analysis Date: {reference_date}(YYYYMMDD format)
 """
 
+    # Inject prefetched data if available
+    if prefetched_data:
+        if language == "ko":
+            instruction = instruction.replace(
+                "## 수집할 데이터\n1. 주요 주주 데이터: 도구 호출(name: yahoo_finance-get_holder_info)로 주요 주주 데이터 수집\n   - 파라미터: ticker=\"" + ticker + "\", holder_type=\"major_holders\"\n2. 기관 보유 데이터: 도구 호출(name: yahoo_finance-get_holder_info)로 기관 투자자 데이터 수집\n   - 파라미터: ticker=\"" + ticker + "\", holder_type=\"institutional_holders\"\n3. 뮤추얼펀드 보유: 도구 호출(name: yahoo_finance-get_holder_info)로 뮤추얼펀드 보유자 데이터 수집\n   - 파라미터: ticker=\"" + ticker + "\", holder_type=\"mutualfund_holders\"",
+                f"## 사전 수집된 데이터 (기관 투자자 보유)\n다음 데이터가 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요 - 보유자 데이터를 위한 도구 호출을 하지 마세요.\n\n{prefetched_data}"
+            )
+        else:
+            instruction = instruction.replace(
+                "## Data to Collect\n1. Major Holders Data: Use tool call(name: yahoo_finance-get_holder_info) to collect major holders data\n   - Parameters: ticker=\"" + ticker + "\", holder_type=\"major_holders\"\n2. Institutional Holdings Data: Use tool call(name: yahoo_finance-get_holder_info) to collect institutional holder data\n   - Parameters: ticker=\"" + ticker + "\", holder_type=\"institutional_holders\"\n3. Mutual Fund Holdings: Use tool call(name: yahoo_finance-get_holder_info) to collect mutual fund holder data\n   - Parameters: ticker=\"" + ticker + "\", holder_type=\"mutualfund_holders\"",
+                f"## Pre-collected Data (Institutional Holdings)\nThe following data has been pre-collected. Use this data directly for your analysis - DO NOT make any tool calls for holder data.\n\n{prefetched_data}"
+            )
+        instruction = instruction.replace("- 반드시 도구 호출 수행", "- 사전 수집된 데이터를 기반으로 분석합니다")
+        instruction = instruction.replace("- You must make a tool call", "- Analyze based on the pre-collected data provided above")
+
     return Agent(
         name="us_institutional_holdings_analysis_agent",
         instruction=instruction,
-        server_names=["yahoo_finance"]
+        server_names=[] if prefetched_data else ["yahoo_finance"]
     )

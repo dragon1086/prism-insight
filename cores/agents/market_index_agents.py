@@ -1,7 +1,7 @@
 from mcp_agent.agents.agent import Agent
 
 
-def create_market_index_analysis_agent(reference_date, max_years_ago, max_years, language: str = "ko"):
+def create_market_index_analysis_agent(reference_date, max_years_ago, max_years, language: str = "ko", prefetched_kospi: str = None, prefetched_kosdaq: str = None):
     """Create market index analysis agent
 
     Args:
@@ -9,6 +9,8 @@ def create_market_index_analysis_agent(reference_date, max_years_ago, max_years,
         max_years_ago: Analysis start date (YYYYMMDD)
         max_years: Analysis period (years)
         language: Language code ("ko" or "en")
+        prefetched_kospi: Pre-collected KOSPI index data (optional)
+        prefetched_kosdaq: Pre-collected KOSDAQ index data (optional)
 
     Returns:
         Agent: Market index analysis agent
@@ -289,8 +291,31 @@ def create_market_index_analysis_agent(reference_date, max_years_ago, max_years,
                         ##분석일: {reference_date}(YYYYMMDD 형식)
                         """
 
+    # Inject prefetched index data if available
+    if prefetched_kospi and prefetched_kosdaq:
+        prefetched_index_block = f"{prefetched_kospi}\n\n{prefetched_kosdaq}"
+        if language == "en":
+            instruction = instruction.replace(
+                f"## Data to Collect\n                        1. KOSPI Index Data: Use tool call(kospi_kosdaq-get_index_ohlcv tool) to collect data from {max_years_ago} to {reference_date} (ticker: \"1001\", collection period (years): {max_years}, daily basis)\n                        2. KOSDAQ Index Data: Use tool call(kospi_kosdaq-get_index_ohlcv tool) to collect data from {max_years_ago} to {reference_date} (ticker: \"2001\", collection period (years): {max_years}, daily basis)",
+                f"## Pre-collected Data (Market Indices)\nThe following KOSPI and KOSDAQ data has been pre-collected. Use this data directly for your analysis - DO NOT make tool calls for index data.\n\n{prefetched_index_block}"
+            )
+        else:
+            instruction = instruction.replace(
+                f"## 수집해야 할 데이터\n                        1. KOSPI 지수 데이터: tool call(kospi_kosdaq-get_index_ohlcv tool)을 사용하여 {max_years_ago}~{reference_date} 기간의 데이터 수집 (ticker: \"1001\", 수집 기간(년) : {max_years}, 일봉 기준)\n                        2. KOSDAQ 지수 데이터: tool call(kospi_kosdaq-get_index_ohlcv tool)을 사용하여 {max_years_ago}~{reference_date} 기간의 데이터 수집 (ticker: \"2001\", 수집 기간(년) : {max_years}, 일봉 기준)",
+                f"## 사전 수집된 데이터 (시장 지수)\n다음 KOSPI, KOSDAQ 데이터가 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요 - 지수 데이터를 위한 도구 호출을 하지 마세요.\n\n{prefetched_index_block}"
+            )
+        # Update precautions
+        instruction = instruction.replace("- 반드시 tool call을 통해 실제 데이터를 수집해야 합니다", "- 사전 수집된 데이터와 perplexity 검색 결과를 기반으로 분석합니다")
+        instruction = instruction.replace("- You must make a tool call to collect actual data", "- Analyze based on the pre-collected data and perplexity search results")
+
+    # When index data is prefetched, only need perplexity for market news
+    if prefetched_kospi and prefetched_kosdaq:
+        server_list = ["perplexity"]
+    else:
+        server_list = ["kospi_kosdaq", "perplexity"]
+
     return Agent(
         name="market_index_analysis_agent",
         instruction=instruction,
-        server_names=["kospi_kosdaq", "perplexity"]
+        server_names=server_list
     )
