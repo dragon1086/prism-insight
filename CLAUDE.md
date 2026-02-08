@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.3.0 | **Updated**: 2026-02-07
+> **Version**: 2.4.0 | **Updated**: 2026-02-09
 
 ## Quick Overview
 
@@ -183,6 +183,7 @@ For comprehensive guides, see:
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.4.0 | 2026-02-09 | **MCP tool call 직접 API prefetch 전환** - pykrx(KR)/yfinance(US) 직접 호출로 데이터 prefetch 후 agent instruction에 주입, KR 종목당 MCP 4회·US 9회 제거, prefetch 실패 시 MCP fallback, 완전 하위호환 |
 | 2.3.0 | 2026-02-07 | **자기개선 매매 피드백 루프 완성** - Performance Tracker 데이터 KR/US 공통 반영, LLM 노이즈 제거, US 대시보드 AI보유 분석 수정, 보편 원칙 필터 강화 (supporting_trades>=2, LIMIT 5), 보안 강화, 스폰서 배지 |
 | 2.2.2 | 2026-02-07 | **Performance Tracker 피드백 루프 정리** - LLM 프롬프트에서 missed_opportunities/traded_vs_watched 제거 (편향 방지), US _extract_trading_scenario에 journal context 주입, KR trigger_type 전달 수정, 자기개선 매매 문서화 |
 | 2.2.0 | 2026-02-04 | **코드베이스 영문화 + 텔레그램 한글 복구** - i18n (코드 주석/로그 영문화, 텔레그램 메시지 한글 유지), US holding decisions, demo.py, Product Hunt 랜딩, 다수 버그 수정 (31커밋, 155파일) |
