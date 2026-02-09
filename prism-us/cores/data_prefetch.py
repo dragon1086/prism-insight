@@ -526,6 +526,279 @@ def prefetch_financial_statements(ticker: str) -> str:
         return ""
 
 
+def _clean_xbrl_label(raw: str) -> str:
+    """Clean XBRL member names into readable labels.
+
+    Args:
+        raw: Raw XBRL member name (e.g., "IPhoneMember", "GreaterChinaSegmentMember")
+
+    Returns:
+        Human-readable label (e.g., "iPhone", "Greater China")
+    """
+    import re
+    label = raw.replace("Member", "").replace("Segment", "")
+
+    known = {
+        "IPhone": "iPhone", "IPad": "iPad", "IMac": "iMac",
+        "WearablesHomeandAccessories": "Wearables, Home & Accessories",
+        "WearablesHomeAndAccessories": "Wearables, Home & Accessories",
+        "ServiceOther": "Services & Other",
+        "OEMAndOther": "OEM & Other",
+        "LinkedInCorporation": "LinkedIn",
+        "MicrosoftThreeSixFiveCommercialProductsAndCloudServices": "Microsoft 365 Commercial",
+        "MicrosoftThreeSixFiveConsumerProductsAndCloudServices": "Microsoft 365 Consumer",
+        "ServerProductsAndCloudServices": "Server Products & Cloud Services",
+        "SearchAndNewsAdvertising": "Search & News Advertising",
+        "DynamicsProductsAndCloudServices": "Dynamics Products & Cloud Services",
+        "EnterpriseAndPartnerServices": "Enterprise & Partner Services",
+        "WindowsAndDevices": "Windows & Devices",
+        "OtherProductsAndServices": "Other Products & Services",
+        "ComputeAndNetworking": "Compute & Networking",
+        "ProfessionalVisualization": "Professional Visualization",
+        "RestOfAsiaPacific": "Rest of Asia Pacific",
+        "GreaterChina": "Greater China",
+        "OtherCountries": "Other Countries",
+        "NonUs": "International",
+    }
+    if label in known:
+        return known[label]
+
+    # CamelCase to spaces
+    label = re.sub(r'([a-z])([A-Z])', r'\1 \2', label)
+    label = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', label)
+    return label.strip()
+
+
+def _parse_10k_segment_revenue(html_content: str) -> str:
+    """Parse segment revenue data from 10-K XBRL inline HTML.
+
+    Extracts Products/Services split, product line breakdown,
+    geographic segment revenue, and country-level revenue from
+    XBRL inline tags embedded in SEC 10-K filings.
+
+    Args:
+        html_content: Raw HTML content of 10-K filing
+
+    Returns:
+        Markdown formatted segment revenue data, or empty string
+    """
+    import re
+
+    # 1. Parse all XBRL contexts (dimension definitions)
+    context_pattern = r'<xbrli:context[^>]*id="([^"]+)"[^>]*>(.*?)</xbrli:context>'
+    contexts = {}
+    for m in re.finditer(context_pattern, html_content, re.DOTALL):
+        ctx_id = m.group(1)
+        ctx_body = m.group(2)
+        dims = re.findall(
+            r'<xbrldi:explicitMember[^>]*dimension="([^"]+)"[^>]*>([^<]+)', ctx_body
+        )
+        periods = re.findall(r'<xbrli:(?:startDate|endDate)>([^<]+)', ctx_body)
+        period = f"{periods[0]}~{periods[1]}" if len(periods) >= 2 else ""
+        contexts[ctx_id] = {"dims": dict(dims), "period": period}
+
+    # 2. Parse all revenue XBRL tags
+    rev_pattern = (
+        r'<ix:nonFraction[^>]*contextRef="([^"]+)"[^>]*'
+        r'name="[^"]*Revenue[^"]*"[^>]*>([^<]+)</ix:nonFraction>'
+    )
+    revenues = []
+    for m in re.finditer(rev_pattern, html_content):
+        ctx_id = m.group(1)
+        value_str = m.group(2).strip().replace(',', '')
+        try:
+            value = int(value_str)
+        except ValueError:
+            continue
+        ctx = contexts.get(ctx_id, {"dims": {}, "period": ""})
+        revenues.append({"value": value, "dims": ctx["dims"], "period": ctx["period"]})
+
+    if not revenues:
+        return ""
+
+    # 3. Categorize revenues by dimension type
+    product_service = {}  # {(category, period): value}
+    product_lines = {}    # {(product, period): value}
+    geographic = {}       # {(region, period): value}
+    geo_country = {}      # {(country, period): value}
+    totals = {}           # {period: value}
+
+    for r in revenues:
+        dims = r["dims"]
+        period = r["period"]
+        value = r["value"]
+
+        if not period or value < 5:
+            continue
+
+        seg_axis = dims.get("us-gaap:StatementBusinessSegmentsAxis", "")
+        product_axis = dims.get("srt:ProductOrServiceAxis", "")
+        consol_axis = dims.get("srt:ConsolidationItemsAxis", "")
+        geo_axis = dims.get("srt:StatementGeographicalAxis", "")
+
+        if seg_axis and consol_axis:
+            region = seg_axis.split(":")[-1].replace("SegmentMember", "").replace("Member", "")
+            geographic[(region, period)] = value
+        elif product_axis:
+            product = product_axis.split(":")[-1].replace("Member", "")
+            if product in ("Product", "Service"):
+                product_service[(product, period)] = value
+            else:
+                product_lines[(product, period)] = value
+        elif geo_axis:
+            country = geo_axis.split(":")[-1].replace("Member", "")
+            geo_country[(country, period)] = value
+        elif not dims:
+            if period not in totals or value > totals.get(period, 0):
+                totals[period] = value
+
+    # 4. Format as markdown
+    result = "### Segment Revenue Data (from 10-K filing, in millions USD)\n\n"
+
+    all_periods = sorted(set(
+        p for _, p in list(product_service.keys()) + list(product_lines.keys()) +
+        list(geographic.keys()) + list(geo_country.keys())
+    ), reverse=True)
+
+    if not all_periods:
+        return ""
+
+    def _period_label(p):
+        parts = p.split("~")
+        return f"FY{parts[1][:4]}" if len(parts) == 2 else p
+
+    def _fmt_value(v):
+        if v >= 1000:
+            return f"${v / 1000:.1f}B"
+        return f"${v:,}M"
+
+    # Products vs Services (skip if Services is zero)
+    has_services = any(v > 0 for (k, _), v in product_service.items() if k == "Service")
+    if product_service and has_services:
+        periods = sorted(set(p for _, p in product_service.keys()), reverse=True)
+        cols = [_period_label(p) for p in periods]
+        result += "#### Revenue by Category\n\n"
+        result += "| Category | " + " | ".join(cols) + " |\n"
+        result += "|----------|" + "|".join(["--------"] * len(cols)) + "|\n"
+        for seg_type in ["Product", "Service"]:
+            vals = [_fmt_value(product_service.get((seg_type, p), 0)) for p in periods]
+            result += f"| {seg_type}s | " + " | ".join(vals) + " |\n"
+        total_vals = [_fmt_value(totals.get(p, 0)) for p in periods]
+        result += f"| **Total** | " + " | ".join(total_vals) + " |\n\n"
+
+    # Product lines
+    if product_lines:
+        periods = sorted(set(p for _, p in product_lines.keys()), reverse=True)
+        cols = [_period_label(p) for p in periods]
+        result += "#### Revenue by Product Line\n\n"
+        result += "| Product | " + " | ".join(cols) + " |\n"
+        result += "|---------|" + "|".join(["--------"] * len(cols)) + "|\n"
+        products = list(set(prod for prod, _ in product_lines.keys()))
+        latest = periods[0] if periods else ""
+        products.sort(key=lambda x: product_lines.get((x, latest), 0), reverse=True)
+        products = products[:8]  # Limit to top 8 to control token usage
+        for prod in products:
+            label = _clean_xbrl_label(prod)
+            vals = [_fmt_value(product_lines.get((prod, p), 0)) for p in periods]
+            result += f"| {label} | " + " | ".join(vals) + " |\n"
+        result += "\n"
+
+    # Geographic segments
+    if geographic:
+        periods = sorted(set(p for _, p in geographic.keys()), reverse=True)
+        cols = [_period_label(p) for p in periods]
+        result += "#### Revenue by Geographic Segment\n\n"
+        result += "| Region | " + " | ".join(cols) + " |\n"
+        result += "|--------|" + "|".join(["--------"] * len(cols)) + "|\n"
+        regions = list(set(r for r, _ in geographic.keys()))
+        latest = periods[0] if periods else ""
+        regions.sort(key=lambda x: geographic.get((x, latest), 0), reverse=True)
+        for region in regions:
+            label = _clean_xbrl_label(region)
+            vals = [_fmt_value(geographic.get((region, p), 0)) for p in periods]
+            result += f"| {label} | " + " | ".join(vals) + " |\n"
+        total_vals = [_fmt_value(totals.get(p, 0)) for p in periods]
+        result += f"| **Total** | " + " | ".join(total_vals) + " |\n\n"
+
+    # Country-level (skip if geographic segments already provide regional breakdown)
+    if geo_country and not geographic:
+        periods = sorted(set(p for _, p in geo_country.keys()), reverse=True)
+        cols = [_period_label(p) for p in periods]
+        result += "#### Revenue by Country\n\n"
+        result += "| Country | " + " | ".join(cols) + " |\n"
+        result += "|---------|" + "|".join(["--------"] * len(cols)) + "|\n"
+        countries = list(set(c for c, _ in geo_country.keys()))
+        latest = periods[0] if periods else ""
+        countries.sort(key=lambda x: geo_country.get((x, latest), 0), reverse=True)
+        for country in countries:
+            label = _clean_xbrl_label(country)
+            vals = [_fmt_value(geo_country.get((country, p), 0)) for p in periods]
+            result += f"| {label} | " + " | ".join(vals) + " |\n"
+        result += "\n"
+
+    return result
+
+
+def prefetch_segment_revenue(ticker: str) -> str:
+    """Prefetch segment revenue data from latest 10-K filing via Yahoo Finance CDN.
+
+    Uses yfinance sec_filings to find 10-K URL, downloads XBRL inline HTML from
+    cdn.yahoofinance.com, and parses segment revenue breakdowns.
+
+    Args:
+        ticker: Stock ticker symbol
+
+    Returns:
+        Markdown formatted segment revenue data, or empty string on error
+    """
+    try:
+        import yfinance as yf
+        import urllib.request
+
+        stock = yf.Ticker(ticker)
+        filings = stock.sec_filings
+
+        if not filings:
+            logger.warning(f"No SEC filings for {ticker}")
+            return ""
+
+        # Find latest 10-K
+        tenk = None
+        for f in filings:
+            if f.get('type') == '10-K':
+                tenk = f
+                break
+
+        if not tenk:
+            logger.warning(f"No 10-K filing found for {ticker}")
+            return ""
+
+        url = tenk.get('exhibits', {}).get('10-K', '')
+        if not url:
+            logger.warning(f"No 10-K exhibit URL for {ticker}")
+            return ""
+
+        # Download 10-K HTML from Yahoo Finance CDN
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        resp = urllib.request.urlopen(req, timeout=30)
+        html_content = resp.read().decode('utf-8', errors='replace')
+
+        if not html_content:
+            logger.warning(f"Empty 10-K HTML for {ticker}")
+            return ""
+
+        result = _parse_10k_segment_revenue(html_content)
+        if result:
+            logger.info(f"Parsed segment revenue for {ticker} from 10-K ({len(html_content):,} chars HTML)")
+        else:
+            logger.warning(f"No segment revenue data found in 10-K for {ticker}")
+
+        return result
+    except Exception as e:
+        logger.warning(f"Segment revenue prefetch failed for {ticker}: {e}")
+        return ""
+
+
 def prefetch_us_analysis_data(ticker: str) -> dict:
     """Prefetch all data needed for US stock analysis agents.
 
@@ -579,6 +852,11 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
     financial_statements = prefetch_financial_statements(ticker)
     if financial_statements:
         result["financial_statements"] = financial_statements
+
+    # 9. Segment revenue (for company_overview - parsed from 10-K XBRL via Yahoo Finance CDN)
+    segment_revenue = prefetch_segment_revenue(ticker)
+    if segment_revenue:
+        result["segment_revenue"] = segment_revenue
 
     if result:
         logger.info(f"Prefetched US data for {ticker}: {list(result.keys())}")

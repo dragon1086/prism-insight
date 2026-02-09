@@ -507,12 +507,14 @@ Company: {company_name} ({ticker})
 
     if has_prefetch:
         holder_data = pf.get('holder_info', '')
+        segment_data = pf.get('segment_revenue', '')
         prefetch_block = f"""## Pre-collected Data (Company Overview)
 The following data has been pre-collected via yfinance. Use this data directly for analysis.
 DO NOT scrape Profile, Holders pages via firecrawl. DO NOT call any MCP tools.
 
 {pf['company_profile']}
 {f"### Institutional Holdings Data{chr(10)}{chr(10)}{holder_data}" if holder_data else ""}
+{f"{chr(10)}{segment_data}" if segment_data else ""}
 """
         prefetch_block_ko = f"""## 사전 수집된 데이터 (기업 개요)
 다음 데이터가 yfinance를 통해 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요.
@@ -520,6 +522,7 @@ Profile, Holders 페이지 firecrawl 스크랩 금지. MCP 도구 호출 금지.
 
 {pf['company_profile']}
 {f"### 기관 투자자 보유 데이터{chr(10)}{chr(10)}{holder_data}" if holder_data else ""}
+{f"{chr(10)}{segment_data}" if segment_data else ""}
 """
         if language == "ko":
             start_marker = "## 수집할 데이터"
