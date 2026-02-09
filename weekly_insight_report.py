@@ -183,38 +183,75 @@ def generate_weekly_report(db_path: str = DB_PATH) -> str:
     if kr_best_trigger_rate > 0 or us_best_trigger_rate > 0:
         best_market = "한국" if kr_best_trigger_rate >= us_best_trigger_rate else "미국"
         best_trigger = kr_best_trigger_name if kr_best_trigger_rate >= us_best_trigger_rate else us_best_trigger_name
-        summary = f"{best_market} {best_trigger} 트리거 신뢰도 유지 중"
+        best_rate = max(kr_best_trigger_rate, us_best_trigger_rate)
+        summary = f"{best_market} '{best_trigger}' 트리거가 승률 {best_rate:.0f}%로 가장 안정적"
     else:
-        summary = "데이터 축적 중, 곧 인사이트 제공 예정"
+        summary = "데이터 축적 중 — 30일 추적 완료 후 인사이트 제공 예정"
 
-    # Format avoided/missed stats
-    kr_avoided_str = f"{kr_avoided_count}건" + (f" (평균 {_format_percentage(kr_avoided_avg)})" if kr_avoided_avg else "")
-    kr_missed_str = f"{kr_missed_count}건" + (f" (최고 {_format_percentage(kr_missed_best)})" if kr_missed_best else "")
+    # Format avoided/missed stats with explanations
+    def _avoided_detail(count, avg):
+        if count == 0:
+            return "0건 — AI가 매수를 건너뛴 종목 중 하락한 종목 없음"
+        return f"{count}건 (평균 {_format_percentage(avg)}) — 매수하지 않아 손실을 피한 종목"
+
+    def _missed_detail(count, best):
+        if count == 0:
+            return "0건 — 놓친 상승 종목 없음"
+        return f"{count}건 (최고 {_format_percentage(best)}) — 매수하지 않았으나 크게 오른 종목"
+
+    kr_avoided_str = _avoided_detail(kr_avoided_count, kr_avoided_avg)
+    kr_missed_str = _missed_detail(kr_missed_count, kr_missed_best)
     kr_trigger_str = f"{kr_best_trigger_name} (승률 {kr_best_trigger_rate:.0f}%)" if kr_best_trigger_rate > 0 else "데이터 축적 중"
     kr_principles_str = f"{kr_new_principles}개 추가 (총 {kr_total_principles}개)"
 
-    us_avoided_str = f"{us_avoided_count}건" + (f" (평균 {_format_percentage(us_avoided_avg)})" if us_avoided_avg else "")
-    us_missed_str = f"{us_missed_count}건" + (f" (최고 {_format_percentage(us_missed_best)})" if us_missed_best else "")
+    us_avoided_str = _avoided_detail(us_avoided_count, us_avoided_avg)
+    us_missed_str = _missed_detail(us_missed_count, us_missed_best)
     us_trigger_str = f"{us_best_trigger_name} (승률 {us_best_trigger_rate:.0f}%)" if us_best_trigger_rate > 0 else "데이터 축적 중"
     us_principles_str = f"{us_new_principles}개"
 
+    # Build actionable insights
+    insights = []
+    if kr_best_trigger_rate >= 60 or us_best_trigger_rate >= 60:
+        insights.append(f"승률 60%+ 트리거가 있습니다. 해당 트리거 종목을 우선 검토하세요.")
+    if kr_missed_count + us_missed_count >= 3:
+        insights.append("놓친 기회가 3건 이상입니다. 매수 기준을 약간 완화하는 것을 고려해보세요.")
+    if kr_avoided_count + us_avoided_count >= 5:
+        insights.append("회피한 손실이 5건 이상입니다. AI의 관망 판단이 잘 작동하고 있습니다.")
+    if not insights:
+        insights.append("이번 주는 큰 변동 없이 안정적으로 운영되었습니다.")
+
+    insights_str = '\n'.join(f"  → {i}" for i in insights)
+
     message = f"""📋 PRISM 주간 인사이트 ({start_display} ~ {end_display})
+이번 주 AI 매매 판단의 성과를 돌아봅니다.
 
 🇰🇷 한국시장
 ━━━━━━━━━━━━━━━━━━━━
 🛡️ 회피한 손실: {kr_avoided_str}
 ❌ 놓친 기회: {kr_missed_str}
 📊 가장 정확한 트리거: {kr_trigger_str}
-📌 새 원칙: {kr_principles_str}
+📌 새 매매 원칙: {kr_principles_str}
 
 🇺🇸 미국시장
 ━━━━━━━━━━━━━━━━━━━━
 🛡️ 회피한 손실: {us_avoided_str}
 ❌ 놓친 기회: {us_missed_str}
 📊 가장 정확한 트리거: {us_trigger_str}
-📌 새 원칙: {us_principles_str}
+📌 새 매매 원칙: {us_principles_str}
 
-💡 이번 주 핵심: {summary}"""
+📌 이번 주 인사이트
+{insights_str}
+
+💡 핵심: {summary}
+
+ℹ️ 용어 안내
+• 트리거 = AI가 종목을 발견한 이유 (급등, 거래량 급증 등)
+• 회피한 손실 = 매수하지 않았는데 30일 뒤 -5% 이상 하락한 종목
+• 놓친 기회 = 매수하지 않았는데 30일 뒤 +10% 이상 상승한 종목
+• 승률 = 해당 트리거로 분석한 종목 중 30일 후 수익이 난 비율
+• 매매 원칙 = AI가 과거 매매 경험에서 스스로 학습한 규칙
+
+📊 상세 데이터는 /triggers 명령어로 확인하세요."""
 
     return message
 
