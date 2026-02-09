@@ -44,7 +44,6 @@
 |---------|---------|---------|
 | Telegram Bot | Channel messaging | [BotFather](https://t.me/botfather) |
 | Korea Investment & Securities | Automated trading | [KIS Developers](https://apiportal.koreainvestment.com/) |
-| Finnhub | US stock news | [finnhub.io](https://finnhub.io/) |
 
 ---
 
@@ -366,10 +365,6 @@ See [utils/CRONTAB_SETUP.md](../utils/CRONTAB_SETUP.md) for details.
 For US market analysis (NYSE, NASDAQ):
 
 ```bash
-# Additional API key (optional, for enhanced news)
-# Add to .env:
-FINNHUB_API_KEY="your_finnhub_key"
-
 # Run US analysis
 python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
 ```

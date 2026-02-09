@@ -26,22 +26,7 @@
 | **기관투자자 보유** | ✅ **무료** | `ticker.institutional_holders` (Vanguard, Blackrock 등) |
 | 대주주 지분 | ✅ 정상 | `ticker.major_holders` |
 
-**결론**: yfinance가 Finnhub 유료 기능을 대체 가능 → **Primary 데이터 소스로 확정**
-
-### ⚠️ Finnhub (Supplementary)
-
-| 기능 | 테스트 결과 | 비고 |
-|------|------------|------|
-| 기업 프로필 | ✅ 정상 | `company_profile2()` |
-| SEC 공시 | ✅ 정상 | 무료 티어 포함 |
-| **기관투자자 보유** | ❌ **403 에러** | Premium 전용 ($49+/월) |
-
-**무료 티어 제한**:
-- 60 API calls/minute
-- Personal use only (상업용 불가)
-- 기관투자자 데이터 접근 불가
-
-**결론**: 보조 데이터 소스로 사용, 기관투자자 데이터는 yfinance 사용
+**결론**: yfinance가 모든 필요한 데이터를 무료로 제공 → **Primary 데이터 소스로 확정**
 
 ### ✅ pandas-market-calendars (Holiday Detection)
 
@@ -125,14 +110,14 @@ prism-insight/
 | 용도 | Primary | Fallback | API Key | 비고 |
 |------|---------|----------|---------|------|
 | OHLCV 데이터 | **yfinance** | Polygon MCP | 무료 / 유료 | ✅ 테스트 완료 |
-| 기업 재무 | **yfinance** | Finnhub | 무료 | ✅ 테스트 완료 |
-| 기관투자자 보유 | **yfinance** | - | **무료** | ✅ Finnhub 유료 대체 |
+| 기업 재무 | **yfinance** | - | 무료 | ✅ 테스트 완료 |
+| 기관투자자 보유 | **yfinance** | - | **무료** | ✅ 테스트 완료 |
 | 뉴스/리서치 | Perplexity | (기존 공유) | 기존 | - |
-| SEC 공시 | Firecrawl | Finnhub | 기존 / 무료 | - |
+| SEC 공시 | Firecrawl | - | 기존 | - |
 | 시장 지수 | **yfinance** | - | 무료 | ✅ 테스트 완료 |
 | **웹 스크래핑** | **Firecrawl** | - | **기존** | - |
 
-> **핵심 변경**: yfinance가 기관투자자 데이터를 무료로 제공하므로 Finnhub Premium 불필요
+> **핵심 변경**: yfinance가 기관투자자 데이터를 무료로 제공하므로 추가 유료 서비스 불필요
 
 ### Firecrawl 활용 계획
 
@@ -157,12 +142,6 @@ mcp:
     yfinance_us:
       command: "python3"
       args: ["-m", "yfinance_mcp_server"]
-
-    finnhub_us:
-      command: "npx"
-      args: ["-y", "mcp-finnhub"]
-      env:
-        FINNHUB_API_KEY: "${FINNHUB_API_KEY}"
 
     polygon_us:  # Optional for production
       command: "npx"
@@ -238,7 +217,7 @@ ALTER TABLE trading_intuitions ADD COLUMN market TEXT DEFAULT 'KR';
 2. ✅ `prism-us/__init__.py` 생성
 3. ✅ `prism-us/check_market_day.py` - NYSE/NASDAQ 휴일 체커 (pandas-market-calendars 사용)
 4. ✅ `prism-us/IMPLEMENTATION_STATUS.md` 생성
-5. ✅ `.env.example`에 US 섹션 추가 (FINNHUB_API_KEY)
+5. ✅ `.env.example`에 US 섹션 추가
 6. ✅ `requirements.txt`에 신규 패키지 추가 (yfinance, pandas-market-calendars)
 7. ✅ `docs/US_STOCK_PLAN.md` 생성
 
@@ -255,10 +234,9 @@ python prism-us/check_market_day.py
 
 **완료된 작업**:
 1. ✅ yfinance-mcp 서버 설치 (`npm install -g yfinance-mcp`)
-2. ✅ Finnhub: finnhub-python 라이브러리로 대체 (MCP 서버 없음)
-3. ✅ `prism-us/cores/us_data_client.py` 생성 - 통합 데이터 클라이언트
-4. ✅ 데이터 조회 테스트 완료 (AAPL, 시장지수)
-5. ✅ `mcp_agent.config.yaml`에 yfinance_us 서버 추가
+2. ✅ `prism-us/cores/us_data_client.py` 생성 - 통합 데이터 클라이언트
+3. ✅ 데이터 조회 테스트 완료 (AAPL, 시장지수)
+4. ✅ `mcp_agent.config.yaml`에 yfinance_us 서버 추가
 
 **검증 완료**:
 ```
@@ -420,21 +398,17 @@ python prism-us/orchestrator.py --mode both --no-telegram
 ### In Progress
 - Phase 2: 50% complete
   - [x] yfinance MCP 설치
-  - [ ] Finnhub MCP 설치
   - [ ] us_data_client.py
 
 ### Blockers
 - None
 
 ### Next Steps
-1. Finnhub MCP 설치
-2. us_data_client.py 완성
+1. us_data_client.py 완성
+2. 테스트 작성
 
 ### Files Modified This Session
 - prism-us/cores/us_data_client.py (new)
-
-### Notes for Next Session
-- Finnhub API key 필요
 ```
 
 ---
@@ -474,7 +448,6 @@ aiosqlite                    # 비동기 DB
 ### 신규 MCP 서버
 ```
 yfinance-mcp-server (npm or pip)  # US OHLCV
-mcp-finnhub (npm)                 # 기업 재무, SEC
 @anthropic/polygon-mcp (optional) # 프로덕션용 (유료)
 ```
 
@@ -512,7 +485,7 @@ perplexity-ask               # 뉴스/리서치
 
 | 항목 | 한국 | 미국 |
 |------|-----|------|
-| 데이터 소스 | pykrx, kospi_kosdaq MCP | yfinance, finnhub, firecrawl MCP |
+| 데이터 소스 | pykrx, kospi_kosdaq MCP | yfinance, firecrawl MCP |
 | Trading API | KIS 국내주식 API | KIS 해외주식 API (동일 인프라) |
 | 시장 시간 | 09:00-15:30 KST | 09:30-16:00 EST (KST 23:30-06:00) |
 | 시총 필터 | 5000억 KRW | $20B USD |

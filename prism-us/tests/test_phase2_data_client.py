@@ -7,7 +7,6 @@ Tests for cores/us_data_client.py module:
 - Company information retrieval
 - Institutional holders data
 - Market indices data
-- Finnhub integration (optional)
 """
 
 import os
@@ -36,22 +35,10 @@ class TestUSDataClientInit:
     """Tests for USDataClient initialization."""
 
     def test_client_init_without_api_key(self):
-        """Test client initialization without Finnhub API key."""
+        """Test client initialization."""
         client = USDataClient()
         assert client is not None
         assert isinstance(client, USDataClient)
-
-    def test_client_init_with_api_key(self):
-        """Test client initialization with Finnhub API key."""
-        client = USDataClient(finnhub_api_key="test_key")
-        assert client is not None
-        assert client.finnhub_api_key == "test_key"
-
-    def test_client_init_from_env(self):
-        """Test client initialization from environment variable."""
-        with patch.dict(os.environ, {"FINNHUB_API_KEY": "env_test_key"}):
-            client = USDataClient()
-            assert client.finnhub_api_key == "env_test_key"
 
     def test_get_us_data_client_factory(self):
         """Test get_us_data_client factory function."""
@@ -245,48 +232,6 @@ class TestMarketIndices:
 
 
 # =============================================================================
-# Test: Finnhub Integration
-# =============================================================================
-
-@pytest.mark.skipif(
-    not os.getenv("FINNHUB_API_KEY"),
-    reason="Finnhub API key not set"
-)
-@pytest.mark.network
-class TestFinnhubIntegration:
-    """Tests for Finnhub integration (requires API key)."""
-
-    def test_finnhub_client_initialized(self):
-        """Test that Finnhub client is initialized with API key."""
-        client = USDataClient()
-        assert client._finnhub_client is not None
-
-    def test_get_company_profile_finnhub(self, sample_ticker):
-        """Test Finnhub company profile retrieval."""
-        client = USDataClient()
-        profile = client.get_company_profile_finnhub(sample_ticker)
-
-        assert isinstance(profile, dict)
-        if profile:
-            # Finnhub profile may have different fields
-            assert "ticker" in profile or "name" in profile or len(profile) > 0
-
-    def test_get_company_news_finnhub(self, sample_ticker):
-        """Test Finnhub news retrieval."""
-        client = USDataClient()
-        news = client.get_company_news_finnhub(sample_ticker)
-
-        assert isinstance(news, list)
-
-    def test_get_sec_filings_finnhub(self, sample_ticker):
-        """Test Finnhub SEC filings retrieval."""
-        client = USDataClient()
-        filings = client.get_sec_filings_finnhub(sample_ticker)
-
-        assert isinstance(filings, list)
-
-
-# =============================================================================
 # Test: Utility Methods
 # =============================================================================
 
@@ -328,17 +273,3 @@ class TestUSDataClientMocked:
             client = USDataClient()
             info = client.get_company_info("TEST")
             assert isinstance(info, dict)
-
-    def test_finnhub_not_initialized_warning(self):
-        """Test warning when Finnhub methods called without client."""
-        client = USDataClient(finnhub_api_key=None)
-        client._finnhub_client = None
-
-        # These should return empty results, not raise
-        profile = client.get_company_profile_finnhub("AAPL")
-        news = client.get_company_news_finnhub("AAPL")
-        filings = client.get_sec_filings_finnhub("AAPL")
-
-        assert profile == {}
-        assert news == []
-        assert filings == []

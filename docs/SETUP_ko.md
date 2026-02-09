@@ -44,7 +44,6 @@
 |--------|------|---------|
 | 텔레그램 봇 | 채널 메시징 | [BotFather](https://t.me/botfather) |
 | 한국투자증권 | 자동매매 | [KIS Developers](https://apiportal.koreainvestment.com/) |
-| Finnhub | 미국 주식 뉴스 | [finnhub.io](https://finnhub.io/) |
 
 ---
 
@@ -366,10 +365,6 @@ utils/setup_crontab.sh
 미국 시장 분석 (NYSE, NASDAQ):
 
 ```bash
-# 추가 API 키 (선택, 뉴스 강화용)
-# .env에 추가:
-FINNHUB_API_KEY="your_finnhub_key"
-
 # 미국 주식 분석 실행
 python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
 ```

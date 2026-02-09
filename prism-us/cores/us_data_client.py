@@ -1,9 +1,7 @@
 """
 US Stock Data Client
 
-Unified interface for fetching US stock market data.
-Primary: yfinance (free, comprehensive)
-Supplementary: Finnhub (free tier, 60 calls/min)
+Unified interface for fetching US stock market data using yfinance.
 
 Usage:
     from prism_us.cores.us_data_client import USDataClient
@@ -24,9 +22,7 @@ Usage:
 """
 
 import logging
-import os
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 import yfinance as yf
@@ -42,30 +38,12 @@ class USDataClient:
     - OHLCV data (yfinance)
     - Company information (yfinance)
     - Financial statements (yfinance)
-    - Institutional holders (yfinance - FREE!)
-    - SEC filings (Finnhub)
-    - News (Finnhub)
+    - Institutional holders (yfinance)
     """
 
-    def __init__(self, finnhub_api_key: Optional[str] = None):
-        """
-        Initialize the US data client.
-
-        Args:
-            finnhub_api_key: Optional Finnhub API key (defaults to env var)
-        """
-        self.finnhub_api_key = finnhub_api_key or os.getenv("FINNHUB_API_KEY")
-        self._finnhub_client = None
-
-        if self.finnhub_api_key:
-            try:
-                import finnhub
-                self._finnhub_client = finnhub.Client(api_key=self.finnhub_api_key)
-                logger.info("Finnhub client initialized")
-            except ImportError:
-                logger.warning("finnhub-python not installed, Finnhub features disabled")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Finnhub client: {e}")
+    def __init__(self):
+        """Initialize the US data client."""
+        pass
 
     # =========================================================================
     # OHLCV Data (yfinance)
@@ -281,7 +259,7 @@ class USDataClient:
         """
         Get institutional ownership data.
 
-        Note: This is FREE via yfinance (Finnhub requires premium $49+/month)
+        Note: This is FREE via yfinance
 
         Args:
             ticker: Stock ticker symbol
@@ -357,289 +335,6 @@ class USDataClient:
             result[name] = self.get_ohlcv(symbol, period=period)
 
         return result
-
-    # =========================================================================
-    # Finnhub Data (Supplementary)
-    # =========================================================================
-
-    def get_company_profile_finnhub(self, ticker: str) -> Dict[str, Any]:
-        """
-        Get company profile from Finnhub.
-
-        Args:
-            ticker: Stock ticker symbol
-
-        Returns:
-            Dictionary with company profile
-        """
-        if not self._finnhub_client:
-            logger.warning("Finnhub client not initialized")
-            return {}
-
-        try:
-            profile = self._finnhub_client.company_profile2(symbol=ticker)
-            logger.info(f"Retrieved Finnhub profile for {ticker}")
-            return profile or {}
-        except Exception as e:
-            logger.error(f"Error fetching Finnhub profile for {ticker}: {e}")
-            return {}
-
-    def get_company_news_finnhub(
-        self,
-        ticker: str,
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Get company news from Finnhub.
-
-        Args:
-            ticker: Stock ticker symbol
-            from_date: Start date (YYYY-MM-DD)
-            to_date: End date (YYYY-MM-DD)
-
-        Returns:
-            List of news articles
-        """
-        if not self._finnhub_client:
-            logger.warning("Finnhub client not initialized")
-            return []
-
-        try:
-            if not from_date:
-                from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-            if not to_date:
-                to_date = datetime.now().strftime("%Y-%m-%d")
-
-            news = self._finnhub_client.company_news(ticker, _from=from_date, to=to_date)
-            logger.info(f"Retrieved {len(news)} news articles for {ticker}")
-            return news or []
-        except Exception as e:
-            logger.error(f"Error fetching Finnhub news for {ticker}: {e}")
-            return []
-
-    def get_sec_filings_finnhub(self, ticker: str) -> List[Dict[str, Any]]:
-        """
-        Get SEC filings from Finnhub.
-
-        Args:
-            ticker: Stock ticker symbol
-
-        Returns:
-            List of SEC filings
-        """
-        if not self._finnhub_client:
-            logger.warning("Finnhub client not initialized")
-            return []
-
-        try:
-            filings = self._finnhub_client.filings(symbol=ticker)
-            logger.info(f"Retrieved {len(filings)} SEC filings for {ticker}")
-            return filings or []
-        except Exception as e:
-            logger.error(f"Error fetching SEC filings for {ticker}: {e}")
-            return []
-
-    def get_earnings_calendar_finnhub(self, ticker: str) -> List[Dict[str, Any]]:
-        """
-        Get earnings calendar from Finnhub.
-
-        Args:
-            ticker: Stock ticker symbol
-
-        Returns:
-            List of earnings dates
-        """
-        if not self._finnhub_client:
-            logger.warning("Finnhub client not initialized")
-            return []
-
-        try:
-            # Get next 30 days of earnings
-            from_date = datetime.now().strftime("%Y-%m-%d")
-            to_date = (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d")
-
-            earnings = self._finnhub_client.earnings_calendar(
-                _from=from_date,
-                to=to_date,
-                symbol=ticker
-            )
-
-            result = earnings.get("earningsCalendar", []) if earnings else []
-            logger.info(f"Retrieved {len(result)} earnings dates for {ticker}")
-            return result
-        except Exception as e:
-            logger.error(f"Error fetching earnings calendar for {ticker}: {e}")
-            return []
-
-    def get_quote_finnhub(self, ticker: str) -> Dict[str, Any]:
-        """
-        Get real-time quote from Finnhub.
-
-        Args:
-            ticker: Stock ticker symbol
-
-        Returns:
-            Dictionary with quote data (c=current, h=high, l=low, o=open, pc=previous_close)
-        """
-        if not self._finnhub_client:
-            logger.warning("Finnhub client not initialized")
-            return {}
-
-        try:
-            quote = self._finnhub_client.quote(ticker)
-            if quote and quote.get("c", 0) > 0:
-                logger.info(f"Retrieved Finnhub quote for {ticker}: ${quote.get('c', 0):.2f}")
-                return {
-                    "price": quote.get("c", 0),
-                    "high": quote.get("h", 0),
-                    "low": quote.get("l", 0),
-                    "open": quote.get("o", 0),
-                    "previous_close": quote.get("pc", 0),
-                    "change": quote.get("d", 0),
-                    "change_pct": quote.get("dp", 0),
-                }
-            return {}
-        except Exception as e:
-            logger.error(f"Error fetching Finnhub quote for {ticker}: {e}")
-            return {}
-
-    def get_basic_financials_finnhub(self, ticker: str) -> Dict[str, Any]:
-        """
-        Get basic financials from Finnhub (P/E, P/B, market cap, etc.).
-
-        Args:
-            ticker: Stock ticker symbol
-
-        Returns:
-            Dictionary with financial metrics
-        """
-        if not self._finnhub_client:
-            logger.warning("Finnhub client not initialized")
-            return {}
-
-        try:
-            financials = self._finnhub_client.company_basic_financials(ticker, "all")
-            if financials and financials.get("metric"):
-                metrics = financials.get("metric", {})
-                logger.info(f"Retrieved Finnhub basic financials for {ticker}")
-                return {
-                    "pe_ratio": metrics.get("peNormalizedAnnual", 0),
-                    "price_to_book": metrics.get("pbAnnual", 0),
-                    "market_cap": metrics.get("marketCapitalization", 0) * 1e6 if metrics.get("marketCapitalization") else 0,
-                    "beta": metrics.get("beta", 0),
-                    "dividend_yield": metrics.get("dividendYieldIndicatedAnnual", 0),
-                    "eps": metrics.get("epsNormalizedAnnual", 0),
-                    "roe": metrics.get("roeTTM", 0),
-                    "roa": metrics.get("roaTTM", 0),
-                    "52_week_high": metrics.get("52WeekHigh", 0),
-                    "52_week_low": metrics.get("52WeekLow", 0),
-                }
-            return {}
-        except Exception as e:
-            logger.error(f"Error fetching Finnhub basic financials for {ticker}: {e}")
-            return {}
-
-    # =========================================================================
-    # Fallback Methods (yfinance → Finnhub)
-    # =========================================================================
-
-    def get_company_info_with_fallback(self, ticker: str) -> Dict[str, Any]:
-        """
-        Get company info with Finnhub fallback if yfinance fails.
-
-        Args:
-            ticker: Stock ticker symbol
-
-        Returns:
-            Dictionary with company info (from yfinance or Finnhub)
-        """
-        # Try yfinance first
-        info = self.get_company_info(ticker)
-
-        # If yfinance returned valid data, return it
-        if info and info.get("name") and info.get("price", 0) > 0:
-            return info
-
-        # yfinance failed, try Finnhub fallback
-        if not self._finnhub_client:
-            logger.warning(f"yfinance failed for {ticker} and Finnhub not configured")
-            return info  # Return whatever we got from yfinance
-
-        logger.info(f"yfinance failed for {ticker}, trying Finnhub fallback...")
-
-        # Get data from Finnhub
-        profile = self.get_company_profile_finnhub(ticker)
-        quote = self.get_quote_finnhub(ticker)
-        financials = self.get_basic_financials_finnhub(ticker)
-
-        if not profile and not quote:
-            logger.warning(f"Finnhub fallback also failed for {ticker}")
-            return info  # Return whatever we got from yfinance
-
-        # Build combined result
-        fallback_info = {
-            "ticker": ticker,
-            "name": profile.get("name", info.get("name", "")),
-            "sector": profile.get("finnhubIndustry", info.get("sector", "")),
-            "industry": profile.get("finnhubIndustry", info.get("industry", "")),
-            "website": profile.get("weburl", info.get("website", "")),
-            "country": profile.get("country", info.get("country", "")),
-            "exchange": profile.get("exchange", info.get("exchange", "")),
-            "currency": profile.get("currency", info.get("currency", "USD")),
-            "market_cap": profile.get("marketCapitalization", 0) * 1e6 if profile.get("marketCapitalization") else financials.get("market_cap", 0),
-            "price": quote.get("price", info.get("price", 0)),
-            "previous_close": quote.get("previous_close", info.get("previous_close", 0)),
-            "open": quote.get("open", info.get("open", 0)),
-            "day_high": quote.get("high", info.get("day_high", 0)),
-            "day_low": quote.get("low", info.get("day_low", 0)),
-            "pe_ratio": financials.get("pe_ratio", info.get("pe_ratio", 0)),
-            "price_to_book": financials.get("price_to_book", info.get("price_to_book", 0)),
-            "beta": financials.get("beta", info.get("beta", 0)),
-            "dividend_yield": financials.get("dividend_yield", info.get("dividend_yield", 0)),
-            "fifty_two_week_high": financials.get("52_week_high", info.get("fifty_two_week_high", 0)),
-            "fifty_two_week_low": financials.get("52_week_low", info.get("52_week_low", 0)),
-            "_source": "finnhub_fallback",  # Mark as fallback data
-        }
-
-        logger.info(f"Finnhub fallback successful for {ticker}")
-        return fallback_info
-
-    def get_current_price_with_fallback(self, ticker: str) -> float:
-        """
-        Get current stock price with Finnhub fallback.
-
-        Args:
-            ticker: Stock ticker symbol
-
-        Returns:
-            Current price
-        """
-        # Try yfinance first
-        info = self.get_company_info(ticker)
-        price = info.get("price", 0.0)
-
-        if price > 0:
-            return price
-
-        # Fallback to Finnhub
-        if self._finnhub_client:
-            logger.info(f"yfinance price failed for {ticker}, trying Finnhub...")
-            quote = self.get_quote_finnhub(ticker)
-            if quote and quote.get("price", 0) > 0:
-                return quote.get("price", 0.0)
-
-        logger.warning(f"Failed to get price for {ticker} from both sources")
-        return 0.0
-
-    def has_finnhub_fallback(self) -> bool:
-        """
-        Check if Finnhub fallback is available.
-
-        Returns:
-            True if Finnhub client is configured
-        """
-        return self._finnhub_client is not None
 
     # =========================================================================
     # Utility Methods
@@ -719,17 +414,14 @@ class USDataClient:
 
 
 # Convenience function for quick access
-def get_us_data_client(finnhub_api_key: Optional[str] = None) -> USDataClient:
+def get_us_data_client() -> USDataClient:
     """
     Create and return a USDataClient instance.
-
-    Args:
-        finnhub_api_key: Optional Finnhub API key
 
     Returns:
         USDataClient instance
     """
-    return USDataClient(finnhub_api_key=finnhub_api_key)
+    return USDataClient()
 
 
 if __name__ == "__main__":
