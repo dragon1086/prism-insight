@@ -27,7 +27,8 @@ def create_us_company_status_agent(
     ticker: str,
     reference_date: str,
     urls: Dict[str, str],
-    language: str = "en"
+    language: str = "en",
+    prefetched_data: dict = None
 ):
     """Create US company status analysis agent
 
@@ -234,10 +235,77 @@ Company: {company_name} ({ticker})
 ##Analysis Date: {reference_date}(YYYYMMDD format)
 """
 
+    # Inject prefetched data: replace firecrawl key-statistics/financials + yahoo_finance MCP with pre-collected data
+    pf = prefetched_data or {}
+    has_prefetch = bool(pf.get("stock_info"))
+
+    if has_prefetch:
+        prefetch_block = f"""## Pre-collected Data (Company Status)
+The following data has been pre-collected via yfinance. Use this data directly for analysis.
+DO NOT scrape Key Statistics or Financials pages. DO NOT call yahoo_finance MCP tools.
+
+{pf['stock_info']}
+{pf.get('recommendations', '')}
+
+## Additional Data to Collect
+
+### 1. Yahoo Finance Analysis Page (URL: {urls['analysis']}):
+   - Earnings Estimates: Current Qtr, Next Qtr, Current Year, Next Year estimates
+   - Revenue Estimates: Current Qtr, Next Qtr, Current Year, Next Year estimates
+   - EPS Trends: Current and past estimates
+   - Analyst Recommendations: Buy/Hold/Sell ratings, Target Price
+
+### 2. sec_edgar MCP Server (Official SEC XBRL Data - More Accurate):
+   - Use tool call(name: sec_edgar-get_financials) with identifier="{ticker}", statement_type="all"
+   - Use tool call(name: sec_edgar-get_key_metrics) with identifier="{ticker}"
+"""
+        prefetch_block_ko = f"""## 사전 수집된 데이터 (기업 현황)
+다음 데이터가 yfinance를 통해 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요.
+Key Statistics, Financials 페이지 스크랩 금지. yahoo_finance MCP 도구 호출 금지.
+
+{pf['stock_info']}
+{pf.get('recommendations', '')}
+
+## 추가 수집할 데이터
+
+### 1. Yahoo Finance Analysis 페이지 (URL: {urls['analysis']}):
+   - 실적 전망: 당분기, 차분기, 당해연도, 차연도 추정치
+   - 매출 전망: 당분기, 차분기, 당해연도, 차연도 추정치
+   - EPS 추세: 현재 및 과거 추정치
+   - 애널리스트 권고: 매수/보유/매도 평가, 목표가
+
+### 2. sec_edgar MCP 서버 (공식 SEC XBRL 데이터 - 더 정확):
+   - 도구 호출(name: sec_edgar-get_financials), identifier="{ticker}", statement_type="all"
+   - 도구 호출(name: sec_edgar-get_key_metrics), identifier="{ticker}"
+"""
+        if language == "ko":
+            # Replace Korean data section
+            start_marker = "## 수집할 데이터"
+            end_marker = "## 분석 방향"
+            start_idx = instruction.find(start_marker)
+            end_idx = instruction.find(end_marker)
+            if start_idx != -1 and end_idx != -1:
+                instruction = instruction[:start_idx] + prefetch_block_ko + "\n" + instruction[end_idx:]
+        else:
+            # Replace English data section
+            start_marker = "## Data to Collect"
+            end_marker = "## Analysis Direction"
+            start_idx = instruction.find(start_marker)
+            end_idx = instruction.find(end_marker)
+            if start_idx != -1 and end_idx != -1:
+                instruction = instruction[:start_idx] + prefetch_block + "\n" + instruction[end_idx:]
+
+    # When prefetched: only need firecrawl (for analysis page) + sec_edgar
+    # Remove yahoo_finance (prefetched via stock_info + recommendations)
+    if has_prefetch:
+        servers = ["firecrawl", "sec_edgar"]
+    else:
+        servers = ["firecrawl", "yahoo_finance", "sec_edgar"]
+
     return Agent(
         name="us_company_status_agent",
         instruction=instruction,
-        server_names=["firecrawl", "yahoo_finance", "sec_edgar"]
+        server_names=servers
     )
 
 
@@ -246,7 +314,8 @@ def create_us_company_overview_agent(
     ticker: str,
     reference_date: str,
     urls: Dict[str, str],
-    language: str = "en"
+    language: str = "en",
+    prefetched_data: dict = None
 ):
     """Create US company overview analysis agent
 
@@ -458,8 +527,63 @@ Company: {company_name} ({ticker})
 ##Analysis Date: {reference_date}(YYYYMMDD format)
 """
 
+    # Inject prefetched data: replace firecrawl profile/holders/sec-filings pages with pre-collected data
+    pf = prefetched_data or {}
+    has_prefetch = bool(pf.get("company_profile"))
+
+    if has_prefetch:
+        holder_data = pf.get('holder_info', '')
+        prefetch_block = f"""## Pre-collected Data (Company Overview)
+The following data has been pre-collected via yfinance. Use this data directly for analysis.
+DO NOT scrape Profile, Holders, or SEC Filings pages via firecrawl.
+
+{pf['company_profile']}
+{f"### Institutional Holdings Data{chr(10)}{chr(10)}{holder_data}" if holder_data else ""}
+
+## Data to Collect via sec_edgar MCP (Official SEC Data)
+   - Use tool call(name: sec_edgar-get_recent_filings) with identifier="{ticker}", form_type="10-K", limit=3
+   - Use tool call(name: sec_edgar-get_recent_filings) with identifier="{ticker}", form_type="10-Q", limit=4
+   - Use tool call(name: sec_edgar-get_recent_filings) with identifier="{ticker}", form_type="8-K", limit=5
+   - Use tool call(name: sec_edgar-get_insider_transactions) with identifier="{ticker}", days=90
+   - Use tool call(name: sec_edgar-get_insider_summary) with identifier="{ticker}", days=180
+"""
+        prefetch_block_ko = f"""## 사전 수집된 데이터 (기업 개요)
+다음 데이터가 yfinance를 통해 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요.
+Profile, Holders, SEC Filings 페이지 firecrawl 스크랩 금지.
+
+{pf['company_profile']}
+{f"### 기관 투자자 보유 데이터{chr(10)}{chr(10)}{holder_data}" if holder_data else ""}
+
+## sec_edgar MCP 서버로 수집할 데이터 (공식 SEC 데이터)
+   - 도구 호출(name: sec_edgar-get_recent_filings), identifier="{ticker}", form_type="10-K", limit=3
+   - 도구 호출(name: sec_edgar-get_recent_filings), identifier="{ticker}", form_type="10-Q", limit=4
+   - 도구 호출(name: sec_edgar-get_recent_filings), identifier="{ticker}", form_type="8-K", limit=5
+   - 도구 호출(name: sec_edgar-get_insider_transactions), identifier="{ticker}", days=90
+   - 도구 호출(name: sec_edgar-get_insider_summary), identifier="{ticker}", days=180
+"""
+        if language == "ko":
+            start_marker = "## 수집할 데이터"
+            end_marker = "## 분석 방향"
+            start_idx = instruction.find(start_marker)
+            end_idx = instruction.find(end_marker)
+            if start_idx != -1 and end_idx != -1:
+                instruction = instruction[:start_idx] + prefetch_block_ko + "\n" + instruction[end_idx:]
+        else:
+            start_marker = "## Data to Collect"
+            end_marker = "## Analysis Direction"
+            start_idx = instruction.find(start_marker)
+            end_idx = instruction.find(end_marker)
+            if start_idx != -1 and end_idx != -1:
+                instruction = instruction[:start_idx] + prefetch_block + "\n" + instruction[end_idx:]
+
+    # When prefetched: only need sec_edgar (firecrawl pages replaced by prefetch)
+    if has_prefetch:
+        servers = ["sec_edgar"]
+    else:
+        servers = ["firecrawl", "yahoo_finance", "sec_edgar"]
+
     return Agent(
         name="us_company_overview_agent",
         instruction=instruction,
-        server_names=["firecrawl", "yahoo_finance", "sec_edgar"]
+        server_names=servers
     )

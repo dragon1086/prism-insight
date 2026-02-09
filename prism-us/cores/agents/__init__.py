@@ -110,10 +110,12 @@ def get_us_agent_directory(
             prefetched_data=pf.get("holder_info")
         ),
         "company_status": lambda: create_us_company_status_agent(
-            company_name, ticker, reference_date, urls, language
+            company_name, ticker, reference_date, urls, language,
+            prefetched_data={"stock_info": pf.get("stock_info", ""), "recommendations": pf.get("recommendations", "")} if pf.get("stock_info") else None
         ),
         "company_overview": lambda: create_us_company_overview_agent(
-            company_name, ticker, reference_date, urls, language
+            company_name, ticker, reference_date, urls, language,
+            prefetched_data={"company_profile": pf.get("company_profile", ""), "holder_info": pf.get("holder_info", "")} if pf.get("company_profile") else None
         ),
         "news_analysis": lambda: create_us_news_analysis_agent(
             company_name, ticker, reference_date, language

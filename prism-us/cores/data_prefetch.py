@@ -158,6 +158,197 @@ def prefetch_us_market_indices(reference_date: str = None) -> dict:
     return result
 
 
+def prefetch_stock_info(ticker: str) -> str:
+    """Prefetch company info and key statistics via yfinance.
+
+    Replaces yahoo_finance MCP get_stock_info call and
+    firecrawl key-statistics/financials page scrapes.
+
+    Args:
+        ticker: Stock ticker symbol
+
+    Returns:
+        Markdown formatted company info string, or empty string on error
+    """
+    try:
+        client = _get_us_data_client()
+        info = client.get_company_info(ticker)
+
+        if not info or not info.get("name"):
+            logger.warning(f"No company info for {ticker}")
+            return ""
+
+        def _fmt(val, fmt_type="default"):
+            if val is None or val == 0:
+                return "N/A"
+            if fmt_type == "currency":
+                if abs(val) >= 1e12:
+                    return f"${val/1e12:.2f}T"
+                elif abs(val) >= 1e9:
+                    return f"${val/1e9:.2f}B"
+                elif abs(val) >= 1e6:
+                    return f"${val/1e6:.2f}M"
+                return f"${val:,.2f}"
+            elif fmt_type == "percent":
+                return f"{val*100:.2f}%" if abs(val) < 1 else f"{val:.2f}%"
+            elif fmt_type == "ratio":
+                return f"{val:.2f}"
+            elif fmt_type == "number":
+                if abs(val) >= 1e9:
+                    return f"{val/1e9:.2f}B"
+                elif abs(val) >= 1e6:
+                    return f"{val/1e6:.2f}M"
+                return f"{val:,.0f}"
+            return str(val)
+
+        result = f"### Company Info: {info.get('name', ticker)} ({ticker})\n\n"
+
+        result += "#### Valuation Measures\n\n"
+        result += "| Metric | Value |\n|--------|-------|\n"
+        result += f"| Market Cap | {_fmt(info.get('market_cap'), 'currency')} |\n"
+        result += f"| Enterprise Value | {_fmt(info.get('enterprise_value'), 'currency')} |\n"
+        result += f"| Trailing P/E | {_fmt(info.get('pe_ratio'), 'ratio')} |\n"
+        result += f"| Forward P/E | {_fmt(info.get('forward_pe'), 'ratio')} |\n"
+        result += f"| PEG Ratio | {_fmt(info.get('peg_ratio'), 'ratio')} |\n"
+        result += f"| Price/Sales | {_fmt(info.get('price_to_sales'), 'ratio')} |\n"
+        result += f"| Price/Book | {_fmt(info.get('price_to_book'), 'ratio')} |\n"
+        result += "\n"
+
+        result += "#### Financial Highlights\n\n"
+        result += "| Metric | Value |\n|--------|-------|\n"
+        result += f"| Revenue | {_fmt(info.get('revenue'), 'currency')} |\n"
+        result += f"| Gross Profit | {_fmt(info.get('gross_profit'), 'currency')} |\n"
+        result += f"| EBITDA | {_fmt(info.get('ebitda'), 'currency')} |\n"
+        result += f"| Net Income | {_fmt(info.get('net_income'), 'currency')} |\n"
+        result += f"| Diluted EPS | {_fmt(info.get('earnings_per_share'), 'ratio')} |\n"
+        result += f"| Profit Margin | {_fmt(info.get('profit_margin'), 'percent')} |\n"
+        result += f"| Operating Margin | {_fmt(info.get('operating_margin'), 'percent')} |\n"
+        result += f"| ROA | {_fmt(info.get('return_on_assets'), 'percent')} |\n"
+        result += f"| ROE | {_fmt(info.get('return_on_equity'), 'percent')} |\n"
+        result += "\n"
+
+        result += "#### Trading Information\n\n"
+        result += "| Metric | Value |\n|--------|-------|\n"
+        result += f"| Current Price | {_fmt(info.get('price'), 'currency')} |\n"
+        result += f"| Previous Close | {_fmt(info.get('previous_close'), 'currency')} |\n"
+        result += f"| Beta | {_fmt(info.get('beta'), 'ratio')} |\n"
+        result += f"| 52-Week High | {_fmt(info.get('fifty_two_week_high'), 'currency')} |\n"
+        result += f"| 52-Week Low | {_fmt(info.get('fifty_two_week_low'), 'currency')} |\n"
+        result += f"| 50-Day Average | {_fmt(info.get('fifty_day_avg'), 'currency')} |\n"
+        result += f"| 200-Day Average | {_fmt(info.get('two_hundred_day_avg'), 'currency')} |\n"
+        result += f"| Avg Volume (3mo) | {_fmt(info.get('avg_volume'), 'number')} |\n"
+        result += f"| Shares Outstanding | {_fmt(info.get('shares_outstanding'), 'number')} |\n"
+        result += f"| Float Shares | {_fmt(info.get('float_shares'), 'number')} |\n"
+        result += f"| Short Ratio | {_fmt(info.get('short_ratio'), 'ratio')} |\n"
+        result += "\n"
+
+        result += "#### Dividend Info\n\n"
+        result += "| Metric | Value |\n|--------|-------|\n"
+        result += f"| Dividend Rate | {_fmt(info.get('dividend_rate'), 'currency')} |\n"
+        result += f"| Dividend Yield | {_fmt(info.get('dividend_yield'), 'percent')} |\n"
+        result += f"| Payout Ratio | {_fmt(info.get('payout_ratio'), 'percent')} |\n"
+        result += "\n"
+
+        result += "#### Analyst Targets\n\n"
+        result += "| Metric | Value |\n|--------|-------|\n"
+        result += f"| Target High | {_fmt(info.get('target_high'), 'currency')} |\n"
+        result += f"| Target Low | {_fmt(info.get('target_low'), 'currency')} |\n"
+        result += f"| Target Mean | {_fmt(info.get('target_mean'), 'currency')} |\n"
+        result += f"| Target Median | {_fmt(info.get('target_median'), 'currency')} |\n"
+        result += f"| Recommendation | {info.get('recommendation', 'N/A')} |\n"
+        result += f"| Number of Analysts | {info.get('num_analysts', 'N/A')} |\n"
+        result += "\n"
+
+        return result
+    except Exception as e:
+        logger.error(f"Error prefetching stock info for {ticker}: {e}")
+        return ""
+
+
+def prefetch_recommendations(ticker: str) -> str:
+    """Prefetch analyst recommendations via yfinance.
+
+    Args:
+        ticker: Stock ticker symbol
+
+    Returns:
+        Markdown formatted recommendations string, or empty string on error
+    """
+    try:
+        import yfinance as yf
+        stock = yf.Ticker(ticker)
+        recs = stock.recommendations
+
+        if recs is None or recs.empty:
+            logger.warning(f"No recommendations for {ticker}")
+            return ""
+
+        return _df_to_markdown(recs, f"Analyst Recommendations: {ticker}")
+    except Exception as e:
+        logger.error(f"Error prefetching recommendations for {ticker}: {e}")
+        return ""
+
+
+def prefetch_company_profile(ticker: str) -> str:
+    """Prefetch company profile data via yfinance.
+
+    Replaces firecrawl profile page scrape for company_overview agent.
+
+    Args:
+        ticker: Stock ticker symbol
+
+    Returns:
+        Markdown formatted company profile string, or empty string on error
+    """
+    try:
+        import yfinance as yf
+        stock = yf.Ticker(ticker)
+        info = stock.info
+
+        if not info:
+            logger.warning(f"No profile info for {ticker}")
+            return ""
+
+        result = f"### Company Profile: {info.get('longName', ticker)}\n\n"
+
+        result += "#### Basic Information\n\n"
+        result += "| Field | Value |\n|-------|-------|\n"
+        result += f"| Company Name | {info.get('longName', 'N/A')} |\n"
+        result += f"| Sector | {info.get('sector', 'N/A')} |\n"
+        result += f"| Industry | {info.get('industry', 'N/A')} |\n"
+        result += f"| Website | {info.get('website', 'N/A')} |\n"
+        employees = info.get('fullTimeEmployees')
+        result += f"| Full-Time Employees | {employees:,} |\n" if employees else "| Full-Time Employees | N/A |\n"
+        city = info.get('city', '')
+        state = info.get('state', '')
+        country = info.get('country', '')
+        address = ", ".join(filter(None, [city, state, country]))
+        result += f"| Headquarters | {address or 'N/A'} |\n"
+        result += "\n"
+
+        description = info.get('longBusinessSummary', '')
+        if description:
+            result += "#### Business Description\n\n"
+            result += f"{description}\n\n"
+
+        officers = info.get('companyOfficers', [])
+        if officers:
+            result += "#### Key Executives\n\n"
+            result += "| Name | Title | Total Pay |\n|------|-------|-----------|\n"
+            for officer in officers[:10]:
+                name = officer.get('name', 'N/A')
+                title = officer.get('title', 'N/A')
+                pay = officer.get('totalPay', 0)
+                pay_str = f"${pay:,.0f}" if pay else "N/A"
+                result += f"| {name} | {title} | {pay_str} |\n"
+            result += "\n"
+
+        return result
+    except Exception as e:
+        logger.error(f"Error prefetching company profile for {ticker}: {e}")
+        return ""
+
+
 def prefetch_us_analysis_data(ticker: str) -> dict:
     """Prefetch all data needed for US stock analysis agents.
 
@@ -186,6 +377,21 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
     market_indices = prefetch_us_market_indices()
     if market_indices:
         result["market_indices"] = market_indices
+
+    # 4. Stock info (for company_status - replaces key-statistics/financials firecrawl + yahoo_finance MCP)
+    stock_info = prefetch_stock_info(ticker)
+    if stock_info:
+        result["stock_info"] = stock_info
+
+    # 5. Recommendations (for company_status - replaces yahoo_finance MCP get_recommendations)
+    recommendations = prefetch_recommendations(ticker)
+    if recommendations:
+        result["recommendations"] = recommendations
+
+    # 6. Company profile (for company_overview - replaces firecrawl profile page)
+    company_profile = prefetch_company_profile(ticker)
+    if company_profile:
+        result["company_profile"] = company_profile
 
     if result:
         logger.info(f"Prefetched US data for {ticker}: {list(result.keys())}")
