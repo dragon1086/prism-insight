@@ -12,7 +12,8 @@ def create_us_market_index_analysis_agent(
     reference_date: str,
     max_years_ago: str,
     max_years: int,
-    language: str = "en"
+    language: str = "en",
+    prefetched_indices: str = None
 ):
     """Create US market index analysis agent
 
@@ -293,8 +294,54 @@ def create_us_market_index_analysis_agent(
 ##Analysis Date: {reference_date}(YYYYMMDD format)
 """
 
+    # Inject prefetched index data if available
+    if prefetched_indices:
+        if language == "ko":
+            # Replace items 1-5 (index data collection) but keep item 6 (perplexity search)
+            old_data_section = f"""## 수집할 데이터
+1. S&P 500 지수 데이터: 도구 호출(yahoo_finance-get_historical_stock_prices), ticker="^GSPC", period="1y", interval="1d"
+2. NASDAQ 종합 데이터: 도구 호출(yahoo_finance-get_historical_stock_prices), ticker="^IXIC", period="1y", interval="1d"
+3. 다우존스 산업평균: 도구 호출(yahoo_finance-get_historical_stock_prices), ticker="^DJI", period="1y", interval="1d"
+4. 러셀 2000 데이터: 도구 호출(yahoo_finance-get_historical_stock_prices), ticker="^RUT", period="1y", interval="1d"
+5. VIX 변동성 지수: 도구 호출(yahoo_finance-get_historical_stock_prices), ticker="^VIX", period="3mo", interval="1d"
+6. 종합 시장 분석: perplexity_ask 도구로"""
+            new_data_section = f"""## 사전 수집된 데이터 (시장 지수)
+다음 데이터가 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요 - 지수 데이터를 위한 도구 호출을 하지 마세요.
+
+{prefetched_indices}
+
+## 추가 수집할 데이터
+1. 종합 시장 분석: perplexity_ask 도구로"""
+            instruction = instruction.replace(old_data_section, new_data_section)
+        else:
+            old_data_section = f"""## Data to Collect
+1. S&P 500 Index Data: Use tool call(yahoo_finance-get_historical_stock_prices) with ticker="^GSPC", period="1y", interval="1d"
+2. NASDAQ Composite Data: Use tool call(yahoo_finance-get_historical_stock_prices) with ticker="^IXIC", period="1y", interval="1d"
+3. Dow Jones Industrial Average: Use tool call(yahoo_finance-get_historical_stock_prices) with ticker="^DJI", period="1y", interval="1d"
+4. Russell 2000 Data: Use tool call(yahoo_finance-get_historical_stock_prices) with ticker="^RUT", period="1y", interval="1d"
+5. VIX Volatility Index: Use tool call(yahoo_finance-get_historical_stock_prices) with ticker="^VIX", period="3mo", interval="1d"
+6. Comprehensive Market Analysis: Use the perplexity_ask tool"""
+            new_data_section = f"""## Pre-collected Data (Market Indices)
+The following data has been pre-collected. Use this data directly for your analysis - DO NOT make tool calls for index data.
+
+{prefetched_indices}
+
+## Additional Data to Collect
+1. Comprehensive Market Analysis: Use the perplexity_ask tool"""
+            instruction = instruction.replace(old_data_section, new_data_section)
+
+        # Update precautions
+        instruction = instruction.replace("- 실제 데이터 수집을 위해 반드시 도구 호출 수행", "- 사전 수집된 데이터와 perplexity 검색 결과를 기반으로 분석합니다")
+        instruction = instruction.replace("- You must make a tool call to collect actual data", "- Analyze based on the pre-collected data and perplexity search results")
+
+    # When index data is prefetched, only need perplexity for market news
+    if prefetched_indices:
+        server_list = ["perplexity"]
+    else:
+        server_list = ["yahoo_finance", "perplexity"]
+
     return Agent(
         name="us_market_index_analysis_agent",
         instruction=instruction,
-        server_names=["yahoo_finance", "perplexity"]
+        server_names=server_list
     )

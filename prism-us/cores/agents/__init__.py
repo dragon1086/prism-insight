@@ -61,7 +61,8 @@ def get_us_agent_directory(
     ticker: str,
     reference_date: str,
     base_sections: List[str],
-    language: str = "en"
+    language: str = "en",
+    prefetched_data: dict = None
 ) -> Dict:
     """
     Returns a directory of agents for each section.
@@ -93,24 +94,35 @@ def get_us_agent_directory(
     max_years = 1
     max_years_ago = (ref_date - timedelta(days=365 * max_years)).strftime("%Y%m%d")
 
+    # Extract prefetched data
+    pf = prefetched_data or {}
+    market_indices = pf.get("market_indices", {})
+    # Combine all index data into one string for the market agent
+    combined_indices = "\n\n".join(market_indices.values()) if market_indices else None
+
     agent_creators = {
         "price_volume_analysis": lambda: create_us_price_volume_analysis_agent(
-            company_name, ticker, reference_date, max_years_ago, max_years, language
+            company_name, ticker, reference_date, max_years_ago, max_years, language,
+            prefetched_data=pf.get("stock_ohlcv")
         ),
         "institutional_holdings_analysis": lambda: create_us_institutional_holdings_analysis_agent(
-            company_name, ticker, reference_date, max_years_ago, max_years, language
+            company_name, ticker, reference_date, max_years_ago, max_years, language,
+            prefetched_data=pf.get("holder_info")
         ),
         "company_status": lambda: create_us_company_status_agent(
-            company_name, ticker, reference_date, urls, language
+            company_name, ticker, reference_date, urls, language,
+            prefetched_data={"stock_info": pf.get("stock_info", ""), "recommendations": pf.get("recommendations", ""), "analysis_estimates": pf.get("analysis_estimates", ""), "financial_statements": pf.get("financial_statements", "")} if pf.get("stock_info") else None
         ),
         "company_overview": lambda: create_us_company_overview_agent(
-            company_name, ticker, reference_date, urls, language
+            company_name, ticker, reference_date, urls, language,
+            prefetched_data={"company_profile": pf.get("company_profile", ""), "holder_info": pf.get("holder_info", ""), "segment_revenue": pf.get("segment_revenue", "")} if pf.get("company_profile") else None
         ),
         "news_analysis": lambda: create_us_news_analysis_agent(
             company_name, ticker, reference_date, language
         ),
         "market_index_analysis": lambda: create_us_market_index_analysis_agent(
-            reference_date, max_years_ago, max_years, language
+            reference_date, max_years_ago, max_years, language,
+            prefetched_indices=combined_indices
         )
     }
 

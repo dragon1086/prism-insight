@@ -129,10 +129,22 @@ async def analyze_us_stock(
         # Always include news_analysis in base_sections for report structure
         base_sections = yfinance_sections + ["news_analysis"]
 
-        # 4. Get US-specific agents
-        agents = get_us_agent_directory(company_name, ticker, reference_date, base_sections, language)
+        # 4. Prefetch data to reduce MCP tool call overhead
+        try:
+            _prefetch_path = Path(__file__).parent / "data_prefetch.py"
+            _prefetch_spec = importlib.util.spec_from_file_location("us_data_prefetch", _prefetch_path)
+            _prefetch_module = importlib.util.module_from_spec(_prefetch_spec)
+            _prefetch_spec.loader.exec_module(_prefetch_module)
+            prefetched = _prefetch_module.prefetch_us_analysis_data(ticker)
+            logger.info(f"Prefetched US data for {ticker}: {list(prefetched.keys()) if prefetched else 'none'}")
+        except Exception as e:
+            logger.warning(f"US data prefetch failed, falling back to MCP: {e}")
+            prefetched = {}
 
-        # 5. Execute base analysis using HYBRID mode
+        # 5. Get US-specific agents (with prefetched data)
+        agents = get_us_agent_directory(company_name, ticker, reference_date, base_sections, language, prefetched_data=prefetched)
+
+        # 6. Execute base analysis using HYBRID mode
         # - yfinance sections: sequential with 2 sec delay (rate limit friendly)
         # - news_analysis: parallel with yfinance sections (uses perplexity, not yfinance)
         logger.info(f"Running US analysis in HYBRID mode for {company_name}...")

@@ -71,12 +71,6 @@ services:
               args: ["--from", "yahoo-finance-mcp", "yahoo-finance-mcp"]
               read_timeout_seconds: 120
 
-            sec_edgar:
-              command: "uvx"
-              args: ["--from", "sec-edgar-mcp", "sec-edgar-mcp"]
-              env:
-                SEC_EDGAR_USER_AGENT: "PRISM-INSIGHT (prism@example.com)"
-              read_timeout_seconds: 120
 
             perplexity:
               command: "npx"

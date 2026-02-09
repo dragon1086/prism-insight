@@ -26,7 +26,7 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
                            - formats: ["markdown"], onlyMainContent: true, maxAge: 7200000 (2-hour cache)
                            - If no news from target date ({reference_date}), collect news from past week
                         
-                        2. If important articles exist, scrape their URLs again with firecrawl_scrape (with maxAge: 7200000)
+                        2. Analyze using news list page titles and summaries only (do NOT scrape individual article URLs - token optimization)
                         
                         ### STEP 2: Identify Sector Leaders and Analyze Trends (Mandatory - Use Perplexity)
                         
@@ -41,23 +41,18 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
                         - Perplexity will return leaders with stock codes (e.g., 크래프톤 259960, 넷마블 251270)
                         - **IMPORTANT**: Always verify the dates in Perplexity's response match {reference_date} or are recent
                         
-                        **2-2. Collect leader news with firecrawl**
-                        - For each leader stock code from Perplexity, use firecrawl_scrape:
-                          `https://finance.naver.com/item/news.naver?code=LEADER_CODE`
-                        - Use maxAge: 7200000 (2-hour cache)
-                        - Check news from past week
-                        
-                        **2-3. Ask Perplexity for sector trend analysis**
+                        **2-2. Ask Perplexity for sector trend analysis**
                         - **perplexity_ask**: "As of {reference_date}, what is the recent trend for {{sector name}} stocks in Korea? 
                            Are the leading stocks showing positive momentum? Provide recent news from {reference_date} or close to it."
                         - Compare: Rising with leaders → High reliability / This stock alone → Possibly temporary
                         
                         ## Tool Usage Principles
-                        
-                        1. **firecrawl priority**: Individual stock news from Naver Finance (most reliable)
-                        2. **perplexity for leaders**: Find sector leaders and analyze trends (ALWAYS specify date: {reference_date})
+
+                        1. **firecrawl 1회만 사용**: Target stock Naver Finance news page only (do NOT scrape individual articles or leader stocks)
+                        2. **perplexity for leaders & trends**: Find sector leaders and analyze trends (ALWAYS specify date: {reference_date})
                         3. **Date verification critical**: Always check dates in Perplexity responses match {reference_date} or are recent
                         4. **Source notation**: [NaverFinance:StockName] / [Perplexity:Number, verified date]
+                        5. **Token optimization**: Minimize firecrawl calls - use Perplexity responses for sector leader analysis instead of scraping
                         
                         ## Tool Guide
                         
@@ -107,15 +102,15 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
                         - No tool usage mentions
 
                         ## Precautions
-                        - Use firecrawl_search to find sector leaders (backup: perplexity)
-                        - Check 2-3 leaders' Naver Finance news (firecrawl_scrape)
+                        - Use Perplexity to find sector leaders and their trends (do NOT scrape leader news pages)
                         - Beware perplexity hallucinations, always verify dates
                         - Prioritize same-day price cause analysis
                         - Specify stock codes for accurate news
-                        - Assess reliability via sector leader movements
+                        - Assess reliability via sector leader movements (using Perplexity data only, no firecrawl for leaders)
                         - Provide deep analysis and insights
                         - Clear source notation: [NaverFinance:StockName] / [Perplexity:Number, Date]
                         - Use only recent info (within 1 month of analysis date)
+                        - Token optimization: firecrawl_scrape only 1 call for target stock news page
 
                         ## Output Format
                         
@@ -139,7 +134,7 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
                            - formats: ["markdown"], onlyMainContent: true, maxAge: 7200000 (2시간 캐시)
                            - 당일({reference_date}) 뉴스가 없으면 최근 1주일 이내 뉴스 수집
                         
-                        2. 중요 기사가 있다면 해당 URL을 다시 firecrawl_scrape로 상세 수집 (maxAge: 7200000 사용)
+                        2. 뉴스 목록 페이지의 제목과 요약만으로 분석 (개별 기사 URL 추가 스크랩 불필요 - 토큰 절약)
                         
                         ### STEP 2: 섹터 주도주 파악 및 동향 분석 (필수 - Perplexity 사용)
                         
@@ -154,23 +149,18 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
                         - Perplexity가 종목코드와 함께 주도주를 알려줄 것임 (예: 크래프톤 259960, 넷마블 251270)
                         - **중요**: Perplexity 답변의 날짜가 {reference_date}와 일치하거나 최신인지 반드시 확인
                         
-                        **2-2. firecrawl로 주도주 뉴스 수집**
-                        - Perplexity가 알려준 각 주도주 종목코드로 firecrawl_scrape 실행:
-                          `https://finance.naver.com/item/news.naver?code=주도주코드`
-                        - maxAge: 7200000 사용 (2시간 캐시)
-                        - 최근 1주일 이내 뉴스 확인
-                        
-                        **2-3. Perplexity에게 섹터 동향 질문**
+                        **2-2. Perplexity에게 섹터 동향 질문**
                         - **perplexity_ask**: "{reference_date} 기준으로, {{섹터명}} 섹터의 최근 동향은 어떤가요? 
                            주도주들도 상승세를 보이고 있나요? {reference_date} 또는 그 인근의 최신 뉴스를 중심으로 답변해주세요."
                         - 비교 분석: 주도주와 동반 상승 → 신뢰도 높음 / 이 종목만 상승 → 일시적 가능성
                         
                         ## 도구 사용 원칙
-                        
-                        1. **firecrawl 최우선**: 네이버 금융에서 개별 종목 뉴스 수집 (가장 신뢰할 수 있음)
-                        2. **perplexity로 주도주 찾기**: 섹터 주도주 파악 및 동향 분석 (반드시 날짜 명시: {reference_date})
+
+                        1. **firecrawl 1회만 사용**: 대상 종목 네이버 금융 뉴스 페이지만 스크랩 (개별 기사나 주도주 뉴스 페이지 추가 스크랩 금지)
+                        2. **perplexity로 주도주 및 동향 분석**: 섹터 주도주 파악 및 동향 분석 (반드시 날짜 명시: {reference_date})
                         3. **날짜 검증 필수**: Perplexity 답변의 날짜가 {reference_date}와 일치하거나 최신인지 항상 확인
                         4. **출처 표기**: [네이버금융:종목명] / [Perplexity:번호, 확인된날짜]
+                        5. **토큰 최적화**: firecrawl 호출 최소화 - 섹터 주도주 분석은 Perplexity 답변으로 충분
                         
                         ## 도구 가이드
                         
@@ -227,16 +217,16 @@ def create_news_analysis_agent(company_name, company_code, reference_date, langu
                         - 일반 투자자도 이해할 수 있는 명확한 언어 사용
 
                         ## 주의사항
-                        - 반드시 firecrawl_scrape 도구를 첫 번째로 사용할 것 (네이버 금융은 가장 신뢰할 수 있는 한국 주식 뉴스 소스)
+                        - firecrawl_scrape는 대상 종목 뉴스 페이지 1회만 사용 (개별 기사, 주도주 뉴스 추가 스크랩 금지 - 토큰 절약)
                         - perplexity로 섹터 주도주를 찾을 때 반드시 기준일({reference_date})을 명시하여 최신 정보 요청
                         - perplexity 답변의 날짜를 항상 검증하고, {reference_date}와 동떨어진 정보는 제외
-                        - firecrawl로 주도주 2-3개의 뉴스 페이지 수집 (주가 신뢰도 판단의 핵심)
+                        - 섹터 주도주 동향은 Perplexity 답변만으로 분석 (firecrawl 추가 호출 불필요)
                         - 당일 주가 변동 원인 파악을 최우선으로 하고, 반드시 보고서 첫 부분에 상세히 분석할 것
                         - 검색할 때 반드시 종목코드를 함께 명시하여 정확한 기업의 뉴스만 수집할 것
                         - 유사한 기업명(예: 신풍제약 vs 신풍)의 뉴스를 혼동하지 말 것
                         - 단순 뉴스 나열이 아닌, 깊이 있는 분석과 인사이트 제공
                         - 주가 급등/급락의 경우 구체적인 원인 분석에 집중
-                        - 섹터 주도주 움직임을 분석하여 주가 상승의 신뢰도 판단
+                        - 섹터 주도주 움직임은 Perplexity 답변을 기반으로 분석하여 주가 상승의 신뢰도 판단
                         - 시장 전문가처럼 통찰력 있는 분석 제공
                         - 검색된 뉴스가 부족한 경우 솔직하게 언급하고 가용한 정보만으로 분석
                         - 뉴스 내용을 카테고리별로 명확히 구분하여 정리해 통찰력 있는 분석 제공

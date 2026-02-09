@@ -54,10 +54,22 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         # 3. Define sections to analyze
         base_sections = ["price_volume_analysis", "investor_trading_analysis", "company_status", "company_overview", "news_analysis", "market_index_analysis"]
 
-        # 4. Get agents
-        agents = get_agent_directory(company_name, company_code, reference_date, base_sections, language)
+        # 4. Prefetch data to reduce MCP tool call overhead
+        from cores.data_prefetch import prefetch_kr_analysis_data
+        try:
+            from datetime import timedelta
+            ref_date_obj = datetime.strptime(reference_date, "%Y%m%d")
+            max_years_calc = 1
+            max_years_ago_calc = (ref_date_obj - timedelta(days=365*max_years_calc)).strftime("%Y%m%d")
+            prefetched = prefetch_kr_analysis_data(company_code, reference_date, max_years_ago_calc)
+        except Exception as e:
+            logger.warning(f"Data prefetch failed, falling back to MCP: {e}")
+            prefetched = {}
 
-        # 5. Execute base analysis
+        # 5. Get agents (with prefetched data)
+        agents = get_agent_directory(company_name, company_code, reference_date, base_sections, language, prefetched_data=prefetched)
+
+        # 6. Execute base analysis
         # Parallel processing option: Activated when PRISM_PARALLEL_REPORT=true is set in .env file
         # ⚠️ Warning: Parallel processing greatly improves speed but may hit OpenAI API rate limits.
         # When using advanced models like GPT-5.2, rate limits may be stricter, so be careful.
