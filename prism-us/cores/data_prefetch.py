@@ -289,6 +289,102 @@ def prefetch_recommendations(ticker: str) -> str:
         return ""
 
 
+def prefetch_analysis_estimates(ticker: str) -> str:
+    """Prefetch earnings/revenue estimates and analyst data via yfinance.
+
+    Replaces firecrawl scrape of Yahoo Finance Analysis page for company_status agent.
+
+    Args:
+        ticker: Stock ticker symbol
+
+    Returns:
+        Markdown formatted analysis estimates string, or empty string on error
+    """
+    try:
+        import yfinance as yf
+        stock = yf.Ticker(ticker)
+
+        result = ""
+
+        # 1. Earnings Estimates
+        try:
+            earnings_est = stock.earnings_estimate
+            if earnings_est is not None and not earnings_est.empty:
+                result += _df_to_markdown(earnings_est, f"Earnings Estimates: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No earnings estimates for {ticker}: {e}")
+
+        # 2. Revenue Estimates
+        try:
+            revenue_est = stock.revenue_estimate
+            if revenue_est is not None and not revenue_est.empty:
+                result += _df_to_markdown(revenue_est, f"Revenue Estimates: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No revenue estimates for {ticker}: {e}")
+
+        # 3. EPS Trend
+        try:
+            eps_trend = stock.eps_trend
+            if eps_trend is not None and not eps_trend.empty:
+                result += _df_to_markdown(eps_trend, f"EPS Trend: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No EPS trend for {ticker}: {e}")
+
+        # 4. EPS Revisions
+        try:
+            eps_revisions = stock.eps_revisions
+            if eps_revisions is not None and not eps_revisions.empty:
+                result += _df_to_markdown(eps_revisions, f"EPS Revisions: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No EPS revisions for {ticker}: {e}")
+
+        # 5. Growth Estimates
+        try:
+            growth_est = stock.growth_estimates
+            if growth_est is not None and not growth_est.empty:
+                result += _df_to_markdown(growth_est, f"Growth Estimates: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No growth estimates for {ticker}: {e}")
+
+        # 6. Analyst Price Targets (dict format)
+        try:
+            targets = stock.analyst_price_targets
+            if targets and isinstance(targets, dict):
+                result += f"### Analyst Price Targets: {ticker}\n\n"
+                result += "| Metric | Value |\n|--------|-------|\n"
+                result += f"| Current | ${targets.get('current', 'N/A')} |\n"
+                result += f"| High | ${targets.get('high', 'N/A')} |\n"
+                result += f"| Low | ${targets.get('low', 'N/A')} |\n"
+                result += f"| Mean | ${targets.get('mean', 'N/A')} |\n"
+                result += f"| Median | ${targets.get('median', 'N/A')} |\n"
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No analyst price targets for {ticker}: {e}")
+
+        # 7. Recommendations Summary
+        try:
+            rec_summary = stock.recommendations_summary
+            if rec_summary is not None and not rec_summary.empty:
+                result += _df_to_markdown(rec_summary, f"Recommendations Summary: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No recommendations summary for {ticker}: {e}")
+
+        if not result:
+            logger.warning(f"No analysis estimates data for {ticker}")
+            return ""
+
+        return result
+    except Exception as e:
+        logger.error(f"Error prefetching analysis estimates for {ticker}: {e}")
+        return ""
+
+
 def prefetch_company_profile(ticker: str) -> str:
     """Prefetch company profile data via yfinance.
 
@@ -392,6 +488,11 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
     company_profile = prefetch_company_profile(ticker)
     if company_profile:
         result["company_profile"] = company_profile
+
+    # 7. Analysis estimates (for company_status - replaces firecrawl Analysis page)
+    analysis_estimates = prefetch_analysis_estimates(ticker)
+    if analysis_estimates:
+        result["analysis_estimates"] = analysis_estimates
 
     if result:
         logger.info(f"Prefetched US data for {ticker}: {list(result.keys())}")

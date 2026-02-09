@@ -238,8 +238,46 @@ Company: {company_name} ({ticker})
     # Inject prefetched data: replace firecrawl key-statistics/financials + yahoo_finance MCP with pre-collected data
     pf = prefetched_data or {}
     has_prefetch = bool(pf.get("stock_info"))
+    has_analysis = bool(pf.get("analysis_estimates"))
 
-    if has_prefetch:
+    if has_prefetch and has_analysis:
+        # Full prefetch - no firecrawl needed
+        prefetch_block = f"""## Pre-collected Data (Company Status)
+The following data has been pre-collected via yfinance. Use this data directly for analysis.
+DO NOT scrape any Yahoo Finance pages. DO NOT call yahoo_finance MCP tools.
+
+{pf['stock_info']}
+{pf.get('recommendations', '')}
+
+### Analysis Estimates Data
+
+{pf.get('analysis_estimates', '')}
+
+## Additional Data to Collect
+
+### From sec_edgar MCP Server (Official SEC XBRL Data - More Accurate):
+   - Use tool call(name: sec_edgar-get_financials) with identifier="{ticker}", statement_type="all"
+   - Use tool call(name: sec_edgar-get_key_metrics) with identifier="{ticker}"
+"""
+        prefetch_block_ko = f"""## 사전 수집된 데이터 (기업 현황)
+다음 데이터가 yfinance를 통해 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요.
+Yahoo Finance 페이지 스크랩 금지. yahoo_finance MCP 도구 호출 금지.
+
+{pf['stock_info']}
+{pf.get('recommendations', '')}
+
+### 분석 추정치 데이터
+
+{pf.get('analysis_estimates', '')}
+
+## 추가 수집할 데이터
+
+### sec_edgar MCP 서버 (공식 SEC XBRL 데이터 - 더 정확):
+   - 도구 호출(name: sec_edgar-get_financials), identifier="{ticker}", statement_type="all"
+   - 도구 호출(name: sec_edgar-get_key_metrics), identifier="{ticker}"
+"""
+    elif has_prefetch:
+        # Partial prefetch - still need Analysis page firecrawl
         prefetch_block = f"""## Pre-collected Data (Company Status)
 The following data has been pre-collected via yfinance. Use this data directly for analysis.
 DO NOT scrape Key Statistics or Financials pages. DO NOT call yahoo_finance MCP tools.
@@ -295,11 +333,15 @@ Key Statistics, Financials 페이지 스크랩 금지. yahoo_finance MCP 도구 
             if start_idx != -1 and end_idx != -1:
                 instruction = instruction[:start_idx] + prefetch_block + "\n" + instruction[end_idx:]
 
-    # When prefetched: only need firecrawl (for analysis page) + sec_edgar
-    # Remove yahoo_finance (prefetched via stock_info + recommendations)
-    if has_prefetch:
+    # Server selection based on prefetch status
+    if has_prefetch and has_analysis:
+        # Full prefetch - no firecrawl needed at all
+        servers = ["sec_edgar"]
+    elif has_prefetch:
+        # Partial prefetch - still need firecrawl for Analysis page
         servers = ["firecrawl", "sec_edgar"]
     else:
+        # No prefetch - need all servers
         servers = ["firecrawl", "yahoo_finance", "sec_edgar"]
 
     return Agent(
