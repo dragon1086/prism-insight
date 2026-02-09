@@ -276,6 +276,21 @@ Yahoo Finance 페이지 스크랩 금지. yahoo_finance MCP 도구 호출 금지
    - 도구 호출(name: sec_edgar-get_financials), identifier="{ticker}", statement_type="all"
    - 도구 호출(name: sec_edgar-get_key_metrics), identifier="{ticker}"
 """
+        # Inject prefetch block into instruction
+        if language == "ko":
+            start_marker = "## 수집할 데이터"
+            end_marker = "## 분석 방향"
+            start_idx = instruction.find(start_marker)
+            end_idx = instruction.find(end_marker)
+            if start_idx != -1 and end_idx != -1:
+                instruction = instruction[:start_idx] + prefetch_block_ko + "\n" + instruction[end_idx:]
+        else:
+            start_marker = "## Data to Collect"
+            end_marker = "## Analysis Direction"
+            start_idx = instruction.find(start_marker)
+            end_idx = instruction.find(end_marker)
+            if start_idx != -1 and end_idx != -1:
+                instruction = instruction[:start_idx] + prefetch_block + "\n" + instruction[end_idx:]
     elif has_prefetch:
         # Partial prefetch - still need Analysis page firecrawl
         prefetch_block = f"""## Pre-collected Data (Company Status)
