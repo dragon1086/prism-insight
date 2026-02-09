@@ -762,36 +762,41 @@ def prefetch_segment_revenue(ticker: str) -> str:
             logger.warning(f"No SEC filings for {ticker}")
             return ""
 
-        # Find latest 10-K
-        tenk = None
+        # Find latest 10-K or 10-Q (whichever is most recent)
+        # sec_filings are returned in date-descending order
+        filing = None
         for f in filings:
-            if f.get('type') == '10-K':
-                tenk = f
+            ftype = f.get('type', '')
+            if ftype in ('10-K', '10-Q'):
+                filing = f
                 break
 
-        if not tenk:
-            logger.warning(f"No 10-K filing found for {ticker}")
+        if not filing:
+            logger.warning(f"No 10-K/10-Q filing found for {ticker}")
             return ""
 
-        url = tenk.get('exhibits', {}).get('10-K', '')
+        filing_type = filing.get('type', '10-K')
+        url = filing.get('exhibits', {}).get(filing_type, '')
         if not url:
-            logger.warning(f"No 10-K exhibit URL for {ticker}")
+            logger.warning(f"No {filing_type} exhibit URL for {ticker}")
             return ""
 
-        # Download 10-K HTML from Yahoo Finance CDN
+        # Download filing HTML from Yahoo Finance CDN
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         resp = urllib.request.urlopen(req, timeout=30)
         html_content = resp.read().decode('utf-8', errors='replace')
 
         if not html_content:
-            logger.warning(f"Empty 10-K HTML for {ticker}")
+            logger.warning(f"Empty {filing_type} HTML for {ticker}")
             return ""
 
         result = _parse_10k_segment_revenue(html_content)
         if result:
-            logger.info(f"Parsed segment revenue for {ticker} from 10-K ({len(html_content):,} chars HTML)")
+            # Update title to reflect actual filing type
+            result = result.replace("from 10-K filing", f"from {filing_type} filing")
+            logger.info(f"Parsed segment revenue for {ticker} from {filing_type} ({len(html_content):,} chars HTML)")
         else:
-            logger.warning(f"No segment revenue data found in 10-K for {ticker}")
+            logger.warning(f"No segment revenue data found in {filing_type} for {ticker}")
 
         return result
     except Exception as e:
