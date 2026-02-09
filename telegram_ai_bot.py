@@ -205,85 +205,112 @@ def generate_triggers_message(db_path: str) -> str:
                 return 'C'
 
         grade_emoji = {'A': '🟢', 'B': '🔵', 'C': '🟡', 'D': '⚪'}
+        grade_label = {
+            'A': '높은 신뢰 — 분석+매매 모두 검증됨',
+            'B': '보통 신뢰 — 분석 정확도 양호',
+            'C': '낮은 신뢰 — 주의 필요',
+            'D': '판단 보류 — 데이터 부족',
+        }
+
+        def _format_trigger_line(trigger_type, analysis_data, trading_data):
+            """Format a single trigger line with detailed stats."""
+            completed = analysis_data.get('completed', 0) or 0
+            total = analysis_data.get('total', 0) or 0
+            wins = analysis_data.get('wins', 0) or 0
+            avg_return = analysis_data.get('avg_return')
+            trade_count = trading_data.get('count', 0) or 0
+            trade_wins = trading_data.get('wins', 0) or 0
+            avg_profit = trading_data.get('avg_profit')
+
+            grade = compute_grade(trigger_type, analysis_data, trading_data)
+            emoji = grade_emoji[grade]
+
+            if completed == 0:
+                line = f"{emoji} {trigger_type} [{grade}]\n   추적 중 ({total}건 분석 대기)"
+            elif completed < 3:
+                line = f"{emoji} {trigger_type} [{grade}]\n   데이터 부족 — {completed}건 완료 (최소 3건 필요)"
+            else:
+                analysis_win_rate = int(wins / completed * 100)
+                return_str = f", 평균수익 {avg_return * 100:+.1f}%" if avg_return is not None else ""
+                parts = [f"{emoji} {trigger_type} [{grade}]"]
+                parts.append(f"   분석 승률 {analysis_win_rate}% ({wins}/{completed}건{return_str})")
+                if trade_count > 0:
+                    trading_win_rate = int(trade_wins / trade_count * 100)
+                    profit_str = f", 평균손익 {avg_profit * 100:+.1f}%" if avg_profit is not None else ""
+                    parts.append(f"   매매 승률 {trading_win_rate}% ({trade_wins}/{trade_count}건{profit_str})")
+                else:
+                    parts.append("   매매 이력 없음")
+                line = '\n'.join(parts)
+
+            return grade, completed, line
 
         # Build message
-        msg_parts = ["📡 트리거 신뢰도 리포트\n"]
+        msg_parts = ["📡 트리거 신뢰도 리포트"]
+        msg_parts.append("━━━━━━━━━━━━━━━━━━━━")
+        msg_parts.append("AI가 종목을 발견한 '이유(트리거)'별로")
+        msg_parts.append("과거 분석 정확도와 실매매 성과를 비교합니다.\n")
+
+        # Grade legend
+        msg_parts.append("등급 기준:")
+        for g in ['A', 'B', 'C', 'D']:
+            msg_parts.append(f"  {grade_emoji[g]} {g} — {grade_label[g]}")
 
         # KR section
         msg_parts.append("\n🇰🇷 한국시장")
+        msg_parts.append("─────────────────")
         kr_triggers = []
         for trigger_type, analysis_data in kr_analysis.items():
             trading_data = kr_trading.get(trigger_type, {})
-            completed = analysis_data.get('completed', 0) or 0
-            total = analysis_data.get('total', 0) or 0
-            wins = analysis_data.get('wins', 0) or 0
-            trade_count = trading_data.get('count', 0) or 0
-            trade_wins = trading_data.get('wins', 0) or 0
+            kr_triggers.append(_format_trigger_line(trigger_type, analysis_data, trading_data))
 
-            grade = compute_grade(trigger_type, analysis_data, trading_data)
-            emoji = grade_emoji[grade]
-
-            if completed == 0:
-                line = f"{emoji} {trigger_type} — 추적 중 ({total}건)"
-            elif completed < 3:
-                line = f"{emoji} {trigger_type} — 데이터 부족 ({completed}건)"
-            elif trade_count > 0:
-                analysis_win_rate = int(wins / completed * 100)
-                trading_win_rate = int(trade_wins / trade_count * 100)
-                line = f"{emoji} {trigger_type} — 분석 {analysis_win_rate}% ({completed}건), 매매 {trading_win_rate}% ({trade_count}건)"
-            else:
-                analysis_win_rate = int(wins / completed * 100)
-                line = f"{emoji} {trigger_type} — 분석 {analysis_win_rate}% ({completed}건)"
-
-            kr_triggers.append((grade, completed, line))
-
-        # Sort by grade (A > B > C > D) then by completed count
         grade_order = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
         kr_triggers.sort(key=lambda x: (grade_order[x[0]], -x[1]))
 
-        for _, _, line in kr_triggers:
-            msg_parts.append(line)
+        if kr_triggers:
+            for _, _, line in kr_triggers:
+                msg_parts.append(line)
+        else:
+            msg_parts.append("  데이터 없음")
 
         # US section
         msg_parts.append("\n🇺🇸 미국시장")
+        msg_parts.append("─────────────────")
         us_triggers = []
         for trigger_type, analysis_data in us_analysis.items():
             trading_data = us_trading.get(trigger_type, {})
-            completed = analysis_data.get('completed', 0) or 0
-            total = analysis_data.get('total', 0) or 0
-            wins = analysis_data.get('wins', 0) or 0
-            trade_count = trading_data.get('count', 0) or 0
-            trade_wins = trading_data.get('wins', 0) or 0
-
-            grade = compute_grade(trigger_type, analysis_data, trading_data)
-            emoji = grade_emoji[grade]
-
-            if completed == 0:
-                line = f"{emoji} {trigger_type} — 추적 중 ({total}건)"
-            elif completed < 3:
-                line = f"{emoji} {trigger_type} — 데이터 부족 ({completed}건)"
-            elif trade_count > 0:
-                analysis_win_rate = int(wins / completed * 100)
-                trading_win_rate = int(trade_wins / trade_count * 100)
-                line = f"{emoji} {trigger_type} — 분석 {analysis_win_rate}% ({completed}건), 매매 {trading_win_rate}% ({trade_count}건)"
-            else:
-                analysis_win_rate = int(wins / completed * 100)
-                line = f"{emoji} {trigger_type} — 분석 {analysis_win_rate}% ({completed}건)"
-
-            us_triggers.append((grade, completed, line))
+            us_triggers.append(_format_trigger_line(trigger_type, analysis_data, trading_data))
 
         us_triggers.sort(key=lambda x: (grade_order[x[0]], -x[1]))
 
-        for _, _, line in us_triggers:
-            msg_parts.append(line)
+        if us_triggers:
+            for _, _, line in us_triggers:
+                msg_parts.append(line)
+        else:
+            msg_parts.append("  데이터 없음")
 
-        # Find best trigger
+        # Summary & insight
+        msg_parts.append("\n━━━━━━━━━━━━━━━━━━━━")
+
         all_triggers = kr_triggers + us_triggers
-        if all_triggers:
-            best_trigger = all_triggers[0]
-            best_grade = best_trigger[0]
-            best_name = best_trigger[2].split(' — ')[0].replace('🟢 ', '').replace('🔵 ', '').replace('🟡 ', '').replace('⚪ ', '')
-            msg_parts.append(f"\n💡 최고 신뢰 트리거: {best_name} ({best_grade}등급)")
+        a_grade = [t for t in all_triggers if t[0] == 'A']
+        c_or_d = [t for t in all_triggers if t[0] in ('C', 'D')]
+
+        if a_grade:
+            best_name = a_grade[0][2].split('[')[0].strip().lstrip('🟢🔵🟡⚪ ')
+            msg_parts.append(f"💡 가장 믿을 만한 트리거: {best_name}")
+            msg_parts.append("   → 이 트리거가 발동되면 매수 적극 검토")
+        elif all_triggers:
+            best = all_triggers[0]
+            best_name = best[2].split('[')[0].strip().lstrip('🟢🔵🟡⚪ ')
+            msg_parts.append(f"💡 현재 최고 트리거: {best_name} ({best[0]}등급)")
+
+        if c_or_d:
+            weak_names = [t[2].split('[')[0].strip().lstrip('🟢🔵🟡⚪ ') for t in c_or_d[:2]]
+            msg_parts.append(f"⚠️ 주의 트리거: {', '.join(weak_names)}")
+            msg_parts.append("   → 이 트리거의 종목은 신중하게 판단하세요")
+
+        msg_parts.append("\n분석 승률 = AI 예측이 맞은 비율")
+        msg_parts.append("매매 승률 = 실제 매수 후 수익 비율")
 
         return '\n'.join(msg_parts)
 
