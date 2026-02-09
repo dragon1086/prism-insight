@@ -445,6 +445,87 @@ def prefetch_company_profile(ticker: str) -> str:
         return ""
 
 
+def prefetch_financial_statements(ticker: str) -> str:
+    """Prefetch financial statements (income statement, balance sheet, cash flow) via yfinance.
+
+    Replaces SEC EDGAR get_financials/get_key_metrics calls.
+
+    Args:
+        ticker: Stock ticker symbol
+
+    Returns:
+        Markdown formatted financial statements string, or empty string on error
+    """
+    try:
+        import yfinance as yf
+        stock = yf.Ticker(ticker)
+
+        result = ""
+
+        # Annual income statement
+        try:
+            income = stock.income_stmt
+            if income is not None and not income.empty:
+                result += _df_to_markdown(income, f"Annual Income Statement: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No annual income statement for {ticker}: {e}")
+
+        # Annual balance sheet
+        try:
+            balance = stock.balance_sheet
+            if balance is not None and not balance.empty:
+                result += _df_to_markdown(balance, f"Annual Balance Sheet: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No annual balance sheet for {ticker}: {e}")
+
+        # Annual cash flow
+        try:
+            cashflow = stock.cashflow
+            if cashflow is not None and not cashflow.empty:
+                result += _df_to_markdown(cashflow, f"Annual Cash Flow: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No annual cash flow for {ticker}: {e}")
+
+        # Quarterly income statement (latest 4 quarters)
+        try:
+            q_income = stock.quarterly_income_stmt
+            if q_income is not None and not q_income.empty:
+                result += _df_to_markdown(q_income, f"Quarterly Income Statement: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No quarterly income statement for {ticker}: {e}")
+
+        # Quarterly balance sheet
+        try:
+            q_balance = stock.quarterly_balance_sheet
+            if q_balance is not None and not q_balance.empty:
+                result += _df_to_markdown(q_balance, f"Quarterly Balance Sheet: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No quarterly balance sheet for {ticker}: {e}")
+
+        # Quarterly cash flow
+        try:
+            q_cashflow = stock.quarterly_cashflow
+            if q_cashflow is not None and not q_cashflow.empty:
+                result += _df_to_markdown(q_cashflow, f"Quarterly Cash Flow: {ticker}")
+                result += "\n"
+        except Exception as e:
+            logger.debug(f"No quarterly cash flow for {ticker}: {e}")
+
+        if not result:
+            logger.warning(f"No financial statements for {ticker}")
+            return ""
+
+        return result
+    except Exception as e:
+        logger.error(f"Error prefetching financial statements for {ticker}: {e}")
+        return ""
+
+
 def prefetch_us_analysis_data(ticker: str) -> dict:
     """Prefetch all data needed for US stock analysis agents.
 
@@ -493,6 +574,11 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
     analysis_estimates = prefetch_analysis_estimates(ticker)
     if analysis_estimates:
         result["analysis_estimates"] = analysis_estimates
+
+    # 8. Financial statements (for company_status - replaces SEC EDGAR financials)
+    financial_statements = prefetch_financial_statements(ticker)
+    if financial_statements:
+        result["financial_statements"] = financial_statements
 
     if result:
         logger.info(f"Prefetched US data for {ticker}: {list(result.keys())}")

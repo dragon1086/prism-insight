@@ -111,7 +111,7 @@ def get_us_agent_directory(
         ),
         "company_status": lambda: create_us_company_status_agent(
             company_name, ticker, reference_date, urls, language,
-            prefetched_data={"stock_info": pf.get("stock_info", ""), "recommendations": pf.get("recommendations", ""), "analysis_estimates": pf.get("analysis_estimates", "")} if pf.get("stock_info") else None
+            prefetched_data={"stock_info": pf.get("stock_info", ""), "recommendations": pf.get("recommendations", ""), "analysis_estimates": pf.get("analysis_estimates", ""), "financial_statements": pf.get("financial_statements", "")} if pf.get("stock_info") else None
         ),
         "company_overview": lambda: create_us_company_overview_agent(
             company_name, ticker, reference_date, urls, language,

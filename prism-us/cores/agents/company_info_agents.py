@@ -2,20 +2,12 @@
 US Company Information Analysis Agents
 
 Agents for fundamental analysis of US companies.
-Uses firecrawl, yahoo_finance, and sec_edgar MCP servers for comprehensive data.
+Uses yfinance prefetched data for comprehensive financial analysis.
 
-MCP Servers Used:
-- yahoo_finance: Real-time quotes, company info, financials, institutional holders, recommendations
-- sec_edgar: Official SEC filings (10-K/10-Q/8-K), XBRL-parsed financials, key metrics, insider trading
-- firecrawl: Web scraping for Yahoo Finance pages (key statistics, financials, analysis)
-
-Key sec_edgar Tools:
-- get_financials: XBRL-parsed income statement, balance sheet, cash flow (more accurate than scraped)
-- get_key_metrics: Financial ratios and metrics from SEC filings
-- get_recent_filings: List of 10-K, 10-Q, 8-K filings with accession numbers
-- get_filing_sections: Extract specific sections from filings (Item 1, 1A, 7, etc.)
-- get_insider_transactions: Recent insider buy/sell transactions (Form 3, 4, 5)
-- get_insider_summary: Summary of insider trading activity
+All financial data (valuation, income statement, balance sheet, cash flow,
+analyst estimates, institutional holdings) is pre-collected via yfinance and
+injected into agent instructions. No MCP server tools are needed when data
+is fully prefetched.
 """
 
 from mcp_agent.agents.agent import Agent
@@ -44,7 +36,7 @@ def create_us_company_status_agent(
     """
 
     if language == "ko":
-        instruction = f"""당신은 기업 현황 분석 전문가입니다. Yahoo Finance와 SEC 데이터를 수집 및 분석하여 투자자가 쉽게 이해할 수 있는 종합 보고서를 작성해야 합니다.
+        instruction = f"""당신은 기업 현황 분석 전문가입니다. Yahoo Finance 데이터를 수집 및 분석하여 투자자가 쉽게 이해할 수 있는 종합 보고서를 작성해야 합니다.
 URL 접근 시 firecrawl_scrape 도구를 사용하고 formats 파라미터를 ["markdown"]으로, onlyMainContent 파라미터를 true로 설정하세요.
 데이터 수집 시 차트보다 표에 집중하세요.
 가능한 상세하고 정확하며 풍부하게 작성해 주세요.
@@ -71,13 +63,8 @@ URL 접근 시 firecrawl_scrape 도구를 사용하고 formats 파라미터를 [
    - 도구 호출(name: yahoo_finance-get_stock_info), ticker="{ticker}"
    - 도구 호출(name: yahoo_finance-get_recommendations), ticker="{ticker}", recommendation_type="recommendations"
 
-### 5. sec_edgar MCP 서버 (공식 SEC XBRL 데이터 - 더 정확):
-   - 도구 호출(name: sec_edgar-get_financials), identifier="{ticker}", statement_type="all"
-   - 도구 호출(name: sec_edgar-get_key_metrics), identifier="{ticker}"
-
 ## 분석 방향
 1. 기업 개요 및 비즈니스 모델 설명
-   - 핵심 사업 부문과 매출 비중
    - 핵심 경쟁력과 시장 지위
 
 2. 재무 실적 및 추세 분석
@@ -101,8 +88,7 @@ URL 접근 시 firecrawl_scrape 도구를 사용하고 formats 파라미터를 [
    - 목표가 변화 추세 및 현재가와의 괴리
    - 투자 권고 분포 (Buy/Hold/Sell)
 
-6. 주요 주주 및 지분 구조
-   - 내부자 지분율
+6. 기관 투자자 동향
    - 기관 투자자 지분 변화
 
 ## 보고서 구조 (마크다운 제목 형식 필수)
@@ -166,15 +152,8 @@ Please write as detailed, accurate, and rich as possible.
    - Use tool call(name: yahoo_finance-get_stock_info) with ticker="{ticker}"
    - Use tool call(name: yahoo_finance-get_recommendations) with ticker="{ticker}", recommendation_type="recommendations"
 
-### 5. From sec_edgar MCP Server (Official SEC XBRL Data - More Accurate):
-   - Use tool call(name: sec_edgar-get_financials) with identifier="{ticker}", statement_type="all"
-     This returns XBRL-parsed income statement, balance sheet, and cash flow with exact figures
-   - Use tool call(name: sec_edgar-get_key_metrics) with identifier="{ticker}"
-     This returns key financial ratios and metrics from SEC filings
-
 ## Analysis Direction
 1. Company Overview and Business Model Explanation
-   - Core business segments and revenue proportions
    - Core competitiveness and market position
 
 2. Financial Performance and Trend Analysis
@@ -198,8 +177,7 @@ Please write as detailed, accurate, and rich as possible.
    - Target price change trends and divergence from current price
    - Investment recommendation distribution (Buy/Hold/Sell)
 
-6. Major Shareholders and Ownership
-   - Insider ownership percentage
+6. Institutional Investor Trends
    - Institutional ownership changes
 
 ## Report Structure (MUST use markdown heading format)
@@ -244,7 +222,7 @@ Company: {company_name} ({ticker})
         # Full prefetch - no firecrawl needed
         prefetch_block = f"""## Pre-collected Data (Company Status)
 The following data has been pre-collected via yfinance. Use this data directly for analysis.
-DO NOT scrape any Yahoo Finance pages. DO NOT call yahoo_finance MCP tools.
+DO NOT scrape any Yahoo Finance pages. DO NOT call any MCP tools.
 
 {pf['stock_info']}
 {pf.get('recommendations', '')}
@@ -253,15 +231,13 @@ DO NOT scrape any Yahoo Finance pages. DO NOT call yahoo_finance MCP tools.
 
 {pf.get('analysis_estimates', '')}
 
-## Additional Data to Collect
+### Financial Statements Data
 
-### From sec_edgar MCP Server (Official SEC XBRL Data - More Accurate):
-   - Use tool call(name: sec_edgar-get_financials) with identifier="{ticker}", statement_type="all"
-   - Use tool call(name: sec_edgar-get_key_metrics) with identifier="{ticker}"
+{pf.get('financial_statements', '')}
 """
         prefetch_block_ko = f"""## 사전 수집된 데이터 (기업 현황)
 다음 데이터가 yfinance를 통해 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요.
-Yahoo Finance 페이지 스크랩 금지. yahoo_finance MCP 도구 호출 금지.
+Yahoo Finance 페이지 스크랩 금지. MCP 도구 호출 금지.
 
 {pf['stock_info']}
 {pf.get('recommendations', '')}
@@ -270,11 +246,9 @@ Yahoo Finance 페이지 스크랩 금지. yahoo_finance MCP 도구 호출 금지
 
 {pf.get('analysis_estimates', '')}
 
-## 추가 수집할 데이터
+### 재무제표 데이터
 
-### sec_edgar MCP 서버 (공식 SEC XBRL 데이터 - 더 정확):
-   - 도구 호출(name: sec_edgar-get_financials), identifier="{ticker}", statement_type="all"
-   - 도구 호출(name: sec_edgar-get_key_metrics), identifier="{ticker}"
+{pf.get('financial_statements', '')}
 """
         # Inject prefetch block into instruction
         if language == "ko":
@@ -307,10 +281,6 @@ DO NOT scrape Key Statistics or Financials pages. DO NOT call yahoo_finance MCP 
    - Revenue Estimates: Current Qtr, Next Qtr, Current Year, Next Year estimates
    - EPS Trends: Current and past estimates
    - Analyst Recommendations: Buy/Hold/Sell ratings, Target Price
-
-### 2. sec_edgar MCP Server (Official SEC XBRL Data - More Accurate):
-   - Use tool call(name: sec_edgar-get_financials) with identifier="{ticker}", statement_type="all"
-   - Use tool call(name: sec_edgar-get_key_metrics) with identifier="{ticker}"
 """
         prefetch_block_ko = f"""## 사전 수집된 데이터 (기업 현황)
 다음 데이터가 yfinance를 통해 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요.
@@ -326,10 +296,6 @@ Key Statistics, Financials 페이지 스크랩 금지. yahoo_finance MCP 도구 
    - 매출 전망: 당분기, 차분기, 당해연도, 차연도 추정치
    - EPS 추세: 현재 및 과거 추정치
    - 애널리스트 권고: 매수/보유/매도 평가, 목표가
-
-### 2. sec_edgar MCP 서버 (공식 SEC XBRL 데이터 - 더 정확):
-   - 도구 호출(name: sec_edgar-get_financials), identifier="{ticker}", statement_type="all"
-   - 도구 호출(name: sec_edgar-get_key_metrics), identifier="{ticker}"
 """
         if language == "ko":
             # Replace Korean data section
@@ -350,14 +316,14 @@ Key Statistics, Financials 페이지 스크랩 금지. yahoo_finance MCP 도구 
 
     # Server selection based on prefetch status
     if has_prefetch and has_analysis:
-        # Full prefetch - no firecrawl needed at all
-        servers = ["sec_edgar"]
+        # Full prefetch - no MCP servers needed
+        servers = []
     elif has_prefetch:
         # Partial prefetch - still need firecrawl for Analysis page
-        servers = ["firecrawl", "sec_edgar"]
+        servers = ["firecrawl"]
     else:
-        # No prefetch - need all servers
-        servers = ["firecrawl", "yahoo_finance", "sec_edgar"]
+        # No prefetch - need firecrawl and yahoo_finance
+        servers = ["firecrawl", "yahoo_finance"]
 
     return Agent(
         name="us_company_status_agent",
@@ -388,7 +354,7 @@ def create_us_company_overview_agent(
     """
 
     if language == "ko":
-        instruction = f"""당신은 기업 개요 분석 전문가입니다. Yahoo Finance와 SEC 공시 데이터를 수집 및 분석하여 투자자가 쉽게 이해할 수 있는 종합 보고서를 작성해야 합니다.
+        instruction = f"""당신은 기업 개요 분석 전문가입니다. Yahoo Finance 데이터를 수집 및 분석하여 투자자가 쉽게 이해할 수 있는 종합 보고서를 작성해야 합니다.
 URL 접근 시 firecrawl_scrape 도구를 사용하고 formats 파라미터를 ["markdown"]으로, onlyMainContent 파라미터를 true로 설정하세요.
 데이터 수집 시 차트보다 표에 집중하세요.
 
@@ -404,18 +370,6 @@ URL 접근 시 firecrawl_scrape 도구를 사용하고 formats 파라미터를 [
    - 주요 주주: 내부자 지분율, 기관 지분율
    - 상위 기관 투자자: 이름, 보유 주식, 발행주식 대비 비율
    - 상위 뮤추얼펀드 보유자
-
-### 3. SEC Edgar Filings (URL: {urls['sec_filings']}):
-   - 최근 10-K (연간 보고서) 공시
-   - 최근 10-Q (분기 보고서) 공시
-   - 최근 8-K (수시 보고서) 공시
-
-### 4. sec_edgar MCP 서버 (공식 SEC 데이터 - 더 정확):
-   - 도구 호출(name: sec_edgar-get_recent_filings), identifier="{ticker}", form_type="10-K", limit=5
-   - 도구 호출(name: sec_edgar-get_recent_filings), identifier="{ticker}", form_type="10-Q", limit=4
-   - 도구 호출(name: sec_edgar-get_recent_filings), identifier="{ticker}", form_type="8-K", limit=10
-   - 도구 호출(name: sec_edgar-get_insider_transactions), identifier="{ticker}", days=90
-   - 도구 호출(name: sec_edgar-get_insider_summary), identifier="{ticker}", days=180
 
 ## 분석 방향
 1. 기업 기본 정보 분석
@@ -433,22 +387,13 @@ URL 접근 시 firecrawl_scrape 도구를 사용하고 formats 파라미터를 [
    - 주요 임원 변동
    - 조직 구조
 
-4. 최근 SEC 공시 분석 (sec_edgar MCP 데이터 사용)
-   - 최근 10-K 연간 보고서 핵심 내용 (사업 설명, MD&A)
-   - 10-Q 공시의 분기별 실적
-   - 8-K 공시의 주요 이벤트 (실적, 경영진 변동, M&A)
-   - 10-K Item 1A의 위험 요인
-
-5. 지분 구조 및 내부자 활동 분석 (sec_edgar MCP 데이터 사용)
-   - 내부자 지분율 및 최근 Form 4 거래
-   - 내부자 매수 vs 매도 패턴 (강세/약세 신호)
+4. 기관 투자자 동향
    - Yahoo Finance의 기관 투자자 지분 추세
    - 주요 주주 변동 및 시사점
 
-6. 기업 지배구조
-   - 이사회 구성
+5. 기업 지배구조
+   - 이사회 구성 (확인 가능한 범위)
    - 임원 보수 개요
-   - 주주친화 정책
 
 ## 보고서 구조 (마크다운 제목 형식 필수)
 - 보고서 시작 시 줄바꿈 2번 삽입 (\\n\\n)
@@ -483,7 +428,7 @@ URL 접근 시 firecrawl_scrape 도구를 사용하고 formats 파라미터를 [
 ##분석일: {reference_date}(YYYYMMDD 형식)
 """
     else:
-        instruction = f"""You are a company overview analysis expert. You need to collect and analyze data from Yahoo Finance and SEC filings and write a comprehensive report that investors can easily understand.
+        instruction = f"""You are a company overview analysis expert. You need to collect and analyze data from Yahoo Finance and write a comprehensive report that investors can easily understand.
 When accessing URLs, use the firecrawl_scrape tool and set the formats parameter to ["markdown"] and the onlyMainContent parameter to true.
 When collecting data, focus on tables rather than charts.
 
@@ -499,25 +444,6 @@ When collecting data, focus on tables rather than charts.
    - Major Holders: Insider ownership %, Institutional ownership %
    - Top Institutional Holders: Names, shares held, % of outstanding
    - Top Mutual Fund Holders
-
-### 3. From SEC Edgar Filings (Access URL: {urls['sec_filings']}):
-   - Recent 10-K (Annual Report) filings
-   - Recent 10-Q (Quarterly Report) filings
-   - Recent 8-K (Current Report) filings
-
-### 4. From sec_edgar MCP Server (Official SEC Data - More Accurate):
-   - Use tool call(name: sec_edgar-get_recent_filings) with identifier="{ticker}", form_type="10-K", limit=5
-     This returns recent annual reports with accession numbers and filing dates
-   - Use tool call(name: sec_edgar-get_recent_filings) with identifier="{ticker}", form_type="10-Q", limit=4
-     This returns recent quarterly reports
-   - Use tool call(name: sec_edgar-get_recent_filings) with identifier="{ticker}", form_type="8-K", limit=10
-     This returns recent material event disclosures
-   - Use tool call(name: sec_edgar-get_filing_sections) with identifier="{ticker}", accession_number="<accession>", sections=["1", "1A", "7"]
-     Use this to extract specific sections from 10-K: Item 1 (Business), Item 1A (Risk Factors), Item 7 (MD&A)
-   - Use tool call(name: sec_edgar-get_insider_transactions) with identifier="{ticker}", days=90
-     This returns recent insider buy/sell transactions with exact shares and prices
-   - Use tool call(name: sec_edgar-get_insider_summary) with identifier="{ticker}", days=180
-     This returns summary of insider trading activity (total filings, unique insiders, buy/sell patterns)
 
 ## Analysis Direction
 1. Company Basic Information Analysis
@@ -535,22 +461,13 @@ When collecting data, focus on tables rather than charts.
    - Key executive changes
    - Organizational structure
 
-4. Recent SEC Filings Analysis (Use sec_edgar MCP data)
-   - Key takeaways from recent 10-K annual reports (Business description, MD&A)
-   - Quarterly performance from 10-Q filings
-   - Material events from 8-K filings (earnings, management changes, M&A)
-   - Risk factors highlighted in Item 1A of 10-K
-
-5. Ownership Structure and Insider Activity Analysis (Use sec_edgar MCP data)
-   - Insider ownership percentage and recent Form 4 transactions
-   - Insider buying vs selling patterns (bullish/bearish signal)
+4. Institutional Investor Trends
    - Institutional ownership trends from Yahoo Finance
    - Major shareholder changes and implications
 
-6. Corporate Governance
-   - Board composition
+5. Corporate Governance
+   - Board composition (from available data)
    - Executive compensation overview
-   - Shareholder-friendly policies
 
 ## Report Structure (MUST use markdown heading format)
 - Insert 2 newline characters at the start of the report (\\n\\n)
@@ -584,7 +501,7 @@ Company: {company_name} ({ticker})
 ##Analysis Date: {reference_date}(YYYYMMDD format)
 """
 
-    # Inject prefetched data: replace firecrawl profile/holders/sec-filings pages with pre-collected data
+    # Inject prefetched data: replace firecrawl profile/holders pages with pre-collected data
     pf = prefetched_data or {}
     has_prefetch = bool(pf.get("company_profile"))
 
@@ -592,31 +509,17 @@ Company: {company_name} ({ticker})
         holder_data = pf.get('holder_info', '')
         prefetch_block = f"""## Pre-collected Data (Company Overview)
 The following data has been pre-collected via yfinance. Use this data directly for analysis.
-DO NOT scrape Profile, Holders, or SEC Filings pages via firecrawl.
+DO NOT scrape Profile, Holders pages via firecrawl. DO NOT call any MCP tools.
 
 {pf['company_profile']}
 {f"### Institutional Holdings Data{chr(10)}{chr(10)}{holder_data}" if holder_data else ""}
-
-## Data to Collect via sec_edgar MCP (Official SEC Data)
-   - Use tool call(name: sec_edgar-get_recent_filings) with identifier="{ticker}", form_type="10-K", limit=3
-   - Use tool call(name: sec_edgar-get_recent_filings) with identifier="{ticker}", form_type="10-Q", limit=4
-   - Use tool call(name: sec_edgar-get_recent_filings) with identifier="{ticker}", form_type="8-K", limit=5
-   - Use tool call(name: sec_edgar-get_insider_transactions) with identifier="{ticker}", days=90
-   - Use tool call(name: sec_edgar-get_insider_summary) with identifier="{ticker}", days=180
 """
         prefetch_block_ko = f"""## 사전 수집된 데이터 (기업 개요)
 다음 데이터가 yfinance를 통해 사전 수집되었습니다. 이 데이터를 분석에 직접 사용하세요.
-Profile, Holders, SEC Filings 페이지 firecrawl 스크랩 금지.
+Profile, Holders 페이지 firecrawl 스크랩 금지. MCP 도구 호출 금지.
 
 {pf['company_profile']}
 {f"### 기관 투자자 보유 데이터{chr(10)}{chr(10)}{holder_data}" if holder_data else ""}
-
-## sec_edgar MCP 서버로 수집할 데이터 (공식 SEC 데이터)
-   - 도구 호출(name: sec_edgar-get_recent_filings), identifier="{ticker}", form_type="10-K", limit=3
-   - 도구 호출(name: sec_edgar-get_recent_filings), identifier="{ticker}", form_type="10-Q", limit=4
-   - 도구 호출(name: sec_edgar-get_recent_filings), identifier="{ticker}", form_type="8-K", limit=5
-   - 도구 호출(name: sec_edgar-get_insider_transactions), identifier="{ticker}", days=90
-   - 도구 호출(name: sec_edgar-get_insider_summary), identifier="{ticker}", days=180
 """
         if language == "ko":
             start_marker = "## 수집할 데이터"
@@ -633,11 +536,11 @@ Profile, Holders, SEC Filings 페이지 firecrawl 스크랩 금지.
             if start_idx != -1 and end_idx != -1:
                 instruction = instruction[:start_idx] + prefetch_block + "\n" + instruction[end_idx:]
 
-    # When prefetched: only need sec_edgar (firecrawl pages replaced by prefetch)
+    # When prefetched: no MCP servers needed
     if has_prefetch:
-        servers = ["sec_edgar"]
+        servers = []
     else:
-        servers = ["firecrawl", "yahoo_finance", "sec_edgar"]
+        servers = ["firecrawl", "yahoo_finance"]
 
     return Agent(
         name="us_company_overview_agent",
