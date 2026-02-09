@@ -37,7 +37,8 @@ import {
   Globe
 } from "lucide-react"
 import { useLanguage } from "@/components/language-provider"
-import type { TradingInsightsData, TradingPrinciple, TradingJournal, TradingIntuition, SituationAnalysis, JudgmentEvaluation, Market } from "@/types/dashboard"
+import type { TradingInsightsData, TradingPrinciple, TradingJournal, TradingIntuition, SituationAnalysis, JudgmentEvaluation, Market, TriggerReliabilityData } from "@/types/dashboard"
+import { TriggerReliabilityCard } from "./trigger-reliability-card"
 
 type MarketFilter = "all" | "KR" | "US"
 
@@ -202,6 +203,11 @@ export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPage
           </div>
         </div>
       </div>
+
+      {/* Trigger Reliability Card */}
+      {data.trigger_reliability && data.trigger_reliability.trigger_reliability.length > 0 && (
+        <TriggerReliabilityCard data={data.trigger_reliability} market={market} />
+      )}
 
       {/* Two Category Summary Boxes */}
       <div className="grid md:grid-cols-2 gap-4">

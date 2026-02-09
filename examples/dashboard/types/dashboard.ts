@@ -475,10 +475,47 @@ export interface PerformanceAnalysis {
   recommendations: string[]
 }
 
+export interface TriggerReliabilityAnalysis {
+  total_tracked: number
+  completed: number
+  avg_30d_return: number | null
+  win_rate_30d: number | null
+}
+
+export interface TriggerReliabilityTrading {
+  count: number
+  win_rate: number | null
+  avg_profit_rate: number | null
+  profit_factor: number | null
+}
+
+export interface TriggerReliabilityPrinciple {
+  condition: string
+  action: string
+  confidence: number
+  supporting_trades: number
+}
+
+export interface TriggerReliabilityItem {
+  trigger_type: string
+  grade: "A" | "B" | "C" | "D"
+  analysis_accuracy: TriggerReliabilityAnalysis
+  actual_trading: TriggerReliabilityTrading
+  related_principles: TriggerReliabilityPrinciple[]
+  recommendation: string
+}
+
+export interface TriggerReliabilityData {
+  trigger_reliability: TriggerReliabilityItem[]
+  best_trigger: string | null
+  last_updated: string
+}
+
 export interface TradingInsightsData {
   summary: InsightsSummary
   principles: TradingPrinciple[]
   journal_entries: TradingJournal[]
   intuitions: TradingIntuition[]
   performance_analysis?: PerformanceAnalysis
+  trigger_reliability?: TriggerReliabilityData
 }

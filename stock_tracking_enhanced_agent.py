@@ -439,6 +439,13 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                    f"보류 사유: {reason}\n" \
                                    f"분석 의견: {scenario.get('rationale', '정보 없음')}"
 
+                    # Add trigger win rate
+                    trigger_info = getattr(self, 'trigger_info_map', {}).get(ticker, {})
+                    trigger_type_for_rate = trigger_info.get('trigger_type', '')
+                    trigger_win_rate = self._get_trigger_win_rate(trigger_type_for_rate)
+                    if trigger_win_rate:
+                        skip_message += f"\n{trigger_win_rate}"
+
                     self.message_queue.append(skip_message)
                     logger.info(f"Purchase deferred: {company_name}({ticker}) - {reason}")
 
