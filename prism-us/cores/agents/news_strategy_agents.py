@@ -43,7 +43,7 @@ def create_us_news_analysis_agent(
    - formats: ["markdown"], onlyMainContent: true, maxAge: 7200000 (2시간 캐시)
    - 대상 날짜({reference_date}) 뉴스가 없으면 지난 1주일 뉴스 수집
 
-2. 중요 기사가 있으면 해당 URL을 firecrawl_scrape로 다시 스크랩 (maxAge: 7200000 사용)
+2. 뉴스 목록 페이지의 제목과 요약만으로 분석 (개별 기사 URL 추가 스크랩 불필요 - 토큰 절약)
 
 ### STEP 2: 섹터 리더 식별 및 동향 분석 (필수 - Perplexity 사용)
 
@@ -54,11 +54,7 @@ def create_us_news_analysis_agent(
   "As of {ref_year}-{ref_month}-{ref_day}, what are the 2-3 leading stocks in the same sector as {company_name} ({ticker})?
    Please provide ticker symbols and brief reason why they are sector leaders."
 
-**2-2. firecrawl로 리더 뉴스 수집**
-- Perplexity에서 받은 각 리더 티커에 대해 firecrawl_scrape 사용:
-  `https://finance.yahoo.com/quote/LEADER_TICKER/news`
-
-**2-3. Perplexity에 섹터 동향 분석 요청**
+**2-2. Perplexity에 섹터 동향 분석 요청**
 - **perplexity_ask**: "As of {ref_year}-{ref_month}-{ref_day}, what is the recent trend for the sector containing {company_name}?"
 - 비교: 리더와 함께 상승 → 신뢰도 높음 / 이 종목만 → 일시적 가능성
 
@@ -98,13 +94,12 @@ def create_us_news_analysis_agent(
 - 도구 사용 언급 금지
 
 ## 주의사항
-- Yahoo Finance 뉴스에 firecrawl_scrape 먼저 사용 (가장 신뢰할 수 있음)
-- 섹터 리더 및 동향에 Perplexity 사용
-- 2-3개 리더의 Yahoo Finance 뉴스 페이지 확인
+- firecrawl_scrape는 대상 종목 뉴스 페이지 1회만 사용 (개별 기사, 리더 뉴스 추가 스크랩 금지 - 토큰 절약)
+- 섹터 리더 및 동향은 Perplexity 답변만으로 분석 (firecrawl 추가 호출 불필요)
 - perplexity 환각 주의, 항상 날짜 확인
 - 당일 가격 원인 분석 우선
 - 정확한 뉴스 식별을 위해 티커 심볼 사용
-- 섹터 리더 움직임으로 신뢰도 평가
+- 섹터 리더 움직임은 Perplexity 답변 기반으로 신뢰도 평가
 - 깊이 있는 분석과 인사이트 제공
 - 명확한 출처 표기: [YahooFinance:TICKER] / [Perplexity:Number, Date]
 - 최근 정보만 사용 (분석일 기준 1개월 이내)
@@ -131,7 +126,7 @@ def create_us_news_analysis_agent(
    - formats: ["markdown"], onlyMainContent: true, maxAge: 7200000 (2-hour cache)
    - If no news from target date ({reference_date}), collect news from past week
 
-2. If important articles exist, scrape their URLs again with firecrawl_scrape (with maxAge: 7200000)
+2. Analyze using news list page titles and summaries only (do NOT scrape individual article URLs - token optimization)
 
 ### STEP 2: Identify Sector Leaders and Analyze Trends (Mandatory - Use Perplexity)
 
@@ -146,23 +141,18 @@ def create_us_news_analysis_agent(
 - Perplexity will return leaders with tickers (e.g., Apple AAPL, Microsoft MSFT)
 - **IMPORTANT**: Always verify the dates in Perplexity's response match {ref_year}-{ref_month}-{ref_day} or are recent
 
-**2-2. Collect leader news with firecrawl**
-- For each leader ticker from Perplexity, use firecrawl_scrape:
-  `https://finance.yahoo.com/quote/LEADER_TICKER/news`
-- Use maxAge: 7200000 (2-hour cache)
-- Check news from past week
-
-**2-3. Ask Perplexity for sector trend analysis**
+**2-2. Ask Perplexity for sector trend analysis**
 - **perplexity_ask**: "As of {ref_year}-{ref_month}-{ref_day}, what is the recent trend for the sector containing {company_name}?
    Are the leading stocks showing positive momentum? Provide recent news from {ref_year}-{ref_month}-{ref_day} or close to it."
 - Compare: Rising with leaders → High reliability / This stock alone → Possibly temporary
 
 ## Tool Usage Principles
 
-1. **firecrawl priority**: Yahoo Finance news page (most reliable for individual stocks)
-2. **perplexity for leaders**: Find sector leaders and analyze trends (ALWAYS specify date: {ref_year}-{ref_month}-{ref_day})
+1. **firecrawl 1 call only**: Target stock Yahoo Finance news page only (do NOT scrape individual articles or leader stocks)
+2. **perplexity for leaders & trends**: Find sector leaders and analyze trends (ALWAYS specify date: {ref_year}-{ref_month}-{ref_day})
 3. **Date verification critical**: Always check dates in Perplexity responses match analysis date or are recent
 4. **Source notation**: [YahooFinance:TickerSymbol] / [Perplexity:Number, verified date]
+5. **Token optimization**: Minimize firecrawl calls - use Perplexity responses for sector leader analysis instead of scraping
 
 ## Tool Guide
 
@@ -205,13 +195,12 @@ def create_us_news_analysis_agent(
 - No tool usage mentions
 
 ## Precautions
-- Use firecrawl_scrape first for Yahoo Finance news (most reliable)
-- Use Perplexity to find sector leaders and trends (backup: firecrawl search)
-- Check 2-3 leaders' Yahoo Finance news pages
+- firecrawl_scrape only 1 call for target stock news page (do NOT scrape individual articles or leader news - token optimization)
+- Sector leader trends analyzed via Perplexity responses only (no additional firecrawl calls needed)
 - Beware perplexity hallucinations, always verify dates
 - Prioritize same-day price cause analysis
 - Use ticker symbols for accurate news identification
-- Assess reliability via sector leader movements
+- Assess reliability via sector leader movements (using Perplexity data only)
 - Provide deep analysis and insights
 - Clear source notation: [YahooFinance:TICKER] / [Perplexity:Number, Date]
 - Use only recent info (within 1 month of analysis date)

@@ -21,10 +21,10 @@ if __name__ == "__main__":
     start = time.time()
 
     # Execute analysis based on specific date
-    result = asyncio.run(analyze_stock(company_code="036570", company_name="엔씨소프트", reference_date="20251202"))
+    result = asyncio.run(analyze_stock(company_code="036570", company_name="엔씨소프트", reference_date="20260209"))
 
     # Save results
-    with open(f"엔씨소프트_분석보고서_{datetime.now().strftime('%Y%m%d')}_gpt4_1.md", "w", encoding="utf-8") as f:
+    with open(f"엔씨소프트_분석보고서_{datetime.now().strftime('%Y%m%d')}_gpt5_2.md", "w", encoding="utf-8") as f:
         f.write(result)
 
     end = time.time()

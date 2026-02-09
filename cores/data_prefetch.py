@@ -1,45 +1,69 @@
 """
 Data Prefetch Module for Korean Stock Analysis
 
-Pre-fetches stock data using pykrx Python API to inject into agent instructions,
-eliminating the need for kospi_kosdaq MCP server tool calls during analysis.
+Pre-fetches stock data by calling kospi_kosdaq MCP server's library functions directly
+(not via MCP protocol), eliminating MCP tool call round-trips during analysis.
 
-This reduces token usage by avoiding MCP tool call round-trips for predictable,
-parameterized data fetches (OHLCV, index data, trading volume).
+Architecture:
+- Direct call: import kospi_kosdaq_stock_server module → call functions → Dict → markdown
+- MCP fallback: if import fails, agents use MCP tool calls as before (no prefetch)
+
+This mirrors the US module's pattern (us_data_client.py direct import).
 """
 
 import logging
-from datetime import datetime, timedelta
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
-def _df_to_markdown(df: pd.DataFrame, title: str = "") -> str:
-    """Convert DataFrame to markdown table string.
+def _dict_to_markdown(data: dict, title: str = "") -> str:
+    """Convert MCP server's dict response to markdown table string.
+
+    The kospi_kosdaq MCP server functions return Dict[str, Any] with date keys.
+    This converts them back to DataFrame for markdown rendering.
 
     Args:
-        df: DataFrame to convert
+        data: Date-keyed dict from MCP server functions (e.g., {"2026-02-09": {"Open": ..., ...}})
         title: Optional title to prepend
 
     Returns:
-        Markdown table string
+        Markdown table string, or empty string if data is empty/error
     """
-    if df is None or df.empty:
-        return f"### {title}\n\n_No data available_\n" if title else "_No data available_\n"
+    if not data or "error" in data:
+        return ""
+
+    df = pd.DataFrame.from_dict(data, orient='index')
+    if df.empty:
+        return ""
+
+    df.index.name = "Date"
 
     result = ""
     if title:
         result += f"### {title}\n\n"
 
-    # Format the DataFrame as markdown table
     result += df.to_markdown(index=True) + "\n"
     return result
 
 
+def _get_mcp_server_module():
+    """Import kospi_kosdaq_stock_server module for direct library calls.
+
+    Returns:
+        The kospi_kosdaq_stock_server module, or None if import fails
+    """
+    try:
+        import kospi_kosdaq_stock_server as server
+        return server
+    except ImportError:
+        logger.warning("kospi_kosdaq_stock_server module not available, prefetch disabled")
+        return None
+
+
 def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str) -> str:
-    """Prefetch stock OHLCV data using pykrx.
+    """Prefetch stock OHLCV data via kospi_kosdaq MCP server library.
 
     Args:
         company_code: 6-digit stock code (e.g., "005930")
@@ -50,26 +74,20 @@ def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str) -> s
         Markdown formatted OHLCV data string, or empty string on error
     """
     try:
-        from pykrx import stock as pykrx_stock
-
-        df = pykrx_stock.get_market_ohlcv_by_date(start_date, end_date, company_code)
-
-        if df is None or df.empty:
-            logger.warning(f"No OHLCV data for {company_code} ({start_date}~{end_date})")
+        server = _get_mcp_server_module()
+        if not server:
             return ""
 
-        # Rename columns for clarity
-        df.columns = ["Open", "High", "Low", "Close", "Volume", "Change"]
-        df.index.name = "Date"
+        data = server.get_stock_ohlcv(start_date, end_date, company_code)
 
-        return _df_to_markdown(df, f"Stock OHLCV: {company_code} ({start_date}~{end_date})")
+        return _dict_to_markdown(data, f"Stock OHLCV: {company_code} ({start_date}~{end_date})")
     except Exception as e:
         logger.error(f"Error prefetching OHLCV for {company_code}: {e}")
         return ""
 
 
 def prefetch_stock_trading_volume(company_code: str, start_date: str, end_date: str) -> str:
-    """Prefetch investor trading volume data using pykrx.
+    """Prefetch investor trading volume data via kospi_kosdaq MCP server library.
 
     Args:
         company_code: 6-digit stock code
@@ -80,24 +98,20 @@ def prefetch_stock_trading_volume(company_code: str, start_date: str, end_date: 
         Markdown formatted trading volume data string, or empty string on error
     """
     try:
-        from pykrx import stock as pykrx_stock
-
-        df = pykrx_stock.get_market_trading_volume_by_date(start_date, end_date, company_code)
-
-        if df is None or df.empty:
-            logger.warning(f"No trading volume data for {company_code} ({start_date}~{end_date})")
+        server = _get_mcp_server_module()
+        if not server:
             return ""
 
-        df.index.name = "Date"
+        data = server.get_stock_trading_volume(start_date, end_date, company_code)
 
-        return _df_to_markdown(df, f"Investor Trading Volume: {company_code} ({start_date}~{end_date})")
+        return _dict_to_markdown(data, f"Investor Trading Volume: {company_code} ({start_date}~{end_date})")
     except Exception as e:
         logger.error(f"Error prefetching trading volume for {company_code}: {e}")
         return ""
 
 
 def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str) -> str:
-    """Prefetch market index OHLCV data using pykrx.
+    """Prefetch market index OHLCV data via kospi_kosdaq MCP server library.
 
     Args:
         index_ticker: Index ticker ("1001" for KOSPI, "2001" for KOSDAQ)
@@ -108,31 +122,15 @@ def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str) -> s
         Markdown formatted index data string, or empty string on error
     """
     try:
-        from pykrx import stock as pykrx_stock
+        server = _get_mcp_server_module()
+        if not server:
+            return ""
 
         index_name = "KOSPI" if index_ticker == "1001" else "KOSDAQ" if index_ticker == "2001" else index_ticker
 
-        # Try to get index data - pykrx may fail on getting index name, so we wrap it
-        try:
-            df = pykrx_stock.get_index_ohlcv_by_date(start_date, end_date, index_ticker)
-        except KeyError as ke:
-            # If the error is about '지수명' column, try alternative approach
-            if '지수명' in str(ke):
-                logger.warning(f"pykrx index name lookup failed for {index_ticker}, trying raw fetch...")
-                # Use lower-level API that doesn't fetch index name
-                from pykrx.website.krx.market.core import Stock
-                stock = Stock()
-                df = stock.get_index_ohlcv(start_date, end_date, index_ticker, freq='d')
-            else:
-                raise
+        data = server.get_index_ohlcv(start_date, end_date, index_ticker)
 
-        if df is None or df.empty:
-            logger.warning(f"No index data for {index_ticker} ({start_date}~{end_date})")
-            return ""
-
-        df.index.name = "Date"
-
-        return _df_to_markdown(df, f"{index_name} Index ({start_date}~{end_date})")
+        return _dict_to_markdown(data, f"{index_name} Index ({start_date}~{end_date})")
     except Exception as e:
         logger.error(f"Error prefetching index OHLCV for {index_ticker}: {e}")
         return ""
@@ -141,8 +139,8 @@ def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str) -> s
 def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_ago: str) -> dict:
     """Prefetch all data needed for KR stock analysis agents.
 
-    This function gathers all the data that would normally be fetched via
-    kospi_kosdaq MCP server tool calls during analysis.
+    Calls kospi_kosdaq MCP server's library functions directly (not via MCP protocol).
+    If the library is unavailable, returns empty dict and agents fall back to MCP tool calls.
 
     Args:
         company_code: 6-digit stock code
