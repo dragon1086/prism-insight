@@ -330,6 +330,12 @@ Separate commercial license required for SaaS companies.
 
 Analysis information is for reference only, not investment advice. All investment decisions and resulting profits/losses are the investor's responsibility.
 
+### Third-Party Data Sources
+
+PRISM-INSIGHT uses **yfinance** to access Yahoo Finance data for US stock analysis. While the yfinance library is open source (Apache 2.0), **Yahoo Finance data is subject to Yahoo's Terms of Service** which restricts usage to personal, non-commercial purposes. Users who redistribute this data publicly do so at their own risk. Yahoo may block access at any time.
+
+For details on all third-party data source licenses, see [docs/THIRD_PARTY_LICENSES.md](docs/THIRD_PARTY_LICENSES.md).
+
 ---
 
 ## 💝 Sponsorship
