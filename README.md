@@ -16,7 +16,13 @@
 >
 > 13+ specialized AI agents collaborate to detect surge stocks, generate analyst-grade reports, and execute trades automatically.
 
-📖 [한국어 문서](README_ko.md)
+<p align="center">
+  <a href="README.md">English</a> |
+  <a href="README_ko.md">한국어</a> |
+  <a href="README_ja.md">日本語</a> |
+  <a href="README_zh.md">中文</a> |
+  <a href="README_es.md">Español</a>
+</p>
 
 ---
 
@@ -45,6 +51,9 @@ See AI trading performance in real-time:
 Get daily surge stock alerts and AI analysis reports:
 - 🇺🇸 **[English Channel](https://t.me/prism_insight_global_en)**
 - 🇰🇷 **[Korean Channel](https://t.me/stock_ai_agent)**
+- 🇯🇵 **[Japanese Channel](https://t.me/prism_insight_global_ja)**
+- 🇨🇳 **[Chinese Channel](https://t.me/prism_insight_global_zh)**
+- 🇪🇸 **[Spanish Channel](https://t.me/prism_insight_global_es)**
 
 ### 3. Sample Report
 Watch an AI-generated Apple Inc. analysis report:

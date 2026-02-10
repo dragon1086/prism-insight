@@ -16,7 +16,13 @@
 >
 > 13개 이상의 전문화된 AI 에이전트가 협업하여 급등주를 포착하고, 애널리스트급 리포트를 생성하며, 자동으로 매매를 실행합니다.
 
-📖 [English Documentation](README.md)
+<p align="center">
+  <a href="README.md">English</a> |
+  <a href="README_ko.md">한국어</a> |
+  <a href="README_ja.md">日本語</a> |
+  <a href="README_zh.md">中文</a> |
+  <a href="README_es.md">Español</a>
+</p>
 
 ---
 
@@ -45,6 +51,9 @@ AI 매매 성과를 실시간으로 확인하세요:
 매일 급등주 알림과 AI 분석 리포트를 받아보세요:
 - 🇰🇷 **[한국 채널](https://t.me/stock_ai_agent)**
 - 🇺🇸 **[영어 채널](https://t.me/prism_insight_global_en)**
+- 🇯🇵 **[일본어 채널](https://t.me/prism_insight_global_ja)**
+- 🇨🇳 **[중국어 채널](https://t.me/prism_insight_global_zh)**
+- 🇪🇸 **[스페인어 채널](https://t.me/prism_insight_global_es)**
 
 ### 3. 샘플 리포트
 AI가 생성한 Apple Inc. 분석 리포트를 확인하세요:
