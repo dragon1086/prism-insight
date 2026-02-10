@@ -361,7 +361,7 @@ You need to read stock analysis reports and generate trading scenarios in JSON f
 
 **Step 0: Market Environment Assessment**
 Check S&P 500 (^GSPC) last 20 days with yahoo_finance-get_historical_stock_prices:
-- Bull Market: S&P 500 above 20-day MA + rose 5%+ in last 2 weeks
+- Bull Market: S&P 500 above 20-day MA + (rose 2%+ in last 4 weeks OR rose 3%+ in last 2 weeks)
 - Bear/Sideways Market: Above conditions not met
 
 **Bear/Sideways Criteria (Strict - No Change):**
@@ -421,8 +421,8 @@ Check from us_stock_holdings table:
 
 ### 2. Stock Evaluation (1~10 points)
 - **8~10 points**: Active entry (undervalued vs peers + strong momentum)
-- **7 points**: Entry (basic conditions met)
-- **6 points**: Conditional entry (bull market + momentum confirmed)
+- **7 points**: Entry (solid risk/reward with acceptable fundamentals)
+- **6 points**: Entry with caution (momentum present, manageable risk factors)
 - **5 points or less**: No entry (clear negative factors exist)
 
 ### 3. Entry Decision Required Checks
@@ -523,10 +523,10 @@ Add buy score when these signals confirmed:
 - If stop loss within -7% possible, R/R 1.2+ is OK
 - **For No Entry: Must specify 1+ "negative factor" below**
 
-**Bear/Sideways Market (Stay Conservative):**
-- 7 points + strong momentum + undervalued → Consider entry
-- 8 points + normal conditions + positive outlook → Consider entry
-- 9+ points + valuation attractive → Active entry
+**Bear/Sideways Market (Selective but Active):**
+- 6 points + strong momentum + R/R 2.0+ → Entry with tight stop (-5%)
+- 7 points + acceptable risk/reward → Entry
+- 8+ points → Active entry
 - Conservative approach when explicit warnings or negative outlook
 
 ### 6. No Entry Justification Requirements (Bull Market)
@@ -577,7 +577,7 @@ Wrong (may fail parsing):
     "valuation_analysis": "Peer valuation comparison results",
     "sector_outlook": "Industry outlook and trends",
     "buy_score": Score between 1~10,
-    "min_score": Market-adaptive minimum entry score (Bull: 6, Bear/Sideways: 7),
+    "min_score": Market-adaptive minimum entry score (Bull: 5, Bear/Sideways: 6),
     "decision": "Enter" or "No Entry",
     "entry_checklist_passed": Number of checks passed (out of 6),
     "rejection_reason": "For No Entry: specific negative factor (null or empty for Enter)",
