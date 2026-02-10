@@ -116,6 +116,7 @@ class USStockAnalysisOrchestrator:
 
         self.selected_tickers = {}
         self.telegram_config = telegram_config or TelegramConfig(use_telegram=True)
+        self._broadcast_tasks = []  # Collect fire-and-forget broadcast tasks
 
     @staticmethod
     def _extract_base64_images(markdown_text: str) -> tuple:
@@ -419,7 +420,9 @@ class USStockAnalysisOrchestrator:
                     except Exception as e:
                         logger.error(f"Error reading message file {mp}: {str(e)}")
                 if message_contents:
-                    asyncio.create_task(self._send_translated_messages(bot_agent, message_contents))
+                    self._broadcast_tasks.append(
+                        asyncio.create_task(self._send_translated_messages(bot_agent, message_contents))
+                    )
 
             # Send messages to main channel (this moves files to sent folder)
             await bot_agent.process_messages_directory(
@@ -440,7 +443,9 @@ class USStockAnalysisOrchestrator:
 
             # Send translated PDFs to broadcast channels asynchronously (non-blocking)
             if self.telegram_config.broadcast_languages and report_paths:
-                asyncio.create_task(self._send_translated_pdfs(bot_agent, report_paths))
+                self._broadcast_tasks.append(
+                        asyncio.create_task(self._send_translated_pdfs(bot_agent, report_paths))
+                    )
 
         except Exception as e:
             logger.error(f"Error during telegram message transmission: {str(e)}")
@@ -635,7 +640,9 @@ class USStockAnalysisOrchestrator:
 
                 # Send to broadcast channels asynchronously (non-blocking)
                 if self.telegram_config.broadcast_languages:
-                    asyncio.create_task(self._send_translated_trigger_alert(bot_agent, message, mode))
+                    self._broadcast_tasks.append(
+                        asyncio.create_task(self._send_translated_trigger_alert(bot_agent, message, mode))
+                    )
 
                 return success
 
@@ -877,6 +884,16 @@ class USStockAnalysisOrchestrator:
                     logger.error(traceback.format_exc())
             else:
                 logger.warning("No US reports generated, not executing tracking system batch.")
+
+            # Wait for all background broadcast tasks before exiting
+            if self._broadcast_tasks:
+                logger.info(f"Waiting for {len(self._broadcast_tasks)} broadcast translation task(s) to complete...")
+                results = await asyncio.gather(*self._broadcast_tasks, return_exceptions=True)
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        logger.error(f"Broadcast task {i+1} failed: {result}")
+                self._broadcast_tasks.clear()
+                logger.info("All broadcast translation tasks completed")
 
             logger.info(f"US full pipeline complete - mode: {mode}")
 
