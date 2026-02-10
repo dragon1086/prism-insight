@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.4.1 | **Updated**: 2026-02-11
+> **Version**: 2.4.2 | **Updated**: 2026-02-11
 
 ## Quick Overview
 
@@ -196,6 +196,7 @@ For comprehensive guides, see:
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.4.2 | 2026-02-11 | **Broadcast finally 블록 수정 + 언어별 병렬 처리** - broadcast gather를 `finally` 블록으로 이동 (early return/예외 시에도 반드시 대기), `_send_translated_messages`·`_send_translated_pdfs`·`_send_translated_trigger_alert` 언어별 `asyncio.gather()` 병렬 처리 (KR/US 6개 메서드), 다국어 채널 PDF 생성 중단 버그 해결 |
 | 2.4.1 | 2026-02-11 | **다국어 채널 + Broadcast 논블락킹 + US 진입전략 수정** - KR/US 결정문자열 정규화(`_normalize_decision`), US 0% 진입률 버그 수정 (bull detection 완화, score 6 정의 변경, min_score 하향, score-decision 일관성 강제), KR score-decision 일관성 강제 추가, Broadcast 번역 논블락킹 전환 (fire-and-forget + 파이프라인 끝 수거), 언어별 병렬 번역 (`asyncio.gather`), ja/zh/es 다국어 텔레그램 채널 지원, Firebase Bridge lang 필드 추가 |
 | 2.4.0 | 2026-02-10 | **직접 API prefetch + 트리거 신뢰도 카드 + Firebase Bridge** - pykrx(KR)/yfinance(US) 직접 호출로 MCP·Firecrawl·Perplexity 호출 대폭 절감 (API 비용 KR ~50%, US ~30% 절감), 트리거별 A/B/C/D 신뢰도 등급 카드 (대시보드+텔레그램+주간리포트), Firebase Bridge opt-in 모듈 (PRISM-Mobile 연동 기반), /triggers 명령어 및 주간 인사이트 리포트 추가 |
 | 2.3.0 | 2026-02-07 | **자기개선 매매 피드백 루프 완성** - Performance Tracker 데이터 KR/US 공통 반영, LLM 노이즈 제거, US 대시보드 AI보유 분석 수정, 보편 원칙 필터 강화 (supporting_trades>=2, LIMIT 5), 보안 강화, 스폰서 배지 |
