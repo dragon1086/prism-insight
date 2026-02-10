@@ -9,6 +9,7 @@ Set FIREBASE_BRIDGE_ENABLED=true in .env to activate.
 This is a PRISM-Mobile specific feature, not required for core prism-insight usage.
 """
 
+import json
 import logging
 import os
 import re
@@ -81,6 +82,47 @@ def _initialize():
 # Channel username for constructing telegram links (configurable via env)
 TELEGRAM_CHANNEL_USERNAME = os.environ.get('TELEGRAM_CHANNEL_USERNAME', 'stock_ai_agent')
 
+# Multi-channel username mapping: JSON dict of chat_id -> public username
+# e.g. TELEGRAM_CHANNEL_USERNAMES='{"-1001234567890":"stock_ai_agent","-1009876543210":"prism_insight_global_en"}'
+# Also supports per-language env vars: TELEGRAM_CHANNEL_USERNAME_EN, TELEGRAM_CHANNEL_USERNAME_JA, etc.
+_channel_usernames_cache = None
+
+
+def _get_channel_username(channel_id: Optional[str]) -> str:
+    """Resolve Telegram chat_id to public channel username for deep links.
+
+    Lookup order:
+    1. TELEGRAM_CHANNEL_USERNAMES JSON mapping (chat_id -> username)
+    2. TELEGRAM_CHANNEL_ID_{LANG} / TELEGRAM_CHANNEL_USERNAME_{LANG} pairs
+    3. Fallback to TELEGRAM_CHANNEL_USERNAME (default)
+    """
+    if not channel_id:
+        return TELEGRAM_CHANNEL_USERNAME
+
+    global _channel_usernames_cache
+    if _channel_usernames_cache is None:
+        raw = os.environ.get('TELEGRAM_CHANNEL_USERNAMES', '{}')
+        try:
+            _channel_usernames_cache = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            _channel_usernames_cache = {}
+
+    # 1. Direct chat_id -> username mapping
+    if channel_id in _channel_usernames_cache:
+        return _channel_usernames_cache[channel_id]
+
+    # 2. Scan TELEGRAM_CHANNEL_ID_{LANG} env vars
+    for key, value in os.environ.items():
+        if key.startswith('TELEGRAM_CHANNEL_ID_') and value == channel_id:
+            lang_suffix = key[len('TELEGRAM_CHANNEL_ID_'):]  # e.g. 'EN', 'JA'
+            username = os.environ.get(f'TELEGRAM_CHANNEL_USERNAME_{lang_suffix}', '')
+            if username:
+                _channel_usernames_cache[channel_id] = username
+                return username
+
+    # 3. Fallback
+    return TELEGRAM_CHANNEL_USERNAME
+
 
 def detect_market(message: str) -> str:
     """Detect market from message content."""
@@ -109,23 +151,59 @@ def detect_market(message: str) -> str:
 
 
 def detect_type(message: str) -> str:
-    """Detect message type from content."""
+    """Detect message type from content.
+
+    Priority order matters: portfolio > pdf > analysis > trigger.
+    '포트폴리오 리포트' must match portfolio, not pdf.
+    """
     msg_lower = message.lower()
 
-    # PDF report detection
-    if any(kw in msg_lower for kw in ['pdf', '리포트', 'report', '보고서']):
-        return 'pdf'
-
-    # Portfolio detection
-    if any(kw in msg_lower for kw in ['포트폴리오', 'portfolio', '보유', '잔고', '수익률']):
+    # Portfolio detection FIRST (before PDF — '포트폴리오 리포트' should be portfolio)
+    if any(kw in msg_lower for kw in ['포트폴리오', 'portfolio', '보유 종목', '잔고']):
         return 'portfolio'
 
-    # Analysis detection
-    if any(kw in msg_lower for kw in ['분석', 'analysis', '전망', '요약', 'summary', '리뷰', '시장']):
+    # PDF report detection
+    if any(kw in msg_lower for kw in ['.pdf', 'pdf 리포트', 'pdf report']):
+        return 'pdf'
+
+    # Analysis detection (expanded keywords for both KR and EN)
+    if any(kw in msg_lower for kw in [
+        '분석', 'analysis', '전망', '요약', 'summary',
+        '리뷰', '시장', '매수', '매도', '보류',
+        'buy', 'sell', 'hold', 'review', 'outlook',
+    ]):
         return 'analysis'
+
+    # Broad report/리포트 as fallback (after portfolio and analysis checked)
+    if any(kw in msg_lower for kw in ['리포트', 'report', '보고서']):
+        return 'pdf'
 
     # Default: trigger (trading signal)
     return 'trigger'
+
+
+def _clean_filename(text: str) -> str:
+    """Clean a raw filename into a human-readable title.
+
+    'pdfreports/012450_Hanwha_Aerospace_20260210_afternoon.pdf'
+    → '012450 Hanwha Aerospace 20260210 afternoon'
+    """
+    # Extract filename from path
+    name = text.split('/')[-1]
+    # Remove file extension
+    name = re.sub(r'\.\w{2,4}$', '', name)
+    # Replace underscores with spaces
+    name = name.replace('_', ' ')
+    return name.strip()
+
+
+def _looks_like_filepath(text: str) -> bool:
+    """Check if text looks like a file path or raw filename."""
+    return bool(
+        '/' in text
+        or text.endswith('.pdf')
+        or re.match(r'^[\w._-]+\.\w{2,4}$', text)
+    )
 
 
 def extract_title(message: str, max_length: int = 80) -> str:
@@ -143,6 +221,9 @@ def extract_title(message: str, max_length: int = 80) -> str:
         # Remove markdown formatting
         cleaned = re.sub(r'[*_`#]', '', cleaned).strip()
         if cleaned:
+            # Clean file paths used as titles
+            if _looks_like_filepath(cleaned):
+                cleaned = _clean_filename(cleaned)
             return cleaned[:max_length]
     return message[:max_length].strip()
 
@@ -153,6 +234,9 @@ def extract_preview(message: str, max_length: int = 100) -> str:
     text = re.sub(r'[*_`#]', '', message)
     # Collapse whitespace
     text = re.sub(r'\s+', ' ', text).strip()
+    # Don't expose raw file paths as preview
+    if _looks_like_filepath(text.split(' ')[0]):
+        text = _clean_filename(text.split(' ')[0])
     if len(text) <= max_length:
         return text
     return text[:max_length - 3] + '...'
@@ -223,10 +307,11 @@ async def notify(
         preview = extract_preview(message)
         stock_code, stock_name = extract_stock_info(message)
 
-        # Build telegram link
+        # Build telegram link using channel-specific username
         telegram_link = None
         if telegram_message_id:
-            telegram_link = f"https://t.me/{TELEGRAM_CHANNEL_USERNAME}/{telegram_message_id}"
+            username = _get_channel_username(channel_id)
+            telegram_link = f"https://t.me/{username}/{telegram_message_id}"
 
         # Save to Firestore
         from google.cloud.firestore import SERVER_TIMESTAMP
@@ -237,6 +322,7 @@ async def notify(
             'title': title,
             'preview': preview,
             'telegram_link': telegram_link or '',
+            'channel_id': channel_id,
             'stock_code': stock_code,
             'stock_name': stock_name,
             'has_pdf': has_pdf,
