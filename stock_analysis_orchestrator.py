@@ -497,6 +497,7 @@ class StockAnalysisOrchestrator:
     async def _send_translated_messages(self, bot_agent, message_contents):
         """
         Send translated telegram messages to broadcast channels (non-blocking, fire-and-forget)
+        Languages are processed in parallel for faster delivery.
 
         Args:
             bot_agent: TelegramBotAgent instance
@@ -505,43 +506,36 @@ class StockAnalysisOrchestrator:
         try:
             from cores.agents.telegram_translator_agent import translate_telegram_message
 
+            async def _translate_and_send_lang(lang, channel_id):
+                for original_message in message_contents:
+                    try:
+                        logger.info(f"Translating telegram message to {lang}")
+                        translated_message = await translate_telegram_message(
+                            original_message,
+                            model="gpt-5-nano",
+                            from_lang="ko",
+                            to_lang=lang
+                        )
+                        success = await bot_agent.send_message(channel_id, translated_message)
+                        if success:
+                            logger.info(f"Telegram message sent successfully to {lang} channel")
+                        else:
+                            logger.error(f"Failed to send telegram message to {lang} channel")
+                        await asyncio.sleep(1)
+                    except Exception as e:
+                        logger.error(f"Error translating/sending message to {lang}: {str(e)}")
+
+            lang_tasks = []
             for lang in self.telegram_config.broadcast_languages:
-                try:
-                    # Get channel ID for this language
-                    channel_id = self.telegram_config.get_broadcast_channel_id(lang)
-                    if not channel_id:
-                        logger.warning(f"No channel ID configured for language: {lang}")
-                        continue
+                channel_id = self.telegram_config.get_broadcast_channel_id(lang)
+                if not channel_id:
+                    logger.warning(f"No channel ID configured for language: {lang}")
+                    continue
+                logger.info(f"Dispatching parallel translation for {lang} channel")
+                lang_tasks.append(_translate_and_send_lang(lang, channel_id))
 
-                    logger.info(f"Sending translated messages to {lang} channel")
-
-                    # Translate and send each message
-                    for original_message in message_contents:
-                        try:
-                            # Translate message
-                            logger.info(f"Translating telegram message to {lang}")
-                            translated_message = await translate_telegram_message(
-                                original_message,
-                                model="gpt-5-nano",
-                                from_lang="ko",
-                                to_lang=lang
-                            )
-
-                            # Send translated message
-                            success = await bot_agent.send_message(channel_id, translated_message)
-
-                            if success:
-                                logger.info(f"Telegram message sent successfully to {lang} channel")
-                            else:
-                                logger.error(f"Failed to send telegram message to {lang} channel")
-
-                            await asyncio.sleep(1)
-
-                        except Exception as e:
-                            logger.error(f"Error translating/sending message to {lang}: {str(e)}")
-
-                except Exception as e:
-                    logger.error(f"Error processing language {lang}: {str(e)}")
+            if lang_tasks:
+                await asyncio.gather(*lang_tasks, return_exceptions=True)
 
         except Exception as e:
             logger.error(f"Error in _send_translated_messages: {str(e)}")
@@ -557,74 +551,65 @@ class StockAnalysisOrchestrator:
         try:
             from cores.agents.telegram_translator_agent import translate_telegram_message
 
-            for lang in self.telegram_config.broadcast_languages:
-                try:
-                    # Get channel ID for this language
-                    channel_id = self.telegram_config.get_broadcast_channel_id(lang)
-                    if not channel_id:
-                        logger.warning(f"No channel ID configured for language: {lang}")
-                        continue
+            async def _translate_pdfs_for_lang(lang, channel_id):
+                for report_path in report_paths:
+                    try:
+                        logger.info(f"Translating markdown report {report_path} to {lang}")
 
-                    logger.info(f"Sending translated PDFs to {lang} channel")
+                        with open(report_path, 'r', encoding='utf-8') as f:
+                            original_report = f.read()
 
-                    # Translate markdown reports, convert to PDF, and send
-                    for report_path in report_paths:
-                        try:
-                            logger.info(f"Translating markdown report {report_path} to {lang}")
+                        text_for_translation, images = self._extract_base64_images(original_report)
+                        logger.info(f"Prepared report for translation: {len(text_for_translation)} chars (extracted {len(images)} images)")
 
-                            # Read original markdown report
-                            with open(report_path, 'r', encoding='utf-8') as f:
-                                original_report = f.read()
+                        translated_report = await translate_telegram_message(
+                            text_for_translation,
+                            model="gpt-5-nano",
+                            from_lang="ko",
+                            to_lang=lang
+                        )
 
-                            # Extract base64 images before translation
-                            text_for_translation, images = self._extract_base64_images(original_report)
-                            logger.info(f"Prepared report for translation: {len(text_for_translation)} chars (extracted {len(images)} images)")
+                        translated_report = self._restore_base64_images(translated_report, images)
+                        logger.info(f"Restored images to translated report: {len(translated_report)} chars")
 
-                            # Translate the report (without images)
-                            translated_report = await translate_telegram_message(
-                                text_for_translation,
-                                model="gpt-5-nano",
-                                from_lang="ko",
-                                to_lang=lang
-                            )
+                        report_file = Path(report_path)
+                        translated_report_path = await self._create_translated_filename(report_file, lang)
 
-                            # Restore base64 images to translated text
-                            translated_report = self._restore_base64_images(translated_report, images)
-                            logger.info(f"Restored images to translated report: {len(translated_report)} chars")
+                        with open(translated_report_path, 'w', encoding='utf-8') as f:
+                            f.write(translated_report)
 
-                            # Create translated markdown file path with translated company name
-                            report_file = Path(report_path)
-                            translated_report_path = await self._create_translated_filename(report_file, lang)
+                        logger.info(f"Translated report saved: {translated_report_path}")
 
-                            # Save translated markdown
-                            with open(translated_report_path, 'w', encoding='utf-8') as f:
-                                f.write(translated_report)
+                        translated_pdf_paths = await self.convert_to_pdf([str(translated_report_path)])
 
-                            logger.info(f"Translated report saved: {translated_report_path}")
+                        if translated_pdf_paths and len(translated_pdf_paths) > 0:
+                            translated_pdf_path = translated_pdf_paths[0]
+                            logger.info(f"Sending translated PDF {translated_pdf_path} to {lang} channel")
+                            success = await bot_agent.send_document(channel_id, str(translated_pdf_path))
 
-                            # Convert to PDF
-                            translated_pdf_paths = await self.convert_to_pdf([str(translated_report_path)])
-
-                            if translated_pdf_paths and len(translated_pdf_paths) > 0:
-                                # Send translated PDF
-                                translated_pdf_path = translated_pdf_paths[0]
-                                logger.info(f"Sending translated PDF {translated_pdf_path} to {lang} channel")
-                                success = await bot_agent.send_document(channel_id, str(translated_pdf_path))
-
-                                if success:
-                                    logger.info(f"Translated PDF sent successfully to {lang} channel")
-                                else:
-                                    logger.error(f"Failed to send translated PDF to {lang} channel")
-
-                                await asyncio.sleep(1)
+                            if success:
+                                logger.info(f"Translated PDF sent successfully to {lang} channel")
                             else:
-                                logger.error(f"Failed to convert translated report to PDF: {translated_report_path}")
+                                logger.error(f"Failed to send translated PDF to {lang} channel")
 
-                        except Exception as e:
-                            logger.error(f"Error processing report {report_path} for {lang}: {str(e)}")
+                            await asyncio.sleep(1)
+                        else:
+                            logger.error(f"Failed to convert translated report to PDF: {translated_report_path}")
 
-                except Exception as e:
-                    logger.error(f"Error processing language {lang}: {str(e)}")
+                    except Exception as e:
+                        logger.error(f"Error processing report {report_path} for {lang}: {str(e)}")
+
+            lang_tasks = []
+            for lang in self.telegram_config.broadcast_languages:
+                channel_id = self.telegram_config.get_broadcast_channel_id(lang)
+                if not channel_id:
+                    logger.warning(f"No channel ID configured for language: {lang}")
+                    continue
+                logger.info(f"Dispatching parallel PDF translation for {lang} channel")
+                lang_tasks.append(_translate_pdfs_for_lang(lang, channel_id))
+
+            if lang_tasks:
+                await asyncio.gather(*lang_tasks, return_exceptions=True)
 
         except Exception as e:
             logger.error(f"Error in _send_translated_pdfs: {str(e)}")
@@ -716,7 +701,8 @@ class StockAnalysisOrchestrator:
 
     async def _send_translated_trigger_alert(self, bot_agent, original_message: str, mode: str):
         """
-        Send translated trigger alerts to additional language channels
+        Send translated trigger alerts to additional language channels.
+        Languages are processed in parallel for faster delivery.
 
         Args:
             bot_agent: TelegramBotAgent instance
@@ -726,34 +712,33 @@ class StockAnalysisOrchestrator:
         try:
             from cores.agents.telegram_translator_agent import translate_telegram_message
 
-            for lang in self.telegram_config.broadcast_languages:
+            async def _translate_and_send_lang(lang, channel_id):
                 try:
-                    # Get channel ID for this language
-                    channel_id = self.telegram_config.get_broadcast_channel_id(lang)
-                    if not channel_id:
-                        logger.warning(f"No channel ID configured for language: {lang}")
-                        continue
-
                     logger.info(f"Translating trigger alert to {lang}")
-
-                    # Translate message
                     translated_message = await translate_telegram_message(
                         original_message,
                         model="gpt-5-nano",
                         from_lang="ko",
                         to_lang=lang
                     )
-
-                    # Send translated message
                     success = await bot_agent.send_message(channel_id, translated_message)
-
                     if success:
                         logger.info(f"Trigger alert sent successfully to {lang} channel")
                     else:
                         logger.error(f"Failed to send trigger alert to {lang} channel")
-
                 except Exception as e:
                     logger.error(f"Error sending translated trigger alert to {lang}: {str(e)}")
+
+            lang_tasks = []
+            for lang in self.telegram_config.broadcast_languages:
+                channel_id = self.telegram_config.get_broadcast_channel_id(lang)
+                if not channel_id:
+                    logger.warning(f"No channel ID configured for language: {lang}")
+                    continue
+                lang_tasks.append(_translate_and_send_lang(lang, channel_id))
+
+            if lang_tasks:
+                await asyncio.gather(*lang_tasks, return_exceptions=True)
 
         except Exception as e:
             logger.error(f"Error in _send_translated_trigger_alert: {str(e)}")
