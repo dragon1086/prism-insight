@@ -88,13 +88,35 @@ TELEGRAM_CHANNEL_USERNAME = os.environ.get('TELEGRAM_CHANNEL_USERNAME', 'stock_a
 _channel_usernames_cache = None
 
 
-def _get_channel_username(channel_id: Optional[str]) -> str:
+def _get_channel_lang(channel_id: Optional[str]) -> str:
+    """Resolve Telegram chat_id to language code.
+
+    Returns 'ko' for the default channel, or the language suffix (lowercased)
+    for TELEGRAM_CHANNEL_ID_{LANG} matches.
+    """
+    if not channel_id:
+        return 'ko'
+
+    default_channel = os.environ.get('TELEGRAM_CHANNEL_ID', '')
+    if channel_id == default_channel:
+        return 'ko'
+
+    for key, value in os.environ.items():
+        if key.startswith('TELEGRAM_CHANNEL_ID_') and value == channel_id:
+            return key[len('TELEGRAM_CHANNEL_ID_'):].lower()  # e.g. 'en', 'ja'
+
+    return 'ko'
+
+
+def _get_channel_username(channel_id: Optional[str]) -> Optional[str]:
     """Resolve Telegram chat_id to public channel username for deep links.
 
     Lookup order:
     1. TELEGRAM_CHANNEL_USERNAMES JSON mapping (chat_id -> username)
     2. TELEGRAM_CHANNEL_ID_{LANG} / TELEGRAM_CHANNEL_USERNAME_{LANG} pairs
     3. Fallback to TELEGRAM_CHANNEL_USERNAME (default)
+
+    Returns None if no username is found (e.g. private channels).
     """
     if not channel_id:
         return TELEGRAM_CHANNEL_USERNAME
@@ -122,6 +144,24 @@ def _get_channel_username(channel_id: Optional[str]) -> str:
 
     # 3. Fallback
     return TELEGRAM_CHANNEL_USERNAME
+
+
+def _build_telegram_link(channel_id: Optional[str], message_id: int) -> str:
+    """Build telegram deep link, supporting both public and private channels.
+
+    Public channels:  https://t.me/{username}/{message_id}
+    Private channels: https://t.me/c/{channel_id_stripped}/{message_id}
+    """
+    username = _get_channel_username(channel_id)
+    if username:
+        return f"https://t.me/{username}/{message_id}"
+
+    # Private channel fallback: strip -100 prefix
+    if channel_id and channel_id.startswith('-100'):
+        stripped = channel_id[4:]
+        return f"https://t.me/c/{stripped}/{message_id}"
+
+    return ''
 
 
 def detect_market(message: str) -> str:
@@ -307,11 +347,13 @@ async def notify(
         preview = extract_preview(message)
         stock_code, stock_name = extract_stock_info(message)
 
-        # Build telegram link using channel-specific username
-        telegram_link = None
+        # Resolve language from channel
+        lang = _get_channel_lang(channel_id)
+
+        # Build telegram link (public or private channel)
+        telegram_link = ''
         if telegram_message_id:
-            username = _get_channel_username(channel_id)
-            telegram_link = f"https://t.me/{username}/{telegram_message_id}"
+            telegram_link = _build_telegram_link(channel_id, telegram_message_id)
 
         # Save to Firestore
         from google.cloud.firestore import SERVER_TIMESTAMP
@@ -319,9 +361,10 @@ async def notify(
         doc_data = {
             'type': msg_type,
             'market': market,
+            'lang': lang,
             'title': title,
             'preview': preview,
-            'telegram_link': telegram_link or '',
+            'telegram_link': telegram_link,
             'channel_id': channel_id,
             'stock_code': stock_code,
             'stock_name': stock_name,
