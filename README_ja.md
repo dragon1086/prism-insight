@@ -51,9 +51,9 @@ AIトレーディングのパフォーマンスをリアルタイムで確認で
 毎日の急騰銘柄アラートとAI分析レポートを受け取れます：
 - 🇺🇸 **[英語チャンネル](https://t.me/prism_insight_global_en)**
 - 🇰🇷 **[韓国語チャンネル](https://t.me/stock_ai_agent)**
-- 🇯🇵 **[日本語チャンネル](https://t.me/prism_insight_global_ja)**
-- 🇨🇳 **[中国語チャンネル](https://t.me/prism_insight_global_zh)**
-- 🇪🇸 **[スペイン語チャンネル](https://t.me/prism_insight_global_es)**
+- 🇯🇵 **[日本語チャンネル](https://t.me/prism_insight_ja)**
+- 🇨🇳 **[中国語チャンネル](https://t.me/prism_insight_zh)**
+- 🇪🇸 **[スペイン語チャンネル](https://t.me/prism_insight_es)**
 
 ### 3. サンプルレポート
 AIが生成したApple Inc.の分析レポートをご覧ください：

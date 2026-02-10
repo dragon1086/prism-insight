@@ -51,9 +51,9 @@ AI 매매 성과를 실시간으로 확인하세요:
 매일 급등주 알림과 AI 분석 리포트를 받아보세요:
 - 🇰🇷 **[한국 채널](https://t.me/stock_ai_agent)**
 - 🇺🇸 **[영어 채널](https://t.me/prism_insight_global_en)**
-- 🇯🇵 **[일본어 채널](https://t.me/prism_insight_global_ja)**
-- 🇨🇳 **[중국어 채널](https://t.me/prism_insight_global_zh)**
-- 🇪🇸 **[스페인어 채널](https://t.me/prism_insight_global_es)**
+- 🇯🇵 **[일본어 채널](https://t.me/prism_insight_ja)**
+- 🇨🇳 **[중국어 채널](https://t.me/prism_insight_zh)**
+- 🇪🇸 **[스페인어 채널](https://t.me/prism_insight_es)**
 
 ### 3. 샘플 리포트
 AI가 생성한 Apple Inc. 분석 리포트를 확인하세요:
