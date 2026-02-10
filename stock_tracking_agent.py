@@ -1521,12 +1521,10 @@ class StockTrackingAgent:
                 # Delay to prevent API rate limiting
                 await asyncio.sleep(1)
 
-            # Send to broadcast channels if configured (wait for completion)
+            # Send to broadcast channels if configured (non-blocking, fire-and-forget)
             if hasattr(self, 'telegram_config') and self.telegram_config and self.telegram_config.broadcast_languages:
-                # Create task and wait for it to complete
-                translation_task = asyncio.create_task(self._send_to_translation_channels(self.message_queue.copy()))
-                await translation_task
-                logger.info("Broadcast channel messages sent successfully")
+                asyncio.create_task(self._send_to_translation_channels(self.message_queue.copy()))
+                logger.info("Broadcast channel translation dispatched (non-blocking)")
 
             # Clear message queue
             self.message_queue = []

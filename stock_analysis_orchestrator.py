@@ -451,9 +451,17 @@ class StockAnalysisOrchestrator:
         try:
             bot_agent = TelegramBotAgent()
 
-            # Send translated messages to broadcast channels BEFORE process_messages_directory moves files
+            # Pre-read message contents into memory for non-blocking broadcast translation
             if self.telegram_config.broadcast_languages:
-                await self._send_translated_messages(bot_agent, message_paths)
+                message_contents = []
+                for mp in message_paths:
+                    try:
+                        with open(mp, 'r', encoding='utf-8') as f:
+                            message_contents.append(f.read())
+                    except Exception as e:
+                        logger.error(f"Error reading message file {mp}: {str(e)}")
+                if message_contents:
+                    asyncio.create_task(self._send_translated_messages(bot_agent, message_contents))
 
             # Send messages to main channel (this moves files to sent folder)
             await bot_agent.process_messages_directory(
@@ -481,14 +489,13 @@ class StockAnalysisOrchestrator:
         except Exception as e:
             logger.error(f"Error during telegram message transmission: {str(e)}")
 
-    async def _send_translated_messages(self, bot_agent, message_paths):
+    async def _send_translated_messages(self, bot_agent, message_contents):
         """
-        Send translated telegram messages to broadcast channels (synchronous)
-        Must be called BEFORE process_messages_directory moves the files
+        Send translated telegram messages to broadcast channels (non-blocking, fire-and-forget)
 
         Args:
             bot_agent: TelegramBotAgent instance
-            message_paths: List of original message file paths
+            message_contents: List of original message content strings (pre-read from files)
         """
         try:
             from cores.agents.telegram_translator_agent import translate_telegram_message
@@ -503,15 +510,11 @@ class StockAnalysisOrchestrator:
 
                     logger.info(f"Sending translated messages to {lang} channel")
 
-                    # Translate and send each telegram message
-                    for message_path in message_paths:
+                    # Translate and send each message
+                    for original_message in message_contents:
                         try:
-                            # Read original message
-                            with open(message_path, 'r', encoding='utf-8') as f:
-                                original_message = f.read()
-
                             # Translate message
-                            logger.info(f"Translating telegram message from {message_path} to {lang}")
+                            logger.info(f"Translating telegram message to {lang}")
                             translated_message = await translate_telegram_message(
                                 original_message,
                                 model="gpt-5-nano",
@@ -530,7 +533,7 @@ class StockAnalysisOrchestrator:
                             await asyncio.sleep(1)
 
                         except Exception as e:
-                            logger.error(f"Error translating/sending message {message_path} to {lang}: {str(e)}")
+                            logger.error(f"Error translating/sending message to {lang}: {str(e)}")
 
                 except Exception as e:
                     logger.error(f"Error processing language {lang}: {str(e)}")

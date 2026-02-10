@@ -118,7 +118,10 @@ class TelegramSender:
             return messages
 
     async def send_to_translation_channels(self, messages: List[str]):
-        """Send messages to broadcast translation channels."""
+        """Send messages to broadcast translation channels.
+
+        Note: Callers should wrap with asyncio.create_task() for non-blocking execution.
+        """
         if not self.config or not self.config.broadcast_languages:
             return
 
