@@ -51,9 +51,9 @@ See AI trading performance in real-time:
 Get daily surge stock alerts and AI analysis reports:
 - 🇺🇸 **[English Channel](https://t.me/prism_insight_global_en)**
 - 🇰🇷 **[Korean Channel](https://t.me/stock_ai_agent)**
-- 🇯🇵 **[Japanese Channel](https://t.me/prism_insight_global_ja)**
-- 🇨🇳 **[Chinese Channel](https://t.me/prism_insight_global_zh)**
-- 🇪🇸 **[Spanish Channel](https://t.me/prism_insight_global_es)**
+- 🇯🇵 **[Japanese Channel](https://t.me/prism_insight_ja)**
+- 🇨🇳 **[Chinese Channel](https://t.me/prism_insight_zh)**
+- 🇪🇸 **[Spanish Channel](https://t.me/prism_insight_es)**
 
 ### 3. Sample Report
 Watch an AI-generated Apple Inc. analysis report:

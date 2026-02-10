@@ -51,9 +51,9 @@
 每日获取异动股票提醒和 AI 分析报告：
 - 🇺🇸 **[英语频道](https://t.me/prism_insight_global_en)**
 - 🇰🇷 **[韩语频道](https://t.me/stock_ai_agent)**
-- 🇯🇵 **[日语频道](https://t.me/prism_insight_global_ja)**
-- 🇨🇳 **[中文频道](https://t.me/prism_insight_global_zh)**
-- 🇪🇸 **[西班牙语频道](https://t.me/prism_insight_global_es)**
+- 🇯🇵 **[日语频道](https://t.me/prism_insight_ja)**
+- 🇨🇳 **[中文频道](https://t.me/prism_insight_zh)**
+- 🇪🇸 **[西班牙语频道](https://t.me/prism_insight_es)**
 
 ### 3. 示例报告
 观看 AI 生成的 Apple Inc. 分析报告：

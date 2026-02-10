@@ -51,9 +51,9 @@ Observa el rendimiento del trading con IA en tiempo real:
 Recibe alertas diarias de acciones con movimientos inusuales e informes de analisis con IA:
 - 🇺🇸 **[Canal en Ingles](https://t.me/prism_insight_global_en)**
 - 🇰🇷 **[Canal en Coreano](https://t.me/stock_ai_agent)**
-- 🇯🇵 **[Canal en Japones](https://t.me/prism_insight_global_ja)**
-- 🇨🇳 **[Canal en Chino](https://t.me/prism_insight_global_zh)**
-- 🇪🇸 **[Canal en Español](https://t.me/prism_insight_global_es)**
+- 🇯🇵 **[Canal en Japones](https://t.me/prism_insight_ja)**
+- 🇨🇳 **[Canal en Chino](https://t.me/prism_insight_zh)**
+- 🇪🇸 **[Canal en Español](https://t.me/prism_insight_es)**
 
 ### 3. Informe de Ejemplo
 Mira un informe de analisis de Apple Inc. generado por IA:
