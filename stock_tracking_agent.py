@@ -516,7 +516,7 @@ class StockTrackingAgent:
                 "company_name": company_name,
                 "current_price": current_price,
                 "scenario": scenario,
-                "decision": scenario.get("decision", "No entry"),
+                "decision": self._normalize_decision(scenario.get("decision", "No entry")),
                 "sector": sector,
                 "sector_diverse": is_sector_diverse,
                 "rank_change_percentage": rank_change_percentage,
@@ -527,6 +527,27 @@ class StockTrackingAgent:
             logger.error(f"Error analyzing report: {str(e)}")
             logger.error(traceback.format_exc())
             return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _normalize_decision(decision: str) -> str:
+        """Normalize AI decision string to canonical English form.
+
+        LLM may return decision in Korean or various English forms.
+        Maps all variants to a consistent set: 'Enter', 'Watch', 'Skip'.
+        """
+        if not decision:
+            return "Skip"
+        normalized = decision.strip()
+        enter_variants = {"진입", "Entry", "enter", "entry", "Enter", "매수", "Buy", "buy"}
+        watch_variants = {"관망", "Watch", "watch", "Hold", "hold", "보류"}
+        skip_variants = {"미진입", "Skip", "skip", "No entry", "no entry", "패스", "Pass", "pass"}
+        if normalized in enter_variants:
+            return "Enter"
+        if normalized in watch_variants:
+            return "Watch"
+        if normalized in skip_variants:
+            return "Skip"
+        return normalized
 
     def _parse_price_value(self, value: Any) -> float:
         """Parse price value and convert to number (delegates to tracking.helpers)"""
@@ -1331,7 +1352,7 @@ class StockTrackingAgent:
                 buy_score = scenario.get("buy_score", 0)
                 min_score = scenario.get("min_score", 0)
                 logger.info(f"Buy score check: {company_name}({ticker}) - Score: {buy_score}")
-                if analysis_result.get("decision") == "Entry":
+                if analysis_result.get("decision") == "Enter":
                     # Process buy
                     buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
 
@@ -1386,7 +1407,7 @@ class StockTrackingAgent:
                     reason = ""
                     if buy_score < min_score:
                         reason = f"Buy score insufficient ({buy_score} < {min_score})"
-                    elif analysis_result.get("decision") != "Entry":
+                    elif analysis_result.get("decision") != "Enter":
                         reason = f"Not an entry decision (Decision: {analysis_result.get('decision')})"
 
                     logger.info(f"Purchase deferred: {company_name}({ticker}) - {reason}")
