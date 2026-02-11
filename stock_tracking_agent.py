@@ -1434,6 +1434,10 @@ class StockTrackingAgent:
         except Exception as e:
             logger.debug(f"Firebase bridge: {e}")
 
+    def _schedule_firebase(self, message: str, chat_id: str, message_id: int = None):
+        """Schedule Firebase notification as non-blocking task. Returns the task."""
+        return asyncio.create_task(self._notify_firebase(message, chat_id, message_id))
+
     async def send_telegram_message(self, chat_id: str, language: str = "ko") -> bool:
         """
         Send message via Telegram
@@ -1489,8 +1493,9 @@ class StockTrackingAgent:
                 except Exception as e:
                     logger.error(f"Translation failed: {str(e)}. Using original Korean messages.")
 
-            # Send each message
+            # Send each message (Firebase notifications are non-blocking)
             success = True
+            firebase_tasks = []
             for message in self.message_queue:
                 logger.info(f"Sending Telegram message: {chat_id}")
                 try:
@@ -1503,7 +1508,7 @@ class StockTrackingAgent:
                             chat_id=chat_id,
                             text=message
                         )
-                        await self._notify_firebase(message, chat_id, result.message_id)
+                        firebase_tasks.append(self._schedule_firebase(message, chat_id, result.message_id))
                     else:
                         # Split and send if long
                         parts = []
@@ -1532,7 +1537,7 @@ class StockTrackingAgent:
                             await asyncio.sleep(0.5)  # Short delay between split messages
 
                         # Notify with full original message, link to first part
-                        await self._notify_firebase(message, chat_id, first_msg_id)
+                        firebase_tasks.append(self._schedule_firebase(message, chat_id, first_msg_id))
 
                     logger.info(f"Telegram message sent: {chat_id}")
                 except TelegramError as e:
@@ -1541,6 +1546,10 @@ class StockTrackingAgent:
 
                 # Delay to prevent API rate limiting
                 await asyncio.sleep(1)
+
+            # Gather Firebase notifications (non-blocking for Telegram delivery)
+            if firebase_tasks:
+                await asyncio.gather(*firebase_tasks, return_exceptions=True)
 
             # Send to broadcast channels if configured (awaited in run() finally block)
             if hasattr(self, 'telegram_config') and self.telegram_config and self.telegram_config.broadcast_languages:
@@ -1577,7 +1586,8 @@ class StockTrackingAgent:
 
                     logger.info(f"Sending tracking messages to {lang} channel")
 
-                    # Translate and send each message
+                    # Translate and send each message (Firebase non-blocking)
+                    firebase_tasks = []
                     for message in messages:
                         try:
                             # Translate message
@@ -1597,7 +1607,7 @@ class StockTrackingAgent:
                                     chat_id=channel_id,
                                     text=translated_message
                                 )
-                                await self._notify_firebase(translated_message, channel_id, result.message_id)
+                                firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, result.message_id))
                             else:
                                 # Split long messages
                                 parts = []
@@ -1625,13 +1635,17 @@ class StockTrackingAgent:
                                         first_msg_id = result.message_id
                                     await asyncio.sleep(0.5)
 
-                                await self._notify_firebase(translated_message, channel_id, first_msg_id)
+                                firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, first_msg_id))
 
                             logger.info(f"Tracking message sent successfully to {lang} channel")
                             await asyncio.sleep(1)
 
                         except Exception as e:
                             logger.error(f"Error sending tracking message to {lang}: {str(e)}")
+
+                    # Gather Firebase notifications for this language
+                    if firebase_tasks:
+                        await asyncio.gather(*firebase_tasks, return_exceptions=True)
 
                 except Exception as e:
                     logger.error(f"Error processing language {lang}: {str(e)}")
