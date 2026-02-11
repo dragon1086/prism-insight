@@ -1421,6 +1421,19 @@ class StockTrackingAgent:
             logger.error(traceback.format_exc())
             return 0, 0
 
+    async def _notify_firebase(self, message: str, chat_id: str, message_id: int = None):
+        """Send Firebase Bridge notification for Prism Mobile push (never affects Telegram delivery)."""
+        try:
+            from firebase_bridge import notify
+            await notify(
+                message=message,
+                market="kr",
+                telegram_message_id=message_id,
+                channel_id=chat_id,
+            )
+        except Exception as e:
+            logger.debug(f"Firebase bridge: {e}")
+
     async def send_telegram_message(self, chat_id: str, language: str = "ko") -> bool:
         """
         Send message via Telegram
@@ -1486,10 +1499,11 @@ class StockTrackingAgent:
 
                     if len(message) <= MAX_MESSAGE_LENGTH:
                         # Send in one message if short
-                        await self.telegram_bot.send_message(
+                        result = await self.telegram_bot.send_message(
                             chat_id=chat_id,
                             text=message
                         )
+                        await self._notify_firebase(message, chat_id, result.message_id)
                     else:
                         # Split and send if long
                         parts = []
@@ -1507,12 +1521,18 @@ class StockTrackingAgent:
                             parts.append(current_part.rstrip())
 
                         # Send split messages
+                        first_msg_id = None
                         for i, part in enumerate(parts, 1):
-                            await self.telegram_bot.send_message(
+                            result = await self.telegram_bot.send_message(
                                 chat_id=chat_id,
                                 text=f"[{i}/{len(parts)}]\n{part}"
                             )
+                            if i == 1:
+                                first_msg_id = result.message_id
                             await asyncio.sleep(0.5)  # Short delay between split messages
+
+                        # Notify with full original message, link to first part
+                        await self._notify_firebase(message, chat_id, first_msg_id)
 
                     logger.info(f"Telegram message sent: {chat_id}")
                 except TelegramError as e:
@@ -1573,10 +1593,11 @@ class StockTrackingAgent:
                             MAX_MESSAGE_LENGTH = 4096
 
                             if len(translated_message) <= MAX_MESSAGE_LENGTH:
-                                await self.telegram_bot.send_message(
+                                result = await self.telegram_bot.send_message(
                                     chat_id=channel_id,
                                     text=translated_message
                                 )
+                                await self._notify_firebase(translated_message, channel_id, result.message_id)
                             else:
                                 # Split long messages
                                 parts = []
@@ -1594,12 +1615,17 @@ class StockTrackingAgent:
                                     parts.append(current_part.rstrip())
 
                                 # Send split messages
+                                first_msg_id = None
                                 for i, part in enumerate(parts, 1):
-                                    await self.telegram_bot.send_message(
+                                    result = await self.telegram_bot.send_message(
                                         chat_id=channel_id,
                                         text=f"[{i}/{len(parts)}]\n{part}"
                                     )
+                                    if i == 1:
+                                        first_msg_id = result.message_id
                                     await asyncio.sleep(0.5)
+
+                                await self._notify_firebase(translated_message, channel_id, first_msg_id)
 
                             logger.info(f"Tracking message sent successfully to {lang} channel")
                             await asyncio.sleep(1)
