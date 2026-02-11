@@ -105,6 +105,7 @@ class StockTrackingAgent:
         """
         self.max_slots = self.MAX_SLOTS
         self.message_queue = []  # For storing Telegram messages
+        self._broadcast_task = None  # Track broadcast translation task
         self.trading_agent = None
         self.db_path = db_path
         self.conn = None
@@ -1521,10 +1522,10 @@ class StockTrackingAgent:
                 # Delay to prevent API rate limiting
                 await asyncio.sleep(1)
 
-            # Send to broadcast channels if configured (non-blocking, fire-and-forget)
+            # Send to broadcast channels if configured (awaited in run() finally block)
             if hasattr(self, 'telegram_config') and self.telegram_config and self.telegram_config.broadcast_languages:
-                asyncio.create_task(self._send_to_translation_channels(self.message_queue.copy()))
-                logger.info("Broadcast channel translation dispatched (non-blocking)")
+                self._broadcast_task = asyncio.create_task(self._send_to_translation_channels(self.message_queue.copy()))
+                logger.info("Broadcast channel translation dispatched")
 
             # Clear message queue
             self.message_queue = []
@@ -1680,7 +1681,17 @@ class StockTrackingAgent:
                 logger.info("Tracking system batch execution complete")
                 return True
             finally:
-                # Move to finally block to ensure connection is always closed
+                # Wait for broadcast translation task before cleanup
+                if self._broadcast_task:
+                    try:
+                        logger.info("Waiting for tracking broadcast translation to complete...")
+                        await self._broadcast_task
+                        logger.info("Tracking broadcast translation completed")
+                    except Exception as e:
+                        logger.error(f"Tracking broadcast translation failed: {e}")
+                    self._broadcast_task = None
+
+                # Ensure connection is always closed
                 if self.conn:
                     self.conn.close()
                     logger.info("Database connection closed")
