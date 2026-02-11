@@ -882,18 +882,7 @@ class StockAnalysisOrchestrator:
             else:
                 logger.info("Telegram disabled - skipping message generation and transmission steps")
 
-            # 5-1. Wait for broadcast tasks before tracking system
-            # (prevents resource contention on low-spec servers: 1 core / 2GB RAM)
-            if self._broadcast_tasks:
-                logger.info(f"Waiting for {len(self._broadcast_tasks)} broadcast task(s) before tracking system...")
-                bc_results = await asyncio.gather(*self._broadcast_tasks, return_exceptions=True)
-                for i, bc_result in enumerate(bc_results):
-                    if isinstance(bc_result, Exception):
-                        logger.error(f"Broadcast task {i+1} failed: {bc_result}")
-                self._broadcast_tasks.clear()
-                logger.info("All broadcast tasks completed before tracking system")
-
-            # 6. Tracking system batch
+            # 6. Tracking system batch (runs concurrently with broadcast I/O tasks via async)
             if pdf_paths:
                 try:
                     logger.info("Starting stock tracking system batch execution")
