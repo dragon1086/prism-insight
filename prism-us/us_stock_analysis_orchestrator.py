@@ -552,17 +552,18 @@ class USStockAnalysisOrchestrator:
                     except Exception as e:
                         logger.error(f"Error processing US report {report_path} for {lang}: {str(e)}")
 
-            lang_tasks = []
+            # Process languages sequentially to limit memory usage
+            # (each PDF generation spawns a Playwright/Chromium instance)
             for lang in self.telegram_config.broadcast_languages:
                 channel_id = self.telegram_config.get_broadcast_channel_id(lang)
                 if not channel_id:
                     logger.warning(f"No channel ID configured for language: {lang}")
                     continue
-                logger.info(f"Dispatching parallel PDF translation for US {lang} channel")
-                lang_tasks.append(_translate_pdfs_for_lang(lang, channel_id))
-
-            if lang_tasks:
-                await asyncio.gather(*lang_tasks, return_exceptions=True)
+                logger.info(f"Processing PDF translation for US {lang} channel (sequential)")
+                try:
+                    await _translate_pdfs_for_lang(lang, channel_id)
+                except Exception as lang_err:
+                    logger.error(f"US PDF translation failed for {lang}: {lang_err}")
 
         except Exception as e:
             logger.error(f"Error in _send_translated_pdfs: {str(e)}")
@@ -817,6 +818,17 @@ class USStockAnalysisOrchestrator:
                 await self.send_telegram_messages(message_paths, pdf_paths, report_paths)
             else:
                 logger.info("Telegram disabled - skipping US message generation and transmission")
+
+            # 5-1. Wait for broadcast tasks before tracking system
+            # (prevents resource contention on low-spec servers: 1 core / 2GB RAM)
+            if self._broadcast_tasks:
+                logger.info(f"Waiting for {len(self._broadcast_tasks)} broadcast task(s) before tracking system...")
+                bc_results = await asyncio.gather(*self._broadcast_tasks, return_exceptions=True)
+                for i, bc_result in enumerate(bc_results):
+                    if isinstance(bc_result, Exception):
+                        logger.error(f"Broadcast task {i+1} failed: {bc_result}")
+                self._broadcast_tasks.clear()
+                logger.info("All broadcast tasks completed before tracking system")
 
             # 6. Tracking system batch
             if pdf_paths:
