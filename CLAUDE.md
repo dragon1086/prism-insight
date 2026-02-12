@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.4.5 | **Updated**: 2026-02-11
+> **Version**: 2.4.6 | **Updated**: 2026-02-12
 
 ## Quick Overview
 
@@ -196,6 +196,7 @@ For comprehensive guides, see:
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.4.6 | 2026-02-12 | **US 트레이딩 에이전트 신호 체계 정비** - language 기본값 `"en"`→`"ko"` 통일 (prism-us 전체 11파일), KO↔EN 프롬프트 동기화 (진입 기준 완화, 점수 정의 등 6항목), 미국 시장에 맞지 않는 기관 수급/13F 신호 제거, Form 4 내부자 신호 제거 (perplexity 웹검색 비신뢰), 애널리스트 투자의견 제거 (후행 지표+sell-side 편향), 모든 매매 신호를 yahoo_finance 가격/거래량 기반으로 통일 (O'Neil CAN SLIM 원칙) |
 | 2.4.5 | 2026-02-11 | **Firebase notify 논블로킹 + Broadcast-Tracking 동시 실행** - Firebase `_notify_firebase()` 인라인 `await` → `_schedule_firebase()` 태스크로 변경 후 메서드 끝에서 `asyncio.gather()` 수거 (Telegram 전송 블로킹 제거), 오케스트레이터 step 5-1 제거 (broadcast 완료 대기 → tracking 즉시 시작, broadcast는 async I/O로 동시 실행), `finally` 블록이 broadcast 완료 보장 (KR/US 공통) |
 | 2.4.4 | 2026-02-11 | **Tracking 시스템 Firebase Bridge 통합** - stock_tracking_agent(KR)·us_stock_tracking_agent(US) 전체 메시지 전송 포인트에 `firebase_bridge.notify()` 추가 (매수/매도/보류/포트폴리오/요약 메시지 + 다국어 브로드캐스트 채널), Prism Mobile 푸시 알림 지원, `_notify_firebase()` 헬퍼 메서드 (KR: market="kr", US: market="us"), 분할 메시지 시 첫 파트 message_id로 deep link 생성 |
 | 2.4.3 | 2026-02-11 | **Broadcast PDF 순차 처리** - `_send_translated_pdfs` 언어별 병렬→순차 처리 (Playwright 동시 실행 OOM 방지), finally 블록 안전망 유지 (KR/US 공통) |
