@@ -94,7 +94,7 @@ yahoo_finance-get_historical_stock_prices로 S&P 500 (^GSPC) 최근 20일 데이
 
 **강한 모멘텀 신호 조건** (2개 이상 충족 시 더 공격적 진입 가능):
 1. 거래량 20일 평균 대비 200% 이상
-2. 내부자 매수 신호 (Form 4 공시) 또는 애널리스트 목표가 상향
+2. 애널리스트 목표가 상향 또는 Buy 비율 높음 (yahoo_finance 확인)
 3. 신고가 근접 (52주 고가 대비 95% 이상)
 4. 섹터 전체 상승 추세
 
@@ -219,7 +219,7 @@ time-get_current_time tool을 사용하여 현재 시간을 확인 (미국 동�
 ### 4. 모멘텀 가산점 요소
 다음 신호 확인 시 매수 점수 가산:
 - 거래량 급증 (관심 상승. 이전의 돌파 시도 흐름을 면밀히 살펴보고, 이 종목이 돌파에 필요한 거래량의 흐름을 파악해야 함.)
-- 내부자 매수 (Form 4) 또는 애널리스트 투자의견 상향 (스마트 머니 유입 신호)
+- 애널리스트 투자의견 상향 또는 목표가 상향 (스마트 머니 유입 신호)
 - 기술적 추세 전환 (강한 거래량 동반 돌파)
 - 기술적 박스권 상향 돌파 (단, 캔들이 기존 박스 고점까지 가는데 그치지 않고, 박스 업그레이드 되는 움직임이 보여야 함)
 - 동종업계 대비 저평가 (P/E, P/B 섹터 평균 이하)
@@ -247,7 +247,7 @@ time-get_current_time tool을 사용하여 현재 시간을 확인 (미국 동�
 2. P/E 업종 평균 2배+ (극단적 고평가)
 
 **복합 조건 필요 (둘 다 충족 시에만 미진입):**
-3. (RSI 85+ 또는 괴리율 +25%+) AND (내부자 매도 증가 또는 애널리스트 하향)
+3. (RSI 85+ 또는 괴리율 +25%+) AND (애널리스트 하향 또는 목표가 하락)
    → RSI 높아도 수급 좋으면 진입 가능
 
 **불충분한 표현 (사용 금지):** "과열 우려", "변곡 신호", "추가 확인 필요", "리스크 통제 불가"
@@ -390,7 +390,7 @@ When Trigger Info is provided, use the following as guidelines:
 
 **Strong Momentum Signal Conditions** (2+ of following allows more aggressive entry):
 1. Volume 200%+ of 20-day average
-2. Insider buying signals (Form 4 filings) or analyst target price upgrades
+2. Analyst target price upgrades or high Buy ratio (check via yahoo_finance)
 3. Near 52-week high (95%+)
 4. Sector-wide uptrend
 
@@ -508,7 +508,7 @@ Note: US market hours in Korea Standard Time (KST) are approximately 23:30~06:00
 ### 4. Momentum Bonus Factors
 Add buy score when these signals confirmed:
 - Volume surge (Interest rising - need to analyze previous breakout attempts)
-- Insider buying (Form 4) or analyst upgrades (smart money inflow proxy)
+- Analyst upgrades or target price increase (smart money inflow proxy)
 - Technical trend shift (breakout with strong volume)
 - Technical breakout (price moving to higher range)
 - Undervalued vs peers (P/E, P/B below sector average)
@@ -536,7 +536,7 @@ Add buy score when these signals confirmed:
 2. P/E 2x+ industry average (extreme overvaluation)
 
 **Compound Condition Required (both must be met for No Entry):**
-3. (RSI 85+ or deviation +25%+) AND (insider selling or analyst downgrades)
+3. (RSI 85+ or deviation +25%+) AND (analyst downgrades or target price decline)
    → Entry OK if RSI high but supply is good
 
 **Insufficient Expressions (PROHIBITED):** "overheating concern", "inflection signal", "need more confirmation", "risk uncontrollable"
