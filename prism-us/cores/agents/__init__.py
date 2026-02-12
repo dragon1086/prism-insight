@@ -61,7 +61,7 @@ def get_us_agent_directory(
     ticker: str,
     reference_date: str,
     base_sections: List[str],
-    language: str = "en",
+    language: str = "ko",
     prefetched_data: dict = None
 ) -> Dict:
     """
@@ -72,7 +72,7 @@ def get_us_agent_directory(
         ticker: Stock ticker symbol (e.g., "AAPL")
         reference_date: Analysis reference date (YYYYMMDD)
         base_sections: List of sections to generate agents for
-        language: Language code (default: "en" for US market)
+        language: Language code (default: "ko")
 
     Returns:
         Dict[str, Agent]: Dictionary of agents keyed by section name

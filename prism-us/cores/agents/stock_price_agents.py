@@ -14,7 +14,7 @@ def create_us_price_volume_analysis_agent(
     reference_date: str,
     max_years_ago: str,
     max_years: int,
-    language: str = "en",
+    language: str = "ko",
     prefetched_data: str = None
 ):
     """Create US stock price and trading volume analysis agent
@@ -25,7 +25,7 @@ def create_us_price_volume_analysis_agent(
         reference_date: Analysis reference date (YYYYMMDD)
         max_years_ago: Analysis start date (YYYYMMDD)
         max_years: Analysis period (years)
-        language: Language code (default: "en")
+        language: Language code (default: "ko")
 
     Returns:
         Agent: Stock price and trading volume analysis agent
@@ -195,7 +195,7 @@ def create_us_institutional_holdings_analysis_agent(
     reference_date: str,
     max_years_ago: str,
     max_years: int,
-    language: str = "en",
+    language: str = "ko",
     prefetched_data: str = None
 ):
     """Create US institutional holdings analysis agent
@@ -209,7 +209,7 @@ def create_us_institutional_holdings_analysis_agent(
         reference_date: Analysis reference date (YYYYMMDD)
         max_years_ago: Analysis start date (YYYYMMDD)
         max_years: Analysis period (years)
-        language: Language code (default: "en")
+        language: Language code (default: "ko")
 
     Returns:
         Agent: Institutional holdings analysis agent

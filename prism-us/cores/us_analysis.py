@@ -76,7 +76,7 @@ async def analyze_us_stock(
     ticker: str = "AAPL",
     company_name: str = "Apple Inc.",
     reference_date: str = None,
-    language: str = "en",
+    language: str = "ko",
     include_news: bool = True
 ) -> str:
     """
@@ -86,7 +86,7 @@ async def analyze_us_stock(
         ticker: Stock ticker symbol (e.g., "AAPL", "MSFT")
         company_name: Company name (e.g., "Apple Inc.")
         reference_date: Analysis reference date (YYYYMMDD format)
-        language: Language code (default: "en" for US market)
+        language: Language code (default: "ko")
         include_news: Whether to include news analysis (requires Perplexity API)
 
     Returns:

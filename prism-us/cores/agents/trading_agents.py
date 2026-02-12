@@ -10,7 +10,7 @@ Note: These agents will be integrated in Phase 6 (Trading System).
 from mcp_agent.agents.agent import Agent
 
 
-def create_us_trading_scenario_agent(language: str = "en"):
+def create_us_trading_scenario_agent(language: str = "ko"):
     """
     Create US trading scenario generation agent
 
@@ -18,7 +18,7 @@ def create_us_trading_scenario_agent(language: str = "en"):
     Primarily follows value investing principles, but enters more actively when upward momentum is confirmed.
 
     Args:
-        language: Language code ("en" or "ko", default: "en")
+        language: Language code ("ko" or "en", default: "ko")
 
     Returns:
         Agent: Trading scenario generation agent
@@ -54,7 +54,7 @@ def create_us_trading_scenario_agent(language: str = "en"):
 | 보고서 섹션 | 확인할 내용 |
 |------------|-----------|
 | 1-1. 주가 및 거래량 분석 | 기술적 신호, 지지/저항선, 박스권 위치, 이동평균선 |
-| 1-2. 투자자 거래 동향 | 기관 수급, 매집/이탈 패턴 |
+| 1-2. 투자자 거래 동향 | 기관/외국인 수급, 매집/이탈 패턴 |
 | 2-1. 기업 현황 분석 | 재무제표(부채비율, ROE/ROA, 영업이익률), 밸류에이션, 실적 추이 |
 | 2-2. 기업 개요 분석 | 사업 구조, R&D 투자, 경쟁력, 성장 동력 |
 | 3. 최근 주요 뉴스 요약 | 재료(뉴스)의 내용과 지속성 - 현재 급등/관심의 원인 |
@@ -65,7 +65,7 @@ def create_us_trading_scenario_agent(language: str = "en"):
 
 **0단계: 시장 환경 판단**
 yahoo_finance-get_historical_stock_prices로 S&P 500 (^GSPC) 최근 20일 데이터 확인 후:
-- 강세장: S&P 500 20일 이동평균선 위 + 최근 2주 +5% 이상 상승
+- 강세장: S&P 500 20일 이동평균선 위 + (최근 4주 +2% 이상 상승 OR 최근 2주 +3% 이상 상승)
 - 약세장/횡보장: 위 조건 미충족
 
 **약세장/횡보장 기준 (엄격 - 변경 없음):**
@@ -94,7 +94,7 @@ yahoo_finance-get_historical_stock_prices로 S&P 500 (^GSPC) 최근 20일 데이
 
 **강한 모멘텀 신호 조건** (2개 이상 충족 시 더 공격적 진입 가능):
 1. 거래량 20일 평균 대비 200% 이상
-2. 기관 투자자 순매수 (13F 보고서 확인)
+2. 기관 투자자 순매수 (주요 보유자 변화 확인)
 3. 신고가 근접 (52주 고가 대비 95% 이상)
 4. 섹터 전체 상승 추세
 
@@ -125,8 +125,8 @@ us_stock_holdings 테이블에서 다음 정보를 확인하세요:
 
 ### 2. 종목 평가 (1~10점)
 - **8~10점**: 적극 진입 (동종업계 대비 저평가 + 강한 모멘텀)
-- **7점**: 진입 (기본 조건 충족)
-- **6점**: 조건부 진입 (강세장 + 모멘텀 확인 시 진입)
+- **7점**: 진입 (적절한 손익비 + 수용 가능한 펀더멘털)
+- **6점**: 신중 진입 (모멘텀 존재 + 관리 가능한 리스크 요소)
 - **5점 이하**: 미진입 (명확한 부정적 요소 존재)
 
 ## 진입 결정 가이드
@@ -234,10 +234,10 @@ time-get_current_time tool을 사용하여 현재 시간을 확인 (미국 동�
 - 손절 -7% 이내 가능하면 손익비 1.2+도 OK
 - **미진입 시: 아래 "부정 요소" 1개 이상 명시 필수**
 
-**약세장/횡보장 (보수적 유지):**
-- 7점 + 강한 모멘텀 + 저평가 → 진입 고려
-- 8점 + 보통 조건 + 긍정적 전망 → 진입 고려
-- 9점 이상 + 밸류에이션 매력 → 적극 진입
+**약세장/횡보장 (선별적이되 적극적):**
+- 6점 + 강한 모멘텀 + 손익비 2.0+ → 타이트 손절(-5%)로 진입
+- 7점 + 수용 가능한 손익비 → 진입
+- 8점+ → 적극 진입
 - 명시적 경고나 부정적 전망 시 보수적 접근
 
 ### 6. 미진입 정당화 요건 (강세장)
@@ -283,7 +283,7 @@ time-get_current_time tool을 사용하여 현재 시간을 확인 (미국 동�
     "valuation_analysis": "동종업계 밸류에이션 비교 결과",
     "sector_outlook": "업종 전망 및 동향",
     "buy_score": 1~10 사이의 점수,
-    "min_score": 시장 환경에 따른 최소 진입 요구 점수 (강세장: 6, 약세장: 7),
+    "min_score": 시장 환경에 따른 최소 진입 요구 점수 (강세장: 5, 약세장: 6),
     "decision": "진입" 또는 "미진입",
     "entry_checklist_passed": 체크 충족 개수 (6개 중),
     "rejection_reason": "미진입 시: 구체적 부정 요소 기재 (진입 시 null 또는 빈 문자열)",
@@ -321,7 +321,7 @@ time-get_current_time tool을 사용하여 현재 시간을 확인 (미국 동�
     }
 }
 """
-    else:  # English (default)
+    else:  # English
         instruction = """
 ## SYSTEM CONSTRAINTS
 
@@ -623,7 +623,7 @@ Wrong (may fail parsing):
     )
 
 
-def create_us_sell_decision_agent(language: str = "en"):
+def create_us_sell_decision_agent(language: str = "ko"):
     """
     Create US sell decision agent
 
@@ -631,7 +631,7 @@ def create_us_sell_decision_agent(language: str = "en"):
     Comprehensively analyzes data of currently held stocks to decide whether to sell or continue holding.
 
     Args:
-        language: Language code ("en" or "ko", default: "en")
+        language: Language code ("ko" or "en", default: "ko")
 
     Returns:
         Agent: Sell decision agent
@@ -806,7 +806,7 @@ JSON 형식으로 다음과 같이 응답해주세요:
 - **원칙**: 현재 전략이 여전히 유효하다면 needed=false로 설정
 - **숫자 형식 주의**: 85 (O), "$85" (X), "85.00" (O)
 """
-    else:  # English (default)
+    else:  # English
         instruction = """## Your Identity
 You are William O'Neil. Your iron rule: "Cut losses at 7-8%, no exceptions."
 

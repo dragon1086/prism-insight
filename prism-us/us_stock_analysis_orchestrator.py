@@ -14,7 +14,7 @@ Key Differences from Korean Version:
 - Uses ticker symbols (AAPL, MSFT) instead of 6-digit codes
 - Uses yfinance for market data
 - US market hours (09:30-16:00 EST)
-- English language default
+- Korean language default (ko)
 """
 from dotenv import load_dotenv
 load_dotenv()
@@ -257,7 +257,7 @@ class USStockAnalysisOrchestrator:
             logger.error(traceback.format_exc())
             return []
 
-    async def generate_reports(self, tickers: list, mode: str, timeout: int = None, language: str = "en") -> list:
+    async def generate_reports(self, tickers: list, mode: str, timeout: int = None, language: str = "ko") -> list:
         """
         Generate reports serially for all US stocks.
 
@@ -265,7 +265,7 @@ class USStockAnalysisOrchestrator:
             tickers: List of stocks to analyze
             mode: Execution mode
             timeout: Timeout (seconds)
-            language: Analysis language (default: "en")
+            language: Analysis language (default: "ko")
 
         Returns:
             list: List of successful report paths
@@ -345,13 +345,13 @@ class USStockAnalysisOrchestrator:
 
         return pdf_paths
 
-    async def generate_telegram_messages(self, report_pdf_paths: list, language: str = "en") -> list:
+    async def generate_telegram_messages(self, report_pdf_paths: list, language: str = "ko") -> list:
         """
         Generate telegram messages for US stocks
 
         Args:
             report_pdf_paths: List of report file (pdf) paths
-            language: Message language (default: "en")
+            language: Message language (default: "ko")
 
         Returns:
             list: List of generated telegram message file paths

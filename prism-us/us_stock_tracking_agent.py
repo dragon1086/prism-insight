@@ -420,12 +420,12 @@ class USStockTrackingAgent:
         if self.telegram_token:
             self.telegram_bot = Bot(token=self.telegram_token)
 
-    async def initialize(self, language: str = "en"):
+    async def initialize(self, language: str = "ko"):
         """
         Create necessary tables and initialize.
 
         Args:
-            language: Language code for agents (default: "en")
+            language: Language code for agents (default: "ko")
         """
         logger.info("Starting US tracking agent initialization")
 

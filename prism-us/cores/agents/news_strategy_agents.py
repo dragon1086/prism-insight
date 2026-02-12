@@ -12,7 +12,7 @@ def create_us_news_analysis_agent(
     company_name: str,
     ticker: str,
     reference_date: str,
-    language: str = "en"
+    language: str = "ko"
 ):
     """Create US news analysis agent
 
@@ -20,7 +20,7 @@ def create_us_news_analysis_agent(
         company_name: Company name
         ticker: Stock ticker symbol
         reference_date: Analysis reference date (YYYYMMDD)
-        language: Language code (default: "en")
+        language: Language code (default: "ko")
 
     Returns:
         Agent: News analysis agent

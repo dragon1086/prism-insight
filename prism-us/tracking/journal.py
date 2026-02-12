@@ -48,7 +48,7 @@ class USJournalManager:
 
     MARKET = "US"  # Market identifier for shared tables
 
-    def __init__(self, cursor, conn, language: str = "en", enable_journal: bool = False):
+    def __init__(self, cursor, conn, language: str = "ko", enable_journal: bool = False):
         """
         Initialize USJournalManager.
 

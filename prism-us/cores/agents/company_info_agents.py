@@ -19,7 +19,7 @@ def create_us_company_status_agent(
     ticker: str,
     reference_date: str,
     urls: Dict[str, str],
-    language: str = "en",
+    language: str = "ko",
     prefetched_data: dict = None
 ):
     """Create US company status analysis agent
@@ -29,7 +29,7 @@ def create_us_company_status_agent(
         ticker: Stock ticker symbol
         reference_date: Analysis reference date (YYYYMMDD)
         urls: Dictionary of Yahoo Finance URLs
-        language: Language code (default: "en")
+        language: Language code (default: "ko")
 
     Returns:
         Agent: Company status analysis agent
@@ -337,7 +337,7 @@ def create_us_company_overview_agent(
     ticker: str,
     reference_date: str,
     urls: Dict[str, str],
-    language: str = "en",
+    language: str = "ko",
     prefetched_data: dict = None
 ):
     """Create US company overview analysis agent
@@ -347,7 +347,7 @@ def create_us_company_overview_agent(
         ticker: Stock ticker symbol
         reference_date: Analysis reference date (YYYYMMDD)
         urls: Dictionary of Yahoo Finance URLs
-        language: Language code (default: "en")
+        language: Language code (default: "ko")
 
     Returns:
         Agent: Company overview analysis agent
