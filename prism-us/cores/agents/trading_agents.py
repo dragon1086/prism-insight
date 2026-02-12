@@ -10,7 +10,7 @@ Note: These agents will be integrated in Phase 6 (Trading System).
 from mcp_agent.agents.agent import Agent
 
 
-def create_us_trading_scenario_agent(language: str = "en"):
+def create_us_trading_scenario_agent(language: str = "ko"):
     """
     Create US trading scenario generation agent
 
@@ -18,7 +18,7 @@ def create_us_trading_scenario_agent(language: str = "en"):
     Primarily follows value investing principles, but enters more actively when upward momentum is confirmed.
 
     Args:
-        language: Language code ("en" or "ko", default: "en")
+        language: Language code ("ko" or "en", default: "ko")
 
     Returns:
         Agent: Trading scenario generation agent
@@ -54,7 +54,7 @@ def create_us_trading_scenario_agent(language: str = "en"):
 | 보고서 섹션 | 확인할 내용 |
 |------------|-----------|
 | 1-1. 주가 및 거래량 분석 | 기술적 신호, 지지/저항선, 박스권 위치, 이동평균선 |
-| 1-2. 투자자 거래 동향 | 기관 수급, 매집/이탈 패턴 |
+| 1-2. 투자자 거래 동향 | 기관/외국인 수급, 매집/이탈 패턴 |
 | 2-1. 기업 현황 분석 | 재무제표(부채비율, ROE/ROA, 영업이익률), 밸류에이션, 실적 추이 |
 | 2-2. 기업 개요 분석 | 사업 구조, R&D 투자, 경쟁력, 성장 동력 |
 | 3. 최근 주요 뉴스 요약 | 재료(뉴스)의 내용과 지속성 - 현재 급등/관심의 원인 |
@@ -65,7 +65,7 @@ def create_us_trading_scenario_agent(language: str = "en"):
 
 **0단계: 시장 환경 판단**
 yahoo_finance-get_historical_stock_prices로 S&P 500 (^GSPC) 최근 20일 데이터 확인 후:
-- 강세장: S&P 500 20일 이동평균선 위 + 최근 2주 +5% 이상 상승
+- 강세장: S&P 500 20일 이동평균선 위 + (최근 4주 +2% 이상 상승 OR 최근 2주 +3% 이상 상승)
 - 약세장/횡보장: 위 조건 미충족
 
 **약세장/횡보장 기준 (엄격 - 변경 없음):**
@@ -94,7 +94,7 @@ yahoo_finance-get_historical_stock_prices로 S&P 500 (^GSPC) 최근 20일 데이
 
 **강한 모멘텀 신호 조건** (2개 이상 충족 시 더 공격적 진입 가능):
 1. 거래량 20일 평균 대비 200% 이상
-2. 기관 투자자 순매수 (13F 보고서 확인)
+2. 애널리스트 목표가 상향 또는 Buy 비율 높음 (yahoo_finance 확인)
 3. 신고가 근접 (52주 고가 대비 95% 이상)
 4. 섹터 전체 상승 추세
 
@@ -125,8 +125,8 @@ us_stock_holdings 테이블에서 다음 정보를 확인하세요:
 
 ### 2. 종목 평가 (1~10점)
 - **8~10점**: 적극 진입 (동종업계 대비 저평가 + 강한 모멘텀)
-- **7점**: 진입 (기본 조건 충족)
-- **6점**: 조건부 진입 (강세장 + 모멘텀 확인 시 진입)
+- **7점**: 진입 (적절한 손익비 + 수용 가능한 펀더멘털)
+- **6점**: 신중 진입 (모멘텀 존재 + 관리 가능한 리스크 요소)
 - **5점 이하**: 미진입 (명확한 부정적 요소 존재)
 
 ## 진입 결정 가이드
@@ -219,7 +219,7 @@ time-get_current_time tool을 사용하여 현재 시간을 확인 (미국 동�
 ### 4. 모멘텀 가산점 요소
 다음 신호 확인 시 매수 점수 가산:
 - 거래량 급증 (관심 상승. 이전의 돌파 시도 흐름을 면밀히 살펴보고, 이 종목이 돌파에 필요한 거래량의 흐름을 파악해야 함.)
-- 기관 투자자 순매수 (자금 유입, 13F 보고서 확인)
+- 애널리스트 투자의견 상향 또는 목표가 상향 (스마트 머니 유입 신호)
 - 기술적 추세 전환 (강한 거래량 동반 돌파)
 - 기술적 박스권 상향 돌파 (단, 캔들이 기존 박스 고점까지 가는데 그치지 않고, 박스 업그레이드 되는 움직임이 보여야 함)
 - 동종업계 대비 저평가 (P/E, P/B 섹터 평균 이하)
@@ -234,10 +234,10 @@ time-get_current_time tool을 사용하여 현재 시간을 확인 (미국 동�
 - 손절 -7% 이내 가능하면 손익비 1.2+도 OK
 - **미진입 시: 아래 "부정 요소" 1개 이상 명시 필수**
 
-**약세장/횡보장 (보수적 유지):**
-- 7점 + 강한 모멘텀 + 저평가 → 진입 고려
-- 8점 + 보통 조건 + 긍정적 전망 → 진입 고려
-- 9점 이상 + 밸류에이션 매력 → 적극 진입
+**약세장/횡보장 (선별적이되 적극적):**
+- 6점 + 강한 모멘텀 + 손익비 2.0+ → 타이트 손절(-5%)로 진입
+- 7점 + 수용 가능한 손익비 → 진입
+- 8점+ → 적극 진입
 - 명시적 경고나 부정적 전망 시 보수적 접근
 
 ### 6. 미진입 정당화 요건 (강세장)
@@ -247,7 +247,7 @@ time-get_current_time tool을 사용하여 현재 시간을 확인 (미국 동�
 2. P/E 업종 평균 2배+ (극단적 고평가)
 
 **복합 조건 필요 (둘 다 충족 시에만 미진입):**
-3. (RSI 85+ 또는 괴리율 +25%+) AND (기관 순매도 전환)
+3. (RSI 85+ 또는 괴리율 +25%+) AND (애널리스트 하향 또는 목표가 하락)
    → RSI 높아도 수급 좋으면 진입 가능
 
 **불충분한 표현 (사용 금지):** "과열 우려", "변곡 신호", "추가 확인 필요", "리스크 통제 불가"
@@ -283,7 +283,7 @@ time-get_current_time tool을 사용하여 현재 시간을 확인 (미국 동�
     "valuation_analysis": "동종업계 밸류에이션 비교 결과",
     "sector_outlook": "업종 전망 및 동향",
     "buy_score": 1~10 사이의 점수,
-    "min_score": 시장 환경에 따른 최소 진입 요구 점수 (강세장: 6, 약세장: 7),
+    "min_score": 시장 환경에 따른 최소 진입 요구 점수 (강세장: 5, 약세장: 6),
     "decision": "진입" 또는 "미진입",
     "entry_checklist_passed": 체크 충족 개수 (6개 중),
     "rejection_reason": "미진입 시: 구체적 부정 요소 기재 (진입 시 null 또는 빈 문자열)",
@@ -321,7 +321,7 @@ time-get_current_time tool을 사용하여 현재 시간을 확인 (미국 동�
     }
 }
 """
-    else:  # English (default)
+    else:  # English
         instruction = """
 ## SYSTEM CONSTRAINTS
 
@@ -390,7 +390,7 @@ When Trigger Info is provided, use the following as guidelines:
 
 **Strong Momentum Signal Conditions** (2+ of following allows more aggressive entry):
 1. Volume 200%+ of 20-day average
-2. Institutional net buying (check major holder changes)
+2. Analyst target price upgrades or high Buy ratio (check via yahoo_finance)
 3. Near 52-week high (95%+)
 4. Sector-wide uptrend
 
@@ -508,7 +508,7 @@ Note: US market hours in Korea Standard Time (KST) are approximately 23:30~06:00
 ### 4. Momentum Bonus Factors
 Add buy score when these signals confirmed:
 - Volume surge (Interest rising - need to analyze previous breakout attempts)
-- Institutional buying (capital inflow via 13F filings)
+- Analyst upgrades or target price increase (smart money inflow proxy)
 - Technical trend shift (breakout with strong volume)
 - Technical breakout (price moving to higher range)
 - Undervalued vs peers (P/E, P/B below sector average)
@@ -536,7 +536,7 @@ Add buy score when these signals confirmed:
 2. P/E 2x+ industry average (extreme overvaluation)
 
 **Compound Condition Required (both must be met for No Entry):**
-3. (RSI 85+ or deviation +25%+) AND (institutional selling)
+3. (RSI 85+ or deviation +25%+) AND (analyst downgrades or target price decline)
    → Entry OK if RSI high but supply is good
 
 **Insufficient Expressions (PROHIBITED):** "overheating concern", "inflection signal", "need more confirmation", "risk uncontrollable"
@@ -623,7 +623,7 @@ Wrong (may fail parsing):
     )
 
 
-def create_us_sell_decision_agent(language: str = "en"):
+def create_us_sell_decision_agent(language: str = "ko"):
     """
     Create US sell decision agent
 
@@ -631,7 +631,7 @@ def create_us_sell_decision_agent(language: str = "en"):
     Comprehensively analyzes data of currently held stocks to decide whether to sell or continue holding.
 
     Args:
-        language: Language code ("en" or "ko", default: "en")
+        language: Language code ("ko" or "en", default: "ko")
 
     Returns:
         Agent: Sell decision agent
@@ -658,7 +658,7 @@ def create_us_sell_decision_agent(language: str = "en"):
 **매 판단 시 반드시 먼저 확인:**
 1. yahoo_finance-get_historical_stock_prices로 S&P 500 (^GSPC) 최근 20일 데이터 확인
 2. 20일 이동평균선 위에서 상승 중인가?
-3. 기관 투자자 순매수 중인가? (주요 보유자 변화 확인)
+3. 애널리스트 컨센서스가 긍정적인가? (목표가 상향, Buy 비율 확인)
 4. 개별 종목 거래량이 평균 이상인가?
 
 → **강세장 판단**: 위 4개 중 2개 이상 Yes
@@ -673,7 +673,7 @@ def create_us_sell_decision_agent(language: str = "en"):
   1. 손실이 -5% ~ -7% 사이 (-7.1% 이상은 예외 불가)
   2. 당일 종가 반등률 ≥ +3%
   3. 당일 거래량 ≥ 20일 평균 × 2배
-  4. 기관 투자자 순매수
+  4. 애널리스트 컨센서스 지지 (목표가 유지/상향, Buy 비율 높음)
   5. 유예 기간: 최대 1일 (2일차 회복 없으면 무조건 매도)
 - 급격한 하락(-5% 이상): 추세가 꺾였는지 확인 후 전량 손절 여부 결정
 - 시장 충격 상황: 방어적 전량 매도 고려
@@ -685,7 +685,7 @@ def create_us_sell_decision_agent(language: str = "en"):
 - Trailing Stop: 고점 대비 **-8~10%** (노이즈 무시)
 - 매도 조건: **명확한 추세 약화 시에만**
   * 3일 연속 하락 + 거래량 감소
-  * 기관 투자자 순매도 전환
+  * 애널리스트 컨센서스 악화 (목표가 하향, Hold/Sell 비율 증가)
   * 주요 지지선(50일선) 이탈
 
 **⭐ Trailing Stop 관리 (매 실행 시)**
@@ -806,7 +806,7 @@ JSON 형식으로 다음과 같이 응답해주세요:
 - **원칙**: 현재 전략이 여전히 유효하다면 needed=false로 설정
 - **숫자 형식 주의**: 85 (O), "$85" (X), "85.00" (O)
 """
-    else:  # English (default)
+    else:  # English
         instruction = """## Your Identity
 You are William O'Neil. Your iron rule: "Cut losses at 7-8%, no exceptions."
 
@@ -827,7 +827,7 @@ You need to comprehensively analyze the data of currently held stocks to decide 
 **Must check first for every decision:**
 1. Check S&P 500 (^GSPC) recent 20 days data with yahoo_finance-get_historical_stock_prices
 2. Is it rising above 20-day moving average?
-3. Is institutional buying increasing (check major holder reports)?
+3. Is analyst consensus positive? (check target price upgrades, Buy ratio via yahoo_finance)
 4. Is individual stock volume above average?
 
 → **Bull market**: 2 or more of above 4 are Yes
@@ -842,7 +842,7 @@ You need to comprehensively analyze the data of currently held stocks to decide 
   1. Loss between -5% and -7% (NOT -7.1% or worse)
   2. Same-day bounce ≥ +3%
   3. Same-day volume ≥ 2× of 20-day average
-  4. Institutional buying signals
+  4. Analyst consensus support (target price maintained/upgraded, high Buy ratio)
   5. Grace period: 1 day MAXIMUM (Day 2: no recovery → SELL)
 - Sharp decline (-5%+): Check if trend broken, decide on full stop loss
 - Market shock situation: Consider defensive full exit
@@ -854,7 +854,7 @@ You need to comprehensively analyze the data of currently held stocks to decide 
 - Trailing Stop: **-8~10%** from peak (ignore noise)
 - Sell only when **clear trend weakness**:
   * 3 consecutive days decline + volume decrease
-  * Institutional selling signals
+  * Analyst consensus deterioration (target price decline, increasing Hold/Sell ratio)
   * Break major support (50-day line)
 
 **⭐ Trailing Stop Management (Execute Every Run)**

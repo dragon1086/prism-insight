@@ -12,7 +12,7 @@ def create_us_market_index_analysis_agent(
     reference_date: str,
     max_years_ago: str,
     max_years: int,
-    language: str = "en",
+    language: str = "ko",
     prefetched_indices: str = None
 ):
     """Create US market index analysis agent
@@ -21,7 +21,7 @@ def create_us_market_index_analysis_agent(
         reference_date: Analysis reference date (YYYYMMDD)
         max_years_ago: Analysis start date (YYYYMMDD)
         max_years: Analysis period (years)
-        language: Language code (default: "en")
+        language: Language code (default: "ko")
 
     Returns:
         Agent: Market index analysis agent

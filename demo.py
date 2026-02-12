@@ -61,7 +61,7 @@ def get_company_name(ticker: str) -> str:
         return ticker
 
 
-async def generate_report(ticker: str, company_name: str, language: str = "en") -> tuple:
+async def generate_report(ticker: str, company_name: str, language: str = "ko") -> tuple:
     """
     Generate a stock analysis report.
 
@@ -149,9 +149,9 @@ Examples:
     )
     parser.add_argument(
         "--language", "-l",
-        choices=["en", "ko"],
-        default="en",
-        help="Report language (default: en)"
+        choices=["ko", "en"],
+        default="ko",
+        help="Report language (default: ko)"
     )
 
     args = parser.parse_args()
