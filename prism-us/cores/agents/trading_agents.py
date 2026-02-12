@@ -658,7 +658,7 @@ def create_us_sell_decision_agent(language: str = "ko"):
 **매 판단 시 반드시 먼저 확인:**
 1. yahoo_finance-get_historical_stock_prices로 S&P 500 (^GSPC) 최근 20일 데이터 확인
 2. 20일 이동평균선 위에서 상승 중인가?
-3. 내부자 매수 또는 애널리스트 상향 신호가 있는가? (Form 4 공시 확인)
+3. 애널리스트 컨센서스가 긍정적인가? (목표가 상향, Buy 비율 확인)
 4. 개별 종목 거래량이 평균 이상인가?
 
 → **강세장 판단**: 위 4개 중 2개 이상 Yes
@@ -673,7 +673,7 @@ def create_us_sell_decision_agent(language: str = "ko"):
   1. 손실이 -5% ~ -7% 사이 (-7.1% 이상은 예외 불가)
   2. 당일 종가 반등률 ≥ +3%
   3. 당일 거래량 ≥ 20일 평균 × 2배
-  4. 내부자 매수 신호 또는 애널리스트 지지
+  4. 애널리스트 컨센서스 지지 (목표가 유지/상향, Buy 비율 높음)
   5. 유예 기간: 최대 1일 (2일차 회복 없으면 무조건 매도)
 - 급격한 하락(-5% 이상): 추세가 꺾였는지 확인 후 전량 손절 여부 결정
 - 시장 충격 상황: 방어적 전량 매도 고려
@@ -685,7 +685,7 @@ def create_us_sell_decision_agent(language: str = "ko"):
 - Trailing Stop: 고점 대비 **-8~10%** (노이즈 무시)
 - 매도 조건: **명확한 추세 약화 시에만**
   * 3일 연속 하락 + 거래량 감소
-  * 내부자 매도 증가 또는 애널리스트 하향 전환
+  * 애널리스트 컨센서스 악화 (목표가 하향, Hold/Sell 비율 증가)
   * 주요 지지선(50일선) 이탈
 
 **⭐ Trailing Stop 관리 (매 실행 시)**
@@ -827,7 +827,7 @@ You need to comprehensively analyze the data of currently held stocks to decide 
 **Must check first for every decision:**
 1. Check S&P 500 (^GSPC) recent 20 days data with yahoo_finance-get_historical_stock_prices
 2. Is it rising above 20-day moving average?
-3. Are there insider buying signals or analyst upgrades? (check Form 4 filings)
+3. Is analyst consensus positive? (check target price upgrades, Buy ratio via yahoo_finance)
 4. Is individual stock volume above average?
 
 → **Bull market**: 2 or more of above 4 are Yes
@@ -842,7 +842,7 @@ You need to comprehensively analyze the data of currently held stocks to decide 
   1. Loss between -5% and -7% (NOT -7.1% or worse)
   2. Same-day bounce ≥ +3%
   3. Same-day volume ≥ 2× of 20-day average
-  4. Insider buying or analyst support signals
+  4. Analyst consensus support (target price maintained/upgraded, high Buy ratio)
   5. Grace period: 1 day MAXIMUM (Day 2: no recovery → SELL)
 - Sharp decline (-5%+): Check if trend broken, decide on full stop loss
 - Market shock situation: Consider defensive full exit
@@ -854,7 +854,7 @@ You need to comprehensively analyze the data of currently held stocks to decide 
 - Trailing Stop: **-8~10%** from peak (ignore noise)
 - Sell only when **clear trend weakness**:
   * 3 consecutive days decline + volume decrease
-  * Insider selling or analyst downgrade signals
+  * Analyst consensus deterioration (target price decline, increasing Hold/Sell ratio)
   * Break major support (50-day line)
 
 **⭐ Trailing Stop Management (Execute Every Run)**
