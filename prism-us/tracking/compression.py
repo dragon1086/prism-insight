@@ -134,7 +134,7 @@ class USCompressionManager:
             # Compress Layer 1 → Layer 2 for US
             self.cursor.execute("""
                 SELECT id, ticker, company_name, profit_rate, holding_days,
-                       one_line_summary, lessons, pattern_tags
+                       one_line_summary, lessons, pattern_tags, sell_price
                 FROM trading_journal
                 WHERE compression_layer = 1 AND trade_date < ? AND market = ?
             """, (cutoff_layer1, self.MARKET))
@@ -142,13 +142,39 @@ class USCompressionManager:
             layer1_entries = self.cursor.fetchall()
 
             if len(layer1_entries) >= min_entries_for_compression:
+                # Fetch hindsight prices for sold tickers
+                tickers = [entry[1] for entry in layer1_entries if entry[1]]
+                hindsight_prices = self._fetch_us_hindsight_prices(tickers)
+
                 for entry in layer1_entries:
-                    # Update to Layer 2 (keep essential data, mark as summarized)
+                    # entry: (id, ticker, company_name, profit_rate, holding_days,
+                    #         one_line_summary, lessons, pattern_tags, sell_price)
+                    entry_id, ticker, company_name = entry[0], entry[1], entry[2]
+                    sell_price = entry[8] if len(entry) > 8 else None
+
+                    # Build hindsight summary if price data available
+                    hindsight_note = ""
+                    if ticker in hindsight_prices and sell_price:
+                        current = hindsight_prices[ticker]
+                        change = (current - sell_price) / sell_price * 100
+                        if change < -1:
+                            verdict = "Good sell"
+                        elif change > 3:
+                            verdict = "Could have waited"
+                        else:
+                            verdict = "Appropriate sell"
+                        hindsight_note = f" [Hindsight: ${sell_price:.2f} → ${current:.2f} ({change:+.1f}%) - {verdict}]"
+                        logger.info(f"US hindsight: {ticker} sold at ${sell_price:.2f}, now ${current:.2f} ({change:+.1f}%) - {verdict}")
+
+                    # Update to Layer 2 with optional hindsight in compressed_summary
+                    summary = entry[5] or ""  # one_line_summary
+                    compressed_summary = (summary + hindsight_note) if hindsight_note else summary
+
                     self.cursor.execute("""
                         UPDATE trading_journal
-                        SET compression_layer = 2
+                        SET compression_layer = 2, compressed_summary = ?
                         WHERE id = ?
-                    """, (entry[0],))
+                    """, (compressed_summary or None, entry_id))
                     results["layer1_to_layer2"]["compressed"] += 1
 
                 self.conn.commit()
@@ -215,6 +241,31 @@ class USCompressionManager:
         except Exception as e:
             logger.error(f"Error during US compression: {e}")
             return results
+
+    def _fetch_us_hindsight_prices(self, tickers: List[str]) -> Dict[str, float]:
+        """Fetch current US prices for hindsight context during compression.
+
+        Uses yfinance batch download. Returns empty dict on failure.
+        """
+        if not tickers:
+            return {}
+        try:
+            import yfinance as yf
+            data = yf.download(tickers, period="1d", progress=False)
+            prices = {}
+            for ticker in tickers:
+                try:
+                    if len(tickers) == 1:
+                        prices[ticker] = float(data['Close'].iloc[-1])
+                    else:
+                        prices[ticker] = float(data['Close'][ticker].iloc[-1])
+                except Exception:
+                    pass
+            logger.info(f"US: Fetched hindsight prices for {len(prices)} tickers")
+            return prices
+        except Exception as e:
+            logger.warning(f"US: Failed to fetch hindsight prices: {e}")
+            return {}
 
     def _save_intuition(
         self,
