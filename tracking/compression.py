@@ -76,7 +76,7 @@ class CompressionManager:
             self.cursor.execute("""
                 SELECT id, ticker, company_name, trade_date, profit_rate,
                        situation_analysis, judgment_evaluation, lessons,
-                       pattern_tags, one_line_summary, buy_scenario
+                       pattern_tags, one_line_summary, buy_scenario, sell_price
                 FROM trading_journal
                 WHERE compression_layer = 1 AND trade_date < ?
                 ORDER BY trade_date ASC
@@ -127,7 +127,10 @@ class CompressionManager:
             async with compressor_agent:
                 llm = await compressor_agent.attach_llm(OpenAIAugmentedLLM)
 
-                entries_text = self._format_entries_for_compression(entries)
+                # Fetch current prices for hindsight context
+                hindsight_prices = self._fetch_hindsight_prices(entries)
+
+                entries_text = self._format_entries_for_compression(entries, hindsight_prices)
                 prompt = self._build_layer2_prompt(entries_text, len(entries))
 
                 response = await llm.generate_str(
@@ -216,7 +219,32 @@ class CompressionManager:
             logger.error(f"Error in Layer 3 compression: {e}")
             return {"processed": len(entries), "compressed": 0, "intuitions_generated": 0, "errors": [str(e)]}
 
-    def _format_entries_for_compression(self, entries: List[Dict[str, Any]]) -> str:
+    def _fetch_hindsight_prices(self, entries: List[Dict[str, Any]]) -> Dict[str, float]:
+        """Fetch current prices for tickers to add hindsight context during compression.
+
+        Uses pykrx batch API (single call for all KR tickers).
+        Returns empty dict on failure — compression proceeds without hindsight.
+        """
+        try:
+            from krx_data_client import get_nearest_business_day_in_a_week, get_market_ohlcv_by_ticker
+            import datetime as dt
+
+            today = dt.datetime.now().strftime("%Y%m%d")
+            trade_date = get_nearest_business_day_in_a_week(today, prev=True)
+            df = get_market_ohlcv_by_ticker(trade_date)
+
+            prices = {}
+            for entry in entries:
+                ticker = entry.get('ticker', '')
+                if ticker and ticker in df.index:
+                    prices[ticker] = float(df.loc[ticker, "Close"])
+            logger.info(f"Fetched hindsight prices for {len(prices)} tickers")
+            return prices
+        except Exception as e:
+            logger.warning(f"Failed to fetch hindsight prices: {e}")
+            return {}
+
+    def _format_entries_for_compression(self, entries: List[Dict[str, Any]], hindsight_prices: Dict[str, float] | None = None) -> str:
         """Format entries for LLM compression."""
         formatted = []
         for entry in entries:
@@ -233,11 +261,28 @@ class CompressionManager:
                 tags_str = ""
 
             profit_emoji = "✅" if entry.get('profit_rate', 0) > 0 else "❌"
-            formatted.append(
+            line = (
                 f"[ID:{entry['id']}] {entry.get('company_name', '')}({entry.get('ticker', '')}) "
                 f"{profit_emoji} {entry.get('profit_rate', 0):.1f}% | "
                 f"Summary: {entry.get('one_line_summary', 'N/A')} | Lessons: {lessons_str} | Tags: {tags_str}"
             )
+
+            # Append hindsight evaluation if price data available
+            if hindsight_prices:
+                ticker = entry.get('ticker', '')
+                sell_price = entry.get('sell_price')
+                if ticker in hindsight_prices and sell_price:
+                    current = hindsight_prices[ticker]
+                    change = (current - sell_price) / sell_price * 100
+                    if change < -1:
+                        verdict = "잘 팔았음"
+                    elif change > 3:
+                        verdict = "좀 더 기다릴 수 있었음"
+                    else:
+                        verdict = "적절한 매도"
+                    line += f" | [후행평가: 매도가 {sell_price:,.0f}원 → 현재가 {current:,.0f}원 ({change:+.1f}%) - {verdict}]"
+
+            formatted.append(line)
         return "\n".join(formatted)
 
     def _format_entries_for_intuition(self, entries: List[Dict[str, Any]]) -> str:
