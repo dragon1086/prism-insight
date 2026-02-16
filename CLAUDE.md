@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.4.6 | **Updated**: 2026-02-12
+> **Version**: 2.4.7 | **Updated**: 2026-02-16
 
 ## Quick Overview
 
@@ -39,6 +39,8 @@ prism-insight/
 | `python prism-us/us_trigger_batch.py morning INFO` | US surge detection only |
 | `python demo.py 005930` | Single stock report (KR) |
 | `python demo.py AAPL --market us` | Single stock report (US) |
+| `python weekly_insight_report.py --dry-run` | Weekly insight report (print only) |
+| `python weekly_insight_report.py --broadcast-languages en,ja` | Weekly report + broadcast |
 
 ## Configuration Files
 
@@ -196,6 +198,7 @@ For comprehensive guides, see:
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.4.7 | 2026-02-16 | **주간 리포트 확장 + 압축 후행평가** - 주간 매매 요약 섹션 (매수 수익률, 매도 실적), 매도 후 평가 (현재가 비교 → 잘 팔았다/더 기다릴 수 있었다), AI 장기 학습 인사이트 (trading_intuitions 반영), L1→L2 압축 시 현재가 비교 후행 교훈 자동 생성 (KR: pykrx, US: yfinance), 주간 리포트 `--broadcast-languages` 다국어 broadcast 지원, `/triggers` 참조 제거 |
 | 2.4.6 | 2026-02-12 | **US 트레이딩 에이전트 신호 체계 정비** - language 기본값 `"en"`→`"ko"` 통일 (prism-us 전체 11파일), KO↔EN 프롬프트 동기화 (진입 기준 완화, 점수 정의 등 6항목), 미국 시장에 맞지 않는 기관 수급/13F 신호 제거, Form 4 내부자 신호 제거 (perplexity 웹검색 비신뢰), 애널리스트 투자의견 제거 (후행 지표+sell-side 편향), 모든 매매 신호를 yahoo_finance 가격/거래량 기반으로 통일 (O'Neil CAN SLIM 원칙) |
 | 2.4.5 | 2026-02-11 | **Firebase notify 논블로킹 + Broadcast-Tracking 동시 실행** - Firebase `_notify_firebase()` 인라인 `await` → `_schedule_firebase()` 태스크로 변경 후 메서드 끝에서 `asyncio.gather()` 수거 (Telegram 전송 블로킹 제거), 오케스트레이터 step 5-1 제거 (broadcast 완료 대기 → tracking 즉시 시작, broadcast는 async I/O로 동시 실행), `finally` 블록이 broadcast 완료 보장 (KR/US 공통) |
 | 2.4.4 | 2026-02-11 | **Tracking 시스템 Firebase Bridge 통합** - stock_tracking_agent(KR)·us_stock_tracking_agent(US) 전체 메시지 전송 포인트에 `firebase_bridge.notify()` 추가 (매수/매도/보류/포트폴리오/요약 메시지 + 다국어 브로드캐스트 채널), Prism Mobile 푸시 알림 지원, `_notify_firebase()` 헬퍼 메서드 (KR: market="kr", US: market="us"), 분할 메시지 시 첫 파트 message_id로 deep link 생성 |
