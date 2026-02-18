@@ -1061,8 +1061,21 @@ class USStockTrading:
                         await asyncio.sleep(0.5)
 
                         if not price_info:
-                            result['message'] = 'Failed to get current price'
-                            return result
+                            if limit_price and limit_price > 0:
+                                # KIS API returned empty price (market closed / pre-market)
+                                # Use caller-provided limit_price as fallback for reserved order
+                                logger.info(f"[{ticker}] KIS price unavailable, using limit_price ${limit_price:.2f} for reserved order")
+                                price_info = {
+                                    'ticker': ticker.upper(),
+                                    'stock_name': '',
+                                    'current_price': limit_price,
+                                    'change_rate': 0.0,
+                                    'volume': 0,
+                                    'exchange': exchange or ''
+                                }
+                            else:
+                                result['message'] = 'Failed to get current price'
+                                return result
 
                         result['current_price'] = price_info['current_price']
 
