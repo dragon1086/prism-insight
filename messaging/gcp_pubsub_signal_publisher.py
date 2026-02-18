@@ -82,11 +82,24 @@ class SignalPublisher:
         try:
             from google.cloud import pubsub_v1
 
-            # Set credentials if provided
+            # Use explicit credentials object for reliability
             if self.credentials_path:
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self.credentials_path
+                if not os.path.exists(self.credentials_path):
+                    logger.error(
+                        f"GCP credentials file not found: {self.credentials_path}. "
+                        "Check GCP_CREDENTIALS_PATH in .env"
+                    )
+                    return
+                from google.oauth2 import service_account
+                credentials = service_account.Credentials.from_service_account_file(
+                    self.credentials_path,
+                    scopes=["https://www.googleapis.com/auth/pubsub"]
+                )
+                self._publisher = pubsub_v1.PublisherClient(credentials=credentials)
+            else:
+                # Fall back to application default credentials
+                self._publisher = pubsub_v1.PublisherClient()
 
-            self._publisher = pubsub_v1.PublisherClient()
             self._topic_path = self._publisher.topic_path(self.project_id, self.topic_id)
             logger.info(f"GCP Pub/Sub connected: {self._topic_path}")
         except ImportError:

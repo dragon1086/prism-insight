@@ -215,10 +215,15 @@ class USStockTrading:
                 # Use safe conversion helpers to handle empty strings from API
                 current_price = _safe_float(data.get('last'))
 
-                # Validate price - 0 or negative price is invalid
+                # When market is closed, 'last' is empty; fall back to 'base' (previous day close)
                 if current_price <= 0:
-                    logger.warning(f"[{ticker}] Invalid price received: '{data.get('last')}' -> {current_price}")
-                    return None
+                    base_price = _safe_float(data.get('base'))
+                    if base_price > 0:
+                        logger.info(f"[{ticker}] Market closed - 'last' empty, using base price ${base_price:.2f}")
+                        current_price = base_price
+                    else:
+                        logger.warning(f"[{ticker}] Invalid price received: last='{data.get('last')}', base='{data.get('base')}'")
+                        return None
 
                 result = {
                     'ticker': ticker.upper(),
@@ -1061,8 +1066,21 @@ class USStockTrading:
                         await asyncio.sleep(0.5)
 
                         if not price_info:
-                            result['message'] = 'Failed to get current price'
-                            return result
+                            if limit_price and limit_price > 0:
+                                # KIS API returned empty price (market closed / pre-market)
+                                # Use caller-provided limit_price as fallback for reserved order
+                                logger.info(f"[{ticker}] KIS price unavailable, using limit_price ${limit_price:.2f} for reserved order")
+                                price_info = {
+                                    'ticker': ticker.upper(),
+                                    'stock_name': '',
+                                    'current_price': limit_price,
+                                    'change_rate': 0.0,
+                                    'volume': 0,
+                                    'exchange': exchange or ''
+                                }
+                            else:
+                                result['message'] = 'Failed to get current price'
+                                return result
 
                         result['current_price'] = price_info['current_price']
 
