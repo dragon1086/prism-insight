@@ -193,18 +193,34 @@ def detect_market(message: str) -> str:
 def detect_type(message: str) -> str:
     """Detect message type from content.
 
-    Priority order matters: portfolio > pdf > analysis > trigger.
-    '포트폴리오 리포트' must match portfolio, not pdf.
+    Priority order matters: portfolio > pdf > trigger > analysis.
+    Trigger alerts may contain '매수'/'buy' as signal direction keywords,
+    so trigger detection must come BEFORE the general analysis check.
+    '포트폴리오 관점' (perspective section in buy messages) must NOT match
+    portfolio — only dedicated portfolio status/summary messages should match.
     """
     msg_lower = message.lower()
 
-    # Portfolio detection FIRST (before PDF — '포트폴리오 리포트' should be portfolio)
-    if any(kw in msg_lower for kw in ['포트폴리오', 'portfolio', '보유 종목', '잔고']):
+    # Portfolio detection FIRST — use specific phrases to avoid false positives.
+    # '포트폴리오 관점' (portfolio perspective in buy/sell messages) must NOT match here.
+    if any(kw in msg_lower for kw in [
+        '포트폴리오 현황', '포트폴리오 요약', '포트폴리오 리포트',
+        '보유 종목', '잔고',
+        'portfolio summary', 'portfolio status', 'portfolio report', 'holdings',
+    ]):
         return 'portfolio'
 
     # PDF report detection
     if any(kw in msg_lower for kw in ['.pdf', 'pdf 리포트', 'pdf report']):
         return 'pdf'
+
+    # Trigger/signal detection BEFORE analysis — trigger alerts contain '매수'/'buy'
+    # as signal direction which would otherwise be misclassified as analysis.
+    if any(kw in msg_lower for kw in [
+        '트리거', 'trigger', '신호 알림', 'signal alert',
+        '급등', '급락', 'surge',
+    ]):
+        return 'trigger'
 
     # Analysis detection (expanded keywords for both KR and EN)
     if any(kw in msg_lower for kw in [
@@ -258,12 +274,13 @@ def extract_title(message: str, max_length: int = 80) -> str:
             continue
         if len(cleaned) < 3:
             continue
+        # Check filepath BEFORE removing markdown (preserves underscores in filenames).
+        # e.g. "AAPL_Apple_20260219.pdf" must not have _ stripped before filepath check.
+        if _looks_like_filepath(cleaned):
+            return _clean_filename(cleaned)[:max_length]
         # Remove markdown formatting
         cleaned = re.sub(r'[*_`#]', '', cleaned).strip()
         if cleaned:
-            # Clean file paths used as titles
-            if _looks_like_filepath(cleaned):
-                cleaned = _clean_filename(cleaned)
             return cleaned[:max_length]
     return message[:max_length].strip()
 
