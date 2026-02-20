@@ -96,6 +96,7 @@ class SignalPublisher:
                     scopes=["https://www.googleapis.com/auth/pubsub"]
                 )
                 self._publisher = pubsub_v1.PublisherClient(credentials=credentials)
+                logger.info(f"GCP Pub/Sub using service account: {self.credentials_path}")
             else:
                 # Fall back to application default credentials
                 logger.warning(
