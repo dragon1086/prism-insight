@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _df_to_markdown(df: pd.DataFrame, title: str = "") -> str:
-    """Convert DataFrame to markdown table string.
+    """Convert DataFrame to markdown table string (no tabulate dependency).
 
     Args:
         df: DataFrame to convert
@@ -34,7 +34,14 @@ def _df_to_markdown(df: pd.DataFrame, title: str = "") -> str:
     if title:
         result += f"### {title}\n\n"
 
-    result += df.to_markdown(index=True) + "\n"
+    # Build markdown table without requiring tabulate
+    index_name = str(df.index.name) if df.index.name else "Index"
+    headers = [index_name] + [str(c) for c in df.columns]
+    result += "| " + " | ".join(headers) + " |\n"
+    result += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+    for idx, row in df.iterrows():
+        cells = [str(idx)] + [str(v) for v in row]
+        result += "| " + " | ".join(cells) + " |\n"
     return result
 
 
