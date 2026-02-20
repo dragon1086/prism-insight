@@ -96,8 +96,13 @@ class SignalPublisher:
                     scopes=["https://www.googleapis.com/auth/pubsub"]
                 )
                 self._publisher = pubsub_v1.PublisherClient(credentials=credentials)
+                logger.info(f"GCP Pub/Sub using service account: {self.credentials_path}")
             else:
                 # Fall back to application default credentials
+                logger.warning(
+                    "GCP_CREDENTIALS_PATH not set. Falling back to application default credentials. "
+                    "Set GCP_CREDENTIALS_PATH=/path/to/service-account.json in .env to fix 401 errors."
+                )
                 self._publisher = pubsub_v1.PublisherClient()
 
             self._topic_path = self._publisher.topic_path(self.project_id, self.topic_id)

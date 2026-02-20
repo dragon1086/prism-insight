@@ -349,13 +349,20 @@ Generate a professional, informative Telegram message."""
    - 텔레그램 형식에 맞는가?
 
 ## 평가 등급
-- EXCELLENT (5): 게시 준비 완료, 수정 불필요
-- GOOD (4): 약간의 개선 가능
-- FAIR (3): 일부 수정 필요
-- POOR (2): 상당한 문제 있음
-- UNACCEPTABLE (1): 전체 재작성 필요
+- EXCELLENT (3): 게시 준비 완료, 수정 불필요
+- GOOD (2): 약간의 개선 가능
+- FAIR (1): 일부 수정 필요
+- POOR (0): 상당한 문제 있음
 
-EXCELLENT 미만인 경우 구체적인 개선 피드백을 제공하세요."""
+**중요: 반드시 아래 JSON 형식으로 응답해야 합니다:**
+```json
+{{
+    "rating": <0=POOR, 1=FAIR, 2=GOOD, 3=EXCELLENT 중 숫자>,
+    "feedback": "<상세한 피드백 문자열>",
+    "needs_improvement": <rating이 3 미만이면 true, 3이면 false>,
+    "focus_areas": ["<개선영역1>", "<개선영역2>", ...]
+}}
+```"""
 
         else:  # English
             instruction = f"""You are a quality evaluator for US stock market Telegram messages.
@@ -394,13 +401,20 @@ Evaluate the quality of Telegram summary messages for US stocks based on these c
    - Is the format correct for Telegram?
 
 ## Rating Scale
-- EXCELLENT (5): Publication-ready, no changes needed
-- GOOD (4): Minor improvements possible
-- FAIR (3): Requires some revisions
-- POOR (2): Significant issues
-- UNACCEPTABLE (1): Complete rewrite needed
+- EXCELLENT (3): Publication-ready, no changes needed
+- GOOD (2): Minor improvements possible
+- FAIR (1): Requires some revisions
+- POOR (0): Significant issues
 
-Provide specific feedback for improvement if rating is below EXCELLENT."""
+**IMPORTANT: You MUST respond with a JSON object in the following exact format:**
+```json
+{{
+    "rating": <0=POOR, 1=FAIR, 2=GOOD, 3=EXCELLENT as integer>,
+    "feedback": "<detailed feedback string>",
+    "needs_improvement": <true if rating < 3, false if rating == 3>,
+    "focus_areas": ["<area1>", "<area2>", ...]
+}}
+```"""
 
         return Agent(
             name="us_telegram_evaluator",

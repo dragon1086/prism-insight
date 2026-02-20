@@ -165,9 +165,11 @@ class SignalPublisher:
                 {"data": json.dumps(signal_data, ensure_ascii=False)}
             )
 
+            market = (extra_data or {}).get("market", "KR")
+            currency = "USD" if market == "US" else "KRW"
             logger.info(
                 f"Signal published: {signal_type} {company_name}({ticker}) "
-                f"@ {price:,.0f} KRW [ID: {message_id}]"
+                f"@ {price:,.2f} {currency} [ID: {message_id}]"
             )
             return message_id
 

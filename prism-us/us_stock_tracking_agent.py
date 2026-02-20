@@ -96,7 +96,7 @@ translate_telegram_message = _translator_module.translate_telegram_message
 
 try:
     # First try direct import from prism-us directory
-    from cores.agents.trading_agents import create_us_trading_scenario_agent
+    from cores.agents.trading_agents import create_us_trading_scenario_agent, create_us_sell_decision_agent
     from tracking.db_schema import (
         create_us_tables,
         create_us_indexes,
@@ -115,7 +115,7 @@ except ImportError as e:
     _prism_us_fallback = Path(__file__).parent
     if str(_prism_us_fallback) not in sys.path:
         sys.path.insert(0, str(_prism_us_fallback))
-    from cores.agents.trading_agents import create_us_trading_scenario_agent
+    from cores.agents.trading_agents import create_us_trading_scenario_agent, create_us_sell_decision_agent
     from tracking.db_schema import (
         create_us_tables,
         create_us_indexes,
@@ -404,6 +404,7 @@ class USStockTrackingAgent:
         self.message_queue = []
         self._broadcast_task = None  # Track broadcast translation task
         self.trading_agent = None
+        self.sell_decision_agent = None
         self.db_path = db_path
         self.conn = None
         self.cursor = None
@@ -438,6 +439,9 @@ class USStockTrackingAgent:
 
         # Initialize trading scenario agent for US
         self.trading_agent = create_us_trading_scenario_agent(language=language)
+
+        # Initialize sell decision agent for US
+        self.sell_decision_agent = create_us_sell_decision_agent(language=language)
 
         # Create US database tables
         await self._create_tables()
@@ -1097,8 +1101,146 @@ class USStockTrackingAgent:
             return False
 
     async def _analyze_sell_decision(self, stock_data: Dict[str, Any]) -> Tuple[bool, str]:
+        """AI agent-based sell decision analysis.
+
+        Calls sell_decision_agent (LLM) to comprehensively analyze technical trend,
+        market conditions, and portfolio balance. Falls back to rule-based logic on error.
+
+        Args:
+            stock_data: Stock information
+
+        Returns:
+            Tuple[bool, str]: Whether to sell, sell reason
         """
-        Sell decision analysis.
+        ticker = stock_data.get('ticker', '')
+        company_name = stock_data.get('company_name', '')
+        buy_price = stock_data.get('buy_price', 0)
+        buy_date = stock_data.get('buy_date', '')
+        current_price = stock_data.get('current_price', 0)
+        target_price = stock_data.get('target_price', 0)
+        stop_loss = stock_data.get('stop_loss', 0)
+
+        try:
+            profit_rate = ((current_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0
+            buy_datetime = datetime.strptime(buy_date, "%Y-%m-%d %H:%M:%S")
+            days_passed = (datetime.now() - buy_datetime).days
+
+            scenario_str = stock_data.get('scenario', '{}')
+            period = "medium"
+            sector = "Unknown"
+            trading_scenarios = {}
+            try:
+                if isinstance(scenario_str, str):
+                    scenario_data = json.loads(scenario_str)
+                    period = scenario_data.get('investment_period', 'medium')
+                    sector = scenario_data.get('sector', 'Unknown')
+                    trading_scenarios = scenario_data.get('trading_scenarios', {})
+            except Exception:
+                pass
+
+            # Collect current portfolio info from us_stock_holdings
+            self.cursor.execute("""
+                SELECT ticker, company_name, buy_price, current_price, scenario
+                FROM us_stock_holdings
+            """)
+            holdings = [dict(row) for row in self.cursor.fetchall()]
+
+            sector_distribution = {}
+            investment_periods = {"short": 0, "medium": 0, "long": 0}
+            for h in holdings:
+                try:
+                    h_scenario = json.loads(h.get('scenario', '{}')) if isinstance(h.get('scenario'), str) else {}
+                    h_sector = h_scenario.get('sector', 'Other')
+                    sector_distribution[h_sector] = sector_distribution.get(h_sector, 0) + 1
+                    h_period = h_scenario.get('investment_period', 'medium')
+                    investment_periods[h_period] = investment_periods.get(h_period, 0) + 1
+                except Exception:
+                    sector_distribution['Other'] = sector_distribution.get('Other', 0) + 1
+
+            portfolio_info = (
+                f"Current Holdings: {len(holdings)}/{self.max_slots}\n"
+                f"Sector Distribution: {json.dumps(sector_distribution)}\n"
+                f"Investment Period Distribution: {json.dumps(investment_periods)}"
+            )
+
+            logger.info(f"[_analyze_sell_decision] {ticker}({company_name}) portfolio_info:")
+            logger.info(f"  - Holdings: {len(holdings)}/{self.max_slots}, Sectors: {json.dumps(sector_distribution)}")
+
+            # LLM call
+            llm = await self.sell_decision_agent.attach_llm(OpenAIAugmentedLLM)
+
+            prompt_message = f"""
+Please make a sell/hold decision for the following US stock holding.
+
+### Stock Information:
+- Stock: {company_name} ({ticker})
+- Buy Price: ${buy_price:,.2f}
+- Current Price: ${current_price:,.2f}
+- Target Price: ${target_price:,.2f}
+- Stop Loss: ${stop_loss:,.2f}
+- Return: {profit_rate:.2f}%
+- Holding Period: {days_passed} days
+- Investment Period: {period}
+- Sector: {sector}
+
+### Current Portfolio Status:
+{portfolio_info}
+
+### Trading Scenario:
+{json.dumps(trading_scenarios, ensure_ascii=False) if trading_scenarios else "No scenario information"}
+
+### Task:
+Use yahoo_finance and sqlite tools to check latest data, then decide whether to sell or continue holding.
+"""
+
+            response = await llm.generate_str(
+                message=prompt_message,
+                request_params=RequestParams(model="gpt-5.2", maxTokens=16000)
+            )
+
+            if not response or not response.strip():
+                logger.warning(f"{ticker} Empty LLM response, falling back to rule-based decision")
+                return await self._fallback_sell_decision(stock_data)
+
+            # Parse JSON from response
+            json_str = None
+            markdown_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response, re.DOTALL)
+            if markdown_match:
+                json_str = markdown_match.group(1)
+            if not json_str:
+                json_match = re.search(r'(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})', response, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1)
+            if not json_str:
+                clean = response.strip()
+                if clean.startswith('{') and clean.endswith('}'):
+                    json_str = clean
+
+            if not json_str:
+                logger.warning(f"{ticker} No JSON found in LLM response, falling back to rule-based decision")
+                return await self._fallback_sell_decision(stock_data)
+
+            json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+            try:
+                decision_json = json.loads(json_str)
+            except json.JSONDecodeError:
+                json_str_clean = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
+                decision_json = json.loads(json_str_clean)
+
+            should_sell = decision_json.get("should_sell", False)
+            sell_reason = decision_json.get("sell_reason", "AI analysis result")
+            confidence = decision_json.get("confidence", 5)
+            logger.info(f"{ticker}({company_name}) AI sell decision: {'Sell' if should_sell else 'Hold'} (confidence: {confidence}/10)")
+            logger.info(f"Sell reason: {sell_reason}")
+
+            return should_sell, sell_reason
+
+        except Exception as e:
+            logger.error(f"{ticker} AI sell analysis error: {e}, falling back to rule-based decision")
+            return await self._fallback_sell_decision(stock_data)
+
+    async def _fallback_sell_decision(self, stock_data: Dict[str, Any]) -> Tuple[bool, str]:
+        """Rule-based sell decision (fallback when AI unavailable).
 
         Args:
             stock_data: Stock information

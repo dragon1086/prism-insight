@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.4.7 | **Updated**: 2026-02-16
+> **Version**: 2.4.8 | **Updated**: 2026-02-19
 
 ## Quick Overview
 
@@ -198,6 +198,7 @@ For comprehensive guides, see:
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.4.8 | 2026-02-19 | **US 매수 가격 수정 + GCP 인증 + Firebase Bridge 타입 감지 버그 3종 수정** - `get_current_price()` KIS `last` 빈 문자열 시 `base`(전일종가) fallback 추가, `async_buy_stock()` KIS 가격 조회 실패 시 `limit_price` fallback (예약주문 보장), GCP Pub/Sub 401 → 명시적 `service_account.Credentials` 인증으로 전환, `detect_type()` 포트폴리오 키워드 구체화 (`포트폴리오 관점` 오탐 방지), `detect_type()` 트리거 키워드(`트리거/급등/급락/surge`) analysis 이전에 체크 (매수신호 포함 트리거 알림 정상 분류), `extract_title()` 파일경로 체크를 markdown 정리 이전으로 이동 (PDF 파일명 언더바 보존) |
 | 2.4.7 | 2026-02-16 | **주간 리포트 확장 + 압축 후행평가** - 주간 매매 요약 섹션 (매수 수익률, 매도 실적), 매도 후 평가 (현재가 비교 → 잘 팔았다/더 기다릴 수 있었다), AI 장기 학습 인사이트 (trading_intuitions 반영), L1→L2 압축 시 현재가 비교 후행 교훈 자동 생성 (KR: pykrx, US: yfinance), 주간 리포트 `--broadcast-languages` 다국어 broadcast 지원, `/triggers` 참조 제거 |
 | 2.4.6 | 2026-02-12 | **US 트레이딩 에이전트 신호 체계 정비** - language 기본값 `"en"`→`"ko"` 통일 (prism-us 전체 11파일), KO↔EN 프롬프트 동기화 (진입 기준 완화, 점수 정의 등 6항목), 미국 시장에 맞지 않는 기관 수급/13F 신호 제거, Form 4 내부자 신호 제거 (perplexity 웹검색 비신뢰), 애널리스트 투자의견 제거 (후행 지표+sell-side 편향), 모든 매매 신호를 yahoo_finance 가격/거래량 기반으로 통일 (O'Neil CAN SLIM 원칙) |
 | 2.4.5 | 2026-02-11 | **Firebase notify 논블로킹 + Broadcast-Tracking 동시 실행** - Firebase `_notify_firebase()` 인라인 `await` → `_schedule_firebase()` 태스크로 변경 후 메서드 끝에서 `asyncio.gather()` 수거 (Telegram 전송 블로킹 제거), 오케스트레이터 step 5-1 제거 (broadcast 완료 대기 → tracking 즉시 시작, broadcast는 async I/O로 동시 실행), `finally` 블록이 broadcast 완료 보장 (KR/US 공통) |
