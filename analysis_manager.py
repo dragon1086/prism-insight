@@ -26,11 +26,13 @@ class AnalysisRequest:
     """Analysis request object"""
     def __init__(self, stock_code: str, company_name: str, chat_id: int = None,
                  avg_price: float = None, period: int = None, tone: str = None,
-                 background: str = None, message_id: int = None, market_type: str = "kr"):
+                 background: str = None, message_id: int = None, market_type: str = "kr",
+                 user_id: int = None):
         self.id = str(uuid.uuid4())
         self.stock_code = stock_code  # KR: stock code (6 digits), US: ticker symbol (AAPL, etc.)
         self.company_name = company_name
         self.chat_id = chat_id  # Telegram chat ID
+        self.user_id = user_id  # Telegram user ID (for daily limit refund on server error)
         self.avg_price = avg_price
         self.period = period
         self.tone = tone

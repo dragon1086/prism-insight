@@ -503,6 +503,34 @@ class TelegramAIBot:
         logger.info(f"Daily usage recorded: user={user_id}, command={command}")
         return True
 
+    def refund_daily_limit(self, user_id: int, command: str):
+        """
+        Refund daily usage limit when report failed due to server-side error.
+        This allows the user to retry after a server failure (timeout, internal error).
+        """
+        key = f"{user_id}:{command}"
+        if key in self.daily_report_usage:
+            del self.daily_report_usage[key]
+            logger.info(f"Daily limit refunded (server error): user={user_id}, command={command}")
+
+    def _is_server_error(self, request) -> bool:
+        """
+        Detect server-side failures that should not consume the daily limit.
+        Returns True for:
+          - status="failed" (subprocess timeout or unhandled exception)
+          - status="completed" but result contains an error string
+            (internal AI agent error that returned error text instead of report)
+        """
+        if request.status == "failed":
+            return True
+        if request.status == "completed" and request.result:
+            error_markers = [
+                "Error occurred during analysis",
+                "Error occurred during US stock analysis",
+            ]
+            return any(marker in request.result for marker in error_markers)
+        return False
+
     def load_stock_map(self):
         """
         Load dictionary mapping stock codes to names
@@ -830,6 +858,12 @@ class TelegramAIBot:
             logger.warning(f"Cannot send results without chat ID: {request.id}")
             return
 
+        # Refund daily limit if the report failed due to a server-side error
+        # (subprocess timeout, internal AI agent error, etc.) so the user can retry.
+        if getattr(request, 'user_id', None) and self._is_server_error(request):
+            command = "us_report" if request.market_type == "us" else "report"
+            self.refund_daily_limit(request.user_id, command)
+
         try:
             # Send PDF file
             if request.pdf_path and os.path.exists(request.pdf_path):
@@ -1112,7 +1146,8 @@ class TelegramAIBot:
             stock_code=stock_code,
             company_name=stock_name,
             chat_id=chat_id,
-            message_id=waiting_message.message_id
+            message_id=waiting_message.message_id,
+            user_id=user_id
         )
 
         # Check if cached report exists
@@ -1976,7 +2011,8 @@ class TelegramAIBot:
             company_name=company_name,
             chat_id=chat_id,
             message_id=waiting_message.message_id,
-            market_type="us"  # Explicitly mark as US stock
+            market_type="us",  # Explicitly mark as US stock
+            user_id=user_id
         )
 
         # Check if cached US report exists
