@@ -352,20 +352,20 @@ class ConversationContext:
         if self.currency == "USD":
             price_str = f"${self.avg_price:,.2f}"
         else:
-            price_str = f"{self.avg_price:,.0f} KRW"
+            price_str = f"{self.avg_price:,.0f}원"
 
         context = f"""
-Stock Info: {self.ticker_name} ({self.ticker})
-Market: {"USA" if self.market_type == "us" else "Korea"}
-Average Purchase Price: {price_str}
-Holding Period: {self.period} months
-Feedback Style: {self.tone}
-Trading Background: {self.background if self.background else "None"}
+종목 정보: {self.ticker_name} ({self.ticker})
+시장: {"미국" if self.market_type == "us" else "한국"}
+평균 매수가: {price_str}
+보유 기간: {self.period}개월
+피드백 스타일: {self.tone}
+매매 배경: {self.background if self.background else "없음"}
 
-Previous Conversation History:"""
+이전 대화 내역:"""
 
         for item in self.conversation_history:
-            role_label = "AI Response" if item['role'] == 'assistant' else "User Question"
+            role_label = "AI 답변" if item['role'] == 'assistant' else "사용자 질문"
             context += f"\n\n{role_label}: {item['content']}"
 
         return context
@@ -750,11 +750,11 @@ class TelegramAIBot:
             # Different guidance message depending on market type
             if conv_context.market_type == "us":
                 await update.message.reply_text(
-                    "The previous conversation session has expired. Please use the /us_evaluate command to start a new evaluation."
+                    "이전 대화 세션이 만료되었습니다. 새로운 평가를 시작하려면 /us_evaluate 명령어를 사용해주세요."
                 )
             else:
                 await update.message.reply_text(
-                    "The previous conversation session has expired. Please use the /evaluate command to start a new evaluation."
+                    "이전 대화 세션이 만료되었습니다. 새로운 평가를 시작하려면 /evaluate 명령어를 사용해주세요."
                 )
             del self.conversation_contexts[replied_to_msg_id]
             return
@@ -765,11 +765,11 @@ class TelegramAIBot:
         # Waiting message (based on market type)
         if conv_context.market_type == "us":
             waiting_message = await update.message.reply_text(
-                "🇺🇸 Analyzing your follow-up question... Please wait a moment. 💭"
+                "🇺🇸 추가 질문에 대해 분석 중입니다... 잠시만 기다려주세요. 💭"
             )
         else:
             waiting_message = await update.message.reply_text(
-                "Analyzing your follow-up question... Please wait a moment. 💭"
+                "추가 질문에 대해 분석 중입니다... 잠시만 기다려주세요. 💭"
             )
 
         try:
@@ -804,24 +804,24 @@ class TelegramAIBot:
             
             # Send response
             sent_message = await update.message.reply_text(
-                response + "\n\n💡 If you have additional questions, please reply to this message."
+                response + "\n\n💡 추가 질문이 있으시면 이 메시지에 답장(Reply)해주세요."
             )
-            
+
             # Add AI response to conversation history
             conv_context.add_to_history("assistant", response)
-            
+
             # Update context with new message ID
             conv_context.message_id = sent_message.message_id
             conv_context.user_id = update.effective_user.id
             self.conversation_contexts[sent_message.message_id] = conv_context
-            
+
             logger.info(f"Follow-up question processed: User {update.effective_user.id}")
-            
+
         except Exception as e:
             logger.error(f"Error processing follow-up question: {str(e)}, {traceback.format_exc()}")
             await waiting_message.delete()
             await update.message.reply_text(
-                "Sorry, an error occurred while processing your follow-up question. Please try again."
+                "죄송합니다. 추가 질문 처리 중 오류가 발생했습니다. 다시 시도해주세요."
             )
 
     async def send_report_result(self, request: AnalysisRequest):
@@ -836,8 +836,8 @@ class TelegramAIBot:
                 with open(request.pdf_path, 'rb') as file:
                     await self.application.bot.send_document(
                         chat_id=request.chat_id,
-                        document=InputFile(file, filename=f"{request.company_name}_{request.stock_code}_analysis.pdf"),
-                        caption=f"✅ Analysis report for {request.company_name} ({request.stock_code}) is complete."
+                        document=InputFile(file, filename=f"{request.company_name}_{request.stock_code}_분석.pdf"),
+                        caption=f"✅ {request.company_name} ({request.stock_code}) 분석 보고서가 완료되었습니다."
                     )
             else:
                 # Send results as text if PDF file is missing
@@ -845,27 +845,27 @@ class TelegramAIBot:
                     # Truncate and send if text is too long
                     max_length = 4000  # Telegram message max length
                     if len(request.result) > max_length:
-                        summary = request.result[:max_length] + "...(truncated)"
+                        summary = request.result[:max_length] + "...(이하 생략)"
                         await self.application.bot.send_message(
                             chat_id=request.chat_id,
-                            text=f"✅ Analysis results for {request.company_name} ({request.stock_code}):\n\n{summary}"
+                            text=f"✅ {request.company_name} ({request.stock_code}) 분석 결과:\n\n{summary}"
                         )
                     else:
                         await self.application.bot.send_message(
                             chat_id=request.chat_id,
-                            text=f"✅ Analysis results for {request.company_name} ({request.stock_code}):\n\n{request.result}"
+                            text=f"✅ {request.company_name} ({request.stock_code}) 분석 결과:\n\n{request.result}"
                         )
                 else:
                     await self.application.bot.send_message(
                         chat_id=request.chat_id,
-                        text=f"⚠️ Cannot find analysis results for {request.company_name} ({request.stock_code})."
+                        text=f"⚠️ {request.company_name} ({request.stock_code}) 분석 결과를 찾을 수 없습니다."
                     )
         except Exception as e:
             logger.error(f"Error sending results: {str(e)}")
             logger.error(traceback.format_exc())
             await self.application.bot.send_message(
                 chat_id=request.chat_id,
-                text=f"⚠️ An error occurred while sending analysis results for {request.company_name} ({request.stock_code})."
+                text=f"⚠️ {request.company_name} ({request.stock_code}) 분석 결과 전송 중 오류가 발생했습니다."
             )
 
     @staticmethod
@@ -889,25 +889,25 @@ class TelegramAIBot:
         """Handle start command"""
         user = update.effective_user
         await update.message.reply_text(
-            f"Hello, {user.first_name}! I am the Prism Advisor Bot.\n\n"
-            "I provide evaluations of your stock holdings.\n\n"
-            "🇰🇷 <b>Korean Stocks</b>\n"
-            "/evaluate - Start evaluating holdings\n"
-            "/report - Request detailed analysis report\n"
-            "/history - Check analysis history for specific stocks\n\n"
-            "🇺🇸 <b>US Stocks</b>\n"
-            "/us_evaluate - Start evaluating US stocks\n"
-            "/us_report - Request US stock report\n\n"
-            "📝 <b>Investment Journal</b>\n"
-            "/journal - Record investment journal\n"
-            "/memories - Check my memory storage\n\n"
-            "📡 <b>Trigger Reliability</b>\n"
-            "/triggers - View trigger reliability report\n\n"
-            "💡 You can ask additional questions by replying to the evaluation response!\n\n"
-            "This bot is available only to subscribers of the 'Prism Insight' channel.\n"
-            "The channel introduces 3 featured stocks selected by AI at market open and close,\n"
-            "and provides high-quality detailed analysis reports written by AI agents for each stock.\n\n"
-            "Please subscribe via the following link before using the bot: https://t.me/stock_ai_agent",
+            f"안녕하세요, {user.first_name}님! 저는 프리즘 어드바이저 봇입니다.\n\n"
+            "저는 보유하신 종목에 대한 평가를 제공합니다.\n\n"
+            "🇰🇷 <b>한국 주식</b>\n"
+            "/evaluate - 보유 종목 평가 시작\n"
+            "/report - 상세 분석 보고서 요청\n"
+            "/history - 특정 종목의 분석 히스토리 확인\n\n"
+            "🇺🇸 <b>미국 주식</b>\n"
+            "/us_evaluate - 미국 주식 평가 시작\n"
+            "/us_report - 미국 주식 보고서 요청\n\n"
+            "📝 <b>투자 일기</b>\n"
+            "/journal - 투자 일기 기록\n"
+            "/memories - 내 기억 저장소 확인\n\n"
+            "📡 <b>트리거 신뢰도</b>\n"
+            "/triggers - 트리거 신뢰도 리포트 보기\n\n"
+            "💡 평가 응답에 답장(Reply)하여 추가 질문을 할 수 있습니다!\n\n"
+            "이 봇은 '프리즘 인사이트' 채널 구독자만 사용할 수 있습니다.\n"
+            "채널에서는 장 시작과 마감 시 AI가 선별한 특징주 3개를 소개하고,\n"
+            "각 종목에 대한 AI에이전트가 작성한 고퀄리티의 상세 분석 보고서를 제공합니다.\n\n"
+            "다음 링크를 구독한 후 봇을 사용해주세요: https://t.me/stock_ai_agent",
             parse_mode="HTML"
         )
 
@@ -915,43 +915,43 @@ class TelegramAIBot:
     async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle help command"""
         await update.message.reply_text(
-            "📊 <b>Prism Advisor Bot Help</b> 📊\n\n"
-            "<b>Basic Commands:</b>\n"
-            "/start - Start bot\n"
-            "/help - View help\n"
-            "/cancel - Cancel current conversation\n\n"
-            "🇰🇷 <b>Korean Stock Commands:</b>\n"
-            "/evaluate - Start evaluating holdings\n"
-            "/report - Request detailed analysis report\n"
-            "/history - Check analysis history for specific stocks\n\n"
-            "🇺🇸 <b>US Stock Commands:</b>\n"
-            "/us_evaluate - Start evaluating US stocks\n"
-            "/us_report - Request US stock report\n\n"
-            "📝 <b>Investment Journal:</b>\n"
-            "/journal - Record investment thoughts\n"
-            "/memories - Check my memory storage\n"
-            "  • Can be entered with stock code/ticker\n"
-            "  • Used as memory in past evaluations\n\n"
-            "📡 <b>Trigger Reliability:</b>\n"
-            "/triggers - View trigger reliability report for KR & US\n\n"
-            "<b>How to Evaluate Holdings (Same for Korea/US):</b>\n"
-            "1. Enter /evaluate or /us_evaluate command\n"
-            "2. Enter stock code/ticker (e.g., 005930 or AAPL)\n"
-            "3. Enter average purchase price (KRW or USD)\n"
-            "4. Enter holding period\n"
-            "5. Enter desired feedback style\n"
-            "6. Enter trading background (optional)\n"
-            "7. 💡 Can ask additional questions by replying to AI response!\n\n"
-            "<b>✨ Follow-up Question Feature:</b>\n"
-            "• Ask additional questions by replying to AI's evaluation message\n"
-            "• Continuous conversation with previous context maintained\n"
-            "• Conversation session maintained for 24 hours\n\n"
-            "<b>Request Detailed Analysis Report:</b>\n"
-            "1. Enter /report command\n"
-            "2. Enter stock code or name\n"
-            "3. Detailed report will be provided in 5-10 minutes (longer if many requests)\n\n"
-            "<b>Note:</b>\n"
-            "This bot is available only to channel subscribers.",
+            "📊 <b>프리즘 어드바이저 봇 도움말</b> 📊\n\n"
+            "<b>기본 명령어:</b>\n"
+            "/start - 봇 시작\n"
+            "/help - 도움말 보기\n"
+            "/cancel - 현재 진행 중인 대화 취소\n\n"
+            "🇰🇷 <b>한국 주식 명령어:</b>\n"
+            "/evaluate - 보유 종목 평가 시작\n"
+            "/report - 상세 분석 보고서 요청\n"
+            "/history - 특정 종목의 분석 히스토리 확인\n\n"
+            "🇺🇸 <b>미국 주식 명령어:</b>\n"
+            "/us_evaluate - 미국 주식 평가 시작\n"
+            "/us_report - 미국 주식 보고서 요청\n\n"
+            "📝 <b>투자 일기:</b>\n"
+            "/journal - 투자 생각 기록\n"
+            "/memories - 내 기억 저장소 확인\n"
+            "  • 종목 코드/티커와 함께 입력 가능\n"
+            "  • 과거 평가 시 기억으로 활용됨\n\n"
+            "📡 <b>트리거 신뢰도:</b>\n"
+            "/triggers - KR & US 트리거 신뢰도 리포트 보기\n\n"
+            "<b>보유 종목 평가 방법 (한국/미국 동일):</b>\n"
+            "1. /evaluate 또는 /us_evaluate 명령어 입력\n"
+            "2. 종목 코드/티커 입력 (예: 005930 또는 AAPL)\n"
+            "3. 평균 매수가 입력 (원 또는 달러)\n"
+            "4. 보유 기간 입력\n"
+            "5. 원하는 피드백 스타일 입력\n"
+            "6. 매매 배경 입력 (선택사항)\n"
+            "7. 💡 AI 응답에 답장(Reply)하여 추가 질문 가능!\n\n"
+            "<b>✨ 추가 질문 기능:</b>\n"
+            "• AI의 평가 메시지에 답장하여 추가 질문\n"
+            "• 이전 대화 컨텍스트를 유지하여 연속적인 대화 가능\n"
+            "• 24시간 동안 대화 세션 유지\n\n"
+            "<b>상세 분석 보고서 요청:</b>\n"
+            "1. /report 명령어 입력\n"
+            "2. 종목 코드 또는 이름 입력\n"
+            "3. 5-10분 후 상세 보고서가 제공됩니다(요청이 많을 경우 더 길어짐)\n\n"
+            "<b>주의:</b>\n"
+            "이 봇은 채널 구독자만 사용할 수 있습니다.",
             parse_mode="HTML"
         )
 
@@ -966,8 +966,8 @@ class TelegramAIBot:
 
             if not stats or stats.get('total', 0) == 0:
                 await update.message.reply_text(
-                    f"📭 No stored memories for {user_name}.\n\n"
-                    "Try recording your investment diary with the /journal command!",
+                    f"📭 {user_name}님의 저장된 기억이 없습니다.\n\n"
+                    "/journal 명령어로 투자 일기를 기록해보세요!",
                     parse_mode="HTML"
                 )
                 return
@@ -976,31 +976,31 @@ class TelegramAIBot:
             memories = self.memory_manager.get_memories(user_id, limit=20)
 
             # Create response message
-            msg_parts = [f"🧠 <b>{user_name}'s Memory Storage</b>\n"]
+            msg_parts = [f"🧠 <b>{user_name}님의 기억 저장소</b>\n"]
 
             # Statistics
             by_type = stats.get('by_type', {})
-            msg_parts.append(f"\n📊 <b>Stored Memories: {stats.get('total', 0)}</b>")
+            msg_parts.append(f"\n📊 <b>저장된 기억: {stats.get('total', 0)}개</b>")
             if by_type:
                 type_labels = {
-                    'journal': '📝 Journal',
-                    'evaluation': '📈 Evaluation',
-                    'report': '📋 Report',
-                    'conversation': '💬 Conversation'
+                    'journal': '📝 저널',
+                    'evaluation': '📈 평가',
+                    'report': '📋 보고서',
+                    'conversation': '💬 대화'
                 }
                 for mem_type, count in by_type.items():
                     label = type_labels.get(mem_type, mem_type)
-                    msg_parts.append(f"  • {label}: {count}")
+                    msg_parts.append(f"  • {label}: {count}개")
 
             # Statistics by ticker
             by_ticker = stats.get('by_ticker', {})
             if by_ticker:
-                msg_parts.append(f"\n🏷️ <b>Records by Ticker:</b>")
+                msg_parts.append(f"\n🏷️ <b>종목별 기록:</b>")
                 for ticker, count in list(by_ticker.items())[:5]:
-                    msg_parts.append(f"  • {ticker}: {count}")
+                    msg_parts.append(f"  • {ticker}: {count}개")
 
             # Recent memory details
-            msg_parts.append(f"\n\n📜 <b>Recent Memories (max 10):</b>\n")
+            msg_parts.append(f"\n\n📜 <b>최근 기억 (최대 10개):</b>\n")
             for i, mem in enumerate(memories[:10], 1):
                 created = mem.get('created_at', '')[:10]
                 mem_type = mem.get('memory_type', '')
@@ -1035,7 +1035,7 @@ class TelegramAIBot:
         except Exception as e:
             logger.error(f"Error in handle_memories: {e}", exc_info=True)
             await update.message.reply_text(
-                "⚠️ An error occurred while retrieving memories. Please try again later."
+                "⚠️ 기억 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
             )
 
     async def handle_triggers(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1058,8 +1058,8 @@ class TelegramAIBot:
 
         if not is_subscribed:
             await update.message.reply_text(
-                "This bot is available only to channel subscribers.\n"
-                "Please subscribe to the channel via the link below:\n\n"
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
                 "https://t.me/stock_ai_agent"
             )
             return ConversationHandler.END
@@ -1067,18 +1067,18 @@ class TelegramAIBot:
         # Check daily usage limit
         if not self.check_daily_limit(user_id, "report"):
             await update.message.reply_text(
-                "⚠️ The /report command can only be used once per day.\n\n"
-                "Please try again tomorrow."
+                "⚠️ /report 명령어는 하루에 1회만 사용할 수 있습니다.\n\n"
+                "내일 다시 이용해 주세요."
             )
             return ConversationHandler.END
 
         # Check if group chat or private chat
         is_group = update.effective_chat.type in ["group", "supergroup"]
-        greeting = f"{user_name}, " if is_group else ""
+        greeting = f"{user_name}님, " if is_group else ""
 
         await update.message.reply_text(
-            f"{greeting}Please enter the stock code or name to generate a detailed analysis report.\n"
-            "Example: 005930 or Samsung Electronics"
+            f"{greeting}상세 분석 보고서를 생성할 종목 코드나 이름을 입력해주세요.\n"
+            "예: 005930 또는 삼성전자"
         )
 
         return REPORT_CHOOSING_TICKER
@@ -1101,10 +1101,10 @@ class TelegramAIBot:
 
         # Send waiting message
         waiting_message = await update.message.reply_text(
-            f"📊 Analysis report generation request for {stock_name} ({stock_code}) has been registered.\n\n"
-            f"Requests are processed in the order received, and each analysis takes approximately 5-10 minutes.\n\n"
-            f"Wait times may be longer if there are many requests from other users.\n\n "
-            f"We will notify you as soon as it's complete."
+            f"📊 {stock_name} ({stock_code}) 분석 보고서 생성 요청이 등록되었습니다.\n\n"
+            f"요청은 도착 순서대로 처리되며, 한 건당 분석에 약 5-10분이 소요됩니다.\n\n"
+            f"다른 사용자의 요청이 많을 경우 대기 시간이 길어질 수 있습니다.\n\n "
+            f"완료되면 바로 알려드리겠습니다."
         )
 
         # Create analysis request and add to queue
@@ -1127,7 +1127,7 @@ class TelegramAIBot:
             request.pdf_path = cached_pdf
 
             await waiting_message.edit_text(
-                f"✅ Analysis report for {stock_name} ({stock_code}) is ready. Will be sent shortly."
+                f"✅ {stock_name} ({stock_code}) 분석 보고서가 준비되었습니다. 잠시 후 전송됩니다."
             )
 
             # Send result
@@ -1149,19 +1149,19 @@ class TelegramAIBot:
 
         if not is_subscribed:
             await update.message.reply_text(
-                "This bot is available only to channel subscribers.\n"
-                "Please subscribe to the channel via the link below:\n\n"
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
                 "https://t.me/stock_ai_agent"
             )
             return ConversationHandler.END
 
         # Check if group chat or private chat
         is_group = update.effective_chat.type in ["group", "supergroup"]
-        greeting = f"{user_name}, " if is_group else ""
+        greeting = f"{user_name}님, " if is_group else ""
 
         await update.message.reply_text(
-            f"{greeting}Please enter the stock code or name to check analysis history.\n"
-            "Example: 005930 or Samsung Electronics"
+            f"{greeting}분석 히스토리를 확인할 종목 코드나 이름을 입력해주세요.\n"
+            "예: 005930 또는 삼성전자"
         )
 
         return HISTORY_CHOOSING_TICKER
@@ -1186,8 +1186,8 @@ class TelegramAIBot:
 
         if not reports:
             await update.message.reply_text(
-                f"No analysis history for {stock_name} ({stock_code}).\n"
-                f"Try using the /report command to request a new analysis."
+                f"{stock_name} ({stock_code}) 종목에 대한 분석 히스토리가 없습니다.\n"
+                f"/report 명령어를 사용하여 새 분석을 요청해보세요."
             )
             return ConversationHandler.END
 
@@ -1195,7 +1195,7 @@ class TelegramAIBot:
         reports.sort(key=lambda x: x.stat().st_mtime, reverse=True)
 
         # Compose history message
-        history_msg = f"📋 Analysis History for {stock_name} ({stock_code}):\n\n"
+        history_msg = f"📋 {stock_name} ({stock_code}) 분석 히스토리:\n\n"
 
         for i, report in enumerate(reports[:5], 1):
             report_date = datetime.fromtimestamp(report.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
@@ -1203,7 +1203,7 @@ class TelegramAIBot:
 
             # Add file size
             file_size = report.stat().st_size / 1024  # KB
-            history_msg += f"   Size: {file_size:.1f} KB\n"
+            history_msg += f"   크기: {file_size:.1f} KB\n"
 
             # Add first line preview
             try:
@@ -1211,16 +1211,16 @@ class TelegramAIBot:
                     first_line = next(f, "").strip()
                     if first_line:
                         preview = first_line[:50] + "..." if len(first_line) > 50 else first_line
-                        history_msg += f"   Preview: {preview}\n"
+                        history_msg += f"   미리보기: {preview}\n"
             except Exception:
                 pass
 
             history_msg += "\n"
 
         if len(reports) > 5:
-            history_msg += f"Plus {len(reports) - 5} more analysis records.\n"
+            history_msg += f"그 외 {len(reports) - 5}개의 분석 기록이 있습니다.\n"
 
-        history_msg += "\nUse the /report command to check the latest analysis report."
+        history_msg += "\n최신 분석 보고서를 확인하려면 /report 명령어를 사용하세요."
 
         await update.message.reply_text(history_msg)
         return ConversationHandler.END
@@ -1280,8 +1280,8 @@ class TelegramAIBot:
 
         if not is_subscribed:
             await update.message.reply_text(
-                "This bot is available only to channel subscribers.\n"
-                "Please subscribe to the channel via the link below:\n\n"
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
                 "https://t.me/stock_ai_agent"
             )
             return ConversationHandler.END
@@ -1292,11 +1292,11 @@ class TelegramAIBot:
         logger.info(f"Evaluation command started - User: {user_name}, Chat type: {'group' if is_group else 'private'}")
 
         # Mention username in group chats
-        greeting = f"{user_name}, " if is_group else ""
+        greeting = f"{user_name}님, " if is_group else ""
 
         await update.message.reply_text(
-            f"{greeting}Please enter the code or name of your holdings. \n"
-            "Example: 005930 or Samsung Electronics"
+            f"{greeting}보유하신 종목의 코드나 이름을 입력해주세요. \n"
+            "예: 005930 또는 삼성전자"
         )
         return CHOOSING_TICKER
 
@@ -1321,9 +1321,9 @@ class TelegramAIBot:
         logger.info(f"Stock selected: {stock_name} ({stock_code})")
 
         await update.message.reply_text(
-            f"You have selected {stock_name} ({stock_code}).\n\n"
-            f"Please enter your average purchase price. (Numbers only)\n"
-            f"Example: 68500"
+            f"{stock_name} ({stock_code}) 종목을 선택하셨습니다.\n\n"
+            f"평균 매수가를 입력해주세요. (숫자만 입력)\n"
+            f"예: 68500"
         )
 
         logger.info(f"State transition: ENTERING_AVGPRICE - User: {user_id}")
@@ -1337,15 +1337,15 @@ class TelegramAIBot:
             context.user_data['avg_price'] = avg_price
 
             await update.message.reply_text(
-                f"Please enter the holding period. (in months)\n"
-                f"Example: 6 (for 6 months)"
+                f"보유 기간을 입력해주세요. (월 단위)\n"
+                f"예: 6 (6개월)"
             )
             return ENTERING_PERIOD
 
         except ValueError:
             await update.message.reply_text(
-                "Please enter in number format. Exclude commas.\n"
-                "Example: 68500"
+                "숫자 형식으로 입력해주세요. 쉼표 제외.\n"
+                "예: 68500"
             )
             return ENTERING_AVGPRICE
 
@@ -1358,15 +1358,15 @@ class TelegramAIBot:
 
             # Next step: Receive desired feedback style/tone input
             await update.message.reply_text(
-                "In what style or tone would you like to receive feedback?\n"
-                "Example: Honest, Professional, Like a friend, Concise, etc."
+                "어떤 스타일이나 톤으로 피드백을 받고 싶으신가요?\n"
+                "예: 직설적으로, 전문가처럼, 친구처럼, 간결하게 등"
             )
             return ENTERING_TONE
 
         except ValueError:
             await update.message.reply_text(
-                "Please enter in number format.\n"
-                "Example: 6"
+                "숫자 형식으로 입력해주세요.\n"
+                "예: 6"
             )
             return ENTERING_PERIOD
 
@@ -1377,24 +1377,24 @@ class TelegramAIBot:
         context.user_data['tone'] = tone
 
         await update.message.reply_text(
-            "If you have any background on why you traded this stock or major trading history, please let us know.\n"
-            "(Optional, enter 'None' if not applicable)"
+            "이 종목을 매매한 이유나 주요 매매 이력이 있다면 알려주세요.\n"
+            "(선택 사항, 없으면 '없음'을 입력하세요)"
         )
         return ENTERING_BACKGROUND
 
     async def handle_background_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle trading background input and generate AI response"""
         background = update.message.text.strip()
-        context.user_data['background'] = background if background.lower() != 'none' else ""
+        context.user_data['background'] = background if background.lower() not in ['none', '없음'] else ""
 
         # Waiting response message
         waiting_message = await update.message.reply_text(
-            "Analyzing the stock... Please wait a moment."
+            "종목을 분석 중입니다... 잠시 기다려주세요."
         )
 
         # Request analysis from AI agent
         ticker = context.user_data['ticker']
-        ticker_name = context.user_data.get('ticker_name', f"Stock_{ticker}")
+        ticker_name = context.user_data.get('ticker_name', f"종목_{ticker}")
         avg_price = context.user_data['avg_price']
         period = context.user_data['period']
         tone = context.user_data['tone']
@@ -1422,7 +1422,7 @@ class TelegramAIBot:
 
             # Check if response is empty
             if not response or not response.strip():
-                response = "Sorry, an error occurred while generating the response. Please try again."
+                response = "응답 생성 중 오류가 발생했습니다. 다시 시도해주세요."
                 logger.error(f"Empty response generated: {ticker_name}({ticker})")
 
             # Delete waiting message
@@ -1430,9 +1430,9 @@ class TelegramAIBot:
 
             # Send response
             sent_message = await update.message.reply_text(
-                response + "\n\n💡 If you have additional questions, please reply to this message."
+                response + "\n\n💡 추가 질문이 있으시면 이 메시지에 답장(Reply)해주세요."
             )
-            
+
             # Save conversation context
             conv_context = ConversationContext()
             conv_context.message_id = sent_message.message_id
@@ -1475,7 +1475,7 @@ class TelegramAIBot:
         except Exception as e:
             logger.error(f"Error generating or sending response: {str(e)}, {traceback.format_exc()}")
             await waiting_message.delete()
-            await update.message.reply_text("Sorry, an error occurred during analysis. Please try again.")
+            await update.message.reply_text("분석 중 오류가 발생했습니다. 다시 시도해주세요.")
 
         # End conversation
         return ConversationHandler.END
@@ -1487,9 +1487,9 @@ class TelegramAIBot:
         context.user_data.clear()
 
         await update.message.reply_text(
-            "Request has been cancelled.\n\n"
-            "🇰🇷 Korean Stocks: /evaluate, /report, /history\n"
-            "🇺🇸 US Stocks: /us_evaluate, /us_report"
+            "요청이 취소되었습니다.\n\n"
+            "🇰🇷 국내 주식: /evaluate, /report, /history\n"
+            "🇺🇸 해외 주식: /us_evaluate, /us_report"
         )
         return ConversationHandler.END
 
@@ -1497,9 +1497,9 @@ class TelegramAIBot:
     async def handle_cancel_standalone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle conversation cancellation (called from outside conversation)"""
         await update.message.reply_text(
-            "No conversation currently in progress.\n\n"
-            "🇰🇷 Korean Stocks: /evaluate, /report, /history\n"
-            "🇺🇸 US Stocks: /us_evaluate, /us_report"
+            "현재 진행 중인 대화가 없습니다.\n\n"
+            "🇰🇷 국내 주식: /evaluate, /report, /history\n"
+            "🇺🇸 해외 주식: /us_evaluate, /us_report"
         )
 
     @staticmethod
@@ -1509,14 +1509,14 @@ class TelegramAIBot:
         logger.error(f"Error occurred: {error_msg}")
 
         # Error message to show user
-        user_msg = "Sorry, an error occurred. Please try again."
+        user_msg = "죄송합니다, 오류가 발생했습니다. 다시 시도해주세요."
 
         # Handle timeout error
         if "timed out" in error_msg.lower():
-            user_msg = "Request processing time exceeded. Please check your network status and try again."
+            user_msg = "요청 처리 시간이 초과되었습니다. 네트워크 상태를 확인하고 다시 시도해주세요."
         # Handle permission error
         elif "permission" in error_msg.lower():
-            user_msg = "Bot does not have permission to send messages. Please check group settings."
+            user_msg = "봇이 메시지를 보낼 권한이 없습니다. 그룹 설정을 확인해주세요."
         # Log various error information
         logger.error(f"Error details: {traceback.format_exc()}")
 
@@ -1537,7 +1537,7 @@ class TelegramAIBot:
         # Input value defense code
         if not stock_input:
             logger.warning("Empty input value passed")
-            return None, None, "Please enter a stock name or code."
+            return None, None, "종목명이나 코드를 입력해주세요."
 
         if not isinstance(stock_input, str):
             logger.warning(f"Invalid input type: {type(stock_input)}")
@@ -1551,11 +1551,11 @@ class TelegramAIBot:
         # Check stock_name_map status
         if not hasattr(self, 'stock_name_map') or self.stock_name_map is None:
             logger.error("stock_name_map is not initialized")
-            return None, None, "System error: Stock data not loaded."
+            return None, None, "시스템 오류: 주식 데이터가 로드되지 않았습니다."
 
         if not isinstance(self.stock_name_map, dict):
             logger.error(f"stock_name_map type error: {type(self.stock_name_map)}")
-            return None, None, "System error: Stock data format is invalid."
+            return None, None, "시스템 오류: 주식 데이터 형식이 잘못되었습니다."
 
         logger.info(f"stock_name_map status - Size: {len(self.stock_name_map)}")
 
@@ -1575,7 +1575,7 @@ class TelegramAIBot:
                 return stock_code, stock_name, None
             else:
                 logger.warning(f"No name information for stock code {stock_code}")
-                return stock_code, f"Stock_{stock_code}", "No information for this stock code. Please verify the code is correct."
+                return stock_code, f"종목_{stock_code}", "해당 종목 코드에 대한 정보가 없습니다. 코드가 정확한지 확인해주세요."
 
         # If entered as stock name - check for exact match
         logger.info(f"Starting exact name match search: '{stock_input}'")
@@ -1613,7 +1613,7 @@ class TelegramAIBot:
 
         except Exception as e:
             logger.error(f"Error during partial match search: {e}")
-            return None, None, "An error occurred during search."
+            return None, None, "검색 중 오류가 발생했습니다."
 
         logger.info(f"Partial match results: {len(possible_matches)} found")
 
@@ -1627,13 +1627,13 @@ class TelegramAIBot:
             logger.info(f"Multiple matches: {[f'{name}({code})' for name, code in possible_matches]}")
             match_info = "\n".join([f"{name} ({code})" for name, code in possible_matches[:5]])
             if len(possible_matches) > 5:
-                match_info += f"\n... and {len(possible_matches)-5} more"
+                match_info += f"\n... 외 {len(possible_matches)-5}개"
 
-            return None, None, f"Multiple stocks match '{stock_input}'. Please enter the exact stock name or code:\n{match_info}"
+            return None, None, f"'{stock_input}'에 해당하는 종목이 여러 개 있습니다. 정확한 종목명이나 코드를 입력해주세요:\n{match_info}"
         else:
             # Return error message if no matches
             logger.warning(f"No matching stock: '{stock_input}'")
-            return None, None, f"Cannot find stock matching '{stock_input}'. Please enter the exact stock name or code."
+            return None, None, f"'{stock_input}'에 해당하는 종목을 찾을 수 없습니다. 정확한 종목명이나 코드를 입력해주세요."
 
     # US ticker validation cache
     _us_ticker_cache: dict = {}
@@ -1649,7 +1649,7 @@ class TelegramAIBot:
             tuple: (ticker, company_name, error_message)
         """
         if not ticker_input:
-            return None, None, "Please enter a ticker symbol. (e.g., AAPL, MSFT)"
+            return None, None, "티커 심볼을 입력해주세요. (예: AAPL, MSFT)"
 
         ticker = ticker_input.strip().upper()
         logger.info(f"Starting US ticker validation: {ticker}")
@@ -1663,8 +1663,8 @@ class TelegramAIBot:
         # Validate ticker format (1-5 letter alphabets)
         if not re.match(r'^[A-Z]{1,5}$', ticker):
             return None, None, (
-                f"'{ticker_input}' is not a valid US ticker format.\n"
-                "US tickers are 1-5 letter alphabets. (Examples: AAPL, MSFT, GOOGL)"
+                f"'{ticker_input}'는 유효한 미국 티커 형식이 아닙니다.\n"
+                "미국 티커는 1-5개의 영문 알파벳입니다. (예: AAPL, MSFT, GOOGL)"
             )
 
         # Validate ticker with yfinance
@@ -1679,8 +1679,8 @@ class TelegramAIBot:
 
             if not company_name:
                 return None, None, (
-                    f"Cannot find information for ticker '{ticker}'.\n"
-                    "Please verify the ticker symbol is correct."
+                    f"'{ticker}' 티커에 대한 정보를 찾을 수 없습니다.\n"
+                    "티커 심볼이 올바른지 확인해주세요."
                 )
 
             # Save to cache
@@ -1692,7 +1692,7 @@ class TelegramAIBot:
         except Exception as e:
             logger.error(f"Error validating US ticker: {e}")
             # Default handling if yfinance is missing or error occurs
-            return ticker, f"{ticker} (unverified)", None
+            return ticker, f"{ticker} (미확인)", None
 
     # ==========================================================================
     # US stock evaluation handler (/us_evaluate)
@@ -1708,8 +1708,8 @@ class TelegramAIBot:
 
         if not is_subscribed:
             await update.message.reply_text(
-                "This bot is available only to channel subscribers.\n"
-                "Please subscribe to the channel via the link below:\n\n"
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
                 "https://t.me/stock_ai_agent"
             )
             return ConversationHandler.END
@@ -1720,12 +1720,12 @@ class TelegramAIBot:
         logger.info(f"US evaluation command started - User: {user_name}, Chat type: {'group' if is_group else 'private'}")
 
         # Mention username in group chats
-        greeting = f"{user_name}, " if is_group else ""
+        greeting = f"{user_name}님, " if is_group else ""
 
         await update.message.reply_text(
-            f"{greeting}🇺🇸 Starting US stock evaluation.\n\n"
-            "Please enter the ticker symbol of your holdings.\n"
-            "Example: AAPL, MSFT, GOOGL, NVDA"
+            f"{greeting}🇺🇸 미국 주식 평가를 시작합니다.\n\n"
+            "보유하신 종목의 티커 심볼을 입력해주세요.\n"
+            "예: AAPL, MSFT, GOOGL, NVDA"
         )
         return US_CHOOSING_TICKER
 
@@ -1749,9 +1749,9 @@ class TelegramAIBot:
         logger.info(f"US stock selected: {company_name} ({ticker})")
 
         await update.message.reply_text(
-            f"🇺🇸 You have selected {company_name} ({ticker}).\n\n"
-            f"Please enter your average purchase price in USD. (Numbers only)\n"
-            f"Example: 150.50"
+            f"🇺🇸 {company_name} ({ticker}) 종목을 선택하셨습니다.\n\n"
+            f"USD 기준 평균 매수가를 입력해주세요. (숫자만 입력)\n"
+            f"예: 150.50"
         )
 
         logger.info(f"State transition: US_ENTERING_AVGPRICE - User: {user_id}")
@@ -1765,15 +1765,15 @@ class TelegramAIBot:
             context.user_data['us_avg_price'] = avg_price
 
             await update.message.reply_text(
-                f"Please enter the holding period. (in months)\n"
-                f"Example: 6 (for 6 months)"
+                f"보유 기간을 입력해주세요. (월 단위)\n"
+                f"예: 6 (6개월)"
             )
             return US_ENTERING_PERIOD
 
         except ValueError:
             await update.message.reply_text(
-                "Please enter in number format. (Example: 150.50)\n"
-                "Dollar sign ($) and commas will be automatically removed."
+                "숫자 형식으로 입력해주세요. (예: 150.50)\n"
+                "달러 기호($)와 쉼표는 자동으로 제거됩니다."
             )
             return US_ENTERING_AVGPRICE
 
@@ -1785,15 +1785,15 @@ class TelegramAIBot:
             context.user_data['us_period'] = period
 
             await update.message.reply_text(
-                "In what style or tone would you like to receive feedback?\n"
-                "Example: Honest, Professional, Like a friend, Concise, etc."
+                "어떤 스타일이나 톤으로 피드백을 받고 싶으신가요?\n"
+                "예: 직설적으로, 전문가처럼, 친구처럼, 간결하게 등"
             )
             return US_ENTERING_TONE
 
         except ValueError:
             await update.message.reply_text(
-                "Please enter in number format.\n"
-                "Example: 6"
+                "숫자 형식으로 입력해주세요.\n"
+                "예: 6"
             )
             return US_ENTERING_PERIOD
 
@@ -1804,19 +1804,19 @@ class TelegramAIBot:
         context.user_data['us_tone'] = tone
 
         await update.message.reply_text(
-            "If you have any background on why you traded this stock or major trading history, please let us know.\n"
-            "(Optional, enter 'None' if not applicable)"
+            "이 종목을 매매한 이유나 주요 매매 이력이 있다면 알려주세요.\n"
+            "(선택 사항, 없으면 '없음'을 입력하세요)"
         )
         return US_ENTERING_BACKGROUND
 
     async def handle_us_background_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle US trading background input and generate AI response"""
         background = update.message.text.strip()
-        context.user_data['us_background'] = background if background.lower() != 'none' else ""
+        context.user_data['us_background'] = background if background.lower() not in ['none', '없음'] else ""
 
         # Waiting response message
         waiting_message = await update.message.reply_text(
-            "🇺🇸 Analyzing US stock... Please wait a moment."
+            "🇺🇸 미국 주식을 분석 중입니다... 잠시 기다려주세요."
         )
 
         # Request analysis from AI agent
@@ -1849,7 +1849,7 @@ class TelegramAIBot:
 
             # Check if response is empty
             if not response or not response.strip():
-                response = "Sorry, an error occurred while generating the response. Please try again."
+                response = "응답 생성 중 오류가 발생했습니다. 다시 시도해주세요."
                 logger.error(f"Empty response generated: {ticker_name}({ticker})")
 
             # Delete waiting message
@@ -1857,7 +1857,7 @@ class TelegramAIBot:
 
             # Send response
             sent_message = await update.message.reply_text(
-                response + "\n\n💡 If you have additional questions, please reply to this message."
+                response + "\n\n💡 추가 질문이 있으시면 이 메시지에 답장(Reply)해주세요."
             )
 
             # Save conversation context (US market)
@@ -1902,7 +1902,7 @@ class TelegramAIBot:
         except Exception as e:
             logger.error(f"Error generating or sending US response: {str(e)}, {traceback.format_exc()}")
             await waiting_message.delete()
-            await update.message.reply_text("Sorry, an error occurred during analysis. Please try again.")
+            await update.message.reply_text("분석 중 오류가 발생했습니다. 다시 시도해주세요.")
 
         # End conversation
         return ConversationHandler.END
@@ -1921,8 +1921,8 @@ class TelegramAIBot:
 
         if not is_subscribed:
             await update.message.reply_text(
-                "This bot is available only to channel subscribers.\n"
-                "Please subscribe to the channel via the link below:\n\n"
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
                 "https://t.me/stock_ai_agent"
             )
             return ConversationHandler.END
@@ -1930,19 +1930,19 @@ class TelegramAIBot:
         # Check daily usage limit
         if not self.check_daily_limit(user_id, "us_report"):
             await update.message.reply_text(
-                "⚠️ The /us_report command can only be used once per day.\n\n"
-                "Please try again tomorrow."
+                "⚠️ /us_report 명령어는 하루에 1회만 사용할 수 있습니다.\n\n"
+                "내일 다시 이용해 주세요."
             )
             return ConversationHandler.END
 
         # Check if group chat or private chat
         is_group = update.effective_chat.type in ["group", "supergroup"]
-        greeting = f"{user_name}, " if is_group else ""
+        greeting = f"{user_name}님, " if is_group else ""
 
         await update.message.reply_text(
-            f"{greeting}🇺🇸 This is a US stock report request.\n\n"
-            "Please enter the ticker symbol of the stock to analyze.\n"
-            "Example: AAPL, MSFT, GOOGL, NVDA"
+            f"{greeting}🇺🇸 미국 주식 분석 보고서 요청입니다.\n\n"
+            "분석할 종목의 티커 심볼을 입력해주세요.\n"
+            "예: AAPL, MSFT, GOOGL, NVDA"
         )
 
         return US_REPORT_CHOOSING_TICKER
@@ -1964,10 +1964,10 @@ class TelegramAIBot:
 
         # Send waiting message
         waiting_message = await update.message.reply_text(
-            f"🇺🇸 Analysis report generation request for {company_name} ({ticker}) has been registered.\n\n"
-            f"Requests are processed in the order received, and each analysis takes approximately 5-10 minutes.\n\n"
-            f"Wait times may be longer if there are many requests from other users.\n\n"
-            f"We will notify you as soon as it's complete."
+            f"🇺🇸 {company_name} ({ticker}) 분석 보고서 생성 요청이 등록되었습니다.\n\n"
+            f"요청은 접수 순서대로 처리되며, 분석에는 약 5-10분이 소요됩니다.\n\n"
+            f"다른 사용자의 요청이 많을 경우 대기 시간이 길어질 수 있습니다.\n\n"
+            f"완료되면 바로 알려드리겠습니다."
         )
 
         # Create US analysis request and add to queue
@@ -1991,7 +1991,7 @@ class TelegramAIBot:
             request.pdf_path = cached_pdf
 
             await waiting_message.edit_text(
-                f"✅ Analysis report for {company_name} ({ticker}) is ready. Will be sent shortly."
+                f"✅ {company_name} ({ticker}) 분석 보고서가 준비되었습니다. 곧 전송됩니다."
             )
 
             # Send result
@@ -2021,22 +2021,22 @@ class TelegramAIBot:
 
         if not is_subscribed:
             await update.message.reply_text(
-                "This bot is available only to channel subscribers.\n"
-                "Please subscribe to the channel via the link below:\n\n"
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
                 "https://t.me/stock_ai_agent"
             )
             return ConversationHandler.END
 
         # Check if group chat or private chat
         is_group = update.effective_chat.type in ["group", "supergroup"]
-        greeting = f"{user_name}, " if is_group else ""
+        greeting = f"{user_name}님, " if is_group else ""
 
         await update.message.reply_text(
-            f"{greeting}📝 Please write your investment journal.\n\n"
-            "If you enter with a stock code/ticker, it will be linked to that stock:\n"
-            "Example: \"AAPL planning to hold until $170\"\n"
-            "Example: \"005930 judging semiconductor bottom\"\n\n"
-            "Or just freely write your thoughts."
+            f"{greeting}📝 투자 일지를 작성해주세요.\n\n"
+            "종목 코드/티커와 함께 입력하면 해당 종목과 연결됩니다:\n"
+            "예: \"AAPL 170달러까지 보유 예정\"\n"
+            "예: \"005930 반도체 바닥 판단 중\"\n\n"
+            "또는 자유롭게 생각을 적어주세요."
         )
 
         logger.info(f"[JOURNAL] Transitioned to JOURNAL_ENTERING state - user_id: {user_id}")
@@ -2068,24 +2068,24 @@ class TelegramAIBot:
         # Add notice if over 500 characters
         length_note = ""
         if len(text) > 500:
-            length_note = f"\n⚠️ Note: Only the first 500 characters will be referenced in AI conversations. (Current: {len(text)} characters)"
+            length_note = f"\n⚠️ 참고: AI 대화에서는 처음 500자만 참고됩니다. (현재: {len(text)}자)"
 
         if ticker:
             confirm_msg = (
-                f"✅ Recorded in journal!\n\n"
-                f"📝 Stock: {ticker_name} ({ticker})\n"
+                f"✅ 투자 일지에 기록되었습니다!\n\n"
+                f"📝 종목: {ticker_name} ({ticker})\n"
                 f"💭 \"{text[:100]}{'...' if len(text) > 100 else ''}\"\n"
                 f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
                 f"{length_note}\n\n"
-                f"💡 Reply to this message to continue the conversation!"
+                f"💡 이 메시지에 답장하면 대화를 이어갈 수 있습니다!"
             )
         else:
             confirm_msg = (
-                f"✅ Recorded in journal!\n\n"
+                f"✅ 투자 일지에 기록되었습니다!\n\n"
                 f"💭 \"{text[:100]}{'...' if len(text) > 100 else ''}\"\n"
                 f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
                 f"{length_note}\n\n"
-                f"💡 Reply to this message to continue the conversation!"
+                f"💡 이 메시지에 답장하면 대화를 이어갈 수 있습니다!"
             )
 
         sent_message = await update.message.reply_text(confirm_msg)
@@ -2115,8 +2115,8 @@ class TelegramAIBot:
         created_at = journal_ctx.get('created_at')
         if created_at and (datetime.now() - created_at).total_seconds() > 1800:
             await update.message.reply_text(
-                "The previous conversation session has expired.\n"
-                "Please use the /journal command to start a new conversation. 💭"
+                "이전 대화 세션이 만료되었습니다.\n"
+                "/journal 명령어로 새로운 대화를 시작해주세요. 💭"
             )
             return
 
@@ -2128,7 +2128,7 @@ class TelegramAIBot:
 
         # Waiting message
         waiting_message = await update.message.reply_text(
-            "💭 Thinking..."
+            "💭 생각 중..."
         )
 
         try:
@@ -2158,7 +2158,7 @@ class TelegramAIBot:
 
             # Send response
             sent_message = await update.message.reply_text(
-                response + "\n\n💡 Continue the conversation with a reply!"
+                response + "\n\n💡 답장으로 대화를 이어가세요!"
             )
 
             # Add AI response to conversation history
@@ -2190,7 +2190,7 @@ class TelegramAIBot:
             logger.error(f"[JOURNAL_REPLY] Error: {e}")
             await waiting_message.delete()
             await update.message.reply_text(
-                "Sorry, there was a problem generating the response. Could you please try again? 💭"
+                "죄송합니다, 응답 생성 중 문제가 발생했습니다. 다시 시도해주세요. 💭"
             )
 
     def _extract_ticker_from_text(self, text: str) -> tuple:
