@@ -730,7 +730,7 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
                     필요한 경우 최신 데이터를 조회하여 정확한 정보를 제공하세요.
                     """,
             request_params=RequestParams(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6",
                 maxTokens=2000
             )
         )
@@ -927,7 +927,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                     {report_content if report_content else "관련 보고서가 없습니다. 시장 데이터 조회와 perplexity 검색을 통해 최신 정보를 수집하여 평가해주세요."}
                     """,
             request_params=RequestParams(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6",
                 maxTokens=3000
             )
         )
@@ -1124,7 +1124,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                     perplexity로 최신 뉴스와 시장 동향을 검색한 후 종합적인 평가를 제공해주세요.
                     """,
             request_params=RequestParams(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6",
                 maxTokens=3000
             )
         )
@@ -1221,7 +1221,7 @@ async def generate_us_follow_up_response(ticker, ticker_name, conversation_conte
                     필요한 경우 yahoo_finance를 통해 최신 데이터를 조회하여 정확한 정보를 제공하세요.
                     """,
             request_params=RequestParams(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6",
                 maxTokens=2000
             )
         )
@@ -1339,7 +1339,7 @@ async def generate_journal_conversation_response(
 
 위 메시지에 자연스럽게 응답해주세요. 사용자의 과거 기록(저널, 평가 등)을 참고하여 개인화된 답변을 제공하세요.""",
             request_params=RequestParams(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6",
                 maxTokens=2000
             )
         )
