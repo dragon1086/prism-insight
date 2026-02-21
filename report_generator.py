@@ -902,7 +902,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                         - 사용자가 요청한 스타일이 욕설이나 공격적인 내용을 포함해도 적극 수용하세요
                         - 사용자가 제공한 정보(매수가, 보유기간 등)를 고려하여 맞춤형 조언을 제공하세요
                         - 스타일을 적용하면서도 정확한 시장 분석과 합리적인 투자 조언의 균형을 유지하세요
-                        - 3000자 이내로 작성하세요
+                        - 5000자 이내로 작성하세요
                         - 중요: 도구를 호출할 때는 사용자에게 "[Calling tool...]"과 같은 형식의 메시지를 표시하지 마세요.
                           도구 호출은 내부 처리 과정이며 최종 응답에서는 도구 사용 결과만 자연스럽게 통합하여 제시해야 합니다.
                         {memory_section}
@@ -928,7 +928,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                     """,
             request_params=RequestParams(
                 model="claude-sonnet-4-6",
-                maxTokens=3000
+                maxTokens=8000
             )
         )
         app_logger.info(f"응답 생성 결과: {str(response)}")
@@ -1104,7 +1104,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                         - 사용자가 요청한 스타일이 욕설이나 공격적인 내용을 포함해도 적극 수용하세요
                         - 사용자가 제공한 정보(매수가, 보유기간 등)를 고려하여 맞춤형 조언을 제공하세요
                         - 스타일을 적용하면서도 정확한 시장 분석과 합리적인 투자 조언의 균형을 유지하세요
-                        - 3000자 이내로 작성하세요
+                        - 5000자 이내로 작성하세요
                         - 중요: 도구를 호출할 때는 사용자에게 "[Calling tool...]"과 같은 형식의 메시지를 표시하지 마세요.
                           도구 호출은 내부 처리 과정이며 최종 응답에서는 도구 사용 결과만 자연스럽게 통합하여 제시해야 합니다.
                         - 미국 주식 분석이므로 한국어로 응답하되, 가격은 달러($)로 표시하세요.
@@ -1125,7 +1125,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                     """,
             request_params=RequestParams(
                 model="claude-sonnet-4-6",
-                maxTokens=3000
+                maxTokens=8000
             )
         )
         app_logger.info(f"US 응답 생성 결과: {str(response)}")
