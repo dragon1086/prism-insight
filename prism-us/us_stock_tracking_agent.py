@@ -403,6 +403,7 @@ class USStockTrackingAgent:
         """
         self.max_slots = self.MAX_SLOTS
         self.message_queue = []
+        self._msg_types = []  # msg_type for each message in queue
         self._broadcast_task = None  # Track broadcast translation task
         self.trading_agent = None
         self.sell_decision_agent = None
@@ -903,6 +904,7 @@ class USStockTrackingAgent:
                 if portfolio_context:
                     message += f"💼 포트폴리오 관점:\n  {portfolio_context}\n"
 
+            self._msg_types.append("analysis")
             self.message_queue.append(message)
             logger.info(f"{ticker} ({company_name}) purchase complete")
 
@@ -1051,6 +1053,7 @@ class USStockTrackingAgent:
             if trigger_win_rate:
                 skip_message += f"\n{trigger_win_rate}"
 
+            self._msg_types.append("analysis")
             self.message_queue.append(skip_message)
 
             logger.info(
@@ -1460,6 +1463,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             if trigger_win_rate:
                 message += f"\n{trigger_win_rate}"
 
+            self._msg_types.append("analysis")
             self.message_queue.append(message)
             logger.info(f"{ticker} ({company_name}) sell complete (return: {profit_rate:.2f}%)")
 
@@ -1928,7 +1932,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             logger.error(traceback.format_exc())
             return 0, 0
 
-    async def _notify_firebase(self, message: str, chat_id: str, message_id: int = None):
+    async def _notify_firebase(self, message: str, chat_id: str, message_id: int = None, msg_type=None):
         """Send Firebase Bridge notification for Prism Mobile push (never affects Telegram delivery)."""
         try:
             from firebase_bridge import notify
@@ -1937,13 +1941,14 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 market="us",
                 telegram_message_id=message_id,
                 channel_id=chat_id,
+                msg_type=msg_type,
             )
         except Exception as e:
             logger.debug(f"Firebase bridge: {e}")
 
-    def _schedule_firebase(self, message: str, chat_id: str, message_id: int = None):
+    def _schedule_firebase(self, message: str, chat_id: str, message_id: int = None, msg_type=None):
         """Schedule Firebase notification as non-blocking task. Returns the task."""
-        return asyncio.create_task(self._notify_firebase(message, chat_id, message_id))
+        return asyncio.create_task(self._notify_firebase(message, chat_id, message_id, msg_type=msg_type))
 
     async def send_telegram_message(self, chat_id: str, language: str = "ko") -> bool:
         """
@@ -1967,6 +1972,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                 # Initialize message queue
                 self.message_queue = []
+                self._msg_types = []
                 return True  # Consider intentional skip as success
 
             # If Telegram bot not initialized, only output logs
@@ -1979,10 +1985,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                 # Initialize message queue
                 self.message_queue = []
+                self._msg_types = []
                 return False
 
             # Generate summary report
             summary = await self.generate_report_summary()
+            self._msg_types.append("portfolio")
             self.message_queue.append(summary)
 
             # Translate messages if English is requested
@@ -2004,7 +2012,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # Send each message (Firebase notifications are non-blocking)
             success = True
             firebase_tasks = []
-            for message in self.message_queue:
+            for idx, message in enumerate(self.message_queue):
+                msg_type = self._msg_types[idx] if idx < len(self._msg_types) else None
                 logger.info(f"Sending US Telegram message: {chat_id}")
                 try:
                     # Telegram message length limit (4096 characters)
@@ -2016,7 +2025,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             chat_id=chat_id,
                             text=message
                         )
-                        firebase_tasks.append(self._schedule_firebase(message, chat_id, result.message_id))
+                        firebase_tasks.append(self._schedule_firebase(message, chat_id, result.message_id, msg_type=msg_type))
                     else:
                         # Split long message
                         parts = []
@@ -2045,7 +2054,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             await asyncio.sleep(0.5)  # Short delay between split messages
 
                         # Notify with full original message, link to first part
-                        firebase_tasks.append(self._schedule_firebase(message, chat_id, first_msg_id))
+                        firebase_tasks.append(self._schedule_firebase(message, chat_id, first_msg_id, msg_type=msg_type))
 
                     logger.info(f"US Telegram message sent: {chat_id}")
                 except TelegramError as e:
@@ -2061,11 +2070,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             # Send to broadcast channels if configured (awaited in run() finally block)
             if hasattr(self, 'telegram_config') and self.telegram_config and self.telegram_config.broadcast_languages:
-                self._broadcast_task = asyncio.create_task(self._send_to_translation_channels(self.message_queue.copy()))
+                self._broadcast_task = asyncio.create_task(self._send_to_translation_channels(self.message_queue.copy(), self._msg_types.copy()))
                 logger.info("US broadcast channel translation dispatched")
 
             # Clear message queue
             self.message_queue = []
+            self._msg_types = []
 
             return success
 
@@ -2074,12 +2084,13 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             logger.error(traceback.format_exc())
             return False
 
-    async def _send_to_translation_channels(self, messages: List[str]):
+    async def _send_to_translation_channels(self, messages: List[str], msg_types: Optional[list] = None):
         """
         Send messages to translation channels
 
         Args:
             messages: List of original Korean messages
+            msg_types: msg_type for each message in the list
         """
         try:
             # Note: translate_telegram_message is pre-loaded at module level
@@ -2097,7 +2108,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                     # Translate and send each message (Firebase non-blocking)
                     firebase_tasks = []
-                    for message in messages:
+                    for msg_idx, message in enumerate(messages):
+                        msg_type = msg_types[msg_idx] if msg_types and msg_idx < len(msg_types) else None
                         try:
                             # Translate message
                             logger.info(f"Translating US tracking message to {lang}")
@@ -2116,7 +2128,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     chat_id=channel_id,
                                     text=translated_message
                                 )
-                                firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, result.message_id))
+                                firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, result.message_id, msg_type=msg_type))
                             else:
                                 # Split long messages
                                 parts = []
@@ -2143,7 +2155,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         first_msg_id = result.message_id
                                     await asyncio.sleep(0.5)
 
-                                firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, first_msg_id))
+                                firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, first_msg_id, msg_type=msg_type))
 
                             logger.info(f"US tracking message sent successfully to {lang} channel")
 
