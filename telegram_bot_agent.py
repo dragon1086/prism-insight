@@ -40,7 +40,7 @@ class TelegramBotAgent:
 
         self.bot = Bot(token=self.token, request=request)
 
-    async def send_message(self, chat_id, message, parse_mode="Markdown", retry_count=0, max_retries=3):
+    async def send_message(self, chat_id, message, parse_mode="Markdown", retry_count=0, max_retries=3, msg_type=None):
         """
         Send message to Telegram channel
 
@@ -69,6 +69,7 @@ class TelegramBotAgent:
                     message=message,
                     telegram_message_id=result.message_id,
                     channel_id=chat_id,
+                    msg_type=msg_type,
                 )
             except Exception as e:
                 logger.debug(f"Firebase bridge: {e}")
@@ -79,7 +80,7 @@ class TelegramBotAgent:
             logger.warning(f"Rate limit hit. Waiting {wait_time} seconds before retry...")
             await asyncio.sleep(wait_time)
             if retry_count < max_retries:
-                return await self.send_message(chat_id, message, parse_mode, retry_count + 1, max_retries)
+                return await self.send_message(chat_id, message, parse_mode, retry_count + 1, max_retries, msg_type=msg_type)
             else:
                 logger.error(f"Max retries reached after rate limit")
                 return False
@@ -89,7 +90,7 @@ class TelegramBotAgent:
                 wait_time = 2 ** retry_count  # 1, 2, 4 seconds
                 logger.warning(f"Timeout occurred. Retrying in {wait_time} seconds... (attempt {retry_count + 1}/{max_retries})")
                 await asyncio.sleep(wait_time)
-                return await self.send_message(chat_id, message, parse_mode, retry_count + 1, max_retries)
+                return await self.send_message(chat_id, message, parse_mode, retry_count + 1, max_retries, msg_type=msg_type)
             else:
                 logger.error(f"Max retries reached after timeout")
                 return False
@@ -110,6 +111,7 @@ class TelegramBotAgent:
                             message=message,
                             telegram_message_id=result.message_id,
                             channel_id=chat_id,
+                            msg_type=msg_type,
                         )
                     except Exception as e:
                         logger.debug(f"Firebase bridge: {e}")
@@ -119,7 +121,7 @@ class TelegramBotAgent:
                     return False
             return False
 
-    async def send_document(self, chat_id, document_path, caption=None, retry_count=0, max_retries=3):
+    async def send_document(self, chat_id, document_path, caption=None, retry_count=0, max_retries=3, msg_type=None):
         """
         Send file to Telegram channel
 
@@ -151,6 +153,7 @@ class TelegramBotAgent:
                     channel_id=chat_id,
                     has_pdf=True,
                     pdf_telegram_link=telegram_link,
+                    msg_type=msg_type or "pdf",
                 )
             except Exception as e:
                 logger.debug(f"Firebase bridge: {e}")
@@ -161,7 +164,7 @@ class TelegramBotAgent:
             logger.warning(f"Rate limit hit. Waiting {wait_time} seconds before retry...")
             await asyncio.sleep(wait_time)
             if retry_count < max_retries:
-                return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries)
+                return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries, msg_type=msg_type)
             else:
                 logger.error(f"Max retries reached after rate limit")
                 return False
@@ -171,7 +174,7 @@ class TelegramBotAgent:
                 wait_time = 2 ** retry_count  # 1, 2, 4 seconds
                 logger.warning(f"Timeout occurred. Retrying in {wait_time} seconds... (attempt {retry_count + 1}/{max_retries})")
                 await asyncio.sleep(wait_time)
-                return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries)
+                return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries, msg_type=msg_type)
             else:
                 logger.error(f"Max retries reached after timeout")
                 return False
@@ -179,7 +182,7 @@ class TelegramBotAgent:
             logger.error(f"Telegram file send failed: {e}")
             return False
 
-    async def process_messages_directory(self, directory, chat_id, sent_dir=None):
+    async def process_messages_directory(self, directory, chat_id, sent_dir=None, msg_type=None):
         """
         Process and send all Telegram message files in directory
 
@@ -221,7 +224,7 @@ class TelegramBotAgent:
 
                 # Send message
                 logger.info(f"Sending message: {msg_file.name}")
-                success = await self.send_message(chat_id, message)
+                success = await self.send_message(chat_id, message, msg_type=msg_type)
 
                 if success:
                     success_count += 1

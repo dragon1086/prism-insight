@@ -35,7 +35,8 @@ class TelegramSender:
         self,
         chat_id: str,
         messages: List[str],
-        language: str = "ko"
+        language: str = "ko",
+        msg_types: Optional[list] = None
     ) -> bool:
         """
         Send messages to Telegram channel.
@@ -65,9 +66,10 @@ class TelegramSender:
             messages = await self._translate_messages(messages, "en")
 
         success = True
-        for message in messages:
+        for idx, message in enumerate(messages):
+            msg_type = msg_types[idx] if msg_types and idx < len(msg_types) else None
             try:
-                await self._send_single_message(chat_id, message)
+                await self._send_single_message(chat_id, message, msg_type=msg_type)
                 logger.info(f"Telegram message sent: {chat_id}")
             except TelegramError as e:
                 logger.error(f"Telegram message send failed: {e}")
@@ -77,7 +79,7 @@ class TelegramSender:
 
         return success
 
-    async def _send_single_message(self, chat_id: str, message: str):
+    async def _send_single_message(self, chat_id: str, message: str, msg_type=None):
         """Send a single message, splitting if too long."""
         if len(message) <= MAX_MESSAGE_LENGTH:
             result = await self.bot.send_message(chat_id=chat_id, text=message)
@@ -88,6 +90,7 @@ class TelegramSender:
                     message=message,
                     telegram_message_id=result.message_id,
                     channel_id=chat_id,
+                    msg_type=msg_type,
                 )
             except Exception as e:
                 logger.debug(f"Firebase bridge: {e}")
