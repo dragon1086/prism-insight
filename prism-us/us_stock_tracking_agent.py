@@ -640,6 +640,7 @@ class USStockTrackingAgent:
                 logger.info(f"Scenario parsed: {json.dumps(scenario_json, ensure_ascii=False)[:200]}")
                 return scenario_json
 
+            logger.error(f"US trading scenario parse failed. Full response: {response}")
             return default_scenario()
 
         except Exception as e:

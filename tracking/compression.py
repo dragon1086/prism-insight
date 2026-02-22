@@ -398,6 +398,7 @@ Respond in JSON.
         result = parse_llm_json(response, context='compression response')
         if result is not None:
             return result
+        logger.error(f"Compression response parse failed. Full response: {response}")
         return {"compressed_entries": [], "new_intuitions": []}
 
     def _save_intuition(self, intuition: Dict[str, Any], source_ids: List[int]) -> bool:

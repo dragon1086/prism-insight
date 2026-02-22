@@ -876,7 +876,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                 decision_json = parse_llm_json(response, context=f'{ticker} sell decision')
                 if decision_json is None:
-                    logger.warning(f"{ticker} JSON parse failed, falling back to legacy algorithm")
+                    logger.error(f"{ticker} sell decision parse failed. Full response: {response}")
                     return await self._fallback_sell_decision(stock_data)
 
                 logger.info(f"Sell decision parse successful: {json.dumps(decision_json, ensure_ascii=False)[:500]}")

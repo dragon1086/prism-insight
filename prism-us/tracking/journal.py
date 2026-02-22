@@ -229,6 +229,7 @@ Please review the following completed US stock trade:
         result = parse_llm_json(response, context='US journal response')
         if result is not None:
             return result
+        logger.error(f"US journal response parse failed. Full response: {response}")
         return {
             "situation_analysis": {"raw_response": response[:500]},
             "judgment_evaluation": {},

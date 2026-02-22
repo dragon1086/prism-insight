@@ -352,6 +352,7 @@ class StockTrackingAgent:
                 logger.info(f"Scenario parsed: {json.dumps(scenario_json, ensure_ascii=False)[:200]}")
                 return scenario_json
 
+            logger.error(f"Trading scenario parse failed. Full response: {response}")
             return self._default_scenario()
 
         except Exception as e:

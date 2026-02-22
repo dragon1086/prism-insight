@@ -1,5 +1,8 @@
+import json
+import logging
 import re
 import subprocess
+from typing import Any, Dict, Optional
 
 # WiseReport URL template configuration
 WISE_REPORT_BASE = "https://comp.wisereport.co.kr/company/"
@@ -182,10 +185,6 @@ def get_wise_report_url(report_type: str, company_code: str) -> str:
 # --- LLM JSON Response Parsing ---
 # Consolidates duplicated regex + json_repair fallback chains.
 # TODO: Replace with generate_structured() + Pydantic models to eliminate JSON parsing entirely.
-
-import json
-import logging
-from typing import Any, Dict, Optional
 
 _json_logger = logging.getLogger(__name__)
 
