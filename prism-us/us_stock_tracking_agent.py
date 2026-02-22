@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+from cores.utils import parse_llm_json
 
 # Import US-specific modules
 # Use explicit path to avoid conflicts with main project
@@ -637,51 +638,14 @@ class USStockTrackingAgent:
                 )
             )
 
-            # JSON parsing
-            try:
-                def fix_json_syntax(json_str):
-                    """Fix JSON syntax errors."""
-                    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
-                    json_str = re.sub(r'(\])\s*(\n\s*")', r'\1,\2', json_str)
-                    json_str = re.sub(r'(})\s*(\n\s*")', r'\1,\2', json_str)
-                    json_str = re.sub(r'([0-9]|")\s*(\n\s*")', r'\1,\2', json_str)
-                    json_str = re.sub(r',\s*,', ',', json_str)
-                    return json_str
-
-                # Try markdown code block
-                markdown_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response, re.DOTALL)
-                if markdown_match:
-                    json_str = fix_json_syntax(markdown_match.group(1))
-                    scenario_json = json.loads(json_str)
-                    logger.info(f"Scenario parsed from markdown: {json.dumps(scenario_json, ensure_ascii=False)}")
-                    return scenario_json
-
-                # Try regular JSON
-                json_match = re.search(r'({[\s\S]*?})(?:\s*$|\n\n)', response, re.DOTALL)
-                if json_match:
-                    json_str = fix_json_syntax(json_match.group(1))
-                    scenario_json = json.loads(json_str)
-                    return scenario_json
-
-                # Full response as JSON
-                clean_response = fix_json_syntax(response)
-                scenario_json = json.loads(clean_response)
+            # JSON parsing (consolidated in cores/utils.py)
+            scenario_json = parse_llm_json(response, context='US trading scenario')
+            if scenario_json is not None:
+                logger.info(f"Scenario parsed: {json.dumps(scenario_json, ensure_ascii=False)[:200]}")
                 return scenario_json
 
-            except Exception as json_err:
-                logger.error(f"Trading scenario JSON parse error: {json_err}")
-                logger.error(f"Original response: {response[:500]}...")
-
-                # Try json_repair library
-                try:
-                    import json_repair
-                    repaired = json_repair.repair_json(response)
-                    scenario_json = json.loads(repaired)
-                    return scenario_json
-                except (ImportError, Exception):
-                    pass
-
-                return default_scenario()
+            logger.error(f"US trading scenario parse failed. Full response: {response}")
+            return default_scenario()
 
         except Exception as e:
             logger.error(f"Error extracting trading scenario: {str(e)}")

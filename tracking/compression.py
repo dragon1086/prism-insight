@@ -11,6 +11,7 @@ import re
 import traceback
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
+from cores.utils import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -394,29 +395,11 @@ Respond in JSON.
 
     def _parse_response(self, response: str) -> Dict[str, Any]:
         """Parse compression response."""
-        try:
-            markdown_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response, re.DOTALL)
-            if markdown_match:
-                return json.loads(markdown_match.group(1))
-
-            json_match = re.search(r'({[\s\S]*})', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
-                return json.loads(json_str)
-
-            try:
-                import json_repair
-                repaired = json_repair.repair_json(response)
-                return json.loads(repaired)
-            except:
-                pass
-
-            return {"compressed_entries": [], "new_intuitions": []}
-
-        except Exception as e:
-            logger.warning(f"Failed to parse compression response: {e}")
-            return {"compressed_entries": [], "new_intuitions": []}
+        result = parse_llm_json(response, context='compression response')
+        if result is not None:
+            return result
+        logger.error(f"Compression response parse failed. Full response: {response}")
+        return {"compressed_entries": [], "new_intuitions": []}
 
     def _save_intuition(self, intuition: Dict[str, Any], source_ids: List[int]) -> bool:
         """Save intuition to database."""
