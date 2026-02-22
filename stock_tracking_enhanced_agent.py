@@ -16,6 +16,7 @@ from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
 
 # Import core agents
 from cores.agents.trading_agents import create_sell_decision_agent
+from cores.utils import parse_llm_json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -867,54 +868,16 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 )
             )
 
-            # JSON parsing
+            # JSON parsing (consolidated in cores/utils.py)
             try:
-                # Early handling if response is empty or None
                 if not response or not response.strip():
                     logger.warning(f"{ticker} Empty response from LLM, falling back to legacy algorithm")
                     return await self._fallback_sell_decision(stock_data)
 
-                decision_json = None
-                json_str = None
-
-                # 1. Try extracting JSON from markdown code block (```json ... ``` or ``` ... ```)
-                markdown_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response, re.DOTALL)
-                if markdown_match:
-                    json_str = markdown_match.group(1)
-                    logger.debug(f"Found JSON in markdown code block")
-
-                # 2. Try extracting complete JSON object with nested braces
-                if not json_str:
-                    # More sophisticated JSON object matching (supports nested {})
-                    json_match = re.search(r'(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})', response, re.DOTALL)
-                    if json_match:
-                        json_str = json_match.group(1)
-                        logger.debug(f"Found JSON object in response")
-
-                # 3. If entire response is JSON
-                if not json_str:
-                    # Try after removing leading/trailing spaces and markdown
-                    clean_response = response.strip()
-                    if clean_response.startswith('{') and clean_response.endswith('}'):
-                        json_str = clean_response
-                        logger.debug(f"Using entire response as JSON")
-
-                # Fallback if no JSON string found
-                if not json_str:
-                    logger.warning(f"{ticker} No JSON found in response (length: {len(response)}), falling back to legacy algorithm")
-                    logger.debug(f"Response preview: {response[:500]}...")
+                decision_json = parse_llm_json(response, context=f'{ticker} sell decision')
+                if decision_json is None:
+                    logger.error(f"{ticker} sell decision parse failed. Full response: {response}")
                     return await self._fallback_sell_decision(stock_data)
-
-                # JSON preprocessing: remove trailing commas
-                json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
-
-                # Try JSON parsing
-                try:
-                    decision_json = json.loads(json_str)
-                except json.JSONDecodeError as e:
-                    # Additional cleanup attempt: remove control characters
-                    json_str_cleaned = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
-                    decision_json = json.loads(json_str_cleaned)
 
                 logger.info(f"Sell decision parse successful: {json.dumps(decision_json, ensure_ascii=False)[:500]}")
 

@@ -47,6 +47,7 @@ from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
 
 # Core agent imports
 from cores.agents.trading_agents import create_trading_scenario_agent
+from cores.utils import parse_llm_json
 
 # Tracking package imports (refactored helpers)
 from tracking import (
@@ -344,96 +345,15 @@ class StockTrackingAgent:
                 )
             )
 
-            # JSON parsing
+            # JSON parsing (consolidated in cores/utils.py)
             # TODO: Create model and call generate_structured function to improve code maintainability
-            # TODO: Move JSON conversion function to utils for better maintainability
-            try:
-                # JSON string extraction function
-                def fix_json_syntax(json_str):
-                    """Fix JSON syntax errors"""
-                    # 1. Remove trailing commas
-                    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
-
-                    # 2. Add comma after array before object property
-                    # Add comma if " follows ] (array ends and new property starts)
-                    json_str = re.sub(r'(\])\s*(\n\s*")', r'\1,\2', json_str)
-
-                    # 3. Add comma after object before object property
-                    # Add comma if " follows } (object ends and new property starts)
-                    json_str = re.sub(r'(})\s*(\n\s*")', r'\1,\2', json_str)
-
-                    # 4. Add comma after number or string before property
-                    # Add comma if new line and " follows number or string ending with "
-                    json_str = re.sub(r'([0-9]|")\s*(\n\s*")', r'\1,\2', json_str)
-
-                    # 5. Remove duplicate commas
-                    json_str = re.sub(r',\s*,', ',', json_str)
-
-                    return json_str
-
-                # Try extracting JSON from markdown code block (```json ... ```)
-                markdown_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response, re.DOTALL)
-                if markdown_match:
-                    json_str = markdown_match.group(1)
-                    json_str = fix_json_syntax(json_str)
-                    scenario_json = json.loads(json_str)
-                    logger.info(f"Scenario parsed from markdown code block: {json.dumps(scenario_json, ensure_ascii=False)}")
-                    return scenario_json
-
-                # Try extracting regular JSON object
-                json_match = re.search(r'({[\s\S]*?})(?:\s*$|\n\n)', response, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(1)
-                    json_str = fix_json_syntax(json_str)
-                    scenario_json = json.loads(json_str)
-                    logger.info(f"Scenario parsed from regular JSON format: {json.dumps(scenario_json, ensure_ascii=False)}")
-                    return scenario_json
-
-                # If full response is JSON
-                clean_response = fix_json_syntax(response)
-                scenario_json = json.loads(clean_response)
-                logger.info(f"Full response scenario: {json.dumps(scenario_json, ensure_ascii=False)}")
+            scenario_json = parse_llm_json(response, context='trading scenario')
+            if scenario_json is not None:
+                logger.info(f"Scenario parsed: {json.dumps(scenario_json, ensure_ascii=False)[:200]}")
                 return scenario_json
 
-            except Exception as json_err:
-                logger.error(f"Trading scenario JSON parse error: {json_err}")
-                logger.error(f"Original response: {response}")
-
-                # Additional recovery attempt: More robust JSON fixing
-                try:
-                    clean_response = re.sub(r'```(?:json)?|```', '', response).strip()
-
-                    # Fix all possible JSON syntax errors
-                    # 1. Add comma after array/object end before property
-                    clean_response = re.sub(r'(\]|\})\s*(\n\s*"[^"]+"\s*:)', r'\1,\2', clean_response)
-
-                    # 2. Add comma after value before property
-                    clean_response = re.sub(r'(["\d\]\}])\s*\n\s*("[^"]+"\s*:)', r'\1,\n    \2', clean_response)
-
-                    # 3. Remove trailing commas
-                    clean_response = re.sub(r',(\s*[}\]])', r'\1', clean_response)
-
-                    # 4. Remove duplicate commas
-                    clean_response = re.sub(r',\s*,+', ',', clean_response)
-
-                    scenario_json = json.loads(clean_response)
-                    logger.info(f"Scenario parsed with additional recovery: {json.dumps(scenario_json, ensure_ascii=False)}")
-                    return scenario_json
-                except Exception as e:
-                    logger.error(f"Additional recovery attempt failed: {str(e)}")
-
-                    # Last resort: Use json_repair library if available
-                    try:
-                        import json_repair
-                        repaired = json_repair.repair_json(response)
-                        scenario_json = json.loads(repaired)
-                        logger.info("Successfully recovered with json_repair")
-                        return scenario_json
-                    except (ImportError, Exception):
-                        pass
-
-                # Return default scenario if all parsing attempts fail
-                return self._default_scenario()
+            logger.error(f"Trading scenario parse failed. Full response: {response}")
+            return self._default_scenario()
 
         except Exception as e:
             logger.error(f"Error extracting trading scenario: {str(e)}")

@@ -11,6 +11,7 @@ import re
 import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from cores.utils import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -186,46 +187,18 @@ Please review the following completed trade:
 
     def _parse_response(self, response: str) -> Dict[str, Any]:
         """Parse journal agent response into structured data."""
-        try:
-            # Try markdown code block
-            markdown_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response, re.DOTALL)
-            if markdown_match:
-                return json.loads(markdown_match.group(1))
-
-            # Try direct JSON
-            json_match = re.search(r'({[\s\S]*})', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
-                return json.loads(json_str)
-
-            # Try json_repair
-            try:
-                import json_repair
-                repaired = json_repair.repair_json(response)
-                return json.loads(repaired)
-            except:
-                pass
-
-            return {
-                "situation_analysis": {"raw_response": response[:500]},
-                "judgment_evaluation": {},
-                "lessons": [],
-                "pattern_tags": [],
-                "one_line_summary": "Analysis parsing failed",
-                "confidence_score": 0.3
-            }
-
-        except Exception as e:
-            logger.warning(f"Failed to parse journal response: {e}")
-            return {
-                "situation_analysis": {"error": str(e)},
-                "judgment_evaluation": {},
-                "lessons": [],
-                "pattern_tags": [],
-                "one_line_summary": "Analysis parsing error",
-                "confidence_score": 0.2
-            }
+        result = parse_llm_json(response, context='journal response')
+        if result is not None:
+            return result
+        logger.error(f"Journal response parse failed. Full response: {response}")
+        return {
+            "situation_analysis": {"raw_response": response[:500]},
+            "judgment_evaluation": {},
+            "lessons": [],
+            "pattern_tags": [],
+            "one_line_summary": "Analysis parsing failed",
+            "confidence_score": 0.3
+        }
 
     def _save_to_database(
         self, ticker: str, company_name: str, buy_price: float, buy_date: str,

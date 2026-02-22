@@ -1,5 +1,8 @@
+import json
+import logging
 import re
 import subprocess
+from typing import Any, Dict, Optional
 
 # WiseReport URL template configuration
 WISE_REPORT_BASE = "https://comp.wisereport.co.kr/company/"
@@ -177,3 +180,124 @@ def clean_markdown(text: str) -> str:
 def get_wise_report_url(report_type: str, company_code: str) -> str:
     """Generate WiseReport URL"""
     return WISE_REPORT_BASE + URLS[report_type].format(company_code)
+
+
+# --- LLM JSON Response Parsing ---
+# Consolidates duplicated regex + json_repair fallback chains.
+# TODO: Replace with generate_structured() + Pydantic models to eliminate JSON parsing entirely.
+
+_json_logger = logging.getLogger(__name__)
+
+
+def fix_json_syntax(json_str: str) -> str:
+    """Fix common JSON syntax errors from LLM output."""
+    # 1. Remove trailing commas before } or ]
+    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+
+    # 2. Add comma after ] before property
+    json_str = re.sub(r'(\])\s*(\n\s*")', r'\1,\2', json_str)
+
+    # 3. Add comma after } before property
+    json_str = re.sub(r'(})\s*(\n\s*")', r'\1,\2', json_str)
+
+    # 4. Add comma after number or string before property
+    json_str = re.sub(r'([0-9]|")\s*(\n\s*")', r'\1,\2', json_str)
+
+    # 5. Remove duplicate commas
+    json_str = re.sub(r',\s*,', ',', json_str)
+
+    return json_str
+
+
+def _extract_json_string(response: str) -> Optional[str]:
+    """Extract JSON object string from LLM response text."""
+    # Strategy 1: Markdown code block
+    markdown_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response, re.DOTALL)
+    if markdown_match:
+        return markdown_match.group(1)
+
+    # Strategy 2: JSON object with nested braces support
+    json_match = re.search(r'(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})', response, re.DOTALL)
+    if json_match:
+        return json_match.group(1)
+
+    # Strategy 3: Full response is JSON
+    clean = response.strip()
+    if clean.startswith('{') and clean.endswith('}'):
+        return clean
+
+    return None
+
+
+def parse_llm_json(
+    response: str,
+    context: str = 'LLM response',
+) -> Optional[Dict[str, Any]]:
+    """Parse JSON from an LLM text response with multi-stage recovery.
+
+    Returns parsed dict, or None if all parsing attempts fail.
+    """
+    if not response or not response.strip():
+        _json_logger.warning(f'[{context}] Empty response received')
+        return None
+
+    # Stage 1: Extract JSON string
+    json_str = _extract_json_string(response)
+
+    if json_str is None:
+        _json_logger.warning(
+            f'[{context}] No JSON object found in response (length: {len(response)})'
+        )
+        # Fall through to json_repair as last resort
+        json_str = response
+
+    # Stage 2: Fix syntax + parse
+    try:
+        fixed = fix_json_syntax(json_str)
+        result = json.loads(fixed)
+        _json_logger.debug(f'[{context}] JSON parsed successfully')
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Stage 3: Strip control characters + retry
+    try:
+        cleaned = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
+        cleaned = fix_json_syntax(cleaned)
+        result = json.loads(cleaned)
+        _json_logger.info(f'[{context}] JSON parsed after control character cleanup')
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Stage 4: Aggressive cleanup (strip markdown fences, fix comma patterns)
+    try:
+        aggressive = re.sub(r'```(?:json)?|```', '', response).strip()
+        aggressive = re.sub(r'(\]|\})\s*(\n\s*"[^"]+"\s*:)', r'\1,\2', aggressive)
+        aggressive = re.sub(r'(["\d\]\}])\s*\n\s*("[^"]+"\s*:)', r'\1,\n    \2', aggressive)
+        aggressive = re.sub(r',(\s*[}\]])', r'\1', aggressive)
+        aggressive = re.sub(r',\s*,+', ',', aggressive)
+        result = json.loads(aggressive)
+        _json_logger.info(f'[{context}] JSON parsed with aggressive cleanup')
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Stage 5: json_repair library (optional dependency)
+    try:
+        import json_repair
+        repaired = json_repair.repair_json(response)
+        result = json.loads(repaired)
+        _json_logger.info(f'[{context}] JSON parsed via json_repair library')
+        return result
+    except ImportError:
+        _json_logger.debug(f'[{context}] json_repair not installed, skipping')
+    except Exception:
+        pass
+
+    # All stages failed
+    _json_logger.error(
+        f'[{context}] All JSON parsing attempts failed. '
+        f'Response preview: {response[:300]}...'
+    )
+    return None
