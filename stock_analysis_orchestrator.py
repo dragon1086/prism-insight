@@ -470,13 +470,14 @@ class StockAnalysisOrchestrator:
             await bot_agent.process_messages_directory(
                 str(TELEGRAM_MSGS_DIR),
                 chat_id,
-                str(TELEGRAM_MSGS_DIR / "sent")
+                str(TELEGRAM_MSGS_DIR / "sent"),
+                msg_type="analysis"
             )
 
             # Send PDF files to main channel
             for pdf_path in pdf_paths:
                 logger.info(f"Sending PDF file: {pdf_path}")
-                success = await bot_agent.send_document(chat_id, str(pdf_path))
+                success = await bot_agent.send_document(chat_id, str(pdf_path), msg_type="pdf")
                 if success:
                     logger.info(f"PDF file transmission successful: {pdf_path}")
                 else:
@@ -516,7 +517,7 @@ class StockAnalysisOrchestrator:
                             from_lang="ko",
                             to_lang=lang
                         )
-                        success = await bot_agent.send_message(channel_id, translated_message)
+                        success = await bot_agent.send_message(channel_id, translated_message, msg_type="analysis")
                         if success:
                             logger.info(f"Telegram message sent successfully to {lang} channel")
                         else:
@@ -586,7 +587,7 @@ class StockAnalysisOrchestrator:
                         if translated_pdf_paths and len(translated_pdf_paths) > 0:
                             translated_pdf_path = translated_pdf_paths[0]
                             logger.info(f"Sending translated PDF {translated_pdf_path} to {lang} channel")
-                            success = await bot_agent.send_document(channel_id, str(translated_pdf_path))
+                            success = await bot_agent.send_document(channel_id, str(translated_pdf_path), msg_type="pdf")
 
                             if success:
                                 logger.info(f"Translated PDF sent successfully to {lang} channel")
@@ -678,7 +679,7 @@ class StockAnalysisOrchestrator:
                 bot_agent = TelegramBotAgent()
 
                 # Send message to main channel
-                success = await bot_agent.send_message(chat_id, message)
+                success = await bot_agent.send_message(chat_id, message, msg_type="trigger")
 
                 if success:
                     logger.info("Prism Signal alert transmission successful")
@@ -723,7 +724,7 @@ class StockAnalysisOrchestrator:
                         from_lang="ko",
                         to_lang=lang
                     )
-                    success = await bot_agent.send_message(channel_id, translated_message)
+                    success = await bot_agent.send_message(channel_id, translated_message, msg_type="trigger")
                     if success:
                         logger.info(f"Trigger alert sent successfully to {lang} channel")
                     else:
