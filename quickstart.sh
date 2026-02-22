@@ -48,7 +48,13 @@ echo -e "       Python $PYTHON_VERSION detected ✓"
 
 # Install dependencies
 echo -e "${BLUE}[2/5]${NC} Installing Python dependencies..."
-pip install -q -r requirements.txt
+if command -v pip &> /dev/null; then
+    pip install -q -r requirements.txt
+else
+    echo -e "       pip not found, using uv..."
+    uv init
+    uv add -r requirements.txt
+fi
 echo -e "       Dependencies installed ✓"
 
 # Install Playwright
