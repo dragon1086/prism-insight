@@ -168,7 +168,7 @@ def detect_market(message: str) -> str:
     """Detect market from message content."""
     # Korean stock patterns: 6-digit codes, Korean company names, KRW amounts
     kr_patterns = [
-        r'\d{6}',  # 6-digit stock code (Korean)
+        r'(?<!\d)\d{6}(?!\d)',  # standalone 6-digit stock code (not inside longer numbers like dates)
         r'[가-힣]+전자|[가-힣]+증권|[가-힣]+화학|[가-힣]+건설',  # Korean company name patterns
         r'코스피|코스닥|KOSPI|KOSDAQ',
         r'원\s|₩|KRW',
@@ -406,11 +406,11 @@ async def _send_push(title: str, body: str, msg_type: str, market: str):
         if not _messaging:
             return
 
-        # Query devices matching preferences
+        # Query devices matching preferences, tracking doc refs for cleanup
         devices_ref = _db.collection('devices')
         docs = devices_ref.stream()
 
-        tokens = []
+        token_to_ref: dict = {}  # token -> Firestore doc ref (for invalid token cleanup)
         for doc in docs:
             device = doc.to_dict()
             prefs = device.get('preferences', {})
@@ -427,11 +427,19 @@ async def _send_push(title: str, body: str, msg_type: str, market: str):
 
             token = device.get('token')
             if token:
-                tokens.append(token)
+                token_to_ref[token] = doc.reference
 
-        if not tokens:
+        if not token_to_ref:
             logger.info("Firebase: No matching devices for push notification")
             return
+
+        tokens = list(token_to_ref.keys())
+
+        # FCM error codes that indicate a permanently invalid token
+        _INVALID_TOKEN_CODES = {
+            'registration-token-not-registered',  # app uninstalled / token revoked
+            'invalid-registration-token',          # malformed token
+        }
 
         # Send in batches of 500 (FCM limit)
         for i in range(0, len(tokens), 500):
@@ -452,5 +460,28 @@ async def _send_push(title: str, body: str, msg_type: str, market: str):
             logger.info(
                 f"Firebase: FCM sent to {response.success_count}/{len(batch_tokens)} devices"
             )
+
+            # Clean up permanently invalid tokens from Firestore
+            cleaned = 0
+            for idx, resp in enumerate(response.responses):
+                if resp.success:
+                    continue
+                token = batch_tokens[idx]
+                error_code = getattr(resp.exception, 'code', '') or ''
+                # Strip 'messaging/' prefix if present
+                short_code = error_code.replace('messaging/', '')
+                if short_code in _INVALID_TOKEN_CODES:
+                    try:
+                        token_to_ref[token].delete()
+                        cleaned += 1
+                        logger.info(f"Firebase: Removed invalid token [{short_code}]")
+                    except Exception as del_err:
+                        logger.warning(f"Firebase: Failed to delete invalid token: {del_err}")
+                else:
+                    logger.warning(f"Firebase: FCM send failed for token (kept): {short_code or error_code}")
+
+            if cleaned:
+                logger.info(f"Firebase: Cleaned up {cleaned} invalid device token(s)")
+
     except Exception as e:
         logger.warning(f"Firebase: FCM push failed (ignored): {e}")
