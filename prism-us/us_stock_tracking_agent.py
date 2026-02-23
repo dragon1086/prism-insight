@@ -55,7 +55,6 @@ logger = logging.getLogger(__name__)
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
-from cores.utils import parse_llm_json
 
 # Import US-specific modules
 # Use explicit path to avoid conflicts with main project
@@ -94,6 +93,11 @@ _translator_module = _import_from_main_cores(
     "cores/agents/telegram_translator_agent.py"
 )
 translate_telegram_message = _translator_module.translate_telegram_message
+
+# Load parse_llm_json from main project cores/utils.py
+# (avoids prism-us/cores/ namespace collision)
+_utils_module = _import_from_main_cores("cores_utils", "cores/utils.py")
+parse_llm_json = _utils_module.parse_llm_json
 
 try:
     # First try direct import from prism-us directory
