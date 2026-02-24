@@ -472,7 +472,8 @@ Please review the following completed trade:
             # Same stock history
             self.cursor.execute("""
                 SELECT ticker, company_name, profit_rate, holding_days,
-                       one_line_summary, lessons, pattern_tags, trade_date
+                       one_line_summary, lessons, pattern_tags, trade_date,
+                       sell_reason, situation_analysis, judgment_evaluation
                 FROM trading_journal WHERE ticker = ?
                 ORDER BY trade_date DESC LIMIT 3
             """, (ticker,))
@@ -496,6 +497,35 @@ Please review the following completed trade:
                     f"- [{entry[7][:10]}] {profit_emoji} Return {entry[2]:.1f}% "
                     f"(held {entry[3]} days) - {entry[4]}{lessons_str}"
                 )
+
+                # Enrich with sell context so the buy LLM understands WHY the stock was exited
+                sell_reason = entry[8] or ""
+                if sell_reason:
+                    context_parts.append(f"  - 매도 사유: {sell_reason}")
+
+                try:
+                    situation = json.loads(entry[9]) if entry[9] else {}
+                    sell_ctx = situation.get("sell_context_summary", "")
+                    if sell_ctx:
+                        context_parts.append(f"  - 매도 시 상황: {sell_ctx}")
+                    key_changes = situation.get("key_changes", [])
+                    if key_changes:
+                        changes_str = " / ".join(str(c) for c in key_changes[:3])
+                        context_parts.append(f"  - 핵심 변화: {changes_str}")
+                except Exception:
+                    pass
+
+                try:
+                    judgment = json.loads(entry[10]) if entry[10] else {}
+                    sell_quality_reason = judgment.get("sell_quality_reason", "")
+                    if sell_quality_reason:
+                        context_parts.append(f"  - 매도 판단: {sell_quality_reason}")
+                    missed = judgment.get("missed_signals", [])
+                    if missed:
+                        missed_str = " / ".join(str(m) for m in missed[:2])
+                        context_parts.append(f"  - 놓친 신호: {missed_str}")
+                except Exception:
+                    pass
 
             if context_parts and context_parts[-1].startswith("-"):
                 context_parts.append("")
