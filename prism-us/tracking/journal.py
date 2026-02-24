@@ -12,7 +12,6 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from cores.utils import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +41,12 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+# Load parse_llm_json from main project cores/utils.py
+# (avoids prism-us/cores/ namespace collision)
+_utils_module = _import_from_main_cores("cores_utils", "cores/utils.py")
+parse_llm_json = _utils_module.parse_llm_json
 
 
 class USJournalManager:
