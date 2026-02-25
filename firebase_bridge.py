@@ -394,13 +394,13 @@ async def notify(
         logger.info(f"Firebase: Saved {msg_type}/{market} message to Firestore")
 
         # Send FCM push notification
-        await _send_push(title, preview, msg_type, market)
+        await _send_push(title, preview, msg_type, market, lang, telegram_link, pdf_telegram_link or '')
 
     except Exception as e:
         logger.warning(f"Firebase Bridge notify failed (ignored): {e}")
 
 
-async def _send_push(title: str, body: str, msg_type: str, market: str):
+async def _send_push(title: str, body: str, msg_type: str, market: str, lang: str = 'ko', telegram_link: str = '', pdf_telegram_link: str = ''):
     """Send FCM push notification to subscribed devices."""
     try:
         if not _messaging:
@@ -423,6 +423,11 @@ async def _send_push(title: str, body: str, msg_type: str, market: str):
             # Check type preference
             pref_types = prefs.get('types', ['trigger', 'analysis', 'portfolio', 'pdf'])
             if msg_type not in pref_types:
+                continue
+
+            # Check lang preference (default 'ko' for devices without lang set)
+            pref_lang = prefs.get('lang', 'ko')
+            if lang and pref_lang != lang:
                 continue
 
             token = device.get('token')
@@ -452,6 +457,9 @@ async def _send_push(title: str, body: str, msg_type: str, market: str):
                 data={
                     'type': msg_type,
                     'market': market,
+                    'lang': lang,
+                    'telegram_link': telegram_link,
+                    'pdf_telegram_link': pdf_telegram_link,
                 },
                 tokens=batch_tokens,
             )
