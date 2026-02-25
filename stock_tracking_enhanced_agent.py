@@ -1066,7 +1066,12 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     )
                     self.conn.commit()
                     db_updated = True
-                    direction = "상향" if target_price_num > old_target_price else "하향"
+                    if target_price_num == old_target_price:
+                        direction = "유지"
+                    elif target_price_num > old_target_price:
+                        direction = "상향"
+                    else:
+                        direction = "하향"
                     update_message += f"목표가: {target_price_num:,.0f}원으로 {direction}조정\n"
                     logger.info(
                         f"{ticker} Target price AI {direction} adjustment: "
@@ -1085,7 +1090,12 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     )
                     self.conn.commit()
                     db_updated = True
-                    direction = "상향" if stop_loss_num > old_stop_loss else "하향"
+                    if stop_loss_num == old_stop_loss:
+                        direction = "유지"
+                    elif stop_loss_num > old_stop_loss:
+                        direction = "상향"
+                    else:
+                        direction = "하향"
                     update_message += f"손절가: {stop_loss_num:,.0f}원으로 {direction}조정\n"
                     logger.info(
                         f"{ticker} Stop-loss AI {direction} adjustment: "
