@@ -1038,19 +1038,21 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 logger.info(f"{ticker} Portfolio adjustment suggestion (urgency=low): {portfolio_adjustment.get('reason', '')}")
                 return
 
-            db_updated = False
-            update_message = ""
-            adjustment_reason = portfolio_adjustment.get("reason", "AI analysis result")
-
-
-            # Fetch current target_price and stop_loss before update
+            # Verify holding exists in DB before processing
             self.cursor.execute(
                 "SELECT target_price, stop_loss FROM stock_holdings WHERE ticker = ?",
                 (ticker,)
             )
             row = self.cursor.fetchone()
-            old_target_price = (row[0] or 0) if row else 0
-            old_stop_loss = (row[1] or 0) if row else 0
+            if row is None:
+                logger.warning(f"{ticker} stock_holdings SELECT returned None - skipping adjustment")
+                return
+            old_target_price = row[0] or 0
+            old_stop_loss = row[1] or 0
+
+            db_updated = False
+            update_message = ""
+            adjustment_reason = portfolio_adjustment.get("reason", "AI analysis result")
 
             # Adjust target price
             new_target_price = portfolio_adjustment.get("new_target_price")
