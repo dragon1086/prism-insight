@@ -50,10 +50,14 @@ echo -e "       Python $PYTHON_VERSION detected ✓"
 echo -e "${BLUE}[2/5]${NC} Installing Python dependencies..."
 if command -v pip &> /dev/null; then
     pip install -q -r requirements.txt
-else
+elif command -v uv &> /dev/null; then
     echo -e "       pip not found, using uv..."
-    uv init
-    uv add -r requirements.txt
+    uv pip install --system -q -r requirements.txt
+else
+    echo -e "${RED}Error: pip 또는 uv가 필요합니다.${NC}"
+    echo "       pip:  https://pip.pypa.io/en/stable/installation/"
+    echo "       uv:   https://docs.astral.sh/uv/getting-started/installation/"
+    exit 1
 fi
 echo -e "       Dependencies installed ✓"
 
