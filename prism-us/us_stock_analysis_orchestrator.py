@@ -435,7 +435,7 @@ class USStockAnalysisOrchestrator:
             # Send PDF files to main channel
             for pdf_path in pdf_paths:
                 logger.info(f"Sending US PDF file: {pdf_path}")
-                success = await bot_agent.send_document(chat_id, str(pdf_path), msg_type="pdf")
+                success = await bot_agent.send_document(chat_id, str(pdf_path), msg_type="pdf", market="us")
                 if success:
                     logger.info(f"PDF file transmission successful: {pdf_path}")
                 else:
@@ -539,7 +539,7 @@ class USStockAnalysisOrchestrator:
                         if translated_pdf_paths and len(translated_pdf_paths) > 0:
                             translated_pdf_path = translated_pdf_paths[0]
                             logger.info(f"Sending translated US PDF {translated_pdf_path} to {lang} channel")
-                            success = await bot_agent.send_document(channel_id, str(translated_pdf_path), msg_type="pdf")
+                            success = await bot_agent.send_document(channel_id, str(translated_pdf_path), msg_type="pdf", market="us")
 
                             if success:
                                 logger.info(f"Translated US PDF sent successfully to {lang} channel")

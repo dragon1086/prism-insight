@@ -456,6 +456,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     if trigger_win_rate:
                         skip_message += f"\n{trigger_win_rate}"
 
+                    self._msg_types.append("analysis")
                     self.message_queue.append(skip_message)
                     logger.info(f"Purchase deferred: {company_name}({ticker}) - {reason}")
 
@@ -1085,6 +1086,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     message += f"기술적 추세: {analysis_summary.get('technical_trend', 'N/A')}\n"
                     message += f"시장 환경 영향: {analysis_summary.get('market_condition_impact', 'N/A')}"
 
+                self._msg_types.append("portfolio")
                 self.message_queue.append(message)
                 logger.info(f"{ticker} AI-based portfolio adjustment complete: {update_message.strip()}")
             else:

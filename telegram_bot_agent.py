@@ -121,7 +121,7 @@ class TelegramBotAgent:
                     return False
             return False
 
-    async def send_document(self, chat_id, document_path, caption=None, retry_count=0, max_retries=3, msg_type=None):
+    async def send_document(self, chat_id, document_path, caption=None, retry_count=0, max_retries=3, msg_type=None, market=None):
         """
         Send file to Telegram channel
 
@@ -131,6 +131,7 @@ class TelegramBotAgent:
             caption (str, optional): File description
             retry_count (int): Current retry count
             max_retries (int): Maximum retry attempts
+            market (str, optional): Market identifier ('kr' or 'us'). Auto-detected if None.
 
         Returns:
             bool: Transmission success status
@@ -149,6 +150,7 @@ class TelegramBotAgent:
                 telegram_link = f"https://t.me/{os.environ.get('TELEGRAM_CHANNEL_USERNAME', 'stock_ai_agent')}/{result.message_id}"
                 await notify(
                     message=caption or str(document_path),
+                    market=market,
                     telegram_message_id=result.message_id,
                     channel_id=chat_id,
                     has_pdf=True,
@@ -164,7 +166,7 @@ class TelegramBotAgent:
             logger.warning(f"Rate limit hit. Waiting {wait_time} seconds before retry...")
             await asyncio.sleep(wait_time)
             if retry_count < max_retries:
-                return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries, msg_type=msg_type)
+                return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries, msg_type=msg_type, market=market)
             else:
                 logger.error(f"Max retries reached after rate limit")
                 return False
@@ -174,7 +176,7 @@ class TelegramBotAgent:
                 wait_time = 2 ** retry_count  # 1, 2, 4 seconds
                 logger.warning(f"Timeout occurred. Retrying in {wait_time} seconds... (attempt {retry_count + 1}/{max_retries})")
                 await asyncio.sleep(wait_time)
-                return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries, msg_type=msg_type)
+                return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries, msg_type=msg_type, market=market)
             else:
                 logger.error(f"Max retries reached after timeout")
                 return False
