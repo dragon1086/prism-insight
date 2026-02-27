@@ -1039,6 +1039,18 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 logger.info(f"{ticker} Portfolio adjustment suggestion (urgency=low): {portfolio_adjustment.get('reason', '')}")
                 return
 
+            # Verify holding exists in DB before processing
+            self.cursor.execute(
+                "SELECT target_price, stop_loss FROM stock_holdings WHERE ticker = ?",
+                (ticker,)
+            )
+            row = self.cursor.fetchone()
+            if row is None:
+                logger.warning(f"{ticker} stock_holdings SELECT returned None - skipping adjustment")
+                return
+            old_target_price = row[0] or 0
+            old_stop_loss = row[1] or 0
+
             db_updated = False
             update_message = ""
             adjustment_reason = portfolio_adjustment.get("reason", "AI analysis result")
@@ -1055,8 +1067,17 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     )
                     self.conn.commit()
                     db_updated = True
-                    update_message += f"목표가: {target_price_num:,.0f}원으로 조정\n"
-                    logger.info(f"{ticker} Target price AI adjustment: {target_price_num:,.0f} KRW (Urgency: {urgency})")
+                    if target_price_num == old_target_price:
+                        direction = "유지"
+                    elif target_price_num > old_target_price:
+                        direction = "상향"
+                    else:
+                        direction = "하향"
+                    update_message += f"목표가: {target_price_num:,.0f}원으로 {direction}조정\n"
+                    logger.info(
+                        f"{ticker} Target price AI {direction} adjustment: "
+                        f"{target_price_num:,.0f} KRW (prev: {old_target_price:,.0f}, Urgency: {urgency})"
+                    )
 
             # Adjust stop-loss
             new_stop_loss = portfolio_adjustment.get("new_stop_loss")
@@ -1070,8 +1091,17 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     )
                     self.conn.commit()
                     db_updated = True
-                    update_message += f"손절가: {stop_loss_num:,.0f}원으로 조정\n"
-                    logger.info(f"{ticker} Stop-loss AI adjustment: {stop_loss_num:,.0f} KRW (Urgency: {urgency})")
+                    if stop_loss_num == old_stop_loss:
+                        direction = "유지"
+                    elif stop_loss_num > old_stop_loss:
+                        direction = "상향"
+                    else:
+                        direction = "하향"
+                    update_message += f"손절가: {stop_loss_num:,.0f}원으로 {direction}조정\n"
+                    logger.info(
+                        f"{ticker} Stop-loss AI {direction} adjustment: "
+                        f"{stop_loss_num:,.0f} KRW (prev: {old_stop_loss:,.0f}, Urgency: {urgency})"
+                    )
 
             # Generate Telegram message if DB was updated
             if db_updated:
