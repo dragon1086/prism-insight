@@ -425,9 +425,9 @@ async def _send_push(title: str, body: str, msg_type: str, market: str, lang: st
             if msg_type not in pref_types:
                 continue
 
-            # Check lang preference (default 'ko' for devices without lang set)
-            pref_lang = prefs.get('lang', 'ko')
-            if lang and pref_lang != lang:
+            # Check lang preference: only filter if device has explicit lang set
+            pref_lang = prefs.get('lang')  # None if not set → receives all notifications
+            if lang and pref_lang and pref_lang != lang:
                 continue
 
             token = device.get('token')
