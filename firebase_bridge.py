@@ -444,6 +444,7 @@ async def _send_push(title: str, body: str, msg_type: str, market: str, lang: st
         _INVALID_TOKEN_CODES = {
             'registration-token-not-registered',  # app uninstalled / token revoked
             'invalid-registration-token',          # malformed token
+            'NOT_FOUND',                           # FCM v1 API: token not found / app uninstalled
         }
 
         # Send in batches of 500 (FCM limit)
