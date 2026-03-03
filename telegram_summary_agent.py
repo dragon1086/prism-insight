@@ -15,6 +15,60 @@ from mcp_agent.workflows.evaluator_optimizer.evaluator_optimizer import (
     QualityRating,
 )
 
+
+def _extract_last_valid_json(text: str) -> str:
+    """Extract the last complete JSON object from text that may contain multiple objects.
+
+    gpt-5.x reasoning models sometimes emit empty {} thinking tokens before the
+    real JSON payload, producing strings like '{}\n{}\n{"rating":1,...}'.
+    This helper finds the last (most complete) top-level JSON object.
+    """
+    depth = 0
+    start = -1
+    last_complete = None
+    for i, ch in enumerate(text):
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start != -1:
+                last_complete = text[start:i + 1]
+    return last_complete or text
+
+
+class _RobustEvaluatorLLM:
+    """Thin wrapper around an AugmentedLLM that recovers from multi-JSON responses.
+
+    gpt-5.x reasoning models sometimes return several JSON objects in a single
+    completion (e.g. empty `{}` thinking tokens followed by the real payload).
+    The mcp_agent library calls `json.loads` / `model_validate_json` on the raw
+    content and raises a Pydantic ValidationError for trailing characters.
+
+    This wrapper intercepts that failure, calls `generate_str` as a fallback to
+    get the raw text, extracts the last well-formed JSON object, and re-validates.
+    """
+
+    def __init__(self, llm):
+        self._llm = llm
+
+    def __getattr__(self, name):
+        return getattr(self._llm, name)
+
+    async def generate_structured(self, message, response_model, request_params=None):
+        try:
+            return await self._llm.generate_structured(message, response_model, request_params)
+        except Exception as e:
+            logger.warning(f"generate_structured failed ({e}), retrying with JSON extraction fallback")
+            text = await self._llm.generate_str(message=message, request_params=request_params)
+            candidate = _extract_last_valid_json(text)
+            try:
+                data = json.loads(candidate)
+                return response_model.model_validate(data)
+            except Exception:
+                return response_model.model_validate_json(candidate)
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -214,6 +268,9 @@ class TelegramSummaryGenerator:
             llm_factory=OpenAIAugmentedLLM,
             min_rating=QualityRating.EXCELLENT
         )
+
+        # Wrap evaluator_llm to handle multi-JSON responses from gpt-5.x reasoning models
+        evaluator_optimizer.evaluator_llm = _RobustEvaluatorLLM(evaluator_optimizer.evaluator_llm)
 
         # Construct message prompt
         prompt_message = f"""다음은 {metadata['stock_name']}({metadata['stock_code']}) 종목에 대한 상세 분석 보고서입니다.
