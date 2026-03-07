@@ -229,73 +229,69 @@ def _extract_json_string(response: str) -> Optional[str]:
     return None
 
 
+def _parse_strategy_1(json_str: str) -> Optional[Dict[str, Any]]:
+    # Stage 2: Fix syntax + parse
+    fixed = fix_json_syntax(json_str)
+    return json.loads(fixed)
+
+def _parse_strategy_2(json_str: str) -> Optional[Dict[str, Any]]:
+    # Stage 3: Strip control characters + retry
+    cleaned = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
+    cleaned = fix_json_syntax(cleaned)
+    return json.loads(cleaned)
+
+def _parse_strategy_3(response: str) -> Optional[Dict[str, Any]]:
+    # Stage 4: Aggressive cleanup
+    aggressive = re.sub(r'```(?:json)?|```', '', response).strip()
+    aggressive = re.sub(r'(\]|\})\s*(\n\s*"[^"]+"\s*:)', r'\1,\2', aggressive)
+    aggressive = re.sub(r'(["\d\]\}])\s*\n\s*("[^"]+"\s*:)', r'\1,\n    \2', aggressive)
+    aggressive = re.sub(r',(\s*[}\]])', r'\1', aggressive)
+    aggressive = re.sub(r',\s*,+', ',', aggressive)
+    return json.loads(aggressive)
+
+def _parse_strategy_4(response: str) -> Optional[Dict[str, Any]]:
+    # Stage 5: json_repair library
+    import json_repair
+    repaired = json_repair.repair_json(response)
+    return json.loads(repaired)
+
 def parse_llm_json(
     response: str,
     context: str = 'LLM response',
 ) -> Optional[Dict[str, Any]]:
-    """Parse JSON from an LLM text response with multi-stage recovery.
-
-    Returns parsed dict, or None if all parsing attempts fail.
-    """
+    """Parse JSON from an LLM text response with multi-stage recovery."""
     if not response or not response.strip():
         _json_logger.warning(f'[{context}] Empty response received')
         return None
 
     # Stage 1: Extract JSON string
     json_str = _extract_json_string(response)
-
     if json_str is None:
-        _json_logger.warning(
-            f'[{context}] No JSON object found in response (length: {len(response)})'
-        )
-        # Fall through to json_repair as last resort
+        _json_logger.warning(f'[{context}] No JSON object found in response (length: {len(response)})')
         json_str = response
 
-    # Stage 2: Fix syntax + parse
-    try:
-        fixed = fix_json_syntax(json_str)
-        result = json.loads(fixed)
-        _json_logger.debug(f'[{context}] JSON parsed successfully')
-        return result
-    except json.JSONDecodeError:
-        pass
+    strategies = [
+        (_parse_strategy_1, json_str, "parsed successfully"),
+        (_parse_strategy_2, json_str, "parsed after control character cleanup"),
+        (_parse_strategy_3, response, "parsed with aggressive cleanup"),
+        (_parse_strategy_4, response, "parsed via json_repair library")
+    ]
 
-    # Stage 3: Strip control characters + retry
-    try:
-        cleaned = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_str)
-        cleaned = fix_json_syntax(cleaned)
-        result = json.loads(cleaned)
-        _json_logger.info(f'[{context}] JSON parsed after control character cleanup')
-        return result
-    except json.JSONDecodeError:
-        pass
+    for strategy_fn, arg, log_msg in strategies:
+        try:
+            result = strategy_fn(arg)
+            if result is not None:
+                _json_logger.info(f'[{context}] JSON {log_msg}')
+                return result
+        except json.JSONDecodeError:
+            continue
+        except ImportError:
+            if strategy_fn == _parse_strategy_4:
+                _json_logger.debug(f'[{context}] json_repair not installed, skipping')
+            continue
+        except Exception:
+            continue
 
-    # Stage 4: Aggressive cleanup (strip markdown fences, fix comma patterns)
-    try:
-        aggressive = re.sub(r'```(?:json)?|```', '', response).strip()
-        aggressive = re.sub(r'(\]|\})\s*(\n\s*"[^"]+"\s*:)', r'\1,\2', aggressive)
-        aggressive = re.sub(r'(["\d\]\}])\s*\n\s*("[^"]+"\s*:)', r'\1,\n    \2', aggressive)
-        aggressive = re.sub(r',(\s*[}\]])', r'\1', aggressive)
-        aggressive = re.sub(r',\s*,+', ',', aggressive)
-        result = json.loads(aggressive)
-        _json_logger.info(f'[{context}] JSON parsed with aggressive cleanup')
-        return result
-    except json.JSONDecodeError:
-        pass
-
-    # Stage 5: json_repair library (optional dependency)
-    try:
-        import json_repair
-        repaired = json_repair.repair_json(response)
-        result = json.loads(repaired)
-        _json_logger.info(f'[{context}] JSON parsed via json_repair library')
-        return result
-    except ImportError:
-        _json_logger.debug(f'[{context}] json_repair not installed, skipping')
-    except Exception:
-        pass
-
-    # All stages failed
     _json_logger.error(
         f'[{context}] All JSON parsing attempts failed. '
         f'Response preview: {response[:300]}...'
