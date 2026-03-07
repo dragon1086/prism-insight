@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 # In-memory cache: {korean_name: english_name}
 _translation_cache: Dict[str, str] = {}
 
+# Cached agent instance (created once, reused across calls)
+_cached_agent = None
+
 
 def _sanitize_for_filename(name: str, ascii_only: bool = False) -> str:
     """
@@ -62,8 +65,6 @@ async def translate_company_name(korean_name: str) -> str:
     Returns:
         English company name (filename-safe format)
     """
-    global _translation_cache
-
     # Check cache first
     if korean_name in _translation_cache:
         logger.debug(f"Cache hit for company name: {korean_name}")
@@ -74,8 +75,10 @@ async def translate_company_name(korean_name: str) -> str:
         from mcp_agent.workflows.llm.augmented_llm import RequestParams
         from mcp_agent.agents.agent import Agent
 
-        # Create a simple translation agent
-        instruction = """You are a Korean-to-English translator for company names.
+        # Reuse cached agent instance to avoid per-call overhead
+        global _cached_agent
+        if _cached_agent is None:
+            instruction = """You are a Korean-to-English translator for company names.
 
 Your task is to translate Korean company names to their official English names.
 
@@ -101,15 +104,14 @@ Return ONLY the English company name, nothing else. No quotes, no explanation.
 - 삼성SDI → Samsung SDI
 - 기아 → Kia
 """
-
-        agent = Agent(
-            name="company_name_translator",
-            instruction=instruction,
-            server_names=[]
-        )
+            _cached_agent = Agent(
+                name="company_name_translator",
+                instruction=instruction,
+                server_names=[]
+            )
 
         # Attach LLM
-        llm = await agent.attach_llm(OpenAIAugmentedLLM)
+        llm = await _cached_agent.attach_llm(OpenAIAugmentedLLM)
 
         # Generate translation
         # Using gpt-4o-mini: non-reasoning model, 350x cheaper & 14x faster than gpt-5-mini
@@ -150,7 +152,6 @@ Return ONLY the English company name, nothing else. No quotes, no explanation.
 
 def clear_cache():
     """Clear the translation cache."""
-    global _translation_cache
     _translation_cache.clear()
     logger.info("Company name translation cache cleared")
 

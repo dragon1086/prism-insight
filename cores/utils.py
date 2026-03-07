@@ -1,7 +1,6 @@
 import json
 import logging
 import re
-import subprocess
 from typing import Any, Dict, Optional
 
 # WiseReport URL template configuration
@@ -36,11 +35,15 @@ def _fix_line_breaks(text: str) -> str:
     
     header_endings = ['관점', '계획', '해석', '동향', '현황', '개요', '전략', '요약', '배경', '결론']
     sentence_starters = ['본', '다음', '이는', '이번', '해당', '실제', '현재', '그러', '따라', '특히', '또한', '다만', '한편']
-    for ending in header_endings:
-        for starter in sentence_starters:
-            text = text.replace(f'{ending}{starter}', f'{ending}\n\n{starter}')
+
+    # Optimized: single compiled regex instead of O(n×m) nested loop
+    _endings_pattern = '|'.join(re.escape(e) for e in header_endings)
+    _starters_pattern = '|'.join(re.escape(s) for s in sentence_starters)
+    _combined_re = re.compile(rf'({_endings_pattern})({_starters_pattern})')
+    text = _combined_re.sub(r'\1\n\n\2', text)
+
     for starter in sentence_starters:
-        text = re.sub(rf'(\d+\)\s*[가-힣]+\s*(?:계획|현황|분석|동향|개요|배경))({starter})', rf'\1\n\n\2', text)
+        text = re.sub(r'(\d+\)\s*[가-힣]+\s*(?:계획|현황|분석|동향|개요|배경))(' + starter + ')', r'\1\n\n\2', text)
     return text
 
 def _fix_markdown_tables(text: str) -> str:
@@ -255,3 +258,100 @@ def parse_llm_json(
         f'Response preview: {response[:300]}...'
     )
     return None
+
+
+def sanitize_report_for_telegram(markdown_text: str, max_length: int = 4096) -> str:
+    """
+    Sanitize a markdown report for Telegram messaging.
+
+    Strips base64-encoded images, HTML tags, and truncates to Telegram's
+    message length limit while preserving readable content.
+
+    Args:
+        markdown_text: Raw markdown report text
+        max_length: Maximum message length (default: Telegram's 4096)
+
+    Returns:
+        Cleaned text suitable for Telegram messaging
+    """
+    text = markdown_text
+
+    # Remove base64 image embeds (e.g., <img src="data:image/..."> or ![](data:image/...))
+    text = re.sub(r'<img[^>]*src="data:image/[^"]*"[^>]*>', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'!\[[^\]]*\]\(data:image/[^)]*\)', '', text)
+
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # Remove consecutive blank lines (keep max 2)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # Strip leading/trailing whitespace
+    text = text.strip()
+
+    # Truncate to max_length with ellipsis
+    if len(text) > max_length:
+        text = text[:max_length - 20] + "\n\n…(truncated)"
+
+    return text
+
+
+def extract_key_metrics(report_text: str) -> Dict[str, Any]:
+    """
+    Extract structured financial metrics from a markdown analysis report.
+
+    Uses regex patterns to pull key financial figures for downstream use
+    (e.g., alerts, database storage, API responses).
+
+    Args:
+        report_text: Completed markdown analysis report
+
+    Returns:
+        Dictionary with extracted metrics (values may be None if not found)
+    """
+    metrics: Dict[str, Any] = {}
+
+    # Current price (Korean: 현재가, English: Current Price)
+    price_match = re.search(
+        r'(?:현재가|Current\s*Price|종가|Close)[:\s]*[₩$]?\s*([\d,]+)', report_text, re.IGNORECASE
+    )
+    if price_match:
+        metrics['current_price'] = int(price_match.group(1).replace(',', ''))
+
+    # Target price
+    target_match = re.search(
+        r'(?:목표가|Target\s*Price|적정가|Fair\s*Value)[:\s]*[₩$]?\s*([\d,]+)', report_text, re.IGNORECASE
+    )
+    if target_match:
+        metrics['target_price'] = int(target_match.group(1).replace(',', ''))
+
+    # PER (Price-to-Earnings Ratio)
+    per_match = re.search(
+        r'(?:PER|P/E)[:\s]*([\d.]+)\s*(?:배|x|times)?', report_text, re.IGNORECASE
+    )
+    if per_match:
+        metrics['per'] = float(per_match.group(1))
+
+    # PBR (Price-to-Book Ratio)
+    pbr_match = re.search(
+        r'(?:PBR|P/B)[:\s]*([\d.]+)\s*(?:배|x|times)?', report_text, re.IGNORECASE
+    )
+    if pbr_match:
+        metrics['pbr'] = float(pbr_match.group(1))
+
+    # Dividend yield
+    div_match = re.search(
+        r'(?:배당수익률|배당률|Dividend\s*Yield)[:\s]*([\d.]+)\s*%', report_text, re.IGNORECASE
+    )
+    if div_match:
+        metrics['dividend_yield'] = float(div_match.group(1))
+
+    # Market cap
+    mcap_match = re.search(
+        r'(?:시가총액|Market\s*Cap)[:\s]*(?:약\s*)?([₩$]?\s*[\d,.]+\s*(?:조|억|billion|trillion|B|T))',
+        report_text, re.IGNORECASE
+    )
+    if mcap_match:
+        metrics['market_cap'] = mcap_match.group(1).strip()
+
+    return metrics

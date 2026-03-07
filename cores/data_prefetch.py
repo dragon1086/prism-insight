@@ -106,6 +106,24 @@ def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str) -> s
     )
 
 
+def prefetch_stock_fundamentals(company_code: str, start_date: str, end_date: str) -> str:
+    """Prefetch stock fundamental data (PER, PBR, DIV) via kospi_kosdaq MCP server library."""
+    return _safely_prefetch_and_format(
+        "get_market_fundamental_by_date",
+        f"Fundamentals: {company_code} ({start_date}~{end_date})",
+        start_date, end_date, company_code
+    )
+
+
+def prefetch_market_cap(company_code: str, start_date: str, end_date: str) -> str:
+    """Prefetch market cap data via kospi_kosdaq MCP server library."""
+    return _safely_prefetch_and_format(
+        "get_market_cap_by_date",
+        f"Market Cap: {company_code} ({start_date}~{end_date})",
+        start_date, end_date, company_code
+    )
+
+
 def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_ago: str) -> dict:
     """Prefetch all data needed for KR stock analysis agents.
 
@@ -123,6 +141,8 @@ def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_
         - "trading_volume": Investor trading volume as markdown
         - "kospi_index": KOSPI index data as markdown
         - "kosdaq_index": KOSDAQ index data as markdown
+        - "fundamentals": Fundamental data (PER/PBR/DIV) as markdown
+        - "market_cap": Market cap data as markdown
         Returns empty dict on total failure.
     """
     result = {}
@@ -146,6 +166,16 @@ def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_
     kosdaq_index = prefetch_index_ohlcv("2001", max_years_ago, reference_date)
     if kosdaq_index:
         result["kosdaq_index"] = kosdaq_index
+
+    # 5. Fundamental data (PER, PBR, DIV)
+    fundamentals = prefetch_stock_fundamentals(company_code, max_years_ago, reference_date)
+    if fundamentals:
+        result["fundamentals"] = fundamentals
+
+    # 6. Market cap data
+    market_cap = prefetch_market_cap(company_code, max_years_ago, reference_date)
+    if market_cap:
+        result["market_cap"] = market_cap
 
     if result:
         logger.info(f"Prefetched KR data for {company_code}: {list(result.keys())}")

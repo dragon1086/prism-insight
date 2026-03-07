@@ -13,12 +13,11 @@ import asyncio
 import json
 import logging
 import os
-import sqlite3
 import sys
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -49,7 +48,7 @@ class TestTradingJournalTables:
         """Clean up test fixtures"""
         try:
             os.unlink(self.db_path)
-        except:
+        except Exception:
             pass
 
     @pytest.mark.asyncio
@@ -120,7 +119,7 @@ class TestJournalContext:
         """Clean up test fixtures"""
         try:
             os.unlink(self.db_path)
-        except:
+        except Exception:
             pass
 
     @pytest.mark.asyncio
@@ -199,7 +198,7 @@ class TestScoreAdjustment:
         """Clean up test fixtures"""
         try:
             os.unlink(self.db_path)
-        except:
+        except Exception:
             pass
 
     @pytest.mark.asyncio
@@ -297,7 +296,7 @@ class TestParseJournalResponse:
         """Clean up test fixtures"""
         try:
             os.unlink(self.db_path)
-        except:
+        except Exception:
             pass
 
     @pytest.mark.asyncio
@@ -366,7 +365,7 @@ class TestCompression:
         """Clean up test fixtures"""
         try:
             os.unlink(self.db_path)
-        except:
+        except Exception:
             pass
 
     @pytest.mark.asyncio
@@ -643,7 +642,7 @@ def run_quick_test():
             # Cleanup
             try:
                 os.unlink(db_path)
-            except:
+            except Exception:
                 pass
 
     return asyncio.run(async_test())
@@ -662,7 +661,7 @@ class TestTradingPrinciples:
         """Clean up test fixtures"""
         try:
             os.unlink(self.db_path)
-        except:
+        except Exception:
             pass
 
     @pytest.mark.asyncio
@@ -916,7 +915,7 @@ class TestMigrationScript:
         """Clean up test fixtures"""
         try:
             os.unlink(self.db_path)
-        except:
+        except Exception:
             pass
 
     @pytest.mark.asyncio
@@ -989,7 +988,7 @@ class TestCleanupStaleData:
         """Clean up test fixtures"""
         try:
             os.unlink(self.db_path)
-        except:
+        except Exception:
             pass
 
     @pytest.mark.asyncio
@@ -1042,7 +1041,7 @@ class TestCleanupStaleData:
         agent.conn.commit()
 
         # Run cleanup with max_principles=5
-        stats = agent.cleanup_stale_data(max_principles=5, dry_run=False)
+        agent.cleanup_stale_data(max_principles=5, dry_run=False)
 
         # Verify only top 5 remain active
         agent.cursor.execute("SELECT COUNT(*) FROM trading_principles WHERE is_active = 1")

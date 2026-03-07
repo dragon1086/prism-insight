@@ -1,10 +1,14 @@
 """
 Analysis request management and background task processing module
+
+Uses ThreadPoolExecutor for efficient lifecycle management of analysis workers.
 """
 import logging
 import traceback
 import uuid
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime
 from queue import Queue, Empty
 
@@ -21,8 +25,6 @@ logger = logging.getLogger(__name__)
 # Analysis task queue
 analysis_queue = Queue()
 
-
-from dataclasses import dataclass, field
 
 @dataclass
 class AnalysisRequest:
@@ -114,43 +116,75 @@ def _process_single_request(bot_instance, request: AnalysisRequest):
         request.result = f"Error occurred during analysis: {str(e)}"
         bot_instance.result_queue.put(request.id)
 
+
 class AnalysisWorker:
-    """Manages the background thread for processing analysis requests."""
-    def __init__(self, bot_instance):
+    """Manages analysis processing using ThreadPoolExecutor for clean lifecycle management.
+    
+    Replaces raw Thread + Queue pattern with ThreadPoolExecutor for:
+    - Automatic thread lifecycle management
+    - Graceful shutdown with pending task completion
+    - Better error isolation between tasks
+    """
+    def __init__(self, bot_instance, max_workers: int = 2):
         self.bot_instance = bot_instance
+        self.max_workers = max_workers
+        self._executor = None
         self._stop_event = threading.Event()
-        self._thread = None
+        self._dispatcher_thread = None
 
     def start(self):
+        """Start the analysis worker pool and dispatcher."""
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._worker, daemon=True)
-        self._thread.start()
-        logger.info("Background worker thread started.")
-        return self._thread
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.max_workers,
+            thread_name_prefix="analysis-worker"
+        )
+        self._dispatcher_thread = threading.Thread(
+            target=self._dispatcher, daemon=True, name="analysis-dispatcher"
+        )
+        self._dispatcher_thread.start()
+        logger.info(f"AnalysisWorker started with {self.max_workers} workers.")
+        return self._dispatcher_thread
 
     def stop(self, wait=True):
+        """Gracefully stop the worker pool."""
         self._stop_event.set()
-        # Push None to unblock queue.get() immediately if it is waiting
+        # Unblock queue.get() if waiting
         analysis_queue.put(None)
-        if wait and self._thread:
-            self._thread.join()
-        logger.info("Background worker stopped.")
+        if self._executor:
+            self._executor.shutdown(wait=wait, cancel_futures=not wait)
+        if wait and self._dispatcher_thread:
+            self._dispatcher_thread.join(timeout=10)
+        logger.info("AnalysisWorker stopped.")
 
-    def _worker(self):
-        logger.info("Background worker started")
+    def _dispatcher(self):
+        """Dispatch incoming requests from the queue to the thread pool."""
+        logger.info("Analysis dispatcher started")
         while not self._stop_event.is_set():
             try:
                 request = analysis_queue.get(timeout=1.0)
                 if request is None:  # Shutdown signal
                     analysis_queue.task_done()
                     break
-                _process_single_request(self.bot_instance, request)
+                # Submit to thread pool instead of processing in-line
+                future = self._executor.submit(
+                    _process_single_request, self.bot_instance, request
+                )
+                future.add_done_callback(
+                    lambda f, r=request: self._handle_completion(f, r)
+                )
                 analysis_queue.task_done()
             except Empty:
                 continue
             except Exception as e:
-                logger.error(f"Worker: Error during request processing - {str(e)}")
+                logger.error(f"Dispatcher error: {str(e)}")
                 logger.error(traceback.format_exc())
-                # make sure we unblock join() if an exception happens after get()
-                if 'request' in locals() and request is not None:
-                    analysis_queue.task_done()
+
+    def _handle_completion(self, future, request):
+        """Handle completion of a submitted task."""
+        exc = future.exception()
+        if exc:
+            logger.error(f"Analysis task {request.id} failed with exception: {exc}")
+            request.status = "failed"
+            request.result = f"Error occurred during analysis: {str(exc)}"
+            self.bot_instance.result_queue.put(request.id)

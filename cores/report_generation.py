@@ -2,18 +2,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from mcp_agent.agents.agent import Agent
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
-
-
-# Language name mapping for report generation
-LANGUAGE_NAMES = {
-    "ko": "Korean",
-    "en": "English",
-    "ja": "Japanese",
-    "zh": "Chinese",
-    "es": "Spanish",
-    "fr": "French",
-    "de": "German"
-}
+from cores.language_config import LANGUAGE_NAMES
 
 KO_STYLING_RULES = """
 ## 출력 형식 규칙:
@@ -44,6 +33,36 @@ EN_STYLING_RULES = """
 """
 
 
+async def _generate_llm_report(agent, message, logger, section_label="section",
+                               model="gpt-5.2", max_tokens=32000, max_iterations=None):
+    """
+    Shared helper to generate an LLM report with standard configuration.
+
+    Args:
+        agent: Analysis agent (with attach_llm capability)
+        message: Prompt message to send
+        logger: Logger instance
+        section_label: Label for logging (e.g., section name)
+        model: LLM model name
+        max_tokens: Maximum output tokens
+        max_iterations: Max tool-use iterations (None = default)
+    """
+    llm = await agent.attach_llm(OpenAIAugmentedLLM)
+    params = RequestParams(
+        model=model,
+        reasoning_effort="none",
+        maxTokens=max_tokens,
+        parallel_tool_calls=True,
+        use_history=True
+    )
+    if max_iterations is not None:
+        params.max_iterations = max_iterations
+
+    report = await llm.generate_str(message=message, request_params=params)
+    logger.info(f"Completed {section_label} - {len(report)} characters")
+    return report
+
+
 @retry(
     stop=stop_after_attempt(2),  # Maximum 2 attempts (initial + 1 retry)
     wait=wait_exponential(multiplier=1, min=10, max=30),  # Exponentially increasing wait time
@@ -63,8 +82,6 @@ async def generate_report(agent, section, company_name, company_code, reference_
         language: Report language code (default: "ko")
     """
     language_name = LANGUAGE_NAMES.get(language, language.upper())
-
-    llm = await agent.attach_llm(OpenAIAugmentedLLM)
 
     # Create language-specific message
     if language == "ko":
@@ -108,18 +125,7 @@ async def generate_report(agent, section, company_name, company_code, reference_
 ##Analysis Date: {reference_date} (YYYYMMDD format)
 """
 
-    report = await llm.generate_str(
-        message=message,
-        request_params=RequestParams(
-            model="gpt-5.2",
-            reasoning_effort="none",
-            maxTokens=32000,
-            parallel_tool_calls=True,
-            use_history=True
-        )
-    )
-    logger.info(f"Completed {section} - {len(report)} characters")
-    return report
+    return await _generate_llm_report(agent, message, logger, section_label=section)
 
 async def generate_market_report(agent, section, reference_date, logger, language="ko"):
     """
@@ -133,8 +139,6 @@ async def generate_market_report(agent, section, reference_date, logger, languag
         language: Report language code (default: "ko")
     """
     language_name = LANGUAGE_NAMES.get(language, language.upper())
-
-    llm = await agent.attach_llm(OpenAIAugmentedLLM)
 
     # Create language-specific message
     if language == "ko":
@@ -178,19 +182,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
 ##Analysis Date: {reference_date} (YYYYMMDD format)
 """
 
-    report = await llm.generate_str(
-        message=message,
-        request_params=RequestParams(
-            model="gpt-5.2",
-            reasoning_effort="none",
-            maxTokens=32000,
-            max_iterations=3,
-            parallel_tool_calls=True,
-            use_history=True
-        )
-    )
-    logger.info(f"Completed {section} - {len(report)} characters")
-    return report
+    return await _generate_llm_report(agent, message, logger, section_label=section, max_iterations=3)
 
 
 async def generate_summary(section_reports, company_name, company_code, reference_date, logger, language="ko"):
@@ -206,9 +198,6 @@ async def generate_summary(section_reports, company_name, company_code, referenc
         language: Report language code (default: "ko")
     """
     try:
-        from mcp_agent.agents.agent import Agent
-        from mcp_agent.workflows.llm.augmented_llm import RequestParams
-        from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
 
         language_name = LANGUAGE_NAMES.get(language, language.upper())
 
@@ -322,9 +311,7 @@ async def generate_investment_strategy(section_reports, combined_reports, compan
         logger: Logger
         language: Report language code (default: "ko")
     """
-    from mcp_agent.agents.agent import Agent
-    from mcp_agent.workflows.llm.augmented_llm import RequestParams
-    from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+    # Agent, RequestParams, OpenAIAugmentedLLM imported at module top
 
     language_name = LANGUAGE_NAMES.get(language, language.upper())
 

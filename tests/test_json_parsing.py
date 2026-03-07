@@ -6,11 +6,8 @@ Tests JSON parsing logic in stock_tracking_agent.py.
 """
 
 import json
-import re
 import sys
-import sqlite3
 from pathlib import Path
-from typing import Dict, Any
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -77,7 +74,7 @@ class TestJSONParser:
             import json_repair
             fixed_json = json_repair.repair_json(broken_json)
             parsed = json.loads(fixed_json)
-            print(f"   ✅ Parsing successful!")
+            print("   ✅ Parsing successful!")
             print(f"   - portfolio_analysis: {parsed['portfolio_analysis'][:50]}...")
             print(f"   - buy_score: {parsed['buy_score']}")
             print(f"   - decision: {parsed['decision']}")
@@ -140,9 +137,9 @@ class TestJSONParser:
             # Original should fail to parse
             try:
                 json.loads(test_case['broken'])
-                print(f"      ⚠️ Original unexpectedly parsed successfully")
-            except:
-                print(f"      ✅ Original parsing failed (as expected)")
+                print("      ⚠️ Original unexpectedly parsed successfully")
+            except Exception:
+                print("      ✅ Original parsing failed (as expected)")
 
             # Parse after fixing
             try:
@@ -157,7 +154,7 @@ class TestJSONParser:
                         all_passed = False
                         break
                 else:
-                    print(f"      ✅ Parsing successful after fix (all keys present)")
+                    print("      ✅ Parsing successful after fix (all keys present)")
 
             except Exception as e:
                 print(f"      ❌ Parsing still failed after fix: {e}")
@@ -193,7 +190,7 @@ class TestJSONParser:
             try:
                 repaired = json_repair.repair_json(very_broken_json)
                 parsed = json.loads(repaired)
-                print(f"   ✅ Even very broken JSON was repaired successfully!")
+                print("   ✅ Even very broken JSON was repaired successfully!")
                 print(f"      Repaired keys: {list(parsed.keys())}")
             except Exception as e:
                 print(f"   ❌ json_repair repair failed: {e}")

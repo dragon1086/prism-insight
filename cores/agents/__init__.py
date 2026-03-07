@@ -1,3 +1,13 @@
+VALID_SECTIONS = frozenset({
+    "price_volume_analysis",
+    "investor_trading_analysis",
+    "company_status",
+    "company_overview",
+    "news_analysis",
+    "market_index_analysis",
+})
+
+
 def get_agent_directory(company_name, company_code, reference_date, base_sections, language: str = "ko", prefetched_data: dict = None):
     """
     Return agent directory for each section
@@ -12,7 +22,18 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
 
     Returns:
         Dict[str, Agent]: Agent dictionary with section names as keys
+
+    Raises:
+        ValueError: If an unrecognized section name is provided
     """
+    # Validate section names
+    invalid_sections = set(base_sections) - VALID_SECTIONS
+    if invalid_sections:
+        raise ValueError(
+            f"Unrecognized section names: {invalid_sections}. "
+            f"Valid sections: {sorted(VALID_SECTIONS)}"
+        )
+
     from cores.agents.stock_price_agents import (
         create_price_volume_analysis_agent,
         create_investor_trading_analysis_agent
@@ -27,10 +48,7 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
     from cores.agents.market_index_agents import (
         create_market_index_analysis_agent
     )
-    from cores.agents.trading_agents import (
-        create_trading_scenario_agent,
-        create_sell_decision_agent
-    )
+
     from cores.utils import get_wise_report_url
 
     # Create URL mapping

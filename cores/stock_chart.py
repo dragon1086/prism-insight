@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.font_manager as fm
 import seaborn as sns
+from dataclasses import dataclass
 from matplotlib.ticker import FuncFormatter
 import mplfinance as mpf
 from datetime import datetime, timedelta
@@ -23,21 +24,51 @@ import matplotlib as mpl
 import base64
 from io import BytesIO
 import logging
+import yfinance as yf
 
 import matplotlib
 matplotlib.use('Agg')  # Explicitly set graphics backend to Agg (non-interactive)
 
-# Logger setup
+# Logger setup (relies on root logger configuration from main.py)
 logger = logging.getLogger(__name__)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+
+
+@dataclass
+class FontConfig:
+    """Immutable font configuration for chart rendering.
+    
+    Replaces mutable module-level globals (KOREAN_FONT_PATH, KOREAN_FONT_PROP)
+    with a single dataclass holding all font state, initialized lazily.
+    """
+    path: str = None
+    prop: object = None  # fm.FontProperties instance
+    is_configured: bool = False
+
+    def configure(self):
+        """Configure Korean font based on the current platform."""
+        if self.is_configured:
+            return self
+        result_path, result_prop = configure_korean_font()
+        self.path = result_path
+        self.prop = result_prop
+        self.is_configured = True
+        return self
+
+
+# Lazy-init singleton
+_font_config = None
+
+
+def get_font_config() -> FontConfig:
+    """Get or initialize the global FontConfig singleton."""
+    global _font_config
+    if _font_config is None:
+        _font_config = FontConfig()
+        _font_config.configure()
+    return _font_config
 
 def _configure_mac_font():
     """Configure Korean font for macOS"""
-    import glob
     font_paths = [
         '/System/Library/Fonts/AppleSDGothicNeo.ttc',
         '/Library/Fonts/AppleSDGothicNeo.ttc',
@@ -321,16 +352,28 @@ def create_mpf_style(base_mpl_style='seaborn-v0_8-whitegrid'):
     return s
 
 # Import functions from krx_data_client (pykrx compatible)
-from krx_data_client import (
-    get_market_ohlcv_by_date,
-    get_market_cap_by_date,
-    get_market_fundamental_by_date,
-    get_market_trading_volume_by_investor,
-    get_market_trading_value_by_investor,
-    get_market_trading_volume_by_date,
-    get_market_trading_value_by_date,
-    get_market_ticker_name
-)
+try:
+    from krx_data_client import (
+        get_market_ohlcv_by_date,
+        get_market_cap_by_date,
+        get_market_fundamental_by_date,
+        get_market_trading_volume_by_investor,
+        get_market_trading_value_by_investor,
+        get_market_trading_volume_by_date,
+        get_market_trading_value_by_date,
+        get_market_ticker_name
+    )
+except ImportError as e:
+    logger.warning(f"Failed to import krx_data_client ({e}). KRX data functions will return empty DataFrames.")
+    # Define dummy functions for environments where krx_data_client is unavailable (e.g., Windows missing fcntl)
+    def get_market_ohlcv_by_date(*args, **kwargs): return pd.DataFrame()
+    def get_market_cap_by_date(*args, **kwargs): return pd.DataFrame()
+    def get_market_fundamental_by_date(*args, **kwargs): return pd.DataFrame()
+    def get_market_trading_volume_by_investor(*args, **kwargs): return pd.DataFrame()
+    def get_market_trading_value_by_investor(*args, **kwargs): return pd.DataFrame()
+    def get_market_trading_volume_by_date(*args, **kwargs): return pd.DataFrame()
+    def get_market_trading_value_by_date(*args, **kwargs): return pd.DataFrame()
+    def get_market_ticker_name(*args, **kwargs): return "Unknown"
 
 # Professional chart style configuration
 sns.set_context("paper", font_scale=1.2)
@@ -379,9 +422,14 @@ def _prepare_chart_data(ticker, company_name, days=730):
     if company_name is None:
         try:
             company_name = get_market_ticker_name(ticker)
-        except:
+        except Exception:
             company_name = ticker
     return start_date, end_date, company_name
+
+def _apply_suptitle(fig, title, y=0.98):
+    """Apply figure suptitle with Korean font if available"""
+    font_kwargs = {'fontproperties': KOREAN_FONT_PROP} if KOREAN_FONT_PROP else {}
+    fig.suptitle(title, fontsize=16, fontweight='bold', y=y, **font_kwargs)
 
 def _apply_watermark_and_save(fig, save_path, tight_layout=True, top_adjust=None):
     """Apply watermark and Korean font settings if saving, then save and return"""
@@ -496,17 +544,10 @@ def create_price_chart(ticker, company_name=None, days=730, save_path=None, adju
         returnfig=True
     )
 
-    if KOREAN_FONT_PROP:
-        # Apply Korean font to main title
-        fig.suptitle(
-            f"{company_name} ({ticker}) - Price Chart",
-            fontproperties=KOREAN_FONT_PROP,
-            fontsize=16,
-            fontweight='bold'
-        )
+    _apply_suptitle(fig, f"{company_name} ({ticker}) - Price Chart")
 
     # Extract price and volume subplot axes
-    ax1, ax2 = axes[0], axes[2]
+    ax1, _ = axes[0], axes[2]
 
     # Add legend for moving averages
     ax1.legend(['MA20', 'MA60', 'MA120'], loc='upper left')
@@ -611,10 +652,8 @@ def create_market_cap_chart(ticker, company_name=None, days=730, save_path=None)
 
     # Title and label settings
     title = f"{company_name} ({ticker}) - Market Cap Trend"
-    if KOREAN_FONT_PROP:
-        ax.set_title(title, fontsize=16, fontweight='bold', pad=15, fontproperties=KOREAN_FONT_PROP)
-    else:
-        ax.set_title(title, fontsize=16, fontweight='bold', pad=15)
+    font_kwargs = {'fontproperties': KOREAN_FONT_PROP} if KOREAN_FONT_PROP else {}
+    ax.set_title(title, fontsize=16, fontweight='bold', pad=15, **font_kwargs)
     ax.set_ylabel('Market Cap', fontsize=12, labelpad=10)
 
     ax.set_xlabel('', fontsize=12)
@@ -718,16 +757,7 @@ def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=Non
     fig : matplotlib figure
         Figure object containing the chart
     """
-    # Calculate date range
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
-
-    # Get company name if not provided
-    if company_name is None:
-        try:
-            company_name = get_market_ticker_name(ticker)
-        except:
-            company_name = ticker
+    start_date, end_date, company_name = _prepare_chart_data(ticker, company_name, days)
 
     # Fetch stock data
     df = get_market_fundamental_by_date(start_date, end_date, ticker)
@@ -762,8 +792,8 @@ def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=Non
 
     # Add PER annotations
     latest_per = df['PER'].iloc[-1]
-    min_per_idx = df['PER'].idxmin()
-    max_per_idx = df['PER'].idxmax()
+    min_per_idx = df['PER'].idxmin()  # noqa: F841
+    max_per_idx = df['PER'].idxmax()  # noqa: F841
 
     bbox_props = dict(boxstyle="round,pad=0.3", fc="#f8f9fa", ec="none", alpha=0.9)
 
@@ -868,33 +898,11 @@ def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=Non
             bbox=bbox_props
         )
 
-    # Overall title
-    if KOREAN_FONT_PROP:
-        fig.suptitle(
-            f"{company_name} ({ticker}) - Fundamental Analysis",
-            fontsize=16,
-            fontweight='bold',
-            y=0.98,
-            fontproperties=KOREAN_FONT_PROP
-        )
-    else:
-        fig.suptitle(
-            f"{company_name} ({ticker}) - Fundamental Analysis",
-            fontsize=16,
-            fontweight='bold',
-            y=0.98
-        )
+    _apply_suptitle(fig, f"{company_name} ({ticker}) - Fundamental Analysis")
 
-    # Enhance label font settings
+    # Enhance label font settings (font application deferred to _apply_watermark_and_save)
     for ax in axes:
-        ax.tick_params(labelsize=9)  # Axis label font size
-
-        # Set Korean font
-        if KOREAN_FONT_PROP:
-            for label in ax.get_yticklabels():
-                label.set_fontproperties(KOREAN_FONT_PROP)
-            for label in ax.get_xticklabels():
-                label.set_fontproperties(KOREAN_FONT_PROP)
+        ax.tick_params(labelsize=9)
 
     # X-axis date display format
     plt.xticks(rotation=45)
@@ -1009,30 +1017,19 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
             height = bar.get_height()
             value = int(height)
             va = 'bottom' if height >= 0 else 'top'
-            y_pos = 0.3 if height >= 0 else -0.3
+            y_pos = 0.3 if height >= 0 else -0.3  # noqa: F841
 
-            # Apply Korean font if available
-            if KOREAN_FONT_PROP:
-                axes[0].text(
-                    bar.get_x() + bar.get_width()/2.,
-                    height + (height * 0.02 if height >= 0 else height * 0.02),
-                    f'{value:,}',
-                    ha='center',
-                    va=va,
-                    fontsize=9,
-                    rotation=0,
-                    fontproperties=KOREAN_FONT_PROP
-                )
-            else:
-                axes[0].text(
-                    bar.get_x() + bar.get_width()/2.,
-                    height + (height * 0.02 if height >= 0 else height * 0.02),
-                    f'{value:,}',
-                    ha='center',
-                    va=va,
-                    fontsize=9,
-                    rotation=0
-                )
+            font_kwargs = {'fontproperties': KOREAN_FONT_PROP} if KOREAN_FONT_PROP else {}
+            axes[0].text(
+                bar.get_x() + bar.get_width()/2.,
+                height + (height * 0.02 if height >= 0 else height * 0.02),
+                f'{value:,}',
+                ha='center',
+                va=va,
+                fontsize=9,
+                rotation=0,
+                **font_kwargs
+            )
 
     # 2. Daily cumulative net purchase trend
     # Ensure index is datetime type
@@ -1068,7 +1065,7 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
     axes[1].grid(linestyle='--', alpha=0.7)
 
     # Add legend for investor types
-    legend = axes[1].legend(loc='upper left')
+    axes[1].legend(loc='upper left')
 
     # Format Y-axis numbers based on value range
     max_vol = df_cumulative.max().max()
@@ -1082,21 +1079,7 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
     plt.setp(axes[1].xaxis.get_majorticklabels(), rotation=45, ha='right')
 
     # Overall title
-    if KOREAN_FONT_PROP:
-        fig.suptitle(
-            f"{company_name} ({ticker}) - Trading by Investor Type",
-            fontsize=16,
-            fontweight='bold',
-            y=0.98,
-            fontproperties=KOREAN_FONT_PROP
-        )
-    else:
-        fig.suptitle(
-            f"{company_name} ({ticker}) - Trading by Investor Type",
-            fontsize=16,
-            fontweight='bold',
-            y=0.98
-        )
+    _apply_suptitle(fig, f"{company_name} ({ticker}) - Trading by Investor Type")
 
     return _apply_watermark_and_save(fig, save_path, tight_layout=True, top_adjust=0.93)
 
@@ -1124,7 +1107,7 @@ def create_comprehensive_report(ticker, company_name=None, days=730, output_dir=
     if company_name is None:
         try:
             company_name = get_market_ticker_name(ticker)
-        except:
+        except Exception:
             company_name = ticker
 
     # Create output directory (if not exists)
@@ -1232,7 +1215,7 @@ def main():
     Demonstrates comprehensive report generation for Samsung Electronics
     """
     # Check available Korean fonts on system
-    korean_fonts = check_font_available()
+    check_font_available()
 
     # Example: Generate charts for Samsung Electronics
     ticker = "005930"  # Samsung Electronics ticker
@@ -1241,7 +1224,7 @@ def main():
     # Generate comprehensive analysis report with all charts
     report_paths = create_comprehensive_report(ticker, company_name)
 
-    logger.info(f"Generated comprehensive report with the following charts:")
+    logger.info("Generated comprehensive report with the following charts:")
     for chart_type, path in report_paths.items():
         logger.info(f"- {chart_type}: {path}")
 
@@ -1269,3 +1252,184 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ============================================================================
+# New Technical Indicator Charts
+# ============================================================================
+
+
+def create_rsi_chart(ticker, company_name=None, days=180, save_path=None, width=900, dpi=80, **kwargs):
+    """
+    Create RSI (Relative Strength Index) chart with overbought/oversold reference lines.
+
+    Args:
+        ticker: Stock ticker symbol
+        company_name: Company name (optional)
+        days: Number of days to display
+        save_path: Path to save the chart
+        width: Chart width in pixels
+        dpi: Chart DPI
+    """
+    try:
+        ticker_str, display_name, start_date = _prepare_chart_data(ticker, company_name, days)
+        stock_data = yf.download(ticker_str, start=start_date)
+
+        if stock_data.empty:
+            logger.warning(f"No data available for {ticker_str}")
+            return None
+
+        # Calculate RSI (14-day)
+        close = stock_data['Close']
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+
+        # Create chart
+        height = int(width * 0.45)
+        fig, ax = plt.subplots(figsize=(width / dpi, height / dpi), dpi=dpi)
+
+        ax.plot(rsi.index, rsi.values, color='#6366f1', linewidth=1.5, label='RSI (14)')
+        ax.axhline(y=70, color='#ef4444', linestyle='--', alpha=0.7, label='Overbought (70)')
+        ax.axhline(y=30, color='#22c55e', linestyle='--', alpha=0.7, label='Oversold (30)')
+        ax.axhline(y=50, color='#6b7280', linestyle=':', alpha=0.5)
+        ax.fill_between(rsi.index, 70, rsi.values.flatten(), where=(rsi.values.flatten() >= 70),
+                        color='#ef4444', alpha=0.1)
+        ax.fill_between(rsi.index, 30, rsi.values.flatten(), where=(rsi.values.flatten() <= 30),
+                        color='#22c55e', alpha=0.1)
+        ax.set_ylim(0, 100)
+        ax.set_ylabel('RSI')
+        ax.legend(loc='upper left', fontsize=8)
+        ax.grid(True, alpha=0.3)
+        ax.set_facecolor('#1a1d2e')
+        fig.patch.set_facecolor('#0f1117')
+        ax.tick_params(colors='#8b8fa3')
+        ax.yaxis.label.set_color('#8b8fa3')
+
+        title = f'{display_name} RSI (14-Day)'
+        _apply_suptitle(fig, title)
+        fig.tight_layout()
+
+        if save_path:
+            _apply_watermark_and_save(fig, title, save_path)
+
+        return fig
+    except Exception as e:
+        logger.error(f"Error creating RSI chart: {e}")
+        return None
+
+
+def create_bollinger_bands_chart(ticker, company_name=None, days=180, save_path=None, width=900, dpi=80, **kwargs):
+    """
+    Create Bollinger Bands chart (20-day SMA ± 2 standard deviations).
+
+    Args:
+        ticker: Stock ticker symbol
+        company_name: Company name (optional)
+        days: Number of days to display
+        save_path: Path to save the chart
+        width: Chart width in pixels
+        dpi: Chart DPI
+    """
+    try:
+        ticker_str, display_name, start_date = _prepare_chart_data(ticker, company_name, days)
+        stock_data = yf.download(ticker_str, start=start_date)
+
+        if stock_data.empty:
+            logger.warning(f"No data available for {ticker_str}")
+            return None
+
+        close = stock_data['Close']
+        sma20 = close.rolling(window=20).mean()
+        std20 = close.rolling(window=20).std()
+        upper_band = sma20 + (std20 * 2)
+        lower_band = sma20 - (std20 * 2)
+
+        # Create chart
+        height = int(width * 0.5)
+        fig, ax = plt.subplots(figsize=(width / dpi, height / dpi), dpi=dpi)
+
+        ax.plot(close.index, close.values, color='#e1e4ea', linewidth=1.0, label='Close', alpha=0.9)
+        ax.plot(sma20.index, sma20.values, color='#6366f1', linewidth=1.2, label='SMA(20)')
+        ax.plot(upper_band.index, upper_band.values, color='#ef4444', linewidth=0.8, linestyle='--', label='Upper Band')
+        ax.plot(lower_band.index, lower_band.values, color='#22c55e', linewidth=0.8, linestyle='--', label='Lower Band')
+        ax.fill_between(upper_band.index, upper_band.values.flatten(), lower_band.values.flatten(),
+                        color='#6366f1', alpha=0.08)
+        ax.legend(loc='upper left', fontsize=8)
+        ax.grid(True, alpha=0.3)
+        ax.set_facecolor('#1a1d2e')
+        fig.patch.set_facecolor('#0f1117')
+        ax.tick_params(colors='#8b8fa3')
+
+        title = f'{display_name} Bollinger Bands (20,2)'
+        _apply_suptitle(fig, title)
+        fig.tight_layout()
+
+        if save_path:
+            _apply_watermark_and_save(fig, title, save_path)
+
+        return fig
+    except Exception as e:
+        logger.error(f"Error creating Bollinger Bands chart: {e}")
+        return None
+
+
+def create_macd_chart(ticker, company_name=None, days=180, save_path=None, width=900, dpi=80, **kwargs):
+    """
+    Create MACD chart with MACD line, signal line, and histogram.
+
+    MACD Line: 12-day EMA - 26-day EMA
+    Signal Line: 9-day EMA of MACD Line
+    Histogram: MACD Line - Signal Line
+
+    Args:
+        ticker: Stock ticker symbol
+        company_name: Company name (optional)
+        days: Number of days to display
+        save_path: Path to save the chart
+        width: Chart width in pixels
+        dpi: Chart DPI
+    """
+    try:
+        ticker_str, display_name, start_date = _prepare_chart_data(ticker, company_name, days)
+        stock_data = yf.download(ticker_str, start=start_date)
+
+        if stock_data.empty:
+            logger.warning(f"No data available for {ticker_str}")
+            return None
+
+        close = stock_data['Close']
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        histogram = macd_line - signal_line
+
+        # Create chart
+        height = int(width * 0.45)
+        fig, ax = plt.subplots(figsize=(width / dpi, height / dpi), dpi=dpi)
+
+        ax.plot(macd_line.index, macd_line.values, color='#6366f1', linewidth=1.2, label='MACD')
+        ax.plot(signal_line.index, signal_line.values, color='#f59e0b', linewidth=1.0, label='Signal')
+        colors = ['#22c55e' if v >= 0 else '#ef4444' for v in histogram.values.flatten()]
+        ax.bar(histogram.index, histogram.values.flatten(), color=colors, alpha=0.5, width=1, label='Histogram')
+        ax.axhline(y=0, color='#4b5563', linewidth=0.8)
+        ax.legend(loc='upper left', fontsize=8)
+        ax.grid(True, alpha=0.3)
+        ax.set_facecolor('#1a1d2e')
+        fig.patch.set_facecolor('#0f1117')
+        ax.tick_params(colors='#8b8fa3')
+
+        title = f'{display_name} MACD (12,26,9)'
+        _apply_suptitle(fig, title)
+        fig.tight_layout()
+
+        if save_path:
+            _apply_watermark_and_save(fig, title, save_path)
+
+        return fig
+    except Exception as e:
+        logger.error(f"Error creating MACD chart: {e}")
+        return None

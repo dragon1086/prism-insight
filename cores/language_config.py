@@ -12,7 +12,7 @@ Supported Languages:
 import os
 from enum import Enum
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict
 
 
 class Language(Enum):
@@ -252,7 +252,7 @@ class LanguageConfig:
             date_obj = datetime.strptime(date_str, "%Y%m%d")
             templates = self.get_telegram_template()
             return date_obj.strftime(templates["date_format"])
-        except:
+        except Exception:
             return date_str
 
     def get_trigger_emojis(self) -> Dict[str, str]:
@@ -366,6 +366,64 @@ def get_language_from_env() -> Language:
     except ValueError:
         # Default to Korean if invalid language specified
         return Language.KOREAN
+
+
+# Centralized language name mapping (single source of truth)
+LANGUAGE_NAMES = {
+    "ko": "Korean",
+    "en": "English",
+    "ja": "Japanese",
+    "zh": "Chinese",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+}
+
+
+# Localized error messages for common failures
+_ERROR_MESSAGES = {
+    "ko": {
+        "analysis_failed": "분석 중 오류가 발생했습니다.",
+        "timeout": "분석 시간이 초과되었습니다.",
+        "no_data": "데이터를 가져올 수 없습니다.",
+        "invalid_stock_code": "유효하지 않은 종목 코드입니다.",
+        "invalid_date": "유효하지 않은 날짜 형식입니다.",
+        "api_error": "API 호출 중 오류가 발생했습니다.",
+        "chart_failed": "차트 생성 중 오류가 발생했습니다.",
+        "summary_failed": "요약 생성 중 오류가 발생했습니다.",
+        "strategy_failed": "투자 전략 분석에 실패했습니다.",
+        "report_save_failed": "보고서 저장에 실패했습니다.",
+        "no_report": "보고서가 생성되지 않았습니다.",
+    },
+    "en": {
+        "analysis_failed": "An error occurred during analysis.",
+        "timeout": "Analysis timed out.",
+        "no_data": "Unable to retrieve data.",
+        "invalid_stock_code": "Invalid stock code.",
+        "invalid_date": "Invalid date format.",
+        "api_error": "An error occurred during API call.",
+        "chart_failed": "An error occurred during chart generation.",
+        "summary_failed": "An error occurred during summary generation.",
+        "strategy_failed": "Investment strategy analysis failed.",
+        "report_save_failed": "Failed to save report.",
+        "no_report": "No report was generated.",
+    },
+}
+
+
+def get_error_message(key: str, language: str = "ko") -> str:
+    """
+    Get a localized error message.
+
+    Args:
+        key: Error message key (e.g., 'analysis_failed', 'timeout')
+        language: Language code ('ko' or 'en')
+
+    Returns:
+        Localized error message string
+    """
+    lang_messages = _ERROR_MESSAGES.get(language, _ERROR_MESSAGES["en"])
+    return lang_messages.get(key, f"Unknown error: {key}")
 
 
 # Convenience function for getting config

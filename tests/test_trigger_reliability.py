@@ -8,7 +8,6 @@ import sqlite3
 import sys
 import pytest
 from pathlib import Path
-from datetime import datetime
 
 # Path setup
 PROJECT_ROOT = Path(__file__).parent.parent

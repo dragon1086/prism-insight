@@ -5,7 +5,6 @@ Test script for YouTube Event Fund Crawler
 Quick validation of individual components without full workflow execution.
 """
 
-import os
 import sys
 import asyncio
 import logging
