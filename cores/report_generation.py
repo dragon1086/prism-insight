@@ -15,6 +15,34 @@ LANGUAGE_NAMES = {
     "de": "German"
 }
 
+KO_STYLING_RULES = """
+## 출력 형식 규칙:
+- 문장은 자연스러운 산문체로 작성하세요. 문장 중간에 개행하지 마세요.
+- 불필요한 bullet point 사용을 금지합니다. 나열이 꼭 필요한 경우에만 사용하세요.
+- 하나의 문단은 완결된 문장들로 구성하세요.
+- 표 데이터가 아닌 일반 설명은 반드시 문장 형태로 작성하세요.
+- ⚠️ 본문 중간에 ##(h2 헤더)를 임의로 사용하지 마세요. 소제목이 필요하면 **굵은 글씨**나 ###를 사용하세요.
+
+## 말투 규칙 (매우 중요):
+- 보고서 본문은 반드시 '~입니다', '~합니다', '~됩니다', '~있습니다' 등 높임말(합쇼체)로 작성하세요.
+- '~한다', '~된다', '~이다', '~있다' 등 반말(해라체) 사용을 금지합니다.
+- 예시: "상승세를 보인다" (X) → "상승세를 보이고 있습니다" (O)
+- 예시: "주목할 필요가 있다" (X) → "주목할 필요가 있습니다" (O)
+
+## ⚠️ 글자수 제한: 반드시 3000자 이내로 작성하세요. 핵심만 간결하게!
+"""
+
+EN_STYLING_RULES = """
+## Output Format Rules:
+- Write sentences in natural prose style. Do not break lines in the middle of sentences.
+- Do not use unnecessary bullet points. Use them only when listing is absolutely necessary.
+- Each paragraph should consist of complete sentences.
+- General explanations (not table data) must be written in sentence form.
+- ⚠️ Do NOT use ## (h2 headers) arbitrarily in the middle of content. Use **bold text** or ### for sub-sections.
+
+## ⚠️ CHARACTER LIMIT: Keep the report under 3000 characters. Be concise and focus on key insights!
+"""
+
 
 @retry(
     stop=stop_after_attempt(2),  # Maximum 2 attempts (initial + 1 retry)
@@ -54,20 +82,7 @@ async def generate_report(agent, section, company_name, company_code, reference_
 2. 섹션 제목과 구조는 에이전트 지침에 명시된 형식을 따르세요.
 3. 가독성을 위해 적절히 단락을 나누고, 중요한 내용은 강조하세요.
 
-## 출력 형식 규칙:
-- 문장은 자연스러운 산문체로 작성하세요. 문장 중간에 개행하지 마세요.
-- 불필요한 bullet point 사용을 금지합니다. 나열이 꼭 필요한 경우에만 사용하세요.
-- 하나의 문단은 완결된 문장들로 구성하세요.
-- 표 데이터가 아닌 일반 설명은 반드시 문장 형태로 작성하세요.
-- ⚠️ 본문 중간에 ##(h2 헤더)를 임의로 사용하지 마세요. 소제목이 필요하면 **굵은 글씨**나 ###를 사용하세요.
-
-## 말투 규칙 (매우 중요):
-- 보고서 본문은 반드시 '~입니다', '~합니다', '~됩니다', '~있습니다' 등 높임말(합쇼체)로 작성하세요.
-- '~한다', '~된다', '~이다', '~있다' 등 반말(해라체) 사용을 금지합니다.
-- 예시: "상승세를 보인다" (X) → "상승세를 보이고 있습니다" (O)
-- 예시: "주목할 필요가 있다" (X) → "주목할 필요가 있습니다" (O)
-
-## ⚠️ 글자수 제한: 반드시 3000자 이내로 작성하세요. 핵심만 간결하게!
+{KO_STYLING_RULES}
 
 ##분석일: {reference_date}(YYYYMMDD 형식)
 """
@@ -88,14 +103,7 @@ async def generate_report(agent, section, company_name, company_code, reference_
 2. Follow the format specified in the agent's instructions for section titles and structure.
 3. Divide paragraphs appropriately for readability and emphasize important content.
 
-## Output Format Rules:
-- Write sentences in natural prose style. Do not break lines in the middle of sentences.
-- Do not use unnecessary bullet points. Use them only when listing is absolutely necessary.
-- Each paragraph should consist of complete sentences.
-- General explanations (not table data) must be written in sentence form.
-- ⚠️ Do NOT use ## (h2 headers) arbitrarily in the middle of content. Use **bold text** or ### for sub-sections.
-
-## ⚠️ CHARACTER LIMIT: Keep the report under 3000 characters. Be concise and focus on key insights!
+{EN_STYLING_RULES}
 
 ##Analysis Date: {reference_date} (YYYYMMDD format)
 """
@@ -144,20 +152,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
 2. 섹션 제목과 구조는 에이전트 지침에 명시된 형식을 따르세요.
 3. 가독성을 위해 적절히 단락을 나누고, 중요한 내용은 강조하세요.
 
-## 출력 형식 규칙:
-- 문장은 자연스러운 산문체로 작성하세요. 문장 중간에 개행하지 마세요.
-- 불필요한 bullet point 사용을 금지합니다. 나열이 꼭 필요한 경우에만 사용하세요.
-- 하나의 문단은 완결된 문장들로 구성하세요.
-- 표 데이터가 아닌 일반 설명은 반드시 문장 형태로 작성하세요.
-- ⚠️ 본문 중간에 ##(h2 헤더)를 임의로 사용하지 마세요. 소제목이 필요하면 **굵은 글씨**나 ###를 사용하세요.
-
-## 말투 규칙 (매우 중요):
-- 보고서 본문은 반드시 '~입니다', '~합니다', '~됩니다', '~있습니다' 등 높임말(합쇼체)로 작성하세요.
-- '~한다', '~된다', '~이다', '~있다' 등 반말(해라체) 사용을 금지합니다.
-- 예시: "상승세를 보인다" (X) → "상승세를 보이고 있습니다" (O)
-- 예시: "주목할 필요가 있다" (X) → "주목할 필요가 있습니다" (O)
-
-## ⚠️ 글자수 제한: 반드시 3000자 이내로 작성하세요. 핵심만 간결하게!
+{KO_STYLING_RULES}
 
 ##분석일: {reference_date}(YYYYMMDD 형식)
 """
@@ -178,14 +173,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
 2. Follow the format specified in the agent's instructions for section titles and structure.
 3. Divide paragraphs appropriately for readability and emphasize important content.
 
-## Output Format Rules:
-- Write sentences in natural prose style. Do not break lines in the middle of sentences.
-- Do not use unnecessary bullet points. Use them only when listing is absolutely necessary.
-- Each paragraph should consist of complete sentences.
-- General explanations (not table data) must be written in sentence form.
-- ⚠️ Do NOT use ## (h2 headers) arbitrarily in the middle of content. Use **bold text** or ### for sub-sections.
-
-## ⚠️ CHARACTER LIMIT: Keep the report under 3000 characters. Be concise and focus on key insights!
+{EN_STYLING_RULES}
 
 ##Analysis Date: {reference_date} (YYYYMMDD format)
 """
@@ -384,12 +372,7 @@ async def generate_investment_strategy(section_reports, combined_reports, compan
 - 균형 잡힌 리스크-리워드 분석
 - 보고서 본문은 반드시 높임말(합쇼체)로 작성 ('~입니다', '~합니다' 등). 반말('~한다', '~된다') 사용 금지.
 
-## 출력 형식 규칙
-- 문장은 자연스러운 산문체로 작성하세요. 문장 중간에 개행하지 마세요.
-- 불필요한 bullet point 사용을 금지합니다. 나열이 꼭 필요한 경우에만 사용하세요.
-- 하나의 문단은 완결된 문장들로 구성하세요.
-- 표 데이터가 아닌 일반 설명은 반드시 문장 형태로 작성하세요.
-- ⚠️ 본문 중간에 ##(h2 헤더)를 임의로 추가하지 마세요. 정해진 섹션 구조만 사용하세요.
+{KO_STYLING_RULES}
 
 ## 보고서 형식
 - 보고서 시작 시 개행문자 2번 삽입(\\n\\n)

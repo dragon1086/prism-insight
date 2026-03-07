@@ -62,78 +62,48 @@ def _get_mcp_server_module():
         return None
 
 
-def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str) -> str:
-    """Prefetch stock OHLCV data via kospi_kosdaq MCP server library.
-
-    Args:
-        company_code: 6-digit stock code (e.g., "005930")
-        start_date: Start date (YYYYMMDD)
-        end_date: End date (YYYYMMDD)
-
-    Returns:
-        Markdown formatted OHLCV data string, or empty string on error
-    """
+def _safely_prefetch_and_format(fetch_func_name: str, title: str, *args) -> str:
+    """Generic helper to prefetch data from MCP server and format as markdown."""
     try:
         server = _get_mcp_server_module()
         if not server:
             return ""
-
-        data = server.get_stock_ohlcv(start_date, end_date, company_code)
-
-        return _dict_to_markdown(data, f"Stock OHLCV: {company_code} ({start_date}~{end_date})")
+            
+        fetch_func = getattr(server, fetch_func_name)
+        data = fetch_func(*args)
+        
+        return _dict_to_markdown(data, title)
     except Exception as e:
-        logger.error(f"Error prefetching OHLCV for {company_code}: {e}")
+        logger.error(f"Error prefetching {fetch_func_name} with args {args}: {e}")
         return ""
+
+
+def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str) -> str:
+    """Prefetch stock OHLCV data via kospi_kosdaq MCP server library."""
+    return _safely_prefetch_and_format(
+        "get_stock_ohlcv", 
+        f"Stock OHLCV: {company_code} ({start_date}~{end_date})", 
+        start_date, end_date, company_code
+    )
 
 
 def prefetch_stock_trading_volume(company_code: str, start_date: str, end_date: str) -> str:
-    """Prefetch investor trading volume data via kospi_kosdaq MCP server library.
-
-    Args:
-        company_code: 6-digit stock code
-        start_date: Start date (YYYYMMDD)
-        end_date: End date (YYYYMMDD)
-
-    Returns:
-        Markdown formatted trading volume data string, or empty string on error
-    """
-    try:
-        server = _get_mcp_server_module()
-        if not server:
-            return ""
-
-        data = server.get_stock_trading_volume(start_date, end_date, company_code)
-
-        return _dict_to_markdown(data, f"Investor Trading Volume: {company_code} ({start_date}~{end_date})")
-    except Exception as e:
-        logger.error(f"Error prefetching trading volume for {company_code}: {e}")
-        return ""
+    """Prefetch investor trading volume data via kospi_kosdaq MCP server library."""
+    return _safely_prefetch_and_format(
+        "get_stock_trading_volume",
+        f"Investor Trading Volume: {company_code} ({start_date}~{end_date})",
+        start_date, end_date, company_code
+    )
 
 
 def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str) -> str:
-    """Prefetch market index OHLCV data via kospi_kosdaq MCP server library.
-
-    Args:
-        index_ticker: Index ticker ("1001" for KOSPI, "2001" for KOSDAQ)
-        start_date: Start date (YYYYMMDD)
-        end_date: End date (YYYYMMDD)
-
-    Returns:
-        Markdown formatted index data string, or empty string on error
-    """
-    try:
-        server = _get_mcp_server_module()
-        if not server:
-            return ""
-
-        index_name = "KOSPI" if index_ticker == "1001" else "KOSDAQ" if index_ticker == "2001" else index_ticker
-
-        data = server.get_index_ohlcv(start_date, end_date, index_ticker)
-
-        return _dict_to_markdown(data, f"{index_name} Index ({start_date}~{end_date})")
-    except Exception as e:
-        logger.error(f"Error prefetching index OHLCV for {index_ticker}: {e}")
-        return ""
+    """Prefetch market index OHLCV data via kospi_kosdaq MCP server library."""
+    index_name = "KOSPI" if index_ticker == "1001" else "KOSDAQ" if index_ticker == "2001" else index_ticker
+    return _safely_prefetch_and_format(
+        "get_index_ohlcv",
+        f"{index_name} Index ({start_date}~{end_date})",
+        start_date, end_date, index_ticker
+    )
 
 
 def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_ago: str) -> dict:

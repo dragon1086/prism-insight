@@ -22,6 +22,18 @@ from cores.utils import clean_markdown
 
 # Market analysis cache storage (global variable)
 _market_analysis_cache = {}
+_market_analysis_lock = asyncio.Lock()
+
+async def _get_or_generate_market_report(agent, section, reference_date, logger, language):
+    async with _market_analysis_lock:
+        if "report" in _market_analysis_cache:
+            logger.info(f"Using cached market analysis")
+            return _market_analysis_cache["report"]
+        
+        logger.info(f"Generating new market analysis")
+        report = await generate_market_report(agent, section, reference_date, logger, language)
+        _market_analysis_cache["report"] = report
+        return report
 
 async def _execute_parallel_analysis(company_name, company_code, reference_date, language, agents, base_sections, logger):
     section_reports = {}
@@ -38,14 +50,8 @@ async def _execute_parallel_analysis(company_name, company_code, reference_date,
             try:
                 agent = agents[section]
                 if section == "market_index_analysis":
-                    if "report" in _market_analysis_cache:
-                        section_logger.info(f"Using cached market analysis")
-                        return section, _market_analysis_cache["report"]
-                    else:
-                        section_logger.info(f"Generating new market analysis")
-                        report = await generate_market_report(agent, section, reference_date, section_logger, language)
-                        _market_analysis_cache["report"] = report
-                        return section, report
+                    report = await _get_or_generate_market_report(agent, section, reference_date, section_logger, language)
+                    return section, report
                 else:
                     report = await generate_report(agent, section, company_name, company_code, reference_date, section_logger, language)
                     return section, report
@@ -68,13 +74,8 @@ async def _execute_sequential_analysis(company_name, company_code, reference_dat
             try:
                 agent = agents[section]
                 if section == "market_index_analysis":
-                    if "report" in _market_analysis_cache:
-                        logger.info(f"Using cached market analysis")
-                        report = _market_analysis_cache["report"]
-                    else:
-                        logger.info(f"Generating new market analysis")
-                        report = await generate_market_report(agent, section, reference_date, logger, language)
-                        _market_analysis_cache["report"] = report
+                    report = await _get_or_generate_market_report(agent, section, reference_date, logger, language)
+                    section_reports[section] = report
                 else:
                     report = await generate_report(agent, section, company_name, company_code, reference_date, logger, language)
                 section_reports[section] = report
@@ -87,21 +88,23 @@ def _generate_charts(company_code, company_name, reference_date, logger):
     charts_dir = os.path.join("../charts", f"{company_code}_{reference_date}")
     os.makedirs(charts_dir, exist_ok=True)
     
+    DEFAULT_CHART_KWARGS = {'width': 900, 'dpi': 80, 'image_format': 'jpg', 'compress': True}
+    
     try:
         price_chart_html = get_chart_as_base64_html(
-            company_code, company_name, create_price_chart, 'Price Chart', width=900, dpi=80, image_format='jpg', compress=True,
+            company_code, company_name, create_price_chart, 'Price Chart', **DEFAULT_CHART_KWARGS,
             days=730, adjusted=True
         )
         volume_chart_html = get_chart_as_base64_html(
-            company_code, company_name, create_trading_volume_chart, 'Trading Volume Chart', width=900, dpi=80, image_format='jpg', compress=True,
+            company_code, company_name, create_trading_volume_chart, 'Trading Volume Chart', **DEFAULT_CHART_KWARGS,
             days=30  
         )
         market_cap_chart_html = get_chart_as_base64_html(
-            company_code, company_name, create_market_cap_chart, 'Market Cap Trend', width=900, dpi=80, image_format='jpg', compress=True,
+            company_code, company_name, create_market_cap_chart, 'Market Cap Trend', **DEFAULT_CHART_KWARGS,
             days=730
         )
         fundamentals_chart_html = get_chart_as_base64_html(
-            company_code, company_name, create_fundamentals_chart, 'Fundamental Indicators', width=900, dpi=80, image_format='jpg', compress=True,
+            company_code, company_name, create_fundamentals_chart, 'Fundamental Indicators', **DEFAULT_CHART_KWARGS,
             days=730
         )
         return price_chart_html, volume_chart_html, market_cap_chart_html, fundamentals_chart_html
@@ -110,6 +113,9 @@ def _generate_charts(company_code, company_name, reference_date, logger):
         return None, None, None, None
 
 def _compile_final_report(company_code, company_name, reference_date, language, section_reports, executive_summary, charts):
+    import os
+    from jinja2 import Environment, FileSystemLoader
+
     price_chart_html, volume_chart_html, market_cap_chart_html, fundamentals_chart_html = charts
     disclaimer = get_disclaimer(language)
     formatted_date = f"{reference_date[:4]}.{reference_date[4:6]}.{reference_date[6:]}"
@@ -118,71 +124,43 @@ def _compile_final_report(company_code, company_name, reference_date, language, 
         main_headers = {
             "title": f"# {company_name} ({company_code}) 분석 보고서",
             "pub_date": "발행일",
-            "tech_analysis": f"## 1. 기술적 분석\n\n",
-            "fundamental": f"## 2. 펀더멘털 분석\n\n",
-            "news": f"## 3. 뉴스 분석\n\n",
-            "market": f"## 4. 시장 분석\n\n",
-            "strategy": f"## 5. 투자 전략\n\n"
+            "tech_analysis": f"## 1. 기술적 분석\n",
+            "fundamental": f"## 2. 펀더멘털 분석\n",
+            "news": f"## 3. 뉴스 분석\n",
+            "market": f"## 4. 시장 분석\n",
+            "strategy": f"## 5. 투자 전략\n"
         }
     else:
         main_headers = {
             "title": f"# {company_name} ({company_code}) Analysis Report",
             "pub_date": "Publication Date",
-            "tech_analysis": f"## 1. Technical Analysis\n\n",
-            "fundamental": f"## 2. Fundamental Analysis\n\n",
-            "news": f"## 3. News Analysis\n\n",
-            "market": f"## 4. Market Analysis\n\n",
-            "strategy": f"## 5. Investment Strategy\n\n"
+            "tech_analysis": f"## 1. Technical Analysis\n",
+            "fundamental": f"## 2. Fundamental Analysis\n",
+            "news": f"## 3. News Analysis\n",
+            "market": f"## 4. Market Analysis\n",
+            "strategy": f"## 5. Investment Strategy\n"
         }
 
-    final_report = f"{main_headers['title']}\n\n**{main_headers['pub_date']}:** {formatted_date}\n\n---\n\n{executive_summary}\n\n"
+    template_dir = os.path.join(os.path.dirname(__file__), 'templates')
+    env = Environment(loader=FileSystemLoader(template_dir))
+    template = env.get_template('report_template.md')
 
-    if "price_volume_analysis" in section_reports or "investor_trading_analysis" in section_reports:
-        final_report += main_headers["tech_analysis"]
-        if "price_volume_analysis" in section_reports:
-            final_report += section_reports["price_volume_analysis"] + "\n\n"
-            if price_chart_html or volume_chart_html:
-                chart_title = "### 가격 및 거래량 차트\n\n" if language == "ko" else "### Price and Volume Charts\n\n"
-                final_report += chart_title
-                if price_chart_html:
-                    chart_subtitle = "#### 가격 차트\n\n" if language == "ko" else "#### Price Chart\n\n"
-                    final_report += chart_subtitle + price_chart_html + "\n\n"
-                if volume_chart_html:
-                    chart_subtitle = "#### 거래량 차트\n\n" if language == "ko" else "#### Trading Volume Chart\n\n"
-                    final_report += chart_subtitle + volume_chart_html + "\n\n"
-        if "investor_trading_analysis" in section_reports:
-            final_report += section_reports["investor_trading_analysis"] + "\n\n"
+    final_report_str = template.render(
+        company_name=company_name,
+        company_code=company_code,
+        language=language,
+        formatted_date=formatted_date,
+        main_headers=main_headers,
+        executive_summary=executive_summary,
+        section_reports=section_reports,
+        price_chart_html=price_chart_html,
+        volume_chart_html=volume_chart_html,
+        market_cap_chart_html=market_cap_chart_html,
+        fundamentals_chart_html=fundamentals_chart_html,
+        disclaimer=disclaimer
+    )
 
-    if "company_status" in section_reports or "company_overview" in section_reports:
-        final_report += main_headers["fundamental"]
-        if "company_status" in section_reports:
-            final_report += section_reports["company_status"] + "\n\n"
-            if market_cap_chart_html or fundamentals_chart_html:
-                chart_title = "### 시가총액 및 펀더멘털 차트\n\n" if language == "ko" else "### Market Cap and Fundamental Charts\n\n"
-                final_report += chart_title
-                if market_cap_chart_html:
-                    chart_subtitle = "#### 시가총액 추이\n\n" if language == "ko" else "#### Market Cap Trend\n\n"
-                    final_report += chart_subtitle + market_cap_chart_html + "\n\n"
-                if fundamentals_chart_html:
-                    chart_subtitle = "#### 펀더멘털 지표 분석\n\n" if language == "ko" else "#### Fundamental Indicator Analysis\n\n"
-                    final_report += chart_subtitle + fundamentals_chart_html + "\n\n"
-        if "company_overview" in section_reports:
-            final_report += section_reports["company_overview"] + "\n\n"
-
-    if "news_analysis" in section_reports:
-        final_report += main_headers["news"]
-        final_report += section_reports["news_analysis"] + "\n\n"
-
-    if "market_index_analysis" in section_reports:
-        final_report += main_headers["market"]
-        final_report += section_reports["market_index_analysis"] + "\n\n"
-
-    if "investment_strategy" in section_reports:
-        final_report += main_headers["strategy"]
-        final_report += section_reports["investment_strategy"] + "\n\n"
-
-    final_report += "---\n\n" + disclaimer + "\n"
-    return clean_markdown(final_report)
+    return clean_markdown(final_report_str)
 
 async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko"):
     """

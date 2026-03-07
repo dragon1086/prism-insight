@@ -35,238 +35,156 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-def configure_korean_font():
-    """
-    Robust function for Korean font configuration
-    Supports Rocky Linux 8, Ubuntu 22.04, macOS, and Windows
-    """
-    global KOREAN_FONT_PATH, KOREAN_FONT_PROP
-    import glob  # For wildcard path processing
+def _configure_mac_font():
+    """Configure Korean font for macOS"""
+    import glob
+    font_paths = [
+        '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+        '/Library/Fonts/AppleSDGothicNeo.ttc',
+        '/System/Library/Fonts/Supplemental/AppleGothic.ttf',
+        '/Library/Fonts/NanumGothic.ttf',
+        os.path.expanduser('~/Library/Fonts/AppleSDGothicNeo.ttc'),
+        os.path.expanduser('~/Library/Fonts/NanumGothic.ttf'),
+    ]
 
-    system = platform.system()
-
-    # Basic setup
-    plt.rcParams['axes.unicode_minus'] = False
-
-    if system == 'Darwin':  # macOS
-        # macOS system and user font paths
-        font_paths = [
-            '/System/Library/Fonts/AppleSDGothicNeo.ttc',
-            '/Library/Fonts/AppleSDGothicNeo.ttc',
-            '/System/Library/Fonts/Supplemental/AppleGothic.ttf',
-            # Additional paths for manually installed Nanum fonts
-            '/Library/Fonts/NanumGothic.ttf',
-            # User-specific font directories
-            os.path.expanduser('~/Library/Fonts/AppleSDGothicNeo.ttc'),
-            os.path.expanduser('~/Library/Fonts/NanumGothic.ttf'),
-        ]
-
-        # Check if font files exist and try to load them
-        for path in font_paths:
-            if os.path.exists(path):
-                try:
-                    # Register font with matplotlib font manager
-                    fm.fontManager.addfont(path)
-                    KOREAN_FONT_PATH = path
-                    KOREAN_FONT_PROP = fm.FontProperties(fname=path)
-
-                    # Set matplotlib global font configuration
-                    plt.rcParams['font.family'] = 'AppleSDGothicNeo'
-                    mpl.rcParams['font.family'] = 'AppleSDGothicNeo'
-
-                    logger.info(f"Korean font configured: {path}")
-                    return path
-                except (OSError, IOError) as e:
-                    logger.debug(f"macOS font file access failed: {path} -> {e}")
-                    continue
-                except (ValueError, TypeError) as e:
-                    logger.debug(f"macOS font format error: {path} -> {e}")
-                    continue
-
-        # If file path search fails, try searching by font name
-        korean_font_list = ['AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo', 'AppleGothic', 'Malgun Gothic', 'NanumGothic']
-        for font_name in korean_font_list:
+    for path in font_paths:
+        if os.path.exists(path):
             try:
-                # Search installed system fonts by name
-                font_path = fm.findfont(fm.FontProperties(family=font_name))
-                if font_path and not font_path.endswith('afm'):
-                    # Set matplotlib global font configuration
-                    plt.rcParams['font.family'] = font_name
-                    mpl.rcParams['font.family'] = font_name
-                    KOREAN_FONT_PATH = font_path
-                    KOREAN_FONT_PROP = fm.FontProperties(family=font_name)
-
-                    logger.info(f"Korean font configured (by name): {font_name}, path: {font_path}")
-                    return font_path
-            except (AttributeError, KeyError) as e:
-                logger.debug(f"macOS font property error: {font_name} -> {e}")
-                continue
-            except (OSError, IOError) as e:
-                logger.debug(f"macOS font file error: {font_name} -> {e}")
+                fm.fontManager.addfont(path)
+                plt.rcParams['font.family'] = 'AppleSDGothicNeo'
+                mpl.rcParams['font.family'] = 'AppleSDGothicNeo'
+                logger.info(f"Korean font configured: {path}")
+                return path, fm.FontProperties(fname=path)
+            except Exception as e:
+                logger.debug(f"macOS font file error: {path} -> {e}")
                 continue
 
-    elif system == 'Windows':
-        # Windows default Korean font (Malgun Gothic)
+    korean_font_list = ['AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo', 'AppleGothic', 'Malgun Gothic', 'NanumGothic']
+    for font_name in korean_font_list:
         try:
-            plt.rcParams['font.family'] = 'Malgun Gothic'
-            mpl.rcParams['font.family'] = 'Malgun Gothic'
-            KOREAN_FONT_PROP = fm.FontProperties(family='Malgun Gothic')
-            logger.info("Korean font configured: Malgun Gothic (Windows)")
-            return "Malgun Gothic"
-        except (AttributeError, KeyError) as e:
-            logger.debug(f"Windows font configuration failed: {e}")
-        except (OSError, RuntimeError) as e:
-            logger.debug(f"Windows font system error: {e}")
+            font_path = fm.findfont(fm.FontProperties(family=font_name))
+            if font_path and not font_path.endswith('afm'):
+                plt.rcParams['font.family'] = font_name
+                mpl.rcParams['font.family'] = font_name
+                logger.info(f"Korean font configured (by name): {font_name}, path: {font_path}")
+                return font_path, fm.FontProperties(family=font_name)
+        except Exception as e:
+            logger.debug(f"macOS font property error: {font_name} -> {e}")
+            continue
+    return None, None
 
-    else:  # Linux (Rocky Linux 8, Ubuntu 22.04+, and other distributions)
-        # Linux distribution-specific font paths
-        font_paths = []
 
-        # Rocky Linux 8 / CentOS 8 / RHEL 8 font paths
-        rocky_paths = [
-            '/usr/share/fonts/google-nanum/NanumGothic.ttf',
-            '/usr/share/fonts/nanum/NanumGothicCoding.ttf',
-            '/usr/share/fonts/korean/NanumGothic.ttf',
-        ]
+def _configure_windows_font():
+    """Configure Korean font for Windows"""
+    try:
+        plt.rcParams['font.family'] = 'Malgun Gothic'
+        mpl.rcParams['font.family'] = 'Malgun Gothic'
+        logger.info("Korean font configured: Malgun Gothic (Windows)")
+        return "Malgun Gothic", fm.FontProperties(family='Malgun Gothic')
+    except Exception as e:
+        logger.debug(f"Windows font configuration failed: {e}")
+        return None, None
 
-        # Ubuntu 22.04 / Debian-based distribution font paths
-        ubuntu_paths = [
-            '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-            '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
-            '/usr/share/fonts/truetype/nanum/NanumMyeongjo.ttf',
-            '/usr/share/fonts/opentype/nanum/NanumGothic.ttf',
-            '/usr/share/fonts/nanum/NanumGothic.ttf',
-        ]
 
-        # Common font paths (for manual installations)
-        common_paths = [
-            '/usr/share/fonts/NanumGothic.ttf',
-            '/usr/local/share/fonts/NanumGothic.ttf',
-            '/home/*/fonts/NanumGothic.ttf',
-            '/home/*/.fonts/NanumGothic.ttf',
-            '/home/*/.local/share/fonts/NanumGothic.ttf',
-        ]
+def _configure_linux_font():
+    """Configure Korean font for Linux distributions"""
+    import glob
+    font_paths = [
+        '/usr/share/fonts/google-nanum/NanumGothic.ttf',
+        '/usr/share/fonts/nanum/NanumGothicCoding.ttf',
+        '/usr/share/fonts/korean/NanumGothic.ttf',
+        '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+        '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
+        '/usr/share/fonts/truetype/nanum/NanumMyeongjo.ttf',
+        '/usr/share/fonts/opentype/nanum/NanumGothic.ttf',
+        '/usr/share/fonts/nanum/NanumGothic.ttf',
+        '/usr/share/fonts/NanumGothic.ttf',
+        '/usr/local/share/fonts/NanumGothic.ttf',
+        '/home/*/fonts/NanumGothic.ttf',
+        '/home/*/.fonts/NanumGothic.ttf',
+        '/home/*/.local/share/fonts/NanumGothic.ttf',
+    ]
 
-        # Combine all paths (priority: Rocky → Ubuntu → Common)
-        font_paths = rocky_paths + ubuntu_paths + common_paths
-
-        # Search for font files (supports wildcard patterns like /home/*)
-        for path in font_paths:
-            try:
-                # Handle wildcard paths (e.g., /home/*/fonts)
-                if '*' in path:
-                    matching_paths = glob.glob(path)
-                    for match_path in matching_paths:
-                        if os.path.exists(match_path):
-                            try:
-                                # Register font with matplotlib font manager
-                                fm.fontManager.addfont(match_path)
-                                KOREAN_FONT_PATH = match_path
-                                KOREAN_FONT_PROP = fm.FontProperties(fname=match_path)
-
-                                # Set matplotlib global font configuration
-                                plt.rcParams['font.family'] = 'NanumGothic'
-                                mpl.rcParams['font.family'] = 'NanumGothic'
-
-                                logger.info(f"Korean font configured: {match_path}")
-                                return match_path
-                            except (OSError, IOError) as e:
-                                logger.debug(f"Linux font file access failed: {match_path} -> {e}")
-                                continue
-                            except (ValueError, TypeError) as e:
-                                logger.debug(f"Linux font format error: {match_path} -> {e}")
-                                continue
-                            except PermissionError as e:
-                                logger.debug(f"Linux font permission error: {match_path} -> {e}")
-                                continue
-                else:
-                    # Handle regular file paths (no wildcards)
-                    if os.path.exists(path):
+    for path in font_paths:
+        try:
+            if '*' in path:
+                matching_paths = glob.glob(path)
+                for match_path in matching_paths:
+                    if os.path.exists(match_path):
                         try:
-                            # Register font with matplotlib font manager
-                            fm.fontManager.addfont(path)
-                            KOREAN_FONT_PATH = path
-                            KOREAN_FONT_PROP = fm.FontProperties(fname=path)
-
-                            # Set matplotlib global font configuration
+                            fm.fontManager.addfont(match_path)
                             plt.rcParams['font.family'] = 'NanumGothic'
                             mpl.rcParams['font.family'] = 'NanumGothic'
+                            logger.info(f"Korean font configured: {match_path}")
+                            return match_path, fm.FontProperties(fname=match_path)
+                        except Exception as e:
+                            logger.debug(f"Linux font file access failed: {match_path} -> {e}")
+            else:
+                if os.path.exists(path):
+                    try:
+                        fm.fontManager.addfont(path)
+                        plt.rcParams['font.family'] = 'NanumGothic'
+                        mpl.rcParams['font.family'] = 'NanumGothic'
+                        logger.info(f"Korean font configured: {path}")
+                        return path, fm.FontProperties(fname=path)
+                    except Exception as e:
+                        logger.debug(f"Linux font file access failed: {path} -> {e}")
+        except Exception as e:
+            logger.debug(f"glob pattern processing error: {path} -> {e}")
 
-                            logger.info(f"Korean font configured: {path}")
-                            return path
-                        except (OSError, IOError) as e:
-                            logger.debug(f"Linux font file access failed: {path} -> {e}")
-                            continue
-                        except (ValueError, TypeError) as e:
-                            logger.debug(f"Linux font format error: {path} -> {e}")
-                            continue
-                        except PermissionError as e:
-                            logger.debug(f"Linux font permission error: {path} -> {e}")
-                            continue
-            except (OSError, RuntimeError) as e:
-                logger.debug(f"glob pattern processing error: {path} -> {e}")
-                continue
+    logger.info("Path search failed, searching with matplotlib font manager...")
+    korean_font_names = [
+        'NanumGothic', 'Nanum Gothic', 'NanumBarunGothic', 'Nanum Barun Gothic',
+        'NanumMyeongjo', 'Nanum Myeongjo', 'UnDotum', 'UnBatang'
+    ]
 
-        # If file path search fails, try searching with matplotlib font manager
-        logger.info("Path search failed, searching with matplotlib font manager...")
-        korean_font_names = [
-            'NanumGothic', 'Nanum Gothic', 'NanumBarunGothic', 'Nanum Barun Gothic',
-            'NanumMyeongjo', 'Nanum Myeongjo', 'UnDotum', 'UnBatang'
-        ]
+    for font_name in korean_font_names:
+        try:
+            font_path = fm.findfont(fm.FontProperties(family=font_name))
+            if font_path and not font_path.endswith('.afm') and os.path.exists(font_path):
+                plt.rcParams['font.family'] = font_name
+                mpl.rcParams['font.family'] = font_name
+                logger.info(f"Korean font configured (via font manager): {font_name} -> {font_path}")
+                return font_path, fm.FontProperties(family=font_name)
+        except Exception as e:
+            logger.debug(f"Linux font manager attribute error: {font_name} -> {e}")
+            continue
 
-        for font_name in korean_font_names:
-            try:
-                font_path = fm.findfont(fm.FontProperties(family=font_name))
-                if font_path and not font_path.endswith('.afm') and os.path.exists(font_path):
-                    # Set matplotlib global font configuration
-                    plt.rcParams['font.family'] = font_name
-                    mpl.rcParams['font.family'] = font_name
-                    KOREAN_FONT_PATH = font_path
-                    KOREAN_FONT_PROP = fm.FontProperties(family=font_name)
+    return None, None
 
-                    logger.info(f"Korean font configured (via font manager): {font_name} -> {font_path}")
-                    return font_path
-            except (AttributeError, KeyError) as e:
-                logger.debug(f"Linux font manager attribute error: {font_name} -> {e}")
-                continue
-            except (OSError, IOError) as e:
-                logger.debug(f"Linux font manager file error: {font_name} -> {e}")
-                continue
-            except (ValueError, TypeError) as e:
-                logger.debug(f"Linux font manager value error: {font_name} -> {e}")
-                continue
 
-    # Display installation instructions when all font detection attempts fail
+def configure_korean_font():
+    """Robust function for Korean font configuration"""
+    global KOREAN_FONT_PATH, KOREAN_FONT_PROP
+    system = platform.system()
+    plt.rcParams['axes.unicode_minus'] = False
+
+    if system == 'Darwin':
+        path, prop = _configure_mac_font()
+    elif system == 'Windows':
+        path, prop = _configure_windows_font()
+    else:
+        path, prop = _configure_linux_font()
+
+    if path and prop:
+        KOREAN_FONT_PATH = path
+        KOREAN_FONT_PROP = prop
+        return path
+
     logger.info("⚠️ Korean font configuration failed: Korean text may not display properly.")
-
-    # Provide distribution-specific installation instructions
+    
     try:
         if system == 'Linux':
-            # Detect Rocky Linux / CentOS / RHEL distributions
-            if (os.path.exists('/etc/rocky-release') or
-                    os.path.exists('/etc/centos-release') or
-                    os.path.exists('/etc/redhat-release')):
-                logger.info("Rocky Linux/CentOS/RHEL Korean font installation:")
-                logger.info("sudo dnf install google-nanum-fonts")
-
-            # Detect Ubuntu / Debian distributions
-            elif (os.path.exists('/etc/debian_version') or
-                  os.path.exists('/etc/lsb-release')):
-                logger.info("Ubuntu/Debian Korean font installation:")
-                logger.info("sudo apt update && sudo apt install fonts-nanum fonts-nanum-coding")
-
+            if (os.path.exists('/etc/rocky-release') or os.path.exists('/etc/centos-release') or os.path.exists('/etc/redhat-release')):
+                logger.info("Rocky Linux/CentOS/RHEL Korean font installation: sudo dnf install google-nanum-fonts")
+            elif (os.path.exists('/etc/debian_version') or os.path.exists('/etc/lsb-release')):
+                logger.info("Ubuntu/Debian Korean font installation: sudo apt update && sudo apt install fonts-nanum fonts-nanum-coding")
             else:
-                logger.info("Linux Korean font installation:")
                 logger.info("Install nanum fonts using your package manager.")
         else:
             logger.info("For font installation instructions, refer to README.md.")
-
-    except (OSError, PermissionError) as e:
-        logger.debug(f"System information check failed: {e}")
-        logger.info("For font installation instructions, refer to project documentation.")
-    except FileNotFoundError as e:
-        logger.debug(f"System file search failed: {e}")
-        logger.info("For font installation instructions, refer to project documentation.")
+    except Exception as e:
+        logger.debug(f"System check failed: {e}")
 
     return None
 
@@ -454,6 +372,50 @@ def select_number_formatter(max_value):
     else:
         return FuncFormatter(format_trillions)
 
+def _prepare_chart_data(ticker, company_name, days=730):
+    """Calculate date range and resolve company name"""
+    end_date = datetime.now().strftime('%Y%m%d')
+    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
+    if company_name is None:
+        try:
+            company_name = get_market_ticker_name(ticker)
+        except:
+            company_name = ticker
+    return start_date, end_date, company_name
+
+def _apply_watermark_and_save(fig, save_path, tight_layout=True, top_adjust=None):
+    """Apply watermark and Korean font settings if saving, then save and return"""
+    fig.text(0.99, 0.01, "AI Stock Analysis", ha='right', va='bottom', color='#cccccc', fontsize=8)
+    
+    if tight_layout:
+        fig.tight_layout()
+    if top_adjust is not None:
+        fig.subplots_adjust(top=top_adjust)
+        
+    if save_path:
+        if KOREAN_FONT_PROP:
+            for ax in fig.axes:
+                for text in ax.texts:
+                    text.set_fontproperties(KOREAN_FONT_PROP)
+                for label in ax.get_xticklabels() + ax.get_yticklabels():
+                    label.set_fontproperties(KOREAN_FONT_PROP)
+                if hasattr(ax, 'title') and ax.title is not None:
+                    ax.title.set_fontproperties(KOREAN_FONT_PROP)
+                if hasattr(ax, 'yaxis') and hasattr(ax.yaxis, 'label'):
+                    ax.yaxis.label.set_fontproperties(KOREAN_FONT_PROP)
+                if ax.legend_ is not None:
+                    for text in ax.legend_.get_texts():
+                        text.set_fontproperties(KOREAN_FONT_PROP)
+            # Add figure title if present
+            if hasattr(fig, '_suptitle') and fig._suptitle is not None:
+                fig._suptitle.set_fontproperties(KOREAN_FONT_PROP)
+                
+        fig.savefig(save_path, dpi=300, bbox_inches='tight', backend='agg')
+        plt.close(fig)
+        return save_path
+    else:
+        return fig
+
 def create_price_chart(ticker, company_name=None, days=730, save_path=None, adjusted=True):
     """
     Generate elegant OHLCV price chart (including candlestick, volume, moving averages)
@@ -476,17 +438,8 @@ def create_price_chart(ticker, company_name=None, days=730, save_path=None, adju
     fig : matplotlib figure
         Figure object containing the chart
     """
-    # Calculate date range
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
-
-    # Fetch company name if not provided
-    if company_name is None:
-        try:
-            company_name = get_market_ticker_name(ticker)
-        except:
-            company_name = ticker
-
+    start_date, end_date, company_name = _prepare_chart_data(ticker, company_name, days)
+    
     # Fetch stock data
     df = get_market_ohlcv_by_date(start_date, end_date, ticker, adjusted=adjusted)
 
@@ -600,41 +553,7 @@ def create_price_chart(ticker, company_name=None, days=730, save_path=None, adju
     max_price = df['High'].max()
     formatter = select_number_formatter(max_price)
     ax1.yaxis.set_major_formatter(formatter)
-
-    # Add watermark to chart
-    fig.text(
-        0.99, 0.01,
-        "AI Stock Analysis",
-        ha='right', va='bottom',
-        color='#cccccc',
-        fontsize=8
-    )
-
-    if save_path:
-        # Ensure Korean font is applied before saving
-        if KOREAN_FONT_PROP:
-            # Apply Korean font to all text elements
-            for ax in fig.axes:
-                for text in ax.texts:
-                    text.set_fontproperties(KOREAN_FONT_PROP)
-                for label in ax.get_xticklabels() + ax.get_yticklabels():
-                    label.set_fontproperties(KOREAN_FONT_PROP)
-
-                if hasattr(ax, 'title') and ax.title is not None:
-                    ax.title.set_fontproperties(KOREAN_FONT_PROP)
-
-                # Apply font to legend text
-                if ax.legend_ is not None:
-                    for text in ax.legend_.get_texts():
-                        text.set_fontproperties(KOREAN_FONT_PROP)
-
-        # Save chart with high resolution
-        plt.savefig(save_path, dpi=300, bbox_inches='tight', backend='agg')
-        plt.close()
-        return save_path
-    else:
-        plt.tight_layout()
-        return fig
+    return _apply_watermark_and_save(fig, save_path)
 
 def create_market_cap_chart(ticker, company_name=None, days=730, save_path=None):
     """
@@ -656,16 +575,7 @@ def create_market_cap_chart(ticker, company_name=None, days=730, save_path=None)
     fig : matplotlib figure
         Figure object containing the chart
     """
-    # Calculate date range
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
-
-    # Fetch company name if not provided
-    if company_name is None:
-        try:
-            company_name = get_market_ticker_name(ticker)
-        except:
-            company_name = ticker
+    start_date, end_date, company_name = _prepare_chart_data(ticker, company_name, days)
 
     # Fetch stock data
     df = get_market_cap_by_date(start_date, end_date, ticker)
@@ -786,39 +696,7 @@ def create_market_cap_chart(ticker, company_name=None, days=730, save_path=None)
         fontsize=10,
         bbox=bbox_props
     )
-
-    # Add watermark
-    fig.text(
-        0.99, 0.01,
-        "AI Stock Analysis",
-        ha='right', va='bottom',
-        color='#cccccc',
-        fontsize=8
-    )
-
-    plt.tight_layout()
-
-    if save_path:
-        # Re-verify Korean font before saving
-        if KOREAN_FONT_PROP:
-            # Reapply Korean font to important elements
-            for text in ax.texts:
-                text.set_fontproperties(KOREAN_FONT_PROP)
-
-            for label in ax.get_xticklabels() + ax.get_yticklabels():
-                label.set_fontproperties(KOREAN_FONT_PROP)
-
-            if ax.title is not None:
-                ax.title.set_fontproperties(KOREAN_FONT_PROP)
-
-            ax.yaxis.label.set_fontproperties(KOREAN_FONT_PROP)
-
-        # Increase resolution and specify backend
-        plt.savefig(save_path, dpi=300, bbox_inches='tight', backend='agg')
-        plt.close()
-        return save_path
-    else:
-        return fig
+    return _apply_watermark_and_save(fig, save_path)
 
 def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=None):
     """
@@ -1021,43 +899,7 @@ def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=Non
     # X-axis date display format
     plt.xticks(rotation=45)
 
-    # Add watermark
-    fig.text(
-        0.99, 0.01,
-        "AI Stock Analysis",
-        ha='right', va='bottom',
-        color='#cccccc',
-        fontsize=8
-    )
-
-    plt.tight_layout()
-    plt.subplots_adjust(top=0.93)
-
-    if save_path:
-        # Explicitly re-apply Korean font before saving
-        if KOREAN_FONT_PROP:
-            for ax in fig.axes:
-                for text in ax.texts:
-                    text.set_fontproperties(KOREAN_FONT_PROP)
-
-                for label in ax.get_xticklabels() + ax.get_yticklabels():
-                    label.set_fontproperties(KOREAN_FONT_PROP)
-
-                if hasattr(ax, 'title') and ax.title is not None:
-                    ax.title.set_fontproperties(KOREAN_FONT_PROP)
-
-                if hasattr(ax, 'yaxis') and hasattr(ax.yaxis, 'label'):
-                    ax.yaxis.label.set_fontproperties(KOREAN_FONT_PROP)
-
-            if hasattr(fig, '_suptitle') and fig._suptitle is not None:
-                fig._suptitle.set_fontproperties(KOREAN_FONT_PROP)
-
-        # Increase resolution and specify backend
-        plt.savefig(save_path, dpi=300, bbox_inches='tight', backend='agg')
-        plt.close()
-        return save_path
-    else:
-        return fig
+    return _apply_watermark_and_save(fig, save_path, tight_layout=True, top_adjust=0.93)
 
 def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=None):
     """
@@ -1079,16 +921,7 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
     fig : matplotlib figure
         Figure object containing the chart
     """
-    # Calculate date range
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
-
-    # Get company name if not provided
-    if company_name is None:
-        try:
-            company_name = get_market_ticker_name(ticker)
-        except:
-            company_name = ticker
+    start_date, end_date, company_name = _prepare_chart_data(ticker, company_name, days)
 
     # Fetch stock data - trading volume by investor
     df_volume = get_market_trading_volume_by_investor(start_date, end_date, ticker)
@@ -1265,45 +1098,7 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
             y=0.98
         )
 
-    # Add watermark
-    fig.text(
-        0.99, 0.01,
-        "AI Stock Analysis",
-        ha='right', va='bottom',
-        color='#cccccc',
-        fontsize=8
-    )
-
-    plt.tight_layout()
-    plt.subplots_adjust(top=0.93)
-
-    if save_path:
-        # Explicitly re-apply Korean font before saving
-        if KOREAN_FONT_PROP:
-            for ax in fig.axes:
-                for text in ax.texts:
-                    text.set_fontproperties(KOREAN_FONT_PROP)
-
-                for label in ax.get_xticklabels() + ax.get_yticklabels():
-                    label.set_fontproperties(KOREAN_FONT_PROP)
-
-                if hasattr(ax, 'title') and ax.title is not None:
-                    ax.title.set_fontproperties(KOREAN_FONT_PROP)
-
-                # Apply font to legend text as well
-                if ax.legend_ is not None:
-                    for text in ax.legend_.get_texts():
-                        text.set_fontproperties(KOREAN_FONT_PROP)
-
-            if hasattr(fig, '_suptitle') and fig._suptitle is not None:
-                fig._suptitle.set_fontproperties(KOREAN_FONT_PROP)
-
-        # Increase resolution and specify backend
-        plt.savefig(save_path, dpi=300, bbox_inches='tight', backend='agg')
-        plt.close()
-        return save_path
-    else:
-        return fig
+    return _apply_watermark_and_save(fig, save_path, tight_layout=True, top_adjust=0.93)
 
 def create_comprehensive_report(ticker, company_name=None, days=730, output_dir='charts'):
     """
