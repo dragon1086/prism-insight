@@ -47,75 +47,53 @@ class AnalysisRequest:
         self.market_type = market_type  # "kr" (Korea) or "us" (USA)
 
 
-def _process_us_report(request: AnalysisRequest):
-    is_cached, cached_content, cached_file, cached_pdf = get_cached_us_report(request.stock_code)
+def _process_report_generic(request: AnalysisRequest, prefix: str, get_cache_fn, generate_fn, save_md_fn, save_pdf_fn):
+    """Generic report processing logic for both US and KR markets"""
+    is_cached, cached_content, cached_file, cached_pdf = get_cache_fn(request.stock_code)
 
     if is_cached:
-        logger.info(f"Cached US report found: {cached_file}")
+        logger.info(f"Cached {prefix.upper() if prefix else 'KR'} report found: {cached_file}")
         request.result = cached_content
         request.status = "completed"
         request.report_path = cached_file
         request.pdf_path = cached_pdf
     else:
-        logger.info(f"Performing new US analysis: {request.stock_code} - {request.company_name}")
+        logger.info(f"Performing new {prefix.upper() if prefix else 'KR'} analysis: {request.stock_code} - {request.company_name}")
 
         if request.avg_price and request.period:
-            logger.info(f"US Evaluate request already processed: {request.id}")
+            logger.info(f"{prefix.upper() + ' ' if prefix else ''}Evaluate request already processed: {request.id}")
             request.status = "skipped"
         else:
-            report_result = generate_us_report_response_sync(
-                request.stock_code, request.company_name
-            )
+            report_result = generate_fn(request.stock_code, request.company_name)
 
             if report_result:
                 request.result = report_result
                 request.status = "completed"
-                md_path = save_us_report(
-                    request.stock_code, request.company_name, report_result
-                )
+                md_path = save_md_fn(request.stock_code, request.company_name, report_result)
                 request.report_path = md_path
-                pdf_path = save_us_pdf_report(
-                    request.stock_code, request.company_name, md_path
-                )
+                pdf_path = save_pdf_fn(request.stock_code, request.company_name, md_path)
                 request.pdf_path = pdf_path
             else:
                 request.status = "failed"
-                request.result = "Error occurred during US stock analysis."
+                request.result = f"Error occurred during {prefix.upper() if prefix else 'KR'} stock analysis."
+
+def _process_us_report(request: AnalysisRequest):
+    _process_report_generic(
+        request, "US", 
+        get_cached_us_report, 
+        generate_us_report_response_sync, 
+        save_us_report, 
+        save_us_pdf_report
+    )
 
 def _process_kr_report(request: AnalysisRequest):
-    is_cached, cached_content, cached_file, cached_pdf = get_cached_report(request.stock_code)
-
-    if is_cached:
-        logger.info(f"Cached report found: {cached_file}")
-        request.result = cached_content
-        request.status = "completed"
-        request.report_path = cached_file
-        request.pdf_path = cached_pdf
-    else:
-        logger.info(f"Performing new analysis: {request.stock_code} - {request.company_name}")
-
-        if request.avg_price and request.period:
-            logger.info(f"Evaluate request already processed: {request.id}")
-            request.status = "skipped"
-        else:
-            report_result = generate_report_response_sync(
-                request.stock_code, request.company_name
-            )
-
-            if report_result:
-                request.result = report_result
-                request.status = "completed"
-                md_path = save_report(
-                    request.stock_code, request.company_name, report_result
-                )
-                request.report_path = md_path
-                pdf_path = save_pdf_report(
-                    request.stock_code, request.company_name, md_path
-                )
-                request.pdf_path = pdf_path
-            else:
-                request.status = "failed"
-                request.result = "Error occurred during analysis."
+    _process_report_generic(
+        request, "", 
+        get_cached_report, 
+        generate_report_response_sync, 
+        save_report, 
+        save_pdf_report
+    )
 
 def _process_single_request(bot_instance, request: AnalysisRequest):
     logger.info(f"Worker: Starting analysis request processing - {request.id}")
