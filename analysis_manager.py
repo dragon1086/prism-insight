@@ -22,29 +22,28 @@ logger = logging.getLogger(__name__)
 analysis_queue = Queue()
 
 
+from dataclasses import dataclass, field
+
+@dataclass
 class AnalysisRequest:
     """Analysis request object"""
-    def __init__(self, stock_code: str, company_name: str, chat_id: int = None,
-                 avg_price: float = None, period: int = None, tone: str = None,
-                 background: str = None, message_id: int = None, market_type: str = "kr",
-                 user_id: int = None):
-        self.id = str(uuid.uuid4())
-        self.stock_code = stock_code  # KR: stock code (6 digits), US: ticker symbol (AAPL, etc.)
-        self.company_name = company_name
-        self.chat_id = chat_id  # Telegram chat ID
-        self.user_id = user_id  # Telegram user ID (for daily limit refund on server error)
-        self.avg_price = avg_price
-        self.period = period
-        self.tone = tone
-        self.background = background
-        self.status = "pending"
-        self.result = None
-        self.report_path = None
-        self.html_path = None  # Legacy field (kept for compatibility)
-        self.pdf_path = None
-        self.created_at = datetime.now()
-        self.message_id = message_id  # Message ID for status updates
-        self.market_type = market_type  # "kr" (Korea) or "us" (USA)
+    stock_code: str  # KR: stock code (6 digits), US: ticker symbol (AAPL, etc.)
+    company_name: str
+    chat_id: int = None  # Telegram chat ID
+    user_id: int = None  # Telegram user ID (for daily limit refund on server error)
+    avg_price: float = None
+    period: int = None
+    tone: str = None
+    background: str = None
+    message_id: int = None  # Message ID for status updates
+    market_type: str = "kr"  # "kr" (Korea) or "us" (USA)
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    status: str = "pending"
+    result: str = None
+    report_path: str = None
+    html_path: str = None  # Legacy field (kept for compatibility)
+    pdf_path: str = None
+    created_at: datetime = field(default_factory=datetime.now)
 
 
 def _process_report_generic(request: AnalysisRequest, prefix: str, get_cache_fn, generate_fn, save_md_fn, save_pdf_fn):
