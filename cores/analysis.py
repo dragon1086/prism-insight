@@ -22,6 +22,18 @@ from cores.utils import clean_markdown
 
 # Market analysis cache storage (global variable)
 _market_analysis_cache = {}
+_market_analysis_lock = asyncio.Lock()
+
+async def _get_or_generate_market_report(agent, section, reference_date, logger, language):
+    async with _market_analysis_lock:
+        if "report" in _market_analysis_cache:
+            logger.info(f"Using cached market analysis")
+            return _market_analysis_cache["report"]
+        
+        logger.info(f"Generating new market analysis")
+        report = await generate_market_report(agent, section, reference_date, logger, language)
+        _market_analysis_cache["report"] = report
+        return report
 
 async def _execute_parallel_analysis(company_name, company_code, reference_date, language, agents, base_sections, logger):
     section_reports = {}
@@ -38,14 +50,8 @@ async def _execute_parallel_analysis(company_name, company_code, reference_date,
             try:
                 agent = agents[section]
                 if section == "market_index_analysis":
-                    if "report" in _market_analysis_cache:
-                        section_logger.info(f"Using cached market analysis")
-                        return section, _market_analysis_cache["report"]
-                    else:
-                        section_logger.info(f"Generating new market analysis")
-                        report = await generate_market_report(agent, section, reference_date, section_logger, language)
-                        _market_analysis_cache["report"] = report
-                        return section, report
+                    report = await _get_or_generate_market_report(agent, section, reference_date, section_logger, language)
+                    return section, report
                 else:
                     report = await generate_report(agent, section, company_name, company_code, reference_date, section_logger, language)
                     return section, report
@@ -68,13 +74,8 @@ async def _execute_sequential_analysis(company_name, company_code, reference_dat
             try:
                 agent = agents[section]
                 if section == "market_index_analysis":
-                    if "report" in _market_analysis_cache:
-                        logger.info(f"Using cached market analysis")
-                        report = _market_analysis_cache["report"]
-                    else:
-                        logger.info(f"Generating new market analysis")
-                        report = await generate_market_report(agent, section, reference_date, logger, language)
-                        _market_analysis_cache["report"] = report
+                    report = await _get_or_generate_market_report(agent, section, reference_date, logger, language)
+                    section_reports[section] = report
                 else:
                     report = await generate_report(agent, section, company_name, company_code, reference_date, logger, language)
                 section_reports[section] = report
@@ -87,21 +88,23 @@ def _generate_charts(company_code, company_name, reference_date, logger):
     charts_dir = os.path.join("../charts", f"{company_code}_{reference_date}")
     os.makedirs(charts_dir, exist_ok=True)
     
+    DEFAULT_CHART_KWARGS = {'width': 900, 'dpi': 80, 'image_format': 'jpg', 'compress': True}
+    
     try:
         price_chart_html = get_chart_as_base64_html(
-            company_code, company_name, create_price_chart, 'Price Chart', width=900, dpi=80, image_format='jpg', compress=True,
+            company_code, company_name, create_price_chart, 'Price Chart', **DEFAULT_CHART_KWARGS,
             days=730, adjusted=True
         )
         volume_chart_html = get_chart_as_base64_html(
-            company_code, company_name, create_trading_volume_chart, 'Trading Volume Chart', width=900, dpi=80, image_format='jpg', compress=True,
+            company_code, company_name, create_trading_volume_chart, 'Trading Volume Chart', **DEFAULT_CHART_KWARGS,
             days=30  
         )
         market_cap_chart_html = get_chart_as_base64_html(
-            company_code, company_name, create_market_cap_chart, 'Market Cap Trend', width=900, dpi=80, image_format='jpg', compress=True,
+            company_code, company_name, create_market_cap_chart, 'Market Cap Trend', **DEFAULT_CHART_KWARGS,
             days=730
         )
         fundamentals_chart_html = get_chart_as_base64_html(
-            company_code, company_name, create_fundamentals_chart, 'Fundamental Indicators', width=900, dpi=80, image_format='jpg', compress=True,
+            company_code, company_name, create_fundamentals_chart, 'Fundamental Indicators', **DEFAULT_CHART_KWARGS,
             days=730
         )
         return price_chart_html, volume_chart_html, market_cap_chart_html, fundamentals_chart_html
