@@ -62,78 +62,66 @@ def _get_mcp_server_module():
         return None
 
 
-def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str) -> str:
-    """Prefetch stock OHLCV data via kospi_kosdaq MCP server library.
-
-    Args:
-        company_code: 6-digit stock code (e.g., "005930")
-        start_date: Start date (YYYYMMDD)
-        end_date: End date (YYYYMMDD)
-
-    Returns:
-        Markdown formatted OHLCV data string, or empty string on error
-    """
+def _safely_prefetch_and_format(fetch_func_name: str, title: str, *args) -> str:
+    """Generic helper to prefetch data from MCP server and format as markdown."""
     try:
         server = _get_mcp_server_module()
         if not server:
             return ""
-
-        data = server.get_stock_ohlcv(start_date, end_date, company_code)
-
-        return _dict_to_markdown(data, f"Stock OHLCV: {company_code} ({start_date}~{end_date})")
+            
+        fetch_func = getattr(server, fetch_func_name)
+        data = fetch_func(*args)
+        
+        return _dict_to_markdown(data, title)
     except Exception as e:
-        logger.error(f"Error prefetching OHLCV for {company_code}: {e}")
+        logger.error(f"Error prefetching {fetch_func_name} with args {args}: {e}")
         return ""
+
+
+def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str) -> str:
+    """Prefetch stock OHLCV data via kospi_kosdaq MCP server library."""
+    return _safely_prefetch_and_format(
+        "get_stock_ohlcv", 
+        f"Stock OHLCV: {company_code} ({start_date}~{end_date})", 
+        start_date, end_date, company_code
+    )
 
 
 def prefetch_stock_trading_volume(company_code: str, start_date: str, end_date: str) -> str:
-    """Prefetch investor trading volume data via kospi_kosdaq MCP server library.
-
-    Args:
-        company_code: 6-digit stock code
-        start_date: Start date (YYYYMMDD)
-        end_date: End date (YYYYMMDD)
-
-    Returns:
-        Markdown formatted trading volume data string, or empty string on error
-    """
-    try:
-        server = _get_mcp_server_module()
-        if not server:
-            return ""
-
-        data = server.get_stock_trading_volume(start_date, end_date, company_code)
-
-        return _dict_to_markdown(data, f"Investor Trading Volume: {company_code} ({start_date}~{end_date})")
-    except Exception as e:
-        logger.error(f"Error prefetching trading volume for {company_code}: {e}")
-        return ""
+    """Prefetch investor trading volume data via kospi_kosdaq MCP server library."""
+    return _safely_prefetch_and_format(
+        "get_stock_trading_volume",
+        f"Investor Trading Volume: {company_code} ({start_date}~{end_date})",
+        start_date, end_date, company_code
+    )
 
 
 def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str) -> str:
-    """Prefetch market index OHLCV data via kospi_kosdaq MCP server library.
+    """Prefetch market index OHLCV data via kospi_kosdaq MCP server library."""
+    index_name = "KOSPI" if index_ticker == "1001" else "KOSDAQ" if index_ticker == "2001" else index_ticker
+    return _safely_prefetch_and_format(
+        "get_index_ohlcv",
+        f"{index_name} Index ({start_date}~{end_date})",
+        start_date, end_date, index_ticker
+    )
 
-    Args:
-        index_ticker: Index ticker ("1001" for KOSPI, "2001" for KOSDAQ)
-        start_date: Start date (YYYYMMDD)
-        end_date: End date (YYYYMMDD)
 
-    Returns:
-        Markdown formatted index data string, or empty string on error
-    """
-    try:
-        server = _get_mcp_server_module()
-        if not server:
-            return ""
+def prefetch_stock_fundamentals(company_code: str, start_date: str, end_date: str) -> str:
+    """Prefetch stock fundamental data (PER, PBR, DIV) via kospi_kosdaq MCP server library."""
+    return _safely_prefetch_and_format(
+        "get_market_fundamental_by_date",
+        f"Fundamentals: {company_code} ({start_date}~{end_date})",
+        start_date, end_date, company_code
+    )
 
-        index_name = "KOSPI" if index_ticker == "1001" else "KOSDAQ" if index_ticker == "2001" else index_ticker
 
-        data = server.get_index_ohlcv(start_date, end_date, index_ticker)
-
-        return _dict_to_markdown(data, f"{index_name} Index ({start_date}~{end_date})")
-    except Exception as e:
-        logger.error(f"Error prefetching index OHLCV for {index_ticker}: {e}")
-        return ""
+def prefetch_market_cap(company_code: str, start_date: str, end_date: str) -> str:
+    """Prefetch market cap data via kospi_kosdaq MCP server library."""
+    return _safely_prefetch_and_format(
+        "get_market_cap_by_date",
+        f"Market Cap: {company_code} ({start_date}~{end_date})",
+        start_date, end_date, company_code
+    )
 
 
 def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_ago: str) -> dict:
@@ -153,6 +141,8 @@ def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_
         - "trading_volume": Investor trading volume as markdown
         - "kospi_index": KOSPI index data as markdown
         - "kosdaq_index": KOSDAQ index data as markdown
+        - "fundamentals": Fundamental data (PER/PBR/DIV) as markdown
+        - "market_cap": Market cap data as markdown
         Returns empty dict on total failure.
     """
     result = {}
@@ -176,6 +166,16 @@ def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_
     kosdaq_index = prefetch_index_ohlcv("2001", max_years_ago, reference_date)
     if kosdaq_index:
         result["kosdaq_index"] = kosdaq_index
+
+    # 5. Fundamental data (PER, PBR, DIV)
+    fundamentals = prefetch_stock_fundamentals(company_code, max_years_ago, reference_date)
+    if fundamentals:
+        result["fundamentals"] = fundamentals
+
+    # 6. Market cap data
+    market_cap = prefetch_market_cap(company_code, max_years_ago, reference_date)
+    if market_cap:
+        result["market_cap"] = market_cap
 
     if result:
         logger.info(f"Prefetched KR data for {company_code}: {list(result.keys())}")

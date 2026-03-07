@@ -45,7 +45,7 @@ try:
     json.loads(broken_json)
     print("   ❌ Unexpectedly parsed successfully")
 except json.JSONDecodeError as e:
-    print(f"   ✅ Failed to parse as expected")
+    print("   ✅ Failed to parse as expected")
     print(f"      Error: {e}")
 
 # 2. Parse after fixing
@@ -72,7 +72,7 @@ try:
     import json_repair
     repaired = json_repair.repair_json(broken_json)
     parsed = json.loads(repaired)
-    print(f"   ✅ Recovered successfully with json-repair!")
+    print("   ✅ Recovered successfully with json-repair!")
     print(f"      - sell_triggers: {len(parsed['sell_triggers'])}")
     print(f"      - hold_conditions: {len(parsed['hold_conditions'])}")
 except ImportError:

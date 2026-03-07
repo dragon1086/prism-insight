@@ -1,5 +1,7 @@
 import os
+import re
 import asyncio
+from typing import Optional, Callable
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -18,43 +20,196 @@ from cores.stock_chart import (
     get_chart_as_base64_html
 )
 from cores.utils import clean_markdown
-
-
 # Market analysis cache storage (global variable)
 _market_analysis_cache = {}
+_market_analysis_lock = asyncio.Lock()
 
-async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko"):
+async def _get_or_generate_market_report(agent, section, reference_date, logger, language):
+    async with _market_analysis_lock:
+        if "report" in _market_analysis_cache:
+            logger.info("Using cached market analysis")
+            return _market_analysis_cache["report"]
+        
+        logger.info("Generating new market analysis")
+        report = await generate_market_report(agent, section, reference_date, logger, language)
+        _market_analysis_cache["report"] = report
+        return report
+
+async def _execute_parallel_analysis(company_name, company_code, reference_date, language, agents, base_sections, logger):
+    section_reports = {}
+    logger.info(f"Running analysis in PARALLEL mode for {company_name}...")
+
+    async def process_section(section):
+        if section not in agents:
+            return section, None
+
+        section_app = MCPApp(name=f"stock_analysis_{section}")
+        async with section_app.run() as section_context:
+            section_logger = section_context.logger
+            section_logger.info(f"Processing {section} for {company_name}...")
+            try:
+                agent = agents[section]
+                if section == "market_index_analysis":
+                    report = await _get_or_generate_market_report(agent, section, reference_date, section_logger, language)
+                    return section, report
+                else:
+                    report = await generate_report(agent, section, company_name, company_code, reference_date, section_logger, language)
+                    return section, report
+            except Exception as e:
+                section_logger.error(f"Final failure processing {section}: {e}")
+                return section, f"Analysis failed: {section}"
+
+    results = await asyncio.gather(*[process_section(section) for section in base_sections])
+    for section, report in results:
+        if report is not None:
+            section_reports[section] = report
+    return section_reports
+
+async def _execute_sequential_analysis(company_name, company_code, reference_date, language, agents, base_sections, logger):
+    section_reports = {}
+    logger.info(f"Running analysis in SEQUENTIAL mode for {company_name}...")
+    for section in base_sections:
+        if section in agents:
+            logger.info(f"Processing {section} for {company_name}...")
+            try:
+                agent = agents[section]
+                if section == "market_index_analysis":
+                    report = await _get_or_generate_market_report(agent, section, reference_date, logger, language)
+                    section_reports[section] = report
+                else:
+                    report = await generate_report(agent, section, company_name, company_code, reference_date, logger, language)
+                section_reports[section] = report
+            except Exception as e:
+                logger.error(f"Final failure processing {section}: {e}")
+                section_reports[section] = f"Analysis failed: {section}"
+    return section_reports
+
+def _generate_charts(company_code, company_name, reference_date, logger):
+    """Generate charts independently, returning a dict of successful results."""
+    charts_dir = os.path.join("../charts", f"{company_code}_{reference_date}")
+    os.makedirs(charts_dir, exist_ok=True)
+    
+    DEFAULT_CHART_KWARGS = {'width': 900, 'dpi': 80, 'image_format': 'jpg', 'compress': True}
+    
+    chart_configs = [
+        ('price_chart', create_price_chart, 'Price Chart', {'days': 730, 'adjusted': True}),
+        ('volume_chart', create_trading_volume_chart, 'Trading Volume Chart', {'days': 30}),
+        ('market_cap_chart', create_market_cap_chart, 'Market Cap Trend', {'days': 730}),
+        ('fundamentals_chart', create_fundamentals_chart, 'Fundamental Indicators', {'days': 730}),
+    ]
+    
+    charts = {}
+    for key, chart_func, title, extra_kwargs in chart_configs:
+        try:
+            html = get_chart_as_base64_html(
+                company_code, company_name, chart_func, title,
+                **DEFAULT_CHART_KWARGS, **extra_kwargs
+            )
+            charts[key] = html
+        except Exception as e:
+            logger.error(f"Error generating {key}: {str(e)}")
+            charts[key] = None
+    
+    return charts
+
+def _clean_executive_summary(text, company_name, company_code):
+    """Clean LLM-generated executive summary by removing unwanted headers and metadata."""
+    text = text.lstrip('\n')
+    # Remove duplicate title header
+    text = re.sub(
+        r'^#\s*' + re.escape(company_name) + r'\s*\(' + re.escape(company_code) + r'\)[^\n]*\n+',
+        '', text, flags=re.IGNORECASE
+    )
+    # Remove publication date lines
+    text = re.sub(
+        r'^\*{0,2}(Publication Date|발행일)\*{0,2}\s*:\s*[^\n]+\n+',
+        '', text, flags=re.IGNORECASE
+    )
+    # Remove separator lines
+    text = re.sub(r'^-{3,}\s*\n+', '', text)
+    return text.lstrip('\n')
+
+def _compile_final_report(company_code, company_name, reference_date, language, section_reports, executive_summary, charts):
+    from jinja2 import Environment, FileSystemLoader
+
+    price_chart_html = charts.get('price_chart')
+    volume_chart_html = charts.get('volume_chart')
+    market_cap_chart_html = charts.get('market_cap_chart')
+    fundamentals_chart_html = charts.get('fundamentals_chart')
+    disclaimer = get_disclaimer(language)
+    formatted_date = f"{reference_date[:4]}.{reference_date[4:6]}.{reference_date[6:]}"
+
+    if language == "ko":
+        main_headers = {
+            "title": f"# {company_name} ({company_code}) 분석 보고서",
+            "pub_date": "발행일",
+            "tech_analysis": "## 1. 기술적 분석\n",
+            "fundamental": "## 2. 펀더멘털 분석\n",
+            "news": "## 3. 뉴스 분석\n",
+            "market": "## 4. 시장 분석\n",
+            "strategy": "## 5. 투자 전략\n"
+        }
+    else:
+        main_headers = {
+            "title": f"# {company_name} ({company_code}) Analysis Report",
+            "pub_date": "Publication Date",
+            "tech_analysis": "## 1. Technical Analysis\n",
+            "fundamental": "## 2. Fundamental Analysis\n",
+            "news": "## 3. News Analysis\n",
+            "market": "## 4. Market Analysis\n",
+            "strategy": "## 5. Investment Strategy\n"
+        }
+
+    template_dir = os.path.join(os.path.dirname(__file__), 'templates')
+    env = Environment(loader=FileSystemLoader(template_dir))
+    template = env.get_template('report_template.md')
+
+    final_report_str = template.render(
+        company_name=company_name,
+        company_code=company_code,
+        language=language,
+        formatted_date=formatted_date,
+        main_headers=main_headers,
+        executive_summary=executive_summary,
+        section_reports=section_reports,
+        price_chart_html=price_chart_html,
+        volume_chart_html=volume_chart_html,
+        market_cap_chart_html=market_cap_chart_html,
+        fundamentals_chart_html=fundamentals_chart_html,
+        disclaimer=disclaimer
+    )
+
+    return clean_markdown(final_report_str)
+
+async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko",
+                        progress_callback: Optional[Callable[[str, float], None]] = None):
     """
     Generate comprehensive stock analysis report
 
     Args:
         company_code: Stock code
         company_name: Company name
-        reference_date: Analysis reference date (YYYYMMDD format)
-        language: Language code ("ko" or "en")
-
-    Returns:
-        str: Generated final report markdown text
+        reference_date: Analysis date (YYYYMMDD)
+        language: Report language ("ko" or "en")
+        progress_callback: Optional callback(description, percentage) for progress updates
     """
-    # 1. Initial setup and preprocessing
-    app = MCPApp(name="stock_analysis")
+    def _progress(description: str, pct: float):
+        if progress_callback:
+            progress_callback(description, pct)
 
-    # Use today's date if reference_date is not provided
+    app = MCPApp(name="stock_analysis")
+    
     if reference_date is None:
         reference_date = datetime.now().strftime("%Y%m%d")
-
 
     async with app.run() as parallel_app:
         logger = parallel_app.logger
         logger.info(f"Starting: {company_name}({company_code}) analysis - reference date: {reference_date}")
-
-        # 2. Create dictionary to store data as shared resource
-        section_reports = {}
-
-        # 3. Define sections to analyze
+        _progress("Initializing analysis", 0.0)
+        
         base_sections = ["price_volume_analysis", "investor_trading_analysis", "company_status", "company_overview", "news_analysis", "market_index_analysis"]
-
-        # 4. Prefetch data to reduce MCP tool call overhead
+        
+        _progress("Prefetching data", 0.05)
         from cores.data_prefetch import prefetch_kr_analysis_data
         try:
             from datetime import timedelta
@@ -66,91 +221,25 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             logger.warning(f"Data prefetch failed, falling back to MCP: {e}")
             prefetched = {}
 
-        # 5. Get agents (with prefetched data)
+        _progress("Creating analysis agents", 0.10)
         agents = get_agent_directory(company_name, company_code, reference_date, base_sections, language, prefetched_data=prefetched)
-
-        # 6. Execute base analysis
-        # Parallel processing option: Activated when PRISM_PARALLEL_REPORT=true is set in .env file
-        # ⚠️ Warning: Parallel processing greatly improves speed but may hit OpenAI API rate limits.
-        # When using advanced models like GPT-5.2, rate limits may be stricter, so be careful.
         parallel_enabled = os.getenv("PRISM_PARALLEL_REPORT", "false").lower() == "true"
 
+        _progress("Analyzing sections", 0.15)
         if parallel_enabled:
-            # Parallel execution mode
-            # Create independent MCPApp context for each section to prevent MCP server conflicts
-            logger.info(f"Running analysis in PARALLEL mode for {company_name}...")
-
-            async def process_section(section):
-                """Process a single section with its own MCPApp context"""
-                if section not in agents:
-                    return section, None
-
-                # Create independent MCPApp instance for each section
-                section_app = MCPApp(name=f"stock_analysis_{section}")
-
-                async with section_app.run() as section_context:
-                    section_logger = section_context.logger
-                    section_logger.info(f"Processing {section} for {company_name}...")
-                    try:
-                        agent = agents[section]
-                        if section == "market_index_analysis":
-                            if "report" in _market_analysis_cache:
-                                section_logger.info(f"Using cached market analysis")
-                                return section, _market_analysis_cache["report"]
-                            else:
-                                section_logger.info(f"Generating new market analysis")
-                                report = await generate_market_report(agent, section, reference_date, section_logger, language)
-                                _market_analysis_cache["report"] = report
-                                return section, report
-                        else:
-                            report = await generate_report(agent, section, company_name, company_code, reference_date, section_logger, language)
-                            return section, report
-                    except Exception as e:
-                        section_logger.error(f"Final failure processing {section}: {e}")
-                        return section, f"Analysis failed: {section}"
-
-            # Execute all sections in parallel (each with its own MCPApp context)
-            results = await asyncio.gather(*[process_section(section) for section in base_sections])
-            for section, report in results:
-                if report is not None:
-                    section_reports[section] = report
+            section_reports = await _execute_parallel_analysis(company_name, company_code, reference_date, language, agents, base_sections, logger)
         else:
-            # Sequential execution mode (default - rate limit friendly)
-            logger.info(f"Running analysis in SEQUENTIAL mode for {company_name}...")
-            for section in base_sections:
-                if section in agents:
-                    logger.info(f"Processing {section} for {company_name}...")
+            section_reports = await _execute_sequential_analysis(company_name, company_code, reference_date, language, agents, base_sections, logger)
 
-                    try:
-                        agent = agents[section]
-                        if section == "market_index_analysis":
-                            # Check if data exists in cache
-                            if "report" in _market_analysis_cache:
-                                logger.info(f"Using cached market analysis")
-                                report = _market_analysis_cache["report"]
-                            else:
-                                logger.info(f"Generating new market analysis")
-                                report = await generate_market_report(agent, section, reference_date, logger, language)
-                                # Save to cache
-                                _market_analysis_cache["report"] = report
-                        else:
-                            report = await generate_report(agent, section, company_name, company_code, reference_date, logger, language)
-                        section_reports[section] = report
-                    except Exception as e:
-                        logger.error(f"Final failure processing {section}: {e}")
-                        section_reports[section] = f"Analysis failed: {section}"
-
-        # 6. Integrate content from other reports
         combined_reports = ""
         for section in base_sections:
             if section in section_reports:
                 combined_reports += f"\n\n--- {section.upper()} ---\n\n"
                 combined_reports += section_reports[section]
 
-        # 7. Generate investment strategy
+        _progress("Generating investment strategy", 0.70)
         try:
             logger.info(f"Processing investment_strategy for {company_name}...")
-
             investment_strategy = await generate_investment_strategy(
                 section_reports, combined_reports, company_name, company_code, reference_date, logger, language
             )
@@ -160,172 +249,24 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             logger.error(f"Error processing investment_strategy: {e}")
             section_reports["investment_strategy"] = "Investment strategy analysis failed"
 
-        # 8. Generate comprehensive report including all sections
-        all_reports = ""
-        for section in base_sections + ["investment_strategy"]:
-            if section in section_reports:
-                all_reports += f"\n\n--- {section.upper()} ---\n\n"
-                all_reports += section_reports[section]
-
-        # 9. Generate summary
+        _progress("Generating executive summary", 0.80)
         try:
             executive_summary = await generate_summary(
                 section_reports, company_name, company_code, reference_date, logger, language
             )
-            # Remove duplicate title/date if the agent added them
-            import re
-            executive_summary = executive_summary.lstrip('\n')
-            # Remove any leading H1 title that matches the report title pattern
-            executive_summary = re.sub(
-                r'^#\s*' + re.escape(company_name) + r'\s*\(' + re.escape(company_code) + r'\)[^\n]*\n+',
-                '',
-                executive_summary,
-                flags=re.IGNORECASE
-            )
-            # Remove any publication date line right after title removal
-            executive_summary = re.sub(
-                r'^\*{0,2}(Publication Date|발행일)\*{0,2}\s*:\s*[^\n]+\n+',
-                '',
-                executive_summary,
-                flags=re.IGNORECASE
-            )
-            # Remove leading separators (---)
-            executive_summary = re.sub(r'^-{3,}\s*\n+', '', executive_summary)
-            executive_summary = executive_summary.lstrip('\n')
+            executive_summary = _clean_executive_summary(executive_summary, company_name, company_code)
         except Exception as e:
             logger.error(f"Error generating executive summary: {e}")
             executive_summary = "## 핵심 요약\n\n요약 생성 중 오류가 발생했습니다." if language == "ko" else "## Executive Summary\n\nProblem occurred while generating analysis summary."
 
-        # 10. Generate charts
-        charts_dir = os.path.join("../charts", f"{company_code}_{reference_date}")
-        os.makedirs(charts_dir, exist_ok=True)
+        _progress("Generating charts", 0.90)
+        charts = _generate_charts(company_code, company_name, reference_date, logger)
+        
+        _progress("Compiling final report", 0.95)
+        final_report = _compile_final_report(company_code, company_name, reference_date, language, section_reports, executive_summary, charts)
 
-        try:
-            # Generate chart images
-            price_chart_html = get_chart_as_base64_html(
-                company_code, company_name, create_price_chart, 'Price Chart', width=900, dpi=80, image_format='jpg', compress=True,
-                days=730, adjusted=True
-            )
-
-            volume_chart_html = get_chart_as_base64_html(
-                company_code, company_name, create_trading_volume_chart, 'Trading Volume Chart', width=900, dpi=80, image_format='jpg', compress=True,
-                days=30  # Supply/demand analysis based on 1 month
-            )
-
-            market_cap_chart_html = get_chart_as_base64_html(
-                company_code, company_name, create_market_cap_chart, 'Market Cap Trend', width=900, dpi=80, image_format='jpg', compress=True,
-                days=730
-            )
-
-            fundamentals_chart_html = get_chart_as_base64_html(
-                company_code, company_name, create_fundamentals_chart, 'Fundamental Indicators', width=900, dpi=80, image_format='jpg', compress=True,
-                days=730
-            )
-        except Exception as e:
-            logger.error(f"Error occurred while generating charts: {str(e)}")
-            price_chart_html = None
-            volume_chart_html = None
-            market_cap_chart_html = None
-            fundamentals_chart_html = None
-
-        # 11. Compose final report with proper heading hierarchy
-        disclaimer = get_disclaimer(language)
-
-        # Format reference date for display
-        formatted_date = f"{reference_date[:4]}.{reference_date[4:6]}.{reference_date[6:]}"
-
-        # Define main section headers by language
-        if language == "ko":
-            main_headers = {
-                "title": f"# {company_name} ({company_code}) 분석 보고서",
-                "pub_date": "발행일",
-                "tech_analysis": f"## 1. 기술적 분석\n\n",
-                "fundamental": f"## 2. 펀더멘털 분석\n\n",
-                "news": f"## 3. 뉴스 분석\n\n",
-                "market": f"## 4. 시장 분석\n\n",
-                "strategy": f"## 5. 투자 전략\n\n"
-            }
-        else:
-            main_headers = {
-                "title": f"# {company_name} ({company_code}) Analysis Report",
-                "pub_date": "Publication Date",
-                "tech_analysis": f"## 1. Technical Analysis\n\n",
-                "fundamental": f"## 2. Fundamental Analysis\n\n",
-                "news": f"## 3. News Analysis\n\n",
-                "market": f"## 4. Market Analysis\n\n",
-                "strategy": f"## 5. Investment Strategy\n\n"
-            }
-
-        # Build final report with title first (disclaimer at the end like US version)
-        final_report = f"""{main_headers["title"]}
-
-**{main_headers["pub_date"]}:** {formatted_date}
-
----
-
-{executive_summary}
-
-"""
-
-        # Add sections with proper main headers
-        # Technical Analysis section (price_volume + investor_trading)
-        if "price_volume_analysis" in section_reports or "investor_trading_analysis" in section_reports:
-            final_report += main_headers["tech_analysis"]
-            if "price_volume_analysis" in section_reports:
-                final_report += section_reports["price_volume_analysis"] + "\n\n"
-                # Add price and volume charts
-                if price_chart_html or volume_chart_html:
-                    chart_title = "### 가격 및 거래량 차트\n\n" if language == "ko" else "### Price and Volume Charts\n\n"
-                    final_report += chart_title
-                    if price_chart_html:
-                        chart_subtitle = "#### 가격 차트\n\n" if language == "ko" else "#### Price Chart\n\n"
-                        final_report += chart_subtitle + price_chart_html + "\n\n"
-                    if volume_chart_html:
-                        chart_subtitle = "#### 거래량 차트\n\n" if language == "ko" else "#### Trading Volume Chart\n\n"
-                        final_report += chart_subtitle + volume_chart_html + "\n\n"
-            if "investor_trading_analysis" in section_reports:
-                final_report += section_reports["investor_trading_analysis"] + "\n\n"
-
-        # Fundamental Analysis section (company_status + company_overview)
-        if "company_status" in section_reports or "company_overview" in section_reports:
-            final_report += main_headers["fundamental"]
-            if "company_status" in section_reports:
-                final_report += section_reports["company_status"] + "\n\n"
-                # Add market cap and fundamental indicator charts
-                if market_cap_chart_html or fundamentals_chart_html:
-                    chart_title = "### 시가총액 및 펀더멘털 차트\n\n" if language == "ko" else "### Market Cap and Fundamental Charts\n\n"
-                    final_report += chart_title
-                    if market_cap_chart_html:
-                        chart_subtitle = "#### 시가총액 추이\n\n" if language == "ko" else "#### Market Cap Trend\n\n"
-                        final_report += chart_subtitle + market_cap_chart_html + "\n\n"
-                    if fundamentals_chart_html:
-                        chart_subtitle = "#### 펀더멘털 지표 분석\n\n" if language == "ko" else "#### Fundamental Indicator Analysis\n\n"
-                        final_report += chart_subtitle + fundamentals_chart_html + "\n\n"
-            if "company_overview" in section_reports:
-                final_report += section_reports["company_overview"] + "\n\n"
-
-        # News Analysis section
-        if "news_analysis" in section_reports:
-            final_report += main_headers["news"]
-            final_report += section_reports["news_analysis"] + "\n\n"
-
-        # Market Analysis section
-        if "market_index_analysis" in section_reports:
-            final_report += main_headers["market"]
-            final_report += section_reports["market_index_analysis"] + "\n\n"
-
-        # Investment Strategy section
-        if "investment_strategy" in section_reports:
-            final_report += main_headers["strategy"]
-            final_report += section_reports["investment_strategy"] + "\n\n"
-
-        # Add disclaimer at the end
-        final_report += "---\n\n" + disclaimer + "\n"
-
-        # 12. Final markdown cleanup
-        final_report = clean_markdown(final_report)
-
+        _progress("Analysis complete", 1.0)
         logger.info(f"Finalized report for {company_name} - {len(final_report)} characters")
         logger.info(f"Analysis completed for {company_name}.")
-
         return final_report
+

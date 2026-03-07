@@ -307,7 +307,7 @@ def step6_final_cache_refresh():
                          check=True, capture_output=True, text=True, timeout=30)
             print("✅ Matplotlib font manager rebuilt using subprocess fontManager.rebuild()")
             rebuild_success = True
-        except:
+        except Exception:
             pass
 
         # Method 2: Direct fontManager.rebuild() call

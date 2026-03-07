@@ -1,12 +1,16 @@
 """
 Analysis request management and background task processing module
+
+Uses ThreadPoolExecutor for efficient lifecycle management of analysis workers.
 """
 import logging
 import traceback
 import uuid
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime
-from queue import Queue
+from queue import Queue, Empty
 
 from report_generator import (
     get_cached_report, save_report, save_pdf_report,
@@ -22,156 +26,165 @@ logger = logging.getLogger(__name__)
 analysis_queue = Queue()
 
 
+@dataclass
 class AnalysisRequest:
     """Analysis request object"""
-    def __init__(self, stock_code: str, company_name: str, chat_id: int = None,
-                 avg_price: float = None, period: int = None, tone: str = None,
-                 background: str = None, message_id: int = None, market_type: str = "kr",
-                 user_id: int = None):
-        self.id = str(uuid.uuid4())
-        self.stock_code = stock_code  # KR: stock code (6 digits), US: ticker symbol (AAPL, etc.)
-        self.company_name = company_name
-        self.chat_id = chat_id  # Telegram chat ID
-        self.user_id = user_id  # Telegram user ID (for daily limit refund on server error)
-        self.avg_price = avg_price
-        self.period = period
-        self.tone = tone
-        self.background = background
-        self.status = "pending"
-        self.result = None
-        self.report_path = None
-        self.html_path = None  # Legacy field (kept for compatibility)
-        self.pdf_path = None
-        self.created_at = datetime.now()
-        self.message_id = message_id  # Message ID for status updates
-        self.market_type = market_type  # "kr" (Korea) or "us" (USA)
+    stock_code: str  # KR: stock code (6 digits), US: ticker symbol (AAPL, etc.)
+    company_name: str
+    chat_id: int = None  # Telegram chat ID
+    user_id: int = None  # Telegram user ID (for daily limit refund on server error)
+    avg_price: float = None
+    period: int = None
+    tone: str = None
+    background: str = None
+    message_id: int = None  # Message ID for status updates
+    market_type: str = "kr"  # "kr" (Korea) or "us" (USA)
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    status: str = "pending"
+    result: str = None
+    report_path: str = None
+    html_path: str = None  # Legacy field (kept for compatibility)
+    pdf_path: str = None
+    created_at: datetime = field(default_factory=datetime.now)
 
 
-def start_background_worker(bot_instance):
+def _process_report_generic(request: AnalysisRequest, prefix: str, get_cache_fn, generate_fn, save_md_fn, save_pdf_fn):
+    """Generic report processing logic for both US and KR markets"""
+    is_cached, cached_content, cached_file, cached_pdf = get_cache_fn(request.stock_code)
+
+    if is_cached:
+        logger.info(f"Cached {prefix.upper() if prefix else 'KR'} report found: {cached_file}")
+        request.result = cached_content
+        request.status = "completed"
+        request.report_path = cached_file
+        request.pdf_path = cached_pdf
+    else:
+        logger.info(f"Performing new {prefix.upper() if prefix else 'KR'} analysis: {request.stock_code} - {request.company_name}")
+
+        if request.avg_price and request.period:
+            logger.info(f"{prefix.upper() + ' ' if prefix else ''}Evaluate request already processed: {request.id}")
+            request.status = "skipped"
+        else:
+            report_result = generate_fn(request.stock_code, request.company_name)
+
+            if report_result:
+                request.result = report_result
+                request.status = "completed"
+                md_path = save_md_fn(request.stock_code, request.company_name, report_result)
+                request.report_path = md_path
+                pdf_path = save_pdf_fn(request.stock_code, request.company_name, md_path)
+                request.pdf_path = pdf_path
+            else:
+                request.status = "failed"
+                request.result = f"Error occurred during {prefix.upper() if prefix else 'KR'} stock analysis."
+
+def _process_us_report(request: AnalysisRequest):
+    _process_report_generic(
+        request, "US", 
+        get_cached_us_report, 
+        generate_us_report_response_sync, 
+        save_us_report, 
+        save_us_pdf_report
+    )
+
+def _process_kr_report(request: AnalysisRequest):
+    _process_report_generic(
+        request, "", 
+        get_cached_report, 
+        generate_report_response_sync, 
+        save_report, 
+        save_pdf_report
+    )
+
+def _process_single_request(bot_instance, request: AnalysisRequest):
+    logger.info(f"Worker: Starting analysis request processing - {request.id}")
+    bot_instance.pending_requests[request.id] = request
+
+    try:
+        if request.market_type == "us":
+            _process_us_report(request)
+        else:
+            _process_kr_report(request)
+
+        logger.info(f"Analysis complete, adding to result queue: {request.id}")
+        bot_instance.result_queue.put(request.id)
+
+    except Exception as e:
+        logger.error(f"Worker: Error during analysis processing - {str(e)}")
+        logger.error(traceback.format_exc())
+        request.status = "failed"
+        request.result = f"Error occurred during analysis: {str(e)}"
+        bot_instance.result_queue.put(request.id)
+
+
+class AnalysisWorker:
+    """Manages analysis processing using ThreadPoolExecutor for clean lifecycle management.
+    
+    Replaces raw Thread + Queue pattern with ThreadPoolExecutor for:
+    - Automatic thread lifecycle management
+    - Graceful shutdown with pending task completion
+    - Better error isolation between tasks
     """
-    Start background worker
-    Create thread to process analysis requests
-    """
-    def worker():
-        logger.info("Background worker started")
-        while True:
+    def __init__(self, bot_instance, max_workers: int = 2):
+        self.bot_instance = bot_instance
+        self.max_workers = max_workers
+        self._executor = None
+        self._stop_event = threading.Event()
+        self._dispatcher_thread = None
+
+    def start(self):
+        """Start the analysis worker pool and dispatcher."""
+        self._stop_event.clear()
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.max_workers,
+            thread_name_prefix="analysis-worker"
+        )
+        self._dispatcher_thread = threading.Thread(
+            target=self._dispatcher, daemon=True, name="analysis-dispatcher"
+        )
+        self._dispatcher_thread.start()
+        logger.info(f"AnalysisWorker started with {self.max_workers} workers.")
+        return self._dispatcher_thread
+
+    def stop(self, wait=True):
+        """Gracefully stop the worker pool."""
+        self._stop_event.set()
+        # Unblock queue.get() if waiting
+        analysis_queue.put(None)
+        if self._executor:
+            self._executor.shutdown(wait=wait, cancel_futures=not wait)
+        if wait and self._dispatcher_thread:
+            self._dispatcher_thread.join(timeout=10)
+        logger.info("AnalysisWorker stopped.")
+
+    def _dispatcher(self):
+        """Dispatch incoming requests from the queue to the thread pool."""
+        logger.info("Analysis dispatcher started")
+        while not self._stop_event.is_set():
             try:
-                # Get task from queue (blocking)
-                request = analysis_queue.get()
-                logger.info(f"Worker: Starting analysis request processing - {request.id}")
-
-                # Update request status
-                bot_instance.pending_requests[request.id] = request
-
-                try:
-                    # Use different cache/analysis functions based on market type
-                    if request.market_type == "us":
-                        # Process US stock report
-                        is_cached, cached_content, cached_file, cached_pdf = get_cached_us_report(request.stock_code)
-
-                        if is_cached:
-                            logger.info(f"Cached US report found: {cached_file}")
-                            request.result = cached_content
-                            request.status = "completed"
-                            request.report_path = cached_file
-                            request.pdf_path = cached_pdf
-                        else:
-                            # Perform new US analysis
-                            logger.info(f"Performing new US analysis: {request.stock_code} - {request.company_name}")
-
-                            if request.avg_price and request.period:
-                                logger.info(f"US Evaluate request already processed: {request.id}")
-                                request.status = "skipped"
-                            else:
-                                # Generate US report (synchronous mode)
-                                report_result = generate_us_report_response_sync(
-                                    request.stock_code, request.company_name
-                                )
-
-                                if report_result:
-                                    request.result = report_result
-                                    request.status = "completed"
-
-                                    # Save US report file
-                                    md_path = save_us_report(
-                                        request.stock_code, request.company_name, report_result
-                                    )
-                                    request.report_path = md_path
-
-                                    # Generate US PDF
-                                    pdf_path = save_us_pdf_report(
-                                        request.stock_code, request.company_name, md_path
-                                    )
-                                    request.pdf_path = pdf_path
-                                else:
-                                    request.status = "failed"
-                                    request.result = "Error occurred during US stock analysis."
-                    else:
-                        # Process Korean stock report (existing logic)
-                        is_cached, cached_content, cached_file, cached_pdf = get_cached_report(request.stock_code)
-
-                        if is_cached:
-                            logger.info(f"Cached report found: {cached_file}")
-                            request.result = cached_content
-                            request.status = "completed"
-                            request.report_path = cached_file
-                            request.pdf_path = cached_pdf
-                        else:
-                            # Perform new analysis (using synchronous version)
-                            logger.info(f"Performing new analysis: {request.stock_code} - {request.company_name}")
-
-                            # Execute analysis (different prompts for evaluate vs report)
-                            if request.avg_price and request.period:  # For evaluate command
-                                # Evaluate requests are executed asynchronously, so not processed in background
-                                # Already handled by telegram bot
-                                logger.info(f"Evaluate request already processed: {request.id}")
-                                request.status = "skipped"
-                            else:  # For report command
-                                # Execute synchronously
-                                report_result = generate_report_response_sync(
-                                    request.stock_code, request.company_name
-                                )
-
-                                if report_result:
-                                    request.result = report_result
-                                    request.status = "completed"
-
-                                    # Save file
-                                    md_path = save_report(
-                                        request.stock_code, request.company_name, report_result
-                                    )
-                                    request.report_path = md_path
-
-                                    # Generate PDF
-                                    pdf_path = save_pdf_report(
-                                        request.stock_code, request.company_name, md_path
-                                    )
-                                    request.pdf_path = pdf_path
-                                else:
-                                    request.status = "failed"
-                                    request.result = "Error occurred during analysis."
-
-                    # Add to queue for result processing
-                    logger.info(f"Analysis complete, adding to result queue: {request.id}")
-                    bot_instance.result_queue.put(request.id)
-
-                except Exception as e:
-                    logger.error(f"Worker: Error during analysis processing - {str(e)}")
-                    logger.error(traceback.format_exc())
-                    request.status = "failed"
-                    request.result = f"Error occurred during analysis: {str(e)}"
-                    # Add to result queue even on error for processing
-                    bot_instance.result_queue.put(request.id)
-
-            except Exception as e:
-                logger.error(f"Worker: Error during request processing - {str(e)}")
-                logger.error(traceback.format_exc())
-            finally:
-                # Mark task as complete
+                request = analysis_queue.get(timeout=1.0)
+                if request is None:  # Shutdown signal
+                    analysis_queue.task_done()
+                    break
+                # Submit to thread pool instead of processing in-line
+                future = self._executor.submit(
+                    _process_single_request, self.bot_instance, request
+                )
+                future.add_done_callback(
+                    lambda f, r=request: self._handle_completion(f, r)
+                )
                 analysis_queue.task_done()
+            except Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Dispatcher error: {str(e)}")
+                logger.error(traceback.format_exc())
 
-    # Start background thread
-    worker_thread = threading.Thread(target=worker, daemon=True)
-    worker_thread.start()
-    logger.info("Background worker thread started.")
-    return worker_thread
+    def _handle_completion(self, future, request):
+        """Handle completion of a submitted task."""
+        exc = future.exception()
+        if exc:
+            logger.error(f"Analysis task {request.id} failed with exception: {exc}")
+            request.status = "failed"
+            request.result = f"Error occurred during analysis: {str(exc)}"
+            self.bot_instance.result_queue.put(request.id)

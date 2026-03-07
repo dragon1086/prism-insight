@@ -9,7 +9,6 @@ Cautions:
 
 import asyncio
 import sys
-import os
 from pathlib import Path
 import logging
 from typing import List, Dict, Any
@@ -18,7 +17,7 @@ from typing import List, Dict, Any
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from trading.domestic_stock_trading import DomesticStockTrading, AsyncTradingContext
+from trading.domestic_stock_trading import AsyncTradingContext
 
 # Logging setup
 logging.basicConfig(

@@ -103,7 +103,7 @@ async def quick_buy_test(stock_code="061040", amount=10000, mode="demo"):
         result = await trader.async_buy_stock(stock_code, timeout=20.0)
 
         if result['success']:
-            print(f"✅ Buy successful!")
+            print("✅ Buy successful!")
             print(f"   Stock: {result['stock_code']}")
             print(f"   Quantity: {result['quantity']} shares")
             print(f"   Current price: {result['current_price']:,} KRW")
@@ -129,7 +129,7 @@ async def quick_sell_test(stock_code="061040", mode="demo"):
         result = await trader.async_sell_stock(stock_code, timeout=20.0)
 
         if result['success']:
-            print(f"✅ Sell successful!")
+            print("✅ Sell successful!")
             print(f"   Stock: {result['stock_code']}")
             print(f"   Quantity: {result['quantity']} shares")
             print(f"   Estimated amount: {result['estimated_amount']:,} KRW")

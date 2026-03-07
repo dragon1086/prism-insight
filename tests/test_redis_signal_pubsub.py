@@ -20,7 +20,6 @@ import os
 import sys
 import json
 import pytest
-import asyncio
 from unittest.mock import MagicMock, AsyncMock, patch
 from datetime import datetime
 from pathlib import Path
@@ -36,8 +35,6 @@ load_dotenv(PROJECT_ROOT / ".env")
 from messaging.redis_signal_publisher import (
     SignalPublisher,
     get_signal_publisher,
-    publish_buy_signal,
-    publish_sell_signal,
 )
 
 
@@ -170,7 +167,7 @@ class TestPublishSignal:
     @pytest.mark.asyncio
     async def test_publish_signal_with_scenario(self, publisher_with_mock_redis, mock_redis, sample_scenario):
         """시나리오 포함 시그널 발행 테스트"""
-        result = await publisher_with_mock_redis.publish_signal(
+        await publisher_with_mock_redis.publish_signal(
             signal_type="BUY",
             ticker="005930",
             company_name="Samsung Electronics",
@@ -369,7 +366,7 @@ class TestIntegrationWithRealRedis:
             trade_result={"success": True, "message": "테스트 Buy completed"}
         )
 
-        assert message_id is not None, f"message_id is None. Check Redis connection."
+        assert message_id is not None, "message_id is None. Check Redis connection."
         print(f"\n✅ 매수 시그널 발행: {message_id}")
 
         # 발행된 메시지 확인 (upstash-redis 1.5.0+ 시그니처: xrange(key, start, end, count))
@@ -581,12 +578,12 @@ class TestIntegrationWithRealRedis:
         # 최근 메시지 조회
         recent = real_redis.xrevrange(stream_name, count=3)
         
-        print(f"\n📊 스트림 정보:")
+        print("\n📊 스트림 정보:")
         print(f"   - 스트림 이름: {stream_name}")
         print(f"   - 총 메시지 수: {length}")
         
         if recent:
-            print(f"   - 최근 메시지:")
+            print("   - 최근 메시지:")
             for msg_id, data in recent:
                 parsed_data = parse_stream_data(data)
                 signal = json.loads(parsed_data["data"])
@@ -634,7 +631,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_publish_with_special_characters(self, publisher_with_mock_redis, mock_redis):
         """특수문자 포함 시그널 테스트"""
-        result = await publisher_with_mock_redis.publish_buy_signal(
+        await publisher_with_mock_redis.publish_buy_signal(
             ticker="005930",
             company_name="Samsung Electronics (우선주)",
             price=82000,

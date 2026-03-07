@@ -21,8 +21,7 @@ import os
 import sys
 import json
 import pytest
-import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, patch
 from datetime import datetime
 from pathlib import Path
 
@@ -36,9 +35,6 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 from messaging.gcp_pubsub_signal_publisher import (
     SignalPublisher,
-    get_signal_publisher,
-    publish_buy_signal,
-    publish_sell_signal,
 )
 
 
@@ -152,7 +148,7 @@ class TestPublishSignal:
     @pytest.mark.asyncio
     async def test_publish_signal_with_scenario(self, publisher_with_mock, mock_publisher_client, sample_scenario):
         """시나리오 포함 시그널 발행 테스트"""
-        result = await publisher_with_mock.publish_signal(
+        await publisher_with_mock.publish_signal(
             signal_type="BUY",
             ticker="005930",
             company_name="Samsung Electronics",
@@ -402,7 +398,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_publish_with_special_characters(self, publisher_with_mock, mock_publisher_client):
         """특수문자 포함 시그널 테스트"""
-        result = await publisher_with_mock.publish_buy_signal(
+        await publisher_with_mock.publish_buy_signal(
             ticker="005930",
             company_name="Samsung Electronics (우선주)",
             price=82000,
