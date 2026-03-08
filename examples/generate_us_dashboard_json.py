@@ -208,6 +208,43 @@ class USDashboardDataGenerator:
         """Convert SQLite Row to Dictionary"""
         return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
+    def normalize_lessons(self, lessons_data) -> List[Dict]:
+        """L1/L2/L3 lessons 데이터를 일관된 구조로 정규화
+
+        L1 (상세): [{condition, action, reason, priority}] - 완전한 객체 배열
+        L2 (압축): ["문자열 교훈1", ...] 또는 [{action}] - priority 필드 누락 가능
+        L3 (최소): 더 간략한 형태
+
+        모든 형태를 {condition, action, reason, priority} 구조로 통일
+        """
+        if not lessons_data:
+            return []
+
+        normalized = []
+        for item in lessons_data:
+            if isinstance(item, str):
+                normalized.append({
+                    'condition': '',
+                    'action': item,
+                    'reason': '',
+                    'priority': 'medium'
+                })
+            elif isinstance(item, dict):
+                normalized.append({
+                    'condition': item.get('condition', ''),
+                    'action': item.get('action', str(item)),
+                    'reason': item.get('reason', ''),
+                    'priority': item.get('priority', 'medium')
+                })
+            else:
+                normalized.append({
+                    'condition': '',
+                    'action': str(item),
+                    'reason': '',
+                    'priority': 'medium'
+                })
+        return normalized
+
     def get_us_stock_holdings(self, conn) -> List[Dict]:
         """Get current US stock holdings data"""
         cursor = conn.cursor()
@@ -471,81 +508,71 @@ class USDashboardDataGenerator:
             return []
 
     def get_us_trading_insights(self, conn) -> Dict:
-        """Get US trading insights data (trading_journal, trading_principles, trading_intuitions with market='US')"""
+        """Get trading insights data (unified across KR/US markets)"""
         try:
             cursor = conn.cursor()
 
-            # 1. Query trading_principles (market='US')
+            # 1. trading_principles 조회 (KR/US 통합)
+            cursor.execute("""
+                SELECT id, scope, scope_context, condition, action, reason,
+                       priority, confidence, supporting_trades, is_active,
+                       created_at, last_validated_at
+                FROM trading_principles
+                WHERE is_active = 1
+                ORDER BY
+                    CASE priority
+                        WHEN 'high' THEN 1
+                        WHEN 'medium' THEN 2
+                        WHEN 'low' THEN 3
+                    END,
+                    confidence DESC
+            """)
+
             principles = []
-            try:
-                cursor.execute("""
-                    SELECT id, scope, scope_context, condition, action, reason,
-                           priority, confidence, supporting_trades, is_active,
-                           created_at, last_validated_at
-                    FROM trading_principles
-                    WHERE is_active = 1 AND market = 'US'
-                    ORDER BY
-                        CASE priority
-                            WHEN 'high' THEN 1
-                            WHEN 'medium' THEN 2
-                            WHEN 'low' THEN 3
-                        END,
-                        confidence DESC
-                """)
+            for row in cursor.fetchall():
+                principle = self.dict_from_row(row, cursor)
+                principle['is_active'] = bool(principle.get('is_active', 0))
+                principles.append(principle)
 
-                for row in cursor.fetchall():
-                    principle = self.dict_from_row(row, cursor)
-                    principle['is_active'] = bool(principle.get('is_active', 0))
-                    principles.append(principle)
-            except sqlite3.OperationalError:
-                # market column might not exist
-                pass
+            logger.info(f"Trading principles: {len(principles)} items")
 
-            logger.info(f"US Trading principles: {len(principles)} items")
+            # 2. trading_journal 조회 (KR/US 통합)
+            cursor.execute("""
+                SELECT id, ticker, company_name, trade_date, trade_type,
+                       buy_price, sell_price, profit_rate, holding_days,
+                       one_line_summary, situation_analysis, judgment_evaluation,
+                       lessons, pattern_tags, compression_layer
+                FROM trading_journal
+                ORDER BY trade_date DESC
+                LIMIT 50
+            """)
 
-            # 2. Query trading_journal (market='US')
             journal_entries = []
-            try:
-                cursor.execute("""
-                    SELECT id, ticker, company_name, trade_date, trade_type,
-                           buy_price, sell_price, profit_rate, holding_days,
-                           one_line_summary, situation_analysis, judgment_evaluation,
-                           lessons, pattern_tags, compression_layer
-                    FROM trading_journal
-                    WHERE market = 'US'
-                    ORDER BY trade_date DESC
-                    LIMIT 50
-                """)
+            for row in cursor.fetchall():
+                entry = self.dict_from_row(row, cursor)
+                raw_lessons = self.parse_json_field(entry.get('lessons', '[]'))
+                entry['lessons'] = self.normalize_lessons(raw_lessons)
+                entry['pattern_tags'] = self.parse_json_field(entry.get('pattern_tags', '[]'))
+                journal_entries.append(entry)
 
-                for row in cursor.fetchall():
-                    entry = self.dict_from_row(row, cursor)
-                    entry['lessons'] = self.parse_json_field(entry.get('lessons', '[]'))
-                    entry['pattern_tags'] = self.parse_json_field(entry.get('pattern_tags', '[]'))
-                    journal_entries.append(entry)
-            except sqlite3.OperationalError:
-                pass
+            logger.info(f"Trading journal: {len(journal_entries)} entries")
 
-            logger.info(f"US Trading journal: {len(journal_entries)} entries")
+            # 3. trading_intuitions 조회 (KR/US 통합)
+            cursor.execute("""
+                SELECT id, category, condition, insight, confidence,
+                       success_rate, supporting_trades, is_active, subcategory
+                FROM trading_intuitions
+                WHERE is_active = 1
+                ORDER BY confidence DESC
+            """)
 
-            # 3. Query trading_intuitions (market='US')
             intuitions = []
-            try:
-                cursor.execute("""
-                    SELECT id, category, condition, insight, confidence,
-                           success_rate, supporting_trades, is_active, subcategory
-                    FROM trading_intuitions
-                    WHERE is_active = 1 AND market = 'US'
-                    ORDER BY confidence DESC
-                """)
+            for row in cursor.fetchall():
+                intuition = self.dict_from_row(row, cursor)
+                intuition['is_active'] = bool(intuition.get('is_active', 0))
+                intuitions.append(intuition)
 
-                for row in cursor.fetchall():
-                    intuition = self.dict_from_row(row, cursor)
-                    intuition['is_active'] = bool(intuition.get('is_active', 0))
-                    intuitions.append(intuition)
-            except sqlite3.OperationalError:
-                pass
-
-            logger.info(f"US Trading intuitions: {len(intuitions)} items")
+            logger.info(f"Trading intuitions: {len(intuitions)} items")
 
             # 4. Calculate summary statistics
             high_priority_count = sum(1 for p in principles if p.get('priority') == 'high')
@@ -1200,7 +1227,7 @@ class USDashboardDataGenerator:
 
         # Include trades after the last market data date in the final entry
         if result and cumulative_by_date:
-            final_cumulative = max(cumulative_by_date.values())
+            final_cumulative = cumulative_by_date[max(cumulative_by_date.keys())]
             if final_cumulative != result[-1]['cumulative_realized_profit']:
                 result[-1]['cumulative_realized_profit'] = final_cumulative
                 result[-1]['prism_simulator_return'] = final_cumulative / 10
