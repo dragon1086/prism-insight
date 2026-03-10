@@ -289,8 +289,6 @@ class USStockAnalysisOrchestrator:
                         "lagging_sectors": [],
                         "risk_events": [],
                         "beneficiary_themes": [],
-                        "recommended_max_holdings": 8,
-                        "cash_ratio_suggestion": 20,
                         "report_prose": "",
                     }
                 elif not macro_data:

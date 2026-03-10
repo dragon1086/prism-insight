@@ -330,7 +330,7 @@ def create_trading_scenario_agent(language: str = "ko"):
             "investment_period": "Short" / "Medium" / "Long",
             "rationale": "Core investment rationale (within 3 lines)",
             "sector": "Industry/Sector",
-            "market_condition": "Market trend analysis (Uptrend/Downtrend/Sideways)",
+            "market_condition": "Market regime from macro intelligence (strong_bull/moderate_bull/sideways/moderate_bear/strong_bear) + brief rationale. If no macro data, use technical assessment (Uptrend/Downtrend/Sideways with specific evidence)",
             "max_portfolio_size": "Maximum holdings inferred from market analysis",
             "trading_scenarios": {
                 "key_levels": {
@@ -675,7 +675,7 @@ def create_trading_scenario_agent(language: str = "ko"):
             "investment_period": "단기" / "중기" / "장기",
             "rationale": "핵심 투자 근거 (3줄 이내)",
             "sector": "산업군/섹터",
-            "market_condition": "시장 추세 분석 (상승추세/하락추세/횡보 등으로 표현하되 구체적인 근거 같이 제시)",
+            "market_condition": "거시경제 인텔리전스의 시장 체제 (strong_bull/moderate_bull/sideways/moderate_bear/strong_bear) + 간략 근거. 거시 데이터 없으면 기술적 판단 (상승추세/하락추세/횡보 + 구체적 근거)",
             "max_portfolio_size": "시장 상태 분석 결과 추론된 최대 보유 종목수(1개의 숫자로만 표현. 범위표현 안됨. '개'라는 단위 표현도 삭제.)",
             "trading_scenarios": {
                 "key_levels": {
