@@ -16,7 +16,7 @@ def create_macro_intelligence_agent(reference_date, language="ko", prefetched_da
         Agent: Macro intelligence agent
     """
 
-    # Build context from prefetched data
+    # Build context from prefetched data (language-agnostic)
     regime_context = ""
     index_data_context = ""
 
@@ -56,7 +56,14 @@ perplexity data provides overwhelming contradictory evidence.
             if kosdaq_md:
                 index_data_context += kosdaq_md + "\n"
 
-    instruction = f"""You are a Korean stock market macro intelligence analyst.
+    # JSON schema values (language-agnostic)
+    schema_market_regime = prefetched_data.get('computed_regime', {}).get('market_regime', 'sideways') if prefetched_data else 'sideways'
+    schema_regime_confidence = prefetched_data.get('computed_regime', {}).get('regime_confidence', 0.5) if prefetched_data else 0.5
+    schema_simple_ma_regime = prefetched_data.get('computed_regime', {}).get('simple_ma_regime', 'sideways') if prefetched_data else 'sideways'
+    schema_index_summary = _format_index_summary(prefetched_data)
+
+    if language == "en":
+        instruction = f"""You are a Korean stock market macro intelligence analyst.
 Follow the instructions below to collect data, then output ONLY valid JSON. Do not include any text outside the JSON.
 
 Analysis date: {reference_date} (YYYYMMDD format)
@@ -66,7 +73,7 @@ Analysis date: {reference_date} (YYYYMMDD format)
 
 ### Perplexity macro search (1 call only)
 Use the perplexity_ask tool with the following query:
-"{reference_date} 한국 증시 거시경제 동향, 업종별 동향, 주도 섹터와 소외 섹터, 리스크 이벤트, 지정학적 리스크 종합분석"
+"{reference_date} Korean stock market macro trends, sector performance, leading and lagging sectors, risk events, geopolitical risk comprehensive analysis"
 
 ---
 
@@ -95,11 +102,99 @@ Use ONLY these sectors for leading_sectors and lagging_sectors:
 {{{{
   "analysis_date": "YYYYMMDD",
   "market": "KR",
-  "market_regime": "{prefetched_data.get('computed_regime', {}).get('market_regime', 'sideways') if prefetched_data else 'sideways'}",
-  "regime_confidence": {prefetched_data.get('computed_regime', {}).get('regime_confidence', 0.5) if prefetched_data else 0.5},
+  "market_regime": "{schema_market_regime}",
+  "regime_confidence": {schema_regime_confidence},
+  "regime_rationale": "Brief rationale for the regime judgment (1-2 sentences)",
+  "simple_ma_regime": "{schema_simple_ma_regime}",
+  "index_summary": {schema_index_summary},
+  "leading_sectors": [
+    {{"sector": "반도체", "reason": "Surging AI demand", "confidence": 0.8}}
+  ],
+  "lagging_sectors": [
+    {{"sector": "건설", "reason": "Impact of rate hikes", "confidence": 0.6}}
+  ],
+  "risk_events": [
+    {{"event": "Escalating US-China trade tensions", "impact": "negative", "severity": "high", "affected_sectors": ["반도체", "자동차"]}}
+  ],
+  "beneficiary_themes": [
+    {{"theme": "Expanding AI infrastructure investment", "beneficiary_sectors": ["반도체", "IT/소프트웨어"], "duration": "medium_term"}}
+  ],
+  "recommended_max_holdings": 8,
+  "cash_ratio_suggestion": 20,
+  "report_prose": "Macro intelligence report narrative (3-5 paragraphs, formal English)"
+}}}}
+```
+
+## report_prose Guidelines
+
+Write a professional 3-5 paragraph narrative in formal English covering:
+1. Current market regime and its rationale
+2. Leading sectors and why they are outperforming
+3. Key risk events and their potential market impact
+4. Recommended investment posture given the current regime
+
+This prose will be directly inserted into stock analysis reports. Make it informative but concise.
+
+## Field Values Guide
+
+- `recommended_max_holdings`: 6~10 based on regime
+  - strong_bull: 9~10, moderate_bull: 8~9, sideways: 7~8, moderate_bear: 6~7, strong_bear: 5~6
+- `cash_ratio_suggestion`: integer %
+  - strong_bull: 10%, moderate_bull: 15~20%, sideways: 20~25%, moderate_bear: 30%, strong_bear: 40%+
+
+## Important Notes
+
+- Execute perplexity tool call before generating JSON
+- Output MUST be pure JSON only. No markdown code fences, no explanatory text
+- leading_sectors: max 5, descending confidence
+- lagging_sectors: max 5
+- Anti-hallucination: only include content confirmed from actual data
+"""
+    else:
+        instruction = f"""당신은 한국 주식시장 거시경제 인텔리전스 애널리스트입니다.
+아래 지시에 따라 데이터를 수집한 후, 유효한 JSON만 출력하십시오. JSON 외부에 어떠한 텍스트도 포함하지 마십시오.
+
+분석 기준일: {reference_date} (YYYYMMDD 형식)
+{regime_context}
+{index_data_context}
+## 실행할 도구 호출
+
+### Perplexity 거시경제 검색 (1회만)
+perplexity_ask 도구를 사용하여 다음 쿼리를 실행하십시오:
+"{reference_date} 한국 증시 거시경제 동향, 업종별 동향, 주도 섹터와 소외 섹터, 리스크 이벤트, 지정학적 리스크 종합분석"
+
+---
+
+## 수행 과제
+
+Perplexity 검색 결과와 위의 사전 계산된 지수 데이터를 바탕으로:
+1. 사전 계산된 market_regime 및 index_summary 값을 그대로 사용하십시오
+2. Perplexity 분석에서 주도 섹터와 소외 섹터를 파악하십시오
+3. 리스크 이벤트와 수혜 테마를 파악하십시오
+4. 체제 판단 근거를 설명하는 `regime_rationale`을 작성하십시오
+5. 주식 분석 보고서에 삽입될 잘 작성된 3-5단락 내러티브 요약인 `report_prose` 섹션을 작성하십시오
+
+---
+
+## 섹터 분류 체계 (KR 고정 섹터 목록)
+
+leading_sectors와 lagging_sectors에는 반드시 다음 섹터만 사용하십시오:
+반도체, 자동차, 배터리/2차전지, 바이오/제약, 건설, 철강, 화학, 금융,
+유통/소비재, IT/소프트웨어, 엔터테인먼트, 조선, 방산, 에너지, 통신, 운송/물류, 기타
+
+---
+
+## 출력 JSON 스키마 (정확히 이 구조로 출력하십시오)
+
+```json
+{{{{
+  "analysis_date": "YYYYMMDD",
+  "market": "KR",
+  "market_regime": "{schema_market_regime}",
+  "regime_confidence": {schema_regime_confidence},
   "regime_rationale": "판단 근거 간략 설명 (1-2 sentences)",
-  "simple_ma_regime": "{prefetched_data.get('computed_regime', {}).get('simple_ma_regime', 'sideways') if prefetched_data else 'sideways'}",
-  "index_summary": {_format_index_summary(prefetched_data)},
+  "simple_ma_regime": "{schema_simple_ma_regime}",
+  "index_summary": {schema_index_summary},
   "leading_sectors": [
     {{"sector": "반도체", "reason": "AI 수요 급증", "confidence": 0.8}}
   ],
@@ -118,31 +213,31 @@ Use ONLY these sectors for leading_sectors and lagging_sectors:
 }}}}
 ```
 
-## report_prose Guidelines
+## report_prose 작성 지침
 
-Write a professional 3-5 paragraph narrative in {"formal Korean (합쇼체)" if language == "ko" else "English"} covering:
-1. Current market regime and its rationale
-2. Leading sectors and why they are outperforming
-3. Key risk events and their potential market impact
-4. Recommended investment posture given the current regime
+다음 내용을 포함하는 전문적인 3-5단락 내러티브를 한국어 합쇼체로 작성하십시오:
+1. 현재 시장 체제와 그 근거
+2. 주도 섹터와 초과 성과 이유
+3. 주요 리스크 이벤트와 잠재적 시장 영향
+4. 현재 체제를 고려한 권장 투자 포지션
 
-This prose will be directly inserted into stock analysis reports. Make it informative but concise.
-{"Use formal polite style (합쇼체): ~습니다, ~있습니다, ~됩니다" if language == "ko" else ""}
+이 내러티브는 주식 분석 보고서에 직접 삽입됩니다. 유익하되 간결하게 작성하십시오.
+합쇼체를 사용하십시오: ~습니다, ~있습니다, ~됩니다
 
-## Field Values Guide
+## 필드값 가이드
 
-- `recommended_max_holdings`: 6~10 based on regime
+- `recommended_max_holdings`: 체제에 따라 6~10
   - strong_bull: 9~10, moderate_bull: 8~9, sideways: 7~8, moderate_bear: 6~7, strong_bear: 5~6
-- `cash_ratio_suggestion`: integer %
+- `cash_ratio_suggestion`: 정수 %
   - strong_bull: 10%, moderate_bull: 15~20%, sideways: 20~25%, moderate_bear: 30%, strong_bear: 40%+
 
-## Important Notes
+## 중요 사항
 
-- Execute perplexity tool call before generating JSON
-- Output MUST be pure JSON only. No markdown code fences, no explanatory text
-- leading_sectors: max 5, descending confidence
-- lagging_sectors: max 5
-- Anti-hallucination: only include content confirmed from actual data
+- JSON 생성 전에 Perplexity 도구 호출을 실행하십시오
+- 출력은 순수 JSON만이어야 합니다. 마크다운 코드 펜스나 설명 텍스트 없이 출력하십시오
+- leading_sectors: 최대 5개, 신뢰도 내림차순
+- lagging_sectors: 최대 5개
+- 반환금지: 실제 데이터에서 확인된 내용만 포함하십시오
 """
 
     return Agent(

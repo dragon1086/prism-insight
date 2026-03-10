@@ -337,6 +337,54 @@ async def analyze_us_stock(
         if technical_chart_html:
             technical_chart_section = f"\n\n#### Technical Indicators (RSI & MACD)\n\n{technical_chart_html}\n"
 
+        # Build macro section before final report composition
+        macro_section = ""
+        if macro_context:
+            report_prose = macro_context.get("report_prose", "")
+            if report_prose:
+                # Use LLM-generated prose directly — self-contained, no extra header needed
+                macro_section = report_prose + "\n\n"
+            else:
+                # Fallback: build from structured fields if report_prose is empty
+                regime = macro_context.get("market_regime", "sideways")
+                regime_rationale = macro_context.get("regime_rationale", "")
+                leading = macro_context.get("leading_sectors", [])
+                lagging = macro_context.get("lagging_sectors", [])
+                risks = macro_context.get("risk_events", [])
+
+                if language == "ko":
+                    regime_labels = {
+                        "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
+                        "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
+                    }
+                    macro_section += f"**시장 체제**: {regime_labels.get(regime, regime)}\n\n"
+                    if regime_rationale:
+                        macro_section += f"**판단 근거**: {regime_rationale}\n\n"
+                    if leading:
+                        sectors_str = ", ".join([s.get("sector", "") for s in leading[:3]])
+                        macro_section += f"**주도 섹터**: {sectors_str}\n\n"
+                    if lagging:
+                        sectors_str = ", ".join([s.get("sector", "") for s in lagging[:3]])
+                        macro_section += f"**소외 섹터**: {sectors_str}\n\n"
+                    if risks:
+                        for r in risks[:3]:
+                            macro_section += f"- ⚠️ {r.get('event', '')} (영향: {r.get('severity', 'medium')})\n"
+                        macro_section += "\n"
+                else:
+                    macro_section += f"**Market Regime**: {regime.replace('_', ' ').title()}\n\n"
+                    if regime_rationale:
+                        macro_section += f"**Rationale**: {regime_rationale}\n\n"
+                    if leading:
+                        sectors_str = ", ".join([s.get("sector", "") for s in leading[:3]])
+                        macro_section += f"**Leading Sectors**: {sectors_str}\n\n"
+                    if lagging:
+                        sectors_str = ", ".join([s.get("sector", "") for s in lagging[:3]])
+                        macro_section += f"**Lagging Sectors**: {sectors_str}\n\n"
+                    if risks:
+                        for r in risks[:3]:
+                            macro_section += f"- ⚠️ {r.get('event', '')} (Severity: {r.get('severity', 'medium')})\n"
+                        macro_section += "\n"
+
         # Language-specific headers
         if language == "ko":
             headers = {
@@ -397,6 +445,7 @@ async def analyze_us_stock(
 
 {section_reports.get("market_index_analysis", "Analysis not available")}
 {technical_chart_section}
+{macro_section}
 ---
 
 {headers["strategy"]}
@@ -407,67 +456,6 @@ async def analyze_us_stock(
 
 {get_disclaimer(language)}
 """
-
-        # Insert macro intelligence summary into market analysis section
-        if macro_context:
-            report_prose = macro_context.get("report_prose", "")
-            if report_prose:
-                # Use LLM-generated prose directly
-                if language == "ko":
-                    macro_section = "\n### 거시경제 인텔리전스 요약\n\n"
-                else:
-                    macro_section = "\n### Macro Intelligence Summary\n\n"
-                macro_section += report_prose + "\n\n"
-            else:
-                # Fallback: build from structured fields if report_prose is empty
-                regime = macro_context.get("market_regime", "sideways")
-                regime_rationale = macro_context.get("regime_rationale", "")
-                leading = macro_context.get("leading_sectors", [])
-                lagging = macro_context.get("lagging_sectors", [])
-                risks = macro_context.get("risk_events", [])
-
-                if language == "ko":
-                    macro_section = "\n### 거시경제 인텔리전스 요약\n\n"
-                    regime_labels = {
-                        "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
-                        "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
-                    }
-                    macro_section += f"**시장 체제**: {regime_labels.get(regime, regime)}\n\n"
-                    if regime_rationale:
-                        macro_section += f"**판단 근거**: {regime_rationale}\n\n"
-                    if leading:
-                        sectors_str = ", ".join([s.get("sector", "") for s in leading[:3]])
-                        macro_section += f"**주도 섹터**: {sectors_str}\n\n"
-                    if lagging:
-                        sectors_str = ", ".join([s.get("sector", "") for s in lagging[:3]])
-                        macro_section += f"**소외 섹터**: {sectors_str}\n\n"
-                    if risks:
-                        for r in risks[:3]:
-                            macro_section += f"- ⚠️ {r.get('event', '')} (영향: {r.get('severity', 'medium')})\n"
-                        macro_section += "\n"
-                else:
-                    macro_section = "\n### Macro Intelligence Summary\n\n"
-                    macro_section += f"**Market Regime**: {regime.replace('_', ' ').title()}\n\n"
-                    if regime_rationale:
-                        macro_section += f"**Rationale**: {regime_rationale}\n\n"
-                    if leading:
-                        sectors_str = ", ".join([s.get("sector", "") for s in leading[:3]])
-                        macro_section += f"**Leading Sectors**: {sectors_str}\n\n"
-                    if lagging:
-                        sectors_str = ", ".join([s.get("sector", "") for s in lagging[:3]])
-                        macro_section += f"**Lagging Sectors**: {sectors_str}\n\n"
-                    if risks:
-                        for r in risks[:3]:
-                            macro_section += f"- ⚠️ {r.get('event', '')} (Severity: {r.get('severity', 'medium')})\n"
-                        macro_section += "\n"
-
-            # Insert before the strategy section marker
-            strategy_marker = headers["strategy"]
-            if strategy_marker in final_report:
-                final_report = final_report.replace(
-                    strategy_marker,
-                    macro_section + "\n---\n\n" + strategy_marker
-                )
 
         # 11. Clean up markdown formatting
         final_report = clean_markdown(final_report)
