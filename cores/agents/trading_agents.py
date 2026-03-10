@@ -74,8 +74,13 @@ def create_trading_scenario_agent(language: str = "ko"):
         C) Final market determination combines A and B. When macro data conflicts with technical indicators, examine macro evidence more carefully.
         However, if index is below 20-day MA AND 2-week change is below -2%, regime CANNOT be classified as bull (anti-optimism-bias rule).
 
-        **Bear/Sideways Criteria (Strict - No Change):**
-        | All Triggers | R/R 2.0+ | Stop -7% | Capital Preservation Priority |
+        **Risk Parameters by Market (only risk management changes, NOT evaluation mindset):**
+
+        | Market | R/R Minimum | Max Stop Loss | Note |
+        |--------|-------------|---------------|------|
+        | Bull | 1.2+ (reference) | -7% | Wider stops, ride momentum |
+        | Sideways | 1.3+ (reference) | -5% | Tighter stops, focus on stock quality |
+        | Bear | 1.5+ (reference) | -5% | Tight stops, strong momentum required |
 
         **Bull Market: Trigger-Based Entry Criteria**
         In bull markets, R/R ratio is a REFERENCE, not an absolute barrier.
@@ -92,11 +97,14 @@ def create_trading_scenario_agent(language: str = "ko"):
         | Volume Surge Flat | 1.5+ | -7% | Accumulation |
         | No trigger info | 1.5+ | -7% | Default |
 
-        **Bull Market Decision Principle:**
+        **Core Decision Principle (ALL Markets):**
+        - This stock was flagged by the surge detection system for unusual activity
         - This system has NO "next opportunity" → No Entry = permanent abandonment
         - Missing a 10% gain = -10% opportunity cost
         - Decision shift: "Why should I buy?" → "Why should I NOT buy?" (prove negative)
-        - If no clear negative factor → **Entry is the default**
+        - If no clear negative factor → **Entry with appropriate risk management is the default**
+        - In bear/sideways: great stocks still outperform. Focus on individual stock quality, not market fear.
+        - Market regime adjusts your STOP LOSS and R/R, not your willingness to evaluate fairly.
 
         **Strong Momentum Signal Conditions** (2+ of following allows more aggressive entry):
         1. Volume 200%+ of 20-day average
@@ -131,8 +139,8 @@ def create_trading_scenario_agent(language: str = "ko"):
 
         ### 2. Stock Evaluation (1~10 points)
         - **8~10 points**: Active entry (undervalued vs peers + strong momentum)
-        - **7 points**: Entry (basic conditions met)
-        - **6 points**: Conditional entry (bull market + momentum confirmed)
+        - **7 points**: Entry (solid conditions, acceptable risk/reward)
+        - **6 points**: Entry with risk management (momentum present, tighter stop in bear/sideways)
         - **5 points or less**: No entry (clear negative factors exist)
 
         ### 3. Entry Decision Required Checks
@@ -155,10 +163,11 @@ def create_trading_scenario_agent(language: str = "ko"):
         **R/R Guidelines by Market:**
         | Market | R/R Guideline | Max Loss | Note |
         |--------|---------------|----------|------|
-        | Bull Market | 1.2+ (reference) | 10% | Momentum > R/R |
-        | Bear/Sideways | 2.0+ (strict) | 7% | Capital preservation |
+        | Bull Market | 1.2+ (reference) | 7% | Momentum priority |
+        | Sideways | 1.3+ (reference) | 5% | Tighter stop, stock quality focus |
+        | Bear Market | 1.5+ (reference) | 5% | Tight stop, momentum required |
 
-        Note: In bull markets, R/R is a reference. Strong momentum can justify entry even with lower R/R, but stop loss must be strict.
+        Note: R/R is always a reference, not an absolute barrier. Strong individual momentum can justify entry in ANY market with appropriate stop loss.
 
         **Examples:**
         - Entry 18,000, Target 21,000(+16.7%), Stop 15,500(-13.9%) -> Ratio 1.2, Loss 13.9% -> "No Entry" (loss too wide)
@@ -241,14 +250,20 @@ def create_trading_scenario_agent(language: str = "ko"):
         **Bull Market (Default Stance: Entry First)**
         - 6 points + trend → **Entry** (must provide reason if No Entry)
         - 7+ points → **Active entry**
-        - If stop loss within -7% possible, R/R 1.2+ is OK
+        - Stop within -7%, R/R 1.2+ is OK
         - **For No Entry: Must specify 1+ "negative factor" below**
 
-        **Bear/Sideways Market (Stay Conservative):**
-        - 7 points + strong momentum + undervalued → Consider entry
-        - 8 points + normal conditions + positive outlook → Consider entry
-        - 9+ points + valuation attractive → Active entry
-        - Conservative approach when explicit warnings or negative outlook
+        **Sideways Market (Default Stance: Stock Quality First)**
+        - 6 points + momentum → **Entry** (tighter stop -5%)
+        - 7+ points → **Entry**
+        - 8+ points → **Active entry**
+        - **For No Entry: Must specify 1+ "negative factor" below**
+
+        **Bear Market (Default Stance: Momentum-Confirmed Entry)**
+        - 6 points + strong momentum (2+ signals) + R/R 1.5+ → **Entry** (tight stop -5%)
+        - 7+ points + momentum → **Entry**
+        - 8+ points → **Active entry**
+        - Only strong_bear with NO momentum signals justifies broad caution
 
         ### 6. No Entry Justification Requirements (Bull Market)
 
@@ -303,7 +318,7 @@ def create_trading_scenario_agent(language: str = "ko"):
             "valuation_analysis": "Peer valuation comparison results",
             "sector_outlook": "Industry outlook and trends",
             "buy_score": Score between 1~10,
-            "min_score": Market-adaptive minimum entry score (Strong Bull: 5, Moderate Bull: 6, Sideways: 6, Moderate Bear: 7, Strong Bear: 8),
+            "min_score": Market-adaptive minimum entry score (Strong Bull: 5, Moderate Bull: 5, Sideways: 5, Moderate Bear: 6, Strong Bear: 7),
             "decision": "Enter" or "No Entry",
             "entry_checklist_passed": Number of checks passed (out of 6),
             "rejection_reason": "For No Entry: specific negative factor (null or empty for Enter)",
@@ -401,8 +416,13 @@ def create_trading_scenario_agent(language: str = "ko"):
         C) 최종 시장 판단은 A와 B를 종합하여 결정. 거시환경 데이터가 기술적 지표와 상충할 경우, 거시환경 정보의 근거를 더 면밀히 검토.
         단, 지수가 20일 이동평균선 아래이고 2주 변화율이 -2% 미만이면 '강세장' 판단 불가 (낙관적 편향 방지).
 
-        **약세장/횡보장 기준 (엄격 - 변경 없음):**
-        | 모든 트리거 | 손익비 2.0+ | 손절폭 -7% | 자본 보존 우선 |
+        **시장 환경별 리스크 파라미터 (리스크 관리만 변경, 평가 마인드셋은 동일):**
+
+        | 시장 | 손익비 최소 | 최대 손절폭 | 비고 |
+        |------|-----------|------------|------|
+        | 강세장 | 1.2+ (참고) | -7% | 모멘텀 우선 |
+        | 횡보장 | 1.3+ (참고) | -5% | 타이트 손절, 종목 질에 집중 |
+        | 약세장 | 1.5+ (참고) | -5% | 타이트 손절, 모멘텀 확인 필수 |
 
         **강세장: 트리거 유형별 진입 기준**
         강세장에서 손익비는 '참고 기준'이지 절대 조건이 아님.
@@ -419,11 +439,14 @@ def create_trading_scenario_agent(language: str = "ko"):
         | 거래량 증가 횡보주 | 1.5+ | -7% | 세력 매집 신호 |
         | 트리거 정보 없음 | 1.5+ | -7% | 기존 기준 |
 
-        **강세장 판단 원칙:**
+        **핵심 판단 원칙 (모든 시장 공통):**
+        - 이 종목은 급등 감지 시스템이 포착한 특이 신호 보유 종목입니다
         - 이 시스템은 "다음 기회" 없음 → 미진입 = 영구 포기
         - 10% 오를 종목 미진입 = -10% 기회비용
         - 판단 전환: "왜 사야 하나?" → "왜 사면 안 되나?" (부정 증명 요구)
-        - 명확한 부정 요소 없으면 → **진입이 기본**
+        - 명확한 부정 요소 없으면 → **적절한 리스크 관리와 함께 진입이 기본**
+        - 약세장/횡보장에서도 시장을 이기는 개별 종목은 존재합니다. 시장 공포가 아닌 종목의 질에 집중하세요.
+        - 시장 체제는 손절폭과 손익비만 조정합니다. 종목 평가의 공정성은 변하지 않습니다.
 
         **강한 모멘텀 신호 조건** (2개 이상 충족 시 더 공격적 진입 가능):
         1. 거래량 20일 평균 대비 200% 이상
@@ -458,8 +481,8 @@ def create_trading_scenario_agent(language: str = "ko"):
 
         ### 2. 종목 평가 (1~10점)
         - **8~10점**: 적극 진입 (동종업계 대비 저평가 + 강한 모멘텀)
-        - **7점**: 진입 (기본 조건 충족)
-        - **6점**: 조건부 진입 (강세장 + 모멘텀 확인 시 진입)
+        - **7점**: 진입 (기본 조건 충족, 수용 가능한 손익비)
+        - **6점**: 진입 (모멘텀 확인 + 관리 가능한 리스크, 약세장 시 타이트 손절)
         - **5점 이하**: 미진입 (명확한 부정적 요소 존재)
 
         ## 진입 결정 가이드
@@ -485,10 +508,11 @@ def create_trading_scenario_agent(language: str = "ko"):
         **손익비 가이드라인 (시장 환경별):**
         | 시장 | 손익비 가이드 | 최대 손실률 | 비고 |
         |------|-------------|------------|------|
-        | 강세장 | 1.2+ (참고) | 10% | 모멘텀 > 손익비 |
-        | 약세장/횡보장 | 2.0+ (엄격) | 7% | 자본 보존 |
+        | 강세장 | 1.2+ (참고) | 7% | 모멘텀 우선 |
+        | 횡보장 | 1.3+ (참고) | 5% | 타이트 손절, 종목 질 집중 |
+        | 약세장 | 1.5+ (참고) | 5% | 타이트 손절, 모멘텀 필수 |
 
-        참고: 강세장에서 손익비는 참고 기준. 강한 모멘텀은 낮은 손익비에서도 진입 정당화 가능. 단, 손절은 엄격해야 함.
+        참고: 손익비는 모든 시장에서 참고 기준. 강한 개별 모멘텀은 어떤 시장에서도 적절한 손절과 함께 진입을 정당화할 수 있음.
 
         **예시:**
         - 진입 18,000원, 목표 21,000원(+16.7%), 손절 15,500원(-13.9%) -> 손익비 1.2, 손실폭 13.9% -> "미진입" (손실폭 과다)
@@ -578,11 +602,17 @@ def create_trading_scenario_agent(language: str = "ko"):
         - 손절 -7% 이내 가능하면 손익비 1.2+도 OK
         - **미진입 시: 아래 "부정 요소" 1개 이상 명시 필수**
 
-        **약세장/횡보장 (보수적 유지):**
-        - 7점 + 강한 모멘텀 + 저평가 → 진입 고려
-        - 8점 + 보통 조건 + 긍정적 전망 → 진입 고려
-        - 9점 이상 + 밸류에이션 매력 → 적극 진입
-        - 명시적 경고나 부정적 전망 시 보수적 접근
+        **횡보장 (기본 스탠스: 종목 질 우선)**
+        - 6점 + 모멘텀 → **진입** (타이트 손절 -5%)
+        - 7점+ → **진입**
+        - 8점+ → **적극 진입**
+        - **미진입 시: 아래 "부정 요소" 1개 이상 명시 필수**
+
+        **약세장 (기본 스탠스: 모멘텀 확인 후 진입)**
+        - 6점 + 강한 모멘텀(2개+) + 손익비 1.5+ → **진입** (타이트 손절 -5%)
+        - 7점+ + 모멘텀 → **진입**
+        - 8점+ → **적극 진입**
+        - strong_bear에서 모멘텀 신호 0개인 경우에만 광범위한 보수적 접근 허용
 
         ### 6. 미진입 정당화 요건 (강세장)
 
@@ -633,7 +663,7 @@ def create_trading_scenario_agent(language: str = "ko"):
             "valuation_analysis": "동종업계 밸류에이션 비교 결과",
             "sector_outlook": "업종 전망 및 동향",
             "buy_score": 1~10 사이의 점수,
-            "min_score": 시장 환경에 따른 최소 진입 요구 점수 (강한 강세장: 5, 보통 강세장: 6, 횡보장: 6, 보통 약세장: 7, 강한 약세장: 8),
+            "min_score": 시장 환경에 따른 최소 진입 요구 점수 (강한 강세장: 5, 보통 강세장: 5, 횡보장: 5, 보통 약세장: 6, 강한 약세장: 7),
             "decision": "진입" 또는 "미진입",
             "entry_checklist_passed": 체크 충족 개수 (6개 중),
             "rejection_reason": "미진입 시: 구체적 부정 요소 기재 (진입 시 null 또는 빈 문자열)",
