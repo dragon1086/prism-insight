@@ -918,10 +918,10 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
                 if not df.empty and score_column in df.columns:
                     for ticker in df.index:
                         stock_sector = sector_map.get(ticker, "기타")
-                        if stock_sector in leading:
+                        if any(stock_sector in l or l in stock_sector for l in leading):
                             df.loc[ticker, score_column] += 0.1
                             logger.info(f"Sector adjustment for {ticker}: +0.1 (sector={stock_sector}, leading)")
-                        elif stock_sector in lagging:
+                        elif any(stock_sector in l or l in stock_sector for l in lagging):
                             df.loc[ticker, score_column] -= 0.1
                             logger.info(f"Sector adjustment for {ticker}: -0.1 (sector={stock_sector}, lagging)")
 
