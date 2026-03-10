@@ -62,21 +62,26 @@ perplexity data provides overwhelming contradictory evidence.
     schema_simple_ma_regime = prefetched_data.get('computed_regime', {}).get('simple_ma_regime', 'sideways') if prefetched_data else 'sideways'
     schema_index_summary = _format_index_summary(prefetched_data)
 
-    # Derive unique sectors from sector_map if available
+    # Derive unique sectors from sector_map if available, fallback to KRX standard sectors
+    KRX_STANDARD_SECTORS = [
+        "IT 서비스", "건설", "금속", "기계·장비", "기타금융", "기타제조",
+        "농업, 임업 및 어업", "보험", "부동산", "비금속", "섬유·의류",
+        "오락·문화", "운송·창고", "운송장비·부품", "유통", "은행",
+        "음식료·담배", "의료·정밀기기", "일반서비스", "전기·가스",
+        "전기·전자", "제약", "종이·목재", "증권", "통신", "화학",
+    ]
     unique_sectors = None
     if prefetched_data:
         sector_map = prefetched_data.get("sector_map", {})
         if sector_map:
             unique_sectors = sorted(set(sector_map.values()))
+    if not unique_sectors:
+        unique_sectors = KRX_STANDARD_SECTORS
 
     if language == "en":
-        if unique_sectors:
-            sector_taxonomy_section = f"""## Sector Taxonomy
+        sector_taxonomy_section = f"""## Sector Taxonomy
 Use these sector names from actual market data for leading_sectors and lagging_sectors:
 {', '.join(unique_sectors)}"""
-        else:
-            sector_taxonomy_section = """## Sector Classification
-Identify leading and lagging sectors naturally from perplexity analysis results."""
 
         instruction = f"""You are a Korean stock market macro intelligence analyst.
 Follow the instructions below to collect data, then output ONLY valid JSON. Do not include any text outside the JSON.
@@ -153,13 +158,9 @@ This prose will be directly inserted into stock analysis reports. Make it inform
 - Anti-hallucination: only include content confirmed from actual data
 """
     else:
-        if unique_sectors:
-            sector_taxonomy_section_ko = f"""## 섹터 분류 체계
+        sector_taxonomy_section_ko = f"""## 섹터 분류 체계
 실제 시장 데이터의 다음 섹터명을 leading_sectors와 lagging_sectors에 사용하십시오:
 {', '.join(unique_sectors)}"""
-        else:
-            sector_taxonomy_section_ko = """## 섹터 분류 체계
-Perplexity 분석 결과에서 주도 섹터와 소외 섹터를 자연스럽게 파악하십시오."""
 
         instruction = f"""당신은 한국 주식시장 거시경제 인텔리전스 애널리스트입니다.
 아래 지시에 따라 데이터를 수집한 후, 유효한 JSON만 출력하십시오. JSON 외부에 어떠한 텍스트도 포함하지 마십시오.

@@ -173,18 +173,22 @@ def prefetch_macro_intelligence_data(reference_date: str) -> dict:
     if kosdaq_md:
         result["kosdaq_ohlcv_md"] = kosdaq_md
 
-    # 3. Sector map (ticker → sector name)
+    # 3. Sector map (ticker → sector name) via get_sector_info
     try:
         import json as _json
-        # load_all_tickers must be called first to populate the internal cache
-        server.load_all_tickers()
-        raw = server.get_ticker_map()
-        sector_data = _json.loads(raw) if isinstance(raw, str) else raw
-        if isinstance(sector_data, dict) and "message" not in sector_data and "error" not in sector_data:
+        # Fetch KOSPI + KOSDAQ sector classifications
+        kospi_sectors = server.get_sector_info("KOSPI")
+        kosdaq_sectors = server.get_sector_info("KOSDAQ")
+        sector_data = {}
+        for raw in [kospi_sectors, kosdaq_sectors]:
+            parsed = _json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(parsed, dict) and "error" not in parsed:
+                sector_data.update(parsed)
+        if sector_data:
             result["sector_map"] = sector_data
             logger.info(f"Prefetched sector_map: {len(sector_data)} tickers")
         else:
-            logger.warning(f"Sector map not available: {str(sector_data)[:100]}")
+            logger.warning("Sector map not available from get_sector_info")
     except Exception as e:
         logger.error(f"Error fetching sector map: {e}")
 
