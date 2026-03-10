@@ -329,7 +329,7 @@ def create_trading_scenario_agent(language: str = "ko"):
             "expected_loss_pct": Expected loss (%) = (current_price - stop_loss) ÷ current_price × 100 (absolute value, positive number),
             "investment_period": "Short" / "Medium" / "Long",
             "rationale": "Core investment rationale (within 3 lines)",
-            "sector": "Industry/Sector",
+            "sector": "KRX sector name. Must use one of: IT 서비스, 건설, 금속, 기계·장비, 기타금융, 기타제조, 농업·임업및어업, 보험, 부동산, 비금속, 섬유·의류, 오락·문화, 운송·창고, 운송장비·부품, 유통, 은행, 음식료·담배, 의료·정밀기기, 일반서비스, 전기·가스, 전기·전자, 제약, 종이·목재, 증권, 통신, 화학",
             "market_condition": "Market regime from macro intelligence (strong_bull/moderate_bull/sideways/moderate_bear/strong_bear) + brief rationale. If no macro data, use technical assessment (Uptrend/Downtrend/Sideways with specific evidence)",
             "max_portfolio_size": "Maximum holdings inferred from market analysis",
             "trading_scenarios": {
@@ -674,7 +674,7 @@ def create_trading_scenario_agent(language: str = "ko"):
             "expected_loss_pct": 예상 손실률(%) = (현재가 - 손절가) ÷ 현재가 × 100 (절댓값, 양수로 표기),
             "investment_period": "단기" / "중기" / "장기",
             "rationale": "핵심 투자 근거 (3줄 이내)",
-            "sector": "산업군/섹터",
+            "sector": "KRX 업종명. 반드시 다음 중 하나 사용: IT 서비스, 건설, 금속, 기계·장비, 기타금융, 기타제조, 농업·임업및어업, 보험, 부동산, 비금속, 섬유·의류, 오락·문화, 운송·창고, 운송장비·부품, 유통, 은행, 음식료·담배, 의료·정밀기기, 일반서비스, 전기·가스, 전기·전자, 제약, 종이·목재, 증권, 통신, 화학",
             "market_condition": "거시경제 인텔리전스의 시장 체제 (strong_bull/moderate_bull/sideways/moderate_bear/strong_bear) + 간략 근거. 거시 데이터 없으면 기술적 판단 (상승추세/하락추세/횡보 + 구체적 근거)",
             "max_portfolio_size": "시장 상태 분석 결과 추론된 최대 보유 종목수(1개의 숫자로만 표현. 범위표현 안됨. '개'라는 단위 표현도 삭제.)",
             "trading_scenarios": {

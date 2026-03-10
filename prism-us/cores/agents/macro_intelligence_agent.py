@@ -93,11 +93,11 @@ Based on the perplexity search results AND the pre-computed index data above:
 
 ---
 
-## Sector Taxonomy (US GICS-based fixed list)
+## Sector Taxonomy (US - yfinance standard names)
 
-Prefer these standard GICS sector names for leading_sectors and lagging_sectors:
-Technology, Healthcare, Financials, Consumer Discretionary, Consumer Staples,
-Energy, Industrials, Materials, Real Estate, Utilities, Communication Services
+Use these sector names for leading_sectors and lagging_sectors:
+Technology, Healthcare, Financial Services, Consumer Cyclical, Consumer Defensive,
+Energy, Industrials, Basic Materials, Real Estate, Utilities, Communication Services
 
 ---
 
@@ -173,11 +173,11 @@ Perplexity 검색 결과와 위의 사전 계산된 지수 데이터를 기반�
 
 ---
 
-## 섹터 분류 체계 (미국 GICS 기반 고정 목록)
+## 섹터 분류 체계 (미국 - yfinance 표준 섹터명)
 
-leading_sectors 및 lagging_sectors에는 아래 표준 GICS 섹터명을 우선 사용하십시오:
-Technology, Healthcare, Financials, Consumer Discretionary, Consumer Staples,
-Energy, Industrials, Materials, Real Estate, Utilities, Communication Services
+leading_sectors 및 lagging_sectors에는 아래 섹터명을 사용하십시오:
+Technology, Healthcare, Financial Services, Consumer Cyclical, Consumer Defensive,
+Energy, Industrials, Basic Materials, Real Estate, Utilities, Communication Services
 
 ---
 
