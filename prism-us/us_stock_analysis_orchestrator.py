@@ -207,20 +207,27 @@ class USStockAnalysisOrchestrator:
 
         try:
             from mcp_agent.app import MCPApp
+            from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
             from cores.agents.macro_intelligence_agent import create_us_macro_intelligence_agent
 
             macro_app = MCPApp(name="us_macro_intelligence")
 
-            async with macro_app.run() as macro_context:
-                macro_logger = macro_context.logger
+            async with macro_app.run() as macro_run_context:
+                macro_logger = macro_run_context.logger
                 macro_logger.info("US macro intelligence agent starting...")
 
                 agent = create_us_macro_intelligence_agent(reference_date, language)
 
-                llm = await macro_context.create_llm_from_config(agent)
+                from mcp_agent.workflows.llm.augmented_llm import RequestParams
+                llm = await agent.attach_llm(OpenAIAugmentedLLM)
                 result = await llm.generate_str(
-                    message=agent.instruction,
-                    request_params=None
+                    message=f"Execute US stock market macro analysis for {reference_date} and output JSON.",
+                    request_params=RequestParams(
+                        model="gpt-5-mini",
+                        maxTokens=16000,
+                        parallel_tool_calls=True,
+                        use_history=True
+                    )
                 )
 
                 macro_logger.info(f"US macro intelligence raw output: {len(result)} chars")

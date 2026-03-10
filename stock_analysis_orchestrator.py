@@ -278,20 +278,27 @@ class StockAnalysisOrchestrator:
 
         try:
             from mcp_agent.app import MCPApp
+            from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
             from cores.agents.macro_intelligence_agent import create_macro_intelligence_agent
 
             macro_app = MCPApp(name="macro_intelligence")
 
-            async with macro_app.run() as macro_context:
-                macro_logger = macro_context.logger
+            async with macro_app.run() as macro_run_context:
+                macro_logger = macro_run_context.logger
                 macro_logger.info("Macro intelligence agent starting...")
 
                 agent = create_macro_intelligence_agent(reference_date, language)
 
-                llm = await macro_context.create_llm_from_config(agent)
+                from mcp_agent.workflows.llm.augmented_llm import RequestParams
+                llm = await agent.attach_llm(OpenAIAugmentedLLM)
                 result = await llm.generate_str(
-                    message=agent.instruction,
-                    request_params=None
+                    message=f"{reference_date} 기준 한국 주식시장 거시경제 분석을 수행하고 JSON으로 출력하세요.",
+                    request_params=RequestParams(
+                        model="gpt-5-mini",
+                        maxTokens=16000,
+                        parallel_tool_calls=True,
+                        use_history=True
+                    )
                 )
 
                 macro_logger.info(f"Macro intelligence raw output: {len(result)} chars")
