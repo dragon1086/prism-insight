@@ -257,7 +257,85 @@ class StockAnalysisOrchestrator:
         logger.info(f"Restored {len(images)} base64 images to translated text")
         return restored_text
 
-    async def run_trigger_batch(self, mode):
+    async def run_macro_intelligence(self, reference_date: str = None, language: str = "ko") -> dict:
+        """
+        Run macro intelligence agent to get market regime, sector data, and risk events.
+
+        Uses its own MCPApp context to avoid conflicts with other MCP operations.
+
+        Args:
+            reference_date: Analysis date (YYYYMMDD). Defaults to today.
+            language: Language code ("ko" or "en")
+
+        Returns:
+            dict: Macro context with regime, sectors, risks, sector_map.
+                  Returns None if macro intelligence fails (graceful degradation).
+        """
+        if reference_date is None:
+            reference_date = datetime.now().strftime("%Y%m%d")
+
+        logger.info(f"Starting macro intelligence analysis for KR market - date: {reference_date}")
+
+        try:
+            from mcp_agent.app import MCPApp
+            from cores.agents.macro_intelligence_agent import create_macro_intelligence_agent
+
+            macro_app = MCPApp(name="macro_intelligence")
+
+            async with macro_app.run() as macro_context:
+                macro_logger = macro_context.logger
+                macro_logger.info("Macro intelligence agent starting...")
+
+                agent = create_macro_intelligence_agent(reference_date, language)
+
+                llm = await macro_context.create_llm_from_config(agent)
+                result = await llm.generate_str(
+                    message=agent.instruction,
+                    request_params=None
+                )
+
+                macro_logger.info(f"Macro intelligence raw output: {len(result)} chars")
+
+                # Parse JSON from agent output
+                import json as json_module
+
+                # Try direct parse first
+                try:
+                    macro_data = json_module.loads(result.strip())
+                except json_module.JSONDecodeError:
+                    # Try extracting JSON from markdown code block
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', result, re.DOTALL)
+                    if json_match:
+                        macro_data = json_module.loads(json_match.group(1).strip())
+                    else:
+                        # Try json_repair as last resort
+                        try:
+                            from json_repair import repair_json
+                            macro_data = json_module.loads(repair_json(result))
+                        except Exception:
+                            macro_logger.error(f"Failed to parse macro intelligence output as JSON")
+                            return None
+
+                # Validate required fields
+                if "market_regime" not in macro_data:
+                    macro_logger.error("Macro intelligence output missing 'market_regime' field")
+                    return None
+
+                regime = macro_data.get("market_regime", "sideways")
+                macro_logger.info(f"Macro intelligence complete - regime: {regime}, "
+                                 f"leading_sectors: {len(macro_data.get('leading_sectors', []))}, "
+                                 f"risk_events: {len(macro_data.get('risk_events', []))}")
+
+                return macro_data
+
+        except Exception as e:
+            logger.error(f"Macro intelligence failed (graceful degradation): {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    async def run_trigger_batch(self, mode, macro_context: dict = None):
         """
         Execute trigger batch and save results (direct import version)
 
@@ -266,6 +344,7 @@ class StockAnalysisOrchestrator:
 
         Args:
             mode (str): 'morning' or 'afternoon'
+            macro_context (dict): Optional macro intelligence context
 
         Returns:
             list: List of selected stock codes
@@ -283,7 +362,7 @@ class StockAnalysisOrchestrator:
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None,
-                lambda: run_batch(mode, "INFO", results_file)
+                lambda: run_batch(mode, "INFO", results_file, macro_context=macro_context)
             )
 
             if not results:
@@ -843,9 +922,20 @@ class StockAnalysisOrchestrator:
         logger.info(f"Starting full pipeline - mode: {mode}")
 
         try:
+            # 0. Run macro intelligence (market regime, sector data)
+            macro_context = await self.run_macro_intelligence(
+                reference_date=datetime.now().strftime("%Y%m%d"),
+                language=language
+            )
+            if macro_context:
+                logger.info(f"Macro intelligence: regime={macro_context.get('market_regime')}, "
+                           f"sectors={len(macro_context.get('leading_sectors', []))}")
+            else:
+                logger.warning("Macro intelligence unavailable - proceeding without macro context")
+
             # 1. Execute trigger batch - changed to async method (improved asyncio resource management)
             results_file = f"trigger_results_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
-            tickers = await self.run_trigger_batch(mode)
+            tickers = await self.run_trigger_batch(mode, macro_context=macro_context)
 
             if not tickers:
                 logger.warning("No stocks selected. Terminating process.")
@@ -863,7 +953,7 @@ class StockAnalysisOrchestrator:
                 logger.warning(f"Trigger results file not found: {results_file}")
 
             # 2. Generate reports - important: await added here!
-            report_paths = await self.generate_reports(tickers, mode, timeout=600, language=language)
+            report_paths = await self.generate_reports(tickers, mode, timeout=600, language=language, macro_context=macro_context)
             if not report_paths:
                 logger.warning("No reports generated. Terminating process.")
                 return
@@ -952,7 +1042,7 @@ class StockAnalysisOrchestrator:
                 self._broadcast_tasks.clear()
                 logger.info("All broadcast translation tasks completed")
 
-    async def generate_reports(self, tickers, mode, timeout: int = None, language: str = "ko") -> list:
+    async def generate_reports(self, tickers, mode, timeout: int = None, language: str = "ko", macro_context: dict = None) -> list:
         """
         Generate reports serially for all stocks.
         Process one stock at a time to prevent OpenAI rate limit issues.
@@ -998,7 +1088,8 @@ class StockAnalysisOrchestrator:
                     company_code=ticker,
                     company_name=company_name,
                     reference_date=reference_date,
-                    language=language
+                    language=language,
+                    macro_context=macro_context
                 )
 
                 # Save result

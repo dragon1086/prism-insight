@@ -641,8 +641,21 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
 
 # === Final Selection ===
 
+def get_us_sector_map(tickers: list) -> dict:
+    """Map US tickers to GICS sectors using yfinance."""
+    import yfinance as yf
+    sector_map = {}
+    for ticker in tickers:
+        try:
+            info = yf.Ticker(ticker).info
+            sector_map[ticker] = info.get("sector", "Other")
+        except Exception:
+            sector_map[ticker] = "Other"
+    return sector_map
+
+
 def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: bool = True,
-                         lookback_days: int = 10) -> dict:
+                         lookback_days: int = 10, macro_context: dict = None) -> dict:
     """
     Aggregate selected stocks from all triggers and make final selection.
 
@@ -717,9 +730,44 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
     selected_tickers = set()
     score_column = "FinalScore" if use_hybrid and trade_date else "CompositeScore"
 
+    # Determine max selections based on market regime
+    if macro_context:
+        regime = macro_context.get("market_regime", "sideways")
+        if regime in ("strong_bull", "moderate_bull"):
+            max_selections = 5
+        elif regime == "sideways":
+            max_selections = 3
+        else:  # moderate_bear, strong_bear
+            max_selections = 2
+        logger.info(f"Regime-based selection: max_selections={max_selections} (regime={regime})")
+    else:
+        max_selections = 3  # Default (backward compatible)
+
+    # Apply sector bonus/penalty if macro_context provided
+    if macro_context:
+        leading = {s["sector"] for s in macro_context.get("leading_sectors", [])}
+        lagging = {s["sector"] for s in macro_context.get("lagging_sectors", [])}
+        # Get sector info for candidate tickers
+        candidate_tickers = []
+        for name, df in trigger_candidates.items():
+            if not df.empty:
+                candidate_tickers.extend(df.index.tolist())
+        sector_map = get_us_sector_map(list(set(candidate_tickers)))
+        # Apply bonus/penalty
+        for name, df in trigger_candidates.items():
+            if not df.empty and score_column in df.columns:
+                for ticker in df.index:
+                    stock_sector = sector_map.get(ticker, "Other")
+                    if stock_sector in leading:
+                        df.loc[ticker, score_column] += 0.1
+                        logger.info(f"Sector adjustment for {ticker}: +0.1 (sector={stock_sector}, leading)")
+                    elif stock_sector in lagging:
+                        df.loc[ticker, score_column] -= 0.1
+                        logger.info(f"Sector adjustment for {ticker}: -0.1 (sector={stock_sector}, lagging)")
+
     # Select top 1 from each trigger
     for name, df in trigger_candidates.items():
-        if not df.empty and len(selected_tickers) < 3:
+        if not df.empty and len(selected_tickers) < max_selections:
             if score_column in df.columns:
                 sorted_df = df.sort_values(score_column, ascending=False)
             else:
@@ -732,8 +780,8 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
                     logger.info(f"[{name}] Final selection: {ticker}")
                     break
 
-    # If less than 3, add more by overall score
-    if len(selected_tickers) < 3:
+    # If less than max_selections, add more by overall score
+    if len(selected_tickers) < max_selections:
         all_candidates = []
         for name, df in trigger_candidates.items():
             for ticker in df.index:
@@ -744,7 +792,7 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
         all_candidates.sort(key=lambda x: x[2], reverse=True)
 
         for trigger_name, ticker, _, ticker_df in all_candidates:
-            if ticker not in selected_tickers and len(selected_tickers) < 3:
+            if ticker not in selected_tickers and len(selected_tickers) < max_selections:
                 if trigger_name in final_result:
                     final_result[trigger_name] = pd.concat([final_result[trigger_name], ticker_df])
                 else:
@@ -757,7 +805,7 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
 
 # === Batch Execution ===
 
-def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None):
+def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None):
     """
     Execute trigger batch.
 
@@ -765,6 +813,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         trigger_time: "morning" or "afternoon"
         log_level: Logging level
         output_file: Path to save results as JSON (optional)
+        macro_context: Optional macro context dict with market_regime, leading_sectors, lagging_sectors
     """
     numeric_level = getattr(logging, log_level.upper(), logging.INFO)
     logger.setLevel(numeric_level)
@@ -840,7 +889,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                 logger.info(f"  - {ticker} ({company})")
 
     # Final selection
-    final_results = select_final_tickers(triggers, trade_date=trade_date)
+    final_results = select_final_tickers(triggers, trade_date=trade_date, macro_context=macro_context)
 
     # Save to JSON if requested
     if output_file:

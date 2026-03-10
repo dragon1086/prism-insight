@@ -186,7 +186,85 @@ class USStockAnalysisOrchestrator:
 
         return restored_text
 
-    async def run_trigger_batch(self, mode: str):
+    async def run_macro_intelligence(self, reference_date: str = None, language: str = "ko") -> dict:
+        """
+        Run macro intelligence agent to get US market regime, sector data, and risk events.
+
+        Uses its own MCPApp context to avoid conflicts with other MCP operations.
+
+        Args:
+            reference_date: Analysis date (YYYYMMDD). Defaults to today.
+            language: Language code ("ko" or "en")
+
+        Returns:
+            dict: Macro context with regime, sectors, risks.
+                  Returns None if macro intelligence fails (graceful degradation).
+        """
+        if reference_date is None:
+            reference_date = datetime.now().strftime("%Y%m%d")
+
+        logger.info(f"Starting macro intelligence analysis for US market - date: {reference_date}")
+
+        try:
+            from mcp_agent.app import MCPApp
+            from cores.agents.macro_intelligence_agent import create_us_macro_intelligence_agent
+
+            macro_app = MCPApp(name="us_macro_intelligence")
+
+            async with macro_app.run() as macro_context:
+                macro_logger = macro_context.logger
+                macro_logger.info("US macro intelligence agent starting...")
+
+                agent = create_us_macro_intelligence_agent(reference_date, language)
+
+                llm = await macro_context.create_llm_from_config(agent)
+                result = await llm.generate_str(
+                    message=agent.instruction,
+                    request_params=None
+                )
+
+                macro_logger.info(f"US macro intelligence raw output: {len(result)} chars")
+
+                # Parse JSON from agent output
+                import json as json_module
+
+                # Try direct parse first
+                try:
+                    macro_data = json_module.loads(result.strip())
+                except json_module.JSONDecodeError:
+                    # Try extracting JSON from markdown code block
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', result, re.DOTALL)
+                    if json_match:
+                        macro_data = json_module.loads(json_match.group(1).strip())
+                    else:
+                        # Try json_repair as last resort
+                        try:
+                            from json_repair import repair_json
+                            macro_data = json_module.loads(repair_json(result))
+                        except Exception:
+                            macro_logger.error(f"Failed to parse US macro intelligence output as JSON")
+                            return None
+
+                # Validate required fields
+                if "market_regime" not in macro_data:
+                    macro_logger.error("US macro intelligence output missing 'market_regime' field")
+                    return None
+
+                regime = macro_data.get("market_regime", "sideways")
+                macro_logger.info(f"US macro intelligence complete - regime: {regime}, "
+                                 f"leading_sectors: {len(macro_data.get('leading_sectors', []))}, "
+                                 f"risk_events: {len(macro_data.get('risk_events', []))}")
+
+                return macro_data
+
+        except Exception as e:
+            logger.error(f"US macro intelligence failed (graceful degradation): {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    async def run_trigger_batch(self, mode: str, macro_context: dict = None):
         """
         Execute US trigger batch and save results
 
@@ -207,7 +285,7 @@ class USStockAnalysisOrchestrator:
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None,
-                lambda: run_batch(mode, "INFO", results_file)
+                lambda: run_batch(mode, "INFO", results_file, macro_context=macro_context)
             )
 
             if not results:
@@ -257,7 +335,7 @@ class USStockAnalysisOrchestrator:
             logger.error(traceback.format_exc())
             return []
 
-    async def generate_reports(self, tickers: list, mode: str, timeout: int = None, language: str = "ko") -> list:
+    async def generate_reports(self, tickers: list, mode: str, timeout: int = None, language: str = "ko", macro_context: dict = None) -> list:
         """
         Generate reports serially for all US stocks.
 
@@ -295,7 +373,8 @@ class USStockAnalysisOrchestrator:
                     ticker=ticker,
                     company_name=company_name,
                     reference_date=reference_date,
-                    language=language
+                    language=language,
+                    macro_context=macro_context
                 )
 
                 if report and len(report.strip()) > 0:
@@ -783,9 +862,20 @@ class USStockAnalysisOrchestrator:
         logger.info(f"Starting US full pipeline - mode: {mode}")
 
         try:
+            # 0. Run macro intelligence (US market regime, sector data)
+            macro_context = await self.run_macro_intelligence(
+                reference_date=datetime.now().strftime("%Y%m%d"),
+                language=language
+            )
+            if macro_context:
+                logger.info(f"US macro intelligence: regime={macro_context.get('market_regime')}, "
+                           f"sectors={len(macro_context.get('leading_sectors', []))}")
+            else:
+                logger.warning("US macro intelligence unavailable - proceeding without macro context")
+
             # 1. Execute trigger batch
             results_file = f"trigger_results_us_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
-            tickers = await self.run_trigger_batch(mode)
+            tickers = await self.run_trigger_batch(mode, macro_context=macro_context)
 
             if not tickers:
                 logger.warning("No US stocks selected. Terminating process.")
@@ -803,7 +893,7 @@ class USStockAnalysisOrchestrator:
                 logger.warning(f"US trigger results file not found: {results_file}")
 
             # 2. Generate reports
-            report_paths = await self.generate_reports(tickers, mode, timeout=600, language=language)
+            report_paths = await self.generate_reports(tickers, mode, timeout=600, language=language, macro_context=macro_context)
             if not report_paths:
                 logger.warning("No US reports generated. Terminating process.")
                 return

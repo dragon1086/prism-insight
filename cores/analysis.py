@@ -23,7 +23,7 @@ from cores.utils import clean_markdown
 # Market analysis cache storage (global variable)
 _market_analysis_cache = {}
 
-async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko"):
+async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko", macro_context: dict = None):
     """
     Generate comprehensive stock analysis report
 
@@ -313,6 +313,51 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         if "market_index_analysis" in section_reports:
             final_report += main_headers["market"]
             final_report += section_reports["market_index_analysis"] + "\n\n"
+
+            # Append macro intelligence context if available
+            if macro_context:
+                regime = macro_context.get("market_regime", "sideways")
+                regime_rationale = macro_context.get("regime_rationale", "")
+                leading = macro_context.get("leading_sectors", [])
+                lagging = macro_context.get("lagging_sectors", [])
+                risks = macro_context.get("risk_events", [])
+
+                if language == "ko":
+                    macro_section = "### 거시경제 인텔리전스 요약\n\n"
+                    regime_labels = {
+                        "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
+                        "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
+                    }
+                    macro_section += f"**시장 체제**: {regime_labels.get(regime, regime)}\n\n"
+                    if regime_rationale:
+                        macro_section += f"**판단 근거**: {regime_rationale}\n\n"
+                    if leading:
+                        sectors_str = ", ".join([s.get("sector", "") for s in leading[:3]])
+                        macro_section += f"**주도 섹터**: {sectors_str}\n\n"
+                    if lagging:
+                        sectors_str = ", ".join([s.get("sector", "") for s in lagging[:3]])
+                        macro_section += f"**소외 섹터**: {sectors_str}\n\n"
+                    if risks:
+                        for r in risks[:3]:
+                            macro_section += f"- ⚠️ {r.get('event', '')} (영향: {r.get('severity', 'medium')})\n"
+                        macro_section += "\n"
+                else:
+                    macro_section = "### Macro Intelligence Summary\n\n"
+                    macro_section += f"**Market Regime**: {regime.replace('_', ' ').title()}\n\n"
+                    if regime_rationale:
+                        macro_section += f"**Rationale**: {regime_rationale}\n\n"
+                    if leading:
+                        sectors_str = ", ".join([s.get("sector", "") for s in leading[:3]])
+                        macro_section += f"**Leading Sectors**: {sectors_str}\n\n"
+                    if lagging:
+                        sectors_str = ", ".join([s.get("sector", "") for s in lagging[:3]])
+                        macro_section += f"**Lagging Sectors**: {sectors_str}\n\n"
+                    if risks:
+                        for r in risks[:3]:
+                            macro_section += f"- ⚠️ {r.get('event', '')} (Severity: {r.get('severity', 'medium')})\n"
+                        macro_section += "\n"
+
+                final_report += macro_section
 
         # Investment Strategy section
         if "investment_strategy" in section_reports:
