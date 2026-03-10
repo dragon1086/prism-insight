@@ -904,18 +904,8 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
     selected_tickers = set()
     score_column = "final_score" if use_hybrid and trade_date else "composite_score"
 
-    # Determine max selections based on market regime
-    if macro_context:
-        regime = macro_context.get("market_regime", "sideways")
-        if regime in ("strong_bull", "moderate_bull"):
-            max_selections = 5
-        elif regime == "sideways":
-            max_selections = 3
-        else:  # moderate_bear, strong_bear
-            max_selections = 2
-        logger.info(f"Regime-based selection: max_selections={max_selections} (regime={regime})")
-    else:
-        max_selections = 3  # Default (backward compatible)
+    # Fixed max_selections=3 regardless of regime (user preference for consistent selection count)
+    max_selections = 3
 
     # Apply sector bonus/penalty if macro_context provided
     if macro_context:

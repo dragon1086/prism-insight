@@ -876,3 +876,207 @@ def prefetch_us_analysis_data(ticker: str) -> dict:
         logger.warning(f"Failed to prefetch any US data for {ticker}")
 
     return result
+
+
+def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
+    """Prefetch data for US macro intelligence analysis.
+
+    Fetches S&P 500, NASDAQ, VIX index data, then computes market regime
+    programmatically from price data (not LLM-based).
+
+    Args:
+        reference_date: Analysis date (YYYYMMDD) - used for logging
+
+    Returns:
+        Dictionary with:
+        - "sp500_ohlcv_md": S&P 500 20-day OHLCV as markdown
+        - "nasdaq_ohlcv_md": NASDAQ 20-day OHLCV as markdown
+        - "vix_ohlcv_md": VIX 20-day OHLCV as markdown
+        - "computed_regime": programmatically computed regime info dict
+    """
+    result = {}
+
+    try:
+        client = _get_us_data_client()
+    except Exception as e:
+        logger.error(f"Failed to get US data client: {e}")
+        return result
+
+    # 1. S&P 500
+    sp500_df = None
+    try:
+        sp500_df = client.get_ohlcv("^GSPC", period="3mo", interval="1d")
+        if sp500_df is not None and not sp500_df.empty:
+            sp500_20d = sp500_df.tail(20)
+            sp500_20d.columns = [col.title().replace("_", " ") for col in sp500_20d.columns]
+            sp500_20d.index.name = "Date"
+            result["sp500_ohlcv_md"] = _df_to_markdown(sp500_20d, "S&P 500 (20 trading days)")
+    except Exception as e:
+        logger.error(f"Error fetching S&P 500: {e}")
+
+    # 2. NASDAQ
+    nasdaq_df = None
+    try:
+        nasdaq_df = client.get_ohlcv("^IXIC", period="3mo", interval="1d")
+        if nasdaq_df is not None and not nasdaq_df.empty:
+            nasdaq_20d = nasdaq_df.tail(20)
+            nasdaq_20d.columns = [col.title().replace("_", " ") for col in nasdaq_20d.columns]
+            nasdaq_20d.index.name = "Date"
+            result["nasdaq_ohlcv_md"] = _df_to_markdown(nasdaq_20d, "NASDAQ Composite (20 trading days)")
+    except Exception as e:
+        logger.error(f"Error fetching NASDAQ: {e}")
+
+    # 3. VIX
+    vix_df = None
+    try:
+        vix_df = client.get_ohlcv("^VIX", period="3mo", interval="1d")
+        if vix_df is not None and not vix_df.empty:
+            vix_20d = vix_df.tail(20)
+            vix_20d.columns = [col.title().replace("_", " ") for col in vix_20d.columns]
+            vix_20d.index.name = "Date"
+            result["vix_ohlcv_md"] = _df_to_markdown(vix_20d, "VIX (20 trading days)")
+    except Exception as e:
+        logger.error(f"Error fetching VIX: {e}")
+
+    # 4. Compute regime programmatically
+    if sp500_df is not None and not sp500_df.empty:
+        result["computed_regime"] = _compute_us_regime(sp500_df, nasdaq_df, vix_df)
+
+    if result:
+        logger.info(f"Prefetched US macro intelligence data: {list(result.keys())}")
+
+    return result
+
+
+def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, vix_df: pd.DataFrame = None) -> dict:
+    """Compute US market regime programmatically from index data.
+
+    Uses S&P 500 20-day MA, 4-week change, and VIX level for classification.
+
+    Returns:
+        Dict with regime classification, index summary, and confidence.
+    """
+    if sp500_df is None or sp500_df.empty or len(sp500_df) < 10:
+        return {"market_regime": "sideways", "regime_confidence": 0.3, "simple_ma_regime": "sideways"}
+
+    sp500_df = sp500_df.sort_index()
+    df_20d = sp500_df.tail(20)
+
+    # Find close column
+    close_col = None
+    for col_name in ["Close", "close", "Adj Close"]:
+        if col_name in sp500_df.columns:
+            close_col = col_name
+            break
+    if not close_col:
+        close_col = sp500_df.columns[3]
+
+    current_price = float(df_20d[close_col].iloc[-1])
+    ma_20d = float(df_20d[close_col].mean())
+
+    # 4-week change (20 trading days)
+    if len(df_20d) >= 20:
+        price_4w_ago = float(df_20d[close_col].iloc[0])
+    elif len(df_20d) >= 10:
+        price_4w_ago = float(df_20d[close_col].iloc[0])
+    else:
+        price_4w_ago = float(df_20d[close_col].iloc[0])
+    change_4w_pct = ((current_price - price_4w_ago) / price_4w_ago) * 100
+
+    # MA position
+    ma_diff_pct = ((current_price - ma_20d) / ma_20d) * 100
+    above_ma = current_price > ma_20d
+
+    # VIX level
+    vix_current = None
+    vix_level = "moderate"
+    if vix_df is not None and not vix_df.empty:
+        vix_close = None
+        for col_name in ["Close", "close", "Adj Close"]:
+            if col_name in vix_df.columns:
+                vix_close = col_name
+                break
+        if vix_close:
+            vix_current = float(vix_df[vix_close].iloc[-1])
+            if vix_current < 15:
+                vix_level = "low"
+            elif vix_current < 20:
+                vix_level = "moderate"
+            elif vix_current < 25:
+                vix_level = "elevated"
+            else:
+                vix_level = "high"
+
+    # simple_ma_regime
+    if abs(ma_diff_pct) <= 0.5:
+        simple_ma_regime = "sideways"
+    elif above_ma:
+        simple_ma_regime = "bull"
+    else:
+        simple_ma_regime = "bear"
+
+    # S&P 500 20d trend
+    if change_4w_pct > 2:
+        sp500_trend = "up"
+    elif change_4w_pct < -2:
+        sp500_trend = "down"
+    else:
+        sp500_trend = "sideways"
+
+    # NASDAQ trend
+    nasdaq_trend = "sideways"
+    if nasdaq_df is not None and not nasdaq_df.empty:
+        try:
+            nasdaq_df = nasdaq_df.sort_index()
+            nd_20d = nasdaq_df.tail(20)
+            nd_close = None
+            for col_name in ["Close", "close", "Adj Close"]:
+                if col_name in nasdaq_df.columns:
+                    nd_close = col_name
+                    break
+            if nd_close and len(nd_20d) >= 10:
+                nd_current = float(nd_20d[nd_close].iloc[-1])
+                nd_prev = float(nd_20d[nd_close].iloc[0])
+                nd_change = ((nd_current - nd_prev) / nd_prev) * 100
+                if nd_change > 2:
+                    nasdaq_trend = "up"
+                elif nd_change < -2:
+                    nasdaq_trend = "down"
+        except Exception:
+            pass
+
+    # Market regime classification (US uses 4-week / ±3%/±5% thresholds + VIX)
+    if above_ma and change_4w_pct > 3 and vix_level in ("low", "moderate"):
+        regime = "strong_bull"
+        confidence = 0.85
+    elif above_ma and change_4w_pct >= 0:
+        regime = "moderate_bull"
+        confidence = 0.75
+    elif abs(ma_diff_pct) <= 1 and abs(change_4w_pct) < 2:
+        regime = "sideways"
+        confidence = 0.65
+    elif not above_ma and change_4w_pct < -5 and vix_level in ("elevated", "high"):
+        regime = "strong_bear"
+        confidence = 0.85
+    else:
+        regime = "moderate_bear"
+        confidence = 0.75
+
+    index_summary = {
+        "sp500_20d_trend": sp500_trend,
+        "sp500_vs_20d_ma": "above" if above_ma else "below",
+        "sp500_4w_change_pct": round(change_4w_pct, 2),
+        "sp500_current": round(current_price, 2),
+        "sp500_20d_ma": round(ma_20d, 2),
+        "nasdaq_20d_trend": nasdaq_trend,
+    }
+    if vix_current is not None:
+        index_summary["vix_current"] = round(vix_current, 2)
+        index_summary["vix_level"] = vix_level
+
+    return {
+        "market_regime": regime,
+        "regime_confidence": confidence,
+        "simple_ma_regime": simple_ma_regime,
+        "index_summary": index_summary,
+    }

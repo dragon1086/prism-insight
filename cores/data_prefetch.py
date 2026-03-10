@@ -136,6 +136,183 @@ def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str) -> s
         return ""
 
 
+def prefetch_macro_intelligence_data(reference_date: str) -> dict:
+    """Prefetch data for macro intelligence analysis.
+
+    Fetches KOSPI/KOSDAQ index data and sector mapping, then computes market regime
+    programmatically from price data (not LLM-based).
+
+    Args:
+        reference_date: Analysis date (YYYYMMDD)
+
+    Returns:
+        Dictionary with:
+        - "kospi_ohlcv_md": KOSPI 20-day OHLCV as markdown
+        - "kosdaq_ohlcv_md": KOSDAQ 20-day OHLCV as markdown
+        - "sector_map": ticker → sector mapping dict
+        - "computed_regime": programmatically computed regime info dict
+    """
+    from datetime import datetime, timedelta
+
+    result = {}
+
+    server = _get_mcp_server_module()
+    if not server:
+        return result
+
+    ref_dt = datetime.strptime(reference_date, "%Y%m%d")
+    start_date = (ref_dt - timedelta(days=45)).strftime("%Y%m%d")
+
+    # 1. KOSPI index OHLCV
+    kospi_md = prefetch_index_ohlcv("1001", start_date, reference_date)
+    if kospi_md:
+        result["kospi_ohlcv_md"] = kospi_md
+
+    # 2. KOSDAQ index OHLCV
+    kosdaq_md = prefetch_index_ohlcv("2001", start_date, reference_date)
+    if kosdaq_md:
+        result["kosdaq_ohlcv_md"] = kosdaq_md
+
+    # 3. Sector map (ticker → sector name)
+    try:
+        import json as _json
+        # load_all_tickers must be called first to populate the internal cache
+        server.load_all_tickers()
+        raw = server.get_ticker_map()
+        sector_data = _json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(sector_data, dict) and "message" not in sector_data and "error" not in sector_data:
+            result["sector_map"] = sector_data
+            logger.info(f"Prefetched sector_map: {len(sector_data)} tickers")
+        else:
+            logger.warning(f"Sector map not available: {str(sector_data)[:100]}")
+    except Exception as e:
+        logger.error(f"Error fetching sector map: {e}")
+
+    # 4. Compute regime from raw KOSPI data
+    try:
+        kospi_raw = server.get_index_ohlcv(start_date, reference_date, "1001")
+        kosdaq_raw = server.get_index_ohlcv(start_date, reference_date, "2001")
+        if kospi_raw:
+            result["computed_regime"] = _compute_kr_regime(kospi_raw, kosdaq_raw)
+    except Exception as e:
+        logger.error(f"Error computing regime: {e}")
+
+    if result:
+        logger.info(f"Prefetched macro intelligence data: {list(result.keys())}")
+
+    return result
+
+
+def _compute_kr_regime(kospi_ohlcv: dict, kosdaq_ohlcv: dict = None) -> dict:
+    """Compute KR market regime programmatically from KOSPI OHLCV data.
+
+    Uses 20-day MA position and 2-week change rate for classification.
+
+    Returns:
+        Dict with regime classification, index summary, and confidence.
+    """
+    df = pd.DataFrame.from_dict(kospi_ohlcv, orient='index')
+    if df.empty or len(df) < 10:
+        return {"market_regime": "sideways", "regime_confidence": 0.3, "simple_ma_regime": "sideways"}
+
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    df_20d = df.tail(20)
+
+    # Determine close column name (could be "Close" or "종가")
+    close_col = None
+    for col_name in ["Close", "종가"]:
+        if col_name in df.columns:
+            close_col = col_name
+            break
+    if not close_col:
+        close_col = df.columns[3]  # fallback to 4th column (typically Close)
+
+    current_price = float(df_20d[close_col].iloc[-1])
+    ma_20d = float(df_20d[close_col].mean())
+
+    # 2-week change (last 10 trading days)
+    if len(df_20d) >= 10:
+        price_2w_ago = float(df_20d[close_col].iloc[-10])
+    else:
+        price_2w_ago = float(df_20d[close_col].iloc[0])
+    change_2w_pct = ((current_price - price_2w_ago) / price_2w_ago) * 100
+
+    # MA position
+    ma_diff_pct = ((current_price - ma_20d) / ma_20d) * 100
+    above_ma = current_price > ma_20d
+
+    # simple_ma_regime (pure index-based)
+    if abs(ma_diff_pct) <= 0.5:
+        simple_ma_regime = "sideways"
+    elif above_ma:
+        simple_ma_regime = "bull"
+    else:
+        simple_ma_regime = "bear"
+
+    # KOSPI 20d trend
+    if change_2w_pct > 2:
+        kospi_trend = "up"
+    elif change_2w_pct < -2:
+        kospi_trend = "down"
+    else:
+        kospi_trend = "sideways"
+
+    # Market regime classification (KR uses 2-week / ±5% thresholds)
+    if above_ma and change_2w_pct > 5:
+        regime = "strong_bull"
+        confidence = 0.85
+    elif above_ma and change_2w_pct >= 0:
+        regime = "moderate_bull"
+        confidence = 0.75
+    elif abs(ma_diff_pct) <= 1 and abs(change_2w_pct) < 2:
+        regime = "sideways"
+        confidence = 0.65
+    elif not above_ma and change_2w_pct < -5:
+        regime = "strong_bear"
+        confidence = 0.85
+    else:
+        regime = "moderate_bear"
+        confidence = 0.75
+
+    # KOSDAQ trend (if available)
+    kosdaq_trend = "sideways"
+    if kosdaq_ohlcv:
+        try:
+            kd_df = pd.DataFrame.from_dict(kosdaq_ohlcv, orient='index')
+            kd_df.index = pd.to_datetime(kd_df.index)
+            kd_df = kd_df.sort_index().tail(20)
+            kd_close = None
+            for col_name in ["Close", "종가"]:
+                if col_name in kd_df.columns:
+                    kd_close = col_name
+                    break
+            if kd_close and len(kd_df) >= 10:
+                kd_current = float(kd_df[kd_close].iloc[-1])
+                kd_prev = float(kd_df[kd_close].iloc[-10])
+                kd_change = ((kd_current - kd_prev) / kd_prev) * 100
+                if kd_change > 2:
+                    kosdaq_trend = "up"
+                elif kd_change < -2:
+                    kosdaq_trend = "down"
+        except Exception:
+            pass
+
+    return {
+        "market_regime": regime,
+        "regime_confidence": confidence,
+        "simple_ma_regime": simple_ma_regime,
+        "index_summary": {
+            "kospi_20d_trend": kospi_trend,
+            "kospi_vs_20d_ma": "above" if above_ma else "below",
+            "kospi_2w_change_pct": round(change_2w_pct, 2),
+            "kospi_current": round(current_price, 2),
+            "kospi_20d_ma": round(ma_20d, 2),
+            "kosdaq_20d_trend": kosdaq_trend,
+        }
+    }
+
+
 def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_ago: str) -> dict:
     """Prefetch all data needed for KR stock analysis agents.
 

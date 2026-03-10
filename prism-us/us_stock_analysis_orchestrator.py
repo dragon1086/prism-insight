@@ -188,16 +188,18 @@ class USStockAnalysisOrchestrator:
 
     async def run_macro_intelligence(self, reference_date: str = None, language: str = "ko") -> dict:
         """
-        Run macro intelligence agent to get US market regime, sector data, and risk events.
+        Run macro intelligence analysis for US market.
 
-        Uses its own MCPApp context to avoid conflicts with other MCP operations.
+        Step 1: Prefetch index data (S&P 500/NASDAQ/VIX) programmatically
+        Step 2: Compute market regime from actual price data (not LLM)
+        Step 3: Run LLM agent with perplexity only for qualitative analysis
 
         Args:
             reference_date: Analysis date (YYYYMMDD). Defaults to today.
             language: Language code ("ko" or "en")
 
         Returns:
-            dict: Macro context with regime, sectors, risks.
+            dict: Macro context with regime, sectors, risks, report_prose.
                   Returns None if macro intelligence fails (graceful degradation).
         """
         if reference_date is None:
@@ -206,6 +208,17 @@ class USStockAnalysisOrchestrator:
         logger.info(f"Starting macro intelligence analysis for US market - date: {reference_date}")
 
         try:
+            # Step 1: Prefetch index data and compute regime programmatically
+            from cores.data_prefetch import prefetch_us_macro_intelligence_data
+            prefetched = prefetch_us_macro_intelligence_data(reference_date)
+            logger.info(f"US macro prefetch complete: {list(prefetched.keys())}")
+
+            if prefetched.get("computed_regime"):
+                computed = prefetched["computed_regime"]
+                logger.info(f"Pre-computed US regime: {computed.get('market_regime')} "
+                           f"(confidence: {computed.get('regime_confidence')})")
+
+            # Step 2: Run LLM agent with perplexity for qualitative analysis
             from mcp_agent.app import MCPApp
             from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
             from cores.agents.macro_intelligence_agent import create_us_macro_intelligence_agent
@@ -214,16 +227,17 @@ class USStockAnalysisOrchestrator:
 
             async with macro_app.run() as macro_run_context:
                 macro_logger = macro_run_context.logger
-                macro_logger.info("US macro intelligence agent starting...")
+                macro_logger.info("US macro intelligence agent starting (perplexity-only mode)...")
 
-                agent = create_us_macro_intelligence_agent(reference_date, language)
+                agent = create_us_macro_intelligence_agent(reference_date, language, prefetched_data=prefetched)
 
                 from mcp_agent.workflows.llm.augmented_llm import RequestParams
                 llm = await agent.attach_llm(OpenAIAugmentedLLM)
                 result = await llm.generate_str(
                     message=f"Execute US stock market macro analysis for {reference_date} and output JSON.",
                     request_params=RequestParams(
-                        model="gpt-5-mini",
+                        model="gpt-5.2",
+                        reasoning_effort="none",
                         maxTokens=16000,
                         parallel_tool_calls=True,
                         use_history=True
@@ -232,30 +246,54 @@ class USStockAnalysisOrchestrator:
 
                 macro_logger.info(f"US macro intelligence raw output: {len(result)} chars")
 
+                # Save raw output for debugging
+                try:
+                    raw_output_path = f"macro_intelligence_us_{reference_date}.json"
+                    with open(raw_output_path, 'w', encoding='utf-8') as f:
+                        f.write(result)
+                    macro_logger.info(f"Raw output saved to: {raw_output_path}")
+                except Exception:
+                    pass
+
                 # Parse JSON from agent output
                 import json as json_module
+                macro_data = None
 
-                # Try direct parse first
                 try:
                     macro_data = json_module.loads(result.strip())
                 except json_module.JSONDecodeError:
-                    # Try extracting JSON from markdown code block
                     import re
                     json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', result, re.DOTALL)
                     if json_match:
-                        macro_data = json_module.loads(json_match.group(1).strip())
-                    else:
-                        # Try json_repair as last resort
+                        try:
+                            macro_data = json_module.loads(json_match.group(1).strip())
+                        except json_module.JSONDecodeError:
+                            pass
+
+                    if not macro_data:
                         try:
                             from json_repair import repair_json
                             macro_data = json_module.loads(repair_json(result))
                         except Exception:
-                            macro_logger.error(f"Failed to parse US macro intelligence output as JSON")
-                            return None
+                            macro_logger.error("Failed to parse US macro intelligence output as JSON")
 
-                # Validate required fields
-                if "market_regime" not in macro_data:
-                    macro_logger.error("US macro intelligence output missing 'market_regime' field")
+                # Fallback: if LLM failed but we have computed regime, use that
+                if not macro_data and prefetched.get("computed_regime"):
+                    macro_logger.warning("LLM output parsing failed, using computed regime only")
+                    macro_data = {
+                        "analysis_date": reference_date,
+                        "market": "US",
+                        **prefetched["computed_regime"],
+                        "regime_rationale": "Programmatically computed from S&P 500 / VIX data",
+                        "leading_sectors": [],
+                        "lagging_sectors": [],
+                        "risk_events": [],
+                        "beneficiary_themes": [],
+                        "recommended_max_holdings": 8,
+                        "cash_ratio_suggestion": 20,
+                        "report_prose": "",
+                    }
+                elif not macro_data:
                     return None
 
                 regime = macro_data.get("market_regime", "sideways")

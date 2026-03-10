@@ -1,103 +1,105 @@
 from mcp_agent.agents.agent import Agent
 
 
-def create_macro_intelligence_agent(reference_date, language="ko"):
+def create_macro_intelligence_agent(reference_date, language="ko", prefetched_data: dict = None):
     """Create macro intelligence agent for KR market
 
-    Analyzes Korean stock market macro trends, sector rotation, regime classification,
-    and outputs structured JSON for downstream trading decision agents.
+    The agent receives pre-computed regime and index data from programmatic prefetch,
+    and only calls perplexity for qualitative analysis (sector trends, risk events).
 
     Args:
         reference_date: Analysis reference date (YYYYMMDD)
         language: Language code ("ko" or "en")
+        prefetched_data: Dict with computed_regime, kospi_ohlcv_md, kosdaq_ohlcv_md, sector_map
 
     Returns:
         Agent: Macro intelligence agent
     """
 
-    instruction = f"""당신은 한국 주식시장 거시경제 분석 전문가입니다.
-아래 지시에 따라 데이터를 수집하고, 반드시 유효한 JSON만 출력하세요. JSON 외의 텍스트는 절대 포함하지 마세요.
+    # Build context from prefetched data
+    regime_context = ""
+    index_data_context = ""
 
-분석일: {reference_date} (YYYYMMDD 형식)
+    if prefetched_data:
+        computed = prefetched_data.get("computed_regime", {})
+        if computed:
+            regime = computed.get("market_regime", "sideways")
+            confidence = computed.get("regime_confidence", 0.5)
+            simple_ma = computed.get("simple_ma_regime", "sideways")
+            idx = computed.get("index_summary", {})
 
-## 수행해야 할 Tool Call (순서대로)
+            regime_context = f"""
+## Pre-Computed Market Regime (from actual index data)
 
-### 1단계: Perplexity 거시경제 검색
-perplexity_ask 도구를 사용하여 아래 쿼리로 1회 검색:
-"{reference_date} 한국 증시 거시경제 동향, KOSPI KOSDAQ 업종별 동향, 주도 섹터, 리스크 이벤트, 지정학적 리스크 종합분석"
+The following regime was computed programmatically from KOSPI price data:
+- **market_regime**: {regime}
+- **regime_confidence**: {confidence}
+- **simple_ma_regime**: {simple_ma}
+- **KOSPI 20d trend**: {idx.get('kospi_20d_trend', 'N/A')}
+- **KOSPI vs 20d MA**: {idx.get('kospi_vs_20d_ma', 'N/A')}
+- **KOSPI 2-week change**: {idx.get('kospi_2w_change_pct', 'N/A')}%
+- **KOSPI current**: {idx.get('kospi_current', 'N/A')}
+- **KOSPI 20d MA**: {idx.get('kospi_20d_ma', 'N/A')}
+- **KOSDAQ 20d trend**: {idx.get('kosdaq_20d_trend', 'N/A')}
 
-### 2단계: KOSPI 지수 데이터 수집
-kospi_kosdaq-get_index_ohlcv 도구 호출:
-- ticker: "1001" (KOSPI)
-- 최근 20거래일 데이터 수집 (period=1, freq="D")
+You MUST use these pre-computed values for market_regime, regime_confidence, simple_ma_regime, and index_summary.
+You may adjust regime_confidence (±0.1) based on perplexity analysis, but DO NOT change market_regime unless
+perplexity data provides overwhelming contradictory evidence.
+"""
 
-### 3단계: KOSDAQ 지수 데이터 수집
-kospi_kosdaq-get_index_ohlcv 도구 호출:
-- ticker: "2001" (KOSDAQ)
-- 최근 20거래일 데이터 수집 (period=1, freq="D")
+        kospi_md = prefetched_data.get("kospi_ohlcv_md", "")
+        kosdaq_md = prefetched_data.get("kosdaq_ohlcv_md", "")
+        if kospi_md or kosdaq_md:
+            index_data_context = "\n## Pre-fetched Index Data\n\n"
+            if kospi_md:
+                index_data_context += kospi_md + "\n"
+            if kosdaq_md:
+                index_data_context += kosdaq_md + "\n"
 
-### 4단계: 섹터 매핑 수집
-kospi_kosdaq-get_sector_info 도구 호출:
-- market: "KOSPI"
-- 전체 ticker→섹터 매핑 딕셔너리를 수집하여 sector_map 필드에 그대로 포함
+    instruction = f"""You are a Korean stock market macro intelligence analyst.
+Follow the instructions below to collect data, then output ONLY valid JSON. Do not include any text outside the JSON.
 
----
+Analysis date: {reference_date} (YYYYMMDD format)
+{regime_context}
+{index_data_context}
+## Tool Call to Execute
 
-## ⚠️ 핵심 편향 방지 규칙 (CRITICAL ANTI-BIAS RULE)
-
-**KOSPI가 20일 이동평균선 아래에 있고 2주 변화율이 -2% 미만이면, 뉴스 내러티브가 아무리 긍정적이어도 regime을 'bull'로 판단할 수 없습니다.**
-
-- 지수 데이터(KOSPI/KOSDAQ 실제 가격)가 1차 증거 (PRIMARY evidence)
-- Perplexity 내러티브는 2차 확인 수단 (SECONDARY confirmation)
-- 지수가 약세를 보이는데 내러티브가 긍정적이면 → sideways 또는 moderate_bear로 판단
-
----
-
-## 시장 체제(Regime) 분류 기준
-
-KOSPI 20일 이동평균선과 2주 변화율을 기준으로:
-
-| Regime | 조건 |
-|--------|------|
-| strong_bull | KOSPI 20일 MA 위 + 최근 2주 변화율 > +5% |
-| moderate_bull | KOSPI 20일 MA 위 + 양의 추세 (2주 변화율 0~+5%) |
-| sideways | KOSPI 20일 MA 근처 (±1%), 혼재 신호 |
-| moderate_bear | KOSPI 20일 MA 아래 + 음의 추세 |
-| strong_bear | KOSPI 20일 MA 아래 + 최근 2주 변화율 < -5% |
-
-## simple_ma_regime (편향 감지용 보조 지표)
-
-지수 데이터만으로 순수하게 계산:
-- bull: KOSPI 종가 > 20일 단순이동평균
-- bear: KOSPI 종가 < 20일 단순이동평균
-- sideways: KOSPI 종가 ≈ 20일 단순이동평균 (±0.5% 이내)
+### Perplexity macro search (1 call only)
+Use the perplexity_ask tool with the following query:
+"{reference_date} 한국 증시 거시경제 동향, 업종별 동향, 주도 섹터와 소외 섹터, 리스크 이벤트, 지정학적 리스크 종합분석"
 
 ---
 
-## 섹터 분류 기준 (KR 고정 섹터 목록)
+## Your Task
 
-아래 섹터 목록으로 leading_sectors, lagging_sectors를 분류하세요:
+Based on the perplexity search results AND the pre-computed index data above:
+1. Use the pre-computed market_regime and index_summary values as-is
+2. Identify leading and lagging sectors from perplexity analysis
+3. Identify risk events and beneficiary themes
+4. Write a `regime_rationale` explaining the regime judgment
+5. Write a `report_prose` section — a well-written 3-5 paragraph narrative summary for inclusion in stock analysis reports
+
+---
+
+## Sector Taxonomy (KR fixed sector list)
+
+Use ONLY these sectors for leading_sectors and lagging_sectors:
 반도체, 자동차, 배터리/2차전지, 바이오/제약, 건설, 철강, 화학, 금융,
 유통/소비재, IT/소프트웨어, 엔터테인먼트, 조선, 방산, 에너지, 통신, 운송/물류, 기타
 
 ---
 
-## 출력 JSON 스키마 (이 형식 그대로 출력)
+## Output JSON Schema (output exactly this structure)
 
 ```json
-{{
+{{{{
   "analysis_date": "YYYYMMDD",
   "market": "KR",
-  "market_regime": "strong_bull|moderate_bull|sideways|moderate_bear|strong_bear",
-  "regime_confidence": 0.0,
-  "regime_rationale": "판단 근거 간략 설명",
-  "simple_ma_regime": "bull|bear|sideways",
-  "index_summary": {{
-    "kospi_20d_trend": "up|down|sideways",
-    "kospi_vs_20d_ma": "above|below",
-    "kospi_2w_change_pct": 0.0,
-    "kosdaq_20d_trend": "up|down|sideways"
-  }},
+  "market_regime": "{prefetched_data.get('computed_regime', {}).get('market_regime', 'sideways') if prefetched_data else 'sideways'}",
+  "regime_confidence": {prefetched_data.get('computed_regime', {}).get('regime_confidence', 0.5) if prefetched_data else 0.5},
+  "regime_rationale": "판단 근거 간략 설명 (1-2 sentences)",
+  "simple_ma_regime": "{prefetched_data.get('computed_regime', {}).get('simple_ma_regime', 'sideways') if prefetched_data else 'sideways'}",
+  "index_summary": {_format_index_summary(prefetched_data)},
   "leading_sectors": [
     {{"sector": "반도체", "reason": "AI 수요 급증", "confidence": 0.8}}
   ],
@@ -110,42 +112,62 @@ KOSPI 20일 이동평균선과 2주 변화율을 기준으로:
   "beneficiary_themes": [
     {{"theme": "AI 인프라 투자 확대", "beneficiary_sectors": ["반도체", "IT/소프트웨어"], "duration": "medium_term"}}
   ],
-  "sector_map": {{}},
   "recommended_max_holdings": 8,
-  "cash_ratio_suggestion": 20
-}}
+  "cash_ratio_suggestion": 20,
+  "report_prose": "거시경제 분석 리포트 내러티브 (3-5 paragraphs, formal Korean 합쇼체)"
+}}}}
 ```
 
-## 필드 설명
+## report_prose Guidelines
 
-- `analysis_date`: 분석일 ({reference_date})
-- `market`: 항상 "KR"
-- `market_regime`: 위 분류 기준에 따른 체제 (5가지 중 하나)
-- `regime_confidence`: 체제 판단 확신도 (0.0~1.0)
-- `regime_rationale`: 판단 근거 1~2문장
-- `simple_ma_regime`: 20일 MA 기준 순수 지수 판단 (편향 감지용)
-- `index_summary`: KOSPI/KOSDAQ 요약 지표
-  - `kospi_2w_change_pct`: 최근 10거래일(약 2주) 수익률 (%)
-- `leading_sectors`: 주도 섹터 (최대 5개, confidence 내림차순)
-- `lagging_sectors`: 소외/약세 섹터 (최대 5개)
-- `risk_events`: 리스크 이벤트 (severity: high/medium/low)
-- `beneficiary_themes`: 수혜 테마 (duration: short_term/medium_term/long_term)
-- `sector_map`: kospi_kosdaq-get_sector_info 도구의 raw 결과를 그대로 포함 (ticker→섹터명 딕셔너리)
-- `recommended_max_holdings`: 권장 최대 보유 종목 수 (6~10, 시장 체제에 따라)
+Write a professional 3-5 paragraph narrative in {"formal Korean (합쇼체)" if language == "ko" else "English"} covering:
+1. Current market regime and its rationale
+2. Leading sectors and why they are outperforming
+3. Key risk events and their potential market impact
+4. Recommended investment posture given the current regime
+
+This prose will be directly inserted into stock analysis reports. Make it informative but concise.
+{"Use formal polite style (합쇼체): ~습니다, ~있습니다, ~됩니다" if language == "ko" else ""}
+
+## Field Values Guide
+
+- `recommended_max_holdings`: 6~10 based on regime
   - strong_bull: 9~10, moderate_bull: 8~9, sideways: 7~8, moderate_bear: 6~7, strong_bear: 5~6
-- `cash_ratio_suggestion`: 권장 현금 보유 비율 (%) (정수)
+- `cash_ratio_suggestion`: integer %
   - strong_bull: 10%, moderate_bull: 15~20%, sideways: 20~25%, moderate_bear: 30%, strong_bear: 40%+
 
-## 주의사항
+## Important Notes
 
-- 반드시 4단계 tool call을 모두 수행한 후 JSON을 출력하세요
-- 출력은 순수 JSON만. 마크다운 코드블록(```), 설명 텍스트, "분석 완료" 등 불필요한 텍스트 포함 금지
-- 데이터 수집 실패 시에도 최선의 추정값으로 JSON 구조를 완성하세요
-- 할루시네이션 방지: 실제 데이터에서 확인된 내용만 포함
+- Execute perplexity tool call before generating JSON
+- Output MUST be pure JSON only. No markdown code fences, no explanatory text
+- leading_sectors: max 5, descending confidence
+- lagging_sectors: max 5
+- Anti-hallucination: only include content confirmed from actual data
 """
 
     return Agent(
         name="macro_intelligence_agent",
         instruction=instruction,
-        server_names=["perplexity", "kospi_kosdaq"]
+        server_names=["perplexity"]
     )
+
+
+def _format_index_summary(prefetched_data: dict) -> str:
+    """Format index_summary for JSON schema example."""
+    if not prefetched_data:
+        return '{"kospi_20d_trend": "sideways", "kospi_vs_20d_ma": "above", "kospi_2w_change_pct": 0.0, "kosdaq_20d_trend": "sideways"}'
+
+    computed = prefetched_data.get("computed_regime", {})
+    idx = computed.get("index_summary", {})
+    if not idx:
+        return '{"kospi_20d_trend": "sideways", "kospi_vs_20d_ma": "above", "kospi_2w_change_pct": 0.0, "kosdaq_20d_trend": "sideways"}'
+
+    import json
+    # Only include the standard fields (not current/ma which are internal)
+    output = {
+        "kospi_20d_trend": idx.get("kospi_20d_trend", "sideways"),
+        "kospi_vs_20d_ma": idx.get("kospi_vs_20d_ma", "above"),
+        "kospi_2w_change_pct": idx.get("kospi_2w_change_pct", 0.0),
+        "kosdaq_20d_trend": idx.get("kosdaq_20d_trend", "sideways"),
+    }
+    return json.dumps(output, ensure_ascii=False)
