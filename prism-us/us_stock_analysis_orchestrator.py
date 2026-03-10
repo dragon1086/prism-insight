@@ -979,6 +979,8 @@ class USStockAnalysisOrchestrator:
                         chat_id = self.telegram_config.channel_id if self.telegram_config.use_telegram else None
 
                         trigger_results_file = f"trigger_results_us_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
+
+                        # US uses fixed GICS sectors (fallback in trading_agents.py)
                         tracking_success = await tracking_agent.run(
                             pdf_paths, chat_id, language,
                             telegram_config=self.telegram_config,

@@ -1054,9 +1054,16 @@ class StockAnalysisOrchestrator:
 
                         # Pass trigger results file for trigger_type tracking
                         trigger_results_file = f"trigger_results_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
+
+                        # Extract sector names from macro_context for trading agent
+                        kr_sector_names = None
+                        if macro_context and macro_context.get("sector_map"):
+                            kr_sector_names = sorted(set(macro_context["sector_map"].values()))
+
                         tracking_success = await tracking_agent.run(
                             pdf_paths, chat_id, language, self.telegram_config,
-                            trigger_results_file=trigger_results_file
+                            trigger_results_file=trigger_results_file,
+                            sector_names=kr_sector_names
                         )
 
                         if tracking_success:

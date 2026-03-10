@@ -127,12 +127,13 @@ class StockTrackingAgent:
         if self.telegram_token:
             self.telegram_bot = Bot(token=self.telegram_token)
 
-    async def initialize(self, language: str = "ko"):
+    async def initialize(self, language: str = "ko", sector_names: list = None):
         """
         Create necessary tables and initialize
 
         Args:
             language: Language code for agents (default: "ko")
+            sector_names: List of valid sector names for trading agent (optional)
         """
         logger.info("Starting tracking agent initialization")
         logger.info(f"Trading journal feature: {'enabled' if self.enable_journal else 'disabled'}")
@@ -145,8 +146,8 @@ class StockTrackingAgent:
         self.conn.row_factory = sqlite3.Row  # Return results as dictionary
         self.cursor = self.conn.cursor()
 
-        # Initialize trading scenario generation agent with language
-        self.trading_agent = create_trading_scenario_agent(language=language)
+        # Initialize trading scenario generation agent with language and sector names
+        self.trading_agent = create_trading_scenario_agent(language=language, sector_names=sector_names)
 
         # Create database tables
         await self._create_tables()
@@ -1584,7 +1585,7 @@ class StockTrackingAgent:
         except Exception as e:
             logger.error(f"Error in _send_to_translation_channels: {str(e)}")
 
-    async def run(self, pdf_report_paths: List[str], chat_id: str = None, language: str = "ko", telegram_config=None, trigger_results_file: str = None) -> bool | None:
+    async def run(self, pdf_report_paths: List[str], chat_id: str = None, language: str = "ko", telegram_config=None, trigger_results_file: str = None, sector_names: list = None) -> bool | None:
         """
         Main execution function for stock tracking system
 
@@ -1630,8 +1631,8 @@ class StockTrackingAgent:
                 except Exception as e:
                     logger.warning(f"Failed to load trigger results file: {e}")
 
-            # Initialize with language parameter
-            await self.initialize(language)
+            # Initialize with language parameter and sector names
+            await self.initialize(language, sector_names=sector_names)
 
             try:
                 # Process reports
