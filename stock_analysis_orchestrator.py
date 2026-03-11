@@ -779,6 +779,9 @@ class StockAnalysisOrchestrator:
                 logger.warning(f"No trigger results found.")
                 return False
 
+            # Include metadata for hybrid selection info in alert message
+            all_results["metadata"] = metadata
+
             # Generate telegram message
             message = self._create_trigger_alert_message(mode, all_results, trade_date)
 
@@ -879,6 +882,19 @@ class StockAnalysisOrchestrator:
         # Convert date format
         formatted_date = f"{trade_date[:4]}.{trade_date[4:6]}.{trade_date[6:8]}"
 
+        # Extract metadata for hybrid selection info
+        metadata = results.get("metadata", {})
+        market_regime = metadata.get("market_regime")
+        selection_strategy = metadata.get("selection_strategy", "")
+        topdown_count = metadata.get("topdown_count", 0)
+        bottomup_count = metadata.get("bottomup_count", 0)
+
+        REGIME_KO = {
+            "strong_bull": "강세장", "moderate_bull": "온건 강세",
+            "sideways": "횡보장", "moderate_bear": "온건 약세", "strong_bear": "약세장",
+        }
+        CHANNEL_KO = {"top-down": "탑다운 (주도섹터)", "bottom-up": "바텀업 (개별종목)"}
+
         # Set title based on mode
         if mode == "morning":
             title = "🔔 오전 프리즘 시그널 얼럿"
@@ -889,10 +905,20 @@ class StockAnalysisOrchestrator:
 
         # Message header
         message = f"{title}\n"
-        message += f"📅 {formatted_date} {time_desc} 포착된 관심종목\n\n"
+        message += f"📅 {formatted_date} {time_desc} 포착된 관심종목\n"
+
+        # Hybrid selection summary (regime + strategy)
+        if market_regime and "hybrid" in selection_strategy:
+            regime_display = REGIME_KO.get(market_regime, market_regime)
+            message += f"🧭 시장국면: {regime_display} | 선정: 탑다운 {topdown_count}종목 + 바텀업 {bottomup_count}종목\n"
+
+        message += "\n"
 
         # Add stock information by trigger
         for trigger_type, stocks in results.items():
+            if trigger_type == "metadata":
+                continue
+
             # Set emoji based on trigger type
             emoji = self._get_trigger_emoji(trigger_type)
 
@@ -912,6 +938,12 @@ class StockAnalysisOrchestrator:
                 message += f"· *{name}* ({code})\n"
                 message += f"  {current_price:,.0f}원 {arrow} {abs(change_rate):.2f}%\n"
 
+                # Selection channel tag
+                selection_channel = stock.get("selection_channel")
+                if selection_channel:
+                    channel_display = CHANNEL_KO.get(selection_channel, selection_channel)
+                    message += f"  📌 {channel_display}\n"
+
                 # Additional information based on trigger type
                 if "volume_increase" in stock and ("Volume" in trigger_type or "거래량" in trigger_type):
                     volume_increase = stock.get("volume_increase", 0)
@@ -930,6 +962,20 @@ class StockAnalysisOrchestrator:
                 elif "closing_strength" in stock and ("Closing Strength" in trigger_type or "마감 강도" in trigger_type):
                     closing_strength = stock.get("closing_strength", 0) * 100
                     message += f"  마감 강도: {closing_strength:.2f}%\n"
+
+                # Hybrid scoring details (score, R/R, stop-loss)
+                details = []
+                final_score = stock.get("final_score")
+                if final_score is not None:
+                    details.append(f"점수: {final_score:.2f}")
+                rr_ratio = stock.get("risk_reward_ratio")
+                if rr_ratio is not None:
+                    details.append(f"R/R: {rr_ratio:.1f}")
+                sl_pct = stock.get("stop_loss_pct")
+                if sl_pct is not None:
+                    details.append(f"손절: -{sl_pct:.1f}%")
+                if details:
+                    message += f"  📊 {' | '.join(details)}\n"
 
                 message += "\n"
 

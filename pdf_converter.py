@@ -537,10 +537,10 @@ def _extract_report_info(md_content: str) -> dict:
             if us_match:
                 info["company_code"] = us_match.group(1)
 
-    # Extract date from content like "2025-01-24 기준" or "발행일: 2025-01-24"
+    # Extract date from content - prioritize "발행일" (publication date) over financial data dates
     date_patterns = [
+        r'\*{0,2}(?:발행일|Publication Date|생성 일시)\*{0,2}[:\s*]*(\d{4}[-./]\d{2}[-./]\d{2})',  # "**발행일:** 2026.03.12" (handles markdown bold)
         r'(\d{4}-\d{2}-\d{2})\s*기준',  # "2025-01-24 기준"
-        r'(?:발행일|Publication Date|생성 일시)[:\s]*(\d{4}[-./]\d{2}[-./]\d{2})',
         r'(\d{4}[-./]\d{2}[-./]\d{2})\s*(?:기준|현재|as of)',
     ]
     for pattern in date_patterns:
