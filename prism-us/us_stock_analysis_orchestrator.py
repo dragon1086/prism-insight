@@ -321,9 +321,9 @@ class USStockAnalysisOrchestrator:
         try:
             from us_trigger_batch import run_batch
 
-            # Results file path
+            # Results file path (use PRISM_US_DIR for consistent path with telegram_summary_agent)
             effective_date = override_date if override_date else datetime.now().strftime("%Y%m%d")
-            results_file = f"trigger_results_us_{mode}_{effective_date}.json"
+            results_file = str(PRISM_US_DIR / f"trigger_results_us_{mode}_{effective_date}.json")
 
             # Run batch
             loop = asyncio.get_event_loop()
@@ -919,7 +919,7 @@ class USStockAnalysisOrchestrator:
                 logger.warning("US macro intelligence unavailable - proceeding without macro context")
 
             # 1. Execute trigger batch
-            results_file = f"trigger_results_us_{mode}_{effective_date}.json"
+            results_file = str(PRISM_US_DIR / f"trigger_results_us_{mode}_{effective_date}.json")
             tickers = await self.run_trigger_batch(mode, macro_context=macro_context, override_date=override_date)
 
             if not tickers:
@@ -980,7 +980,7 @@ class USStockAnalysisOrchestrator:
                         # Use main channel (Korean) by default - same as Korean stock version
                         chat_id = self.telegram_config.channel_id if self.telegram_config.use_telegram else None
 
-                        trigger_results_file = f"trigger_results_us_{mode}_{effective_date}.json"
+                        trigger_results_file = str(PRISM_US_DIR / f"trigger_results_us_{mode}_{effective_date}.json")
 
                         # US uses fixed GICS sectors (fallback in trading_agents.py)
                         tracking_success = await tracking_agent.run(
