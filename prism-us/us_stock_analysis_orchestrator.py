@@ -322,7 +322,8 @@ class USStockAnalysisOrchestrator:
             from us_trigger_batch import run_batch
 
             # Results file path
-            results_file = f"trigger_results_us_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
+            effective_date = override_date if override_date else datetime.now().strftime("%Y%m%d")
+            results_file = f"trigger_results_us_{mode}_{effective_date}.json"
 
             # Run batch
             loop = asyncio.get_event_loop()
@@ -979,7 +980,7 @@ class USStockAnalysisOrchestrator:
                         # Use main channel (Korean) by default - same as Korean stock version
                         chat_id = self.telegram_config.channel_id if self.telegram_config.use_telegram else None
 
-                        trigger_results_file = f"trigger_results_us_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
+                        trigger_results_file = f"trigger_results_us_{mode}_{effective_date}.json"
 
                         # US uses fixed GICS sectors (fallback in trading_agents.py)
                         tracking_success = await tracking_agent.run(
