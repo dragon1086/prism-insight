@@ -8,7 +8,7 @@
 
 ```yaml
 Stack: Python 3.10+, mcp-agent, GPT-5/Claude 4.6, SQLite, Telegram, KIS API
-Scale: ~70 files, 16,000+ LOC, 13+ AI agents, KR/US dual market support
+Scale: ~75,000+ LOC, 13+ AI agents, KR/US dual market support
 ```
 
 ## Project Structure
