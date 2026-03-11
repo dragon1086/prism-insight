@@ -906,8 +906,9 @@ class USStockAnalysisOrchestrator:
 
         try:
             # 0. Run macro intelligence (US market regime, sector data)
+            effective_date = override_date if override_date else datetime.now().strftime("%Y%m%d")
             macro_context = await self.run_macro_intelligence(
-                reference_date=datetime.now().strftime("%Y%m%d"),
+                reference_date=effective_date,
                 language=language
             )
             if macro_context:
@@ -917,7 +918,7 @@ class USStockAnalysisOrchestrator:
                 logger.warning("US macro intelligence unavailable - proceeding without macro context")
 
             # 1. Execute trigger batch
-            results_file = f"trigger_results_us_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
+            results_file = f"trigger_results_us_{mode}_{effective_date}.json"
             tickers = await self.run_trigger_batch(mode, macro_context=macro_context, override_date=override_date)
 
             if not tickers:
