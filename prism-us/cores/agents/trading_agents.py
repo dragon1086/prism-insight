@@ -869,6 +869,7 @@ Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
 2. get_historical_stock_prices: S&P 500/NASDAQ 시장 지수 정보 확인
 
 **sqlite tool로 확인:**
+0. **중요**: 테이블 조회 전 반드시 `describe_table`로 실제 컬럼명을 확인하세요. 컬럼명을 추측하지 말고, 스키마에 존재하는 컬럼만 사용하세요.
 1. 현재 포트폴리오 전체 현황 (us_stock_holdings 테이블)
 2. 현재 종목의 매매 정보
 3. **DB 업데이트**: portfolio_adjustment에서 목표가/손절가 조정이 필요하면 UPDATE 쿼리 실행
@@ -1035,6 +1036,7 @@ Note: US market hours in Korea Standard Time (KST) are approximately 23:30~06:00
 2. get_historical_stock_prices: Check S&P 500/NASDAQ market index info
 
 **sqlite tool to check:**
+0. **IMPORTANT**: Before querying any table, ALWAYS run `describe_table` first to check the actual column names. NEVER guess column names — use only columns that exist in the schema.
 1. Current portfolio overall status (us_stock_holdings table)
 2. Current stock trading info
 3. **DB Update**: If target/stop price adjustment needed in portfolio_adjustment, execute UPDATE query

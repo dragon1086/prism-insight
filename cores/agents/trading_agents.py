@@ -863,6 +863,7 @@ def create_sell_decision_agent(language: str = "ko"):
         3. get_index_ohlcv: Check KOSPI/KOSDAQ market index info
 
         **sqlite tool to check:**
+        0. **IMPORTANT**: Before querying any table, ALWAYS run `describe_table` first to check the actual column names. NEVER guess column names — use only columns that exist in the schema.
         1. Current portfolio overall status
         2. Current stock trading info
         3. **DB Update**: If target/stop price adjustment needed in portfolio_adjustment, execute UPDATE query
@@ -1032,6 +1033,7 @@ def create_sell_decision_agent(language: str = "ko"):
         4. load_all_tickers 사용 금지!!!
 
         **sqlite tool로 확인:**
+        0. **중요**: 테이블 조회 전 반드시 `describe_table`로 실제 컬럼명을 확인하세요. 컬럼명을 추측하지 말고, 스키마에 존재하는 컬럼만 사용하세요.
         1. 현재 포트폴리오 전체 현황 (stock_holdings 테이블 참고)
         2. 현재 종목의 매매 정보 (참고사항 : stock_holdings테이블의 scenario 컬럼에 있는 json데이터 내에서 target_price와 stop_loss는 최초 진입시 설정한 목표가와 손절가임)
         3. **DB 업데이트**: portfolio_adjustment에서 목표가/손절가 조정이 필요하면 UPDATE 쿼리 실행
