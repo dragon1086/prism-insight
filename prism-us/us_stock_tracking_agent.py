@@ -1834,15 +1834,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 if raw_decision and raw_decision.lower() != normalized_decision:
                     logger.debug(f"Decision normalized: '{raw_decision}' -> '{normalized_decision}'")
 
-                # Score-decision consistency enforcement:
-                # If adjusted score meets threshold, override LLM decision to entry
-                if adjusted_score >= min_score and normalized_decision != "entry":
-                    logger.info(
-                        f"Score-decision override: {company_name}({ticker}) - "
-                        f"Score {adjusted_score} >= {min_score} but decision='{normalized_decision}', forcing entry"
-                    )
-                    normalized_decision = "entry"
-
+                # Respect AI agent's decision (consistent with KR logic)
+                # AI considers qualitative factors (RSI, support structure, volume, etc.)
+                # beyond just the score, so do not override its decision
                 if normalized_decision == "entry":
                     buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
 
