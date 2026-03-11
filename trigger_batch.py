@@ -825,6 +825,71 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
     logger.debug(f"Volume increase sideways stocks detected: {len(result)}")
     return enhance_dataframe(result.sort_values("composite_score", ascending=False).head(10))
 
+def _get_regime_slots(market_regime: str) -> tuple:
+    """Return (topdown_slots, bottomup_slots) based on market regime."""
+    REGIME_SLOTS = {
+        "strong_bull": (2, 1),
+        "moderate_bull": (1, 2),
+        "sideways": (1, 2),
+        "moderate_bear": (1, 2),
+        "strong_bear": (0, 3),
+    }
+    return REGIME_SLOTS.get(market_regime, (1, 2))  # default: sideways ratios
+
+
+def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_column: str) -> list:
+    """Build top-down candidate pool from leading sectors.
+
+    Returns list of (ticker, trigger_name, topdown_score, ticker_df) sorted by topdown_score desc.
+    """
+    if not macro_context:
+        return []
+
+    leading_sectors = macro_context.get("leading_sectors", [])
+    if not leading_sectors:
+        return []
+
+    sector_map = macro_context.get("sector_map", {})
+    if not sector_map:
+        return []
+
+    # Build confidence lookup: sector_name -> confidence
+    sector_confidence = {}
+    leading_names = set()
+    for s in leading_sectors:
+        name = s.get("sector", "")
+        conf = s.get("confidence", 0.5)
+        sector_confidence[name] = conf
+        leading_names.add(name)
+
+    pool = []
+    for trigger_name, df in trigger_candidates.items():
+        if df.empty or score_column not in df.columns:
+            continue
+        for ticker in df.index:
+            stock_sector = sector_map.get(ticker, "")
+            if not stock_sector:
+                continue
+            # Exact match first, then fuzzy substring match
+            matched_sector = None
+            if stock_sector in leading_names:
+                matched_sector = stock_sector
+            else:
+                for l in leading_names:
+                    if stock_sector in l or l in stock_sector:
+                        matched_sector = l
+                        break
+            if matched_sector:
+                base_score = df.loc[ticker, score_column]
+                confidence = sector_confidence.get(matched_sector, 0.5)
+                topdown_score = base_score * (1 + confidence * 0.3)
+                pool.append((ticker, trigger_name, topdown_score, df.loc[[ticker]]))
+
+    # Sort by topdown_score descending
+    pool.sort(key=lambda x: x[2], reverse=True)
+    return pool
+
+
 # --- Comprehensive selection function ---
 def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: bool = True, lookback_days: int = 10, macro_context: dict = None) -> dict:
     """
@@ -900,68 +965,83 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
 
             trigger_candidates[name] = scored_df
 
-    # 3. Final stock selection
+    # 3. Final stock selection (hybrid top-down + bottom-up)
     selected_tickers = set()
     score_column = "final_score" if use_hybrid and trade_date else "composite_score"
-
-    # Fixed max_selections=3 regardless of regime (user preference for consistent selection count)
     max_selections = 3
 
-    # Apply sector bonus/penalty if macro_context provided
-    if macro_context:
-        leading = {s["sector"] for s in macro_context.get("leading_sectors", [])}
-        lagging = {s["sector"] for s in macro_context.get("lagging_sectors", [])}
-        sector_map = macro_context.get("sector_map", {})
+    # Determine regime and slot allocation
+    market_regime = macro_context.get("market_regime", "sideways") if macro_context else "sideways"
+    topdown_slots, bottomup_slots = _get_regime_slots(market_regime)
 
-        if sector_map:
-            for name, df in trigger_candidates.items():
-                if not df.empty and score_column in df.columns:
-                    for ticker in df.index:
-                        stock_sector = sector_map.get(ticker, "기타")
-                        if any(stock_sector in l or l in stock_sector for l in leading):
-                            df.loc[ticker, score_column] += 0.1
-                            logger.info(f"Sector adjustment for {ticker}: +0.1 (sector={stock_sector}, leading)")
-                        elif any(stock_sector in l or l in stock_sector for l in lagging):
-                            df.loc[ticker, score_column] -= 0.1
-                            logger.info(f"Sector adjustment for {ticker}: -0.1 (sector={stock_sector}, lagging)")
+    # Build top-down pool
+    topdown_pool = _build_topdown_pool(trigger_candidates, macro_context, score_column)
 
-    # Select top 1 stock from each trigger
+    # Diagnostics
+    if topdown_pool:
+        topdown_sectors = set(macro_context.get("sector_map", {}).get(t[0], "") for t in topdown_pool)
+        logger.info(f"Top-down pool: {len(topdown_pool)} candidates from sectors {topdown_sectors}")
+    else:
+        logger.info("Top-down pool: empty (pure bottom-up mode)")
+
+    # Phase 1: Fill top-down slots
+    topdown_filled = 0
+    for ticker, trigger_name, td_score, ticker_df in topdown_pool:
+        if topdown_filled >= topdown_slots:
+            break
+        if ticker not in selected_tickers:
+            tagged_df = ticker_df.copy()
+            tagged_df["SelectionChannel"] = "top-down"
+            if trigger_name in final_result:
+                final_result[trigger_name] = pd.concat([final_result[trigger_name], tagged_df])
+            else:
+                final_result[trigger_name] = tagged_df
+            selected_tickers.add(ticker)
+            topdown_filled += 1
+            stock_sector = macro_context.get("sector_map", {}).get(ticker, "N/A") if macro_context else "N/A"
+            logger.info(f"[TOP-DOWN] {ticker} selected (sector={stock_sector}, score={td_score:.3f}, trigger={trigger_name})")
+
+    # Phase 2: Fill bottom-up slots (per-trigger top-1 logic)
     for name, df in trigger_candidates.items():
         if not df.empty and len(selected_tickers) < max_selections:
-            # Check sort column
             if score_column in df.columns:
                 sorted_df = df.sort_values(score_column, ascending=False)
             else:
                 sorted_df = df
-
-            # Select rank 1 excluding duplicates
             for ticker in sorted_df.index:
                 if ticker not in selected_tickers:
-                    final_result[name] = sorted_df.loc[[ticker]]
+                    tagged_df = sorted_df.loc[[ticker]].copy()
+                    tagged_df["SelectionChannel"] = "bottom-up"
+                    final_result[name] = tagged_df
                     selected_tickers.add(ticker)
-                    logger.info(f"[{name}] Final selection: {ticker}")
+                    logger.info(f"[BOTTOM-UP] {ticker} selected (trigger={name})")
                     break
 
-    # 4. Add more by overall score if less than max_selections
+    # Phase 3: Fill remaining by overall score if needed
     if len(selected_tickers) < max_selections:
-        # Sort all candidates by score
         all_candidates = []
         for name, df in trigger_candidates.items():
             for ticker in df.index:
                 if ticker not in selected_tickers:
                     score = df.loc[ticker, score_column] if score_column in df.columns else 0
                     all_candidates.append((name, ticker, score, df.loc[[ticker]]))
-
         all_candidates.sort(key=lambda x: x[2], reverse=True)
 
         for trigger_name, ticker, _, ticker_df in all_candidates:
             if ticker not in selected_tickers and len(selected_tickers) < max_selections:
+                tagged_df = ticker_df.copy()
+                tagged_df["SelectionChannel"] = "bottom-up"
                 if trigger_name in final_result:
-                    final_result[trigger_name] = pd.concat([final_result[trigger_name], ticker_df])
+                    final_result[trigger_name] = pd.concat([final_result[trigger_name], tagged_df])
                 else:
-                    final_result[trigger_name] = ticker_df
+                    final_result[trigger_name] = tagged_df
                 selected_tickers.add(ticker)
-                logger.info(f"[{trigger_name}] Additional selection: {ticker}")
+                logger.info(f"[BOTTOM-UP] {ticker} selected (fill, trigger={trigger_name})")
+
+    # Log selection summary
+    bottomup_count = len(selected_tickers) - topdown_filled
+    strategy = "hybrid_topdown_bottomup" if topdown_filled > 0 else "pure_bottomup"
+    logger.info(f"Selection summary: {topdown_filled} top-down + {bottomup_count} bottom-up = {len(selected_tickers)} total (regime={market_regime}, strategy={strategy})")
 
     return final_result
 
@@ -1073,7 +1153,24 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                     if "final_score" in stocks_df.columns:
                         stock_info["final_score"] = float(stocks_df.loc[ticker, "final_score"])
 
+                    if "SelectionChannel" in stocks_df.columns:
+                        stock_info["selection_channel"] = str(stocks_df.loc[ticker, "SelectionChannel"])
+
                     output_data[trigger_type].append(stock_info)
+
+        # Derive hybrid metadata from final_results
+        _market_regime = macro_context.get("market_regime", "sideways") if macro_context else None
+        _topdown_slots, _bottomup_slots = _get_regime_slots(_market_regime) if _market_regime else (0, 3)
+        _topdown_count = sum(
+            1 for _, stocks_df in final_results.items()
+            for ticker in stocks_df.index
+            if "SelectionChannel" in stocks_df.columns and stocks_df.loc[ticker, "SelectionChannel"] == "top-down"
+        )
+        _bottomup_count = sum(
+            1 for _, stocks_df in final_results.items()
+            for ticker in stocks_df.index
+            if "SelectionChannel" not in stocks_df.columns or stocks_df.loc[ticker, "SelectionChannel"] == "bottom-up"
+        )
 
         # Add execution time and metadata
         output_data["metadata"] = {
@@ -1081,7 +1178,13 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "trigger_mode": trigger_time,
             "trade_date": trade_date,
             "selection_mode": "hybrid",
-            "lookback_days": 10
+            "lookback_days": 10,
+            "selection_strategy": "hybrid_topdown_bottomup" if macro_context else "pure_bottomup",
+            "market_regime": _market_regime,
+            "topdown_slots": _topdown_slots,
+            "bottomup_slots": _bottomup_slots,
+            "topdown_count": _topdown_count,
+            "bottomup_count": _bottomup_count,
         }
 
         # Save JSON file
