@@ -723,6 +723,9 @@ class USStockAnalysisOrchestrator:
                 logger.warning(f"No US trigger results found.")
                 return False
 
+            # Include metadata for hybrid selection info in alert message
+            all_results["metadata"] = metadata
+
             # Generate message based on language (no translation needed - direct templates)
             message = self._create_trigger_alert_message(mode, all_results, trade_date, language)
 
@@ -807,11 +810,30 @@ class USStockAnalysisOrchestrator:
 
         Args:
             mode: 'morning' or 'afternoon'
-            results: Trigger results dictionary
+            results: Trigger results dictionary (includes 'metadata' key with hybrid selection info)
             trade_date: Trade date in YYYYMMDD format
             language: Message language ('ko' or 'en')
         """
         formatted_date = f"{trade_date[:4]}.{trade_date[4:6]}.{trade_date[6:8]}"
+
+        # Extract metadata for hybrid selection info
+        metadata = results.get("metadata", {})
+        market_regime = metadata.get("market_regime")
+        selection_strategy = metadata.get("selection_strategy", "")
+        topdown_count = metadata.get("topdown_count", 0)
+        bottomup_count = metadata.get("bottomup_count", 0)
+
+        # Regime display names
+        REGIME_KO = {
+            "strong_bull": "강세장", "moderate_bull": "온건 강세",
+            "sideways": "횡보장", "moderate_bear": "온건 약세", "strong_bear": "약세장",
+        }
+        REGIME_EN = {
+            "strong_bull": "Strong Bull", "moderate_bull": "Moderate Bull",
+            "sideways": "Sideways", "moderate_bear": "Moderate Bear", "strong_bear": "Strong Bear",
+        }
+        CHANNEL_KO = {"top-down": "탑다운 (주도섹터)", "bottom-up": "바텀업 (개별종목)"}
+        CHANNEL_EN = {"top-down": "Top-Down (Leading Sector)", "bottom-up": "Bottom-Up (Individual)"}
 
         # Language-specific templates
         if language == "ko":
@@ -824,10 +846,15 @@ class USStockAnalysisOrchestrator:
             else:
                 title = "🔔 미국주식 오후 프리즘 시그널 얼럿"
                 time_desc = "장 마감 후"
-            header = f"{title}\n📅 {formatted_date} {time_desc} 포착된 관심종목\n\n"  # Detected stocks of interest
-            volume_label = "거래량 증가"  # Volume increase
-            gap_label = "갭상승"  # Gap up
-            footer = "📋 10~30분 후 상세 분석 리포트가 제공됩니다\n※ 본 정보는 투자 참고용이며, 투자 결정은 본인 책임입니다."  # Detailed analysis report will be available in 10-30 minutes / This is for investment reference only
+            header = f"{title}\n📅 {formatted_date} {time_desc} 포착된 관심종목\n"
+            volume_label = "거래량 증가"
+            gap_label = "갭상승"
+            footer = "📋 10~30분 후 상세 분석 리포트가 제공됩니다\n※ 본 정보는 투자 참고용이며, 투자 결정은 본인 책임입니다."
+            channel_map = CHANNEL_KO
+            regime_map = REGIME_KO
+            score_label = "점수"
+            rr_label = "R/R"
+            sl_label = "손절"
         else:  # English
             if mode == "morning":
                 title = "🔔 US Stock Morning Prism Signal Alert"
@@ -838,16 +865,33 @@ class USStockAnalysisOrchestrator:
             else:
                 title = "🔔 US Stock Afternoon Prism Signal Alert"
                 time_desc = "after market close"
-            header = f"{title}\n📅 {formatted_date} Stocks detected {time_desc}\n\n"
+            header = f"{title}\n📅 {formatted_date} Stocks detected {time_desc}\n"
             volume_label = "Volume Increase"
             gap_label = "Gap Up"
             footer = "📋 Detailed analysis report will be available in 10-30 minutes\n※ This is for investment reference only. Investment decisions are your responsibility."
+            channel_map = CHANNEL_EN
+            regime_map = REGIME_EN
+            score_label = "Score"
+            rr_label = "R/R"
+            sl_label = "SL"
 
         message = header
 
+        # Hybrid selection summary (regime + strategy)
+        if market_regime and "hybrid" in selection_strategy:
+            regime_display = regime_map.get(market_regime, market_regime)
+            if language == "ko":
+                message += f"🧭 시장국면: {regime_display} | 선정: 탑다운 {topdown_count}종목 + 바텀업 {bottomup_count}종목\n"
+            else:
+                message += f"🧭 Regime: {regime_display} | Selection: Top-Down {topdown_count} + Bottom-Up {bottomup_count}\n"
+
+        message += "\n"
+
         for trigger_type, stocks in results.items():
+            if trigger_type == "metadata":
+                continue
+
             emoji = self._get_trigger_emoji(trigger_type)
-            # Translate trigger type based on language
             display_trigger_type = TRIGGER_TYPE_KO.get(trigger_type, trigger_type) if language == "ko" else trigger_type
             message += f"{emoji} {display_trigger_type}\n"
 
@@ -863,13 +907,33 @@ class USStockAnalysisOrchestrator:
                 message += f"· {name} ({ticker})\n"
                 message += f"  ${current_price:.2f} {arrow} {abs(change_rate):.2f}%\n"
 
-                # Additional information based on trigger type
-                if "volume_increase" in stock and ("Volume" in trigger_type or "거래량" in trigger_type):  # Check both English and Korean trigger names
+                # Selection channel tag
+                selection_channel = stock.get("selection_channel")
+                if selection_channel:
+                    channel_display = channel_map.get(selection_channel, selection_channel)
+                    message += f"  📌 {channel_display}\n"
+
+                # Trigger-specific data
+                if "volume_increase" in stock and ("Volume" in trigger_type or "거래량" in trigger_type):
                     volume_increase = stock.get("volume_increase", 0)
                     message += f"  {volume_label}: {volume_increase:.2f}%\n"
-                elif "gap_rate" in stock and ("Gap" in trigger_type or "갭" in trigger_type):  # Check both English and Korean trigger names
+                elif "gap_rate" in stock and ("Gap" in trigger_type or "갭" in trigger_type):
                     gap_rate = stock.get("gap_rate", 0)
                     message += f"  {gap_label}: {gap_rate:.2f}%\n"
+
+                # Hybrid scoring details (score, R/R, stop-loss)
+                details = []
+                final_score = stock.get("final_score")
+                if final_score is not None:
+                    details.append(f"{score_label}: {final_score:.2f}")
+                rr_ratio = stock.get("risk_reward_ratio")
+                if rr_ratio is not None:
+                    details.append(f"{rr_label}: {rr_ratio:.1f}")
+                sl_pct = stock.get("stop_loss_pct")
+                if sl_pct is not None:
+                    details.append(f"{sl_label}: -{sl_pct:.1f}%")
+                if details:
+                    message += f"  📊 {' | '.join(details)}\n"
 
                 message += "\n"
 
