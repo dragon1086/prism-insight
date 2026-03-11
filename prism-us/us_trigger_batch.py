@@ -921,7 +921,7 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
 
 # === Batch Execution ===
 
-def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None):
+def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None, override_date: str = None):
     """
     Execute trigger batch.
 
@@ -937,10 +937,14 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     logger.info(f"Log level: {log_level.upper()}")
 
     # Use US Eastern Time for date calculation (not local KST)
-    us_eastern = ZoneInfo("America/New_York")
-    today_str = datetime.datetime.now(tz=us_eastern).strftime("%Y%m%d")
-    trade_date = get_nearest_business_day(today_str, prev=True)
-    logger.info(f"Batch reference date: {trade_date} (US Eastern Time)")
+    if override_date:
+        trade_date = override_date
+        logger.info(f"Batch reference date: {trade_date} (override)")
+    else:
+        us_eastern = ZoneInfo("America/New_York")
+        today_str = datetime.datetime.now(tz=us_eastern).strftime("%Y%m%d")
+        trade_date = get_nearest_business_day(today_str, prev=True)
+        logger.info(f"Batch reference date: {trade_date} (US Eastern Time)")
 
     # Get S&P 500 + NASDAQ-100 tickers (combined, deduplicated)
     tickers = get_major_tickers()

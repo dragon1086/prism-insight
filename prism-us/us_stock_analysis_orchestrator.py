@@ -307,7 +307,7 @@ class USStockAnalysisOrchestrator:
             logger.error(traceback.format_exc())
             return None
 
-    async def run_trigger_batch(self, mode: str, macro_context: dict = None):
+    async def run_trigger_batch(self, mode: str, macro_context: dict = None, override_date: str = None):
         """
         Execute US trigger batch and save results
 
@@ -328,7 +328,7 @@ class USStockAnalysisOrchestrator:
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None,
-                lambda: run_batch(mode, "INFO", results_file, macro_context=macro_context)
+                lambda: run_batch(mode, "INFO", results_file, macro_context=macro_context, override_date=override_date)
             )
 
             if not results:
@@ -894,7 +894,7 @@ class USStockAnalysisOrchestrator:
         else:
             return "🔎"
 
-    async def run_full_pipeline(self, mode: str, language: str = "ko"):
+    async def run_full_pipeline(self, mode: str, language: str = "ko", override_date: str = None):
         """
         Execute full US pipeline
 
@@ -918,7 +918,7 @@ class USStockAnalysisOrchestrator:
 
             # 1. Execute trigger batch
             results_file = f"trigger_results_us_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
-            tickers = await self.run_trigger_batch(mode, macro_context=macro_context)
+            tickers = await self.run_trigger_batch(mode, macro_context=macro_context, override_date=override_date)
 
             if not tickers:
                 logger.warning("No US stocks selected. Terminating process.")
@@ -1031,6 +1031,8 @@ async def main():
                         help="Disable telegram message transmission")
     parser.add_argument("--force", action="store_true",
                         help="Force execution even on market holidays (for testing)")
+    parser.add_argument("--date", type=str, default=None,
+                        help="Override trade date (YYYYMMDD format, for testing)")
 
     args = parser.parse_args()
 
@@ -1053,13 +1055,13 @@ async def main():
     orchestrator = USStockAnalysisOrchestrator(telegram_config=telegram_config)
 
     if args.mode == "morning" or args.mode == "both":
-        await orchestrator.run_full_pipeline("morning", language=args.language)
+        await orchestrator.run_full_pipeline("morning", language=args.language, override_date=args.date)
 
     if args.mode == "midday":
-        await orchestrator.run_full_pipeline("midday", language=args.language)
+        await orchestrator.run_full_pipeline("midday", language=args.language, override_date=args.date)
 
     if args.mode == "afternoon" or args.mode == "both":
-        await orchestrator.run_full_pipeline("afternoon", language=args.language)
+        await orchestrator.run_full_pipeline("afternoon", language=args.language, override_date=args.date)
 
 
 if __name__ == "__main__":
