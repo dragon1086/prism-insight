@@ -874,7 +874,10 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
                 logger.info(f"[BOTTOM-UP] {ticker} ({company}) via [{name}] (per-trigger top-1)")
                 tagged_df = sorted_df.loc[[ticker]].copy()
                 tagged_df["SelectionChannel"] = "bottom-up"
-                final_result[name] = tagged_df
+                if name in final_result:
+                    final_result[name] = pd.concat([final_result[name], tagged_df])
+                else:
+                    final_result[name] = tagged_df
                 selected_tickers.add(ticker)
                 remaining_slots -= 1
                 break
