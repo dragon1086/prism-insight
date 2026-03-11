@@ -77,7 +77,8 @@ async def analyze_us_stock(
     company_name: str = "Apple Inc.",
     reference_date: str = None,
     language: str = "ko",
-    include_news: bool = True
+    include_news: bool = True,
+    macro_context: dict = None
 ) -> str:
     """
     Generate comprehensive stock analysis report for US stock.
@@ -336,6 +337,54 @@ async def analyze_us_stock(
         if technical_chart_html:
             technical_chart_section = f"\n\n#### Technical Indicators (RSI & MACD)\n\n{technical_chart_html}\n"
 
+        # Build macro section before final report composition
+        macro_section = ""
+        if macro_context:
+            report_prose = macro_context.get("report_prose", "")
+            if report_prose:
+                # Use LLM-generated prose directly — self-contained, no extra header needed
+                macro_section = report_prose + "\n\n"
+            else:
+                # Fallback: build from structured fields if report_prose is empty
+                regime = macro_context.get("market_regime", "sideways")
+                regime_rationale = macro_context.get("regime_rationale", "")
+                leading = macro_context.get("leading_sectors", [])
+                lagging = macro_context.get("lagging_sectors", [])
+                risks = macro_context.get("risk_events", [])
+
+                if language == "ko":
+                    regime_labels = {
+                        "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
+                        "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
+                    }
+                    macro_section += f"**시장 체제**: {regime_labels.get(regime, regime)}\n\n"
+                    if regime_rationale:
+                        macro_section += f"**판단 근거**: {regime_rationale}\n\n"
+                    if leading:
+                        sectors_str = ", ".join([s.get("sector", "") for s in leading[:3]])
+                        macro_section += f"**주도 섹터**: {sectors_str}\n\n"
+                    if lagging:
+                        sectors_str = ", ".join([s.get("sector", "") for s in lagging[:3]])
+                        macro_section += f"**소외 섹터**: {sectors_str}\n\n"
+                    if risks:
+                        for r in risks[:3]:
+                            macro_section += f"- ⚠️ {r.get('event', '')} (영향: {r.get('severity', 'medium')})\n"
+                        macro_section += "\n"
+                else:
+                    macro_section += f"**Market Regime**: {regime.replace('_', ' ').title()}\n\n"
+                    if regime_rationale:
+                        macro_section += f"**Rationale**: {regime_rationale}\n\n"
+                    if leading:
+                        sectors_str = ", ".join([s.get("sector", "") for s in leading[:3]])
+                        macro_section += f"**Leading Sectors**: {sectors_str}\n\n"
+                    if lagging:
+                        sectors_str = ", ".join([s.get("sector", "") for s in lagging[:3]])
+                        macro_section += f"**Lagging Sectors**: {sectors_str}\n\n"
+                    if risks:
+                        for r in risks[:3]:
+                            macro_section += f"- ⚠️ {r.get('event', '')} (Severity: {r.get('severity', 'medium')})\n"
+                        macro_section += "\n"
+
         # Language-specific headers
         if language == "ko":
             headers = {
@@ -396,6 +445,7 @@ async def analyze_us_stock(
 
 {section_reports.get("market_index_analysis", "Analysis not available")}
 {technical_chart_section}
+{macro_section}
 ---
 
 {headers["strategy"]}

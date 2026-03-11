@@ -40,14 +40,15 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
         # Volatility table (store volatility per stock)
         self.volatility_table = {}
 
-    async def initialize(self, language: str = "ko"):
+    async def initialize(self, language: str = "ko", sector_names: list = None):
         """
         Create necessary tables and initialize
 
         Args:
             language: Language code for agents (default: "ko")
+            sector_names: List of valid sector names for trading agent (optional)
         """
-        await super().initialize(language)
+        await super().initialize(language, sector_names=sector_names)
 
         # Initialize sell decision agent with language
         self.sell_decision_agent = create_sell_decision_agent(language=language)

@@ -427,12 +427,13 @@ class USStockTrackingAgent:
         if self.telegram_token:
             self.telegram_bot = Bot(token=self.telegram_token)
 
-    async def initialize(self, language: str = "ko"):
+    async def initialize(self, language: str = "ko", sector_names: list = None):
         """
         Create necessary tables and initialize.
 
         Args:
             language: Language code for agents (default: "ko")
+            sector_names: List of valid sector names for trading agent (optional)
         """
         logger.info("Starting US tracking agent initialization")
 
@@ -444,7 +445,7 @@ class USStockTrackingAgent:
         self.cursor = self.conn.cursor()
 
         # Initialize trading scenario agent for US
-        self.trading_agent = create_us_trading_scenario_agent(language=language)
+        self.trading_agent = create_us_trading_scenario_agent(language=language, sector_names=sector_names)
 
         # Initialize sell decision agent for US
         self.sell_decision_agent = create_us_sell_decision_agent(language=language)
@@ -2304,7 +2305,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             return ""
 
     async def run(self, pdf_report_paths: List[str], chat_id: str = None,
-                  language: str = "ko", telegram_config=None, trigger_results_file: str = None) -> bool:
+                  language: str = "ko", telegram_config=None, trigger_results_file: str = None,
+                  sector_names: list = None) -> bool:
         """
         Main execution function for US stock tracking system.
 
@@ -2349,7 +2351,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     logger.warning(f"Failed to load trigger results file: {e}")
 
             # Initialize
-            await self.initialize(language)
+            await self.initialize(language, sector_names=sector_names)
 
             try:
                 # Process reports

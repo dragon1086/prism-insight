@@ -1,9 +1,9 @@
 # Trigger Batch 알고리즘 문서
 
-> **Last Updated**: 2026-01-14
-> **Version**: 3.0 (v1.16.6)
-> **File**: `trigger_batch.py`
-> **Purpose**: 급등주/모멘텀 종목 자동 스크리닝 (연평균 15% 수익 목표)
+> **Last Updated**: 2026-03-11
+> **Version**: 4.0 (v2.5.3)
+> **File**: `trigger_batch.py`, `prism-us/us_trigger_batch.py`
+> **Purpose**: 급등주/모멘텀 종목 자동 스크리닝 + 거시경제 연동 하이브리드 선정
 
 ---
 
@@ -17,8 +17,9 @@
 6. [트리거 유형별 기준](#6-트리거-유형별-기준-v1166)
 7. [에이전트 점수 계산](#7-에이전트-점수-계산-v1166)
 8. [하이브리드 선별](#8-하이브리드-선별-hybrid-selection)
-9. [최종 선별 로직](#9-최종-선별-로직-select_final_tickers)
-10. [사용법](#10-사용법)
+9. [탑다운+바텀업 하이브리드 선정](#9-탑다운바텀업-하이브리드-선정-v253)
+10. [최종 선별 로직](#10-최종-선별-로직-select_final_tickers)
+11. [사용법](#11-사용법)
 
 ---
 
@@ -28,16 +29,19 @@
 
 `trigger_batch.py`는 매일 오전/오후에 실행되어 **관심 종목 후보**를 자동으로 선별합니다. 선별된 종목은 이후 AI 분석 파이프라인(`stock_analysis_orchestrator.py`)으로 전달됩니다.
 
-### 핵심 목표 (v1.16.6)
+### 핵심 목표 (v2.5.3)
 
 - **연평균 15% 수익** 달성을 위한 종목 선별
 - **trigger_batch ↔ trading_agent 완전 정합성** 확보
 - 모든 시장 상황(강세장/약세장/횡보장)에서 작동
+- **거시경제 체제(regime) 연동**: 탑다운(주도섹터) + 바텀업(시그널) 하이브리드 선정
 
 ### 실행 흐름
 
 ```
-trigger_batch.py (종목 스크리닝)
+macro_intelligence_agent.py (거시경제 분석: regime, leading_sectors, sector_map)
+    ↓
+trigger_batch.py (종목 스크리닝 + 하이브리드 탑다운/바텀업 선정)
     ↓
 stock_analysis_orchestrator.py (AI 분석)
     ↓
@@ -392,17 +396,156 @@ def calculate_agent_fit_metrics(ticker, current_price, trade_date, lookback_days
 
 ---
 
-## 9. 최종 선별 로직 (`select_final_tickers`)
+## 9. 탑다운+바텀업 하이브리드 선정 (v2.5.3)
 
-1. 각 트리거에서 상위 10개 후보 수집
-2. 하이브리드 모드: 10일 데이터로 에이전트 점수 계산
-3. 최종 점수 기준 각 트리거에서 1개씩 선택 (최대 3개)
-4. 3개 미만이면 전체 점수 순으로 추가
-5. 중복 종목 제거
+### 배경
+
+기존 `select_final_tickers`는 순수 바텀업 방식이었습니다. 트리거 시그널(급등, 거래량)로 후보를 감지하고 composite_score/final_score 순위로 Top 3를 선정했습니다. 유일한 매크로 연동은 leading/lagging sector에 대한 ±0.1 점수 보정이었으나, 이는 기존 점수 대비 미미하여 실질적 효과가 없었습니다.
+
+v2.5.3에서 **탑다운 채널**을 추가하여, 거시경제 분석(macro_intelligence_agent)의 주도섹터 정보를 종목 선정에 직접 반영합니다.
+
+### 아키텍처
+
+```
+macro_context (거시 분석 결과)
+├── market_regime: "strong_bull" | "moderate_bull" | "sideways" | "moderate_bear" | "strong_bear"
+├── leading_sectors: [{"sector": "전기·전자", "confidence": 0.9}, ...]
+├── lagging_sectors: [{"sector": "건설", "confidence": 0.7}, ...]
+└── sector_map: {"005930": "전기·전자", "051910": "화학", ...}
+
+                    ┌──────────────────┐
+                    │  트리거 후보 풀   │
+                    │  (각 트리거 Top10) │
+                    └────────┬─────────┘
+                             │
+               ┌─────────────┴─────────────┐
+               ▼                           ▼
+    ┌──────────────────┐        ┌──────────────────┐
+    │   탑다운 풀       │        │   바텀업 풀       │
+    │ leading_sectors  │        │ (기존 로직 유지)   │
+    │ 매칭 종목 필터    │        │ 트리거별 Top1     │
+    │ + confidence 가중│        │ + 점수순 충원     │
+    └────────┬─────────┘        └────────┬─────────┘
+             │                           │
+             └─────────┬─────────────────┘
+                       ▼
+              ┌──────────────────┐
+              │  Regime 슬롯 배분 │
+              │  (탑다운 N + 바텀업 M = 3) │
+              └────────┬─────────┘
+                       ▼
+              ┌──────────────────┐
+              │  최종 3종목 선정  │
+              └──────────────────┘
+```
+
+### 탑다운 풀 구성 (`_build_topdown_pool`)
+
+트리거 후보 중 `leading_sectors`에 해당하는 종목을 필터하고, 섹터 신뢰도(confidence)로 점수를 증폭합니다.
+
+```
+topdown_score = base_score × (1 + sector_confidence × 0.3)
+```
+
+- `base_score`: 기존 final_score 또는 composite_score
+- `sector_confidence`: macro_context의 leading_sectors에서 해당 섹터의 confidence (0.0~1.0)
+- 기존 점수를 기반으로 증폭하므로, 새로운 점수 체계를 만들지 않음
+
+**섹터 매칭**: 정확 매칭 우선, fuzzy substring 매칭을 방어 수단으로 사용. LLM이 sector_taxonomy에서 벗어나는 경우를 대비한 안전장치.
+
+```python
+# KR 섹터: KRX 표준 26개 업종 (전기·전자, 화학, 제약 등)
+# US 섹터: yfinance GICS 11개 업종 (Technology, Healthcare 등)
+```
+
+### Regime별 슬롯 배분 (`_get_regime_slots`)
+
+| Regime | 탑다운 | 바텀업 | 근거 |
+|--------|--------|--------|------|
+| `strong_bull` | **2** | 1 | 강세장에서는 **섹터 로테이션이 수익의 핵심 드라이버**. 주도섹터 내 종목이 비주도섹터 종목보다 구조적으로 유리하므로 탑다운 2종목으로 섹터 베팅 강화 |
+| `moderate_bull` | 1 | **2** | 상승세이나 확신 부족. 섹터 1종목으로 매크로 시그널 반영하되, 바텀업 2종목으로 개별 모멘텀 헤지 |
+| `sideways` | 1 | **2** | 횡보장에서는 섹터 전체가 오르기보다 **개별 종목의 급등/거래량 시그널이 더 신뢰도 높음**. 탑다운 1종목만 유지 |
+| `moderate_bear` | 1 | **2** | 약세장에서 매크로 에이전트의 leading_sectors는 자연스럽게 **방어섹터(유틸리티, 헬스케어, 필수소비재)로 전환**됨. 방어적 섹터 로테이션 1종목은 하락 리스크 관리에 유리 |
+| `strong_bear` | 0 | **3** | 강한 하락장에서는 **어떤 섹터든 하락 가능**. 섹터 베팅 자체가 위험하므로 순수 바텀업으로 개별 종목의 기술적 시그널(반전, 거래량 이상)에만 의존 |
+| (미인식) | 1 | **2** | 알 수 없는 regime은 `sideways` 기본값 적용 |
+
+> **설계 결정(ADR)**: 점수 멀티플라이어 방식(Option B)도 검토했으나, max_selections=3에서 "왜 이 종목이 선정됐나"를 명확히 추적할 수 있는 슬롯 방식이 운영/디버깅에 유리하여 채택. ±0.1 보정의 확대판인 멀티플라이어는 같은 문제(불투명성)를 반복할 우려가 있었음.
+
+### 3단계 선정 프로세스
+
+**Phase 1 — 탑다운 슬롯 채우기**
+1. 탑다운 풀에서 topdown_score 내림차순으로 정렬
+2. regime가 부여한 탑다운 슬롯 수만큼 선정
+3. 선정된 종목에 `SelectionChannel = "top-down"` 태깅
+
+**Phase 2 — 바텀업 슬롯 채우기**
+1. 기존 로직 그대로: 트리거별 최고점수 1종목씩
+2. Phase 1에서 이미 선정된 종목은 제외
+3. 선정된 종목에 `SelectionChannel = "bottom-up"` 태깅
+
+**Phase 3 — 잔여 충원**
+1. 아직 3종목 미달이면 전체 후보 점수순으로 채움
+2. 탑다운 풀에 후보가 부족한 경우, 남은 슬롯은 자동으로 바텀업에 할당
+
+### Fallback (안전장치)
+
+| 상황 | 동작 |
+|------|------|
+| `macro_context = None` | 100% 바텀업 (기존 동작과 동일, 무회귀) |
+| `leading_sectors` 비어있음 | 100% 바텀업 |
+| `sector_map` 비어있음 | 100% 바텀업 |
+| 탑다운 후보 < 배분 슬롯 | 남은 슬롯을 바텀업으로 자동 충원 |
+| `market_regime` 미인식 | `sideways` 기본값 (1 탑다운 + 2 바텀업) |
+
+### 관측성 (Observability)
+
+**로그 출력**:
+```
+[TOP-DOWN] 005930 selected (sector=전기·전자, score=1.016, trigger=거래량 급증 상위주)
+[BOTTOM-UP] 051910 selected (trigger=갭 상승 모멘텀 상위주)
+[BOTTOM-UP] 003490 selected (fill, trigger=일중 상승률 상위주)
+Selection summary: 1 top-down + 2 bottom-up = 3 total (regime=moderate_bull, strategy=hybrid_topdown_bottomup)
+```
+
+**JSON metadata**:
+```json
+{
+  "selection_strategy": "hybrid_topdown_bottomup",
+  "market_regime": "moderate_bull",
+  "topdown_slots": 1,
+  "bottomup_slots": 2,
+  "topdown_count": 1,
+  "bottomup_count": 2
+}
+```
+
+**종목별 `selection_channel`**: 각 종목의 JSON 출력에 `"selection_channel": "top-down"` 또는 `"bottom-up"` 포함.
+
+### KR vs US 차이점
+
+| 항목 | KR (`trigger_batch.py`) | US (`us_trigger_batch.py`) |
+|------|------------------------|---------------------------|
+| 점수 컬럼 | `composite_score`, `final_score` | `CompositeScore`, `FinalScore` |
+| 섹터 소스 | `macro_context["sector_map"]` (KRX 26개 업종) | `get_us_sector_map()` via yfinance (GICS 11개 업종) |
+| 종목명 컬럼 | `stock_name` | `CompanyName` |
+| 섹터 예시 | 전기·전자, 화학, 제약, 운송장비·부품 | Technology, Healthcare, Financial Services |
 
 ---
 
-## 10. 사용법
+## 10. 최종 선별 로직 (`select_final_tickers`)
+
+1. 각 트리거에서 상위 10개 후보 수집
+2. 하이브리드 모드: 10일 데이터로 에이전트 점수 계산
+3. **탑다운 풀 구성**: leading_sectors 매칭 + confidence 가중 (v2.5.3)
+4. **Regime별 슬롯 배분**: 탑다운 N + 바텀업 M = 3 (v2.5.3)
+5. Phase 1: 탑다운 슬롯 채우기
+6. Phase 2: 바텀업 슬롯 채우기 (트리거별 Top 1)
+7. Phase 3: 잔여 충원 (전체 점수순)
+8. 중복 종목 제거, SelectionChannel 태깅
+
+---
+
+## 11. 사용법
 
 ### 기본 실행
 
@@ -424,7 +567,7 @@ python trigger_batch.py afternoon INFO --output result.json
 python trigger_batch.py afternoon DEBUG
 ```
 
-### 출력 예시 (JSON, v1.16.6)
+### 출력 예시 (JSON, v2.5.3)
 
 ```json
 {
@@ -441,7 +584,8 @@ python trigger_batch.py afternoon DEBUG
       "stop_loss_pct": 5.0,
       "stop_loss_price": 84265.0,
       "target_price": 102005.0,
-      "final_score": 1.0
+      "final_score": 1.0,
+      "selection_channel": "top-down"
     }
   ],
   "마감 강도 상위주": [
@@ -454,7 +598,8 @@ python trigger_batch.py afternoon DEBUG
       "agent_fit_score": 1.0,
       "risk_reward_ratio": 3.0,
       "stop_loss_pct": 5.0,
-      "final_score": 1.0
+      "final_score": 1.0,
+      "selection_channel": "bottom-up"
     }
   ],
   "거래량 증가 상위 횡보주": [
@@ -466,15 +611,22 @@ python trigger_batch.py afternoon DEBUG
       "agent_fit_score": 1.0,
       "risk_reward_ratio": 2.14,
       "stop_loss_pct": 7.0,
-      "final_score": 1.0
+      "final_score": 1.0,
+      "selection_channel": "bottom-up"
     }
   ],
   "metadata": {
-    "run_time": "2026-01-14T00:25:14",
+    "run_time": "2026-03-11T09:30:00",
     "trigger_mode": "afternoon",
-    "trade_date": "20260113",
+    "trade_date": "20260311",
     "selection_mode": "hybrid",
-    "lookback_days": 10
+    "lookback_days": 10,
+    "selection_strategy": "hybrid_topdown_bottomup",
+    "market_regime": "moderate_bull",
+    "topdown_slots": 1,
+    "bottomup_slots": 2,
+    "topdown_count": 1,
+    "bottomup_count": 2
   }
 }
 ```
@@ -495,17 +647,20 @@ python trigger_batch.py afternoon DEBUG
 | `calculate_agent_fit_metrics` | 점수 | 에이전트 기준 점수 (v1.16.6 고정 손절폭) |
 | `score_candidates_by_agent_criteria` | 점수 | 후보 종목 에이전트 점수 일괄 계산 |
 | `enhance_dataframe` | 유틸 | 종목명/업종 추가 |
+| `_get_regime_slots` | 선별 | regime → (탑다운, 바텀업) 슬롯 매핑 (v2.5.3) |
+| `_build_topdown_pool` | 선별 | leading_sectors 매칭 + confidence 가중 탑다운 풀 구성 (v2.5.3) |
 | `trigger_morning_volume_surge` | 오전 | 거래량 급증 |
 | `trigger_morning_gap_up_momentum` | 오전 | 갭상승 모멘텀 |
 | `trigger_morning_value_to_cap_ratio` | 오전 | 시총 대비 자금유입 |
 | `trigger_afternoon_daily_rise_top` | 오후 | 일중 상승률 |
 | `trigger_afternoon_closing_strength` | 오후 | 마감 강도 |
 | `trigger_afternoon_volume_surge_flat` | 오후 | 거래량 증가 횡보 |
-| `select_final_tickers` | 선별 | 하이브리드 최종 종목 선택 |
+| `select_final_tickers` | 선별 | 탑다운+바텀업 하이브리드 최종 종목 선택 (v2.5.3) |
+| `get_us_sector_map` | 데이터 | US 종목 → GICS 섹터 매핑 (US only) |
 | `run_batch` | 실행 | 배치 실행 |
 
 ---
 
-**Document Version**: 3.0
-**Last Updated**: 2026-01-14
+**Document Version**: 4.0
+**Last Updated**: 2026-03-11
 **Author**: PRISM-INSIGHT Development Team

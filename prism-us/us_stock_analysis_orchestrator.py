@@ -186,7 +186,128 @@ class USStockAnalysisOrchestrator:
 
         return restored_text
 
-    async def run_trigger_batch(self, mode: str):
+    async def run_macro_intelligence(self, reference_date: str = None, language: str = "ko") -> dict:
+        """
+        Run macro intelligence analysis for US market.
+
+        Step 1: Prefetch index data (S&P 500/NASDAQ/VIX) programmatically
+        Step 2: Compute market regime from actual price data (not LLM)
+        Step 3: Run LLM agent with perplexity only for qualitative analysis
+
+        Args:
+            reference_date: Analysis date (YYYYMMDD). Defaults to today.
+            language: Language code ("ko" or "en")
+
+        Returns:
+            dict: Macro context with regime, sectors, risks, report_prose.
+                  Returns None if macro intelligence fails (graceful degradation).
+        """
+        if reference_date is None:
+            reference_date = datetime.now().strftime("%Y%m%d")
+
+        logger.info(f"Starting macro intelligence analysis for US market - date: {reference_date}")
+
+        try:
+            # Step 1: Prefetch index data and compute regime programmatically
+            from cores.data_prefetch import prefetch_us_macro_intelligence_data
+            prefetched = prefetch_us_macro_intelligence_data(reference_date)
+            logger.info(f"US macro prefetch complete: {list(prefetched.keys())}")
+
+            if prefetched.get("computed_regime"):
+                computed = prefetched["computed_regime"]
+                logger.info(f"Pre-computed US regime: {computed.get('market_regime')} "
+                           f"(confidence: {computed.get('regime_confidence')})")
+
+            # Step 2: Run LLM agent with perplexity for qualitative analysis
+            from mcp_agent.app import MCPApp
+            from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+            from cores.agents.macro_intelligence_agent import create_us_macro_intelligence_agent
+
+            macro_app = MCPApp(name="us_macro_intelligence")
+
+            async with macro_app.run() as macro_run_context:
+                macro_logger = macro_run_context.logger
+                macro_logger.info("US macro intelligence agent starting (perplexity-only mode)...")
+
+                agent = create_us_macro_intelligence_agent(reference_date, language, prefetched_data=prefetched)
+
+                from mcp_agent.workflows.llm.augmented_llm import RequestParams
+                llm = await agent.attach_llm(OpenAIAugmentedLLM)
+                result = await llm.generate_str(
+                    message=f"Execute US stock market macro analysis for {reference_date} and output JSON.",
+                    request_params=RequestParams(
+                        model="gpt-5.2",
+                        reasoning_effort="none",
+                        maxTokens=16000,
+                        parallel_tool_calls=True,
+                        use_history=True
+                    )
+                )
+
+                macro_logger.info(f"US macro intelligence raw output: {len(result)} chars")
+
+                # Save raw output for debugging
+                try:
+                    raw_output_path = f"macro_intelligence_us_{reference_date}.json"
+                    with open(raw_output_path, 'w', encoding='utf-8') as f:
+                        f.write(result)
+                    macro_logger.info(f"Raw output saved to: {raw_output_path}")
+                except Exception:
+                    pass
+
+                # Parse JSON from agent output
+                import json as json_module
+                macro_data = None
+
+                try:
+                    macro_data = json_module.loads(result.strip())
+                except json_module.JSONDecodeError:
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', result, re.DOTALL)
+                    if json_match:
+                        try:
+                            macro_data = json_module.loads(json_match.group(1).strip())
+                        except json_module.JSONDecodeError:
+                            pass
+
+                    if not macro_data:
+                        try:
+                            from json_repair import repair_json
+                            macro_data = json_module.loads(repair_json(result))
+                        except Exception:
+                            macro_logger.error("Failed to parse US macro intelligence output as JSON")
+
+                # Fallback: if LLM failed but we have computed regime, use that
+                if not macro_data and prefetched.get("computed_regime"):
+                    macro_logger.warning("LLM output parsing failed, using computed regime only")
+                    macro_data = {
+                        "analysis_date": reference_date,
+                        "market": "US",
+                        **prefetched["computed_regime"],
+                        "regime_rationale": "Programmatically computed from S&P 500 / VIX data",
+                        "leading_sectors": [],
+                        "lagging_sectors": [],
+                        "risk_events": [],
+                        "beneficiary_themes": [],
+                        "report_prose": "",
+                    }
+                elif not macro_data:
+                    return None
+
+                regime = macro_data.get("market_regime", "sideways")
+                macro_logger.info(f"US macro intelligence complete - regime: {regime}, "
+                                 f"leading_sectors: {len(macro_data.get('leading_sectors', []))}, "
+                                 f"risk_events: {len(macro_data.get('risk_events', []))}")
+
+                return macro_data
+
+        except Exception as e:
+            logger.error(f"US macro intelligence failed (graceful degradation): {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    async def run_trigger_batch(self, mode: str, macro_context: dict = None, override_date: str = None):
         """
         Execute US trigger batch and save results
 
@@ -201,13 +322,14 @@ class USStockAnalysisOrchestrator:
             from us_trigger_batch import run_batch
 
             # Results file path
-            results_file = f"trigger_results_us_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
+            effective_date = override_date if override_date else datetime.now().strftime("%Y%m%d")
+            results_file = f"trigger_results_us_{mode}_{effective_date}.json"
 
             # Run batch
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None,
-                lambda: run_batch(mode, "INFO", results_file)
+                lambda: run_batch(mode, "INFO", results_file, macro_context=macro_context, override_date=override_date)
             )
 
             if not results:
@@ -257,7 +379,7 @@ class USStockAnalysisOrchestrator:
             logger.error(traceback.format_exc())
             return []
 
-    async def generate_reports(self, tickers: list, mode: str, timeout: int = None, language: str = "ko") -> list:
+    async def generate_reports(self, tickers: list, mode: str, timeout: int = None, language: str = "ko", macro_context: dict = None) -> list:
         """
         Generate reports serially for all US stocks.
 
@@ -295,7 +417,8 @@ class USStockAnalysisOrchestrator:
                     ticker=ticker,
                     company_name=company_name,
                     reference_date=reference_date,
-                    language=language
+                    language=language,
+                    macro_context=macro_context
                 )
 
                 if report and len(report.strip()) > 0:
@@ -772,7 +895,7 @@ class USStockAnalysisOrchestrator:
         else:
             return "🔎"
 
-    async def run_full_pipeline(self, mode: str, language: str = "ko"):
+    async def run_full_pipeline(self, mode: str, language: str = "ko", override_date: str = None):
         """
         Execute full US pipeline
 
@@ -783,9 +906,21 @@ class USStockAnalysisOrchestrator:
         logger.info(f"Starting US full pipeline - mode: {mode}")
 
         try:
+            # 0. Run macro intelligence (US market regime, sector data)
+            effective_date = override_date if override_date else datetime.now().strftime("%Y%m%d")
+            macro_context = await self.run_macro_intelligence(
+                reference_date=effective_date,
+                language=language
+            )
+            if macro_context:
+                logger.info(f"US macro intelligence: regime={macro_context.get('market_regime')}, "
+                           f"sectors={len(macro_context.get('leading_sectors', []))}")
+            else:
+                logger.warning("US macro intelligence unavailable - proceeding without macro context")
+
             # 1. Execute trigger batch
-            results_file = f"trigger_results_us_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
-            tickers = await self.run_trigger_batch(mode)
+            results_file = f"trigger_results_us_{mode}_{effective_date}.json"
+            tickers = await self.run_trigger_batch(mode, macro_context=macro_context, override_date=override_date)
 
             if not tickers:
                 logger.warning("No US stocks selected. Terminating process.")
@@ -803,7 +938,7 @@ class USStockAnalysisOrchestrator:
                 logger.warning(f"US trigger results file not found: {results_file}")
 
             # 2. Generate reports
-            report_paths = await self.generate_reports(tickers, mode, timeout=600, language=language)
+            report_paths = await self.generate_reports(tickers, mode, timeout=600, language=language, macro_context=macro_context)
             if not report_paths:
                 logger.warning("No US reports generated. Terminating process.")
                 return
@@ -845,7 +980,9 @@ class USStockAnalysisOrchestrator:
                         # Use main channel (Korean) by default - same as Korean stock version
                         chat_id = self.telegram_config.channel_id if self.telegram_config.use_telegram else None
 
-                        trigger_results_file = f"trigger_results_us_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
+                        trigger_results_file = f"trigger_results_us_{mode}_{effective_date}.json"
+
+                        # US uses fixed GICS sectors (fallback in trading_agents.py)
                         tracking_success = await tracking_agent.run(
                             pdf_paths, chat_id, language,
                             telegram_config=self.telegram_config,
@@ -896,6 +1033,8 @@ async def main():
                         help="Disable telegram message transmission")
     parser.add_argument("--force", action="store_true",
                         help="Force execution even on market holidays (for testing)")
+    parser.add_argument("--date", type=str, default=None,
+                        help="Override trade date (YYYYMMDD format, for testing)")
 
     args = parser.parse_args()
 
@@ -918,13 +1057,13 @@ async def main():
     orchestrator = USStockAnalysisOrchestrator(telegram_config=telegram_config)
 
     if args.mode == "morning" or args.mode == "both":
-        await orchestrator.run_full_pipeline("morning", language=args.language)
+        await orchestrator.run_full_pipeline("morning", language=args.language, override_date=args.date)
 
     if args.mode == "midday":
-        await orchestrator.run_full_pipeline("midday", language=args.language)
+        await orchestrator.run_full_pipeline("midday", language=args.language, override_date=args.date)
 
     if args.mode == "afternoon" or args.mode == "both":
-        await orchestrator.run_full_pipeline("afternoon", language=args.language)
+        await orchestrator.run_full_pipeline("afternoon", language=args.language, override_date=args.date)
 
 
 if __name__ == "__main__":
