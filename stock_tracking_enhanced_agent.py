@@ -416,7 +416,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                 # Score-decision consistency enforcement:
                 # If score meets threshold and sector is diverse, override LLM decision to Enter
-                if buy_score >= min_score and sector_diverse and decision != "Enter":
+                if buy_score > 0 and buy_score >= min_score and sector_diverse and decision != "Enter":
                     logger.info(
                         f"Score-decision override: {company_name}({ticker}) - "
                         f"Score {buy_score} >= {min_score} but decision='{decision}', forcing Enter"
@@ -866,7 +866,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 message=prompt_message,
                 request_params=RequestParams(
                     model="gpt-5.2",
-                    maxTokens=16000
+                    maxTokens=30000
                 )
             )
 

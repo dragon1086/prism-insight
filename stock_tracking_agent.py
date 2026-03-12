@@ -343,7 +343,7 @@ class StockTrackingAgent:
                 message=prompt_message,
                 request_params=RequestParams(
                     model="gpt-5.2",
-                    maxTokens=20000
+                    maxTokens=30000
                 )
             )
 
