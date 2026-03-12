@@ -247,6 +247,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                         "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
                         "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
                     }
+                    macro_section += "### 거시경제 환경\n\n"
                     macro_section += f"**시장 체제**: {regime_labels.get(regime, regime)}\n\n"
                     if regime_rationale:
                         macro_section += f"**판단 근거**: {regime_rationale}\n\n"
@@ -261,6 +262,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                             macro_section += f"- ⚠️ {r.get('event', '')} (영향: {r.get('severity', 'medium')})\n"
                         macro_section += "\n"
                 else:
+                    macro_section += "### Macroeconomic Environment\n\n"
                     macro_section += f"**Market Regime**: {regime.replace('_', ' ').title()}\n\n"
                     if regime_rationale:
                         macro_section += f"**Rationale**: {regime_rationale}\n\n"
@@ -361,7 +363,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             final_report += main_headers["market"]
             final_report += section_reports["market_index_analysis"] + "\n\n"
             if macro_section:
-                final_report += macro_section
+                macro_header = "### 거시경제 환경\n\n" if language == "ko" else "### Macroeconomic Environment\n\n"
+                final_report += macro_header + macro_section
 
         # Investment Strategy section
         if "investment_strategy" in section_reports:
