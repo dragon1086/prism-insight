@@ -342,8 +342,8 @@ async def analyze_us_stock(
         if macro_context:
             report_prose = macro_context.get("report_prose", "")
             if report_prose:
-                # Use LLM-generated prose directly — self-contained, no extra header needed
-                macro_section = report_prose + "\n\n"
+                macro_header = "### 거시경제 환경\n\n" if language == "ko" else "### Macroeconomic Environment\n\n"
+                macro_section = macro_header + report_prose + "\n\n"
             else:
                 # Fallback: build from structured fields if report_prose is empty
                 regime = macro_context.get("market_regime", "sideways")
@@ -357,6 +357,7 @@ async def analyze_us_stock(
                         "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
                         "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
                     }
+                    macro_section += "### 거시경제 환경\n\n"
                     macro_section += f"**시장 체제**: {regime_labels.get(regime, regime)}\n\n"
                     if regime_rationale:
                         macro_section += f"**판단 근거**: {regime_rationale}\n\n"
@@ -371,6 +372,7 @@ async def analyze_us_stock(
                             macro_section += f"- ⚠️ {r.get('event', '')} (영향: {r.get('severity', 'medium')})\n"
                         macro_section += "\n"
                 else:
+                    macro_section += "### Macroeconomic Environment\n\n"
                     macro_section += f"**Market Regime**: {regime.replace('_', ' ').title()}\n\n"
                     if regime_rationale:
                         macro_section += f"**Rationale**: {regime_rationale}\n\n"
