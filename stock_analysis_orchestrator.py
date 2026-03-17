@@ -307,7 +307,7 @@ class StockAnalysisOrchestrator:
                 result = await llm.generate_str(
                     message=f"{reference_date} 기준 한국 주식시장 거시경제 분석을 수행하고 JSON으로 출력하세요.",
                     request_params=RequestParams(
-                        model="gpt-5.2",
+                        model="gpt-5.4",
                         reasoning_effort="none",
                         maxTokens=16000,
                         parallel_tool_calls=True,
