@@ -1,0 +1,113 @@
+{
+  "analysis_date": "20260311",
+  "market": "US",
+  "market_regime": "moderate_bear",
+  "regime_confidence": 0.78,
+  "regime_rationale": "S&P 500이 20일 이동평균선 아래에서 하락 추세를 지속하고(4주 -2.31%), VIX가 24.93으로 상승해 위험회피 성격이 강화된 상태입니다. 다만 나스닥은 20일 기준 횡보로 확인되어 급격한 붕괴보다는 ‘완만한 약세’ 국면에 가깝습니다.",
+  "simple_ma_regime": "bear",
+  "index_summary": {
+    "sp500_20d_trend": "down",
+    "sp500_vs_20d_ma": "below",
+    "sp500_4w_change_pct": -2.31,
+    "nasdaq_20d_trend": "sideways",
+    "vix_current": 24.93,
+    "vix_level": "elevated"
+  },
+  "leading_sectors": [
+    {
+      "sector": "Technology",
+      "reason": "AI 투자(특히 반도체·인프라 수요) 기대가 유가 하락/리스크 완화 시점에 빠르게 반영되며 기술주가 반등을 주도한 흐름이 관측됩니다.",
+      "confidence": 0.74
+    },
+    {
+      "sector": "Communication Services",
+      "reason": "성장주(플랫폼/인터넷 중심) 선호가 위험선호가 회복되는 구간에서 기술주와 동행하는 경향이 있어 상대적 강세로 분류됩니다.",
+      "confidence": 0.6
+    },
+    {
+      "sector": "Utilities",
+      "reason": "변동성 확대 국면에서 방어적 성격과 전력 수요(데이터센터/AI 인프라) 기대가 혼재되어 상대적 방어 수요가 유입될 여지가 있습니다.",
+      "confidence": 0.52
+    }
+  ],
+  "lagging_sectors": [
+    {
+      "sector": "Energy",
+      "reason": "미-이스라엘-이란 갈등 등 지정학 이슈로 유가 변동성이 확대되며 섹터 내 실적/밸류에이션 가시성이 저하되었습니다.",
+      "confidence": 0.73
+    },
+    {
+      "sector": "Financial Services",
+      "reason": "고용 쇼크와 인플레이션 재점화 우려가 동시에 부각되며(‘연준 진퇴양난’), 금리 경로 불확실성이 금융주에 부담으로 작용했습니다.",
+      "confidence": 0.64
+    },
+    {
+      "sector": "Consumer Cyclical",
+      "reason": "고용 둔화 신호가 소비 민감 업종의 실적 기대를 약화시키며 위험회피 구간에서 상대적으로 취약해질 수 있습니다.",
+      "confidence": 0.55
+    }
+  ],
+  "risk_events": [
+    {
+      "event": "고용 지표 쇼크(비농업고용 급감 언급)로 경기 둔화 우려 확대",
+      "impact": "negative",
+      "severity": "high",
+      "affected_sectors": [
+        "Consumer Cyclical",
+        "Financial Services",
+        "Industrials"
+      ]
+    },
+    {
+      "event": "중동 지정학(미-이스라엘-이란 갈등)으로 인한 원유 공급 차질 우려 및 유가 급등/급락 변동성",
+      "impact": "negative",
+      "severity": "high",
+      "affected_sectors": [
+        "Energy",
+        "Industrials",
+        "Consumer Defensive"
+      ]
+    },
+    {
+      "event": "스태그플레이션(성장 둔화 + 물가 재상승) 우려로 연준 정책 경로 불확실성 확대",
+      "impact": "negative",
+      "severity": "medium",
+      "affected_sectors": [
+        "Financial Services",
+        "Real Estate",
+        "Technology"
+      ]
+    },
+    {
+      "event": "변동성 지표(VIX) 급등 구간 반복으로 인한 위험자산 디레버리징/유동성 경색 가능성",
+      "impact": "negative",
+      "severity": "medium",
+      "affected_sectors": [
+        "Technology",
+        "Consumer Cyclical",
+        "Real Estate"
+      ]
+    }
+  ],
+  "beneficiary_themes": [
+    {
+      "theme": "AI 인프라 투자 사이클(반도체·데이터센터 중심)의 구조적 수요 지속",
+      "beneficiary_sectors": [
+        "Technology",
+        "Utilities",
+        "Industrials"
+      ],
+      "duration": "medium_term"
+    },
+    {
+      "theme": "방어·현금성 선호 확대(변동성 국면에서 포지션 축소 및 질적 선호 강화)",
+      "beneficiary_sectors": [
+        "Consumer Defensive",
+        "Healthcare",
+        "Utilities"
+      ],
+      "duration": "short_term"
+    }
+  ],
+  "report_prose": "현재 미국 주식시장은 S&P 500이 20일 이동평균선 아래에서 하락 추세를 유지하고, VIX가 24.93으로 상승해 변동성이 확대된 점을 감안할 때 ‘완만한 약세(moderate_bear)’ 체제로 판단됩니다. 나스닥은 20일 기준 횡보 흐름이 확인되나, 지수 전반의 위험회피 심리와 변동성 레벨은 여전히 방어적 대응을 요구하는 수준입니다.\n\n섹터 측면에서는 AI 투자 기대가 재부각되는 구간에서 Technology 중심의 반등 주도 가능성이 관측됩니다. 유가 변동성이 완화될 때 성장주에 대한 밸류에이션 부담이 일부 경감되며 기술·커뮤니케이션 성격의 대형주로 수급이 쏠릴 소지가 있습니다. 동시에 변동성 구간에서는 Utilities 등 방어적 성격의 섹터가 상대적 완충 역할을 할 가능성도 병존합니다.\n\n주요 리스크는 고용 지표 쇼크로 대표되는 경기 둔화 신호, 중동 지정학 리스크에 따른 유가 급등락, 그리고 성장 둔화와 물가 압력이 동반될 수 있다는 스태그플레이션 우려입니다. 이 조합은 연준의 정책 경로 불확실성을 키우고, 금리 민감 섹터 및 경기민감 섹터(금융·경기소비재 등)에 부담을 줄 수 있습니다.\n\n현 체제를 감안하면 포지셔닝은 (1) 변동성 확대에 대비한 현금/방어 비중 유지, (2) 구조적 수요가 확인되는 AI 인프라 관련 Technology의 선별적 보유, (3) 유가·정책 불확실성에 취약한 구간에서는 에너지 및 금리 경로 의존도가 높은 섹터에 대한 익스포저 관리가 바람직합니다. 또한 단기 반등 국면에서도 VIX 레벨이 높아 추세 전환 확인 전까지는 분할 접근과 리스크 한도 관리가 필요합니다."
+}

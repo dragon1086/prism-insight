@@ -774,7 +774,7 @@ def trigger_contrarian_value(trade_date: str, snapshot: pd.DataFrame,
             hist = yf.download(ticker, period="1y", auto_adjust=True, progress=False)
             if hist.empty:
                 continue
-            high_52w = float(hist["High"].max())
+            high_52w = float(hist["High"].max().iloc[0]) if hasattr(hist["High"].max(), 'iloc') else float(hist["High"].max())
             current_price = float(candidates.loc[ticker, "Close"])
             if high_52w <= 0:
                 continue

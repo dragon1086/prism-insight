@@ -1,0 +1,121 @@
+{
+  "analysis_date": "20260310",
+  "market": "US",
+  "market_regime": "moderate_bear",
+  "regime_confidence": 0.78,
+  "regime_rationale": "S&P 500이 20일선 아래에서 하락 추세를 보이고(4주 -2.17%), VIX가 24.54로 상승해 변동성 프리미엄이 확대된 상태입니다. Perplexity 요약에서도 유가 급등과 지정학적 긴장으로 인한 인플레이션 재점화·위험회피 심리가 강화되어 단기 리스크 오프 성격이 우세합니다.",
+  "simple_ma_regime": "bear",
+  "index_summary": {
+    "sp500_20d_trend": "down",
+    "sp500_vs_20d_ma": "below",
+    "sp500_4w_change_pct": -2.17,
+    "nasdaq_20d_trend": "sideways",
+    "vix_current": 24.54,
+    "vix_level": "elevated"
+  },
+  "leading_sectors": [
+    {
+      "sector": "Energy",
+      "reason": "유가 급등(원유 가격 급등) 국면에서 현금흐름/실적 기대가 상대적으로 개선되며 방어적 상대강세가 나타날 가능성이 큽니다.",
+      "confidence": 0.72
+    },
+    {
+      "sector": "Utilities",
+      "reason": "변동성 확대로 위험회피 성향이 강화되면서 배당/방어 성격 섹터로의 선호가 높아질 수 있습니다.",
+      "confidence": 0.6
+    },
+    {
+      "sector": "Consumer Defensive",
+      "reason": "고용 둔화 및 경기 불확실성 국면에서 필수소비재로의 방어적 로테이션이 유리해질 수 있습니다.",
+      "confidence": 0.58
+    }
+  ],
+  "lagging_sectors": [
+    {
+      "sector": "Technology",
+      "reason": "기술주 중심 조정 및 AI 관련 밸류에이션 경계감이 커지는 구간에서 금리/리스크 프리미엄 상승에 취약합니다.",
+      "confidence": 0.74
+    },
+    {
+      "sector": "Consumer Cyclical",
+      "reason": "실업률 상승 등 고용 둔화 신호가 소비 민감 업종의 실적 기대를 훼손할 수 있습니다.",
+      "confidence": 0.66
+    },
+    {
+      "sector": "Real Estate",
+      "reason": "국채금리 변동 및 인플레이션 재점화 우려가 금리 민감 업종의 멀티플 부담으로 연결될 수 있습니다.",
+      "confidence": 0.6
+    }
+  ],
+  "risk_events": [
+    {
+      "event": "유가 급등에 따른 인플레이션 재점화 및 스태그플레이션 우려",
+      "impact": "negative",
+      "severity": "high",
+      "affected_sectors": [
+        "Technology",
+        "Consumer Cyclical",
+        "Real Estate",
+        "Industrials"
+      ]
+    },
+    {
+      "event": "지정학적 긴장(미국-이란 충돌 심화 및 중동 공급차질 우려)",
+      "impact": "negative",
+      "severity": "high",
+      "affected_sectors": [
+        "Energy",
+        "Industrials",
+        "Basic Materials",
+        "Financial Services"
+      ]
+    },
+    {
+      "event": "고용 둔화(실업률 상승)로 인한 경기 기대 약화",
+      "impact": "negative",
+      "severity": "medium",
+      "affected_sectors": [
+        "Consumer Cyclical",
+        "Financial Services",
+        "Industrials"
+      ]
+    },
+    {
+      "event": "금리 인하 기대 후퇴(물가/유가 변수로 정책 경로 불확실성 확대)",
+      "impact": "negative",
+      "severity": "medium",
+      "affected_sectors": [
+        "Technology",
+        "Real Estate",
+        "Communication Services"
+      ]
+    }
+  ],
+  "beneficiary_themes": [
+    {
+      "theme": "에너지 가격 상승에 따른 업스트림/에너지 현금흐름 개선",
+      "beneficiary_sectors": [
+        "Energy"
+      ],
+      "duration": "short_term"
+    },
+    {
+      "theme": "리스크 오프 국면의 방어주 선호(변동성 확대 구간)",
+      "beneficiary_sectors": [
+        "Utilities",
+        "Consumer Defensive",
+        "Healthcare"
+      ],
+      "duration": "short_term"
+    },
+    {
+      "theme": "AI 투자(자본지출) 구조적 추세는 유지되나 밸류에이션 조정 병행",
+      "beneficiary_sectors": [
+        "Technology",
+        "Communication Services"
+      ],
+      "duration": "medium_term"
+    }
+  ],
+  "report_prose": "2026년 3월 10일 기준 미국 주식시장은 moderate_bear 국면으로 판단됩니다. S&P 500이 20일 이동평균선(6,853.75) 아래에서 하락 추세를 보이고 4주 수익률이 -2.17%로 둔화된 가운데, VIX가 24.54로 상승해 위험 프리미엄이 확대되었습니다. Perplexity 요약에서도 유가 급등과 지정학적 긴장이 인플레이션 재점화 우려를 높이며 단기적으로 위험회피 심리를 자극하는 환경으로 정리됩니다.\n\n섹터 측면에서는 에너지 섹터가 유가 급등의 직접 수혜로 상대적 강세가 기대되며, 변동성 확대 구간에서는 유틸리티 및 필수소비재 등 방어 성격 섹터로의 로테이션이 나타날 여지가 있습니다. 반면 기술(특히 밸류에이션 민감 성장주)과 경기민감 소비재는 금리/리스크 프리미엄 상승 및 경기 둔화 신호에 취약해 상대적 약세가 우려됩니다.\n\n주요 리스크 이벤트는 첫째 유가 급등에 따른 물가 재상승 및 스태그플레이션 우려, 둘째 미국-이란 충돌 심화 등 지정학적 불확실성 확대, 셋째 고용 둔화 신호에 따른 경기 기대 약화입니다. 이러한 요인은 연준의 금리 인하 경로를 불투명하게 만들고, 주식의 멀티플 축소 압력과 변동성 상승으로 연결될 수 있습니다.\n\n포지셔닝 측면에서는 현 국면에서 방어적 비중을 상향하고(에너지/유틸리티/필수소비재 중심), 고변동·고밸류에이션 구간에 노출된 성장주 익스포저는 선별적으로 관리하는 전략이 합리적입니다. 동시에 중기적으로는 AI 관련 투자 추세가 완전히 훼손된 것으로 보기 어렵기 때문에, 변동성 확대 시 분할 접근 등 리스크 관리 하의 단계적 재진입 전략을 병행하는 것이 바람직합니다."
+}
