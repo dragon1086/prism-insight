@@ -494,6 +494,14 @@ def create_price_chart(ticker, company_name=None, days=730, save_path=None, adju
         logger.info(f"No data available for {ticker}.")
         return None
 
+    # Filter out rows with all-zero OHLC values (e.g., newly listed/delisted stocks)
+    ohlc_cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in df.columns]
+    if ohlc_cols:
+        df = df[df[ohlc_cols].sum(axis=1) > 0]
+        if len(df) == 0:
+            logger.info(f"No valid OHLCV data for {ticker} (all zeros).")
+            return None
+
     # Verify index is datetime
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index)
@@ -673,6 +681,13 @@ def create_market_cap_chart(ticker, company_name=None, days=730, save_path=None)
     if df is None or len(df) == 0:
         logger.info(f"No market cap data available for {ticker}.")
         return None
+
+    # Filter out rows with zero market cap (e.g., newly listed/delisted stocks)
+    if 'MarketCap' in df.columns:
+        df = df[df['MarketCap'] > 0]
+        if len(df) == 0:
+            logger.info(f"No valid market cap data for {ticker} (all zeros).")
+            return None
 
     # Verify index is datetime
     if not isinstance(df.index, pd.DatetimeIndex):
@@ -857,6 +872,15 @@ def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=Non
     if df is None or len(df) == 0:
         logger.info(f"No fundamental indicator data available for {ticker}.")
         return None
+
+    # Filter out rows where all fundamental values are zero or NaN
+    fundamental_cols = [c for c in ['PER', 'PBR', 'DIV', 'BPS', 'EPS', 'DPS'] if c in df.columns]
+    if fundamental_cols:
+        df = df.dropna(subset=fundamental_cols, how='all')
+        df = df[df[fundamental_cols].sum(axis=1) != 0]
+        if len(df) == 0:
+            logger.info(f"No valid fundamental data for {ticker} (all zeros/NaN).")
+            return None
 
     # Check if index is datetime
     if not isinstance(df.index, pd.DatetimeIndex):
