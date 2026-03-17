@@ -200,6 +200,8 @@ TRIGGER_CRITERIA = {
     "마감 강도 상위주": {"rr_target": 1.3, "sl_max": 0.05},
     "시총 대비 집중 자금 유입 상위주": {"rr_target": 1.3, "sl_max": 0.05},
     "거래량 증가 상위 횡보주": {"rr_target": 1.5, "sl_max": 0.07},
+    "매크로 섹터 리더": {"rr_target": 1.3, "sl_max": 0.07},
+    "역발상 가치주": {"rr_target": 1.5, "sl_max": 0.08},
     "default": {"rr_target": 1.5, "sl_max": 0.07}
 }
 
@@ -825,6 +827,239 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
     logger.debug(f"Volume increase sideways stocks detected: {len(result)}")
     return enhance_dataframe(result.sort_values("composite_score", ascending=False).head(10))
 
+def trigger_macro_sector_leader(trade_date: str, snapshot: pd.DataFrame,
+                                 prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame = None,
+                                 macro_context: dict = None, top_n: int = 10) -> pd.DataFrame:
+    """
+    [New Trigger] Macro Sector Leader
+    - Identifies stocks in macro-leading sectors with relative strength
+    - Composite score: Relative strength (30%) + Trading amount (20%) + Sector confidence (30%) + Market cap proxy (20%)
+    - Requires macro_context with leading_sectors and sector_map
+    """
+    logger.debug("trigger_macro_sector_leader started")
+
+    if macro_context is None:
+        logger.debug("trigger_macro_sector_leader: No macro_context provided")
+        return pd.DataFrame()
+
+    leading_sectors = macro_context.get("leading_sectors", [])
+    if not leading_sectors:
+        logger.debug("trigger_macro_sector_leader: No leading sectors in macro_context")
+        return pd.DataFrame()
+
+    # KR: sector_map is already available in macro_context (no external API needed)
+    sector_map = macro_context.get("sector_map", {})
+
+    common = snapshot.index.intersection(prev_snapshot.index)
+    snap = snapshot.loc[common].copy()
+    prev = prev_snapshot.loc[common].copy()
+
+    # Absolute filters (100억원)
+    snap = apply_absolute_filters(snap, min_value=10000000000)
+
+    if snap.empty:
+        logger.debug("trigger_macro_sector_leader: No stocks pass absolute filters")
+        return pd.DataFrame()
+
+    # Limit to top 100 by Amount
+    top100 = snap.nlargest(100, "Amount")
+
+    # Build sector confidence lookup and leading sector names
+    sector_confidence = {}
+    leading_names = set()
+    for s in leading_sectors:
+        name = s.get("sector", "")
+        conf = s.get("confidence", 0.5)
+        sector_confidence[name] = conf
+        leading_names.add(name)
+
+    # Filter stocks whose sector matches any leading sector (fuzzy substring match)
+    matched_rows = []
+    matched_confs = []
+    for ticker in top100.index:
+        stock_sector = sector_map.get(ticker, "")
+        if not stock_sector:
+            continue
+        matched_sector = None
+        if stock_sector in leading_names:
+            matched_sector = stock_sector
+        else:
+            for l in leading_names:
+                if stock_sector in l or l in stock_sector:
+                    matched_sector = l
+                    break
+        if matched_sector:
+            matched_rows.append(ticker)
+            matched_confs.append(sector_confidence.get(matched_sector, 0.5))
+
+    if not matched_rows:
+        logger.debug("trigger_macro_sector_leader: No stocks matched leading sectors")
+        return pd.DataFrame()
+
+    snap_filtered = top100.loc[matched_rows].copy()
+    snap_filtered["SectorConfidence"] = matched_confs
+
+    # Calculate daily change for relative strength
+    snap_filtered["DailyChange"] = ((snap_filtered["Close"] - prev.loc[matched_rows, "Close"]) /
+                                     prev.loc[matched_rows, "Close"]) * 100
+
+    # Market average change for relative strength calculation
+    market_avg_change = (
+        ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100
+    ).mean()
+    snap_filtered["RelativeStrength"] = snap_filtered["DailyChange"] - market_avg_change
+
+    # Normalize each component
+    def _norm_col(series: pd.Series) -> pd.Series:
+        col_min = series.min()
+        col_max = series.max()
+        col_range = col_max - col_min if col_max > col_min else 1
+        return (series - col_min) / col_range
+
+    snap_filtered["RelativeStrength_norm"] = _norm_col(snap_filtered["RelativeStrength"])
+    snap_filtered["Amount_norm"] = _norm_col(snap_filtered["Amount"])
+    snap_filtered["SectorConfidence_norm"] = _norm_col(snap_filtered["SectorConfidence"])
+
+    # Market cap proxy: use cap_df if available, otherwise Amount
+    if cap_df is not None and not cap_df.empty and "시가총액" in cap_df.columns:
+        snap_filtered = snap_filtered.merge(cap_df[["시가총액"]], left_index=True,
+                                             right_index=True, how="left")
+        snap_filtered["시가총액"] = snap_filtered["시가총액"].fillna(snap_filtered["Amount"])
+        snap_filtered["MarketCap_norm"] = _norm_col(snap_filtered["시가총액"])
+    else:
+        snap_filtered["MarketCap_norm"] = snap_filtered["Amount_norm"]
+
+    snap_filtered["CompositeScore"] = (
+        snap_filtered["RelativeStrength_norm"] * 0.3 +
+        snap_filtered["Amount_norm"] * 0.2 +
+        snap_filtered["SectorConfidence_norm"] * 0.3 +
+        snap_filtered["MarketCap_norm"] * 0.2
+    )
+
+    result = snap_filtered.sort_values("CompositeScore", ascending=False).head(top_n)
+
+    logger.debug(f"Macro sector leader detected: {len(result)} stocks")
+    return enhance_dataframe(result)
+
+
+def trigger_contrarian_value(trade_date: str, snapshot: pd.DataFrame,
+                              prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame = None,
+                              top_n: int = 10) -> pd.DataFrame:
+    """
+    [New Trigger] Contrarian Value Pick (KR)
+    - Identifies quality stocks in a deep drawdown (15%-40% below 52-week high)
+    - Requires positive recovery signal today (Close > Open)
+    - Scores on drawdown magnitude, liquidity, low P/B ratio, and daily recovery
+    - Uses krx_data_client for 52-week high and fundamental data
+    """
+    from krx_data_client import get_market_ohlcv_by_date, get_market_fundamental_by_date
+
+    logger.debug("trigger_contrarian_value started")
+
+    common = snapshot.index.intersection(prev_snapshot.index)
+    snap = snapshot.loc[common].copy()
+    prev = prev_snapshot.loc[common].copy()
+
+    # Absolute filters (100억원)
+    snap = apply_absolute_filters(snap, min_value=10000000000)
+
+    # Filter rising stocks today (Close > Open) — positive recovery signal
+    snap["DailyChange"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100
+    snap = snap[snap["Close"] > snap["Open"]]
+
+    if snap.empty:
+        logger.debug("trigger_contrarian_value: No rising stocks after absolute filter")
+        return pd.DataFrame()
+
+    # Limit to top 50 by Amount to reduce data fetch calls
+    candidates = snap.nlargest(50, "Amount").copy()
+
+    # Calculate date range for 52-week high lookup
+    trade_dt = datetime.datetime.strptime(trade_date, '%Y%m%d')
+    start_dt = trade_dt - datetime.timedelta(days=365)
+    start_date_str = start_dt.strftime('%Y%m%d')
+
+    # Fetch 52-week high and fundamentals for each candidate
+    rows = []
+    for i, ticker in enumerate(candidates.index):
+        logger.debug(f"trigger_contrarian_value: fetching data for {ticker} ({i+1}/{len(candidates)})")
+        try:
+            hist = get_market_ohlcv_by_date(start_date_str, trade_date, ticker)
+            if hist.empty:
+                continue
+            high_52w = float(hist["High"].max())
+            current_price = float(candidates.loc[ticker, "Close"])
+            if high_52w <= 0:
+                continue
+            drawdown = (current_price - high_52w) / high_52w * 100
+
+            # Filter: drawdown between -15% and -40%
+            if not (-40.0 <= drawdown <= -15.0):
+                continue
+
+            fund_df = get_market_fundamental_by_date(start_date_str, trade_date, ticker)
+            if fund_df.empty:
+                continue
+
+            # Get the latest available row
+            latest = fund_df.iloc[-1]
+            per = float(latest.get("PER", 0) or 0)
+            pbr = float(latest.get("PBR", 0) or 0)
+
+            # Must be profitable (PER > 0) and have valid PBR
+            if per <= 0:
+                continue
+            if pbr <= 0:
+                continue
+
+            rows.append({
+                "Ticker": ticker,
+                "Close": current_price,
+                "Volume": candidates.loc[ticker, "Volume"],
+                "Amount": candidates.loc[ticker, "Amount"],
+                "DailyChange": candidates.loc[ticker, "DailyChange"],
+                "Drawdown": drawdown,
+                "PriceToBook": pbr,
+                "TrailingPE": per,
+            })
+        except Exception as e:
+            logger.debug(f"trigger_contrarian_value: skipping {ticker} due to error: {e}")
+            continue
+
+    if not rows:
+        logger.debug("trigger_contrarian_value: No qualifying stocks after fundamentals filter")
+        return pd.DataFrame()
+
+    result_df = pd.DataFrame(rows).set_index("Ticker")
+
+    def _norm_col(series: pd.Series) -> pd.Series:
+        col_min = series.min()
+        col_max = series.max()
+        col_range = col_max - col_min if col_max > col_min else 1
+        return (series - col_min) / col_range
+
+    # Drawdown magnitude: deeper = higher score (negate because drawdown is negative)
+    result_df["Drawdown_norm"] = _norm_col(-result_df["Drawdown"])
+    # Liquidity
+    result_df["Amount_norm"] = _norm_col(result_df["Amount"])
+    # Low PBR: lower = better value (invert)
+    result_df["PB_norm"] = 1.0 - _norm_col(result_df["PriceToBook"])
+    # Recovery signal: daily change > 0, normalized
+    result_df["Recovery_norm"] = _norm_col(result_df["DailyChange"].clip(lower=0))
+
+    result_df["CompositeScore"] = (
+        result_df["Drawdown_norm"] * 0.3 +
+        result_df["Amount_norm"] * 0.2 +
+        result_df["PB_norm"] * 0.3 +
+        result_df["Recovery_norm"] * 0.2
+    )
+
+    result = result_df.sort_values("CompositeScore", ascending=False).head(top_n)
+
+    logger.debug(f"Contrarian value pick detected: {len(result)} stocks")
+    return enhance_dataframe(result)
+
+
 def _get_regime_slots(market_regime: str) -> tuple:
     """Return (topdown_slots, bottomup_slots) based on market regime."""
     REGIME_SLOTS = {
@@ -1095,6 +1330,23 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     else:
         logger.error("Invalid trigger_time value. Please enter 'morning' or 'afternoon'.")
         return
+
+    # === New triggers: active based on market regime ===
+    if macro_context:
+        market_regime = macro_context.get("market_regime", "sideways")
+        # Macro sector trigger: active in all regimes except strong_bull
+        if market_regime not in ("strong_bull",):
+            res_macro = trigger_macro_sector_leader(trade_date, snapshot, prev_snapshot, cap_df, macro_context)
+            if not res_macro.empty:
+                triggers["매크로 섹터 리더"] = res_macro
+                logger.info(f"매크로 섹터 리더: {len(res_macro)} candidates")
+
+        # Contrarian value: active in sideways, moderate_bear, strong_bear
+        if market_regime in ("sideways", "moderate_bear", "strong_bear"):
+            res_value = trigger_contrarian_value(trade_date, snapshot, prev_snapshot, cap_df)
+            if not res_value.empty:
+                triggers["역발상 가치주"] = res_value
+                logger.info(f"역발상 가치주: {len(res_value)} candidates")
 
     # Log results by trigger
     for name, df in triggers.items():
