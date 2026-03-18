@@ -1,13 +1,13 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.6.0 | **Updated**: 2026-03-12
+> **Version**: 2.7.0 | **Updated**: 2026-03-17
 
 ## Quick Overview
 
 **PRISM-INSIGHT** = AI-powered Korean/US stock analysis & automated trading system
 
 ```yaml
-Stack: Python 3.10+, mcp-agent, GPT-5/Claude 4.6, SQLite, Telegram, KIS API
+Stack: Python 3.10+, mcp-agent, GPT-5.4/Claude 4.6, SQLite, Telegram, KIS API
 Scale: ~75,000+ LOC, 13+ AI agents, KR/US dual market support
 ```
 
@@ -183,6 +183,7 @@ test: Tests
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.7.0 | 2026-03-17 | **트리거 다양화 + 운영 안정화 + GPT-5.4 업그레이드** - 매크로 섹터 리더/역발상 가치주 신규 트리거 2종 추가 (KR/US, 약세·횡보장 대응), 시장 체제별 트리거 활성화 전략, pykrx→krx_data_client 교체 (JSONDecodeError 해결), 차트 빈 데이터 방어 코드, US 매수보류 얼럿 KR 포맷 통일, US 시가총액 $20B 필터 제거, GPT-5.2→5.4 모델 업그레이드 (11개 파일) |
 | 2.6.0 | 2026-03-12 | **거시경제 인텔리전스 + 하이브리드 종목선정 + 텔레그램 얼럿 강화** - Macro Intelligence 에이전트 도입 (시장 체제 판단, 주도/낙후 섹터 식별), 탑다운+바텀업 하이브리드 종목 선정 (#202), US score-decision override 버그 수정 (#203), US trigger results 파일 경로 통일 (#204), KR/US 텔레그램 시그널 얼럿에 시장국면·선정채널·점수/R·R/손절 정보 추가 + PDF 커버 날짜 regex 수정 (#205) |
 | 2.5.2 | 2026-03-04 | **FCM NOT_FOUND 토큰 삭제 + Telegram Evaluator 다중 JSON 파싱 수정** - `firebase_bridge.py` `_INVALID_TOKEN_CODES`에 `NOT_FOUND` 추가 (만료 토큰 0/8 실패 반복 해결, #196), `telegram_summary_agent.py` GPT-5.x reasoning 모델 다중 JSON 응답 파싱 실패 → `_RobustEvaluatorLLM` 래퍼 + `generate_str()` fallback 추가 (#197) |
 | 2.5.1 | 2026-02-22 | **Claude Sonnet 4.6 업그레이드** - `report_generator.py` 내 모델 `claude-sonnet-4-5-20250929` → `claude-sonnet-4-6` (5곳), knowledge cutoff Jan 2025 → Aug 2025 |
