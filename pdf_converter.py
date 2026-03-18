@@ -788,38 +788,51 @@ def markdown_to_html(md_file_path, add_css=True, add_theme=False, logo_path=None
         logger.error(f"Error during HTML conversion: {str(e)}")
         raise
 
+_playwright_browser_verified = False
+
+
 def _ensure_playwright_browser():
     """
     Check if Playwright browser is installed, and auto-install if not
 
-    Uses subprocess only for safe operation regardless of asyncio event loop
+    Uses subprocess only for safe operation regardless of asyncio event loop.
+    Caches result after first successful verification to avoid repeated checks.
 
     Returns:
         bool: Browser installation success status
     """
+    global _playwright_browser_verified
+    if _playwright_browser_verified:
+        return True
+
     import subprocess
     import sys
 
     try:
-        # Check browser info using subprocess (no sync API usage)
-        # Check installed browsers with playwright show command
+        # Use 'playwright install --dry-run' to check if chromium is already installed
         check_result = subprocess.run(
-            [sys.executable, "-m", "playwright", "show"],
+            [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
             capture_output=True,
             text=True,
             timeout=10
         )
 
-        # Check if chromium is installed
-        if "chromium" in check_result.stdout.lower() and "executable" in check_result.stdout.lower():
+        # If dry-run exits 0 and output indicates already installed (no download needed)
+        already_installed = (
+            check_result.returncode == 0
+            and "chromium" in check_result.stdout.lower()
+            and "download" not in check_result.stdout.lower()
+        )
+
+        if already_installed:
             logger.debug("Playwright Chromium browser is already installed.")
+            _playwright_browser_verified = True
             return True
 
-        # Attempt auto-installation if not installed
-        logger.warning("Playwright browser is not installed. Attempting auto-installation...")
+        # Browser needs installation
+        logger.info("Installing Playwright Chromium browser...")
 
         try:
-            # Execute playwright install chromium
             result = subprocess.run(
                 [sys.executable, "-m", "playwright", "install", "chromium"],
                 capture_output=True,
@@ -829,6 +842,7 @@ def _ensure_playwright_browser():
 
             if result.returncode == 0:
                 logger.info("Playwright browser installation complete")
+                _playwright_browser_verified = True
                 return True
             else:
                 logger.error(f"Playwright browser installation failed: {result.stderr}")
@@ -841,9 +855,10 @@ def _ensure_playwright_browser():
             logger.error(f"Error during Playwright browser auto-installation: {str(install_error)}")
             return False
 
-    except subprocess.TimeoutExpired:
-        logger.warning("Playwright browser check timeout - attempting installation...")
-        # Attempt installation even on timeout
+    except (subprocess.TimeoutExpired, Exception):
+        # Dry-run check failed or unavailable, fall back to direct install
+        # (install is a no-op if already present)
+        logger.debug("Playwright dry-run check unavailable, running install directly...")
         try:
             result = subprocess.run(
                 [sys.executable, "-m", "playwright", "install", "chromium"],
@@ -851,12 +866,12 @@ def _ensure_playwright_browser():
                 text=True,
                 timeout=300
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                _playwright_browser_verified = True
+                return True
+            return False
         except Exception:
             return False
-    except Exception as e:
-        logger.error(f"Error checking Playwright browser: {str(e)}")
-        return False
 
 def markdown_to_pdf_playwright(md_file_path, pdf_file_path, add_theme=False, logo_path=None, enable_watermark=False, watermark_opacity=0.02):
     """

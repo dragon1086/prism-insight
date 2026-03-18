@@ -44,8 +44,9 @@ CONFIG_FILE = PROJECT_ROOT / "trading" / "config" / "kis_devlp.yaml"
 with open(CONFIG_FILE, encoding="UTF-8") as f:
     _cfg = yaml.load(f, Loader=yaml.FullLoader)
 
-# US timezone
+# Timezones
 US_EASTERN = pytz.timezone('US/Eastern')
+KST = pytz.timezone('Asia/Seoul')
 
 
 # =============================================================================
@@ -91,12 +92,22 @@ def _safe_int(value, default: int = 0) -> int:
     except (ValueError, TypeError):
         return default
 
-# Exchange code mapping
+# Exchange code mapping (for trading/portfolio APIs using OVRS_EXCG_CD)
 EXCHANGE_CODES = {
     "NASDAQ": "NASD",
     "NYSE": "NYSE",
     "AMEX": "AMEX",
     "NASD": "NASD",  # Allow direct use
+}
+
+# Price query API uses shorter exchange codes (EXCD parameter)
+PRICE_EXCHANGE_CODES = {
+    "NASD": "NAS",
+    "NYSE": "NYS",
+    "AMEX": "AMS",
+    "NAS": "NAS",
+    "NYS": "NYS",
+    "AMS": "AMS",
 }
 
 # Common NASDAQ stocks for exchange detection
@@ -200,9 +211,12 @@ class USStockTrading:
         api_url = "/uapi/overseas-price/v1/quotations/price"
         tr_id = "HHDFS00000300"
 
+        # Price API uses shorter exchange codes (NAS/NYS/AMS)
+        price_excd = PRICE_EXCHANGE_CODES.get(exchange, exchange)
+
         params = {
             "AUTH": "",
-            "EXCD": exchange,
+            "EXCD": price_excd,
             "SYMB": ticker.upper()
         }
 
@@ -632,7 +646,6 @@ class USStockTrading:
             True if reserved order can be placed, False otherwise
         """
         import pytz
-        KST = pytz.timezone('Asia/Seoul')
         now_kst = datetime.datetime.now(KST)
         current_time = now_kst.time()
 
@@ -645,6 +658,86 @@ class USStockTrading:
         resv_end = datetime.time(23, 20)
 
         return resv_start <= current_time <= resv_end
+
+    def _queue_pending_order(self, ticker: str, order_type: str, limit_price: float,
+                             buy_amount: float = None, exchange: str = None) -> Dict[str, Any]:
+        """
+        Queue a reserved order for later batch execution.
+
+        When KIS API reserved order window is closed (before 10:00 KST),
+        saves the order to us_pending_orders table for processing by
+        us_pending_order_batch.py (cron at 10:05 KST).
+
+        Args:
+            ticker: Stock ticker symbol
+            order_type: 'buy' or 'sell'
+            limit_price: Limit price in USD
+            buy_amount: Buy amount in USD (buy only)
+            exchange: Exchange code (NASD, NYSE, AMEX)
+
+        Returns:
+            Order result dict with status='queued'
+        """
+        import sqlite3
+        from pathlib import Path
+
+        try:
+            db_path = Path(__file__).resolve().parent.parent.parent / "stock_tracking_db.sqlite"
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+
+            # Ensure table exists
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS us_pending_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    order_type TEXT NOT NULL,
+                    limit_price REAL NOT NULL,
+                    buy_amount REAL,
+                    exchange TEXT,
+                    trigger_type TEXT,
+                    trigger_mode TEXT,
+                    status TEXT DEFAULT 'pending',
+                    failure_reason TEXT,
+                    created_at TEXT NOT NULL,
+                    executed_at TEXT,
+                    order_result TEXT
+                )
+            """)
+
+            now_kst = datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute(
+                """INSERT INTO us_pending_orders
+                   (ticker, order_type, limit_price, buy_amount, exchange, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+                (ticker.upper(), order_type, limit_price, buy_amount, exchange, now_kst)
+            )
+            conn.commit()
+            pending_id = cursor.lastrowid
+            conn.close()
+
+            logger.info(f"[{ticker}] Reserved order queued (id={pending_id}, {order_type}, ${limit_price:.2f}) - will execute at 10:05 KST")
+
+            return {
+                'success': True,
+                'order_no': f'PENDING-{pending_id}',
+                'ticker': ticker,
+                'quantity': 0,
+                'limit_price': limit_price,
+                'order_type': f'queued_{order_type}',
+                'message': f'Reserved {order_type} order queued (outside KIS time window). Will execute at 10:05 KST.'
+            }
+
+        except Exception as e:
+            logger.error(f"[{ticker}] Failed to queue pending order: {e}")
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'limit_price': limit_price,
+                'message': f'Failed to queue pending order: {str(e)}'
+            }
 
     def buy_reserved_order(self, ticker: str, limit_price: float, buy_amount: float = None,
                            exchange: str = None) -> Dict[str, Any]:
@@ -683,22 +776,19 @@ class USStockTrading:
                 'message': 'Limit price is required for US reserved orders (market order not supported)'
             }
 
-        if not self.is_reserved_order_available():
-            return {
-                'success': False,
-                'order_no': None,
-                'ticker': ticker,
-                'quantity': 0,
-                'limit_price': limit_price,
-                'message': 'Reserved order not available at this time (available 10:00-23:20 KST, except 16:30-16:45)'
-            }
-
         if exchange is None:
             exchange = get_exchange_code(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
         amount = buy_amount if buy_amount else self.buy_amount
+
+        if not self.is_reserved_order_available():
+            # Queue the order for later batch execution (us_pending_order_batch.py at 10:05 KST)
+            return self._queue_pending_order(
+                ticker=ticker, order_type='buy', limit_price=limit_price,
+                buy_amount=amount, exchange=exchange
+            )
 
         # Calculate quantity based on limit price
         buy_quantity = math.floor(amount / limit_price)
@@ -809,19 +899,17 @@ class USStockTrading:
                 'message': 'Limit price is required for reserved sell (or use use_moo=True for Market On Open)'
             }
 
-        if not self.is_reserved_order_available():
-            return {
-                'success': False,
-                'order_no': None,
-                'ticker': ticker,
-                'quantity': 0,
-                'message': 'Reserved order not available at this time (available 10:00-23:20 KST, except 16:30-16:45)'
-            }
-
         if exchange is None:
             exchange = get_exchange_code(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
+
+        if not self.is_reserved_order_available():
+            # Queue the order for later batch execution (us_pending_order_batch.py at 10:05 KST)
+            return self._queue_pending_order(
+                ticker=ticker, order_type='sell', limit_price=limit_price or 0,
+                buy_amount=None, exchange=exchange
+            )
 
         # Check holding quantity
         quantity = self.get_holding_quantity(ticker)
