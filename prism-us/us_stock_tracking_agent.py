@@ -639,7 +639,7 @@ class USStockTrackingAgent:
             response = await llm.generate_str(
                 message=prompt_message,
                 request_params=RequestParams(
-                    model="gpt-5.2",
+                    model="gpt-5.4",
                     maxTokens=30000
                 )
             )
@@ -1043,15 +1043,26 @@ class USStockTrackingAgent:
 
             self.conn.commit()
 
+            # Translate market regime labels to Korean for display
+            _regime_labels_ko = {
+                "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
+                "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
+            }
+            market_condition_display = market_condition
+            for eng, ko in _regime_labels_ko.items():
+                if market_condition_display.startswith(eng):
+                    market_condition_display = market_condition_display.replace(eng, ko, 1)
+                    break
+
             # Generate no-entry message (same format as Korean enhanced version)
-            skip_message = f"⚠️ Buy Skipped: {company_name}({ticker})\n" \
-                           f"Current Price: ${current_price:,.2f}\n" \
-                           f"Buy Score: {buy_score}/{min_score}\n" \
-                           f"Decision: {decision}\n" \
-                           f"Market Condition: {market_condition}\n" \
-                           f"Sector: {sector}\n" \
-                           f"Skip Reason: {skip_reason}\n" \
-                           f"Analysis: {rationale if rationale else 'No information'}"
+            skip_message = f"⚠️ 매수 보류: {company_name}({ticker})\n" \
+                           f"현재가: ${current_price:,.2f}\n" \
+                           f"매수 Score: {buy_score}/10\n" \
+                           f"결정: Skip\n" \
+                           f"시장 상황: {market_condition_display}\n" \
+                           f"산업군: {sector}\n" \
+                           f"보류 사유: {skip_reason}\n" \
+                           f"분석 의견: {rationale if rationale else '정보 없음'}"
 
             # Add trigger win rate
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)
@@ -1167,7 +1178,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             response = await llm.generate_str(
                 message=prompt_message,
-                request_params=RequestParams(model="gpt-5.2", maxTokens=30000)
+                request_params=RequestParams(model="gpt-5.4", maxTokens=30000)
             )
 
             if not response or not response.strip():
@@ -1904,9 +1915,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 else:
                     reason = ""
                     if adjusted_score < min_score:
-                        reason = f"Score insufficient ({adjusted_score} < {min_score})"
+                        reason = f"Insufficient buy score ({adjusted_score} < {min_score})"
                     else:
-                        reason = f"No entry decision (raw: '{raw_decision}', normalized: '{normalized_decision}')"
+                        reason = f"Analysis decision is 'Skip'"
                     logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
 
                     # Save to watchlist for 7/14/30-day performance tracking

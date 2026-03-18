@@ -136,11 +136,11 @@ class StockAnalysisOrchestrator:
         # Translate company name (only for English)
         if not parsed['company_name']:
             logger.warning(f"Empty company name in filename: {original_path.stem}")
-            # Try to get company name from pykrx
+            # Try to get company name from krx_data_client (kospi-kosdaq MCP server)
             try:
-                from pykrx import stock as stock_api
-                parsed['company_name'] = stock_api.get_market_ticker_name(parsed['ticker']) or ""
-                logger.info(f"Retrieved company name from pykrx: {parsed['company_name']}")
+                from krx_data_client import get_market_ticker_name
+                parsed['company_name'] = get_market_ticker_name(parsed['ticker']) or ""
+                logger.info(f"Retrieved company name from krx_data_client: {parsed['company_name']}")
             except Exception:
                 pass
 
@@ -307,7 +307,7 @@ class StockAnalysisOrchestrator:
                 result = await llm.generate_str(
                     message=f"{reference_date} 기준 한국 주식시장 거시경제 분석을 수행하고 JSON으로 출력하세요.",
                     request_params=RequestParams(
-                        model="gpt-5.2",
+                        model="gpt-5.4",
                         reasoning_effort="none",
                         maxTokens=16000,
                         parallel_tool_calls=True,
@@ -444,11 +444,11 @@ class StockAnalysisOrchestrator:
 
                             if name_col:
                                 name = stocks_df.loc[ticker, name_col]
-                            # Fallback: use pykrx API if name is empty
+                            # Fallback: use krx_data_client if name is empty
                             if not name:
                                 try:
-                                    from pykrx import stock as stock_api
-                                    name = stock_api.get_market_ticker_name(ticker) or ""
+                                    from krx_data_client import get_market_ticker_name
+                                    name = get_market_ticker_name(ticker) or ""
                                 except Exception:
                                     pass
 

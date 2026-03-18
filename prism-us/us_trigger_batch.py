@@ -67,8 +67,8 @@ TRIGGER_CRITERIA = {
     "default": {"rr_target": 1.5, "sl_max": 0.07}
 }
 
-# Market cap filter: $20B USD (S&P 500 inclusion level)
-MIN_MARKET_CAP = 20_000_000_000
+# Market cap filter disabled - let trigger scoring handle quality filtering
+# MIN_MARKET_CAP = 20_000_000_000
 
 # Trading value filter: $100M USD
 MIN_TRADING_VALUE = 100_000_000
@@ -250,14 +250,10 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame,
     snap = snapshot.loc[common].copy()
     prev = prev_snapshot.loc[common].copy()
 
-    # Market cap filter
+    # Market cap merge (for scoring, no minimum filter)
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["MarketCap"]], left_index=True, right_index=True, how="inner")
-        snap = snap[snap["MarketCap"] >= MIN_MARKET_CAP]
-        logger.debug(f"After market cap filter: {len(snap)} stocks")
-        if snap.empty:
-            logger.warning("No stocks after market cap filter")
-            return pd.DataFrame()
+        logger.debug(f"After market cap merge: {len(snap)} stocks")
 
     # Absolute filters
     snap = apply_absolute_filters(snap, min_value=MIN_TRADING_VALUE)
@@ -313,13 +309,10 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame,
     snap = snapshot.loc[common].copy()
     prev = prev_snapshot.loc[common].copy()
 
-    # Market cap filter
+    # Market cap merge (for scoring, no minimum filter)
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["MarketCap"]], left_index=True, right_index=True, how="inner")
-        snap = snap[snap["MarketCap"] >= MIN_MARKET_CAP]
-        logger.debug(f"After market cap filter: {len(snap)} stocks")
-        if snap.empty:
-            return pd.DataFrame()
+        logger.debug(f"After market cap merge: {len(snap)} stocks")
 
     # Absolute filters
     snap = apply_absolute_filters(snap, min_value=MIN_TRADING_VALUE)
@@ -419,11 +412,6 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame,
         # v1.16.6: Max change rate filter (20%)
         merged = merged[merged["DailyChange"] <= 20.0]
 
-        # Market cap filter ($20B+)
-        merged = merged[merged["MarketCap"] >= MIN_MARKET_CAP]
-        if merged.empty:
-            return pd.DataFrame()
-
         # Composite score
         for col in ["ValueCapRatio", "Amount", "IntradayChange"]:
             col_max = merged[col].max()
@@ -476,9 +464,6 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame,
     # Market cap filter
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["MarketCap"]], left_index=True, right_index=True, how="inner")
-        snap = snap[snap["MarketCap"] >= MIN_MARKET_CAP]
-        if snap.empty:
-            return pd.DataFrame()
 
     # Absolute filters
     snap = apply_absolute_filters(snap.copy(), min_value=MIN_TRADING_VALUE)
@@ -521,9 +506,6 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame,
     # Market cap filter
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["MarketCap"]], left_index=True, right_index=True, how="inner")
-        snap = snap[snap["MarketCap"] >= MIN_MARKET_CAP]
-        if snap.empty:
-            return pd.DataFrame()
 
     # Absolute filters
     snap = apply_absolute_filters(snap, min_value=MIN_TRADING_VALUE)
@@ -598,9 +580,6 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
     # Market cap filter
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["MarketCap"]], left_index=True, right_index=True, how="inner")
-        snap = snap[snap["MarketCap"] >= MIN_MARKET_CAP]
-        if snap.empty:
-            return pd.DataFrame()
 
     # Absolute filters
     snap = apply_absolute_filters(snap, min_value=MIN_TRADING_VALUE)
@@ -1079,7 +1058,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "selection_mode": "hybrid",
             "lookback_days": 10,
             "market": "US",
-            "min_market_cap_usd": MIN_MARKET_CAP,
+            "min_market_cap_usd": None,  # Market cap filter disabled
             "min_trading_value_usd": MIN_TRADING_VALUE,
             "selection_strategy": "hybrid_topdown_bottomup" if macro_context else "pure_bottomup",
             "market_regime": _market_regime,
