@@ -103,7 +103,7 @@ async def generate_report(agent, section, company_name, company_code, reference_
     report = await llm.generate_str(
         message=message,
         request_params=RequestParams(
-            model="gpt-5.2",
+            model="gpt-5.4-mini",
             reasoning_effort="none",
             maxTokens=32000,
             parallel_tool_calls=True,
@@ -193,7 +193,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
     report = await llm.generate_str(
         message=message,
         request_params=RequestParams(
-            model="gpt-5.2",
+            model="gpt-5.4-mini",
             reasoning_effort="none",
             maxTokens=32000,
             max_iterations=3,
@@ -304,7 +304,7 @@ Comprehensive Analysis Report:
         executive_summary = await llm.generate_str(
             message=message,
             request_params=RequestParams(
-                model="gpt-5.2",
+                model="gpt-5.4-mini",
                 reasoning_effort="none",
                 maxTokens=16000,
                 max_iterations=2,
@@ -541,7 +541,7 @@ Please present a consistent and executable investment strategy that investors ca
         investment_strategy = await llm.generate_str(
             message=message,
             request_params=RequestParams(
-                model="gpt-5.2",
+                model="gpt-5.4-mini",
                 reasoning_effort="none",
                 maxTokens=32000,
                 max_iterations=3,
