@@ -236,7 +236,7 @@ class USStockAnalysisOrchestrator:
                 result = await llm.generate_str(
                     message=f"Execute US stock market macro analysis for {reference_date} and output JSON.",
                     request_params=RequestParams(
-                        model="gpt-5.4",
+                        model="gpt-5.4-mini",
                         reasoning_effort="none",
                         maxTokens=16000,
                         parallel_tool_calls=True,
