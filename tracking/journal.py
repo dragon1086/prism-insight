@@ -93,7 +93,7 @@ class JournalManager:
 
                 response = await llm.generate_str(
                     message=prompt,
-                    request_params=RequestParams(model="gpt-5.4-mini", maxTokens=16000)
+                    request_params=RequestParams(model="gpt-5.4", maxTokens=16000)
                 )
                 logger.info(f"Journal agent response received: {len(response)} chars")
 
