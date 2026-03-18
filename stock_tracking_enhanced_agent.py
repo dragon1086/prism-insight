@@ -865,7 +865,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             response = await llm.generate_str(
                 message=prompt_message,
                 request_params=RequestParams(
-                    model="gpt-5.4", reasoning_effort="high",
+                    model="gpt-5.2",
                     maxTokens=30000
                 )
             )

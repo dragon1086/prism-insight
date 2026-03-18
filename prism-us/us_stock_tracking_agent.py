@@ -639,7 +639,7 @@ class USStockTrackingAgent:
             response = await llm.generate_str(
                 message=prompt_message,
                 request_params=RequestParams(
-                    model="gpt-5.4", reasoning_effort="high",
+                    model="gpt-5.2",
                     maxTokens=30000
                 )
             )
@@ -1178,7 +1178,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             response = await llm.generate_str(
                 message=prompt_message,
-                request_params=RequestParams(model="gpt-5.4", reasoning_effort="high", maxTokens=30000)
+                request_params=RequestParams(model="gpt-5.2", maxTokens=30000)
             )
 
             if not response or not response.strip():
