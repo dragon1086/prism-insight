@@ -76,7 +76,7 @@ class USTelegramSummaryGenerator:
         """
         Extract ticker, company name, and date from filename.
 
-        US filename format: AAPL_Apple Inc_20260118_gpt5.pdf
+        US filename format: AAPL_Apple Inc_20260118_gpt5.4-mini.pdf
 
         Args:
             filename: Report filename

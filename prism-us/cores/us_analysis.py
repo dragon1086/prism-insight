@@ -499,7 +499,7 @@ if __name__ == "__main__":
     ))
 
     # Save result
-    output_path = f"AAPL_Apple Inc_{datetime.now().strftime('%Y%m%d')}_gpt5.md"
+    output_path = f"AAPL_Apple Inc_{datetime.now().strftime('%Y%m%d')}_gpt5.4-mini.md"
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(result)
 
