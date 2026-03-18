@@ -237,6 +237,7 @@ class USStockAnalysisOrchestrator:
                     message=f"Execute US stock market macro analysis for {reference_date} and output JSON.",
                     request_params=RequestParams(
                         model="gpt-5.2",
+                        reasoning_effort="none",
                         maxTokens=16000,
                         parallel_tool_calls=True,
                         use_history=True

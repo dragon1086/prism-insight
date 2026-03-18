@@ -479,6 +479,7 @@ Report Content:
             message=prompt_message,
             request_params=RequestParams(
                 model="gpt-5.2",
+                reasoning_effort="none",
                 maxTokens=6000,
                 max_iterations=2
             )
