@@ -47,6 +47,10 @@ PYTHONPATH=/app/prism-insight
 # Yahoo Finance data delay: 15-20 min (schedule adjusted accordingly)
 # -----------------------------------------------------------------------------
 
+# US Pending orders batch at 10:05 KST - process queued reserved orders from early morning analysis
+# Orders placed before 10:00 KST (outside KIS API window) are queued in us_pending_orders table
+5 10 * * 2-6 cd /app/prism-insight && python3 prism-us/us_pending_order_batch.py >> /app/prism-insight/logs/us_pending_orders_$(date +\%Y\%m\%d).log 2>&1
+
 # US Morning batch at 00:15 KST (10:15 EST) - Tue-Sat (Mon-Fri US)
 15 0 * * 2-6 cd /app/prism-insight && python3 prism-us/us_stock_analysis_orchestrator.py --mode morning >> /app/prism-insight/logs/us_morning_$(date +\%Y\%m\%d).log 2>&1
 

@@ -142,7 +142,10 @@ class TelegramBotAgent:
                     chat_id=chat_id,
                     document=document,
                     caption=caption,
-                    parse_mode="Markdown"  # Markdown format support
+                    parse_mode="Markdown",  # Markdown format support
+                    read_timeout=60,
+                    write_timeout=60,
+                    connect_timeout=30,
                 )
             logger.info(f"File sent successfully: {document_path}")
             try:

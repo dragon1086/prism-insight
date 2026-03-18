@@ -159,6 +159,27 @@ CREATE TABLE IF NOT EXISTS us_holding_decisions (
 )
 """
 
+# Table: us_pending_orders - Queued reserved orders (when placed outside KIS API time window)
+# KIS API reserved order window: 10:00~23:20 KST (except 16:30~16:45)
+# Orders placed before 10:00 KST are queued here and processed by us_pending_order_batch.py at 10:05 KST
+TABLE_US_PENDING_ORDERS = """
+CREATE TABLE IF NOT EXISTS us_pending_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    order_type TEXT NOT NULL,          -- 'buy' or 'sell'
+    limit_price REAL NOT NULL,         -- USD
+    buy_amount REAL,                   -- USD (buy only)
+    exchange TEXT,                     -- NASD, NYSE, AMEX
+    trigger_type TEXT,
+    trigger_mode TEXT,
+    status TEXT DEFAULT 'pending',     -- pending, executed, failed, expired, cancelled
+    failure_reason TEXT,
+    created_at TEXT NOT NULL,
+    executed_at TEXT,
+    order_result TEXT                  -- JSON result from KIS API
+)
+"""
+
 # =============================================================================
 # Indexes for US Tables
 # =============================================================================
@@ -186,6 +207,10 @@ US_INDEXES = [
     # us_holding_decisions indexes
     "CREATE INDEX IF NOT EXISTS idx_us_holding_dec_ticker ON us_holding_decisions(ticker)",
     "CREATE INDEX IF NOT EXISTS idx_us_holding_dec_date ON us_holding_decisions(decision_date)",
+
+    # us_pending_orders indexes
+    "CREATE INDEX IF NOT EXISTS idx_us_pending_status ON us_pending_orders(status)",
+    "CREATE INDEX IF NOT EXISTS idx_us_pending_created ON us_pending_orders(created_at)",
 ]
 
 # =============================================================================
@@ -213,6 +238,7 @@ def create_us_tables(cursor, conn):
         ("us_watchlist_history", TABLE_US_WATCHLIST_HISTORY),
         ("us_analysis_performance_tracker", TABLE_US_PERFORMANCE_TRACKER),
         ("us_holding_decisions", TABLE_US_HOLDING_DECISIONS),
+        ("us_pending_orders", TABLE_US_PENDING_ORDERS),
     ]
 
     for table_name, table_sql in tables:
@@ -449,6 +475,7 @@ async def async_initialize_us_database(db_path: Optional[str] = None):
         TABLE_US_TRADING_HISTORY,
         TABLE_US_WATCHLIST_HISTORY,
         TABLE_US_PERFORMANCE_TRACKER,
+        TABLE_US_PENDING_ORDERS,
     ]
 
     for table_sql in tables:

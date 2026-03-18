@@ -39,6 +39,8 @@ prism-insight/
 | `python prism-us/us_trigger_batch.py morning INFO` | US surge detection only |
 | `python demo.py 005930` | Single stock report (KR) |
 | `python demo.py AAPL --market us` | Single stock report (US) |
+| `python prism-us/us_pending_order_batch.py` | US pending order batch (10:05 KST cron) |
+| `python prism-us/us_pending_order_batch.py --dry-run` | US pending order dry run |
 | `python weekly_insight_report.py --dry-run` | Weekly insight report (print only) |
 | `python weekly_insight_report.py --broadcast-languages en,ja` | Weekly report + broadcast |
 
@@ -141,6 +143,7 @@ result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price
 | `watchlist_history` / `us_watchlist_history` | Analyzed but not entered |
 | `analysis_performance_tracker` / `us_analysis_performance_tracker` | 7/14/30-day tracking |
 | `us_holding_decisions` | US AI holding analysis (v2.2.0) |
+| `us_pending_orders` | US queued reserved orders (v2.7.1) |
 
 ## Quick Troubleshooting
 
@@ -154,6 +157,7 @@ result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price
 | Telegram message in English | v2.2.0 restored Korean templates - pull latest |
 | Broadcast translation empty | gpt-5-mini fallback added in v2.2.0 |
 | `/report` 오류 후 재사용 불가 | v2.5.0 수정 - 서버 오류 시 자동 환급됨, 재시도 가능 |
+| US 예약주문 시간외 실패 | v2.7.1 - 10시 이전 주문은 자동 큐잉 → 10:05 KST 배치 실행 |
 
 ## i18n Strategy (v2.2.0)
 
