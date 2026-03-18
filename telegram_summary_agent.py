@@ -290,7 +290,6 @@ class TelegramSummaryGenerator:
             message=prompt_message,
             request_params=RequestParams(
                 model="gpt-5.4-mini",
-                reasoning_effort="none",
                 maxTokens=6000,
                 max_iterations=2
             )
