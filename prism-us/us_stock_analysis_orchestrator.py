@@ -407,7 +407,7 @@ class USStockAnalysisOrchestrator:
             logger.info(f"[{idx}/{len(tickers)}] Starting US stock analysis: {company_name}({ticker})")
 
             reference_date = datetime.now().strftime("%Y%m%d")
-            output_file = str(US_REPORTS_DIR / f"{ticker}_{company_name}_{reference_date}_{mode}_gpt5.md")
+            output_file = str(US_REPORTS_DIR / f"{ticker}_{company_name}_{reference_date}_{mode}_gpt5.4-mini.md")
 
             try:
                 from cores.us_analysis import analyze_us_stock

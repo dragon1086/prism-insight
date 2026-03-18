@@ -66,8 +66,8 @@ class StockAnalysisOrchestrator:
         """
         Parse report filename to extract components.
 
-        Expected format: {ticker}_{company_name}_{date}_{mode}_gpt5.2
-        Example: 005930_삼성전자_20250127_morning_gpt5.2
+        Expected format: {ticker}_{company_name}_{date}_{mode}_gpt5.4-mini
+        Example: 005930_삼성전자_20250127_morning_gpt5.4-mini
 
         Args:
             filename_stem: Filename without extension
@@ -1176,7 +1176,7 @@ class StockAnalysisOrchestrator:
 
             # Set output file path
             reference_date = datetime.now().strftime("%Y%m%d")
-            output_file = str(REPORTS_DIR / f"{ticker}_{company_name}_{reference_date}_{mode}_gpt5.2.md")
+            output_file = str(REPORTS_DIR / f"{ticker}_{company_name}_{reference_date}_{mode}_gpt5.4-mini.md")
 
             try:
                 # Import function directly from main.py
