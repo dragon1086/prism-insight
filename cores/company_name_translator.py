@@ -112,12 +112,11 @@ Return ONLY the English company name, nothing else. No quotes, no explanation.
         llm = await agent.attach_llm(OpenAIAugmentedLLM)
 
         # Generate translation
-        # Using gpt-4o-mini: non-reasoning model, 350x cheaper & 14x faster than gpt-5-mini
         english_name = await llm.generate_str(
             message=f"Translate this Korean company name to English: {korean_name}",
             request_params=RequestParams(
-                model="gpt-4o-mini",
-                maxTokens=100,
+                model="gpt-5-nano",
+                maxTokens=1000,
                 temperature=0.1,
                 max_iterations=1
             )
