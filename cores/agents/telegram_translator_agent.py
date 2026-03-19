@@ -79,9 +79,15 @@ Your task is to translate {from_lang_name} telegram messages to {to_lang_name}.
 - Preserve arrows: ⬆️, ⬇️, ➖, ↔️
 - Maintain visual hierarchy with emojis
 
+### 7. Placeholders - CRITICAL
+- NEVER modify, translate, or remove placeholder tokens such as <<<__BASE64_IMAGE_0__>>>, <<<__BASE64_IMAGE_1__>>>, etc.
+- These tokens MUST appear in the translated output EXACTLY as they appear in the input, character-for-character.
+- Do not add spaces, change angle brackets, or wrap them in markdown formatting.
+
 ## Instructions
 Translate the following {from_lang_name} telegram message to {to_lang_name} following all guidelines above.
 **CRITICAL**: Make sure to translate ALL company names to {to_lang_name}. Do not leave them in {from_lang_name}.
+**CRITICAL**: Preserve all <<<__BASE64_IMAGE_N__>>> placeholders exactly as-is. Do not translate or modify them.
 Only return the translated text without any explanations or metadata.
 """
 
