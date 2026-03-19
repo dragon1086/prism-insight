@@ -414,14 +414,14 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 decision = analysis_result.get("decision")
                 logger.info(f"Buy score check: {company_name}({ticker}) - Score: {buy_score}, Min required score: {min_score}")
 
-                # Score-decision consistency enforcement:
-                # If score meets threshold and sector is diverse, override LLM decision to Enter
+                # Respect AI agent's decision (consistent with US logic)
+                # AI considers qualitative factors (RSI, support structure, volume, sector outlook, etc.)
+                # beyond just the score, so do not override its decision
                 if buy_score > 0 and buy_score >= min_score and sector_diverse and decision != "Enter":
                     logger.info(
-                        f"Score-decision override: {company_name}({ticker}) - "
-                        f"Score {buy_score} >= {min_score} but decision='{decision}', forcing Enter"
+                        f"AI decision respected: {company_name}({ticker}) - "
+                        f"Score {buy_score} >= {min_score} but decision='{decision}', keeping Skip"
                     )
-                    decision = "Enter"
 
                 # Generate message if not buying (watch/insufficient score/sector constraints)
                 if decision != "Enter" or buy_score < min_score or not sector_diverse:
