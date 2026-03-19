@@ -215,11 +215,14 @@ class StockAnalysisOrchestrator:
             Text with restored images
         """
         restored_text = translated_text
+        restored_count = 0
+        missing_images = []
 
         # First try exact match
         for placeholder, original_image in images.items():
             if placeholder in restored_text:
                 restored_text = restored_text.replace(placeholder, original_image)
+                restored_count += 1
                 logger.debug(f"Restored image (exact match): {placeholder}")
             else:
                 # Fallback: look for translated variations like [Image: ...] or ![...]
@@ -248,13 +251,37 @@ class StockAnalysisOrchestrator:
                             after = restored_text[match_obj.end():]
                             restored_text = before + original_image + after
                             logger.info(f"Restored image {img_num} using fallback pattern: {pattern}")
+                            restored_count += 1
                             replaced = True
                             break
 
                     if not replaced:
+                        missing_images.append((int(img_num), placeholder, original_image))
                         logger.warning(f"Could not restore image {img_num}, placeholder not found: {placeholder}")
 
-        logger.info(f"Restored {len(images)} base64 images to translated text")
+        # Re-insert missing images at proportional positions in translated text
+        if missing_images:
+            logger.info(f"Re-inserting {len(missing_images)} missing images by position")
+            # Sort by image number descending to insert from last to first (preserve positions)
+            missing_images.sort(key=lambda x: x[0], reverse=True)
+            total_images = len(images)
+            text_len = len(restored_text)
+            for img_num, placeholder, original_image in missing_images:
+                # Estimate position: image N out of total should be at ~(N+1)/(total+1) of text
+                ratio = (img_num + 1) / (total_images + 1)
+                insert_pos = int(text_len * ratio)
+                # Find nearest newline to avoid splitting a line
+                newline_pos = restored_text.rfind('\n', 0, insert_pos)
+                if newline_pos == -1:
+                    newline_pos = insert_pos
+                restored_text = restored_text[:newline_pos] + '\n\n' + original_image + '\n' + restored_text[newline_pos:]
+                restored_count += 1
+                logger.info(f"Re-inserted image {img_num} at position {newline_pos}")
+
+        if restored_count < len(images):
+            logger.warning(f"Restored {restored_count}/{len(images)} base64 images to translated text")
+        else:
+            logger.info(f"Restored {restored_count}/{len(images)} base64 images to translated text")
         return restored_text
 
     async def run_macro_intelligence(self, reference_date: str = None, language: str = "ko") -> dict:
