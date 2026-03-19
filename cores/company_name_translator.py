@@ -15,6 +15,17 @@ logger = logging.getLogger(__name__)
 _translation_cache: Dict[str, str] = {}
 
 
+def _romanize_korean_name(korean_name: str) -> str:
+    """
+    Basic fallback for Korean company names.
+    Extracts any ASCII parts (brand prefixes like HD, SK, LG), or returns 'Company'.
+    """
+    ascii_parts = re.findall(r'[a-zA-Z0-9]+', korean_name)
+    if ascii_parts:
+        return "_".join(ascii_parts)
+    return "Company"
+
+
 def _sanitize_for_filename(name: str, ascii_only: bool = False) -> str:
     """
     Convert name to filename-safe format.
@@ -115,7 +126,7 @@ Return ONLY the English company name, nothing else. No quotes, no explanation.
         english_name = await llm.generate_str(
             message=f"Translate this Korean company name to English: {korean_name}",
             request_params=RequestParams(
-                model="gpt-5-nano",
+                model="gpt-5.4-mini",
                 maxTokens=1000,
                 temperature=0.1,
                 max_iterations=1
@@ -127,10 +138,10 @@ Return ONLY the English company name, nothing else. No quotes, no explanation.
         english_name = english_name.strip().strip('"\'')
         sanitized_name = _sanitize_for_filename(english_name, ascii_only=True)
 
-        # Fallback to ticker-based name if translation is empty (don't use Korean in English filename)
+        # Fallback: extract ASCII parts from original name
         if not sanitized_name:
-            logger.warning(f"Translation returned empty for '{korean_name}', using 'Company' as fallback")
-            sanitized_name = "Company"
+            sanitized_name = _romanize_korean_name(korean_name)
+            logger.warning(f"Translation returned empty for '{korean_name}', fallback: {sanitized_name}")
 
         # Cache the result
         _translation_cache[korean_name] = sanitized_name
