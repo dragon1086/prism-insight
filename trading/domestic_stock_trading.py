@@ -540,7 +540,7 @@ class DomesticStockTrading:
             "CANO": self.trenv.my_acct,
             "ACNT_PRDT_CD": self.trenv.my_prod,
             "PDNO": stock_code,
-            "ORD_DVSN": "02",  # 02: After-hours closing price
+            "ORD_DVSN": "06",  # 06: Post-market after-hours (장후 시간외, 15:40~16:00)
             "ORD_QTY": str(buy_quantity),
             "ORD_UNPR": "0",  # 0 for closing price trading
             "EXCG_ID_DVSN_CD": "KRX",
