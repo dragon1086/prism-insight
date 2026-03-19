@@ -1018,8 +1018,22 @@ class USStockTrading:
             }
 
         if self.is_market_open():
-            logger.info(f"[{ticker}] Market is open - executing market buy")
-            return self.buy_market_price(ticker, buy_amount, exchange)
+            # US stocks do NOT support market price buy (시장가 매수).
+            # KIS API TTTT1002U ORD_DVSN "00" = limit price (지정가), not market price.
+            # Sending OVRS_ORD_UNPR "0" causes APBK1507 error.
+            # Always use limit price buy with the provided price.
+            if limit_price and limit_price > 0:
+                logger.info(f"[{ticker}] Market is open - executing limit buy @ ${limit_price:.2f}")
+                return self.buy_limit_price(ticker, limit_price, buy_amount, exchange)
+            else:
+                logger.warning(f"[{ticker}] Market is open but no limit_price provided - cannot execute buy")
+                return {
+                    'success': False,
+                    'order_no': None,
+                    'ticker': ticker,
+                    'quantity': 0,
+                    'message': 'US stocks require limit_price for buy orders (no market price buy supported)'
+                }
         else:
             # Market is closed - use reserved order if limit_price provided
             if limit_price and limit_price > 0:
