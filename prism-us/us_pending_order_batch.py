@@ -25,9 +25,11 @@ import argparse
 import datetime
 from pathlib import Path
 
-# Add project paths
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Add project paths (prism-us first so its trading/ takes priority over KR trading/)
+_prism_us_dir = str(Path(__file__).resolve().parent)
+_project_root = str(Path(__file__).resolve().parent.parent)
+sys.path.insert(0, _project_root)
+sys.path.insert(0, _prism_us_dir)
 
 import pytz
 
@@ -113,11 +115,8 @@ def process_pending_orders(dry_run: bool = False):
 
     logger.info(f"Found {len(pending_orders)} pending order(s) to process")
 
-    # Import trading module
-    try:
-        from trading.us_stock_trading import USStockTrading
-    except ImportError:
-        from prism_us.trading.us_stock_trading import USStockTrading
+    # Import trading module (prism-us/trading/ is first in sys.path)
+    from trading.us_stock_trading import USStockTrading
 
     # Initialize trading (uses config from environment)
     try:
