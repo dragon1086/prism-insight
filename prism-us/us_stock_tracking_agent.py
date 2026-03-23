@@ -1813,7 +1813,22 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 rank_change_msg = analysis_result.get("rank_change_msg", "")
 
                 if not sector_diverse:
-                    logger.info(f"Purchase deferred: {company_name} ({ticker}) - Sector over-concentration")
+                    sector = analysis_result.get("sector", "Unknown")
+                    reason = f"Sector '{sector}' over-concentration prevention"
+                    logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
+
+                    await self._save_watchlist_item(
+                        ticker=ticker,
+                        company_name=company_name,
+                        current_price=current_price,
+                        buy_score=scenario.get("buy_score", 0),
+                        min_score=scenario.get("min_score", 0),
+                        decision="Skip",
+                        skip_reason=reason,
+                        scenario=scenario,
+                        sector=sector,
+                        was_traded=False
+                    )
                     continue
 
                 buy_score = scenario.get("buy_score", 0)
