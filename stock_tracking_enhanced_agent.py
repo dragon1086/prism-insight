@@ -755,6 +755,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             period = "Medium-term"  # Default value
             sector = "Unknown"
             trading_scenarios = {}
+            highest_price = buy_price  # Default to buy price
+            initial_stop_loss = stop_loss
+            initial_target_price = target_price
 
             try:
                 if isinstance(scenario_str, str):
@@ -762,6 +765,21 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     period = scenario_data.get('investment_period', 'Medium-term')
                     sector = scenario_data.get('sector', 'Unknown')
                     trading_scenarios = scenario_data.get('trading_scenarios', {})
+                    initial_stop_loss = scenario_data.get('stop_loss', stop_loss)
+                    initial_target_price = scenario_data.get('target_price', target_price)
+                    highest_price = scenario_data.get('highest_price', buy_price)
+
+                    # Update highest_price if current price exceeds it
+                    if current_price > highest_price:
+                        highest_price = current_price
+                        scenario_data['highest_price'] = highest_price
+                        updated_scenario_str = json.dumps(scenario_data, ensure_ascii=False)
+                        self.cursor.execute(
+                            "UPDATE stock_holdings SET scenario = ? WHERE ticker = ?",
+                            (updated_scenario_str, ticker)
+                        )
+                        self.conn.commit()
+                        logger.info(f"{ticker} highest_price updated in scenario: {highest_price:,.0f} KRW")
             except:
                 pass
 
@@ -819,8 +837,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 - 종목명: {company_name}({ticker})
                 - 매수가: {buy_price:,.0f}원
                 - 현재가: {current_price:,.0f}원
-                - 목표가: {target_price:,.0f}원
-                - 손절가: {stop_loss:,.0f}원
+                - 목표가: {target_price:,.0f}원 (최초 시나리오: {initial_target_price:,.0f}원)
+                - 손절가: {stop_loss:,.0f}원 (최초 시나리오: {initial_stop_loss:,.0f}원)
+                - 진입 후 최고가: {highest_price:,.0f}원
                 - 수익률: {profit_rate:.2f}%
                 - 보유기간: {days_passed}일
                 - 투자기간: {period}
@@ -835,6 +854,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 ### 분석 요청:
                 위 정보를 바탕으로 kospi_kosdaq과 sqlite 도구를 활용하여 최신 데이터를 확인하고,
                 매도할지 계속 보유할지 결정해주세요.
+                **주의**: 손절가/목표가 조정이 필요하면 반드시 portfolio_adjustment JSON으로 응답하세요. DB를 직접 UPDATE하지 마세요.
                 """
             else:  # English
                 prompt_message = f"""
@@ -844,8 +864,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 - Stock: {company_name}({ticker})
                 - Buy Price: {buy_price:,.0f} KRW
                 - Current Price: {current_price:,.0f} KRW
-                - Target Price: {target_price:,.0f} KRW
-                - Stop Loss: {stop_loss:,.0f} KRW
+                - Target Price: {target_price:,.0f} KRW (initial scenario: {initial_target_price:,.0f} KRW)
+                - Stop Loss: {stop_loss:,.0f} KRW (initial scenario: {initial_stop_loss:,.0f} KRW)
+                - Highest Price Since Entry: {highest_price:,.0f} KRW
                 - Return: {profit_rate:.2f}%
                 - Holding Period: {days_passed} days
                 - Investment Period: {period}
@@ -860,6 +881,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 ### Analysis Request:
                 Based on the above information, use the kospi_kosdaq and sqlite tools to check the latest data,
                 and decide whether to sell or continue holding.
+                **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
                 """
 
             response = await llm.generate_str(
@@ -909,7 +931,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                         # Process portfolio_adjustment
                         if portfolio_adjustment.get("needed", False):
-                            await self._process_portfolio_adjustment(ticker, company_name, portfolio_adjustment, analysis_summary)
+                            await self._process_portfolio_adjustment(ticker, company_name, portfolio_adjustment, analysis_summary, current_price)
                 except Exception as db_err:
                     # Main flow continues even if DB operation fails
                     logger.error(f"{ticker} Error processing holding_decisions DB (main flow continues): {str(db_err)}")
@@ -1027,7 +1049,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.error(f"Error in fallback sell analysis: {str(e)}")
             return False, "Analysis error"
 
-    async def _process_portfolio_adjustment(self, ticker: str, company_name: str, portfolio_adjustment: Dict[str, Any], analysis_summary: Dict[str, Any]):
+    async def _process_portfolio_adjustment(self, ticker: str, company_name: str, portfolio_adjustment: Dict[str, Any], analysis_summary: Dict[str, Any], current_price: float = 0):
         """Process DB updates and Telegram notifications based on portfolio_adjustment"""
         try:
             # Return if adjustment not needed
@@ -1086,23 +1108,31 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 # Safe number conversion (including comma removal)
                 stop_loss_num = self._safe_number_conversion(new_stop_loss)
                 if stop_loss_num > 0:
-                    self.cursor.execute(
-                        "UPDATE stock_holdings SET stop_loss = ? WHERE ticker = ?",
-                        (stop_loss_num, ticker)
-                    )
-                    self.conn.commit()
-                    db_updated = True
-                    if stop_loss_num == old_stop_loss:
-                        direction = "유지"
-                    elif stop_loss_num > old_stop_loss:
-                        direction = "상향"
+                    # Validation: reject stop_loss above current price
+                    if current_price > 0 and stop_loss_num > current_price:
+                        logger.warning(
+                            f"{ticker} Portfolio adjustment REJECTED: new stop_loss {stop_loss_num:,.0f} > "
+                            f"current_price {current_price:,.0f}. "
+                            f"This indicates trailing stop breach — should trigger sell, not adjustment."
+                        )
                     else:
-                        direction = "하향"
-                    update_message += f"손절가: {stop_loss_num:,.0f}원으로 {direction}조정\n"
-                    logger.info(
-                        f"{ticker} Stop-loss AI {direction} adjustment: "
-                        f"{stop_loss_num:,.0f} KRW (prev: {old_stop_loss:,.0f}, Urgency: {urgency})"
-                    )
+                        self.cursor.execute(
+                            "UPDATE stock_holdings SET stop_loss = ? WHERE ticker = ?",
+                            (stop_loss_num, ticker)
+                        )
+                        self.conn.commit()
+                        db_updated = True
+                        if stop_loss_num == old_stop_loss:
+                            direction = "유지"
+                        elif stop_loss_num > old_stop_loss:
+                            direction = "상향"
+                        else:
+                            direction = "하향"
+                        update_message += f"손절가: {stop_loss_num:,.0f}원으로 {direction}조정\n"
+                        logger.info(
+                            f"{ticker} Stop-loss AI {direction} adjustment: "
+                            f"{stop_loss_num:,.0f} KRW (prev: {old_stop_loss:,.0f}, Urgency: {urgency})"
+                        )
 
             # Generate Telegram message if DB was updated
             if db_updated:
