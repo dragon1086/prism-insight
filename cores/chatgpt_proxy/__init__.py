@@ -26,9 +26,9 @@ def inject_env(port: int | None = None) -> None:
     OpenAISettings picks up the proxy URL.
     """
     proxy_port = port or DEFAULT_PROXY_PORT
-    os.environ["OPENAI_BASE_URL"] = f"http://localhost:{proxy_port}"
+    os.environ["OPENAI_BASE_URL"] = f"http://localhost:{proxy_port}/v1"
     os.environ["OPENAI_API_KEY"] = "chatgpt-oauth-placeholder"
-    logger.info("Environment variables set: OPENAI_BASE_URL=http://localhost:%d", proxy_port)
+    logger.info("Environment variables set: OPENAI_BASE_URL=http://localhost:%d/v1", proxy_port)
 
 
 def clear_env() -> None:

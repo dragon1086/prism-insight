@@ -262,3 +262,7 @@ async def status() -> None:
     print(f"Refresh token: {'present' if has_refresh else 'missing'}")
     print(f"Account ID: {auth.get('account_id', 'unknown')}")
     print(f"Auth file: {AUTH_FILE}")
+
+
+if __name__ == "__main__":
+    asyncio.run(login())

@@ -65,7 +65,8 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
     try:
         translated_request = api_translator.translate_request(body)
     except Exception as e:
-        logger.error("Request translation failed: %s", e)
+        msg_types = [(m.get("role"), type(m.get("content")).__name__, type(m.get("tool_calls")).__name__) for m in (body.get("messages") or [])]
+        logger.error("Request translation failed: %s | messages: %s", e, msg_types)
         return web.json_response(
             {"error": {"message": f"Request translation error: {e}", "type": "server_error"}},
             status=500,
@@ -92,7 +93,9 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
     if account_id:
         headers["chatgpt-account-id"] = account_id
 
-    logger.debug("Forwarding request to ChatGPT (model=%s)", original_model)
+    logger.debug("Proxy request: model=%s -> %s, tools=%d, messages=%d",
+                 original_model, translated_request.get("model"),
+                 len(body.get("tools") or []), len(body.get("messages") or []))
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -116,12 +119,14 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                     return web.json_response(translated_error, status=status)
 
                 # Parse response (may be SSE or JSON)
+                # Always request stream=true, so check both Content-Type and body format
                 content_type = resp.headers.get("Content-Type", "")
-                if "text/event-stream" in content_type:
+                is_sse = "text/event-stream" in content_type or raw_body.lstrip().startswith("event:")
+                if is_sse:
                     try:
                         api_response = api_translator.collect_sse_to_response(raw_body)
                     except ValueError as e:
-                        logger.error("SSE parsing failed: %s", e)
+                        logger.error("SSE parsing failed: %s (Content-Type: %s, body[:200]: %s)", e, content_type, raw_body[:200])
                         return web.json_response(
                             {"error": {"message": f"SSE parsing error: {e}", "type": "server_error"}},
                             status=502,
@@ -130,7 +135,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                     try:
                         api_response = json.loads(raw_body)
                     except json.JSONDecodeError:
-                        logger.error("Invalid JSON response from ChatGPT")
+                        logger.error("Invalid JSON response from ChatGPT (Content-Type: %s, body[:200]: %s)", content_type, raw_body[:200])
                         return web.json_response(
                             {"error": {"message": "Invalid response from upstream", "type": "server_error"}},
                             status=502,
@@ -153,5 +158,4 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
             status=500,
         )
 
-    logger.debug("Request completed successfully (model=%s)", original_model)
     return web.json_response(result)

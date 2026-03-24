@@ -8,6 +8,24 @@ import time
 from typing import Any
 
 
+# Models not supported on Codex endpoint -> best available replacement
+_MODEL_MAP: dict[str, str] = {
+    "gpt-4o": "gpt-5.4-mini",
+    "gpt-4o-mini": "gpt-5.4-mini",
+    "gpt-4o-2024-08-06": "gpt-5.4-mini",
+    "gpt-4-turbo": "gpt-5.4-mini",
+    "gpt-4": "gpt-5.4-mini",
+    "gpt-3.5-turbo": "gpt-5.4-mini",
+    "o4-mini": "gpt-5.4-mini",
+    "o3-mini": "gpt-5.4-mini",
+}
+
+
+def _map_model(model: str) -> str:
+    """Map unsupported model names to Codex-compatible equivalents."""
+    return _MODEL_MAP.get(model, model)
+
+
 def translate_request(body: dict) -> dict:
     """Translate Chat Completions request to Responses API format.
 
@@ -18,12 +36,16 @@ def translate_request(body: dict) -> dict:
     - response_format -> text.format
     """
     translated: dict[str, Any] = {
-        "model": body.get("model", "gpt-4o"),
+        "model": _map_model(body.get("model", "gpt-4o")),
     }
 
     # Messages -> Input (with role mapping)
-    messages = body.get("messages", [])
-    translated["input"] = _translate_messages_to_input(messages)
+    # Extract system messages as instructions (required by Codex endpoint)
+    messages = body.get("messages") or []
+    system_parts = [m.get("content") or "" for m in messages if m.get("role") == "system"]
+    non_system = [m for m in messages if m.get("role") != "system"]
+    translated["instructions"] = "\n\n".join(system_parts) if system_parts else "You are a helpful assistant."
+    translated["input"] = _translate_messages_to_input(non_system)
 
     # Parameter passthrough
     for key in ("temperature", "top_p", "stop", "seed"):
@@ -35,17 +57,24 @@ def translate_request(body: dict) -> dict:
         translated["max_output_tokens"] = body["max_tokens"]
 
     # Tools (flatten nested function structure)
-    if "tools" in body:
+    if body.get("tools"):
         translated["tools"] = _translate_tools_request(body["tools"])
 
     if "tool_choice" in body:
         translated["tool_choice"] = body["tool_choice"]
 
     # response_format -> text.format
+    # Chat Completions: {"type":"json_schema","json_schema":{"name":"...","schema":{...}}}
+    # Responses API:    {"type":"json_schema","name":"...","schema":{...}}
     if "response_format" in body:
         rf = body["response_format"]
         if isinstance(rf, dict):
-            translated["text"] = {"format": rf}
+            fmt = dict(rf)
+            # Flatten nested json_schema to top level
+            if fmt.get("type") == "json_schema" and "json_schema" in fmt:
+                inner = fmt.pop("json_schema")
+                fmt.update(inner)
+            translated["text"] = {"format": fmt}
 
     # ChatGPT backend requirements (discovered from open-source analysis)
     translated["store"] = False  # MANDATORY: store:true returns 400
@@ -76,7 +105,7 @@ def _translate_messages_to_input(messages: list[dict]) -> list[dict]:
             if content:
                 result.append({"role": "assistant", "content": content})
             # Add each tool call as a separate function_call item
-            for tc in msg["tool_calls"]:
+            for tc in (msg.get("tool_calls") or []):
                 func = tc.get("function", {})
                 result.append({
                     "type": "function_call",
@@ -85,10 +114,6 @@ def _translate_messages_to_input(messages: list[dict]) -> list[dict]:
                     "arguments": func.get("arguments", "{}"),
                 })
             continue
-
-        # System -> developer (Responses API convention)
-        if role == "system":
-            role = "developer"
 
         translated_msg: dict[str, Any] = {"role": role}
         if content is not None:
@@ -276,10 +301,11 @@ def collect_sse_to_response(sse_text: str) -> dict:
             pass
 
     if completed_data:
-        return completed_data
+        # Unwrap nested structure: {"type":"response.completed","response":{...}} -> {...}
+        return completed_data.get("response", completed_data)
 
     if failed_data:
-        return failed_data
+        return failed_data.get("response", failed_data)
 
     # Fallback: reconstruct from deltas if no completed event
     if text_chunks:
