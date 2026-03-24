@@ -809,15 +809,18 @@ def create_sell_decision_agent(language: str = "ko"):
           * Break major support (20-day line)
           
         **⭐ Trailing Stop Management (Execute Every Run)**
-        1. Check highest price since entry
-        2. If current price makes new high → Update stop loss upward via portfolio_adjustment
-        
+        1. The system provides highest_price (peak since entry) in the prompt — use it directly, no need to query separately
+        2. If current price > highest_price → system auto-updates it
+        3. Calculate trailing stop from highest_price and return via portfolio_adjustment JSON
+
         Example: Entry 10,000, Initial stop 9,300
         → Rise to 12,000 → new_stop_loss: 11,040 (12,000 × 0.92)
         → Rise to 15,000 → new_stop_loss: 13,800 (15,000 × 0.92)
         → Fall to 13,500 (breaks trailing stop) → should_sell: true
-        
+
         Trailing Stop %: Bull market peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
+
+        **⚠️ Important**: new_stop_loss must NEVER exceed current price. If trailing stop > current price, set should_sell: true instead.
 
         **B) Bear/Sideways Mode → Secure Profit (Defensive)**
         - Consider immediate sell when target reached
@@ -886,7 +889,7 @@ def create_sell_decision_agent(language: str = "ko"):
         0. **IMPORTANT**: Before querying any table, ALWAYS run `describe_table` first to check the actual column names. NEVER guess column names — use only columns that exist in the schema.
         1. Current portfolio overall status
         2. Current stock trading info
-        3. **DB Update**: If target/stop price adjustment needed in portfolio_adjustment, execute UPDATE query
+        3. **⚠️ DO NOT directly UPDATE**: Never directly UPDATE target_price or stop_loss in stock_holdings table. If adjustment is needed, return it ONLY via portfolio_adjustment in your JSON response.
 
         **Prudent Adjustment Principle:**
         - Portfolio adjustment harms investment principle consistency, do only when truly necessary
@@ -978,15 +981,18 @@ def create_sell_decision_agent(language: str = "ko"):
           * 주요 지지선(20일선) 이탈
 
         **⭐ Trailing Stop 관리 (매 실행 시)**
-        1. 진입 후 최고가 확인
-        2. 현재가가 최고가 경신 시 → portfolio_adjustment로 손절가 상향
-        
+        1. 시스템이 진입 후 최고가(highest_price)를 프롬프트에 제공합니다 — 직접 조회 불필요
+        2. 현재가 > highest_price이면 시스템이 자동 갱신합니다
+        3. highest_price 기준 trailing stop을 계산하여 portfolio_adjustment JSON으로 응답하세요
+
         예시: 진입 10,000원, 초기 손절 9,300원
         → 상승 12,000원 → new_stop_loss: 11,040원 (12,000 × 0.92)
         → 상승 15,000원 → new_stop_loss: 13,800원 (15,000 × 0.92)
         → 하락 13,500원 (이탈) → should_sell: true
-        
+
         Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
+
+        **⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. trailing stop > 현재가이면 should_sell: true로 매도 판단하세요.
 
         **B) 약세장/횡보장 모드 → 수익 확보 (방어적)**
         - 목표가 도달 시 즉시 매도 고려
@@ -1056,7 +1062,7 @@ def create_sell_decision_agent(language: str = "ko"):
         0. **중요**: 테이블 조회 전 반드시 `describe_table`로 실제 컬럼명을 확인하세요. 컬럼명을 추측하지 말고, 스키마에 존재하는 컬럼만 사용하세요.
         1. 현재 포트폴리오 전체 현황 (stock_holdings 테이블 참고)
         2. 현재 종목의 매매 정보 (참고사항 : stock_holdings테이블의 scenario 컬럼에 있는 json데이터 내에서 target_price와 stop_loss는 최초 진입시 설정한 목표가와 손절가임)
-        3. **DB 업데이트**: portfolio_adjustment에서 목표가/손절가 조정이 필요하면 UPDATE 쿼리 실행
+        3. **⚠️ DB 직접 수정 금지**: stock_holdings 테이블의 target_price, stop_loss를 직접 UPDATE하지 마세요. 조정이 필요하면 반드시 응답 JSON의 portfolio_adjustment로만 전달하세요.
 
         **신중한 조정 원칙:**
         - 포트폴리오 조정은 투자 원칙과 일관성을 해치므로 정말 필요할 때만 수행

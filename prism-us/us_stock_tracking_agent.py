@@ -1112,12 +1112,37 @@ class USStockTrackingAgent:
             period = "medium"
             sector = "Unknown"
             trading_scenarios = {}
+            highest_price = max(buy_price, current_price)  # Default to max of buy/current
+            highest_price_initialized = False
+            initial_stop_loss = stop_loss
+            initial_target_price = target_price
             try:
                 if isinstance(scenario_str, str):
                     scenario_data = json.loads(scenario_str)
                     period = scenario_data.get('investment_period', 'medium')
                     sector = scenario_data.get('sector', 'Unknown')
                     trading_scenarios = scenario_data.get('trading_scenarios', {})
+                    initial_stop_loss = scenario_data.get('stop_loss', stop_loss)
+                    initial_target_price = scenario_data.get('target_price', target_price)
+
+                    if 'highest_price' in scenario_data:
+                        highest_price = scenario_data['highest_price']
+                    else:
+                        highest_price = max(buy_price, current_price)
+                        highest_price_initialized = True
+                        logger.info(f"{ticker} highest_price not in scenario, initialized to ${highest_price:,.2f}")
+
+                    # Update highest_price if current price exceeds it
+                    if current_price > highest_price:
+                        highest_price = current_price
+                        scenario_data['highest_price'] = highest_price
+                        updated_scenario_str = json.dumps(scenario_data, ensure_ascii=False)
+                        self.cursor.execute(
+                            "UPDATE us_stock_holdings SET scenario = ? WHERE ticker = ?",
+                            (updated_scenario_str, ticker)
+                        )
+                        self.conn.commit()
+                        logger.info(f"{ticker} highest_price updated in scenario: ${highest_price:,.2f}")
             except Exception:
                 pass
 
@@ -1159,8 +1184,9 @@ Please make a sell/hold decision for the following US stock holding.
 - Stock: {company_name} ({ticker})
 - Buy Price: ${buy_price:,.2f}
 - Current Price: ${current_price:,.2f}
-- Target Price: ${target_price:,.2f}
-- Stop Loss: ${stop_loss:,.2f}
+- Target Price: ${target_price:,.2f} (initial scenario: ${initial_target_price:,.2f})
+- Stop Loss: ${stop_loss:,.2f} (initial scenario: ${initial_stop_loss:,.2f})
+- Highest Price Since Entry: ${highest_price:,.2f}{' (⚠️ First tracking - verify actual peak since entry via get_historical_stock_prices)' if highest_price_initialized else ''}
 - Return: {profit_rate:.2f}%
 - Holding Period: {days_passed} days
 - Investment Period: {period}
@@ -1174,6 +1200,7 @@ Please make a sell/hold decision for the following US stock holding.
 
 ### Task:
 Use yahoo_finance and sqlite tools to check latest data, then decide whether to sell or continue holding.
+**Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
 """
 
             response = await llm.generate_str(
@@ -1213,8 +1240,16 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             should_sell = decision_json.get("should_sell", False)
             sell_reason = decision_json.get("sell_reason", "AI analysis result")
             confidence = decision_json.get("confidence", 5)
+            analysis_summary = decision_json.get("analysis_summary", {})
+            portfolio_adjustment = decision_json.get("portfolio_adjustment", {})
             logger.info(f"{ticker}({company_name}) AI sell decision: {'Sell' if should_sell else 'Hold'} (confidence: {confidence}/10)")
             logger.info(f"Sell reason: {sell_reason}")
+
+            # Process portfolio_adjustment when holding (not selling)
+            if not should_sell and portfolio_adjustment.get("needed", False):
+                await self._process_portfolio_adjustment(
+                    ticker, company_name, portfolio_adjustment, analysis_summary, current_price
+                )
 
             return should_sell, sell_reason
 
@@ -1301,6 +1336,114 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         except Exception as e:
             logger.error(f"Error analyzing sell decision: {str(e)}")
             return False, "Analysis error"
+
+    async def _process_portfolio_adjustment(
+        self,
+        ticker: str,
+        company_name: str,
+        portfolio_adjustment: Dict[str, Any],
+        analysis_summary: Dict[str, Any],
+        current_price: float = 0
+    ):
+        """Process DB updates and Telegram notifications based on portfolio_adjustment"""
+        try:
+            if not portfolio_adjustment.get("needed", False):
+                return
+
+            urgency = portfolio_adjustment.get("urgency", "low").lower()
+            if urgency == "low":
+                logger.info(f"{ticker} Portfolio adjustment suggestion (urgency=low): {portfolio_adjustment.get('reason', '')}")
+                return
+
+            # Verify holding exists in DB
+            self.cursor.execute(
+                "SELECT target_price, stop_loss FROM us_stock_holdings WHERE ticker = ?",
+                (ticker,)
+            )
+            row = self.cursor.fetchone()
+            if row is None:
+                logger.warning(f"{ticker} us_stock_holdings SELECT returned None - skipping adjustment")
+                return
+            old_target_price = row[0] or 0
+            old_stop_loss = row[1] or 0
+
+            db_updated = False
+            update_message = ""
+            adjustment_reason = portfolio_adjustment.get("reason", "AI analysis result")
+
+            # Adjust target price
+            new_target_price = portfolio_adjustment.get("new_target_price")
+            if new_target_price is not None:
+                try:
+                    target_price_num = float(str(new_target_price).replace(',', '').replace('$', ''))
+                except (ValueError, TypeError):
+                    target_price_num = 0
+                if target_price_num > 0:
+                    self.cursor.execute(
+                        "UPDATE us_stock_holdings SET target_price = ? WHERE ticker = ?",
+                        (target_price_num, ticker)
+                    )
+                    self.conn.commit()
+                    db_updated = True
+                    if target_price_num > old_target_price:
+                        direction = "upward"
+                    elif target_price_num < old_target_price:
+                        direction = "downward"
+                    else:
+                        direction = "maintained"
+                    update_message += f"Target: ${target_price_num:,.2f} ({direction})\n"
+                    logger.info(f"{ticker} Target price AI {direction} adjustment: ${target_price_num:,.2f} (prev: ${old_target_price:,.2f})")
+
+            # Adjust stop-loss
+            new_stop_loss = portfolio_adjustment.get("new_stop_loss")
+            if new_stop_loss is not None:
+                try:
+                    stop_loss_num = float(str(new_stop_loss).replace(',', '').replace('$', ''))
+                except (ValueError, TypeError):
+                    stop_loss_num = 0
+                if stop_loss_num > 0:
+                    # Validation: reject stop_loss above current price
+                    if current_price > 0 and stop_loss_num > current_price:
+                        logger.warning(
+                            f"{ticker} Portfolio adjustment REJECTED: new stop_loss ${stop_loss_num:,.2f} > "
+                            f"current_price ${current_price:,.2f}. "
+                            f"This indicates trailing stop breach — should trigger sell, not adjustment."
+                        )
+                    else:
+                        self.cursor.execute(
+                            "UPDATE us_stock_holdings SET stop_loss = ? WHERE ticker = ?",
+                            (stop_loss_num, ticker)
+                        )
+                        self.conn.commit()
+                        db_updated = True
+                        if stop_loss_num > old_stop_loss:
+                            direction = "upward"
+                        elif stop_loss_num < old_stop_loss:
+                            direction = "downward"
+                        else:
+                            direction = "maintained"
+                        update_message += f"Stop Loss: ${stop_loss_num:,.2f} ({direction})\n"
+                        logger.info(f"{ticker} Stop-loss AI {direction} adjustment: ${stop_loss_num:,.2f} (prev: ${old_stop_loss:,.2f})")
+
+            if db_updated:
+                urgency_emoji = {"high": "🚨", "medium": "⚠️", "low": "💡"}.get(urgency, "🔄")
+                message = f"{urgency_emoji} Portfolio Adjustment: {company_name}({ticker})\n"
+                message += update_message
+                message += f"Reason: {adjustment_reason}\n"
+                message += f"Urgency: {urgency.upper()}\n"
+                if analysis_summary:
+                    message += f"Technical Trend: {analysis_summary.get('technical_trend', 'N/A')}\n"
+                    message += f"Market Impact: {analysis_summary.get('market_condition_impact', 'N/A')}"
+                self._msg_types.append("portfolio")
+                self.message_queue.append(message)
+                logger.info(f"{ticker} AI-based portfolio adjustment complete: {update_message.strip()}")
+            else:
+                logger.warning(f"{ticker} Portfolio adjustment requested but no specific values: {portfolio_adjustment}")
+
+        except Exception as e:
+            logger.error(f"{ticker} Error processing portfolio adjustment: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     async def _save_holding_decision(
         self,

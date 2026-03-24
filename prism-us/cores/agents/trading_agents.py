@@ -814,8 +814,9 @@ def create_us_sell_decision_agent(language: str = "ko"):
   * 주요 지지선(50일선) 이탈
 
 **⭐ Trailing Stop 관리 (매 실행 시)**
-1. 진입 후 최고가 확인
-2. 현재가가 최고가 경신 시 → portfolio_adjustment로 손절가 상향
+1. 시스템이 진입 후 최고가(highest_price)를 프롬프트에 제공합니다 — 직접 조회 불필요
+2. 현재가 > highest_price이면 시스템이 자동 갱신합니다
+3. highest_price 기준 trailing stop을 계산하여 portfolio_adjustment JSON으로 응답하세요
 
 예시: 진입 $100, 초기 손절 $93
 → 상승 $120 → new_stop_loss: $110.40 ($120 × 0.92)
@@ -823,6 +824,8 @@ def create_us_sell_decision_agent(language: str = "ko"):
 → 하락 $135 (이탈) → should_sell: true
 
 Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
+
+**⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. trailing stop > 현재가이면 should_sell: true로 매도 판단하세요.
 
 **B) 약세장/횡보장 모드 → 수익 확보 (방어적)**
 - 목표가 도달 시 즉시 매도 고려
@@ -892,7 +895,7 @@ Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
 0. **중요**: 테이블 조회 전 반드시 `describe_table`로 실제 컬럼명을 확인하세요. 컬럼명을 추측하지 말고, 스키마에 존재하는 컬럼만 사용하세요.
 1. 현재 포트폴리오 전체 현황 (us_stock_holdings 테이블)
 2. 현재 종목의 매매 정보
-3. **DB 업데이트**: portfolio_adjustment에서 목표가/손절가 조정이 필요하면 UPDATE 쿼리 실행
+3. **⚠️ DB 직접 수정 금지**: us_stock_holdings 테이블의 target_price, stop_loss를 직접 UPDATE하지 마세요. 조정이 필요하면 반드시 응답 JSON의 portfolio_adjustment로만 전달하세요.
 
 **신중한 조정 원칙:**
 - 포트폴리오 조정은 투자 원칙과 일관성을 해치므로 정말 필요할 때만 수행
@@ -981,8 +984,9 @@ You need to comprehensively analyze the data of currently held stocks to decide 
   * Break major support (50-day line)
 
 **⭐ Trailing Stop Management (Execute Every Run)**
-1. Check highest price since entry
-2. If current price makes new high → Update stop loss upward via portfolio_adjustment
+1. The system provides highest_price (peak since entry) in the prompt — use it directly, no need to query separately
+2. If current price > highest_price → system auto-updates it
+3. Calculate trailing stop from highest_price and return via portfolio_adjustment JSON
 
 Example: Entry $100, Initial stop $93
 → Rise to $120 → new_stop_loss: $110.40 ($120 × 0.92)
@@ -990,6 +994,8 @@ Example: Entry $100, Initial stop $93
 → Fall to $135 (breaks trailing stop) → should_sell: true
 
 Trailing Stop %: Bull market peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
+
+**⚠️ Important**: new_stop_loss must NEVER exceed current price. If trailing stop > current price, set should_sell: true instead.
 
 **B) Bear/Sideways Mode → Secure Profit (Defensive)**
 - Consider immediate sell when target reached
@@ -1059,7 +1065,7 @@ Note: US market hours in Korea Standard Time (KST) are approximately 23:30~06:00
 0. **IMPORTANT**: Before querying any table, ALWAYS run `describe_table` first to check the actual column names. NEVER guess column names — use only columns that exist in the schema.
 1. Current portfolio overall status (us_stock_holdings table)
 2. Current stock trading info
-3. **DB Update**: If target/stop price adjustment needed in portfolio_adjustment, execute UPDATE query
+3. **⚠️ DO NOT directly UPDATE**: Never directly UPDATE target_price or stop_loss in us_stock_holdings table. If adjustment is needed, return it ONLY via portfolio_adjustment in your JSON response.
 
 **Prudent Adjustment Principle:**
 - Portfolio adjustment harms investment principle consistency, do only when truly necessary
