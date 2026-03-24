@@ -1268,6 +1268,8 @@ async def main():
     parser.add_argument("--no-telegram", action="store_true",
                         help="Disable telegram message transmission. "
                              "Use when testing without telegram configuration or running locally.")
+    parser.add_argument("--no-proxy", action="store_true",
+                        help="Disable ChatGPT OAuth proxy (use standard OpenAI API key)")
 
     args = parser.parse_args()
 
@@ -1290,6 +1292,20 @@ async def main():
     # Log telegram configuration status
     telegram_config.log_status()
 
+    # ChatGPT OAuth proxy setup
+    proxy_started = False
+    if not args.no_proxy and os.getenv("PRISM_OPENAI_AUTH_MODE") == "chatgpt_oauth":
+        try:
+            from cores.chatgpt_proxy import inject_env, start_proxy, stop_proxy
+            inject_env()
+            proxy_started = await start_proxy()
+            if not proxy_started:
+                logger.warning("ChatGPT OAuth proxy failed to start, falling back to standard API")
+                from cores.chatgpt_proxy import clear_env
+                clear_env()
+        except Exception as e:
+            logger.warning("ChatGPT OAuth proxy setup error: %s, falling back to standard API", e)
+
     orchestrator = StockAnalysisOrchestrator(telegram_config=telegram_config)
 
     if args.mode == "morning" or args.mode == "both":
@@ -1297,6 +1313,14 @@ async def main():
 
     if args.mode == "afternoon" or args.mode == "both":
         await orchestrator.run_full_pipeline("afternoon", language=args.language)
+
+    # Stop proxy if started
+    if proxy_started:
+        try:
+            from cores.chatgpt_proxy import stop_proxy
+            await stop_proxy()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     # Check market holiday

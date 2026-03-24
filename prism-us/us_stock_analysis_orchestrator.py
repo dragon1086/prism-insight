@@ -1141,6 +1141,8 @@ async def main():
                         help="Additional languages for parallel telegram channel broadcasting (comma-separated, e.g., 'en,ja,zh')")
     parser.add_argument("--no-telegram", action="store_true",
                         help="Disable telegram message transmission")
+    parser.add_argument("--no-proxy", action="store_true",
+                        help="Disable ChatGPT OAuth proxy (use standard OpenAI API key)")
     parser.add_argument("--force", action="store_true",
                         help="Force execution even on market holidays (for testing)")
     parser.add_argument("--date", type=str, default=None,
@@ -1164,6 +1166,21 @@ async def main():
 
     telegram_config.log_status()
 
+    # ChatGPT OAuth proxy setup
+    proxy_started = False
+    if not args.no_proxy and os.getenv("PRISM_OPENAI_AUTH_MODE") == "chatgpt_oauth":
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from cores.chatgpt_proxy import inject_env, start_proxy
+            inject_env()
+            proxy_started = await start_proxy()
+            if not proxy_started:
+                logger.warning("ChatGPT OAuth proxy failed to start, falling back to standard API")
+                from cores.chatgpt_proxy import clear_env
+                clear_env()
+        except Exception as e:
+            logger.warning("ChatGPT OAuth proxy setup error: %s, falling back to standard API", e)
+
     orchestrator = USStockAnalysisOrchestrator(telegram_config=telegram_config)
 
     if args.mode == "morning" or args.mode == "both":
@@ -1174,6 +1191,15 @@ async def main():
 
     if args.mode == "afternoon" or args.mode == "both":
         await orchestrator.run_full_pipeline("afternoon", language=args.language, override_date=args.date)
+
+    # Stop proxy if started
+    if proxy_started:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from cores.chatgpt_proxy import stop_proxy
+            await stop_proxy()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
