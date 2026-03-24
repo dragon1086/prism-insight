@@ -2188,6 +2188,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                         except Exception as e:
                             logger.error(f"Error translating/sending US message to {lang}: {str(e)}")
+                            from telegram_config import is_openai_quota_error, send_openai_quota_alert
+                            if is_openai_quota_error(e):
+                                await send_openai_quota_alert(self.telegram_config, market="US")
+                                return
 
                     # Gather Firebase notifications for this language
                     if firebase_tasks:

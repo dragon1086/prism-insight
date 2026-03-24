@@ -632,6 +632,10 @@ class USStockAnalysisOrchestrator:
                         await asyncio.sleep(1)
                     except Exception as e:
                         logger.error(f"Error translating/sending US message to {lang}: {str(e)}")
+                        from telegram_config import is_openai_quota_error, send_openai_quota_alert
+                        if is_openai_quota_error(e):
+                            await send_openai_quota_alert(self.telegram_config, market="US")
+                            return
 
             lang_tasks = []
             for lang in self.telegram_config.broadcast_languages:
@@ -705,6 +709,10 @@ class USStockAnalysisOrchestrator:
 
                     except Exception as e:
                         logger.error(f"Error processing US report {report_path} for {lang}: {str(e)}")
+                        from telegram_config import is_openai_quota_error, send_openai_quota_alert
+                        if is_openai_quota_error(e):
+                            await send_openai_quota_alert(self.telegram_config, market="US")
+                            return
 
             # Process languages sequentially to limit memory usage
             # (each PDF generation spawns a Playwright/Chromium instance)
@@ -819,6 +827,10 @@ class USStockAnalysisOrchestrator:
                         logger.error(f"Failed to send US trigger alert to {lang} channel")
                 except Exception as e:
                     logger.error(f"Error sending translated US trigger alert to {lang}: {str(e)}")
+                    from telegram_config import is_openai_quota_error, send_openai_quota_alert
+                    if is_openai_quota_error(e):
+                        await send_openai_quota_alert(self.telegram_config, market="US")
+                        return
 
             lang_tasks = []
             for lang in self.telegram_config.broadcast_languages:
@@ -1101,6 +1113,10 @@ class USStockAnalysisOrchestrator:
             logger.error(f"Error during US pipeline execution: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
+            # Send Telegram alert for OpenAI quota errors
+            from telegram_config import is_openai_quota_error, send_openai_quota_alert
+            if is_openai_quota_error(e):
+                await send_openai_quota_alert(self.telegram_config, market="US")
 
         finally:
             # Always wait for background broadcast tasks, even on error/early return
