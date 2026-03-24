@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.6.0 | **Updated**: 2026-03-12
+> **Version**: 2.7.0 | **Updated**: 2026-03-24
 
 ## Quick Overview
 
@@ -17,6 +17,7 @@ Scale: ~75,000+ LOC, 13+ AI agents, KR/US dual market support
 prism-insight/
 ├── cores/                    # AI Analysis Engine
 │   ├── agents/              # 13 specialized AI agents
+│   ├── chatgpt_proxy/       # ChatGPT OAuth Proxy (Codex endpoint)
 │   ├── analysis.py          # Core orchestration
 │   └── report_generation.py # Report templates
 ├── trading/                  # KIS API Trading (KR)
@@ -34,6 +35,7 @@ prism-insight/
 |---------|---------|
 | `python stock_analysis_orchestrator.py --mode morning` | KR morning analysis |
 | `python stock_analysis_orchestrator.py --mode morning --no-telegram` | Local test (no Telegram) |
+| `PRISM_OPENAI_AUTH_MODE=chatgpt_oauth python stock_analysis_orchestrator.py --mode morning` | ChatGPT OAuth proxy mode |
 | `python prism-us/us_stock_analysis_orchestrator.py --mode morning` | US morning analysis |
 | `python trigger_batch.py morning INFO` | KR surge detection only |
 | `python prism-us/us_trigger_batch.py morning INFO` | US surge detection only |
@@ -48,7 +50,7 @@ prism-insight/
 
 | File | Purpose |
 |------|---------|
-| `.env` | Telegram tokens, channel IDs, Redis/GCP settings |
+| `.env` | Telegram tokens, channel IDs, Redis/GCP settings, `PRISM_OPENAI_AUTH_MODE` |
 | `mcp_agent.secrets.yaml` | API keys (OpenAI, Anthropic, Firecrawl, etc.) |
 | `mcp_agent.config.yaml` | MCP server configuration |
 | `trading/config/kis_devlp.yaml` | KIS trading API credentials |
@@ -158,6 +160,8 @@ result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price
 | Broadcast translation empty | gpt-5-mini fallback added in v2.2.0 |
 | `/report` 오류 후 재사용 불가 | v2.5.0 수정 - 서버 오류 시 자동 환급됨, 재시도 가능 |
 | US 예약주문 시간외 실패 | v2.7.1 - 10시 이전 주문은 자동 큐잉 → 10:05 KST 배치 실행 |
+| ChatGPT OAuth 404 | Codex 엔드포인트 미지원 모델 → `_MODEL_MAP` 자동 매핑 (v2.7.0) |
+| ChatGPT OAuth proxy 무반응 | `python -m cores.chatgpt_proxy.oauth_login`으로 토큰 갱신 |
 
 ## i18n Strategy (v2.2.0)
 
@@ -187,6 +191,7 @@ test: Tests
 
 | Ver | Date | Changes |
 |-----|------|---------|
+| 2.7.0 | 2026-03-24 | **ChatGPT OAuth Proxy + README 전면 업데이트** - ChatGPT Plus/Pro 구독으로 API 키 없이 분석 실행 가능 (`cores/chatgpt_proxy/`), Codex 엔드포인트 모델 매핑·SSE 파싱·response_format 변환 (#224), README 5개 언어 전면 개편 (모바일 앱·홍보영상·매매실적·Macro Intelligence 반영), 대시보드 스크린샷 교체 |
 | 2.6.0 | 2026-03-12 | **거시경제 인텔리전스 + 하이브리드 종목선정 + 텔레그램 얼럿 강화** - Macro Intelligence 에이전트 도입 (시장 체제 판단, 주도/낙후 섹터 식별), 탑다운+바텀업 하이브리드 종목 선정 (#202), US score-decision override 버그 수정 (#203), US trigger results 파일 경로 통일 (#204), KR/US 텔레그램 시그널 얼럿에 시장국면·선정채널·점수/R·R/손절 정보 추가 + PDF 커버 날짜 regex 수정 (#205) |
 | 2.5.2 | 2026-03-04 | **FCM NOT_FOUND 토큰 삭제 + Telegram Evaluator 다중 JSON 파싱 수정** - `firebase_bridge.py` `_INVALID_TOKEN_CODES`에 `NOT_FOUND` 추가 (만료 토큰 0/8 실패 반복 해결, #196), `telegram_summary_agent.py` GPT-5.x reasoning 모델 다중 JSON 응답 파싱 실패 → `_RobustEvaluatorLLM` 래퍼 + `generate_str()` fallback 추가 (#197) |
 | 2.5.1 | 2026-02-22 | **Claude Sonnet 4.6 업그레이드** - `report_generator.py` 내 모델 `claude-sonnet-4-5-20250929` → `claude-sonnet-4-6` (5곳), knowledge cutoff Jan 2025 → Aug 2025 |
