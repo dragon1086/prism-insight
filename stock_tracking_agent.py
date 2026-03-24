@@ -1574,6 +1574,10 @@ class StockTrackingAgent:
 
                         except Exception as e:
                             logger.error(f"Error sending tracking message to {lang}: {str(e)}")
+                            from telegram_config import is_openai_quota_error, send_openai_quota_alert
+                            if is_openai_quota_error(e):
+                                await send_openai_quota_alert(self.telegram_config, market="KR")
+                                return
 
                     # Gather Firebase notifications for this language
                     if firebase_tasks:

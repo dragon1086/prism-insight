@@ -161,3 +161,54 @@ class TelegramConfig:
             f"channel_id={'***' if self._channel_id else None}, "
             f"bot_token={'***' if self._bot_token else None})"
         )
+
+
+def is_openai_quota_error(error: Exception) -> bool:
+    """
+    Check if an exception is an OpenAI insufficient_quota error (429).
+
+    Args:
+        error: The caught exception
+
+    Returns:
+        True if this is an OpenAI quota exceeded error
+    """
+    error_str = str(error)
+    return "insufficient_quota" in error_str or (
+        "429" in error_str and "exceeded" in error_str.lower() and "quota" in error_str.lower()
+    )
+
+
+async def send_openai_quota_alert(telegram_config: "TelegramConfig", market: str = "KR"):
+    """
+    Send a Telegram alert when OpenAI API quota is exceeded.
+
+    Args:
+        telegram_config: TelegramConfig instance
+        market: Market identifier ("KR" or "US")
+    """
+    if not telegram_config or not telegram_config.use_telegram:
+        return
+
+    try:
+        from telegram import Bot
+        from telegram.request import HTTPXRequest
+
+        request = HTTPXRequest(connect_timeout=10.0, read_timeout=10.0)
+        bot = Bot(token=telegram_config.bot_token, request=request)
+
+        alert_message = (
+            f"🚨 [{market}] OpenAI API 크레딧 소진 알림\n\n"
+            f"OpenAI API 크레딧이 소진되어 분석 파이프라인이 중단되었습니다.\n\n"
+            f"• 오류: insufficient_quota (HTTP 429)\n"
+            f"• 조치 필요: OpenAI Platform → Billing에서 크레딧 충전 또는 Organization Budget 상향\n"
+            f"• https://platform.openai.com/settings/organization/billing"
+        )
+
+        await bot.send_message(
+            chat_id=telegram_config.channel_id,
+            text=alert_message
+        )
+        logger.info(f"[{market}] OpenAI quota alert sent to Telegram")
+    except Exception as e:
+        logger.error(f"[{market}] Failed to send OpenAI quota alert: {e}")
