@@ -755,7 +755,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             period = "Medium-term"  # Default value
             sector = "Unknown"
             trading_scenarios = {}
-            highest_price = buy_price  # Default to buy price
+            highest_price = max(buy_price, current_price)  # Default to max of buy/current
+            highest_price_initialized = False  # Track if this is first run
             initial_stop_loss = stop_loss
             initial_target_price = target_price
 
@@ -767,7 +768,13 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     trading_scenarios = scenario_data.get('trading_scenarios', {})
                     initial_stop_loss = scenario_data.get('stop_loss', stop_loss)
                     initial_target_price = scenario_data.get('target_price', target_price)
-                    highest_price = scenario_data.get('highest_price', buy_price)
+
+                    if 'highest_price' in scenario_data:
+                        highest_price = scenario_data['highest_price']
+                    else:
+                        highest_price = max(buy_price, current_price)
+                        highest_price_initialized = True
+                        logger.info(f"{ticker} highest_price not in scenario, initialized to {highest_price:,.0f} KRW")
 
                     # Update highest_price if current price exceeds it
                     if current_price > highest_price:
@@ -839,7 +846,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 - 현재가: {current_price:,.0f}원
                 - 목표가: {target_price:,.0f}원 (최초 시나리오: {initial_target_price:,.0f}원)
                 - 손절가: {stop_loss:,.0f}원 (최초 시나리오: {initial_stop_loss:,.0f}원)
-                - 진입 후 최고가: {highest_price:,.0f}원
+                - 진입 후 최고가: {highest_price:,.0f}원{' (⚠️ 첫 추적 - get_stock_ohlcv로 진입일 이후 실제 최고가를 확인하세요)' if highest_price_initialized else ''}
                 - 수익률: {profit_rate:.2f}%
                 - 보유기간: {days_passed}일
                 - 투자기간: {period}
@@ -866,7 +873,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 - Current Price: {current_price:,.0f} KRW
                 - Target Price: {target_price:,.0f} KRW (initial scenario: {initial_target_price:,.0f} KRW)
                 - Stop Loss: {stop_loss:,.0f} KRW (initial scenario: {initial_stop_loss:,.0f} KRW)
-                - Highest Price Since Entry: {highest_price:,.0f} KRW
+                - Highest Price Since Entry: {highest_price:,.0f} KRW{' (⚠️ First tracking - verify actual peak since entry via get_stock_ohlcv)' if highest_price_initialized else ''}
                 - Return: {profit_rate:.2f}%
                 - Holding Period: {days_passed} days
                 - Investment Period: {period}

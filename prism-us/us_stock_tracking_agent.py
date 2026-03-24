@@ -1112,7 +1112,8 @@ class USStockTrackingAgent:
             period = "medium"
             sector = "Unknown"
             trading_scenarios = {}
-            highest_price = buy_price  # Default to buy price
+            highest_price = max(buy_price, current_price)  # Default to max of buy/current
+            highest_price_initialized = False
             initial_stop_loss = stop_loss
             initial_target_price = target_price
             try:
@@ -1123,7 +1124,13 @@ class USStockTrackingAgent:
                     trading_scenarios = scenario_data.get('trading_scenarios', {})
                     initial_stop_loss = scenario_data.get('stop_loss', stop_loss)
                     initial_target_price = scenario_data.get('target_price', target_price)
-                    highest_price = scenario_data.get('highest_price', buy_price)
+
+                    if 'highest_price' in scenario_data:
+                        highest_price = scenario_data['highest_price']
+                    else:
+                        highest_price = max(buy_price, current_price)
+                        highest_price_initialized = True
+                        logger.info(f"{ticker} highest_price not in scenario, initialized to ${highest_price:,.2f}")
 
                     # Update highest_price if current price exceeds it
                     if current_price > highest_price:
@@ -1179,7 +1186,7 @@ Please make a sell/hold decision for the following US stock holding.
 - Current Price: ${current_price:,.2f}
 - Target Price: ${target_price:,.2f} (initial scenario: ${initial_target_price:,.2f})
 - Stop Loss: ${stop_loss:,.2f} (initial scenario: ${initial_stop_loss:,.2f})
-- Highest Price Since Entry: ${highest_price:,.2f}
+- Highest Price Since Entry: ${highest_price:,.2f}{' (⚠️ First tracking - verify actual peak since entry via get_historical_stock_prices)' if highest_price_initialized else ''}
 - Return: {profit_rate:.2f}%
 - Holding Period: {days_passed} days
 - Investment Period: {period}
