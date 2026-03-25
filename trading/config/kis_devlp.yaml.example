@@ -1,58 +1,72 @@
-# KIS Developer API 설정 파일 샘플
-# 이 파일을 kis_devlp.yaml로 복사하고 실제 값으로 수정하세요.
+# KIS Developer API 설정 파일 예시
+# 이 파일을 kis_devlp.yaml로 복사한 뒤 실제 값으로 수정하세요.
 
-# 종목 매수 단위 금액
+# 종목별 기본 매수 금액
 default_unit_amount: 10000       # 한국 주식 (KRW)
 default_unit_amount_usd: 100     # 미국 주식 (USD)
 
 # 자동매매 작동 여부
 auto_trading: true
 
-# 기본 매매 환경 (demo : 모의투자, real : 실제 투자)
+# 기본 매매 환경 (demo: 모의투자, real: 실전투자)
 default_mode: demo
 
-#홈페이지에서 API서비스 신청시 받은 Appkey, Appsecret 값 설정
-#실전투자 (https://openapi.koreainvestment.com에서 발급)
-my_app: "실전투자용_앱키를_여기에_입력하세요"
-my_sec: "실전투자용_앱시크리트를_여기에_입력하세요"
+# 기본 상품 코드
+# 01: 종합계좌, 03: 국내선물옵션, 08: 해외선물옵션, 22: 개인연금, 29: 퇴직연금
+default_product_code: "01"
 
-#모의투자 (https://openapi.koreainvestment.com에서 발급)
-paper_app: "모의투자용_앱키를_여기에_입력하세요"
-paper_sec: "모의투자용_앱시크리트를_여기에_입력하세요"
+# 홈페이지에서 API 서비스 신청 시 발급받은 App Key / App Secret
+# 실전투자 (https://openapi.koreainvestment.com 에서 발급)
+my_app: "실전투자용_앱키를_입력하세요"
+my_sec: "실전투자용_앱시크릿을_입력하세요"
 
-# HTS ID (한국투자증권 HTS 로그인 ID)
-my_htsid: "HTS_아이디를_여기에_입력하세요"
+# 모의투자 (https://openapi.koreainvestment.com 에서 발급)
+paper_app: "모의투자용_앱키를_입력하세요"
+paper_sec: "모의투자용_앱시크릿을_입력하세요"
 
-#계좌번호 앞 8자리
-my_acct_stock: "실전투자_계좌번호_앞8자리"
-my_acct_future: "선물옵션계좌_앞8자리"
-my_paper_stock: "모의투자_계좌번호_앞8자리"
-my_paper_future: "모의투자_선물옵션계좌_앞8자리"
+# 한국투자증권 HTS 로그인 ID
+my_htsid: "HTS_아이디를_입력하세요"
 
-#계좌번호 뒤 2자리
-my_prod: "01" # 종합계좌
-# my_prod: "03" # 국내선물옵션계좌
-# my_prod: "08" # 해외선물옵션 계좌
-# my_prod: "22" # 개인연금
-# my_prod: "29" # 퇴직연금
+# 다중 계좌 설정
+# 계좌 수 제한 없이 계속 추가할 수 있습니다.
+# mode: real 또는 demo
+# market: kr, us, all 중 하나
+# account: 계좌번호 앞 8자리
+# product: 계좌번호 뒤 2자리
+accounts:
+  - name: "실전-메인"
+    mode: "real"
+    market: "all"
+    account: "12345678"
+    product: "01"
 
-#domain infos (수정하지 마세요)
-prod: "https://openapi.koreainvestment.com:9443" # 서비스
-ops: "ws://ops.koreainvestment.com:21000" # 웹소켓
-vps: "https://openapivts.koreainvestment.com:29443" # 모의투자 서비스
-vops: "ws://ops.koreainvestment.com:31000" # 모의투자 웹소켓
+  - name: "실전-서브"
+    mode: "real"
+    market: "kr"
+    account: "23456789"
+    product: "01"
+
+  - name: "모의-메인"
+    mode: "demo"
+    market: "all"
+    account: "34567890"
+    product: "01"
+
+# 도메인 정보 (수정하지 마세요)
+prod: "https://openapi.koreainvestment.com:9443"
+ops: "ws://ops.koreainvestment.com:21000"
+vps: "https://openapivts.koreainvestment.com:29443"
+vops: "ws://ops.koreainvestment.com:31000"
 
 my_token: ""
 
-# User-Agent; Chrome > F12 개발자 모드 > Console > navigator.userAgent > 자신의 userAgent 확인가능
+# User-Agent
+# Chrome > F12 개발자도구 > Console > navigator.userAgent 로 확인 가능
 my_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
 
-# ================================
-# 설정 방법:
-# ================================
+# 설정 순서
 # 1. https://openapi.koreainvestment.com 방문
-# 2. 회원가입 및 API 신청
-# 3. 모의투자용/실전투자용 앱키 발급
+# 2. 회원가입 및 API 서비스 신청
+# 3. 실전투자 / 모의투자 앱키 발급
 # 4. 이 파일을 kis_devlp.yaml로 복사
-# 5. 실제 값으로 수정
-# ================================
+# 5. App Key / Secret / HTS ID / accounts 값을 실제 값으로 수정

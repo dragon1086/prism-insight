@@ -111,6 +111,123 @@ token_tmp = get_token_filename()
 with open(os.path.join(config_root, "kis_devlp.yaml"), encoding="UTF-8") as f:
     _cfg = yaml.safe_load(f)
 
+
+DEFAULT_PRODUCT_CODE = str(_cfg.get("default_product_code", "01"))
+
+
+def _normalize_server_mode(mode: str | None) -> str | None:
+    """Normalize mode aliases to KIS server identifiers."""
+    if mode is None:
+        return None
+
+    normalized = str(mode).strip().lower()
+    if normalized in {"real", "prod", "live"}:
+        return "prod"
+    if normalized in {"demo", "paper", "vps", "mock"}:
+        return "vps"
+    return normalized
+
+
+def get_configured_accounts(
+    svr: str | None = None,
+    product: str | None = None,
+    market: str | None = None,
+) -> list[dict]:
+    """
+    Return normalized account definitions from config.
+
+    Requires the multi-account `accounts` list in kis_devlp.yaml.
+    """
+    requested_svr = _normalize_server_mode(svr)
+    requested_product = str(product) if product is not None else None
+    requested_market = str(market).strip().lower() if market else None
+
+    raw_accounts = _cfg.get("accounts")
+    normalized_accounts: list[dict] = []
+
+    if isinstance(raw_accounts, list):
+        for index, item in enumerate(raw_accounts):
+            if not isinstance(item, dict):
+                continue
+            if item.get("enabled", True) is False:
+                continue
+
+            account_number = item.get("account") or item.get("account_number") or item.get("cano")
+            if not account_number:
+                continue
+
+            account_mode = _normalize_server_mode(item.get("mode") or item.get("svr") or item.get("environment"))
+            if account_mode not in {"prod", "vps"}:
+                continue
+
+            normalized_accounts.append({
+                "name": str(item.get("name") or item.get("id") or f"account-{index + 1}"),
+                "svr": account_mode,
+                "product": str(item.get("product") or item.get("product_code") or DEFAULT_PRODUCT_CODE),
+                "account": str(account_number),
+                "market": str(item.get("market") or "all").lower(),
+            })
+
+    if not normalized_accounts:
+        raise ValueError("No accounts configured. Define at least one entry in 'accounts' inside kis_devlp.yaml.")
+
+    filtered_accounts = []
+    for account in normalized_accounts:
+        if requested_svr and account["svr"] != requested_svr:
+            continue
+        if requested_product and account["product"] != requested_product:
+            continue
+        if requested_market and account["market"] not in {requested_market, "all", "both"}:
+            continue
+        filtered_accounts.append(account)
+
+    return filtered_accounts
+
+
+def resolve_account(
+    svr: str,
+    product: str | None = None,
+    account_name: str | None = None,
+    account_index: int | None = None,
+    market: str | None = None,
+) -> dict:
+    """Resolve a single account from config for the requested server/product."""
+    requested_svr = _normalize_server_mode(svr)
+    requested_product = str(product) if product is not None else None
+    accounts = get_configured_accounts(svr=requested_svr, market=market)
+
+    if account_name:
+        matched = [account for account in accounts if account["name"] == account_name]
+        if not matched:
+            raise ValueError(f"Account '{account_name}' not found for mode '{requested_svr}'")
+        if requested_product:
+            matched = [account for account in matched if account["product"] == requested_product]
+        if not matched:
+            raise ValueError(
+                f"Account '{account_name}' does not support product '{requested_product or DEFAULT_PRODUCT_CODE}'"
+            )
+        return matched[0]
+
+    if requested_product:
+        product_accounts = [account for account in accounts if account["product"] == requested_product]
+        if product_accounts:
+            accounts = product_accounts
+
+    if account_index is not None:
+        if account_index < 0 or account_index >= len(accounts):
+            raise ValueError(
+                f"Account index {account_index} is out of range for mode '{requested_svr}' ({len(accounts)} accounts)"
+            )
+        return accounts[account_index]
+
+    if not accounts:
+        raise ValueError(
+            f"No accounts configured for mode '{requested_svr}'"
+            + (f" and product '{requested_product}'" if requested_product else "")
+        )
+
+    return accounts[0]
+
 _TRENV = None
 _last_auth_time = datetime.now()
 _autoReAuth = False
@@ -680,7 +797,7 @@ def isPaperTrading():  # Paper trading
 
 
 # Set 'prod' for live trading, 'vps' for paper trading
-def changeTREnv(token_key, svr="prod", product=_cfg["my_prod"]):
+def changeTREnv(token_key, svr="prod", product=DEFAULT_PRODUCT_CODE, account_name=None, account_index=None):
     cfg = dict()
 
     global _isPaper
@@ -698,22 +815,15 @@ def changeTREnv(token_key, svr="prod", product=_cfg["my_prod"]):
     cfg["my_app"] = _cfg[ak1]
     cfg["my_sec"] = _cfg[ak2]
 
-    if svr == "prod" and product == "01":  # Live trading - stocks, consignment account, investment account
-        cfg["my_acct"] = _cfg["my_acct_stock"]
-    elif svr == "prod" and product == "03":  # Live trading - futures/options (derivatives)
-        cfg["my_acct"] = _cfg["my_acct_future"]
-    elif svr == "prod" and product == "08":  # Live trading - overseas futures/options (derivatives)
-        cfg["my_acct"] = _cfg["my_acct_future"]
-    elif svr == "prod" and product == "22":  # Live trading - personal pension savings account
-        cfg["my_acct"] = _cfg["my_acct_stock"]
-    elif svr == "prod" and product == "29":  # Live trading - retirement pension account
-        cfg["my_acct"] = _cfg["my_acct_stock"]
-    elif svr == "vps" and product == "01":  # Paper trading - stocks, consignment account, investment account
-        cfg["my_acct"] = _cfg["my_paper_stock"]
-    elif svr == "vps" and product == "03":  # Paper trading - futures/options (derivatives)
-        cfg["my_acct"] = _cfg["my_paper_future"]
+    account = resolve_account(
+        svr=svr,
+        product=product,
+        account_name=account_name,
+        account_index=account_index,
+    )
 
-    cfg["my_prod"] = product
+    cfg["my_acct"] = account["account"]
+    cfg["my_prod"] = account["product"]
     cfg["my_htsid"] = _cfg["my_htsid"]
     cfg["my_url"] = _cfg[svr]
 
@@ -736,7 +846,7 @@ def _getResultObject(json_data):
 
 # Token issuance, validity 1 day, maintains existing token if issued within 6 hours, notification sent on issuance
 # For paper trading use svr='vps', if not investment account(01) change product='XX' (last 2 digits of account number)
-def auth(svr="prod", product=_cfg["my_prod"], url=None):
+def auth(svr="prod", product=DEFAULT_PRODUCT_CODE, url=None, account_name=None, account_index=None):
     """
     Authenticate with KIS API and obtain access token.
 
@@ -830,7 +940,7 @@ def auth(svr="prod", product=_cfg["my_prod"], url=None):
         logging.info("✅ Using existing valid token")
 
     # Set up environment with token
-    changeTREnv(my_token, svr, product)
+    changeTREnv(my_token, svr, product, account_name=account_name, account_index=account_index)
 
     # Update base headers
     if _TRENV is not None:
@@ -847,7 +957,7 @@ def auth(svr="prod", product=_cfg["my_prod"], url=None):
 
 # end of initialize, token reissue, token validity 1 day on issuance
 # Saves to _last_auth_time on program execution to check validity, reissues token on expiry
-def reAuth(svr="prod", product=_cfg["my_prod"]):
+def reAuth(svr="prod", product=DEFAULT_PRODUCT_CODE, account_name=None, account_index=None):
     n2 = datetime.now()
     # BUG FIX: Changed .seconds to .total_seconds()
     # .seconds only returns seconds within the current day (0-86399)
@@ -855,7 +965,7 @@ def reAuth(svr="prod", product=_cfg["my_prod"]):
     # Also reduced to 23 hours (82800s) for safety margin before 24h expiry
     if (n2 - _last_auth_time).total_seconds() >= 82800:  # 23 hours (safety margin)
         logging.info("Token approaching expiry, re-authenticating...")
-        auth(svr, product)
+        auth(svr, product, account_name=account_name, account_index=account_index)
 
 
 def getEnv():
@@ -1081,7 +1191,7 @@ def _getBaseHeader_ws():
     return copy.deepcopy(_base_headers_ws)
 
 
-def auth_ws(svr="prod", product=_cfg["my_prod"]):
+def auth_ws(svr="prod", product=DEFAULT_PRODUCT_CODE, account_name=None, account_index=None):
     p = {"grant_type": "client_credentials"}
     if svr == "prod":
         ak1 = "my_app"
@@ -1102,7 +1212,7 @@ def auth_ws(svr="prod", product=_cfg["my_prod"]):
         print("Get Approval token fail!\nYou have to restart your app!!!")
         return
 
-    changeTREnv(None, svr, product)
+    changeTREnv(None, svr, product, account_name=account_name, account_index=account_index)
 
     _base_headers_ws["approval_key"] = approval_key
 
@@ -1113,10 +1223,10 @@ def auth_ws(svr="prod", product=_cfg["my_prod"]):
         print(f"[{_last_auth_time}] => get AUTH Key completed!")
 
 
-def reAuth_ws(svr="prod", product=_cfg["my_prod"]):
+def reAuth_ws(svr="prod", product=DEFAULT_PRODUCT_CODE, account_name=None, account_index=None):
     n2 = datetime.now()
     if (n2 - _last_auth_time).seconds >= 86400:
-        auth_ws(svr, product)
+        auth_ws(svr, product, account_name=account_name, account_index=account_index)
 
 
 def data_fetch(tr_id, tr_type, params, appendHeaders=None) -> dict:

@@ -49,7 +49,15 @@ class DomesticStockTrading:
     # Default trading environment
     DEFAULT_MODE = _cfg["default_mode"]
 
-    def __init__(self, mode: str = DEFAULT_MODE, buy_amount: int = None, auto_trading:bool = AUTO_TRADING):
+    def __init__(
+        self,
+        mode: str = DEFAULT_MODE,
+        buy_amount: int = None,
+        auto_trading: bool = AUTO_TRADING,
+        account_name: str = None,
+        account_index: int = None,
+        product_code: str = "01",
+    ):
         """
         Initialize
 
@@ -65,10 +73,18 @@ class DomesticStockTrading:
         self.env = "vps" if mode == "demo" else "prod"
         self.buy_amount = buy_amount if buy_amount else self.DEFAULT_BUY_AMOUNT
         self.auto_trading = auto_trading
+        self.account_name = account_name
+        self.account_index = account_index
+        self.product_code = str(product_code)
 
         # Authentication with improved error handling
         try:
-            ka.auth(svr=self.env, product="01")
+            ka.auth(
+                svr=self.env,
+                product=self.product_code,
+                account_name=self.account_name,
+                account_index=self.account_index,
+            )
         except CredentialMismatchError as e:
             logger.error("=" * 60)
             logger.error("❌ CREDENTIAL MISMATCH DETECTED!")
@@ -81,10 +97,10 @@ class DomesticStockTrading:
             logger.error(f"   2. For {self.mode} mode:")
             if self.mode == "real":
                 logger.error("      - 'my_app' should start with 'PS' (NOT 'PSVT')")
-                logger.error("      - 'my_acct_stock' should be your real account number")
+                logger.error("      - 'accounts'에 실전투자 계좌를 올바르게 설정하세요")
             else:
                 logger.error("      - 'paper_app' should start with 'PSVT'")
-                logger.error("      - 'my_paper_stock' should be your paper trading account")
+                logger.error("      - 'accounts'에 모의투자 계좌를 올바르게 설정하세요")
             logger.error("=" * 60)
             raise RuntimeError(f"Credential mismatch for {self.mode} mode: {e}") from e
 
@@ -144,6 +160,20 @@ class DomesticStockTrading:
         logger.info(f"   Mode: {mode}, Buy Amount: {self.buy_amount:,} KRW")
         logger.info(f"   Account: {self.trenv.my_acct}-{self.trenv.my_prod}")
 
+    def _activate_account(self):
+        """Ensure the shared KIS environment matches this trader's account."""
+        ka.changeTREnv(
+            self.trenv.my_token,
+            svr=self.env,
+            product=self.trenv.my_prod,
+            account_name=self.account_name,
+            account_index=self.account_index,
+        )
+
+    def _request(self, api_url: str, tr_id: str, params: Dict[str, Any], **kwargs):
+        self._activate_account()
+        return ka._url_fetch(api_url, tr_id, "", params, **kwargs)
+
     def get_current_price(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
         Get current market price (also used for connectivity test)
@@ -169,7 +199,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params)
+            res = self._request(api_url, tr_id, params)
 
             if res.isOK():
                 data = res.getBody().output
@@ -285,7 +315,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -406,7 +436,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -549,7 +579,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -658,7 +688,7 @@ class DomesticStockTrading:
             params["RSVN_ORD_END_DT"] = ""
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -766,7 +796,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -897,7 +927,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -998,7 +1028,7 @@ class DomesticStockTrading:
             params["RSVN_ORD_END_DT"] = ""
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -1363,7 +1393,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params)
+            res = self._request(api_url, tr_id, params)
 
             if res.isOK():
                 current_portfolio = []
@@ -1443,7 +1473,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params)
+            res = self._request(api_url, tr_id, params)
 
             if res.isOK():
                 output2 = res.getBody().output2[0]  # Account summary
@@ -1493,14 +1523,32 @@ class AsyncTradingContext:
     # Default trading environment
     DEFAULT_MODE = _cfg["default_mode"]
 
-    def __init__(self, mode: str = DEFAULT_MODE, buy_amount: int = None, auto_trading: bool = AUTO_TRADING):
+    def __init__(
+        self,
+        mode: str = DEFAULT_MODE,
+        buy_amount: int = None,
+        auto_trading: bool = AUTO_TRADING,
+        account_name: str = None,
+        account_index: int = None,
+        product_code: str = "01",
+    ):
         self.mode = mode
         self.buy_amount = buy_amount
         self.auto_trading = auto_trading
+        self.account_name = account_name
+        self.account_index = account_index
+        self.product_code = product_code
         self.trader = None
 
     async def __aenter__(self):
-        self.trader = DomesticStockTrading(mode=self.mode, buy_amount=self.buy_amount, auto_trading=self.auto_trading)
+        self.trader = DomesticStockTrading(
+            mode=self.mode,
+            buy_amount=self.buy_amount,
+            auto_trading=self.auto_trading,
+            account_name=self.account_name,
+            account_index=self.account_index,
+            product_code=self.product_code,
+        )
         return self.trader
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

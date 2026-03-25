@@ -151,7 +151,15 @@ class USStockTrading:
     # Default trading environment
     DEFAULT_MODE = _cfg.get("default_mode", "demo")
 
-    def __init__(self, mode: str = None, buy_amount: float = None, auto_trading: bool = None):
+    def __init__(
+        self,
+        mode: str = None,
+        buy_amount: float = None,
+        auto_trading: bool = None,
+        account_name: str = None,
+        account_index: int = None,
+        product_code: str = "01",
+    ):
         """
         Initialize US Stock Trading
 
@@ -164,9 +172,17 @@ class USStockTrading:
         self.env = "vps" if self.mode == "demo" else "prod"
         self.buy_amount = buy_amount if buy_amount else self.DEFAULT_BUY_AMOUNT
         self.auto_trading = auto_trading if auto_trading is not None else self.AUTO_TRADING
+        self.account_name = account_name
+        self.account_index = account_index
+        self.product_code = str(product_code)
 
         # Authentication
-        ka.auth(svr=self.env, product="01")
+        ka.auth(
+            svr=self.env,
+            product=self.product_code,
+            account_name=self.account_name,
+            account_index=self.account_index,
+        )
 
         try:
             self.trenv = ka.getTREnv()
@@ -184,6 +200,20 @@ class USStockTrading:
         logger.info(f"USStockTrading initialized (Async Enabled)")
         logger.info(f"Mode: {mode}, Buy Amount: ${self.buy_amount:,.2f} USD")
         logger.info(f"Account: {self.trenv.my_acct}-{self.trenv.my_prod}")
+
+    def _activate_account(self):
+        """Ensure the shared KIS environment matches this trader's account."""
+        ka.changeTREnv(
+            self.trenv.my_token,
+            svr=self.env,
+            product=self.trenv.my_prod,
+            account_name=self.account_name,
+            account_index=self.account_index,
+        )
+
+    def _request(self, api_url: str, tr_id: str, params: Dict[str, Any], **kwargs):
+        self._activate_account()
+        return ka._url_fetch(api_url, tr_id, "", params, **kwargs)
 
     def get_current_price(self, ticker: str, exchange: str = None) -> Optional[Dict[str, Any]]:
         """
@@ -221,7 +251,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params)
+            res = self._request(api_url, tr_id, params)
 
             if res.isOK():
                 data = res.getBody().output
@@ -362,7 +392,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -463,7 +493,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -578,7 +608,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -823,7 +853,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -951,7 +981,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -1392,7 +1422,7 @@ class USStockTrading:
             params["OVRS_EXCG_CD"] = exchange
 
             try:
-                res = ka._url_fetch(api_url, tr_id, "", params)
+                res = self._request(api_url, tr_id, params)
 
                 if res.isOK():
                     output1 = res.getBody().output1
@@ -1463,7 +1493,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params)
+            res = self._request(api_url, tr_id, params)
 
             if res.isOK():
                 body = res.getBody()
@@ -1519,17 +1549,31 @@ class AsyncUSTradingContext:
     AUTO_TRADING = _cfg.get("auto_trading", True)
     DEFAULT_MODE = _cfg.get("default_mode", "demo")
 
-    def __init__(self, mode: str = None, buy_amount: float = None, auto_trading: bool = None):
+    def __init__(
+        self,
+        mode: str = None,
+        buy_amount: float = None,
+        auto_trading: bool = None,
+        account_name: str = None,
+        account_index: int = None,
+        product_code: str = "01",
+    ):
         self.mode = mode if mode else self.DEFAULT_MODE
         self.buy_amount = buy_amount
         self.auto_trading = auto_trading if auto_trading is not None else self.AUTO_TRADING
+        self.account_name = account_name
+        self.account_index = account_index
+        self.product_code = product_code
         self.trader = None
 
     async def __aenter__(self):
         self.trader = USStockTrading(
             mode=self.mode,
             buy_amount=self.buy_amount,
-            auto_trading=self.auto_trading
+            auto_trading=self.auto_trading,
+            account_name=self.account_name,
+            account_index=self.account_index,
+            product_code=self.product_code,
         )
         return self.trader
 

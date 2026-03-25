@@ -36,6 +36,7 @@ with open(CONFIG_FILE, encoding="UTF-8") as f:
 
 # Import local modules
 from trading.domestic_stock_trading import DomesticStockTrading
+from trading import kis_auth as ka
 from telegram_bot_agent import TelegramBotAgent
 
 # Import US trading module (optional - may not be available)
@@ -136,6 +137,53 @@ class PortfolioTelegramReporter:
             sign = "+" if amount >= 0 else ""
             return f"{sign}{amount:,.0f}원" if amount else "0원"
 
+    def _get_account_configs(self, market: str) -> List[Dict[str, Any]]:
+        """Resolve configured accounts for the active mode and market."""
+        svr = "vps" if self.trading_mode == "demo" else "prod"
+        accounts = ka.get_configured_accounts(svr=svr, product="01", market=market)
+        if not accounts:
+            accounts = ka.get_configured_accounts(svr=svr, product="01")
+        return accounts
+
+    def _merge_account_summaries(self, summaries: List[Dict[str, Any]], currency: str) -> Dict[str, Any]:
+        """Aggregate account summaries into a single summary payload."""
+        valid_summaries = [summary for summary in summaries if summary]
+        if not valid_summaries:
+            return {}
+
+        total_eval = sum(summary.get('total_eval_amount', 0) for summary in valid_summaries)
+        total_profit = sum(summary.get('total_profit_amount', 0) for summary in valid_summaries)
+        total_cost = total_eval - total_profit
+        total_profit_rate = (total_profit / total_cost * 100) if total_cost > 0 else 0
+
+        merged = {
+            'total_eval_amount': total_eval,
+            'total_profit_amount': total_profit,
+            'total_profit_rate': total_profit_rate,
+            'available_amount': sum(summary.get('available_amount', 0) for summary in valid_summaries),
+            'account_count': len(valid_summaries),
+            'accounts': valid_summaries,
+        }
+
+        if currency == "KRW":
+            merged['deposit'] = sum(summary.get('deposit', 0) for summary in valid_summaries)
+            merged['total_cash'] = sum(summary.get('total_cash', summary.get('deposit', 0)) for summary in valid_summaries)
+        else:
+            total_usd_cash = sum(summary.get('usd_cash', 0) for summary in valid_summaries)
+            merged['usd_cash'] = total_usd_cash
+
+            weighted_exchange_base = sum(summary.get('usd_cash', 0) for summary in valid_summaries if summary.get('exchange_rate', 0) > 0)
+            weighted_exchange_sum = sum(
+                summary.get('usd_cash', 0) * summary.get('exchange_rate', 0)
+                for summary in valid_summaries
+                if summary.get('exchange_rate', 0) > 0
+            )
+            merged['exchange_rate'] = (
+                weighted_exchange_sum / weighted_exchange_base if weighted_exchange_base > 0 else 0
+            )
+
+        return merged
+
     def create_portfolio_message(
         self,
         kr_portfolio: List[Dict[str, Any]],
@@ -190,7 +238,9 @@ class PortfolioTelegramReporter:
             # Total assets and season profit
             season_profit_emoji = "📈" if season_profit >= 0 else "📉"
 
-            message += f"🇰🇷 *한국주식 계좌*\n"
+            kr_account_count = kr_account_summary.get('account_count', 1)
+            account_suffix = f" ({kr_account_count} accounts)" if kr_account_count > 1 else ""
+            message += f"🇰🇷 *한국주식 계좌*{account_suffix}\n"
             message += f"💰 총 자산: `{self.format_currency(total_assets)}`\n"
             message += f"{season_profit_emoji} 시즌 수익: `{self.format_currency_with_sign(season_profit)}` "
             message += f"({self.format_percentage(season_profit_rate)})\n"
@@ -205,7 +255,9 @@ class PortfolioTelegramReporter:
 
         # ========== US Account Summary ==========
         if us_portfolio or us_account_summary:
-            message += f"🇺🇸 *미국주식 계좌*\n"
+            us_account_count = us_account_summary.get('account_count', 1)
+            account_suffix = f" ({us_account_count} accounts)" if us_account_count > 1 else ""
+            message += f"🇺🇸 *미국주식 계좌*{account_suffix}\n"
 
             if us_account_summary:
                 us_total_eval = us_account_summary.get('total_eval_amount', 0)
@@ -258,7 +310,8 @@ class PortfolioTelegramReporter:
                     status_emoji = "➖"
 
                 # Stock information
-                message += f"\n*{i}. {stock_name}* ({stock_code}) {status_emoji}\n"
+                account_tag = f" [{stock.get('account_name')}]" if stock.get('account_name') else ""
+                message += f"\n*{i}. {stock_name}* ({stock_code}){account_tag} {status_emoji}\n"
                 message += f"  평가: `{self.format_currency(eval_amount)}`\n"
                 message += f"  단가: `{self.format_currency(avg_price)}` ({quantity}주)\n"
                 message += f"  손익: `{self.format_currency_with_sign(profit_amount)}`  |  {self.format_percentage(profit_rate)}\n"
@@ -291,7 +344,8 @@ class PortfolioTelegramReporter:
 
                 # Stock information
                 exchange_tag = f"[{exchange}]" if exchange else ""
-                message += f"\n*{i}. {ticker}* {exchange_tag} {status_emoji}\n"
+                account_tag = f" [{stock.get('account_name')}]" if stock.get('account_name') else ""
+                message += f"\n*{i}. {ticker}* {exchange_tag}{account_tag} {status_emoji}\n"
                 message += f"  {stock_name[:20]}{'...' if len(stock_name) > 20 else ''}\n"
                 message += f"  평가: `{self.format_currency(eval_amount, 'USD')}`\n"
                 message += f"  단가: `{self.format_currency(avg_price, 'USD')}` ({quantity}주)\n"
@@ -312,36 +366,66 @@ class PortfolioTelegramReporter:
         us_portfolio = []
         us_account_summary = {}
 
-        # Fetch KR trading data
-        try:
-            kr_trader = DomesticStockTrading(mode=self.trading_mode)
+        # Fetch KR trading data across all configured accounts
+        kr_summaries = []
+        for account in self._get_account_configs("kr"):
+            try:
+                kr_trader = DomesticStockTrading(
+                    mode=self.trading_mode,
+                    account_name=account["name"],
+                    product_code=account["product"],
+                )
 
-            logger.info("Fetching KR portfolio data...")
-            kr_portfolio = kr_trader.get_portfolio()
+                logger.info(f"Fetching KR portfolio data for account '{account['name']}'...")
+                account_portfolio = kr_trader.get_portfolio()
+                for stock in account_portfolio:
+                    stock["account_name"] = account["name"]
+                    stock["account_product"] = account["product"]
+                kr_portfolio.extend(account_portfolio)
 
-            logger.info("Fetching KR account summary...")
-            kr_account_summary = kr_trader.get_account_summary() or {}
+                logger.info(f"Fetching KR account summary for account '{account['name']}'...")
+                account_summary = kr_trader.get_account_summary() or {}
+                if account_summary:
+                    account_summary["account_name"] = account["name"]
+                    account_summary["account_product"] = account["product"]
+                    kr_summaries.append(account_summary)
 
-            logger.info(f"KR data fetch complete: {len(kr_portfolio)} holdings")
+            except Exception as e:
+                logger.error(f"Error fetching KR trading data for account '{account['name']}': {str(e)}")
 
-        except Exception as e:
-            logger.error(f"Error fetching KR trading data: {str(e)}")
+        kr_account_summary = self._merge_account_summaries(kr_summaries, currency="KRW")
+        logger.info(f"KR data fetch complete: {len(kr_portfolio)} holdings across {len(kr_summaries)} accounts")
 
         # Fetch US trading data (if available)
         if US_TRADING_AVAILABLE:
-            try:
-                us_trader = USStockTrading(mode=self.trading_mode)
+            us_summaries = []
+            for account in self._get_account_configs("us"):
+                try:
+                    us_trader = USStockTrading(
+                        mode=self.trading_mode,
+                        account_name=account["name"],
+                        product_code=account["product"],
+                    )
 
-                logger.info("Fetching US portfolio data...")
-                us_portfolio = us_trader.get_portfolio()
+                    logger.info(f"Fetching US portfolio data for account '{account['name']}'...")
+                    account_portfolio = us_trader.get_portfolio()
+                    for stock in account_portfolio:
+                        stock["account_name"] = account["name"]
+                        stock["account_product"] = account["product"]
+                    us_portfolio.extend(account_portfolio)
 
-                logger.info("Fetching US account summary...")
-                us_account_summary = us_trader.get_account_summary() or {}
+                    logger.info(f"Fetching US account summary for account '{account['name']}'...")
+                    account_summary = us_trader.get_account_summary() or {}
+                    if account_summary:
+                        account_summary["account_name"] = account["name"]
+                        account_summary["account_product"] = account["product"]
+                        us_summaries.append(account_summary)
 
-                logger.info(f"US data fetch complete: {len(us_portfolio)} holdings")
+                except Exception as e:
+                    logger.error(f"Error fetching US trading data for account '{account['name']}': {str(e)}")
 
-            except Exception as e:
-                logger.error(f"Error fetching US trading data: {str(e)}")
+            us_account_summary = self._merge_account_summaries(us_summaries, currency="USD")
+            logger.info(f"US data fetch complete: {len(us_portfolio)} holdings across {len(us_summaries)} accounts")
         else:
             logger.info("US trading module not available, skipping US portfolio")
 
