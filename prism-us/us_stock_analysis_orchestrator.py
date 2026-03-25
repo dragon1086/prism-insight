@@ -267,7 +267,8 @@ class USStockAnalysisOrchestrator:
             # Step 2: Run LLM agent with perplexity for qualitative analysis
             from mcp_agent.app import MCPApp
             from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
-            from cores.agents.macro_intelligence_agent import create_us_macro_intelligence_agent
+            _macro_agent_mod = _import_from_us_cores("us_macro_intelligence_agent", "cores/agents/macro_intelligence_agent.py")
+            create_us_macro_intelligence_agent = _macro_agent_mod.create_us_macro_intelligence_agent
 
             macro_app = MCPApp(name="us_macro_intelligence")
 
@@ -456,7 +457,8 @@ class USStockAnalysisOrchestrator:
             output_file = str(US_REPORTS_DIR / f"{ticker}_{company_name}_{reference_date}_{mode}_gpt5.4-mini.md")
 
             try:
-                from cores.us_analysis import analyze_us_stock
+                _us_analysis_mod = _import_from_us_cores("us_analysis", "cores/us_analysis.py")
+                analyze_us_stock = _us_analysis_mod.analyze_us_stock
 
                 logger.info(f"[{idx}/{len(tickers)}] Starting analyze_us_stock function call")
                 report = await analyze_us_stock(
