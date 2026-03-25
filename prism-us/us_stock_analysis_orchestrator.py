@@ -72,6 +72,21 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     return module
 
 
+def _import_from_us_cores(module_name: str, relative_path: str):
+    """
+    Import module directly from prism-us/cores/ directory.
+
+    Counterpart to _import_from_main_cores — used when Python's cached 'cores'
+    package points to the main project's cores/ and shadows prism-us/cores/.
+    """
+    import importlib.util
+    file_path = PRISM_US_DIR / relative_path
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 # Pre-load telegram_translator_agent from main project (used in multiple methods)
 _translator_module = _import_from_main_cores(
     "telegram_translator_agent",
@@ -239,7 +254,8 @@ class USStockAnalysisOrchestrator:
 
         try:
             # Step 1: Prefetch index data and compute regime programmatically
-            from cores.data_prefetch import prefetch_us_macro_intelligence_data
+            _us_prefetch_mod = _import_from_us_cores("us_data_prefetch", "cores/data_prefetch.py")
+            prefetch_us_macro_intelligence_data = _us_prefetch_mod.prefetch_us_macro_intelligence_data
             prefetched = prefetch_us_macro_intelligence_data(reference_date)
             logger.info(f"US macro prefetch complete: {list(prefetched.keys())}")
 
