@@ -1541,6 +1541,91 @@ class USStockTrading:
             return None
 
 
+class MultiAccountUSStockTrading:
+    """Fan out trading orders to all configured US accounts for the current mode."""
+
+    def __init__(self, mode: str, buy_amount: float = None, auto_trading: bool = USStockTrading.AUTO_TRADING, product_code: str = "01"):
+        self.mode = mode
+        self.buy_amount = buy_amount
+        self.auto_trading = auto_trading
+        self.product_code = str(product_code)
+
+        svr = "vps" if mode == "demo" else "prod"
+        self.account_configs = ka.get_configured_accounts(svr=svr, product=self.product_code, market="us")
+        if not self.account_configs:
+            self.account_configs = ka.get_configured_accounts(svr=svr, product=self.product_code)
+
+    async def async_buy_stock(self, ticker: str, buy_amount: Optional[float] = None,
+                              exchange: str = None, timeout: float = 30.0, limit_price: Optional[float] = None) -> Dict[str, Any]:
+        results = []
+        for account in self.account_configs:
+            trader = USStockTrading(
+                mode=self.mode,
+                buy_amount=self.buy_amount,
+                auto_trading=self.auto_trading,
+                account_name=account["name"],
+                product_code=account["product"],
+            )
+            result = await trader.async_buy_stock(
+                ticker=ticker,
+                buy_amount=buy_amount,
+                exchange=exchange,
+                timeout=timeout,
+                limit_price=limit_price,
+            )
+            result["account_name"] = account["name"]
+            results.append(result)
+
+        return self._aggregate_results(ticker, results, action="buy")
+
+    async def async_sell_stock(self, ticker: str, exchange: str = None,
+                               timeout: float = 30.0, limit_price: Optional[float] = None,
+                               use_moo: bool = False) -> Dict[str, Any]:
+        results = []
+        for account in self.account_configs:
+            trader = USStockTrading(
+                mode=self.mode,
+                buy_amount=self.buy_amount,
+                auto_trading=self.auto_trading,
+                account_name=account["name"],
+                product_code=account["product"],
+            )
+            result = await trader.async_sell_stock(
+                ticker=ticker,
+                exchange=exchange,
+                timeout=timeout,
+                limit_price=limit_price,
+                use_moo=use_moo,
+            )
+            result["account_name"] = account["name"]
+            results.append(result)
+
+        return self._aggregate_results(ticker, results, action="sell")
+
+    def _aggregate_results(self, ticker: str, results: List[Dict[str, Any]], action: str) -> Dict[str, Any]:
+        success_count = sum(1 for result in results if result.get("success"))
+        total_accounts = len(results)
+        total_quantity = sum(result.get("quantity", 0) for result in results)
+        total_amount = sum(result.get("total_amount", result.get("estimated_amount", 0)) for result in results)
+
+        messages = [
+            f"{result.get('account_name')}: {result.get('message', '')}"
+            for result in results
+        ]
+
+        return {
+            "success": success_count == total_accounts and total_accounts > 0,
+            "partial_success": 0 < success_count < total_accounts,
+            "ticker": ticker,
+            "quantity": total_quantity,
+            "total_amount": total_amount,
+            "estimated_amount": total_amount,
+            "order_no": None,
+            "message": f"{action} executed for {success_count}/{total_accounts} accounts | " + " ; ".join(messages),
+            "account_results": results,
+        }
+
+
 # Context Manager
 class AsyncUSTradingContext:
     """Async trading context manager for safe resource management"""
@@ -1567,14 +1652,22 @@ class AsyncUSTradingContext:
         self.trader = None
 
     async def __aenter__(self):
-        self.trader = USStockTrading(
-            mode=self.mode,
-            buy_amount=self.buy_amount,
-            auto_trading=self.auto_trading,
-            account_name=self.account_name,
-            account_index=self.account_index,
-            product_code=self.product_code,
-        )
+        if self.account_name is None and self.account_index is None:
+            self.trader = MultiAccountUSStockTrading(
+                mode=self.mode,
+                buy_amount=self.buy_amount,
+                auto_trading=self.auto_trading,
+                product_code=self.product_code,
+            )
+        else:
+            self.trader = USStockTrading(
+                mode=self.mode,
+                buy_amount=self.buy_amount,
+                auto_trading=self.auto_trading,
+                account_name=self.account_name,
+                account_index=self.account_index,
+                product_code=self.product_code,
+            )
         return self.trader
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
