@@ -17,16 +17,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
+from trading import kis_auth as ka
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 DB_PATH = str(Path(__file__).parent / "stock_tracking_db.sqlite")
 
 
-def _safe_query(cursor, query: str, default=(0, 0)):
+def _safe_query(cursor, query: str, params=(), default=(0, 0)):
     """Execute query with error handling, return default on failure."""
     try:
-        cursor.execute(query)
+        cursor.execute(query, params)
         result = cursor.fetchone()
         return result if result else default
     except sqlite3.Error as e:
@@ -34,10 +35,10 @@ def _safe_query(cursor, query: str, default=(0, 0)):
         return default
 
 
-def _safe_query_all(cursor, query: str) -> list:
+def _safe_query_all(cursor, query: str, params=()) -> list:
     """Execute query and return all results, empty list on failure."""
     try:
-        cursor.execute(query)
+        cursor.execute(query, params)
         return cursor.fetchall()
     except sqlite3.Error as e:
         logger.warning(f"Query failed: {e}")
@@ -61,24 +62,36 @@ def _sell_verdict(change_pct: float) -> str:
         return "👌 적절한 매도"
 
 
+def _get_primary_account_key(market: str) -> str | None:
+    default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
+    svr = "vps" if default_mode == "demo" else "prod"
+    try:
+        return ka.resolve_account(svr=svr, market=market)["account_key"]
+    except Exception as exc:
+        logger.warning(f"Primary {market} account resolution failed: {exc}")
+        return None
+
+
 def _get_weekly_trades(cursor, week_start_str: str) -> str:
     """Get weekly trade summary for KR and US markets."""
-    kr_sells = _safe_query_all(cursor, f"""
+    kr_account_key = _get_primary_account_key("kr")
+    us_account_key = _get_primary_account_key("us")
+    kr_sells = _safe_query_all(cursor, """
         SELECT ticker, company_name, buy_price, sell_price, profit_rate, holding_days
-        FROM trading_history WHERE sell_date >= '{week_start_str}' ORDER BY sell_date DESC
-    """)
-    kr_buys = _safe_query_all(cursor, f"""
+        FROM trading_history WHERE sell_date >= ? AND account_key = ? ORDER BY sell_date DESC
+    """, (week_start_str, kr_account_key)) if kr_account_key else []
+    kr_buys = _safe_query_all(cursor, """
         SELECT ticker, company_name, buy_price, buy_date, current_price
-        FROM stock_holdings WHERE buy_date >= '{week_start_str}'
-    """)
-    us_sells = _safe_query_all(cursor, f"""
+        FROM stock_holdings WHERE buy_date >= ? AND account_key = ?
+    """, (week_start_str, kr_account_key)) if kr_account_key else []
+    us_sells = _safe_query_all(cursor, """
         SELECT ticker, company_name, buy_price, sell_price, profit_rate, holding_days
-        FROM us_trading_history WHERE sell_date >= '{week_start_str}' ORDER BY sell_date DESC
-    """)
-    us_buys = _safe_query_all(cursor, f"""
+        FROM us_trading_history WHERE sell_date >= ? AND account_key = ? ORDER BY sell_date DESC
+    """, (week_start_str, us_account_key)) if us_account_key else []
+    us_buys = _safe_query_all(cursor, """
         SELECT ticker, company_name, buy_price, buy_date, current_price
-        FROM us_stock_holdings WHERE buy_date >= '{week_start_str}'
-    """)
+        FROM us_stock_holdings WHERE buy_date >= ? AND account_key = ?
+    """, (week_start_str, us_account_key)) if us_account_key else []
 
     if not (kr_sells or kr_buys or us_sells or us_buys):
         return "이번 주 매매 없음"
@@ -117,14 +130,16 @@ def _get_sell_evaluation(cursor, week_start_str: str) -> str | None:
 
     Returns None if no sells this week (section should be omitted).
     """
-    kr_sells = _safe_query_all(cursor, f"""
+    kr_account_key = _get_primary_account_key("kr")
+    us_account_key = _get_primary_account_key("us")
+    kr_sells = _safe_query_all(cursor, """
         SELECT ticker, company_name, sell_price
-        FROM trading_history WHERE sell_date >= '{week_start_str}'
-    """)
-    us_sells = _safe_query_all(cursor, f"""
+        FROM trading_history WHERE sell_date >= ? AND account_key = ?
+    """, (week_start_str, kr_account_key)) if kr_account_key else []
+    us_sells = _safe_query_all(cursor, """
         SELECT ticker, company_name, sell_price
-        FROM us_trading_history WHERE sell_date >= '{week_start_str}'
-    """)
+        FROM us_trading_history WHERE sell_date >= ? AND account_key = ?
+    """, (week_start_str, us_account_key)) if us_account_key else []
 
     if not kr_sells and not us_sells:
         return None

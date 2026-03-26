@@ -32,7 +32,7 @@ sys.path.insert(0, str(PARENT_DIR))               # project root - MUST be first
 # Load configuration file
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
 with open(CONFIG_FILE, encoding="UTF-8") as f:
-    _cfg = yaml.load(f, Loader=yaml.FullLoader)
+    _cfg = yaml.safe_load(f)
 
 # Import local modules
 from trading.domestic_stock_trading import DomesticStockTrading
@@ -140,10 +140,10 @@ class PortfolioTelegramReporter:
     def _get_primary_account_config(self, market: str) -> Optional[Dict[str, Any]]:
         """Resolve the representative account for the active mode and market."""
         svr = "vps" if self.trading_mode == "demo" else "prod"
-        accounts = ka.get_configured_accounts(svr=svr, product="01", market=market)
-        if not accounts:
-            accounts = ka.get_configured_accounts(svr=svr, product="01")
-        return accounts[0] if accounts else None
+        try:
+            return ka.resolve_account(svr=svr, product="01", market=market)
+        except ValueError:
+            return None
 
     def create_portfolio_message(
         self,

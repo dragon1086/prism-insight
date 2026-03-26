@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 # Table: us_stock_holdings - Current US stock positions
 TABLE_US_STOCK_HOLDINGS = """
 CREATE TABLE IF NOT EXISTS us_stock_holdings (
-    ticker TEXT PRIMARY KEY,           -- AAPL, MSFT, etc.
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_key TEXT NOT NULL,
+    account_name TEXT,
+    ticker TEXT NOT NULL,              -- AAPL, MSFT, etc.
     company_name TEXT NOT NULL,
     buy_price REAL NOT NULL,           -- USD
     buy_date TEXT NOT NULL,
@@ -32,7 +35,8 @@ CREATE TABLE IF NOT EXISTS us_stock_holdings (
     stop_loss REAL,                    -- USD
     trigger_type TEXT,                 -- intraday_surge, volume_surge, gap_up, etc.
     trigger_mode TEXT,                 -- morning, afternoon
-    sector TEXT                        -- GICS sector (Technology, Healthcare, etc.)
+    sector TEXT,                       -- GICS sector (Technology, Healthcare, etc.)
+    UNIQUE(account_key, ticker)
 )
 """
 
@@ -40,6 +44,8 @@ CREATE TABLE IF NOT EXISTS us_stock_holdings (
 TABLE_US_TRADING_HISTORY = """
 CREATE TABLE IF NOT EXISTS us_trading_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_key TEXT NOT NULL,
+    account_name TEXT,
     ticker TEXT NOT NULL,
     company_name TEXT NOT NULL,
     buy_price REAL NOT NULL,           -- USD
@@ -132,6 +138,8 @@ CREATE TABLE IF NOT EXISTS us_analysis_performance_tracker (
 TABLE_US_HOLDING_DECISIONS = """
 CREATE TABLE IF NOT EXISTS us_holding_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_key TEXT NOT NULL,
+    account_name TEXT,
     ticker TEXT NOT NULL,
     decision_date TEXT NOT NULL,
     decision_time TEXT NOT NULL,
@@ -153,9 +161,7 @@ CREATE TABLE IF NOT EXISTS us_holding_decisions (
     adjustment_urgency TEXT,
 
     full_json_data TEXT NOT NULL,
-
-    created_at TEXT DEFAULT (datetime('now', 'localtime')),
-    FOREIGN KEY (ticker) REFERENCES us_stock_holdings(ticker)
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
 )
 """
 
@@ -165,6 +171,10 @@ CREATE TABLE IF NOT EXISTS us_holding_decisions (
 TABLE_US_PENDING_ORDERS = """
 CREATE TABLE IF NOT EXISTS us_pending_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_key TEXT NOT NULL,
+    account_name TEXT,
+    product_code TEXT,
+    mode TEXT,
     ticker TEXT NOT NULL,
     order_type TEXT NOT NULL,          -- 'buy' or 'sell'
     limit_price REAL NOT NULL,         -- USD
@@ -186,10 +196,13 @@ CREATE TABLE IF NOT EXISTS us_pending_orders (
 
 US_INDEXES = [
     # us_stock_holdings indexes
+    "CREATE INDEX IF NOT EXISTS idx_us_holdings_account_key ON us_stock_holdings(account_key)",
+    "CREATE INDEX IF NOT EXISTS idx_us_holdings_account_ticker ON us_stock_holdings(account_key, ticker)",
     "CREATE INDEX IF NOT EXISTS idx_us_holdings_sector ON us_stock_holdings(sector)",
     "CREATE INDEX IF NOT EXISTS idx_us_holdings_trigger ON us_stock_holdings(trigger_type)",
 
     # us_trading_history indexes
+    "CREATE INDEX IF NOT EXISTS idx_us_history_account_key ON us_trading_history(account_key)",
     "CREATE INDEX IF NOT EXISTS idx_us_history_ticker ON us_trading_history(ticker)",
     "CREATE INDEX IF NOT EXISTS idx_us_history_date ON us_trading_history(sell_date)",
     "CREATE INDEX IF NOT EXISTS idx_us_history_sector ON us_trading_history(sector)",
@@ -205,10 +218,12 @@ US_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_us_perf_status ON us_analysis_performance_tracker(tracking_status)",
 
     # us_holding_decisions indexes
+    "CREATE INDEX IF NOT EXISTS idx_us_holding_dec_account_key ON us_holding_decisions(account_key)",
     "CREATE INDEX IF NOT EXISTS idx_us_holding_dec_ticker ON us_holding_decisions(ticker)",
     "CREATE INDEX IF NOT EXISTS idx_us_holding_dec_date ON us_holding_decisions(decision_date)",
 
     # us_pending_orders indexes
+    "CREATE INDEX IF NOT EXISTS idx_us_pending_account_key ON us_pending_orders(account_key)",
     "CREATE INDEX IF NOT EXISTS idx_us_pending_status ON us_pending_orders(status)",
     "CREATE INDEX IF NOT EXISTS idx_us_pending_created ON us_pending_orders(created_at)",
 ]
@@ -222,6 +237,228 @@ MARKET_COLUMN_MIGRATIONS = [
     ("trading_principles", "market TEXT DEFAULT 'KR'"),
     ("trading_intuitions", "market TEXT DEFAULT 'KR'"),
 ]
+
+
+def _table_exists(cursor, table_name: str) -> bool:
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+        (table_name,),
+    )
+    return cursor.fetchone() is not None
+
+
+def _get_columns(cursor, table_name: str) -> list[str]:
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    return [row[1] for row in cursor.fetchall()]
+
+
+def _build_projection(source_columns: list[str], target_columns: list[str], defaults: dict[str, str]) -> list[str]:
+    projection = []
+    for column in target_columns:
+        if column in source_columns:
+            projection.append(column)
+        else:
+            projection.append(f"{defaults[column]} AS {column}")
+    return projection
+
+
+def _get_primary_account_scope() -> tuple[str, str, str, str]:
+    try:
+        from trading import kis_auth as ka
+
+        default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
+        svr = "vps" if default_mode == "demo" else "prod"
+        primary_account = ka.resolve_account(svr=svr, market="us")
+        mode = "demo" if primary_account["svr"] == "vps" else "real"
+        return primary_account["account_key"], primary_account["name"], primary_account["product"], mode
+    except Exception as exc:
+        logger.warning(f"Falling back to legacy US account scope during migration: {exc}")
+        return "legacy:us:default", "legacy-primary-us", "01", "demo"
+
+
+def _rebuild_table(cursor, conn, table_name: str, create_sql: str, target_columns: list[str], defaults: dict[str, str]):
+    if not _table_exists(cursor, table_name):
+        return
+
+    source_columns = _get_columns(cursor, table_name)
+    if all(column in source_columns for column in target_columns if column in {"account_key", "account_name"}) and (
+        table_name != "us_stock_holdings" or "id" in source_columns
+    ):
+        return
+
+    logger.info(f"Migrating {table_name} to multi-account schema")
+    legacy_table = f"{table_name}_legacy"
+    cursor.execute(f"DROP TABLE IF EXISTS {legacy_table}")
+    cursor.execute(f"ALTER TABLE {table_name} RENAME TO {legacy_table}")
+    cursor.execute(create_sql)
+
+    projection = _build_projection(_get_columns(cursor, legacy_table), target_columns, defaults)
+    cursor.execute(
+        f"""
+        INSERT INTO {table_name} ({", ".join(target_columns)})
+        SELECT {", ".join(projection)}
+        FROM {legacy_table}
+        """
+    )
+    cursor.execute(f"DROP TABLE {legacy_table}")
+    conn.commit()
+
+
+def migrate_multi_account_schema(cursor, conn):
+    account_key, account_name, product_code, mode = _get_primary_account_scope()
+
+    _rebuild_table(
+        cursor,
+        conn,
+        "us_stock_holdings",
+        TABLE_US_STOCK_HOLDINGS,
+        [
+            "account_key",
+            "account_name",
+            "ticker",
+            "company_name",
+            "buy_price",
+            "buy_date",
+            "current_price",
+            "last_updated",
+            "scenario",
+            "target_price",
+            "stop_loss",
+            "trigger_type",
+            "trigger_mode",
+            "sector",
+        ],
+        {
+            "account_key": f"'{account_key}'",
+            "account_name": f"'{account_name}'",
+            "current_price": "NULL",
+            "last_updated": "NULL",
+            "scenario": "NULL",
+            "target_price": "NULL",
+            "stop_loss": "NULL",
+            "trigger_type": "NULL",
+            "trigger_mode": "NULL",
+            "sector": "NULL",
+        },
+    )
+
+    _rebuild_table(
+        cursor,
+        conn,
+        "us_trading_history",
+        TABLE_US_TRADING_HISTORY,
+        [
+            "id",
+            "account_key",
+            "account_name",
+            "ticker",
+            "company_name",
+            "buy_price",
+            "buy_date",
+            "sell_price",
+            "sell_date",
+            "profit_rate",
+            "holding_days",
+            "scenario",
+            "trigger_type",
+            "trigger_mode",
+            "sector",
+        ],
+        {
+            "account_key": f"'{account_key}'",
+            "account_name": f"'{account_name}'",
+            "scenario": "NULL",
+            "trigger_type": "NULL",
+            "trigger_mode": "NULL",
+            "sector": "NULL",
+        },
+    )
+
+    _rebuild_table(
+        cursor,
+        conn,
+        "us_holding_decisions",
+        TABLE_US_HOLDING_DECISIONS,
+        [
+            "id",
+            "account_key",
+            "account_name",
+            "ticker",
+            "decision_date",
+            "decision_time",
+            "current_price",
+            "should_sell",
+            "sell_reason",
+            "confidence",
+            "technical_trend",
+            "volume_analysis",
+            "market_condition_impact",
+            "time_factor",
+            "portfolio_adjustment_needed",
+            "adjustment_reason",
+            "new_target_price",
+            "new_stop_loss",
+            "adjustment_urgency",
+            "full_json_data",
+            "created_at",
+        ],
+        {
+            "account_key": f"'{account_key}'",
+            "account_name": f"'{account_name}'",
+            "sell_reason": "NULL",
+            "confidence": "NULL",
+            "technical_trend": "NULL",
+            "volume_analysis": "NULL",
+            "market_condition_impact": "NULL",
+            "time_factor": "NULL",
+            "portfolio_adjustment_needed": "0",
+            "adjustment_reason": "NULL",
+            "new_target_price": "NULL",
+            "new_stop_loss": "NULL",
+            "adjustment_urgency": "NULL",
+            "created_at": "datetime('now', 'localtime')",
+        },
+    )
+
+    _rebuild_table(
+        cursor,
+        conn,
+        "us_pending_orders",
+        TABLE_US_PENDING_ORDERS,
+        [
+            "id",
+            "account_key",
+            "account_name",
+            "product_code",
+            "mode",
+            "ticker",
+            "order_type",
+            "limit_price",
+            "buy_amount",
+            "exchange",
+            "trigger_type",
+            "trigger_mode",
+            "status",
+            "failure_reason",
+            "created_at",
+            "executed_at",
+            "order_result",
+        ],
+        {
+            "account_key": f"'{account_key}'",
+            "account_name": f"'{account_name}'",
+            "product_code": f"'{product_code}'",
+            "mode": f"'{mode}'",
+            "buy_amount": "NULL",
+            "exchange": "NULL",
+            "trigger_type": "NULL",
+            "trigger_mode": "NULL",
+            "status": "'pending'",
+            "failure_reason": "NULL",
+            "executed_at": "NULL",
+            "order_result": "NULL",
+        },
+    )
 
 
 def create_us_tables(cursor, conn):
@@ -248,6 +485,7 @@ def create_us_tables(cursor, conn):
         except Exception as e:
             logger.error(f"Error creating table {table_name}: {e}")
 
+    migrate_multi_account_schema(cursor, conn)
     conn.commit()
     logger.info("US database tables created")
 
@@ -446,6 +684,8 @@ def initialize_us_database(db_path: Optional[str] = None):
     # Migrate US watchlist history columns (for existing databases)
     migrate_us_watchlist_history_columns(cursor, conn)
 
+    migrate_multi_account_schema(cursor, conn)
+
     logger.info(f"US database initialized: {db_path}")
 
     return cursor, conn
@@ -475,6 +715,7 @@ async def async_initialize_us_database(db_path: Optional[str] = None):
         TABLE_US_TRADING_HISTORY,
         TABLE_US_WATCHLIST_HISTORY,
         TABLE_US_PERFORMANCE_TRACKER,
+        TABLE_US_HOLDING_DECISIONS,
         TABLE_US_PENDING_ORDERS,
     ]
 
@@ -505,18 +746,27 @@ async def async_initialize_us_database(db_path: Optional[str] = None):
 # Utility Functions
 # =============================================================================
 
-def get_us_holdings_count(cursor) -> int:
+def get_us_holdings_count(cursor, account_key: Optional[str] = None) -> int:
     """Get count of current US holdings."""
-    cursor.execute("SELECT COUNT(*) FROM us_stock_holdings")
+    if account_key:
+        cursor.execute("SELECT COUNT(*) FROM us_stock_holdings WHERE account_key = ?", (account_key,))
+    else:
+        cursor.execute("SELECT COUNT(*) FROM us_stock_holdings")
     return cursor.fetchone()[0]
 
 
-def get_us_holding(cursor, ticker: str) -> Optional[dict]:
+def get_us_holding(cursor, ticker: str, account_key: Optional[str] = None) -> Optional[dict]:
     """Get a specific US holding."""
-    cursor.execute(
-        "SELECT * FROM us_stock_holdings WHERE ticker = ?",
-        (ticker,)
-    )
+    if account_key:
+        cursor.execute(
+            "SELECT * FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
+            (ticker, account_key)
+        )
+    else:
+        cursor.execute(
+            "SELECT * FROM us_stock_holdings WHERE ticker = ?",
+            (ticker,)
+        )
     row = cursor.fetchone()
     if row:
         columns = [desc[0] for desc in cursor.description]
@@ -524,12 +774,18 @@ def get_us_holding(cursor, ticker: str) -> Optional[dict]:
     return None
 
 
-def is_us_ticker_in_holdings(cursor, ticker: str) -> bool:
+def is_us_ticker_in_holdings(cursor, ticker: str, account_key: Optional[str] = None) -> bool:
     """Check if a US ticker is in holdings."""
-    cursor.execute(
-        "SELECT COUNT(*) FROM us_stock_holdings WHERE ticker = ?",
-        (ticker,)
-    )
+    if account_key:
+        cursor.execute(
+            "SELECT COUNT(*) FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
+            (ticker, account_key)
+        )
+    else:
+        cursor.execute(
+            "SELECT COUNT(*) FROM us_stock_holdings WHERE ticker = ?",
+            (ticker,)
+        )
     return cursor.fetchone()[0] > 0
 
 

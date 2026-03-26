@@ -50,7 +50,7 @@ def get_pending_orders(conn: sqlite3.Connection, today_str: str) -> list:
     """Get today's pending orders."""
     cursor = conn.cursor()
     cursor.execute(
-        """SELECT id, ticker, order_type, limit_price, buy_amount, exchange
+        """SELECT id, account_key, account_name, product_code, mode, ticker, order_type, limit_price, buy_amount, exchange
            FROM us_pending_orders
            WHERE status = 'pending' AND date(created_at) = ?
            ORDER BY id ASC""",
@@ -118,16 +118,15 @@ def process_pending_orders(dry_run: bool = False):
     # Import trading module (prism-us/trading/ is first in sys.path)
     from trading.us_stock_trading import USStockTrading
 
-    # Initialize trading (uses config from environment)
+    # Check if reserved order window is open using a representative trader
     try:
-        trader = USStockTrading()
+        window_checker = USStockTrading()
     except Exception as e:
         logger.error(f"Failed to initialize trading module: {e}")
         conn.close()
         return
 
-    # Check if reserved order window is open
-    if not trader.is_reserved_order_available():
+    if not window_checker.is_reserved_order_available():
         logger.error("Reserved order window is not open. Aborting batch.")
         conn.close()
         return
@@ -138,19 +137,23 @@ def process_pending_orders(dry_run: bool = False):
 
     for order in pending_orders:
         order_id = order['id']
+        account_name = order.get('account_name')
+        product_code = order.get('product_code') or "01"
+        mode = order.get('mode') or "demo"
         ticker = order['ticker']
         order_type = order['order_type']
         limit_price = order['limit_price']
         buy_amount = order['buy_amount']
         exchange = order['exchange']
 
-        logger.info(f"Processing order #{order_id}: {order_type} {ticker} @ ${limit_price:.2f}")
+        logger.info(f"Processing order #{order_id}: {order_type} {ticker} @ ${limit_price:.2f} for {account_name}")
 
         if dry_run:
             logger.info(f"  [DRY RUN] Would execute {order_type} for {ticker}")
             continue
 
         try:
+            trader = USStockTrading(mode=mode, account_name=account_name, product_code=product_code)
             if order_type == 'buy':
                 result = trader.buy_reserved_order(
                     ticker=ticker,

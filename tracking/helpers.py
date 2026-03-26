@@ -48,7 +48,7 @@ def extract_ticker_info(report_path: str) -> Tuple[str, str]:
         return "", ""
 
 
-async def get_current_stock_price(cursor, ticker: str) -> float:
+async def get_current_stock_price(cursor, ticker: str, account_key: str | None = None) -> float:
     """
     Get current stock price.
 
@@ -75,21 +75,27 @@ async def get_current_stock_price(cursor, ticker: str) -> float:
             return float(current_price)
         else:
             logger.warning(f"Cannot find ticker {ticker}")
-            return _get_last_price_from_db(cursor, ticker)
+            return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
     except Exception as e:
         logger.error(f"Error querying current price for {ticker}: {str(e)}")
         logger.error(traceback.format_exc())
-        return _get_last_price_from_db(cursor, ticker)
+        return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
 
-def _get_last_price_from_db(cursor, ticker: str) -> float:
+def _get_last_price_from_db(cursor, ticker: str, account_key: str | None = None) -> float:
     """Get last saved price from DB as fallback."""
     try:
-        cursor.execute(
-            "SELECT current_price FROM stock_holdings WHERE ticker = ?",
-            (ticker,)
-        )
+        if account_key:
+            cursor.execute(
+                "SELECT current_price FROM stock_holdings WHERE ticker = ? AND account_key = ?",
+                (ticker, account_key)
+            )
+        else:
+            cursor.execute(
+                "SELECT current_price FROM stock_holdings WHERE ticker = ?",
+                (ticker,)
+            )
         row = cursor.fetchone()
         if row and row[0]:
             last_price = float(row[0])
@@ -170,7 +176,7 @@ async def get_trading_value_rank_change(ticker: str) -> Tuple[float, str]:
         return 0, "Trading value ranking analysis failed"
 
 
-def is_ticker_in_holdings(cursor, ticker: str) -> bool:
+def is_ticker_in_holdings(cursor, ticker: str, account_key: str | None = None) -> bool:
     """
     Check if stock is already in holdings.
 
@@ -182,10 +188,16 @@ def is_ticker_in_holdings(cursor, ticker: str) -> bool:
         bool: True if holding, False otherwise
     """
     try:
-        cursor.execute(
-            "SELECT COUNT(*) FROM stock_holdings WHERE ticker = ?",
-            (ticker,)
-        )
+        if account_key:
+            cursor.execute(
+                "SELECT COUNT(*) FROM stock_holdings WHERE ticker = ? AND account_key = ?",
+                (ticker, account_key)
+            )
+        else:
+            cursor.execute(
+                "SELECT COUNT(*) FROM stock_holdings WHERE ticker = ?",
+                (ticker,)
+            )
         count = cursor.fetchone()[0]
         return count > 0
     except Exception as e:
@@ -193,10 +205,13 @@ def is_ticker_in_holdings(cursor, ticker: str) -> bool:
         return False
 
 
-def get_current_slots_count(cursor) -> int:
+def get_current_slots_count(cursor, account_key: str | None = None) -> int:
     """Get current number of holdings."""
     try:
-        cursor.execute("SELECT COUNT(*) FROM stock_holdings")
+        if account_key:
+            cursor.execute("SELECT COUNT(*) FROM stock_holdings WHERE account_key = ?", (account_key,))
+        else:
+            cursor.execute("SELECT COUNT(*) FROM stock_holdings")
         count = cursor.fetchone()[0]
         return count
     except Exception as e:
@@ -204,7 +219,7 @@ def get_current_slots_count(cursor) -> int:
         return 0
 
 
-def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentration_ratio: float) -> bool:
+def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentration_ratio: float, account_key: str | None = None) -> bool:
     """
     Check for over-concentration in same sector.
 
@@ -221,7 +236,10 @@ def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentrat
         if not sector or sector == "Unknown":
             return True
 
-        cursor.execute("SELECT scenario FROM stock_holdings")
+        if account_key:
+            cursor.execute("SELECT scenario FROM stock_holdings WHERE account_key = ?", (account_key,))
+        else:
+            cursor.execute("SELECT scenario FROM stock_holdings")
         holdings_scenarios = cursor.fetchall()
 
         sectors = []
