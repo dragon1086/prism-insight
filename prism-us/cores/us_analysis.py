@@ -148,7 +148,7 @@ async def analyze_us_stock(
             logger.warning(f"US data prefetch failed, falling back to MCP: {e}")
             prefetched = {}
 
-        if os.getenv("ADANOS_API_KEY"):
+        if include_news and os.getenv("ADANOS_API_KEY"):
             try:
                 social_client = USSocialSentimentClient()
                 social_snapshot = social_client.get_social_sentiment_markdown(ticker=ticker, days=7)
