@@ -1,7 +1,7 @@
 """
 Phase 2: Social Sentiment Client Tests
 
-Tests for the optional Adanos-based social sentiment client used by PRISM-US.
+Tests for the optional social sentiment client used by PRISM-US.
 """
 
 import sys

@@ -1,9 +1,10 @@
 """
 US Social Sentiment Client
 
-Fetches structured US stock social sentiment snapshots from the Adanos API.
-The client is intentionally read-only and optional so the existing PRISM-US
-analysis flow continues to work unchanged when no API key is configured.
+Fetches structured US stock social sentiment snapshots from an optional
+third-party API. The client is intentionally read-only and optional so the
+existing PRISM-US analysis flow continues to work unchanged when no API key is
+configured.
 """
 
 from __future__ import annotations
