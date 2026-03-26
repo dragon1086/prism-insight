@@ -118,7 +118,11 @@ def get_us_agent_directory(
             prefetched_data={"company_profile": pf.get("company_profile", ""), "holder_info": pf.get("holder_info", ""), "segment_revenue": pf.get("segment_revenue", "")} if pf.get("company_profile") else None
         ),
         "news_analysis": lambda: create_us_news_analysis_agent(
-            company_name, ticker, reference_date, language
+            company_name,
+            ticker,
+            reference_date,
+            language,
+            prefetched_social_sentiment=pf.get("social_sentiment"),
         ),
         "market_index_analysis": lambda: create_us_market_index_analysis_agent(
             reference_date, max_years_ago, max_years, language,

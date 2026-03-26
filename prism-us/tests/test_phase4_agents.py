@@ -167,6 +167,22 @@ class TestAgentDirectory:
         assert 'unknown_section' not in agents
         assert 'price_volume_analysis' in agents
 
+    def test_news_agent_receives_prefetched_social_sentiment(self, sample_reference_date):
+        """News agent should embed prefetched social sentiment context when provided."""
+        agents = get_us_agent_directory(
+            company_name="Tesla, Inc.",
+            ticker="TSLA",
+            reference_date=sample_reference_date,
+            base_sections=['news_analysis'],
+            language="en",
+            prefetched_data={"social_sentiment": "### Structured Social Sentiment Snapshot (7d)\n- Average Buzz: 74.3/100"},
+        )
+
+        agent = agents['news_analysis']
+        assert "Structured Social Sentiment Snapshot" in agent.instruction
+        assert "do not make extra tool calls for social sentiment" in agent.instruction
+        assert agent.server_names == ["perplexity", "firecrawl"]
+
 
 # =============================================================================
 # Test: Individual Agent Imports
