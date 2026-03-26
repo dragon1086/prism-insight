@@ -12,7 +12,8 @@ def create_us_news_analysis_agent(
     company_name: str,
     ticker: str,
     reference_date: str,
-    language: str = "ko"
+    language: str = "ko",
+    prefetched_social_sentiment: str = None,
 ):
     """Create US news analysis agent
 
@@ -25,6 +26,23 @@ def create_us_news_analysis_agent(
     Returns:
         Agent: News analysis agent
     """
+
+    social_context = ""
+    if prefetched_social_sentiment:
+        if language == "ko":
+            social_context = (
+                "\n## 추가 구조화 소셜 센티먼트 데이터\n"
+                "다음 데이터는 사전 수집된 공개 소셜/뉴스 센티먼트 스냅샷입니다. "
+                "최근 뉴스 해석에 이 데이터를 함께 반영하되, 소셜 센티먼트 데이터를 위해 별도 도구 호출은 하지 마세요.\n\n"
+                f"{prefetched_social_sentiment}\n"
+            )
+        else:
+            social_context = (
+                "\n## Additional Structured Social Sentiment Context\n"
+                "The following snapshot has already been prefetched. Use it alongside the news analysis, "
+                "but do not make extra tool calls for social sentiment.\n\n"
+                f"{prefetched_social_sentiment}\n"
+            )
 
     # Format date for display
     ref_year = reference_date[:4]
@@ -215,6 +233,8 @@ def create_us_news_analysis_agent(
 Company: {company_name} ({ticker})
 Analysis Date: {reference_date}(YYYYMMDD format)
 """
+
+    instruction += social_context
 
     return Agent(
         name="us_news_analysis_agent",

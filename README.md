@@ -127,6 +127,8 @@ python3 demo.py TSLA --language ko  # Tesla (Korean report)
 > **Get your OpenAI API key** from [OpenAI Platform](https://platform.openai.com/api-keys)
 >
 > **Optional**: Add a [Perplexity API key](https://www.perplexity.ai/) to `mcp_agent.config.yaml` for news analysis
+>
+> **Optional**: Add `ADANOS_API_KEY` to enrich US stock news analysis with structured social sentiment context
 
 Your AI-generated PDF reports will be saved in `prism-us/pdf_reports/`.
 
