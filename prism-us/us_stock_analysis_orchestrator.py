@@ -32,10 +32,11 @@ from pathlib import Path
 # Add paths for imports
 PROJECT_ROOT = Path(__file__).parent.parent
 PRISM_US_DIR = Path(__file__).parent
-sys.path.insert(0, str(PRISM_US_DIR))
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import cores.openai_debug  # noqa: F401 — OpenAI 400 error request body logging
+
+sys.path.insert(0, str(PRISM_US_DIR))
 
 # Logger configuration
 logging.basicConfig(
