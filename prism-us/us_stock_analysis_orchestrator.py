@@ -19,7 +19,6 @@ Key Differences from Korean Version:
 from dotenv import load_dotenv
 load_dotenv()
 
-import cores.openai_debug  # noqa: F401 — OpenAI 400 error request body logging
 import argparse
 import asyncio
 import json
@@ -35,6 +34,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 PRISM_US_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PRISM_US_DIR))
+
+import cores.openai_debug  # noqa: F401 — OpenAI 400 error request body logging
 
 # Logger configuration
 logging.basicConfig(
