@@ -180,10 +180,10 @@ class USSocialSentimentClient:
         """Extract a ticker row from compare payloads."""
         if isinstance(payload, list):
             candidates = payload
-        elif isinstance(payload, dict) and isinstance(payload.get("data"), list):
-            candidates = payload["data"]
         elif isinstance(payload, dict):
-            candidates = [payload]
+            candidates = payload.get("stocks") or payload.get("data")
+            if not isinstance(candidates, list):
+                candidates = [payload]
         else:
             return None
 
