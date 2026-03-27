@@ -9,6 +9,7 @@ configured.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 from statistics import mean
@@ -74,10 +75,15 @@ class USSocialSentimentClient:
             return None
 
         sources: Dict[str, Dict[str, Any]] = {}
-        for platform in self.PLATFORM_SPECS:
-            parsed = self._fetch_platform_snapshot(platform, ticker, days)
-            if parsed:
-                sources[platform] = parsed
+        with ThreadPoolExecutor(max_workers=len(self.PLATFORM_SPECS)) as pool:
+            futures = {
+                platform: pool.submit(self._fetch_platform_snapshot, platform, ticker, days)
+                for platform in self.PLATFORM_SPECS
+            }
+            for platform in self.PLATFORM_SPECS:
+                parsed = futures[platform].result()
+                if parsed:
+                    sources[platform] = parsed
 
         if not sources:
             return None
@@ -110,7 +116,7 @@ class USSocialSentimentClient:
             "",
         ]
 
-        for platform in ("reddit", "x", "news", "polymarket"):
+        for platform in self.PLATFORM_SPECS:
             source = snapshot["sources"].get(platform)
             if not source:
                 continue

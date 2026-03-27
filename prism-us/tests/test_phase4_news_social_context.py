@@ -31,4 +31,6 @@ def test_news_agent_receives_prefetched_social_sentiment(sample_reference_date):
     agent = agents["news_analysis"]
     assert "Structured Social Sentiment Snapshot" in agent.instruction
     assert "do not make extra tool calls for social sentiment" in agent.instruction
+    assert "Social sentiment alignment" in agent.instruction
+    assert agent.instruction.index("Structured Social Sentiment Snapshot") < agent.instruction.index("## Output Format")
     assert agent.server_names == ["perplexity", "firecrawl"]
