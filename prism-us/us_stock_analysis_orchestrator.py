@@ -19,6 +19,7 @@ Key Differences from Korean Version:
 from dotenv import load_dotenv
 load_dotenv()
 
+import cores.openai_debug  # noqa: F401 — OpenAI 400 error request body logging
 import argparse
 import asyncio
 import json
