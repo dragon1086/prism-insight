@@ -34,23 +34,17 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import importlib.util as _ilu
-_PRISM_US_DIR = os.path.dirname(os.path.abspath(__file__))
-_surge_spec = _ilu.spec_from_file_location(
-    "us_surge_detector",
-    os.path.join(_PRISM_US_DIR, "cores", "us_surge_detector.py")
+from cores.us_surge_detector import (
+    get_snapshot,
+    get_previous_snapshot,
+    get_multi_day_ohlcv,
+    get_major_tickers,
+    get_ticker_name,
+    get_nearest_business_day,
+    apply_absolute_filters,
+    normalize_and_score,
+    enhance_dataframe,
 )
-_surge_mod = _ilu.module_from_spec(_surge_spec)
-_surge_spec.loader.exec_module(_surge_mod)
-get_snapshot = _surge_mod.get_snapshot
-get_previous_snapshot = _surge_mod.get_previous_snapshot
-get_multi_day_ohlcv = _surge_mod.get_multi_day_ohlcv
-get_major_tickers = _surge_mod.get_major_tickers
-get_ticker_name = _surge_mod.get_ticker_name
-get_nearest_business_day = _surge_mod.get_nearest_business_day
-apply_absolute_filters = _surge_mod.apply_absolute_filters
-normalize_and_score = _surge_mod.normalize_and_score
-enhance_dataframe = _surge_mod.enhance_dataframe
 
 # Logger setup
 logger = logging.getLogger(__name__)

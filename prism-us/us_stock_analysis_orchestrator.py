@@ -72,19 +72,31 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     return module
 
 
-def _import_from_us_cores(module_name: str, relative_path: str):
-    """
-    Import module directly from prism-us/cores/ directory.
+def _import_proxy_safe():
+    """Load chatgpt_proxy from main project cores/ without polluting sys.modules['cores'].
 
-    Counterpart to _import_from_main_cores — used when Python's cached 'cores'
-    package points to the main project's cores/ and shadows prism-us/cores/.
+    The standard 'from cores.chatgpt_proxy import ...' caches PROJECT_ROOT/cores/
+    in sys.modules['cores'], which shadows prism-us/cores/ for all later imports.
+    This function saves and restores sys.modules + sys.path so the import leaves
+    no trace that would affect subsequent 'from cores.xxx' resolution.
     """
-    import importlib.util
-    file_path = PRISM_US_DIR / relative_path
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    saved_cores = sys.modules.get("cores")
+    saved_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT))
+        if "cores" in sys.modules:
+            del sys.modules["cores"]
+        import cores.chatgpt_proxy as proxy_mod
+        return proxy_mod
+    finally:
+        sys.path[:] = saved_path
+        # Clean up sub-module entries registered during import
+        for key in [k for k in sys.modules if k.startswith("cores.chatgpt_proxy")]:
+            del sys.modules[key]
+        if saved_cores is not None:
+            sys.modules["cores"] = saved_cores
+        elif "cores" in sys.modules:
+            del sys.modules["cores"]
 
 
 # Pre-load telegram_translator_agent from main project (used in multiple methods)
@@ -254,8 +266,7 @@ class USStockAnalysisOrchestrator:
 
         try:
             # Step 1: Prefetch index data and compute regime programmatically
-            _us_prefetch_mod = _import_from_us_cores("us_data_prefetch", "cores/data_prefetch.py")
-            prefetch_us_macro_intelligence_data = _us_prefetch_mod.prefetch_us_macro_intelligence_data
+            from cores.data_prefetch import prefetch_us_macro_intelligence_data
             prefetched = prefetch_us_macro_intelligence_data(reference_date)
             logger.info(f"US macro prefetch complete: {list(prefetched.keys())}")
 
@@ -267,8 +278,7 @@ class USStockAnalysisOrchestrator:
             # Step 2: Run LLM agent with perplexity for qualitative analysis
             from mcp_agent.app import MCPApp
             from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
-            _macro_agent_mod = _import_from_us_cores("us_macro_intelligence_agent", "cores/agents/macro_intelligence_agent.py")
-            create_us_macro_intelligence_agent = _macro_agent_mod.create_us_macro_intelligence_agent
+            from cores.agents.macro_intelligence_agent import create_us_macro_intelligence_agent
 
             macro_app = MCPApp(name="us_macro_intelligence")
 
@@ -457,8 +467,7 @@ class USStockAnalysisOrchestrator:
             output_file = str(US_REPORTS_DIR / f"{ticker}_{company_name}_{reference_date}_{mode}_gpt5.4-mini.md")
 
             try:
-                _us_analysis_mod = _import_from_us_cores("us_analysis", "cores/us_analysis.py")
-                analyze_us_stock = _us_analysis_mod.analyze_us_stock
+                from cores.us_analysis import analyze_us_stock
 
                 logger.info(f"[{idx}/{len(tickers)}] Starting analyze_us_stock function call")
                 report = await analyze_us_stock(
@@ -1186,18 +1195,26 @@ async def main():
 
     # ChatGPT OAuth proxy setup
     proxy_started = False
+    stop_proxy = None
     if not args.no_proxy and os.getenv("PRISM_OPENAI_AUTH_MODE") == "chatgpt_oauth":
         try:
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-            from cores.chatgpt_proxy import inject_env, start_proxy
+            _proxy_mod = _import_proxy_safe()
+            inject_env = _proxy_mod.inject_env
+            start_proxy = _proxy_mod.start_proxy
+            clear_env = _proxy_mod.clear_env
+            stop_proxy = _proxy_mod.stop_proxy
+
             inject_env()
             proxy_started = await start_proxy()
             if not proxy_started:
                 logger.warning("ChatGPT OAuth proxy failed to start, falling back to standard API")
-                from cores.chatgpt_proxy import clear_env
                 clear_env()
         except Exception as e:
             logger.warning("ChatGPT OAuth proxy setup error: %s, falling back to standard API", e)
+            try:
+                _proxy_mod.clear_env()
+            except Exception:
+                pass
 
     orchestrator = USStockAnalysisOrchestrator(telegram_config=telegram_config)
 
@@ -1211,10 +1228,8 @@ async def main():
         await orchestrator.run_full_pipeline("afternoon", language=args.language, override_date=args.date)
 
     # Stop proxy if started
-    if proxy_started:
+    if proxy_started and stop_proxy is not None:
         try:
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-            from cores.chatgpt_proxy import stop_proxy
             await stop_proxy()
         except Exception:
             pass
