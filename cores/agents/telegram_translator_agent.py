@@ -135,8 +135,7 @@ async def translate_telegram_message(
                 model=model,
                 maxTokens=100000,
                 temperature=0.3,  # Lower temperature for more consistent translations
-                max_iterations=1,  # Single pass translation, no complex reasoning needed
-                reasoning_effort="none",  # gpt-5-nano is not a reasoning model
+                max_iterations=1  # Single pass translation, no complex reasoning needed
             )
         )
 
