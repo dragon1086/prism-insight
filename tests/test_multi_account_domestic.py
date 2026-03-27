@@ -316,6 +316,91 @@ def test_kr_schema_migration_backfills_primary_account(monkeypatch):
     assert cursor.fetchone() == ("vps:11112222:01", "KR Primary", "000660")
 
 
+def test_kr_schema_recovers_interrupted_stock_holdings_migration(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE stock_holdings_legacy (
+            ticker TEXT PRIMARY KEY,
+            company_name TEXT NOT NULL,
+            buy_price REAL NOT NULL,
+            buy_date TEXT NOT NULL,
+            current_price REAL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO stock_holdings_legacy (ticker, company_name, buy_price, buy_date, current_price)
+        VALUES ('005930', 'Samsung Electronics', 70000, '2026-03-01', 71000)
+        """
+    )
+    cursor.execute(kr_schema.TABLE_STOCK_HOLDINGS)
+    conn.commit()
+
+    monkeypatch.setattr(
+        kr_schema,
+        "_get_primary_account_scope",
+        lambda: ("vps:11112222:01", "KR Primary"),
+    )
+
+    kr_schema.migrate_multi_account_schema(cursor, conn)
+
+    cursor.execute("SELECT account_key, account_name, ticker FROM stock_holdings")
+    assert cursor.fetchone() == ("vps:11112222:01", "KR Primary", "005930")
+    assert not kr_schema._table_exists(cursor, "stock_holdings_legacy")
+
+
+def test_kr_schema_requires_primary_account_when_migration_needed(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE stock_holdings (
+            ticker TEXT PRIMARY KEY,
+            company_name TEXT NOT NULL,
+            buy_price REAL NOT NULL,
+            buy_date TEXT NOT NULL,
+            current_price REAL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO stock_holdings (ticker, company_name, buy_price, buy_date, current_price)
+        VALUES ('005930', 'Samsung Electronics', 70000, '2026-03-01', 71000)
+        """
+    )
+    conn.commit()
+
+    def _raise_scope_error():
+        raise RuntimeError("KIS auth unavailable")
+
+    monkeypatch.setattr(kr_schema, "_get_primary_account_scope", _raise_scope_error)
+
+    with pytest.raises(RuntimeError, match="Unable to verify the primary account"):
+        kr_schema.migrate_multi_account_schema(cursor, conn)
+
+    cursor.execute("PRAGMA table_info(stock_holdings)")
+    assert "account_key" not in {row[1] for row in cursor.fetchall()}
+
+
+def test_kr_schema_skips_scope_resolution_when_already_migrated(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    cursor = conn.cursor()
+    kr_schema.create_all_tables(cursor, conn)
+
+    def _raise_scope_error():
+        raise AssertionError("Primary account resolution should not be called")
+
+    monkeypatch.setattr(kr_schema, "_get_primary_account_scope", _raise_scope_error)
+
+    kr_schema.migrate_multi_account_schema(cursor, conn)
+
+
 def test_kr_helpers_apply_account_scope(monkeypatch):
     conn = sqlite3.connect(":memory:")
     cursor = conn.cursor()

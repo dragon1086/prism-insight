@@ -286,6 +286,138 @@ def test_us_schema_migration_backfills_primary_account_scope(monkeypatch):
     assert cursor.fetchone() == ("vps:us-primary:01", "US Primary", "01", "demo", "MSFT")
 
 
+def test_us_schema_recovers_interrupted_migration(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE us_stock_holdings_legacy (
+            ticker TEXT PRIMARY KEY,
+            company_name TEXT NOT NULL,
+            buy_price REAL NOT NULL,
+            buy_date TEXT NOT NULL,
+            current_price REAL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO us_stock_holdings_legacy (ticker, company_name, buy_price, buy_date, current_price)
+        VALUES ('AAPL', 'Apple Inc.', 180.5, '2026-03-01', 185.0)
+        """
+    )
+    cursor.execute(us_schema.TABLE_US_STOCK_HOLDINGS)
+    conn.commit()
+
+    monkeypatch.setattr(
+        us_schema,
+        "_get_primary_account_scope",
+        lambda: ("vps:us-primary:01", "US Primary", "01", "demo"),
+    )
+
+    us_schema.migrate_multi_account_schema(cursor, conn)
+
+    cursor.execute("SELECT account_key, account_name, ticker FROM us_stock_holdings")
+    assert cursor.fetchone() == ("vps:us-primary:01", "US Primary", "AAPL")
+    assert not us_schema._table_exists(cursor, "us_stock_holdings_legacy")
+
+
+def test_us_schema_requires_primary_account_when_migration_needed(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE us_stock_holdings (
+            ticker TEXT PRIMARY KEY,
+            company_name TEXT NOT NULL,
+            buy_price REAL NOT NULL,
+            buy_date TEXT NOT NULL,
+            current_price REAL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO us_stock_holdings (ticker, company_name, buy_price, buy_date, current_price)
+        VALUES ('AAPL', 'Apple Inc.', 180.5, '2026-03-01', 185.0)
+        """
+    )
+    conn.commit()
+
+    def _raise_scope_error():
+        raise RuntimeError("KIS auth unavailable")
+
+    monkeypatch.setattr(us_schema, "_get_primary_account_scope", _raise_scope_error)
+
+    with pytest.raises(RuntimeError, match="Unable to verify the primary account"):
+        us_schema.migrate_multi_account_schema(cursor, conn)
+
+    cursor.execute("PRAGMA table_info(us_stock_holdings)")
+    assert "account_key" not in {row[1] for row in cursor.fetchall()}
+
+
+def test_us_schema_skips_scope_resolution_when_already_migrated(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    cursor = conn.cursor()
+    us_schema.create_us_tables(cursor, conn)
+
+    def _raise_scope_error():
+        raise AssertionError("Primary account resolution should not be called")
+
+    monkeypatch.setattr(us_schema, "_get_primary_account_scope", _raise_scope_error)
+
+    us_schema.migrate_multi_account_schema(cursor, conn)
+
+
+@pytest.mark.asyncio
+async def test_async_initialize_us_database_migrates_legacy_schema(monkeypatch):
+    temp_file = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+    temp_path = Path(temp_file.name)
+    temp_file.close()
+
+    try:
+        conn = sqlite3.connect(str(temp_path))
+        conn.execute(
+            """
+            CREATE TABLE us_stock_holdings (
+                ticker TEXT PRIMARY KEY,
+                company_name TEXT NOT NULL,
+                buy_price REAL NOT NULL,
+                buy_date TEXT NOT NULL,
+                current_price REAL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO us_stock_holdings (ticker, company_name, buy_price, buy_date, current_price)
+            VALUES ('AAPL', 'Apple Inc.', 180.5, '2026-03-01', 185.0)
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(
+            us_schema,
+            "_get_primary_account_scope",
+            lambda: ("vps:us-primary:01", "US Primary", "01", "demo"),
+        )
+
+        async_conn = await us_schema.async_initialize_us_database(str(temp_path))
+        async_cursor = await async_conn.execute(
+            "SELECT account_key, account_name, ticker FROM us_stock_holdings"
+        )
+        row = await async_cursor.fetchone()
+        await async_cursor.close()
+        await async_conn.close()
+
+        assert row == ("vps:us-primary:01", "US Primary", "AAPL")
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def test_us_schema_allows_same_ticker_across_accounts(initialized_us_temp_database):
     cursor, conn, _ = initialized_us_temp_database
 

@@ -90,6 +90,11 @@ class USDashboardDataGenerator:
         except Exception as exc:
             logger.warning(f"US primary account resolution failed: {exc}")
             return None
+
+    def _get_cached_primary_account_key(self) -> Optional[str]:
+        if not hasattr(self, "_primary_account_key"):
+            self._primary_account_key = self._get_primary_account_key()
+        return self._primary_account_key
     US_SEASON1_START_AMOUNT = 10000  # $10,000 USD
 
     def __init__(
@@ -111,6 +116,7 @@ class USDashboardDataGenerator:
         self.output_path = output_path
         self.trading_mode = trading_mode if trading_mode is not None else _cfg.get("default_mode", "demo")
         self.enable_translation = enable_translation and TRANSLATION_AVAILABLE
+        self._primary_account_key = self._get_primary_account_key()
 
         # Initialize translator
         if self.enable_translation:
@@ -259,7 +265,7 @@ class USDashboardDataGenerator:
     def get_us_stock_holdings(self, conn) -> List[Dict]:
         """Get current US stock holdings data"""
         cursor = conn.cursor()
-        primary_account_key = self._get_primary_account_key()
+        primary_account_key = self._get_cached_primary_account_key()
 
         # Check if table exists
         cursor.execute("""
@@ -325,7 +331,7 @@ class USDashboardDataGenerator:
     def get_us_trading_history(self, conn) -> List[Dict]:
         """Get US trading history data"""
         cursor = conn.cursor()
-        primary_account_key = self._get_primary_account_key()
+        primary_account_key = self._get_cached_primary_account_key()
 
         # Check if table exists
         cursor.execute("""
@@ -374,7 +380,7 @@ class USDashboardDataGenerator:
         """
         try:
             cursor = conn.cursor()
-            primary_account_key = self._get_primary_account_key()
+            primary_account_key = self._get_cached_primary_account_key()
 
             # Check if table exists
             cursor.execute("""
@@ -751,7 +757,7 @@ class USDashboardDataGenerator:
 
             # 3. Actual trading stats (from us_trading_history, last 30 days)
             actual_trading = {}
-            primary_account_key = self._get_primary_account_key()
+            primary_account_key = self._get_cached_primary_account_key()
             try:
                 query = """
                     SELECT
@@ -1064,7 +1070,7 @@ class USDashboardDataGenerator:
             # 2. Actual trading data (us_trading_history)
             trading_data = {}
             US_TRIGGER_TRACKING_START_DATE = '2026-01-20'
-            primary_account_key = self._get_primary_account_key()
+            primary_account_key = self._get_cached_primary_account_key()
             try:
                 query = """
                     SELECT

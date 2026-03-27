@@ -272,193 +272,295 @@ def _get_primary_account_scope() -> tuple[str, str, str, str]:
         mode = "demo" if primary_account["svr"] == "vps" else "real"
         return primary_account["account_key"], primary_account["name"], primary_account["product"], mode
     except Exception as exc:
-        logger.warning(f"Falling back to legacy US account scope during migration: {exc}")
-        return "legacy:us:default", "legacy-primary-us", "01", "demo"
+        raise RuntimeError(
+            "Unable to verify the primary account required for US DB migration. "
+            "Please ensure at least one US account is configured in kis_devlp.yaml. "
+            f"Migration aborted to prevent data orphaning. Cause: {exc}"
+        ) from exc
 
 
-def _rebuild_table(cursor, conn, table_name: str, create_sql: str, target_columns: list[str], defaults: dict[str, str]):
+def _count_rows(cursor, table_name: str) -> int:
+    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+    return cursor.fetchone()[0]
+
+
+def _table_requires_migration(cursor, table_name: str, marker_columns: list[str]) -> bool:
+    if _table_exists(cursor, f"{table_name}_legacy"):
+        return True
+    if not _table_exists(cursor, table_name):
+        return False
+    source_columns = _get_columns(cursor, table_name)
+    return not all(column in source_columns for column in marker_columns)
+
+
+def _recover_interrupted_migration(cursor, conn, table_name: str):
+    legacy_table = f"{table_name}_legacy"
+    if not (_table_exists(cursor, table_name) and _table_exists(cursor, legacy_table)):
+        return
+
+    current_count = _count_rows(cursor, table_name)
+    legacy_count = _count_rows(cursor, legacy_table)
+    if current_count == 0:
+        logger.warning(f"Recovering interrupted migration for {table_name} from {legacy_table}")
+        cursor.execute(f"DROP TABLE {table_name}")
+        cursor.execute(f"ALTER TABLE {legacy_table} RENAME TO {table_name}")
+        conn.commit()
+        return
+
+    if legacy_count > 0:
+        raise RuntimeError(
+            f"Ambiguous interrupted migration for {table_name}: both {table_name} and {legacy_table} contain rows. "
+            "Manual intervention is required."
+        )
+
+
+def _rebuild_table(
+    cursor,
+    conn,
+    table_name: str,
+    create_sql: str,
+    target_columns: list[str],
+    defaults: dict[str, str],
+    marker_columns: list[str],
+):
+    _recover_interrupted_migration(cursor, conn, table_name)
+
     if not _table_exists(cursor, table_name):
         return
 
-    source_columns = _get_columns(cursor, table_name)
-    if all(column in source_columns for column in target_columns if column in {"account_key", "account_name"}) and (
-        table_name != "us_stock_holdings" or "id" in source_columns
-    ):
+    if not _table_requires_migration(cursor, table_name, marker_columns):
         return
 
-    logger.info(f"Migrating {table_name} to multi-account schema")
     legacy_table = f"{table_name}_legacy"
-    cursor.execute(f"DROP TABLE IF EXISTS {legacy_table}")
-    cursor.execute(f"ALTER TABLE {table_name} RENAME TO {legacy_table}")
-    cursor.execute(create_sql)
+    backup_table = f"{table_name}_pre_multi_account_backup"
 
-    projection = _build_projection(_get_columns(cursor, legacy_table), target_columns, defaults)
-    cursor.execute(
-        f"""
-        INSERT INTO {table_name} ({", ".join(target_columns)})
-        SELECT {", ".join(projection)}
-        FROM {legacy_table}
-        """
-    )
-    cursor.execute(f"DROP TABLE {legacy_table}")
-    conn.commit()
+    if _table_exists(cursor, legacy_table):
+        raise RuntimeError(
+            f"Ambiguous migration state for {table_name}: legacy table {legacy_table} already exists. "
+            "Manual intervention is required."
+        )
+
+    if not _table_exists(cursor, backup_table):
+        logger.info(f"Creating backup table {backup_table} before migrating {table_name}")
+        cursor.execute(f"CREATE TABLE {backup_table} AS SELECT * FROM {table_name}")
+        conn.commit()
+    else:
+        logger.warning(f"Preserving existing backup table {backup_table} for {table_name}")
+
+    logger.info(f"Migrating {table_name} to multi-account schema")
+
+    try:
+        cursor.execute(f"ALTER TABLE {table_name} RENAME TO {legacy_table}")
+        cursor.execute(create_sql)
+
+        projection = _build_projection(_get_columns(cursor, legacy_table), target_columns, defaults)
+        cursor.execute(
+            f"""
+            INSERT INTO {table_name} ({", ".join(target_columns)})
+            SELECT {", ".join(projection)}
+            FROM {legacy_table}
+            """
+        )
+
+        source_count = _count_rows(cursor, legacy_table)
+        target_count = _count_rows(cursor, table_name)
+        if source_count != target_count:
+            raise RuntimeError(
+                f"Row count mismatch during {table_name} migration: {legacy_table}={source_count}, {table_name}={target_count}"
+            )
+
+        cursor.execute(f"DROP TABLE {legacy_table}")
+        conn.commit()
+
+        if _table_exists(cursor, backup_table):
+            cursor.execute(f"DROP TABLE {backup_table}")
+            conn.commit()
+    except Exception as exc:
+        logger.error(f"{table_name} migration failed: {exc}")
+        logger.error(f"Manual recovery is available from backup table {backup_table}")
+        raise
 
 
 def migrate_multi_account_schema(cursor, conn):
-    account_key, account_name, product_code, mode = _get_primary_account_scope()
+    primary_scope = None
 
-    _rebuild_table(
-        cursor,
-        conn,
-        "us_stock_holdings",
-        TABLE_US_STOCK_HOLDINGS,
-        [
-            "account_key",
-            "account_name",
-            "ticker",
-            "company_name",
-            "buy_price",
-            "buy_date",
-            "current_price",
-            "last_updated",
-            "scenario",
-            "target_price",
-            "stop_loss",
-            "trigger_type",
-            "trigger_mode",
-            "sector",
-        ],
-        {
-            "account_key": f"'{account_key}'",
-            "account_name": f"'{account_name}'",
-            "current_price": "NULL",
-            "last_updated": "NULL",
-            "scenario": "NULL",
-            "target_price": "NULL",
-            "stop_loss": "NULL",
-            "trigger_type": "NULL",
-            "trigger_mode": "NULL",
-            "sector": "NULL",
-        },
-    )
+    def get_primary_scope():
+        nonlocal primary_scope
+        if primary_scope is None:
+            try:
+                primary_scope = _get_primary_account_scope()
+            except Exception as exc:
+                raise RuntimeError(
+                    "Unable to verify the primary account required for US DB migration. "
+                    "Please ensure at least one US account is configured in kis_devlp.yaml. "
+                    f"Migration aborted to prevent data orphaning. Cause: {exc}"
+                ) from exc
+        return primary_scope
 
-    _rebuild_table(
-        cursor,
-        conn,
-        "us_trading_history",
-        TABLE_US_TRADING_HISTORY,
-        [
-            "id",
-            "account_key",
-            "account_name",
-            "ticker",
-            "company_name",
-            "buy_price",
-            "buy_date",
-            "sell_price",
-            "sell_date",
-            "profit_rate",
-            "holding_days",
-            "scenario",
-            "trigger_type",
-            "trigger_mode",
-            "sector",
-        ],
-        {
-            "account_key": f"'{account_key}'",
-            "account_name": f"'{account_name}'",
-            "scenario": "NULL",
-            "trigger_type": "NULL",
-            "trigger_mode": "NULL",
-            "sector": "NULL",
-        },
-    )
+    if _table_requires_migration(cursor, "us_stock_holdings", ["id", "account_key", "account_name"]):
+        account_key, account_name, _, _ = get_primary_scope()
+        _rebuild_table(
+            cursor,
+            conn,
+            "us_stock_holdings",
+            TABLE_US_STOCK_HOLDINGS,
+            [
+                "account_key",
+                "account_name",
+                "ticker",
+                "company_name",
+                "buy_price",
+                "buy_date",
+                "current_price",
+                "last_updated",
+                "scenario",
+                "target_price",
+                "stop_loss",
+                "trigger_type",
+                "trigger_mode",
+                "sector",
+            ],
+            {
+                "account_key": f"'{account_key}'",
+                "account_name": f"'{account_name}'",
+                "current_price": "NULL",
+                "last_updated": "NULL",
+                "scenario": "NULL",
+                "target_price": "NULL",
+                "stop_loss": "NULL",
+                "trigger_type": "NULL",
+                "trigger_mode": "NULL",
+                "sector": "NULL",
+            },
+            ["id", "account_key", "account_name"],
+        )
 
-    _rebuild_table(
-        cursor,
-        conn,
-        "us_holding_decisions",
-        TABLE_US_HOLDING_DECISIONS,
-        [
-            "id",
-            "account_key",
-            "account_name",
-            "ticker",
-            "decision_date",
-            "decision_time",
-            "current_price",
-            "should_sell",
-            "sell_reason",
-            "confidence",
-            "technical_trend",
-            "volume_analysis",
-            "market_condition_impact",
-            "time_factor",
-            "portfolio_adjustment_needed",
-            "adjustment_reason",
-            "new_target_price",
-            "new_stop_loss",
-            "adjustment_urgency",
-            "full_json_data",
-            "created_at",
-        ],
-        {
-            "account_key": f"'{account_key}'",
-            "account_name": f"'{account_name}'",
-            "sell_reason": "NULL",
-            "confidence": "NULL",
-            "technical_trend": "NULL",
-            "volume_analysis": "NULL",
-            "market_condition_impact": "NULL",
-            "time_factor": "NULL",
-            "portfolio_adjustment_needed": "0",
-            "adjustment_reason": "NULL",
-            "new_target_price": "NULL",
-            "new_stop_loss": "NULL",
-            "adjustment_urgency": "NULL",
-            "created_at": "datetime('now', 'localtime')",
-        },
-    )
+    if _table_requires_migration(cursor, "us_trading_history", ["account_key", "account_name"]):
+        account_key, account_name, _, _ = get_primary_scope()
+        _rebuild_table(
+            cursor,
+            conn,
+            "us_trading_history",
+            TABLE_US_TRADING_HISTORY,
+            [
+                "id",
+                "account_key",
+                "account_name",
+                "ticker",
+                "company_name",
+                "buy_price",
+                "buy_date",
+                "sell_price",
+                "sell_date",
+                "profit_rate",
+                "holding_days",
+                "scenario",
+                "trigger_type",
+                "trigger_mode",
+                "sector",
+            ],
+            {
+                "account_key": f"'{account_key}'",
+                "account_name": f"'{account_name}'",
+                "scenario": "NULL",
+                "trigger_type": "NULL",
+                "trigger_mode": "NULL",
+                "sector": "NULL",
+            },
+            ["account_key", "account_name"],
+        )
 
-    _rebuild_table(
-        cursor,
-        conn,
-        "us_pending_orders",
-        TABLE_US_PENDING_ORDERS,
-        [
-            "id",
-            "account_key",
-            "account_name",
-            "product_code",
-            "mode",
-            "ticker",
-            "order_type",
-            "limit_price",
-            "buy_amount",
-            "exchange",
-            "trigger_type",
-            "trigger_mode",
-            "status",
-            "failure_reason",
-            "created_at",
-            "executed_at",
-            "order_result",
-        ],
-        {
-            "account_key": f"'{account_key}'",
-            "account_name": f"'{account_name}'",
-            "product_code": f"'{product_code}'",
-            "mode": f"'{mode}'",
-            "buy_amount": "NULL",
-            "exchange": "NULL",
-            "trigger_type": "NULL",
-            "trigger_mode": "NULL",
-            "status": "'pending'",
-            "failure_reason": "NULL",
-            "executed_at": "NULL",
-            "order_result": "NULL",
-        },
-    )
+    if _table_requires_migration(cursor, "us_holding_decisions", ["account_key", "account_name"]):
+        account_key, account_name, _, _ = get_primary_scope()
+        _rebuild_table(
+            cursor,
+            conn,
+            "us_holding_decisions",
+            TABLE_US_HOLDING_DECISIONS,
+            [
+                "id",
+                "account_key",
+                "account_name",
+                "ticker",
+                "decision_date",
+                "decision_time",
+                "current_price",
+                "should_sell",
+                "sell_reason",
+                "confidence",
+                "technical_trend",
+                "volume_analysis",
+                "market_condition_impact",
+                "time_factor",
+                "portfolio_adjustment_needed",
+                "adjustment_reason",
+                "new_target_price",
+                "new_stop_loss",
+                "adjustment_urgency",
+                "full_json_data",
+                "created_at",
+            ],
+            {
+                "account_key": f"'{account_key}'",
+                "account_name": f"'{account_name}'",
+                "sell_reason": "NULL",
+                "confidence": "NULL",
+                "technical_trend": "NULL",
+                "volume_analysis": "NULL",
+                "market_condition_impact": "NULL",
+                "time_factor": "NULL",
+                "portfolio_adjustment_needed": "0",
+                "adjustment_reason": "NULL",
+                "new_target_price": "NULL",
+                "new_stop_loss": "NULL",
+                "adjustment_urgency": "NULL",
+                "created_at": "datetime('now', 'localtime')",
+            },
+            ["account_key", "account_name"],
+        )
+
+    if _table_requires_migration(cursor, "us_pending_orders", ["account_key", "account_name", "product_code", "mode"]):
+        account_key, account_name, product_code, mode = get_primary_scope()
+        _rebuild_table(
+            cursor,
+            conn,
+            "us_pending_orders",
+            TABLE_US_PENDING_ORDERS,
+            [
+                "id",
+                "account_key",
+                "account_name",
+                "product_code",
+                "mode",
+                "ticker",
+                "order_type",
+                "limit_price",
+                "buy_amount",
+                "exchange",
+                "trigger_type",
+                "trigger_mode",
+                "status",
+                "failure_reason",
+                "created_at",
+                "executed_at",
+                "order_result",
+            ],
+            {
+                "account_key": f"'{account_key}'",
+                "account_name": f"'{account_name}'",
+                "product_code": f"'{product_code}'",
+                "mode": f"'{mode}'",
+                "buy_amount": "NULL",
+                "exchange": "NULL",
+                "trigger_type": "NULL",
+                "trigger_mode": "NULL",
+                "status": "'pending'",
+                "failure_reason": "NULL",
+                "executed_at": "NULL",
+                "order_result": "NULL",
+            },
+            ["account_key", "account_name", "product_code", "mode"],
+        )
 
 
 def create_us_tables(cursor, conn):
@@ -691,6 +793,14 @@ def initialize_us_database(db_path: Optional[str] = None):
     return cursor, conn
 
 
+def _initialize_us_database_sync_and_close(db_path: str):
+    cursor, conn = initialize_us_database(db_path)
+    try:
+        cursor.close()
+    finally:
+        conn.close()
+
+
 async def async_initialize_us_database(db_path: Optional[str] = None):
     """
     Async version of initialize_us_database.
@@ -702,41 +812,14 @@ async def async_initialize_us_database(db_path: Optional[str] = None):
         tuple: (connection,) - aiosqlite connection
     """
     import aiosqlite
+    import asyncio
 
     if db_path is None:
         project_root = Path(__file__).resolve().parent.parent.parent
         db_path = project_root / "stock_tracking_db.sqlite"
 
+    await asyncio.to_thread(_initialize_us_database_sync_and_close, str(db_path))
     conn = await aiosqlite.connect(str(db_path))
-
-    # Create US tables
-    tables = [
-        TABLE_US_STOCK_HOLDINGS,
-        TABLE_US_TRADING_HISTORY,
-        TABLE_US_WATCHLIST_HISTORY,
-        TABLE_US_PERFORMANCE_TRACKER,
-        TABLE_US_HOLDING_DECISIONS,
-        TABLE_US_PENDING_ORDERS,
-    ]
-
-    for table_sql in tables:
-        await conn.execute(table_sql)
-
-    # Create US indexes
-    for index_sql in US_INDEXES:
-        try:
-            await conn.execute(index_sql)
-        except Exception:
-            pass
-
-    # Add market column to shared tables
-    for table_name, column_def in MARKET_COLUMN_MIGRATIONS:
-        try:
-            await conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
-        except Exception:
-            pass
-
-    await conn.commit()
     logger.info(f"US database initialized (async): {db_path}")
 
     return conn

@@ -481,6 +481,8 @@ class USStockTrackingAgent:
         self.account_configs = self._get_trading_accounts()
         if self.account_configs:
             self._set_active_account(self.account_configs[0])
+        else:
+            logger.warning("No trading accounts configured - skipping trade execution")
 
         logger.info(f"US tracking agent initialization complete (journal: {self.enable_journal})")
         return True
@@ -513,6 +515,21 @@ class USStockTrackingAgent:
     def _account_scope(self) -> Tuple[str, str]:
         account = self._require_active_account()
         return account["account_key"], account["name"]
+
+    @staticmethod
+    def _safe_account_log_label(account: Dict[str, Any]) -> str:
+        """Format account identity for logs without exposing raw account numbers."""
+        account_name = account.get("name", "unknown")
+        account_key = str(account.get("account_key", "") or "")
+        if not account_key:
+            return account_name
+
+        parts = account_key.split(":")
+        if len(parts) == 3:
+            scope, account_number, product = parts
+            return f"{account_name} ({scope}:{ka.mask_account_number(account_number)}:{product})"
+
+        return f"{account_name} ({ka.mask_account_number(account_key)})"
 
     def _normalize_decision(self, decision: str) -> str:
         """
@@ -695,6 +712,60 @@ class USStockTrackingAgent:
             logger.error(traceback.format_exc())
             return default_scenario()
 
+    async def _analyze_report_core(self, pdf_report_path: str) -> Dict[str, Any]:
+        """Analyze a report once without applying account-scoped portfolio checks."""
+        try:
+            logger.info(f"Starting report analysis: {pdf_report_path}")
+
+            ticker, company_name = await self._extract_ticker_info(pdf_report_path)
+            if not ticker or not company_name:
+                logger.error(f"Failed to extract ticker info: {pdf_report_path}")
+                return {"success": False, "error": "Failed to extract ticker info"}
+
+            current_price = await self._get_current_stock_price(ticker)
+            if current_price <= 0:
+                logger.error(f"{ticker} current price query failed")
+                return {"success": False, "error": "Current price query failed"}
+
+            rank_change_percentage, rank_change_msg = await self._get_trading_value_rank_change(ticker)
+
+            from pdf_converter import pdf_to_markdown_text
+
+            report_content = pdf_to_markdown_text(pdf_report_path)
+            trigger_info = getattr(self, 'trigger_info_map', {}).get(ticker, {})
+            trigger_type = trigger_info.get('trigger_type', '')
+            trigger_mode = trigger_info.get('trigger_mode', '')
+
+            scenario = await self._extract_trading_scenario(
+                report_content,
+                rank_change_msg,
+                ticker=ticker,
+                sector=None,
+                trigger_type=trigger_type,
+                trigger_mode=trigger_mode
+            )
+
+            raw_decision = scenario.get("decision", "no_entry")
+            sector = scenario.get("sector", "Unknown")
+
+            return {
+                "success": True,
+                "ticker": ticker,
+                "company_name": company_name,
+                "current_price": current_price,
+                "scenario": scenario,
+                "decision": self._normalize_decision(raw_decision),
+                "raw_decision": raw_decision,
+                "sector": sector,
+                "rank_change_percentage": rank_change_percentage,
+                "rank_change_msg": rank_change_msg
+            }
+
+        except Exception as e:
+            logger.error(f"Error analyzing report: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "error": str(e)}
+
     async def analyze_report(self, pdf_report_path: str) -> Dict[str, Any]:
         """
         Analyze US stock analysis report and make trading decision.
@@ -705,83 +776,26 @@ class USStockTrackingAgent:
         Returns:
             Dict: Trading decision result
         """
-        try:
-            logger.info(f"Starting report analysis: {pdf_report_path}")
+        analysis_result = await self._analyze_report_core(pdf_report_path)
+        if not analysis_result.get("success", False):
+            return analysis_result
 
-            # Extract ticker and company name
-            ticker, company_name = await self._extract_ticker_info(pdf_report_path)
-
-            if not ticker or not company_name:
-                logger.error(f"Failed to extract ticker info: {pdf_report_path}")
-                return {"success": False, "error": "Failed to extract ticker info"}
-
-            # Check if already holding
-            is_holding = await self._is_ticker_in_holdings(ticker)
-            if is_holding:
-                logger.info(f"{ticker} ({company_name}) already in holdings")
-                holding_current_price = await self._get_current_stock_price(ticker)
-                return {
-                    "success": True,
-                    "decision": "holding",
-                    "ticker": ticker,
-                    "company_name": company_name,
-                    "current_price": holding_current_price
-                }
-
-            # Get current stock price
-            current_price = await self._get_current_stock_price(ticker)
-            if current_price <= 0:
-                logger.error(f"{ticker} current price query failed")
-                return {"success": False, "error": "Current price query failed"}
-
-            # Analyze trading value
-            rank_change_percentage, rank_change_msg = await self._get_trading_value_rank_change(ticker)
-
-            # Read report content
-            from pdf_converter import pdf_to_markdown_text
-            report_content = pdf_to_markdown_text(pdf_report_path)
-
-            # Get trigger info
-            trigger_info = getattr(self, 'trigger_info_map', {}).get(ticker, {})
-            trigger_type = trigger_info.get('trigger_type', '')
-            trigger_mode = trigger_info.get('trigger_mode', '')
-
-            # Extract trading scenario
-            scenario = await self._extract_trading_scenario(
-                report_content,
-                rank_change_msg,
-                ticker=ticker,
-                sector=None,
-                trigger_type=trigger_type,
-                trigger_mode=trigger_mode
-            )
-
-            # Check sector diversity
-            sector = scenario.get("sector", "Unknown")
-            is_sector_diverse = await self._check_sector_diversity(sector)
-
-            # Normalize decision for consistent comparison
-            raw_decision = scenario.get("decision", "no_entry")
-            normalized_decision = self._normalize_decision(raw_decision)
-
+        ticker = analysis_result.get("ticker")
+        company_name = analysis_result.get("company_name")
+        if await self._is_ticker_in_holdings(ticker):
+            logger.info(f"{ticker} ({company_name}) already in holdings")
             return {
                 "success": True,
+                "decision": "holding",
                 "ticker": ticker,
                 "company_name": company_name,
-                "current_price": current_price,
-                "scenario": scenario,
-                "decision": normalized_decision,  # Normalized: "entry" or "no_entry"
-                "raw_decision": raw_decision,  # Original from agent for logging
-                "sector": sector,
-                "sector_diverse": is_sector_diverse,
-                "rank_change_percentage": rank_change_percentage,
-                "rank_change_msg": rank_change_msg
+                "current_price": analysis_result.get("current_price", 0)
             }
 
-        except Exception as e:
-            logger.error(f"Error analyzing report: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {"success": False, "error": str(e)}
+        analysis_result["sector_diverse"] = await self._check_sector_diversity(
+            analysis_result.get("sector", "Unknown")
+        )
+        return analysis_result
 
     async def buy_stock(self, ticker: str, company_name: str, current_price: float,
                         scenario: Dict[str, Any], rank_change_msg: str = "") -> bool:
@@ -1975,12 +1989,35 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         try:
             logger.info(f"Processing {len(pdf_report_paths)} US reports")
 
+            if not self.account_configs:
+                logger.warning("No accounts configured. Skipping buy/sell execution.")
+                return 0, 0
+
+            if not self.active_account:
+                self._set_active_account(self.account_configs[0])
+
             buy_count = 0
             sell_count = 0
+            signaled_tickers: set[str] = set()
+            analysis_states: list[dict[str, Any]] = []
+
+            for pdf_report_path in pdf_report_paths:
+                analysis_result = await self._analyze_report_core(pdf_report_path)
+                if not analysis_result.get("success", False):
+                    logger.error(f"Report analysis failed: {pdf_report_path}")
+                    continue
+                analysis_states.append(
+                    {
+                        "analysis": analysis_result,
+                        "traded": False,
+                        "should_save_watchlist": False,
+                        "skip_reason": None,
+                    }
+                )
 
             for account in self.account_configs:
                 self._set_active_account(account)
-                logger.info(f"Processing US reports for account {account['name']} ({account['account_key']})")
+                logger.info(f"Processing US reports for account {self._safe_account_log_label(account)}")
 
                 # Update existing holdings and make sell decisions
                 sold_stocks = await self.update_holdings()
@@ -1991,49 +2028,37 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 else:
                     logger.info(f"No stocks sold for {account['name']}")
 
-                # Analyze new reports and make buy decisions
-                for pdf_report_path in pdf_report_paths:
-                    analysis_result = await self.analyze_report(pdf_report_path)
-
-                    if not analysis_result.get("success", False):
-                        logger.error(f"Report analysis failed: {pdf_report_path}")
-                        continue
-
-                    if analysis_result.get("decision") == "holding":
-                        logger.info(f"Skipping stock in holdings: {analysis_result.get('ticker')}")
-                        continue
-
+                for state in analysis_states:
+                    analysis_result = state["analysis"]
                     ticker = analysis_result.get("ticker")
                     company_name = analysis_result.get("company_name")
                     current_price = analysis_result.get("current_price", 0)
                     scenario = analysis_result.get("scenario", {})
-                    sector_diverse = analysis_result.get("sector_diverse", True)
+                    sector = analysis_result.get("sector", "Unknown")
                     rank_change_msg = analysis_result.get("rank_change_msg", "")
 
-                    if not sector_diverse:
-                        sector = analysis_result.get("sector", "Unknown")
+                    if await self._is_ticker_in_holdings(ticker):
+                        logger.info(f"Skipping stock in holdings: {ticker}")
+                        continue
+
+                    current_slots = await self._get_current_slots_count()
+                    if current_slots >= self.max_slots:
+                        reason = f"Max slots reached for {account['name']}"
+                        logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
+                        state["should_save_watchlist"] = True
+                        state["skip_reason"] = state["skip_reason"] or reason
+                        continue
+
+                    if not await self._check_sector_diversity(sector):
                         reason = f"Sector '{sector}' over-concentration prevention"
                         logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
-
-                        await self._save_watchlist_item(
-                            ticker=ticker,
-                            company_name=company_name,
-                            current_price=current_price,
-                            buy_score=scenario.get("buy_score", 0),
-                            min_score=scenario.get("min_score", 0),
-                            decision="Skip",
-                            skip_reason=reason,
-                            scenario=scenario,
-                            sector=sector,
-                            was_traded=False
-                        )
+                        state["should_save_watchlist"] = True
+                        state["skip_reason"] = state["skip_reason"] or reason
                         continue
 
                     buy_score = scenario.get("buy_score", 0)
                     min_score = scenario.get("min_score", 0)
-                    sector = analysis_result.get("sector", "Unknown")
 
-                    # Apply score adjustment from journal if enabled
                     score_adjustment = 0
                     adjustment_reasons = []
                     trigger_info = getattr(self, 'trigger_info_map', {}).get(ticker, {})
@@ -2052,23 +2077,17 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         f"Adjusted: {adjusted_score}, Min: {min_score}"
                     )
 
-                    # Log decision normalization for debugging
                     raw_decision = analysis_result.get("raw_decision", "")
                     normalized_decision = analysis_result.get("decision", "no_entry")
                     if raw_decision and raw_decision.lower() != normalized_decision:
                         logger.debug(f"Decision normalized: '{raw_decision}' -> '{normalized_decision}'")
 
-                    # Respect AI agent's decision (consistent with KR logic)
-                    # AI considers qualitative factors (RSI, support structure, volume, etc.)
-                    # beyond just the score, so do not override its decision
                     if normalized_decision == "entry":
                         buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
 
                         if buy_success:
-                            # Execute actual trading
                             trade_result = {'success': False, 'message': 'Trading not executed'}
 
-                            # Only execute trading if we have a valid price
                             if current_price > 0:
                                 try:
                                     try:
@@ -2076,8 +2095,6 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     except ImportError:
                                         from prism_us.trading.us_stock_trading import AsyncUSTradingContext
                                     async with AsyncUSTradingContext(account_name=account["name"]) as trading:
-                                        # Pass limit_price for reserved orders (required for US market)
-                                        # Trading module will use current_price as limit_price for reserved orders
                                         trade_result = await trading.async_buy_stock(ticker=ticker, limit_price=current_price)
 
                                     if trade_result['success']:
@@ -2089,41 +2106,50 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             else:
                                 logger.warning(f"Skipping actual purchase for {ticker}: invalid current_price ({current_price})")
 
-                            # [Optional] Publish buy signal via Redis Streams
-                            # Auto-skipped if Redis not configured (requires UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN)
-                            try:
-                                from messaging.redis_signal_publisher import publish_buy_signal
-                                await publish_buy_signal(
-                                    ticker=ticker,
-                                    company_name=company_name,
-                                    price=current_price,
-                                    scenario=scenario,
-                                    source="AI분석",
-                                    trade_result=trade_result,
-                                    market="US"
+                            if trade_result.get("partial_success"):
+                                successful = trade_result.get("successful_accounts", [])
+                                failed = trade_result.get("failed_accounts", [])
+                                logger.warning(
+                                    f"{ticker} partial success: {len(successful)}/{len(successful) + len(failed)} accounts"
                                 )
-                            except Exception as signal_err:
-                                logger.warning(f"Buy signal publish failed (non-critical): {signal_err}")
 
-                            # [Optional] Publish buy signal via GCP Pub/Sub
-                            # Auto-skipped if GCP not configured (requires GCP_PROJECT_ID, GCP_PUBSUB_TOPIC_ID)
-                            try:
-                                from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
-                                await gcp_publish_buy_signal(
-                                    ticker=ticker,
-                                    company_name=company_name,
-                                    price=current_price,
-                                    scenario=scenario,
-                                    source="AI분석",
-                                    trade_result=trade_result,
-                                    market="US"
-                                )
-                            except Exception as signal_err:
-                                logger.warning(f"GCP buy signal publish failed (non-critical): {signal_err}")
+                            if ticker not in signaled_tickers:
+                                try:
+                                    from messaging.redis_signal_publisher import publish_buy_signal
+                                    await publish_buy_signal(
+                                        ticker=ticker,
+                                        company_name=company_name,
+                                        price=current_price,
+                                        scenario=scenario,
+                                        source="AI분석",
+                                        trade_result=trade_result,
+                                        market="US"
+                                    )
+                                except Exception as signal_err:
+                                    logger.warning(f"Buy signal publish failed (non-critical): {signal_err}")
+
+                                try:
+                                    from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
+                                    await gcp_publish_buy_signal(
+                                        ticker=ticker,
+                                        company_name=company_name,
+                                        price=current_price,
+                                        scenario=scenario,
+                                        source="AI분석",
+                                        trade_result=trade_result,
+                                        market="US"
+                                    )
+                                except Exception as signal_err:
+                                    logger.warning(f"GCP buy signal publish failed (non-critical): {signal_err}")
+
+                                signaled_tickers.add(ticker)
 
                             buy_count += 1
+                            state["traded"] = True
                             logger.info(f"Purchase complete: {company_name} ({ticker}) @ ${current_price:.2f}")
                         else:
+                            state["should_save_watchlist"] = True
+                            state["skip_reason"] = state["skip_reason"] or "Purchase failed"
                             logger.warning(f"Purchase failed: {company_name} ({ticker})")
                     else:
                         reason = ""
@@ -2132,20 +2158,28 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         else:
                             reason = f"Analysis decision is 'Skip'"
                         logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
+                        state["should_save_watchlist"] = True
+                        state["skip_reason"] = state["skip_reason"] or reason
 
-                        # Save to watchlist for 7/14/30-day performance tracking
-                        await self._save_watchlist_item(
-                            ticker=ticker,
-                            company_name=company_name,
-                            current_price=current_price,
-                            buy_score=buy_score,
-                            min_score=min_score,
-                            decision=normalized_decision,
-                            skip_reason=reason,
-                            scenario=scenario,
-                            sector=sector,
-                            was_traded=False
-                        )
+            for state in analysis_states:
+                if state["traded"] or not state["should_save_watchlist"]:
+                    continue
+
+                analysis_result = state["analysis"]
+                scenario = analysis_result.get("scenario", {})
+                decision = analysis_result.get("decision", "no_entry")
+                await self._save_watchlist_item(
+                    ticker=analysis_result.get("ticker"),
+                    company_name=analysis_result.get("company_name"),
+                    current_price=analysis_result.get("current_price", 0),
+                    buy_score=scenario.get("buy_score", 0),
+                    min_score=scenario.get("min_score", 0),
+                    decision=decision if decision != "entry" else "Skip",
+                    skip_reason=state["skip_reason"] or "Trade not executed",
+                    scenario=scenario,
+                    sector=analysis_result.get("sector", "Unknown"),
+                    was_traded=False
+                )
 
             logger.info(f"Report processing complete - Bought: {buy_count}, Sold: {sell_count}")
             return buy_count, sell_count

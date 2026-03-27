@@ -237,124 +237,209 @@ def _get_primary_account_scope() -> tuple[str, str]:
         primary_account = ka.resolve_account(svr=svr, market="kr")
         return primary_account["account_key"], primary_account["name"]
     except Exception as exc:
-        logger.warning(f"Falling back to legacy KR account scope during migration: {exc}")
-        return "legacy:kr:default", "legacy-primary-kr"
+        raise RuntimeError(
+            "Unable to verify the primary account required for KR DB migration. "
+            "Please ensure at least one account is configured in kis_devlp.yaml. "
+            f"Migration aborted to prevent data orphaning. Cause: {exc}"
+        ) from exc
 
 
-def _rebuild_stock_holdings_for_multi_account(cursor, conn):
-    if not _table_exists(cursor, "stock_holdings"):
+def _count_rows(cursor, table_name: str) -> int:
+    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+    return cursor.fetchone()[0]
+
+
+def _table_requires_migration(cursor, table_name: str, marker_columns: list[str]) -> bool:
+    if _table_exists(cursor, f"{table_name}_legacy"):
+        return True
+    if not _table_exists(cursor, table_name):
+        return False
+    source_columns = _get_columns(cursor, table_name)
+    return not all(column in source_columns for column in marker_columns)
+
+
+def _recover_interrupted_migration(cursor, conn, table_name: str):
+    legacy_table = f"{table_name}_legacy"
+    if not (_table_exists(cursor, table_name) and _table_exists(cursor, legacy_table)):
         return
 
-    columns = _get_columns(cursor, "stock_holdings")
-    if "account_key" in columns and "id" in columns:
+    current_count = _count_rows(cursor, table_name)
+    legacy_count = _count_rows(cursor, legacy_table)
+    if current_count == 0:
+        logger.warning(f"Recovering interrupted migration for {table_name} from {legacy_table}")
+        cursor.execute(f"DROP TABLE {table_name}")
+        cursor.execute(f"ALTER TABLE {legacy_table} RENAME TO {table_name}")
+        conn.commit()
         return
 
-    logger.info("Migrating stock_holdings to multi-account schema")
-    account_key, account_name = _get_primary_account_scope()
-    legacy_table = "stock_holdings_legacy"
-
-    cursor.execute(f"DROP TABLE IF EXISTS {legacy_table}")
-    cursor.execute(f"ALTER TABLE stock_holdings RENAME TO {legacy_table}")
-    cursor.execute(TABLE_STOCK_HOLDINGS)
-
-    target_columns = [
-        "account_key",
-        "account_name",
-        "ticker",
-        "company_name",
-        "buy_price",
-        "buy_date",
-        "current_price",
-        "last_updated",
-        "scenario",
-        "target_price",
-        "stop_loss",
-        "trigger_type",
-        "trigger_mode",
-        "sector",
-    ]
-    defaults = {
-        "account_key": f"'{account_key}'",
-        "account_name": f"'{account_name}'",
-        "current_price": "NULL",
-        "last_updated": "NULL",
-        "scenario": "NULL",
-        "target_price": "NULL",
-        "stop_loss": "NULL",
-        "trigger_type": "NULL",
-        "trigger_mode": "NULL",
-        "sector": "NULL",
-    }
-    source_columns = _get_columns(cursor, legacy_table)
-    projection = _build_column_projection(source_columns, target_columns, defaults)
-    cursor.execute(
-        f"""
-        INSERT INTO stock_holdings ({", ".join(target_columns)})
-        SELECT {", ".join(projection)}
-        FROM {legacy_table}
-        """
-    )
-    cursor.execute(f"DROP TABLE {legacy_table}")
-    conn.commit()
+    if legacy_count > 0:
+        raise RuntimeError(
+            f"Ambiguous interrupted migration for {table_name}: both {table_name} and {legacy_table} contain rows. "
+            "Manual intervention is required."
+        )
 
 
-def _rebuild_trading_history_for_multi_account(cursor, conn):
-    if not _table_exists(cursor, "trading_history"):
+def _rebuild_table(
+    cursor,
+    conn,
+    table_name: str,
+    create_sql: str,
+    target_columns: list[str],
+    defaults: dict[str, str],
+    marker_columns: list[str],
+):
+    _recover_interrupted_migration(cursor, conn, table_name)
+
+    if not _table_exists(cursor, table_name):
         return
 
-    columns = _get_columns(cursor, "trading_history")
-    if "account_key" in columns and "account_name" in columns:
+    if not _table_requires_migration(cursor, table_name, marker_columns):
         return
 
-    logger.info("Migrating trading_history to multi-account schema")
-    account_key, account_name = _get_primary_account_scope()
-    legacy_table = "trading_history_legacy"
+    legacy_table = f"{table_name}_legacy"
+    backup_table = f"{table_name}_pre_multi_account_backup"
 
-    cursor.execute(f"DROP TABLE IF EXISTS {legacy_table}")
-    cursor.execute(f"ALTER TABLE trading_history RENAME TO {legacy_table}")
-    cursor.execute(TABLE_TRADING_HISTORY)
+    if _table_exists(cursor, legacy_table):
+        raise RuntimeError(
+            f"Ambiguous migration state for {table_name}: legacy table {legacy_table} already exists. "
+            "Manual intervention is required."
+        )
 
-    target_columns = [
-        "id",
-        "account_key",
-        "account_name",
-        "ticker",
-        "company_name",
-        "buy_price",
-        "buy_date",
-        "sell_price",
-        "sell_date",
-        "profit_rate",
-        "holding_days",
-        "scenario",
-        "trigger_type",
-        "trigger_mode",
-        "sector",
-    ]
-    defaults = {
-        "account_key": f"'{account_key}'",
-        "account_name": f"'{account_name}'",
-        "scenario": "NULL",
-        "trigger_type": "NULL",
-        "trigger_mode": "NULL",
-        "sector": "NULL",
-    }
-    source_columns = _get_columns(cursor, legacy_table)
-    projection = _build_column_projection(source_columns, target_columns, defaults)
-    cursor.execute(
-        f"""
-        INSERT INTO trading_history ({", ".join(target_columns)})
-        SELECT {", ".join(projection)}
-        FROM {legacy_table}
-        """
-    )
-    cursor.execute(f"DROP TABLE {legacy_table}")
-    conn.commit()
+    if not _table_exists(cursor, backup_table):
+        logger.info(f"Creating backup table {backup_table} before migrating {table_name}")
+        cursor.execute(f"CREATE TABLE {backup_table} AS SELECT * FROM {table_name}")
+        conn.commit()
+    else:
+        logger.warning(f"Preserving existing backup table {backup_table} for {table_name}")
+
+    logger.info(f"Migrating {table_name} to multi-account schema")
+
+    try:
+        cursor.execute(f"ALTER TABLE {table_name} RENAME TO {legacy_table}")
+        cursor.execute(create_sql)
+
+        source_columns = _get_columns(cursor, legacy_table)
+        projection = _build_column_projection(source_columns, target_columns, defaults)
+        cursor.execute(
+            f"""
+            INSERT INTO {table_name} ({", ".join(target_columns)})
+            SELECT {", ".join(projection)}
+            FROM {legacy_table}
+            """
+        )
+
+        source_count = _count_rows(cursor, legacy_table)
+        target_count = _count_rows(cursor, table_name)
+        if source_count != target_count:
+            raise RuntimeError(
+                f"Row count mismatch during {table_name} migration: {legacy_table}={source_count}, {table_name}={target_count}"
+            )
+
+        cursor.execute(f"DROP TABLE {legacy_table}")
+        conn.commit()
+
+        if _table_exists(cursor, backup_table):
+            cursor.execute(f"DROP TABLE {backup_table}")
+            conn.commit()
+    except Exception as exc:
+        logger.error(f"{table_name} migration failed: {exc}")
+        logger.error(f"Manual recovery is available from backup table {backup_table}")
+        raise
 
 
 def migrate_multi_account_schema(cursor, conn):
-    _rebuild_stock_holdings_for_multi_account(cursor, conn)
-    _rebuild_trading_history_for_multi_account(cursor, conn)
+    stock_defaults = history_defaults = None
+
+    if _table_requires_migration(cursor, "stock_holdings", ["id", "account_key", "account_name"]):
+        try:
+            account_key, account_name = _get_primary_account_scope()
+        except Exception as exc:
+            raise RuntimeError(
+                "Unable to verify the primary account required for KR DB migration. "
+                "Please ensure at least one account is configured in kis_devlp.yaml. "
+                f"Migration aborted to prevent data orphaning. Cause: {exc}"
+            ) from exc
+        stock_defaults = {
+            "account_key": f"'{account_key}'",
+            "account_name": f"'{account_name}'",
+            "current_price": "NULL",
+            "last_updated": "NULL",
+            "scenario": "NULL",
+            "target_price": "NULL",
+            "stop_loss": "NULL",
+            "trigger_type": "NULL",
+            "trigger_mode": "NULL",
+            "sector": "NULL",
+        }
+        _rebuild_table(
+            cursor,
+            conn,
+            "stock_holdings",
+            TABLE_STOCK_HOLDINGS,
+            [
+                "account_key",
+                "account_name",
+                "ticker",
+                "company_name",
+                "buy_price",
+                "buy_date",
+                "current_price",
+                "last_updated",
+                "scenario",
+                "target_price",
+                "stop_loss",
+                "trigger_type",
+                "trigger_mode",
+                "sector",
+            ],
+            stock_defaults,
+            ["id", "account_key", "account_name"],
+        )
+
+    if _table_requires_migration(cursor, "trading_history", ["account_key", "account_name"]):
+        if history_defaults is None:
+            if stock_defaults is None:
+                try:
+                    account_key, account_name = _get_primary_account_scope()
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Unable to verify the primary account required for KR DB migration. "
+                        "Please ensure at least one account is configured in kis_devlp.yaml. "
+                        f"Migration aborted to prevent data orphaning. Cause: {exc}"
+                    ) from exc
+            history_defaults = {
+                "account_key": f"'{account_key}'",
+                "account_name": f"'{account_name}'",
+                "scenario": "NULL",
+                "trigger_type": "NULL",
+                "trigger_mode": "NULL",
+                "sector": "NULL",
+            }
+        _rebuild_table(
+            cursor,
+            conn,
+            "trading_history",
+            TABLE_TRADING_HISTORY,
+            [
+                "id",
+                "account_key",
+                "account_name",
+                "ticker",
+                "company_name",
+                "buy_price",
+                "buy_date",
+                "sell_price",
+                "sell_date",
+                "profit_rate",
+                "holding_days",
+                "scenario",
+                "trigger_type",
+                "trigger_mode",
+                "sector",
+            ],
+            history_defaults,
+            ["account_key", "account_name"],
+        )
 
 
 def create_all_tables(cursor, conn):
