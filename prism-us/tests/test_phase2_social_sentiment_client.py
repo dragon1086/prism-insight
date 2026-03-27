@@ -117,3 +117,46 @@ def test_social_sentiment_markdown_renders_expected_fields(monkeypatch):
     assert "#### Polymarket" in markdown
     assert "- Trades: 18" in markdown
     assert markdown.index("#### Reddit") < markdown.index("#### X.com") < markdown.index("#### News") < markdown.index("#### Polymarket")
+
+
+def test_extract_row_supports_stocks_wrapper():
+    """Live compare responses wrap rows in a top-level stocks list."""
+    payload = {
+        "period_days": 7,
+        "stocks": [
+            {
+                "ticker": "AAPL",
+                "buzz_score": 73.8,
+                "bullish_pct": 32,
+                "trend": "rising",
+                "mentions": 426,
+            }
+        ],
+    }
+
+    row = USSocialSentimentClient._extract_row(payload, "AAPL")
+
+    assert row is not None
+    assert row["ticker"] == "AAPL"
+    assert row["buzz_score"] == 73.8
+
+
+def test_extract_row_supports_data_wrapper_for_compatibility():
+    """Older wrapper shapes should continue to work."""
+    payload = {
+        "data": [
+            {
+                "ticker": "MSFT",
+                "buzz_score": 60.0,
+                "bullish_pct": 55,
+                "trend": "stable",
+                "mentions": 200,
+            }
+        ]
+    }
+
+    row = USSocialSentimentClient._extract_row(payload, "MSFT")
+
+    assert row is not None
+    assert row["ticker"] == "MSFT"
+    assert row["buzz_score"] == 60.0
