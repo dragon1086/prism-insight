@@ -33,10 +33,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 PRISM_US_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
-
-import cores.openai_debug  # noqa: F401 — OpenAI 400 error request body logging
-
 sys.path.insert(0, str(PRISM_US_DIR))
+
+# Load openai_debug from project root via importlib (prism-us/cores/ shadows root cores/)
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
+if _spec and _spec.loader:
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
 
 # Logger configuration
 logging.basicConfig(
