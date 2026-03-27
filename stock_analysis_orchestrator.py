@@ -12,6 +12,7 @@ Overall Process:
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
+import cores.openai_debug  # noqa: F401 — OpenAI 400 error request body logging
 import argparse
 import asyncio
 import json
