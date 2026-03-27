@@ -116,3 +116,4 @@ def test_social_sentiment_markdown_renders_expected_fields(monkeypatch):
     assert "- Mentions: 200" in markdown
     assert "#### Polymarket" in markdown
     assert "- Trades: 18" in markdown
+    assert markdown.index("#### Reddit") < markdown.index("#### X.com") < markdown.index("#### News") < markdown.index("#### Polymarket")

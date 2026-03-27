@@ -100,6 +100,7 @@ def create_us_news_analysis_agent(
 3. 주요 뉴스 (카테고리별)
 4. 향후 주목 포인트
 5. 정보 신뢰도 평가
+6. 공개 소셜 센티먼트 정렬 여부 (제공된 경우)와 뉴스 내러티브의 일치/불일치 여부
 
 ## 보고서 구조 (마크다운 제목 형식 필수)
 
@@ -121,6 +122,8 @@ def create_us_news_analysis_agent(
 - 깊이 있는 분석과 인사이트 제공
 - 명확한 출처 표기: [YahooFinance:TICKER] / [Perplexity:Number, Date]
 - 최근 정보만 사용 (분석일 기준 1개월 이내)
+
+{social_context}
 
 ## 출력 형식
 
@@ -202,6 +205,7 @@ def create_us_news_analysis_agent(
 3. Major news (by category)
 4. Future watch points
 5. Information reliability evaluation
+6. Social sentiment alignment (if provided) and whether it reinforces or diverges from the news narrative
 
 ## Report Structure (MUST use markdown heading format)
 
@@ -223,6 +227,8 @@ def create_us_news_analysis_agent(
 - Clear source notation: [YahooFinance:TICKER] / [Perplexity:Number, Date]
 - Use only recent info (within 1 month of analysis date)
 
+{social_context}
+
 ## Output Format
 
 - No tool usage process mentions
@@ -233,8 +239,6 @@ def create_us_news_analysis_agent(
 Company: {company_name} ({ticker})
 Analysis Date: {reference_date}(YYYYMMDD format)
 """
-
-    instruction += social_context
 
     return Agent(
         name="us_news_analysis_agent",

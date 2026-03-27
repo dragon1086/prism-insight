@@ -151,7 +151,11 @@ async def analyze_us_stock(
         if include_news and os.getenv("ADANOS_API_KEY"):
             try:
                 social_client = USSocialSentimentClient()
-                social_snapshot = social_client.get_social_sentiment_markdown(ticker=ticker, days=7)
+                social_snapshot = await asyncio.to_thread(
+                    social_client.get_social_sentiment_markdown,
+                    ticker,
+                    7,
+                )
                 if social_snapshot:
                     prefetched["social_sentiment"] = social_snapshot
                     logger.info("Prefetched social sentiment for %s", ticker)
