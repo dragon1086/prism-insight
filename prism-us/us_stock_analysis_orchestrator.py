@@ -79,6 +79,33 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     return module
 
 
+def _import_proxy_safe():
+    """Load chatgpt_proxy from main project cores/ without polluting sys.modules['cores'].
+
+    The standard 'from cores.chatgpt_proxy import ...' caches PROJECT_ROOT/cores/
+    in sys.modules['cores'], which shadows prism-us/cores/ for all later imports.
+    This function saves and restores sys.modules + sys.path so the import leaves
+    no trace that would affect subsequent 'from cores.xxx' resolution.
+    """
+    saved_cores = sys.modules.get("cores")
+    saved_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT))
+        if "cores" in sys.modules:
+            del sys.modules["cores"]
+        import cores.chatgpt_proxy as proxy_mod
+        return proxy_mod
+    finally:
+        sys.path[:] = saved_path
+        # Clean up sub-module entries registered during import
+        for key in [k for k in sys.modules if k.startswith("cores.chatgpt_proxy")]:
+            del sys.modules[key]
+        if saved_cores is not None:
+            sys.modules["cores"] = saved_cores
+        elif "cores" in sys.modules:
+            del sys.modules["cores"]
+
+
 # Pre-load telegram_translator_agent from main project (used in multiple methods)
 _translator_module = _import_from_main_cores(
     "telegram_translator_agent",
@@ -1175,18 +1202,26 @@ async def main():
 
     # ChatGPT OAuth proxy setup
     proxy_started = False
+    stop_proxy = None
     if not args.no_proxy and os.getenv("PRISM_OPENAI_AUTH_MODE") == "chatgpt_oauth":
         try:
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-            from cores.chatgpt_proxy import inject_env, start_proxy
+            _proxy_mod = _import_proxy_safe()
+            inject_env = _proxy_mod.inject_env
+            start_proxy = _proxy_mod.start_proxy
+            clear_env = _proxy_mod.clear_env
+            stop_proxy = _proxy_mod.stop_proxy
+
             inject_env()
             proxy_started = await start_proxy()
             if not proxy_started:
                 logger.warning("ChatGPT OAuth proxy failed to start, falling back to standard API")
-                from cores.chatgpt_proxy import clear_env
                 clear_env()
         except Exception as e:
             logger.warning("ChatGPT OAuth proxy setup error: %s, falling back to standard API", e)
+            try:
+                _proxy_mod.clear_env()
+            except Exception:
+                pass
 
     orchestrator = USStockAnalysisOrchestrator(telegram_config=telegram_config)
 
@@ -1200,10 +1235,8 @@ async def main():
         await orchestrator.run_full_pipeline("afternoon", language=args.language, override_date=args.date)
 
     # Stop proxy if started
-    if proxy_started:
+    if proxy_started and stop_proxy is not None:
         try:
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-            from cores.chatgpt_proxy import stop_proxy
             await stop_proxy()
         except Exception:
             pass
