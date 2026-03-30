@@ -574,7 +574,8 @@ class USStockTrading:
             "ORD_QTY": str(quantity),
             "OVRS_ORD_UNPR": "0",  # Market price = 0
             "ORD_SVR_DVSN_CD": "0",
-            "SLL_TYPE": "00"  # Sell type
+            "SLL_TYPE": "00",  # Sell type
+            "ORD_DVSN": "00"   # Order type: limit (US only supports 지정가)
         }
 
         try:
