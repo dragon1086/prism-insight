@@ -167,7 +167,6 @@ class TestAgentDirectory:
         assert 'unknown_section' not in agents
         assert 'price_volume_analysis' in agents
 
-
 # =============================================================================
 # Test: Individual Agent Imports
 # =============================================================================

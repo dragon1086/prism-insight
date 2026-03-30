@@ -71,6 +71,12 @@ get_us_price_chart_html = _chart_module.get_us_price_chart_html
 get_us_institutional_chart_html = _chart_module.get_us_institutional_chart_html
 get_us_technical_chart_html = _chart_module.get_us_technical_chart_html
 
+_social_client_module = _import_from_project_root(
+    "us_social_sentiment_client",
+    _prism_us_dir / "cores" / "us_social_sentiment_client.py"
+)
+USSocialSentimentClient = _social_client_module.USSocialSentimentClient
+
 
 async def analyze_us_stock(
     ticker: str = "AAPL",
@@ -141,6 +147,20 @@ async def analyze_us_stock(
         except Exception as e:
             logger.warning(f"US data prefetch failed, falling back to MCP: {e}")
             prefetched = {}
+
+        if include_news and os.getenv("ADANOS_API_KEY"):
+            try:
+                social_client = USSocialSentimentClient()
+                social_snapshot = await asyncio.to_thread(
+                    social_client.get_social_sentiment_markdown,
+                    ticker,
+                    7,
+                )
+                if social_snapshot:
+                    prefetched["social_sentiment"] = social_snapshot
+                    logger.info(f"Prefetched social sentiment for {ticker}")
+            except Exception as e:
+                logger.warning(f"US social sentiment prefetch failed, continuing without it: {e}")
 
         # 5. Get US-specific agents (with prefetched data)
         agents = get_us_agent_directory(company_name, ticker, reference_date, base_sections, language, prefetched_data=prefetched)

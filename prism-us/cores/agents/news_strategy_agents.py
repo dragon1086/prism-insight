@@ -12,7 +12,8 @@ def create_us_news_analysis_agent(
     company_name: str,
     ticker: str,
     reference_date: str,
-    language: str = "ko"
+    language: str = "ko",
+    prefetched_social_sentiment: str = None,
 ):
     """Create US news analysis agent
 
@@ -25,6 +26,23 @@ def create_us_news_analysis_agent(
     Returns:
         Agent: News analysis agent
     """
+
+    social_context = ""
+    if prefetched_social_sentiment:
+        if language == "ko":
+            social_context = (
+                "\n## 추가 구조화 소셜 센티먼트 데이터\n"
+                "다음 데이터는 사전 수집된 공개 소셜/뉴스 센티먼트 스냅샷입니다. "
+                "최근 뉴스 해석에 이 데이터를 함께 반영하되, 소셜 센티먼트 데이터를 위해 별도 도구 호출은 하지 마세요.\n\n"
+                f"{prefetched_social_sentiment}\n"
+            )
+        else:
+            social_context = (
+                "\n## Additional Structured Social Sentiment Context\n"
+                "The following snapshot has already been prefetched. Use it alongside the news analysis, "
+                "but do not make extra tool calls for social sentiment.\n\n"
+                f"{prefetched_social_sentiment}\n"
+            )
 
     # Format date for display
     ref_year = reference_date[:4]
@@ -82,6 +100,7 @@ def create_us_news_analysis_agent(
 3. 주요 뉴스 (카테고리별)
 4. 향후 주목 포인트
 5. 정보 신뢰도 평가
+6. 공개 소셜 센티먼트 정렬 여부 (제공된 경우)와 뉴스 내러티브의 일치/불일치 여부
 
 ## 보고서 구조 (마크다운 제목 형식 필수)
 
@@ -103,6 +122,8 @@ def create_us_news_analysis_agent(
 - 깊이 있는 분석과 인사이트 제공
 - 명확한 출처 표기: [YahooFinance:TICKER] / [Perplexity:Number, Date]
 - 최근 정보만 사용 (분석일 기준 1개월 이내)
+
+{social_context}
 
 ## 출력 형식
 
@@ -184,6 +205,7 @@ def create_us_news_analysis_agent(
 3. Major news (by category)
 4. Future watch points
 5. Information reliability evaluation
+6. Social sentiment alignment (if provided) and whether it reinforces or diverges from the news narrative
 
 ## Report Structure (MUST use markdown heading format)
 
@@ -204,6 +226,8 @@ def create_us_news_analysis_agent(
 - Provide deep analysis and insights
 - Clear source notation: [YahooFinance:TICKER] / [Perplexity:Number, Date]
 - Use only recent info (within 1 month of analysis date)
+
+{social_context}
 
 ## Output Format
 
