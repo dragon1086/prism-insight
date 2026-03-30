@@ -790,6 +790,11 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             except:
                 pass
 
+            # Hard mechanical stop-loss check BEFORE AI — cannot be overridden
+            if stop_loss > 0 and current_price <= stop_loss:
+                logger.info(f"{ticker} 기계적 손절 조건 도달 (손절가: {stop_loss:,.0f}원) — AI 판단 생략")
+                return True, f"손절 조건 도달 (손절가: {stop_loss:,.0f}원)"
+
             # Collect current portfolio information
             self.cursor.execute("""
                 SELECT ticker, company_name, buy_price, current_price, scenario
@@ -832,6 +837,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.info(f"  - Sector distribution: {json.dumps(sector_distribution, ensure_ascii=False)}")
             logger.info(f"  - Investment periods: {json.dumps(investment_periods, ensure_ascii=False)}")
 
+            # Dynamic trailing stop threshold: min 1.5%, max 5%, scales with price appreciation
+            trailing_stop_threshold_pct = max(1.5, min(5.0, (highest_price - buy_price) / buy_price * 100 * 0.3)) if buy_price > 0 else 3.0
+
             # LLM call to generate sell decision
             llm = await self.sell_decision_agent.attach_llm(OpenAIAugmentedLLM)
 
@@ -847,6 +855,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 - 목표가: {target_price:,.0f}원 (최초 시나리오: {initial_target_price:,.0f}원)
                 - 손절가: {stop_loss:,.0f}원 (최초 시나리오: {initial_stop_loss:,.0f}원)
                 - 진입 후 최고가: {highest_price:,.0f}원{' (⚠️ 첫 추적 - get_stock_ohlcv로 진입일 이후 실제 최고가를 확인하세요)' if highest_price_initialized else ''}
+                - 트레일링 스탑 조정 임계값: {trailing_stop_threshold_pct:.1f}% (이 값 이상 상향 시만 손절가 조정 가능)
                 - 수익률: {profit_rate:.2f}%
                 - 보유기간: {days_passed}일
                 - 투자기간: {period}
@@ -1121,6 +1130,12 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             f"{ticker} Portfolio adjustment REJECTED: new stop_loss {stop_loss_num:,.0f} > "
                             f"current_price {current_price:,.0f}. "
                             f"This indicates trailing stop breach — should trigger sell, not adjustment."
+                        )
+                    # Ratchet: reject stop_loss below current stop_loss (one-way ratchet)
+                    elif old_stop_loss > 0 and stop_loss_num < old_stop_loss:
+                        logger.warning(
+                            f"{ticker} 래칫 규칙 위반 REJECTED: AI 손절가 하향 시도 "
+                            f"{stop_loss_num:,.0f} < {old_stop_loss:,.0f} KRW — 무시합니다."
                         )
                     else:
                         self.cursor.execute(

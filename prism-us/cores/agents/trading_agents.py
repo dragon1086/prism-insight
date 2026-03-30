@@ -818,7 +818,7 @@ def create_us_sell_decision_agent(language: str = "ko"):
 2. 현재가 > highest_price이면 시스템이 자동 갱신합니다
 3. highest_price 기준 trailing stop을 계산하되, **아래 조건을 모두 충족할 때만** portfolio_adjustment로 응답하세요:
    - 계산된 trailing stop > 현재 stop_loss (손절가는 절대 내릴 수 없음, 일방향 래칫)
-   - 계산된 trailing stop이 현재 stop_loss보다 **3% 이상** 높을 때만 조정 (노이즈 방지)
+   - 계산된 trailing stop이 현재 stop_loss보다 **프롬프트 제공 임계값(기본 3%) 이상** 높을 때만 조정 (노이즈 방지, 프롬프트의 '트레일링 스탑 조정 임계값' 참조)
    - 위 조건 미충족 시: portfolio_adjustment.needed = false, new_stop_loss = null
 
 예시: 진입 $100, 초기 손절 $93
@@ -993,7 +993,7 @@ You need to comprehensively analyze the data of currently held stocks to decide 
 2. If current price > highest_price → system auto-updates it
 3. Calculate trailing stop from highest_price, but **only submit portfolio_adjustment when ALL conditions are met**:
    - Calculated trailing stop > current stop_loss (stop loss is one-way ratchet — never lower it)
-   - Calculated trailing stop is at least **3% higher** than current stop_loss (noise filter)
+   - Calculated trailing stop is at least **the threshold from the prompt (default 3%) higher** than current stop_loss (noise filter — see 'Trailing Stop Adjustment Threshold' in prompt)
    - If conditions not met: portfolio_adjustment.needed = false, new_stop_loss = null
 
 Example: Entry $100, Initial stop $93
