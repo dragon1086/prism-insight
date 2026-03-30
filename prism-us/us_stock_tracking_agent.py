@@ -713,7 +713,15 @@ class USStockTrackingAgent:
             return default_scenario()
 
     async def _analyze_report_core(self, pdf_report_path: str) -> Dict[str, Any]:
-        """Analyze a report once without applying account-scoped portfolio checks."""
+        """Analyze a report once before per-account execution checks.
+
+        Note:
+            `_extract_trading_scenario()` includes the currently active account's
+            portfolio state in the LLM context. In multi-account mode this means
+            the primary account shapes the shared report analysis, while actual
+            buy eligibility is still re-checked per account in `process_reports()`.
+            This keeps LLM cost flat instead of multiplying per account.
+        """
         try:
             logger.info(f"Starting report analysis: {pdf_report_path}")
 
@@ -1826,7 +1834,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             "profit_rate": ((current_price - stock.get('buy_price', 0)) / stock.get('buy_price', 0) * 100) if stock.get('buy_price', 0) > 0 else 0,
                             "reason": sell_reason,
                             "account_name": stock.get("account_name"),
-                            "account_key": stock.get("account_key"),
+                            "account_label": self._safe_account_log_label(
+                                {
+                                    "name": stock.get("account_name"),
+                                    "account_key": stock.get("account_key"),
+                                }
+                            ),
                         })
                 else:
                     # Save holding decision when not selling
@@ -2017,16 +2030,17 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             for account in self.account_configs:
                 self._set_active_account(account)
-                logger.info(f"Processing US reports for account {self._safe_account_log_label(account)}")
+                label = self._safe_account_log_label(account)
+                logger.info(f"Processing US reports for account {label}")
 
                 # Update existing holdings and make sell decisions
                 sold_stocks = await self.update_holdings()
                 sell_count += len(sold_stocks)
 
                 if sold_stocks:
-                    logger.info(f"{len(sold_stocks)} stocks sold for {account['name']}")
+                    logger.info(f"{len(sold_stocks)} stocks sold for {label}")
                 else:
-                    logger.info(f"No stocks sold for {account['name']}")
+                    logger.info(f"No stocks sold for {label}")
 
                 for state in analysis_states:
                     analysis_result = state["analysis"]
@@ -2043,7 +2057,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                     current_slots = await self._get_current_slots_count()
                     if current_slots >= self.max_slots:
-                        reason = f"Max slots reached for {account['name']}"
+                        reason = f"Max slots reached for {label}"
                         logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
                         state["should_save_watchlist"] = True
                         state["skip_reason"] = state["skip_reason"] or reason

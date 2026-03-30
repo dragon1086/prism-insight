@@ -316,6 +316,67 @@ def test_kr_schema_migration_backfills_primary_account(monkeypatch):
     assert cursor.fetchone() == ("vps:11112222:01", "KR Primary", "000660")
 
 
+def test_kr_schema_migration_handles_quoted_account_names_and_retains_backups(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE stock_holdings (
+            ticker TEXT PRIMARY KEY,
+            company_name TEXT NOT NULL,
+            buy_price REAL NOT NULL,
+            buy_date TEXT NOT NULL,
+            current_price REAL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE trading_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            company_name TEXT NOT NULL,
+            buy_price REAL NOT NULL,
+            buy_date TEXT NOT NULL,
+            sell_price REAL NOT NULL,
+            sell_date TEXT NOT NULL,
+            profit_rate REAL NOT NULL,
+            holding_days INTEGER NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO stock_holdings (ticker, company_name, buy_price, buy_date, current_price)
+        VALUES ('005930', 'Samsung Electronics', 70000, '2026-03-01', 71000)
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO trading_history
+        (ticker, company_name, buy_price, buy_date, sell_price, sell_date, profit_rate, holding_days)
+        VALUES ('000660', 'SK Hynix', 120000, '2026-02-01', 132000, '2026-03-01', 10.0, 28)
+        """
+    )
+    conn.commit()
+
+    monkeypatch.setattr(
+        kr_schema,
+        "_get_primary_account_scope",
+        lambda: ("vps:11112222:01", "O'Brien Primary"),
+    )
+
+    kr_schema.migrate_multi_account_schema(cursor, conn)
+
+    cursor.execute("SELECT account_key, account_name FROM stock_holdings")
+    assert cursor.fetchone() == ("vps:11112222:01", "O'Brien Primary")
+    cursor.execute("SELECT account_key, account_name FROM trading_history")
+    assert cursor.fetchone() == ("vps:11112222:01", "O'Brien Primary")
+    assert kr_schema._table_exists(cursor, "stock_holdings_pre_multi_account_backup")
+    assert kr_schema._table_exists(cursor, "trading_history_pre_multi_account_backup")
+
+
 def test_kr_schema_recovers_interrupted_stock_holdings_migration(monkeypatch):
     conn = sqlite3.connect(":memory:")
     cursor = conn.cursor()

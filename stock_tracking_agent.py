@@ -412,7 +412,15 @@ class StockTrackingAgent:
         return default_scenario()
 
     async def _analyze_report_core(self, pdf_report_path: str) -> Dict[str, Any]:
-        """Analyze a report once without applying account-scoped portfolio checks."""
+        """Analyze a report once before per-account execution checks.
+
+        Note:
+            `_extract_trading_scenario()` includes the currently active account's
+            portfolio state in the LLM context. In multi-account mode this means
+            the primary account shapes the shared report analysis, while actual
+            buy eligibility is still re-checked per account in `process_reports()`.
+            This keeps LLM cost flat instead of multiplying per account.
+        """
         try:
             logger.info(f"Starting report analysis: {pdf_report_path}")
 
@@ -541,6 +549,115 @@ class StockTrackingAgent:
             return ""
         except Exception:
             return ""
+
+    async def _save_watchlist_item(
+        self,
+        ticker: str,
+        company_name: str,
+        current_price: float,
+        buy_score: int,
+        min_score: int,
+        decision: str,
+        skip_reason: str,
+        scenario: Dict[str, Any],
+        sector: str,
+        was_traded: bool = False,
+    ) -> bool:
+        """Save deferred KR analyses for watchlist and performance tracking."""
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            target_price = scenario.get("target_price", 0)
+            stop_loss = scenario.get("stop_loss", 0)
+            investment_period = scenario.get("investment_period", self.PERIOD_SHORT)
+            portfolio_analysis = scenario.get("portfolio_analysis", "")
+            valuation_analysis = scenario.get("valuation_analysis", "")
+            sector_outlook = scenario.get("sector_outlook", "")
+            market_condition = scenario.get("market_condition", "")
+            rationale = scenario.get("rationale", "")
+
+            trigger_info = getattr(self, "trigger_info_map", {}).get(ticker, {})
+            trigger_type = trigger_info.get("trigger_type", "")
+            trigger_mode = trigger_info.get("trigger_mode", "")
+            risk_reward_ratio = trigger_info.get(
+                "risk_reward_ratio",
+                scenario.get("risk_reward_ratio", 0),
+            )
+
+            self.cursor.execute(
+                """
+                INSERT INTO watchlist_history
+                (ticker, company_name, current_price, analyzed_date, buy_score, min_score,
+                 decision, skip_reason, target_price, stop_loss, investment_period, sector,
+                 scenario, portfolio_analysis, valuation_analysis, sector_outlook,
+                 market_condition, rationale, trigger_type, trigger_mode, risk_reward_ratio, was_traded)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticker,
+                    company_name,
+                    current_price,
+                    now,
+                    buy_score,
+                    min_score,
+                    decision,
+                    skip_reason,
+                    target_price,
+                    stop_loss,
+                    investment_period,
+                    sector,
+                    json.dumps(scenario, ensure_ascii=False),
+                    portfolio_analysis,
+                    valuation_analysis,
+                    sector_outlook,
+                    market_condition,
+                    rationale,
+                    trigger_type,
+                    trigger_mode,
+                    risk_reward_ratio,
+                    1 if was_traded else 0,
+                ),
+            )
+            watchlist_id = self.cursor.lastrowid
+
+            self.cursor.execute(
+                """
+                INSERT INTO analysis_performance_tracker
+                (watchlist_id, ticker, company_name, trigger_type, trigger_mode,
+                 analyzed_date, analyzed_price, decision, was_traded, skip_reason,
+                 buy_score, min_score, target_price, stop_loss, risk_reward_ratio,
+                 tracking_status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    watchlist_id,
+                    ticker,
+                    company_name,
+                    trigger_type,
+                    trigger_mode,
+                    now,
+                    current_price,
+                    decision,
+                    1 if was_traded else 0,
+                    skip_reason,
+                    buy_score,
+                    min_score,
+                    target_price,
+                    stop_loss,
+                    risk_reward_ratio,
+                    now,
+                    now,
+                ),
+            )
+            self.conn.commit()
+            logger.info(
+                f"{ticker}({company_name}) watchlist save complete - "
+                f"Score: {buy_score}/{min_score}, Reason: {skip_reason}, Trigger: {trigger_type}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"{ticker} Error saving watchlist: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
 
     async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "") -> bool:
         """
@@ -1123,16 +1240,21 @@ class StockTrackingAgent:
                             logger.warning(f"GCP sell signal publish failed (non-critical): {signal_err}")
 
                     if sell_success:
+                        account_label = self._safe_account_log_label(
+                            {
+                                "name": stock.get("account_name"),
+                                "account_key": stock.get("account_key"),
+                            }
+                        )
                         sold_stocks.append({
                             "ticker": ticker,
                             "company_name": company_name,
                             "buy_price": stock.get('buy_price', 0),
                             "sell_price": current_price,
                             "profit_rate": ((current_price - stock.get('buy_price', 0)) / stock.get('buy_price', 0) * 100),
-                            "reason": sell_reason
-                            ,
+                            "reason": sell_reason,
                             "account_name": stock.get("account_name"),
-                            "account_key": stock.get("account_key"),
+                            "account_label": account_label,
                         })
                 else:
                     # Update current price
@@ -1300,31 +1422,40 @@ class StockTrackingAgent:
             buy_count = 0
             sell_count = 0
             signaled_tickers: set[str] = set()
-            analysis_cache: list[Dict[str, Any]] = []
+            analysis_states: list[dict[str, Any]] = []
 
             for pdf_report_path in pdf_report_paths:
                 analysis_result = await self._analyze_report_core(pdf_report_path)
                 if not analysis_result.get("success", False):
                     logger.error(f"Report analysis failed: {pdf_report_path} - {analysis_result.get('error', 'Unknown error')}")
                     continue
-                analysis_cache.append(analysis_result)
+                analysis_states.append(
+                    {
+                        "analysis": analysis_result,
+                        "traded": False,
+                        "should_save_watchlist": False,
+                        "skip_reason": None,
+                    }
+                )
 
             for account in self.account_configs:
                 self._set_active_account(account)
-                logger.info(f"Processing KR reports for account {self._safe_account_log_label(account)}")
+                label = self._safe_account_log_label(account)
+                logger.info(f"Processing KR reports for account {label}")
 
                 # 1. Update existing holdings and make sell decisions
                 sold_stocks = await self.update_holdings()
                 sell_count += len(sold_stocks)
 
                 if sold_stocks:
-                    logger.info(f"{len(sold_stocks)} stocks sold for {account['name']}")
+                    logger.info(f"{len(sold_stocks)} stocks sold for {label}")
                     for stock in sold_stocks:
                         logger.info(f"Sold: {stock['company_name']}({stock['ticker']}) - Return: {stock['profit_rate']:.2f}% / Reason: {stock['reason']}")
                 else:
-                    logger.info(f"No stocks sold for {account['name']}")
+                    logger.info(f"No stocks sold for {label}")
 
-                for analysis_result in analysis_cache:
+                for state in analysis_states:
+                    analysis_result = state["analysis"]
                     ticker = analysis_result.get("ticker")
                     company_name = analysis_result.get("company_name")
                     current_price = analysis_result.get("current_price", 0)
@@ -1338,11 +1469,17 @@ class StockTrackingAgent:
 
                     current_slots = await self._get_current_slots_count()
                     if current_slots >= self.max_slots:
-                        logger.info(f"Purchase deferred: {company_name}({ticker}) - max slots reached for {account['name']}")
+                        reason = f"Max slots reached for {label}"
+                        logger.info(f"Purchase deferred: {company_name}({ticker}) - {reason}")
+                        state["should_save_watchlist"] = True
+                        state["skip_reason"] = state["skip_reason"] or reason
                         continue
 
                     if not await self._check_sector_diversity(sector):
-                        logger.info(f"Purchase deferred: {company_name}({ticker}) - Preventing sector over-investment")
+                        reason = "Preventing sector over-investment"
+                        logger.info(f"Purchase deferred: {company_name}({ticker}) - {reason}")
+                        state["should_save_watchlist"] = True
+                        state["skip_reason"] = state["skip_reason"] or reason
                         continue
 
                     buy_score = scenario.get("buy_score", 0)
@@ -1403,8 +1540,11 @@ class StockTrackingAgent:
 
                         if buy_success:
                             buy_count += 1
+                            state["traded"] = True
                             logger.info(f"Purchase complete: {company_name}({ticker}) @ {current_price:,.0f} KRW")
                         else:
+                            state["should_save_watchlist"] = True
+                            state["skip_reason"] = state["skip_reason"] or "Purchase failed"
                             logger.warning(f"Purchase failed: {company_name}({ticker})")
                         continue
 
@@ -1415,6 +1555,31 @@ class StockTrackingAgent:
                         reason = f"Not an entry decision (Decision: {analysis_result.get('decision')})"
 
                     logger.info(f"Purchase deferred: {company_name}({ticker}) - {reason}")
+                    state["should_save_watchlist"] = True
+                    state["skip_reason"] = state["skip_reason"] or reason
+
+            for state in analysis_states:
+                if state["traded"] or not state["should_save_watchlist"]:
+                    continue
+
+                analysis_result = state["analysis"]
+                scenario = analysis_result.get("scenario", {})
+                decision = self._normalize_decision(analysis_result.get("decision", "Skip"))
+                if decision == "Enter":
+                    decision = "Watch"
+
+                await self._save_watchlist_item(
+                    ticker=analysis_result.get("ticker"),
+                    company_name=analysis_result.get("company_name"),
+                    current_price=analysis_result.get("current_price", 0),
+                    buy_score=scenario.get("buy_score", 0),
+                    min_score=scenario.get("min_score", 0),
+                    decision=decision,
+                    skip_reason=state["skip_reason"] or "Trade not executed",
+                    scenario=scenario,
+                    sector=analysis_result.get("sector", "Unknown"),
+                    was_traded=False,
+                )
 
             logger.info(f"Report processing complete - Purchased: {buy_count} stocks, Sold: {sell_count} stocks")
             return buy_count, sell_count

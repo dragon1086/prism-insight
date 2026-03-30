@@ -252,14 +252,8 @@ def _get_columns(cursor, table_name: str) -> list[str]:
     return [row[1] for row in cursor.fetchall()]
 
 
-def _build_projection(source_columns: list[str], target_columns: list[str], defaults: dict[str, str]) -> list[str]:
-    projection = []
-    for column in target_columns:
-        if column in source_columns:
-            projection.append(column)
-        else:
-            projection.append(f"{defaults[column]} AS {column}")
-    return projection
+def _get_copy_columns(source_columns: list[str], target_columns: list[str]) -> list[str]:
+    return [column for column in target_columns if column in source_columns]
 
 
 def _get_primary_account_scope() -> tuple[str, str, str, str]:
@@ -320,7 +314,7 @@ def _rebuild_table(
     table_name: str,
     create_sql: str,
     target_columns: list[str],
-    defaults: dict[str, str],
+    defaults: dict[str, object],
     marker_columns: list[str],
 ):
     _recover_interrupted_migration(cursor, conn, table_name)
@@ -353,14 +347,28 @@ def _rebuild_table(
         cursor.execute(f"ALTER TABLE {table_name} RENAME TO {legacy_table}")
         cursor.execute(create_sql)
 
-        projection = _build_projection(_get_columns(cursor, legacy_table), target_columns, defaults)
-        cursor.execute(
-            f"""
-            INSERT INTO {table_name} ({", ".join(target_columns)})
-            SELECT {", ".join(projection)}
-            FROM {legacy_table}
-            """
-        )
+        source_columns = _get_columns(cursor, legacy_table)
+        insert_columns = []
+        projection = []
+        params = []
+        for column in target_columns:
+            if column in source_columns:
+                insert_columns.append(column)
+                projection.append(column)
+            elif column in defaults:
+                insert_columns.append(column)
+                projection.append("?")
+                params.append(defaults[column])
+
+        if insert_columns:
+            cursor.execute(
+                f"""
+                INSERT INTO {table_name} ({", ".join(insert_columns)})
+                SELECT {", ".join(projection)}
+                FROM {legacy_table}
+                """,
+                tuple(params),
+            )
 
         source_count = _count_rows(cursor, legacy_table)
         target_count = _count_rows(cursor, table_name)
@@ -371,10 +379,10 @@ def _rebuild_table(
 
         cursor.execute(f"DROP TABLE {legacy_table}")
         conn.commit()
-
-        if _table_exists(cursor, backup_table):
-            cursor.execute(f"DROP TABLE {backup_table}")
-            conn.commit()
+        logger.info(
+            f"{table_name} migration complete ({target_count} rows migrated). "
+            f"Backup table {backup_table} retained for manual cleanup."
+        )
     except Exception as exc:
         logger.error(f"{table_name} migration failed: {exc}")
         logger.error(f"Manual recovery is available from backup table {backup_table}")
@@ -405,6 +413,7 @@ def migrate_multi_account_schema(cursor, conn):
             "us_stock_holdings",
             TABLE_US_STOCK_HOLDINGS,
             [
+                "id",
                 "account_key",
                 "account_name",
                 "ticker",
@@ -421,16 +430,8 @@ def migrate_multi_account_schema(cursor, conn):
                 "sector",
             ],
             {
-                "account_key": f"'{account_key}'",
-                "account_name": f"'{account_name}'",
-                "current_price": "NULL",
-                "last_updated": "NULL",
-                "scenario": "NULL",
-                "target_price": "NULL",
-                "stop_loss": "NULL",
-                "trigger_type": "NULL",
-                "trigger_mode": "NULL",
-                "sector": "NULL",
+                "account_key": account_key,
+                "account_name": account_name,
             },
             ["id", "account_key", "account_name"],
         )
@@ -460,12 +461,8 @@ def migrate_multi_account_schema(cursor, conn):
                 "sector",
             ],
             {
-                "account_key": f"'{account_key}'",
-                "account_name": f"'{account_name}'",
-                "scenario": "NULL",
-                "trigger_type": "NULL",
-                "trigger_mode": "NULL",
-                "sector": "NULL",
+                "account_key": account_key,
+                "account_name": account_name,
             },
             ["account_key", "account_name"],
         )
@@ -501,20 +498,9 @@ def migrate_multi_account_schema(cursor, conn):
                 "created_at",
             ],
             {
-                "account_key": f"'{account_key}'",
-                "account_name": f"'{account_name}'",
-                "sell_reason": "NULL",
-                "confidence": "NULL",
-                "technical_trend": "NULL",
-                "volume_analysis": "NULL",
-                "market_condition_impact": "NULL",
-                "time_factor": "NULL",
-                "portfolio_adjustment_needed": "0",
-                "adjustment_reason": "NULL",
-                "new_target_price": "NULL",
-                "new_stop_loss": "NULL",
-                "adjustment_urgency": "NULL",
-                "created_at": "datetime('now', 'localtime')",
+                "account_key": account_key,
+                "account_name": account_name,
+                "portfolio_adjustment_needed": 0,
             },
             ["account_key", "account_name"],
         )
@@ -546,18 +532,10 @@ def migrate_multi_account_schema(cursor, conn):
                 "order_result",
             ],
             {
-                "account_key": f"'{account_key}'",
-                "account_name": f"'{account_name}'",
-                "product_code": f"'{product_code}'",
-                "mode": f"'{mode}'",
-                "buy_amount": "NULL",
-                "exchange": "NULL",
-                "trigger_type": "NULL",
-                "trigger_mode": "NULL",
-                "status": "'pending'",
-                "failure_reason": "NULL",
-                "executed_at": "NULL",
-                "order_result": "NULL",
+                "account_key": account_key,
+                "account_name": account_name,
+                "product_code": product_code,
+                "mode": mode,
             },
             ["account_key", "account_name", "product_code", "mode"],
         )
@@ -785,8 +763,6 @@ def initialize_us_database(db_path: Optional[str] = None):
 
     # Migrate US watchlist history columns (for existing databases)
     migrate_us_watchlist_history_columns(cursor, conn)
-
-    migrate_multi_account_schema(cursor, conn)
 
     logger.info(f"US database initialized: {db_path}")
 

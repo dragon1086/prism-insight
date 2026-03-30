@@ -100,6 +100,12 @@ class _FakeAsyncUSTradingContext:
             "failed_accounts": ["us-secondary"],
         }
 
+    async def async_sell_stock(self, ticker, limit_price=None):
+        return {
+            "success": True,
+            "message": f"sold for {self.account_name}",
+        }
+
 
 def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):
     redis_module = types.ModuleType("messaging.redis_signal_publisher")
@@ -108,11 +114,19 @@ def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):
     async def publish_buy_signal(**kwargs):
         redis_calls.append(kwargs)
 
+    async def publish_sell_signal(**kwargs):
+        redis_calls.append(kwargs)
+
     async def gcp_publish_buy_signal(**kwargs):
         gcp_calls.append(kwargs)
 
+    async def gcp_publish_sell_signal(**kwargs):
+        gcp_calls.append(kwargs)
+
     redis_module.publish_buy_signal = publish_buy_signal
+    redis_module.publish_sell_signal = publish_sell_signal
     gcp_module.publish_buy_signal = gcp_publish_buy_signal
+    gcp_module.publish_sell_signal = gcp_publish_sell_signal
 
     monkeypatch.setitem(sys.modules, "messaging.redis_signal_publisher", redis_module)
     monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_module)
@@ -290,6 +304,86 @@ async def test_process_reports_returns_zero_for_empty_accounts(caplog):
 
     assert (buy_count, sell_count) == (0, 0)
     assert "no accounts configured" in caplog.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_update_holdings_masks_sold_account_payload(monkeypatch):
+    agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+    agent.conn = sqlite3.connect(":memory:")
+    agent.conn.row_factory = sqlite3.Row
+    agent.cursor = agent.conn.cursor()
+    agent.cursor.execute(
+        """
+        CREATE TABLE us_stock_holdings (
+            ticker TEXT,
+            company_name TEXT,
+            buy_price REAL,
+            buy_date TEXT,
+            current_price REAL,
+            scenario TEXT,
+            target_price REAL,
+            stop_loss REAL,
+            last_updated TEXT,
+            trigger_type TEXT,
+            trigger_mode TEXT,
+            account_key TEXT,
+            account_name TEXT,
+            sector TEXT
+        )
+        """
+    )
+    agent.cursor.execute(
+        """
+        INSERT INTO us_stock_holdings
+        (ticker, company_name, buy_price, buy_date, current_price, scenario, target_price,
+         stop_loss, last_updated, trigger_type, trigger_mode, account_key, account_name, sector)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "AAPL",
+            "Apple Inc.",
+            180.5,
+            "2026-03-01 09:00:00",
+            185.0,
+            "{}",
+            None,
+            None,
+            "2026-03-01 09:00:00",
+            "AI Analysis",
+            "morning",
+            "vps:12345678:01",
+            "us-primary",
+            "Technology",
+        ),
+    )
+    agent.conn.commit()
+    agent.active_account = {"name": "us-primary", "account_key": "vps:12345678:01", "product": "01"}
+    agent.message_queue = []
+    agent._msg_types = []
+
+    async def fake_get_current_stock_price(ticker):
+        return 190.0
+
+    async def fake_analyze_sell_decision(stock):
+        return True, "Take profit"
+
+    async def fake_sell_stock(stock, reason):
+        return True
+
+    agent._get_current_stock_price = fake_get_current_stock_price
+    agent._analyze_sell_decision = fake_analyze_sell_decision
+    agent.sell_stock = fake_sell_stock
+
+    redis_calls = []
+    gcp_calls = []
+    _install_signal_modules(monkeypatch, redis_calls, gcp_calls)
+    _install_us_trading_module(monkeypatch)
+
+    sold = await USStockTrackingAgent.update_holdings(agent)
+
+    assert len(sold) == 1
+    assert sold[0]["account_label"] == "us-primary (vps:12****78:01)"
+    assert "account_key" not in sold[0]
 
 
 def test_safe_account_log_label_masks_account_key():

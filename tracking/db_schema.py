@@ -53,6 +53,69 @@ CREATE TABLE IF NOT EXISTS trading_history (
 )
 """
 
+# Table: watchlist_history
+TABLE_WATCHLIST_HISTORY = """
+CREATE TABLE IF NOT EXISTS watchlist_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    company_name TEXT NOT NULL,
+    current_price REAL NOT NULL,
+    analyzed_date TEXT NOT NULL,
+    buy_score INTEGER NOT NULL,
+    min_score INTEGER NOT NULL,
+    decision TEXT NOT NULL,
+    skip_reason TEXT NOT NULL,
+    target_price REAL,
+    stop_loss REAL,
+    investment_period TEXT,
+    sector TEXT,
+    scenario TEXT,
+    portfolio_analysis TEXT,
+    valuation_analysis TEXT,
+    sector_outlook TEXT,
+    market_condition TEXT,
+    rationale TEXT,
+    trigger_type TEXT,
+    trigger_mode TEXT,
+    risk_reward_ratio REAL,
+    was_traded INTEGER DEFAULT 0
+)
+"""
+
+# Table: analysis_performance_tracker
+TABLE_ANALYSIS_PERFORMANCE_TRACKER = """
+CREATE TABLE IF NOT EXISTS analysis_performance_tracker (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    watchlist_id INTEGER,
+    ticker TEXT NOT NULL,
+    company_name TEXT,
+    trigger_type TEXT,
+    trigger_mode TEXT,
+    analyzed_date TEXT NOT NULL,
+    analyzed_price REAL,
+    decision TEXT,
+    was_traded INTEGER DEFAULT 0,
+    skip_reason TEXT,
+    buy_score REAL,
+    min_score REAL,
+    target_price REAL,
+    stop_loss REAL,
+    risk_reward_ratio REAL,
+    tracked_7d_date TEXT,
+    tracked_7d_price REAL,
+    tracked_7d_return REAL,
+    tracked_14d_date TEXT,
+    tracked_14d_price REAL,
+    tracked_14d_return REAL,
+    tracked_30d_date TEXT,
+    tracked_30d_price REAL,
+    tracked_30d_return REAL,
+    tracking_status TEXT DEFAULT 'pending',
+    created_at TEXT,
+    updated_at TEXT
+)
+"""
+
 # Table: trading_journal
 TABLE_TRADING_JOURNAL = """
 CREATE TABLE IF NOT EXISTS trading_journal (
@@ -190,6 +253,12 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_stock_holdings_account_key ON stock_holdings(account_key)",
     "CREATE INDEX IF NOT EXISTS idx_stock_holdings_account_ticker ON stock_holdings(account_key, ticker)",
     "CREATE INDEX IF NOT EXISTS idx_trading_history_account_key ON trading_history(account_key)",
+    "CREATE INDEX IF NOT EXISTS idx_watchlist_ticker ON watchlist_history(ticker)",
+    "CREATE INDEX IF NOT EXISTS idx_watchlist_date ON watchlist_history(analyzed_date)",
+    "CREATE INDEX IF NOT EXISTS idx_watchlist_decision ON watchlist_history(decision)",
+    "CREATE INDEX IF NOT EXISTS idx_perf_ticker ON analysis_performance_tracker(ticker)",
+    "CREATE INDEX IF NOT EXISTS idx_perf_date ON analysis_performance_tracker(analyzed_date)",
+    "CREATE INDEX IF NOT EXISTS idx_perf_status ON analysis_performance_tracker(tracking_status)",
     "CREATE INDEX IF NOT EXISTS idx_journal_ticker ON trading_journal(ticker)",
     "CREATE INDEX IF NOT EXISTS idx_journal_pattern ON trading_journal(pattern_tags)",
     "CREATE INDEX IF NOT EXISTS idx_journal_date ON trading_journal(trade_date)",
@@ -218,14 +287,8 @@ def _get_columns(cursor, table_name: str) -> list[str]:
     return [row[1] for row in cursor.fetchall()]
 
 
-def _build_column_projection(source_columns: list[str], target_columns: list[str], defaults: dict[str, str]) -> list[str]:
-    projection = []
-    for column in target_columns:
-        if column in source_columns:
-            projection.append(column)
-        else:
-            projection.append(f"{defaults[column]} AS {column}")
-    return projection
+def _get_copy_columns(source_columns: list[str], target_columns: list[str]) -> list[str]:
+    return [column for column in target_columns if column in source_columns]
 
 
 def _get_primary_account_scope() -> tuple[str, str]:
@@ -285,7 +348,7 @@ def _rebuild_table(
     table_name: str,
     create_sql: str,
     target_columns: list[str],
-    defaults: dict[str, str],
+    defaults: dict[str, object],
     marker_columns: list[str],
 ):
     _recover_interrupted_migration(cursor, conn, table_name)
@@ -319,14 +382,27 @@ def _rebuild_table(
         cursor.execute(create_sql)
 
         source_columns = _get_columns(cursor, legacy_table)
-        projection = _build_column_projection(source_columns, target_columns, defaults)
-        cursor.execute(
-            f"""
-            INSERT INTO {table_name} ({", ".join(target_columns)})
-            SELECT {", ".join(projection)}
-            FROM {legacy_table}
-            """
-        )
+        insert_columns = []
+        projection = []
+        params = []
+        for column in target_columns:
+            if column in source_columns:
+                insert_columns.append(column)
+                projection.append(column)
+            elif column in defaults:
+                insert_columns.append(column)
+                projection.append("?")
+                params.append(defaults[column])
+
+        if insert_columns:
+            cursor.execute(
+                f"""
+                INSERT INTO {table_name} ({", ".join(insert_columns)})
+                SELECT {", ".join(projection)}
+                FROM {legacy_table}
+                """,
+                tuple(params),
+            )
 
         source_count = _count_rows(cursor, legacy_table)
         target_count = _count_rows(cursor, table_name)
@@ -337,10 +413,10 @@ def _rebuild_table(
 
         cursor.execute(f"DROP TABLE {legacy_table}")
         conn.commit()
-
-        if _table_exists(cursor, backup_table):
-            cursor.execute(f"DROP TABLE {backup_table}")
-            conn.commit()
+        logger.info(
+            f"{table_name} migration complete ({target_count} rows migrated). "
+            f"Backup table {backup_table} retained for manual cleanup."
+        )
     except Exception as exc:
         logger.error(f"{table_name} migration failed: {exc}")
         logger.error(f"Manual recovery is available from backup table {backup_table}")
@@ -360,16 +436,8 @@ def migrate_multi_account_schema(cursor, conn):
                 f"Migration aborted to prevent data orphaning. Cause: {exc}"
             ) from exc
         stock_defaults = {
-            "account_key": f"'{account_key}'",
-            "account_name": f"'{account_name}'",
-            "current_price": "NULL",
-            "last_updated": "NULL",
-            "scenario": "NULL",
-            "target_price": "NULL",
-            "stop_loss": "NULL",
-            "trigger_type": "NULL",
-            "trigger_mode": "NULL",
-            "sector": "NULL",
+            "account_key": account_key,
+            "account_name": account_name,
         }
         _rebuild_table(
             cursor,
@@ -408,12 +476,8 @@ def migrate_multi_account_schema(cursor, conn):
                         f"Migration aborted to prevent data orphaning. Cause: {exc}"
                     ) from exc
             history_defaults = {
-                "account_key": f"'{account_key}'",
-                "account_name": f"'{account_name}'",
-                "scenario": "NULL",
-                "trigger_type": "NULL",
-                "trigger_mode": "NULL",
-                "sector": "NULL",
+                "account_key": account_key,
+                "account_name": account_name,
             }
         _rebuild_table(
             cursor,
@@ -442,6 +506,91 @@ def migrate_multi_account_schema(cursor, conn):
         )
 
 
+def migrate_watchlist_history_columns(cursor, conn):
+    migrations = [
+        ("watchlist_history", "min_score INTEGER"),
+        ("watchlist_history", "target_price REAL"),
+        ("watchlist_history", "stop_loss REAL"),
+        ("watchlist_history", "investment_period TEXT"),
+        ("watchlist_history", "portfolio_analysis TEXT"),
+        ("watchlist_history", "valuation_analysis TEXT"),
+        ("watchlist_history", "sector_outlook TEXT"),
+        ("watchlist_history", "market_condition TEXT"),
+        ("watchlist_history", "rationale TEXT"),
+        ("watchlist_history", "trigger_type TEXT"),
+        ("watchlist_history", "trigger_mode TEXT"),
+        ("watchlist_history", "risk_reward_ratio REAL"),
+        ("watchlist_history", "was_traded INTEGER DEFAULT 0"),
+        ("watchlist_history", "sector TEXT"),
+    ]
+
+    for table_name, column_def in migrations:
+        try:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
+            conn.commit()
+            logger.info(f"Added column to {table_name}: {column_def}")
+        except Exception as exc:
+            if "duplicate column name" in str(exc).lower():
+                logger.debug(f"Column already exists in {table_name}: {column_def}")
+            else:
+                logger.warning(f"Migration warning for {table_name}: {exc}")
+
+
+def migrate_analysis_performance_tracker_columns(cursor, conn):
+    migrations = [
+        ("analysis_performance_tracker", "watchlist_id INTEGER"),
+        ("analysis_performance_tracker", "company_name TEXT"),
+        ("analysis_performance_tracker", "trigger_type TEXT"),
+        ("analysis_performance_tracker", "trigger_mode TEXT"),
+        ("analysis_performance_tracker", "decision TEXT"),
+        ("analysis_performance_tracker", "was_traded INTEGER DEFAULT 0"),
+        ("analysis_performance_tracker", "skip_reason TEXT"),
+        ("analysis_performance_tracker", "buy_score REAL"),
+        ("analysis_performance_tracker", "min_score REAL"),
+        ("analysis_performance_tracker", "target_price REAL"),
+        ("analysis_performance_tracker", "stop_loss REAL"),
+        ("analysis_performance_tracker", "risk_reward_ratio REAL"),
+        ("analysis_performance_tracker", "tracked_7d_date TEXT"),
+        ("analysis_performance_tracker", "tracked_7d_price REAL"),
+        ("analysis_performance_tracker", "tracked_7d_return REAL"),
+        ("analysis_performance_tracker", "tracked_14d_date TEXT"),
+        ("analysis_performance_tracker", "tracked_14d_price REAL"),
+        ("analysis_performance_tracker", "tracked_14d_return REAL"),
+        ("analysis_performance_tracker", "tracked_30d_date TEXT"),
+        ("analysis_performance_tracker", "tracked_30d_price REAL"),
+        ("analysis_performance_tracker", "tracked_30d_return REAL"),
+        ("analysis_performance_tracker", "tracking_status TEXT DEFAULT 'pending'"),
+        ("analysis_performance_tracker", "updated_at TEXT"),
+    ]
+
+    for table_name, column_def in migrations:
+        try:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
+            conn.commit()
+            logger.info(f"Added column to {table_name}: {column_def}")
+        except Exception as exc:
+            if "duplicate column name" in str(exc).lower():
+                logger.debug(f"Column already exists in {table_name}: {column_def}")
+            else:
+                logger.warning(f"Migration warning for {table_name}: {exc}")
+
+    try:
+        cursor.execute(
+            """
+            UPDATE analysis_performance_tracker
+            SET tracking_status = CASE
+                WHEN tracked_30d_return IS NOT NULL THEN 'completed'
+                WHEN tracked_7d_return IS NOT NULL THEN 'in_progress'
+                ELSE 'pending'
+            END
+            WHERE tracking_status IS NULL OR tracking_status = 'pending'
+            """
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.warning(f"Error updating KR tracking_status: {exc}")
+
+
 def create_all_tables(cursor, conn):
     """
     Create all database tables.
@@ -453,6 +602,8 @@ def create_all_tables(cursor, conn):
     tables = [
         TABLE_STOCK_HOLDINGS,
         TABLE_TRADING_HISTORY,
+        TABLE_WATCHLIST_HISTORY,
+        TABLE_ANALYSIS_PERFORMANCE_TRACKER,
         TABLE_TRADING_JOURNAL,
         TABLE_TRADING_INTUITIONS,
         TABLE_TRADING_PRINCIPLES,
@@ -464,6 +615,8 @@ def create_all_tables(cursor, conn):
         cursor.execute(table_sql)
 
     migrate_multi_account_schema(cursor, conn)
+    migrate_watchlist_history_columns(cursor, conn)
+    migrate_analysis_performance_tracker_columns(cursor, conn)
     conn.commit()
     logger.info("Database tables created")
 

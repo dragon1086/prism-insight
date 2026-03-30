@@ -286,6 +286,63 @@ def test_us_schema_migration_backfills_primary_account_scope(monkeypatch):
     assert cursor.fetchone() == ("vps:us-primary:01", "US Primary", "01", "demo", "MSFT")
 
 
+def test_us_schema_migration_handles_quoted_account_names_retains_backups_and_preserves_ids(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE us_stock_holdings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            company_name TEXT NOT NULL,
+            buy_price REAL NOT NULL,
+            buy_date TEXT NOT NULL,
+            current_price REAL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE us_pending_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            order_type TEXT NOT NULL,
+            limit_price REAL NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO us_stock_holdings (id, ticker, company_name, buy_price, buy_date, current_price)
+        VALUES (7, 'AAPL', 'Apple Inc.', 180.5, '2026-03-01', 185.0)
+        """
+    )
+    cursor.execute(
+        """
+        INSERT INTO us_pending_orders (ticker, order_type, limit_price, created_at)
+        VALUES ('MSFT', 'buy', 410.0, '2026-03-02 09:00:00')
+        """
+    )
+    conn.commit()
+
+    monkeypatch.setattr(
+        us_schema,
+        "_get_primary_account_scope",
+        lambda: ("vps:us-primary:01", "O'Brien US", "01", "demo"),
+    )
+
+    us_schema.migrate_multi_account_schema(cursor, conn)
+
+    cursor.execute("SELECT id, account_key, account_name FROM us_stock_holdings")
+    assert cursor.fetchone() == (7, "vps:us-primary:01", "O'Brien US")
+    cursor.execute("SELECT account_key, account_name, product_code, mode FROM us_pending_orders")
+    assert cursor.fetchone() == ("vps:us-primary:01", "O'Brien US", "01", "demo")
+    assert us_schema._table_exists(cursor, "us_stock_holdings_pre_multi_account_backup")
+    assert us_schema._table_exists(cursor, "us_pending_orders_pre_multi_account_backup")
+
+
 def test_us_schema_recovers_interrupted_migration(monkeypatch):
     conn = sqlite3.connect(":memory:")
     cursor = conn.cursor()
@@ -369,6 +426,25 @@ def test_us_schema_skips_scope_resolution_when_already_migrated(monkeypatch):
     monkeypatch.setattr(us_schema, "_get_primary_account_scope", _raise_scope_error)
 
     us_schema.migrate_multi_account_schema(cursor, conn)
+
+
+def test_initialize_us_database_runs_multi_account_migration_once(monkeypatch):
+    calls = []
+    temp_file = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+    temp_path = Path(temp_file.name)
+    temp_file.close()
+
+    def fake_migration(cursor, conn):
+        calls.append("migrated")
+
+    monkeypatch.setattr(us_schema, "migrate_multi_account_schema", fake_migration)
+
+    cursor, conn = us_schema.initialize_us_database(str(temp_path))
+    try:
+        assert calls == ["migrated"]
+    finally:
+        conn.close()
+        temp_path.unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio
