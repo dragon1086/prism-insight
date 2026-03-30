@@ -27,6 +27,11 @@ LOG_PATTERNS=(
     # 미국 주식
     "us_orchestrator_*.log"
     "trigger_results_us_*.json"
+    # 압축 로그
+    "compression_*.log"
+    # 거시경제 인텔리전스
+    "macro_intelligence_kr_*.json"
+    "macro_intelligence_us_*.json"
 )
 
 # 프로젝트 루트에서 7일 이상 된 로그 파일 삭제
@@ -42,6 +47,9 @@ PRISM_US_DIR="$PROJECT_ROOT/prism-us"
 if [ -d "$PRISM_US_DIR" ]; then
     # US 성과 추적 로그
     find "$PRISM_US_DIR" -maxdepth 1 -name "us_performance_tracker_*.log" -type f -mtime +$DAYS_TO_KEEP_LOGS -exec rm {} \;
+
+    # US 거시경제 인텔리전스
+    find "$PRISM_US_DIR" -maxdepth 1 -name "macro_intelligence_us_*.json" -type f -mtime +$DAYS_TO_KEEP_LOGS -exec rm {} \;
 
     # US 스케줄러 로그 (일요일에 내용 비우기)
     if [ $(date +%u) -eq 7 ]; then

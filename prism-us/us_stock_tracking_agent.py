@@ -1146,6 +1146,11 @@ class USStockTrackingAgent:
             except Exception:
                 pass
 
+            # Hard mechanical stop-loss check BEFORE AI — cannot be overridden
+            if stop_loss > 0 and current_price <= stop_loss:
+                logger.info(f"{ticker} Mechanical stop-loss triggered (stop-loss: ${stop_loss:,.2f}) — skipping AI")
+                return True, f"Stop-loss condition reached (stop-loss: ${stop_loss:,.2f})"
+
             # Collect current portfolio info from us_stock_holdings
             self.cursor.execute("""
                 SELECT ticker, company_name, buy_price, current_price, scenario
@@ -1174,6 +1179,9 @@ class USStockTrackingAgent:
             logger.info(f"[_analyze_sell_decision] {ticker}({company_name}) portfolio_info:")
             logger.info(f"  - Holdings: {len(holdings)}/{self.max_slots}, Sectors: {json.dumps(sector_distribution)}")
 
+            # Dynamic trailing stop threshold: min 1.5%, max 5%, scales with price appreciation
+            trailing_stop_threshold_pct = max(1.5, min(5.0, (highest_price - buy_price) / buy_price * 100 * 0.3)) if buy_price > 0 else 3.0
+
             # LLM call
             llm = await self.sell_decision_agent.attach_llm(OpenAIAugmentedLLM)
 
@@ -1187,6 +1195,7 @@ Please make a sell/hold decision for the following US stock holding.
 - Target Price: ${target_price:,.2f} (initial scenario: ${initial_target_price:,.2f})
 - Stop Loss: ${stop_loss:,.2f} (initial scenario: ${initial_stop_loss:,.2f})
 - Highest Price Since Entry: ${highest_price:,.2f}{' (⚠️ First tracking - verify actual peak since entry via get_historical_stock_prices)' if highest_price_initialized else ''}
+- Trailing Stop Adjustment Threshold: {trailing_stop_threshold_pct:.1f}% (only adjust stop-loss if new value is at least this much higher)
 - Return: {profit_rate:.2f}%
 - Holding Period: {days_passed} days
 - Investment Period: {period}
@@ -1408,6 +1417,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             f"{ticker} Portfolio adjustment REJECTED: new stop_loss ${stop_loss_num:,.2f} > "
                             f"current_price ${current_price:,.2f}. "
                             f"This indicates trailing stop breach — should trigger sell, not adjustment."
+                        )
+                    # Ratchet: reject stop_loss below current stop_loss (one-way ratchet)
+                    elif old_stop_loss > 0 and stop_loss_num < old_stop_loss:
+                        logger.warning(
+                            f"{ticker} Ratchet rule violated REJECTED: AI attempted to lower stop_loss "
+                            f"${stop_loss_num:,.2f} < ${old_stop_loss:,.2f} — ignoring."
                         )
                     else:
                         self.cursor.execute(

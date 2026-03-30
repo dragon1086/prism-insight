@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+
 # Add paths for imports
 PRISM_US_DIR = Path(__file__).parent.parent
 PROJECT_ROOT = PRISM_US_DIR.parent
@@ -34,6 +35,7 @@ except ModuleNotFoundError:
     sys.modules.setdefault("mcp_agent", mcp_agent)
     sys.modules.setdefault("mcp_agent.agents", agents_module)
     sys.modules.setdefault("mcp_agent.agents.agent", agent_module)
+
 
 from cores.agents import get_us_agent_directory
 

@@ -813,19 +813,23 @@ def create_us_sell_decision_agent(language: str = "ko"):
   * 3일 연속 하락 + 거래량 감소
   * 주요 지지선(50일선) 이탈
 
-**⭐ Trailing Stop 관리 (매 실행 시)**
+**⭐ Trailing Stop 관리**
 1. 시스템이 진입 후 최고가(highest_price)를 프롬프트에 제공합니다 — 직접 조회 불필요
 2. 현재가 > highest_price이면 시스템이 자동 갱신합니다
-3. highest_price 기준 trailing stop을 계산하여 portfolio_adjustment JSON으로 응답하세요
+3. highest_price 기준 trailing stop을 계산하되, **아래 조건을 모두 충족할 때만** portfolio_adjustment로 응답하세요:
+   - 계산된 trailing stop > 현재 stop_loss (손절가는 절대 내릴 수 없음, 일방향 래칫)
+   - 계산된 trailing stop이 현재 stop_loss보다 **프롬프트 제공 임계값(기본 3%) 이상** 높을 때만 조정 (노이즈 방지, 프롬프트의 '트레일링 스탑 조정 임계값' 참조)
+   - 위 조건 미충족 시: portfolio_adjustment.needed = false, new_stop_loss = null
 
 예시: 진입 $100, 초기 손절 $93
-→ 상승 $120 → new_stop_loss: $110.40 ($120 × 0.92)
-→ 상승 $150 → new_stop_loss: $138 ($150 × 0.92)
-→ 하락 $135 (이탈) → should_sell: true
+→ 상승 $120 → trailing stop $110.40, 현재 손절가 $93 대비 +18.7% → 조정 O
+→ 고점 $120 유지 후 하락 $115 → trailing stop $110.40, 현재 손절가 $110.40과 동일 → 조정 X
+→ 하락 $109 (trailing stop $110.40 이탈) → should_sell: true
 
 Trailing Stop %: 강세장 고점 × 0.92 (-8%), 약세장 고점 × 0.95 (-5%)
 
 **⚠️ 중요**: new_stop_loss는 절대 현재가를 초과하면 안 됩니다. trailing stop > 현재가이면 should_sell: true로 매도 판단하세요.
+**🔒 손절가 하향 절대 금지**: new_stop_loss가 현재 stop_loss보다 낮은 값이면 제출하지 마세요. 어떤 이유로도 손절가를 내리는 것은 허용되지 않습니다.
 
 **B) 약세장/횡보장 모드 → 수익 확보 (방어적)**
 - 목표가 도달 시 즉시 매도 고려
@@ -928,12 +932,13 @@ JSON 형식으로 다음과 같이 응답해주세요:
 
 **portfolio_adjustment 작성 가이드:**
 - **매우 신중하게 판단**: 잦은 조정은 투자 원칙을 해치므로 정말 필요할 때만
-- needed=true 조건: 시장 환경 급변, 종목 펀더멘털 변화, 기술적 구조 변화 등
+- needed=true 조건: 시장 환경 급변, 종목 펀더멘털 변화, 기술적 구조 변화, 또는 trailing stop 조건(위 규칙) 충족 시
 - new_target_price: 조정이 필요하면 85 (순수 숫자, 쉼표나 $ 없이), 아니면 null
 - new_stop_loss: 조정이 필요하면 70 (순수 숫자, 쉼표나 $ 없이), 아니면 null
 - urgency: high(즉시), medium(며칠 내), low(참고용)
 - **원칙**: 현재 전략이 여전히 유효하다면 needed=false로 설정
 - **숫자 형식 주의**: 85 (O), "$85" (X), "85.00" (O)
+- **🔒 손절가 래칫 원칙**: new_stop_loss는 반드시 현재 stop_loss보다 높아야 합니다. 현재 손절가보다 낮은 new_stop_loss는 어떤 이유로도 제출 불가. 손절가는 오직 상향만 가능합니다.
 """
     else:  # English
         instruction = """## Your Identity
@@ -983,19 +988,23 @@ You need to comprehensively analyze the data of currently held stocks to decide 
   * 3 consecutive days decline + volume decrease
   * Break major support (50-day line)
 
-**⭐ Trailing Stop Management (Execute Every Run)**
+**⭐ Trailing Stop Management**
 1. The system provides highest_price (peak since entry) in the prompt — use it directly, no need to query separately
 2. If current price > highest_price → system auto-updates it
-3. Calculate trailing stop from highest_price and return via portfolio_adjustment JSON
+3. Calculate trailing stop from highest_price, but **only submit portfolio_adjustment when ALL conditions are met**:
+   - Calculated trailing stop > current stop_loss (stop loss is one-way ratchet — never lower it)
+   - Calculated trailing stop is at least **the threshold from the prompt (default 3%) higher** than current stop_loss (noise filter — see 'Trailing Stop Adjustment Threshold' in prompt)
+   - If conditions not met: portfolio_adjustment.needed = false, new_stop_loss = null
 
 Example: Entry $100, Initial stop $93
-→ Rise to $120 → new_stop_loss: $110.40 ($120 × 0.92)
-→ Rise to $150 → new_stop_loss: $138 ($150 × 0.92)
-→ Fall to $135 (breaks trailing stop) → should_sell: true
+→ Rise to $120 → trailing stop $110.40, vs current $93 (+18.7%) → adjust ✓
+→ Peak $120, price falls to $115 → trailing stop $110.40, same as current → no adjust ✗
+→ Fall to $109 (breaks trailing stop $110.40) → should_sell: true
 
 Trailing Stop %: Bull market peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
 
 **⚠️ Important**: new_stop_loss must NEVER exceed current price. If trailing stop > current price, set should_sell: true instead.
+**🔒 Stop loss ratchet rule**: new_stop_loss must always be HIGHER than the current stop_loss. Submitting a lower stop_loss is strictly forbidden under any circumstances.
 
 **B) Bear/Sideways Mode → Secure Profit (Defensive)**
 - Consider immediate sell when target reached
@@ -1098,12 +1107,13 @@ Please respond in JSON format:
 
 **portfolio_adjustment Writing Guide:**
 - **Very prudent judgment**: Frequent adjustments harm investment principles, do only when truly necessary
-- needed=true conditions: Market environment upheaval, stock fundamentals change, technical structure change etc.
+- needed=true conditions: Market environment upheaval, stock fundamentals change, technical structure change, or trailing stop condition (above rules) met
 - new_target_price: 85 (pure number, no comma or $) if adjustment needed, else null
 - new_stop_loss: 70 (pure number, no comma or $) if adjustment needed, else null
 - urgency: high(immediate), medium(within days), low(reference)
 - **Principle**: If current strategy still valid, set needed=false
 - **Number format note**: 85 (O), "$85" (X), "85.00" (O)
+- **🔒 Stop loss ratchet**: new_stop_loss must be HIGHER than current stop_loss. A lower value is forbidden under any reason. Stop loss moves only upward.
 """
 
     return Agent(

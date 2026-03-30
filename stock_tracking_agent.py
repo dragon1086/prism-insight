@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
 from telegram import Bot
-from telegram.error import TelegramError
+from telegram.error import TelegramError, TimedOut, RetryAfter
 
 # Logging configuration
 logging.basicConfig(
@@ -1363,6 +1363,26 @@ class StockTrackingAgent:
         """Schedule Firebase notification as non-blocking task. Returns the task."""
         return asyncio.create_task(self._notify_firebase(message, chat_id, message_id, msg_type=msg_type))
 
+    async def _send_with_retry(self, chat_id: str, text: str, max_retries: int = 3):
+        """Send a single Telegram message with retry on timeout and rate-limit."""
+        for attempt in range(max_retries + 1):
+            try:
+                return await self.telegram_bot.send_message(chat_id=chat_id, text=text)
+            except RetryAfter as e:
+                if attempt < max_retries:
+                    wait_time = e.retry_after + 1
+                    logger.warning(f"Rate limit hit. Waiting {wait_time}s before retry... (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
+            except TimedOut:
+                if attempt < max_retries:
+                    wait_time = 2 ** attempt  # 1, 2, 4 seconds
+                    logger.warning(f"Timeout sending to {chat_id}. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
+
     async def send_telegram_message(self, chat_id: str, language: str = "ko") -> bool:
         """
         Send message via Telegram
@@ -1433,10 +1453,7 @@ class StockTrackingAgent:
 
                     if len(message) <= MAX_MESSAGE_LENGTH:
                         # Send in one message if short
-                        result = await self.telegram_bot.send_message(
-                            chat_id=chat_id,
-                            text=message
-                        )
+                        result = await self._send_with_retry(chat_id=chat_id, text=message)
                         firebase_tasks.append(self._schedule_firebase(message, chat_id, result.message_id, msg_type=msg_type))
                     else:
                         # Split and send if long
@@ -1457,10 +1474,7 @@ class StockTrackingAgent:
                         # Send split messages
                         first_msg_id = None
                         for i, part in enumerate(parts, 1):
-                            result = await self.telegram_bot.send_message(
-                                chat_id=chat_id,
-                                text=f"[{i}/{len(parts)}]\n{part}"
-                            )
+                            result = await self._send_with_retry(chat_id=chat_id, text=f"[{i}/{len(parts)}]\n{part}")
                             if i == 1:
                                 first_msg_id = result.message_id
                             await asyncio.sleep(0.5)  # Short delay between split messages
@@ -1535,10 +1549,7 @@ class StockTrackingAgent:
                             MAX_MESSAGE_LENGTH = 4096
 
                             if len(translated_message) <= MAX_MESSAGE_LENGTH:
-                                result = await self.telegram_bot.send_message(
-                                    chat_id=channel_id,
-                                    text=translated_message
-                                )
+                                result = await self._send_with_retry(chat_id=channel_id, text=translated_message)
                                 firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, result.message_id, msg_type=msg_type))
                             else:
                                 # Split long messages
@@ -1559,10 +1570,7 @@ class StockTrackingAgent:
                                 # Send split messages
                                 first_msg_id = None
                                 for i, part in enumerate(parts, 1):
-                                    result = await self.telegram_bot.send_message(
-                                        chat_id=channel_id,
-                                        text=f"[{i}/{len(parts)}]\n{part}"
-                                    )
+                                    result = await self._send_with_retry(chat_id=channel_id, text=f"[{i}/{len(parts)}]\n{part}")
                                     if i == 1:
                                         first_msg_id = result.message_id
                                     await asyncio.sleep(0.5)
