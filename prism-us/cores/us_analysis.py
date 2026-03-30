@@ -158,7 +158,7 @@ async def analyze_us_stock(
                 )
                 if social_snapshot:
                     prefetched["social_sentiment"] = social_snapshot
-                    logger.info("Prefetched social sentiment for %s", ticker)
+                    logger.info(f"Prefetched social sentiment for {ticker}")
             except Exception as e:
                 logger.warning(f"US social sentiment prefetch failed, continuing without it: {e}")
 
