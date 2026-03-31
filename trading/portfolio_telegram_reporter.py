@@ -32,10 +32,11 @@ sys.path.insert(0, str(PARENT_DIR))               # project root - MUST be first
 # Load configuration file
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
 with open(CONFIG_FILE, encoding="UTF-8") as f:
-    _cfg = yaml.load(f, Loader=yaml.FullLoader)
+    _cfg = yaml.safe_load(f)
 
 # Import local modules
 from trading.domestic_stock_trading import DomesticStockTrading
+from trading import kis_auth as ka
 from telegram_bot_agent import TelegramBotAgent
 
 # Import US trading module (optional - may not be available)
@@ -135,6 +136,14 @@ class PortfolioTelegramReporter:
         else:  # KRW
             sign = "+" if amount >= 0 else ""
             return f"{sign}{amount:,.0f}원" if amount else "0원"
+
+    def _get_primary_account_config(self, market: str) -> Optional[Dict[str, Any]]:
+        """Resolve the representative account for the active mode and market."""
+        svr = "vps" if self.trading_mode == "demo" else "prod"
+        try:
+            return ka.resolve_account(svr=svr, product="01", market=market)
+        except ValueError:
+            return None
 
     def create_portfolio_message(
         self,
@@ -312,36 +321,47 @@ class PortfolioTelegramReporter:
         us_portfolio = []
         us_account_summary = {}
 
-        # Fetch KR trading data
-        try:
-            kr_trader = DomesticStockTrading(mode=self.trading_mode)
+        # Fetch KR trading data from the representative account only
+        kr_account = self._get_primary_account_config("kr")
+        if kr_account:
+            try:
+                kr_trader = DomesticStockTrading(
+                    mode=self.trading_mode,
+                    account_name=kr_account["name"],
+                    product_code=kr_account["product"],
+                )
 
-            logger.info("Fetching KR portfolio data...")
-            kr_portfolio = kr_trader.get_portfolio()
+                logger.info(f"Fetching KR portfolio data for representative account '{kr_account['name']}'...")
+                kr_portfolio = kr_trader.get_portfolio()
 
-            logger.info("Fetching KR account summary...")
-            kr_account_summary = kr_trader.get_account_summary() or {}
+                logger.info(f"Fetching KR account summary for representative account '{kr_account['name']}'...")
+                kr_account_summary = kr_trader.get_account_summary() or {}
 
-            logger.info(f"KR data fetch complete: {len(kr_portfolio)} holdings")
+                logger.info(f"KR data fetch complete: {len(kr_portfolio)} holdings")
 
-        except Exception as e:
-            logger.error(f"Error fetching KR trading data: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error fetching KR trading data for representative account '{kr_account['name']}': {str(e)}")
 
         # Fetch US trading data (if available)
         if US_TRADING_AVAILABLE:
-            try:
-                us_trader = USStockTrading(mode=self.trading_mode)
+            us_account = self._get_primary_account_config("us")
+            if us_account:
+                try:
+                    us_trader = USStockTrading(
+                        mode=self.trading_mode,
+                        account_name=us_account["name"],
+                        product_code=us_account["product"],
+                    )
 
-                logger.info("Fetching US portfolio data...")
-                us_portfolio = us_trader.get_portfolio()
+                    logger.info(f"Fetching US portfolio data for representative account '{us_account['name']}'...")
+                    us_portfolio = us_trader.get_portfolio()
 
-                logger.info("Fetching US account summary...")
-                us_account_summary = us_trader.get_account_summary() or {}
+                    logger.info(f"Fetching US account summary for representative account '{us_account['name']}'...")
+                    us_account_summary = us_trader.get_account_summary() or {}
 
-                logger.info(f"US data fetch complete: {len(us_portfolio)} holdings")
-
-            except Exception as e:
-                logger.error(f"Error fetching US trading data: {str(e)}")
+                    logger.info(f"US data fetch complete: {len(us_portfolio)} holdings")
+                except Exception as e:
+                    logger.error(f"Error fetching US trading data for representative account '{us_account['name']}': {str(e)}")
         else:
             logger.info("US trading module not available, skipping US portfolio")
 

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Load configuration file
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
 with open(CONFIG_FILE, encoding="UTF-8") as f:
-    _cfg = yaml.load(f, Loader=yaml.FullLoader)
+    _cfg = yaml.safe_load(f)
 
 
 class DomesticStockTrading:
@@ -49,7 +49,15 @@ class DomesticStockTrading:
     # Default trading environment
     DEFAULT_MODE = _cfg["default_mode"]
 
-    def __init__(self, mode: str = DEFAULT_MODE, buy_amount: int = None, auto_trading:bool = AUTO_TRADING):
+    def __init__(
+        self,
+        mode: str = DEFAULT_MODE,
+        buy_amount: int = None,
+        auto_trading: bool = AUTO_TRADING,
+        account_name: str = None,
+        account_index: int = None,
+        product_code: str = "01",
+    ):
         """
         Initialize
 
@@ -63,12 +71,29 @@ class DomesticStockTrading:
         """
         self.mode = mode
         self.env = "vps" if mode == "demo" else "prod"
-        self.buy_amount = buy_amount if buy_amount else self.DEFAULT_BUY_AMOUNT
         self.auto_trading = auto_trading
+        self.account_index = account_index
+        self.account_config = ka.resolve_account(
+            svr=self.env,
+            product=str(product_code),
+            account_name=account_name,
+            account_index=account_index,
+            market="kr",
+        )
+        self.account_name = self.account_config["name"]
+        self.account_key = self.account_config["account_key"]
+        self.account_index = account_index
+        self.product_code = self.account_config["product"]
+        default_buy_amount = int(self.account_config.get("buy_amount_krw") or self.DEFAULT_BUY_AMOUNT)
+        self.buy_amount = buy_amount if buy_amount is not None else default_buy_amount
 
         # Authentication with improved error handling
         try:
-            ka.auth(svr=self.env, product="01")
+            ka.auth(
+                svr=self.env,
+                product=self.product_code,
+                account_key=self.account_key,
+            )
         except CredentialMismatchError as e:
             logger.error("=" * 60)
             logger.error("❌ CREDENTIAL MISMATCH DETECTED!")
@@ -81,10 +106,10 @@ class DomesticStockTrading:
             logger.error(f"   2. For {self.mode} mode:")
             if self.mode == "real":
                 logger.error("      - 'my_app' should start with 'PS' (NOT 'PSVT')")
-                logger.error("      - 'my_acct_stock' should be your real account number")
+                logger.error("      - 'accounts'에 실전투자 계좌를 올바르게 설정하세요")
             else:
                 logger.error("      - 'paper_app' should start with 'PSVT'")
-                logger.error("      - 'my_paper_stock' should be your paper trading account")
+                logger.error("      - 'accounts'에 모의투자 계좌를 올바르게 설정하세요")
             logger.error("=" * 60)
             raise RuntimeError(f"Credential mismatch for {self.mode} mode: {e}") from e
 
@@ -142,7 +167,21 @@ class DomesticStockTrading:
 
         logger.info(f"✅ DomesticStockTrading initialized (Async Enabled)")
         logger.info(f"   Mode: {mode}, Buy Amount: {self.buy_amount:,} KRW")
-        logger.info(f"   Account: {self.trenv.my_acct}-{self.trenv.my_prod}")
+        logger.info(f"   Account: {self.account_name} ({ka.mask_account_number(self.trenv.my_acct)}-{self.trenv.my_prod})")
+
+    def _activate_account(self):
+        """Ensure the shared KIS environment matches this trader's account."""
+        ka.changeTREnv(
+            self.trenv.my_token,
+            svr=self.env,
+            product=self.trenv.my_prod,
+            account_key=self.account_key,
+        )
+
+    def _request(self, api_url: str, tr_id: str, params: Dict[str, Any], **kwargs):
+        with ka.get_trading_env_lock():
+            self._activate_account()
+            return ka._url_fetch(api_url, tr_id, "", params, **kwargs)
 
     def get_current_price(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
@@ -169,7 +208,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params)
+            res = self._request(api_url, tr_id, params)
 
             if res.isOK():
                 data = res.getBody().output
@@ -285,7 +324,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -406,7 +445,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -549,7 +588,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -658,7 +697,7 @@ class DomesticStockTrading:
             params["RSVN_ORD_END_DT"] = ""
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -766,7 +805,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -897,7 +936,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -998,7 +1037,7 @@ class DomesticStockTrading:
             params["RSVN_ORD_END_DT"] = ""
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -1363,7 +1402,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params)
+            res = self._request(api_url, tr_id, params)
 
             if res.isOK():
                 current_portfolio = []
@@ -1443,7 +1482,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params)
+            res = self._request(api_url, tr_id, params)
 
             if res.isOK():
                 output2 = res.getBody().output2[0]  # Account summary
@@ -1483,6 +1522,165 @@ class DomesticStockTrading:
             return {}
 
 
+class MultiAccountDomesticStockTrading:
+    """Fan out trading orders to all configured domestic accounts for the current mode."""
+
+    def __init__(self, mode: str, buy_amount: int = None, auto_trading: bool = DomesticStockTrading.AUTO_TRADING, product_code: str = "01"):
+        self.mode = mode
+        self.buy_amount = buy_amount
+        self.auto_trading = auto_trading
+        self.product_code = str(product_code)
+
+        svr = "vps" if mode == "demo" else "prod"
+        self.account_configs = ka.get_configured_accounts(svr=svr, product=self.product_code, market="kr")
+        self._traders: dict[str, DomesticStockTrading] = {}
+        self.primary_account = None
+        try:
+            self.primary_account = ka.resolve_account(svr=svr, product=self.product_code, market="kr")
+        except ValueError:
+            logger.warning("No domestic accounts configured for multi-account trading")
+
+    def _get_trader(self, account: Dict[str, Any]) -> DomesticStockTrading:
+        trader = self._traders.get(account["account_key"])
+        if trader is None:
+            trader = DomesticStockTrading(
+                mode=self.mode,
+                buy_amount=self.buy_amount,
+                auto_trading=self.auto_trading,
+                account_name=account["name"],
+                product_code=account["product"],
+            )
+            self._traders[account["account_key"]] = trader
+        return trader
+
+    def _get_primary_trader(self) -> DomesticStockTrading:
+        if not self.primary_account:
+            raise RuntimeError("No primary domestic account configured")
+        return self._get_trader(self.primary_account)
+
+    async def async_buy_stock(self, stock_code: str, buy_amount: Optional[int] = None, timeout: float = 30.0, limit_price: Optional[int] = None) -> Dict[str, Any]:
+        if not self.account_configs:
+            return self._aggregate_results(stock_code, [], action="buy")
+        results = []
+        for account in self.account_configs:
+            trader = self._get_trader(account)
+            result = await trader.async_buy_stock(
+                stock_code=stock_code,
+                buy_amount=buy_amount,
+                timeout=timeout,
+                limit_price=limit_price,
+            )
+            result["account_name"] = account["name"]
+            result["account_key"] = account["account_key"]
+            results.append(result)
+
+        return self._aggregate_results(stock_code, results, action="buy")
+
+    async def async_sell_stock(self, stock_code: str, timeout: float = 30.0, limit_price: Optional[int] = None) -> Dict[str, Any]:
+        if not self.account_configs:
+            return self._aggregate_results(stock_code, [], action="sell")
+        results = []
+        for account in self.account_configs:
+            trader = self._get_trader(account)
+            result = await trader.async_sell_stock(
+                stock_code=stock_code,
+                timeout=timeout,
+                limit_price=limit_price,
+            )
+            result["account_name"] = account["name"]
+            result["account_key"] = account["account_key"]
+            results.append(result)
+
+        return self._aggregate_results(stock_code, results, action="sell")
+
+    def get_portfolio(self) -> List[Dict[str, Any]]:
+        return self._get_primary_trader().get_portfolio()
+
+    def get_account_summary(self) -> Dict[str, Any]:
+        return self._get_primary_trader().get_account_summary()
+
+    def get_current_price(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        return self._get_primary_trader().get_current_price(stock_code)
+
+    def calculate_buy_quantity(self, stock_code: str, buy_amount: int = None) -> int:
+        return self._get_primary_trader().calculate_buy_quantity(stock_code, buy_amount)
+
+    def get_holding_quantity(self, stock_code: str) -> int:
+        return self._get_primary_trader().get_holding_quantity(stock_code)
+
+    def _aggregate_results(self, stock_code: str, results: List[Dict[str, Any]], action: str) -> Dict[str, Any]:
+        success_count = sum(1 for result in results if result.get("success"))
+        total_accounts = len(results)
+        total_quantity = sum(result.get("quantity", 0) for result in results)
+        total_amount = sum(result.get("total_amount", result.get("estimated_amount", 0)) for result in results)
+        successful_accounts = [result.get("account_name") for result in results if result.get("success")]
+        failed_accounts = [result.get("account_name") for result in results if not result.get("success")]
+
+        messages = [
+            f"{result.get('account_name')}: {result.get('message', '')}"
+            for result in results
+        ]
+
+        if total_accounts == 0:
+            return {
+                "success": False,
+                "partial_success": False,
+                "stock_code": stock_code,
+                "quantity": 0,
+                "total_amount": 0,
+                "estimated_amount": 0,
+                "order_no": None,
+                "message": f"No domestic accounts configured for {action}",
+                "account_results": [],
+                "successful_accounts": [],
+                "failed_accounts": [],
+            }
+
+        return {
+            "success": success_count == total_accounts and total_accounts > 0,
+            "partial_success": 0 < success_count < total_accounts,
+            "stock_code": stock_code,
+            "quantity": total_quantity,
+            "total_amount": total_amount,
+            "estimated_amount": total_amount,
+            "order_no": None,
+            "message": f"{action} executed for {success_count}/{total_accounts} accounts | " + " ; ".join(messages),
+            "account_results": results,
+            "successful_accounts": successful_accounts,
+            "failed_accounts": failed_accounts,
+        }
+
+
+class MultiAccountTradingContext:
+    """Explicit multi-account domestic trading context."""
+
+    def __init__(
+        self,
+        mode: str = DomesticStockTrading.DEFAULT_MODE,
+        buy_amount: int = None,
+        auto_trading: bool = DomesticStockTrading.AUTO_TRADING,
+        product_code: str = "01",
+    ):
+        self.mode = mode
+        self.buy_amount = buy_amount
+        self.auto_trading = auto_trading
+        self.product_code = product_code
+        self.trader = None
+
+    async def __aenter__(self):
+        self.trader = MultiAccountDomesticStockTrading(
+            mode=self.mode,
+            buy_amount=self.buy_amount,
+            auto_trading=self.auto_trading,
+            product_code=self.product_code,
+        )
+        return self.trader
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            logger.error(f"MultiAccountTradingContext error: {exc_type.__name__}: {exc_val}")
+
+
 # Context manager
 class AsyncTradingContext:
     """Async trading context manager (safe resource management)"""
@@ -1493,14 +1691,32 @@ class AsyncTradingContext:
     # Default trading environment
     DEFAULT_MODE = _cfg["default_mode"]
 
-    def __init__(self, mode: str = DEFAULT_MODE, buy_amount: int = None, auto_trading: bool = AUTO_TRADING):
+    def __init__(
+        self,
+        mode: str = DEFAULT_MODE,
+        buy_amount: int = None,
+        auto_trading: bool = AUTO_TRADING,
+        account_name: str = None,
+        account_index: int = None,
+        product_code: str = "01",
+    ):
         self.mode = mode
         self.buy_amount = buy_amount
         self.auto_trading = auto_trading
+        self.account_name = account_name
+        self.account_index = account_index
+        self.product_code = product_code
         self.trader = None
 
     async def __aenter__(self):
-        self.trader = DomesticStockTrading(mode=self.mode, buy_amount=self.buy_amount, auto_trading=self.auto_trading)
+        self.trader = DomesticStockTrading(
+            mode=self.mode,
+            buy_amount=self.buy_amount,
+            auto_trading=self.auto_trading,
+            account_name=self.account_name,
+            account_index=self.account_index,
+            product_code=self.product_code,
+        )
         return self.trader
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

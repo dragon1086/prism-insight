@@ -418,3 +418,99 @@ class TestUSTriggerReliability:
 
         assert result['trigger_reliability'] == []
         assert result['best_trigger'] is None
+
+
+def test_us_dashboard_caches_primary_account_key(monkeypatch):
+    import generate_us_dashboard_json as dashboard_module
+    from generate_us_dashboard_json import USDashboardDataGenerator
+
+    calls = []
+
+    def fake_resolve_account(*, svr, market):
+        calls.append((svr, market))
+        return {"account_key": "vps:us-primary:01"}
+
+    monkeypatch.setitem(dashboard_module._cfg, "default_mode", "demo")
+    monkeypatch.setattr(dashboard_module.ka, "resolve_account", fake_resolve_account)
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE us_stock_holdings (
+            account_key TEXT,
+            ticker TEXT,
+            company_name TEXT,
+            buy_price REAL,
+            buy_date TEXT,
+            current_price REAL,
+            last_updated TEXT,
+            scenario TEXT,
+            target_price REAL,
+            stop_loss REAL,
+            trigger_type TEXT,
+            trigger_mode TEXT,
+            sector TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE us_trading_history (
+            id INTEGER PRIMARY KEY,
+            account_key TEXT,
+            ticker TEXT,
+            company_name TEXT,
+            buy_price REAL,
+            buy_date TEXT,
+            sell_price REAL,
+            sell_date TEXT,
+            profit_rate REAL,
+            holding_days INTEGER,
+            scenario TEXT,
+            trigger_type TEXT,
+            trigger_mode TEXT,
+            sector TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO us_stock_holdings (
+            account_key, ticker, company_name, buy_price, buy_date, current_price,
+            last_updated, scenario, target_price, stop_loss, trigger_type, trigger_mode, sector
+        )
+        VALUES (
+            'vps:us-primary:01', 'AAPL', 'Apple Inc.', 180.5, '2026-03-01',
+            185.0, '2026-03-02 09:00:00', '{}', 200.0, 170.0, 'gap_up', 'morning', 'Technology'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO us_trading_history (
+            id, account_key, ticker, company_name, buy_price, buy_date, sell_price,
+            sell_date, profit_rate, holding_days, scenario, trigger_type, trigger_mode, sector
+        )
+        VALUES (
+            1, 'vps:us-primary:01', 'AAPL', 'Apple Inc.', 180.5, '2026-03-01',
+            190.0, '2026-03-10', 5.26, 9, '{}', 'gap_up', 'morning', 'Technology'
+        )
+        """
+    )
+    conn.commit()
+
+    generator = USDashboardDataGenerator(
+        db_path=":memory:",
+        output_path="dummy.json",
+        enable_translation=False,
+    )
+
+    holdings = generator.get_us_stock_holdings(conn)
+    history = generator.get_us_trading_history(conn)
+
+    assert len(holdings) == 1
+    assert len(history) == 1
+    assert calls == [("vps", "us")]
+
+    conn.close()

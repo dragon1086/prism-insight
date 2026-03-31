@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Load configuration file (use same config as domestic)
 CONFIG_FILE = PROJECT_ROOT / "trading" / "config" / "kis_devlp.yaml"
 with open(CONFIG_FILE, encoding="UTF-8") as f:
-    _cfg = yaml.load(f, Loader=yaml.FullLoader)
+    _cfg = yaml.safe_load(f)
 
 # Timezones
 US_EASTERN = pytz.timezone('US/Eastern')
@@ -151,7 +151,15 @@ class USStockTrading:
     # Default trading environment
     DEFAULT_MODE = _cfg.get("default_mode", "demo")
 
-    def __init__(self, mode: str = None, buy_amount: float = None, auto_trading: bool = None):
+    def __init__(
+        self,
+        mode: str = None,
+        buy_amount: float = None,
+        auto_trading: bool = None,
+        account_name: str = None,
+        account_index: int = None,
+        product_code: str = "01",
+    ):
         """
         Initialize US Stock Trading
 
@@ -162,11 +170,28 @@ class USStockTrading:
         """
         self.mode = mode if mode else self.DEFAULT_MODE
         self.env = "vps" if self.mode == "demo" else "prod"
-        self.buy_amount = buy_amount if buy_amount else self.DEFAULT_BUY_AMOUNT
         self.auto_trading = auto_trading if auto_trading is not None else self.AUTO_TRADING
+        self.account_index = account_index
+        self.account_config = ka.resolve_account(
+            svr=self.env,
+            product=str(product_code),
+            account_name=account_name,
+            account_index=account_index,
+            market="us",
+        )
+        self.account_name = self.account_config["name"]
+        self.account_key = self.account_config["account_key"]
+        self.account_index = account_index
+        self.product_code = self.account_config["product"]
+        default_buy_amount = float(self.account_config.get("buy_amount_usd") or self.DEFAULT_BUY_AMOUNT)
+        self.buy_amount = buy_amount if buy_amount is not None else default_buy_amount
 
         # Authentication
-        ka.auth(svr=self.env, product="01")
+        ka.auth(
+            svr=self.env,
+            product=self.product_code,
+            account_key=self.account_key,
+        )
 
         try:
             self.trenv = ka.getTREnv()
@@ -183,7 +208,21 @@ class USStockTrading:
 
         logger.info(f"USStockTrading initialized (Async Enabled)")
         logger.info(f"Mode: {mode}, Buy Amount: ${self.buy_amount:,.2f} USD")
-        logger.info(f"Account: {self.trenv.my_acct}-{self.trenv.my_prod}")
+        logger.info(f"Account: {self.account_name} ({ka.mask_account_number(self.trenv.my_acct)}-{self.trenv.my_prod})")
+
+    def _activate_account(self):
+        """Ensure the shared KIS environment matches this trader's account."""
+        ka.changeTREnv(
+            self.trenv.my_token,
+            svr=self.env,
+            product=self.trenv.my_prod,
+            account_key=self.account_key,
+        )
+
+    def _request(self, api_url: str, tr_id: str, params: Dict[str, Any], **kwargs):
+        with ka.get_trading_env_lock():
+            self._activate_account()
+            return ka._url_fetch(api_url, tr_id, "", params, **kwargs)
 
     def get_current_price(self, ticker: str, exchange: str = None) -> Optional[Dict[str, Any]]:
         """
@@ -221,7 +260,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params)
+            res = self._request(api_url, tr_id, params)
 
             if res.isOK():
                 data = res.getBody().output
@@ -362,7 +401,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -463,7 +502,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -579,7 +618,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -691,6 +730,10 @@ class USStockTrading:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS us_pending_orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_key TEXT NOT NULL,
+                    account_name TEXT,
+                    product_code TEXT,
+                    mode TEXT,
                     ticker TEXT NOT NULL,
                     order_type TEXT NOT NULL,
                     limit_price REAL NOT NULL,
@@ -709,9 +752,20 @@ class USStockTrading:
             now_kst = datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute(
                 """INSERT INTO us_pending_orders
-                   (ticker, order_type, limit_price, buy_amount, exchange, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
-                (ticker.upper(), order_type, limit_price, buy_amount, exchange, now_kst)
+                   (account_key, account_name, product_code, mode, ticker, order_type, limit_price, buy_amount, exchange, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                (
+                    self.account_key,
+                    self.account_name,
+                    self.product_code,
+                    self.mode,
+                    ticker.upper(),
+                    order_type,
+                    limit_price,
+                    buy_amount,
+                    exchange,
+                    now_kst,
+                )
             )
             conn.commit()
             pending_id = cursor.lastrowid
@@ -824,7 +878,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -952,7 +1006,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params, postFlag=True)
+            res = self._request(api_url, tr_id, params, postFlag=True)
 
             if res.isOK():
                 output = res.getBody().output
@@ -1393,7 +1447,7 @@ class USStockTrading:
             params["OVRS_EXCG_CD"] = exchange
 
             try:
-                res = ka._url_fetch(api_url, tr_id, "", params)
+                res = self._request(api_url, tr_id, params)
 
                 if res.isOK():
                     output1 = res.getBody().output1
@@ -1464,7 +1518,7 @@ class USStockTrading:
         }
 
         try:
-            res = ka._url_fetch(api_url, tr_id, "", params)
+            res = self._request(api_url, tr_id, params)
 
             if res.isOK():
                 body = res.getBody()
@@ -1512,6 +1566,171 @@ class USStockTrading:
             return None
 
 
+class MultiAccountUSStockTrading:
+    """Fan out trading orders to all configured US accounts for the current mode."""
+
+    def __init__(self, mode: str, buy_amount: float = None, auto_trading: bool = USStockTrading.AUTO_TRADING, product_code: str = "01"):
+        self.mode = mode
+        self.buy_amount = buy_amount
+        self.auto_trading = auto_trading
+        self.product_code = str(product_code)
+
+        svr = "vps" if mode == "demo" else "prod"
+        self.account_configs = ka.get_configured_accounts(svr=svr, product=self.product_code, market="us")
+        self._traders: dict[str, USStockTrading] = {}
+        self.primary_account = None
+        try:
+            self.primary_account = ka.resolve_account(svr=svr, product=self.product_code, market="us")
+        except ValueError:
+            logger.warning("No US accounts configured for multi-account trading")
+
+    def _get_trader(self, account: Dict[str, Any]) -> USStockTrading:
+        trader = self._traders.get(account["account_key"])
+        if trader is None:
+            trader = USStockTrading(
+                mode=self.mode,
+                buy_amount=self.buy_amount,
+                auto_trading=self.auto_trading,
+                account_name=account["name"],
+                product_code=account["product"],
+            )
+            self._traders[account["account_key"]] = trader
+        return trader
+
+    def _get_primary_trader(self) -> USStockTrading:
+        if not self.primary_account:
+            raise RuntimeError("No primary US account configured")
+        return self._get_trader(self.primary_account)
+
+    async def async_buy_stock(self, ticker: str, buy_amount: Optional[float] = None,
+                              exchange: str = None, timeout: float = 30.0, limit_price: Optional[float] = None) -> Dict[str, Any]:
+        if not self.account_configs:
+            return self._aggregate_results(ticker, [], action="buy")
+        results = []
+        for account in self.account_configs:
+            trader = self._get_trader(account)
+            result = await trader.async_buy_stock(
+                ticker=ticker,
+                buy_amount=buy_amount,
+                exchange=exchange,
+                timeout=timeout,
+                limit_price=limit_price,
+            )
+            result["account_name"] = account["name"]
+            result["account_key"] = account["account_key"]
+            results.append(result)
+
+        return self._aggregate_results(ticker, results, action="buy")
+
+    async def async_sell_stock(self, ticker: str, exchange: str = None,
+                               timeout: float = 30.0, limit_price: Optional[float] = None,
+                               use_moo: bool = False) -> Dict[str, Any]:
+        if not self.account_configs:
+            return self._aggregate_results(ticker, [], action="sell")
+        results = []
+        for account in self.account_configs:
+            trader = self._get_trader(account)
+            result = await trader.async_sell_stock(
+                ticker=ticker,
+                exchange=exchange,
+                timeout=timeout,
+                limit_price=limit_price,
+                use_moo=use_moo,
+            )
+            result["account_name"] = account["name"]
+            result["account_key"] = account["account_key"]
+            results.append(result)
+
+        return self._aggregate_results(ticker, results, action="sell")
+
+    def get_portfolio(self) -> List[Dict[str, Any]]:
+        return self._get_primary_trader().get_portfolio()
+
+    def get_account_summary(self) -> Optional[Dict[str, Any]]:
+        return self._get_primary_trader().get_account_summary()
+
+    def get_current_price(self, ticker: str, exchange: str = None) -> Optional[Dict[str, Any]]:
+        return self._get_primary_trader().get_current_price(ticker, exchange)
+
+    def calculate_buy_quantity(self, ticker: str, buy_amount: float = None, exchange: str = None) -> int:
+        return self._get_primary_trader().calculate_buy_quantity(ticker, buy_amount, exchange)
+
+    def get_holding_quantity(self, ticker: str) -> int:
+        return self._get_primary_trader().get_holding_quantity(ticker)
+
+    def _aggregate_results(self, ticker: str, results: List[Dict[str, Any]], action: str) -> Dict[str, Any]:
+        success_count = sum(1 for result in results if result.get("success"))
+        total_accounts = len(results)
+        total_quantity = sum(result.get("quantity", 0) for result in results)
+        total_amount = sum(result.get("total_amount", result.get("estimated_amount", 0)) for result in results)
+        successful_accounts = [result.get("account_name") for result in results if result.get("success")]
+        failed_accounts = [result.get("account_name") for result in results if not result.get("success")]
+
+        messages = [
+            f"{result.get('account_name')}: {result.get('message', '')}"
+            for result in results
+        ]
+
+        if total_accounts == 0:
+            return {
+                "success": False,
+                "partial_success": False,
+                "ticker": ticker,
+                "quantity": 0,
+                "total_amount": 0,
+                "estimated_amount": 0,
+                "order_no": None,
+                "message": f"No US accounts configured for {action}",
+                "account_results": [],
+                "successful_accounts": [],
+                "failed_accounts": [],
+            }
+
+        return {
+            "success": success_count == total_accounts and total_accounts > 0,
+            "partial_success": 0 < success_count < total_accounts,
+            "ticker": ticker,
+            "quantity": total_quantity,
+            "total_amount": total_amount,
+            "estimated_amount": total_amount,
+            "order_no": None,
+            "message": f"{action} executed for {success_count}/{total_accounts} accounts | " + " ; ".join(messages),
+            "account_results": results,
+            "successful_accounts": successful_accounts,
+            "failed_accounts": failed_accounts,
+        }
+
+
+class MultiAccountUSTradingContext:
+    """Explicit multi-account US trading context."""
+
+    def __init__(
+        self,
+        mode: str = USStockTrading.DEFAULT_MODE,
+        buy_amount: float = None,
+        auto_trading: bool = USStockTrading.AUTO_TRADING,
+        product_code: str = "01",
+    ):
+        self.mode = mode
+        self.buy_amount = buy_amount
+        self.auto_trading = auto_trading
+        self.product_code = product_code
+        self.trader = None
+
+    async def __aenter__(self):
+        self.trader = MultiAccountUSStockTrading(
+            mode=self.mode,
+            buy_amount=self.buy_amount,
+            auto_trading=self.auto_trading,
+            product_code=self.product_code,
+        )
+        return self.trader
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            logger.error(f"MultiAccountUSTradingContext error: {exc_type.__name__}: {exc_val}")
+
+
 # Context Manager
 class AsyncUSTradingContext:
     """Async trading context manager for safe resource management"""
@@ -1520,17 +1739,31 @@ class AsyncUSTradingContext:
     AUTO_TRADING = _cfg.get("auto_trading", True)
     DEFAULT_MODE = _cfg.get("default_mode", "demo")
 
-    def __init__(self, mode: str = None, buy_amount: float = None, auto_trading: bool = None):
+    def __init__(
+        self,
+        mode: str = None,
+        buy_amount: float = None,
+        auto_trading: bool = None,
+        account_name: str = None,
+        account_index: int = None,
+        product_code: str = "01",
+    ):
         self.mode = mode if mode else self.DEFAULT_MODE
         self.buy_amount = buy_amount
         self.auto_trading = auto_trading if auto_trading is not None else self.AUTO_TRADING
+        self.account_name = account_name
+        self.account_index = account_index
+        self.product_code = product_code
         self.trader = None
 
     async def __aenter__(self):
         self.trader = USStockTrading(
             mode=self.mode,
             buy_amount=self.buy_amount,
-            auto_trading=self.auto_trading
+            auto_trading=self.auto_trading,
+            account_name=self.account_name,
+            account_index=self.account_index,
+            product_code=self.product_code,
         )
         return self.trader
 

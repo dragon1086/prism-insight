@@ -68,10 +68,12 @@ except ImportError:
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
 try:
     with open(CONFIG_FILE, encoding="UTF-8") as f:
-        _cfg = yaml.load(f, Loader=yaml.FullLoader)
+        _cfg = yaml.safe_load(f)
 except FileNotFoundError:
     _cfg = {"default_mode": "demo"}
     logger.warning(f"Config file not found: {CONFIG_FILE}. Using default mode (demo).")
+
+from trading import kis_auth as ka
 
 
 class USDashboardDataGenerator:
@@ -79,6 +81,20 @@ class USDashboardDataGenerator:
 
     # US market start date (Season 1)
     US_SEASON1_START_DATE = "2026-01-29"
+
+    def _get_primary_account_key(self) -> Optional[str]:
+        default_mode = str(_cfg.get("default_mode", "demo")).strip().lower()
+        svr = "vps" if default_mode == "demo" else "prod"
+        try:
+            return ka.resolve_account(svr=svr, market="us")["account_key"]
+        except Exception as exc:
+            logger.warning(f"US primary account resolution failed: {exc}")
+            return None
+
+    def _get_cached_primary_account_key(self) -> Optional[str]:
+        if not hasattr(self, "_primary_account_key"):
+            self._primary_account_key = self._get_primary_account_key()
+        return self._primary_account_key
     US_SEASON1_START_AMOUNT = 10000  # $10,000 USD
 
     def __init__(
@@ -100,6 +116,7 @@ class USDashboardDataGenerator:
         self.output_path = output_path
         self.trading_mode = trading_mode if trading_mode is not None else _cfg.get("default_mode", "demo")
         self.enable_translation = enable_translation and TRANSLATION_AVAILABLE
+        self._primary_account_key = self._get_primary_account_key()
 
         # Initialize translator
         if self.enable_translation:
@@ -248,6 +265,7 @@ class USDashboardDataGenerator:
     def get_us_stock_holdings(self, conn) -> List[Dict]:
         """Get current US stock holdings data"""
         cursor = conn.cursor()
+        primary_account_key = self._get_cached_primary_account_key()
 
         # Check if table exists
         cursor.execute("""
@@ -258,13 +276,23 @@ class USDashboardDataGenerator:
             logger.warning("us_stock_holdings table not found")
             return []
 
-        cursor.execute("""
-            SELECT ticker, company_name, buy_price, buy_date, current_price,
-                   last_updated, scenario, target_price, stop_loss, trigger_type,
-                   trigger_mode, sector
-            FROM us_stock_holdings
-            ORDER BY buy_date DESC
-        """)
+        if primary_account_key:
+            cursor.execute("""
+                SELECT ticker, company_name, buy_price, buy_date, current_price,
+                       last_updated, scenario, target_price, stop_loss, trigger_type,
+                       trigger_mode, sector
+                FROM us_stock_holdings
+                WHERE account_key = ?
+                ORDER BY buy_date DESC
+            """, (primary_account_key,))
+        else:
+            cursor.execute("""
+                SELECT ticker, company_name, buy_price, buy_date, current_price,
+                       last_updated, scenario, target_price, stop_loss, trigger_type,
+                       trigger_mode, sector
+                FROM us_stock_holdings
+                ORDER BY buy_date DESC
+            """)
 
         holdings = []
         for row in cursor.fetchall():
@@ -303,6 +331,7 @@ class USDashboardDataGenerator:
     def get_us_trading_history(self, conn) -> List[Dict]:
         """Get US trading history data"""
         cursor = conn.cursor()
+        primary_account_key = self._get_cached_primary_account_key()
 
         # Check if table exists
         cursor.execute("""
@@ -313,13 +342,23 @@ class USDashboardDataGenerator:
             logger.warning("us_trading_history table not found")
             return []
 
-        cursor.execute("""
-            SELECT id, ticker, company_name, buy_price, buy_date, sell_price,
-                   sell_date, profit_rate, holding_days, scenario, trigger_type,
-                   trigger_mode, sector
-            FROM us_trading_history
-            ORDER BY sell_date DESC
-        """)
+        if primary_account_key:
+            cursor.execute("""
+                SELECT id, ticker, company_name, buy_price, buy_date, sell_price,
+                       sell_date, profit_rate, holding_days, scenario, trigger_type,
+                       trigger_mode, sector
+                FROM us_trading_history
+                WHERE account_key = ?
+                ORDER BY sell_date DESC
+            """, (primary_account_key,))
+        else:
+            cursor.execute("""
+                SELECT id, ticker, company_name, buy_price, buy_date, sell_price,
+                       sell_date, profit_rate, holding_days, scenario, trigger_type,
+                       trigger_mode, sector
+                FROM us_trading_history
+                ORDER BY sell_date DESC
+            """)
 
         history = []
         for row in cursor.fetchall():
@@ -341,6 +380,7 @@ class USDashboardDataGenerator:
         """
         try:
             cursor = conn.cursor()
+            primary_account_key = self._get_cached_primary_account_key()
 
             # Check if table exists
             cursor.execute("""
@@ -352,9 +392,14 @@ class USDashboardDataGenerator:
                 return []
 
             # Get the most recent decision_date
-            cursor.execute("""
-                SELECT MAX(decision_date) FROM us_holding_decisions
-            """)
+            if primary_account_key:
+                cursor.execute("""
+                    SELECT MAX(decision_date) FROM us_holding_decisions WHERE account_key = ?
+                """, (primary_account_key,))
+            else:
+                cursor.execute("""
+                    SELECT MAX(decision_date) FROM us_holding_decisions
+                """)
             latest_date_row = cursor.fetchone()
             latest_date = latest_date_row[0] if latest_date_row else None
 
@@ -363,19 +408,34 @@ class USDashboardDataGenerator:
                 return []
 
             # LEFT JOIN with us_stock_holdings to get company_name
-            cursor.execute("""
-                SELECT hd.id, hd.ticker, hd.decision_date, hd.decision_time, hd.current_price,
-                       hd.should_sell, hd.sell_reason, hd.confidence, hd.technical_trend,
-                       hd.volume_analysis, hd.market_condition_impact, hd.time_factor,
-                       hd.portfolio_adjustment_needed, hd.adjustment_reason,
-                       hd.new_target_price, hd.new_stop_loss, hd.adjustment_urgency,
-                       hd.full_json_data, hd.created_at,
-                       sh.company_name
-                FROM us_holding_decisions hd
-                LEFT JOIN us_stock_holdings sh ON hd.ticker = sh.ticker
-                WHERE hd.decision_date = ?
-                ORDER BY hd.created_at DESC
-            """, (latest_date,))
+            if primary_account_key:
+                cursor.execute("""
+                    SELECT hd.id, hd.ticker, hd.decision_date, hd.decision_time, hd.current_price,
+                           hd.should_sell, hd.sell_reason, hd.confidence, hd.technical_trend,
+                           hd.volume_analysis, hd.market_condition_impact, hd.time_factor,
+                           hd.portfolio_adjustment_needed, hd.adjustment_reason,
+                           hd.new_target_price, hd.new_stop_loss, hd.adjustment_urgency,
+                           hd.full_json_data, hd.created_at,
+                           sh.company_name
+                    FROM us_holding_decisions hd
+                    LEFT JOIN us_stock_holdings sh ON hd.ticker = sh.ticker AND hd.account_key = sh.account_key
+                    WHERE hd.decision_date = ? AND hd.account_key = ?
+                    ORDER BY hd.created_at DESC
+                """, (latest_date, primary_account_key))
+            else:
+                cursor.execute("""
+                    SELECT hd.id, hd.ticker, hd.decision_date, hd.decision_time, hd.current_price,
+                           hd.should_sell, hd.sell_reason, hd.confidence, hd.technical_trend,
+                           hd.volume_analysis, hd.market_condition_impact, hd.time_factor,
+                           hd.portfolio_adjustment_needed, hd.adjustment_reason,
+                           hd.new_target_price, hd.new_stop_loss, hd.adjustment_urgency,
+                           hd.full_json_data, hd.created_at,
+                           sh.company_name
+                    FROM us_holding_decisions hd
+                    LEFT JOIN us_stock_holdings sh ON hd.ticker = sh.ticker
+                    WHERE hd.decision_date = ?
+                    ORDER BY hd.created_at DESC
+                """, (latest_date,))
 
             decisions = []
             for row in cursor.fetchall():
@@ -697,8 +757,9 @@ class USDashboardDataGenerator:
 
             # 3. Actual trading stats (from us_trading_history, last 30 days)
             actual_trading = {}
+            primary_account_key = self._get_cached_primary_account_key()
             try:
-                cursor.execute("""
+                query = """
                     SELECT
                         COUNT(*) as count,
                         AVG(profit_rate) as avg_profit_rate,
@@ -712,7 +773,12 @@ class USDashboardDataGenerator:
                         SUM(CASE WHEN profit_rate < 0 THEN ABS(profit_rate) ELSE 0 END) as total_loss
                     FROM us_trading_history
                     WHERE sell_date >= date('now', '-30 days')
-                """)
+                """
+                params = ()
+                if primary_account_key:
+                    query += " AND account_key = ?"
+                    params = (primary_account_key,)
+                cursor.execute(query, params)
                 row = cursor.fetchone()
                 if row and row[0] > 0:
                     count = row[0]
@@ -742,7 +808,7 @@ class USDashboardDataGenerator:
             actual_trading_by_trigger = []
             US_TRIGGER_TRACKING_START_DATE = '2026-01-20'
             try:
-                cursor.execute("""
+                query = """
                     SELECT
                         COALESCE(trigger_type, 'AI Analysis') as trigger_type,
                         COUNT(*) as count,
@@ -756,9 +822,16 @@ class USDashboardDataGenerator:
                         AVG(CASE WHEN profit_rate <= 0 THEN profit_rate END) as avg_loss
                     FROM us_trading_history
                     WHERE sell_date >= ?
+                """
+                params = [US_TRIGGER_TRACKING_START_DATE]
+                if primary_account_key:
+                    query += " AND account_key = ?"
+                    params.append(primary_account_key)
+                query += """
                     GROUP BY trigger_type
                     ORDER BY count DESC
-                """, (US_TRIGGER_TRACKING_START_DATE,))
+                """
+                cursor.execute(query, tuple(params))
 
                 for row in cursor.fetchall():
                     trigger_type = row[0] or 'AI Analysis'
@@ -997,8 +1070,9 @@ class USDashboardDataGenerator:
             # 2. Actual trading data (us_trading_history)
             trading_data = {}
             US_TRIGGER_TRACKING_START_DATE = '2026-01-20'
+            primary_account_key = self._get_cached_primary_account_key()
             try:
-                cursor.execute("""
+                query = """
                     SELECT
                         COALESCE(trigger_type, 'AI Analysis') as trigger_type,
                         COUNT(*) as count,
@@ -1008,9 +1082,16 @@ class USDashboardDataGenerator:
                         SUM(CASE WHEN profit_rate < 0 THEN ABS(profit_rate) ELSE 0 END) as total_loss
                     FROM us_trading_history
                     WHERE sell_date IS NOT NULL AND sell_date >= ?
+                """
+                params = [US_TRIGGER_TRACKING_START_DATE]
+                if primary_account_key:
+                    query += " AND account_key = ?"
+                    params.append(primary_account_key)
+                query += """
                     GROUP BY trigger_type
                     ORDER BY count DESC
-                """, (US_TRIGGER_TRACKING_START_DATE,))
+                """
+                cursor.execute(query, tuple(params))
                 for row in cursor.fetchall():
                     total_profit = row[4] or 0
                     total_loss = row[5] or 0
