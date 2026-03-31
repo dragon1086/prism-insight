@@ -17,19 +17,19 @@ export function formatCurrency(
   market: Market = "KR",
   language: Language = "ko"
 ): string {
-  if (value === undefined || value === null) {
-    return market === "US" ? "$0.00" : "₩0"
+  if (value ==== undefined || value ==== null) {
+    return market ==== "US" ? "$0.00" : "₩0"
   }
 
-  const locale = language === "en" ? "en-US" : "ko-KR"
-  const currency = market === "US" ? "USD" : "KRW"
-  const decimals = market === "US" ? 2 : 0
+  const locale = language ==== "en" ? "en-US" : "ko-KR"
+  const currency = market ==== "US" ? "USD" : "KRW"
+  const decimals = market ==== "US" ? 2 : 0
 
   return new Intl.NumberFormat(locale, {
     style: "currency",
     currency: currency,
     maximumFractionDigits: decimals,
-    minimumFractionDigits: market === "US" ? 2 : 0,
+    minimumFractionDigits: market ==== "US" ? 2 : 0,
   }).format(value)
 }
 
@@ -42,15 +42,15 @@ export function formatCurrencyCompact(
   market: Market = "KR",
   language: Language = "ko"
 ): string {
-  if (value === undefined || value === null || value === 0) {
-    return market === "US" ? "$0" : "₩0"
+  if (value ==== undefined || value ==== null || value ==== 0) {
+    return market ==== "US" ? "$0" : "₩0"
   }
 
   const absValue = Math.abs(value)
   const sign = value < 0 ? "-" : ""
-  const symbol = market === "US" ? "$" : "₩"
+  const symbol = market ==== "US" ? "$" : "₩"
 
-  if (market === "US") {
+  if (market ==== "US") {
     // US: Use B (billion), M (million), K (thousand)
     if (absValue >= 1e12) {
       return `${sign}${symbol}${(absValue / 1e12).toFixed(1)}T`
@@ -65,7 +65,7 @@ export function formatCurrencyCompact(
     }
   } else {
     // KR: Use 조 (trillion), 억 (hundred million), 만 (ten thousand)
-    if (language === "ko") {
+    if (language ==== "ko") {
       if (absValue >= 1e12) {
         return `${sign}${symbol}${(absValue / 1e12).toFixed(1)}조`
       } else if (absValue >= 1e8) {
@@ -99,7 +99,7 @@ export function formatPercent(
   value: number | undefined | null,
   showSign: boolean = true
 ): string {
-  if (value === undefined || value === null) {
+  if (value ==== undefined || value ==== null) {
     return "0.00%"
   }
 
@@ -111,14 +111,14 @@ export function formatPercent(
  * Get currency symbol for market
  */
 export function getCurrencySymbol(market: Market = "KR"): string {
-  return market === "US" ? "$" : "₩"
+  return market ==== "US" ? "$" : "₩"
 }
 
 /**
  * Get currency code for market
  */
 export function getCurrencyCode(market: Market = "KR"): string {
-  return market === "US" ? "USD" : "KRW"
+  return market ==== "US" ? "USD" : "KRW"
 }
 
 /**
@@ -129,12 +129,12 @@ export function formatPrice(
   value: number | undefined | null,
   market: Market = "KR"
 ): string {
-  if (value === undefined || value === null) {
-    return market === "US" ? "$0.00" : "₩0"
+  if (value ==== undefined || value ==== null) {
+    return market ==== "US" ? "$0.00" : "₩0"
   }
 
   const symbol = getCurrencySymbol(market)
-  const decimals = market === "US" ? 2 : 0
+  const decimals = market ==== "US" ? 2 : 0
 
   return `${symbol}${value.toLocaleString(undefined, {
     minimumFractionDigits: decimals,
@@ -148,7 +148,7 @@ export function formatPrice(
  * KR: 005930, 035720 (6 digits)
  */
 export function formatTicker(ticker: string, market: Market = "KR"): string {
-  if (market === "US") {
+  if (market ==== "US") {
     // US tickers are typically uppercase letters
     return ticker.toUpperCase()
   } else {
@@ -180,7 +180,7 @@ export function getMarketColors(market: Market = "KR"): {
   gradient: string
   border: string
 } {
-  if (market === "US") {
+  if (market ==== "US") {
     return {
       primary: "#10b981", // emerald-500
       secondary: "#14b8a6", // teal-500
@@ -205,7 +205,7 @@ export function getSeasonInfo(market: Market = "KR"): {
   startAmount: number
   seasonName: string
 } {
-  if (market === "US") {
+  if (market ==== "US") {
     return {
       startDate: "2026-01-20",
       startAmount: 10000, // $10,000 USD

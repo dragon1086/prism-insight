@@ -1215,10 +1215,7 @@ class APIResp:
 
     def isOK(self):
         try:
-            if self.getBody().rt_cd == "0":
-                return True
-            else:
-                return False
+            return self.getBody().rt_cd == "0"
         except:
             return False
 
