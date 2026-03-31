@@ -10,6 +10,7 @@ Tests for us_stock_analysis_orchestrator.py and us_telegram_summary_agent.py:
 
 import os
 import sys
+from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -312,6 +313,55 @@ class TestOrchestratorIntegration:
 
                 result = await orchestrator.run_trigger_batch('morning')
                 assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_run_full_pipeline_logs_tracking_error_state(self, monkeypatch, caplog):
+        """Tracking failures should not emit a misleading success-only final log."""
+        from us_stock_analysis_orchestrator import USStockAnalysisOrchestrator
+
+        class _FakeAppRun:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class _FakeApp:
+            def run(self):
+                return _FakeAppRun()
+
+        class _FakeTrackingAgent:
+            def __init__(self, telegram_token=None):
+                self.telegram_token = telegram_token
+
+            async def run(self, pdf_paths, chat_id, language, telegram_config=None, trigger_results_file=None):
+                return False
+
+        fake_tracking_module = SimpleNamespace(
+            USStockTrackingAgent=_FakeTrackingAgent,
+            app=_FakeApp(),
+        )
+
+        with patch('telegram_config.TelegramConfig') as mock_config:
+            config = mock_config.return_value
+            config.use_telegram = False
+            config.bot_token = None
+            config.channel_id = None
+            config.log_status = MagicMock()
+
+            orchestrator = USStockAnalysisOrchestrator()
+            monkeypatch.setattr(orchestrator, "run_macro_intelligence", AsyncMock(return_value={}))
+            monkeypatch.setattr(orchestrator, "run_trigger_batch", AsyncMock(return_value=[{"ticker": "AAPL"}]))
+            monkeypatch.setattr(orchestrator, "generate_reports", AsyncMock(return_value=["/tmp/aapl.md"]))
+            monkeypatch.setattr(orchestrator, "convert_to_pdf", AsyncMock(return_value=["/tmp/aapl.pdf"]))
+            monkeypatch.setitem(sys.modules, "us_stock_tracking_agent", fake_tracking_module)
+
+            caplog.set_level("INFO")
+            await orchestrator.run_full_pipeline("midday", language="en", override_date="20260401")
+
+        assert "US tracking system batch execution failed" in caplog.text
+        assert "US full pipeline completed with tracking errors - mode: midday" in caplog.text
+        assert "US full pipeline complete - mode: midday" not in caplog.text
 
 
 # =============================================================================

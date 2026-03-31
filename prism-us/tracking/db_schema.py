@@ -8,11 +8,31 @@ Shared tables (trading_journal, trading_principles, trading_intuitions)
 are used with 'market' column to distinguish between KR and US.
 """
 
+import importlib.util
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_root_kis_auth_module():
+    module_name = "prism_root_trading_kis_auth"
+    existing_module = sys.modules.get(module_name)
+    if existing_module is not None:
+        return existing_module
+
+    module_path = PROJECT_ROOT / "trading" / "kis_auth.py"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load root trading auth module from {module_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 # =============================================================================
 # US-Specific Tables (us_* prefix)
@@ -258,7 +278,7 @@ def _get_copy_columns(source_columns: list[str], target_columns: list[str]) -> l
 
 def _get_primary_account_scope() -> tuple[str, str, str, str]:
     try:
-        from trading import kis_auth as ka
+        ka = _load_root_kis_auth_module()
 
         default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"
@@ -267,8 +287,8 @@ def _get_primary_account_scope() -> tuple[str, str, str, str]:
         return primary_account["account_key"], primary_account["name"], primary_account["product"], mode
     except Exception as exc:
         raise RuntimeError(
-            "Unable to verify the primary account required for US DB migration. "
-            "Please ensure at least one US account is configured in kis_devlp.yaml. "
+            "Unable to verify the primary US account required for DB migration. "
+            "Please ensure root trading/kis_auth.py is loadable and at least one US account is configured in kis_devlp.yaml. "
             f"Migration aborted to prevent data orphaning. Cause: {exc}"
         ) from exc
 
@@ -395,14 +415,7 @@ def migrate_multi_account_schema(cursor, conn):
     def get_primary_scope():
         nonlocal primary_scope
         if primary_scope is None:
-            try:
-                primary_scope = _get_primary_account_scope()
-            except Exception as exc:
-                raise RuntimeError(
-                    "Unable to verify the primary account required for US DB migration. "
-                    "Please ensure at least one US account is configured in kis_devlp.yaml. "
-                    f"Migration aborted to prevent data orphaning. Cause: {exc}"
-                ) from exc
+            primary_scope = _get_primary_account_scope()
         return primary_scope
 
     if _table_requires_migration(cursor, "us_stock_holdings", ["id", "account_key", "account_name"]):

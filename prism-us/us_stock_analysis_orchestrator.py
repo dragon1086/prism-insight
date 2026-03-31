@@ -1044,6 +1044,7 @@ class USStockAnalysisOrchestrator:
             language: Analysis language (default: "ko" - same as Korean stock version)
         """
         logger.info(f"Starting US full pipeline - mode: {mode}")
+        tracking_success = True
 
         try:
             # 0. Run macro intelligence (US market regime, sector data)
@@ -1135,13 +1136,17 @@ class USStockAnalysisOrchestrator:
                             logger.error("US tracking system batch execution failed")
 
                 except Exception as e:
+                    tracking_success = False
                     logger.error(f"Error during US tracking system batch execution: {str(e)}")
                     import traceback
                     logger.error(traceback.format_exc())
             else:
                 logger.warning("No US reports generated, not executing tracking system batch.")
 
-            logger.info(f"US full pipeline complete - mode: {mode}")
+            if tracking_success:
+                logger.info(f"US full pipeline complete - mode: {mode}")
+            else:
+                logger.warning(f"US full pipeline completed with tracking errors - mode: {mode}")
 
         except Exception as e:
             logger.error(f"Error during US pipeline execution: {str(e)}")
