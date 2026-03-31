@@ -792,8 +792,13 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
             # Hard mechanical stop-loss check BEFORE AI — cannot be overridden
             if stop_loss > 0 and current_price <= stop_loss:
+                loss_pct = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0
                 logger.info(f"{ticker} 기계적 손절 조건 도달 (손절가: {stop_loss:,.0f}원) — AI 판단 생략")
-                return True, f"손절 조건 도달 (손절가: {stop_loss:,.0f}원)"
+                return True, (
+                    f"사전 설정 손절가({stop_loss:,.0f}원) 도달로 기계적 손절 실행.\n"
+                    f"현재가 {current_price:,.0f}원 / 매수가 {buy_price:,.0f}원 / 손실률 {loss_pct:.1f}%.\n"
+                    f"손절가 이하 하락 시 AI 판단 없이 즉시 매도하는 규칙에 따라 처리되었습니다."
+                )
 
             # Collect current portfolio information
             self.cursor.execute("""

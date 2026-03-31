@@ -356,9 +356,9 @@ class USStockTrading:
             "OVRS_EXCG_CD": exchange,
             "PDNO": ticker.upper(),
             "ORD_QTY": str(buy_quantity),
-            "OVRS_ORD_UNPR": "0",  # Market price = 0
+            "OVRS_ORD_UNPR": "0",  # Market order price = 0
             "ORD_SVR_DVSN_CD": "0",
-            "ORD_DVSN": "00"  # 00: Market price
+            "ORD_DVSN": "01"   # Market order (시장가)
         }
 
         try:
@@ -457,7 +457,7 @@ class USStockTrading:
             "OVRS_EXCG_CD": exchange,
             "PDNO": ticker.upper(),
             "ORD_QTY": str(buy_quantity),
-            "OVRS_ORD_UNPR": str(limit_price),
+            "OVRS_ORD_UNPR": f"{limit_price:.2f}",
             "ORD_SVR_DVSN_CD": "0",
             "ORD_DVSN": "00"  # Limit order
         }
@@ -572,10 +572,10 @@ class USStockTrading:
             "OVRS_EXCG_CD": exchange,
             "PDNO": ticker.upper(),
             "ORD_QTY": str(quantity),
-            "OVRS_ORD_UNPR": "0",  # Market price = 0
+            "OVRS_ORD_UNPR": "0",  # Market order price = 0
             "ORD_SVR_DVSN_CD": "0",
             "SLL_TYPE": "00",  # Sell type
-            "ORD_DVSN": "00"   # Order type: limit (US only supports 지정가)
+            "ORD_DVSN": "01"   # Market order (시장가)
         }
 
         try:
@@ -819,7 +819,7 @@ class USStockTrading:
             "OVRS_EXCG_CD": exchange,
             "PDNO": ticker.upper(),
             "FT_ORD_QTY": str(int(buy_quantity)),  # Must be integer string for KIS API
-            "FT_ORD_UNPR3": str(limit_price),
+            "FT_ORD_UNPR3": f"{limit_price:.2f}",
             "ORD_SVR_DVSN_CD": "0"
         }
 
@@ -938,7 +938,7 @@ class USStockTrading:
             order_price = "0"
             order_type_str = "MOO (Market On Open)"
         else:
-            order_price = str(limit_price)
+            order_price = f"{limit_price:.2f}"
             order_type_str = f"Limit ${limit_price:.2f}"
 
         params = {
