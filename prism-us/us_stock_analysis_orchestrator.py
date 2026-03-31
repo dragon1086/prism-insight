@@ -921,7 +921,7 @@ class USStockAnalysisOrchestrator:
                 time_desc = "장중 12시 30분 시점"
             else:
                 title = "🔔 미국주식 오후 프리즘 시그널 얼럿"
-                time_desc = "장 마감 후"
+                time_desc = "오후 분석"
             header = f"{title}\n📅 {formatted_date} {time_desc} 포착된 관심종목\n"
             volume_label = "거래량 증가"
             gap_label = "갭상승"

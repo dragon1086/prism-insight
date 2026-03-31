@@ -941,7 +941,7 @@ class StockAnalysisOrchestrator:
             time_desc = "장 시작 후 10분 시점"
         else:
             title = "🔔 오후 프리즘 시그널 얼럿"
-            time_desc = "장 마감 후"
+            time_desc = "오후 분석"
 
         # Message header
         message = f"{title}\n"
