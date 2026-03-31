@@ -133,7 +133,11 @@ except ImportError as e:
     )
     from tracking.journal import USJournalManager
     from tracking.compression import USCompressionManager
-from trading import kis_auth as ka
+# Load kis_auth from main project trading/ (prism-us/trading/ has no kis_auth)
+import importlib.util as _importlib_util
+_kis_auth_spec = _importlib_util.spec_from_file_location("kis_auth", PROJECT_ROOT / "trading/kis_auth.py")
+ka = _importlib_util.module_from_spec(_kis_auth_spec)
+_kis_auth_spec.loader.exec_module(ka)
 
 # Create MCPApp instance
 app = MCPApp(name="us_stock_tracking")
