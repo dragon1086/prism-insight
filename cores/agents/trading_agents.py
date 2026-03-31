@@ -825,8 +825,7 @@ def create_sell_decision_agent(language: str = "ko"):
         **B) Bear/Sideways Mode → Secure Profit (Defensive)**
         - Consider immediate sell when target reached
         - Trailing Stop: **-3~5%** from peak
-        - Maximum observation period: 7 trading days
-        - Sell conditions: Target achieved or profit 5%+
+        - Sell conditions: Target achieved or trailing stop breached (no fixed time or profit % limit)
 
         **Priority 3: Time Management**
         - Short-term (~1 month): Active sell when target achieved
@@ -1001,8 +1000,7 @@ def create_sell_decision_agent(language: str = "ko"):
         **B) 약세장/횡보장 모드 → 수익 확보 (방어적)**
         - 목표가 도달 시 즉시 매도 고려
         - Trailing Stop: 고점 대비 **-3~5%**
-        - 최대 관찰 기간: 7거래일
-        - 매도 조건: 목표가 달성 or 수익 5% 이상
+        - 매도 조건: 목표가 달성 or 트레일링스탑 이탈 (고정 관찰 기간·수익률 기준 없음)
 
         **3순위: 시간 관리**
         - 단기(~1개월): 목표가 달성 시 적극 매도
