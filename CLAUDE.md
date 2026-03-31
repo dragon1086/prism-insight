@@ -29,6 +29,54 @@ prism-insight/
 └── tests/                    # Test suite
 ```
 
+## Analysis Pipeline
+
+```
+[Morning Run]
+trigger_batch.py / us_trigger_batch.py
+    → Surge/momentum detection → stock candidates (JSON)
+    ↓
+stock_analysis_orchestrator.py
+    → data_prefetch (parallel data fetch)
+    → cores/analysis.py — 6 analysis agents (sequential)
+        Technical Analyst → Trading Flow → Financial → Industry → News → Market
+    → Investment Strategist (integrates all 6 reports)
+    → report_generation.py → PDF
+    → telegram_summary_agent → Telegram message (Korean)
+    ↓
+stock_tracking_agent.py  (runs independently, cron)
+    → sell_decision_agent → KIS sell order
+    → buy via trigger signal → KIS buy order
+```
+
+> **Multi-account (v2.9.0)**: `stock_tracking_agent` fans out buy/sell to all accounts in `kis_devlp.yaml`. Telegram report is sent from primary account only.
+
+---
+
+## AI Agents
+
+13 specialized agents organized in 4 teams. Full details → [`docs/CLAUDE_AGENTS.md`](docs/CLAUDE_AGENTS.md)
+
+| # | Agent | File | Purpose |
+|---|-------|------|---------|
+| 1 | Technical Analyst | `cores/agents/stock_price_agents.py` | Price/volume, RSI, MACD, Bollinger |
+| 2 | Trading Flow Analyst | `cores/agents/stock_price_agents.py` | Institutional/foreign/individual flows |
+| 3 | Financial Analyst | `cores/agents/company_info_agents.py` | PER, PBR, ROE, valuation |
+| 4 | Industry Analyst | `cores/agents/company_info_agents.py` | Business model, competitive position |
+| 5 | News Analyst | `cores/agents/news_strategy_agents.py` | News, catalysts, disclosures |
+| 6 | Market Analyst | `cores/agents/market_index_agents.py` | KOSPI/KOSDAQ, macro (result cached) |
+| 7 | Investment Strategist | `cores/agents/news_strategy_agents.py` | Synthesizes 1-6 into actionable strategy |
+| 8 | Macro Intelligence | `cores/agents/macro_intelligence_agent.py` | Market regime, leading/lagging sectors |
+| 9 | Summary Optimizer | `cores/agents/telegram_summary_optimizer_agent.py` | Report → 400-char Telegram message |
+| 10 | Quality Evaluator | `cores/agents/telegram_summary_evaluator_agent.py` | Summary QA loop until EXCELLENT |
+| 11 | Translation Specialist | `cores/agents/telegram_translator_agent.py` | KR→EN/JA/ZH/ES broadcast |
+| 12 | Buy Specialist | `cores/agents/trading_agents.py` | Entry decision, score threshold |
+| 13 | Sell Specialist | `cores/agents/trading_agents.py` | Hold/sell decision, stop-loss |
+
+> US agents mirror KR under `prism-us/cores/agents/` (no Macro Intelligence, Trading Journal, Translation agents).
+
+---
+
 ## Key Entry Points
 
 | Command | Purpose |
@@ -56,6 +104,34 @@ prism-insight/
 | `trading/config/kis_devlp.yaml` | KIS trading API credentials |
 
 **Setup**: Copy `*.example` files and fill in credentials.
+
+### Key Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | ✅ | Telegram bot token |
+| `TELEGRAM_CHANNEL_ID` | ✅ | KR channel ID |
+| `PRISM_OPENAI_AUTH_MODE` | ✅ | `api_key` (default) or `chatgpt_oauth` |
+| `ADANOS_API_KEY` | ⬜ | US social sentiment (Adanos). Omit to disable |
+| `ENABLE_TRADING_JOURNAL` | ⬜ | `true` to enable trading journal agent |
+| `GCP_CREDENTIALS_PATH` | ⬜ | GCP service account JSON for Pub/Sub |
+
+### Multi-Account Setup (v2.9.0)
+
+```yaml
+# trading/config/kis_devlp.yaml
+accounts:
+  - id: primary       # Telegram reports use this account
+    app_key: ...
+    app_secret: ...
+    account_no: XXXXXXXX-XX
+  - id: secondary
+    app_key: ...
+    app_secret: ...
+    account_no: YYYYYYYY-YY
+```
+
+> DB migration (`account_id` column) runs automatically on first start.
 
 ## Code Conventions
 
@@ -155,7 +231,7 @@ result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price
 | Playwright PDF fails | `python3 -m playwright install chromium` |
 | Korean fonts missing | `sudo dnf install google-nanum-fonts && fc-cache -fv` |
 | KIS auth fails | Check `trading/config/kis_devlp.yaml` |
-| prism-us import error | Use `_import_from_main_cores()` helper |
+| prism-us import error | v2.9.0: `importlib.util` 기반 임포트로 해결됨. 직접 수정 시 `cores/openai_debug.py` 참고 |
 | Telegram message in English | v2.2.0 restored Korean templates - pull latest |
 | Broadcast translation empty | gpt-5-mini fallback added in v2.2.0 |
 | `/report` 오류 후 재사용 불가 | v2.5.0 수정 - 서버 오류 시 자동 환급됨, 재시도 가능 |
