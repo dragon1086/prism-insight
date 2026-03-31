@@ -408,11 +408,42 @@ def test_us_schema_requires_primary_account_when_migration_needed(monkeypatch):
 
     monkeypatch.setattr(us_schema, "_get_primary_account_scope", _raise_scope_error)
 
-    with pytest.raises(RuntimeError, match="Unable to verify the primary account"):
+    with pytest.raises(RuntimeError, match="KIS auth unavailable"):
         us_schema.migrate_multi_account_schema(cursor, conn)
 
     cursor.execute("PRAGMA table_info(us_stock_holdings)")
     assert "account_key" not in {row[1] for row in cursor.fetchall()}
+
+
+def test_us_schema_loads_root_kis_auth_even_when_prism_us_precedes_sys_path():
+    module = us_schema._load_root_kis_auth_module()
+    monkeypatch = pytest.MonkeyPatch()
+
+    try:
+        assert Path(module.__file__).resolve() == (PROJECT_ROOT / "trading" / "kis_auth.py").resolve()
+        monkeypatch.setattr(module, "getEnv", lambda: {"default_mode": "demo"})
+        monkeypatch.setattr(
+            module,
+            "resolve_account",
+            lambda **kwargs: {
+                "svr": "vps",
+                "account_key": "vps:us-primary:01",
+                "name": "US Primary",
+                "product": "01",
+            },
+        )
+
+        original_path = list(sys.path)
+        try:
+            sys.path.insert(0, str(PROJECT_ROOT))
+            sys.path.insert(0, str(PRISM_US_DIR))
+            scope = us_schema._get_primary_account_scope()
+        finally:
+            sys.path[:] = original_path
+
+        assert scope == ("vps:us-primary:01", "US Primary", "01", "demo")
+    finally:
+        monkeypatch.undo()
 
 
 def test_us_schema_skips_scope_resolution_when_already_migrated(monkeypatch):
