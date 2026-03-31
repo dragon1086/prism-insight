@@ -122,6 +122,11 @@ async def translate_telegram_message(
     from mcp_agent.workflows.llm.augmented_llm import RequestParams
 
     try:
+        # Sanitize: strip control characters that break JSON serialization
+        # (NUL bytes and other ASCII control chars except \t \n \r are invalid in JSON strings)
+        import re as _re
+        message = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', message)
+
         # Create translator agent
         translator = create_telegram_translator_agent(from_lang=from_lang, to_lang=to_lang)
 
