@@ -221,13 +221,13 @@ def _build_legacy_accounts() -> list[dict[str, Any]]:
     """Build normalized accounts from legacy config keys."""
     legacy_accounts: list[dict[str, Any]] = []
     legacy_candidates = [
-        ("my_acct_stock", "prod", "legacy-real-stock", True),
-        ("my_paper_stock", "vps", "legacy-demo-stock", True),
-        ("my_acct_future", "prod", "legacy-real-future", False),
-        ("my_paper_future", "vps", "legacy-demo-future", False),
+        ("my_acct_stock", "prod", "legacy-real-stock", True, "all"),
+        ("my_paper_stock", "vps", "legacy-demo-stock", True, "all"),
+        ("my_acct_future", "prod", "legacy-real-future", False, "kr"),
+        ("my_paper_future", "vps", "legacy-demo-future", False, "kr"),
     ]
 
-    for key, svr, name, primary in legacy_candidates:
+    for key, svr, name, primary, market in legacy_candidates:
         account_number = _cfg.get(key)
         if not account_number:
             continue
@@ -239,7 +239,7 @@ def _build_legacy_accounts() -> list[dict[str, Any]]:
                     "mode": svr,
                     "account": str(account_number),
                     "product": str(_cfg.get("my_prod", DEFAULT_PRODUCT_CODE)),
-                    "market": "all",
+                    "market": market,
                     "primary": primary,
                     "buy_amount_krw": DEFAULT_BUY_AMOUNT_KRW,
                     "buy_amount_usd": DEFAULT_BUY_AMOUNT_USD,
