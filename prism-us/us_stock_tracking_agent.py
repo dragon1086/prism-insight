@@ -2139,47 +2139,65 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             else:
                                 logger.warning(f"Skipping actual purchase for {ticker}: invalid current_price ({current_price})")
 
-                            if trade_result.get("partial_success"):
-                                successful = trade_result.get("successful_accounts", [])
-                                failed = trade_result.get("failed_accounts", [])
-                                logger.warning(
-                                    f"{ticker} partial success: {len(successful)}/{len(successful) + len(failed)} accounts"
-                                )
+                            # Only mark as traded if KIS order actually succeeded
+                            trade_actually_succeeded = trade_result.get('success') or trade_result.get('partial_success')
 
-                            if ticker not in signaled_tickers:
+                            if not trade_actually_succeeded:
+                                # Rollback the DB holding inserted by buy_stock() before the order attempt
                                 try:
-                                    from messaging.redis_signal_publisher import publish_buy_signal
-                                    await publish_buy_signal(
-                                        ticker=ticker,
-                                        company_name=company_name,
-                                        price=current_price,
-                                        scenario=scenario,
-                                        source="AI분석",
-                                        trade_result=trade_result,
-                                        market="US"
+                                    account_key_rb, _ = self._account_scope()
+                                    self.cursor.execute(
+                                        "DELETE FROM us_stock_holdings WHERE account_key=? AND ticker=?",
+                                        (account_key_rb, ticker)
                                     )
-                                except Exception as signal_err:
-                                    logger.warning(f"Buy signal publish failed (non-critical): {signal_err}")
-
-                                try:
-                                    from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
-                                    await gcp_publish_buy_signal(
-                                        ticker=ticker,
-                                        company_name=company_name,
-                                        price=current_price,
-                                        scenario=scenario,
-                                        source="AI분석",
-                                        trade_result=trade_result,
-                                        market="US"
+                                    self.conn.commit()
+                                    logger.warning(f"Rolled back DB holding for {ticker}: KIS order not executed successfully")
+                                except Exception as rb_err:
+                                    logger.warning(f"Failed to rollback holding for {ticker}: {rb_err}")
+                                state["should_save_watchlist"] = True
+                                state["skip_reason"] = state["skip_reason"] or f"KIS order failed: {trade_result.get('message', 'Unknown')}"
+                            else:
+                                if trade_result.get("partial_success"):
+                                    successful = trade_result.get("successful_accounts", [])
+                                    failed = trade_result.get("failed_accounts", [])
+                                    logger.warning(
+                                        f"{ticker} partial success: {len(successful)}/{len(successful) + len(failed)} accounts"
                                     )
-                                except Exception as signal_err:
-                                    logger.warning(f"GCP buy signal publish failed (non-critical): {signal_err}")
 
-                                signaled_tickers.add(ticker)
+                                if ticker not in signaled_tickers:
+                                    try:
+                                        from messaging.redis_signal_publisher import publish_buy_signal
+                                        await publish_buy_signal(
+                                            ticker=ticker,
+                                            company_name=company_name,
+                                            price=current_price,
+                                            scenario=scenario,
+                                            source="AI분석",
+                                            trade_result=trade_result,
+                                            market="US"
+                                        )
+                                    except Exception as signal_err:
+                                        logger.warning(f"Buy signal publish failed (non-critical): {signal_err}")
 
-                            buy_count += 1
-                            state["traded"] = True
-                            logger.info(f"Purchase complete: {company_name} ({ticker}) @ ${current_price:.2f}")
+                                    try:
+                                        from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
+                                        await gcp_publish_buy_signal(
+                                            ticker=ticker,
+                                            company_name=company_name,
+                                            price=current_price,
+                                            scenario=scenario,
+                                            source="AI분석",
+                                            trade_result=trade_result,
+                                            market="US"
+                                        )
+                                    except Exception as signal_err:
+                                        logger.warning(f"GCP buy signal publish failed (non-critical): {signal_err}")
+
+                                    signaled_tickers.add(ticker)
+
+                                buy_count += 1
+                                state["traded"] = True
+                                logger.info(f"Purchase complete: {company_name} ({ticker}) @ ${current_price:.2f}")
                         else:
                             state["should_save_watchlist"] = True
                             state["skip_reason"] = state["skip_reason"] or "Purchase failed"
