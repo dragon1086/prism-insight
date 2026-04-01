@@ -212,6 +212,9 @@ def _build_normalized_account(
         "primary": _to_bool(item.get("primary"), default=primary_default),
         "buy_amount_krw": _normalize_buy_amount(item.get("buy_amount_krw") or item.get("buy_amount")),
         "buy_amount_usd": _normalize_buy_amount(item.get("buy_amount_usd")),
+        # Per-account API credentials (optional; fall back to global my_app/my_sec if absent)
+        "app_key": item.get("app_key") or item.get("appkey") or None,
+        "app_secret": item.get("app_secret") or item.get("appsecret") or None,
     }
     normalized["account_key"] = f"{normalized['svr']}:{normalized['account']}:{normalized['product']}"
     return normalized
@@ -424,7 +427,7 @@ def _get_or_create_encryption_key():
     return key
 
 # Obtain and save token (token value, token validity time 1 day, same token value if applied within 6 hours, notification sent when issued)
-def save_token(my_token: str, my_expired: str):
+def save_token(my_token: str, my_expired: str, account_key: Optional[str] = None):
     """
     Save token securely with encryption and atomic write.
 
@@ -433,10 +436,12 @@ def save_token(my_token: str, my_expired: str):
     - Uses atomic write (temp file + rename) to prevent corruption
     - File locking prevents race conditions in multi-process scenarios
     - Cross-platform compatible (Windows and Unix)
+    - Per-account token file isolation via account_key
 
     Args:
         my_token: The access token string
         my_expired: Token expiry datetime string (format: "YYYY-MM-DD HH:MM:SS")
+        account_key: Optional account key for per-account token file isolation
 
     Raises:
         TokenFileError: If token data is invalid or write fails
@@ -467,21 +472,28 @@ def save_token(my_token: str, my_expired: str):
     json_string = json.dumps(token_data, indent=2)
     encrypted_data = fernet.encrypt(json_string.encode('utf-8'))
 
+    # Determine target token file (per-account or global)
+    if account_key:
+        acct_hash = hashlib.sha256(account_key.encode()).hexdigest()[:8]
+        target_token_file = os.path.join(config_root, f"KIS_acct_{acct_hash}.token")
+    else:
+        target_token_file = token_tmp
+
     # Atomic write with file locking (prevents race conditions)
     lock_file = os.path.join(config_root, ".token_write.lock")
 
     try:
         with CrossPlatformFileLock(lock_file, timeout=30):
             # Use atomic write (temp file + rename)
-            _atomic_write(token_tmp, encrypted_data)
+            _atomic_write(target_token_file, encrypted_data)
 
             # Set secure file permissions
-            _set_secure_file_permissions(token_tmp)
+            _set_secure_file_permissions(target_token_file)
 
             # Clean up old token files
             cleanup_old_tokens()
 
-            logging.info(f"✅ Encrypted token saved atomically: {token_tmp}")
+            logging.info(f"✅ Encrypted token saved atomically: {target_token_file}")
 
     except TokenFileError:
         raise
@@ -491,7 +503,7 @@ def save_token(my_token: str, my_expired: str):
 
 
 # Check token (token value, token validity 1 day, same token value if applied within 6 hours, notification sent when issued)
-def read_token() -> Optional[str]:
+def read_token(account_key: Optional[str] = None) -> Optional[str]:
     """
     Read and validate token with auto-recovery.
 
@@ -501,18 +513,28 @@ def read_token() -> Optional[str]:
     - Auto-cleanup of expired tokens
     - Sorted by modification time (newest first)
     - Cross-platform compatible file deletion
+    - Per-account token file isolation via account_key
+
+    Args:
+        account_key: Optional account key to look up a per-account token file only
 
     Returns:
         Valid token string or None if no valid token found
     """
     try:
-        # Find all token files (multiple patterns for compatibility)
-        token_files = list(Path(config_root).glob("KIS*.token")) + \
-                      list(Path(config_root).glob("KIS20*"))
+        if account_key:
+            # Per-account mode: only look for the specific account's token file
+            acct_hash = hashlib.sha256(account_key.encode()).hexdigest()[:8]
+            acct_token_path = Path(config_root) / f"KIS_acct_{acct_hash}.token"
+            token_files = [acct_token_path] if acct_token_path.exists() else []
+        else:
+            # Global mode: find all token files (multiple patterns for compatibility)
+            token_files = list(Path(config_root).glob("KIS*.token")) + \
+                          list(Path(config_root).glob("KIS20*"))
 
-        # Also check current token_tmp path
-        if os.path.exists(token_tmp) and Path(token_tmp) not in token_files:
-            token_files.append(Path(token_tmp))
+            # Also check current token_tmp path
+            if os.path.exists(token_tmp) and Path(token_tmp) not in token_files:
+                token_files.append(Path(token_tmp))
 
         if not token_files:
             logging.debug("No token files found")
@@ -919,7 +941,12 @@ def _atomic_write(file_path_str: str, data: bytes) -> bool:
 def _getBaseHeader():
     if _autoReAuth:
         reAuth()
-    return copy.deepcopy(_base_headers)
+    headers = copy.deepcopy(_base_headers)  # static fields only (Content-Type, User-Agent, etc.)
+    if _TRENV is not None:
+        headers["authorization"] = f"Bearer {_TRENV.my_token}"
+        headers["appkey"] = _TRENV.my_app
+        headers["appsecret"] = _TRENV.my_sec
+    return headers
 
 
 def get_trading_env_lock():
@@ -977,9 +1004,6 @@ def changeTREnv(
         _isPaper = True
         _smartSleep = 0.5
 
-    cfg["my_app"] = _cfg[ak1]
-    cfg["my_sec"] = _cfg[ak2]
-
     account = resolve_account(
         svr=svr,
         product=product,
@@ -987,6 +1011,10 @@ def changeTREnv(
         account_index=account_index,
         account_key=account_key,
     )
+
+    # Use per-account credentials if configured, fall back to global keys
+    cfg["my_app"] = account.get("app_key") or _cfg[ak1]
+    cfg["my_sec"] = account.get("app_secret") or _cfg[ak2]
 
     cfg["my_acct"] = account["account"]
     cfg["my_prod"] = account["product"]
@@ -1043,19 +1071,32 @@ def auth(
         "grant_type": "client_credentials",
     }
 
-    # Determine which keys to use based on server type
+    # Determine global fallback keys based on server type
     if svr == "prod":  # Live trading
-        ak1 = "my_app"  # App key (for live trading)
-        ak2 = "my_sec"  # App secret (for live trading)
+        ak1 = "my_app"
+        ak2 = "my_sec"
     elif svr == "vps":  # Paper trading
-        ak1 = "paper_app"  # App key (for paper trading)
-        ak2 = "paper_sec"  # App secret (for paper trading)
+        ak1 = "paper_app"
+        ak2 = "paper_sec"
     else:
         raise ValueError(f"Invalid server type: {svr}. Must be 'prod' or 'vps'")
 
-    # Get app key and secret from config
-    app_key = _cfg.get(ak1)
-    app_secret = _cfg.get(ak2)
+    # Resolve account early to pick up per-account app_key/app_secret if configured
+    try:
+        _auth_account = resolve_account(
+            svr=svr,
+            product=product,
+            account_name=account_name,
+            account_index=account_index,
+            account_key=account_key,
+        )
+        app_key = _auth_account.get("app_key") or _cfg.get(ak1)
+        app_secret = _auth_account.get("app_secret") or _cfg.get(ak2)
+    except Exception:
+        # Fallback to global keys if account resolution fails at this stage
+        app_key = _cfg.get(ak1)
+        app_secret = _cfg.get(ak2)
+        _auth_account = None
 
     if not app_key or not app_secret:
         raise CredentialMismatchError(
@@ -1071,8 +1112,8 @@ def auth(
     p["appkey"] = app_key
     p["appsecret"] = app_secret
 
-    # Check for existing valid token
-    saved_token = read_token()
+    # Check for existing valid token (per-account if account_key provided)
+    saved_token = read_token(account_key=account_key)
 
     if saved_token is None:
         # No valid token - request new one
@@ -1093,8 +1134,8 @@ def auth(
                     response_text=str(result)
                 )
 
-            # Save the new token
-            save_token(my_token, my_expired)
+            # Save the new token (per-account if account_key provided)
+            save_token(my_token, my_expired, account_key=account_key)
             logging.info(f"✅ New token obtained and saved (expires: {my_expired})")
 
         except TokenRequestError as e:
