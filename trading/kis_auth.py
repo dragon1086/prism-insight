@@ -231,6 +231,9 @@ def _build_legacy_accounts() -> list[dict[str, Any]]:
         account_number = _cfg.get(key)
         if not account_number:
             continue
+        # Skip placeholder values (must be a numeric 8-digit account number)
+        if not str(account_number).strip().isdigit():
+            continue
         legacy_accounts.append(
             _build_normalized_account(
                 len(legacy_accounts),
