@@ -16,6 +16,11 @@ default_mode: demo
 default_product_code: "01"
 
 # 홈페이지에서 API 서비스 신청 시 발급받은 App Key / App Secret
+#
+# ⚠️  중요: KIS API는 App Key 1개당 계좌번호 1개가 바인딩됩니다.
+#    다중 계좌를 사용할 경우 아래 accounts 항목에서 계좌별로 app_key/app_secret을 지정하세요.
+#    여기 my_app/my_sec는 accounts에 app_key가 없는 계좌의 폴백(fallback)으로만 사용됩니다.
+#
 # 실전투자 (https://openapi.koreainvestment.com 에서 발급)
 my_app: "실전투자용_앱키를_입력하세요"
 my_sec: "실전투자용_앱시크릿을_입력하세요"
@@ -29,28 +34,43 @@ my_htsid: "HTS_아이디를_입력하세요"
 
 # 다중 계좌 설정
 # 계좌 수 제한 없이 계속 추가할 수 있습니다.
-# mode: real 또는 demo
-# market: kr, us, all 중 하나
-# account: 계좌번호 앞 8자리
-# product: 계좌번호 뒤 2자리
+#
+# 필드 설명:
+#   name     : 계좌 식별용 이름 (로그에 표시됨)
+#   mode     : real (실전투자) 또는 demo (모의투자)
+#   market   : kr (국내만), us (미국만), all (국내+미국)
+#   account  : 계좌번호 앞 8자리
+#   product  : 계좌번호 뒤 2자리 (현물: 01)
+#   app_key  : 이 계좌에 바인딩된 App Key (KIS는 계좌 1개당 App Key 1개 필요)
+#   app_secret: 이 계좌에 바인딩된 App Secret
+#
+# ℹ️  app_key/app_secret을 생략하면 위의 글로벌 my_app/my_sec가 폴백으로 사용됩니다.
+#    단일 계좌 운용 시에는 생략해도 됩니다.
 accounts:
   - name: "실전-메인"
     mode: "real"
     market: "all"
     account: "12345678"
     product: "01"
+    app_key: "이_계좌에_바인딩된_실전투자_앱키"
+    app_secret: "이_계좌에_바인딩된_실전투자_앱시크릿"
 
   - name: "실전-서브"
     mode: "real"
     market: "kr"
     account: "23456789"
     product: "01"
+    app_key: "이_계좌에_바인딩된_실전투자_앱키"
+    app_secret: "이_계좌에_바인딩된_실전투자_앱시크릿"
 
   - name: "모의-메인"
     mode: "demo"
     market: "all"
     account: "34567890"
     product: "01"
+    # 모의투자는 계좌별 app_key 없이 글로벌 paper_app/paper_sec 폴백 사용 가능
+    # app_key: "모의투자용_앱키"
+    # app_secret: "모의투자용_앱시크릿"
 
 # 도메인 정보 (수정하지 마세요)
 prod: "https://openapi.koreainvestment.com:9443"
@@ -67,6 +87,8 @@ my_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, 
 # 설정 순서
 # 1. https://openapi.koreainvestment.com 방문
 # 2. 회원가입 및 API 서비스 신청
-# 3. 실전투자 / 모의투자 앱키 발급
+# 3. 운용할 계좌 수만큼 App Key / App Secret 각각 발급
+#    (KIS는 App Key 1개 = 계좌번호 1개 바인딩 — 계좌당 별도 발급 필요)
 # 4. 이 파일을 kis_devlp.yaml로 복사
-# 5. App Key / Secret / HTS ID / accounts 값을 실제 값으로 수정
+# 5. 각 계좌 항목의 app_key / app_secret에 해당 계좌 전용 키 입력
+# 6. HTS ID, my_htsid 값 입력
