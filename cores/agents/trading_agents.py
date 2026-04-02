@@ -111,10 +111,17 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         **Core Decision Principle (ALL Markets):**
         - This stock was flagged by the surge detection system for unusual activity
-        - This system has NO "next opportunity" → No Entry = permanent abandonment
-        - Missing a 10% gain = -10% opportunity cost
-        - Decision shift: "Why should I buy?" → "Why should I NOT buy?" (prove negative)
-        - If no clear negative factor → **Entry with appropriate risk management is the default**
+        - This system has NO "next opportunity", but sideways markets require more selectivity to avoid false breakouts and repeated stop losses
+        - In bull markets, opportunity cost matters more; in sideways markets, avoiding low-quality breakouts matters more
+        - Decision shift:
+          * Bull market: "Why should I NOT buy?" (prove negative)
+          * Sideways market: "Is there enough durable edge beyond short-term price strength?"
+        - In sideways markets, lack of a negative factor alone is NOT enough for entry
+        - For sideways entries, confirm at least one additional durable edge beyond momentum:
+          * institutional/foreign accumulation
+          * sector/theme tailwind
+          * relative undervaluation vs peers
+          * durable catalyst from news/earnings
         - In bear/sideways: great stocks still outperform. Focus on individual stock quality, not market fear.
         - Market regime adjusts your STOP LOSS and R/R, not your willingness to evaluate fairly.
 
@@ -152,7 +159,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         ### 2. Stock Evaluation (1~10 points)
         - **8~10 points**: Active entry (undervalued vs peers + strong momentum)
         - **7 points**: Entry (solid conditions, acceptable risk/reward)
-        - **6 points**: Entry with risk management (momentum present, tighter stop in bear/sideways)
+        - **6 points**: Conditional entry with risk management (momentum present, but more confirmation needed in bear/sideways)
         - **5 points or less**: No entry (clear negative factors exist)
 
         ### 3. Entry Decision Required Checks
@@ -179,7 +186,10 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         | Sideways | 1.3+ (reference) | 5% | Tighter stop, stock quality focus |
         | Bear Market | 1.5+ (reference) | 5% | Tight stop, momentum required |
 
-        Note: R/R is always a reference, not an absolute barrier. Strong individual momentum can justify entry in ANY market with appropriate stop loss.
+        Note:
+        - In bull markets, R/R is primarily a reference, not an absolute barrier.
+        - In sideways/bear markets, R/R should be applied more strictly.
+        - In sideways markets, strong individual momentum alone is insufficient; confirm at least one of institutional/foreign accumulation, sector tailwind, durable catalyst, or closing confirmation above the box top.
 
         **Examples:**
         - Entry 18,000, Target 21,000(+16.7%), Stop 15,500(-13.9%) -> Ratio 1.2, Loss 13.9% -> "No Entry" (loss too wide)
@@ -250,7 +260,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         ### 4. Momentum Bonus Factors
         Add buy score when these signals confirmed:
-        - Volume surge (Interest rising. Need to look closely at the flow of previous breakthrough attempts and understand the flow of volume the stock needs to break through. In particular, it should be significantly stronger than the volume of cases that failed after the breakthrough attempt.)
+        - Volume surge (Interest rising. Need to look closely at the flow of previous breakthrough attempts and understand the flow of volume the stock needs to break through. In particular, it should be significantly stronger than the volume of cases that failed after the breakthrough attempt. In sideways markets, volume surge alone is not enough for entry.)
         - Institutional/foreign net buying (capital inflow)
         - Technological trend shift (However, the minimum condition is that the previous high should be drilled with strong trading volume, as it can be a simple test of supply and demand of forces. Whether the trend changes or not should be accurately weighed using volume and several auxiliary indicators.)
         - Technical box-up breakthrough (however, the candle should not only reach the high point of the existing box, but also show the movement to upgrade the box)
@@ -265,10 +275,15 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - Stop within -7%, R/R 1.2+ is OK
         - **For No Entry: Must specify 1+ "negative factor" below**
 
-        **Sideways Market (Default Stance: Stock Quality First)**
-        - 6 points + momentum → **Entry** (tighter stop -5%)
+        **Sideways Market (Default Stance: Selective Entry)**
+        - 6 points + momentum + 1 additional confirmation → **Entry** (tighter stop -5%)
         - 7+ points → **Entry**
         - 8+ points → **Active entry**
+        - Additional confirmation (need at least 1):
+          * Institutional/foreign net buying
+          * Sector/theme tailwind
+          * Durable catalyst from news/earnings
+          * Closing confirmation above the box top / resistance
         - **For No Entry: Must specify 1+ "negative factor" below**
 
         **Bear Market (Default Stance: Momentum-Confirmed Entry)**
@@ -473,12 +488,19 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         **핵심 판단 원칙 (모든 시장 공통):**
         - 이 종목은 급등 감지 시스템이 포착한 특이 신호 보유 종목입니다
-        - 이 시스템은 "다음 기회" 없음 → 미진입 = 영구 포기
-        - 10% 오를 종목 미진입 = -10% 기회비용
-        - 판단 전환: "왜 사야 하나?" → "왜 사면 안 되나?" (부정 증명 요구)
-        - 명확한 부정 요소 없으면 → **적절한 리스크 관리와 함께 진입이 기본**
+        - 이 시스템은 "다음 기회"가 없지만, 횡보장에서는 허위 돌파와 반복 손절을 더 경계해야 합니다
+        - 강세장에서는 기회비용을 더 중시하고, 횡보장에서는 낮은 질의 돌파를 피하는 것을 더 중시합니다
+        - 판단 전환:
+          * 강세장: "왜 사면 안 되나?"를 우선 검토
+          * 횡보장: "짧은 가격 급등 말고도 지속 가능한 우위가 충분한가?"를 우선 검토
+        - 횡보장에서는 명확한 부정 요소가 없다는 이유만으로 진입하지 않습니다
+        - 횡보장 진입 시에는 모멘텀 외에 아래 추가 확인 요소 중 최소 1개를 확인하세요:
+          * 기관/외국인 수급 우위
+          * 업종/테마 순풍
+          * 동종업계 대비 저평가
+          * 뉴스/실적 재료의 지속성
         - 약세장/횡보장에서도 시장을 이기는 개별 종목은 존재합니다. 시장 공포가 아닌 종목의 질에 집중하세요.
-        - 시장 체제는 손절폭과 손익비만 조정합니다. 종목 평가의 공정성은 변하지 않습니다.
+        - 시장 체제는 손절폭과 손익비를 조정하지만, 횡보장에서는 진입 근거의 질도 더 엄격히 따져야 합니다.
 
         **강한 모멘텀 신호 조건** (2개 이상 충족 시 더 공격적 진입 가능):
         1. 거래량 20일 평균 대비 200% 이상
@@ -514,7 +536,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         ### 2. 종목 평가 (1~10점)
         - **8~10점**: 적극 진입 (동종업계 대비 저평가 + 강한 모멘텀)
         - **7점**: 진입 (기본 조건 충족, 수용 가능한 손익비)
-        - **6점**: 진입 (모멘텀 확인 + 관리 가능한 리스크, 약세장 시 타이트 손절)
+        - **6점**: 조건부 진입 (모멘텀 확인 + 관리 가능한 리스크, 약세장/횡보장에서는 추가 확인 필요)
         - **5점 이하**: 미진입 (명확한 부정적 요소 존재)
 
         ## 진입 결정 가이드
@@ -544,7 +566,10 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         | 횡보장 | 1.3+ (참고) | 5% | 타이트 손절, 종목 질 집중 |
         | 약세장 | 1.5+ (참고) | 5% | 타이트 손절, 모멘텀 필수 |
 
-        참고: 손익비는 모든 시장에서 참고 기준. 강한 개별 모멘텀은 어떤 시장에서도 적절한 손절과 함께 진입을 정당화할 수 있음.
+        참고:
+        - 강세장에서는 손익비를 참고 기준으로 본다.
+        - 횡보장/약세장에서는 손익비를 더 엄격하게 반영한다.
+        - 횡보장에서는 강한 개별 모멘텀만으로 진입을 정당화하지 말고, 기관/외국인 수급, 업종/테마 순풍, 재료 지속성, 박스 상단 종가 안착 중 최소 1개를 추가 확인한다.
 
         **예시:**
         - 진입 18,000원, 목표 21,000원(+16.7%), 손절 15,500원(-13.9%) -> 손익비 1.2, 손실폭 13.9% -> "미진입" (손실폭 과다)
@@ -619,7 +644,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         ### 4. 모멘텀 가산점 요소
         다음 신호 확인 시 매수 점수 가산:
-        - 거래량 급증 (관심 상승. 이전의 돌파 시도 흐름을 면밀히 살펴보고, 이 종목이 돌파에 필요한 거래량의 흐름을 파악해야 함. 특히, 돌파 시도 후 실패했던 케이스의 거래량보다 현저히 힘이 강해야 함.)
+        - 거래량 급증 (관심 상승. 이전의 돌파 시도 흐름을 면밀히 살펴보고, 이 종목이 돌파에 필요한 거래량의 흐름을 파악해야 함. 특히, 돌파 시도 후 실패했던 케이스의 거래량보다 현저히 힘이 강해야 함. 단, 횡보장에서는 거래량 급증만으로 진입을 정당화하지 말 것.)
         - 기관/외국인 순매수 (자금 유입)
         - 기술적 추세 전환 (단, 세력의 단순 수급 테스트같은 속임수일 수 있으니, 최소조건으로 직전 고점은 거래량 동반과 함께 힘있게 뚫어야 함. 추세 전환 여부를 거래량 및 여러 보조지표를 활용해 정밀하게 따져봐야 함) 
         - 기술적 박스권 상향 돌파 (단, 캔들이 기존 박스 고점까지 가는데 그치지 않고, 박스 업그레이드 되는 움직임이 보여야 함)
@@ -634,10 +659,15 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - 손절 -7% 이내 가능하면 손익비 1.2+도 OK
         - **미진입 시: 아래 "부정 요소" 1개 이상 명시 필수**
 
-        **횡보장 (기본 스탠스: 종목 질 우선)**
-        - 6점 + 모멘텀 → **진입** (타이트 손절 -5%)
+        **횡보장 (기본 스탠스: 선별 진입)**
+        - 6점 + 모멘텀 + 추가 확인 1개 → **진입** (타이트 손절 -5%)
         - 7점+ → **진입**
         - 8점+ → **적극 진입**
+        - 추가 확인 1개:
+          * 기관/외국인 순매수
+          * 업종/테마 순풍
+          * 재료의 지속성
+          * 박스권 상단/저항선 종가 안착
         - **미진입 시: 아래 "부정 요소" 1개 이상 명시 필수**
 
         **약세장 (기본 스탠스: 모멘텀 확인 후 진입)**
