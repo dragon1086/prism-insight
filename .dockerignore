@@ -13,10 +13,14 @@ dist
 build
 .venv
 venv
+**/.venv
+**/__pycache__
 
 # Node
 node_modules
 perplexity-ask/node_modules
+**/node_modules
+**/.next
 
 # IDE
 .idea
@@ -27,14 +31,23 @@ perplexity-ask/node_modules
 # Logs & Data (will be created at runtime)
 *.log
 *.sqlite
+*.db
 logs/
 pdf_reports/
 reports/
 charts/
 telegram_messages/
+quickstart-output/
+quickstart-config/
+tasks/
+.omx/
+macro_intelligence_*.json
+macro_test_output.json
+tmp*.md
 
 # Secrets (should be mounted)
 .env
+mcp_agent.config.yaml
 mcp_agent.secrets.yaml
 trading/config/kis_devlp.yaml
 
