@@ -7,110 +7,40 @@
 #   1. Set your OpenAI API key:
 #      export OPENAI_API_KEY=sk-your-key-here
 #
-#   2. Start the container:
-#      docker-compose -f docker-compose.quickstart.yml up -d
+#   2. Build and start the container:
+#      docker compose -f docker-compose.quickstart.yml up --build -d
 #
-#   3. Run US stock analysis:
-#      docker exec -it prism-quickstart python3 prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
+#   3. Run a demo report:
+#      docker exec -it prism-quickstart python3 demo.py NVDA
 #
 #   4. Find your reports in ./quickstart-output/
 
 services:
   prism-insight:
-    image: ghcr.io/dragon1086/prism-insight:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: prism-insight:quickstart-local
     container_name: prism-quickstart
 
     environment:
-      - TZ=America/New_York
-      - PYTHONUNBUFFERED=1
-      - ENABLE_CRON=false  # Disable scheduled jobs for quick testing
+      TZ: America/New_York
+      PYTHONUNBUFFERED: "1"
+      ENABLE_CRON: "false"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY before running docker compose}
+      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
 
     # Mount only essential volumes
     volumes:
       # Output directory for reports
-      - ./quickstart-output/reports:/app/prism-insight/reports
-      - ./quickstart-output/pdf_reports:/app/prism-insight/pdf_reports
+      - ./quickstart-output/reports:/app/prism-insight/prism-us/reports
+      - ./quickstart-output/pdf_reports:/app/prism-insight/prism-us/pdf_reports
 
-      # Config files (generated on first run)
+      # Persistent quickstart config (generated on first run)
       - ./quickstart-config:/app/prism-insight/quickstart-config
 
     working_dir: /app/prism-insight
 
-    # Override entrypoint to setup minimal config
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        echo "========================================"
-        echo "  PRISM-INSIGHT Quick Start"
-        echo "========================================"
-
-        # Create minimal config if not exists
-        if [ ! -f /app/prism-insight/mcp_agent.secrets.yaml ]; then
-          echo "Creating minimal config..."
-          cat > /app/prism-insight/mcp_agent.secrets.yaml << 'EOF'
-        openai:
-          api_key: ${OPENAI_API_KEY:-your-openai-api-key-here}
-
-        anthropic:
-          api_key: ${ANTHROPIC_API_KEY:-optional}
-        EOF
-        fi
-
-        # Create minimal mcp_agent.config.yaml for US stocks
-        if [ ! -f /app/prism-insight/mcp_agent.config.yaml ]; then
-          cat > /app/prism-insight/mcp_agent.config.yaml << 'EOF'
-        execution_engine: asyncio
-        logger:
-          type: console
-          level: info
-
-        mcp:
-          servers:
-            yahoo_finance:
-              command: "uvx"
-              args: ["--from", "yahoo-finance-mcp", "yahoo-finance-mcp"]
-              read_timeout_seconds: 120
-
-
-            perplexity:
-              command: "npx"
-              args: ["-y", "@perplexity-ai/mcp-server"]
-              env:
-                PERPLEXITY_API_KEY: "${PERPLEXITY_API_KEY:-optional}"
-
-        openai:
-          default_model: gpt-4o
-          reasoning_effort: high
-        EOF
-        fi
-
-        # Initialize database
-        python3 << 'INIT_DB'
-        import sqlite3
-        import sys
-        sys.path.insert(0, '/app/prism-insight')
-        try:
-            from prism_us_tracking_db_schema import create_us_tables, create_us_indexes
-            conn = sqlite3.connect('/app/prism-insight/stock_tracking_db.sqlite')
-            cursor = conn.cursor()
-            create_us_tables(cursor, conn)
-            create_us_indexes(cursor, conn)
-            conn.close()
-            print("[OK] Database initialized")
-        except Exception as e:
-            print(f"[WARN] DB init skipped: {e}")
-        INIT_DB
-
-        echo ""
-        echo "Quick Start Ready!"
-        echo ""
-        echo "Run US stock analysis:"
-        echo "  docker exec -it prism-quickstart python3 prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram"
-        echo ""
-        echo "Reports will be saved to ./quickstart-output/"
-        echo ""
-
-        # Keep container running
-        tail -f /dev/null
+    entrypoint: ["/app/prism-insight/docker/quickstart-entrypoint.sh"]
 
     restart: "no"

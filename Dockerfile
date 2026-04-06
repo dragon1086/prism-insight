@@ -46,7 +46,6 @@ RUN apt-get update && apt-get upgrade -y && \
 # Node.js 22.x LTS 설치
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
-    npm install -g npm@latest && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -63,15 +62,18 @@ RUN python3 -m venv /app/venv
 # 가상환경 활성화
 ENV PATH="/app/venv/bin:$PATH"
 
-# Git 리포지토리 클론
-RUN git clone -b main https://github.com/dragon1086/prism-insight.git /app/prism-insight
-
 # 작업 디렉토리 변경
 WORKDIR /app/prism-insight
+
+# Python 의존성을 먼저 복사해 캐시 효율을 높임
+COPY requirements.txt /app/prism-insight/requirements.txt
 
 # Python 의존성 설치 (setuptools for pykrx compatibility)
 RUN pip install --no-cache-dir --upgrade pip setuptools && \
     pip install --no-cache-dir -r requirements.txt
+
+# 로컬 워크스페이스를 이미지에 복사
+COPY . /app/prism-insight
 
 # Playwright 브라우저 설치 (Chromium만)
 RUN playwright install --with-deps chromium
@@ -110,9 +112,11 @@ RUN mkdir -p /app/prism-insight/docker
 # Crontab 및 Entrypoint 스크립트 복사 (이미지 빌드 시)
 COPY docker/crontab /app/prism-insight/docker/crontab
 COPY docker/entrypoint.sh /app/prism-insight/docker/entrypoint.sh
+COPY docker/quickstart-entrypoint.sh /app/prism-insight/docker/quickstart-entrypoint.sh
 
 # Entrypoint 스크립트 실행 권한 부여
 RUN chmod +x /app/prism-insight/docker/entrypoint.sh && \
+    chmod +x /app/prism-insight/docker/quickstart-entrypoint.sh && \
     chmod 644 /app/prism-insight/docker/crontab
 
 # 권한 설정
@@ -130,7 +134,7 @@ c = conn.cursor(); \
 c.execute(\"SELECT COUNT(*) FROM sqlite_master WHERE type='table'\"); \
 tables = c.fetchone()[0]; \
 assert tables >= 5, f'Only {tables} tables found'; \
-" && service cron status || exit 1
+" && if [ \"$ENABLE_CRON\" = \"true\" ]; then service cron status; else exit 0; fi || exit 1
 
 # 기본 셸 변경
 SHELL ["/bin/bash", "-c"]

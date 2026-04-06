@@ -139,12 +139,14 @@ AI가 생성한 PDF 리포트는 `prism-us/pdf_reports/`에 저장됩니다.
 # 1. OpenAI API 키 설정
 export OPENAI_API_KEY=sk-your-key-here
 
-# 2. 컨테이너 시작
-docker-compose -f docker-compose.quickstart.yml up -d
+# 2. 로컬 quickstart 이미지 빌드 및 시작
+docker compose -f docker-compose.quickstart.yml up --build -d
 
 # 3. 분석 실행
 docker exec -it prism-quickstart python3 demo.py NVDA
 ```
+
+첫 실행 시 이미지를 로컬에서 빌드하므로 몇 분 정도 걸릴 수 있습니다.
 
 리포트는 `./quickstart-output/`에 저장됩니다.
 

@@ -224,8 +224,10 @@ def _get_ai_intuitions(cursor, week_start_str: str) -> str:
     if total_count == 0:
         return "아직 데이터 축적 중입니다. 매매 기록이 쌓이면 AI가 패턴을 학습합니다."
 
+    new_count_str = f"{new_count}개" if new_count > 0 else "없음"
+    avg_conf_str = f"{avg_conf * 100:.0f}%" if avg_conf else "집계 중"
     lines = [
-        f"이번 주 새로 생성: {new_count}개 | 활성 직관: {total_count}개 | 평균 신뢰도: {avg_conf * 100:.0f}%"
+        f"이번 주 신규: {new_count_str} | 누적 활성 직관: {total_count}개 | 평균 신뢰도: {avg_conf_str}"
     ]
 
     all_intuitions = kr_intuitions + us_intuitions
@@ -264,25 +266,23 @@ async def generate_weekly_report(db_path: str = DB_PATH) -> str:
     kr_new_principles, kr_total_principles = 0, 0
 
     try:
-        query = f"""
+        query = """
             SELECT COUNT(*), AVG(tracked_30d_return * 100)
             FROM analysis_performance_tracker
             WHERE tracking_status='completed'
               AND was_traded=0
               AND tracked_30d_return < -0.05
-              AND updated_at >= '{week_start_str}'
         """
         count, avg = _safe_query(cursor, query)
         kr_avoided_count = count or 0
         kr_avoided_avg = avg
 
-        query = f"""
+        query = """
             SELECT COUNT(*), MAX(tracked_30d_return * 100)
             FROM analysis_performance_tracker
             WHERE tracking_status='completed'
               AND was_traded=0
               AND tracked_30d_return > 0.10
-              AND updated_at >= '{week_start_str}'
         """
         count, max_return = _safe_query(cursor, query)
         kr_missed_count = count or 0
@@ -326,25 +326,23 @@ async def generate_weekly_report(db_path: str = DB_PATH) -> str:
     us_new_principles = 0
 
     try:
-        query = f"""
+        query = """
             SELECT COUNT(*), AVG(return_30d * 100)
             FROM us_analysis_performance_tracker
             WHERE return_30d IS NOT NULL
-              AND was_traded=0
+              AND COALESCE(was_traded, 0) = 0
               AND return_30d < -0.05
-              AND last_updated >= '{week_start_str}'
         """
         count, avg = _safe_query(cursor, query)
         us_avoided_count = count or 0
         us_avoided_avg = avg
 
-        query = f"""
+        query = """
             SELECT COUNT(*), MAX(return_30d * 100)
             FROM us_analysis_performance_tracker
             WHERE return_30d IS NOT NULL
-              AND was_traded=0
+              AND COALESCE(was_traded, 0) = 0
               AND return_30d > 0.10
-              AND last_updated >= '{week_start_str}'
         """
         count, max_return = _safe_query(cursor, query)
         us_missed_count = count or 0
