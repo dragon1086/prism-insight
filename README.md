@@ -195,7 +195,7 @@ cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
 # Edit config files with your API keys
 
 # 2. Build & Run
-docker-compose up -d
+docker compose up -d
 
 # 3. Run analysis manually (optional)
 docker exec prism-insight-container python3 stock_analysis_orchestrator.py --mode morning --no-telegram

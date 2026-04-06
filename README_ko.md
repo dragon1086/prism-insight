@@ -195,7 +195,7 @@ cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
 # 설정 파일에 API 키 입력
 
 # 2. 빌드 & 실행
-docker-compose up -d
+docker compose up -d
 
 # 3. 수동 분석 실행 (선택)
 docker exec prism-insight-container python3 stock_analysis_orchestrator.py --mode morning --no-telegram
