@@ -230,19 +230,19 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         #### 3-5. Current Time Reflection & Data Reliability
         Use time-get_current_time tool to check current time (Korea KST).
 
-        During market hours (09:00~15:20):
+        During morning session (09:30~10:30):
         - Today's volume/candles are incomplete forming data
         - Do not make judgments like "today's volume is low", "today's candle is bearish"
         - Analyze with confirmed data from previous day or recent days
         - Today's data can only be "trend change reference", not confirmed judgment basis
 
-        After market close (15:30+):
+        During afternoon session (14:50+):
         - Today's volume/candles/price changes are all confirmed
         - All technical indicators (volume, close, candle patterns) are reliable
         - Actively use today's data for analysis
 
         Core Principle:
-        During market = Previous confirmed data focus / After close = All data including today
+        Morning session = Previous confirmed data focus / Afternoon session = All data including today
 
         #### 3-6. Macro and Geopolitical Risk Assessment
         Always check 'Daily Market Movement Factor Analysis' in the report's '4. Market Analysis' section and evaluate:
@@ -310,9 +310,9 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - "Sector lagging + capital outflow trend confirmed" (macro data evidence required)
 
         ## Tool Usage Guide
-        - Volume/investor trading: kospi_kosdaq-get_stock_ohlcv, kospi_kosdaq-get_stock_trading_volume
+        - Current time: time-get_current_time tool — **call this FIRST**. Use the returned date as the end date for all kospi_kosdaq queries. Never assume or guess the current date.
+        - Volume/investor trading: kospi_kosdaq-get_stock_ohlcv, kospi_kosdaq-get_stock_trading_volume (end date = date from time-get_current_time)
         - Valuation comparison: perplexity_ask tool
-        - Current time: time-get_current_time tool
         - Data query basis: 'Publication date: ' in report
 
         ## Key Report Sections
@@ -614,19 +614,19 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         #### 3-5. 현재 시간 반영 및 데이터 신뢰도 판단
         time-get_current_time tool을 사용하여 현재 시간을 확인 (한국시간 KST 기준).
 
-        장중(09:00~15:20) 데이터 분석 시:
+        오전장(09:30~10:30) 데이터 분석 시:
         - 당일 거래량/캔들은 아직 형성 중인 미완성 데이터
         - "오늘 거래량이 부족하다", "오늘 캔들이 약세다" 등의 판단 금지
         - 전일 또는 최근 수일간의 확정 데이터로 분석할 것
         - 당일 데이터는 "추세 변화의 참고"만 가능, 확정 판단의 근거로 사용 금지
 
-        장 마감 후(15:30 이후) 데이터 분석 시:
+        오후 장(14:50 이후) 데이터 분석 시:
         - 당일 거래량/캔들 모두 확정 완료
         - 모든 기술적 지표 (거래량, 종가, 캔들 패턴 등) 신뢰 가능
         - 당일 데이터를 적극 활용하여 분석 가능
 
         핵심 원칙:
-        장중 실행 = 전일 확정 데이터 중심 분석 / 장 마감 후 = 당일 포함 모든 데이터 활용
+        오전장 실행 = 전일 확정 데이터 중심 분석 / 오후 장 이후 = 당일 포함 모든 데이터 활용
 
         #### 3-6. 거시경제 및 지정학적 리스크 평가
         보고서의 '4. 시장 분석' 섹션에서 '당일 시장 변동 요인 분석'을 반드시 확인하고 다음을 평가:
@@ -694,9 +694,9 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - "해당 섹터 소외 + 자금 이탈 추세 확인" (거시 데이터 근거 필수)
 
         ## 도구 사용 가이드
-        - 거래량/투자자별 매매: kospi_kosdaq-get_stock_ohlcv, kospi_kosdaq-get_stock_trading_volume
+        - 현재 시간: time-get_current_time tool — **kospi_kosdaq 조회 전 반드시 먼저 호출하세요**. 반환된 날짜를 모든 kospi_kosdaq 조회의 종료일(end date)로 사용하세요. 현재 날짜를 임의로 가정하거나 추측하지 마세요.
+        - 거래량/투자자별 매매: kospi_kosdaq-get_stock_ohlcv, kospi_kosdaq-get_stock_trading_volume (종료일 = time-get_current_time으로 획득한 날짜)
         - 밸류에이션 비교: perplexity_ask tool
-        - 현재 시간: time-get_current_time tool
         - 데이터 조회 기준: 보고서의 'Publication date: ' 날짜
         - kospi_kosdaq-load_all_tickers 사용 금지!!!
 
@@ -867,20 +867,20 @@ def create_sell_decision_agent(language: str = "ko"):
         ### ⚠️ Current Time Check & Data Reliability
         **Use time-get_current_time tool to check current time first (Korea KST)**
 
-        **During market hours (09:00~15:20):**
+        **During morning session (09:30~10:30):**
         - Today's volume/price changes are **incomplete forming data**
         - ❌ Prohibited: "Today volume plunged", "Today sharp fall/rise" etc. confirmed judgments
         - ✅ Recommended: Grasp trend with previous day or recent days confirmed data
         - Today's sharp moves are "ongoing movement" reference only, not confirmed sell basis
         - Especially for stop/profit decisions, compare with previous day close
 
-        **After market close (15:30+):**
+        **During afternoon session (14:50+):**
         - Today's volume/candle/price changes all **confirmed complete**
         - Can actively use today's data for technical analysis
         - Volume surge/decline, candle patterns, price moves etc. are reliable for judgment
 
         **Core Principle:**
-        During market = Previous confirmed data / After close = All data including today
+        During market = Previous confirmed data / Afternoon session = All data including today
 
         ### Analysis Elements
 
@@ -907,12 +907,12 @@ def create_sell_decision_agent(language: str = "ko"):
 
         ### Tool Usage Guide
 
-        **time-get_current_time:** Get current time
+        **time-get_current_time:** Get current time — **call this FIRST before any kospi_kosdaq query**. Use the returned date as the end date for all OHLCV/volume queries. Never assume or guess the current date.
 
         **kospi_kosdaq tool to check:**
-        1. get_stock_ohlcv: Analyze trend with recent 14 days price/volume data
-        2. get_stock_trading_volume: Check institutional/foreign trading trends
-        3. get_index_ohlcv: Check KOSPI/KOSDAQ market index info
+        1. get_stock_ohlcv: Analyze trend with recent 14 days price/volume data (end date = date from time-get_current_time)
+        2. get_stock_trading_volume: Check institutional/foreign trading trends (end date = date from time-get_current_time)
+        3. get_index_ohlcv: Check KOSPI/KOSDAQ market index info (end date = date from time-get_current_time)
 
         **sqlite tool to check:**
         0. **IMPORTANT**: Before querying any table, ALWAYS run `describe_table` first to check the actual column names. NEVER guess column names — use only columns that exist in the schema.
@@ -1042,20 +1042,20 @@ def create_sell_decision_agent(language: str = "ko"):
         ### ⚠️ 현재 시간 확인 및 데이터 신뢰도 판단
         **time-get_current_time tool을 사용하여 현재 시간을 먼저 확인하세요 (한국시간 KST 기준)**
 
-        **장중(09:00~15:20) 분석 시:**
+        **오전장(09:30~10:30) 분석 시:**
         - 당일 거래량/가격 변화는 **아직 형성 중인 미완성 데이터**
         - ❌ 금지: "오늘 거래량 급감", "오늘 급락/급등" 등 당일 확정 판단
         - ✅ 권장: 전일 또는 최근 수일간의 확정 데이터로 추세 파악
         - 당일 급변동은 "진행 중인 움직임" 정도만 참고, 확정 매도 근거로 사용 금지
         - 특히 손절/익절 판단 시 전일 종가 기준으로 비교
 
-        **장 마감 후(15:30 이후) 분석 시:**
+        **오후 장(14:50 이후) 분석 시:**
         - 당일 거래량/캔들/가격 변화 모두 **확정 완료**
         - 당일 데이터를 적극 활용한 기술적 분석 가능
         - 거래량 급증/급감, 캔들 패턴, 가격 변동 등 신뢰도 높은 판단 가능
 
         **핵심 원칙:**
-        장중 실행 = 전일 확정 데이터로 판단 / 장 마감 후 = 당일 포함 모든 데이터 활용
+        오전장 실행 = 전일 확정 데이터로 판단 / 오후 장 이후 = 당일 포함 모든 데이터 활용
 
         ### 분석 요소
 
@@ -1082,12 +1082,12 @@ def create_sell_decision_agent(language: str = "ko"):
 
         ### 도구 사용 지침
 
-        **time-get_current_time:** 현재 시간 획득
+        **time-get_current_time:** 현재 시간 획득 — **kospi_kosdaq 조회 전 반드시 먼저 호출하세요**. 반환된 날짜를 모든 OHLCV/거래량 조회의 종료일(end date)로 사용하세요. 현재 날짜를 임의로 가정하거나 추측하지 마세요.
 
         **kospi_kosdaq tool로 확인:**
-        1. get_stock_ohlcv: 최근 14일 가격/거래량 데이터로 추세 분석
-        2. get_stock_trading_volume: 기관/외국인 매매 동향 확인
-        3. get_index_ohlcv: 코스피/코스닥 시장 지수 정보 확인
+        1. get_stock_ohlcv: 최근 14일 가격/거래량 데이터로 추세 분석 (종료일 = time-get_current_time으로 획득한 날짜)
+        2. get_stock_trading_volume: 기관/외국인 매매 동향 확인 (종료일 = time-get_current_time으로 획득한 날짜)
+        3. get_index_ohlcv: 코스피/코스닥 시장 지수 정보 확인 (종료일 = time-get_current_time으로 획득한 날짜)
         4. load_all_tickers 사용 금지!!!
 
         **sqlite tool로 확인:**
