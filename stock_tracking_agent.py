@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
+import cores.openai_debug  # noqa: F401 — OpenAI 400/429 request metadata logging
 from telegram import Bot
 from telegram.error import TelegramError, TimedOut, RetryAfter
 
@@ -46,6 +47,7 @@ from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
 
 # Core agent imports
+from cores.openai_error_logging import log_openai_error
 from cores.agents.trading_agents import create_trading_scenario_agent
 from cores.utils import parse_llm_json
 
@@ -403,6 +405,7 @@ class StockTrackingAgent:
             return self._default_scenario()
 
         except Exception as e:
+            log_openai_error(logger, e, "KR trading scenario extraction")
             logger.error(f"Error extracting trading scenario: {str(e)}")
             logger.error(traceback.format_exc())
             return self._default_scenario()

@@ -9,6 +9,8 @@ import logging
 import re
 from typing import Any, Dict
 
+from cores.openai_error_logging import log_openai_error
+
 logger = logging.getLogger(__name__)
 
 # In-memory cache: {korean_name: english_name}
@@ -150,6 +152,7 @@ Return ONLY the English company name, nothing else. No quotes, no explanation.
         return sanitized_name
 
     except Exception as e:
+        log_openai_error(logger, e, f"company name translation for {korean_name}")
         logger.error(f"Failed to translate company name '{korean_name}': {str(e)}")
         # Fallback: return generic name (don't use Korean characters in English filename)
         # Korean name would fail the ascii_only sanitization anyway

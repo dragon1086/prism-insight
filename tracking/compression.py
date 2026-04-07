@@ -11,6 +11,8 @@ import re
 import traceback
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
+
+from cores.openai_error_logging import log_openai_error
 from cores.utils import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,7 @@ class CompressionManager:
             return results
 
         except Exception as e:
+            log_openai_error(logger, e, "journal compression")
             logger.error(f"Error during compression: {e}")
             traceback.print_exc()
             return {"error": str(e)}
@@ -172,6 +175,7 @@ class CompressionManager:
             return results
 
         except Exception as e:
+            log_openai_error(logger, e, "layer2 journal compression")
             logger.error(f"Error in Layer 2 compression: {e}")
             return {"processed": len(entries), "compressed": 0, "errors": [str(e)]}
 
@@ -217,6 +221,7 @@ class CompressionManager:
             return results
 
         except Exception as e:
+            log_openai_error(logger, e, "layer3 journal compression")
             logger.error(f"Error in Layer 3 compression: {e}")
             return {"processed": len(entries), "compressed": 0, "intuitions_generated": 0, "errors": [str(e)]}
 

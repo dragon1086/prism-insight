@@ -10,6 +10,7 @@ import re
 import os
 import json
 import logging
+import importlib.util as _ilu
 from datetime import datetime
 from pathlib import Path
 
@@ -32,9 +33,20 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 import sys
 _prism_us_dir = Path(__file__).parent
-sys.path.insert(0, str(_prism_us_dir))
 _project_root = _prism_us_dir.parent
 sys.path.insert(0, str(_project_root))
+sys.path.insert(0, str(_prism_us_dir))
+
+_openai_debug_spec = _ilu.spec_from_file_location("cores.openai_debug", _project_root / "cores" / "openai_debug.py")
+if _openai_debug_spec and _openai_debug_spec.loader:
+    _openai_debug_mod = _ilu.module_from_spec(_openai_debug_spec)
+    _openai_debug_spec.loader.exec_module(_openai_debug_mod)
+
+_error_spec = _ilu.spec_from_file_location("prism_root_openai_error_logging", _project_root / "cores" / "openai_error_logging.py")
+if _error_spec and _error_spec.loader:
+    _error_mod = _ilu.module_from_spec(_error_spec)
+    _error_spec.loader.exec_module(_error_mod)
+    log_openai_error = _error_mod.log_openai_error
 
 # MCPApp instance
 app = MCPApp(name="us_telegram_summary")
@@ -648,6 +660,7 @@ This information is for reference only. Investment decisions and responsibilitie
             return telegram_message
 
         except Exception as e:
+            log_openai_error(logger, e, f"US telegram summary report processing for {report_pdf_path}")
             logger.error(f"Error processing report: {e}")
             raise
 
@@ -700,6 +713,7 @@ async def process_all_reports(
         try:
             await generator.process_report(str(report_file), output_dir, language)
         except Exception as e:
+            log_openai_error(logger, e, f"US telegram summary batch item {report_file.name}")
             logger.error(f"Error processing {report_file.name}: {e}")
 
     logger.info("All reports processed.")

@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+import cores.openai_debug  # noqa: F401 — OpenAI 400/429 request metadata logging
 from mcp_agent.agents.agent import Agent
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
@@ -14,6 +15,8 @@ from mcp_agent.workflows.evaluator_optimizer.evaluator_optimizer import (
     EvaluatorOptimizerLLM,
     QualityRating,
 )
+
+from cores.openai_error_logging import log_openai_error
 
 
 def _extract_last_valid_json(text: str) -> str:
@@ -60,6 +63,7 @@ class _RobustEvaluatorLLM:
         try:
             return await self._llm.generate_structured(message, response_model, request_params)
         except Exception as e:
+            log_openai_error(logger, e, "telegram summary evaluator structured generation")
             logger.warning(f"generate_structured failed ({e}), retrying with JSON extraction fallback")
             text = await self._llm.generate_str(message=message, request_params=request_params)
             candidate = _extract_last_valid_json(text)
@@ -426,6 +430,7 @@ class TelegramSummaryGenerator:
             return telegram_message
 
         except Exception as e:
+            log_openai_error(logger, e, f"telegram summary report processing for {report_pdf_path}")
             logger.error(f"Error processing report: {e}")
             raise
 
@@ -467,6 +472,7 @@ async def process_all_reports(reports_dir="pdf_reports", output_dir="telegram_me
         try:
             await generator.process_report(str(report_file), output_dir, from_lang, to_lang)
         except Exception as e:
+            log_openai_error(logger, e, f"telegram summary batch item {report_file.name}")
             logger.error(f"Error processing {report_file.name}: {e}")
 
     logger.info("All report processing completed.")
