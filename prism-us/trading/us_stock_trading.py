@@ -560,13 +560,21 @@ class USStockTrading:
 
         return 0
 
-    def sell_all_market_price(self, ticker: str, exchange: str = None) -> Dict[str, Any]:
+    def sell_all_market_price(self, ticker: str, exchange: str = None,
+                              limit_price: float = None) -> Dict[str, Any]:
         """
-        Market price sell all holdings
+        Sell all holdings at current market price (limit order at current price).
+
+        KIS TTTT1006U does not support ORD_DVSN "01" (market order) for sell.
+        Valid values: 00=limit, 31=MOO, 32=LOO, 33=MOC, 34=LOC.
+        We use ORD_DVSN "00" (limit) with the current price, which fills
+        immediately when the market is open.
 
         Args:
             ticker: Stock ticker symbol
             exchange: Exchange code
+            limit_price: Current price to use as limit price. If not provided,
+                         fetched automatically.
 
         Returns:
             Order result dict
@@ -597,6 +605,19 @@ class USStockTrading:
                 'message': 'No holdings to sell'
             }
 
+        # Fetch current price if not provided
+        if not limit_price or limit_price <= 0:
+            price_info = self.get_current_price(ticker, exchange)
+            limit_price = price_info['current_price'] if price_info else 0.0
+            if limit_price <= 0:
+                return {
+                    'success': False,
+                    'order_no': None,
+                    'ticker': ticker,
+                    'quantity': 0,
+                    'message': 'Failed to fetch current price for sell order'
+                }
+
         # Execute sell order
         api_url = "/uapi/overseas-stock/v1/trading/order"
 
@@ -611,10 +632,10 @@ class USStockTrading:
             "OVRS_EXCG_CD": exchange,
             "PDNO": ticker.upper(),
             "ORD_QTY": str(quantity),
-            "OVRS_ORD_UNPR": "0",  # Market order price = 0
+            "OVRS_ORD_UNPR": f"{limit_price:.2f}",  # KIS TTTT1006U: no market order (ORD_DVSN "01"), use limit at current price
             "ORD_SVR_DVSN_CD": "0",
             "SLL_TYPE": "00",  # Sell type
-            "ORD_DVSN": "01"   # Market order (시장가)
+            "ORD_DVSN": "00"   # Limit order (지정가) — TTTT1006U does not support "01"
         }
 
         try:
@@ -1134,7 +1155,7 @@ class USStockTrading:
 
         if self.is_market_open():
             logger.info(f"[{ticker}] Market is open - executing market sell")
-            return self.sell_all_market_price(ticker, exchange)
+            return self.sell_all_market_price(ticker, exchange, limit_price=limit_price)
         else:
             # Market is closed - use reserved order
             if limit_price and limit_price > 0:
