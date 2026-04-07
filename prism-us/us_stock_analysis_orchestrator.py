@@ -33,9 +33,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 PRISM_US_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PRISM_US_DIR))
-
 from cores.openai_error_logging import log_openai_error
+sys.path.insert(0, str(PRISM_US_DIR))
 
 # Load openai_debug from project root via importlib (prism-us/cores/ shadows root cores/)
 import importlib.util as _ilu
