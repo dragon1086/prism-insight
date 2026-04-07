@@ -28,20 +28,25 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+import importlib.util as _ilu
 
 # Add paths for imports
 PROJECT_ROOT = Path(__file__).parent.parent
 PRISM_US_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from cores.openai_error_logging import log_openai_error
 sys.path.insert(0, str(PRISM_US_DIR))
 
 # Load openai_debug from project root via importlib (prism-us/cores/ shadows root cores/)
-import importlib.util as _ilu
 _spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
 if _spec and _spec.loader:
     _mod = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)
+
+_error_spec = _ilu.spec_from_file_location("prism_root_openai_error_logging", PROJECT_ROOT / "cores" / "openai_error_logging.py")
+if _error_spec and _error_spec.loader:
+    _error_mod = _ilu.module_from_spec(_error_spec)
+    _error_spec.loader.exec_module(_error_mod)
+    log_openai_error = _error_mod.log_openai_error
 
 # Logger configuration
 logging.basicConfig(

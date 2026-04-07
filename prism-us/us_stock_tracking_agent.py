@@ -29,6 +29,7 @@ import re
 import sqlite3
 import sys
 import traceback
+import importlib.util as _ilu
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
@@ -36,12 +37,16 @@ from typing import List, Dict, Any, Tuple, Optional
 # Add parent directory to path for imports
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-
-import importlib.util as _ilu
 _openai_debug_spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
 if _openai_debug_spec and _openai_debug_spec.loader:
     _openai_debug_mod = _ilu.module_from_spec(_openai_debug_spec)
     _openai_debug_spec.loader.exec_module(_openai_debug_mod)
+
+_error_spec = _ilu.spec_from_file_location("prism_root_openai_error_logging", PROJECT_ROOT / "cores" / "openai_error_logging.py")
+if _error_spec and _error_spec.loader:
+    _error_mod = _ilu.module_from_spec(_error_spec)
+    _error_spec.loader.exec_module(_error_mod)
+    log_openai_error = _error_mod.log_openai_error
 
 from telegram import Bot
 from telegram.error import TelegramError
@@ -61,7 +66,6 @@ logger = logging.getLogger(__name__)
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
-from cores.openai_error_logging import log_openai_error
 
 # Import US-specific modules
 # Use explicit path to avoid conflicts with main project
