@@ -23,6 +23,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from cores.openai_error_logging import log_openai_error
+
 # Logger configuration
 logging.basicConfig(
     level=logging.INFO,
@@ -405,6 +407,7 @@ class StockAnalysisOrchestrator:
                 return macro_data
 
         except Exception as e:
+            log_openai_error(logger, e, "KR macro intelligence")
             logger.error(f"Macro intelligence failed (graceful degradation): {str(e)}")
             import traceback
             logger.error(traceback.format_exc())

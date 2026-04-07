@@ -37,6 +37,12 @@ from typing import List, Dict, Any, Tuple, Optional
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import importlib.util as _ilu
+_openai_debug_spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
+if _openai_debug_spec and _openai_debug_spec.loader:
+    _openai_debug_mod = _ilu.module_from_spec(_openai_debug_spec)
+    _openai_debug_spec.loader.exec_module(_openai_debug_mod)
+
 from telegram import Bot
 from telegram.error import TelegramError
 
@@ -55,6 +61,7 @@ logger = logging.getLogger(__name__)
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+from cores.openai_error_logging import log_openai_error
 
 # Import US-specific modules
 # Use explicit path to avoid conflicts with main project
@@ -712,6 +719,7 @@ class USStockTrackingAgent:
             return default_scenario()
 
         except Exception as e:
+            log_openai_error(logger, e, "US trading scenario extraction")
             logger.error(f"Error extracting trading scenario: {str(e)}")
             logger.error(traceback.format_exc())
             return default_scenario()

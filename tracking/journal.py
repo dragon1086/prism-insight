@@ -11,6 +11,8 @@ import re
 import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+
+from cores.openai_error_logging import log_openai_error
 from cores.utils import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -116,6 +118,7 @@ class JournalManager:
             return True
 
         except Exception as e:
+            log_openai_error(logger, e, f"journal entry creation for {stock_data.get('ticker', '')}")
             logger.error(f"Error creating journal entry: {str(e)}")
             logger.error(traceback.format_exc())
             return False

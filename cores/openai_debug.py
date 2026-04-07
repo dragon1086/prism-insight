@@ -1,7 +1,7 @@
-"""OpenAI API 400 error debug logging.
+"""OpenAI API 400/429 debug logging.
 
 Import this module early in orchestrator entry points to enable
-automatic request body logging when OpenAI returns 400 errors.
+automatic request/response metadata logging when OpenAI returns 400/429 errors.
 
 Usage:
     import cores.openai_debug  # noqa: F401 — side-effect import
@@ -17,17 +17,19 @@ _original_sync_init = httpx.Client.__init__
 
 
 async def _async_log_on_error(response: httpx.Response):
-    """Log request body when OpenAI API returns 400."""
+    """Log request metadata when OpenAI API returns 400/429."""
     if (
-        response.status_code == 400
+        response.status_code in {400, 429}
         and "openai.com" in str(response.request.url)
     ):
         body = response.request.content
+        request_id = response.headers.get("x-request-id", "unavailable")
         logger.error(
-            "[OpenAI 400 Debug] %s %s | "
-            "Body(%d bytes): %s",
+            "[OpenAI %s Debug] %s %s | x-request-id=%s | Body(%d bytes): %s",
+            response.status_code,
             response.request.method,
             response.request.url,
+            request_id,
             len(body),
             body[:3000].decode("utf-8", errors="replace"),
         )
@@ -42,17 +44,19 @@ def _patched_async_init(self, *args, **kwargs):
 
 
 def _sync_log_on_error(response: httpx.Response):
-    """Log request body when OpenAI API returns 400 (sync)."""
+    """Log request metadata when OpenAI API returns 400/429 (sync)."""
     if (
-        response.status_code == 400
+        response.status_code in {400, 429}
         and "openai.com" in str(response.request.url)
     ):
         body = response.request.content
+        request_id = response.headers.get("x-request-id", "unavailable")
         logger.error(
-            "[OpenAI 400 Debug] %s %s | "
-            "Body(%d bytes): %s",
+            "[OpenAI %s Debug] %s %s | x-request-id=%s | Body(%d bytes): %s",
+            response.status_code,
             response.request.method,
             response.request.url,
+            request_id,
             len(body),
             body[:3000].decode("utf-8", errors="replace"),
         )
@@ -70,4 +74,4 @@ def _patched_sync_init(self, *args, **kwargs):
 httpx.AsyncClient.__init__ = _patched_async_init
 httpx.Client.__init__ = _patched_sync_init
 
-logger.info("OpenAI 400 debug logging enabled")
+logger.info("OpenAI 400/429 debug logging enabled")

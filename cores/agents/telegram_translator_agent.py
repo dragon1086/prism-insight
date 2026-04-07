@@ -1,5 +1,7 @@
 from mcp_agent.agents.agent import Agent
 
+from cores.openai_error_logging import log_openai_error
+
 
 def create_telegram_translator_agent(from_lang: str = "ko", to_lang: str = "en"):
     """
@@ -150,5 +152,6 @@ async def translate_telegram_message(
         # If translation fails, return original message with error note
         import logging
         logger = logging.getLogger(__name__)
+        log_openai_error(logger, e, "telegram translation")
         logger.error(f"Translation failed: {str(e)}")
         return message  # Fallback to original message

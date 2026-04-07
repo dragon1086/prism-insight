@@ -35,6 +35,8 @@ PRISM_US_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PRISM_US_DIR))
 
+from cores.openai_error_logging import log_openai_error
+
 # Load openai_debug from project root via importlib (prism-us/cores/ shadows root cores/)
 import importlib.util as _ilu
 _spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
@@ -366,6 +368,7 @@ class USStockAnalysisOrchestrator:
                 return macro_data
 
         except Exception as e:
+            log_openai_error(logger, e, "US macro intelligence")
             logger.error(f"US macro intelligence failed (graceful degradation): {str(e)}")
             import traceback
             logger.error(traceback.format_exc())

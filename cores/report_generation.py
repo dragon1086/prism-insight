@@ -3,6 +3,8 @@ from mcp_agent.agents.agent import Agent
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
 
+from cores.openai_error_logging import log_openai_error
+
 
 # Language name mapping for report generation
 LANGUAGE_NAMES = {
@@ -100,16 +102,20 @@ async def generate_report(agent, section, company_name, company_code, reference_
 ##Analysis Date: {reference_date} (YYYYMMDD format)
 """
 
-    report = await llm.generate_str(
-        message=message,
-        request_params=RequestParams(
-            model="gpt-5.4-mini",
-            reasoning_effort="none",
-            maxTokens=32000,
-            parallel_tool_calls=True,
-            use_history=True
+    try:
+        report = await llm.generate_str(
+            message=message,
+            request_params=RequestParams(
+                model="gpt-5.4-mini",
+                reasoning_effort="none",
+                maxTokens=32000,
+                parallel_tool_calls=True,
+                use_history=True
+            )
         )
-    )
+    except Exception as e:
+        log_openai_error(logger, e, f"report generation for {section}")
+        raise
     logger.info(f"Completed {section} - {len(report)} characters")
     return report
 
@@ -190,17 +196,21 @@ async def generate_market_report(agent, section, reference_date, logger, languag
 ##Analysis Date: {reference_date} (YYYYMMDD format)
 """
 
-    report = await llm.generate_str(
-        message=message,
-        request_params=RequestParams(
-            model="gpt-5.4-mini",
-            reasoning_effort="none",
-            maxTokens=32000,
-            max_iterations=3,
-            parallel_tool_calls=True,
-            use_history=True
+    try:
+        report = await llm.generate_str(
+            message=message,
+            request_params=RequestParams(
+                model="gpt-5.4-mini",
+                reasoning_effort="none",
+                maxTokens=32000,
+                max_iterations=3,
+                parallel_tool_calls=True,
+                use_history=True
+            )
         )
-    )
+    except Exception as e:
+        log_openai_error(logger, e, f"market report generation for {section}")
+        raise
     logger.info(f"Completed {section} - {len(report)} characters")
     return report
 
@@ -314,6 +324,7 @@ Comprehensive Analysis Report:
         )
         return executive_summary
     except Exception as e:
+        log_openai_error(logger, e, f"executive summary generation for {company_name}")
         logger.error(f"Error generating executive summary: {e}")
         if language == "ko":
             return "## 핵심 요약\n\n분석 요약을 생성하는 데 문제가 발생했습니다."
@@ -552,6 +563,7 @@ Please present a consistent and executable investment strategy that investors ca
         logger.info(f"Completed investment_strategy - {len(investment_strategy)} characters")
         return investment_strategy
     except Exception as e:
+        log_openai_error(logger, e, f"investment strategy generation for {company_name}")
         logger.error(f"Error processing investment_strategy: {e}")
         if language == "ko":
             return "투자 전략 분석 실패"
