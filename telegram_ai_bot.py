@@ -2419,19 +2419,22 @@ class TelegramAIBot:
             else:
                 await self.application.bot.send_message(
                     chat_id=chat_id,
-                    text="⚠️ 리서치 결과를 가져오지 못했습니다. 잠시 후 다시 시도해주세요."
+                    text="⚠️ Firecrawl AI로부터 응답을 받지 못했습니다.\n"
+                         "가능한 원인: 크레딧 부족, 서버 타임아웃, 또는 검색 결과 없음.\n"
+                         "잠시 후 다시 시도하거나 질문을 바꿔보세요."
                 )
                 return False
 
         except Exception as e:
-            logger.error(f"Firecrawl command error: {e}")
+            logger.error(f"Firecrawl command error: {e}", exc_info=True)
             try:
                 await waiting_msg.delete()
             except Exception:
                 pass
             await self.application.bot.send_message(
                 chat_id=chat_id,
-                text="⚠️ 리서치 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+                text=f"⚠️ 리서치 중 오류가 발생했습니다: {type(e).__name__}\n"
+                     "잠시 후 다시 시도해주세요."
             )
             return False
 

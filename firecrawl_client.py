@@ -70,6 +70,53 @@ def firecrawl_search(query: str, limit: int = 10):
         return None
 
 
+def _extract_agent_text(result) -> Optional[str]:
+    """Extract readable text from Firecrawl agent result, trying multiple formats."""
+    if not result:
+        return None
+
+    # Try result.data (common in SDK v4)
+    if hasattr(result, 'data') and result.data:
+        data = result.data
+        if isinstance(data, dict):
+            # Try known keys in priority order
+            for key in ['telegram_message', 'result', 'text', 'answer', 'report', 'report_content', 'content']:
+                val = data.get(key)
+                if val and isinstance(val, str) and len(val) > 50:
+                    return val
+            # Try nested dict — search all string values recursively
+            for key, val in data.items():
+                if isinstance(val, str) and len(val) > 100:
+                    return val
+                if isinstance(val, dict):
+                    for k2, v2 in val.items():
+                        if isinstance(v2, str) and len(v2) > 100:
+                            return v2
+            # Last resort: stringify the whole dict
+            text = str(data)
+            if len(text) > 50:
+                return text
+        elif isinstance(data, str) and len(data) > 50:
+            return data
+        else:
+            return str(data)
+
+    # Try result as dict directly
+    if isinstance(result, dict):
+        for key in ['data', 'result', 'telegram_message', 'text']:
+            val = result.get(key)
+            if val and isinstance(val, str) and len(val) > 50:
+                return val
+            if isinstance(val, dict):
+                return _extract_agent_text(type('Obj', (), {'data': val})())
+
+    # Try result as string
+    if isinstance(result, str) and len(result) > 50:
+        return result
+
+    return None
+
+
 def firecrawl_agent(prompt: str, max_credits: int = 200, model: Literal["spark-1-mini", "spark-1-pro"] = "spark-1-mini") -> Optional[str]:
     """
     Run Firecrawl agent (Spark) with a prompt.
@@ -89,14 +136,18 @@ def firecrawl_agent(prompt: str, max_credits: int = 200, model: Literal["spark-1
             model=model,
             max_credits=max_credits,
         )
-        # Extract text from result — result.data is a dict
-        if result and hasattr(result, 'data') and result.data:
-            data = result.data
-            if isinstance(data, dict):
-                # Try common keys
-                return data.get('result') or data.get('telegram_message') or data.get('text') or str(data)
-            return str(data)
-        logger.warning("Firecrawl agent returned empty result")
+        # Debug: log raw result structure
+        logger.info(f"Firecrawl agent raw result type: {type(result)}")
+        if result:
+            logger.info(f"Firecrawl agent result attrs: {[a for a in dir(result) if not a.startswith('_')]}")
+
+        # Extract text from result — try multiple response formats
+        text = _extract_agent_text(result)
+        if text:
+            logger.info(f"Firecrawl agent response: {len(text)} chars")
+            return text
+
+        logger.warning(f"Firecrawl agent returned empty result. Raw: {str(result)[:500]}")
         return None
     except Exception as e:
         logger.error(f"Firecrawl agent failed: {e}")
