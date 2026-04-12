@@ -2510,12 +2510,17 @@ class TelegramAIBot:
             )
             return
 
-        event = update.message.text.replace("/signal", "").strip()
+        event = update.message.text.replace("/signal", "").strip()[:200]
         if not event:
             await update.message.reply_text(
                 "사용법: /signal [이벤트/뉴스]\n"
                 "예시: /signal 트럼프 관세 인상"
             )
+            return
+
+        allowed, _ = self.check_daily_limit_count(user_id, "signal", max_count=10)
+        if not allowed:
+            await update.message.reply_text("⚠️ 오늘의 /signal 사용 횟수(10회)를 모두 소진하였습니다.")
             return
 
         logger.info(f"/signal command - user={user_id}, event='{event[:50]}'")
@@ -2544,12 +2549,17 @@ class TelegramAIBot:
             )
             return
 
-        event = update.message.text.replace("/us_signal", "").strip()
+        event = update.message.text.replace("/us_signal", "").strip()[:200]
         if not event:
             await update.message.reply_text(
                 "사용법: /us_signal [이벤트/뉴스]\n"
                 "예시: /us_signal TSMC 실적 서프라이즈"
             )
+            return
+
+        allowed, _ = self.check_daily_limit_count(user_id, "us_signal", max_count=10)
+        if not allowed:
+            await update.message.reply_text("⚠️ 오늘의 /us_signal 사용 횟수(10회)를 모두 소진하였습니다.")
             return
 
         logger.info(f"/us_signal command - user={user_id}, event='{event[:50]}'")
@@ -2578,12 +2588,17 @@ class TelegramAIBot:
             )
             return
 
-        theme = update.message.text.replace("/theme", "").strip()
+        theme = update.message.text.replace("/theme", "").strip()[:200]
         if not theme:
             await update.message.reply_text(
                 "사용법: /theme [테마/섹터]\n"
                 "예시: /theme 2차전지"
             )
+            return
+
+        allowed, _ = self.check_daily_limit_count(user_id, "theme", max_count=10)
+        if not allowed:
+            await update.message.reply_text("⚠️ 오늘의 /theme 사용 횟수(10회)를 모두 소진하였습니다.")
             return
 
         logger.info(f"/theme command - user={user_id}, theme='{theme[:50]}'")
@@ -2613,12 +2628,17 @@ class TelegramAIBot:
             )
             return
 
-        theme = update.message.text.replace("/us_theme", "").strip()
+        theme = update.message.text.replace("/us_theme", "").strip()[:200]
         if not theme:
             await update.message.reply_text(
                 "사용법: /us_theme [테마/섹터]\n"
                 "예시: /us_theme AI semiconductor"
             )
+            return
+
+        allowed, _ = self.check_daily_limit_count(user_id, "us_theme", max_count=10)
+        if not allowed:
+            await update.message.reply_text("⚠️ 오늘의 /us_theme 사용 횟수(10회)를 모두 소진하였습니다.")
             return
 
         logger.info(f"/us_theme command - user={user_id}, theme='{theme[:50]}'")
@@ -2648,7 +2668,7 @@ class TelegramAIBot:
             )
             return
 
-        question = update.message.text.replace("/ask", "").strip()
+        question = update.message.text.replace("/ask", "").strip()[:500]
         if not question:
             await update.message.reply_text(
                 "사용법: /ask [질문]\n"

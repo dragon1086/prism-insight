@@ -1382,7 +1382,8 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
         from firecrawl_client import firecrawl_search
 
         # Step 1: Firecrawl search (2 credits per 10 results)
-        result = await asyncio.get_event_loop().run_in_executor(
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
             None, lambda: firecrawl_search(search_query, limit=limit)
         )
         items = result.web if result and result.web else []
