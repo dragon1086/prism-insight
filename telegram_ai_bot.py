@@ -2493,12 +2493,12 @@ class TelegramAIBot:
         logger.info(f"/us_signal command - user={user_id}, event='{event[:50]}'")
 
         prompt = (
-            f"Analyze the impact of '{event}' on the US stock market (S&P500, NASDAQ).\n"
-            "1. Top 3 beneficiary sectors and representative stocks\n"
-            "2. Top 3 negatively impacted sectors and representative stocks\n"
-            "3. Historical precedents\n"
-            "4. Retail investor strategy\n"
-            "Write in Korean, Telegram message format with emojis. Under 3000 characters."
+            f"'{event}'가 미국 주식시장(S&P500, NASDAQ)에 미치는 영향을 분석해줘.\n"
+            "1. 수혜 예상 섹터와 대표 종목 3개\n"
+            "2. 피해 예상 섹터와 대표 종목 3개\n"
+            "3. 과거 유사 사례\n"
+            "4. 개인투자자 대응 전략\n"
+            "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
         await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
 
@@ -2560,13 +2560,13 @@ class TelegramAIBot:
         logger.info(f"/us_theme command - user={user_id}, theme='{theme[:50]}'")
 
         prompt = (
-            f"Analyze the current health of the '{theme}' theme in the US stock market (S&P500, NASDAQ).\n"
-            "1. Theme temperature (🟢Hot/🟡Neutral/🔴Cooling — pick one with reasoning)\n"
-            "2. Top 3 leading stocks with recent price trends\n"
-            "3. 3 positive factors\n"
-            "4. 3 negative factors\n"
-            "5. Entry timing opinion\n"
-            "Write in Korean, Telegram message format with emojis. Under 3000 characters."
+            f"미국 주식시장(S&P500, NASDAQ)에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
+            "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
+            "2. 대장주 3개와 최근 주가 동향\n"
+            "3. 긍정 요인 3개\n"
+            "4. 부정 요인 3개\n"
+            "5. 진입 타이밍 의견\n"
+            "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
         await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
 
