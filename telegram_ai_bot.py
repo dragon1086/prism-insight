@@ -37,6 +37,7 @@ from report_generator import (
     get_cached_us_report, generate_journal_conversation_response
 )
 from tracking.user_memory import UserMemoryManager
+from firecrawl_client import firecrawl_agent
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -418,6 +419,9 @@ class TelegramAIBot:
         # Daily usage limit (user_id:command -> date)
         self.daily_report_usage: Dict[str, str] = {}
 
+        # Daily count-based usage limit for /ask (user_id:command -> {date, count})
+        self.daily_ask_usage: Dict[str, Dict] = {}
+
         # Create bot application (including timeout settings)
         request = HTTPXRequest(
             connection_pool_size=8,
@@ -472,6 +476,16 @@ class TelegramAIBot:
         if daily_limit_expired:
             logger.info(f"Cleaned up expired daily limits: {len(daily_limit_expired)} entries")
 
+        # Clean up count-based daily limits (remove non-today dates)
+        daily_ask_expired = [
+            key for key, usage in self.daily_ask_usage.items()
+            if usage.get("date") != today
+        ]
+        for key in daily_ask_expired:
+            del self.daily_ask_usage[key]
+        if daily_ask_expired:
+            logger.info(f"Cleaned up expired ask limits: {len(daily_ask_expired)} entries")
+
     def compress_user_memories(self):
         """Compress user memories (nightly batch)"""
         if self.memory_manager:
@@ -512,6 +526,44 @@ class TelegramAIBot:
         if key in self.daily_report_usage:
             del self.daily_report_usage[key]
             logger.info(f"Daily limit refunded (server error): user={user_id}, command={command}")
+
+    def check_daily_limit_count(self, user_id: int, command: str, max_count: int = 3) -> tuple:
+        """
+        Check count-based daily usage limit.
+
+        Args:
+            user_id: User ID
+            command: Command name
+            max_count: Maximum allowed uses per day
+
+        Returns:
+            tuple: (allowed: bool, remaining: int)
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        key = f"{user_id}:{command}"
+
+        usage = self.daily_ask_usage.get(key)
+        if usage and usage.get("date") == today:
+            if usage["count"] >= max_count:
+                logger.info(f"Daily count limit exceeded: user={user_id}, command={command}, count={usage['count']}/{max_count}")
+                return False, 0
+            usage["count"] += 1
+            remaining = max_count - usage["count"]
+            logger.info(f"Daily count usage recorded: user={user_id}, command={command}, count={usage['count']}/{max_count}")
+            return True, remaining
+        else:
+            self.daily_ask_usage[key] = {"date": today, "count": 1}
+            remaining = max_count - 1
+            logger.info(f"Daily count usage started: user={user_id}, command={command}, count=1/{max_count}")
+            return True, remaining
+
+    def refund_daily_limit_count(self, user_id: int, command: str):
+        """Refund one count-based daily usage when Firecrawl call fails."""
+        key = f"{user_id}:{command}"
+        usage = self.daily_ask_usage.get(key)
+        if usage and usage["count"] > 0:
+            usage["count"] -= 1
+            logger.info(f"Daily count limit refunded: user={user_id}, command={command}, count={usage['count']}")
 
     def _is_server_error(self, request) -> bool:
         """
@@ -738,6 +790,21 @@ class TelegramAIBot:
         )
         self.application.add_handler(journal_conv_handler)
 
+        # ==========================================================================
+        # Firecrawl AI Research commands
+        # BotFather commands to register manually:
+        #   signal - 이벤트/뉴스 임팩트 분석 (한국)
+        #   us_signal - 이벤트/뉴스 임팩트 분석 (미국)
+        #   theme - 테마/섹터 건강도 진단 (한국)
+        #   us_theme - 테마/섹터 건강도 진단 (미국)
+        #   ask - AI 투자 리서처 (자유 질문)
+        # ==========================================================================
+        self.application.add_handler(CommandHandler("signal", self.handle_signal))
+        self.application.add_handler(CommandHandler("us_signal", self.handle_us_signal))
+        self.application.add_handler(CommandHandler("theme", self.handle_theme))
+        self.application.add_handler(CommandHandler("us_theme", self.handle_us_theme))
+        self.application.add_handler(CommandHandler("ask", self.handle_ask))
+
         # General text messages - /help or /start guidance
         self.application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, self.handle_default_message
@@ -937,6 +1004,12 @@ class TelegramAIBot:
             "/memories - 내 기억 저장소 확인\n\n"
             "📡 <b>트리거 신뢰도</b>\n"
             "/triggers - 트리거 신뢰도 리포트 보기\n\n"
+            "🔥 <b>Firecrawl AI 리서치</b>\n"
+            "/signal - 이벤트/뉴스 임팩트 분석 (한국)\n"
+            "/us_signal - 이벤트/뉴스 임팩트 분석 (미국)\n"
+            "/theme - 테마/섹터 건강도 진단 (한국)\n"
+            "/us_theme - 테마/섹터 건강도 진단 (미국)\n"
+            "/ask - AI 투자 리서처 (자유 질문)\n\n"
             "💡 평가 응답에 답장(Reply)하여 추가 질문을 할 수 있습니다!\n\n"
             "이 봇은 '프리즘 인사이트' 채널 구독자만 사용할 수 있습니다.\n"
             "채널에서는 장 시작과 마감 시 AI가 선별한 특징주 3개를 소개하고,\n"
@@ -968,6 +1041,12 @@ class TelegramAIBot:
             "  • 과거 평가 시 기억으로 활용됨\n\n"
             "📡 <b>트리거 신뢰도:</b>\n"
             "/triggers - KR & US 트리거 신뢰도 리포트 보기\n\n"
+            "🔥 <b>Firecrawl AI 리서치:</b>\n"
+            "/signal [이벤트] - 이벤트/뉴스 임팩트 분석 (한국)\n"
+            "/us_signal [event] - 이벤트/뉴스 임팩트 분석 (미국)\n"
+            "/theme [테마] - 테마/섹터 건강도 진단 (한국)\n"
+            "/us_theme [theme] - 테마/섹터 건강도 진단 (미국)\n"
+            "/ask [질문] - AI 투자 리서처 자유 질문 (일 3회)\n\n"
             "<b>보유 종목 평가 방법 (한국/미국 동일):</b>\n"
             "1. /evaluate 또는 /us_evaluate 명령어 입력\n"
             "2. 종목 코드/티커 입력 (예: 005930 또는 AAPL)\n"
@@ -2295,6 +2374,250 @@ class TelegramAIBot:
                 pass
 
         return None, None, 'kr'
+
+    # ==========================================================================
+    # Firecrawl AI Research handlers
+    # ==========================================================================
+
+    _DISCLAIMER_KR = "\n\n⚠️ 본 내용은 투자 참고용이며, 투자 판단의 책임은 본인에게 있습니다."
+    _DISCLAIMER_US = "\n\n⚠️ This is for informational purposes only. Investment decisions are your own responsibility."
+
+    async def _run_firecrawl_command(self, update: Update, prompt: str, disclaimer: str) -> bool:
+        """
+        Common helper for Firecrawl-based commands.
+        Sends a waiting message, calls firecrawl_agent, then replaces it with the result.
+
+        Returns:
+            bool: True if successful, False on failure
+        """
+        chat_id = update.effective_chat.id
+        waiting_msg = await update.message.reply_text("🔍 리서치 중...")
+
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: firecrawl_agent(prompt, max_credits=200, model="spark-1-mini")
+            )
+
+            # Delete waiting message
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+
+            if result:
+                # Telegram message limit is 4096 chars — chunk if needed
+                full_text = result + disclaimer
+                if len(full_text) > 4096:
+                    # Send in chunks, keep disclaimer on last chunk
+                    for i in range(0, len(result), 4096):
+                        chunk = result[i:i + 4096]
+                        await self.application.bot.send_message(chat_id=chat_id, text=chunk)
+                    await self.application.bot.send_message(chat_id=chat_id, text=disclaimer.strip())
+                else:
+                    await self.application.bot.send_message(chat_id=chat_id, text=full_text)
+                return True
+            else:
+                await self.application.bot.send_message(
+                    chat_id=chat_id,
+                    text="⚠️ 리서치 결과를 가져오지 못했습니다. 잠시 후 다시 시도해주세요."
+                )
+                return False
+
+        except Exception as e:
+            logger.error(f"Firecrawl command error: {e}")
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ 리서치 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+            )
+            return False
+
+    async def handle_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /signal command — KR event impact analysis"""
+        user_id = update.effective_user.id
+
+        is_subscribed = await self.check_channel_subscription(user_id)
+        if not is_subscribed:
+            await update.message.reply_text(
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
+                "https://t.me/stock_ai_agent"
+            )
+            return
+
+        # Extract event text after the command
+        event = update.message.text.replace("/signal", "").strip()
+        if not event:
+            await update.message.reply_text(
+                "사용법: /signal [이벤트/뉴스]\n"
+                "예시: /signal 트럼프 관세 인상"
+            )
+            return
+
+        logger.info(f"/signal command - user={user_id}, event='{event[:50]}'")
+
+        prompt = (
+            f"{event}가 한국 주식시장에 미치는 영향을 분석해줘.\n"
+            "1. 수혜 예상 섹터와 대표 종목 3개\n"
+            "2. 피해 예상 섹터와 대표 종목 3개\n"
+            "3. 과거 유사 사례\n"
+            "4. 개인투자자 대응 전략\n"
+            "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
+        )
+        await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
+
+    async def handle_us_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /us_signal command — US event impact analysis"""
+        user_id = update.effective_user.id
+
+        is_subscribed = await self.check_channel_subscription(user_id)
+        if not is_subscribed:
+            await update.message.reply_text(
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
+                "https://t.me/stock_ai_agent"
+            )
+            return
+
+        event = update.message.text.replace("/us_signal", "").strip()
+        if not event:
+            await update.message.reply_text(
+                "사용법: /us_signal [event/news]\n"
+                "예시: /us_signal tariff impact on tech stocks"
+            )
+            return
+
+        logger.info(f"/us_signal command - user={user_id}, event='{event[:50]}'")
+
+        prompt = (
+            f"Analyze the impact of '{event}' on the US stock market (S&P500, NASDAQ).\n"
+            "1. Top 3 beneficiary sectors and representative stocks\n"
+            "2. Top 3 negatively impacted sectors and representative stocks\n"
+            "3. Historical precedents\n"
+            "4. Retail investor strategy\n"
+            "Write in Korean, Telegram message format with emojis. Under 3000 characters."
+        )
+        await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
+
+    async def handle_theme(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /theme command — KR theme health check"""
+        user_id = update.effective_user.id
+
+        is_subscribed = await self.check_channel_subscription(user_id)
+        if not is_subscribed:
+            await update.message.reply_text(
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
+                "https://t.me/stock_ai_agent"
+            )
+            return
+
+        theme = update.message.text.replace("/theme", "").strip()
+        if not theme:
+            await update.message.reply_text(
+                "사용법: /theme [테마/섹터]\n"
+                "예시: /theme 2차전지"
+            )
+            return
+
+        logger.info(f"/theme command - user={user_id}, theme='{theme[:50]}'")
+
+        prompt = (
+            f"한국 주식시장에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
+            "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
+            "2. 대장주 3개와 최근 주가 동향\n"
+            "3. 긍정 요인 3개\n"
+            "4. 부정 요인 3개\n"
+            "5. 진입 타이밍 의견\n"
+            "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
+        )
+        await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
+
+    async def handle_us_theme(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /us_theme command — US theme health check"""
+        user_id = update.effective_user.id
+
+        is_subscribed = await self.check_channel_subscription(user_id)
+        if not is_subscribed:
+            await update.message.reply_text(
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
+                "https://t.me/stock_ai_agent"
+            )
+            return
+
+        theme = update.message.text.replace("/us_theme", "").strip()
+        if not theme:
+            await update.message.reply_text(
+                "사용법: /us_theme [theme/sector]\n"
+                "예시: /us_theme AI semiconductor"
+            )
+            return
+
+        logger.info(f"/us_theme command - user={user_id}, theme='{theme[:50]}'")
+
+        prompt = (
+            f"Analyze the current health of the '{theme}' theme in the US stock market (S&P500, NASDAQ).\n"
+            "1. Theme temperature (🟢Hot/🟡Neutral/🔴Cooling — pick one with reasoning)\n"
+            "2. Top 3 leading stocks with recent price trends\n"
+            "3. 3 positive factors\n"
+            "4. 3 negative factors\n"
+            "5. Entry timing opinion\n"
+            "Write in Korean, Telegram message format with emojis. Under 3000 characters."
+        )
+        await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
+
+    async def handle_ask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /ask command — free-form investment research (3 per day)"""
+        user_id = update.effective_user.id
+
+        is_subscribed = await self.check_channel_subscription(user_id)
+        if not is_subscribed:
+            await update.message.reply_text(
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\n"
+                "https://t.me/stock_ai_agent"
+            )
+            return
+
+        question = update.message.text.replace("/ask", "").strip()
+        if not question:
+            await update.message.reply_text(
+                "사용법: /ask [질문]\n"
+                "예시: /ask 워렌 버핏이 올해 뭘 샀어?"
+            )
+            return
+
+        # Check daily limit (3 per day)
+        allowed, remaining = self.check_daily_limit_count(user_id, "ask", max_count=3)
+        if not allowed:
+            await update.message.reply_text(
+                "⚠️ 오늘의 /ask 사용 횟수(3회)를 모두 소진하였습니다.\n"
+                "내일 다시 이용해주세요."
+            )
+            return
+
+        logger.info(f"/ask command - user={user_id}, question='{question[:50]}', remaining={remaining}")
+
+        prompt = (
+            f"다음 투자 관련 질문에 대해 최신 정보를 기반으로 답변해줘:\n\n"
+            f"{question}\n\n"
+            "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
+        )
+        success = await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
+
+        if success:
+            # Show remaining count
+            await update.message.reply_text(
+                f"📊 오늘 남은 /ask 횟수: {remaining}회"
+            )
+        else:
+            # Refund on failure
+            self.refund_daily_limit_count(user_id, "ask")
+            logger.info(f"/ask refunded for user={user_id} due to failure")
 
     async def process_results(self):
         """Check items to process from result queue"""
