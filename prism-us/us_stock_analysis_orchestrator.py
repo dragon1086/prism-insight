@@ -1091,7 +1091,14 @@ class USStockAnalysisOrchestrator:
                 logger.warning("No US reports generated. Terminating process.")
                 return
 
-            # 3. PDF conversion
+            # 3. Archive ingest (fire-and-forget, does not block pipeline)
+            try:
+                from cores.archive.ingest import ingest_reports_async  # type: ignore[import]
+                asyncio.create_task(ingest_reports_async(report_paths, market="us"))
+            except Exception as _e:
+                logger.warning(f"Archive ingest hook skipped: {_e}")
+
+            # 4. PDF conversion
             pdf_paths = await self.convert_to_pdf(report_paths)
 
             # 4-5. Generate and send telegram messages

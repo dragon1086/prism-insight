@@ -684,6 +684,7 @@ def migrate_us_performance_tracker_columns(cursor, conn):
         ("us_analysis_performance_tracker", "was_traded INTEGER DEFAULT 0"),
         ("us_analysis_performance_tracker", "risk_reward_ratio REAL"),
         ("us_analysis_performance_tracker", "skip_reason TEXT"),
+        ("us_analysis_performance_tracker", "report_path TEXT"),
     ]
 
     for table_name, column_def in migrations:
