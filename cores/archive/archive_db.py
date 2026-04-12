@@ -23,18 +23,32 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 ARCHIVE_DB_PATH = PROJECT_ROOT / "archive.db"
 
 
+_FTS_OPS = frozenset({"AND", "OR", "NOT"})
+
+
 def _sanitize_fts_query(query: str) -> str:
     """
-    Prevent FTS5 MATCH injection by quoting bare tokens.
+    Prevent FTS5 MATCH injection by quoting every non-operator token.
 
-    Passes through recognized FTS5 boolean operators or wildcards unchanged.
-    For plain input wraps the whole query in double-quotes (phrase search).
+    Recognized FTS5 boolean operators (AND/OR/NOT) are passed through;
+    all other tokens are individually double-quoted to prevent injection.
+    Wildcard ``*`` is appended to the preceding quoted token when present.
     """
-    stripped = query.strip()
-    if any(op in stripped for op in (' AND ', ' OR ', ' NOT ', '*')):
-        return stripped
-    escaped = stripped.replace('"', '""')
-    return f'"{escaped}"'
+    tokens = query.strip().split()
+    if not tokens:
+        return '""'
+    safe: list[str] = []
+    for token in tokens:
+        if token in _FTS_OPS:
+            safe.append(token)
+        elif token == "*":
+            # Attach wildcard to preceding token: "반도"*
+            if safe:
+                safe[-1] += "*"
+        else:
+            escaped = token.replace('"', '""')
+            safe.append(f'"{escaped}"')
+    return " ".join(safe) if safe else '""'
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +144,14 @@ CREATE TABLE IF NOT EXISTS insights (
 # DB init
 # ---------------------------------------------------------------------------
 
+_initialized_paths: set = set()
+
+
 async def init_db(db_path: Optional[str] = None) -> None:
-    """Create all tables and indexes. Safe to call multiple times (idempotent)."""
+    """Create all tables and indexes. Runs DDL at most once per process per db_path."""
     path = db_path or str(ARCHIVE_DB_PATH)
+    if path in _initialized_paths:
+        return
     async with aiosqlite.connect(path) as db:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA foreign_keys=ON")
@@ -145,6 +164,7 @@ async def init_db(db_path: Optional[str] = None) -> None:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ra_date ON report_archive(report_date)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ra_market ON report_archive(market)")
         await db.commit()
+    _initialized_paths.add(path)
 
 
 def _sha256_short(text: str) -> str:

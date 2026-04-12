@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import aiosqlite
 import yaml
@@ -95,7 +95,7 @@ def _load_api_key() -> Optional[str]:
 def _query_hash(text: str, market: Optional[str], ticker: Optional[str],
                 date_from: Optional[str], date_to: Optional[str]) -> str:
     key = f"{text}|{market}|{ticker}|{date_from}|{date_to}"
-    return hashlib.sha256(key.encode()).hexdigest()[:16]
+    return hashlib.sha256(key.encode()).hexdigest()[:32]
 
 
 def _parse_hints(text: str) -> Dict[str, Optional[str]]:
@@ -115,8 +115,16 @@ def _parse_hints(text: str) -> Dict[str, Optional[str]]:
         hints["market"] = "kr"
 
     # Ticker hint — US: 2-5 uppercase letters; KR: 6-digit code
+    _TICKER_STOPWORDS = frozenset({
+        "AI", "US", "OR", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "IF",
+        "IN", "IS", "IT", "ME", "MY", "NO", "OF", "OK", "ON", "SO", "TO",
+        "UP", "WE", "AM", "ARE", "THE", "AND", "FOR", "NOT", "BUT", "ALL",
+        "CAN", "HAS", "HER", "HIM", "HIS", "HOW", "ITS", "MAY", "NEW",
+        "NOW", "OLD", "OUR", "OUT", "OWN", "SAY", "SHE", "TOO", "USE",
+        "ETF", "IPO", "CEO", "CFO", "NYSE", "SEC", "FDA", "GDP",
+    })
     m = re.search(r"\b([A-Z]{2,5})\b", text)
-    if m:
+    if m and m.group(1) not in _TICKER_STOPWORDS:
         hints["ticker"] = m.group(1)
     m = re.search(r"\b(\d{6})\b", text)
     if m:
@@ -220,11 +228,32 @@ def _build_context(snippets: List[ReportSnippet], max_chars: int = _MAX_CONTEXT_
     return "".join(lines)
 
 
+def _get_openai_client(api_key: str):
+    """
+    Create an AsyncOpenAI client respecting PRISM_OPENAI_AUTH_MODE.
+
+    When ``chatgpt_oauth`` mode is active, uses the ChatGPT proxy endpoint.
+    Otherwise falls back to standard OpenAI API with the provided key.
+    """
+    import os
+
+    import openai
+
+    auth_mode = os.environ.get("PRISM_OPENAI_AUTH_MODE", "api_key")
+    if auth_mode == "chatgpt_oauth":
+        try:
+            from cores.chatgpt_proxy.constants import CHATGPT_BASE_URL  # type: ignore[import]
+            return openai.AsyncOpenAI(api_key=api_key, base_url=CHATGPT_BASE_URL)
+        except ImportError:
+            logger.debug("chatgpt_proxy not available, falling back to api_key mode")
+    return openai.AsyncOpenAI(api_key=api_key)
+
+
 async def _synthesize(query: str, context: str, api_key: str,
                        model: str) -> str:
     """Call OpenAI chat completion to synthesize an insight from retrieved context."""
     try:
-        import openai  # lazy import
+        import openai  # noqa: F811 — lazy; _get_openai_client also imports
     except ImportError:
         return "openai 패키지가 설치되어 있지 않습니다. `pip install openai`"
 
@@ -237,17 +266,21 @@ async def _synthesize(query: str, context: str, api_key: str,
         "- 관련 종목 목록이 있으면 번호 목록으로 정리하세요."
     )
 
-    client = openai.AsyncOpenAI(api_key=api_key)
-    resp = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"### 아카이브 데이터\n{context}\n\n### 질문\n{query}"},
-        ],
-        max_tokens=800,
-        temperature=0.3,
-    )
-    return resp.choices[0].message.content or ""
+    try:
+        client = _get_openai_client(api_key)
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"### 아카이브 데이터\n{context}\n\n### 질문\n{query}"},
+            ],
+            max_tokens=800,
+            temperature=0.3,
+        )
+        return resp.choices[0].message.content or ""
+    except Exception as e:
+        logger.warning(f"LLM synthesis failed: {e}")
+        return f"[LLM 합성 실패] 컨텍스트만 반환합니다:\n\n{context[:2000]}"
 
 
 # ---------------------------------------------------------------------------
@@ -321,18 +354,21 @@ class QueryEngine:
         if not skip_cache:
             cached = await get_cached_insight(q_hash, self.db_path)
             if cached:
-                cached_data = json.loads(cached)
-                return QueryResult(
-                    answer=cached_data["answer"],
-                    sources=[],
-                    evidence_ids=cached_data.get("evidence_ids", []),
-                    query_hash=q_hash,
-                    cached=True,
-                    model_used=cached_data.get("model_used", self.model),
-                )
+                try:
+                    cached_data = json.loads(cached)
+                    return QueryResult(
+                        answer=cached_data["answer"],
+                        sources=[],
+                        evidence_ids=cached_data.get("evidence_ids", []),
+                        query_hash=q_hash,
+                        cached=True,
+                        model_used=cached_data.get("model_used", self.model),
+                    )
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.warning(f"Corrupted cache entry for {q_hash}, regenerating: {e}")
 
         # 2. Retrieval
-        snippets = await self._retrieve(
+        snippets = await self.retrieve(
             text=text,
             market=effective_market,
             ticker=effective_ticker,
@@ -437,18 +473,20 @@ class QueryEngine:
                     for r in rows
                 ]
                 cur = await db.execute("SELECT COUNT(*) FROM report_enrichment")
-                result["enriched_count"] = (await cur.fetchone())[0]
+                row = await cur.fetchone()
+                result["enriched_count"] = row[0] if row else 0
                 cur = await db.execute("SELECT COUNT(*) FROM insights")
-                result["cached_insights"] = (await cur.fetchone())[0]
+                row = await cur.fetchone()
+                result["cached_insights"] = row[0] if row else 0
         except Exception as e:
             logger.warning(f"Stats query failed: {e}")
         return result
 
     # ------------------------------------------------------------------
-    # Internal retrieval
+    # Retrieval (public — reusable by auto_insight / Phase 3)
     # ------------------------------------------------------------------
 
-    async def _retrieve(
+    async def retrieve(
         self,
         text: str,
         market: Optional[str],
