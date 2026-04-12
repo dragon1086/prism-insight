@@ -213,6 +213,23 @@ CREATE TABLE IF NOT EXISTS trading_principles (
 )
 """
 
+# Table: portfolio_adjustment_log (target/stop_loss change history)
+TABLE_PORTFOLIO_ADJUSTMENT_LOG = """
+CREATE TABLE IF NOT EXISTS portfolio_adjustment_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_key TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    adjusted_at TEXT NOT NULL,
+    old_target_price REAL,
+    new_target_price REAL,
+    old_stop_loss REAL,
+    new_stop_loss REAL,
+    adjustment_reason TEXT,
+    urgency TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+)
+"""
+
 # Table: user_memories (per-user memory storage)
 TABLE_USER_MEMORIES = """
 CREATE TABLE IF NOT EXISTS user_memories (
@@ -266,6 +283,9 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_intuitions_scope ON trading_intuitions(scope)",
     "CREATE INDEX IF NOT EXISTS idx_principles_scope ON trading_principles(scope)",
     "CREATE INDEX IF NOT EXISTS idx_principles_priority ON trading_principles(priority)",
+    # Portfolio adjustment log indexes
+    "CREATE INDEX IF NOT EXISTS idx_adj_log_ticker ON portfolio_adjustment_log(account_key, ticker)",
+    "CREATE INDEX IF NOT EXISTS idx_adj_log_date ON portfolio_adjustment_log(adjusted_at DESC)",
     # User memory indexes
     "CREATE INDEX IF NOT EXISTS idx_memories_user ON user_memories(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_memories_type ON user_memories(user_id, memory_type)",
@@ -609,6 +629,7 @@ def create_all_tables(cursor, conn):
         TABLE_TRADING_PRINCIPLES,
         TABLE_USER_MEMORIES,
         TABLE_USER_PREFERENCES,
+        TABLE_PORTFOLIO_ADJUSTMENT_LOG,
     ]
 
     for table_sql in tables:

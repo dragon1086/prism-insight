@@ -668,6 +668,11 @@ class USStockTrackingAgent:
                     sector=sector,
                     trigger_type=trigger_type
                 )
+                if journal_context:
+                    logger.info(f"[Journal] US injected context for {ticker} ({len(journal_context)} chars)")
+                    logger.debug(f"[Journal] US context preview: {journal_context[:500]}")
+                else:
+                    logger.warning(f"[Journal] US empty context for {ticker} (enable_journal={self.enable_journal})")
                 # Get score adjustment suggestion
                 adjustment, reasons = self.get_score_adjustment(ticker, sector, trigger_type)
                 if adjustment != 0 or reasons:
@@ -1258,6 +1263,29 @@ class USStockTrackingAgent:
             logger.info(f"[_analyze_sell_decision] {ticker}({company_name}) portfolio_info:")
             logger.info(f"  - Holdings: {len(holdings)}/{self.max_slots}, Sectors: {json.dumps(sector_distribution)}")
 
+            # Fetch portfolio adjustment history for this ticker
+            adjustment_history_section = ""
+            try:
+                self.cursor.execute("""
+                    SELECT adjusted_at, old_target_price, new_target_price,
+                           old_stop_loss, new_stop_loss, adjustment_reason, urgency
+                    FROM us_portfolio_adjustment_log
+                    WHERE ticker = ? AND account_key = ?
+                    ORDER BY adjusted_at DESC LIMIT 10
+                """, (ticker, self._account_scope()[0]))
+                adj_rows = self.cursor.fetchall()
+                if adj_rows:
+                    lines = ["### Portfolio Adjustment History:"]
+                    for r in adj_rows:
+                        lines.append(
+                            f"- [{r[0][:16]}] Target: ${r[1]:,.2f}→${r[2]:,.2f} / "
+                            f"Stop: ${r[3]:,.2f}→${r[4]:,.2f} ({r[6]}) — {r[5]}"
+                        )
+                    adjustment_history_section = "\n".join(lines)
+                    logger.info(f"[_analyze_sell_decision] {ticker} adjustment history: {len(adj_rows)} records injected")
+            except Exception:
+                pass  # Table may not exist yet on first run
+
             # Dynamic trailing stop threshold: min 1.5%, max 5%, scales with price appreciation
             trailing_stop_threshold_pct = max(1.5, min(5.0, (highest_price - buy_price) / buy_price * 100 * 0.3)) if buy_price > 0 else 3.0
 
@@ -1285,6 +1313,8 @@ Please make a sell/hold decision for the following US stock holding.
 
 ### Trading Scenario:
 {json.dumps(trading_scenarios, ensure_ascii=False) if trading_scenarios else "No scenario information"}
+
+{adjustment_history_section}
 
 ### Task:
 Use yahoo_finance and sqlite tools to check latest data, then decide whether to sell or continue holding.
@@ -1520,6 +1550,39 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         logger.info(f"{ticker} Stop-loss AI {direction} adjustment: ${stop_loss_num:,.2f} (prev: ${old_stop_loss:,.2f})")
 
             if db_updated:
+                # Log adjustment history (single record for both target + stop_loss changes)
+                try:
+                    from datetime import datetime as _dt
+                    now = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+                    acct_key = self._account_scope()[0]
+                    # Determine final new values
+                    final_new_target = old_target_price
+                    try:
+                        t = float(str(portfolio_adjustment.get("new_target_price", 0)).replace(',', '').replace('$', ''))
+                        if t > 0:
+                            final_new_target = t
+                    except (ValueError, TypeError):
+                        pass
+                    final_new_sl = old_stop_loss
+                    try:
+                        s = float(str(portfolio_adjustment.get("new_stop_loss", 0)).replace(',', '').replace('$', ''))
+                        if s > 0:
+                            final_new_sl = s
+                    except (ValueError, TypeError):
+                        pass
+                    self.cursor.execute("""
+                        INSERT INTO us_portfolio_adjustment_log
+                        (account_key, ticker, adjusted_at, old_target_price, new_target_price,
+                         old_stop_loss, new_stop_loss, adjustment_reason, urgency)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (acct_key, ticker, now,
+                          old_target_price, final_new_target,
+                          old_stop_loss, final_new_sl,
+                          adjustment_reason, urgency))
+                    self.conn.commit()
+                except Exception as log_err:
+                    logger.warning(f"{ticker} Failed to log US portfolio adjustment (non-critical): {log_err}")
+
                 urgency_emoji = {"high": "🚨", "medium": "⚠️", "low": "💡"}.get(urgency, "🔄")
                 message = f"{urgency_emoji} Portfolio Adjustment: {company_name}({ticker})\n"
                 message += update_message
@@ -1703,6 +1766,14 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 "DELETE FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
                 (ticker, account_key)
             )
+            # Cleanup portfolio adjustment history (lifecycle management)
+            try:
+                self.cursor.execute(
+                    "DELETE FROM us_portfolio_adjustment_log WHERE ticker = ? AND account_key = ?",
+                    (ticker, account_key)
+                )
+            except Exception:
+                pass  # Table may not exist yet
             self.conn.commit()
 
             # Build sell message (same format as KR template)
