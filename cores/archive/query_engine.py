@@ -81,7 +81,7 @@ class QueryResult:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_api_key() -> Optional[str]:
+def load_api_key() -> Optional[str]:
     """Read OpenAI API key from mcp_agent.secrets.yaml."""
     try:
         with open(_SECRETS_PATH) as f:
@@ -249,7 +249,7 @@ def _get_openai_client(api_key: str):
     return openai.AsyncOpenAI(api_key=api_key)
 
 
-async def _synthesize(query: str, context: str, api_key: str,
+async def synthesize(query: str, context: str, api_key: str,
                        model: str) -> str:
     """Call OpenAI chat completion to synthesize an insight from retrieved context."""
     try:
@@ -389,7 +389,7 @@ class QueryEngine:
         context = _build_context(snippets)
 
         # 4. Synthesize
-        api_key = self._api_key or _load_api_key()
+        api_key = self._api_key or load_api_key()
         if not api_key:
             answer = (
                 "[API 키 없음] 컨텍스트만 반환합니다:\n\n"
@@ -397,7 +397,7 @@ class QueryEngine:
             )
         else:
             self._api_key = api_key
-            answer = await _synthesize(text, context, api_key, self.model)
+            answer = await synthesize(text, context, api_key, self.model)
 
         evidence_ids = [s.report_id for s in snippets]
 

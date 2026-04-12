@@ -22,16 +22,24 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import re
+
 import aiosqlite
 
 from .archive_db import ARCHIVE_DB_PATH, init_db  # type: ignore[import]
-from .query_engine import QueryEngine, _load_api_key, _synthesize  # type: ignore[import]
+from .query_engine import QueryEngine, load_api_key, synthesize  # type: ignore[import]
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 _DEFAULT_MODEL = "gpt-4.1-mini"
+
+
+def _sanitize_for_llm(text: str, max_len: int = 3000) -> str:
+    """Strip control characters and limit length to prevent prompt injection."""
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    return cleaned[:max_len]
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +202,7 @@ class AutoInsight:
             market: 'kr', 'us', or None
             top_n: Number of entries per side
         """
+        top_n = min(max(top_n, 1), 100)
         col_map = {7: "return_7d", 14: "return_14d", 30: "return_30d",
                     60: "return_60d", 90: "return_90d"}
         col = col_map.get(days, "return_30d")
@@ -399,12 +408,12 @@ class AutoInsight:
             "-" * 55,
         ]
         for p in phases:
-            phase = p["market_phase"] or "unknown"
-            cnt = p["cnt"]
-            a7 = f"{p['avg_7d']:+.1f}%" if p["avg_7d"] is not None else "n/a"
-            a30 = f"{p['avg_30d']:+.1f}%" if p["avg_30d"] is not None else "n/a"
-            a90 = f"{p['avg_90d']:+.1f}%" if p["avg_90d"] is not None else "n/a"
-            sl = p["sl_count"]
+            phase = p.get("market_phase") or "unknown"
+            cnt = p.get("cnt", 0) or 0
+            a7 = f"{p['avg_7d']:+.1f}%" if p.get("avg_7d") is not None else "n/a"
+            a30 = f"{p['avg_30d']:+.1f}%" if p.get("avg_30d") is not None else "n/a"
+            a90 = f"{p['avg_90d']:+.1f}%" if p.get("avg_90d") is not None else "n/a"
+            sl = p.get("sl_count", 0) or 0
             lines.append(f"{phase:<12} {cnt:>5} {a7:>8} {a30:>8} {a90:>8} {sl:>5}")
 
         body = "\n".join(lines)
@@ -500,13 +509,15 @@ class AutoInsight:
 
         # Optional LLM narrative
         if with_narrative and cnt > 0:
-            api_key = _load_api_key()
+            api_key = load_api_key()
             if api_key:
-                context = body + "\n\n" + json.dumps(
-                    {"avgs": avgs, "top": top, "count": cnt, "tickers": tickers},
-                    ensure_ascii=False,
+                context = _sanitize_for_llm(
+                    body + "\n\n" + json.dumps(
+                        {"avgs": avgs, "top": top, "count": cnt, "tickers": tickers},
+                        ensure_ascii=False,
+                    )
                 )
-                narrative = await _synthesize(
+                narrative = await synthesize(
                     query=f"{week_start}~{week_end} 주간 분석 성과를 요약하고 인사이트를 제시하세요.",
                     context=context,
                     api_key=api_key,
@@ -540,3 +551,57 @@ class AutoInsight:
             self.weekly_summary(market=market, with_narrative=with_narrative),
         )
         return list(reports)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point (for cron / manual invocation)
+# ---------------------------------------------------------------------------
+
+async def _main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="PRISM 아카이브 자동 인사이트 생성")
+    parser.add_argument("--market", choices=["kr", "us"], help="시장 필터")
+    parser.add_argument(
+        "--type",
+        choices=["daily", "leaderboard", "stoploss", "phase", "weekly", "all"],
+        default="all",
+        help="인사이트 유형 (기본값: all)",
+    )
+    parser.add_argument("--days", type=int, default=30, help="리더보드 수익률 기간 (기본값: 30)")
+    parser.add_argument("--date", help="대상 날짜 (YYYY-MM-DD, 기본값: 오늘)")
+    parser.add_argument("--narrative", action="store_true", help="주간 요약에 LLM 내러티브 포함")
+    parser.add_argument("--json", action="store_true", dest="as_json", help="JSON 출력")
+    parser.add_argument("--dry-run", action="store_true", dest="dry_run", help="출력만 (전송 없음)")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    ai = AutoInsight(model=_DEFAULT_MODEL)
+
+    type_map = {
+        "daily": lambda: ai.daily_digest(date=args.date, market=args.market),
+        "leaderboard": lambda: ai.performance_leaderboard(days=args.days, market=args.market),
+        "stoploss": lambda: ai.stop_loss_analysis(market=args.market),
+        "phase": lambda: ai.market_phase_report(market=args.market),
+        "weekly": lambda: ai.weekly_summary(date=args.date, market=args.market, with_narrative=args.narrative),
+    }
+
+    if args.type == "all":
+        reports = await ai.generate_all(market=args.market, with_narrative=args.narrative)
+    else:
+        reports = [await type_map[args.type]()]
+
+    for report in reports:
+        if args.as_json:
+            print(report.to_json())
+        else:
+            print(f"\n{'='*60}")
+            print(report.to_telegram(max_length=10000))
+            print("=" * 60)
+
+
+if __name__ == "__main__":
+    import asyncio as _asyncio
+
+    _asyncio.run(_main())
