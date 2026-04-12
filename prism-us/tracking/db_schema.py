@@ -210,6 +210,23 @@ CREATE TABLE IF NOT EXISTS us_pending_orders (
 )
 """
 
+# Table: us_portfolio_adjustment_log (target/stop_loss change history)
+TABLE_US_PORTFOLIO_ADJUSTMENT_LOG = """
+CREATE TABLE IF NOT EXISTS us_portfolio_adjustment_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_key TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    adjusted_at TEXT NOT NULL,
+    old_target_price REAL,
+    new_target_price REAL,
+    old_stop_loss REAL,
+    new_stop_loss REAL,
+    adjustment_reason TEXT,
+    urgency TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+)
+"""
+
 # =============================================================================
 # Indexes for US Tables
 # =============================================================================
@@ -246,6 +263,9 @@ US_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_us_pending_account_key ON us_pending_orders(account_key)",
     "CREATE INDEX IF NOT EXISTS idx_us_pending_status ON us_pending_orders(status)",
     "CREATE INDEX IF NOT EXISTS idx_us_pending_created ON us_pending_orders(created_at)",
+    # us_portfolio_adjustment_log indexes
+    "CREATE INDEX IF NOT EXISTS idx_us_adj_log_ticker ON us_portfolio_adjustment_log(account_key, ticker)",
+    "CREATE INDEX IF NOT EXISTS idx_us_adj_log_date ON us_portfolio_adjustment_log(adjusted_at DESC)",
 ]
 
 # =============================================================================
@@ -569,6 +589,7 @@ def create_us_tables(cursor, conn):
         ("us_analysis_performance_tracker", TABLE_US_PERFORMANCE_TRACKER),
         ("us_holding_decisions", TABLE_US_HOLDING_DECISIONS),
         ("us_pending_orders", TABLE_US_PENDING_ORDERS),
+        ("us_portfolio_adjustment_log", TABLE_US_PORTFOLIO_ADJUSTMENT_LOG),
     ]
 
     for table_name, table_sql in tables:

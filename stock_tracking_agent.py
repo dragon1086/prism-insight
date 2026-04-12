@@ -317,6 +317,13 @@ class StockTrackingAgent:
                     market_condition=None,
                     trigger_type=trigger_type
                 )
+                if journal_context:
+                    logger.info(f"[Journal] Injected context for {ticker} ({len(journal_context)} chars)")
+                    logger.debug(f"[Journal] Context preview: {journal_context[:500]}")
+                elif self.enable_journal:
+                    logger.warning(f"[Journal] Empty context for {ticker} despite journal being enabled")
+                else:
+                    logger.debug(f"[Journal] Journal disabled, no context for {ticker}")
                 # Get score adjustment suggestion
                 adjustment, reasons = self._get_score_adjustment_from_context(ticker, sector, trigger_type)
                 if adjustment != 0 or reasons:

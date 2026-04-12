@@ -842,6 +842,41 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.info(f"  - Sector distribution: {json.dumps(sector_distribution, ensure_ascii=False)}")
             logger.info(f"  - Investment periods: {json.dumps(investment_periods, ensure_ascii=False)}")
 
+            # Fetch portfolio adjustment history for this ticker
+            adjustment_history_section = ""
+            try:
+                acct_key = self._account_scope()[0] if hasattr(self, '_account_scope') else None
+                if acct_key:
+                    self.cursor.execute("""
+                        SELECT adjusted_at, old_target_price, new_target_price,
+                               old_stop_loss, new_stop_loss, adjustment_reason, urgency
+                        FROM portfolio_adjustment_log
+                        WHERE ticker = ? AND account_key = ?
+                        ORDER BY adjusted_at DESC LIMIT 10
+                    """, (ticker, acct_key))
+                else:
+                    self.cursor.execute("""
+                        SELECT adjusted_at, old_target_price, new_target_price,
+                               old_stop_loss, new_stop_loss, adjustment_reason, urgency
+                        FROM portfolio_adjustment_log
+                        WHERE ticker = ?
+                        ORDER BY adjusted_at DESC LIMIT 10
+                    """, (ticker,))
+                adj_rows = self.cursor.fetchall()
+                if adj_rows:
+                    lines = ["### 📋 포트폴리오 조정 이력:"]
+                    for r in adj_rows:
+                        ot = r[1] or 0; nt = r[2] or 0; os_ = r[3] or 0; ns = r[4] or 0
+                        reason = r[5] or "N/A"; urg = r[6] or "N/A"
+                        lines.append(
+                            f"- [{r[0][:16]}] 목표가: {ot:,.0f}→{nt:,.0f} / "
+                            f"손절가: {os_:,.0f}→{ns:,.0f} ({urg}) — {reason}"
+                        )
+                    adjustment_history_section = "\n".join(lines)
+                    logger.info(f"[_analyze_sell_decision] {ticker} adjustment history: {len(adj_rows)} records injected")
+            except Exception:
+                pass  # Table may not exist yet on first run
+
             # Dynamic trailing stop threshold: min 1.5%, max 5%, scales with price appreciation
             trailing_stop_threshold_pct = max(1.5, min(5.0, (highest_price - buy_price) / buy_price * 100 * 0.3)) if buy_price > 0 else 3.0
 
@@ -872,6 +907,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 ### 매매 시나리오 정보:
                 {json.dumps(trading_scenarios, ensure_ascii=False) if trading_scenarios else "시나리오 정보 없음"}
 
+                {adjustment_history_section}
+
                 ### 분석 요청:
                 위 정보를 바탕으로 kospi_kosdaq과 sqlite 도구를 활용하여 최신 데이터를 확인하고,
                 매도할지 계속 보유할지 결정해주세요.
@@ -898,6 +935,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                 ### Trading Scenario Information:
                 {json.dumps(trading_scenarios, ensure_ascii=False) if trading_scenarios else "No scenario information"}
+
+                {adjustment_history_section}
 
                 ### Analysis Request:
                 Based on the above information, use the kospi_kosdaq and sqlite tools to check the latest data,
@@ -1163,6 +1202,28 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
             # Generate Telegram message if DB was updated
             if db_updated:
+                # Log adjustment history (single record for both target + stop_loss changes)
+                try:
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    acct_key = self._account_scope()[0] if hasattr(self, '_account_scope') else 'default'
+                    # Use explicit None check to avoid falsy-zero bug with `or`
+                    new_tp_raw = portfolio_adjustment.get("new_target_price")
+                    new_tp_log = self._safe_number_conversion(new_tp_raw) if new_tp_raw is not None else old_target_price
+                    new_sl_raw = portfolio_adjustment.get("new_stop_loss")
+                    new_sl_log = self._safe_number_conversion(new_sl_raw) if new_sl_raw is not None else old_stop_loss
+                    self.cursor.execute("""
+                        INSERT INTO portfolio_adjustment_log
+                        (account_key, ticker, adjusted_at, old_target_price, new_target_price,
+                         old_stop_loss, new_stop_loss, adjustment_reason, urgency)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (acct_key, ticker, now,
+                          old_target_price, new_tp_log,
+                          old_stop_loss, new_sl_log,
+                          adjustment_reason, urgency))
+                    self.conn.commit()
+                except Exception as log_err:
+                    logger.warning(f"{ticker} Failed to log portfolio adjustment (non-critical): {log_err}")
+
                 urgency_emoji = {"high": "🚨", "medium": "⚠️", "low": "💡"}.get(urgency, "🔄")
                 message = f"{urgency_emoji} 포트폴리오 조정: {company_name}({ticker})\n"
                 message += update_message
@@ -1293,11 +1354,17 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             bool: Delete success status
         """
         try:
+            acct_key = self._account_scope()[0] if hasattr(self, '_account_scope') else None
             self.cursor.execute("DELETE FROM holding_decisions WHERE ticker = ?", (ticker,))
+            # Also delete portfolio adjustment history (lifecycle cleanup)
+            if acct_key:
+                self.cursor.execute("DELETE FROM portfolio_adjustment_log WHERE ticker = ? AND account_key = ?", (ticker, acct_key))
+            else:
+                self.cursor.execute("DELETE FROM portfolio_adjustment_log WHERE ticker = ?", (ticker,))
             self.conn.commit()
-            logger.info(f"{ticker} Sell decision data deleted")
+            logger.info(f"{ticker} Sell decision data and adjustment history deleted")
             return True
-            
+
         except Exception as e:
             logger.error(f"{ticker} Sell decision delete failed (main flow continues): {str(e)}")
             return False
