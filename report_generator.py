@@ -1359,3 +1359,83 @@ async def generate_journal_conversation_response(
             pass
 
         return "죄송해요, 응답 생성 중 문제가 생겼어요. 다시 말씀해주시겠어요? 💭"
+
+
+# =============================================================================
+# Firecrawl Search + Claude analysis
+# =============================================================================
+
+async def generate_firecrawl_search_response(search_query: str, analysis_prompt: str, limit: int = 5) -> Optional[str]:
+    """
+    Cost-efficient Firecrawl /search (2 credits) + Claude Sonnet analysis.
+    Uses the same global MCPApp pattern as other generate_* functions.
+
+    Args:
+        search_query: Web search query for Firecrawl
+        analysis_prompt: Prompt for Claude to analyze the search results
+        limit: Number of search results (default 5)
+
+    Returns:
+        str: Claude-generated analysis, or None on error
+    """
+    try:
+        from firecrawl_client import firecrawl_search
+
+        # Step 1: Firecrawl search (2 credits per 10 results)
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: firecrawl_search(search_query, limit=limit)
+        )
+        items = result.web if result and result.web else []
+
+        if not items:
+            logger.warning(f"No search results for: {search_query[:50]}")
+            return None
+
+        # Step 2: Build context from search snippets
+        context = ""
+        for item in items:
+            title = getattr(item, 'title', '') or ''
+            url = getattr(item, 'url', '') or ''
+            desc = getattr(item, 'description', '') or ''
+            context += f"- {title}\n  URL: {url}\n  {desc}\n\n"
+
+        logger.info(f"Search context built: {len(items)} results, {len(context)} chars")
+
+        # Step 3: Use global MCPApp + Claude Sonnet for analysis
+        app = await get_or_create_global_mcp_app()
+
+        agent = Agent(
+            name="firecrawl_search_analyst",
+            instruction=(
+                "당신은 웹 검색 결과를 분석하여 투자자에게 유용한 인사이트를 제공하는 전문가입니다.\n"
+                "텔레그램 메시지 형태로, 이모지를 포함하여 자연스럽게 작성하세요.\n"
+                "마크다운 형식 대신 텔레그램에 적합한 플레인 텍스트로 작성하세요.\n"
+                "검색 결과에 없는 내용을 지어내지 마세요."
+            ),
+            server_names=[]
+        )
+
+        llm = await agent.attach_llm(AnthropicAugmentedLLM)
+
+        response = await llm.generate_str(
+            message=f"다음은 웹 검색 결과입니다:\n\n{context}\n\n---\n\n{analysis_prompt}",
+            request_params=RequestParams(
+                model="claude-sonnet-4-6",
+                maxTokens=2000
+            )
+        )
+        app.logger.info(f"Firecrawl search+Claude response: {len(response)} chars")
+
+        return clean_model_response(response)
+
+    except Exception as e:
+        logger.error(f"generate_firecrawl_search_response failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+        try:
+            await reset_global_mcp_app()
+        except Exception:
+            pass
+
+        return None

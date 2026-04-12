@@ -34,10 +34,11 @@ from report_generator import (
     generate_evaluation_response, get_cached_report, generate_follow_up_response,
     get_or_create_global_mcp_app, cleanup_global_mcp_app,
     generate_us_evaluation_response, generate_us_follow_up_response,
-    get_cached_us_report, generate_journal_conversation_response
+    get_cached_us_report, generate_journal_conversation_response,
+    generate_firecrawl_search_response
 )
 from tracking.user_memory import UserMemoryManager
-from firecrawl_client import firecrawl_agent, firecrawl_search_and_analyze
+from firecrawl_client import firecrawl_agent
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -2449,7 +2450,7 @@ class TelegramAIBot:
     async def _run_search_and_claude(self, update: Update, search_query: str, analysis_prompt: str, disclaimer: str) -> bool:
         """
         Cost-efficient helper using Firecrawl /search (2 credits) + Claude Sonnet 4.6.
-        Used for /signal, /theme commands instead of expensive /agent.
+        Uses the same global MCPApp + AnthropicAugmentedLLM pattern as /evaluate.
 
         Returns:
             bool: True if successful, False on failure
@@ -2458,9 +2459,7 @@ class TelegramAIBot:
         waiting_msg = await update.message.reply_text("🔍 리서치 중...")
 
         try:
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: firecrawl_search_and_analyze(search_query, analysis_prompt)
-            )
+            result = await generate_firecrawl_search_response(search_query, analysis_prompt)
 
             try:
                 await waiting_msg.delete()

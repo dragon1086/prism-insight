@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 _DISCLAIMER = "\n\n⚠️ 본 내용은 투자 참고용이며, 투자 판단의 책임은 본인에게 있습니다."
 
 
-def _generate_kr_report() -> str:
+async def _generate_kr_report() -> str:
     """Generate KR market intelligence report via Firecrawl search + Claude."""
-    from firecrawl_client import firecrawl_search_and_analyze
+    from report_generator import generate_firecrawl_search_response
 
     today_str = datetime.now().strftime("%Y년 %m월 %d일")
 
@@ -46,16 +46,16 @@ def _generate_kr_report() -> str:
         "텔레그램 메시지 형태로 이모지 포함하여 작성. 4000자 이내."
     )
 
-    result = firecrawl_search_and_analyze(search_query, analysis_prompt, limit=10)
+    result = await generate_firecrawl_search_response(search_query, analysis_prompt, limit=10)
     if not result:
         logger.error("Failed to generate KR intelligence report")
         return ""
     return result
 
 
-def _generate_us_report() -> str:
+async def _generate_us_report() -> str:
     """Generate US market intelligence report via Firecrawl search + Claude."""
-    from firecrawl_client import firecrawl_search_and_analyze
+    from report_generator import generate_firecrawl_search_response
 
     today_str = datetime.now().strftime("%Y년 %m월 %d일")
 
@@ -72,20 +72,20 @@ def _generate_us_report() -> str:
         "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 4000자 이내."
     )
 
-    result = firecrawl_search_and_analyze(search_query, analysis_prompt, limit=10)
+    result = await generate_firecrawl_search_response(search_query, analysis_prompt, limit=10)
     if not result:
         logger.error("Failed to generate US intelligence report")
         return ""
     return result
 
 
-def generate_weekly_intelligence() -> str:
+async def generate_weekly_intelligence() -> str:
     """Generate combined weekly intelligence report."""
     today = datetime.now()
     date_display = today.strftime("%-m/%-d")
 
-    kr_report = _generate_kr_report()
-    us_report = _generate_us_report()
+    kr_report = await _generate_kr_report()
+    us_report = await _generate_us_report()
 
     sections = [f"🔥 PRISM 주간 Firecrawl 인텔리전스 ({date_display})"]
 
@@ -194,7 +194,7 @@ def main():
     )
 
     async def _run():
-        message = generate_weekly_intelligence()
+        message = await generate_weekly_intelligence()
         print(message)
 
         if not args.dry_run:
