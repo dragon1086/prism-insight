@@ -27,40 +27,42 @@ logger = logging.getLogger(__name__)
 _DISCLAIMER = "\n\n⚠️ 본 내용은 투자 참고용이며, 투자 판단의 책임은 본인에게 있습니다."
 
 
-def _generate_kr_report() -> str:
-    """Generate KR market intelligence report via Firecrawl agent."""
-    from firecrawl_client import firecrawl_agent
+async def _generate_kr_report() -> str:
+    """Generate KR market intelligence report via Firecrawl search + Claude."""
+    from report_generator import generate_firecrawl_search_response
 
     today_str = datetime.now().strftime("%Y년 %m월 %d일")
 
-    prompt = (
+    search_query = f"코스피 코스닥 주간 시황 {today_str} 외국인 기관 수급"
+    analysis_prompt = (
         f"오늘 날짜는 {today_str}입니다.\n"
-        "이번 주 한국 주식시장 주간 인텔리전스 리포트를 작성해줘.\n\n"
+        "위 검색 결과를 바탕으로 이번 주 한국 주식시장 주간 인텔리전스 리포트를 작성해줘.\n\n"
         "포함 내용:\n"
         "1. 이번 주 KOSPI/KOSDAQ 주요 흐름 요약\n"
         "2. 가장 주목받은 테마 3개와 대표 종목\n"
         "3. 외국인/기관 수급 동향\n"
         "4. 다음 주 주요 일정 및 이벤트\n"
         "5. 개인투자자를 위한 전략 제안\n\n"
-        "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 4000자 이내."
+        "텔레그램 메시지 형태로 이모지 포함하여 작성. 4000자 이내."
     )
 
-    result = firecrawl_agent(prompt, max_credits=200, model="spark-1-mini")
+    result = await generate_firecrawl_search_response(search_query, analysis_prompt, limit=10)
     if not result:
         logger.error("Failed to generate KR intelligence report")
         return ""
     return result
 
 
-def _generate_us_report() -> str:
-    """Generate US market intelligence report via Firecrawl agent."""
-    from firecrawl_client import firecrawl_agent
+async def _generate_us_report() -> str:
+    """Generate US market intelligence report via Firecrawl search + Claude."""
+    from report_generator import generate_firecrawl_search_response
 
     today_str = datetime.now().strftime("%Y년 %m월 %d일")
 
-    prompt = (
+    search_query = f"US stock market weekly recap S&P 500 NASDAQ {today_str}"
+    analysis_prompt = (
         f"오늘 날짜는 {today_str}입니다.\n"
-        "이번 주 미국 주식시장 주간 인텔리전스 리포트를 작성해줘.\n\n"
+        "위 검색 결과를 바탕으로 이번 주 미국 주식시장 주간 인텔리전스 리포트를 작성해줘.\n\n"
         "포함 내용:\n"
         "1. 이번 주 S&P500/NASDAQ 주요 흐름 요약\n"
         "2. 가장 주목받은 섹터 3개와 대표 종목\n"
@@ -70,20 +72,20 @@ def _generate_us_report() -> str:
         "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 4000자 이내."
     )
 
-    result = firecrawl_agent(prompt, max_credits=200, model="spark-1-mini")
+    result = await generate_firecrawl_search_response(search_query, analysis_prompt, limit=10)
     if not result:
         logger.error("Failed to generate US intelligence report")
         return ""
     return result
 
 
-def generate_weekly_intelligence() -> str:
+async def generate_weekly_intelligence() -> str:
     """Generate combined weekly intelligence report."""
     today = datetime.now()
     date_display = today.strftime("%-m/%-d")
 
-    kr_report = _generate_kr_report()
-    us_report = _generate_us_report()
+    kr_report = await _generate_kr_report()
+    us_report = await _generate_us_report()
 
     sections = [f"🔥 PRISM 주간 Firecrawl 인텔리전스 ({date_display})"]
 
@@ -192,7 +194,7 @@ def main():
     )
 
     async def _run():
-        message = generate_weekly_intelligence()
+        message = await generate_weekly_intelligence()
         print(message)
 
         if not args.dry_run:

@@ -34,7 +34,8 @@ from report_generator import (
     generate_evaluation_response, get_cached_report, generate_follow_up_response,
     get_or_create_global_mcp_app, cleanup_global_mcp_app,
     generate_us_evaluation_response, generate_us_follow_up_response,
-    get_cached_us_report, generate_journal_conversation_response
+    get_cached_us_report, generate_journal_conversation_response,
+    generate_firecrawl_search_response
 )
 from tracking.user_memory import UserMemoryManager
 from firecrawl_client import firecrawl_agent
@@ -2446,8 +2447,58 @@ class TelegramAIBot:
             )
             return False
 
+    async def _run_search_and_claude(self, update: Update, search_query: str, analysis_prompt: str, disclaimer: str) -> bool:
+        """
+        Cost-efficient helper using Firecrawl /search (2 credits) + Claude Sonnet 4.6.
+        Uses the same global MCPApp + AnthropicAugmentedLLM pattern as /evaluate.
+
+        Returns:
+            bool: True if successful, False on failure
+        """
+        chat_id = update.effective_chat.id
+        waiting_msg = await update.message.reply_text("🔍 리서치 중...")
+
+        try:
+            result = await generate_firecrawl_search_response(search_query, analysis_prompt)
+
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+
+            if result:
+                full_text = result + disclaimer
+                if len(full_text) > 4096:
+                    for i in range(0, len(result), 4096):
+                        chunk = result[i:i + 4096]
+                        await self.application.bot.send_message(chat_id=chat_id, text=chunk)
+                    await self.application.bot.send_message(chat_id=chat_id, text=disclaimer.strip())
+                else:
+                    await self.application.bot.send_message(chat_id=chat_id, text=full_text)
+                return True
+            else:
+                await self.application.bot.send_message(
+                    chat_id=chat_id,
+                    text="⚠️ 검색 결과가 부족하거나 분석 생성에 실패했습니다.\n"
+                         "질문을 바꿔서 다시 시도해보세요."
+                )
+                return False
+
+        except Exception as e:
+            logger.error(f"Search+Claude command error: {e}", exc_info=True)
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ 리서치 중 오류가 발생했습니다: {type(e).__name__}\n"
+                     "잠시 후 다시 시도해주세요."
+            )
+            return False
+
     async def handle_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /signal command — KR event impact analysis"""
+        """Handle /signal command — KR event impact analysis (search + Claude)"""
         user_id = update.effective_user.id
 
         is_subscribed = await self.check_channel_subscription(user_id)
@@ -2459,7 +2510,6 @@ class TelegramAIBot:
             )
             return
 
-        # Extract event text after the command
         event = update.message.text.replace("/signal", "").strip()
         if not event:
             await update.message.reply_text(
@@ -2470,18 +2520,19 @@ class TelegramAIBot:
 
         logger.info(f"/signal command - user={user_id}, event='{event[:50]}'")
 
-        prompt = (
-            f"{event}가 한국 주식시장에 미치는 영향을 분석해줘.\n"
+        search_query = f"{event} 한국 주식시장 수혜주 피해주"
+        analysis_prompt = (
+            f"위 검색 결과를 바탕으로, '{event}'가 한국 주식시장에 미치는 영향을 분석해줘.\n"
             "1. 수혜 예상 섹터와 대표 종목 3개\n"
             "2. 피해 예상 섹터와 대표 종목 3개\n"
             "3. 과거 유사 사례\n"
             "4. 개인투자자 대응 전략\n"
-            "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
+            "텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
-        await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
+        await self._run_search_and_claude(update, search_query, analysis_prompt, self._DISCLAIMER_KR)
 
     async def handle_us_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /us_signal command — US event impact analysis"""
+        """Handle /us_signal command — US event impact analysis (search + Claude)"""
         user_id = update.effective_user.id
 
         is_subscribed = await self.check_channel_subscription(user_id)
@@ -2496,25 +2547,26 @@ class TelegramAIBot:
         event = update.message.text.replace("/us_signal", "").strip()
         if not event:
             await update.message.reply_text(
-                "사용법: /us_signal [event/news]\n"
-                "예시: /us_signal tariff impact on tech stocks"
+                "사용법: /us_signal [이벤트/뉴스]\n"
+                "예시: /us_signal TSMC 실적 서프라이즈"
             )
             return
 
         logger.info(f"/us_signal command - user={user_id}, event='{event[:50]}'")
 
-        prompt = (
-            f"'{event}'가 미국 주식시장(S&P500, NASDAQ)에 미치는 영향을 분석해줘.\n"
+        search_query = f"{event} US stock market impact beneficiary"
+        analysis_prompt = (
+            f"위 검색 결과를 바탕으로, '{event}'가 미국 주식시장(S&P500, NASDAQ)에 미치는 영향을 분석해줘.\n"
             "1. 수혜 예상 섹터와 대표 종목 3개\n"
             "2. 피해 예상 섹터와 대표 종목 3개\n"
             "3. 과거 유사 사례\n"
             "4. 개인투자자 대응 전략\n"
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
-        await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
+        await self._run_search_and_claude(update, search_query, analysis_prompt, self._DISCLAIMER_KR)
 
     async def handle_theme(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /theme command — KR theme health check"""
+        """Handle /theme command — KR theme health check (search + Claude)"""
         user_id = update.effective_user.id
 
         is_subscribed = await self.check_channel_subscription(user_id)
@@ -2536,19 +2588,20 @@ class TelegramAIBot:
 
         logger.info(f"/theme command - user={user_id}, theme='{theme[:50]}'")
 
-        prompt = (
-            f"한국 주식시장에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
+        search_query = f"{theme} 테마 전망 주도주 대장주 2026"
+        analysis_prompt = (
+            f"위 검색 결과를 바탕으로, 한국 주식시장에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
             "2. 대장주 3개와 최근 주가 동향\n"
             "3. 긍정 요인 3개\n"
             "4. 부정 요인 3개\n"
             "5. 진입 타이밍 의견\n"
-            "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
+            "텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
-        await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
+        await self._run_search_and_claude(update, search_query, analysis_prompt, self._DISCLAIMER_KR)
 
     async def handle_us_theme(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /us_theme command — US theme health check"""
+        """Handle /us_theme command — US theme health check (search + Claude)"""
         user_id = update.effective_user.id
 
         is_subscribed = await self.check_channel_subscription(user_id)
@@ -2563,15 +2616,16 @@ class TelegramAIBot:
         theme = update.message.text.replace("/us_theme", "").strip()
         if not theme:
             await update.message.reply_text(
-                "사용법: /us_theme [theme/sector]\n"
+                "사용법: /us_theme [테마/섹터]\n"
                 "예시: /us_theme AI semiconductor"
             )
             return
 
         logger.info(f"/us_theme command - user={user_id}, theme='{theme[:50]}'")
 
-        prompt = (
-            f"미국 주식시장(S&P500, NASDAQ)에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
+        search_query = f"{theme} sector outlook leading stocks 2026"
+        analysis_prompt = (
+            f"위 검색 결과를 바탕으로, 미국 주식시장(S&P500, NASDAQ)에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
             "2. 대장주 3개와 최근 주가 동향\n"
             "3. 긍정 요인 3개\n"
@@ -2579,7 +2633,7 @@ class TelegramAIBot:
             "5. 진입 타이밍 의견\n"
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
-        await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
+        await self._run_search_and_claude(update, search_query, analysis_prompt, self._DISCLAIMER_KR)
 
     async def handle_ask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /ask command — free-form investment research (3 per day)"""
