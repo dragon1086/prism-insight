@@ -845,20 +845,32 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             # Fetch portfolio adjustment history for this ticker
             adjustment_history_section = ""
             try:
-                self.cursor.execute("""
-                    SELECT adjusted_at, old_target_price, new_target_price,
-                           old_stop_loss, new_stop_loss, adjustment_reason, urgency
-                    FROM portfolio_adjustment_log
-                    WHERE ticker = ?
-                    ORDER BY adjusted_at DESC LIMIT 10
-                """, (ticker,))
+                acct_key = self._account_scope()[0] if hasattr(self, '_account_scope') else None
+                if acct_key:
+                    self.cursor.execute("""
+                        SELECT adjusted_at, old_target_price, new_target_price,
+                               old_stop_loss, new_stop_loss, adjustment_reason, urgency
+                        FROM portfolio_adjustment_log
+                        WHERE ticker = ? AND account_key = ?
+                        ORDER BY adjusted_at DESC LIMIT 10
+                    """, (ticker, acct_key))
+                else:
+                    self.cursor.execute("""
+                        SELECT adjusted_at, old_target_price, new_target_price,
+                               old_stop_loss, new_stop_loss, adjustment_reason, urgency
+                        FROM portfolio_adjustment_log
+                        WHERE ticker = ?
+                        ORDER BY adjusted_at DESC LIMIT 10
+                    """, (ticker,))
                 adj_rows = self.cursor.fetchall()
                 if adj_rows:
                     lines = ["### 📋 포트폴리오 조정 이력:"]
                     for r in adj_rows:
+                        ot = r[1] or 0; nt = r[2] or 0; os_ = r[3] or 0; ns = r[4] or 0
+                        reason = r[5] or "N/A"; urg = r[6] or "N/A"
                         lines.append(
-                            f"- [{r[0][:16]}] 목표가: {r[1]:,.0f}→{r[2]:,.0f} / "
-                            f"손절가: {r[3]:,.0f}→{r[4]:,.0f} ({r[6]}) — {r[5]}"
+                            f"- [{r[0][:16]}] 목표가: {ot:,.0f}→{nt:,.0f} / "
+                            f"손절가: {os_:,.0f}→{ns:,.0f} ({urg}) — {reason}"
                         )
                     adjustment_history_section = "\n".join(lines)
                     logger.info(f"[_analyze_sell_decision] {ticker} adjustment history: {len(adj_rows)} records injected")
@@ -1194,14 +1206,19 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 try:
                     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     acct_key = self._account_scope()[0] if hasattr(self, '_account_scope') else 'default'
+                    # Use explicit None check to avoid falsy-zero bug with `or`
+                    new_tp_raw = portfolio_adjustment.get("new_target_price")
+                    new_tp_log = self._safe_number_conversion(new_tp_raw) if new_tp_raw is not None else old_target_price
+                    new_sl_raw = portfolio_adjustment.get("new_stop_loss")
+                    new_sl_log = self._safe_number_conversion(new_sl_raw) if new_sl_raw is not None else old_stop_loss
                     self.cursor.execute("""
                         INSERT INTO portfolio_adjustment_log
                         (account_key, ticker, adjusted_at, old_target_price, new_target_price,
                          old_stop_loss, new_stop_loss, adjustment_reason, urgency)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (acct_key, ticker, now,
-                          old_target_price, self._safe_number_conversion(portfolio_adjustment.get("new_target_price")) or old_target_price,
-                          old_stop_loss, self._safe_number_conversion(portfolio_adjustment.get("new_stop_loss")) or old_stop_loss,
+                          old_target_price, new_tp_log,
+                          old_stop_loss, new_sl_log,
                           adjustment_reason, urgency))
                     self.conn.commit()
                 except Exception as log_err:
@@ -1337,9 +1354,13 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             bool: Delete success status
         """
         try:
+            acct_key = self._account_scope()[0] if hasattr(self, '_account_scope') else None
             self.cursor.execute("DELETE FROM holding_decisions WHERE ticker = ?", (ticker,))
             # Also delete portfolio adjustment history (lifecycle cleanup)
-            self.cursor.execute("DELETE FROM portfolio_adjustment_log WHERE ticker = ?", (ticker,))
+            if acct_key:
+                self.cursor.execute("DELETE FROM portfolio_adjustment_log WHERE ticker = ? AND account_key = ?", (ticker, acct_key))
+            else:
+                self.cursor.execute("DELETE FROM portfolio_adjustment_log WHERE ticker = ?", (ticker,))
             self.conn.commit()
             logger.info(f"{ticker} Sell decision data and adjustment history deleted")
             return True

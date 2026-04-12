@@ -671,8 +671,10 @@ class USStockTrackingAgent:
                 if journal_context:
                     logger.info(f"[Journal] US injected context for {ticker} ({len(journal_context)} chars)")
                     logger.debug(f"[Journal] US context preview: {journal_context[:500]}")
+                elif self.enable_journal:
+                    logger.warning(f"[Journal] US empty context for {ticker} despite journal being enabled")
                 else:
-                    logger.warning(f"[Journal] US empty context for {ticker} (enable_journal={self.enable_journal})")
+                    logger.debug(f"[Journal] US journal disabled, no context for {ticker}")
                 # Get score adjustment suggestion
                 adjustment, reasons = self.get_score_adjustment(ticker, sector, trigger_type)
                 if adjustment != 0 or reasons:
@@ -1277,9 +1279,11 @@ class USStockTrackingAgent:
                 if adj_rows:
                     lines = ["### Portfolio Adjustment History:"]
                     for r in adj_rows:
+                        ot = r[1] or 0; nt = r[2] or 0; os_ = r[3] or 0; ns = r[4] or 0
+                        reason = r[5] or "N/A"; urg = r[6] or "N/A"
                         lines.append(
-                            f"- [{r[0][:16]}] Target: ${r[1]:,.2f}→${r[2]:,.2f} / "
-                            f"Stop: ${r[3]:,.2f}→${r[4]:,.2f} ({r[6]}) — {r[5]}"
+                            f"- [{r[0][:16]}] Target: ${ot:,.2f}→${nt:,.2f} / "
+                            f"Stop: ${os_:,.2f}→${ns:,.2f} ({urg}) — {reason}"
                         )
                     adjustment_history_section = "\n".join(lines)
                     logger.info(f"[_analyze_sell_decision] {ticker} adjustment history: {len(adj_rows)} records injected")
@@ -1552,8 +1556,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             if db_updated:
                 # Log adjustment history (single record for both target + stop_loss changes)
                 try:
-                    from datetime import datetime as _dt
-                    now = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     acct_key = self._account_scope()[0]
                     # Determine final new values
                     final_new_target = old_target_price
@@ -1772,8 +1775,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     "DELETE FROM us_portfolio_adjustment_log WHERE ticker = ? AND account_key = ?",
                     (ticker, account_key)
                 )
-            except Exception:
-                pass  # Table may not exist yet
+            except Exception as e:
+                logger.debug(f"{ticker} Cleanup adjustment log skipped: {e}")
             self.conn.commit()
 
             # Build sell message (same format as KR template)
