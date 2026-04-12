@@ -581,6 +581,7 @@ def migrate_analysis_performance_tracker_columns(cursor, conn):
         ("analysis_performance_tracker", "tracked_30d_return REAL"),
         ("analysis_performance_tracker", "tracking_status TEXT DEFAULT 'pending'"),
         ("analysis_performance_tracker", "updated_at TEXT"),
+        ("analysis_performance_tracker", "report_path TEXT"),
     ]
 
     for table_name, column_def in migrations:
