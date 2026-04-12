@@ -38,7 +38,7 @@ from report_generator import (
     generate_firecrawl_search_response
 )
 from tracking.user_memory import UserMemoryManager
-from firecrawl_client import firecrawl_agent
+from firecrawl_client import firecrawl_agent, firecrawl_search_and_analyze
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
