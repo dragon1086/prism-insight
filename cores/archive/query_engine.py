@@ -190,6 +190,66 @@ def _parse_hints(text: str) -> Dict[str, Optional[str]]:
     return hints
 
 
+def _parse_outcome_filter(text: str) -> Dict[str, Any]:
+    """
+    Extract outcome-based filter conditions from a natural language query.
+
+    Returns a dict with any of these keys (only present when detected):
+        market_phase, min_return_current, min_return_365d, max_drawdown_threshold,
+        stop_loss_triggered
+
+    Examples::
+
+        "하락장에서 1년 후 50% 이상 오른 종목들의 공통점"
+            → {market_phase: "bear", min_return_365d: 50.0}
+        "MDD 10% 이하로 30% 이상 수익 낸 종목"
+            → {min_return_current: 30.0, max_drawdown_threshold: -10.0}
+        "손절 없이 수익 난 종목들"
+            → {stop_loss_triggered: False}
+    """
+    result: Dict[str, Any] = {}
+    t = text.lower()
+
+    # Market phase
+    if re.search(r"하락장|bear|약세장|급락|폭락", t):
+        result["market_phase"] = "bear"
+    elif re.search(r"상승장|bull|강세장|랠리", t):
+        result["market_phase"] = "bull"
+    elif re.search(r"횡보|sideways|박스권", t):
+        result["market_phase"] = "sideways"
+    elif re.search(r"조정|correction", t):
+        result["market_phase"] = "correction"
+
+    # Return thresholds — "50% 이상", "+30% 초과", "수익률 20%"
+    _365d_ctx = bool(re.search(r"1년|365일|연간|annual", t))
+    pct_match = re.search(
+        r"(?:\+)?(\d+(?:\.\d+)?)\s*%\s*(?:이상|초과|넘|above|over|up)", t
+    )
+    if pct_match:
+        val = float(pct_match.group(1))
+        if _365d_ctx:
+            result["min_return_365d"] = val
+        else:
+            result["min_return_current"] = val
+
+    # Max drawdown — "MDD 10% 이하", "최대낙폭 15%", "낙폭 10% 미만"
+    mdd_match = re.search(
+        r"(?:mdd|최대\s*낙폭|낙폭|drawdown)\s*[-\u2013]?\s*(\d+(?:\.\d+)?)\s*%"
+        r"\s*(?:이하|미만|내|below|under)?",
+        t,
+    )
+    if mdd_match:
+        result["max_drawdown_threshold"] = -float(mdd_match.group(1))
+
+    # Stop-loss
+    if re.search(r"손절\s*(?:없이|안\s*된|안\s*나|없는|없었|미발동)", t):
+        result["stop_loss_triggered"] = False
+    elif re.search(r"손절\s*(?:된|발동|나온|있는|있었)", t):
+        result["stop_loss_triggered"] = True
+
+    return result
+
+
 def _format_enrichment(e: Dict[str, Any]) -> str:
     """Format enrichment dict as a compact human-readable summary."""
     if not e:
@@ -604,6 +664,117 @@ class QueryEngine:
                 enrichment=enrichments.get(rid, {}),
             ))
 
+        return snippets
+
+    async def retrieve_by_outcome(
+        self,
+        market: Optional[str] = None,
+        market_phase: Optional[str] = None,
+        min_return_current: Optional[float] = None,
+        max_return_current: Optional[float] = None,
+        min_return_365d: Optional[float] = None,
+        max_drawdown_threshold: Optional[float] = None,
+        stop_loss_triggered: Optional[bool] = None,
+        limit: int = 20,
+    ) -> List[ReportSnippet]:
+        """
+        Retrieve reports filtered by long-term outcome metrics for pattern analysis.
+
+        All return thresholds are percentages (e.g. 30.0 = +30%).
+        max_drawdown_threshold is a negative percentage floor (e.g. -10.0 means
+        MDD must be better than -10%, i.e. max_drawdown >= -10.0).
+
+        Example — find bear-market entries that rose >30% with MDD better than -15%::
+
+            snippets = await engine.retrieve_by_outcome(
+                market_phase="bear",
+                min_return_current=30.0,
+                max_drawdown_threshold=-15.0,
+            )
+        """
+        await init_db(self.db_path)
+        clauses: List[str] = []
+        params: List[Any] = []
+
+        if market:
+            clauses.append("ra.market = ?")
+            params.append(market)
+        if market_phase:
+            clauses.append("re.market_phase = ?")
+            params.append(market_phase)
+        if min_return_current is not None:
+            clauses.append("re.return_current >= ?")
+            params.append(min_return_current)
+        if max_return_current is not None:
+            clauses.append("re.return_current <= ?")
+            params.append(max_return_current)
+        if min_return_365d is not None:
+            clauses.append("re.return_365d >= ?")
+            params.append(min_return_365d)
+        if max_drawdown_threshold is not None:
+            # e.g. -10.0 means max_drawdown must be >= -10 (drawdown was mild)
+            clauses.append("re.max_drawdown >= ?")
+            params.append(max_drawdown_threshold)
+        if stop_loss_triggered is not None:
+            clauses.append("re.stop_loss_triggered = ?")
+            params.append(1 if stop_loss_triggered else 0)
+
+        # Require that long-term data has been populated
+        clauses.append("re.return_current IS NOT NULL")
+
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else "WHERE re.return_current IS NOT NULL"
+
+        import aiosqlite as _aiosqlite
+        async with _aiosqlite.connect(self.db_path) as db:
+            db.row_factory = _aiosqlite.Row
+            cur = await db.execute(
+                f"""
+                SELECT ra.id, ra.ticker, ra.company_name, ra.report_date,
+                       ra.market, ra.mode,
+                       re.return_current, re.return_365d, re.max_return_since,
+                       re.max_drawdown, re.market_phase,
+                       re.price_at_analysis, re.price_current
+                FROM report_archive ra
+                JOIN report_enrichment re ON re.report_id = ra.id
+                {where}
+                ORDER BY re.return_current DESC
+                LIMIT ?
+                """,
+                params + [limit],
+            )
+            rows = await cur.fetchall()
+
+        if not rows:
+            return []
+
+        ids = [r["id"] for r in rows]
+        enrichments, excerpts = await asyncio.gather(
+            _fetch_enrichments(ids, self.db_path),
+            _fetch_content_excerpts(ids, self.db_path),
+        )
+
+        snippets: List[ReportSnippet] = []
+        for r in rows:
+            rid = r["id"]
+            enrich = enrichments.get(rid, {})
+            # Merge long-term fields into enrichment dict for context building
+            enrich.update({
+                "return_current": r["return_current"],
+                "return_365d": r["return_365d"],
+                "max_return_since": r["max_return_since"],
+                "max_drawdown": r["max_drawdown"],
+            })
+            snippets.append(ReportSnippet(
+                report_id=rid,
+                ticker=r["ticker"],
+                company_name=r["company_name"],
+                report_date=r["report_date"],
+                market=r["market"],
+                mode=r["mode"],
+                snippet="",
+                content_excerpt=excerpts.get(rid, ""),
+                enrichment=enrich,
+            ))
         return snippets
 
 

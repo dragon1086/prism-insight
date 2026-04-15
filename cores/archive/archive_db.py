@@ -139,12 +139,48 @@ CREATE TABLE IF NOT EXISTS insights (
 )
 """
 
+_DDL_TICKER_PRICE_HISTORY = """
+CREATE TABLE IF NOT EXISTS ticker_price_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id   INTEGER NOT NULL REFERENCES report_archive(id),
+    ticker      TEXT NOT NULL,
+    market      TEXT NOT NULL,
+    price_date  TEXT NOT NULL,
+    close       REAL NOT NULL,
+    return_pct  REAL,
+    UNIQUE(report_id, price_date)
+)
+"""
+
+# New long-term performance columns for report_enrichment (added via migration)
+_ENRICHMENT_PERF_COLUMNS = [
+    ("return_current",    "REAL"),
+    ("price_current",     "REAL"),
+    ("return_180d",       "REAL"),
+    ("return_365d",       "REAL"),
+    ("max_return_since",  "REAL"),
+    ("max_return_date",   "TEXT"),
+    ("max_drawdown",      "REAL"),
+    ("max_drawdown_date", "TEXT"),
+    ("drawdown_from_peak","REAL"),
+    ("last_price_update", "TEXT"),
+]
+
 
 # ---------------------------------------------------------------------------
 # DB init
 # ---------------------------------------------------------------------------
 
 _initialized_paths: set = set()
+
+
+async def _migrate_enrichment_columns(db) -> None:
+    """Add long-term performance columns to report_enrichment if missing."""
+    for col_name, col_type in _ENRICHMENT_PERF_COLUMNS:
+        try:
+            await db.execute(f"ALTER TABLE report_enrichment ADD COLUMN {col_name} {col_type}")
+        except Exception:
+            pass  # Column already exists
 
 
 async def init_db(db_path: Optional[str] = None) -> None:
@@ -160,9 +196,12 @@ async def init_db(db_path: Optional[str] = None) -> None:
         await db.execute(_DDL_REPORT_ENRICHMENT)
         await db.execute(_DDL_MARKET_TIMELINE)
         await db.execute(_DDL_INSIGHTS)
+        await db.execute(_DDL_TICKER_PRICE_HISTORY)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ra_ticker ON report_archive(ticker)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ra_date ON report_archive(report_date)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ra_market ON report_archive(market)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tph_ticker_date ON ticker_price_history(ticker, price_date)")
+        await _migrate_enrichment_columns(db)
         await db.commit()
     _initialized_paths.add(path)
 
@@ -353,6 +392,101 @@ async def upsert_enrichment(
         )
         await db.commit()
         logger.debug(f"Enrichment saved: report_id={report_id}")
+
+
+async def update_enrichment_performance(
+    report_id: int,
+    perf: Dict[str, Any],
+    db_path: Optional[str] = None,
+) -> None:
+    """
+    Update long-term performance columns in report_enrichment.
+
+    perf keys: return_current, price_current, return_180d, return_365d,
+               max_return_since, max_return_date, max_drawdown,
+               max_drawdown_date, drawdown_from_peak, last_price_update
+    """
+    path = db_path or str(ARCHIVE_DB_PATH)
+    cols = [c for c, _ in _ENRICHMENT_PERF_COLUMNS if c in perf]
+    if not cols:
+        return
+    set_clause = ", ".join(f"{c} = ?" for c in cols)
+    values = [perf[c] for c in cols] + [report_id]
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            f"UPDATE report_enrichment SET {set_clause} WHERE report_id = ?",
+            values,
+        )
+        await db.commit()
+
+
+async def bulk_upsert_price_history(
+    rows: List[Dict[str, Any]],
+    db_path: Optional[str] = None,
+) -> int:
+    """
+    Insert or replace daily close rows into ticker_price_history.
+
+    Each row dict: {report_id, ticker, market, price_date, close, return_pct}
+    Returns count of rows written.
+    """
+    if not rows:
+        return 0
+    path = db_path or str(ARCHIVE_DB_PATH)
+    async with aiosqlite.connect(path) as db:
+        await db.execute("PRAGMA foreign_keys=ON")
+        await db.executemany(
+            """
+            INSERT OR REPLACE INTO ticker_price_history
+                (report_id, ticker, market, price_date, close, return_pct)
+            VALUES (:report_id, :ticker, :market, :price_date, :close, :return_pct)
+            """,
+            rows,
+        )
+        await db.commit()
+    return len(rows)
+
+
+async def get_reports_for_price_update(
+    market: Optional[str] = None,
+    ticker: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Return reports that need long-term price update:
+    - Have price_at_analysis (needed as base price)
+    - Either last_price_update IS NULL or was > 6 days ago
+
+    Returns list of dicts: {id, ticker, company_name, market, report_date, price_at_analysis}
+    """
+    path = db_path or str(ARCHIVE_DB_PATH)
+    clauses = [
+        "re.price_at_analysis IS NOT NULL",
+        "(re.last_price_update IS NULL OR re.last_price_update < date('now', '-6 days'))",
+    ]
+    params: List[Any] = []
+    if market:
+        clauses.append("ra.market = ?")
+        params.append(market)
+    if ticker:
+        clauses.append("ra.ticker = ?")
+        params.append(ticker)
+    where = " AND ".join(clauses)
+    async with aiosqlite.connect(path) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"""
+            SELECT ra.id, ra.ticker, ra.company_name, ra.market, ra.report_date,
+                   re.price_at_analysis
+            FROM report_archive ra
+            JOIN report_enrichment re ON re.report_id = ra.id
+            WHERE {where}
+            ORDER BY ra.report_date DESC
+            """,
+            params,
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
