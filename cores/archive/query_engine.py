@@ -98,6 +98,52 @@ def _query_hash(text: str, market: Optional[str], ticker: Optional[str],
     return hashlib.sha256(key.encode()).hexdigest()[:32]
 
 
+# Korean conversational/question words that shouldn't be FTS5 search terms
+_KO_STOPWORDS = frozenset({
+    # Question/request endings
+    "요약해줘", "알려줘", "보여줘", "분석해줘", "설명해줘", "말해줘",
+    "해줘", "해주세요", "해줘요", "알려주세요", "보여주세요",
+    "무엇인가", "무엇인지", "어떻게", "어떤가", "어떻습니까", "어떠한가",
+    "있나요", "있는가", "없나요", "인가요", "인지요", "인지",
+    "알고싶어", "알고싶습니다", "궁금해", "궁금합니다",
+    # Common generic nouns that don't help retrieval
+    "내용을", "내용은", "내용이", "내용", "결과는", "결과를", "결과",
+    "현황은", "현황을", "현황", "상황은", "상황을", "상황",
+    "분석은", "분석이", "분석을", "분석", "요약", "정리",
+    "보고서", "리포트", "리포",
+    # Generic time/scope words
+    "최근", "최신", "이번", "지난", "전체",
+    "관련", "대한", "대해서", "대해", "에서", "에서의",
+    "이런", "그런", "저런", "해당", "이것", "그것",
+})
+
+
+def _to_fts_query(text: str) -> str:
+    """
+    Convert a natural language query to an FTS5 search string.
+
+    Strips Korean conversational stopwords and short particles, then joins
+    remaining tokens with OR so FTS5 returns documents matching ANY term.
+    Falls back to the original text if all tokens are filtered out.
+
+    Example:
+        "삼성전자 분석 내용을 요약해줘" → '"삼성전자" OR "분석"'
+        "AAPL earnings analysis"        → '"AAPL" OR "earnings" OR "analysis"'
+    """
+    tokens = text.strip().split()
+    # Keep tokens that are: not a stopword, not a single char Korean particle
+    meaningful = [
+        t for t in tokens
+        if t not in _KO_STOPWORDS and len(t) >= 2
+    ]
+    if not meaningful:
+        return text  # fall back to raw text so search_fts can still try
+
+    # Join with OR — any matching term brings back the report
+    parts = [f'"{t.replace(chr(34), chr(34)+chr(34))}"' for t in meaningful]
+    return " OR ".join(parts)
+
+
 def _parse_hints(text: str) -> Dict[str, Optional[str]]:
     """
     Best-effort extraction of ticker / market / date hints from NL query.
@@ -501,9 +547,9 @@ class QueryEngine:
         fts_hits: List[Dict] = []
         structured_hits: List[Dict] = []
 
-        # FTS search
+        # FTS search — strip conversational words so Korean NL queries find results
         fts_hits = await search_fts(
-            text,
+            _to_fts_query(text),
             market=market,
             limit=_MAX_REPORTS_IN_CONTEXT * 2,
             db_path=self.db_path,
