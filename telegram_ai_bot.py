@@ -2655,7 +2655,7 @@ class TelegramAIBot:
             await update.message.reply_text("⚠️ 오늘의 /signal 사용 횟수(10회)를 모두 소진하였습니다.")
             return ConversationHandler.END
         event = update.message.text.strip()[:200]
-        today = datetime.now().strftime("%Y년 %m월 %d일")
+        today = datetime.now().strftime("%Y년 %m월")
         logger.info(f"/signal query - user={user_id}, event='{event[:50]}'")
         search_query = f"{event} 한국증시 영향 {today}"
         analysis_prompt = (
@@ -2704,7 +2704,7 @@ class TelegramAIBot:
             await update.message.reply_text("⚠️ 오늘의 /us_signal 사용 횟수(10회)를 모두 소진하였습니다.")
             return ConversationHandler.END
         event = update.message.text.strip()[:200]
-        today = datetime.now().strftime("%Y %B %d")
+        today = datetime.now().strftime("%Y %B")
         logger.info(f"/us_signal query - user={user_id}, event='{event[:50]}'")
         search_query = f"{event} stock market impact {today}"
         analysis_prompt = (
