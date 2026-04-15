@@ -35,7 +35,7 @@ from report_generator import (
     get_or_create_global_mcp_app, cleanup_global_mcp_app,
     generate_us_evaluation_response, generate_us_follow_up_response,
     get_cached_us_report, generate_journal_conversation_response,
-    generate_firecrawl_search_response
+    generate_firecrawl_search_response, generate_firecrawl_followup_response
 )
 from tracking.user_memory import UserMemoryManager
 from firecrawl_client import firecrawl_agent
@@ -80,6 +80,13 @@ US_REPORT_CHOOSING_TICKER = 10  # State for /us_report command
 
 # Journal conversation state definitions
 JOURNAL_ENTERING = 20  # State for /journal command
+
+# Firecrawl command conversation states
+SIGNAL_ENTERING_QUERY = 30
+US_SIGNAL_ENTERING_QUERY = 31
+THEME_ENTERING_QUERY = 32
+US_THEME_ENTERING_QUERY = 33
+ASK_ENTERING_QUERY = 34
 
 # Channel ID
 CHANNEL_ID = int(os.getenv("TELEGRAM_CHANNEL_ID", "0"))
@@ -376,6 +383,31 @@ class ConversationContext:
         return (datetime.now() - self.last_updated) > timedelta(hours=hours)
 
 
+class FirecrawlConversationContext:
+    """Context for Firecrawl-based command follow-up conversations."""
+
+    def __init__(self, command: str, query: str):
+        self.command = command  # "signal" | "us_signal" | "theme" | "us_theme" | "ask"
+        self.query = query      # original user parameter
+        self.conversation_history = []
+        self.created_at = datetime.now()
+        self.last_updated = datetime.now()
+
+    def add_to_history(self, role: str, content: str):
+        self.conversation_history.append({"role": role, "content": content})
+        self.last_updated = datetime.now()
+
+    def is_expired(self, hours: int = 24) -> bool:
+        return (datetime.now() - self.last_updated) > timedelta(hours=hours)
+
+    def get_context_summary(self) -> str:
+        lines = [f"명령어: /{self.command}", f"초기 질의: {self.query}", "", "대화 내역:"]
+        for item in self.conversation_history:
+            role_label = "AI 답변" if item["role"] == "assistant" else "사용자 질문"
+            lines.append(f"\n{role_label}: {item['content']}")
+        return "\n".join(lines)
+
+
 class TelegramAIBot:
     """Telegram AI Conversational Bot"""
 
@@ -413,6 +445,9 @@ class TelegramAIBot:
 
         # Journal context storage (for replies)
         self.journal_contexts: Dict[int, Dict] = {}
+
+        # Firecrawl command follow-up context storage (keyed by bot message ID)
+        self.firecrawl_contexts: Dict[int, FirecrawlConversationContext] = {}
 
         # Initialize user memory manager
         self.memory_manager = UserMemoryManager("user_memories.sqlite")
@@ -465,6 +500,15 @@ class TelegramAIBot:
         for key in journal_expired:
             del self.journal_contexts[key]
             logger.info(f"Deleted expired journal context: Message ID {key}")
+
+        # Clean up firecrawl follow-up contexts (older than 24 hours)
+        firecrawl_expired = [
+            msg_id for msg_id, ctx in self.firecrawl_contexts.items()
+            if ctx.is_expired(hours=24)
+        ]
+        for key in firecrawl_expired:
+            del self.firecrawl_contexts[key]
+            logger.info(f"Deleted expired firecrawl context: Message ID {key}")
 
         # Clean up daily usage limits (remove non-today dates)
         today = datetime.now().strftime("%Y-%m-%d")
@@ -557,6 +601,21 @@ class TelegramAIBot:
             remaining = max_count - 1
             logger.info(f"Daily count usage started: user={user_id}, command={command}, count=1/{max_count}")
             return True, remaining
+
+    def peek_daily_limit_count(self, user_id: int, command: str, max_count: int = 3) -> tuple:
+        """
+        Check count-based daily limit WITHOUT consuming a count.
+        Returns (allowed: bool, remaining: int). Use this in start handlers
+        to give early feedback without charging for a cancelled conversation.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        key = f"{user_id}:{command}"
+        usage = self.daily_ask_usage.get(key)
+        if usage and usage.get("date") == today:
+            if usage["count"] >= max_count:
+                return False, 0
+            return True, max_count - usage["count"]
+        return True, max_count
 
     def refund_daily_limit_count(self, user_id: int, command: str):
         """Refund one count-based daily usage when Firecrawl call fails."""
@@ -792,19 +851,71 @@ class TelegramAIBot:
         self.application.add_handler(journal_conv_handler)
 
         # ==========================================================================
-        # Firecrawl AI Research commands
-        # BotFather commands to register manually:
+        # Firecrawl AI Research commands — interactive ConversationHandlers
+        # Each command first asks for the required parameter, then calls Firecrawl.
+        # Subsequent replies to the bot's response continue via Anthropic Sonnet 4.6.
+        # BotFather commands to register:
         #   signal - 이벤트/뉴스 임팩트 분석 (한국)
         #   us_signal - 이벤트/뉴스 임팩트 분석 (미국)
         #   theme - 테마/섹터 건강도 진단 (한국)
         #   us_theme - 테마/섹터 건강도 진단 (미국)
         #   ask - AI 투자 리서처 (자유 질문)
         # ==========================================================================
-        self.application.add_handler(CommandHandler("signal", self.handle_signal))
-        self.application.add_handler(CommandHandler("us_signal", self.handle_us_signal))
-        self.application.add_handler(CommandHandler("theme", self.handle_theme))
-        self.application.add_handler(CommandHandler("us_theme", self.handle_us_theme))
-        self.application.add_handler(CommandHandler("ask", self.handle_ask))
+
+        signal_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("signal", self.handle_signal_start),
+                MessageHandler(filters.Regex(r'^/signal(@\w+)?$'), self.handle_signal_start),
+            ],
+            states={SIGNAL_ENTERING_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_signal_query)]},
+            fallbacks=[CommandHandler("cancel", self.handle_cancel)],
+            per_chat=False, per_user=True, conversation_timeout=300,
+        )
+        self.application.add_handler(signal_handler)
+
+        us_signal_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("us_signal", self.handle_us_signal_start),
+                MessageHandler(filters.Regex(r'^/us_signal(@\w+)?$'), self.handle_us_signal_start),
+            ],
+            states={US_SIGNAL_ENTERING_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_us_signal_query)]},
+            fallbacks=[CommandHandler("cancel", self.handle_cancel)],
+            per_chat=False, per_user=True, conversation_timeout=300,
+        )
+        self.application.add_handler(us_signal_handler)
+
+        theme_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("theme", self.handle_theme_start),
+                MessageHandler(filters.Regex(r'^/theme(@\w+)?$'), self.handle_theme_start),
+            ],
+            states={THEME_ENTERING_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_theme_query)]},
+            fallbacks=[CommandHandler("cancel", self.handle_cancel)],
+            per_chat=False, per_user=True, conversation_timeout=300,
+        )
+        self.application.add_handler(theme_handler)
+
+        us_theme_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("us_theme", self.handle_us_theme_start),
+                MessageHandler(filters.Regex(r'^/us_theme(@\w+)?$'), self.handle_us_theme_start),
+            ],
+            states={US_THEME_ENTERING_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_us_theme_query)]},
+            fallbacks=[CommandHandler("cancel", self.handle_cancel)],
+            per_chat=False, per_user=True, conversation_timeout=300,
+        )
+        self.application.add_handler(us_theme_handler)
+
+        ask_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("ask", self.handle_ask_start),
+                MessageHandler(filters.Regex(r'^/ask(@\w+)?$'), self.handle_ask_start),
+            ],
+            states={ASK_ENTERING_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_ask_query)]},
+            fallbacks=[CommandHandler("cancel", self.handle_cancel)],
+            per_chat=False, per_user=True, conversation_timeout=300,
+        )
+        self.application.add_handler(ask_handler)
 
         # General text messages - /help or /start guidance
         self.application.add_handler(MessageHandler(
@@ -833,7 +944,20 @@ class TelegramAIBot:
             await self._handle_journal_reply(update, journal_ctx)
             return
 
-        # 2. Check evaluation context
+        # 2. Check Firecrawl command context (signal/us_signal/theme/us_theme/ask follow-up)
+        if replied_to_msg_id in self.firecrawl_contexts:
+            fc_ctx = self.firecrawl_contexts[replied_to_msg_id]
+            logger.info(f"[REPLY] Found in firecrawl_contexts - command: /{fc_ctx.command}, query: {fc_ctx.query[:40]}")
+            if fc_ctx.is_expired():
+                await update.message.reply_text(
+                    "이전 리서치 세션이 만료되었습니다. 명령어를 다시 입력해주세요."
+                )
+                del self.firecrawl_contexts[replied_to_msg_id]
+                return
+            await self._handle_firecrawl_reply(update, fc_ctx)
+            return
+
+        # 3. Check evaluation context
         if replied_to_msg_id not in self.conversation_contexts:
             # Treat as general message if no context exists
             logger.info(f"[REPLY] Not in conversation_contexts, skipping. keys: {list(self.conversation_contexts.keys())[:5]}")
@@ -2391,13 +2515,13 @@ class TelegramAIBot:
     _DISCLAIMER_KR = "\n\n⚠️ 본 내용은 투자 참고용이며, 투자 판단의 책임은 본인에게 있습니다."
     _DISCLAIMER_US = "\n\n⚠️ This is for informational purposes only. Investment decisions are your own responsibility."
 
-    async def _run_firecrawl_command(self, update: Update, prompt: str, disclaimer: str) -> bool:
+    async def _run_firecrawl_command(self, update: Update, prompt: str, disclaimer: str):
         """
         Common helper for Firecrawl-based commands.
         Sends a waiting message, calls firecrawl_agent, then replaces it with the result.
 
         Returns:
-            bool: True if successful, False on failure
+            tuple: (success: bool, response_text: str | None, sent_msg_id: int | None)
         """
         chat_id = update.effective_chat.id
         waiting_msg = await update.message.reply_text("🔍 리서치 중...")
@@ -2415,16 +2539,18 @@ class TelegramAIBot:
 
             if result:
                 # Telegram message limit is 4096 chars — chunk if needed
-                full_text = result + disclaimer
+                followup_hint = "\n\n💬 이 메시지에 답장(Reply)하여 추가 질문할 수 있습니다!"
+                full_text = result + disclaimer + followup_hint
                 if len(full_text) > 4096:
-                    # Send in chunks, keep disclaimer on last chunk
                     for i in range(0, len(result), 4096):
                         chunk = result[i:i + 4096]
                         await self.application.bot.send_message(chat_id=chat_id, text=chunk)
-                    await self.application.bot.send_message(chat_id=chat_id, text=disclaimer.strip())
+                    sent_msg = await self.application.bot.send_message(
+                        chat_id=chat_id, text=disclaimer.strip() + followup_hint
+                    )
                 else:
-                    await self.application.bot.send_message(chat_id=chat_id, text=full_text)
-                return True
+                    sent_msg = await self.application.bot.send_message(chat_id=chat_id, text=full_text)
+                return True, result, sent_msg.message_id
             else:
                 await self.application.bot.send_message(
                     chat_id=chat_id,
@@ -2432,7 +2558,7 @@ class TelegramAIBot:
                          "가능한 원인: 크레딧 부족, 서버 타임아웃, 또는 검색 결과 없음.\n"
                          "잠시 후 다시 시도하거나 질문을 바꿔보세요."
                 )
-                return False
+                return False, None, None
 
         except Exception as e:
             logger.error(f"Firecrawl command error: {e}", exc_info=True)
@@ -2445,15 +2571,15 @@ class TelegramAIBot:
                 text=f"⚠️ 리서치 중 오류가 발생했습니다: {type(e).__name__}\n"
                      "잠시 후 다시 시도해주세요."
             )
-            return False
+            return False, None, None
 
-    async def _run_search_and_claude(self, update: Update, search_query: str, analysis_prompt: str, disclaimer: str) -> bool:
+    async def _run_search_and_claude(self, update: Update, search_query: str, analysis_prompt: str, disclaimer: str):
         """
         Cost-efficient helper using Firecrawl /search (2 credits) + Claude Sonnet 4.6.
         Uses the same global MCPApp + AnthropicAugmentedLLM pattern as /evaluate.
 
         Returns:
-            bool: True if successful, False on failure
+            tuple: (success: bool, response_text: str | None, sent_msg_id: int | None)
         """
         chat_id = update.effective_chat.id
         waiting_msg = await update.message.reply_text("🔍 리서치 중...")
@@ -2467,22 +2593,25 @@ class TelegramAIBot:
                 pass
 
             if result:
-                full_text = result + disclaimer
+                followup_hint = "\n\n💬 이 메시지에 답장(Reply)하여 추가 질문할 수 있습니다!"
+                full_text = result + disclaimer + followup_hint
                 if len(full_text) > 4096:
                     for i in range(0, len(result), 4096):
                         chunk = result[i:i + 4096]
                         await self.application.bot.send_message(chat_id=chat_id, text=chunk)
-                    await self.application.bot.send_message(chat_id=chat_id, text=disclaimer.strip())
+                    sent_msg = await self.application.bot.send_message(
+                        chat_id=chat_id, text=disclaimer.strip() + followup_hint
+                    )
                 else:
-                    await self.application.bot.send_message(chat_id=chat_id, text=full_text)
-                return True
+                    sent_msg = await self.application.bot.send_message(chat_id=chat_id, text=full_text)
+                return True, result, sent_msg.message_id
             else:
                 await self.application.bot.send_message(
                     chat_id=chat_id,
                     text="⚠️ 검색 결과가 부족하거나 분석 생성에 실패했습니다.\n"
                          "질문을 바꿔서 다시 시도해보세요."
                 )
-                return False
+                return False, None, None
 
         except Exception as e:
             logger.error(f"Search+Claude command error: {e}", exc_info=True)
@@ -2495,37 +2624,40 @@ class TelegramAIBot:
                 text=f"⚠️ 리서치 중 오류가 발생했습니다: {type(e).__name__}\n"
                      "잠시 후 다시 시도해주세요."
             )
-            return False
+            return False, None, None
 
-    async def handle_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /signal command — KR event impact analysis (search + Claude)"""
+    # ==========================================================================
+    # /signal — KR event impact
+    # ==========================================================================
+
+    async def handle_signal_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
-
-        is_subscribed = await self.check_channel_subscription(user_id)
-        if not is_subscribed:
+        if not await self.check_channel_subscription(user_id):
             await update.message.reply_text(
                 "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
-                "아래 링크를 통해 채널을 구독해주세요:\n\n"
-                "https://t.me/stock_ai_agent"
+                "아래 링크를 통해 채널을 구독해주세요:\n\nhttps://t.me/stock_ai_agent"
             )
-            return
+            return ConversationHandler.END
+        allowed, _ = self.peek_daily_limit_count(user_id, "signal", max_count=10)
+        if not allowed:
+            await update.message.reply_text("⚠️ 오늘의 /signal 사용 횟수(10회)를 모두 소진하였습니다.")
+            return ConversationHandler.END
+        await update.message.reply_text(
+            "🇰🇷 어떤 이벤트/뉴스가 한국 증시에 미치는 영향을 분석할까요?\n"
+            "예: 트럼프 관세 인상, 이란 미국 휴전, 삼성전자 역대급 실적"
+        )
+        return SIGNAL_ENTERING_QUERY
 
-        event = update.message.text.replace("/signal", "").strip()[:200]
-        if not event:
-            await update.message.reply_text(
-                "사용법: /signal [이벤트/뉴스]\n"
-                "예시: /signal 트럼프 관세 인상"
-            )
-            return
-
+    async def handle_signal_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
         allowed, _ = self.check_daily_limit_count(user_id, "signal", max_count=10)
         if not allowed:
             await update.message.reply_text("⚠️ 오늘의 /signal 사용 횟수(10회)를 모두 소진하였습니다.")
-            return
-
-        logger.info(f"/signal command - user={user_id}, event='{event[:50]}'")
-
-        search_query = f"{event} 한국 주식시장 수혜주 피해주"
+            return ConversationHandler.END
+        event = update.message.text.strip()[:200]
+        today = datetime.now().strftime("%Y년 %m월 %d일")
+        logger.info(f"/signal query - user={user_id}, event='{event[:50]}'")
+        search_query = f"{event} 한국 주식시장 수혜주 피해주 최신뉴스 {today}"
         analysis_prompt = (
             f"위 검색 결과를 바탕으로, '{event}'가 한국 주식시장에 미치는 영향을 분석해줘.\n"
             "1. 수혜 예상 섹터와 대표 종목 3개\n"
@@ -2534,37 +2666,47 @@ class TelegramAIBot:
             "4. 개인투자자 대응 전략\n"
             "텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
-        await self._run_search_and_claude(update, search_query, analysis_prompt, self._DISCLAIMER_KR)
+        success, response_text, msg_id = await self._run_search_and_claude(
+            update, search_query, analysis_prompt, self._DISCLAIMER_KR
+        )
+        if success and msg_id and response_text:
+            ctx = FirecrawlConversationContext("signal", event)
+            ctx.add_to_history("assistant", response_text)
+            self.firecrawl_contexts[msg_id] = ctx
+        return ConversationHandler.END
 
-    async def handle_us_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /us_signal command — US event impact analysis (search + Claude)"""
+    # ==========================================================================
+    # /us_signal — US event impact
+    # ==========================================================================
+
+    async def handle_us_signal_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
-
-        is_subscribed = await self.check_channel_subscription(user_id)
-        if not is_subscribed:
+        if not await self.check_channel_subscription(user_id):
             await update.message.reply_text(
                 "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
-                "아래 링크를 통해 채널을 구독해주세요:\n\n"
-                "https://t.me/stock_ai_agent"
+                "아래 링크를 통해 채널을 구독해주세요:\n\nhttps://t.me/stock_ai_agent"
             )
-            return
+            return ConversationHandler.END
+        allowed, _ = self.peek_daily_limit_count(user_id, "us_signal", max_count=10)
+        if not allowed:
+            await update.message.reply_text("⚠️ 오늘의 /us_signal 사용 횟수(10회)를 모두 소진하였습니다.")
+            return ConversationHandler.END
+        await update.message.reply_text(
+            "🇺🇸 어떤 이벤트/뉴스가 미국 증시에 미치는 영향을 분석할까요?\n"
+            "예: TSMC 실적 서프라이즈, 연준 금리 인상, 엔비디아 신제품 출시"
+        )
+        return US_SIGNAL_ENTERING_QUERY
 
-        event = update.message.text.replace("/us_signal", "").strip()[:200]
-        if not event:
-            await update.message.reply_text(
-                "사용법: /us_signal [이벤트/뉴스]\n"
-                "예시: /us_signal TSMC 실적 서프라이즈"
-            )
-            return
-
+    async def handle_us_signal_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
         allowed, _ = self.check_daily_limit_count(user_id, "us_signal", max_count=10)
         if not allowed:
             await update.message.reply_text("⚠️ 오늘의 /us_signal 사용 횟수(10회)를 모두 소진하였습니다.")
-            return
-
-        logger.info(f"/us_signal command - user={user_id}, event='{event[:50]}'")
-
-        search_query = f"{event} US stock market impact beneficiary"
+            return ConversationHandler.END
+        event = update.message.text.strip()[:200]
+        today = datetime.now().strftime("%Y %B %d")
+        logger.info(f"/us_signal query - user={user_id}, event='{event[:50]}'")
+        search_query = f"{event} US stock market impact news {today}"
         analysis_prompt = (
             f"위 검색 결과를 바탕으로, '{event}'가 미국 주식시장(S&P500, NASDAQ)에 미치는 영향을 분석해줘.\n"
             "1. 수혜 예상 섹터와 대표 종목 3개\n"
@@ -2573,37 +2715,47 @@ class TelegramAIBot:
             "4. 개인투자자 대응 전략\n"
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
-        await self._run_search_and_claude(update, search_query, analysis_prompt, self._DISCLAIMER_KR)
+        success, response_text, msg_id = await self._run_search_and_claude(
+            update, search_query, analysis_prompt, self._DISCLAIMER_KR
+        )
+        if success and msg_id and response_text:
+            ctx = FirecrawlConversationContext("us_signal", event)
+            ctx.add_to_history("assistant", response_text)
+            self.firecrawl_contexts[msg_id] = ctx
+        return ConversationHandler.END
 
-    async def handle_theme(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /theme command — KR theme health check (search + Claude)"""
+    # ==========================================================================
+    # /theme — KR theme health check
+    # ==========================================================================
+
+    async def handle_theme_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
-
-        is_subscribed = await self.check_channel_subscription(user_id)
-        if not is_subscribed:
+        if not await self.check_channel_subscription(user_id):
             await update.message.reply_text(
                 "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
-                "아래 링크를 통해 채널을 구독해주세요:\n\n"
-                "https://t.me/stock_ai_agent"
+                "아래 링크를 통해 채널을 구독해주세요:\n\nhttps://t.me/stock_ai_agent"
             )
-            return
+            return ConversationHandler.END
+        allowed, _ = self.peek_daily_limit_count(user_id, "theme", max_count=10)
+        if not allowed:
+            await update.message.reply_text("⚠️ 오늘의 /theme 사용 횟수(10회)를 모두 소진하였습니다.")
+            return ConversationHandler.END
+        await update.message.reply_text(
+            "🇰🇷 어떤 한국 테마/섹터의 건강도를 진단할까요?\n"
+            "예: 2차전지, 방산, AI 반도체, 조선"
+        )
+        return THEME_ENTERING_QUERY
 
-        theme = update.message.text.replace("/theme", "").strip()[:200]
-        if not theme:
-            await update.message.reply_text(
-                "사용법: /theme [테마/섹터]\n"
-                "예시: /theme 2차전지"
-            )
-            return
-
+    async def handle_theme_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
         allowed, _ = self.check_daily_limit_count(user_id, "theme", max_count=10)
         if not allowed:
             await update.message.reply_text("⚠️ 오늘의 /theme 사용 횟수(10회)를 모두 소진하였습니다.")
-            return
-
-        logger.info(f"/theme command - user={user_id}, theme='{theme[:50]}'")
-
-        search_query = f"{theme} 테마 전망 주도주 대장주 2026"
+            return ConversationHandler.END
+        theme = update.message.text.strip()[:200]
+        today = datetime.now().strftime("%Y년 %m월")
+        logger.info(f"/theme query - user={user_id}, theme='{theme[:50]}'")
+        search_query = f"{theme} 테마 주도주 대장주 최신 뉴스 {today}"
         analysis_prompt = (
             f"위 검색 결과를 바탕으로, 한국 주식시장에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
@@ -2613,37 +2765,47 @@ class TelegramAIBot:
             "5. 진입 타이밍 의견\n"
             "텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
-        await self._run_search_and_claude(update, search_query, analysis_prompt, self._DISCLAIMER_KR)
+        success, response_text, msg_id = await self._run_search_and_claude(
+            update, search_query, analysis_prompt, self._DISCLAIMER_KR
+        )
+        if success and msg_id and response_text:
+            ctx = FirecrawlConversationContext("theme", theme)
+            ctx.add_to_history("assistant", response_text)
+            self.firecrawl_contexts[msg_id] = ctx
+        return ConversationHandler.END
 
-    async def handle_us_theme(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /us_theme command — US theme health check (search + Claude)"""
+    # ==========================================================================
+    # /us_theme — US theme health check
+    # ==========================================================================
+
+    async def handle_us_theme_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
-
-        is_subscribed = await self.check_channel_subscription(user_id)
-        if not is_subscribed:
+        if not await self.check_channel_subscription(user_id):
             await update.message.reply_text(
                 "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
-                "아래 링크를 통해 채널을 구독해주세요:\n\n"
-                "https://t.me/stock_ai_agent"
+                "아래 링크를 통해 채널을 구독해주세요:\n\nhttps://t.me/stock_ai_agent"
             )
-            return
+            return ConversationHandler.END
+        allowed, _ = self.peek_daily_limit_count(user_id, "us_theme", max_count=10)
+        if not allowed:
+            await update.message.reply_text("⚠️ 오늘의 /us_theme 사용 횟수(10회)를 모두 소진하였습니다.")
+            return ConversationHandler.END
+        await update.message.reply_text(
+            "🇺🇸 어떤 미국 테마/섹터의 건강도를 진단할까요?\n"
+            "예: AI 데이터센터, 바이오, 방산, 클라우드"
+        )
+        return US_THEME_ENTERING_QUERY
 
-        theme = update.message.text.replace("/us_theme", "").strip()[:200]
-        if not theme:
-            await update.message.reply_text(
-                "사용법: /us_theme [테마/섹터]\n"
-                "예시: /us_theme AI semiconductor"
-            )
-            return
-
+    async def handle_us_theme_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
         allowed, _ = self.check_daily_limit_count(user_id, "us_theme", max_count=10)
         if not allowed:
             await update.message.reply_text("⚠️ 오늘의 /us_theme 사용 횟수(10회)를 모두 소진하였습니다.")
-            return
-
-        logger.info(f"/us_theme command - user={user_id}, theme='{theme[:50]}'")
-
-        search_query = f"{theme} sector outlook leading stocks 2026"
+            return ConversationHandler.END
+        theme = update.message.text.strip()[:200]
+        today = datetime.now().strftime("%Y %B")
+        logger.info(f"/us_theme query - user={user_id}, theme='{theme[:50]}'")
+        search_query = f"{theme} sector outlook leading stocks news {today}"
         analysis_prompt = (
             f"위 검색 결과를 바탕으로, 미국 주식시장(S&P500, NASDAQ)에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
@@ -2653,56 +2815,118 @@ class TelegramAIBot:
             "5. 진입 타이밍 의견\n"
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
-        await self._run_search_and_claude(update, search_query, analysis_prompt, self._DISCLAIMER_KR)
+        success, response_text, msg_id = await self._run_search_and_claude(
+            update, search_query, analysis_prompt, self._DISCLAIMER_KR
+        )
+        if success and msg_id and response_text:
+            ctx = FirecrawlConversationContext("us_theme", theme)
+            ctx.add_to_history("assistant", response_text)
+            self.firecrawl_contexts[msg_id] = ctx
+        return ConversationHandler.END
 
-    async def handle_ask(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /ask command — free-form investment research (3 per day)"""
+    # ==========================================================================
+    # /ask — free-form investment research
+    # ==========================================================================
+
+    async def handle_ask_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
-
-        is_subscribed = await self.check_channel_subscription(user_id)
-        if not is_subscribed:
+        if not await self.check_channel_subscription(user_id):
             await update.message.reply_text(
                 "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
-                "아래 링크를 통해 채널을 구독해주세요:\n\n"
-                "https://t.me/stock_ai_agent"
+                "아래 링크를 통해 채널을 구독해주세요:\n\nhttps://t.me/stock_ai_agent"
             )
-            return
-
-        question = update.message.text.replace("/ask", "").strip()[:500]
-        if not question:
+            return ConversationHandler.END
+        # Peek (no consume) — consume happens in handle_ask_query when the query is actually made
+        allowed, remaining = self.peek_daily_limit_count(user_id, "ask", max_count=3)
+        if not allowed:
             await update.message.reply_text(
-                "사용법: /ask [질문]\n"
-                "예시: /ask 워렌 버핏이 올해 뭘 샀어?"
+                "⚠️ 오늘의 /ask 사용 횟수(3회)를 모두 소진하였습니다.\n내일 다시 이용해주세요."
             )
-            return
+            return ConversationHandler.END
+        await update.message.reply_text(
+            f"💬 투자 관련 질문을 입력해주세요. (오늘 남은 횟수: {remaining}회)\n"
+            "예: 워렌 버핏이 올해 뭘 샀어? / 코스피 다음주도 오를까?"
+        )
+        return ASK_ENTERING_QUERY
 
-        # Check daily limit (3 per day)
+    async def handle_ask_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        # Consume the count here (after user actually submits the query)
         allowed, remaining = self.check_daily_limit_count(user_id, "ask", max_count=3)
         if not allowed:
             await update.message.reply_text(
-                "⚠️ 오늘의 /ask 사용 횟수(3회)를 모두 소진하였습니다.\n"
-                "내일 다시 이용해주세요."
+                "⚠️ 오늘의 /ask 사용 횟수(3회)를 모두 소진하였습니다.\n내일 다시 이용해주세요."
             )
-            return
-
-        logger.info(f"/ask command - user={user_id}, question='{question[:50]}', remaining={remaining}")
-
+            return ConversationHandler.END
+        question = update.message.text.strip()[:500]
+        today = datetime.now().strftime("%Y년 %m월 %d일")
+        logger.info(f"/ask query - user={user_id}, question='{question[:50]}', remaining={remaining}")
         prompt = (
-            f"다음 투자 관련 질문에 대해 최신 정보를 기반으로 답변해줘:\n\n"
+            f"오늘은 {today}입니다. 다음 투자 관련 질문에 대해 최신 정보를 기반으로 답변해줘:\n\n"
             f"{question}\n\n"
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         )
-        success = await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
-
+        success, response_text, msg_id = await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
         if success:
-            # Show remaining count
-            await update.message.reply_text(
-                f"📊 오늘 남은 /ask 횟수: {remaining}회"
-            )
+            if remaining > 0:
+                await update.message.reply_text(f"📊 오늘 남은 /ask 횟수: {remaining}회")
+            if msg_id and response_text:
+                ctx = FirecrawlConversationContext("ask", question)
+                ctx.add_to_history("assistant", response_text)
+                self.firecrawl_contexts[msg_id] = ctx
         else:
-            # Refund on failure
             self.refund_daily_limit_count(user_id, "ask")
             logger.info(f"/ask refunded for user={user_id} due to failure")
+        return ConversationHandler.END
+
+    # ==========================================================================
+    # Firecrawl follow-up reply handler
+    # ==========================================================================
+
+    async def _handle_firecrawl_reply(self, update: Update, fc_ctx: FirecrawlConversationContext):
+        """Handle a reply to a Firecrawl bot message — continue via Anthropic Sonnet 4.6."""
+        user_question = update.message.text.strip()
+        chat_id = update.effective_chat.id
+
+        waiting_msg = await update.message.reply_text("💭 분석 중입니다... 잠시만 기다려주세요.")
+
+        try:
+            fc_ctx.add_to_history("user", user_question)
+            conversation_context = fc_ctx.get_context_summary()
+
+            response = await generate_firecrawl_followup_response(
+                command=fc_ctx.command,
+                query=fc_ctx.query,
+                conversation_context=conversation_context,
+                user_question=user_question,
+            )
+
+            await waiting_msg.delete()
+
+            if not response:
+                await update.message.reply_text(
+                    "⚠️ 추가 질문 처리 중 오류가 발생했습니다. 다시 시도해주세요."
+                )
+                fc_ctx.conversation_history.pop()  # rollback the user turn
+                return
+
+            sent_msg = await update.message.reply_text(
+                response + "\n\n💬 이 메시지에 답장(Reply)하여 추가 질문할 수 있습니다!"
+            )
+            fc_ctx.add_to_history("assistant", response)
+
+            # Register new message ID so the next reply still works
+            self.firecrawl_contexts[sent_msg.message_id] = fc_ctx
+
+        except Exception as e:
+            logger.error(f"_handle_firecrawl_reply error: {e}", exc_info=True)
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+            await update.message.reply_text(
+                "⚠️ 추가 질문 처리 중 오류가 발생했습니다. 다시 시도해주세요."
+            )
 
     async def process_results(self):
         """Check items to process from result queue"""

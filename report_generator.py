@@ -1381,10 +1381,11 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
     try:
         from firecrawl_client import firecrawl_search
 
-        # Step 1: Firecrawl search (2 credits per 10 results)
+        # Step 1: Firecrawl search with full article content
+        # with_content=True fetches markdown body per result — much richer than meta descriptions.
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
-            None, lambda: firecrawl_search(search_query, limit=limit)
+            None, lambda: firecrawl_search(search_query, limit=limit, with_content=True)
         )
         items = result.web if result and result.web else []
 
@@ -1392,13 +1393,16 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
             logger.warning(f"No search results for: {search_query[:50]}")
             return None
 
-        # Step 2: Build context from search snippets
+        # Step 2: Build context — prefer full markdown, fall back to description snippet
         context = ""
         for item in items:
             title = getattr(item, 'title', '') or ''
             url = getattr(item, 'url', '') or ''
             desc = getattr(item, 'description', '') or ''
-            context += f"- {title}\n  URL: {url}\n  {desc}\n\n"
+            # markdown is populated when with_content=True; truncate to 2000 chars per article
+            markdown = getattr(item, 'markdown', '') or ''
+            body = markdown[:2000] if markdown else desc
+            context += f"[{title}]\nURL: {url}\n{body}\n\n"
 
         logger.info(f"Search context built: {len(items)} results, {len(context)} chars")
 
@@ -1439,4 +1443,90 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
         except Exception:
             pass
 
+        return None
+
+
+# MCP server config per Firecrawl command type
+_FIRECRAWL_CMD_SERVERS = {
+    "signal":    ["perplexity", "kospi_kosdaq"],
+    "us_signal": ["perplexity"],
+    "theme":     ["perplexity", "kospi_kosdaq"],
+    "us_theme":  ["perplexity"],
+    "ask":       ["perplexity", "kospi_kosdaq"],
+}
+
+_FIRECRAWL_CMD_PERSONA = {
+    "signal":    "한국 주식시장 이벤트/뉴스 임팩트 분석 전문가",
+    "us_signal": "미국 주식시장 이벤트/뉴스 임팩트 분석 전문가",
+    "theme":     "한국 테마/섹터 건강도 진단 전문가",
+    "us_theme":  "미국 테마/섹터 건강도 진단 전문가",
+    "ask":       "투자 리서처",
+}
+
+
+async def generate_firecrawl_followup_response(
+    command: str,
+    query: str,
+    conversation_context: str,
+    user_question: str,
+) -> Optional[str]:
+    """
+    Follow-up conversation for Firecrawl-based commands (signal, us_signal, theme, us_theme, ask).
+    First response comes from Firecrawl; subsequent replies use Anthropic Sonnet 4.6
+    with command-specific MCP servers so the conversation stays grounded in live data.
+
+    Args:
+        command: One of "signal", "us_signal", "theme", "us_theme", "ask"
+        query: The original user query that kicked off the Firecrawl search
+        conversation_context: Formatted prior conversation (initial response + follow-ups)
+        user_question: The user's new follow-up question
+
+    Returns:
+        str: Claude-generated response, or None on error
+    """
+    try:
+        app = await get_or_create_global_mcp_app()
+        server_names = _FIRECRAWL_CMD_SERVERS.get(command, ["perplexity"])
+        persona = _FIRECRAWL_CMD_PERSONA.get(command, "투자 분석 전문가")
+
+        agent = Agent(
+            name="firecrawl_followup_agent",
+            instruction=f"""당신은 {persona}입니다.
+
+## 초기 질의
+{query}
+
+## 이전 대화 내용
+{conversation_context}
+
+## 응답 가이드라인
+1. 이전 대화 내용을 바탕으로 맥락을 유지하세요.
+2. 필요하면 도구로 최신 정보를 조회하세요.
+3. 텔레그램 메시지 형태로 이모지를 포함하여 작성하세요.
+4. 마크다운 대신 플레인 텍스트로 작성하세요.
+5. 2000자 이내로 작성하세요.
+6. 도구 호출 과정을 사용자에게 노출하지 마세요.
+""",
+            server_names=server_names,
+        )
+
+        llm = await agent.attach_llm(AnthropicAugmentedLLM)
+        response = await llm.generate_str(
+            message=user_question,
+            request_params=RequestParams(
+                model="claude-sonnet-4-6",
+                maxTokens=2000,
+            ),
+        )
+        app.logger.info(f"firecrawl_followup ({command}): {len(response)} chars")
+        return clean_model_response(response)
+
+    except Exception as e:
+        logger.error(f"generate_firecrawl_followup_response failed ({command}): {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        try:
+            await reset_global_mcp_app()
+        except Exception:
+            pass
         return None
