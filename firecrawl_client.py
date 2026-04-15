@@ -49,21 +49,34 @@ def get_firecrawl_app():
     return _firecrawl_app
 
 
-def firecrawl_search(query: str, limit: int = 10):
+def firecrawl_search(query: str, limit: int = 10, with_content: bool = False):
     """
     Search the web via Firecrawl.
 
     Args:
         query: Search query string
         limit: Maximum number of results (default 10, costs 2 credits per 10)
+        with_content: When True, scrape full markdown content for each result.
+                      Each result item will have a .markdown attribute with the
+                      article body (more credits used, but much richer data).
 
     Returns:
         SearchData object with .web list of results, or None on error
     """
     try:
         app = get_firecrawl_app()
-        result = app.search(query, limit=limit)
-        logger.info(f"Firecrawl search completed: query='{query[:50]}', results={len(result.web) if result and result.web else 0}")
+        if with_content:
+            try:
+                from firecrawl import ScrapeOptions  # available in firecrawl-py >= 1.0
+                scrape_opts = ScrapeOptions(formats=["markdown"])
+                result = app.search(query, limit=limit, scrape_options=scrape_opts)
+            except (ImportError, TypeError) as ie:
+                # Fallback: SDK version doesn't support ScrapeOptions — use plain search
+                logger.warning(f"ScrapeOptions not available ({ie}), falling back to plain search")
+                result = app.search(query, limit=limit)
+        else:
+            result = app.search(query, limit=limit)
+        logger.info(f"Firecrawl search: query='{query[:50]}', results={len(result.web) if result and result.web else 0}, with_content={with_content}")
         return result
     except Exception as e:
         logger.error(f"Firecrawl search failed: {e}")
