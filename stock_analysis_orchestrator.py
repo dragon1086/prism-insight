@@ -1094,13 +1094,6 @@ class StockAnalysisOrchestrator:
                 logger.warning("No reports generated. Terminating process.")
                 return
 
-            # Archive ingest (fire-and-forget, does not block pipeline)
-            try:
-                from cores.archive.ingest import ingest_reports_async  # type: ignore[import]
-                asyncio.create_task(ingest_reports_async(report_paths, market="kr"))
-            except Exception as _e:
-                logger.warning(f"Archive ingest hook skipped: {_e}")
-
             # 3. PDF conversion
             pdf_paths = await self.convert_to_pdf(report_paths)
 
