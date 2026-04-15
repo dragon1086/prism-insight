@@ -87,6 +87,7 @@ US_SIGNAL_ENTERING_QUERY = 31
 THEME_ENTERING_QUERY = 32
 US_THEME_ENTERING_QUERY = 33
 ASK_ENTERING_QUERY = 34
+INSIGHT_ENTERING_QUERY = 35
 
 # Channel ID
 CHANNEL_ID = int(os.getenv("TELEGRAM_CHANNEL_ID", "0"))
@@ -916,6 +917,17 @@ class TelegramAIBot:
             per_chat=False, per_user=True, conversation_timeout=300,
         )
         self.application.add_handler(ask_handler)
+
+        insight_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("insight", self.handle_insight_start),
+                MessageHandler(filters.Regex(r'^/insight(@\w+)?$'), self.handle_insight_start),
+            ],
+            states={INSIGHT_ENTERING_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_insight_query)]},
+            fallbacks=[CommandHandler("cancel", self.handle_cancel)],
+            per_chat=False, per_user=True, conversation_timeout=300,
+        )
+        self.application.add_handler(insight_handler)
 
         # General text messages - /help or /start guidance
         self.application.add_handler(MessageHandler(
@@ -2878,6 +2890,102 @@ class TelegramAIBot:
             self.refund_daily_limit_count(user_id, "ask")
             logger.info(f"/ask refunded for user={user_id} due to failure")
         return ConversationHandler.END
+
+    # ==========================================================================
+    # /insight — PRISM archive query (server-to-server or direct)
+    # ==========================================================================
+
+    async def handle_insight_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /insight command — ask user for their archive query."""
+        user_id = update.effective_user.id
+        if not await self.check_channel_subscription(user_id):
+            await update.message.reply_text(
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\nhttps://t.me/stock_ai_agent"
+            )
+            return ConversationHandler.END
+        await update.message.reply_text(
+            "🗂 PRISM 아카이브에 쌓인 실제 분석 데이터를 기반으로 답변합니다.\n\n"
+            "질문을 입력해주세요:\n"
+            "예: 하락장에서 분석된 반도체 종목들 30일 수익률은?\n"
+            "예: 손절 발동 후 회복한 종목 비율은?"
+        )
+        return INSIGHT_ENTERING_QUERY
+
+    async def handle_insight_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Execute archive query — calls pipeline API if configured, else local engine."""
+        chat_id = update.effective_chat.id
+        question = update.message.text.strip()[:500]
+        logger.info(f"/insight query - user={update.effective_user.id}, q='{question[:60]}'")
+
+        waiting_msg = await update.message.reply_text("🗂 아카이브 분석 중... 잠시만 기다려주세요.")
+
+        try:
+            answer = await self._call_archive_query(question)
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+
+            if answer:
+                full_text = f"🗂 PRISM 아카이브 인사이트\n\n{answer}\n\n{self._DISCLAIMER_KR.strip()}"
+                if len(full_text) > 4096:
+                    for i in range(0, len(full_text), 4096):
+                        await self.application.bot.send_message(chat_id=chat_id, text=full_text[i:i + 4096])
+                else:
+                    await self.application.bot.send_message(chat_id=chat_id, text=full_text)
+            else:
+                await self.application.bot.send_message(
+                    chat_id=chat_id,
+                    text="⚠️ 아카이브에서 관련 데이터를 찾지 못했습니다.\n질문을 바꿔서 다시 시도해주세요."
+                )
+        except Exception as e:
+            logger.error(f"/insight error: {e}", exc_info=True)
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ 아카이브 조회 중 오류가 발생했습니다: {type(e).__name__}\n잠시 후 다시 시도해주세요."
+            )
+        return ConversationHandler.END
+
+    async def _call_archive_query(self, question: str, market: Optional[str] = None) -> Optional[str]:
+        """
+        Call archive query engine.
+        - If ARCHIVE_API_URL is set: call pipeline server HTTP API (two-server setup)
+        - Otherwise: call query_engine directly (single-server setup)
+        """
+        api_url = os.getenv("ARCHIVE_API_URL", "").rstrip("/")
+        api_key = os.getenv("ARCHIVE_API_KEY", "")
+
+        if api_url:
+            # Two-server mode: call pipeline server API
+            import aiohttp
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            payload = {"question": question, "market": market, "model": "gpt-4.1-mini"}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{api_url}/query",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Archive API returned {resp.status}: {await resp.text()}")
+                        return None
+                    data = await resp.json()
+                    return data.get("answer")
+        else:
+            # Single-server mode: call query_engine directly
+            try:
+                from cores.archive.query_engine import ask  # type: ignore[import]
+                result = await ask(question, market=market, model="gpt-4.1-mini")
+                return result.answer if result else None
+            except Exception as e:
+                logger.error(f"Local archive query failed: {e}", exc_info=True)
+                return None
 
     # ==========================================================================
     # Firecrawl follow-up reply handler
