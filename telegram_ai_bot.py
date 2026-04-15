@@ -2655,9 +2655,9 @@ class TelegramAIBot:
             await update.message.reply_text("⚠️ 오늘의 /signal 사용 횟수(10회)를 모두 소진하였습니다.")
             return ConversationHandler.END
         event = update.message.text.strip()[:200]
-        today = datetime.now().strftime("%Y년 %m월 %d일")
+        today = datetime.now().strftime("%Y년 %m월")
         logger.info(f"/signal query - user={user_id}, event='{event[:50]}'")
-        search_query = f"{event} 한국 주식시장 수혜주 피해주 최신뉴스 {today}"
+        search_query = f"{event} 한국증시 영향 {today}"
         analysis_prompt = (
             f"위 검색 결과를 바탕으로, '{event}'가 한국 주식시장에 미치는 영향을 분석해줘.\n"
             "1. 수혜 예상 섹터와 대표 종목 3개\n"
@@ -2704,9 +2704,9 @@ class TelegramAIBot:
             await update.message.reply_text("⚠️ 오늘의 /us_signal 사용 횟수(10회)를 모두 소진하였습니다.")
             return ConversationHandler.END
         event = update.message.text.strip()[:200]
-        today = datetime.now().strftime("%Y %B %d")
+        today = datetime.now().strftime("%Y %B")
         logger.info(f"/us_signal query - user={user_id}, event='{event[:50]}'")
-        search_query = f"{event} US stock market impact news {today}"
+        search_query = f"{event} stock market impact {today}"
         analysis_prompt = (
             f"위 검색 결과를 바탕으로, '{event}'가 미국 주식시장(S&P500, NASDAQ)에 미치는 영향을 분석해줘.\n"
             "1. 수혜 예상 섹터와 대표 종목 3개\n"
@@ -2755,7 +2755,7 @@ class TelegramAIBot:
         theme = update.message.text.strip()[:200]
         today = datetime.now().strftime("%Y년 %m월")
         logger.info(f"/theme query - user={user_id}, theme='{theme[:50]}'")
-        search_query = f"{theme} 테마 주도주 대장주 최신 뉴스 {today}"
+        search_query = f"{theme} 테마주 뉴스 {today}"
         analysis_prompt = (
             f"위 검색 결과를 바탕으로, 한국 주식시장에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
@@ -2805,7 +2805,7 @@ class TelegramAIBot:
         theme = update.message.text.strip()[:200]
         today = datetime.now().strftime("%Y %B")
         logger.info(f"/us_theme query - user={user_id}, theme='{theme[:50]}'")
-        search_query = f"{theme} sector outlook leading stocks news {today}"
+        search_query = f"{theme} sector stocks news {today}"
         analysis_prompt = (
             f"위 검색 결과를 바탕으로, 미국 주식시장(S&P500, NASDAQ)에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"

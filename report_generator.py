@@ -1390,21 +1390,21 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
         items = result.web if result and result.web else []
 
         if not items:
-            logger.warning(f"No search results for: {search_query[:50]}")
-            return None
+            logger.warning(f"No search results for: {search_query[:50]}, falling back to Claude-only analysis")
+            context = "(최신 웹 검색 결과를 찾지 못했습니다. 알려진 시장 지식을 바탕으로 분석합니다.)\n\n"
+        else:
+            # Step 2: Build context — prefer full markdown, fall back to description snippet
+            context = ""
+            for item in items:
+                title = getattr(item, 'title', '') or ''
+                url = getattr(item, 'url', '') or ''
+                desc = getattr(item, 'description', '') or ''
+                # markdown is populated when with_content=True; truncate to 2000 chars per article
+                markdown = getattr(item, 'markdown', '') or ''
+                body = markdown[:2000] if markdown else desc
+                context += f"[{title}]\nURL: {url}\n{body}\n\n"
 
-        # Step 2: Build context — prefer full markdown, fall back to description snippet
-        context = ""
-        for item in items:
-            title = getattr(item, 'title', '') or ''
-            url = getattr(item, 'url', '') or ''
-            desc = getattr(item, 'description', '') or ''
-            # markdown is populated when with_content=True; truncate to 2000 chars per article
-            markdown = getattr(item, 'markdown', '') or ''
-            body = markdown[:2000] if markdown else desc
-            context += f"[{title}]\nURL: {url}\n{body}\n\n"
-
-        logger.info(f"Search context built: {len(items)} results, {len(context)} chars")
+            logger.info(f"Search context built: {len(items)} results, {len(context)} chars")
 
         # Step 3: Use global MCPApp + Claude Sonnet for analysis
         app = await get_or_create_global_mcp_app()
