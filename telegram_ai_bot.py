@@ -40,6 +40,7 @@ from report_generator import (
 from tracking.user_memory import UserMemoryManager
 from firecrawl_client import firecrawl_agent
 from datetime import datetime, timedelta
+from dataclasses import dataclass
 from typing import Dict, Optional
 
 # Load environment variables
@@ -87,6 +88,7 @@ US_SIGNAL_ENTERING_QUERY = 31
 THEME_ENTERING_QUERY = 32
 US_THEME_ENTERING_QUERY = 33
 ASK_ENTERING_QUERY = 34
+INSIGHT_ENTERING_QUERY = 35
 
 # Channel ID
 CHANNEL_ID = int(os.getenv("TELEGRAM_CHANNEL_ID", "0"))
@@ -408,6 +410,40 @@ class FirecrawlConversationContext:
         return "\n".join(lines)
 
 
+class InsightConversationContext:
+    """Context for /insight multi-turn reply conversations (30min TTL)."""
+
+    def __init__(self, original_question: str, user_id: int, chat_id: int):
+        self.original_question = original_question
+        self.user_id = user_id
+        self.chat_id = chat_id
+        self.last_insight_id: Optional[int] = None
+        self.conversation_history: list = []
+        self.created_at = datetime.now()
+        self.last_updated = datetime.now()
+
+    def is_expired(self, ttl_minutes: int = 30) -> bool:
+        return (datetime.now() - self.last_updated) > timedelta(minutes=ttl_minutes)
+
+    def add_turn(self, user_q: str, bot_a: str, insight_id: Optional[int]):
+        self.conversation_history.append(
+            {"q": user_q, "a": bot_a, "iid": insight_id}
+        )
+        if insight_id is not None:
+            self.last_insight_id = insight_id
+        self.last_updated = datetime.now()
+
+
+@dataclass
+class InsightPayload:
+    """Response payload from /insight_agent or local InsightAgent."""
+    answer: str
+    insight_id: Optional[int]
+    remaining_quota: int
+    tickers_mentioned: list
+    tools_used: list
+
+
 class TelegramAIBot:
     """Telegram AI Conversational Bot"""
 
@@ -449,6 +485,9 @@ class TelegramAIBot:
         # Firecrawl command follow-up context storage (keyed by bot message ID)
         self.firecrawl_contexts: Dict[int, FirecrawlConversationContext] = {}
 
+        # /insight multi-turn reply context (keyed by bot message ID, 30min TTL)
+        self.insight_contexts: Dict[int, InsightConversationContext] = {}
+
         # Initialize user memory manager
         self.memory_manager = UserMemoryManager("user_memories.sqlite")
 
@@ -467,6 +506,8 @@ class TelegramAIBot:
         )
         self.application = Application.builder().token(self.token).request(request).build()
         self.setup_handlers()
+        # Sync command menu with BotFather on startup (1회)
+        self.application.post_init = self._on_application_post_init
 
         # Start background worker
         start_background_worker(self)
@@ -479,6 +520,40 @@ class TelegramAIBot:
         self.scheduler.add_job(self.compress_user_memories, "cron", hour=3, minute=0)
         self.scheduler.start()
     
+    async def _on_application_post_init(self, application):
+        """post_init hook — runs once after the Application is initialized."""
+        try:
+            await self._register_bot_commands()
+        except Exception as e:
+            logger.warning(f"post_init command registration failed: {e}")
+
+    async def _register_bot_commands(self):
+        """Sync slash-command menu with BotFather (set_my_commands API)."""
+        from telegram import BotCommand
+        commands = [
+            BotCommand("evaluate",    "보유 종목 평가 시작"),
+            BotCommand("us_evaluate", "미국 주식 보유 종목 평가"),
+            BotCommand("report",      "국내 종목 리포트"),
+            BotCommand("us_report",   "미국 종목 리포트"),
+            BotCommand("history",     "분석 히스토리 조회"),
+            BotCommand("triggers",    "오늘의 급등/급락 트리거"),
+            BotCommand("signal",      "국내 시장 시그널 분석"),
+            BotCommand("us_signal",   "미국 시장 시그널 분석"),
+            BotCommand("theme",       "국내 테마 진단"),
+            BotCommand("us_theme",    "미국 테마 진단"),
+            BotCommand("ask",         "자유 질문 (최신 정보 기반)"),
+            BotCommand("insight",     "누적 인사이트 기반 장기 분석"),
+            BotCommand("journal",     "매매 저널 조회"),
+            BotCommand("help",        "도움말"),
+        ]
+        try:
+            await self.application.bot.set_my_commands(commands)
+            logger.info(
+                f"Registered {len(commands)} bot commands via BotFather API"
+            )
+        except Exception as e:
+            logger.warning(f"set_my_commands failed: {e}")
+
     def cleanup_expired_contexts(self):
         """Clean up expired conversation contexts"""
         expired_keys = []
@@ -509,6 +584,16 @@ class TelegramAIBot:
         for key in firecrawl_expired:
             del self.firecrawl_contexts[key]
             logger.info(f"Deleted expired firecrawl context: Message ID {key}")
+
+        # Clean up /insight multi-turn contexts (30 min TTL)
+        insight_expired = [
+            msg_id for msg_id, ctx in self.insight_contexts.items()
+            if ctx.is_expired(ttl_minutes=30)
+        ]
+        for key in insight_expired:
+            del self.insight_contexts[key]
+        if insight_expired:
+            logger.info(f"Deleted {len(insight_expired)} expired insight contexts")
 
         # Clean up daily usage limits (remove non-today dates)
         today = datetime.now().strftime("%Y-%m-%d")
@@ -917,6 +1002,17 @@ class TelegramAIBot:
         )
         self.application.add_handler(ask_handler)
 
+        insight_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("insight", self.handle_insight_start),
+                MessageHandler(filters.Regex(r'^/insight(@\w+)?$'), self.handle_insight_start),
+            ],
+            states={INSIGHT_ENTERING_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_insight_query)]},
+            fallbacks=[CommandHandler("cancel", self.handle_cancel)],
+            per_chat=False, per_user=True, conversation_timeout=300,
+        )
+        self.application.add_handler(insight_handler)
+
         # General text messages - /help or /start guidance
         self.application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, self.handle_default_message
@@ -955,6 +1051,19 @@ class TelegramAIBot:
                 del self.firecrawl_contexts[replied_to_msg_id]
                 return
             await self._handle_firecrawl_reply(update, fc_ctx)
+            return
+
+        # 2.5 Check /insight multi-turn reply context (30min TTL)
+        if replied_to_msg_id in self.insight_contexts:
+            ic = self.insight_contexts[replied_to_msg_id]
+            logger.info(f"[REPLY] Found in insight_contexts - q: {ic.original_question[:40]}")
+            if ic.is_expired():
+                await update.message.reply_text(
+                    "이전 /insight 세션이 만료되었습니다. /insight로 새로 시작해주세요."
+                )
+                del self.insight_contexts[replied_to_msg_id]
+                return
+            await self._handle_insight_reply(update, ic)
             return
 
         # 3. Check evaluation context
@@ -2709,8 +2818,8 @@ class TelegramAIBot:
         search_query = f"{event} stock market impact {today}"
         analysis_prompt = (
             f"위 검색 결과를 바탕으로, '{event}'가 미국 주식시장(S&P500, NASDAQ)에 미치는 영향을 분석해줘.\n"
-            "1. 수혜 예상 섹터와 대표 종목 3개\n"
-            "2. 피해 예상 섹터와 대표 종목 3개\n"
+            "1. 수혜 예상 섹터와 대표 종목 3개 (가능하면 yfinance로 최근 주가 흐름 포함)\n"
+            "2. 피해 예상 섹터와 대표 종목 3개 (가능하면 yfinance로 최근 주가 흐름 포함)\n"
             "3. 과거 유사 사례\n"
             "4. 개인투자자 대응 전략\n"
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
@@ -2809,7 +2918,7 @@ class TelegramAIBot:
         analysis_prompt = (
             f"위 검색 결과를 바탕으로, 미국 주식시장(S&P500, NASDAQ)에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
-            "2. 대장주 3개와 최근 주가 동향\n"
+            "2. 대장주 3개와 최근 주가 동향 (yfinance 실시간 데이터 기반)\n"
             "3. 긍정 요인 3개\n"
             "4. 부정 요인 3개\n"
             "5. 진입 타이밍 의견\n"
@@ -2878,6 +2987,261 @@ class TelegramAIBot:
             self.refund_daily_limit_count(user_id, "ask")
             logger.info(f"/ask refunded for user={user_id} due to failure")
         return ConversationHandler.END
+
+    # ==========================================================================
+    # /insight — PRISM archive query (server-to-server or direct)
+    # ==========================================================================
+
+    async def handle_insight_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /insight command — ask user for their archive query."""
+        user_id = update.effective_user.id
+        if not await self.check_channel_subscription(user_id):
+            await update.message.reply_text(
+                "이 봇은 채널 구독자만 사용할 수 있습니다.\n"
+                "아래 링크를 통해 채널을 구독해주세요:\n\nhttps://t.me/stock_ai_agent"
+            )
+            return ConversationHandler.END
+        await update.message.reply_text(
+            "🗂 PRISM 아카이브에 쌓인 실제 분석 데이터를 기반으로 답변합니다.\n\n"
+            "질문을 입력해주세요:\n"
+            "예: 하락장에서 분석된 반도체 종목들 30일 수익률은?\n"
+            "예: 손절 발동 후 회복한 종목 비율은?"
+        )
+        return INSIGHT_ENTERING_QUERY
+
+    async def handle_insight_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Route to InsightAgent (retrieval + function calling + auto-save)."""
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        question = update.message.text.strip()
+        if len(question) > 2000:
+            await update.message.reply_text("질문은 2000자 이내로 입력해주세요.")
+            return ConversationHandler.END
+        logger.info(f"/insight - user={user_id}, q='{question[:60]}'")
+
+        waiting_msg = await update.message.reply_text(
+            "🧭 누적 인사이트 + 시장 데이터 결합 중…"
+        )
+
+        try:
+            payload = await self._call_insight_agent(
+                question=question, user_id=user_id, chat_id=chat_id,
+            )
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+
+            if not payload:
+                await self.application.bot.send_message(
+                    chat_id=chat_id,
+                    text="⚠️ 인사이트 조회에 실패했습니다. 잠시 후 다시 시도해주세요.",
+                )
+                return ConversationHandler.END
+
+            header = "🧭 PRISM 장기 인사이트"
+            body = payload.answer
+            quota_line = (
+                f"\n\n📊 오늘 남은 /insight: {payload.remaining_quota}회"
+                if payload.remaining_quota >= 0 else ""
+            )
+            full = f"{header}\n\n{body}{quota_line}\n\n{self._DISCLAIMER_KR.strip()}"
+
+            if len(full) > 4096:
+                # split but keep final message_id for reply mapping
+                chunks = [full[i:i + 4096] for i in range(0, len(full), 4096)]
+                last_sent = None
+                for ch in chunks:
+                    last_sent = await self.application.bot.send_message(
+                        chat_id=chat_id, text=ch,
+                    )
+                sent = last_sent
+            else:
+                sent = await self.application.bot.send_message(
+                    chat_id=chat_id, text=full,
+                )
+
+            # Register multi-turn reply context
+            if sent is not None:
+                ic = InsightConversationContext(
+                    original_question=question,
+                    user_id=user_id, chat_id=chat_id,
+                )
+                ic.add_turn(question, payload.answer, payload.insight_id)
+                self.insight_contexts[sent.message_id] = ic
+        except Exception as e:
+            logger.error(f"/insight error: {e}", exc_info=True)
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ 인사이트 처리 중 오류: {type(e).__name__}\n잠시 후 다시 시도해주세요.",
+            )
+        return ConversationHandler.END
+
+    async def _call_insight_agent(
+        self,
+        question: str,
+        user_id: int,
+        chat_id: int,
+        previous_insight_id: Optional[int] = None,
+    ) -> Optional["InsightPayload"]:
+        """Dispatch to pipeline API (two-server) or local agent (single-server)."""
+        api_url = os.getenv("ARCHIVE_API_URL", "").rstrip("/")
+        api_key = os.getenv("ARCHIVE_API_KEY", "")
+        daily_limit = int(os.getenv("INSIGHT_DAILY_LIMIT", "20"))
+
+        if api_url:
+            import aiohttp
+            payload_body = {
+                "question": question,
+                "user_id": user_id,
+                "chat_id": chat_id,
+                "daily_limit": daily_limit,
+                "previous_insight_id": previous_insight_id,
+            }
+            headers = (
+                {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            )
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
+                        f"{api_url}/insight_agent",
+                        json=payload_body, headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=90),
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.error(
+                                f"/insight_agent {resp.status}: "
+                                f"{await resp.text()}"
+                            )
+                            return None
+                        data = await resp.json()
+                        return InsightPayload(
+                            answer=data["answer"],
+                            insight_id=data.get("insight_id"),
+                            remaining_quota=int(data.get("remaining_quota", -1)),
+                            tickers_mentioned=data.get("tickers_mentioned", []),
+                            tools_used=data.get("tools_used", []),
+                        )
+            except Exception as e:
+                logger.error(
+                    f"_call_insight_agent HTTP error: {e}", exc_info=True,
+                )
+                return None
+        else:
+            try:
+                from cores.archive.insight_agent import InsightAgent
+                agent = InsightAgent()
+                r = await agent.run(
+                    question=question, user_id=user_id, chat_id=chat_id,
+                    daily_limit=daily_limit,
+                    previous_insight_id=previous_insight_id,
+                )
+                return InsightPayload(
+                    answer=r.answer,
+                    insight_id=r.insight_id,
+                    remaining_quota=r.remaining_quota,
+                    tickers_mentioned=r.tickers_mentioned,
+                    tools_used=r.tools_used,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Local insight agent failed: {e}", exc_info=True,
+                )
+                return None
+
+    async def _handle_insight_reply(
+        self, update: Update, ic: "InsightConversationContext",
+    ):
+        """Reply-based multi-turn follow-up on /insight answers (30min TTL)."""
+        user_question = update.message.text.strip()
+        if len(user_question) > 2000:
+            await update.message.reply_text("질문은 2000자 이내로 입력해주세요.")
+            return
+        chat_id = update.effective_chat.id
+        waiting = await update.message.reply_text(
+            "🧭 누적 인사이트 + 시장 데이터 결합 중…"
+        )
+        try:
+            payload = await self._call_insight_agent(
+                question=user_question,
+                user_id=update.effective_user.id,
+                chat_id=chat_id,
+                previous_insight_id=ic.last_insight_id,
+            )
+            try:
+                await waiting.delete()
+            except Exception:
+                pass
+            if not payload:
+                await update.message.reply_text(
+                    "⚠️ 인사이트 조회 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+                )
+                return
+            quota_line = (
+                f"\n\n📊 오늘 남은 /insight: {payload.remaining_quota}회"
+                if payload.remaining_quota >= 0 else ""
+            )
+            text = f"🧭 {payload.answer}{quota_line}"
+            if len(text) > 4096:
+                chunks = [text[i:i + 4096] for i in range(0, len(text), 4096)]
+                last_sent = None
+                for ch in chunks:
+                    last_sent = await update.message.reply_text(ch)
+                sent = last_sent
+            else:
+                sent = await update.message.reply_text(text)
+            ic.add_turn(user_question, payload.answer, payload.insight_id)
+            if sent is not None:
+                self.insight_contexts[sent.message_id] = ic
+        except Exception as e:
+            logger.error(f"_handle_insight_reply error: {e}", exc_info=True)
+            try:
+                await waiting.delete()
+            except Exception:
+                pass
+            await update.message.reply_text(
+                f"⚠️ 오류: {type(e).__name__}"
+            )
+
+    async def _call_archive_query(self, question: str, market: Optional[str] = None) -> Optional[str]:
+        """
+        Call archive query engine.
+        - If ARCHIVE_API_URL is set: call pipeline server HTTP API (two-server setup)
+        - Otherwise: call query_engine directly (single-server setup)
+        """
+        api_url = os.getenv("ARCHIVE_API_URL", "").rstrip("/")
+        api_key = os.getenv("ARCHIVE_API_KEY", "")
+
+        if api_url:
+            # Two-server mode: call pipeline server API
+            import aiohttp
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            payload = {"question": question, "market": market, "model": "gpt-5.4-mini"}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{api_url}/query",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Archive API returned {resp.status}: {await resp.text()}")
+                        return None
+                    data = await resp.json()
+                    return data.get("answer")
+        else:
+            # Single-server mode: call query_engine directly
+            try:
+                from cores.archive.query_engine import ask  # type: ignore[import]
+                result = await ask(question, market=market, model="gpt-5.4-mini")
+                return result.answer if result else None
+            except Exception as e:
+                logger.error(f"Local archive query failed: {e}", exc_info=True)
+                return None
 
     # ==========================================================================
     # Firecrawl follow-up reply handler

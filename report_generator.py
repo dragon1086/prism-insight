@@ -1449,10 +1449,10 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
 # MCP server config per Firecrawl command type
 _FIRECRAWL_CMD_SERVERS = {
     "signal":    ["perplexity", "kospi_kosdaq"],
-    "us_signal": ["perplexity"],
+    "us_signal": ["perplexity", "yahoo_finance"],
     "theme":     ["perplexity", "kospi_kosdaq"],
-    "us_theme":  ["perplexity"],
-    "ask":       ["perplexity", "kospi_kosdaq"],
+    "us_theme":  ["perplexity", "yahoo_finance"],
+    "ask":       ["perplexity", "kospi_kosdaq", "yahoo_finance"],
 }
 
 _FIRECRAWL_CMD_PERSONA = {
@@ -1489,6 +1489,13 @@ async def generate_firecrawl_followup_response(
         server_names = _FIRECRAWL_CMD_SERVERS.get(command, ["perplexity"])
         persona = _FIRECRAWL_CMD_PERSONA.get(command, "투자 분석 전문가")
 
+        _data_tool_guide = (
+            "- 미국 종목 주가·재무·거래량 조회는 yahoo_finance 도구를 우선 사용하세요.\n"
+            "- 최신 뉴스·이벤트 맥락은 perplexity 도구로 보완하세요.\n"
+        ) if command in ("us_signal", "us_theme", "ask") else (
+            "- 한국 종목 주가·거래량 조회는 kospi_kosdaq 도구를 우선 사용하세요.\n"
+            "- 최신 뉴스·이벤트 맥락은 perplexity 도구로 보완하세요.\n"
+        )
         agent = Agent(
             name="firecrawl_followup_agent",
             instruction=f"""당신은 {persona}입니다.
@@ -1499,6 +1506,8 @@ async def generate_firecrawl_followup_response(
 ## 이전 대화 내용
 {conversation_context}
 
+## 데이터 조회 가이드
+{_data_tool_guide}
 ## 응답 가이드라인
 1. 이전 대화 내용을 바탕으로 맥락을 유지하세요.
 2. 필요하면 도구로 최신 정보를 조회하세요.
