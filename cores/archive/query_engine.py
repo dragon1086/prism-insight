@@ -378,13 +378,17 @@ async def synthesize(query: str, context: str, api_key: str,
 
     try:
         client = _get_openai_client(api_key)
+        # GPT-5.x reasoning models: use max_completion_tokens and pin reasoning off.
+        # 800 was too tight — reasoning tokens count toward the cap even when
+        # effort="none", so give Korean 400~800자 output real headroom.
         resp = await client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"### 아카이브 데이터\n{context}\n\n### 질문\n{query}"},
             ],
-            max_tokens=800,
+            max_completion_tokens=2000,
+            reasoning_effort="none",
             temperature=0.3,
         )
         return resp.choices[0].message.content or ""
