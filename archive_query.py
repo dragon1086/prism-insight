@@ -76,6 +76,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="아카이브 통계 출력",
     )
     p.add_argument(
+        "--insight-stats",
+        action="store_true",
+        dest="insight_stats",
+        help="persistent_insights 집계 출력 (총건수, 유저수, 도구사용분포, 비용)",
+    )
+    p.add_argument(
         "--json",
         action="store_true",
         dest="as_json",
@@ -125,6 +131,60 @@ def _render_search(hits: list, as_json: bool) -> None:
         snippet = h.get("snippet", "")
         if snippet:
             print(f"     …{snippet}…")
+    print()
+
+
+async def _render_insight_stats(as_json: bool) -> None:
+    """persistent_insights 집계 + 도구 분포 + 최근 7일 비용."""
+    import aiosqlite
+    from cores.archive.archive_db import ARCHIVE_DB_PATH, init_db
+    await init_db()
+    async with aiosqlite.connect(str(ARCHIVE_DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT COUNT(*) AS c, COUNT(DISTINCT user_id) AS u "
+            "FROM persistent_insights"
+        )
+        r = await cur.fetchone()
+        total = r["c"] if r else 0
+        uniq = r["u"] if r else 0
+        cur = await db.execute(
+            "SELECT tool_name, COUNT(*) AS c FROM insight_tool_usage "
+            "GROUP BY tool_name ORDER BY c DESC"
+        )
+        tools = [dict(r) for r in await cur.fetchall()]
+        cur = await db.execute(
+            "SELECT * FROM insight_cost_daily ORDER BY date DESC LIMIT 7"
+        )
+        costs = [dict(r) for r in await cur.fetchall()]
+        cur = await db.execute(
+            "SELECT COUNT(*) AS c FROM weekly_insight_summary"
+        )
+        weekly_count = (await cur.fetchone())["c"]
+    data = {
+        "total_insights": total,
+        "unique_users": uniq,
+        "weekly_summaries": weekly_count,
+        "tool_usage": tools,
+        "cost_last_7d": costs,
+    }
+    if as_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+    print("\n=== /insight 통계 ===")
+    print(f"  총 인사이트:     {total}")
+    print(f"  고유 사용자:     {uniq}")
+    print(f"  주간 요약:       {weekly_count}")
+    print("\n  도구 사용 분포:")
+    for t in tools:
+        print(f"    {t['tool_name']:25s}  {t['c']}회")
+    print("\n  최근 7일 비용:")
+    for c in costs:
+        print(
+            f"    {c['date']}  in={c['input_tokens']:>6}  out={c['output_tokens']:>6}  "
+            f"emb={c['embedding_tokens']:>6}  perp={c['perplexity_calls']:>3}  "
+            f"fc={c['firecrawl_calls']:>3}"
+        )
     print()
 
 
@@ -184,6 +244,11 @@ async def _main(args: argparse.Namespace) -> int:
     from cores.archive.query_engine import QueryEngine  # type: ignore[import]
 
     engine = QueryEngine(model=args.model)
+
+    # --insight-stats (persistent_insights 집계)
+    if args.insight_stats:
+        await _render_insight_stats(args.as_json)
+        return 0
 
     # --stats
     if args.stats:
