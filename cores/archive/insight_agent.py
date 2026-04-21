@@ -3,9 +3,13 @@ insight_agent.py — /insight 명령을 처리하는 메인 에이전트.
 
 흐름:
   1. retrieval: persistent_insights (FTS + embedding) + weekly_summary + report_archive
-  2. synthesis: mcp-agent Agent + OpenAIAugmentedLLM (gpt-5.4-mini)
+  2. synthesis: mcp-agent Agent + AnthropicAugmentedLLM (claude-sonnet-4-6)
                 function calling으로 필요시 MCP 도구 자동 선택
                 (perplexity / firecrawl / yahoo_finance / kospi_kosdaq)
+
+                OpenAI gpt-5.x reasoning 모델은 function calling과 reasoning_effort를
+                동시에 지원하지 않아 (400 invalid_request_error) Claude로 전환.
+                OpenAI는 embedding / 비-tool synthesize 전용.
   3. storage:   persistent_insights INSERT (fire-and-forget 성격이지만 동기로 기다림)
 """
 
@@ -20,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from mcp_agent.agents.agent import Agent
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
-from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+from mcp_agent.workflows.llm.augmented_llm_anthropic import AnthropicAugmentedLLM
 
 from . import persistent_insights as pi_store
 from .archive_db import ARCHIVE_DB_PATH
@@ -30,7 +34,8 @@ from .query_engine import QueryEngine, load_api_key
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-5.4-mini"
+# Claude handles MCP function calling reliably in this repo (firecrawl pattern).
+DEFAULT_MODEL = "claude-sonnet-4-6"
 _MAX_REPORTS_IN_CONTEXT = 6
 
 # MCP 서버 연결 순서 — 무료 우선, 유료 후순 (프롬프트 가드레일과 함께 동작)
@@ -212,7 +217,7 @@ class InsightAgent:
             )
             try:
                 async with agent:
-                    llm = await agent.attach_llm(OpenAIAugmentedLLM)
+                    llm = await agent.attach_llm(AnthropicAugmentedLLM)
                     user_msg = (
                         f"## 사용자 질문\n{question}\n\n"
                         f"## 컨텍스트 (누적 인사이트 + 리포트)\n{context_str}\n\n"
@@ -222,7 +227,6 @@ class InsightAgent:
                         message=user_msg,
                         request_params=RequestParams(
                             model=self.model,
-                            reasoning_effort="none",
                             maxTokens=4000,
                         ),
                     )
