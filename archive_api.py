@@ -107,6 +107,25 @@ class StatsResponse(BaseModel):
     stats: dict
 
 
+class InsightAgentRequest(BaseModel):
+    question: str
+    user_id: int
+    chat_id: int
+    daily_limit: int = 20
+    previous_insight_id: Optional[int] = None
+
+
+class InsightAgentResponse(BaseModel):
+    answer: str
+    key_takeaways: list[str]
+    tickers_mentioned: list[str]
+    tools_used: list[str]
+    evidence_count: int
+    insight_id: Optional[int] = None
+    remaining_quota: int
+    model_used: str
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -217,6 +236,43 @@ async def query(req: QueryRequest, _key: str = Depends(_verify_key)):
         )
     except Exception as e:
         logger.error(f"/query error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/insight_agent", response_model=InsightAgentResponse)
+async def insight_agent_endpoint(
+    req: InsightAgentRequest, _key: str = Depends(_verify_key),
+):
+    """Persistent insight agent — retrieval + function calling + auto-save."""
+    if not req.question or len(req.question.strip()) < 2:
+        raise HTTPException(status_code=400, detail="question is required")
+    if len(req.question) > 2000:
+        raise HTTPException(status_code=400, detail="question too long (>2000 chars)")
+
+    try:
+        from cores.archive.insight_agent import InsightAgent
+        agent = InsightAgent()
+        result = await agent.run(
+            question=req.question.strip(),
+            user_id=req.user_id,
+            chat_id=req.chat_id,
+            daily_limit=req.daily_limit,
+            previous_insight_id=req.previous_insight_id,
+        )
+        return InsightAgentResponse(
+            answer=result.answer,
+            key_takeaways=result.key_takeaways,
+            tickers_mentioned=result.tickers_mentioned,
+            tools_used=result.tools_used,
+            evidence_count=len(result.evidence_report_ids),
+            insight_id=result.insight_id,
+            remaining_quota=result.remaining_quota,
+            model_used=result.model_used,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"/insight_agent error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
