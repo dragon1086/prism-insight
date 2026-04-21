@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
-_DEFAULT_MODEL = "gpt-4.1-mini"
+_DEFAULT_MODEL = "gpt-5.4-mini"
 
 
 def _sanitize_for_llm(text: str, max_len: int = 3000) -> str:

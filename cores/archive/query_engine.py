@@ -44,7 +44,7 @@ _SECRETS_PATH = PROJECT_ROOT / "mcp_agent.secrets.yaml"
 # Constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_MODEL = "gpt-4.1-mini"
+_DEFAULT_MODEL = "gpt-5.4-mini"
 _MAX_CONTEXT_CHARS = 8_000   # approximate token budget for retrieved context
 _MAX_REPORTS_IN_CONTEXT = 6
 _CACHE_TTL_HOURS = 24

@@ -2964,7 +2964,7 @@ class TelegramAIBot:
             # Two-server mode: call pipeline server API
             import aiohttp
             headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-            payload = {"question": question, "market": market, "model": "gpt-4.1-mini"}
+            payload = {"question": question, "market": market, "model": "gpt-5.4-mini"}
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{api_url}/query",
@@ -2981,7 +2981,7 @@ class TelegramAIBot:
             # Single-server mode: call query_engine directly
             try:
                 from cores.archive.query_engine import ask  # type: ignore[import]
-                result = await ask(question, market=market, model="gpt-4.1-mini")
+                result = await ask(question, market=market, model="gpt-5.4-mini")
                 return result.answer if result else None
             except Exception as e:
                 logger.error(f"Local archive query failed: {e}", exc_info=True)

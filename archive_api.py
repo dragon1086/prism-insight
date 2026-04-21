@@ -88,7 +88,7 @@ class QueryRequest(BaseModel):
     date_from: Optional[str] = None    # YYYY-MM-DD
     date_to: Optional[str] = None      # YYYY-MM-DD
     skip_cache: bool = False
-    model: str = "gpt-4.1-mini"
+    model: str = "gpt-5.4-mini"
 
 
 class QueryResponse(BaseModel):
