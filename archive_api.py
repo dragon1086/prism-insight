@@ -180,7 +180,6 @@ async def search(
                 "company_name": r["company_name"],
                 "report_date": r["report_date"],
                 "market": r["market"],
-                "score": r.get("score"),
             }
             for r in rows
         ]

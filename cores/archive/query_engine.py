@@ -93,8 +93,12 @@ def load_api_key() -> Optional[str]:
 
 
 def _query_hash(text: str, market: Optional[str], ticker: Optional[str],
-                date_from: Optional[str], date_to: Optional[str]) -> str:
-    key = f"{text}|{market}|{ticker}|{date_from}|{date_to}"
+                date_from: Optional[str], date_to: Optional[str],
+                outcome_filter: Optional[Dict[str, Any]] = None) -> str:
+    outcome_key = ""
+    if outcome_filter:
+        outcome_key = "|".join(f"{k}={outcome_filter[k]}" for k in sorted(outcome_filter))
+    key = f"{text}|{market}|{ticker}|{date_from}|{date_to}|{outcome_key}"
     return hashlib.sha256(key.encode()).hexdigest()[:32]
 
 
@@ -453,8 +457,12 @@ class QueryEngine:
         effective_date_from = date_from or hints["date_from"]
         effective_date_to = date_to or hints["date_to"]
 
+        # Outcome-based filter (e.g. "하락장에서 1년 후 50% 오른 종목")
+        outcome_filter = _parse_outcome_filter(text)
+
         q_hash = _query_hash(text, effective_market, effective_ticker,
-                              effective_date_from, effective_date_to)
+                              effective_date_from, effective_date_to,
+                              outcome_filter if outcome_filter else None)
 
         # 1. Cache check
         if not skip_cache:
@@ -473,14 +481,26 @@ class QueryEngine:
                 except (json.JSONDecodeError, KeyError) as e:
                     logger.warning(f"Corrupted cache entry for {q_hash}, regenerating: {e}")
 
-        # 2. Retrieval
-        snippets = await self.retrieve(
-            text=text,
-            market=effective_market,
-            ticker=effective_ticker,
-            date_from=effective_date_from,
-            date_to=effective_date_to,
-        )
+        # 2. Retrieval — branch on outcome filter
+        if outcome_filter:
+            logger.info(f"Outcome filter detected: {outcome_filter}")
+            snippets = await self.retrieve_by_outcome(
+                market=effective_market,
+                market_phase=outcome_filter.get("market_phase"),
+                min_return_current=outcome_filter.get("min_return_current"),
+                min_return_365d=outcome_filter.get("min_return_365d"),
+                max_drawdown_threshold=outcome_filter.get("max_drawdown_threshold"),
+                stop_loss_triggered=outcome_filter.get("stop_loss_triggered"),
+                limit=_MAX_REPORTS_IN_CONTEXT,
+            )
+        else:
+            snippets = await self.retrieve(
+                text=text,
+                market=effective_market,
+                ticker=effective_ticker,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
+            )
 
         if not snippets:
             return QueryResult(

@@ -118,3 +118,5 @@ id_ed25519*
 .vscode/
 *.local
 archive.db
+archive.db-shm
+archive.db-wal
