@@ -506,8 +506,6 @@ class TelegramAIBot:
         )
         self.application = Application.builder().token(self.token).request(request).build()
         self.setup_handlers()
-        # Sync command menu with BotFather on startup (1회)
-        self.application.post_init = self._on_application_post_init
 
         # Start background worker
         start_background_worker(self)
@@ -520,13 +518,6 @@ class TelegramAIBot:
         self.scheduler.add_job(self.compress_user_memories, "cron", hour=3, minute=0)
         self.scheduler.start()
     
-    async def _on_application_post_init(self, application):
-        """post_init hook — runs once after the Application is initialized."""
-        try:
-            await self._register_bot_commands()
-        except Exception as e:
-            logger.warning(f"post_init command registration failed: {e}")
-
     async def _register_bot_commands(self):
         """Sync slash-command menu with BotFather (set_my_commands API)."""
         from telegram import BotCommand
@@ -3337,6 +3328,11 @@ class TelegramAIBot:
         
         # Run bot
         await self.application.initialize()
+        # Sync slash-command menu with BotFather (1x on startup)
+        try:
+            await self._register_bot_commands()
+        except Exception as e:
+            logger.warning(f"_register_bot_commands failed on startup: {e}")
         await self.application.start()
         await self.application.updater.start_polling()
 
