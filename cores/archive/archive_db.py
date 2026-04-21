@@ -152,6 +152,117 @@ CREATE TABLE IF NOT EXISTS ticker_price_history (
 )
 """
 
+# ---------------------------------------------------------------------------
+# Persistent insight layer (accumulated /insight Q&A, weekly summaries, quotas)
+# ---------------------------------------------------------------------------
+
+_DDL_PERSISTENT_INSIGHTS = """
+CREATE TABLE IF NOT EXISTS persistent_insights (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER,
+    chat_id             INTEGER,
+    question            TEXT NOT NULL,
+    answer              TEXT NOT NULL,
+    key_takeaways       TEXT NOT NULL,
+    tools_used          TEXT,
+    tickers_mentioned   TEXT,
+    evidence_report_ids TEXT,
+    embedding           BLOB,
+    model_used          TEXT,
+    previous_insight_id INTEGER,
+    superseded_by       INTEGER,
+    created_at          TEXT DEFAULT (datetime('now', 'localtime'))
+)
+"""
+
+_DDL_PERSISTENT_INSIGHTS_FTS = """
+CREATE VIRTUAL TABLE IF NOT EXISTS persistent_insights_fts USING fts5(
+    question, key_takeaways,
+    content='persistent_insights', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 1'
+)
+"""
+
+_DDL_PERSISTENT_INSIGHTS_TRIGGER_AI = """
+CREATE TRIGGER IF NOT EXISTS persistent_insights_ai
+AFTER INSERT ON persistent_insights BEGIN
+    INSERT INTO persistent_insights_fts(rowid, question, key_takeaways)
+    VALUES (new.id, new.question, new.key_takeaways);
+END
+"""
+
+_DDL_PERSISTENT_INSIGHTS_TRIGGER_AD = """
+CREATE TRIGGER IF NOT EXISTS persistent_insights_ad
+AFTER DELETE ON persistent_insights BEGIN
+    INSERT INTO persistent_insights_fts(persistent_insights_fts, rowid, question, key_takeaways)
+    VALUES ('delete', old.id, old.question, old.key_takeaways);
+END
+"""
+
+_DDL_PERSISTENT_INSIGHTS_TRIGGER_AU = """
+CREATE TRIGGER IF NOT EXISTS persistent_insights_au
+AFTER UPDATE ON persistent_insights BEGIN
+    INSERT INTO persistent_insights_fts(persistent_insights_fts, rowid, question, key_takeaways)
+    VALUES ('delete', old.id, old.question, old.key_takeaways);
+    INSERT INTO persistent_insights_fts(rowid, question, key_takeaways)
+    VALUES (new.id, new.question, new.key_takeaways);
+END
+"""
+
+_DDL_WEEKLY_INSIGHT_SUMMARY = """
+CREATE TABLE IF NOT EXISTS weekly_insight_summary (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_start         TEXT NOT NULL UNIQUE,
+    week_end           TEXT NOT NULL,
+    summary_text       TEXT NOT NULL,
+    source_insight_ids TEXT,
+    insight_count      INTEGER,
+    top_tickers        TEXT,
+    created_at         TEXT DEFAULT (datetime('now', 'localtime'))
+)
+"""
+
+_DDL_INSIGHT_TOOL_USAGE = """
+CREATE TABLE IF NOT EXISTS insight_tool_usage (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    insight_id INTEGER NOT NULL,
+    tool_name  TEXT NOT NULL,
+    call_count INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+)
+"""
+
+_DDL_USER_INSIGHT_QUOTA = """
+CREATE TABLE IF NOT EXISTS user_insight_quota (
+    user_id INTEGER NOT NULL,
+    date    TEXT NOT NULL,
+    count   INTEGER DEFAULT 0,
+    PRIMARY KEY (user_id, date)
+)
+"""
+
+_DDL_INSIGHT_COST_DAILY = """
+CREATE TABLE IF NOT EXISTS insight_cost_daily (
+    date             TEXT PRIMARY KEY,
+    input_tokens     INTEGER DEFAULT 0,
+    output_tokens    INTEGER DEFAULT 0,
+    embedding_tokens INTEGER DEFAULT 0,
+    perplexity_calls INTEGER DEFAULT 0,
+    firecrawl_calls  INTEGER DEFAULT 0
+)
+"""
+
+_DDL_INSIGHT_METRICS_VIEW = """
+CREATE VIEW IF NOT EXISTS insight_metrics_daily AS
+SELECT
+    DATE(created_at) AS d,
+    COUNT(*)                 AS queries,
+    COUNT(DISTINCT user_id)  AS unique_users,
+    AVG(LENGTH(answer))      AS avg_answer_len
+FROM persistent_insights
+GROUP BY DATE(created_at)
+"""
+
 # New long-term performance columns for report_enrichment (added via migration)
 _ENRICHMENT_PERF_COLUMNS = [
     ("return_current",    "REAL"),
@@ -197,10 +308,26 @@ async def init_db(db_path: Optional[str] = None) -> None:
         await db.execute(_DDL_MARKET_TIMELINE)
         await db.execute(_DDL_INSIGHTS)
         await db.execute(_DDL_TICKER_PRICE_HISTORY)
+        # Persistent insight layer
+        await db.execute(_DDL_PERSISTENT_INSIGHTS)
+        await db.execute(_DDL_PERSISTENT_INSIGHTS_FTS)
+        await db.execute(_DDL_PERSISTENT_INSIGHTS_TRIGGER_AI)
+        await db.execute(_DDL_PERSISTENT_INSIGHTS_TRIGGER_AD)
+        await db.execute(_DDL_PERSISTENT_INSIGHTS_TRIGGER_AU)
+        await db.execute(_DDL_WEEKLY_INSIGHT_SUMMARY)
+        await db.execute(_DDL_INSIGHT_TOOL_USAGE)
+        await db.execute(_DDL_USER_INSIGHT_QUOTA)
+        await db.execute(_DDL_INSIGHT_COST_DAILY)
+        await db.execute(_DDL_INSIGHT_METRICS_VIEW)
+        # Indexes
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ra_ticker ON report_archive(ticker)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ra_date ON report_archive(report_date)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ra_market ON report_archive(market)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_tph_ticker_date ON ticker_price_history(ticker, price_date)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_pi_chat ON persistent_insights(chat_id, created_at DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_pi_created ON persistent_insights(created_at DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_wis_week ON weekly_insight_summary(week_start DESC)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_itu_insight ON insight_tool_usage(insight_id)")
         await _migrate_enrichment_columns(db)
         await db.commit()
     _initialized_paths.add(path)
