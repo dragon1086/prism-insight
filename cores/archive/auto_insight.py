@@ -534,6 +534,144 @@ class AutoInsight:
         )
 
     # ------------------------------------------------------------------
+    # Persistent insight weekly compression
+    # ------------------------------------------------------------------
+    async def compress_weekly_insights(
+        self,
+        week_start: Optional[str] = None,
+        week_end: Optional[str] = None,
+    ) -> Optional[int]:
+        """
+        Compress persistent_insights created between week_start~week_end into
+        one weekly_insight_summary row + mark them as superseded.
+
+        Returns the summary_id on success, None on skip/failure.
+        Default window: last completed Mon~Sun relative to today.
+        """
+        from datetime import datetime, timedelta
+
+        if not week_start or not week_end:
+            today = datetime.today()
+            last_sunday = today - timedelta(days=today.weekday() + 1)
+            last_monday = last_sunday - timedelta(days=6)
+            week_start = last_monday.strftime("%Y-%m-%d")
+            week_end = last_sunday.strftime("%Y-%m-%d")
+
+        await init_db(self.db_path)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT id, question, key_takeaways, tickers_mentioned
+                FROM persistent_insights
+                WHERE superseded_by IS NULL
+                  AND DATE(created_at) >= ? AND DATE(created_at) <= ?
+                ORDER BY id ASC
+                """,
+                (week_start, week_end),
+            )
+            rows = await cur.fetchall()
+
+        if not rows or len(rows) < 6:
+            logger.info(
+                f"weekly compression skip: {len(rows)} rows in "
+                f"{week_start}~{week_end}"
+            )
+            return None
+
+        # Aggregate top tickers
+        tick_counts: Dict[str, int] = {}
+        for r in rows:
+            try:
+                tks = json.loads(r["tickers_mentioned"] or "[]")
+            except Exception:
+                tks = []
+            for t in tks:
+                tick_counts[t] = tick_counts.get(t, 0) + 1
+        top_tickers = sorted(tick_counts.items(), key=lambda x: -x[1])[:5]
+
+        # Build compact input
+        content_lines: List[str] = []
+        for r in rows:
+            try:
+                tk = json.loads(r["key_takeaways"] or "[]")
+            except Exception:
+                tk = []
+            ta = " | ".join(tk[:2])
+            content_lines.append(f"- Q: {r['question'][:80]} | takeaways: {ta}")
+        weekly_input = "\n".join(content_lines)
+
+        # LLM compression
+        api_key = load_api_key()
+        if not api_key:
+            logger.warning("weekly compression skipped: no API key")
+            return None
+
+        system_prompt = (
+            "PRISM 장기투자 인사이트 축적 시스템의 주간 압축 엔진입니다. "
+            "아래 Q&A 요약 목록에서 **재사용 가능한 공통 패턴**만 5~10개 bullet로 "
+            "정리하세요. 개별 질문이 아닌 공통 패턴 중심. 한국어 합쇼체."
+        )
+        try:
+            from .query_engine import _get_openai_client
+            client = _get_openai_client(api_key)
+            resp = await client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"## 주간 Q&A 목록\n{weekly_input}"},
+                ],
+                max_completion_tokens=1500,
+                reasoning_effort="none",
+                temperature=0.3,
+            )
+            summary_text = resp.choices[0].message.content or ""
+        except Exception as e:
+            logger.warning(f"weekly compression LLM failed: {e}")
+            return None
+
+        if not summary_text.strip():
+            logger.warning("weekly compression: empty LLM response")
+            return None
+
+        # Insert summary row and mark sources as superseded
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                INSERT OR IGNORE INTO weekly_insight_summary
+                    (week_start, week_end, summary_text, source_insight_ids,
+                     insight_count, top_tickers)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    week_start, week_end, summary_text,
+                    json.dumps([r["id"] for r in rows]),
+                    len(rows),
+                    json.dumps(
+                        [{"ticker": t, "count": c} for t, c in top_tickers],
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+            await db.commit()
+            summary_id = cur.lastrowid
+
+        if summary_id is None:
+            logger.warning("weekly compression: INSERT produced no id")
+            return None
+
+        from .persistent_insights import mark_superseded
+        await mark_superseded(
+            [r["id"] for r in rows], summary_id, db_path=self.db_path,
+        )
+        logger.info(
+            f"weekly compression done: {len(rows)} insights → "
+            f"summary_id={summary_id} ({week_start}~{week_end})"
+        )
+        return summary_id
+
+    # ------------------------------------------------------------------
     # Run all insights
     # ------------------------------------------------------------------
 
@@ -550,6 +688,11 @@ class AutoInsight:
             self.market_phase_report(market=market),
             self.weekly_summary(market=market, with_narrative=with_narrative),
         )
+        # Persistent insight weekly compression (market-agnostic — shared pool)
+        try:
+            await self.compress_weekly_insights()
+        except Exception as e:
+            logger.warning(f"compress_weekly_insights failed in generate_all: {e}")
         return list(reports)
 
 
@@ -564,10 +707,12 @@ async def _main() -> None:
     parser.add_argument("--market", choices=["kr", "us"], help="시장 필터")
     parser.add_argument(
         "--type",
-        choices=["daily", "leaderboard", "stoploss", "phase", "weekly", "all"],
+        choices=["daily", "leaderboard", "stoploss", "phase", "weekly", "compress", "all"],
         default="all",
-        help="인사이트 유형 (기본값: all)",
+        help="인사이트 유형 (기본값: all). compress=persistent_insights 주간 압축만 실행",
     )
+    parser.add_argument("--week-start", dest="week_start", help="compress 전용: 시작일(월)")
+    parser.add_argument("--week-end", dest="week_end", help="compress 전용: 종료일(일)")
     parser.add_argument("--days", type=int, default=30, help="리더보드 수익률 기간 (기본값: 30)")
     parser.add_argument("--date", help="대상 날짜 (YYYY-MM-DD, 기본값: 오늘)")
     parser.add_argument("--narrative", action="store_true", help="주간 요약에 LLM 내러티브 포함")
@@ -586,6 +731,13 @@ async def _main() -> None:
         "phase": lambda: ai.market_phase_report(market=args.market),
         "weekly": lambda: ai.weekly_summary(date=args.date, market=args.market, with_narrative=args.narrative),
     }
+
+    if args.type == "compress":
+        sid = await ai.compress_weekly_insights(
+            week_start=args.week_start, week_end=args.week_end,
+        )
+        print(f"compress result: summary_id={sid}")
+        return
 
     if args.type == "all":
         reports = await ai.generate_all(market=args.market, with_narrative=args.narrative)
