@@ -69,7 +69,7 @@ class InsightAgent:
         self._api_key: Optional[str] = None
 
     # ------------------------------------------------------------------
-    # Retrieval (3-tier: insights + weekly + reports)
+    # Retrieval (5-tier: insights + weekly + reports + semantic facts + outcomes)
     # ------------------------------------------------------------------
     async def _build_retrieval_context(self, question: str) -> Dict[str, Any]:
         api_key = self._api_key or load_api_key()
@@ -97,23 +97,99 @@ class InsightAgent:
             weekly = []
         if isinstance(reports, Exception):
             reports = []
+
+        insights = insights or []
+        reports = (reports or [])[:_MAX_REPORTS_IN_CONTEXT]
+
+        # Outcome grounding + semantic facts (Phase B):
+        # collect tickers from retrieved insights + reports, then JOIN
+        # report_enrichment for objective return data and ticker_semantic_facts
+        # for distilled per-ticker knowledge.
+        ticker_set: set = set()
+        for ins in insights:
+            for t in (ins.tickers_mentioned or []):
+                if t:
+                    ticker_set.add(str(t).upper())
+        for r in reports:
+            if r.ticker:
+                ticker_set.add(str(r.ticker).upper())
+        tickers = sorted(ticker_set)[:20]   # cap for context size
+
+        outcomes_task = pi_store.fetch_outcomes_for_tickers(
+            tickers, db_path=self.db_path,
+        ) if tickers else asyncio.sleep(0, result={})
+        facts_task = pi_store.get_semantic_facts_for_tickers(
+            tickers, limit_per_ticker=3, db_path=self.db_path,
+        ) if tickers else asyncio.sleep(0, result={})
+        outcomes, semantic_facts = await asyncio.gather(
+            outcomes_task, facts_task, return_exceptions=True,
+        )
+        if isinstance(outcomes, Exception):
+            outcomes = {}
+        if isinstance(semantic_facts, Exception):
+            semantic_facts = {}
+
         return {
-            "insights": insights or [],
+            "insights": insights,
             "weekly": weekly or [],
-            "reports": (reports or [])[:_MAX_REPORTS_IN_CONTEXT],
+            "reports": reports,
+            "outcomes": outcomes,
+            "semantic_facts": semantic_facts,
             "q_emb": q_emb,
         }
 
     def _format_context(self, ctx: Dict[str, Any]) -> str:
         parts: List[str] = []
+
+        # Tier 1 — distilled semantic facts per ticker (Mem0 pattern)
+        sf = ctx.get("semantic_facts") or {}
+        if sf:
+            parts.append("## 종목별 누적 사실 (자동 증류, 신뢰도 정렬)")
+            for ticker, facts in sf.items():
+                parts.append(f"- **{ticker}**")
+                for f in facts:
+                    cat = f.get("category") or "?"
+                    conf = f.get("confidence", 0.0)
+                    parts.append(
+                        f"  · [{cat}|conf={conf:.2f}] {f['fact'][:240]}"
+                    )
+
+        # Tier 2 — objective outcome grounding (수익률·MDD·시장국면)
+        outcomes = ctx.get("outcomes") or {}
+        if outcomes:
+            parts.append("\n## 종목별 객관 결과 (report_enrichment)")
+            for ticker, o in outcomes.items():
+                bits = []
+                for k, label in [
+                    ("return_30d", "30d"), ("return_90d", "90d"),
+                    ("return_180d", "180d"), ("return_365d", "365d"),
+                    ("return_current", "현재"),
+                ]:
+                    v = o.get(k)
+                    if v is not None:
+                        bits.append(f"{label}={v:+.1f}%")
+                mdd = o.get("max_drawdown")
+                if mdd is not None:
+                    bits.append(f"MDD={mdd:+.1f}%")
+                phase = o.get("market_phase")
+                if phase:
+                    bits.append(f"국면={phase}")
+                ad = o.get("analysis_date")
+                if ad:
+                    bits.append(f"분석일={ad}")
+                parts.append(f"- **{ticker}**: " + " | ".join(bits))
+
+        # Tier 3 — recent weekly summaries
         if ctx["weekly"]:
-            parts.append("## 최근 주간 인사이트 요약")
+            parts.append("\n## 최근 주간 인사이트 요약")
             for w in ctx["weekly"]:
                 parts.append(
                     f"- ({w['week_start']}~{w['week_end']}) "
                     f"건수={w.get('insight_count')} 주요종목={w.get('top_tickers')}"
                 )
                 parts.append(f"  {(w['summary_text'] or '')[:600]}")
+
+        # Tier 4 — accumulated insights (top-5 with feedback signals applied)
         if ctx["insights"]:
             parts.append("\n## 누적 인사이트 (top-5)")
             for i, ins in enumerate(ctx["insights"], 1):
@@ -126,6 +202,8 @@ class InsightAgent:
                     f"   ticker={ins.tickers_mentioned} "
                     f"evidence={ins.evidence_report_ids}"
                 )
+
+        # Tier 5 — raw report excerpts
         if ctx["reports"]:
             parts.append("\n## 관련 분석 리포트 (archive)")
             for r in ctx["reports"]:
