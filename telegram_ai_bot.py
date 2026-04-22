@@ -520,8 +520,16 @@ class TelegramAIBot:
         self.scheduler.start()
     
     async def _register_bot_commands(self):
-        """Sync slash-command menu with BotFather (set_my_commands API)."""
-        from telegram import BotCommand
+        """Sync slash-command menu with BotFather across all scopes
+        (private chats, groups, group admins) — without explicit scope the
+        Telegram default only covers private chats."""
+        from telegram import (
+            BotCommand,
+            BotCommandScopeDefault,
+            BotCommandScopeAllPrivateChats,
+            BotCommandScopeAllGroupChats,
+            BotCommandScopeAllChatAdministrators,
+        )
         commands = [
             BotCommand("evaluate",    "보유 종목 평가 시작"),
             BotCommand("us_evaluate", "미국 주식 보유 종목 평가"),
@@ -538,13 +546,20 @@ class TelegramAIBot:
             BotCommand("journal",     "매매 저널 조회"),
             BotCommand("help",        "도움말"),
         ]
-        try:
-            await self.application.bot.set_my_commands(commands)
-            logger.info(
-                f"Registered {len(commands)} bot commands via BotFather API"
-            )
-        except Exception as e:
-            logger.warning(f"set_my_commands failed: {e}")
+        scopes = [
+            ("default", BotCommandScopeDefault()),
+            ("private", BotCommandScopeAllPrivateChats()),
+            ("group", BotCommandScopeAllGroupChats()),
+            ("group_admin", BotCommandScopeAllChatAdministrators()),
+        ]
+        for label, scope in scopes:
+            try:
+                await self.application.bot.set_my_commands(commands, scope=scope)
+                logger.info(
+                    f"Registered {len(commands)} bot commands (scope={label})"
+                )
+            except Exception as e:
+                logger.warning(f"set_my_commands failed (scope={label}): {e}")
 
     def cleanup_expired_contexts(self):
         """Clean up expired conversation contexts"""
