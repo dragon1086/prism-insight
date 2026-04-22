@@ -22,9 +22,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from datetime import datetime, timezone, timedelta
+
 from mcp_agent.agents.agent import Agent
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_anthropic import AnthropicAugmentedLLM
+
+_KST = timezone(timedelta(hours=9))
 
 from . import persistent_insights as pi_store
 from .archive_db import ARCHIVE_DB_PATH
@@ -210,9 +214,17 @@ class InsightAgent:
             from report_generator import get_or_create_global_mcp_app, reset_global_mcp_app
             _ = await get_or_create_global_mcp_app()
 
+            today_kst = datetime.now(_KST).strftime("%Y-%m-%d")
+            dated_prompt = (
+                f"# 오늘 날짜: {today_kst} (KST)\n"
+                "- 날짜 관련 모든 질문/응답에서 이 날짜를 기준으로 해석하세요.\n"
+                "- 'N일 수익률', '최근', '올해', '30거래일' 등의 표현은 이 기준일로부터 역산합니다.\n"
+                "- 외부 도구 호출 시에도 이 기준일 범위의 데이터를 요청하세요.\n\n"
+                f"{INSIGHT_SYSTEM_PROMPT}"
+            )
             agent = Agent(
                 name="insight_agent",
-                instruction=INSIGHT_SYSTEM_PROMPT,
+                instruction=dated_prompt,
                 server_names=_MCP_SERVERS,
             )
             try:
