@@ -154,11 +154,21 @@ class InsightAgent:
                         f"  · [{cat}|conf={conf:.2f}] {f['fact'][:240]}"
                     )
 
-        # Tier 2 — objective outcome grounding (수익률·MDD·시장국면)
+        # Tier 2 — objective outcome grounding (수익률·MDD·시장국면 + 참조 기간)
         outcomes = ctx.get("outcomes") or {}
         if outcomes:
             parts.append("\n## 종목별 객관 결과 (report_enrichment)")
             for ticker, o in outcomes.items():
+                # Data window is mandatory for verifiability — show prominently.
+                first = o.get("first_analysis_date") or o.get("analysis_date") or "?"
+                last_a = o.get("last_analysis_date") or o.get("analysis_date") or "?"
+                last_p = o.get("last_price_update") or "?"
+                rc = o.get("report_count")
+                window_bits = [f"분석일범위={first}~{last_a}"]
+                if rc:
+                    window_bits.append(f"리포트수={rc}건")
+                if last_p and last_p != "?":
+                    window_bits.append(f"가격최종={last_p}")
                 bits = []
                 for k, label in [
                     ("return_30d", "30d"), ("return_90d", "90d"),
@@ -174,10 +184,10 @@ class InsightAgent:
                 phase = o.get("market_phase")
                 if phase:
                     bits.append(f"국면={phase}")
-                ad = o.get("analysis_date")
-                if ad:
-                    bits.append(f"분석일={ad}")
-                parts.append(f"- **{ticker}**: " + " | ".join(bits))
+                parts.append(
+                    f"- **{ticker}** [{' | '.join(window_bits)}]: "
+                    + " | ".join(bits)
+                )
 
         # Tier 3 — recent weekly summaries
         if ctx["weekly"]:

@@ -386,9 +386,12 @@ async def fetch_outcomes_for_tickers(
     db_path: Optional[str] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Outcome grounding — return {ticker: {return_30d, return_90d, return_365d,
-    return_current, max_drawdown, market_phase, last_price_update}}.
-    Latest enrichment per ticker.
+    Outcome grounding — return {ticker: {…outcomes…, first_analysis_date,
+    last_analysis_date, last_price_update}}.
+
+    Latest enrichment per ticker is used for return/MDD/market_phase fields.
+    Min/max analysis_date span is added separately so the LLM can cite the
+    full data window when mentioning a ticker.
     """
     if not tickers:
         return {}
@@ -396,6 +399,7 @@ async def fetch_outcomes_for_tickers(
     placeholders = ",".join("?" for _ in tickers)
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row
+        # Latest enrichment row per ticker
         cur = await db.execute(
             f"""
             SELECT re.ticker, re.return_30d, re.return_90d, re.return_180d,
@@ -409,11 +413,27 @@ async def fetch_outcomes_for_tickers(
             tickers,
         )
         rows = await cur.fetchall()
+        # Analysis date window per ticker (min ~ max)
+        cur = await db.execute(
+            f"""
+            SELECT re.ticker,
+                   MIN(re.analysis_date) AS first_analysis_date,
+                   MAX(re.analysis_date) AS last_analysis_date,
+                   COUNT(*)               AS report_count
+            FROM report_enrichment re
+            WHERE re.ticker IN ({placeholders})
+            GROUP BY re.ticker
+            """,
+            tickers,
+        )
+        windows = {r["ticker"]: dict(r) for r in await cur.fetchall()}
+
     out: Dict[str, Dict[str, Any]] = {}
     for r in rows:
         t = r["ticker"]
         if t in out:
             continue   # keep most recent only
+        win = windows.get(t, {})
         out[t] = {
             "return_30d": r["return_30d"],
             "return_90d": r["return_90d"],
@@ -424,6 +444,9 @@ async def fetch_outcomes_for_tickers(
             "market_phase": r["market_phase"],
             "last_price_update": r["last_price_update"],
             "analysis_date": r["analysis_date"],
+            "first_analysis_date": win.get("first_analysis_date"),
+            "last_analysis_date": win.get("last_analysis_date"),
+            "report_count": win.get("report_count"),
         }
     return out
 
