@@ -672,6 +672,193 @@ class AutoInsight:
         return summary_id
 
     # ------------------------------------------------------------------
+    # Semantic fact distillation (Mem0 / Auto Dream pattern, Phase B)
+    # ------------------------------------------------------------------
+    async def distill_semantic_facts(
+        self,
+        days_window: int = 30,
+        min_mentions: int = 2,
+        max_facts_per_ticker: int = 5,
+    ) -> int:
+        """
+        Walk recent persistent_insights, group by ticker (>= min_mentions),
+        ask LLM to distill 2~5 atomic facts per ticker, then upsert to
+        ticker_semantic_facts. Conflicting facts get superseded by newer ones.
+
+        Returns total facts inserted.
+        """
+        import json
+        import aiosqlite
+        from datetime import datetime, timedelta
+        from .archive_db import ARCHIVE_DB_PATH
+        from .persistent_insights import (
+            upsert_semantic_fact, get_semantic_facts_for_tickers,
+            supersede_semantic_fact, fetch_outcomes_for_tickers,
+        )
+
+        path = self.db_path or str(ARCHIVE_DB_PATH)
+        cutoff = (datetime.today() - timedelta(days=days_window)).strftime("%Y-%m-%d")
+
+        # Group recent insights by ticker
+        ticker_to_inputs: Dict[str, List[Dict[str, Any]]] = {}
+        async with aiosqlite.connect(path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT id, question, key_takeaways, tickers_mentioned,
+                       confidence_score, created_at
+                FROM persistent_insights
+                WHERE DATE(created_at) >= ?
+                """,
+                (cutoff,),
+            )
+            rows = await cur.fetchall()
+
+        for r in rows:
+            try:
+                tks = json.loads(r["tickers_mentioned"] or "[]")
+                kt = json.loads(r["key_takeaways"] or "[]")
+            except Exception:
+                continue
+            for t in tks:
+                t = str(t).upper()
+                if not t:
+                    continue
+                ticker_to_inputs.setdefault(t, []).append({
+                    "id": r["id"],
+                    "question": r["question"][:200],
+                    "takeaways": kt[:3],
+                    "confidence": r["confidence_score"] or 0.0,
+                    "created_at": r["created_at"][:10],
+                })
+
+        # Filter: only tickers with min_mentions+
+        eligible = {
+            t: items for t, items in ticker_to_inputs.items()
+            if len(items) >= min_mentions
+        }
+        if not eligible:
+            logger.info(f"distill_semantic_facts: no eligible tickers (window={days_window}d)")
+            return 0
+
+        api_key = load_api_key()
+        if not api_key:
+            logger.warning("distill_semantic_facts skipped: no API key")
+            return 0
+
+        outcomes = await fetch_outcomes_for_tickers(
+            list(eligible.keys()), db_path=path,
+        )
+
+        from .query_engine import _get_openai_client
+        client = _get_openai_client(api_key)
+
+        total_inserted = 0
+        for ticker, items in eligible.items():
+            # Existing facts for conflict detection
+            existing = await get_semantic_facts_for_tickers(
+                [ticker], limit_per_ticker=10, db_path=path,
+            )
+            existing_facts = existing.get(ticker, [])
+            existing_text = "\n".join(
+                f"- [{f['category']}|conf={f['confidence']:.2f}] {f['fact']}"
+                for f in existing_facts
+            ) or "(없음)"
+
+            outcome = outcomes.get(ticker) or {}
+            outcome_str = " ".join(
+                f"{k}={v:+.1f}%" if isinstance(v, (int, float)) else f"{k}={v}"
+                for k, v in outcome.items() if v is not None
+            ) or "(데이터 없음)"
+
+            mention_str = "\n".join(
+                f"- ({it['created_at']}) Q: {it['question']} | "
+                f"takeaways: {' | '.join(it['takeaways'])} | "
+                f"signal_conf={it['confidence']:+.2f}"
+                for it in items[:15]
+            )
+
+            user_msg = (
+                f"# 종목: {ticker}\n\n"
+                f"## 객관 결과 (report_enrichment)\n{outcome_str}\n\n"
+                f"## 기존 누적 사실 (참고)\n{existing_text}\n\n"
+                f"## 최근 30일 이 종목 관련 Q&A\n{mention_str}\n\n"
+                f"위 정보를 종합해 **재사용 가능한 원자적 사실(atomic facts)**을 "
+                f"최대 {max_facts_per_ticker}개 추출하세요. 각 fact는 한 줄(최대 200자), "
+                f"카테고리(fundamental/momentum/risk/sentiment/thesis 중 1), "
+                f"신뢰도(0.0~1.0)를 함께 반환하세요.\n\n"
+                f"## 응답 형식 (순수 JSON 배열)\n"
+                f'[\n'
+                f'  {{"fact":"...", "category":"fundamental", "confidence":0.85}},\n'
+                f'  ...\n'
+                f']\n\n'
+                f"기존 사실과 명백히 모순되는 내용을 발견하면, 새 fact를 같이 포함하되 confidence를 낮추지 마세요. "
+                f"객관 결과(수익률·MDD)와 누적 인사이트가 충돌하면 객관 결과를 우선시하세요."
+            )
+
+            try:
+                resp = await client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content":
+                            "당신은 PRISM 인사이트 사실 증류 엔진입니다. 한국어 합쇼체. "
+                            "응답은 순수 JSON 배열만 — 그 외 텍스트 절대 금지."},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    max_completion_tokens=1500,
+                    reasoning_effort="none",
+                    temperature=0.2,
+                )
+                raw = resp.choices[0].message.content or ""
+            except Exception as e:
+                logger.warning(f"distill_semantic_facts LLM failed for {ticker}: {e}")
+                continue
+
+            # Parse JSON
+            import re as _re
+            m = _re.search(r"\[.*\]", raw, _re.DOTALL)
+            if not m:
+                logger.warning(f"distill_semantic_facts no JSON for {ticker}")
+                continue
+            try:
+                facts = json.loads(m.group(0))
+            except Exception:
+                logger.warning(f"distill_semantic_facts JSON parse fail for {ticker}")
+                continue
+
+            inserted_for_ticker = 0
+            for f in facts[:max_facts_per_ticker]:
+                fact_text = str(f.get("fact", "")).strip()[:240]
+                cat = str(f.get("category", "")).strip().lower() or "thesis"
+                conf = float(f.get("confidence", 0.5))
+                conf = max(0.0, min(1.0, conf))
+                if not fact_text:
+                    continue
+                supporting_ids = [it["id"] for it in items]
+                try:
+                    await upsert_semantic_fact(
+                        ticker=ticker, fact_text=fact_text,
+                        fact_category=cat, confidence=conf,
+                        supporting_insight_ids=supporting_ids,
+                        db_path=path,
+                    )
+                    inserted_for_ticker += 1
+                except Exception as e:
+                    logger.warning(f"upsert fact failed {ticker}: {e}")
+
+            total_inserted += inserted_for_ticker
+            logger.info(
+                f"distill_semantic_facts {ticker}: {inserted_for_ticker} facts "
+                f"inserted from {len(items)} mentions"
+            )
+
+        logger.info(
+            f"distill_semantic_facts done: {total_inserted} facts across "
+            f"{len(eligible)} tickers (window={days_window}d)"
+        )
+        return total_inserted
+
+    # ------------------------------------------------------------------
     # Run all insights
     # ------------------------------------------------------------------
 
@@ -693,6 +880,11 @@ class AutoInsight:
             await self.compress_weekly_insights()
         except Exception as e:
             logger.warning(f"compress_weekly_insights failed in generate_all: {e}")
+        # Phase B: semantic fact distillation (Mem0/Auto Dream pattern)
+        try:
+            await self.distill_semantic_facts()
+        except Exception as e:
+            logger.warning(f"distill_semantic_facts failed in generate_all: {e}")
         return list(reports)
 
 
@@ -707,12 +899,16 @@ async def _main() -> None:
     parser.add_argument("--market", choices=["kr", "us"], help="시장 필터")
     parser.add_argument(
         "--type",
-        choices=["daily", "leaderboard", "stoploss", "phase", "weekly", "compress", "all"],
+        choices=["daily", "leaderboard", "stoploss", "phase", "weekly",
+                 "compress", "distill", "all"],
         default="all",
-        help="인사이트 유형 (기본값: all). compress=persistent_insights 주간 압축만 실행",
+        help="인사이트 유형 (기본값: all). "
+             "compress=주간 인사이트 압축, distill=ticker별 시맨틱 사실 증류",
     )
     parser.add_argument("--week-start", dest="week_start", help="compress 전용: 시작일(월)")
     parser.add_argument("--week-end", dest="week_end", help="compress 전용: 종료일(일)")
+    parser.add_argument("--distill-window", dest="distill_window", type=int, default=30,
+                        help="distill 전용: 최근 N일 인사이트 대상 (기본 30)")
     parser.add_argument("--days", type=int, default=30, help="리더보드 수익률 기간 (기본값: 30)")
     parser.add_argument("--date", help="대상 날짜 (YYYY-MM-DD, 기본값: 오늘)")
     parser.add_argument("--narrative", action="store_true", help="주간 요약에 LLM 내러티브 포함")
@@ -737,6 +933,11 @@ async def _main() -> None:
             week_start=args.week_start, week_end=args.week_end,
         )
         print(f"compress result: summary_id={sid}")
+        return
+
+    if args.type == "distill":
+        n = await ai.distill_semantic_facts(days_window=args.distill_window)
+        print(f"distill result: {n} facts inserted")
         return
 
     if args.type == "all":
