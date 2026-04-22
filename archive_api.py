@@ -126,6 +126,19 @@ class InsightAgentResponse(BaseModel):
     model_used: str
 
 
+class FeedbackRequest(BaseModel):
+    insight_id: int
+    user_id: int
+    score: int                 # +1 / -1
+    reason: Optional[str] = None
+
+
+class FeedbackResponse(BaseModel):
+    ok: bool
+    insight_id: int
+    new_confidence: float
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -273,6 +286,40 @@ async def insight_agent_endpoint(
         raise
     except Exception as e:
         logger.error(f"/insight_agent error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/feedback", response_model=FeedbackResponse)
+async def feedback_endpoint(
+    req: FeedbackRequest, _key: str = Depends(_verify_key),
+):
+    """Record user 👍/👎 feedback on an insight (DPO-lite signal)."""
+    if req.score not in (-1, 0, 1):
+        raise HTTPException(status_code=400, detail="score must be -1, 0, or 1")
+    try:
+        from cores.archive.persistent_insights import record_feedback
+        import aiosqlite
+        from cores.archive.archive_db import ARCHIVE_DB_PATH
+        ok = await record_feedback(
+            insight_id=req.insight_id, user_id=req.user_id,
+            score=req.score, reason=(req.reason or "")[:500],
+        )
+        if not ok:
+            raise HTTPException(status_code=400, detail="feedback rejected")
+        async with aiosqlite.connect(str(ARCHIVE_DB_PATH)) as db:
+            cur = await db.execute(
+                "SELECT COALESCE(confidence_score, 0.0) FROM persistent_insights WHERE id=?",
+                (req.insight_id,),
+            )
+            row = await cur.fetchone()
+            new_conf = float(row[0]) if row else 0.0
+        return FeedbackResponse(
+            ok=True, insight_id=req.insight_id, new_confidence=new_conf,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"/feedback error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

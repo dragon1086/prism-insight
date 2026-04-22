@@ -20,9 +20,10 @@ from pathlib import Path
 from queue import Queue
 
 from dotenv import load_dotenv
-from telegram import Update, InputFile
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+    Application, CommandHandler, MessageHandler, filters, ContextTypes,
+    ConversationHandler, CallbackQueryHandler,
 )
 from telegram.request import HTTPXRequest
 
@@ -1003,6 +1004,12 @@ class TelegramAIBot:
             per_chat=False, per_user=True, conversation_timeout=300,
         )
         self.application.add_handler(insight_handler)
+
+        # /insight inline-keyboard feedback (👍/👎) callback
+        self.application.add_handler(CallbackQueryHandler(
+            self.handle_insight_feedback_callback,
+            pattern=r"^insight_fb:",
+        ))
 
         # General text messages - /help or /start guidance
         self.application.add_handler(MessageHandler(
@@ -3000,6 +3007,102 @@ class TelegramAIBot:
         )
         return INSIGHT_ENTERING_QUERY
 
+    @staticmethod
+    def _insight_feedback_keyboard(insight_id: Optional[int]):
+        """Build 👍/👎 inline keyboard for /insight answers."""
+        if insight_id is None:
+            return None
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("👍 도움됨", callback_data=f"insight_fb:1:{insight_id}"),
+            InlineKeyboardButton("👎 부정확", callback_data=f"insight_fb:-1:{insight_id}"),
+        ]])
+
+    async def handle_insight_feedback_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Process inline keyboard 👍/👎 → POST /feedback (or local CRUD)."""
+        query = update.callback_query
+        if not query or not query.data:
+            return
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        try:
+            _, score_str, iid_str = query.data.split(":", 2)
+            score = int(score_str)
+            insight_id = int(iid_str)
+        except Exception:
+            return
+        user_id = query.from_user.id if query.from_user else 0
+
+        ok, new_conf = await self._call_insight_feedback(insight_id, user_id, score)
+        if ok:
+            label = "👍 도움됨" if score > 0 else "👎 부정확"
+            try:
+                await query.edit_message_reply_markup(
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(
+                            f"{label} 기록됨 (신뢰도 {new_conf:+.2f})",
+                            callback_data="insight_fb:noop:0",
+                        )
+                    ]])
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                await query.answer("⚠️ 피드백 저장 실패", show_alert=False)
+            except Exception:
+                pass
+
+    async def _call_insight_feedback(
+        self, insight_id: int, user_id: int, score: int,
+    ) -> tuple:
+        """Returns (ok, new_confidence)."""
+        api_url = os.getenv("ARCHIVE_API_URL", "").rstrip("/")
+        api_key = os.getenv("ARCHIVE_API_KEY", "")
+        if api_url:
+            import aiohttp
+            payload = {
+                "insight_id": insight_id, "user_id": user_id, "score": score,
+            }
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
+                        f"{api_url}/feedback",
+                        json=payload, headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.error(f"/feedback {resp.status}: {await resp.text()}")
+                            return False, 0.0
+                        data = await resp.json()
+                        return True, float(data.get("new_confidence", 0.0))
+            except Exception as e:
+                logger.error(f"_call_insight_feedback HTTP error: {e}", exc_info=True)
+                return False, 0.0
+        else:
+            try:
+                from cores.archive.persistent_insights import record_feedback
+                from cores.archive.archive_db import ARCHIVE_DB_PATH
+                import aiosqlite
+                ok = await record_feedback(
+                    insight_id=insight_id, user_id=user_id, score=score,
+                )
+                if not ok:
+                    return False, 0.0
+                async with aiosqlite.connect(str(ARCHIVE_DB_PATH)) as db:
+                    cur = await db.execute(
+                        "SELECT COALESCE(confidence_score, 0.0) FROM persistent_insights WHERE id=?",
+                        (insight_id,),
+                    )
+                    row = await cur.fetchone()
+                    new_conf = float(row[0]) if row else 0.0
+                return True, new_conf
+            except Exception as e:
+                logger.error(f"local feedback failed: {e}", exc_info=True)
+                return False, 0.0
+
     async def handle_insight_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Route to InsightAgent (retrieval + function calling + auto-save)."""
         chat_id = update.effective_chat.id
@@ -3038,18 +3141,21 @@ class TelegramAIBot:
             )
             full = f"{header}\n\n{body}{quota_line}\n\n{self._DISCLAIMER_KR.strip()}"
 
+            kb = self._insight_feedback_keyboard(payload.insight_id)
             if len(full) > 4096:
                 # split but keep final message_id for reply mapping
                 chunks = [full[i:i + 4096] for i in range(0, len(full), 4096)]
                 last_sent = None
-                for ch in chunks:
+                for idx, ch in enumerate(chunks):
+                    is_last = (idx == len(chunks) - 1)
                     last_sent = await self.application.bot.send_message(
                         chat_id=chat_id, text=ch,
+                        reply_markup=(kb if is_last else None),
                     )
                 sent = last_sent
             else:
                 sent = await self.application.bot.send_message(
-                    chat_id=chat_id, text=full,
+                    chat_id=chat_id, text=full, reply_markup=kb,
                 )
 
             # Register multi-turn reply context
@@ -3177,14 +3283,18 @@ class TelegramAIBot:
                 if payload.remaining_quota >= 0 else ""
             )
             text = f"🧭 {payload.answer}{quota_line}"
+            kb = self._insight_feedback_keyboard(payload.insight_id)
             if len(text) > 4096:
                 chunks = [text[i:i + 4096] for i in range(0, len(text), 4096)]
                 last_sent = None
-                for ch in chunks:
-                    last_sent = await update.message.reply_text(ch)
+                for idx, ch in enumerate(chunks):
+                    is_last = (idx == len(chunks) - 1)
+                    last_sent = await update.message.reply_text(
+                        ch, reply_markup=(kb if is_last else None),
+                    )
                 sent = last_sent
             else:
-                sent = await update.message.reply_text(text)
+                sent = await update.message.reply_text(text, reply_markup=kb)
             ic.add_turn(user_question, payload.answer, payload.insight_id)
             if sent is not None:
                 self.insight_contexts[sent.message_id] = ic
