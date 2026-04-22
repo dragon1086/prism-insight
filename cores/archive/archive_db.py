@@ -263,6 +263,55 @@ FROM persistent_insights
 GROUP BY DATE(created_at)
 """
 
+# ---------------------------------------------------------------------------
+# Self-improvement layer (Phase B):
+#   - insight_feedback           — DPO-lite user signals (👍/👎)
+#   - ticker_semantic_facts      — distilled per-ticker facts (Mem0 pattern)
+#   - confidence_score column on persistent_insights (boost/deboost retrieval)
+# ---------------------------------------------------------------------------
+
+_DDL_INSIGHT_FEEDBACK = """
+CREATE TABLE IF NOT EXISTS insight_feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    insight_id  INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    score       INTEGER NOT NULL,            -- +1 (good), -1 (bad)
+    reason      TEXT,
+    created_at  TEXT DEFAULT (datetime('now', 'localtime')),
+    UNIQUE(insight_id, user_id)              -- one vote per user per insight
+)
+"""
+
+_DDL_TICKER_SEMANTIC_FACTS = """
+CREATE TABLE IF NOT EXISTS ticker_semantic_facts (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker                 TEXT NOT NULL,
+    fact_text              TEXT NOT NULL,             -- distilled fact
+    fact_category          TEXT,                      -- 'fundamental'|'momentum'|'risk'|'sentiment'|'thesis'
+    confidence             REAL DEFAULT 0.5,          -- 0.0~1.0
+    supporting_insight_ids TEXT,                      -- JSON array
+    supporting_report_ids  TEXT,                      -- JSON array
+    last_validated_at      TEXT DEFAULT (datetime('now', 'localtime')),
+    superseded_by          INTEGER,                   -- conflict resolution → another fact id
+    created_at             TEXT DEFAULT (datetime('now', 'localtime'))
+)
+"""
+
+# Migration: add confidence_score column to persistent_insights if missing
+_PERSISTENT_INSIGHTS_NEW_COLUMNS = [
+    ("confidence_score", "REAL DEFAULT 0.0"),
+]
+
+
+async def _migrate_persistent_insights_columns(db) -> None:
+    for col_name, col_type in _PERSISTENT_INSIGHTS_NEW_COLUMNS:
+        try:
+            await db.execute(
+                f"ALTER TABLE persistent_insights ADD COLUMN {col_name} {col_type}"
+            )
+        except Exception:
+            pass  # column already exists
+
 # New long-term performance columns for report_enrichment (added via migration)
 _ENRICHMENT_PERF_COLUMNS = [
     ("return_current",    "REAL"),
@@ -319,6 +368,9 @@ async def init_db(db_path: Optional[str] = None) -> None:
         await db.execute(_DDL_USER_INSIGHT_QUOTA)
         await db.execute(_DDL_INSIGHT_COST_DAILY)
         await db.execute(_DDL_INSIGHT_METRICS_VIEW)
+        # Self-improvement layer (Phase B)
+        await db.execute(_DDL_INSIGHT_FEEDBACK)
+        await db.execute(_DDL_TICKER_SEMANTIC_FACTS)
         # Indexes
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ra_ticker ON report_archive(ticker)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ra_date ON report_archive(report_date)")
@@ -328,7 +380,10 @@ async def init_db(db_path: Optional[str] = None) -> None:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_pi_created ON persistent_insights(created_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_wis_week ON weekly_insight_summary(week_start DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_itu_insight ON insight_tool_usage(insight_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_if_insight ON insight_feedback(insight_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tsf_ticker ON ticker_semantic_facts(ticker, last_validated_at DESC)")
         await _migrate_enrichment_columns(db)
+        await _migrate_persistent_insights_columns(db)
         await db.commit()
     _initialized_paths.add(path)
 

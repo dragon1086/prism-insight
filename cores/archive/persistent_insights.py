@@ -155,20 +155,55 @@ async def fts_candidates(
         return []
 
 
+async def _get_confidence_scores(
+    insight_ids: List[int], db_path: Optional[str] = None,
+) -> Dict[int, float]:
+    if not insight_ids:
+        return {}
+    path = db_path or str(ARCHIVE_DB_PATH)
+    placeholders = ",".join("?" for _ in insight_ids)
+    async with aiosqlite.connect(path) as db:
+        cur = await db.execute(
+            f"""
+            SELECT id, COALESCE(confidence_score, 0.0) AS cs
+            FROM persistent_insights
+            WHERE id IN ({placeholders})
+            """,
+            insight_ids,
+        )
+        rows = await cur.fetchall()
+    return {r[0]: float(r[1]) for r in rows}
+
+
 async def search_insights(
     query: str,
     query_embedding: Optional[bytes],
     limit: int = 5,
     exclude_superseded: bool = True,
     db_path: Optional[str] = None,
+    confidence_weight: float = 0.15,
+    drop_below: float = -0.6,
 ) -> List[InsightRow]:
     """
-    FTS top-50 → 임베딩 재랭킹 top-limit.
-    query_embedding이 없거나 후보가 적으면 FTS 순서 그대로 상위 limit.
+    FTS top-50 → 임베딩 재랭킹 + confidence_score 가중치 → top-limit.
+
+    final_score = cosine_sim + confidence_weight * confidence_score
+                  (confidence_score ∈ [-1, 1])
+
+    Insights with confidence_score below drop_below are filtered out entirely
+    (heavily downvoted answers shouldn't pollute future retrievals).
     """
     candidates = await fts_candidates(
         query, limit=50, exclude_superseded=exclude_superseded, db_path=db_path
     )
+    if not candidates:
+        return []
+
+    # Confidence filter + boost
+    cs_map = await _get_confidence_scores(
+        [c.id for c in candidates], db_path=db_path
+    )
+    candidates = [c for c in candidates if cs_map.get(c.id, 0.0) > drop_below]
     if not candidates:
         return []
     if not query_embedding or len(candidates) <= limit:
@@ -183,11 +218,12 @@ async def search_insights(
     for c in candidates:
         cv = decode_embedding(c.embedding)
         if cv is None:
-            scored.append((0.0, c))
-            continue
-        cn = float(np.linalg.norm(cv)) or 1e-9
-        s = float(np.dot(q_vec, cv) / (q_norm * cn))
-        scored.append((s, c))
+            sim = 0.0
+        else:
+            cn = float(np.linalg.norm(cv)) or 1e-9
+            sim = float(np.dot(q_vec, cv) / (q_norm * cn))
+        boost = confidence_weight * cs_map.get(c.id, 0.0)
+        scored.append((sim + boost, c))
     scored.sort(key=lambda x: -x[0])
     return [c for _, c in scored[:limit]]
 
@@ -299,6 +335,181 @@ async def increment_cost(
                 today, input_tokens, output_tokens, embedding_tokens,
                 perplexity_calls, firecrawl_calls,
             ),
+        )
+        await db.commit()
+
+
+async def record_feedback(
+    insight_id: int,
+    user_id: int,
+    score: int,                 # +1 / -1
+    reason: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> bool:
+    """
+    Record user feedback (UPSERT — one vote per user per insight).
+    Updates persistent_insights.confidence_score = SUM(feedback.score) / 10.0 (clamped).
+    Returns True on success.
+    """
+    if score not in (-1, 0, 1):
+        return False
+    path = db_path or str(ARCHIVE_DB_PATH)
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            """
+            INSERT INTO insight_feedback (insight_id, user_id, score, reason)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(insight_id, user_id) DO UPDATE SET
+                score=excluded.score,
+                reason=COALESCE(excluded.reason, reason),
+                created_at=datetime('now', 'localtime')
+            """,
+            (insight_id, user_id, score, reason),
+        )
+        cur = await db.execute(
+            "SELECT COALESCE(SUM(score), 0) FROM insight_feedback WHERE insight_id=?",
+            (insight_id,),
+        )
+        agg = (await cur.fetchone())[0] or 0
+        # Clamp to [-1.0, +1.0] using soft normalization (1 vote ≈ 0.2)
+        score_norm = max(-1.0, min(1.0, float(agg) / 5.0))
+        await db.execute(
+            "UPDATE persistent_insights SET confidence_score=? WHERE id=?",
+            (score_norm, insight_id),
+        )
+        await db.commit()
+    return True
+
+
+async def fetch_outcomes_for_tickers(
+    tickers: List[str],
+    db_path: Optional[str] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Outcome grounding — return {ticker: {return_30d, return_90d, return_365d,
+    return_current, max_drawdown, market_phase, last_price_update}}.
+    Latest enrichment per ticker.
+    """
+    if not tickers:
+        return {}
+    path = db_path or str(ARCHIVE_DB_PATH)
+    placeholders = ",".join("?" for _ in tickers)
+    async with aiosqlite.connect(path) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"""
+            SELECT re.ticker, re.return_30d, re.return_90d, re.return_180d,
+                   re.return_365d, re.return_current,
+                   re.max_drawdown, re.market_phase, re.last_price_update,
+                   re.analysis_date
+            FROM report_enrichment re
+            WHERE re.ticker IN ({placeholders})
+            ORDER BY re.analysis_date DESC
+            """,
+            tickers,
+        )
+        rows = await cur.fetchall()
+    out: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        t = r["ticker"]
+        if t in out:
+            continue   # keep most recent only
+        out[t] = {
+            "return_30d": r["return_30d"],
+            "return_90d": r["return_90d"],
+            "return_180d": r["return_180d"],
+            "return_365d": r["return_365d"],
+            "return_current": r["return_current"],
+            "max_drawdown": r["max_drawdown"],
+            "market_phase": r["market_phase"],
+            "last_price_update": r["last_price_update"],
+            "analysis_date": r["analysis_date"],
+        }
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Semantic facts CRUD (Mem0 pattern — distilled atomic facts per ticker)
+# ---------------------------------------------------------------------------
+
+async def upsert_semantic_fact(
+    *,
+    ticker: str,
+    fact_text: str,
+    fact_category: str,
+    confidence: float = 0.5,
+    supporting_insight_ids: Optional[List[int]] = None,
+    supporting_report_ids: Optional[List[int]] = None,
+    db_path: Optional[str] = None,
+) -> int:
+    path = db_path or str(ARCHIVE_DB_PATH)
+    async with aiosqlite.connect(path) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO ticker_semantic_facts
+                (ticker, fact_text, fact_category, confidence,
+                 supporting_insight_ids, supporting_report_ids,
+                 last_validated_at)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+            """,
+            (
+                ticker.upper(), fact_text, fact_category, confidence,
+                json.dumps(supporting_insight_ids or []),
+                json.dumps(supporting_report_ids or []),
+            ),
+        )
+        await db.commit()
+        return int(cur.lastrowid) if cur.lastrowid else -1
+
+
+async def get_semantic_facts_for_tickers(
+    tickers: List[str],
+    limit_per_ticker: int = 3,
+    exclude_superseded: bool = True,
+    db_path: Optional[str] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Return {ticker: [{fact, category, confidence, validated_at}, ...]}."""
+    if not tickers:
+        return {}
+    path = db_path or str(ARCHIVE_DB_PATH)
+    placeholders = ",".join("?" for _ in tickers)
+    supersede_clause = "AND superseded_by IS NULL" if exclude_superseded else ""
+    async with aiosqlite.connect(path) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"""
+            SELECT ticker, fact_text, fact_category, confidence, last_validated_at
+            FROM ticker_semantic_facts
+            WHERE ticker IN ({placeholders})
+              {supersede_clause}
+            ORDER BY ticker, confidence DESC, last_validated_at DESC
+            """,
+            [t.upper() for t in tickers],
+        )
+        rows = await cur.fetchall()
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        t = r["ticker"]
+        if t not in out:
+            out[t] = []
+        if len(out[t]) < limit_per_ticker:
+            out[t].append({
+                "fact": r["fact_text"],
+                "category": r["fact_category"],
+                "confidence": r["confidence"],
+                "validated_at": r["last_validated_at"],
+            })
+    return out
+
+
+async def supersede_semantic_fact(
+    old_id: int, new_id: int, db_path: Optional[str] = None,
+) -> None:
+    path = db_path or str(ARCHIVE_DB_PATH)
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "UPDATE ticker_semantic_facts SET superseded_by=? WHERE id=?",
+            (new_id, old_id),
         )
         await db.commit()
 
