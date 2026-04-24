@@ -2101,7 +2101,7 @@ class TelegramAIBot:
     async def handle_us_ticker_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle US ticker input"""
         user_id = update.effective_user.id
-        user_input = update.message.text.strip()
+        user_input = update.message.text.strip().upper()
         logger.info(f"Received US ticker input - User: {user_id}, Input: {user_input}")
 
         # Validate ticker
