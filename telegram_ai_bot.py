@@ -544,6 +544,7 @@ class TelegramAIBot:
             BotCommand("ask",         "자유 질문 (최신 정보 기반)"),
             BotCommand("insight",     "누적 인사이트 기반 장기 분석"),
             BotCommand("journal",     "매매 저널 조회"),
+            BotCommand("cancel",      "진행 중인 명령어 취소 (evaluate·us_evaluate·report·us_report·history·signal·us_signal·theme·us_theme·ask·insight·journal)"),
             BotCommand("help",        "도움말"),
         ]
         scopes = [
@@ -771,7 +772,7 @@ class TelegramAIBot:
         # Basic commands
         self.application.add_handler(CommandHandler("start", self.handle_start))
         self.application.add_handler(CommandHandler("help", self.handle_help))
-        self.application.add_handler(CommandHandler("cancel", self.handle_cancel_standalone))
+        self.application.add_handler(CommandHandler("cancel", self.handle_cancel_standalone), group=1)
         self.application.add_handler(CommandHandler("memories", self.handle_memories))
         self.application.add_handler(CommandHandler("triggers", self.handle_triggers))
 
@@ -1857,8 +1858,8 @@ class TelegramAIBot:
 
         await update.message.reply_text(
             "요청이 취소되었습니다.\n\n"
-            "🇰🇷 국내 주식: /evaluate, /report, /history\n"
-            "🇺🇸 해외 주식: /us_evaluate, /us_report"
+            "취소 가능한 명령어: /evaluate, /us_evaluate, /report, /us_report, /history, "
+            "/signal, /us_signal, /theme, /us_theme, /ask, /insight, /journal"
         )
         return ConversationHandler.END
 
@@ -1867,8 +1868,8 @@ class TelegramAIBot:
         """Handle conversation cancellation (called from outside conversation)"""
         await update.message.reply_text(
             "현재 진행 중인 대화가 없습니다.\n\n"
-            "🇰🇷 국내 주식: /evaluate, /report, /history\n"
-            "🇺🇸 해외 주식: /us_evaluate, /us_report"
+            "취소 가능한 명령어: /evaluate, /us_evaluate, /report, /us_report, /history, "
+            "/signal, /us_signal, /theme, /us_theme, /ask, /insight, /journal"
         )
 
     @staticmethod
@@ -2101,7 +2102,7 @@ class TelegramAIBot:
     async def handle_us_ticker_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle US ticker input"""
         user_id = update.effective_user.id
-        user_input = update.message.text.strip()
+        user_input = update.message.text.strip().upper()
         logger.info(f"Received US ticker input - User: {user_id}, Input: {user_input}")
 
         # Validate ticker
