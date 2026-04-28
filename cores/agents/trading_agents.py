@@ -309,6 +309,11 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - "Strong bear market regime + defensive positioning required" (NOT allowed if stock has 2+ strong momentum signals)
         - "Sector lagging + capital outflow trend confirmed" (macro data evidence required)
 
+        **Permitted valuation/data-quality No Entry expressions (cite the exact field):**
+        - Reverse DCF verdict = "unrealistic" (must quote the implied CAGR vs past 5y CAGR with [actual]/[inference] tags from the reverse_dcf block)
+        - data_quality_check.flag = "too_many_assumptions" (must quote the assumption_count from the data_quality_check block)
+        - These two are intentionally added to defend the aggressive bull-market entry stance against momentum-fueled overvaluation traps and ungrounded LLM rationale. Use only when the math/data clearly supports it; do NOT use as a vague hedge.
+
         ## Tool Usage Guide
         - Current time: time-get_current_time tool — **call this FIRST**. Use the returned date as the end date for all kospi_kosdaq queries. Never assume or guess the current date.
         - Volume/investor trading: kospi_kosdaq-get_stock_ohlcv, kospi_kosdaq-get_stock_trading_volume (end date = date from time-get_current_time)
@@ -319,6 +324,43 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - 'Investment Strategy and Opinion': Core investment view
         - 'Recent Major News Summary': Industry trends and news
         - 'Technical Analysis': Price, target, stop loss info
+
+        ## Reverse DCF Sanity Check (Mandatory)
+
+        From the Financial Analyst report, extract or infer:
+        - Current price (CP), shares outstanding, latest TTM revenue, latest TTM operating income.
+        - Past 5-year revenue CAGR, past 5-year operating margin range.
+
+        Compute (LLM-side, simple two-stage approximation):
+        - Implied 10-year revenue CAGR that the current EV/market cap would justify
+          assuming terminal growth = 2.5% and discount rate = 9% (KR equity).
+        - Implied steady-state operating margin needed if revenue CAGR is held at the past-5y median.
+
+        Verdict bands:
+        - "reasonable"  : implied CAGR within 1.2x of past 5y CAGR AND implied margin within historical range
+        - "stretched"   : implied CAGR 1.2x~2x of past 5y CAGR, OR implied margin at top of historical range
+        - "unrealistic" : implied CAGR > 2x past 5y CAGR, OR implied margin > historical max
+        - "insufficient_data" : any required input is [unavailable] (do NOT penalise — flag for human review)
+
+        Output goes into the JSON `reverse_dcf` block (see schema below).
+        Tag every number you cite here with [actual] / [inference] / [assumption] / [unavailable].
+
+        ## Data Provenance Tagging (Mandatory)
+
+        Every numeric claim in valuation_analysis, sector_outlook, rationale, and rejection_reason
+        MUST carry exactly one tag:
+          [actual]      — value pulled directly from the attached report
+          [inference]   — value derived by you from one or more [actual] values
+          [assumption]  — value you guessed because the report did not contain it
+          [unavailable] — required value that the report did not contain
+
+        Examples:
+          "PER 18.5x [actual] vs sector median 22x [actual] → 16% discount [inference]"
+          "implied 10y CAGR 25% [inference] vs past-5y CAGR 11% [actual] → stretched"
+          "expected 2026 op margin 14% [assumption] (no guidance disclosed)"
+
+        Then count tags across the four fields above and emit the `data_quality_check` block.
+        If assumption_count > 3, set flag to "too_many_assumptions"; otherwise "ok".
 
         ## JSON Response Format
 
@@ -359,6 +401,23 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
             "sector": "KRX sector name. Must use one of: {sector_constraint}",
             "market_condition": "Market regime from macro intelligence (strong_bull/moderate_bull/sideways/moderate_bear/strong_bear) + brief rationale. If no macro data, use technical assessment (Uptrend/Downtrend/Sideways with specific evidence)",
             "max_portfolio_size": "Maximum holdings inferred from market analysis",
+            "reverse_dcf": {
+                "implied_revenue_cagr_pct": Number (10y revenue CAGR implied by current price),
+                "implied_op_margin_pct": Number (steady-state op margin implied by current price),
+                "past_5y_revenue_cagr_pct": Number or null,
+                "past_5y_op_margin_range_pct": "8~12" style string or null,
+                "discount_rate_used_pct": 9.0,
+                "terminal_growth_pct": 2.5,
+                "verdict": "reasonable" | "stretched" | "unrealistic" | "insufficient_data",
+                "comment": "1-line plain-language explanation with [actual]/[inference]/[assumption] tags"
+            },
+            "data_quality_check": {
+                "actual_count": Number of [actual] tags counted,
+                "inference_count": Number of [inference] tags counted,
+                "assumption_count": Number of [assumption] tags counted,
+                "unavailable_count": Number of [unavailable] tags counted,
+                "flag": "ok" | "too_many_assumptions"
+            },
             "trading_scenarios": {
                 "key_levels": {
                     "primary_support": Primary support level,
@@ -693,12 +752,53 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - "시장 체제 강한 약세 + 방어적 포지션 필요" (단, 강한 모멘텀 2개 이상이면 이 사유 불가)
         - "해당 섹터 소외 + 자금 이탈 추세 확인" (거시 데이터 근거 필수)
 
+        **허용되는 밸류에이션/데이터 품질 기반 미진입 표현 (해당 필드 직접 인용 필수):**
+        - 리버스 DCF 결과 "unrealistic" (reverse_dcf 블록의 implied CAGR vs 과거 5년 CAGR을 [actual]/[inference] 태그와 함께 직접 인용해야 합니다)
+        - data_quality_check.flag = "too_many_assumptions" (data_quality_check 블록의 assumption_count를 직접 인용해야 합니다)
+        - 이 두 사유는 강세장 적극매수 모드에서 모멘텀에 휩쓸린 고평가 함정과 근거 없는 LLM 추론으로부터 방어하기 위해 의도적으로 추가되었습니다. 수치/데이터가 명확히 뒷받침될 때만 사용하시고, 막연한 회피 사유로 쓰지 마세요.
+
         ## 도구 사용 가이드
         - 현재 시간: time-get_current_time tool — **kospi_kosdaq 조회 전 반드시 먼저 호출하세요**. 반환된 날짜를 모든 kospi_kosdaq 조회의 종료일(end date)로 사용하세요. 현재 날짜를 임의로 가정하거나 추측하지 마세요.
         - 거래량/투자자별 매매: kospi_kosdaq-get_stock_ohlcv, kospi_kosdaq-get_stock_trading_volume (종료일 = time-get_current_time으로 획득한 날짜)
         - 밸류에이션 비교: perplexity_ask tool
         - 데이터 조회 기준: 보고서의 'Publication date: ' 날짜
         - kospi_kosdaq-load_all_tickers 사용 금지!!!
+
+        ## 리버스 DCF 점검 (필수)
+
+        재무 분석 보고서에서 다음 값을 추출하거나 추론합니다:
+        - 현재가(CP), 발행주식수, 최신 TTM 매출, 최신 TTM 영업이익
+        - 과거 5년 매출 CAGR, 과거 5년 영업이익률 범위
+
+        다음을 LLM이 직접 계산합니다(2단계 근사):
+        - 현재 시가총액(EV)이 정당화하는 향후 10년 매출 CAGR (영구성장률 2.5%, 할인율 9% 가정 — 한국 주식 기준)
+        - 매출 CAGR을 과거 5년 중앙값으로 고정했을 때 필요한 정상상태 영업이익률
+
+        판정 구간:
+        - "reasonable"   : 추정 CAGR이 과거 5년 CAGR의 1.2배 이내 AND 추정 마진이 과거 범위 내
+        - "stretched"    : 추정 CAGR이 과거 5년 CAGR의 1.2~2배 OR 추정 마진이 과거 최상단
+        - "unrealistic"  : 추정 CAGR이 과거 5년 CAGR의 2배 초과 OR 추정 마진이 과거 최댓값 초과
+        - "insufficient_data" : 입력값 중 [unavailable]이 있을 때 (감점하지 말고 사람 검토 플래그)
+
+        결과는 JSON `reverse_dcf` 블록에 기재합니다(아래 스키마 참조).
+        본문에 인용하는 모든 숫자에는 [actual] / [inference] / [assumption] / [unavailable] 태그를 붙이세요.
+
+        ## 데이터 출처 태깅 (필수)
+
+        valuation_analysis, sector_outlook, rationale, rejection_reason 네 필드의 모든 숫자 주장에는
+        반드시 다음 중 정확히 하나의 태그를 붙입니다:
+          [actual]      — 첨부된 보고서에서 직접 가져온 값
+          [inference]   — [actual] 값들로부터 본인이 계산한 값
+          [assumption]  — 보고서에 없어 본인이 추정한 값
+          [unavailable] — 보고서에 없는 필수 값
+
+        예시:
+          "PER 18.5배 [actual] vs 업종 중앙값 22배 [actual] → 16% 할인 [inference]"
+          "추정 10년 CAGR 25% [inference] vs 과거 5년 CAGR 11% [actual] → stretched"
+          "2026년 예상 영업이익률 14% [assumption] (가이던스 미공개)"
+
+        그 후 위 4개 필드의 태그를 모두 카운트하여 `data_quality_check` 블록에 기재합니다.
+        assumption_count > 3 이면 flag = "too_many_assumptions", 그 외에는 "ok".
 
         ## JSON 응답 형식
 
@@ -739,6 +839,23 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
             "sector": "KRX 업종명. 반드시 다음 중 하나 사용: {sector_constraint}",
             "market_condition": "거시경제 인텔리전스의 시장 체제 (strong_bull/moderate_bull/sideways/moderate_bear/strong_bear) + 간략 근거. 거시 데이터 없으면 기술적 판단 (상승추세/하락추세/횡보 + 구체적 근거)",
             "max_portfolio_size": "시장 상태 분석 결과 추론된 최대 보유 종목수(1개의 숫자로만 표현. 범위표현 안됨. '개'라는 단위 표현도 삭제.)",
+            "reverse_dcf": {
+                "implied_revenue_cagr_pct": 숫자 (현재가가 정당화하는 10년 매출 CAGR),
+                "implied_op_margin_pct": 숫자 (현재가가 정당화하는 정상상태 영업이익률),
+                "past_5y_revenue_cagr_pct": 숫자 또는 null,
+                "past_5y_op_margin_range_pct": "8~12" 형태 문자열 또는 null,
+                "discount_rate_used_pct": 9.0,
+                "terminal_growth_pct": 2.5,
+                "verdict": "reasonable" | "stretched" | "unrealistic" | "insufficient_data",
+                "comment": "[actual]/[inference]/[assumption] 태그를 포함한 1줄 평어 설명"
+            },
+            "data_quality_check": {
+                "actual_count": [actual] 태그 카운트,
+                "inference_count": [inference] 태그 카운트,
+                "assumption_count": [assumption] 태그 카운트,
+                "unavailable_count": [unavailable] 태그 카운트,
+                "flag": "ok" | "too_many_assumptions"
+            },
             "trading_scenarios": {
                 "key_levels": {
                     "primary_support": 주요 지지선,
