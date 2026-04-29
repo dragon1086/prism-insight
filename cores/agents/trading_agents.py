@@ -96,6 +96,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         | Regime | min_score | R/R floor | Max stop | Momentum signals | Extra confirmations |
         |--------|-----------|-----------|----------|------------------|---------------------|
+        | parabolic     | 4 | 0.7 | -5% | 2+ | 0 |
         | strong_bull   | 4 | 1.0 | -7% | 1+ | 0 |
         | moderate_bull | 4 | 1.2 | -7% | 1+ | 0 |
         | sideways      | 5 | 1.3 | -6% | 1+ | 0 |
@@ -107,6 +108,30 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
           AND momentum_signal_count meets row AND additional_confirmation_count meets row
           → **Enter**.
         - Any condition fails → **No Entry** with rejection_reason naming the failing item.
+
+        ### Parabolic regime activation (when to use the parabolic row)
+
+        Apply the **parabolic** row ONLY when ALL of the following hold:
+        1. Base regime evaluates to `strong_bull` (KOSPI ≥ 20-day MA, recent 2-week return strong)
+        2. KOSPI 90-day return ≥ +30% (clearly accelerated, not just bullish)
+        3. KOSPI 30-day return ≥ +10% (acceleration ongoing, not cooling)
+        4. Trigger type is one of: "Daily Rise Top / Closing Strength / Gap Up Momentum"
+           (the **momentum-leader cohort**; explicitly **excludes** "Volume Surge" and
+           "Capital Inflow Ratio" — these tend to mark distribution in late-cycle
+           parabolic phases per historical data, so they keep the strong_bull row)
+
+        If any condition fails → fall back to the standard `strong_bull` row (R/R floor 1.0, stop -7%).
+
+        **Distribution Day Kill Switch (overrides parabolic activation):**
+        If the report or analysis shows ≥ 4 distribution days (institutional selling sessions
+        with ≥ -0.2% close on rising volume) within the last 4 weeks → demote regime by ONE step
+        (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways).
+        State the demotion in `market_condition` field.
+
+        **Parabolic position sizing** (apply when parabolic row is active):
+        - Halve the normal position concept: prefer 50% of the slot's capital
+        - Reduce max_portfolio_size by 1~2 slots vs. what the report's market risk implies
+        - State explicitly in `portfolio_context` that this is a parabolic-regime sizing reduction
 
         ## Step 3 — Momentum Signals (count toward matrix row)
 
@@ -210,8 +235,15 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         ## Entry / Target / Stop Computation
 
         - entry_price: current price (no range, no "around"). Range expressions are prohibited.
-        - target_price: report's stated target if present; otherwise 80% of distance to next major resistance,
-          or current_price × (1 + 15~30%) when neither is available.
+        - target_price: pick the FIRST applicable rule:
+          1. Report's stated target IF target ≥ current_price × 1.05 (target is meaningfully above current price)
+          2. Otherwise (report target is stale / at-or-below current_price): 80% of the distance from current price
+             to the next major resistance from report 1-1, OR 80% to the resistance after that,
+             choosing whichever satisfies the regime's R/R floor with the smallest distance
+          3. Fallback if no resistance levels are available: current_price × (1 + 15~30%)
+          Rationale: in momentum / parabolic regimes the analyst consensus target frequently lags
+          the actual price by months, producing artificially negative R/R. Rule 1 prevents that
+          while still respecting consensus when it is current.
         - stop_loss: per "Stop Loss Construction" above.
 
         ## Tool Usage
@@ -250,7 +282,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
             "buy_score": Integer 1~10,
             "macro_adjustment": -1, 0, or +1,
             "effective_score": buy_score + macro_adjustment,
-            "min_score": Regime-adaptive (strong_bull:4, moderate_bull:4, sideways:5, moderate_bear:5, strong_bear:6),
+            "min_score": Regime-adaptive (parabolic:4, strong_bull:4, moderate_bull:4, sideways:5, moderate_bear:5, strong_bear:6),
             "momentum_signal_count": 0~5,
             "additional_confirmation_count": 0~5,
             "decision": "Enter" or "No Entry",
@@ -354,6 +386,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         | 시장 체제 | min_score | 손익비 floor | 최대 손절폭 | 모멘텀 신호 | 추가 확인 |
         |----------|-----------|------------|----------|----------|--------|
+        | parabolic     | 4 | 0.7 | -5% | 2개+ | 0 |
         | strong_bull   | 4 | 1.0 | -7% | 1개+ | 0 |
         | moderate_bull | 4 | 1.2 | -7% | 1개+ | 0 |
         | sideways      | 5 | 1.3 | -6% | 1개+ | 0 |
@@ -365,6 +398,28 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
           AND momentum_signal_count 충족 AND additional_confirmation_count 충족
           → **진입**.
         - 위 조건 중 하나라도 미달 → **미진입**. 미달 항목을 rejection_reason에 명시하십시오.
+
+        ### parabolic 행 적용 조건 (언제 strong_bull 대신 parabolic을 적용하나)
+
+        다음을 **모두** 충족할 때에 한해 parabolic 행을 적용하십시오:
+        1. 기본 regime이 `strong_bull` (KOSPI ≥ 20일선, 최근 2주 강세)
+        2. KOSPI 90일 수익률 ≥ +30% (단순 강세가 아니라 명백한 가속)
+        3. KOSPI 30일 수익률 ≥ +10% (가속이 식지 않고 진행 중)
+        4. 트리거 유형이 다음 중 하나: "일중 상승률 상위주 / 마감 강도 상위주 / 갭 상승 모멘텀 상위주"
+           (모멘텀 리더 코호트 한정. **거래량 급증 / 시총 대비 자금 유입은 제외** —
+           과거 데이터에서 폭주장 후반부 distribution 신호와 일치하므로 strong_bull 행 유지)
+
+        하나라도 미달 → 일반 `strong_bull` 행으로 fallback (R/R 1.0, 손절 -7%).
+
+        **Distribution Day Kill Switch (parabolic 활성화를 무력화):**
+        보고서 또는 분석에서 최근 4주 내 분포일(거래량 동반 -0.2%↓ 마감) ≥ 4건이 확인되면
+        regime을 1단계 보수화하십시오 (parabolic → strong_bull, strong_bull → moderate_bull,
+        moderate_bull → sideways). 보수화 사실을 `market_condition` 필드에 명시하십시오.
+
+        **parabolic 포지션 사이징** (parabolic 행이 활성화될 때):
+        - 평소 슬롯의 50% 비중을 권고합니다 (1슬롯=100% 매매라는 시스템 제약 안에서, max_portfolio_size 자체를 줄여 비중 효과 달성)
+        - max_portfolio_size를 보고서의 시장 리스크 기준값보다 1~2 슬롯 줄이십시오
+        - parabolic regime 사이징 축소라는 사실을 `portfolio_context`에 명시
 
         ## 3단계 — 모멘텀 신호 (매트릭스 행에 카운트)
 
@@ -464,7 +519,11 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         ## 진입가 / 목표가 / 손절가 산정
 
         - entry_price: 현재가 그대로 사용. 범위 표현 금지.
-        - target_price: 보고서 명시 목표가가 있으면 그대로, 없으면 다음 주요 저항선까지 거리의 80% 위치, 둘 다 없으면 현재가 × (1 + 15~30%).
+        - target_price: 다음 룰을 순서대로 적용해 첫 번째 해당 케이스를 선택하십시오.
+          1. 보고서 명시 목표가 ≥ 현재가 × 1.05 → 그대로 사용 (목표가가 현재가보다 의미있게 위)
+          2. 그렇지 않으면(보고서 목표가가 stale 또는 현재가 이하) → 보고서 1-1 다음 주요 저항선까지 거리의 80% 위치, 또는 그 다음 저항선까지 거리의 80% 위치 중 현재 regime의 R/R floor를 충족하는 가장 가까운 값
+          3. 저항선 정보가 없으면 → 현재가 × (1 + 15~30%)
+          취지: 모멘텀 / 폭주장(parabolic) regime에서는 애널리스트 컨센서스 목표가가 가격을 수개월 따라잡지 못해 R/R 계산이 인위적으로 음수가 되는 경우가 빈번합니다. 룰 1은 컨센서스가 최신일 때 그대로 존중하면서도, stale 경우엔 차트 기반으로 fallback 합니다.
         - stop_loss: 위 "손절가 설정" 규칙대로 산정.
 
         ## 도구 사용
@@ -502,7 +561,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
             "buy_score": 1~10 정수,
             "macro_adjustment": -1, 0, 또는 +1,
             "effective_score": buy_score + macro_adjustment,
-            "min_score": 시장 체제별 (strong_bull:4, moderate_bull:4, sideways:5, moderate_bear:5, strong_bear:6),
+            "min_score": 시장 체제별 (parabolic:4, strong_bull:4, moderate_bull:4, sideways:5, moderate_bear:5, strong_bear:6),
             "momentum_signal_count": 0~5,
             "additional_confirmation_count": 0~5,
             "decision": "진입" 또는 "미진입",

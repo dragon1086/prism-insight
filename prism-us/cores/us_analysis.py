@@ -374,6 +374,7 @@ async def analyze_us_stock(
 
                 if language == "ko":
                     regime_labels = {
+                        "parabolic": "폭주 강세장",
                         "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
                         "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
                     }

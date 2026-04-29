@@ -288,3 +288,90 @@ def test_ambiguous_setup_no_longer_auto_no_entry_en():
     agent = create_trading_scenario_agent(language="en")
     assert "name the *specific* uncertainty in the rationale" in agent.instruction
     assert '"Vague concern" is not allowed as a No Entry reason' in agent.instruction
+
+
+# --- v2.12.0: Parabolic regime + target_price fallback + DD kill switch ---
+
+def test_parabolic_regime_row_in_matrix_ko():
+    agent = create_trading_scenario_agent(language="ko")
+    # The parabolic row must be present in the matrix with R/R floor 0.7, stop -5%, momentum 2+
+    assert "| parabolic     | 4 | 0.7 | -5% | 2개+ | 0 |" in agent.instruction
+
+
+def test_parabolic_regime_row_in_matrix_en():
+    agent = create_trading_scenario_agent(language="en")
+    assert "| parabolic     | 4 | 0.7 | -5% | 2+ | 0 |" in agent.instruction
+
+
+def test_parabolic_activation_conditions_ko():
+    agent = create_trading_scenario_agent(language="ko")
+    # All 4 activation conditions must be present
+    assert "KOSPI 90일 수익률 ≥ +30%" in agent.instruction
+    assert "KOSPI 30일 수익률 ≥ +10%" in agent.instruction
+    assert "일중 상승률 상위주 / 마감 강도 상위주 / 갭 상승 모멘텀 상위주" in agent.instruction
+    # Exclude volume surge and capital inflow from parabolic
+    assert "거래량 급증 / 시총 대비 자금 유입은 제외" in agent.instruction
+
+
+def test_parabolic_activation_conditions_en():
+    agent = create_trading_scenario_agent(language="en")
+    assert "KOSPI 90-day return ≥ +30%" in agent.instruction
+    assert "KOSPI 30-day return ≥ +10%" in agent.instruction
+    assert "Daily Rise Top / Closing Strength / Gap Up Momentum" in agent.instruction
+    assert 'excludes** "Volume Surge" and' in agent.instruction
+
+
+def test_distribution_day_kill_switch_ko():
+    agent = create_trading_scenario_agent(language="ko")
+    assert "Distribution Day Kill Switch" in agent.instruction
+    assert "분포일" in agent.instruction
+    # 4-week / 4-day rule
+    assert "4주 내" in agent.instruction
+    # Demotion mapping must be explicit
+    assert "parabolic → strong_bull" in agent.instruction
+
+
+def test_distribution_day_kill_switch_en():
+    agent = create_trading_scenario_agent(language="en")
+    assert "Distribution Day Kill Switch" in agent.instruction
+    assert "distribution days" in agent.instruction
+    assert "parabolic → strong_bull" in agent.instruction
+
+
+def test_target_price_fallback_rule_ko():
+    agent = create_trading_scenario_agent(language="ko")
+    # Rule 1: report target ≥ current_price × 1.05 → use as-is
+    assert "현재가 × 1.05" in agent.instruction
+    # Rule 2: chart-based fallback when target is stale
+    assert "stale 또는 현재가 이하" in agent.instruction
+    assert "다음 주요 저항선까지 거리의 80%" in agent.instruction
+
+
+def test_target_price_fallback_rule_en():
+    agent = create_trading_scenario_agent(language="en")
+    assert "current_price × 1.05" in agent.instruction
+    assert "report target is stale" in agent.instruction
+    assert "80% of the distance" in agent.instruction
+
+
+def test_parabolic_position_sizing_ko():
+    agent = create_trading_scenario_agent(language="ko")
+    assert "parabolic 포지션 사이징" in agent.instruction
+    assert "max_portfolio_size를 보고서의 시장 리스크 기준값보다 1~2 슬롯 줄이십시오" in agent.instruction
+
+
+def test_parabolic_position_sizing_en():
+    agent = create_trading_scenario_agent(language="en")
+    assert "Parabolic position sizing" in agent.instruction
+    assert "Reduce max_portfolio_size by 1~2 slots" in agent.instruction
+
+
+def test_parabolic_min_score_in_schema_ko():
+    agent = create_trading_scenario_agent(language="ko")
+    # JSON schema must list parabolic:4 alongside the existing regimes
+    assert "parabolic:4" in agent.instruction
+
+
+def test_parabolic_min_score_in_schema_en():
+    agent = create_trading_scenario_agent(language="en")
+    assert "parabolic:4" in agent.instruction

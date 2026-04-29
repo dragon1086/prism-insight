@@ -456,8 +456,17 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                     reason = " / ".join(reason_parts) if reason_parts else "기타"
 
-                    # Market condition info
-                    market_condition_text = scenario.get("market_condition")
+                    # Market condition info — translate regime label to Korean for display
+                    market_condition_text = scenario.get("market_condition") or ""
+                    _regime_labels_ko = {
+                        "parabolic": "폭주 강세장",
+                        "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
+                        "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
+                    }
+                    for eng, ko in _regime_labels_ko.items():
+                        if market_condition_text.startswith(eng):
+                            market_condition_text = market_condition_text.replace(eng, ko, 1)
+                            break
 
                     # Generate skip message
                     skip_message = f"⚠️ 매수 보류: {company_name}({ticker})\n" \
