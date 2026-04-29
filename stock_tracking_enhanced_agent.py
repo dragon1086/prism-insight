@@ -412,7 +412,14 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 buy_score = scenario.get("buy_score", 0)
                 min_score = scenario.get("min_score", 0)
                 decision = analysis_result.get("decision")
+                rationale = scenario.get("rationale", "") or ""
                 logger.info(f"Buy score check: {company_name}({ticker}) - Score: {buy_score}, Min required score: {min_score}")
+                logger.info(
+                    f"Scenario decision: {company_name}({ticker}) - "
+                    f"decision={decision!r}, sector_diverse={sector_diverse}, sector={sector!r}"
+                )
+                if rationale:
+                    logger.info(f"Scenario rationale ({company_name}/{ticker}): {rationale[:300]}")
 
                 # Respect AI agent's decision (consistent with US logic)
                 # AI considers qualitative factors (RSI, support structure, volume, sector outlook, etc.)
@@ -425,17 +432,29 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                 # Generate message if not buying (watch/insufficient score/sector constraints)
                 if decision != "Enter" or buy_score < min_score or not sector_diverse:
-                    # Determine reason for not buying
-                    reason = ""
-                    if not sector_diverse:
-                        reason = f"Sector '{sector}' over-concentration prevention"
+                    # Build a single reason string that lists ALL applicable causes,
+                    # ordered by who actually blocked the entry. AI judgment is shown
+                    # first when the AI itself rejected — so the displayed reason
+                    # matches the rationale in the same message.
+                    reason_parts = []
+
+                    if decision != "Enter":
+                        reason_parts.append(f"AI 판단: {decision}")
                     elif buy_score < min_score:
-                        if decision == "Enter":
-                            decision = "Skip"  # Change from "Enter" to "Skip"
-                            logger.info(f"Decision changed due to insufficient buy score: {company_name}({ticker}) - Enter → Skip (Score: {buy_score} < {min_score})")
-                        reason = f"Insufficient buy score ({buy_score} < {min_score})"
-                    elif decision != "Enter":
-                        reason = f"Analysis decision is 'Skip'"
+                        # AI said Enter but score is below threshold — flip to Skip
+                        decision = "Skip"
+                        logger.info(
+                            f"Decision changed due to insufficient buy score: "
+                            f"{company_name}({ticker}) - Enter → Skip "
+                            f"(Score: {buy_score} < {min_score})"
+                        )
+
+                    if buy_score < min_score:
+                        reason_parts.append(f"점수 부족 ({buy_score}/{min_score})")
+                    if not sector_diverse:
+                        reason_parts.append(f"섹터 집중 ({sector})")
+
+                    reason = " / ".join(reason_parts) if reason_parts else "기타"
 
                     # Market condition info
                     market_condition_text = scenario.get("market_condition")

@@ -298,9 +298,20 @@ async def get_trading_value_rank_change(ticker: str) -> Tuple[float, str]:
         return 0, "Trading value analysis failed"
 
 
+# Apply ratio guard only when portfolio is large enough that the ratio is meaningful.
+# With <4 holdings, a single same-sector position naturally produces 25-100% — blocking
+# every additional buy in that sector even though absolute count is well under the cap.
+MIN_HOLDINGS_FOR_RATIO_CHECK = 4
+
+
 def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentration_ratio: float, account_key: str | None = None) -> bool:
     """
     Check for over-concentration in same sector.
+
+    The absolute cap (`max_same_sector`) is always enforced. The ratio cap
+    (`concentration_ratio`) is only applied once the portfolio holds at least
+    `MIN_HOLDINGS_FOR_RATIO_CHECK` positions, so that small portfolios are not
+    blocked by trivially high ratios (e.g. 1/2 = 50%).
 
     Args:
         cursor: SQLite cursor
@@ -333,12 +344,20 @@ def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentrat
 
         same_sector_count = sum(1 for s in sectors if s and s.lower() == sector.lower())
 
-        if same_sector_count >= max_same_sector or \
-           (sectors and same_sector_count / len(sectors) >= concentration_ratio):
+        if same_sector_count >= max_same_sector:
             logger.warning(
-                f"Sector '{sector}' over-concentration risk: "
-                f"Currently holding {same_sector_count} stocks "
-                f"(max {max_same_sector}, limit {concentration_ratio*100:.0f}%)"
+                f"Sector '{sector}' absolute cap reached: "
+                f"holding {same_sector_count} stocks (max {max_same_sector})"
+            )
+            return False
+
+        if len(sectors) >= MIN_HOLDINGS_FOR_RATIO_CHECK and \
+           same_sector_count / len(sectors) >= concentration_ratio:
+            logger.warning(
+                f"Sector '{sector}' ratio cap reached: "
+                f"{same_sector_count}/{len(sectors)} = "
+                f"{same_sector_count/len(sectors)*100:.0f}% "
+                f"(limit {concentration_ratio*100:.0f}%)"
             )
             return False
 
@@ -2168,12 +2187,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         state["skip_reason"] = state["skip_reason"] or reason
                         continue
 
-                    if not await self._check_sector_diversity(sector):
-                        reason = f"Sector '{sector}' over-concentration prevention"
-                        logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
-                        state["should_save_watchlist"] = True
-                        state["skip_reason"] = state["skip_reason"] or reason
-                        continue
+                    # Evaluate sector / score / decision independently so the displayed
+                    # rejection reason matches the rationale in the same message,
+                    # rather than short-circuiting on whichever cause the code checked first.
+                    sector_diverse = await self._check_sector_diversity(sector)
 
                     buy_score = scenario.get("buy_score", 0)
                     min_score = scenario.get("min_score", 0)
@@ -2201,7 +2218,15 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     if raw_decision and raw_decision.lower() != normalized_decision:
                         logger.debug(f"Decision normalized: '{raw_decision}' -> '{normalized_decision}'")
 
-                    if normalized_decision == "entry":
+                    rationale = scenario.get("rationale", "") or ""
+                    logger.info(
+                        f"Scenario decision: {company_name} ({ticker}) - "
+                        f"decision={normalized_decision!r}, sector_diverse={sector_diverse}, sector={sector!r}"
+                    )
+                    if rationale:
+                        logger.info(f"Scenario rationale ({company_name}/{ticker}): {rationale[:300]}")
+
+                    if normalized_decision == "entry" and adjusted_score >= min_score and sector_diverse:
                         buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
 
                         if buy_success:
@@ -2289,11 +2314,17 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             state["skip_reason"] = state["skip_reason"] or "Purchase failed"
                             logger.warning(f"Purchase failed: {company_name} ({ticker})")
                     else:
-                        reason = ""
+                        # Build a single reason string that lists ALL applicable causes,
+                        # so the displayed reason matches the AI rationale shown in the
+                        # same message (instead of short-circuiting on sector check first).
+                        reason_parts = []
+                        if normalized_decision != "entry":
+                            reason_parts.append(f"AI judgment: {normalized_decision}")
                         if adjusted_score < min_score:
-                            reason = f"Insufficient buy score ({adjusted_score} < {min_score})"
-                        else:
-                            reason = f"Analysis decision is 'Skip'"
+                            reason_parts.append(f"Insufficient score ({adjusted_score}/{min_score})")
+                        if not sector_diverse:
+                            reason_parts.append(f"Sector concentration ({sector})")
+                        reason = " / ".join(reason_parts) if reason_parts else "Other"
                         logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
                         state["should_save_watchlist"] = True
                         state["skip_reason"] = state["skip_reason"] or reason
