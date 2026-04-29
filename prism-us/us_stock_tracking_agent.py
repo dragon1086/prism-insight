@@ -2252,27 +2252,21 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             else:
                                 logger.warning(f"Skipping actual purchase for {ticker}: invalid current_price ({current_price})")
 
-                            # Only mark as traded if KIS order actually succeeded
+                            # Simulator DB record (inserted by buy_stock) is independent of KIS result.
+                            # KIS failure only affects real-money execution — the simulator holding stays.
                             trade_actually_succeeded = trade_result.get('success') or trade_result.get('partial_success')
 
+                            # Simulator state: always update when buy_stock() succeeded,
+                            # regardless of KIS result (simulator and real trading are independent).
+                            buy_count += 1
+                            state["traded"] = True
+
                             if not trade_actually_succeeded:
-                                # Rollback the DB holding inserted by buy_stock() before the order attempt
-                                try:
-                                    account_key_rb, _ = self._account_scope()
-                                    self.cursor.execute(
-                                        "DELETE FROM us_stock_holdings WHERE account_key=? AND ticker=?",
-                                        (account_key_rb, ticker)
-                                    )
-                                    self.conn.commit()
-                                    logger.warning(f"Rolled back DB holding for {ticker}: KIS order not executed successfully")
-                                except Exception as rb_err:
-                                    logger.warning(f"Failed to rollback holding for {ticker}: {rb_err}")
-                                # KIS execution failure is separate from analysis-level skip.
-                                # The buy signal (simulator) was already sent correctly — do NOT trigger 보류 메시지.
                                 logger.warning(
                                     f"[{ticker}] KIS order failed: {trade_result.get('message', 'Unknown')} "
-                                    f"— buy signal already sent, no skip notification"
+                                    f"— simulator holding preserved, no skip notification"
                                 )
+                                logger.info(f"Simulator purchase recorded: {company_name} ({ticker}) @ ${current_price:.2f} (KIS order failed)")
                             else:
                                 if trade_result.get("partial_success"):
                                     successful = trade_result.get("successful_accounts", [])
@@ -2312,8 +2306,6 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                                     signaled_tickers.add(ticker)
 
-                                buy_count += 1
-                                state["traded"] = True
                                 logger.info(f"Purchase complete: {company_name} ({ticker}) @ ${current_price:.2f}")
                         else:
                             state["should_save_watchlist"] = True
