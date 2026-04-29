@@ -2,7 +2,9 @@ streamlit>=1.10.0
 pandas~=2.2.3
 numpy~=2.2.3
 # mcp-agent>=0.2.6  # TODO: upstream PR #648 머지 후 복원
-mcp-agent @ git+https://github.com/dragon1086/mcp-agent.git@feature/skip-reasoning-effort-with-tools-gpt54
+# Pin to commit SHA so pip detects fork updates without --force-reinstall.
+# Branch ref alone is ignored when version (0.2.6) already matches.
+mcp-agent @ git+https://github.com/dragon1086/mcp-agent.git@430b9e4dcf3fa3bed8ac7921cedc8602e01cbd7d
 requests~=2.32.3
 aiohttp~=3.11.13
 python-dateutil~=2.9.0.post0
