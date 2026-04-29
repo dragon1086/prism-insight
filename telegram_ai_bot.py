@@ -40,6 +40,7 @@ from report_generator import (
 )
 from tracking.user_memory import UserMemoryManager
 from firecrawl_client import firecrawl_agent
+from cores.disclaimer_utils import strip_trailing_disclaimer as _strip_trailing_disclaimer
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -2638,6 +2639,9 @@ class TelegramAIBot:
     _DISCLAIMER_KR = "\n\n⚠️ 본 내용은 투자 참고용이며, 투자 판단의 책임은 본인에게 있습니다."
     _DISCLAIMER_US = "\n\n⚠️ This is for informational purposes only. Investment decisions are your own responsibility."
 
+    # gh #263: strip LLM-emitted disclaimer block before appending our canonical one.
+    _strip_trailing_disclaimer = staticmethod(_strip_trailing_disclaimer)
+
     async def _run_firecrawl_command(self, update: Update, prompt: str, disclaimer: str):
         """
         Common helper for Firecrawl-based commands.
@@ -2661,6 +2665,8 @@ class TelegramAIBot:
                 pass
 
             if result:
+                # Strip any LLM-emitted disclaimer so it does not double up with our canonical one (gh #263).
+                result = self._strip_trailing_disclaimer(result)
                 # Telegram message limit is 4096 chars — chunk if needed
                 followup_hint = "\n\n💬 이 메시지에 답장(Reply)하여 추가 질문할 수 있습니다!"
                 full_text = result + disclaimer + followup_hint
@@ -2716,6 +2722,8 @@ class TelegramAIBot:
                 pass
 
             if result:
+                # Strip any LLM-emitted disclaimer so it does not double up with our canonical one (gh #263).
+                result = self._strip_trailing_disclaimer(result)
                 followup_hint = "\n\n💬 이 메시지에 답장(Reply)하여 추가 질문할 수 있습니다!"
                 full_text = result + disclaimer + followup_hint
                 if len(full_text) > 4096:
