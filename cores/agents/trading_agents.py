@@ -132,6 +132,27 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - "Macro Sector Leader" trigger → +1 extra confirmation (sector leader)
         - "Contrarian Value Stock" trigger → no extra credit; F1~F4 must all pass and decline must be cyclical, not structural
 
+        **Macro Sector Leader trigger — analysis points:**
+        - Stock identified by macro analysis as the representative of a leading sector
+        - Even if short-term momentum signals are weak, weigh the medium-term tailwind from the sector
+        - Verify in report 2-2 that this stock is actually a sector leader (market share, growth)
+
+        **Contrarian Value Stock trigger — analysis points:**
+        - Stock has fallen sharply from recent highs but fundamentals appear sound
+        - **Critical**: classify the decline as temporary (sentiment / sector rotation) vs structural
+          (earnings deterioration / loss of competitive edge) using the report
+        - Structural decline → No Entry
+        - Temporary decline → Enter only if F1~F4 all pass; spell out the rebound scenario in rationale
+        - Weight report 2-1 financial-health items (debt ratio, op margin, cash flow) heavily
+
+        ## Portfolio Analysis Guide
+
+        Query stock_holdings (filter by account_id='primary' when column exists):
+        - Current number of holdings (max 10 slots)
+        - Sector distribution (over-concentration check)
+        - Investment-period distribution (short / medium / long ratio)
+        - Portfolio average return
+
         ## Portfolio Constraints
 
         - 7+ holdings → only consider buy_score ≥ 6 regardless of regime
@@ -175,6 +196,17 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - If primary support is beyond -10% from current price → No Entry (standalone reason 1).
         - Stop must NOT be set wider than matrix max stop just to "give room".
 
+        ## R/R Calculation (reference)
+
+        ```
+        expected_return_pct = (target_price - current_price) / current_price * 100
+        expected_loss_pct  = (current_price - stop_loss)  / current_price * 100
+        risk_reward_ratio  = expected_return_pct / expected_loss_pct
+        ```
+
+        If the resulting R/R is below the matrix floor for the current regime → No Entry
+        (cite "R/R below floor" in rejection_reason).
+
         ## Entry / Target / Stop Computation
 
         - entry_price: current price (no range, no "around"). Range expressions are prohibited.
@@ -187,7 +219,10 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - `time-get_current_time`: call FIRST. Use the returned date as the end date for ALL kospi_kosdaq queries.
         - `kospi_kosdaq-get_stock_ohlcv` / `get_stock_trading_volume` / `get_index_ohlcv`: market and stock data.
         - DO NOT call `kospi_kosdaq-load_all_tickers`.
-        - `perplexity-ask`: only when sector PER/PBR comparison is missing from the report.
+        - `perplexity-ask`: only when sector PER/PBR comparison is missing from the report. When called:
+          * "[Stock name] PER PBR vs [Sector] industry average comparison"
+          * "[Stock name] vs major peer competitors valuation comparison"
+          * Include the current date in the query and verify the date returned in the response
         - `sqlite`: run `describe_table` first; filter holdings by `account_id = 'primary'` when column exists.
 
         ## Time-of-day Data Reliability
@@ -219,6 +254,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
             "momentum_signal_count": 0~5,
             "additional_confirmation_count": 0~5,
             "decision": "Enter" or "No Entry",
+            "entry_checklist_passed": Integer 0~6 (sum of: F1 pass + F2 pass + F3 pass + F4 pass + momentum signal count meets row + R/R ≥ floor),
             "rejection_reason": "For No Entry: name the failing matrix item / standalone or compound reason (null for Enter)",
             "target_price": Number,
             "stop_loss": Number,
@@ -353,6 +389,26 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - "매크로 섹터 리더" 트리거 → 추가 확인 +1 (섹터 주도)
         - "역발상 가치주" 트리거 → 자동 가산 없음. F1~F4 펀더 게이트 모두 통과 + 하락 원인이 일시적(시장 센티먼트/섹터 로테이션)일 때만 진입 검토. 하락이 구조적(실적 악화/경쟁력 상실)이면 미진입.
 
+        **매크로 섹터 리더 트리거 분석 포인트:**
+        - 거시경제 분석에서 주도 섹터로 식별된 업종의 대표주
+        - 단기 모멘텀이 약해도 섹터 순풍에 의한 중기 상승 가능성을 적극 고려하십시오
+        - 보고서 '2-2. 기업 개요 분석'에서 시장점유율/성장성 기준 섹터 리더 여부 검증
+
+        **역발상 가치주 트리거 분석 포인트:**
+        - 최근 고점 대비 큰 폭 하락했지만 펀더멘털이 건전한 종목
+        - **핵심 판단**: 하락 원인이 일시적(시장 센티먼트, 섹터 로테이션)인지 구조적(실적 악화, 경쟁력 상실)인지 보고서에서 반드시 확인
+        - 구조적 문제 → 미진입
+        - 일시적 하락 + F1~F4 통과 → 반등 시나리오를 rationale에 명시한 뒤 진입 검토
+        - 보고서 '2-1. 기업 현황 분석'의 부채비율, 영업이익률, 현금흐름을 비중 있게 검토
+
+        ## 포트폴리오 분석 가이드
+
+        stock_holdings 테이블(account_id='primary' 필터)에서 다음을 확인하십시오:
+        - 현재 보유 종목 수 (최대 10슬롯)
+        - 산업군 분포 (특정 섹터 과다 노출 여부)
+        - 투자 기간 분포 (단기 / 중기 / 장기 비율)
+        - 포트폴리오 평균 수익률
+
         ## 포트폴리오 제약
 
         - 보유 종목 7개 이상 → 시장 체제와 무관하게 buy_score 6점 이상만 고려
@@ -394,6 +450,17 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - 주요 지지선이 현재가 대비 -10% 이상 떨어져 있으면 미진입 (단독 사유 1).
         - "여유를 주려고" 매트릭스 최대 손절폭보다 넓게 설정하지 마십시오.
 
+        ## 손익비 계산식 (참고)
+
+        ```
+        expected_return_pct = (target_price - current_price) / current_price * 100
+        expected_loss_pct  = (current_price - stop_loss)  / current_price * 100
+        risk_reward_ratio  = expected_return_pct / expected_loss_pct
+        ```
+
+        계산된 R/R이 현재 시장 체제의 매트릭스 floor 미달이면 미진입
+        (rejection_reason에 "R/R floor 미달" 명시).
+
         ## 진입가 / 목표가 / 손절가 산정
 
         - entry_price: 현재가 그대로 사용. 범위 표현 금지.
@@ -405,7 +472,10 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - `time-get_current_time`: 가장 먼저 호출하십시오. 반환된 날짜를 모든 kospi_kosdaq 조회의 종료일로 사용합니다.
         - `kospi_kosdaq-get_stock_ohlcv` / `get_stock_trading_volume` / `get_index_ohlcv`: 시장/종목 데이터.
         - `kospi_kosdaq-load_all_tickers` 호출 금지.
-        - `perplexity-ask`: 보고서에 동종업계 PER/PBR 비교가 없을 때만 호출하십시오.
+        - `perplexity-ask`: 보고서에 동종업계 PER/PBR 비교가 없을 때만 호출하십시오. 호출 시:
+          * "[종목명] PER PBR vs [업종명] 업계 평균 비교"
+          * "[종목명] vs 동종업계 주요 경쟁사 비교"
+          * 질문에 현재 날짜를 포함하고, 답변의 날짜를 항상 검증하십시오
         - `sqlite`: `describe_table` 먼저 실행하고, account_id 컬럼이 있으면 `account_id = 'primary'`로 필터링하십시오.
 
         ## 시간대별 데이터 신뢰도
@@ -436,6 +506,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
             "momentum_signal_count": 0~5,
             "additional_confirmation_count": 0~5,
             "decision": "진입" 또는 "미진입",
+            "entry_checklist_passed": 0~6 정수 (F1 통과 + F2 통과 + F3 통과 + F4 통과 + 모멘텀 신호 매트릭스 충족 + R/R ≥ floor 합계),
             "rejection_reason": "미진입 시: 매트릭스의 어느 항목 또는 단독/복합 사유가 미달했는지 명시 (진입 시 null)",
             "target_price": 숫자,
             "stop_loss": 숫자,

@@ -206,6 +206,85 @@ def test_us_sector_constraint_applied_en():
     assert "{sector_constraint}" not in agent.instruction
 
 
+# --- Restored content: trigger detail / portfolio guide / perplexity / R/R / checklist ---
+
+def test_us_macro_sector_leader_detail_present_ko():
+    agent = create_us_trading_scenario_agent(language="ko")
+    assert "**Macro Sector Leader 트리거 분석 포인트:**" in agent.instruction
+    assert "단기 모멘텀이 약해도 섹터 순풍에 의한 중기 상승 가능성" in agent.instruction
+
+
+def test_us_macro_sector_leader_detail_present_en():
+    agent = create_us_trading_scenario_agent(language="en")
+    assert "**Macro Sector Leader trigger — analysis points:**" in agent.instruction
+    assert "weigh the medium-term tailwind from the sector" in agent.instruction
+
+
+def test_us_contrarian_value_detail_present_ko():
+    agent = create_us_trading_scenario_agent(language="ko")
+    assert "**Contrarian Value 트리거 분석 포인트:**" in agent.instruction
+    assert "구조적(실적 악화, 경쟁력 상실)" in agent.instruction
+
+
+def test_us_contrarian_value_detail_present_en():
+    agent = create_us_trading_scenario_agent(language="en")
+    assert "**Contrarian Value trigger — analysis points:**" in agent.instruction
+    assert "earnings deterioration / loss of competitive edge" in agent.instruction
+
+
+def test_us_portfolio_analysis_guide_present_ko():
+    agent = create_us_trading_scenario_agent(language="ko")
+    assert "## 포트폴리오 분석 가이드" in agent.instruction
+    assert "us_stock_holdings 테이블" in agent.instruction
+    for item in ("현재 보유 종목 수", "산업군 분포", "투자 기간 분포", "포트폴리오 평균 수익률"):
+        assert item in agent.instruction
+
+
+def test_us_portfolio_analysis_guide_present_en():
+    agent = create_us_trading_scenario_agent(language="en")
+    assert "## Portfolio Analysis Guide" in agent.instruction
+    assert "us_stock_holdings" in agent.instruction
+    for item in ("Current number of holdings", "Sector distribution",
+                 "Investment-period distribution", "Portfolio average return"):
+        assert item in agent.instruction
+
+
+def test_us_perplexity_detail_present_ko():
+    agent = create_us_trading_scenario_agent(language="ko")
+    # US prompt embeds English perplexity queries (sent to global service)
+    assert "major peer competitors valuation comparison" in agent.instruction
+    assert "현재 날짜를 포함" in agent.instruction
+
+
+def test_us_perplexity_detail_present_en():
+    agent = create_us_trading_scenario_agent(language="en")
+    assert "major peer competitors valuation comparison" in agent.instruction
+    assert "Include the current date" in agent.instruction
+
+
+def test_us_rr_formula_present_ko():
+    agent = create_us_trading_scenario_agent(language="ko")
+    assert "## 손익비 계산식 (참고)" in agent.instruction
+    assert "expected_return_pct = (target_price - current_price)" in agent.instruction
+
+
+def test_us_rr_formula_present_en():
+    agent = create_us_trading_scenario_agent(language="en")
+    assert "## R/R Calculation (reference)" in agent.instruction
+    assert "expected_return_pct = (target_price - current_price)" in agent.instruction
+
+
+def test_us_entry_checklist_passed_in_schema_ko():
+    agent = create_us_trading_scenario_agent(language="ko")
+    # Dashboard depends on this field — must remain in schema
+    assert '"entry_checklist_passed":' in agent.instruction
+
+
+def test_us_entry_checklist_passed_in_schema_en():
+    agent = create_us_trading_scenario_agent(language="en")
+    assert '"entry_checklist_passed":' in agent.instruction
+
+
 # --- Anti-loophole: "ambiguous → No Entry" loophole removed ---------------
 
 def test_us_ambiguous_setup_no_longer_auto_no_entry_ko():
