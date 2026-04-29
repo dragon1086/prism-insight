@@ -110,34 +110,64 @@ PRICE_EXCHANGE_CODES = {
     "AMS": "AMS",
 }
 
-# Common NASDAQ stocks for exchange detection
-NASDAQ_TICKERS = {
-    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA",
-    "AVGO", "COST", "ADBE", "CSCO", "PEP", "NFLX", "INTC", "AMD",
-    "QCOM", "TXN", "HON", "CMCSA", "SBUX", "GILD", "MDLZ", "ISRG",
-    "VRTX", "REGN", "ATVI", "ADP", "BKNG", "CHTR", "LRCX", "MU",
-    "KLAC", "SNPS", "CDNS", "MRVL", "PANW", "CRWD", "ZS", "DDOG"
+# yfinance exchange field → KIS OVRS_EXCG_CD mapping
+_YFINANCE_TO_KIS: Dict[str, str] = {
+    "NMS": "NASD",      # NASDAQ Global Select Market
+    "NGM": "NASD",      # NASDAQ Global Market
+    "NCM": "NASD",      # NASDAQ Capital Market
+    "NasdaqGS": "NASD",
+    "NasdaqGM": "NASD",
+    "NasdaqCM": "NASD",
+    "NYQ": "NYSE",
+    "NYSE": "NYSE",
+    "ASE": "AMEX",
+    "PCX": "AMEX",
+}
+
+# In-process cache: populated on first lookup, persists for process lifetime
+_EXCHANGE_CACHE: Dict[str, str] = {
+    "AAPL": "NASD", "MSFT": "NASD", "GOOGL": "NASD", "GOOG": "NASD",
+    "AMZN": "NASD", "META": "NASD", "NVDA": "NASD", "TSLA": "NASD",
+    "AVGO": "NASD", "COST": "NASD", "ADBE": "NASD", "CSCO": "NASD",
+    "PEP": "NASD",  "NFLX": "NASD", "INTC": "NASD", "AMD":  "NASD",
+    "QCOM": "NASD", "TXN":  "NASD", "CMCSA": "NASD", "SBUX": "NASD",
+    "GILD": "NASD", "MDLZ": "NASD", "ISRG": "NASD", "VRTX": "NASD",
+    "REGN": "NASD", "ADP":  "NASD", "BKNG": "NASD", "CHTR": "NASD",
+    "LRCX": "NASD", "MU":   "NASD", "KLAC": "NASD", "SNPS": "NASD",
+    "CDNS": "NASD", "MRVL": "NASD", "PANW": "NASD", "CRWD": "NASD",
+    "ZS":   "NASD", "DDOG": "NASD",
 }
 
 
 def get_exchange_code(ticker: str) -> str:
     """
-    Determine the exchange code for a given ticker.
+    Determine the KIS exchange code for a ticker.
 
-    Args:
-        ticker: Stock ticker symbol
+    Checks in-process cache first (instant), then queries yfinance for
+    unknown tickers, and falls back to NYSE if the lookup fails.
 
     Returns:
-        Exchange code (NASD, NYSE, AMEX)
+        Exchange code: "NASD", "NYSE", or "AMEX"
     """
-    # Simple heuristic - most tech stocks are on NASDAQ
-    # In production, you'd want to look this up from a database or API
     ticker_upper = ticker.upper()
 
-    if ticker_upper in NASDAQ_TICKERS:
-        return "NASD"
+    if ticker_upper in _EXCHANGE_CACHE:
+        return _EXCHANGE_CACHE[ticker_upper]
 
-    # Default to NYSE for unknown tickers (can be overridden)
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker_upper).info
+        exch = info.get("exchange") or ""
+        kis_code = _YFINANCE_TO_KIS.get(exch)
+        if kis_code:
+            _EXCHANGE_CACHE[ticker_upper] = kis_code
+            logger.debug(f"[exchange] {ticker_upper}: yfinance={exch} → KIS={kis_code}")
+            return kis_code
+        logger.warning(f"[exchange] Unmapped yfinance exchange '{exch}' for {ticker_upper}, defaulting to NYSE")
+    except Exception as e:
+        logger.warning(f"[exchange] yfinance lookup failed for {ticker_upper}: {e}, defaulting to NYSE")
+
+    _EXCHANGE_CACHE[ticker_upper] = "NYSE"
     return "NYSE"
 
 
