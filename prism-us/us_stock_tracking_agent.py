@@ -2256,11 +2256,17 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             # KIS failure only affects real-money execution — the simulator holding stays.
                             trade_actually_succeeded = trade_result.get('success') or trade_result.get('partial_success')
 
+                            # Simulator state: always update when buy_stock() succeeded,
+                            # regardless of KIS result (simulator and real trading are independent).
+                            buy_count += 1
+                            state["traded"] = True
+
                             if not trade_actually_succeeded:
                                 logger.warning(
                                     f"[{ticker}] KIS order failed: {trade_result.get('message', 'Unknown')} "
                                     f"— simulator holding preserved, no skip notification"
                                 )
+                                logger.info(f"Simulator purchase recorded: {company_name} ({ticker}) @ ${current_price:.2f} (KIS order failed)")
                             else:
                                 if trade_result.get("partial_success"):
                                     successful = trade_result.get("successful_accounts", [])
@@ -2300,8 +2306,6 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                                     signaled_tickers.add(ticker)
 
-                                buy_count += 1
-                                state["traded"] = True
                                 logger.info(f"Purchase complete: {company_name} ({ticker}) @ ${current_price:.2f}")
                         else:
                             state["should_save_watchlist"] = True
