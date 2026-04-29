@@ -24,6 +24,7 @@ load_dotenv()
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -1149,6 +1150,7 @@ class USStockTrackingAgent:
 
             # Translate market regime labels to Korean for display
             _regime_labels_ko = {
+                "parabolic": "폭주 강세장",
                 "strong_bull": "강한 강세장", "moderate_bull": "보통 강세장",
                 "sideways": "횡보장", "moderate_bear": "보통 약세장", "strong_bear": "강한 약세장"
             }
@@ -2265,8 +2267,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     logger.warning(f"Rolled back DB holding for {ticker}: KIS order not executed successfully")
                                 except Exception as rb_err:
                                     logger.warning(f"Failed to rollback holding for {ticker}: {rb_err}")
-                                state["should_save_watchlist"] = True
-                                state["skip_reason"] = state["skip_reason"] or f"KIS order failed: {trade_result.get('message', 'Unknown')}"
+                                # KIS execution failure is separate from analysis-level skip.
+                                # The buy signal (simulator) was already sent correctly — do NOT trigger 보류 메시지.
+                                logger.warning(
+                                    f"[{ticker}] KIS order failed: {trade_result.get('message', 'Unknown')} "
+                                    f"— buy signal already sent, no skip notification"
+                                )
                             else:
                                 if trade_result.get("partial_success"):
                                     successful = trade_result.get("successful_accounts", [])
