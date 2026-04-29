@@ -270,12 +270,14 @@ python demo.py AAPL --market us
 ```
 🚀 PRISM-INSIGHT v2.11.0
 
-PRISM의 매수 결정 엔진을 근본부터 다시 만들었습니다.
+PRISM의 매수 결정 프롬프트를 정리했습니다.
 
-오랫동안 쌓인 모순과 도피처 — "애매하면 일단 미진입", "참고용 손익비",
-"가치투자 + 모멘텀" 같은 양립 불가 표현들을 모두 걷어냈습니다.
+그동안 누적된 모순과 도피처 — "애매하면 일단 미진입", "참고용 손익비",
+"가치투자 + 모멘텀" 같은 양립 불가 표현들을 걷어내고,
+시장 국면(강한 강세장 ~ 강한 약세장)별 진입 기준을
+하나의 매트릭스로 통일했습니다.
 
-이제 매수 판단은 윌리엄 오닐의 CAN SLIM 철학을 단일 축으로 움직입니다.
+기준은 윌리엄 오닐의 CAN SLIM 철학으로 일관성을 잡았습니다.
 
 ━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -309,15 +311,13 @@ KR/US 동일 매트릭스. 두 시장이 일관되게 동작합니다.
 
 ━━━━━━━━━━━━━━━━━━━━━━━
 
-🚫 막연한 회피는 더 이상 통하지 않습니다
+📌 미진입 사유 정형화
 
-이전엔 "과열 우려", "변곡 신호", "추가 확인 필요" 같은 표현으로
-사실상 어떤 종목이든 미진입을 정당화할 수 있었습니다.
+"과열 우려", "변곡 신호", "추가 확인 필요" 같은 막연한 표현은
+단독 미진입 사유로 사용 금지입니다.
 
-이제 미진입 사유는 5가지 단독 사유 + 1가지 복합 사유로 정형화됐고,
-위 회피 표현들은 단독 사유로 사용 금지입니다.
-
-PRISM은 더 이상 "안전하게 관망"이라는 도피처를 갖지 않습니다.
+미진입은 5가지 단독 사유 + 1가지 복합 사유 중 어느 것에 해당하는지
+(또는 매트릭스의 어느 항목이 미달했는지) 명시해야 합니다.
 
 ━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -354,13 +354,15 @@ PRISM은 더 이상 "안전하게 관망"이라는 도피처를 갖지 않습니
 ```
 🚀 PRISM-INSIGHT v2.11.0 Update
 
-We rebuilt PRISM's buy-decision engine from the ground up.
+We cleaned up PRISM's buy-decision prompt.
 
 Years of accumulated contradictions and escape hatches —
 "if unclear → No Entry", "R/R as reference", "value investing + momentum"
-identity drift — have all been removed.
+identity drift — have been removed, and entry criteria across the
+5 market regimes (strong_bull → strong_bear) are now unified
+into a single matrix.
 
-The strategist now runs on a single axis: William O'Neil's CAN SLIM.
+Reasoning is anchored on a single axis: William O'Neil's CAN SLIM.
 
 🧱 Stage 1: Fundamental Gate (F1~F4) — New
   F1 Profitability — Op profit positive in last 2 quarters
@@ -380,10 +382,11 @@ Identical for KR and US — both markets behave consistently.
 Slightly more aggressive than before, because the Fundamental Gate
 already pre-filters for quality.
 
-🚫 No more vague-hedge rejections
-  "overheating concern", "needs more confirmation", "wait and see"
-  are no longer accepted as standalone rejection reasons.
-  The system has no "next opportunity" — vague hedging is forbidden.
+📌 Rejection reasons formalized
+  Vague expressions like "overheating concern", "needs more confirmation",
+  "wait and see" are no longer accepted as standalone rejection reasons.
+  Rejections must cite a specific matrix item or one of the
+  5 standalone / 1 compound reasons.
 
 🤖 Trading agent brain upgrade
   LLM model used for buy/sell decisions upgraded gpt-5.4 → gpt-5.5
