@@ -121,7 +121,8 @@ _YFINANCE_TO_KIS: Dict[str, str] = {
     "NYQ": "NYSE",
     "NYSE": "NYSE",
     "ASE": "AMEX",
-    "PCX": "AMEX",
+    "PCX": "AMEX",      # NYSE Arca
+    "BTS": "NYSE",      # Cboe BZX Exchange (formerly BATS) — KIS treats as NYSE
 }
 
 # In-process cache: populated on first lookup, persists for process lifetime
@@ -136,6 +137,8 @@ _EXCHANGE_CACHE: Dict[str, str] = {
     "LRCX": "NASD", "MU":   "NASD", "KLAC": "NASD", "SNPS": "NASD",
     "CDNS": "NASD", "MRVL": "NASD", "PANW": "NASD", "CRWD": "NASD",
     "ZS":   "NASD", "DDOG": "NASD",
+    # Cboe BZX-listed stocks (yfinance: 'BTS') — KIS accesses via NYSE
+    "CBOE": "NYSE",
 }
 
 
@@ -549,8 +552,12 @@ class USStockTrading:
                     'message': f'Limit buy order completed ({buy_quantity} shares x ${limit_price:.2f})'
                 }
             else:
-                error_msg = f"{res.getErrorCode()} - {res.getErrorMessage()}"
-                logger.error(f"Limit buy order failed: {error_msg}")
+                error_code = res.getErrorCode()
+                error_msg = f"{error_code} - {res.getErrorMessage()}"
+                if error_code == "APBK0656":
+                    logger.error(f"Limit buy order failed: {error_msg} (exchange={exchange}, ticker={ticker.upper()}) — stock may not be in KIS universe for this exchange")
+                else:
+                    logger.error(f"Limit buy order failed: {error_msg} (exchange={exchange})")
 
                 return {
                     'success': False,
