@@ -17,8 +17,11 @@ Key differences from Korean domestic trading:
 
 import asyncio
 import datetime
+import json
 import logging
 import math
+import os
+import threading
 import time
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -111,6 +114,8 @@ PRICE_EXCHANGE_CODES = {
 }
 
 # yfinance exchange field → KIS OVRS_EXCG_CD mapping
+# This is a protocol translation table. Add new entries here when an unknown
+# yfinance exchange code is logged at ERROR level by get_exchange_code().
 _YFINANCE_TO_KIS: Dict[str, str] = {
     "NMS": "NASD",      # NASDAQ Global Select Market
     "NGM": "NASD",      # NASDAQ Global Market
@@ -123,54 +128,87 @@ _YFINANCE_TO_KIS: Dict[str, str] = {
     "ASE": "AMEX",
     "PCX": "AMEX",      # NYSE Arca
     "BTS": "NYSE",      # Cboe BZX Exchange (formerly BATS) — KIS treats as NYSE
+    "BATS": "NYSE",     # Cboe BZX (alternate yfinance code)
 }
 
-# In-process cache: populated on first lookup, persists for process lifetime
-_EXCHANGE_CACHE: Dict[str, str] = {
-    "AAPL": "NASD", "MSFT": "NASD", "GOOGL": "NASD", "GOOG": "NASD",
-    "AMZN": "NASD", "META": "NASD", "NVDA": "NASD", "TSLA": "NASD",
-    "AVGO": "NASD", "COST": "NASD", "ADBE": "NASD", "CSCO": "NASD",
-    "PEP": "NASD",  "NFLX": "NASD", "INTC": "NASD", "AMD":  "NASD",
-    "QCOM": "NASD", "TXN":  "NASD", "CMCSA": "NASD", "SBUX": "NASD",
-    "GILD": "NASD", "MDLZ": "NASD", "ISRG": "NASD", "VRTX": "NASD",
-    "REGN": "NASD", "ADP":  "NASD", "BKNG": "NASD", "CHTR": "NASD",
-    "LRCX": "NASD", "MU":   "NASD", "KLAC": "NASD", "SNPS": "NASD",
-    "CDNS": "NASD", "MRVL": "NASD", "PANW": "NASD", "CRWD": "NASD",
-    "ZS":   "NASD", "DDOG": "NASD",
-    # Cboe BZX-listed stocks (yfinance: 'BTS') — KIS accesses via NYSE
-    "CBOE": "NYSE",
-}
+# Persistent ticker → KIS exchange cache.
+# Auto-populated on first yfinance lookup; survives process restarts.
+# Hand-editable — useful when a stock changes exchange or yfinance is wrong.
+_EXCHANGE_CACHE_FILE = TRADING_DIR / "data" / "exchange_cache.json"
+_EXCHANGE_CACHE_LOCK = threading.Lock()
+
+
+def _load_exchange_cache() -> Dict[str, str]:
+    """Load persistent ticker → exchange cache from disk."""
+    try:
+        if _EXCHANGE_CACHE_FILE.exists():
+            with open(_EXCHANGE_CACHE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {k.upper(): v for k, v in data.items() if isinstance(v, str)}
+                logger.warning(f"[exchange] Cache file is not a dict: {_EXCHANGE_CACHE_FILE}")
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[exchange] Failed to load cache file ({_EXCHANGE_CACHE_FILE}): {e} — starting empty")
+    return {}
+
+
+def _save_exchange_cache(cache: Dict[str, str]) -> None:
+    """Atomically write the ticker → exchange cache to disk (sorted for clean diffs)."""
+    try:
+        _EXCHANGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = _EXCHANGE_CACHE_FILE.with_suffix(".json.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp_path, _EXCHANGE_CACHE_FILE)
+    except OSError as e:
+        logger.warning(f"[exchange] Failed to save cache file ({_EXCHANGE_CACHE_FILE}): {e}")
+
+
+_EXCHANGE_CACHE: Dict[str, str] = _load_exchange_cache()
 
 
 def get_exchange_code(ticker: str) -> str:
     """
     Determine the KIS exchange code for a ticker.
 
-    Checks in-process cache first (instant), then queries yfinance for
-    unknown tickers, and falls back to NYSE if the lookup fails.
+    Lookup order:
+        1. Persistent cache (data/exchange_cache.json) — instant
+        2. yfinance .info["exchange"] → translated via _YFINANCE_TO_KIS
+        3. Fallback to "NYSE" (NOT cached, so adding mappings retroactively works)
 
     Returns:
         Exchange code: "NASD", "NYSE", or "AMEX"
     """
     ticker_upper = ticker.upper()
 
-    if ticker_upper in _EXCHANGE_CACHE:
-        return _EXCHANGE_CACHE[ticker_upper]
+    cached = _EXCHANGE_CACHE.get(ticker_upper)
+    if cached:
+        return cached
 
+    exch = ""
     try:
         import yfinance as yf
         info = yf.Ticker(ticker_upper).info
         exch = info.get("exchange") or ""
         kis_code = _YFINANCE_TO_KIS.get(exch)
         if kis_code:
-            _EXCHANGE_CACHE[ticker_upper] = kis_code
-            logger.debug(f"[exchange] {ticker_upper}: yfinance={exch} → KIS={kis_code}")
+            with _EXCHANGE_CACHE_LOCK:
+                _EXCHANGE_CACHE[ticker_upper] = kis_code
+                _save_exchange_cache(_EXCHANGE_CACHE)
+            logger.info(f"[exchange] {ticker_upper}: yfinance={exch} → KIS={kis_code} (cached)")
             return kis_code
-        logger.warning(f"[exchange] Unmapped yfinance exchange '{exch}' for {ticker_upper}, defaulting to NYSE")
     except Exception as e:
-        logger.warning(f"[exchange] yfinance lookup failed for {ticker_upper}: {e}, defaulting to NYSE")
+        logger.warning(f"[exchange] yfinance lookup failed for {ticker_upper}: {e} — defaulting to NYSE")
+        return "NYSE"
 
-    _EXCHANGE_CACHE[ticker_upper] = "NYSE"
+    # yfinance returned an exchange we don't know how to map.
+    # Loud error so the missing mapping gets noticed and added to _YFINANCE_TO_KIS.
+    # Fallback is NOT cached, so adding the mapping later picks up retroactively.
+    logger.error(
+        f"[exchange] UNMAPPED yfinance exchange '{exch}' for {ticker_upper} — defaulting to NYSE. "
+        f"Add '{exch}' to _YFINANCE_TO_KIS or override in {_EXCHANGE_CACHE_FILE.name}."
+    )
     return "NYSE"
 
 
