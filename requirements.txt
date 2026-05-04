@@ -9,7 +9,7 @@ requests~=2.32.3
 aiohttp~=3.11.13
 python-dateutil~=2.9.0.post0
 email-validator
-openai~=1.64.0
+openai>=1.66.0,<2.0.0
 anthropic~=0.64.0
 markdown>=3.3.0
 python-telegram-bot>=20.0

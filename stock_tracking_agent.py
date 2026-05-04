@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # MCP related imports
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
-from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
 
 # Core agent imports
 from cores.openai_error_logging import log_openai_error
