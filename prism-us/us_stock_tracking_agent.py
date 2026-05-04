@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 # MCP related imports
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
-from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
 
 # Import US-specific modules
 # Use explicit path to avoid conflicts with main project

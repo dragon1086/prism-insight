@@ -17,8 +17,11 @@ Key differences from Korean domestic trading:
 
 import asyncio
 import datetime
+import json
 import logging
 import math
+import os
+import threading
 import time
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -111,6 +114,8 @@ PRICE_EXCHANGE_CODES = {
 }
 
 # yfinance exchange field → KIS OVRS_EXCG_CD mapping
+# This is a protocol translation table. Add new entries here when an unknown
+# yfinance exchange code is logged at ERROR level by get_exchange_code().
 _YFINANCE_TO_KIS: Dict[str, str] = {
     "NMS": "NASD",      # NASDAQ Global Select Market
     "NGM": "NASD",      # NASDAQ Global Market
@@ -121,53 +126,89 @@ _YFINANCE_TO_KIS: Dict[str, str] = {
     "NYQ": "NYSE",
     "NYSE": "NYSE",
     "ASE": "AMEX",
-    "PCX": "AMEX",
+    "PCX": "AMEX",      # NYSE Arca
+    "BTS": "NYSE",      # Cboe BZX Exchange (formerly BATS) — KIS treats as NYSE
+    "BATS": "NYSE",     # Cboe BZX (alternate yfinance code)
 }
 
-# In-process cache: populated on first lookup, persists for process lifetime
-_EXCHANGE_CACHE: Dict[str, str] = {
-    "AAPL": "NASD", "MSFT": "NASD", "GOOGL": "NASD", "GOOG": "NASD",
-    "AMZN": "NASD", "META": "NASD", "NVDA": "NASD", "TSLA": "NASD",
-    "AVGO": "NASD", "COST": "NASD", "ADBE": "NASD", "CSCO": "NASD",
-    "PEP": "NASD",  "NFLX": "NASD", "INTC": "NASD", "AMD":  "NASD",
-    "QCOM": "NASD", "TXN":  "NASD", "CMCSA": "NASD", "SBUX": "NASD",
-    "GILD": "NASD", "MDLZ": "NASD", "ISRG": "NASD", "VRTX": "NASD",
-    "REGN": "NASD", "ADP":  "NASD", "BKNG": "NASD", "CHTR": "NASD",
-    "LRCX": "NASD", "MU":   "NASD", "KLAC": "NASD", "SNPS": "NASD",
-    "CDNS": "NASD", "MRVL": "NASD", "PANW": "NASD", "CRWD": "NASD",
-    "ZS":   "NASD", "DDOG": "NASD",
-}
+# Persistent ticker → KIS exchange cache.
+# Auto-populated on first yfinance lookup; survives process restarts.
+# Hand-editable — useful when a stock changes exchange or yfinance is wrong.
+_EXCHANGE_CACHE_FILE = TRADING_DIR / "data" / "exchange_cache.json"
+_EXCHANGE_CACHE_LOCK = threading.Lock()
+
+
+def _load_exchange_cache() -> Dict[str, str]:
+    """Load persistent ticker → exchange cache from disk."""
+    try:
+        if _EXCHANGE_CACHE_FILE.exists():
+            with open(_EXCHANGE_CACHE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {k.upper(): v for k, v in data.items() if isinstance(v, str)}
+                logger.warning(f"[exchange] Cache file is not a dict: {_EXCHANGE_CACHE_FILE}")
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[exchange] Failed to load cache file ({_EXCHANGE_CACHE_FILE}): {e} — starting empty")
+    return {}
+
+
+def _save_exchange_cache(cache: Dict[str, str]) -> None:
+    """Atomically write the ticker → exchange cache to disk (sorted for clean diffs)."""
+    try:
+        _EXCHANGE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = _EXCHANGE_CACHE_FILE.with_suffix(".json.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp_path, _EXCHANGE_CACHE_FILE)
+    except OSError as e:
+        logger.warning(f"[exchange] Failed to save cache file ({_EXCHANGE_CACHE_FILE}): {e}")
+
+
+_EXCHANGE_CACHE: Dict[str, str] = _load_exchange_cache()
 
 
 def get_exchange_code(ticker: str) -> str:
     """
     Determine the KIS exchange code for a ticker.
 
-    Checks in-process cache first (instant), then queries yfinance for
-    unknown tickers, and falls back to NYSE if the lookup fails.
+    Lookup order:
+        1. Persistent cache (data/exchange_cache.json) — instant
+        2. yfinance .info["exchange"] → translated via _YFINANCE_TO_KIS
+        3. Fallback to "NYSE" (NOT cached, so adding mappings retroactively works)
 
     Returns:
         Exchange code: "NASD", "NYSE", or "AMEX"
     """
     ticker_upper = ticker.upper()
 
-    if ticker_upper in _EXCHANGE_CACHE:
-        return _EXCHANGE_CACHE[ticker_upper]
+    cached = _EXCHANGE_CACHE.get(ticker_upper)
+    if cached:
+        return cached
 
+    exch = ""
     try:
         import yfinance as yf
         info = yf.Ticker(ticker_upper).info
         exch = info.get("exchange") or ""
         kis_code = _YFINANCE_TO_KIS.get(exch)
         if kis_code:
-            _EXCHANGE_CACHE[ticker_upper] = kis_code
-            logger.debug(f"[exchange] {ticker_upper}: yfinance={exch} → KIS={kis_code}")
+            with _EXCHANGE_CACHE_LOCK:
+                _EXCHANGE_CACHE[ticker_upper] = kis_code
+                _save_exchange_cache(_EXCHANGE_CACHE)
+            logger.info(f"[exchange] {ticker_upper}: yfinance={exch} → KIS={kis_code} (cached)")
             return kis_code
-        logger.warning(f"[exchange] Unmapped yfinance exchange '{exch}' for {ticker_upper}, defaulting to NYSE")
     except Exception as e:
-        logger.warning(f"[exchange] yfinance lookup failed for {ticker_upper}: {e}, defaulting to NYSE")
+        logger.warning(f"[exchange] yfinance lookup failed for {ticker_upper}: {e} — defaulting to NYSE")
+        return "NYSE"
 
-    _EXCHANGE_CACHE[ticker_upper] = "NYSE"
+    # yfinance returned an exchange we don't know how to map.
+    # Loud error so the missing mapping gets noticed and added to _YFINANCE_TO_KIS.
+    # Fallback is NOT cached, so adding the mapping later picks up retroactively.
+    logger.error(
+        f"[exchange] UNMAPPED yfinance exchange '{exch}' for {ticker_upper} — defaulting to NYSE. "
+        f"Add '{exch}' to _YFINANCE_TO_KIS or override in {_EXCHANGE_CACHE_FILE.name}."
+    )
     return "NYSE"
 
 
@@ -254,6 +295,67 @@ class USStockTrading:
             self._activate_account()
             return ka._url_fetch(api_url, tr_id, "", params, **kwargs)
 
+    def _probe_exchange(self, ticker: str) -> Optional[str]:
+        """
+        Probe KIS price API across NAS/NYS/AMS to discover which one holds this ticker.
+
+        KIS classifies all US stocks into NASD/NYSE/AMEX regardless of actual listing
+        venue (Cboe BZX, IEX, NYSE Arca, etc.). The price API returns empty data
+        (last='' and base='') when queried with the wrong exchange code, so we probe
+        each candidate until one returns a valid price.
+
+        Returns:
+            KIS exchange code ("NASD"/"NYSE"/"AMEX") or None if not found.
+        """
+        api_url = "/uapi/overseas-price/v1/quotations/price"
+        tr_id = "HHDFS00000300"
+        ticker_upper = ticker.upper()
+
+        # Probe order: NASD first (covers majority), then NYSE, then AMEX.
+        for kis_code, price_excd in (("NASD", "NAS"), ("NYSE", "NYS"), ("AMEX", "AMS")):
+            params = {"AUTH": "", "EXCD": price_excd, "SYMB": ticker_upper}
+            try:
+                res = self._request(api_url, tr_id, params)
+                if res.isOK():
+                    data = res.getBody().output
+                    last = _safe_float(data.get("last"))
+                    base = _safe_float(data.get("base"))
+                    if last > 0 or base > 0:
+                        return kis_code
+            except Exception as e:
+                logger.warning(f"[exchange] KIS probe error {ticker_upper}/{price_excd}: {e}")
+
+        return None
+
+    def _resolve_exchange(self, ticker: str) -> str:
+        """
+        Resolve KIS exchange code for a ticker — KIS-authoritative.
+
+        Lookup order:
+            1. Persistent cache (data/exchange_cache.json) — instant
+            2. Probe KIS price API across NAS/NYS/AMS — authoritative
+            3. Fallback to "NYSE" (NOT cached, so a later success picks up retroactively)
+        """
+        ticker_upper = ticker.upper()
+
+        cached = _EXCHANGE_CACHE.get(ticker_upper)
+        if cached:
+            return cached
+
+        kis_code = self._probe_exchange(ticker_upper)
+        if kis_code:
+            with _EXCHANGE_CACHE_LOCK:
+                _EXCHANGE_CACHE[ticker_upper] = kis_code
+                _save_exchange_cache(_EXCHANGE_CACHE)
+            logger.info(f"[exchange] {ticker_upper} resolved via KIS probe → {kis_code} (cached)")
+            return kis_code
+
+        logger.error(
+            f"[exchange] KIS probe found no match for {ticker_upper} on NAS/NYS/AMS — "
+            f"defaulting to NYSE. Stock may not be in KIS's overseas trading universe."
+        )
+        return "NYSE"
+
     def get_current_price(self, ticker: str, exchange: str = None) -> Optional[Dict[str, Any]]:
         """
         Get current market price for US stock
@@ -273,7 +375,7 @@ class USStockTrading:
             }
         """
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
@@ -394,7 +496,7 @@ class USStockTrading:
             }
 
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
@@ -493,7 +595,7 @@ class USStockTrading:
             }
 
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
@@ -549,8 +651,12 @@ class USStockTrading:
                     'message': f'Limit buy order completed ({buy_quantity} shares x ${limit_price:.2f})'
                 }
             else:
-                error_msg = f"{res.getErrorCode()} - {res.getErrorMessage()}"
-                logger.error(f"Limit buy order failed: {error_msg}")
+                error_code = res.getErrorCode()
+                error_msg = f"{error_code} - {res.getErrorMessage()}"
+                if error_code == "APBK0656":
+                    logger.error(f"Limit buy order failed: {error_msg} (exchange={exchange}, ticker={ticker.upper()}) — stock may not be in KIS universe for this exchange")
+                else:
+                    logger.error(f"Limit buy order failed: {error_msg} (exchange={exchange})")
 
                 return {
                     'success': False,
@@ -619,7 +725,7 @@ class USStockTrading:
             }
 
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
@@ -883,7 +989,7 @@ class USStockTrading:
             }
 
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
@@ -1006,7 +1112,7 @@ class USStockTrading:
             }
 
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
