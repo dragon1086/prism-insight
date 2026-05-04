@@ -295,6 +295,67 @@ class USStockTrading:
             self._activate_account()
             return ka._url_fetch(api_url, tr_id, "", params, **kwargs)
 
+    def _probe_exchange(self, ticker: str) -> Optional[str]:
+        """
+        Probe KIS price API across NAS/NYS/AMS to discover which one holds this ticker.
+
+        KIS classifies all US stocks into NASD/NYSE/AMEX regardless of actual listing
+        venue (Cboe BZX, IEX, NYSE Arca, etc.). The price API returns empty data
+        (last='' and base='') when queried with the wrong exchange code, so we probe
+        each candidate until one returns a valid price.
+
+        Returns:
+            KIS exchange code ("NASD"/"NYSE"/"AMEX") or None if not found.
+        """
+        api_url = "/uapi/overseas-price/v1/quotations/price"
+        tr_id = "HHDFS00000300"
+        ticker_upper = ticker.upper()
+
+        # Probe order: NASD first (covers majority), then NYSE, then AMEX.
+        for kis_code, price_excd in (("NASD", "NAS"), ("NYSE", "NYS"), ("AMEX", "AMS")):
+            params = {"AUTH": "", "EXCD": price_excd, "SYMB": ticker_upper}
+            try:
+                res = self._request(api_url, tr_id, params)
+                if res.isOK():
+                    data = res.getBody().output
+                    last = _safe_float(data.get("last"))
+                    base = _safe_float(data.get("base"))
+                    if last > 0 or base > 0:
+                        return kis_code
+            except Exception as e:
+                logger.warning(f"[exchange] KIS probe error {ticker_upper}/{price_excd}: {e}")
+
+        return None
+
+    def _resolve_exchange(self, ticker: str) -> str:
+        """
+        Resolve KIS exchange code for a ticker — KIS-authoritative.
+
+        Lookup order:
+            1. Persistent cache (data/exchange_cache.json) — instant
+            2. Probe KIS price API across NAS/NYS/AMS — authoritative
+            3. Fallback to "NYSE" (NOT cached, so a later success picks up retroactively)
+        """
+        ticker_upper = ticker.upper()
+
+        cached = _EXCHANGE_CACHE.get(ticker_upper)
+        if cached:
+            return cached
+
+        kis_code = self._probe_exchange(ticker_upper)
+        if kis_code:
+            with _EXCHANGE_CACHE_LOCK:
+                _EXCHANGE_CACHE[ticker_upper] = kis_code
+                _save_exchange_cache(_EXCHANGE_CACHE)
+            logger.info(f"[exchange] {ticker_upper} resolved via KIS probe → {kis_code} (cached)")
+            return kis_code
+
+        logger.error(
+            f"[exchange] KIS probe found no match for {ticker_upper} on NAS/NYS/AMS — "
+            f"defaulting to NYSE. Stock may not be in KIS's overseas trading universe."
+        )
+        return "NYSE"
+
     def get_current_price(self, ticker: str, exchange: str = None) -> Optional[Dict[str, Any]]:
         """
         Get current market price for US stock
@@ -314,7 +375,7 @@ class USStockTrading:
             }
         """
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
@@ -435,7 +496,7 @@ class USStockTrading:
             }
 
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
@@ -534,7 +595,7 @@ class USStockTrading:
             }
 
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
@@ -664,7 +725,7 @@ class USStockTrading:
             }
 
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
@@ -928,7 +989,7 @@ class USStockTrading:
             }
 
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
@@ -1051,7 +1112,7 @@ class USStockTrading:
             }
 
         if exchange is None:
-            exchange = get_exchange_code(ticker)
+            exchange = self._resolve_exchange(ticker)
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
