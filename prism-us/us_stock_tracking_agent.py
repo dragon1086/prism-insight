@@ -66,7 +66,16 @@ logger = logging.getLogger(__name__)
 # MCP related imports
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
-from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location(
+    "openai_responses_llm",
+    Path(__file__).resolve().parent.parent / "cores" / "llm" / "openai_responses_llm.py",
+)
+assert _spec is not None and _spec.loader is not None
+_mod = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)  # type: ignore[union-attr]
+OpenAIAugmentedLLM = _mod.OpenAIResponsesLLM
+del _ilu, _spec, _mod
 
 # Import US-specific modules
 # Use explicit path to avoid conflicts with main project
