@@ -12,7 +12,7 @@ import traceback
 import re
 
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
-from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
 
 # Import core agents
 from cores.agents.trading_agents import create_sell_decision_agent
