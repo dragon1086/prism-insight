@@ -52,6 +52,12 @@ def translate_request(body: dict) -> dict:
         if key in body:
             translated[key] = body[key]
 
+    # reasoning_effort -> Responses API {"reasoning": {"effort": "..."}}
+    # "none" means disable reasoning (omit the field entirely)
+    reasoning_effort = body.get("reasoning_effort")
+    if reasoning_effort and reasoning_effort != "none":
+        translated["reasoning"] = {"effort": reasoning_effort}
+
     # max_tokens -> max_output_tokens
     if "max_tokens" in body:
         translated["max_output_tokens"] = body["max_tokens"]
@@ -236,89 +242,79 @@ def translate_error(error_body: dict, status_code: int) -> tuple[dict, int]:
 def collect_sse_to_response(sse_text: str) -> dict:
     """Parse SSE stream text and extract the final Responses API object.
 
-    Looks for 'event: response.completed' or 'event: response.failed' events
-    and extracts the JSON data from the subsequent data: line.
+    The ChatGPT Codex SSE stream sends output items via separate events
+    (response.output_item.done) and the final response.completed event may
+    arrive with an empty output array. We collect output items from the
+    .done events and merge them into the final response.
     """
     lines = sse_text.split("\n")
     current_event = ""
     data_lines: list[str] = []
     completed_data: dict | None = None
     failed_data: dict | None = None
-
-    # Also track incremental text for delta reconstruction
+    output_items: list[dict] = []
     text_chunks: list[str] = []
+
+    def _process(event: str, raw: str) -> None:
+        nonlocal completed_data, failed_data
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if event == "response.completed":
+            completed_data = parsed
+        elif event == "response.failed":
+            failed_data = parsed
+        elif event == "response.output_text.delta":
+            delta = parsed.get("delta", "")
+            if delta:
+                text_chunks.append(delta)
+        elif event == "response.output_item.done":
+            item = parsed.get("item")
+            if isinstance(item, dict):
+                output_items.append(item)
 
     for line in lines:
         if line.startswith("event: "):
-            # If we had accumulated data for a previous event, process it
             if data_lines and current_event:
-                raw = "\n".join(data_lines)
-                try:
-                    parsed = json.loads(raw)
-                    if current_event == "response.completed":
-                        completed_data = parsed
-                    elif current_event == "response.failed":
-                        failed_data = parsed
-                    elif current_event == "response.output_text.delta":
-                        delta = parsed.get("delta", "")
-                        if delta:
-                            text_chunks.append(delta)
-                except json.JSONDecodeError:
-                    pass
-
+                _process(current_event, "\n".join(data_lines))
             current_event = line[7:].strip()
             data_lines = []
-
         elif line.startswith("data: "):
             data_lines.append(line[6:])
-
         elif line == "" and data_lines and current_event:
-            raw = "\n".join(data_lines)
-            try:
-                parsed = json.loads(raw)
-                if current_event == "response.completed":
-                    completed_data = parsed
-                elif current_event == "response.failed":
-                    failed_data = parsed
-                elif current_event == "response.output_text.delta":
-                    delta = parsed.get("delta", "")
-                    if delta:
-                        text_chunks.append(delta)
-            except json.JSONDecodeError:
-                pass
+            _process(current_event, "\n".join(data_lines))
             data_lines = []
 
     # Process any remaining data
     if data_lines and current_event:
-        raw = "\n".join(data_lines)
-        try:
-            parsed = json.loads(raw)
-            if current_event == "response.completed":
-                completed_data = parsed
-            elif current_event == "response.failed":
-                failed_data = parsed
-        except json.JSONDecodeError:
-            pass
+        _process(current_event, "\n".join(data_lines))
 
-    if completed_data:
-        # Unwrap nested structure: {"type":"response.completed","response":{...}} -> {...}
-        return completed_data.get("response", completed_data)
-
-    if failed_data:
-        return failed_data.get("response", failed_data)
-
-    # Fallback: reconstruct from deltas if no completed event
-    if text_chunks:
-        return {
-            "id": "resp_reconstructed",
-            "output": [
+    def _ensure_output(response_obj: dict) -> dict:
+        """Fill in output array from collected items/deltas if completed event lacks it."""
+        if response_obj.get("output"):
+            return response_obj
+        if output_items:
+            response_obj["output"] = output_items
+        elif text_chunks:
+            response_obj["output"] = [
                 {
                     "type": "message",
                     "role": "assistant",
                     "content": [{"type": "output_text", "text": "".join(text_chunks)}],
                 }
-            ],
-            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-        }
+            ]
+        return response_obj
+
+    if completed_data:
+        return _ensure_output(completed_data.get("response", completed_data))
+
+    if failed_data:
+        return failed_data.get("response", failed_data)
+
+    # No completed event — synthesize from collected items/deltas
+    if output_items or text_chunks:
+        synthesized: dict = {"id": "resp_reconstructed", "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}}
+        return _ensure_output(synthesized)
 
     raise ValueError("No response.completed or response.failed event found in SSE stream")

@@ -125,6 +125,9 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
                 if is_sse:
                     try:
                         api_response = api_translator.collect_sse_to_response(raw_body)
+                        logger.debug("SSE parsed: output_items=%s status=%s",
+                                     [i.get("type") for i in api_response.get("output", [])],
+                                     api_response.get("status"))
                     except ValueError as e:
                         logger.error("SSE parsing failed: %s (Content-Type: %s, body[:200]: %s)", e, content_type, raw_body[:200])
                         return web.json_response(
