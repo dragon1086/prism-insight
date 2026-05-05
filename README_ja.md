@@ -61,8 +61,6 @@ PRISM_OPENAI_AUTH_MODE=chatgpt_oauth python stock_analysis_orchestrator.py --mod
 
 APIの請求ゼロ。同等の高精度分析。既存のサブスクリプションがそのまま活用できます。
 
-**セットアップ詳細**: [docs/chatgpt-oauth/setup.md](docs/chatgpt-oauth/setup.md)
-
 ---
 
 ## モバイルアプリ
@@ -328,7 +326,6 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 | [docs/CLAUDE_AGENTS.md](docs/CLAUDE_AGENTS.md) | AIエージェントシステムの詳細 |
 | [docs/TRIGGER_BATCH_ALGORITHMS.md](docs/TRIGGER_BATCH_ALGORITHMS.md) | 急騰検出アルゴリズム |
 | [docs/TRADING_JOURNAL.md](docs/TRADING_JOURNAL.md) | トレーディングメモリシステム |
-| [docs/chatgpt-oauth/setup.md](docs/chatgpt-oauth/setup.md) | ChatGPT OAuthプロキシのセットアップ |
 
 ---
 

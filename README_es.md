@@ -61,8 +61,6 @@ PRISM_OPENAI_AUTH_MODE=chatgpt_oauth python stock_analysis_orchestrator.py --mod
 
 Sin costos de API. El mismo analisis potente. Tu suscripcion existente hace el trabajo.
 
-**Documentacion**: [docs/chatgpt-oauth/setup.md](docs/chatgpt-oauth/setup.md)
-
 ---
 
 ## Aplicacion Movil
@@ -328,7 +326,6 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 | [docs/CLAUDE_AGENTS.md](docs/CLAUDE_AGENTS.md) | Detalles del sistema de agentes de IA |
 | [docs/TRIGGER_BATCH_ALGORITHMS.md](docs/TRIGGER_BATCH_ALGORITHMS.md) | Algoritmos de deteccion de movimientos inusuales |
 | [docs/TRADING_JOURNAL.md](docs/TRADING_JOURNAL.md) | Sistema de memoria de trading |
-| [docs/chatgpt-oauth/setup.md](docs/chatgpt-oauth/setup.md) | Configuracion del proxy OAuth de ChatGPT |
 
 ---
 

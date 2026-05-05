@@ -61,8 +61,6 @@ PRISM_OPENAI_AUTH_MODE=chatgpt_oauth python stock_analysis_orchestrator.py --mod
 
 API 요금 0원. 동일한 강력한 분석. 기존 구독으로 충분합니다.
 
-> **ChatGPT OAuth 설정 가이드**: [docs/chatgpt-oauth/setup.md](docs/chatgpt-oauth/setup.md)
-
 ---
 
 ## 모바일 앱
@@ -328,7 +326,6 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 | [docs/CLAUDE_AGENTS.md](docs/CLAUDE_AGENTS.md) | AI 에이전트 시스템 상세 |
 | [docs/TRIGGER_BATCH_ALGORITHMS.md](docs/TRIGGER_BATCH_ALGORITHMS.md) | 급등주 탐지 알고리즘 |
 | [docs/TRADING_JOURNAL.md](docs/TRADING_JOURNAL.md) | 매매 메모리 시스템 |
-| [docs/chatgpt-oauth/setup.md](docs/chatgpt-oauth/setup.md) | ChatGPT OAuth 프록시 설정 |
 
 ---
 

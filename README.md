@@ -328,7 +328,6 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 | [docs/CLAUDE_AGENTS.md](docs/CLAUDE_AGENTS.md) | AI agent system details |
 | [docs/TRIGGER_BATCH_ALGORITHMS.md](docs/TRIGGER_BATCH_ALGORITHMS.md) | Surge detection algorithms |
 | [docs/TRADING_JOURNAL.md](docs/TRADING_JOURNAL.md) | Trading memory system |
-| [docs/chatgpt-oauth/setup.md](docs/chatgpt-oauth/setup.md) | ChatGPT OAuth proxy setup |
 
 ---
 
