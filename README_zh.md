@@ -61,8 +61,6 @@ PRISM_OPENAI_AUTH_MODE=chatgpt_oauth python stock_analysis_orchestrator.py --mod
 
 零 API 账单。同等强大的分析能力。让您现有的订阅发挥价值。
 
-详细配置说明：[docs/chatgpt-oauth/setup.md](docs/chatgpt-oauth/setup.md)
-
 ---
 
 ## 移动端应用
@@ -328,7 +326,6 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 | [docs/CLAUDE_AGENTS.md](docs/CLAUDE_AGENTS.md) | AI 代理系统详情 |
 | [docs/TRIGGER_BATCH_ALGORITHMS.md](docs/TRIGGER_BATCH_ALGORITHMS.md) | 异动检测算法 |
 | [docs/TRADING_JOURNAL.md](docs/TRADING_JOURNAL.md) | 交易记忆系统 |
-| [docs/chatgpt-oauth/setup.md](docs/chatgpt-oauth/setup.md) | ChatGPT OAuth 代理配置 |
 
 ---
 
