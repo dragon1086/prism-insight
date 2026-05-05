@@ -264,5 +264,43 @@ async def status() -> None:
     print(f"Auth file: {AUTH_FILE}")
 
 
+def _main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python -m cores.chatgpt_proxy.oauth_login",
+        description="ChatGPT OAuth login. Re-uses an existing token unless --force is set.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force re-authentication even if a valid token already exists.",
+    )
+    args = parser.parse_args()
+
+    if not args.force and AUTH_FILE.exists():
+        try:
+            with open(AUTH_FILE) as f:
+                auth = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            auth = {}
+
+        if auth.get("refresh_token"):
+            now = time.time()
+            expires_at = auth.get("expires_at", 0)
+            status_str = "VALID" if expires_at > now else "EXPIRED (will auto-refresh on next API call)"
+
+            print("Already authenticated — no login needed.")
+            print(f"  Status:        {status_str}")
+            print(f"  Expires at:    {time.ctime(expires_at)}")
+            print(f"  Account ID:    {auth.get('account_id', 'unknown')}")
+            print(f"  Token file:    {AUTH_FILE}")
+            print()
+            print("Run again with --force to re-authenticate (switch account, refresh expired refresh token, etc.).")
+            return
+
+    asyncio.run(login(force=args.force))
+
+
 if __name__ == "__main__":
-    asyncio.run(login())
+    _main()
