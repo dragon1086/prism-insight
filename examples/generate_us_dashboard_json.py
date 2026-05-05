@@ -35,10 +35,13 @@ SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 PRISM_US_DIR = PROJECT_ROOT / "prism-us"
 TRADING_DIR = PROJECT_ROOT / "trading"
+# IMPORTANT: do NOT add PRISM_US_DIR to sys.path. prism-us/trading/ would shadow
+# the root trading/ package (which exposes kis_auth) and cause:
+#   ImportError: cannot import name 'kis_auth' from 'trading'
+#   (.../prism-us/trading/__init__.py)
+# USStockTrading is loaded via importlib.util below to avoid the namespace clash.
 sys.path.insert(0, str(SCRIPT_DIR))  # examples/ folder (for translation_utils)
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PRISM_US_DIR))
-sys.path.insert(0, str(TRADING_DIR))
 
 # yfinance import for market index data
 try:
@@ -48,13 +51,24 @@ except ImportError:
     YFINANCE_AVAILABLE = False
     logger.warning("yfinance not installed. Market index data will be unavailable.")
 
-# KIS US Stock Trading import
+# KIS US Stock Trading import.
+# Loaded via importlib.util from an explicit path so prism-us/trading/__init__.py
+# does NOT get registered as the top-level `trading` package — see comment above.
+USStockTrading = None
+KIS_US_AVAILABLE = False
 try:
-    from trading.us_stock_trading import USStockTrading
-    KIS_US_AVAILABLE = True
-except ImportError:
-    KIS_US_AVAILABLE = False
-    logger.warning("KIS US Stock Trading module not available. Real portfolio will be empty.")
+    import importlib.util as _ilu
+    _us_trading_path = PRISM_US_DIR / "trading" / "us_stock_trading.py"
+    if _us_trading_path.exists():
+        _spec = _ilu.spec_from_file_location("prism_us_stock_trading", _us_trading_path)
+        _us_trading_module = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_us_trading_module)
+        USStockTrading = _us_trading_module.USStockTrading
+        KIS_US_AVAILABLE = True
+    else:
+        logger.warning(f"prism-us trading module not found at {_us_trading_path}.")
+except Exception as exc:
+    logger.warning(f"KIS US Stock Trading module not available: {exc}. Real portfolio will be empty.")
 
 # Translation utility import (after path setup)
 try:
