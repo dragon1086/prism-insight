@@ -47,12 +47,17 @@
 **APIキーがなくても大丈夫です。** PRISM-INSIGHTは、**Codex OAuth プロキシ**を通じて、ChatGPT Plus（月$20）またはPro（月$200）のサブスクリプションで直接分析を実行できるようになりました。
 
 ```bash
-# 初回ログイン（一度だけ）
+# 初回ログイン（ブラウザが自動で開きChatGPT認証）
 python -m cores.chatgpt_proxy.oauth_login
+
+# 再認証が必要な場合（アカウント切替、トークン期限切れなど）
+python -m cores.chatgpt_proxy.oauth_login --force
 
 # ChatGPTサブスクリプションで実行
 PRISM_OPENAI_AUTH_MODE=chatgpt_oauth python stock_analysis_orchestrator.py --mode morning
 ```
+
+> トークンはバックグラウンドで自動更新されるため、ChatGPTアカウントを変更するかパスワードを変更した場合のみ再ログインが必要です。
 
 APIの請求ゼロ。同等の高精度分析。既存のサブスクリプションがそのまま活用できます。
 

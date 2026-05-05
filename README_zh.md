@@ -47,12 +47,17 @@
 **没有 API 密钥？没关系。** PRISM-INSIGHT 现在支持通过 **Codex OAuth 代理**直接使用您的 ChatGPT Plus（$20/月）或 Pro（$200/月）订阅进行分析。
 
 ```bash
-# 一次性登录
+# 首次登录（浏览器会自动打开进行 ChatGPT 认证）
 python -m cores.chatgpt_proxy.oauth_login
+
+# 需要重新登录时（切换账号、令牌过期等）
+python -m cores.chatgpt_proxy.oauth_login --force
 
 # 使用 ChatGPT 订阅运行分析
 PRISM_OPENAI_AUTH_MODE=chatgpt_oauth python stock_analysis_orchestrator.py --mode morning
 ```
+
+> 令牌会在后台自动刷新，仅在更换 ChatGPT 账号或修改密码时才需要重新登录。
 
 零 API 账单。同等强大的分析能力。让您现有的订阅发挥价值。
 
