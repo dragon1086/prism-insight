@@ -96,7 +96,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         | Regime | min_score | R/R floor | Max stop | Momentum signals | Extra confirmations |
         |--------|-----------|-----------|----------|------------------|---------------------|
-        | parabolic     | 4 | 0.7 | -5% | 2+ | 0 |
+        | parabolic     | 4 | 0.7 | -7% | 1+ | 0 |
         | strong_bull   | 4 | 1.0 | -7% | 1+ | 0 |
         | moderate_bull | 4 | 1.2 | -7% | 1+ | 0 |
         | sideways      | 5 | 1.3 | -6% | 1+ | 0 |
@@ -128,10 +128,12 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways).
         State the demotion in `market_condition` field.
 
-        **Parabolic position sizing** (apply when parabolic row is active):
-        - Halve the normal position concept: prefer 50% of the slot's capital
-        - Reduce max_portfolio_size by 1~2 slots vs. what the report's market risk implies
-        - State explicitly in `portfolio_context` that this is a parabolic-regime sizing reduction
+        **Parabolic position management** (apply when parabolic row is active):
+        - Active buying recommended: use the report-derived max_portfolio_size as-is. Do NOT reduce slots.
+        - Risk control comes ONLY from (1) Distribution Day Kill Switch and (2) momentum / buy_score gating
+          and (3) tight stop_loss enforcement — do not work around it via sizing reduction.
+        - State the parabolic regime in `portfolio_context`, but do NOT use "reduction" or "축소" language.
+          Parabolic = momentum tailwind = full deployment; risk is managed downstream by the kill switch.
 
         ## Step 3 — Momentum Signals (count toward matrix row)
 
@@ -220,6 +222,10 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - Choose the tighter of: matrix max stop OR primary support from report 1-1.
         - If primary support is beyond -10% from current price → No Entry (standalone reason 1).
         - Stop must NOT be set wider than matrix max stop just to "give room".
+        - **primary_support sanity check (mandatory)**: if the derived expected_loss_pct is below 50% of the matrix max stop, the primary support is too close to the entry price. In that case:
+          1. Prefer secondary_support from report 1-1; if that is also too close,
+          2. Use 50% of the matrix max stop as a floor (e.g. parabolic max -7% → at least -3.5% guaranteed).
+          This guardrail prevents post-entry stop-outs from normal market noise.
 
         ## R/R Calculation (reference)
 
@@ -307,11 +313,11 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
                     "volume_baseline": "Normal volume baseline (string)"
                 },
                 "sell_triggers": [
-                    "Take profit 1: target / resistance reached",
-                    "Take profit 2: momentum exhaustion",
-                    "Stop loss 1: support break",
-                    "Stop loss 2: downward acceleration",
-                    "Time condition: sideways drift / hold-period limit"
+                    "Take-profit milestone: hitting target / major resistance is a milestone, NOT an auto-sell trigger. In parabolic/strong_bull/moderate_bull regimes, switch to trailing stop and keep holding while trend persists. ONLY in sideways/moderate_bear/strong_bear regimes does target-hit trigger immediate full exit",
+                    "Trend weakness (multi-condition AND): on a closing-price basis, exit fully if 2 or more of these hold simultaneously — (1) close below 20d MA, (2) volume at or above average, (3) sector/market weakness in tandem",
+                    "Hard stop (closing basis): exit fully ONLY when the closing price breaks stop_loss. An intraday wick that briefly pierces stop_loss is NOT a sell reason",
+                    "O'Neil absolute rule: closing loss ≥ -7% triggers automatic full exit, no exceptions",
+                    "Time review (NOT a trigger): N trading days elapsed is a trend-review checkpoint, not an auto-sell trigger. Only consider exit if both close and volume confirm clear range-bound drift"
                 ],
                 "hold_conditions": [
                     "Hold condition 1",
@@ -386,7 +392,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         | 시장 체제 | min_score | 손익비 floor | 최대 손절폭 | 모멘텀 신호 | 추가 확인 |
         |----------|-----------|------------|----------|----------|--------|
-        | parabolic     | 4 | 0.7 | -5% | 2개+ | 0 |
+        | parabolic     | 4 | 0.7 | -7% | 1개+ | 0 |
         | strong_bull   | 4 | 1.0 | -7% | 1개+ | 0 |
         | moderate_bull | 4 | 1.2 | -7% | 1개+ | 0 |
         | sideways      | 5 | 1.3 | -6% | 1개+ | 0 |
@@ -416,10 +422,12 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         regime을 1단계 보수화하십시오 (parabolic → strong_bull, strong_bull → moderate_bull,
         moderate_bull → sideways). 보수화 사실을 `market_condition` 필드에 명시하십시오.
 
-        **parabolic 포지션 사이징** (parabolic 행이 활성화될 때):
-        - 평소 슬롯의 50% 비중을 권고합니다 (1슬롯=100% 매매라는 시스템 제약 안에서, max_portfolio_size 자체를 줄여 비중 효과 달성)
-        - max_portfolio_size를 보고서의 시장 리스크 기준값보다 1~2 슬롯 줄이십시오
-        - parabolic regime 사이징 축소라는 사실을 `portfolio_context`에 명시
+        **parabolic 포지션 운영** (parabolic 행이 활성화될 때):
+        - 적극 매수 권장: max_portfolio_size를 보고서 기준값 그대로 사용하십시오. **슬롯 축소 금지**.
+        - 리스크 관리는 (1) Distribution Day Kill Switch, (2) momentum / buy_score 게이트, (3) 타이트한 stop_loss 집행
+          이 세 가지로만 수행합니다 — 사이징 축소로 우회하지 마십시오.
+        - parabolic regime이라는 사실은 `portfolio_context`에 명시하되 "축소" 표현은 사용하지 않습니다.
+          parabolic = 모멘텀 순풍 = 풀 가동이며, 리스크는 kill switch에서 관리합니다.
 
         ## 3단계 — 모멘텀 신호 (매트릭스 행에 카운트)
 
@@ -504,6 +512,10 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - 매트릭스 최대 손절폭과 보고서 1-1의 주요 지지선 중 더 가까운(타이트한) 값을 채택하십시오.
         - 주요 지지선이 현재가 대비 -10% 이상 떨어져 있으면 미진입 (단독 사유 1).
         - "여유를 주려고" 매트릭스 최대 손절폭보다 넓게 설정하지 마십시오.
+        - **primary_support 검증 (필수)**: 산출된 expected_loss_pct가 매트릭스 최대 손절폭의 50% 미만이면, 1차 지지선이 진입가 너무 가까이 있는 상태입니다. 이때는:
+          1. 보고서 1-1의 secondary_support를 우선 검토하고, 그것도 너무 가까우면
+          2. 매트릭스 최대 손절폭의 50%를 floor로 채택 (예: parabolic max -7% → 최소 -3.5% 보장)
+          이는 매수 직후 정상 시장 노이즈로 인한 손절 발동을 방지하기 위한 가드레일입니다.
 
         ## 손익비 계산식 (참고)
 
@@ -586,11 +598,11 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
                     "volume_baseline": "평소 거래량 기준 (문자열 가능)"
                 },
                 "sell_triggers": [
-                    "익절 조건 1: 목표가/저항선 도달",
-                    "익절 조건 2: 모멘텀 소진",
-                    "손절 조건 1: 지지선 이탈",
-                    "손절 조건 2: 하락 가속",
-                    "시간 조건: 횡보 지속 또는 보유 한계"
+                    "익절 마일스톤: 목표가·주요 저항선 도달은 1차 마일스톤이며 자동 매도 트리거가 아닙니다. parabolic/strong_bull/moderate_bull regime이면 즉시 매도 금지 — trailing stop으로 전환해 추세 지속 시 보유. sideways/moderate_bear/strong_bear regime에서만 도달 즉시 전량 매도",
+                    "추세 약화 (multi-condition AND): 종가 기준 ① 20일선 이탈 ② 거래량 평균 이상 동반 ③ 섹터/시장 동반 약세 — 이 중 2개 이상 동시 충족 시 전량 매도",
+                    "하드 스탑: 종가 기준 stop_loss 이탈 시에만 전량 매도. 장중 wick(intraday low)으로 일시 이탈한 것은 매도 사유로 인정하지 않음",
+                    "오닐 절대 룰: 종가 기준 -7% 이상 손실 도달 시 무조건 전량 매도",
+                    "시간 점검 (트리거 아님): 보유 N거래일 경과는 자동 매도 트리거가 아니라 추세 점검 시점일 뿐. 박스권 횡보가 종가·거래량 모두에서 명확히 확인될 때에만 매도 검토"
                 ],
                 "hold_conditions": [
                     "보유 지속 조건 1",
@@ -651,6 +663,31 @@ def create_sell_decision_agent(language: str = "ko"):
 
         → **Bull market**: 2 or more of above 4 are Yes
         → **Bear/Sideways market**: Conditions not met
+
+        ### Priority 0: Core Principles for Sell Judgement (MUST follow)
+
+        **Core-1) Closing-Price Rule:**
+        - All stop_loss and trailing-stop judgements are based on the **closing price**.
+        - An intraday low that briefly touches stop_loss (intraday wick) is NEVER a sell reason on its own.
+        - Stop loss fires only when the closing price closes below stop_loss.
+        - During morning session (09:30~10:30 KST equivalent), use the previous day's confirmed close. After 14:50 KST equivalent or after market close, today's close is usable.
+
+        **Core-2) Interpret buy-scenario take-profit conditions as milestones:**
+        - In stock_holdings.scenario.trading_scenarios.sell_triggers, phrases like "sell when target reached" or "take profit 1: target/resistance reached" are **milestones, not automatic sell orders**.
+        - In parabolic/strong_bull/moderate_bull regimes: target-hit is the activation point for the trailing stop — do NOT sell immediately. Keep holding while the trend persists.
+        - In sideways/moderate_bear/strong_bear regimes: target-hit triggers immediate full exit.
+        - Always classify the current regime first, then interpret the scenario; never sell mechanically based on scenario text alone.
+
+        **Core-3) Trailing-stop activation:**
+        - Trailing stop activates ONLY after highest_price since entry ≥ entry_price × 1.05.
+        - Before activation (peak still under entry +5%), keep the initial stop_loss from the buy scenario; do NOT switch to a trailing stop.
+        - This prevents the post-entry noise from pushing the trailing stop below the entry price and losing its protective function.
+
+        **Core-4) Sell-signal priority (single source of truth):**
+        - Tier 1: Absolute sell (closing loss ≥ -7%, OR closing price breaks stop_loss).
+        - Tier 2: Trailing-stop closing breach (only if activated per Core-3).
+        - Tier 3: Trend-weakness composite (3 consecutive daily-closing declines + above-average volume + close below 20d MA — ALL three required).
+        - Time-based conditions are NOT sell triggers; they are trend-review checkpoints only. Sell decisions fire only via Tiers 1~3.
 
         ### Sell Decision Priority (Cut Losses Short, Let Profits Run!)
 
@@ -822,6 +859,31 @@ def create_sell_decision_agent(language: str = "ko"):
 
         → **강세장 판단**: 위 4개 중 2개 이상 Yes
         → **약세장/횡보장**: 위 조건 미충족
+
+        ### 0순위: 매도 판단의 핵심 원칙 (반드시 준수)
+
+        **핵심-1) 종가 기준 (Closing-Price Rule):**
+        - 모든 손절가·trailing stop 판단은 **종가(closing price)** 기준입니다.
+        - 장중 저가가 stop_loss를 일시적으로 터치(intraday wick)한 것만으로는 절대 매도하지 마십시오.
+        - 종가가 stop_loss 아래로 마감했을 때만 손절 발동합니다.
+        - 오전장(09:30~10:30 KST) 분석 시에는 전일 종가 기준으로 판단하고, 오후장(14:50+) 분석 시에만 당일 종가를 사용하십시오.
+
+        **핵심-2) 매수 시나리오의 익절 조건은 마일스톤으로 해석:**
+        - 보유 종목의 stock_holdings.scenario.trading_scenarios.sell_triggers 중 "목표가 도달 시 매도", "익절 조건 1: 목표가/저항선 도달" 등의 문구는 **자동 매도 명령이 아니라 1차 마일스톤**입니다.
+        - 시장이 parabolic/strong_bull/moderate_bull이면: 목표가 도달은 trailing stop 전환 시점이며 즉시 매도하지 마십시오. 추세가 살아있으면 보유 지속이 원칙입니다.
+        - 시장이 sideways/moderate_bear/strong_bear이면: 목표가 도달 시 즉시 전량 매도가 원칙입니다.
+        - 시나리오 문구를 기계적으로 따라 매도하지 말고, 반드시 현재 regime을 먼저 판정하고 그에 맞춰 해석하십시오.
+
+        **핵심-3) trailing stop 활성화 조건:**
+        - 진입 후 고점(highest_price) ≥ 진입가 × 1.05를 충족한 이후에만 trailing stop이 활성화됩니다.
+        - 활성화 전(고점이 진입가 +5% 미만)에는 매수 시 설정된 초기 stop_loss를 유지하며 trailing stop으로 변경하지 않습니다.
+        - 이는 진입 직후 작은 변동으로 trailing stop이 진입가 아래로 내려가서 보호 기능을 잃는 현상을 방지합니다.
+
+        **핵심-4) 매도 신호 우선순위 (single source of truth):**
+        - 1단계: 절대 매도 (종가 기준 -7% 이상 손실 OR 종가 기준 stop_loss 이탈)
+        - 2단계: trailing stop 종가 이탈 (활성화된 이후에만)
+        - 3단계: 추세 종합 약화 (3거래일 연속 종가 하락 + 거래량 동반 + 20일선 종가 이탈, 3개 모두 충족)
+        - 시간 조건은 매도 트리거가 아닙니다. 추세 점검 시점일 뿐이며, 매도 결정은 위 1~3단계에서만 발동합니다.
 
         ### 매도 결정 우선순위 (손실은 짧게, 수익은 길게!)
 
