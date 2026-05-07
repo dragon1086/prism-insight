@@ -294,13 +294,13 @@ def test_ambiguous_setup_no_longer_auto_no_entry_en():
 
 def test_parabolic_regime_row_in_matrix_ko():
     agent = create_trading_scenario_agent(language="ko")
-    # The parabolic row must be present in the matrix with R/R floor 0.7, stop -5%, momentum 2+
-    assert "| parabolic     | 4 | 0.7 | -5% | 2개+ | 0 |" in agent.instruction
+    # v2.10.0: parabolic stop loosened to -7% (O'Neil rule) and momentum to 1+ for active buying
+    assert "| parabolic     | 4 | 0.7 | -7% | 1개+ | 0 |" in agent.instruction
 
 
 def test_parabolic_regime_row_in_matrix_en():
     agent = create_trading_scenario_agent(language="en")
-    assert "| parabolic     | 4 | 0.7 | -5% | 2+ | 0 |" in agent.instruction
+    assert "| parabolic     | 4 | 0.7 | -7% | 1+ | 0 |" in agent.instruction
 
 
 def test_parabolic_activation_conditions_ko():
@@ -356,14 +356,17 @@ def test_target_price_fallback_rule_en():
 
 def test_parabolic_position_sizing_ko():
     agent = create_trading_scenario_agent(language="ko")
-    assert "parabolic 포지션 사이징" in agent.instruction
-    assert "max_portfolio_size를 보고서의 시장 리스크 기준값보다 1~2 슬롯 줄이십시오" in agent.instruction
+    # v2.10.0: parabolic switched from sizing reduction to active full deployment
+    assert "parabolic 포지션 운영" in agent.instruction
+    assert "슬롯 축소 금지" in agent.instruction
+    assert "max_portfolio_size를 보고서 기준값 그대로 사용" in agent.instruction
 
 
 def test_parabolic_position_sizing_en():
     agent = create_trading_scenario_agent(language="en")
-    assert "Parabolic position sizing" in agent.instruction
-    assert "Reduce max_portfolio_size by 1~2 slots" in agent.instruction
+    assert "Parabolic position management" in agent.instruction
+    assert "Do NOT reduce slots" in agent.instruction
+    assert "use the report-derived max_portfolio_size as-is" in agent.instruction
 
 
 def test_parabolic_min_score_in_schema_ko():
