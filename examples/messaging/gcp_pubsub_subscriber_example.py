@@ -38,6 +38,7 @@ import logging
 import argparse
 import asyncio
 import threading
+import importlib.util
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -412,6 +413,17 @@ class ScheduledOrderManager:
 scheduled_order_manager: Optional[ScheduledOrderManager] = None
 
 
+def load_us_stock_trading_class():
+    """Load prism-us trading module without colliding with root trading package."""
+    module_path = PROJECT_ROOT / "prism-us" / "trading" / "us_stock_trading.py"
+    spec = importlib.util.spec_from_file_location("prism_us_stock_trading", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load US trading module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.USStockTrading
+
+
 def setup_logging(log_file: str = None) -> logging.Logger:
     """Configure logging"""
     log_dir = PROJECT_ROOT / "logs"
@@ -521,10 +533,7 @@ async def execute_us_buy_trade(ticker: str, company_name: str, logger: logging.L
         limit_price: Limit price in USD for reserved orders (required for off-hours trading)
     """
     try:
-        # Import from prism-us module
-        import sys
-        sys.path.insert(0, str(PROJECT_ROOT / "prism-us"))
-        from trading.us_stock_trading import USStockTrading
+        USStockTrading = load_us_stock_trading_class()
 
         trading = USStockTrading()
 
@@ -562,10 +571,7 @@ async def execute_us_sell_trade(ticker: str, company_name: str, logger: logging.
         limit_price: Limit price in USD for reserved orders (required for off-hours trading)
     """
     try:
-        # Import from prism-us module
-        import sys
-        sys.path.insert(0, str(PROJECT_ROOT / "prism-us"))
-        from trading.us_stock_trading import USStockTrading
+        USStockTrading = load_us_stock_trading_class()
 
         trading = USStockTrading()
 
