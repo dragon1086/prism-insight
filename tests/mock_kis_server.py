@@ -548,7 +548,15 @@ def order_reserved(body: ReservedOrderRequest, tr_id: str = Header(..., alias="t
     # KIS spec for 주식예약주문 uniquely uses `msg` (not `msg1`) in the response
     # envelope. Emit `msg` alongside `msg1` so both spec-conformant clients
     # and the generic _ok() envelope work.
-    return {**OK_BODY, "msg": OK_BODY["msg1"], "output": {"RSVN_ORD_SEQ": seq}}
+    # Output key: spec body table lists lowercase `rsvn_ord_seq`, but the
+    # spec Response Example and the production client both use UPPERCASE
+    # `RSVN_ORD_SEQ` (trading/domestic_stock_trading.py:704,1044). Emit both
+    # so spec-conformant contract tests AND existing clients pass.
+    return {
+        **OK_BODY,
+        "msg": OK_BODY["msg1"],
+        "output": {"RSVN_ORD_SEQ": seq, "rsvn_ord_seq": seq},
+    }
 
 
 # ---------- Inquiries ----------

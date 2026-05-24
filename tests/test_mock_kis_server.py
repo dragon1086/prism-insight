@@ -382,4 +382,8 @@ def test_reserved_order_response_includes_msg_field(client):
     assert body["rt_cd"] == "0"
     assert "msg" in body  # spec-required
     assert "msg1" in body  # back-compat with generic envelope
+    # Spec body table uses lowercase `rsvn_ord_seq`; example + client uses
+    # UPPERCASE `RSVN_ORD_SEQ`. Both must be present.
     assert body["output"]["RSVN_ORD_SEQ"]
+    assert body["output"]["rsvn_ord_seq"]
+    assert body["output"]["RSVN_ORD_SEQ"] == body["output"]["rsvn_ord_seq"]
