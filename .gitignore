@@ -120,3 +120,19 @@ id_ed25519*
 archive.db
 archive.db-shm
 archive.db-wal
+
+# Coverage outputs
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+coverage-*.xml
+htmlcov-*/
+
+# Claude Code session state (worktrees, agent caches)
+.claude/
+
+# Approval layer SQLite (created at runtime when ENABLE_TRADE_APPROVAL=true)
+trade_approvals.db
+trade_approvals.db-shm
+trade_approvals.db-wal

@@ -331,3 +331,98 @@ def test_parse_callback_data_round_trip():
     assert parse_callback_data("other:ok:x") is None
     assert parse_callback_data("apv:xx:abc") is None  # unknown action
     assert parse_callback_data("apv:ok:") is None     # empty id
+
+
+# --------------------------------------------------------------- retry flow
+
+
+@pytest.mark.asyncio
+async def test_retry_with_amount_creates_new_proposal(store, bot, monkeypatch):
+    _patch_keyboard(monkeypatch)
+    executor = _FakeExecutor(ExecutionResult(success=True))
+    mgr = _manager(store, executor, timeout_seconds=3600)
+
+    original = _proposal()
+    original.metadata = {"account_name": "primary", "scenario": {"buy_score": 9}}
+    await mgr.request_approval(bot, chat_id=99, proposal=original)
+
+    # Click 📝 modify
+    query = FakeCallbackQuery(
+        data=build_callback_data(ACTION_MODIFY, original.short_id()), bot=bot,
+    )
+    await mgr.handle_callback(query)
+
+    # /retry_<id> 300000 — new approval card should be sent
+    sent_before = len(bot.sent)
+    new_proposal = await mgr.retry_with_amount(
+        bot, chat_id=99, short_id=original.short_id(), new_amount_krw=300_000,
+    )
+    assert new_proposal is not None
+    assert new_proposal.proposed_amount_krw == 300_000
+    assert new_proposal.approval_id != original.approval_id
+    # Metadata is preserved so the executor can still route to the right account.
+    assert new_proposal.metadata["account_name"] == "primary"
+    assert new_proposal.metadata["scenario"]["buy_score"] == 9
+    # A fresh approval message must have been sent.
+    assert len(bot.sent) == sent_before + 1
+    # Original record stays MODIFY_REQUESTED for audit; new record is PENDING.
+    assert store.get(original.approval_id).decision == ApprovalDecision.MODIFY_REQUESTED.value
+    assert store.get(new_proposal.approval_id).decision == ApprovalDecision.PENDING.value
+
+
+@pytest.mark.asyncio
+async def test_retry_with_unknown_short_id_returns_none(store, bot, monkeypatch):
+    _patch_keyboard(monkeypatch)
+    executor = _FakeExecutor(ExecutionResult(success=True))
+    mgr = _manager(store, executor, timeout_seconds=3600)
+    # No prior MODIFY → retry must report "not found".
+    result = await mgr.retry_with_amount(
+        bot, chat_id=99, short_id="deadbeefcafe", new_amount_krw=500_000,
+    )
+    assert result is None
+    assert bot.sent == []
+
+
+@pytest.mark.asyncio
+async def test_retry_consumes_modify_stash_so_second_retry_fails(store, bot, monkeypatch):
+    _patch_keyboard(monkeypatch)
+    executor = _FakeExecutor(ExecutionResult(success=True))
+    mgr = _manager(store, executor, timeout_seconds=3600)
+
+    original = _proposal()
+    await mgr.request_approval(bot, chat_id=99, proposal=original)
+    await mgr.handle_callback(FakeCallbackQuery(
+        data=build_callback_data(ACTION_MODIFY, original.short_id()), bot=bot,
+    ))
+
+    first = await mgr.retry_with_amount(
+        bot, chat_id=99, short_id=original.short_id(), new_amount_krw=200_000,
+    )
+    assert first is not None
+    second = await mgr.retry_with_amount(
+        bot, chat_id=99, short_id=original.short_id(), new_amount_krw=300_000,
+    )
+    assert second is None  # stash was consumed on first retry
+
+
+@pytest.mark.asyncio
+async def test_retry_rejects_non_positive_amount(store, bot, monkeypatch):
+    _patch_keyboard(monkeypatch)
+    executor = _FakeExecutor(ExecutionResult(success=True))
+    mgr = _manager(store, executor, timeout_seconds=3600)
+    original = _proposal()
+    await mgr.request_approval(bot, chat_id=99, proposal=original)
+    await mgr.handle_callback(FakeCallbackQuery(
+        data=build_callback_data(ACTION_MODIFY, original.short_id()), bot=bot,
+    ))
+    assert await mgr.retry_with_amount(
+        bot, chat_id=99, short_id=original.short_id(), new_amount_krw=0,
+    ) is None
+    assert await mgr.retry_with_amount(
+        bot, chat_id=99, short_id=original.short_id(), new_amount_krw=-1,
+    ) is None
+    # Stash should still be present (a rejected retry doesn't consume it).
+    valid = await mgr.retry_with_amount(
+        bot, chat_id=99, short_id=original.short_id(), new_amount_krw=100_000,
+    )
+    assert valid is not None

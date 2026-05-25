@@ -1031,10 +1031,19 @@ class TelegramAIBot:
         # Human-in-the-Loop trade approval callbacks
         # (✅ approve / ❌ reject / 📝 modify). Inert when
         # ENABLE_TRADE_APPROVAL is unset — nothing sends `apv:` callbacks.
-        from trading.approval_integration import telegram_callback_handler
+        from trading.approval_integration import (
+            telegram_callback_handler,
+            telegram_retry_handler,
+        )
         self.application.add_handler(CallbackQueryHandler(
             telegram_callback_handler,
             pattern=r"^apv:",
+        ))
+        # `/retry_<short_id> <amount>` to resubmit a MODIFY_REQUESTED proposal
+        # with a new investment amount. Inert when ENABLE_TRADE_APPROVAL=false.
+        self.application.add_handler(MessageHandler(
+            filters.Regex(r'^/retry_[0-9a-fA-F]'),
+            telegram_retry_handler,
         ))
 
         # General text messages - /help or /start guidance

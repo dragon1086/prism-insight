@@ -361,6 +361,69 @@ async def telegram_callback_handler(update, context) -> None:
             pass
 
 
+# ------------------------------------------------ MODIFY → /retry_<id> <amount>
+
+import re as _re
+
+_RETRY_PATTERN = _re.compile(
+    r"^/retry_([0-9a-fA-F]{6,32})(?:[\s_]+([\d,]+))?\s*$"
+)
+
+
+async def telegram_retry_handler(update, context) -> None:
+    """python-telegram-bot MessageHandler entry-point for `/retry_<id> <amount>`.
+
+    Register with `application.add_handler(MessageHandler(
+        filters.Regex(r'^/retry_[a-f0-9]'), telegram_retry_handler))`. Inert
+    when ENABLE_TRADE_APPROVAL=false (the manager won't have any modify-
+    pending entries, so retry always reports "expired").
+    """
+    msg = getattr(update, "message", None)
+    if msg is None or not getattr(msg, "text", None):
+        return
+    match = _RETRY_PATTERN.match(msg.text.strip())
+    if match is None:
+        await msg.reply_text(
+            "사용법: /retry_<승인ID> <금액(원)>\n예: /retry_abc123def456 500000"
+        )
+        return
+    short_id = match.group(1).lower()
+    amount_raw = match.group(2)
+    if not amount_raw:
+        await msg.reply_text(
+            "금액을 함께 입력해주세요. 예: /retry_" + short_id + " 500000"
+        )
+        return
+    try:
+        new_amount_krw = int(amount_raw.replace(",", ""))
+    except ValueError:
+        await msg.reply_text("금액은 숫자로 입력해주세요. 예: 500000")
+        return
+    if new_amount_krw <= 0:
+        await msg.reply_text("금액은 0보다 커야 합니다.")
+        return
+
+    chat_id = msg.chat.id if getattr(msg, "chat", None) else None
+    if chat_id is None:
+        return
+    bot = context.bot if context and getattr(context, "bot", None) else msg.get_bot()
+
+    try:
+        new_proposal = await get_manager().retry_with_amount(
+            bot, chat_id, short_id=short_id, new_amount_krw=new_amount_krw,
+        )
+    except Exception:
+        logger.exception("retry dispatch failed for short_id=%s", short_id)
+        await msg.reply_text("재요청 처리 중 오류가 발생했습니다.")
+        return
+
+    if new_proposal is None:
+        await msg.reply_text(
+            "해당 수정 요청을 찾을 수 없거나 만료되었습니다. "
+            "(이미 재요청했거나 30분이 경과한 경우 새 매매 시그널을 기다려주세요)"
+        )
+
+
 # ---------------------------------------------------------- helpers
 
 

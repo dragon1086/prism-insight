@@ -320,6 +320,109 @@ async def test_telegram_callback_handler_dispatches_to_manager(monkeypatch, fake
 
 
 @pytest.mark.asyncio
+async def test_telegram_retry_handler_resubmits_with_new_amount(monkeypatch, fake_trading_module, bot):
+    """`telegram_retry_handler` parses `/retry_<id> <amount>` and triggers a
+    fresh approval round with the user-supplied amount."""
+    monkeypatch.setattr(appr, "_publish_signal",
+                        lambda *a, **kw: asyncio.sleep(0))
+
+    original = await appr.request_buy_approval(
+        bot, chat_id=99,
+        ticker="005930", company_name="삼성전자",
+        current_price=70_000,
+        scenario={"buy_score": 82, "buy_amount_krw": 500_000},
+        account_name="primary",
+    )
+    assert original is not None
+
+    # User taps 📝 (modify) — must stash the proposal in the manager.
+    from approval.message import ACTION_MODIFY
+    modify_query = FakeCallbackQuery(
+        data=build_callback_data(ACTION_MODIFY, original.short_id()), bot=bot,
+    )
+    update = type("Update", (), {"callback_query": modify_query})()
+    context = type("Context", (), {})()
+    await appr.telegram_callback_handler(update, context)
+
+    # Simulate user typing `/retry_<short_id> 300,000`
+    @dataclass
+    class FakeChat:
+        id: int = 99
+
+    @dataclass
+    class FakeReply:
+        replies: List[str] = field(default_factory=list)
+
+        async def reply_text(self, text: str, **kw):
+            self.replies.append(text)
+
+    msg = type("Msg", (), {})()
+    msg.text = f"/retry_{original.short_id()} 300,000"
+    msg.chat = FakeChat()
+    replies: List[str] = []
+
+    async def _reply(text, **kw):
+        replies.append(text)
+    msg.reply_text = _reply
+    msg.get_bot = lambda: bot
+
+    update_msg = type("UpdateMsg", (), {"message": msg})()
+    context_msg = type("Ctx", (), {"bot": bot})()
+    sent_before = len(bot.sent)
+    await appr.telegram_retry_handler(update_msg, context_msg)
+
+    # A fresh approval card was sent; no error reply.
+    assert len(bot.sent) == sent_before + 1
+    assert replies == []
+    # The new proposal in SQLite has the retried amount.
+    pendings = appr.get_store().list_pending()
+    assert len(pendings) == 1
+    assert pendings[0].proposed_amount_krw == 300_000
+
+
+@pytest.mark.asyncio
+async def test_telegram_retry_handler_missing_amount_replies_with_usage(monkeypatch, bot):
+    """No amount → polite usage hint, no new approval card."""
+    msg = type("Msg", (), {})()
+    msg.text = "/retry_abcdef012345"
+    msg.chat = type("C", (), {"id": 99})()
+    replies: List[str] = []
+
+    async def _reply(text, **kw):
+        replies.append(text)
+    msg.reply_text = _reply
+    msg.get_bot = lambda: bot
+
+    update_msg = type("UpdateMsg", (), {"message": msg})()
+    context_msg = type("Ctx", (), {"bot": bot})()
+    await appr.telegram_retry_handler(update_msg, context_msg)
+
+    assert any("금액" in r for r in replies)
+    assert bot.sent == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_retry_handler_unknown_id_reports_expired(monkeypatch, bot):
+    """Unknown short_id → 'not found / expired' message, no crash."""
+    msg = type("Msg", (), {})()
+    msg.text = "/retry_deadbeefcafe 500000"
+    msg.chat = type("C", (), {"id": 99})()
+    replies: List[str] = []
+
+    async def _reply(text, **kw):
+        replies.append(text)
+    msg.reply_text = _reply
+    msg.get_bot = lambda: bot
+
+    update_msg = type("UpdateMsg", (), {"message": msg})()
+    context_msg = type("Ctx", (), {"bot": bot})()
+    await appr.telegram_retry_handler(update_msg, context_msg)
+
+    assert any("만료" in r or "찾을 수 없" in r for r in replies)
+    assert bot.sent == []
+
+
+@pytest.mark.asyncio
 async def test_executor_publishes_signals_after_kis_call(fake_trading_module, bot):
     """When `_kis_executor` runs successfully, it calls the Redis + GCP
     publishers (best-effort, swallows exceptions)."""

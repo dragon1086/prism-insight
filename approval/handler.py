@@ -52,7 +52,10 @@ class ApprovalManagerConfig:
     rejected_message_template: str = "❌ 거절되었습니다."
     expired_message_template: str = "⏰ 30분 경과 — 자동 거절되었습니다."
     modify_message_template: str = (
-        "📝 금액 수정 요청을 받았습니다. 새 금액으로 /retry_<short_id> 를 입력해주세요."
+        "📝 금액 수정 요청을 받았습니다.\n"
+        "새 금액(원)으로 다음 명령을 입력해주세요:\n"
+        "/retry_{short_id} <새 금액>\n"
+        "예: /retry_{short_id} 300000"
     )
     executed_message_template: str = "🎯 주문 체결: {order_no} ({quantity}주 @ {fill_price:,}원)"
     execution_failed_template: str = "⚠️ 주문 실패: {message}"
@@ -79,6 +82,11 @@ class ApprovalManager:
         self.executor = executor
         self.config = config or ApprovalManagerConfig()
         self._pending: Dict[str, _PendingEntry] = {}
+        # Holding bay for MODIFY_REQUESTED proposals awaiting /retry_<id> <amount>.
+        # Metadata (account_name/scenario/holding_qty) isn't persisted to SQLite,
+        # so we keep the original proposal in memory until the user retries or
+        # the entry expires.
+        self._modify_pending: Dict[str, TradeProposal] = {}
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ public
@@ -248,11 +256,80 @@ class ApprovalManager:
         self.store.update_decision(
             approval_id, ApprovalDecision.MODIFY_REQUESTED, decided_by=decided_by,
         )
+        # Stash the proposal so /retry_<short_id> <amount> can rebuild a new
+        # TradeProposal with all the original metadata (account, scenario,
+        # holding_qty) preserved. Reaped by _expire_modify_after.
+        async with self._lock:
+            self._modify_pending[approval_id] = entry.proposal
+        asyncio.create_task(
+            self._expire_modify_after(approval_id, self.config.timeout_seconds)
+        )
         await self._edit(query, self.config.modify_message_template.format(
             short_id=entry.proposal.short_id()
         ))
         entry.decided.set()
         return ApprovalDecision.MODIFY_REQUESTED
+
+    async def _expire_modify_after(self, approval_id: str, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        async with self._lock:
+            self._modify_pending.pop(approval_id, None)
+
+    async def retry_with_amount(
+        self,
+        bot,
+        chat_id: int,
+        *,
+        short_id: str,
+        new_amount_krw: int,
+    ) -> Optional[TradeProposal]:
+        """Build a fresh proposal from a MODIFY_REQUESTED stash and re-prompt.
+
+        Returns the new TradeProposal on success, None if the short_id has no
+        matching modify-stash (already retried, expired, or never modified).
+        The original MODIFY_REQUESTED record in SQLite is left intact for
+        audit; the new proposal gets a brand-new approval_id.
+        """
+        if new_amount_krw <= 0:
+            return None
+
+        async with self._lock:
+            stash_key = None
+            for approval_id in self._modify_pending:
+                if approval_id.startswith(short_id):
+                    stash_key = approval_id
+                    break
+            if stash_key is None:
+                return None
+            original = self._modify_pending.pop(stash_key)
+
+        # New proposal: same fields, new amount, new approval_id (auto-gen),
+        # new proposed_at, never inherits auto_execute from a sell stop-loss
+        # (a stop-loss skipping approval can't have been MODIFY_REQUESTED).
+        new_proposal = TradeProposal(
+            ticker=original.ticker,
+            stock_name=original.stock_name,
+            side=original.side,
+            entry_price=original.entry_price,
+            proposed_amount_krw=int(new_amount_krw),
+            stop_loss=original.stop_loss,
+            target_price=original.target_price,
+            score=original.score,
+            confidence=original.confidence,
+            rationale=list(original.rationale),
+            trigger_type=original.trigger_type,
+            auto_execute=False,
+            metadata=dict(original.metadata),
+        )
+        await self.request_approval(bot, chat_id, new_proposal)
+        logger.info(
+            "approval retried: old=%s new=%s amount=%s",
+            short_id, new_proposal.short_id(), new_amount_krw,
+        )
+        return new_proposal
 
     async def _auto_execute(self, proposal: TradeProposal, *, chat_id: int) -> ApprovalRecord:
         record = self.store.insert_proposal(proposal, chat_id=chat_id, message_id=None)
