@@ -20,7 +20,10 @@ mcp:
 
     firecrawl:
         command: "npx"
-        args: [ "-y", "firecrawl-mcp" ]
+        # Pin firecrawl-mcp version to avoid broken npx cache states (see issue #286).
+        # Unpinned `firecrawl-mcp` cached a release with a nested zod ESM/CJS mismatch,
+        # causing the MCP server to crash on startup and tools to silently disappear.
+        args: [ "-y", "firecrawl-mcp@3.17.0" ]
         env:
           FIRECRAWL_API_KEY: "example key"
 
