@@ -691,6 +691,7 @@ class USStockTrackingAgent:
             # Get trading journal context for informed decisions
             journal_context = ""
             score_adjustment_info = ""
+            adjustment, reasons = 0, []
             if ticker:
                 journal_context = self.get_journal_context(
                     ticker=ticker,
@@ -752,6 +753,12 @@ class USStockTrackingAgent:
             # JSON parsing (consolidated in cores/utils.py)
             scenario_json = parse_llm_json(response, context='US trading scenario')
             if scenario_json is not None:
+                # Persist the experience-based score adjustment alongside the scenario.
+                # It rides inside the scenario JSON, stored in us_stock_holdings.scenario and
+                # copied to us_trading_history.scenario on sell — giving the weekly influence
+                # report a journal-impact signal for free (#280).
+                if adjustment != 0 or reasons:
+                    scenario_json["score_adjustment"] = {"value": adjustment, "reasons": reasons}
                 logger.info(f"Scenario parsed: {json.dumps(scenario_json, ensure_ascii=False)[:200]}")
                 return scenario_json
 
@@ -949,6 +956,19 @@ class USStockTrackingAgent:
                 message += f"Trading Value Analysis: {rank_change_msg}\n"
 
             message += f"Rationale: {scenario.get('rationale', 'No information')}\n"
+
+            # Surface journal-grounded reasoning so the feedback loop is transparent (#280).
+            # All fields optional — defends against scenarios without journal_reflection.
+            _jr = scenario.get('journal_reflection') or {}
+            if isinstance(_jr, dict):
+                if _jr.get('recent_exit_caution'):
+                    message += f"⚠️ 최근 매도 주의: {_jr.get('recent_exit_caution')}\n"
+                if _jr.get('applied_lessons'):
+                    message += f"📒 매매일지 반영: {_jr.get('applied_lessons')}\n"
+            _sadj = scenario.get('score_adjustment') or {}
+            if isinstance(_sadj, dict) and _sadj.get('value'):
+                _rsn = ', '.join(_sadj.get('reasons', []) or [])
+                message += f"📊 경험 기반 점수조정: {_sadj.get('value'):+d}점 ({_rsn})\n"
 
             # Trading scenario details (same format as KR version)
             trading_scenarios = scenario.get('trading_scenarios', {})
@@ -1183,6 +1203,19 @@ class USStockTrackingAgent:
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)
             if trigger_win_rate:
                 skip_message += f"\n{trigger_win_rate}"
+
+            # Surface journal-grounded reasoning so the feedback loop is transparent (#280).
+            # All fields optional — defends against scenarios without journal_reflection.
+            _jr = scenario.get('journal_reflection') or {}
+            if isinstance(_jr, dict):
+                if _jr.get('recent_exit_caution'):
+                    skip_message += f"\n⚠️ 최근 매도 주의: {_jr.get('recent_exit_caution')}"
+                if _jr.get('applied_lessons'):
+                    skip_message += f"\n📒 매매일지 반영: {_jr.get('applied_lessons')}"
+            _sadj = scenario.get('score_adjustment') or {}
+            if isinstance(_sadj, dict) and _sadj.get('value'):
+                _rsn = ', '.join(_sadj.get('reasons', []) or [])
+                skip_message += f"\n📊 경험 기반 점수조정: {_sadj.get('value'):+d}점 ({_rsn})"
 
             self._msg_types.append("analysis")
             self.message_queue.append(skip_message)

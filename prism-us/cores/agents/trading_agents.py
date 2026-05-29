@@ -262,6 +262,13 @@ risk_reward_ratio  = expected_return_pct / expected_loss_pct
 - **장 후반 (마감 1시간 전 이후)**: 당일 데이터가 사실상 확정. 모든 기술적 지표를 사용해도 됩니다.
 - 분석이 미국 시장 마감 후(아침 KST)에 실행되는 경우 직전 거래일 종가 기준으로 판단하십시오.
 
+## 매매일지·직관 활용 (주입된 경우)
+프롬프트에 "Same Stock Past Trading History" 또는 "Accumulated Trading Intuitions"가 주어지면 신중히 가중하십시오:
+- 이 종목을 **최근(≤5거래일) 매도**했거나(특히 ⚠️ 태그가 붙은 경우), 과거 **유사 패턴·느낌의 손실 이력**이 있으면 추격 재진입을 한 박자 늦추고 손익비·셋업을 더 엄격히 보십시오.
+- 다만 매매일지 하나만 보고 기계적으로 미진입하지는 마십시오 — 현재 셋업이 과거와 **무엇이 다른지**를 판단하는 것이 핵심입니다.
+- 최근 매도 이력에도 진입한다면 rationale에 "지금이 왜 다른가"를 명시하고, journal_reflection 필드를 채우십시오.
+- journal_reflection은 항상 출력하십시오. 주입된 일지가 없으면 referenced=false, 나머지는 null로 두십시오.
+
 ## JSON 응답 형식
 
 key_levels의 가격 필드 형식: `170` / `"170"` / `"170~180"` (범위는 중간값 사용).
@@ -297,6 +304,11 @@ key_levels의 가격 필드 형식: `170` / `"170"` / `"170~180"` (범위는 중
     "sector": "GICS 섹터명. 반드시 다음 중 하나: {sector_constraint}",
     "market_condition": "regime + 1줄 근거",
     "max_portfolio_size": 6~10 사이 정수,
+    "journal_reflection": {
+        "referenced": true 또는 false (주입된 매매일지/직관이 이번 판단에 실제로 영향을 줬는가),
+        "recent_exit_caution": "이 종목을 최근(≤5거래일) 매도했거나 과거 유사 손실 패턴이 있으면 그 주의점 1줄, 없으면 null",
+        "applied_lessons": "반영한 매매일지·직관 교훈 1줄과 그것이 판단을 어떻게 바꿨는지 (없으면 null)"
+    },
     "trading_scenarios": {
         "key_levels": {
             "primary_support": 숫자,
@@ -564,6 +576,13 @@ If the resulting R/R is below the matrix floor for the current regime → No Ent
 - **Closing hour onward**: today's data is settled. All technical indicators are usable.
 - When the analysis runs after US market close (KST morning), use the most recent settled session.
 
+## Using the Trading Journal & Intuitions (when injected)
+When the prompt includes "Same Stock Past Trading History" or "Accumulated Trading Intuitions", weigh them carefully:
+- If this stock was **exited recently (<=5 trading days)** (especially when tagged ⚠️), or shows a **past similar-loss pattern**, slow down a chase re-entry and apply stricter R/R and setup checks.
+- Do NOT mechanically skip based on the journal alone — the key is judging **what is different now** versus the past setup.
+- If you still enter despite a recent exit, state "why now is different" in the rationale and fill the journal_reflection field.
+- Always output journal_reflection. If no journal was injected, set referenced=false and the rest null.
+
 ## JSON Response Format
 
 key_levels price formats: `170` / `"170"` / `"170~180"` (range midpoint used).
@@ -599,6 +618,11 @@ Prohibited: `"$170"`, `"about $170"`, `"minimum 170"`.
     "sector": "GICS sector name. Must be one of: {sector_constraint}",
     "market_condition": "regime + 1-line evidence",
     "max_portfolio_size": Integer 6~10,
+    "journal_reflection": {
+        "referenced": true or false (did the injected trading journal/intuitions materially inform this decision),
+        "recent_exit_caution": "If this stock was exited recently (<=5 trading days) or shows a past similar-loss pattern, the 1-line caution; else null",
+        "applied_lessons": "1-line: which journal/intuition lesson was weighed and how it shifted the decision (null if none)"
+    },
     "trading_scenarios": {
         "key_levels": {
             "primary_support": Number,

@@ -496,9 +496,22 @@ Please review the following completed trade:
                     pass
 
                 profit_emoji = "✅" if entry[2] > 0 else "❌"
+                # Recency framing: flag names exited within the last ~5 trading days
+                # (≈7 calendar days) so the buy LLM does not overlook that it just
+                # closed this very stock (the same-day re-buy churn case, #282).
+                recency_tag = ""
+                try:
+                    exit_date = datetime.strptime(entry[7][:10], "%Y-%m-%d")
+                    days_since = (datetime.now() - exit_date).days
+                    if days_since <= 7:
+                        recency_tag = f" ⚠️ {days_since}일 전 매도 — 추격 재진입 신중 검토"
+                    else:
+                        recency_tag = f" ({days_since}일 전)"
+                except Exception:
+                    pass
                 context_parts.append(
                     f"- [{entry[7][:10]}] {profit_emoji} Return {entry[2]:.1f}% "
-                    f"(held {entry[3]} days) - {entry[4]}{lessons_str}"
+                    f"(held {entry[3]} days) - {entry[4]}{lessons_str}{recency_tag}"
                 )
 
                 # Enrich with sell context so the buy LLM understands WHY the stock was exited
