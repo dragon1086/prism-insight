@@ -132,6 +132,10 @@ try:
         migrate_us_watchlist_history_columns,
         is_us_ticker_in_holdings,
         get_us_holdings_count,
+        get_us_existing_position_for_ticker,
+        evaluate_us_pyramid_add_gate,
+        compute_us_fractional_sell_quantity,
+        decide_us_sell_plan,
     )
     from tracking.journal import USJournalManager
     from tracking.compression import USCompressionManager
@@ -151,6 +155,10 @@ except ImportError as e:
         migrate_us_watchlist_history_columns,
         is_us_ticker_in_holdings,
         get_us_holdings_count,
+        get_us_existing_position_for_ticker,
+        evaluate_us_pyramid_add_gate,
+        compute_us_fractional_sell_quantity,
+        decide_us_sell_plan,
     )
     from tracking.journal import USJournalManager
     from tracking.compression import USCompressionManager
@@ -843,14 +851,31 @@ class USStockTrackingAgent:
         ticker = analysis_result.get("ticker")
         company_name = analysis_result.get("company_name")
         if await self._is_ticker_in_holdings(ticker):
-            logger.info(f"{ticker} ({company_name}) already in holdings")
-            return {
-                "success": True,
-                "decision": "holding",
-                "ticker": ticker,
-                "company_name": company_name,
-                "current_price": analysis_result.get("current_price", 0)
-            }
+            # Pyramiding (#288): allow an additional independent entry only when the
+            # strong-bull add-gate passes. Otherwise keep the legacy hard block.
+            scenario = analysis_result.get("scenario", {}) or {}
+            current_price = analysis_result.get("current_price", 0)
+            account_key = self._account_scope()[0]
+            existing = get_us_existing_position_for_ticker(self.cursor, ticker, account_key=account_key)
+            allowed, reason = evaluate_us_pyramid_add_gate(
+                market_condition=scenario.get("market_condition", ""),
+                existing_avg_buy_price=existing.get("avg_buy_price", 0.0),
+                current_price=current_price,
+                existing_row_count=existing.get("row_count", 0),
+            )
+            if not allowed:
+                logger.info(f"{ticker} ({company_name}) already in holdings — add gate blocked: {reason}")
+                return {
+                    "success": True,
+                    "decision": "holding",
+                    "ticker": ticker,
+                    "company_name": company_name,
+                    "current_price": current_price
+                }
+            logger.info(f"{ticker} ({company_name}) pyramiding add gate passed: {reason}")
+            analysis_result["is_add"] = True
+            analysis_result["existing_avg_buy_price"] = existing.get("avg_buy_price", 0.0)
+            analysis_result["existing_row_count"] = existing.get("row_count", 0)
 
         analysis_result["sector_diverse"] = await self._check_sector_diversity(
             analysis_result.get("sector", "Unknown")
@@ -858,7 +883,7 @@ class USStockTrackingAgent:
         return analysis_result
 
     async def buy_stock(self, ticker: str, company_name: str, current_price: float,
-                        scenario: Dict[str, Any], rank_change_msg: str = "") -> bool:
+                        scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
         """
         Process stock purchase.
 
@@ -868,13 +893,15 @@ class USStockTrackingAgent:
             current_price: Current stock price in USD
             scenario: Trading scenario information
             rank_change_msg: Trading value ranking change info
+            is_add: Pyramiding add (#288) — bypass the already-holding re-check and
+                    insert an independent additional row instead of a first entry.
 
         Returns:
             bool: Purchase success status
         """
         try:
-            # Check if already holding
-            if await self._is_ticker_in_holdings(ticker):
+            # Check if already holding (skipped for a pyramiding add)
+            if not is_add and await self._is_ticker_in_holdings(ticker):
                 logger.warning(f"{ticker} ({company_name}) already in holdings")
                 return False
 
@@ -920,16 +947,31 @@ class USStockTrackingAgent:
             )
             self.conn.commit()
 
-            # Build buy message (same format as KR template)
+            # Build buy message (same format as KR template).
+            # Pyramiding adds (#288) get a distinct header showing the entry number
+            # and the new aggregate average price.
             target_price = scenario.get('target_price', 0)
             stop_loss = scenario.get('stop_loss', 0)
 
-            message = f"📈 New Buy: {company_name}({ticker})\n" \
-                      f"Buy Price: ${current_price:,.2f}\n" \
-                      f"Target: ${target_price:,.2f}\n" \
-                      f"Stop Loss: ${stop_loss:,.2f}\n" \
-                      f"Period: {scenario.get('investment_period', 'short')}\n" \
-                      f"Sector: {scenario.get('sector', 'Unknown')}\n"
+            if is_add:
+                agg = get_us_existing_position_for_ticker(self.cursor, ticker, account_key=account_key)
+                entry_no = agg.get("row_count", 1)  # this entry is the Nth row
+                new_avg = agg.get("avg_buy_price", current_price)
+                message = f"📈 Add-On Entry (#{entry_no}): {company_name}({ticker})\n" \
+                          f"This Entry: ${current_price:,.2f}\n" \
+                          f"New Avg Price: ${new_avg:,.2f}\n" \
+                          f"⚠️ Portfolio weight increased (1 independent slot consumed)\n" \
+                          f"Target: ${target_price:,.2f}\n" \
+                          f"Stop Loss: ${stop_loss:,.2f}\n" \
+                          f"Period: {scenario.get('investment_period', 'short')}\n" \
+                          f"Sector: {scenario.get('sector', 'Unknown')}\n"
+            else:
+                message = f"📈 New Buy: {company_name}({ticker})\n" \
+                          f"Buy Price: ${current_price:,.2f}\n" \
+                          f"Target: ${target_price:,.2f}\n" \
+                          f"Stop Loss: ${stop_loss:,.2f}\n" \
+                          f"Period: {scenario.get('investment_period', 'short')}\n" \
+                          f"Sector: {scenario.get('sector', 'Unknown')}\n"
 
             # Add trigger win rate
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)
@@ -1252,10 +1294,19 @@ class USStockTrackingAgent:
                         highest_price = current_price
                         scenario_data['highest_price'] = highest_price
                         updated_scenario_str = json.dumps(scenario_data, ensure_ascii=False)
-                        self.cursor.execute(
-                            "UPDATE us_stock_holdings SET scenario = ? WHERE ticker = ? AND account_key = ?",
-                            (updated_scenario_str, ticker, self._account_scope()[0])
-                        )
+                        # Pyramiding (#288): scope by row id so only THIS row's
+                        # scenario is updated. Fall back to ticker when id missing.
+                        row_id = stock_data.get('id')
+                        if row_id is not None:
+                            self.cursor.execute(
+                                "UPDATE us_stock_holdings SET scenario = ? WHERE id = ?",
+                                (updated_scenario_str, row_id)
+                            )
+                        else:
+                            self.cursor.execute(
+                                "UPDATE us_stock_holdings SET scenario = ? WHERE ticker = ? AND account_key = ?",
+                                (updated_scenario_str, ticker, self._account_scope()[0])
+                            )
                         self.conn.commit()
                         logger.info(f"{ticker} highest_price updated in scenario: ${highest_price:,.2f}")
             except Exception:
@@ -1400,7 +1451,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # Process portfolio_adjustment when holding (not selling)
             if not should_sell and portfolio_adjustment.get("needed", False):
                 await self._process_portfolio_adjustment(
-                    ticker, company_name, portfolio_adjustment, analysis_summary, current_price
+                    ticker, company_name, portfolio_adjustment, analysis_summary, current_price,
+                    row_id=stock_data.get('id')
                 )
 
             return should_sell, sell_reason
@@ -1495,9 +1547,15 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         company_name: str,
         portfolio_adjustment: Dict[str, Any],
         analysis_summary: Dict[str, Any],
-        current_price: float = 0
+        current_price: float = 0,
+        row_id: int = None
     ):
-        """Process DB updates and Telegram notifications based on portfolio_adjustment"""
+        """Process DB updates and Telegram notifications based on portfolio_adjustment
+
+        row_id: pyramiding (#288) — when provided, all UPDATEs/SELECT target only
+                this specific holding row (multi-row correctness). Falls back to
+                ticker-scoped queries when None.
+        """
         try:
             if not portfolio_adjustment.get("needed", False):
                 return
@@ -1508,10 +1566,16 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 return
 
             # Verify holding exists in DB
-            self.cursor.execute(
-                "SELECT target_price, stop_loss FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
-                (ticker, self._account_scope()[0])
-            )
+            if row_id is not None:
+                self.cursor.execute(
+                    "SELECT target_price, stop_loss FROM us_stock_holdings WHERE id = ?",
+                    (row_id,)
+                )
+            else:
+                self.cursor.execute(
+                    "SELECT target_price, stop_loss FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
+                    (ticker, self._account_scope()[0])
+                )
             row = self.cursor.fetchone()
             if row is None:
                 logger.warning(f"{ticker} us_stock_holdings SELECT returned None - skipping adjustment")
@@ -1531,10 +1595,16 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 except (ValueError, TypeError):
                     target_price_num = 0
                 if target_price_num > 0:
-                    self.cursor.execute(
-                        "UPDATE us_stock_holdings SET target_price = ? WHERE ticker = ? AND account_key = ?",
-                        (target_price_num, ticker, self._account_scope()[0])
-                    )
+                    if row_id is not None:
+                        self.cursor.execute(
+                            "UPDATE us_stock_holdings SET target_price = ? WHERE id = ?",
+                            (target_price_num, row_id)
+                        )
+                    else:
+                        self.cursor.execute(
+                            "UPDATE us_stock_holdings SET target_price = ? WHERE ticker = ? AND account_key = ?",
+                            (target_price_num, ticker, self._account_scope()[0])
+                        )
                     self.conn.commit()
                     db_updated = True
                     if target_price_num > old_target_price:
@@ -1568,10 +1638,16 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             f"${stop_loss_num:,.2f} < ${old_stop_loss:,.2f} — ignoring."
                         )
                     else:
-                        self.cursor.execute(
-                            "UPDATE us_stock_holdings SET stop_loss = ? WHERE ticker = ? AND account_key = ?",
-                            (stop_loss_num, ticker, self._account_scope()[0])
-                        )
+                        if row_id is not None:
+                            self.cursor.execute(
+                                "UPDATE us_stock_holdings SET stop_loss = ? WHERE id = ?",
+                                (stop_loss_num, row_id)
+                            )
+                        else:
+                            self.cursor.execute(
+                                "UPDATE us_stock_holdings SET stop_loss = ? WHERE ticker = ? AND account_key = ?",
+                                (stop_loss_num, ticker, self._account_scope()[0])
+                            )
                         self.conn.commit()
                         db_updated = True
                         if stop_loss_num > old_stop_loss:
@@ -1794,19 +1870,33 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 )
             )
 
-            # Remove from holdings
-            self.cursor.execute(
-                "DELETE FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
-                (ticker, account_key)
-            )
-            # Cleanup portfolio adjustment history (lifecycle management)
-            try:
+            # Remove from holdings.
+            # Pyramiding (#288): when the row carries an id AND the ticker has more
+            # than one row for this account, delete ONLY that row (preserving the
+            # remaining independent entries). Single-row tickers keep the legacy
+            # ticker-scoped delete + adjustment-log cleanup (zero behavior change).
+            row_id = stock_data.get('id')
+            existing = get_us_existing_position_for_ticker(self.cursor, ticker, account_key=account_key)
+            is_partial = row_id is not None and existing.get("row_count", 0) > 1
+            if is_partial:
                 self.cursor.execute(
-                    "DELETE FROM us_portfolio_adjustment_log WHERE ticker = ? AND account_key = ?",
+                    "DELETE FROM us_stock_holdings WHERE id = ?",
+                    (row_id,)
+                )
+            else:
+                self.cursor.execute(
+                    "DELETE FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
                     (ticker, account_key)
                 )
-            except Exception as e:
-                logger.debug(f"{ticker} Cleanup adjustment log skipped: {e}")
+                # Cleanup portfolio adjustment history only when the ticker is fully
+                # exited (no remaining rows).
+                try:
+                    self.cursor.execute(
+                        "DELETE FROM us_portfolio_adjustment_log WHERE ticker = ? AND account_key = ?",
+                        (ticker, account_key)
+                    )
+                except Exception as e:
+                    logger.debug(f"{ticker} Cleanup adjustment log skipped: {e}")
             self.conn.commit()
 
             # Build sell message (same format as KR template)
@@ -1860,8 +1950,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             logger.info("Starting US holdings update")
 
             # Query holdings list
+            # id included for pyramiding (#288): enables per-row delete and
+            # fractional-sell quantity computation for multi-row tickers.
             self.cursor.execute(
-                """SELECT ticker, company_name, buy_price, buy_date, current_price,
+                """SELECT id, ticker, company_name, buy_price, buy_date, current_price,
                    scenario, target_price, stop_loss, last_updated,
                    trigger_type, trigger_mode, sector, account_key, account_name
                    FROM us_stock_holdings
@@ -1876,9 +1968,25 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             sold_stocks = []
 
+            # Pyramiding (#288) FIX 2 — in-pass over-sell guard (mirror of KR):
+            # snapshot the ticker's total broker qty ONCE per pass and distribute
+            # from (snapshot - already_ordered), so unfilled limit/reserved orders
+            # cannot cause an over-sell on later iterations of the same ticker.
+            pass_total_qty: Dict[str, int] = {}   # ticker -> snapshot total qty
+            pass_sold_qty: Dict[str, int] = {}    # ticker -> cumulative ordered qty
+            # FIX 1 — tickers already FULL-exited this pass (all rows sold at once
+            # because the order had to be queued). Their remaining DB rows were
+            # already removed, so skip them when the loop reaches them.
+            fully_exited_tickers: set = set()
+
             for stock in holdings:
                 ticker = stock.get('ticker')
                 company_name = stock.get('company_name')
+
+                # FIX 1: skip rows whose ticker was already fully exited this pass.
+                if ticker in fully_exited_tickers:
+                    logger.info(f"{ticker} already fully exited this pass — skipping remaining row")
+                    continue
 
                 # Query current stock price
                 current_price = await self._get_current_stock_price(ticker)
@@ -1895,10 +2003,68 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 should_sell, sell_reason = await self._analyze_sell_decision(stock)
 
                 if should_sell:
+                    # Pyramiding (#288): compute remaining row count N for this
+                    # (ticker, account) BEFORE any DB row is deleted by sell_stock.
+                    acct_key = stock.get("account_key")
+                    remaining_rows = get_us_existing_position_for_ticker(
+                        self.cursor, ticker, account_key=acct_key
+                    ).get("row_count", 1)
+
+                    # FIX 1: decide the execution plan. A fractional (N>1) order
+                    # that would be QUEUED for the pending-order batch must NOT be
+                    # sent as a partial (the queue drops the quantity and later
+                    # full-liquidates the broker position). In that case do a FULL
+                    # position exit instead: sell the whole holding once and delete
+                    # ALL rows for the ticker so DB and broker stay consistent.
+                    will_queue = False
+                    if remaining_rows > 1 and current_price > 0:
+                        try:
+                            try:
+                                from trading.us_stock_trading import AsyncUSTradingContext
+                            except ImportError:
+                                from prism_us.trading.us_stock_trading import AsyncUSTradingContext
+                            async with AsyncUSTradingContext(account_name=stock.get("account_name")) as _probe:
+                                # Order gets queued when market is closed AND the
+                                # reserved-order window is unavailable (pre-10:00 KST).
+                                will_queue = (not _probe.is_market_open()) and (not _probe.is_reserved_order_available())
+                        except Exception as probe_err:
+                            logger.warning(f"{ticker} could not probe order window ({probe_err}); assuming will_queue=True (safe full-exit)")
+                            will_queue = True
+
+                    plan = decide_us_sell_plan(remaining_rows, will_queue)
+                    logger.info(f"{ticker} sell plan: {plan} (remaining_rows={remaining_rows}, will_queue={will_queue})")
+
                     # Delete from holding_decisions when selling
                     await self._delete_holding_decision(ticker)
 
-                    sell_success = await self.sell_stock(stock, sell_reason)
+                    if plan == "full_exit":
+                        # Record P&L for EVERY remaining row at current price and
+                        # delete them all (sell_stock deletes one row per call;
+                        # the final call deletes the last row by ticker scope).
+                        self.cursor.execute(
+                            """SELECT id, ticker, company_name, buy_price, buy_date, current_price,
+                               scenario, target_price, stop_loss, last_updated,
+                               trigger_type, trigger_mode, sector, account_key, account_name
+                               FROM us_stock_holdings
+                               WHERE ticker = ? AND account_key = ?""",
+                            (ticker, acct_key),
+                        )
+                        sibling_rows = [dict(r) for r in self.cursor.fetchall()]
+                        sell_success = True
+                        for sib in sibling_rows:
+                            sib['current_price'] = current_price
+                            ok = await self.sell_stock(sib, sell_reason)
+                            sell_success = sell_success and ok
+                        # Mark immediately (independent of KIS result) so the
+                        # already-deleted sibling rows still in the in-memory
+                        # `holdings` snapshot are skipped later this pass.
+                        fully_exited_tickers.add(ticker)
+                        logger.info(
+                            f"{ticker} FULL-EXIT: closed {len(sibling_rows)} pyramid rows "
+                            f"(queued order cannot carry a partial quantity)"
+                        )
+                    else:
+                        sell_success = await self.sell_stock(stock, sell_reason)
 
                     if sell_success:
                         # Execute actual trading
@@ -1912,9 +2078,35 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 except ImportError:
                                     from prism_us.trading.us_stock_trading import AsyncUSTradingContext
                                 async with AsyncUSTradingContext(account_name=stock.get("account_name")) as trading:
+                                    # Determine sell quantity.
+                                    # FIX 1: full_exit -> quantity=None (sell whole position).
+                                    # FIX 2: fractional -> distribute from a per-pass snapshot
+                                    # (snapshot - already_ordered) so unfilled orders cannot over-sell.
+                                    sell_quantity = None
+                                    # The FINAL row of a ticker already split THIS pass
+                                    # (plan flips to "single_full" at remaining_rows==1) must also
+                                    # sell from the snapshot remainder, NOT re-query the broker —
+                                    # otherwise unfilled earlier limit orders make get_holding_quantity
+                                    # return the full position and the last row over-sells (#288 FIX 2).
+                                    if plan == "fractional" or (ticker in pass_total_qty and plan == "single_full"):
+                                        if ticker not in pass_total_qty:
+                                            pass_total_qty[ticker] = await asyncio.to_thread(
+                                                trading.get_holding_quantity, ticker
+                                            )
+                                            pass_sold_qty[ticker] = 0
+                                        available = pass_total_qty[ticker] - pass_sold_qty[ticker]
+                                        sell_quantity = compute_us_fractional_sell_quantity(available, remaining_rows)
+                                        pass_sold_qty[ticker] += sell_quantity
+                                        logger.info(
+                                            f"{ticker} pyramiding fractional sell: {sell_quantity} shares "
+                                            f"(available {available} of snapshot {pass_total_qty[ticker]}, "
+                                            f"remaining rows={remaining_rows})"
+                                        )
+                                    # plan == "full_exit" -> sell_quantity stays None (full position);
+                                    # the ticker was already added to fully_exited_tickers above.
                                     # Pass limit_price for reserved orders (required for US market)
                                     # If limit_price is 0, trading module will use MOO (Market On Open)
-                                    trade_result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price)
+                                    trade_result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price, quantity=sell_quantity)
 
                                 if trade_result['success']:
                                     logger.info(f"Actual sell successful: {trade_result['message']}")
@@ -1961,21 +2153,27 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         except Exception as signal_err:
                             logger.warning(f"GCP sell signal publish failed (non-critical): {signal_err}")
 
-                        sold_stocks.append({
-                            "ticker": ticker,
-                            "company_name": company_name,
-                            "buy_price": stock.get('buy_price', 0),
-                            "sell_price": current_price,
-                            "profit_rate": ((current_price - stock.get('buy_price', 0)) / stock.get('buy_price', 0) * 100) if stock.get('buy_price', 0) > 0 else 0,
-                            "reason": sell_reason,
-                            "account_name": stock.get("account_name"),
-                            "account_label": self._safe_account_log_label(
-                                {
-                                    "name": stock.get("account_name"),
-                                    "account_key": stock.get("account_key"),
-                                }
-                            ),
-                        })
+                        # Report sold rows. For a full_exit, every closed pyramid
+                        # row is reported (so the sell count matches reality);
+                        # otherwise just the single row that triggered the sell.
+                        _exited_rows = sibling_rows if plan == "full_exit" else [stock]
+                        for _row in _exited_rows:
+                            _bp = _row.get('buy_price', 0)
+                            sold_stocks.append({
+                                "ticker": ticker,
+                                "company_name": _row.get('company_name', company_name),
+                                "buy_price": _bp,
+                                "sell_price": current_price,
+                                "profit_rate": ((current_price - _bp) / _bp * 100) if _bp > 0 else 0,
+                                "reason": sell_reason,
+                                "account_name": _row.get("account_name"),
+                                "account_label": self._safe_account_log_label(
+                                    {
+                                        "name": _row.get("account_name"),
+                                        "account_key": _row.get("account_key"),
+                                    }
+                                ),
+                            })
                 else:
                     # Save holding decision when not selling
                     await self._save_holding_decision(ticker, current_price, should_sell, sell_reason, stock)
@@ -2186,9 +2384,24 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     sector = analysis_result.get("sector", "Unknown")
                     rank_change_msg = analysis_result.get("rank_change_msg", "")
 
+                    # Pyramiding (#288): allow an additional independent entry for a
+                    # held ticker only when the strong-bull add-gate passes. Otherwise
+                    # keep the legacy skip. Computed per active account.
+                    is_add = False
                     if await self._is_ticker_in_holdings(ticker):
-                        logger.info(f"Skipping stock in holdings: {ticker}")
-                        continue
+                        acct_key = self._account_scope()[0]
+                        existing = get_us_existing_position_for_ticker(self.cursor, ticker, account_key=acct_key)
+                        allowed, gate_reason = evaluate_us_pyramid_add_gate(
+                            market_condition=scenario.get("market_condition", ""),
+                            existing_avg_buy_price=existing.get("avg_buy_price", 0.0),
+                            current_price=current_price,
+                            existing_row_count=existing.get("row_count", 0),
+                        )
+                        if not allowed:
+                            logger.info(f"Skipping stock in holdings: {ticker} — add gate blocked: {gate_reason}")
+                            continue
+                        logger.info(f"{ticker} pyramiding add gate passed: {gate_reason}")
+                        is_add = True
 
                     current_slots = await self._get_current_slots_count()
                     if current_slots >= self.max_slots:
@@ -2238,7 +2451,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         logger.info(f"Scenario rationale ({company_name}/{ticker}): {rationale[:300]}")
 
                     if normalized_decision == "entry" and adjusted_score >= min_score and sector_diverse:
-                        buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
+                        # is_add => pyramiding additional independent row (#288)
+                        buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg, is_add=is_add)
 
                         if buy_success:
                             trade_result = {'success': False, 'message': 'Trading not executed'}

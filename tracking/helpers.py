@@ -219,6 +219,134 @@ def get_current_slots_count(cursor, account_key: str | None = None) -> int:
         return 0
 
 
+# ── Pyramiding (#288) ──────────────────────────────────────────────────────
+# Strong-bull add-on / pyramiding helpers. Each pyramid entry is an independent
+# stock_holdings row. The gate below decides whether the "already holding" block
+# may be bypassed for an additional entry.
+
+# Market regimes in which pyramiding (adding to a winning position) is allowed.
+PYRAMID_ALLOWED_REGIMES = ("strong_bull", "parabolic")
+# Minimum aggregate profit (%) of the existing position to allow an add.
+PYRAMID_MIN_PROFIT_PCT = 5.0
+# Maximum number of rows (entries) per ticker/account (initial + up to 2 adds).
+PYRAMID_MAX_ROWS = 3
+# Table name for holdings (overridable for US: "us_stock_holdings").
+_HOLDINGS_TABLE = "stock_holdings"
+
+
+def get_existing_position_for_ticker(
+    cursor,
+    ticker: str,
+    account_key: str | None = None,
+    table_name: str = _HOLDINGS_TABLE,
+) -> Dict[str, Any]:
+    """Aggregate the existing holding for a ticker/account.
+
+    Returns a dict with:
+        row_count: number of existing rows for (ticker, account)
+        avg_buy_price: simple average buy_price across those rows (0 if none)
+    Used by the pyramiding add-gate.
+
+    NOTE (#288, intentional): ``avg_buy_price`` is a SIMPLE MEAN of per-row entry
+    prices, NOT a share-weighted average. The independent-row model deliberately
+    stores no per-row quantity in ``stock_holdings``, and each add is ~1 unit, so
+    the simple mean is an accurate-enough proxy for both the +5% profit gate and
+    the Telegram "누적 평단" display.
+    """
+    try:
+        if account_key:
+            cursor.execute(
+                f"SELECT buy_price FROM {table_name} WHERE ticker = ? AND account_key = ?",
+                (ticker, account_key),
+            )
+        else:
+            cursor.execute(
+                f"SELECT buy_price FROM {table_name} WHERE ticker = ?",
+                (ticker,),
+            )
+        prices = [float(r[0]) for r in cursor.fetchall() if r[0] is not None]
+        row_count = len(prices)
+        avg_buy_price = (sum(prices) / row_count) if row_count else 0.0
+        return {"row_count": row_count, "avg_buy_price": avg_buy_price}
+    except Exception as e:
+        logger.error(f"Error querying existing position for {ticker}: {str(e)}")
+        return {"row_count": 0, "avg_buy_price": 0.0}
+
+
+def _regime_label(market_condition: str | None) -> str:
+    """Extract the leading regime label from a market_condition string.
+
+    Real values look like ``"strong_bull: 보고서 기준 KOSPI가 20일선 상회..."`` —
+    the regime token (with underscore) comes before the first ':'. We take the
+    substring before the first ':', normalise it, and canonicalise separators so
+    a hyphen/space variant ("strong-bull"/"strong bull") maps to "strong_bull".
+    Fail-closed: anything unrecognised returns "" (no add).
+    """
+    if not market_condition or not isinstance(market_condition, str):
+        return ""
+    # Take the regime token before the first ':' (rest is the human description).
+    text = market_condition.split(":", 1)[0].strip().lower()
+    # Canonicalise separators: hyphen/space -> underscore (e.g. "strong-bull").
+    text = text.replace("-", "_").replace(" ", "_")
+    return text
+
+
+def evaluate_pyramid_add_gate(
+    market_condition: str | None,
+    existing_avg_buy_price: float,
+    current_price: float,
+    existing_row_count: int,
+    min_profit_pct: float = PYRAMID_MIN_PROFIT_PCT,
+    max_rows: int = PYRAMID_MAX_ROWS,
+) -> Tuple[bool, str]:
+    """Pure add-gate for pyramiding (#288).
+
+    Returns (allowed, reason). All of the following must hold to allow:
+      1) regime in PYRAMID_ALLOWED_REGIMES (parsed from market_condition prefix)
+      2) existing aggregate position profit >= min_profit_pct
+      3) existing_row_count < max_rows
+
+    Does NOT include the buy-agent Enter/score/sector checks — those are applied
+    independently by the normal buy path.
+    """
+    regime = _regime_label(market_condition)
+    if regime not in PYRAMID_ALLOWED_REGIMES:
+        return False, f"regime '{regime or 'unknown'}' not in {PYRAMID_ALLOWED_REGIMES}"
+
+    if existing_row_count >= max_rows:
+        return False, f"row count {existing_row_count} >= max {max_rows}"
+
+    if not existing_avg_buy_price or existing_avg_buy_price <= 0 or not current_price or current_price <= 0:
+        return False, "insufficient price data for profit check"
+
+    profit_pct = (current_price - existing_avg_buy_price) / existing_avg_buy_price * 100.0
+    if profit_pct < min_profit_pct:
+        return False, f"profit {profit_pct:.2f}% < required {min_profit_pct:.1f}%"
+
+    return True, f"add allowed (regime={regime}, profit={profit_pct:.2f}%, rows={existing_row_count})"
+
+
+def compute_fractional_sell_quantity(total_quantity: int, remaining_rows: int) -> int:
+    """Shares to sell for one row when ``remaining_rows`` rows remain (#288).
+
+    - remaining_rows <= 1  -> sell all (total_quantity)  [zero regression for non-pyramided]
+    - remaining_rows >  1  -> floor(total_quantity / remaining_rows)
+
+    Recomputed live at each sell so the LAST remaining row always sweeps the
+    remainder (since it sees remaining_rows == 1 and sells everything left).
+    """
+    try:
+        total = int(total_quantity)
+        n = int(remaining_rows)
+    except (TypeError, ValueError):
+        return int(total_quantity) if total_quantity else 0
+    if total <= 0:
+        return 0
+    if n <= 1:
+        return total
+    return total // n
+
+
 # Apply ratio guard only when portfolio is large enough that the ratio is meaningful.
 # With <4 holdings, a single same-sector position naturally produces 25-100% — blocking
 # every additional buy in that sector even though absolute count is well under the cap.

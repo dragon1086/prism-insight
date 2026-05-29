@@ -407,6 +407,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 sector_diverse = analysis_result.get("sector_diverse", True)
                 rank_change_percentage = analysis_result.get("rank_change_percentage", 0)
                 rank_change_msg = analysis_result.get("rank_change_msg", "")
+                is_add = analysis_result.get("is_add", False)  # pyramiding (#288)
 
                 # Check entry decision
                 buy_score = scenario.get("buy_score", 0)
@@ -506,8 +507,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                 # Process buy if entry decision
                 if decision == "Enter" and buy_score >= min_score and sector_diverse:
-                    # Process buy
-                    buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
+                    # Process buy (is_add => pyramiding additional independent row, #288)
+                    buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg, is_add=is_add)
 
                     if buy_success:
                         # Call actual account trading function (async)
@@ -565,9 +566,11 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.error(traceback.format_exc())
             return 0, 0
 
-    async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "") -> bool:
+    async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
         """
         Stock buy processing (override parent class method)
+
+        is_add: pyramiding add (#288) — passed through to the parent buy path.
         """
         try:
             # Calculate dynamically if target price/stop-loss is missing or 0 in scenario
@@ -582,7 +585,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 logger.info(f"{ticker} Dynamic stop-loss calculated: {stop_loss:,.0f} KRW")
 
             # Call parent class's buy_stock method
-            return await super().buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
+            return await super().buy_stock(ticker, company_name, current_price, scenario, rank_change_msg, is_add=is_add)
 
         except Exception as e:
             logger.error(f"{ticker} Error during purchase processing: {str(e)}")
@@ -809,10 +812,20 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         highest_price = current_price
                         scenario_data['highest_price'] = highest_price
                         updated_scenario_str = json.dumps(scenario_data, ensure_ascii=False)
-                        self.cursor.execute(
-                            "UPDATE stock_holdings SET scenario = ? WHERE ticker = ?",
-                            (updated_scenario_str, ticker)
-                        )
+                        # Pyramiding (#288): scope by row id so only THIS row's
+                        # scenario is updated (multi-row tickers). Fall back to
+                        # ticker when id is unavailable (legacy callers).
+                        row_id = stock_data.get('id')
+                        if row_id is not None:
+                            self.cursor.execute(
+                                "UPDATE stock_holdings SET scenario = ? WHERE id = ?",
+                                (updated_scenario_str, row_id)
+                            )
+                        else:
+                            self.cursor.execute(
+                                "UPDATE stock_holdings SET scenario = ? WHERE ticker = ?",
+                                (updated_scenario_str, ticker)
+                            )
                         self.conn.commit()
                         logger.info(f"{ticker} highest_price updated in scenario: {highest_price:,.0f} KRW")
             except:
@@ -1019,7 +1032,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                         # Process portfolio_adjustment
                         if portfolio_adjustment.get("needed", False):
-                            await self._process_portfolio_adjustment(ticker, company_name, portfolio_adjustment, analysis_summary, current_price)
+                            await self._process_portfolio_adjustment(ticker, company_name, portfolio_adjustment, analysis_summary, current_price, row_id=stock_data.get('id'))
                 except Exception as db_err:
                     # Main flow continues even if DB operation fails
                     logger.error(f"{ticker} Error processing holding_decisions DB (main flow continues): {str(db_err)}")
@@ -1137,8 +1150,13 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.error(f"Error in fallback sell analysis: {str(e)}")
             return False, "Analysis error"
 
-    async def _process_portfolio_adjustment(self, ticker: str, company_name: str, portfolio_adjustment: Dict[str, Any], analysis_summary: Dict[str, Any], current_price: float = 0):
-        """Process DB updates and Telegram notifications based on portfolio_adjustment"""
+    async def _process_portfolio_adjustment(self, ticker: str, company_name: str, portfolio_adjustment: Dict[str, Any], analysis_summary: Dict[str, Any], current_price: float = 0, row_id: int = None):
+        """Process DB updates and Telegram notifications based on portfolio_adjustment
+
+        row_id: pyramiding (#288) — when provided, all UPDATEs/SELECT target only
+                this specific holding row (multi-row correctness). Falls back to
+                ticker-scoped queries when None (legacy/single-row).
+        """
         try:
             # Return if adjustment not needed
             if not portfolio_adjustment.get("needed", False):
@@ -1151,10 +1169,16 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 return
 
             # Verify holding exists in DB before processing
-            self.cursor.execute(
-                "SELECT target_price, stop_loss FROM stock_holdings WHERE ticker = ?",
-                (ticker,)
-            )
+            if row_id is not None:
+                self.cursor.execute(
+                    "SELECT target_price, stop_loss FROM stock_holdings WHERE id = ?",
+                    (row_id,)
+                )
+            else:
+                self.cursor.execute(
+                    "SELECT target_price, stop_loss FROM stock_holdings WHERE ticker = ?",
+                    (ticker,)
+                )
             row = self.cursor.fetchone()
             if row is None:
                 logger.warning(f"{ticker} stock_holdings SELECT returned None - skipping adjustment")
@@ -1172,10 +1196,16 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 # Safe number conversion (including comma removal)
                 target_price_num = self._safe_number_conversion(new_target_price)
                 if target_price_num > 0:
-                    self.cursor.execute(
-                        "UPDATE stock_holdings SET target_price = ? WHERE ticker = ?",
-                        (target_price_num, ticker)
-                    )
+                    if row_id is not None:
+                        self.cursor.execute(
+                            "UPDATE stock_holdings SET target_price = ? WHERE id = ?",
+                            (target_price_num, row_id)
+                        )
+                    else:
+                        self.cursor.execute(
+                            "UPDATE stock_holdings SET target_price = ? WHERE ticker = ?",
+                            (target_price_num, ticker)
+                        )
                     self.conn.commit()
                     db_updated = True
                     if target_price_num == old_target_price:
@@ -1210,10 +1240,16 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             f"{stop_loss_num:,.0f} < {old_stop_loss:,.0f} KRW — 무시합니다."
                         )
                     else:
-                        self.cursor.execute(
-                            "UPDATE stock_holdings SET stop_loss = ? WHERE ticker = ?",
-                            (stop_loss_num, ticker)
-                        )
+                        if row_id is not None:
+                            self.cursor.execute(
+                                "UPDATE stock_holdings SET stop_loss = ? WHERE id = ?",
+                                (stop_loss_num, row_id)
+                            )
+                        else:
+                            self.cursor.execute(
+                                "UPDATE stock_holdings SET stop_loss = ? WHERE ticker = ?",
+                                (stop_loss_num, ticker)
+                            )
                         self.conn.commit()
                         db_updated = True
                         if stop_loss_num == old_stop_loss:

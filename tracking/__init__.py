@@ -21,6 +21,9 @@ from tracking.helpers import (
     check_sector_diversity,
     parse_price_value,
     default_scenario,
+    get_existing_position_for_ticker,
+    evaluate_pyramid_add_gate,
+    compute_fractional_sell_quantity,
 )
 from tracking.trading_ops import (
     analyze_sell_decision,
@@ -49,6 +52,9 @@ __all__ = [
     "check_sector_diversity",
     "parse_price_value",
     "default_scenario",
+    "get_existing_position_for_ticker",
+    "evaluate_pyramid_add_gate",
+    "compute_fractional_sell_quantity",
     # Trading ops
     "analyze_sell_decision",
     "format_buy_message",

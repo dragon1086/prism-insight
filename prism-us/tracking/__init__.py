@@ -17,6 +17,10 @@ from .db_schema import (
     is_us_ticker_in_holdings,
     get_us_holdings_count,
     get_us_holding,
+    get_us_existing_position_for_ticker,
+    evaluate_us_pyramid_add_gate,
+    compute_us_fractional_sell_quantity,
+    decide_us_sell_plan,
 )
 
 from .journal import USJournalManager
@@ -33,6 +37,10 @@ __all__ = [
     "is_us_ticker_in_holdings",
     "get_us_holdings_count",
     "get_us_holding",
+    "get_us_existing_position_for_ticker",
+    "evaluate_us_pyramid_add_gate",
+    "compute_us_fractional_sell_quantity",
+    "decide_us_sell_plan",
     # Journal
     "USJournalManager",
     # Compression
