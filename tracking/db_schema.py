@@ -27,8 +27,7 @@ CREATE TABLE IF NOT EXISTS stock_holdings (
     stop_loss REAL,
     trigger_type TEXT,
     trigger_mode TEXT,
-    sector TEXT,
-    UNIQUE(account_key, ticker)
+    sector TEXT
 )
 """
 
@@ -526,6 +525,133 @@ def migrate_multi_account_schema(cursor, conn):
         )
 
 
+def _holdings_table_has_unique_constraint(cursor, table_name: str) -> bool:
+    """Detect whether ``table_name`` was created with a UNIQUE(account_key, ticker)
+    constraint by reading its CREATE statement from sqlite_master.
+
+    Returns False when the table does not exist or has no such UNIQUE clause.
+    """
+    cursor.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
+        (table_name,),
+    )
+    row = cursor.fetchone()
+    if not row or not row[0]:
+        return False
+    return "UNIQUE" in row[0].upper()
+
+
+def _drop_unique_constraint(cursor, conn, table_name: str, create_sql: str):
+    """Rebuild ``table_name`` WITHOUT the UNIQUE(account_key, ticker) constraint,
+    preserving all rows. Idempotent: no-op when the constraint is already gone.
+
+    Uses the same safe pattern as ``_rebuild_table``:
+    backup -> rename-to-legacy -> create-new -> copy-all -> verify-rowcount -> drop-legacy.
+    The new table SQL (``create_sql``) must NOT contain the UNIQUE clause.
+    """
+    if not _table_exists(cursor, table_name):
+        return
+
+    # Recover from an interrupted run (legacy table left behind) before deciding.
+    _recover_interrupted_migration(cursor, conn, table_name)
+
+    if not _holdings_table_has_unique_constraint(cursor, table_name):
+        # Already migrated (or never had the constraint) -> no-op.
+        return
+
+    legacy_table = f"{table_name}_legacy"
+    backup_table = f"{table_name}_pre_pyramiding_backup"
+
+    if _table_exists(cursor, legacy_table):
+        raise RuntimeError(
+            f"Ambiguous migration state for {table_name}: legacy table {legacy_table} already exists. "
+            "Manual intervention is required."
+        )
+
+    if not _table_exists(cursor, backup_table):
+        logger.info(f"Creating backup table {backup_table} before dropping UNIQUE on {table_name}")
+        cursor.execute(f"CREATE TABLE {backup_table} AS SELECT * FROM {table_name}")
+        conn.commit()
+    else:
+        logger.warning(f"Preserving existing backup table {backup_table} for {table_name}")
+
+    logger.info(f"Dropping UNIQUE(account_key, ticker) constraint on {table_name} (pyramiding migration)")
+
+    try:
+        cursor.execute(f"ALTER TABLE {table_name} RENAME TO {legacy_table}")
+        cursor.execute(create_sql)
+
+        columns = _get_columns(cursor, legacy_table)
+        col_list = ", ".join(columns)
+        cursor.execute(
+            f"INSERT INTO {table_name} ({col_list}) SELECT {col_list} FROM {legacy_table}"
+        )
+
+        source_count = _count_rows(cursor, legacy_table)
+        target_count = _count_rows(cursor, table_name)
+        if source_count != target_count:
+            raise RuntimeError(
+                f"Row count mismatch during {table_name} UNIQUE-drop migration: "
+                f"{legacy_table}={source_count}, {table_name}={target_count}"
+            )
+
+        cursor.execute(f"DROP TABLE {legacy_table}")
+        conn.commit()
+        logger.info(
+            f"{table_name} UNIQUE-drop migration complete ({target_count} rows preserved). "
+            f"Backup table {backup_table} retained for manual cleanup."
+        )
+    except Exception as exc:
+        logger.error(f"{table_name} UNIQUE-drop migration failed: {exc}")
+        logger.error(f"Manual recovery is available from backup table {backup_table}")
+        raise
+
+
+def migrate_drop_holdings_unique_constraint(cursor, conn):
+    """Drop the legacy UNIQUE(account_key, ticker) constraint from holdings tables
+    so pyramiding (#288) can store multiple independent rows per ticker.
+
+    Idempotent and safe to run repeatedly. Handles both KR (stock_holdings) and
+    US (us_stock_holdings) tables; either may be absent in a given DB.
+    """
+    _drop_unique_constraint(cursor, conn, "stock_holdings", TABLE_STOCK_HOLDINGS)
+
+    # US table is created by prism-us/tracking/db_schema.py; rebuild it here too
+    # only if it exists in this DB, mirroring its canonical (UNIQUE-free) schema.
+    if _table_exists(cursor, "us_stock_holdings"):
+        cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
+            ("us_stock_holdings",),
+        )
+        row = cursor.fetchone()
+        if row and row[0] and "UNIQUE" in row[0].upper():
+            # Reconstruct a UNIQUE-free CREATE from the existing column set so we
+            # don't depend on importing the US schema module from the KR side.
+            us_create_sql = _build_create_without_unique(cursor, "us_stock_holdings")
+            _drop_unique_constraint(cursor, conn, "us_stock_holdings", us_create_sql)
+
+
+def _build_create_without_unique(cursor, table_name: str) -> str:
+    """Build a CREATE TABLE statement for ``table_name`` preserving its columns
+    and types but omitting any table-level UNIQUE constraint. Used when the
+    canonical CREATE SQL is owned by another module."""
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    cols = cursor.fetchall()  # (cid, name, type, notnull, dflt_value, pk)
+    defs = []
+    for _cid, name, col_type, notnull, dflt, pk in cols:
+        parts = [name, col_type or "TEXT"]
+        if pk:
+            parts.append("PRIMARY KEY")
+            if (col_type or "").upper() == "INTEGER":
+                parts.append("AUTOINCREMENT")
+        if notnull and not pk:
+            parts.append("NOT NULL")
+        if dflt is not None:
+            parts.append(f"DEFAULT {dflt}")
+        defs.append(" ".join(parts))
+    return f"CREATE TABLE {table_name} (\n    " + ",\n    ".join(defs) + "\n)"
+
+
 def migrate_watchlist_history_columns(cursor, conn):
     migrations = [
         ("watchlist_history", "min_score INTEGER"),
@@ -637,6 +763,7 @@ def create_all_tables(cursor, conn):
         cursor.execute(table_sql)
 
     migrate_multi_account_schema(cursor, conn)
+    migrate_drop_holdings_unique_constraint(cursor, conn)
     migrate_watchlist_history_columns(cursor, conn)
     migrate_analysis_performance_tracker_columns(cursor, conn)
     conn.commit()

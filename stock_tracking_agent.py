@@ -66,6 +66,9 @@ from tracking import (
     check_sector_diversity,
     parse_price_value,
     default_scenario,
+    get_existing_position_for_ticker,
+    evaluate_pyramid_add_gate,
+    compute_fractional_sell_quantity,
     analyze_sell_decision,
     format_buy_message,
     format_sell_message,
@@ -509,14 +512,34 @@ class StockTrackingAgent:
 
         is_holding = await self._is_ticker_in_holdings(ticker)
         if is_holding:
-            logger.info(f"{ticker}({company_name}) already in holdings")
-            return {
-                "success": True,
-                "decision": "Already holding",
-                "ticker": ticker,
-                "company_name": company_name,
-                "current_price": analysis_result.get("current_price", 0),
-            }
+            # Pyramiding (#288): allow an additional independent entry only when the
+            # strong-bull add-gate passes. Otherwise keep the legacy hard block.
+            scenario = analysis_result.get("scenario", {}) or {}
+            current_price = analysis_result.get("current_price", 0)
+            account_key, _ = self._account_scope()
+            existing = get_existing_position_for_ticker(self.cursor, ticker, account_key=account_key)
+            allowed, reason = evaluate_pyramid_add_gate(
+                market_condition=scenario.get("market_condition", ""),
+                existing_avg_buy_price=existing.get("avg_buy_price", 0.0),
+                current_price=current_price,
+                existing_row_count=existing.get("row_count", 0),
+            )
+            if not allowed:
+                logger.info(f"{ticker}({company_name}) already in holdings — add gate blocked: {reason}")
+                return {
+                    "success": True,
+                    "decision": "Already holding",
+                    "ticker": ticker,
+                    "company_name": company_name,
+                    "current_price": current_price,
+                }
+
+            logger.info(f"{ticker}({company_name}) pyramiding add gate passed: {reason}")
+            # Tag as an add and pass through to the normal buy path (which still
+            # independently gates on Enter/score/sector_diverse).
+            analysis_result["is_add"] = True
+            analysis_result["existing_avg_buy_price"] = existing.get("avg_buy_price", 0.0)
+            analysis_result["existing_row_count"] = existing.get("row_count", 0)
 
         sector = analysis_result.get("sector", "Unknown")
         analysis_result["sector_diverse"] = await self._check_sector_diversity(sector)
@@ -676,7 +699,7 @@ class StockTrackingAgent:
             logger.error(traceback.format_exc())
             return False
 
-    async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "") -> bool:
+    async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
         """
         Process stock purchase
 
@@ -686,13 +709,15 @@ class StockTrackingAgent:
             current_price: Current stock price
             scenario: Trading scenario information
             rank_change_msg: Trading value ranking change info
+            is_add: Pyramiding add (#288) — bypass the already-holding re-check and
+                    insert an independent additional row instead of a first entry.
 
         Returns:
             bool: Purchase success status
         """
         try:
-            # Check if already holding
-            if await self._is_ticker_in_holdings(ticker):
+            # Check if already holding (skipped for a pyramiding add)
+            if not is_add and await self._is_ticker_in_holdings(ticker):
                 logger.warning(f"{ticker}({company_name}) already in holdings")
                 return False
 
@@ -749,13 +774,27 @@ class StockTrackingAgent:
             )
             self.conn.commit()
 
-            # Add purchase message
-            message = f"📈 신규 매수: {company_name}({ticker})\n" \
-                      f"매수가: {current_price:,.0f}원\n" \
-                      f"목표가: {scenario.get('target_price', 0):,.0f}원\n" \
-                      f"손절가: {scenario.get('stop_loss', 0):,.0f}원\n" \
-                      f"투자기간: {scenario.get('investment_period', '단기')}\n" \
-                      f"산업군: {scenario.get('sector', '알 수 없음')}\n"
+            # Add purchase message — pyramiding adds (#288) get a distinct header
+            # showing the entry number and the new aggregate average price.
+            if is_add:
+                agg = get_existing_position_for_ticker(self.cursor, ticker, account_key=account_key)
+                entry_no = agg.get("row_count", 1)  # this entry is the Nth row
+                new_avg = agg.get("avg_buy_price", current_price)
+                message = f"📈 추가 진입 ({entry_no}차): {company_name}({ticker})\n" \
+                          f"이번 진입가: {current_price:,.0f}원\n" \
+                          f"누적 평단가: {new_avg:,.0f}원\n" \
+                          f"⚠️ 포트폴리오 비중이 증가했습니다 (독립 슬롯 1 소비)\n" \
+                          f"목표가: {scenario.get('target_price', 0):,.0f}원\n" \
+                          f"손절가: {scenario.get('stop_loss', 0):,.0f}원\n" \
+                          f"투자기간: {scenario.get('investment_period', '단기')}\n" \
+                          f"산업군: {scenario.get('sector', '알 수 없음')}\n"
+            else:
+                message = f"📈 신규 매수: {company_name}({ticker})\n" \
+                          f"매수가: {current_price:,.0f}원\n" \
+                          f"목표가: {scenario.get('target_price', 0):,.0f}원\n" \
+                          f"손절가: {scenario.get('stop_loss', 0):,.0f}원\n" \
+                          f"투자기간: {scenario.get('investment_period', '단기')}\n" \
+                          f"산업군: {scenario.get('sector', '알 수 없음')}\n"
 
             # Add trigger win rate
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)
@@ -1014,11 +1053,23 @@ class StockTrackingAgent:
                 )
             )
 
-            # Remove from holdings
-            self.cursor.execute(
-                "DELETE FROM stock_holdings WHERE ticker = ? AND account_key = ?",
-                (ticker, account_key)
-            )
+            # Remove from holdings.
+            # Pyramiding (#288): when the row carries an id AND the ticker has more
+            # than one row for this account, delete ONLY that row so the remaining
+            # independent entries are preserved. Single-row tickers keep the legacy
+            # ticker-scoped delete (zero behavior change).
+            row_id = stock_data.get('id')
+            existing = get_existing_position_for_ticker(self.cursor, ticker, account_key=account_key)
+            if row_id is not None and existing.get("row_count", 0) > 1:
+                self.cursor.execute(
+                    "DELETE FROM stock_holdings WHERE id = ?",
+                    (row_id,)
+                )
+            else:
+                self.cursor.execute(
+                    "DELETE FROM stock_holdings WHERE ticker = ? AND account_key = ?",
+                    (ticker, account_key)
+                )
 
             # Save changes
             self.conn.commit()
@@ -1169,8 +1220,10 @@ class StockTrackingAgent:
             logger.info("Starting holdings info update")
 
             # Query holdings list
+            # id included for pyramiding (#288): enables per-row delete and
+            # fractional-sell quantity computation for multi-row tickers.
             self.cursor.execute(
-                """SELECT ticker, company_name, buy_price, buy_date, current_price,
+                """SELECT id, ticker, company_name, buy_price, buy_date, current_price,
                    scenario, target_price, stop_loss, last_updated,
                    trigger_type, trigger_mode, account_key, account_name, sector
                    FROM stock_holdings
@@ -1184,6 +1237,17 @@ class StockTrackingAgent:
                 return []
 
             sold_stocks = []
+
+            # Pyramiding (#288) FIX 2 — in-pass over-sell guard:
+            # When several rows of the SAME ticker sell within one update pass,
+            # limit/reserved orders may not have filled yet, so re-reading the
+            # broker quantity each iteration would see the full (un-decremented)
+            # quantity and over-sell. Instead we snapshot the ticker's total
+            # broker quantity ONCE (first sell of that ticker this pass) and
+            # distribute from the snapshot using an in-pass accumulator —
+            # independent of fill timing.
+            pass_total_qty: Dict[str, int] = {}   # ticker -> snapshot total qty
+            pass_sold_qty: Dict[str, int] = {}    # ticker -> cumulative ordered qty
 
             for stock in holdings:
                 ticker = stock.get('ticker')
@@ -1222,15 +1286,51 @@ class StockTrackingAgent:
                 should_sell, sell_reason = await self._analyze_sell_decision(stock)
 
                 if should_sell:
-                    # Process sell
+                    # Pyramiding (#288): compute remaining row count N for this
+                    # (ticker, account) BEFORE the DB row is deleted by sell_stock.
+                    # N>1 => fractional KIS sell (floor(total/N)); N==1 => sell all
+                    # (unchanged). Recomputed live each sell so the last row sweeps.
+                    remaining_rows = get_existing_position_for_ticker(
+                        self.cursor, ticker, account_key=stock.get("account_key")
+                    ).get("row_count", 1)
+
+                    # Process sell (deletes only this row when N>1, else the ticker)
                     sell_success = await self.sell_stock(stock, sell_reason)
 
                     if sell_success:
                         # Call actual account trading function (async)
                         from trading.domestic_stock_trading import AsyncTradingContext
                         async with AsyncTradingContext(account_name=stock.get("account_name")) as trading:
+                            # Determine fractional sell quantity for multi-row tickers.
+                            # FIX 2: snapshot total qty once per ticker per pass and
+                            # distribute from (snapshot - already_ordered), so fills
+                            # that haven't settled yet cannot cause an over-sell.
+                            sell_quantity = None
+                            # Multi-row tickers sell fractionally. The FINAL row of a
+                            # ticker already split THIS pass (remaining_rows==1 but
+                            # ticker in pass_total_qty) must also sell from the snapshot
+                            # remainder (available), NOT re-query the broker — otherwise,
+                            # if the earlier limit orders are still unfilled, get_holding_quantity
+                            # returns the full position and the last row over-sells (#288 FIX 2).
+                            # Genuinely single-row tickers (never split) keep quantity=None → sell_all.
+                            if remaining_rows > 1 or ticker in pass_total_qty:
+                                if ticker not in pass_total_qty:
+                                    pass_total_qty[ticker] = await asyncio.to_thread(
+                                        trading.get_holding_quantity, ticker
+                                    )
+                                    pass_sold_qty[ticker] = 0
+                                available = pass_total_qty[ticker] - pass_sold_qty[ticker]
+                                sell_quantity = compute_fractional_sell_quantity(available, remaining_rows)
+                                pass_sold_qty[ticker] += sell_quantity
+                                logger.info(
+                                    f"{ticker} pyramiding fractional sell: {sell_quantity} shares "
+                                    f"(available {available} of snapshot {pass_total_qty[ticker]}, "
+                                    f"remaining rows={remaining_rows})"
+                                )
                             # Execute async sell with limit price for reserved orders
-                            trade_result = await trading.async_sell_stock(stock_code=ticker, limit_price=current_price)
+                            trade_result = await trading.async_sell_stock(
+                                stock_code=ticker, limit_price=current_price, quantity=sell_quantity
+                            )
 
                         if trade_result['success']:
                             logger.info(f"Actual sell successful: {trade_result['message']}")

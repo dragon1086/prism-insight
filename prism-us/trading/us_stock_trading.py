@@ -95,6 +95,25 @@ def _safe_int(value, default: int = 0) -> int:
     except (ValueError, TypeError):
         return default
 
+
+def _resolve_sell_quantity(holding_quantity: int, quantity: int = None) -> int:
+    """Resolve the number of shares to sell (US, #288).
+
+    When ``quantity`` is None the full holding is sold (unchanged behavior).
+    When given, the requested partial quantity is used, clamped to
+    [1, holding_quantity] to avoid over-selling.
+    """
+    if quantity is None:
+        return holding_quantity
+    try:
+        q = int(quantity)
+    except (TypeError, ValueError):
+        return holding_quantity
+    if q <= 0:
+        return holding_quantity
+    return min(q, holding_quantity)
+
+
 # Exchange code mapping (for trading/portfolio APIs using OVRS_EXCG_CD)
 EXCHANGE_CODES = {
     "NASDAQ": "NASD",
@@ -697,9 +716,9 @@ class USStockTrading:
         return 0
 
     def sell_all_market_price(self, ticker: str, exchange: str = None,
-                              limit_price: float = None) -> Dict[str, Any]:
+                              limit_price: float = None, quantity: int = None) -> Dict[str, Any]:
         """
-        Sell all holdings at current market price (limit order at current price).
+        Sell holdings at current market price (limit order at current price).
 
         KIS TTTT1006U does not support ORD_DVSN "01" (market order) for sell.
         Valid values: 00=limit, 31=MOO, 32=LOO, 33=MOC, 34=LOC.
@@ -711,6 +730,7 @@ class USStockTrading:
             exchange: Exchange code
             limit_price: Current price to use as limit price. If not provided,
                          fetched automatically.
+            quantity: Partial sell quantity (None = full holding, unchanged).
 
         Returns:
             Order result dict
@@ -730,9 +750,9 @@ class USStockTrading:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
         # Check holding quantity
-        quantity = self.get_holding_quantity(ticker)
+        holding_quantity = self.get_holding_quantity(ticker)
 
-        if quantity == 0:
+        if holding_quantity == 0:
             return {
                 'success': False,
                 'order_no': None,
@@ -740,6 +760,9 @@ class USStockTrading:
                 'quantity': 0,
                 'message': 'No holdings to sell'
             }
+
+        # Determine sell quantity (partial when quantity given, else full holding)
+        quantity = _resolve_sell_quantity(holding_quantity, quantity)
 
         # Fetch current price if not provided
         if not limit_price or limit_price <= 0:
@@ -1077,7 +1100,7 @@ class USStockTrading:
             }
 
     def sell_reserved_order(self, ticker: str, limit_price: float = None,
-                            use_moo: bool = False, exchange: str = None) -> Dict[str, Any]:
+                            use_moo: bool = False, exchange: str = None, quantity: int = None) -> Dict[str, Any]:
         """
         Reserved order sell for US stock (executed at next market open)
         Reserved sell order - automatically executed at next market open
@@ -1089,6 +1112,10 @@ class USStockTrading:
             limit_price: Limit price in USD (required if use_moo is False)
             use_moo: Use Market On Open order (default: False)
             exchange: Exchange code
+            quantity: Partial sell quantity (None = full holding, unchanged).
+                      NOTE: when the order must be queued for the pending-order
+                      batch (outside reserved-order window), the queued order
+                      liquidates the full holding (partial not supported there).
 
         Returns:
             Order result dict
@@ -1124,9 +1151,9 @@ class USStockTrading:
             )
 
         # Check holding quantity
-        quantity = self.get_holding_quantity(ticker)
+        holding_quantity = self.get_holding_quantity(ticker)
 
-        if quantity == 0:
+        if holding_quantity == 0:
             return {
                 'success': False,
                 'order_no': None,
@@ -1134,6 +1161,9 @@ class USStockTrading:
                 'quantity': 0,
                 'message': 'No holdings to sell'
             }
+
+        # Determine sell quantity (partial when quantity given, else full holding)
+        quantity = _resolve_sell_quantity(holding_quantity, quantity)
 
         # Reserved order API
         api_url = "/uapi/overseas-stock/v1/trading/order-resv"
@@ -1262,7 +1292,7 @@ class USStockTrading:
                 }
 
     def smart_sell_all(self, ticker: str, exchange: str = None,
-                       limit_price: float = None, use_moo: bool = False) -> Dict[str, Any]:
+                       limit_price: float = None, use_moo: bool = False, quantity: int = None) -> Dict[str, Any]:
         """
         Smart sell - automatically choose best method based on market hours
 
@@ -1276,6 +1306,7 @@ class USStockTrading:
             exchange: Exchange code
             limit_price: Limit price for reserved order when market is closed
             use_moo: Use Market On Open for reserved order (default: False)
+            quantity: Partial sell quantity (None = full holding, unchanged behavior)
 
         Returns:
             Order result dict
@@ -1291,15 +1322,15 @@ class USStockTrading:
 
         if self.is_market_open():
             logger.info(f"[{ticker}] Market is open - executing market sell")
-            return self.sell_all_market_price(ticker, exchange, limit_price=limit_price)
+            return self.sell_all_market_price(ticker, exchange, limit_price=limit_price, quantity=quantity)
         else:
             # Market is closed - use reserved order
             if limit_price and limit_price > 0:
                 logger.info(f"[{ticker}] Market is closed - placing reserved sell order (limit: ${limit_price:.2f})")
-                return self.sell_reserved_order(ticker, limit_price, use_moo=False, exchange=exchange)
+                return self.sell_reserved_order(ticker, limit_price, use_moo=False, exchange=exchange, quantity=quantity)
             elif use_moo:
                 logger.info(f"[{ticker}] Market is closed - placing reserved MOO sell order")
-                return self.sell_reserved_order(ticker, limit_price=None, use_moo=True, exchange=exchange)
+                return self.sell_reserved_order(ticker, limit_price=None, use_moo=True, exchange=exchange, quantity=quantity)
             else:
                 logger.warning(f"[{ticker}] Market is closed and no limit_price/use_moo provided")
                 return {
@@ -1438,7 +1469,7 @@ class USStockTrading:
 
     async def async_sell_stock(self, ticker: str, exchange: str = None,
                                timeout: float = 30.0, limit_price: Optional[float] = None,
-                               use_moo: bool = False) -> Dict[str, Any]:
+                               use_moo: bool = False, quantity: Optional[int] = None) -> Dict[str, Any]:
         """
         Async sell API with timeout
 
@@ -1448,13 +1479,14 @@ class USStockTrading:
             timeout: Timeout in seconds
             limit_price: Limit price for reserved order when market is closed
             use_moo: Use Market On Open for reserved order
+            quantity: Partial sell quantity (None = full holding, unchanged behavior)
 
         Returns:
             Order result dict
         """
         try:
             return await asyncio.wait_for(
-                self._execute_sell_stock(ticker, exchange, limit_price, use_moo),
+                self._execute_sell_stock(ticker, exchange, limit_price, use_moo, quantity=quantity),
                 timeout=timeout
             )
         except asyncio.TimeoutError:
@@ -1470,8 +1502,11 @@ class USStockTrading:
             }
 
     async def _execute_sell_stock(self, ticker: str, exchange: str = None,
-                                  limit_price: float = None, use_moo: bool = False) -> Dict[str, Any]:
-        """Execute sell stock logic with portfolio verification"""
+                                  limit_price: float = None, use_moo: bool = False, quantity: int = None) -> Dict[str, Any]:
+        """Execute sell stock logic with portfolio verification
+
+        quantity: partial sell quantity (None = full holding, unchanged behavior)
+        """
         result = {
             'success': False,
             'ticker': ticker,
@@ -1530,11 +1565,14 @@ class USStockTrading:
                             logger.warning(f"[Async Sell] {ticker} no valid limit_price, using MOO")
                             effective_use_moo = True
 
-                        logger.info(f"[Async Sell] {ticker} limit_price: ${effective_limit_price:.2f}, use_moo: {effective_use_moo}")
+                        # Resolve partial sell quantity (None = full holding)
+                        sell_quantity = _resolve_sell_quantity(target_stock['quantity'], quantity)
+
+                        logger.info(f"[Async Sell] {ticker} limit_price: ${effective_limit_price:.2f}, use_moo: {effective_use_moo}, qty: {sell_quantity}/{target_stock['quantity']}")
 
                         # Execute sell
                         sell_result = await asyncio.to_thread(
-                            self.smart_sell_all, ticker, exchange, effective_limit_price if effective_limit_price > 0 else None, effective_use_moo
+                            self.smart_sell_all, ticker, exchange, effective_limit_price if effective_limit_price > 0 else None, effective_use_moo, sell_quantity
                         )
 
                         if sell_result['success']:
@@ -1781,7 +1819,7 @@ class MultiAccountUSStockTrading:
 
     async def async_sell_stock(self, ticker: str, exchange: str = None,
                                timeout: float = 30.0, limit_price: Optional[float] = None,
-                               use_moo: bool = False) -> Dict[str, Any]:
+                               use_moo: bool = False, quantity: Optional[int] = None) -> Dict[str, Any]:
         if not self.account_configs:
             return self._aggregate_results(ticker, [], action="sell")
         results = []
@@ -1793,6 +1831,7 @@ class MultiAccountUSStockTrading:
                 timeout=timeout,
                 limit_price=limit_price,
                 use_moo=use_moo,
+                quantity=quantity,
             )
             result["account_name"] = account["name"]
             result["account_key"] = account["account_key"]

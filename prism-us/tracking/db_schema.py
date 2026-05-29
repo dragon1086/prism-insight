@@ -55,8 +55,7 @@ CREATE TABLE IF NOT EXISTS us_stock_holdings (
     stop_loss REAL,                    -- USD
     trigger_type TEXT,                 -- intraday_surge, volume_surge, gap_up, etc.
     trigger_mode TEXT,                 -- morning, afternoon
-    sector TEXT,                       -- GICS sector (Technology, Healthcare, etc.)
-    UNIQUE(account_key, ticker)
+    sector TEXT                        -- GICS sector (Technology, Healthcare, etc.)
 )
 """
 
@@ -574,6 +573,85 @@ def migrate_multi_account_schema(cursor, conn):
         )
 
 
+def _us_holdings_table_has_unique_constraint(cursor, table_name: str) -> bool:
+    """Detect whether ``table_name`` was created with a UNIQUE constraint by
+    reading its CREATE statement from sqlite_master."""
+    cursor.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
+        (table_name,),
+    )
+    row = cursor.fetchone()
+    if not row or not row[0]:
+        return False
+    return "UNIQUE" in row[0].upper()
+
+
+def migrate_drop_us_holdings_unique_constraint(cursor, conn):
+    """Drop the legacy UNIQUE(account_key, ticker) constraint from us_stock_holdings
+    so pyramiding (#288) can store multiple independent rows per ticker.
+
+    Idempotent and safe to run repeatedly. Preserves ALL rows using the same
+    backup -> rename-to-legacy -> create-new -> copy-all -> verify -> drop-legacy
+    pattern as the multi-account migration.
+    """
+    table_name = "us_stock_holdings"
+    if not _table_exists(cursor, table_name):
+        return
+
+    # Recover from an interrupted run before deciding.
+    _recover_interrupted_migration(cursor, conn, table_name)
+
+    if not _us_holdings_table_has_unique_constraint(cursor, table_name):
+        return  # already migrated (or never had it) -> no-op
+
+    legacy_table = f"{table_name}_legacy"
+    backup_table = f"{table_name}_pre_pyramiding_backup"
+
+    if _table_exists(cursor, legacy_table):
+        raise RuntimeError(
+            f"Ambiguous migration state for {table_name}: legacy table {legacy_table} already exists. "
+            "Manual intervention is required."
+        )
+
+    if not _table_exists(cursor, backup_table):
+        logger.info(f"Creating backup table {backup_table} before dropping UNIQUE on {table_name}")
+        cursor.execute(f"CREATE TABLE {backup_table} AS SELECT * FROM {table_name}")
+        conn.commit()
+    else:
+        logger.warning(f"Preserving existing backup table {backup_table} for {table_name}")
+
+    logger.info(f"Dropping UNIQUE(account_key, ticker) constraint on {table_name} (pyramiding migration)")
+
+    try:
+        cursor.execute(f"ALTER TABLE {table_name} RENAME TO {legacy_table}")
+        cursor.execute(TABLE_US_STOCK_HOLDINGS)  # canonical CREATE (UNIQUE-free)
+
+        columns = _get_columns(cursor, legacy_table)
+        col_list = ", ".join(columns)
+        cursor.execute(
+            f"INSERT INTO {table_name} ({col_list}) SELECT {col_list} FROM {legacy_table}"
+        )
+
+        source_count = _count_rows(cursor, legacy_table)
+        target_count = _count_rows(cursor, table_name)
+        if source_count != target_count:
+            raise RuntimeError(
+                f"Row count mismatch during {table_name} UNIQUE-drop migration: "
+                f"{legacy_table}={source_count}, {table_name}={target_count}"
+            )
+
+        cursor.execute(f"DROP TABLE {legacy_table}")
+        conn.commit()
+        logger.info(
+            f"{table_name} UNIQUE-drop migration complete ({target_count} rows preserved). "
+            f"Backup table {backup_table} retained for manual cleanup."
+        )
+    except Exception as exc:
+        logger.error(f"{table_name} UNIQUE-drop migration failed: {exc}")
+        logger.error(f"Manual recovery is available from backup table {backup_table}")
+        raise
+
+
 def create_us_tables(cursor, conn):
     """
     Create all US-specific database tables.
@@ -600,6 +678,7 @@ def create_us_tables(cursor, conn):
             logger.error(f"Error creating table {table_name}: {e}")
 
     migrate_multi_account_schema(cursor, conn)
+    migrate_drop_us_holdings_unique_constraint(cursor, conn)
     conn.commit()
     logger.info("US database tables created")
 
@@ -881,6 +960,134 @@ def is_us_ticker_in_holdings(cursor, ticker: str, account_key: Optional[str] = N
             (ticker,)
         )
     return cursor.fetchone()[0] > 0
+
+
+# ── Pyramiding (#288) ──────────────────────────────────────────────────────
+# Strong-bull add-on / pyramiding helpers for US. Mirror of the KR helpers in
+# tracking/helpers.py. Each pyramid entry is an independent us_stock_holdings row.
+
+# Market regimes in which pyramiding is allowed.
+US_PYRAMID_ALLOWED_REGIMES = ("strong_bull", "parabolic")
+US_PYRAMID_MIN_PROFIT_PCT = 5.0
+US_PYRAMID_MAX_ROWS = 3
+
+
+def get_us_existing_position_for_ticker(cursor, ticker: str, account_key: Optional[str] = None) -> dict:
+    """Aggregate the existing US holding for a ticker/account.
+
+    Returns {row_count, avg_buy_price}. Used by the pyramiding add-gate.
+
+    NOTE (#288, intentional): ``avg_buy_price`` is a SIMPLE MEAN of per-row entry
+    prices, NOT a share-weighted average. The independent-row model deliberately
+    stores no per-row quantity in ``us_stock_holdings``, and each add is ~1 unit,
+    so the simple mean is an accurate-enough proxy for both the +5% profit gate
+    and the Telegram "New Avg Price" display.
+    """
+    try:
+        if account_key:
+            cursor.execute(
+                "SELECT buy_price FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
+                (ticker, account_key),
+            )
+        else:
+            cursor.execute(
+                "SELECT buy_price FROM us_stock_holdings WHERE ticker = ?",
+                (ticker,),
+            )
+        prices = [float(r[0]) for r in cursor.fetchall() if r[0] is not None]
+        row_count = len(prices)
+        avg_buy_price = (sum(prices) / row_count) if row_count else 0.0
+        return {"row_count": row_count, "avg_buy_price": avg_buy_price}
+    except Exception as e:
+        logger.error(f"Error querying existing US position for {ticker}: {e}")
+        return {"row_count": 0, "avg_buy_price": 0.0}
+
+
+def _us_regime_label(market_condition) -> str:
+    """Extract the leading regime label from a market_condition string.
+
+    Mirror of KR ``_regime_label``: take the token before the first ':',
+    normalise, and canonicalise hyphen/space to underscore so "strong-bull"
+    maps to "strong_bull". Fail-closed: unrecognised -> "" (no add).
+    """
+    if not market_condition or not isinstance(market_condition, str):
+        return ""
+    text = market_condition.split(":", 1)[0].strip().lower()
+    text = text.replace("-", "_").replace(" ", "_")
+    return text
+
+
+def evaluate_us_pyramid_add_gate(
+    market_condition,
+    existing_avg_buy_price: float,
+    current_price: float,
+    existing_row_count: int,
+    min_profit_pct: float = US_PYRAMID_MIN_PROFIT_PCT,
+    max_rows: int = US_PYRAMID_MAX_ROWS,
+):
+    """Pure add-gate for US pyramiding (#288). Returns (allowed, reason).
+
+    All of: regime in allowed set, aggregate profit >= min_profit_pct,
+    existing_row_count < max_rows. Buy-agent Enter/score/sector checks apply
+    independently in the normal buy path.
+    """
+    regime = _us_regime_label(market_condition)
+    if regime not in US_PYRAMID_ALLOWED_REGIMES:
+        return False, f"regime '{regime or 'unknown'}' not in {US_PYRAMID_ALLOWED_REGIMES}"
+    if existing_row_count >= max_rows:
+        return False, f"row count {existing_row_count} >= max {max_rows}"
+    if not existing_avg_buy_price or existing_avg_buy_price <= 0 or not current_price or current_price <= 0:
+        return False, "insufficient price data for profit check"
+    profit_pct = (current_price - existing_avg_buy_price) / existing_avg_buy_price * 100.0
+    if profit_pct < min_profit_pct:
+        return False, f"profit {profit_pct:.2f}% < required {min_profit_pct:.1f}%"
+    return True, f"add allowed (regime={regime}, profit={profit_pct:.2f}%, rows={existing_row_count})"
+
+
+def compute_us_fractional_sell_quantity(total_quantity: int, remaining_rows: int) -> int:
+    """Shares to sell for one row when ``remaining_rows`` rows remain (US, #288).
+
+    remaining_rows <= 1 -> sell all; remaining_rows > 1 -> floor(total/remaining).
+    Recomputed live each sell so the last row sweeps the remainder.
+    """
+    try:
+        total = int(total_quantity)
+        n = int(remaining_rows)
+    except (TypeError, ValueError):
+        return int(total_quantity) if total_quantity else 0
+    if total <= 0:
+        return 0
+    if n <= 1:
+        return total
+    return total // n
+
+
+def decide_us_sell_plan(remaining_rows: int, will_queue: bool) -> str:
+    """Decide how to execute a US sell for a (possibly pyramided) ticker (#288, FIX 1).
+
+    Pure decision branch — keeps the timing-dependent choice testable.
+
+    Args:
+        remaining_rows: number of us_stock_holdings rows for this (ticker, account)
+            INCLUDING the row currently being sold (i.e. >=1).
+        will_queue: True when the KIS sell order would be QUEUED for the pending-
+            order batch instead of executing now (market closed AND reserved-order
+            window unavailable). The pending-order queue does NOT carry a partial
+            quantity, so a queued fractional order would later full-liquidate the
+            broker position while only one DB row was removed -> DB/broker desync.
+
+    Returns one of:
+        "single_full"  - one row left: sell the whole position (unchanged legacy).
+        "fractional"   - N>1 and order executes now: sell floor(available/N), one row.
+        "full_exit"    - N>1 but order WILL be queued: exit the ENTIRE position
+                          (full quantity) and delete ALL rows for the ticker, so
+                          the queued full-liquidation stays consistent with the DB.
+    """
+    if remaining_rows <= 1:
+        return "single_full"
+    if will_queue:
+        return "full_exit"
+    return "fractional"
 
 
 if __name__ == "__main__":
