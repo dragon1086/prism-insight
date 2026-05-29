@@ -310,6 +310,7 @@ class StockTrackingAgent:
             # Get trading journal context for informed decisions
             journal_context = ""
             score_adjustment_info = ""
+            adjustment, reasons = 0, []
             if ticker:
                 journal_context = self._get_relevant_journal_context(
                     ticker=ticker,
@@ -405,6 +406,12 @@ class StockTrackingAgent:
             # TODO: Create model and call generate_structured function to improve code maintainability
             scenario_json = parse_llm_json(response, context='trading scenario')
             if scenario_json is not None:
+                # Persist the experience-based score adjustment alongside the scenario.
+                # It rides inside the scenario JSON, which is stored in
+                # stock_holdings.scenario and copied to trading_history.scenario on sell —
+                # giving the weekly influence report a journal-impact signal for free (#280).
+                if adjustment != 0 or reasons:
+                    scenario_json["score_adjustment"] = {"value": adjustment, "reasons": reasons}
                 logger.info(f"Scenario parsed: {json.dumps(scenario_json, ensure_ascii=False)[:200]}")
                 return scenario_json
 
@@ -768,7 +775,20 @@ class StockTrackingAgent:
                 message += f"거래대금 분석: {rank_change_msg}\n"
 
             message += f"투자근거: {scenario.get('rationale', '정보 없음')}\n"
-            
+
+            # Surface journal-grounded reasoning so the feedback loop is transparent (#280).
+            # All fields are optional — defends against scenarios without journal_reflection.
+            _jr = scenario.get('journal_reflection') or {}
+            if isinstance(_jr, dict):
+                if _jr.get('recent_exit_caution'):
+                    message += f"⚠️ 최근 매도 주의: {_jr.get('recent_exit_caution')}\n"
+                if _jr.get('applied_lessons'):
+                    message += f"📒 매매일지 반영: {_jr.get('applied_lessons')}\n"
+            _sadj = scenario.get('score_adjustment') or {}
+            if isinstance(_sadj, dict) and _sadj.get('value'):
+                _rsn = ', '.join(_sadj.get('reasons', []) or [])
+                message += f"📊 경험 기반 점수조정: {_sadj.get('value'):+d}점 ({_rsn})\n"
+
             # Format trading scenario
             trading_scenarios = scenario.get('trading_scenarios', {})
             if trading_scenarios and isinstance(trading_scenarios, dict):

@@ -485,6 +485,19 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     if trigger_win_rate:
                         skip_message += f"\n{trigger_win_rate}"
 
+                    # Surface journal-grounded reasoning so the feedback loop is transparent (#280).
+                    # All fields optional — defends against scenarios without journal_reflection.
+                    _jr = scenario.get('journal_reflection') or {}
+                    if isinstance(_jr, dict):
+                        if _jr.get('recent_exit_caution'):
+                            skip_message += f"\n⚠️ 최근 매도 주의: {_jr.get('recent_exit_caution')}"
+                        if _jr.get('applied_lessons'):
+                            skip_message += f"\n📒 매매일지 반영: {_jr.get('applied_lessons')}"
+                    _sadj = scenario.get('score_adjustment') or {}
+                    if isinstance(_sadj, dict) and _sadj.get('value'):
+                        _rsn = ', '.join(_sadj.get('reasons', []) or [])
+                        skip_message += f"\n📊 경험 기반 점수조정: {_sadj.get('value'):+d}점 ({_rsn})"
+
                     self._msg_types.append("analysis")
                     self.message_queue.append(skip_message)
                     logger.info(f"Purchase deferred: {company_name}({ticker}) - {reason}")
