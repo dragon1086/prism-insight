@@ -468,11 +468,20 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             market_condition_text = market_condition_text.replace(eng, ko, 1)
                             break
 
+                    # When the AI decided "Enter" but the trade was still deferred
+                    # (e.g., sector concentration cap), surface the contradiction on the
+                    # decision line itself. The standalone "보류 사유" line several rows
+                    # below is easy to miss, which made an Enter+hold look like a bug.
+                    if decision == "Enter":
+                        decision_display = f"Enter (실제 보류 — 사유: {reason})"
+                    else:
+                        decision_display = decision
+
                     # Generate skip message
                     skip_message = f"⚠️ 매수 보류: {company_name}({ticker})\n" \
                                    f"현재가: {current_price:,.0f}원\n" \
                                    f"매수 Score: {buy_score}/10\n" \
-                                   f"결정: {decision}\n" \
+                                   f"결정: {decision_display}\n" \
                                    f"시장 상황: {market_condition_text}\n" \
                                    f"산업군: {scenario.get('sector', '알 수 없음')}\n" \
                                    f"보류 사유: {reason}\n" \
