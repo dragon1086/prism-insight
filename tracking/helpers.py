@@ -59,28 +59,42 @@ async def get_current_stock_price(cursor, ticker: str, account_key: str | None =
     Returns:
         float: Current stock price
     """
-    try:
-        from krx_data_client import get_nearest_business_day_in_a_week, get_market_ohlcv_by_ticker
-        import datetime
+    import asyncio
+    from krx_data_client import get_nearest_business_day_in_a_week, get_market_ohlcv_by_ticker
+    import datetime
 
-        today = datetime.datetime.now().strftime("%Y%m%d")
-        trade_date = get_nearest_business_day_in_a_week(today, prev=True)
-        logger.info(f"Target date: {trade_date}")
+    # KRX API (data.krx.co.kr) can intermittently time out. Retry the transient
+    # fetch a few times before falling back, so a momentary blip does not silently
+    # drop a fresh buy candidate (its price is not yet in the DB, so the last-price
+    # fallback returns 0 and the whole report analysis is skipped). #289-adjacent.
+    MAX_RETRIES = 3
+    for attempt in range(MAX_RETRIES):
+        try:
+            today = datetime.datetime.now().strftime("%Y%m%d")
+            trade_date = get_nearest_business_day_in_a_week(today, prev=True)
+            logger.info(f"Target date: {trade_date}")
 
-        df = get_market_ohlcv_by_ticker(trade_date)
+            df = get_market_ohlcv_by_ticker(trade_date)
 
-        if ticker in df.index:
-            current_price = df.loc[ticker, "Close"]
-            logger.info(f"{ticker} current price: {current_price:,.0f} KRW")
-            return float(current_price)
-        else:
-            logger.warning(f"Cannot find ticker {ticker}")
-            return _get_last_price_from_db(cursor, ticker, account_key=account_key)
+            if ticker in df.index:
+                current_price = df.loc[ticker, "Close"]
+                logger.info(f"{ticker} current price: {current_price:,.0f} KRW")
+                return float(current_price)
+            else:
+                # Data fetched OK but ticker absent — retrying won't help.
+                logger.warning(f"Cannot find ticker {ticker}")
+                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
-    except Exception as e:
-        logger.error(f"Error querying current price for {ticker}: {str(e)}")
-        logger.error(traceback.format_exc())
-        return _get_last_price_from_db(cursor, ticker, account_key=account_key)
+        except Exception as e:
+            logger.error(f"Error querying current price for {ticker} "
+                         f"(attempt {attempt + 1}/{MAX_RETRIES}): {str(e)}")
+            if attempt < MAX_RETRIES - 1:
+                wait = 2 * (attempt + 1)  # 2s, 4s exponential-ish backoff
+                logger.warning(f"{ticker} price query retry in {wait}s")
+                await asyncio.sleep(wait)
+            else:
+                logger.error(traceback.format_exc())
+                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
 
 def _get_last_price_from_db(cursor, ticker: str, account_key: str | None = None) -> float:
