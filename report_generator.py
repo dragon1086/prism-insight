@@ -1409,10 +1409,13 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
         # Step 3: Use global MCPApp + Claude Sonnet for analysis
         app = await get_or_create_global_mcp_app()
 
+        current_date = datetime.now().strftime("%Y년 %m월 %d일")
         agent = Agent(
             name="firecrawl_search_analyst",
             instruction=(
-                "당신은 웹 검색 결과를 분석하여 투자자에게 유용한 인사이트를 제공하는 전문가입니다.\n"
+                f"당신은 웹 검색 결과를 분석하여 투자자에게 유용한 인사이트를 제공하는 전문가입니다.\n"
+                f"오늘은 {current_date}입니다. '최근'·'올해'·'현재' 등은 이 날짜 기준으로 해석하고, "
+                f"모델 학습 시점의 연도로 착각하지 마세요.\n"
                 "텔레그램 메시지 형태로, 이모지를 포함하여 자연스럽게 작성하세요.\n"
                 "마크다운 형식 대신 텔레그램에 적합한 플레인 텍스트로 작성하세요.\n"
                 "검색 결과에 없는 내용을 지어내지 마세요."
@@ -1447,12 +1450,15 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
 
 
 # MCP server config per Firecrawl command type
+# "time" gives the followup agent get_current_time so date-ranged tool calls
+# (kospi_kosdaq / yahoo_finance) are anchored to the real year, not the model's
+# training cutoff — otherwise Sonnet queries ~1-year-old data (#283).
 _FIRECRAWL_CMD_SERVERS = {
-    "signal":    ["perplexity", "kospi_kosdaq"],
-    "us_signal": ["perplexity", "yahoo_finance"],
-    "theme":     ["perplexity", "kospi_kosdaq"],
-    "us_theme":  ["perplexity", "yahoo_finance"],
-    "ask":       ["perplexity", "kospi_kosdaq", "yahoo_finance"],
+    "signal":    ["perplexity", "kospi_kosdaq", "time"],
+    "us_signal": ["perplexity", "yahoo_finance", "time"],
+    "theme":     ["perplexity", "kospi_kosdaq", "time"],
+    "us_theme":  ["perplexity", "yahoo_finance", "time"],
+    "ask":       ["perplexity", "kospi_kosdaq", "yahoo_finance", "time"],
 }
 
 _FIRECRAWL_CMD_PERSONA = {
@@ -1488,6 +1494,7 @@ async def generate_firecrawl_followup_response(
         app = await get_or_create_global_mcp_app()
         server_names = _FIRECRAWL_CMD_SERVERS.get(command, ["perplexity"])
         persona = _FIRECRAWL_CMD_PERSONA.get(command, "투자 분석 전문가")
+        current_date = datetime.now().strftime("%Y년 %m월 %d일")
 
         _data_tool_guide = (
             "- 미국 종목 주가·재무·거래량 조회는 yahoo_finance 도구를 우선 사용하세요.\n"
@@ -1499,6 +1506,11 @@ async def generate_firecrawl_followup_response(
         agent = Agent(
             name="firecrawl_followup_agent",
             instruction=f"""당신은 {persona}입니다.
+
+## 현재 날짜 (매우 중요)
+- 오늘은 {current_date}입니다.
+- 주가·거래량 등 기간 기반 도구를 호출할 때는 반드시 위 '오늘' 날짜의 연도를 기준으로 조회하세요. 모델 학습 시점의 연도를 사용하지 마세요.
+- 가능하면 먼저 time 서버의 get_current_time 툴로 현재 날짜를 확인한 뒤, 그 연도를 도구 조회에 사용하세요.
 
 ## 초기 질의
 {query}

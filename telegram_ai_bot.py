@@ -2790,6 +2790,7 @@ class TelegramAIBot:
         logger.info(f"/signal query - user={user_id}, event='{event[:50]}'")
         search_query = f"{event} 한국증시 영향 {today}"
         analysis_prompt = (
+            f"오늘은 {today} 기준입니다. '최근/현재'는 이 시점으로 해석하세요.\n"
             f"위 검색 결과를 바탕으로, '{event}'가 한국 주식시장에 미치는 영향을 분석해줘.\n"
             "1. 수혜 예상 섹터와 대표 종목 3개\n"
             "2. 피해 예상 섹터와 대표 종목 3개\n"
@@ -2839,6 +2840,7 @@ class TelegramAIBot:
         logger.info(f"/us_signal query - user={user_id}, event='{event[:50]}'")
         search_query = f"{event} stock market impact {today}"
         analysis_prompt = (
+            f"오늘은 {today} 기준입니다. '최근/현재'는 이 시점으로 해석하세요.\n"
             f"위 검색 결과를 바탕으로, '{event}'가 미국 주식시장(S&P500, NASDAQ)에 미치는 영향을 분석해줘.\n"
             "1. 수혜 예상 섹터와 대표 종목 3개 (가능하면 yfinance로 최근 주가 흐름 포함)\n"
             "2. 피해 예상 섹터와 대표 종목 3개 (가능하면 yfinance로 최근 주가 흐름 포함)\n"
@@ -2888,6 +2890,7 @@ class TelegramAIBot:
         logger.info(f"/theme query - user={user_id}, theme='{theme[:50]}'")
         search_query = f"{theme} 테마주 뉴스 {today}"
         analysis_prompt = (
+            f"오늘은 {today} 기준입니다. '최근/현재'는 이 시점으로 해석하세요.\n"
             f"위 검색 결과를 바탕으로, 한국 주식시장에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
             "2. 대장주 3개와 최근 주가 동향\n"
@@ -2938,6 +2941,7 @@ class TelegramAIBot:
         logger.info(f"/us_theme query - user={user_id}, theme='{theme[:50]}'")
         search_query = f"{theme} sector stocks news {today}"
         analysis_prompt = (
+            f"오늘은 {today} 기준입니다. '최근/현재'는 이 시점으로 해석하세요.\n"
             f"위 검색 결과를 바탕으로, 미국 주식시장(S&P500, NASDAQ)에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
             "2. 대장주 3개와 최근 주가 동향 (yfinance 실시간 데이터 기반)\n"
