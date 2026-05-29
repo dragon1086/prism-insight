@@ -220,23 +220,36 @@ async def get_current_stock_price(cursor, ticker: str, account_key: str | None =
     Returns:
         float: Current stock price in USD
     """
-    try:
-        import yfinance as yf
+    import asyncio
+    import yfinance as yf
 
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        current_price = info.get('regularMarketPrice', 0) or info.get('previousClose', 0)
+    # yfinance can intermittently fail/throttle. Retry a few times before falling
+    # back, so a momentary blip does not silently drop a fresh buy candidate whose
+    # price is not yet in the DB (last-price fallback returns 0 → report skipped).
+    # Mirrors the KR tracking/helpers.py retry logic.
+    MAX_RETRIES = 3
+    for attempt in range(MAX_RETRIES):
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            current_price = info.get('regularMarketPrice', 0) or info.get('previousClose', 0)
 
-        if current_price > 0:
-            logger.info(f"{ticker} current price: ${current_price:.2f}")
-            return float(current_price)
-        else:
-            logger.warning(f"Cannot get price for {ticker}")
-            return _get_last_price_from_db(cursor, ticker, account_key=account_key)
+            if current_price > 0:
+                logger.info(f"{ticker} current price: ${current_price:.2f}")
+                return float(current_price)
+            else:
+                logger.warning(f"Cannot get price for {ticker}")
+                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
-    except Exception as e:
-        logger.error(f"Error querying current price for {ticker}: {str(e)}")
-        return _get_last_price_from_db(cursor, ticker, account_key=account_key)
+        except Exception as e:
+            logger.error(f"Error querying current price for {ticker} "
+                         f"(attempt {attempt + 1}/{MAX_RETRIES}): {str(e)}")
+            if attempt < MAX_RETRIES - 1:
+                wait = 2 * (attempt + 1)  # 2s, 4s
+                logger.warning(f"{ticker} price query retry in {wait}s")
+                await asyncio.sleep(wait)
+            else:
+                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
 
 def _get_last_price_from_db(cursor, ticker: str, account_key: str | None = None) -> float:
