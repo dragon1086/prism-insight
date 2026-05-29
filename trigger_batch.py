@@ -356,6 +356,93 @@ def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: 
     return result_df
 
 
+# === #289: KR screening signals (O'Neil-style RS + extension), regime-aware blend ===
+# Regime-aware weights for final_score: (composite/momentum, agent R/R, RS, extension).
+# Each component is 0~1 and weights sum to 1.0 → final_score stays in 0~1.
+# Kill switch / rollback: set RS and extension weights to 0 (then re-rank is composite+agent only).
+REGIME_SCORE_WEIGHTS = {
+    "strong_bull":   (0.20, 0.35, 0.30, 0.15),  # bull: emphasize RS (leaders), lighten extension (but not 0)
+    "moderate_bull": (0.25, 0.35, 0.20, 0.20),
+    "sideways":      (0.20, 0.35, 0.15, 0.30),  # calm: heavier extension penalty (chasing worst here)
+    "moderate_bear": (0.15, 0.35, 0.15, 0.35),
+    "strong_bear":   (0.15, 0.35, 0.15, 0.35),
+}
+_DEFAULT_SCORE_WEIGHTS = REGIME_SCORE_WEIGHTS["sideways"]
+
+# Extension (overheating) thresholds, measured in ADR units above MA20.
+EXTENSION_ADR_T_LOW = 2.0    # <= : healthy (near base) → no penalty (score 1.0)
+EXTENSION_ADR_T_HIGH = 6.0   # >= : climax / extended → full penalty (score 0.0)
+
+# Multi-week relative-strength lookback (trading days, ~3 months).
+SCREENING_SIGNAL_LOOKBACK_DAYS = 60
+
+
+def _compute_extension_score(extension_in_adr: float) -> float:
+    """#289: Map ADR-extension above MA20 to a 0~1 score.
+
+    1.0 = healthy (price near its 20-day mean, i.e. near a base/pivot),
+    0.0 = climax / extended (price far above the mean in volatility-normalized terms).
+    Linear taper between EXTENSION_ADR_T_LOW and EXTENSION_ADR_T_HIGH.
+    """
+    if extension_in_adr <= EXTENSION_ADR_T_LOW:
+        return 1.0
+    if extension_in_adr >= EXTENSION_ADR_T_HIGH:
+        return 0.0
+    span = EXTENSION_ADR_T_HIGH - EXTENSION_ADR_T_LOW
+    return float(max(0.0, min(1.0, 1.0 - (extension_in_adr - EXTENSION_ADR_T_LOW) / span)))
+
+
+def calculate_screening_signals(ticker: str, current_price: float, trade_date: str,
+                                lookback_days: int = SCREENING_SIGNAL_LOOKBACK_DAYS) -> dict:
+    """#289: Compute O'Neil-style screening signals from a single multi-week OHLCV fetch.
+
+    Intentionally independent of calculate_agent_fit_metrics so the agent's 10-day
+    target-price (resistance) lookback — and therefore agent_fit_score — is NOT perturbed.
+
+    Returns dict:
+        - extension_in_adr: (Close - MA20)/MA20 expressed in units of ADR% (overheating proxy)
+        - extension_score:  0~1 (1=healthy near base, 0=climax/extended)
+        - return_nd:        N-day price return % (raw multi-week relative-strength input;
+                            benchmark subtraction cancels under cross-candidate normalization)
+    """
+    result = {"extension_in_adr": 0.0, "extension_score": 1.0, "return_nd": 0.0}
+    if current_price <= 0:
+        return result
+
+    df = get_multi_day_ohlcv(ticker, trade_date, lookback_days)
+    if df.empty or len(df) < 5:
+        return result
+
+    high_col = "High" if "High" in df.columns else "고가"
+    low_col = "Low" if "Low" in df.columns else "저가"
+    close_col = "Close" if "Close" in df.columns else "종가"
+    if close_col not in df.columns:
+        return result
+
+    closes = df[close_col][df[close_col] > 0]
+    if closes.empty:
+        return result
+
+    # Multi-week return (relative-strength input).
+    first_close = float(closes.iloc[0])
+    if first_close > 0:
+        result["return_nd"] = (current_price - first_close) / first_close * 100
+
+    # MA20 + ADR(20d) extension.
+    recent_closes = closes.tail(20)
+    ma20 = float(recent_closes.mean()) if len(recent_closes) > 0 else 0.0
+    if ma20 > 0 and high_col in df.columns and low_col in df.columns:
+        hl = df.tail(20)
+        valid = hl[(hl[high_col] > 0) & (hl[low_col] > 0)]
+        if not valid.empty:
+            adr_pct = float(((valid[high_col] / valid[low_col] - 1.0) * 100).mean())
+            if adr_pct > 0:
+                ext = ((current_price - ma20) / ma20 * 100) / adr_pct
+                result["extension_in_adr"] = float(ext)
+                result["extension_score"] = _compute_extension_score(ext)
+    return result
+
+
 # --- Morning trigger functions (based on market open snapshot) ---
 def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame = None, top_n: int = 10) -> pd.DataFrame:
     """
@@ -399,8 +486,8 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_s
     # Calculate change rate vs previous day - modified method
     snap["prev_day_change_rate"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100
 
-    # v1.16.6: Change rate upper limit (20% or less, surge stocks can enter with fixed stop-loss)
-    snap = snap[snap["prev_day_change_rate"] <= 20.0]
+    # #289: Change rate upper limit unified to 15% (was 20%) — align secondary triggers with primary
+    snap = snap[snap["prev_day_change_rate"] <= 15.0]
 
     # Debug calculation process for first 5 stocks' change rate vs previous day
     for ticker in snap.index[:5]:
@@ -583,8 +670,8 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame, 
         merged["prev_day_change_rate"] = ((merged["Close"] - prev["Close"]) / prev["Close"]) * 100  # Same as brokerage app
         merged["is_rising"] = merged["Close"] > merged["Open"]
 
-        # v1.16.6: Change rate upper limit (20% or less, surge stocks can enter with fixed stop-loss)
-        merged = merged[merged["prev_day_change_rate"] <= 20.0]
+        # #289: Change rate upper limit unified to 15% (was 20%) — align secondary triggers with primary
+        merged = merged[merged["prev_day_change_rate"] <= 15.0]
         if merged.empty:
             logger.warning("No stocks after change rate upper limit filtering")
             return pd.DataFrame()
@@ -721,8 +808,8 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame, 
     snap["intraday_change_rate"] = (snap["Close"] / snap["Open"] - 1) * 100  # Current vs opening price
     snap["prev_day_change_rate"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100  # Same as brokerage app
 
-    # v1.16.7: Change rate upper limit (20% or less, exclude limit-up stocks)
-    snap = snap[snap["prev_day_change_rate"] <= 20.0]
+    # #289: Change rate upper limit unified to 15% (was 20%) — exclude limit-up / align with primary
+    snap = snap[snap["prev_day_change_rate"] <= 15.0]
     if snap.empty:
         logger.debug("trigger_afternoon_closing_strength: No stocks after change rate filtering")
         return pd.DataFrame()
@@ -1162,27 +1249,58 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
         logger.warning("No candidates from all triggers.")
         return final_result
 
-    # 2. Hybrid mode: Calculate agent scores
+    # 2. Hybrid mode: Calculate agent scores + #289 RS/extension signals
     if use_hybrid and trade_date:
         logger.info(f"Hybrid selection mode - Calculate agent scores with {lookback_days}-day data")
 
+        # #289: regime-aware blend weights (composite, agent R/R, RS, extension)
+        _regime = macro_context.get("market_regime", "sideways") if macro_context else "sideways"
+        w_comp, w_agent, w_rs, w_ext = REGIME_SCORE_WEIGHTS.get(_regime, _DEFAULT_SCORE_WEIGHTS)
+        logger.info(f"[#289] Blend weights for regime '{_regime}': "
+                    f"composite={w_comp}, agent={w_agent}, RS={w_rs}, extension={w_ext}")
+
+        # #289: pre-compute O'Neil-style signals across ALL unique candidates (cross-trigger),
+        # then normalize the multi-week return into a relative-strength score (0~1).
+        screening_signals = {}  # ticker -> {extension_in_adr, extension_score, return_nd}
+        for _name, _cdf in trigger_candidates.items():
+            for _ticker in _cdf.index:
+                if _ticker in screening_signals:
+                    continue
+                _cp = _cdf.loc[_ticker, "Close"] if "Close" in _cdf.columns else 0
+                screening_signals[_ticker] = calculate_screening_signals(_ticker, float(_cp), trade_date)
+
+        rs_score_map = {}
+        if screening_signals:
+            _returns = [s["return_nd"] for s in screening_signals.values()]
+            _r_min, _r_max = min(_returns), max(_returns)
+            _r_range = _r_max - _r_min if _r_max > _r_min else 0.0
+            for _ticker, s in screening_signals.items():
+                rs_score_map[_ticker] = ((s["return_nd"] - _r_min) / _r_range) if _r_range > 0 else 0.5
+
         for name, candidates_df in trigger_candidates.items():
-            # v1.16.6: Calculate agent scores by trigger type
+            # v1.16.6: Calculate agent scores by trigger type (agent_fit_score unchanged)
             scored_df = score_candidates_by_agent_criteria(candidates_df, trade_date, lookback_days, trigger_type=name)
 
-            # v1.16.6: Calculate final score: composite score (30%) + agent score (70%)
-            # Increase agent score weight to prioritize stocks likely to be approved by agents
+            # #289: final score = regime-weighted blend of composite + agent + RS + extension
             if "composite_score" in scored_df.columns and "agent_fit_score" in scored_df.columns:
-                # Normalize composite score (0~1)
+                # Normalize composite score (0~1) within trigger
                 cp_max = scored_df["composite_score"].max()
                 cp_min = scored_df["composite_score"].min()
                 cp_range = cp_max - cp_min if cp_max > cp_min else 1
                 scored_df["composite_score_norm"] = (scored_df["composite_score"] - cp_min) / cp_range
 
-                # Calculate final score (v1.16.6: adjusted weights)
+                # #289: attach RS + extension signals (cross-candidate)
+                scored_df["rs_score"] = [rs_score_map.get(t, 0.5) for t in scored_df.index]
+                scored_df["rs_relative"] = [screening_signals.get(t, {}).get("return_nd", 0.0) for t in scored_df.index]
+                scored_df["extension_score"] = [screening_signals.get(t, {}).get("extension_score", 1.0) for t in scored_df.index]
+                scored_df["extension_in_adr"] = [screening_signals.get(t, {}).get("extension_in_adr", 0.0) for t in scored_df.index]
+
+                # #289: regime-aware final score (was composite*0.3 + agent*0.7)
                 scored_df["final_score"] = (
-                    scored_df["composite_score_norm"] * 0.3 +
-                    scored_df["agent_fit_score"] * 0.7
+                    scored_df["composite_score_norm"] * w_comp +
+                    scored_df["agent_fit_score"] * w_agent +
+                    scored_df["rs_score"] * w_rs +
+                    scored_df["extension_score"] * w_ext
                 )
 
                 # Sort by final score
@@ -1194,9 +1312,10 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
                     logger.info(f"  - {ticker} ({scored_df.loc[ticker, 'stock_name'] if 'stock_name' in scored_df.columns else ''}): "
                                f"Composite={scored_df.loc[ticker, 'composite_score']:.3f}, "
                                f"Agent={scored_df.loc[ticker, 'agent_fit_score']:.3f}, "
+                               f"RS={scored_df.loc[ticker, 'rs_score']:.3f}, "
+                               f"Ext={scored_df.loc[ticker, 'extension_score']:.3f}(adr={scored_df.loc[ticker, 'extension_in_adr']:.1f}), "
                                f"Final={scored_df.loc[ticker, 'final_score']:.3f}, "
-                               f"Risk-reward={scored_df.loc[ticker, 'risk_reward_ratio']:.2f}, "
-                               f"Stop-loss={scored_df.loc[ticker, 'stop_loss_pct']*100:.1f}%")
+                               f"R/R={scored_df.loc[ticker, 'risk_reward_ratio']:.2f}")
 
             trigger_candidates[name] = scored_df
 
@@ -1334,12 +1453,13 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     # === New triggers: active based on market regime ===
     if macro_context:
         market_regime = macro_context.get("market_regime", "sideways")
-        # Macro sector trigger: active in all regimes except strong_bull
-        if market_regime not in ("strong_bull",):
-            res_macro = trigger_macro_sector_leader(trade_date, snapshot, prev_snapshot, cap_df, macro_context)
-            if not res_macro.empty:
-                triggers["매크로 섹터 리더"] = res_macro
-                logger.info(f"매크로 섹터 리더: {len(res_macro)} candidates")
+        # #289: Macro sector trigger now active in ALL regimes (incl. strong_bull) so that
+        # sector leaders surface even in surging markets; downstream RS/extension blend
+        # re-ranks them to favor non-extended leaders.
+        res_macro = trigger_macro_sector_leader(trade_date, snapshot, prev_snapshot, cap_df, macro_context)
+        if not res_macro.empty:
+            triggers["매크로 섹터 리더"] = res_macro
+            logger.info(f"매크로 섹터 리더: {len(res_macro)} candidates")
 
         # Contrarian value: active in sideways, moderate_bear, strong_bear
         if market_regime in ("sideways", "moderate_bear", "strong_bear"):
@@ -1407,6 +1527,14 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                         stock_info["target_price"] = float(stocks_df.loc[ticker, "target_price"]) if "target_price" in stocks_df.columns else 0
                     if "final_score" in stocks_df.columns:
                         stock_info["final_score"] = float(stocks_df.loc[ticker, "final_score"])
+
+                    # #289: observability — RS + extension signals
+                    if "rs_score" in stocks_df.columns:
+                        stock_info["rs_score"] = float(stocks_df.loc[ticker, "rs_score"])
+                        stock_info["rs_relative"] = float(stocks_df.loc[ticker, "rs_relative"]) if "rs_relative" in stocks_df.columns else 0
+                    if "extension_score" in stocks_df.columns:
+                        stock_info["extension_score"] = float(stocks_df.loc[ticker, "extension_score"])
+                        stock_info["extension_in_adr"] = float(stocks_df.loc[ticker, "extension_in_adr"]) if "extension_in_adr" in stocks_df.columns else 0
 
                     if "SelectionChannel" in stocks_df.columns:
                         stock_info["selection_channel"] = str(stocks_df.loc[ticker, "SelectionChannel"])

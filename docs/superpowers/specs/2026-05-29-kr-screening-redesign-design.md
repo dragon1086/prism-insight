@@ -59,12 +59,13 @@
 final_score = w_comp·composite_norm + w_agent·agent_fit + w_rs·rs_score + w_ext·extension_score
 ```
 
-### Stage 1 — 보조 트리거 임계 통일 (저위험, KR+US)
+### Stage 1 — 보조 트리거 임계 통일 (저위험, **KR only**)
 `≤20%` → `≤15%`:
 - KR: `trigger_batch.py:403`, `:587`, `:725`
-- US: `prism-us/us_trigger_batch.py:272`, `:415`
 
-효과는 작지만 주력 트리거(이미 15%)와 일관성. 롤백 = 숫자 5개 되돌림.
+주력 트리거(이미 15%)와 일관성. 롤백 = 숫자 3개 되돌림.
+
+> **US 제외 결정 (2026-05-29)**: #289의 전제가 "KR과 US는 구조가 다르다"이다. US는 ±제한폭이 없고 개인 과열이 적어 15~20% 상승이 정당한 돌파일 때가 많으며, 진단상 US 병목은 스크리닝 품질이 아니라 슬롯/섹터 캡이다. US 보조 트리거를 조이면 멀쩡한 후보만 줄어듦 → **#289는 전 단계 KR 전용**, `us_trigger_batch.py` 미수정.
 
 ### Stage 2 — Extension(과열) soft score (KR only)
 종목별 지표:
@@ -81,8 +82,10 @@ final_score = w_comp·composite_norm + w_agent·agent_fit + w_rs·rs_score + w_e
   벤치마크 = 해당 종목 시장 지수(코스피/코스닥 N일 수익률). `get_multi_day_ohlcv(days≈60)` + 지수 시계열 1회.
 - `rs_score` = 후보군 내 `rs_relative` 정규화(0~1).
 - `trigger_macro_sector_leader`:
-  - 단일일 RelativeStrength(`:910`) → 다주 `rs_relative`로 격상.
-  - strong_bull 비활성(`:1338`) 해제 — 단 과열점수도 함께 적용해 "안 뜬 섹터 주도주"를 surface.
+  - strong_bull 비활성(`:1338`) 해제 — 폭등장에서도 섹터 주도주 후보 진입.
+  - **단일일 RelativeStrength(`:910`)는 섹터 shortlist용으로 유지**(top100 종목에 60일 fetch는 과비용). 실제 다주 RS 재정렬은 **downstream `final_score`(아래 통합)** 에서 모든 트리거 후보에 일괄 적용 — macro 트리거 후보도 여기서 60일 RS·과열점수로 재정렬됨.
+
+> **구현 정교화**: `calculate_agent_fit_metrics`의 target price는 10일 고가 기반이므로 그 lookback을 바꾸면 R/R(=agent_fit)이 변동(스코프 외). 따라서 MA20·ADR·60일수익률은 **별도 함수 `calculate_screening_signals`** 에서 60일 OHLCV 1회 fetch로 산출(에이전트 스코어 불변). 대상은 최종 후보군(~30-60종목)뿐.
 
 ### 국면별 가중치 (모듈 상수 1곳, 재배포 없이 튜닝)
 | 국면 | w_comp(모멘텀) | w_agent(R/R) | w_rs(RS) | w_ext(과열) |
@@ -101,7 +104,7 @@ final_score = w_comp·composite_norm + w_agent·agent_fit + w_rs·rs_score + w_e
 
 ## 4. 범위 결정
 
-- **Stage 2·3는 KR 전용.** 진단상 US는 스크리닝이 건강(매수에이전트 avg 5~7점, 슬롯/섹터 캡에 막힘). 과열감점을 US에 넣으면 멀쩡한 파이프라인 훼손 위험.
+- **전 단계(Stage 1·2·3) KR 전용.** 진단상 US는 스크리닝이 건강(매수에이전트 avg 5~7점, 슬롯/섹터 캡에 막힘). 과열감점을 US에 넣으면 멀쩡한 파이프라인 훼손 위험. Stage 1 임계 통일도 US에는 불필요(위 결정).
 - **US 캡 완화는 #289와 별개** — 별도 이슈로 분리(out of scope).
 - **매수에이전트(`trading_agents.py`)는 미수정** — 구조적으로 호환되게 스크리닝만 정렬(스코프 최소). 보정2로 신호 #3과 충돌 없음.
 - **극단 climax 하드컷은 v1 제외** — soft 재정렬만으로 시작, 라이브 관찰 후 필요 시 도입(reversibility 우선).
