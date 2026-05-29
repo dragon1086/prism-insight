@@ -563,6 +563,25 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame,
     return enhance_dataframe(result.sort_values("CompositeScore", ascending=False).head(10))
 
 
+# Sideways trigger downtrend gate (#289 follow-up, mirrors KR trigger_batch.py):
+# a genuine consolidation base forms at/above the 20-day mean; a stock below MA20
+# on a quiet day is a downtrend, not a base. Allow a support test within -3% of MA20.
+SIDEWAYS_MA20_SUPPORT_TOLERANCE = 0.97
+
+
+def _compute_ma20(ticker: str, trade_date: str, lookback_days: int = 20) -> float:
+    """20-day moving average of close for the sideways downtrend gate.
+    Returns 0.0 when data is unavailable (gate treats 0 as 'unknown → pass')."""
+    df = get_multi_day_ohlcv(ticker, trade_date, lookback_days)
+    if df.empty:
+        return 0.0
+    close_col = "Close" if "Close" in df.columns else "종가"
+    if close_col not in df.columns:
+        return 0.0
+    closes = df[close_col][df[close_col] > 0].tail(20)
+    return float(closes.mean()) if len(closes) > 0 else 0.0
+
+
 def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
                                         prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame = None,
                                         top_n: int = 20) -> pd.DataFrame:
@@ -614,6 +633,24 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
 
     if result.empty:
         logger.debug("trigger_afternoon_volume_surge_flat: No sideways stocks")
+        return pd.DataFrame()
+
+    # #289 follow-up: downtrend gate. IsSideways only checks |today's move| <= 5%,
+    # mislabeling a downtrending stock (below MA20) as "sideways". A real base sits
+    # at/above the 20-day mean — exclude names clearly below MA20.
+    kept_mask = []
+    for ticker in result.index:
+        ma20 = _compute_ma20(ticker, trade_date)
+        close_price = float(result.loc[ticker, "Close"])
+        kept_mask.append(ma20 <= 0 or close_price >= ma20 * SIDEWAYS_MA20_SUPPORT_TOLERANCE)
+    excluded = len(result) - sum(kept_mask)
+    result = result[pd.Series(kept_mask, index=result.index)].copy()
+    if excluded:
+        logger.debug(f"trigger_afternoon_volume_surge_flat: downtrend gate excluded "
+                     f"{excluded} stock(s) below MA20")
+
+    if result.empty:
+        logger.debug("trigger_afternoon_volume_surge_flat: No stocks after downtrend gate")
         return pd.DataFrame()
 
     logger.debug(f"Volume surge sideways detected: {len(result)} stocks")

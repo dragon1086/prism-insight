@@ -373,6 +373,12 @@ _DEFAULT_SCORE_WEIGHTS = REGIME_SCORE_WEIGHTS["sideways"]
 EXTENSION_ADR_T_LOW = 2.0    # <= : healthy (near base) → no penalty (score 1.0)
 EXTENSION_ADR_T_HIGH = 6.0   # >= : climax / extended → full penalty (score 0.0)
 
+# Sideways trigger downtrend gate (#289 follow-up): a genuine consolidation base
+# forms at/above the 20-day mean. A stock drifting BELOW MA20 on a quiet day is a
+# downtrend, not a base, and must not be treated as a buyable "sideways" stock.
+# Allow a support test within this fraction of MA20 (0.97 = down to -3% of MA20).
+SIDEWAYS_MA20_SUPPORT_TOLERANCE = 0.97
+
 # Multi-week relative-strength lookback (trading days, ~3 months).
 SCREENING_SIGNAL_LOOKBACK_DAYS = 60
 
@@ -441,6 +447,20 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
                 result["extension_in_adr"] = float(ext)
                 result["extension_score"] = _compute_extension_score(ext)
     return result
+
+
+def _compute_ma20(ticker: str, trade_date: str, lookback_days: int = 20) -> float:
+    """#289 follow-up: 20-day moving average of close, for the sideways-trigger
+    downtrend gate. Returns 0.0 when data is unavailable (the gate treats 0 as
+    'unknown → pass' so a data blip never silently drops candidates)."""
+    df = get_multi_day_ohlcv(ticker, trade_date, lookback_days)
+    if df.empty:
+        return 0.0
+    close_col = "Close" if "Close" in df.columns else "종가"
+    if close_col not in df.columns:
+        return 0.0
+    closes = df[close_col][df[close_col] > 0].tail(20)
+    return float(closes.mean()) if len(closes) > 0 else 0.0
 
 
 # --- Morning trigger functions (based on market open snapshot) ---
@@ -903,6 +923,26 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
 
     if result.empty:
         logger.debug("trigger_afternoon_volume_surge_flat: No stocks meeting criteria")
+        return pd.DataFrame()
+
+    # #289 follow-up: downtrend gate. is_sideways only checks |today's move| <= 5%,
+    # which mislabels a downtrending stock (below MA20, weak RS) as "sideways"
+    # (e.g. 이노션 2026-05-29: -2.2%, below MA20). A real consolidation base sits
+    # at/above the 20-day mean — exclude names clearly below MA20.
+    kept_mask = []
+    for ticker in result.index:
+        ma20 = _compute_ma20(ticker, trade_date)
+        close_price = float(result.loc[ticker, "Close"])
+        # ma20 <= 0 means data unavailable → keep (don't drop on a data blip)
+        kept_mask.append(ma20 <= 0 or close_price >= ma20 * SIDEWAYS_MA20_SUPPORT_TOLERANCE)
+    excluded = len(result) - sum(kept_mask)
+    result = result[pd.Series(kept_mask, index=result.index)].copy()
+    if excluded:
+        logger.debug(f"trigger_afternoon_volume_surge_flat: downtrend gate excluded "
+                     f"{excluded} stock(s) below MA20")
+
+    if result.empty:
+        logger.debug("trigger_afternoon_volume_surge_flat: No stocks after downtrend gate")
         return pd.DataFrame()
 
     # Add debugging logs
