@@ -1,4 +1,4 @@
-# PRISM-INSIGHT v2.13.0 — KR 스크리닝 재설계 + 매매 안정화 + 투명성
+# PRISM-INSIGHT v2.13.0 — 매매 엔진 대규모 업그레이드 (피라미딩 · 매도 안정화 · KR 스크리닝 재설계)
 
 > **Release Date**: 2026-05-29
 > **Range**: `v2.12.0`(dff7350) → `main`(2a1ba8f) · 13 PRs
@@ -153,56 +153,70 @@ git pull --ff-only origin main
 ### 한국어
 
 ```
-🚀 PRISM-INSIGHT v2.13.0 — 한국 종목 스크리닝 재설계 + 매매 안정화
+🚀 PRISM-INSIGHT v2.13.0 — 매매 엔진 대규모 업그레이드
 
-📊 핵심: "당일 급등률"로만 종목을 고르던 한국 스크리닝을
-윌리엄 오닐식 "상대강도(RS) + 과열도" 기준으로 재설계했습니다.
+지난 한 달간 매매 전 과정을 다듬었습니다. 핵심 5가지입니다.
 
-기존엔 폭등장에서 이미 고점까지 치솟은 과열 종목(climax)이 후보로 올라와
-매수 판단에서 번번이 거절됐는데, 이제는
+📈 1) 강세장 추가매수(피라미딩) 도입
+강한 추세가 확인된 보유 종목에 "불타기"로 추가 진입할 수 있게 했습니다.
+수익 종목의 추세를 끝까지 활용하고, 분할 매도로 차익을 단계적으로 실현합니다.
+(이번 릴리즈 중 변경량이 가장 큰 작업 — 한국·미국 양쪽 적용)
 
-✅ 시장보다 꾸준히 강한 "진짜 주도주"(상대강도 높은 종목)를 위로
-✅ 이동평균선에서 변동성 대비 너무 멀리 뜬 "막판 불꽃" 종목은 아래로
+🛡️ 2) 매도 로직 안정화 — 0~1일 노이즈 매도 근절
+매수 직후 장중 흔들림만으로 손절되던 문제를 "종가 기준 매도"로 바꿨습니다.
+"목표가 도달 시 전량 매도"가 시나리오에 박제되던 것도 손질해,
+수익은 추세 따라 길게 끌고 가도록(let winners run) 정비했습니다.
 
-정렬합니다. 후보를 잘라내지 않고 순위만 바꾸므로 폭등장에서도 안전하며,
-시장 국면(강세장/횡보장/약세장)에 따라 기준 강도를 자동 조절합니다.
+📊 3) 한국 종목 스크리닝 재설계
+"당일 급등률"로만 고르던 방식을 오닐식 "상대강도 + 과열도"로 바꿨습니다.
+시장보다 꾸준히 강한 진짜 주도주를 위로, 이미 고점까지 치솟은
+과열 종목(막판 불꽃)은 아래로 정렬합니다. (한국 시장 전용)
 
-🔧 함께 들어간 매매 안정화:
-• 0~1일 노이즈성 손절 정비 — 장중 흔들림이 아닌 종가 기준 매도로 전환
-• 강한 강세장 추가매수(피라미딩) — 수익 종목에 분할 추가 진입 지원
-• 매매일지가 판단에 준 영향을 매수/보류 메시지에 투명하게 표시
-• ChatGPT OAuth·미국 거래소 인식·봇 날짜 인식 등 운영 버그 다수 정리
+📝 4) 매매일지 피드백 투명화
+과거 매매 기록이 현재 매수/매도 판단에 어떻게 반영됐는지
+매수·보류 메시지에 투명하게 표시하고, 주간 영향 통계를 제공합니다.
 
-🇰🇷 이번 스크리닝 재설계는 한국 시장 전용입니다.
-미국은 시장 구조가 달라 별도로 다룹니다.
+🔧 5) 운영 안정성 다수 개선
+미국 거래소 코드 자동 인식, ChatGPT OAuth 연결, Firecrawl 데이터 수집,
+봇 명령어 날짜 인식, 시세 조회 자동 재시도 등 안정성을 폭넓게 강화했습니다.
+
+📊 모든 매매 로직은 5인 투자 거장(오닐·미너비니·드러켄밀러·버핏·퀀트)
+관점으로 검토해 합의된 부분만 반영했습니다.
 ```
 
 ### English
 
 ```
-🚀 PRISM-INSIGHT v2.13.0 — KR Screening Redesign + Trading Stability
+🚀 PRISM-INSIGHT v2.13.0 — Major Trading-Engine Upgrade
 
-📊 Core: We redesigned Korean stock screening — from "today's raw surge %"
-to William O'Neil-style "Relative Strength (RS) + extension (overheating)".
+A month of refinements across the entire trading cycle. Five highlights:
 
-Previously, surging markets pushed already-extended climax stocks into the
-candidate pool, where the buy agent rightly rejected them. Now screening:
+📈 1) Strong-bull pyramiding
+You can now add to winning positions when a strong trend is confirmed —
+riding winners further and scaling out of profits in stages.
+(The largest change in this release — applied to both KR and US.)
 
-✅ Ranks UP true leaders — stocks consistently stronger than the market (high RS)
-✅ Ranks DOWN "blow-off" stocks stretched far above their moving average
-   relative to their own volatility (ADR-normalized extension)
+🛡️ 2) Sell-logic stability — eliminating 0-1 day noise stops
+Sells now trigger on the CLOSING price, not intraday wicks, so freshly
+bought positions aren't stopped out by momentary swings. We also stopped
+"sell-all at target" from being hard-coded into every scenario — letting
+winners run with the trend.
 
-It re-ranks rather than cutting candidates (safe even in surging markets),
-and auto-adjusts the strictness by market regime (bull / sideways / bear).
+📊 3) Korean screening redesign
+From "today's raw surge %" to O'Neil-style "Relative Strength + extension":
+true leaders consistently stronger than the market rank up, while
+already-extended "blow-off" stocks rank down. (Korea-only.)
 
-🔧 Bundled trading-stability fixes:
-• Tamed 0-1 day noise stops — sells now trigger on CLOSE, not intraday wicks
-• Strong-bull pyramiding — add to winning positions in independent rows
-• Trading-journal influence now shown transparently in buy/hold messages
-• Many ops fixes: ChatGPT OAuth SSE, US exchange resolution, bot date anchoring
+📝 4) Transparent trading-journal feedback
+How past trades influenced the current buy/sell decision is now shown
+transparently in buy/hold messages, with weekly impact stats.
 
-🇰🇷 This screening redesign is Korea-only.
-US has a different market structure and is handled separately.
+🔧 5) Broad operational hardening
+US exchange-code resolution, ChatGPT OAuth, Firecrawl data fetching,
+bot date anchoring, and automatic price-query retries — all strengthened.
+
+📊 All trading logic was reviewed through 5 investing masters
+(O'Neil · Minervini · Druckenmiller · Buffett · Quant) — only consensus adopted.
 ```
 
 ---
