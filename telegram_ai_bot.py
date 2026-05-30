@@ -2642,10 +2642,24 @@ class TelegramAIBot:
     # gh #263: strip LLM-emitted disclaimer block before appending our canonical one.
     _strip_trailing_disclaimer = staticmethod(_strip_trailing_disclaimer)
 
-    async def _run_firecrawl_command(self, update: Update, prompt: str, disclaimer: str):
+    # Grounding directive appended to every Firecrawl agent (Spark) prompt.
+    # Forces the agent to actually scrape the live web and cite sources rather than
+    # answering from its own parametric knowledge — verified to make spark-1-mini
+    # emit source URLs instead of ungrounded text.
+    _FIRECRAWL_GROUNDING = (
+        "\n\n반드시 웹을 검색하고 실제 뉴스/기사 페이지를 스크랩하여 각 주장에 출처 URL을 명시하라. "
+        "너의 사전지식이 아니라 오늘 기준 최신 웹 데이터에 근거하라."
+    )
+
+    async def _run_firecrawl_command(self, update: Update, prompt: str, disclaimer: str,
+                                     model: str = "spark-1-mini", max_credits: int = 200):
         """
         Common helper for Firecrawl-based commands.
         Sends a waiting message, calls firecrawl_agent, then replaces it with the result.
+
+        Args:
+            model: Spark agent model — "spark-1-mini" (default) or "spark-1-pro".
+            max_credits: Per-call credit ceiling passed to the agent.
 
         Returns:
             tuple: (success: bool, response_text: str | None, sent_msg_id: int | None)
@@ -2655,7 +2669,7 @@ class TelegramAIBot:
 
         try:
             result = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: firecrawl_agent(prompt, max_credits=200, model="spark-1-mini")
+                None, lambda: firecrawl_agent(prompt, max_credits=max_credits, model=model)
             )
 
             # Delete waiting message
@@ -2788,18 +2802,17 @@ class TelegramAIBot:
         event = update.message.text.strip()[:200]
         today = datetime.now().strftime("%Y년 %m월")
         logger.info(f"/signal query - user={user_id}, event='{event[:50]}'")
-        search_query = f"{event} 한국증시 영향 {today}"
-        analysis_prompt = (
+        prompt = (
             f"오늘은 {today} 기준입니다. '최근/현재'는 이 시점으로 해석하세요.\n"
-            f"위 검색 결과를 바탕으로, '{event}'가 한국 주식시장에 미치는 영향을 분석해줘.\n"
+            f"'{event}'가 한국 주식시장에 미치는 영향을 분석해줘.\n"
             "1. 수혜 예상 섹터와 대표 종목 3개\n"
             "2. 피해 예상 섹터와 대표 종목 3개\n"
             "3. 과거 유사 사례\n"
             "4. 개인투자자 대응 전략\n"
             "텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
-        )
-        success, response_text, msg_id = await self._run_search_and_claude(
-            update, search_query, analysis_prompt, self._DISCLAIMER_KR
+        ) + self._FIRECRAWL_GROUNDING
+        success, response_text, msg_id = await self._run_firecrawl_command(
+            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini"
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("signal", event)
@@ -2838,18 +2851,17 @@ class TelegramAIBot:
         event = update.message.text.strip()[:200]
         today = datetime.now().strftime("%Y %B")
         logger.info(f"/us_signal query - user={user_id}, event='{event[:50]}'")
-        search_query = f"{event} stock market impact {today}"
-        analysis_prompt = (
+        prompt = (
             f"오늘은 {today} 기준입니다. '최근/현재'는 이 시점으로 해석하세요.\n"
-            f"위 검색 결과를 바탕으로, '{event}'가 미국 주식시장(S&P500, NASDAQ)에 미치는 영향을 분석해줘.\n"
-            "1. 수혜 예상 섹터와 대표 종목 3개 (가능하면 yfinance로 최근 주가 흐름 포함)\n"
-            "2. 피해 예상 섹터와 대표 종목 3개 (가능하면 yfinance로 최근 주가 흐름 포함)\n"
+            f"'{event}'가 미국 주식시장(S&P500, NASDAQ)에 미치는 영향을 분석해줘.\n"
+            "1. 수혜 예상 섹터와 대표 종목 3개 (최근 주가 흐름 포함)\n"
+            "2. 피해 예상 섹터와 대표 종목 3개 (최근 주가 흐름 포함)\n"
             "3. 과거 유사 사례\n"
             "4. 개인투자자 대응 전략\n"
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
-        )
-        success, response_text, msg_id = await self._run_search_and_claude(
-            update, search_query, analysis_prompt, self._DISCLAIMER_KR
+        ) + self._FIRECRAWL_GROUNDING
+        success, response_text, msg_id = await self._run_firecrawl_command(
+            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini"
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("us_signal", event)
@@ -2888,19 +2900,18 @@ class TelegramAIBot:
         theme = update.message.text.strip()[:200]
         today = datetime.now().strftime("%Y년 %m월")
         logger.info(f"/theme query - user={user_id}, theme='{theme[:50]}'")
-        search_query = f"{theme} 테마주 뉴스 {today}"
-        analysis_prompt = (
+        prompt = (
             f"오늘은 {today} 기준입니다. '최근/현재'는 이 시점으로 해석하세요.\n"
-            f"위 검색 결과를 바탕으로, 한국 주식시장에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
+            f"한국 주식시장에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
             "2. 대장주 3개와 최근 주가 동향\n"
             "3. 긍정 요인 3개\n"
             "4. 부정 요인 3개\n"
             "5. 진입 타이밍 의견\n"
             "텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
-        )
-        success, response_text, msg_id = await self._run_search_and_claude(
-            update, search_query, analysis_prompt, self._DISCLAIMER_KR
+        ) + self._FIRECRAWL_GROUNDING
+        success, response_text, msg_id = await self._run_firecrawl_command(
+            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini"
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("theme", theme)
@@ -2939,19 +2950,18 @@ class TelegramAIBot:
         theme = update.message.text.strip()[:200]
         today = datetime.now().strftime("%Y %B")
         logger.info(f"/us_theme query - user={user_id}, theme='{theme[:50]}'")
-        search_query = f"{theme} sector stocks news {today}"
-        analysis_prompt = (
+        prompt = (
             f"오늘은 {today} 기준입니다. '최근/현재'는 이 시점으로 해석하세요.\n"
-            f"위 검색 결과를 바탕으로, 미국 주식시장(S&P500, NASDAQ)에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
+            f"미국 주식시장(S&P500, NASDAQ)에서 '{theme}' 테마의 현재 건강도를 진단해줘.\n"
             "1. 테마 온도 (🟢과열/🟡적정/🔴냉각 중 택1, 근거 포함)\n"
-            "2. 대장주 3개와 최근 주가 동향 (yfinance 실시간 데이터 기반)\n"
+            "2. 대장주 3개와 최근 주가 동향\n"
             "3. 긍정 요인 3개\n"
             "4. 부정 요인 3개\n"
             "5. 진입 타이밍 의견\n"
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
-        )
-        success, response_text, msg_id = await self._run_search_and_claude(
-            update, search_query, analysis_prompt, self._DISCLAIMER_KR
+        ) + self._FIRECRAWL_GROUNDING
+        success, response_text, msg_id = await self._run_firecrawl_command(
+            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini"
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("us_theme", theme)
@@ -3000,8 +3010,10 @@ class TelegramAIBot:
             f"오늘은 {today}입니다. 다음 투자 관련 질문에 대해 최신 정보를 기반으로 답변해줘:\n\n"
             f"{question}\n\n"
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
+        ) + self._FIRECRAWL_GROUNDING
+        success, response_text, msg_id = await self._run_firecrawl_command(
+            update, prompt, self._DISCLAIMER_KR, model="spark-1-pro", max_credits=400
         )
-        success, response_text, msg_id = await self._run_firecrawl_command(update, prompt, self._DISCLAIMER_KR)
         if success:
             if remaining > 0:
                 await update.message.reply_text(f"📊 오늘 남은 /ask 횟수: {remaining}회")
