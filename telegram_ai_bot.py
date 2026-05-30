@@ -2651,8 +2651,16 @@ class TelegramAIBot:
         "너의 사전지식이 아니라 오늘 기준 최신 웹 데이터에 근거하라."
     )
 
+    # Firecrawl Spark(/AGENT) jobs can hang server-side in IN_PROGRESS or FAIL
+    # without returning, which would otherwise block the executor thread until the
+    # 300s ConversationHandler timeout. Cap the wait and fall back to search+Claude.
+    _FIRECRAWL_AGENT_TIMEOUT = 120  # seconds
+
     async def _run_firecrawl_command(self, update: Update, prompt: str, disclaimer: str,
-                                     model: str = "spark-1-mini", max_credits: int = 200):
+                                     model: str = "spark-1-mini", max_credits: int = 200,
+                                     fallback_search_query: str = None,
+                                     fallback_analysis_prompt: str = None,
+                                     timeout: int = None):
         """
         Common helper for Firecrawl-based commands.
         Sends a waiting message, calls firecrawl_agent, then replaces it with the result.
@@ -2660,17 +2668,50 @@ class TelegramAIBot:
         Args:
             model: Spark agent model — "spark-1-mini" (default) or "spark-1-pro".
             max_credits: Per-call credit ceiling passed to the agent.
+            fallback_search_query: When set together with fallback_analysis_prompt,
+                a Firecrawl Spark timeout/failure/empty result triggers a search+Claude
+                fallback (generate_firecrawl_search_response) instead of erroring out.
+            fallback_analysis_prompt: Analysis instruction passed to the Claude fallback.
+            timeout: Seconds to wait for the Spark agent before giving up (defaults to
+                _FIRECRAWL_AGENT_TIMEOUT). Heavy spark-1-pro jobs need a larger budget so
+                legitimate deep-research runs are not cut off prematurely.
 
         Returns:
             tuple: (success: bool, response_text: str | None, sent_msg_id: int | None)
         """
         chat_id = update.effective_chat.id
+        agent_timeout = timeout or self._FIRECRAWL_AGENT_TIMEOUT
         waiting_msg = await update.message.reply_text("🔍 리서치 중...")
 
         try:
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: firecrawl_agent(prompt, max_credits=max_credits, model=model)
-            )
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None, lambda: firecrawl_agent(prompt, max_credits=max_credits, model=model)
+                    ),
+                    timeout=agent_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Firecrawl agent timed out after {agent_timeout}s "
+                    f"(model={model}) — Spark job likely stuck server-side"
+                )
+                result = None
+
+            # Fallback: Spark hung/failed/returned empty — retry via search+Claude (Anthropic).
+            if not result and fallback_search_query and fallback_analysis_prompt:
+                logger.info("Falling back to search+Claude after Firecrawl agent miss")
+                try:
+                    await waiting_msg.edit_text("🔍 리서치 중... (보조 엔진 전환)")
+                except Exception:
+                    pass
+                try:
+                    result = await generate_firecrawl_search_response(
+                        fallback_search_query, fallback_analysis_prompt
+                    )
+                except Exception as fe:
+                    logger.error(f"Search+Claude fallback failed: {fe}", exc_info=True)
+                    result = None
 
             # Delete waiting message
             try:
@@ -2812,7 +2853,8 @@ class TelegramAIBot:
             "텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         ) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
-            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini"
+            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
+            fallback_search_query=event, fallback_analysis_prompt=prompt
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("signal", event)
@@ -2861,7 +2903,8 @@ class TelegramAIBot:
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         ) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
-            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini"
+            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
+            fallback_search_query=event, fallback_analysis_prompt=prompt
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("us_signal", event)
@@ -2911,7 +2954,8 @@ class TelegramAIBot:
             "텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         ) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
-            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini"
+            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
+            fallback_search_query=theme, fallback_analysis_prompt=prompt
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("theme", theme)
@@ -2961,7 +3005,8 @@ class TelegramAIBot:
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         ) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
-            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini"
+            update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
+            fallback_search_query=theme, fallback_analysis_prompt=prompt
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("us_theme", theme)
@@ -3012,7 +3057,8 @@ class TelegramAIBot:
             "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 3000자 이내."
         ) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
-            update, prompt, self._DISCLAIMER_KR, model="spark-1-pro", max_credits=400
+            update, prompt, self._DISCLAIMER_KR, model="spark-1-pro", max_credits=2000,
+            fallback_search_query=question, fallback_analysis_prompt=prompt, timeout=240
         )
         if success:
             if remaining > 0:
