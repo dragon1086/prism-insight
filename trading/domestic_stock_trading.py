@@ -12,6 +12,7 @@ import math
 import time
 from pathlib import Path
 from typing import Optional, Dict, List, Any
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -32,6 +33,36 @@ from kis_auth import (
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+KST = ZoneInfo("Asia/Seoul")
+
+
+def _now_kst() -> datetime.datetime:
+    """Return timezone-aware current time in Korea Standard Time."""
+    return datetime.datetime.now(KST)
+
+
+def _domestic_order_window(now: Optional[datetime.datetime] = None) -> str:
+    """Classify the Korean domestic stock order window using KST.
+
+    Returns one of:
+    - regular: 09:00~15:30 market orders
+    - closing: 15:40~16:00 after-hours closing-price orders
+    - reserved: KIS reserved-order window, excluding 23:40~00:10
+    - unavailable: gaps where neither regular/closing nor reserved orders are accepted
+    """
+    now = now or _now_kst()
+    current_time = now.astimezone(KST).time() if now.tzinfo else now.time()
+
+    if datetime.time(9, 0) <= current_time <= datetime.time(15, 30):
+        return "regular"
+    if datetime.time(15, 40) <= current_time <= datetime.time(16, 0):
+        return "closing"
+    if datetime.time(16, 0) < current_time <= datetime.time(23, 40):
+        return "reserved"
+    if datetime.time(0, 10) <= current_time <= datetime.time(7, 30):
+        return "reserved"
+    return "unavailable"
 
 # Load configuration file
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
@@ -530,27 +561,34 @@ class DomesticStockTrading:
                 'message': 'Auto trading is disabled. Cannot execute buy order. (AUTO_TRADING=False)'
             }
 
-        now = datetime.datetime.now()
-        current_time = now.time()
+        now = _now_kst()
+        order_window = _domestic_order_window(now)
 
-        # Branch by time period
-        if datetime.time(9, 0) <= current_time <= datetime.time(15, 30):
-            # Regular trading hours
-            logger.info(f"[{stock_code}] Regular trading hours - executing market buy")
+        # Branch by Korean market time (KST), regardless of server/local timezone.
+        if order_window == "regular":
+            logger.info(f"[{stock_code}] Regular trading hours (KST) - executing market buy")
             return self.buy_market_price(stock_code, buy_amount)
 
-        elif datetime.time(15, 40) <= current_time <= datetime.time(16, 0):
-            # After-hours closing price trading
-            logger.info(f"[{stock_code}] After-hours closing price time - executing closing price buy")
+        if order_window == "closing":
+            logger.info(f"[{stock_code}] After-hours closing price time (KST) - executing closing price buy")
             return self.buy_closing_price(stock_code, buy_amount)
 
-        else:
-            # Reserved order (limit or market price)
+        if order_window == "reserved":
             if limit_price:
-                logger.info(f"[{stock_code}] Outside trading hours - executing reserved order (limit: {limit_price:,} KRW)")
+                logger.info(f"[{stock_code}] Reserved order window (KST) - executing reserved order (limit: {limit_price:,} KRW)")
             else:
-                logger.info(f"[{stock_code}] Outside trading hours - executing reserved order (market)")
+                logger.info(f"[{stock_code}] Reserved order window (KST) - executing reserved order (market)")
             return self.buy_reserved_order(stock_code, buy_amount, limit_price=limit_price)
+
+        message = "Order window unavailable in KST (reserved orders are accepted 16:00~23:40 and 00:10~07:30)"
+        logger.warning(f"[{stock_code}] {message}")
+        return {
+            'success': False,
+            'order_no': None,
+            'stock_code': stock_code,
+            'quantity': 0,
+            'message': message
+        }
 
     def buy_closing_price(self, stock_code: str, buy_amount: int = None) -> Dict[str, Any]:
         """
@@ -893,27 +931,34 @@ class DomesticStockTrading:
                 'message': 'Auto trading is disabled. Cannot execute sell order. (AUTO_TRADING=False)'
             }
 
-        now = datetime.datetime.now()
-        current_time = now.time()
+        now = _now_kst()
+        order_window = _domestic_order_window(now)
 
-        # Branch by time period
-        if datetime.time(9, 0) <= current_time <= datetime.time(15, 30):
-            # Regular trading hours - market sell
-            logger.info(f"[{stock_code}] Regular trading hours - executing market sell")
+        # Branch by Korean market time (KST), regardless of server/local timezone.
+        if order_window == "regular":
+            logger.info(f"[{stock_code}] Regular trading hours (KST) - executing market sell")
             return self.sell_all_market_price(stock_code, quantity=quantity)
 
-        elif datetime.time(15, 40) <= current_time <= datetime.time(16, 0):
-            # After-hours closing price trading
-            logger.info(f"[{stock_code}] After-hours closing price time - executing closing price sell")
+        if order_window == "closing":
+            logger.info(f"[{stock_code}] After-hours closing price time (KST) - executing closing price sell")
             return self.sell_all_closing_price(stock_code, quantity=quantity)
 
-        else:
-            # Reserved order (limit or market price)
+        if order_window == "reserved":
             if limit_price:
-                logger.info(f"[{stock_code}] Outside trading hours - executing reserved order (limit: {limit_price:,} KRW)")
+                logger.info(f"[{stock_code}] Reserved order window (KST) - executing reserved order (limit: {limit_price:,} KRW)")
             else:
-                logger.info(f"[{stock_code}] Outside trading hours - executing reserved order (market)")
+                logger.info(f"[{stock_code}] Reserved order window (KST) - executing reserved order (market)")
             return self.sell_all_reserved_order(stock_code, limit_price=limit_price, quantity=quantity)
+
+        message = "Order window unavailable in KST (reserved orders are accepted 16:00~23:40 and 00:10~07:30)"
+        logger.warning(f"[{stock_code}] {message}")
+        return {
+            'success': False,
+            'order_no': None,
+            'stock_code': stock_code,
+            'quantity': 0,
+            'message': message
+        }
 
     def sell_all_closing_price(self, stock_code: str, quantity: int = None) -> Dict[str, Any]:
         """
@@ -1163,7 +1208,7 @@ class DomesticStockTrading:
                 'total_amount': 0,
                 'order_no': None,
                 'message': f'Buy request timeout ({timeout}s)',
-                'timestamp': datetime.datetime.now().isoformat()
+                'timestamp': _now_kst().isoformat()
             }
 
     async def _execute_buy_stock(self, stock_code: str, buy_amount: int = None, limit_price: int = None) -> Dict[str, Any]:
@@ -1178,7 +1223,7 @@ class DomesticStockTrading:
             'total_amount': 0,
             'order_no': None,
             'message': '',
-            'timestamp': datetime.datetime.now().isoformat()
+            'timestamp': _now_kst().isoformat()
         }
 
         # 3-level protection: per-stock lock + semaphore + global lock
@@ -1286,7 +1331,7 @@ class DomesticStockTrading:
                 'estimated_amount': 0,
                 'order_no': None,
                 'message': f'Sell request timeout ({timeout}s)',
-                'timestamp': datetime.datetime.now().isoformat()
+                'timestamp': _now_kst().isoformat()
             }
 
     async def _execute_sell_stock(self, stock_code: str, limit_price: int = None, quantity: int = None) -> Dict[str, Any]:
@@ -1302,7 +1347,7 @@ class DomesticStockTrading:
             'estimated_amount': 0,
             'order_no': None,
             'message': '',
-            'timestamp': datetime.datetime.now().isoformat()
+            'timestamp': _now_kst().isoformat()
         }
 
         # 3-level protection: per-stock lock + semaphore + global lock
