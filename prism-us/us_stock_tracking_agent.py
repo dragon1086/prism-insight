@@ -643,8 +643,16 @@ class USStockTrackingAgent:
         account_key, _ = self._account_scope()
         return get_us_holdings_count(self.cursor, account_key=account_key)
 
-    async def _check_sector_diversity(self, sector: str) -> bool:
-        """Check for over-concentration in same sector."""
+    async def _check_sector_diversity(self, sector: str, is_pyramiding_add: bool = False) -> bool:
+        """Check for over-concentration in same sector.
+
+        Pyramiding adds (#288) target a ticker already held, so the name is
+        already counted toward the sector. Adding to it does not introduce a
+        new name into the sector, so the count-based concentration limit should
+        not block it — only brand-new positions are subject to the limit.
+        """
+        if is_pyramiding_add:
+            return True
         account_key, _ = self._account_scope()
         return check_sector_diversity(
             self.cursor, sector,
@@ -2460,7 +2468,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     # Evaluate sector / score / decision independently so the displayed
                     # rejection reason matches the rationale in the same message,
                     # rather than short-circuiting on whichever cause the code checked first.
-                    sector_diverse = await self._check_sector_diversity(sector)
+                    sector_diverse = await self._check_sector_diversity(sector, is_pyramiding_add=is_add)
 
                     buy_score = scenario.get("buy_score", 0)
                     min_score = scenario.get("min_score", 0)
