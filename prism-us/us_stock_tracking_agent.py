@@ -1443,8 +1443,20 @@ class USStockTrackingAgent:
             # LLM call
             llm = await self.sell_decision_agent.attach_llm(OpenAIAugmentedLLM)
 
+            # 시스템이 사이클당 1회 계산한 LIVE 시장 레짐(S&P500/VIX 기반, OpenAI 무관).
+            # 매수시점 동결값(scenario.market_condition)이 아닌 '현재' 레짐을 권위값으로 주입.
+            live_regime_summary = getattr(self, "_live_regime_summary", None)
+            live_regime_block = (
+                live_regime_summary
+                if live_regime_summary
+                else "unavailable — verify via yahoo_finance (^GSPC 20MA, ^VIX)"
+            )
+
             prompt_message = f"""
 Please make a sell/hold decision for the following US stock holding.
+
+### Current Market Regime (LIVE, system-computed — authoritative):
+{live_regime_block}
 
 ### Stock Information:
 - Stock: {company_name} ({ticker})
@@ -1469,6 +1481,7 @@ Please make a sell/hold decision for the following US stock holding.
 
 ### Task:
 Use yahoo_finance and sqlite tools to check latest data, then decide whether to sell or continue holding.
+**Market regime**: Treat the "Current Market Regime (LIVE)" above as the authoritative market environment for step-0 분석 (강세장/약세장 판단). It is system-computed from S&P500/VIX this cycle; prefer it over the stored buy-time scenario. Only if it shows "unavailable", fall back to fetching ^GSPC/^VIX via yahoo_finance yourself.
 **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
 """
 
@@ -1530,13 +1543,33 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
     def _get_live_regime_safe(self) -> Optional[str]:
         """매도 사이클의 '현재' 시장 레짐을 yfinance(S&P500/VIX) 기반으로 1회 계산.
         OpenAI 와 무관하므로 quota 사고 중에도 동작. 실패 시 None → stale 폴백.
+
+        부수효과: self._live_regime_summary 에 AI 매도 프롬프트 주입용 사람-읽기 요약을
+        저장한다(S&P500 vs 20MA, 4주 변동, VIX). 실패 시 None.
         """
+        self._live_regime_summary = None
         try:
             from cores.data_prefetch import prefetch_us_macro_intelligence_data
             data = prefetch_us_macro_intelligence_data() or {}
-            regime = (data.get("computed_regime") or {}).get("market_regime")
+            cr = data.get("computed_regime") or {}
+            regime = cr.get("market_regime")
             if regime:
                 logger.info(f"[sell] live US market regime: {regime}")
+                s = cr.get("index_summary") or {}
+                conf = cr.get("regime_confidence")
+                parts = [regime]
+                if s.get("sp500_current") is not None and s.get("sp500_20d_ma") is not None:
+                    parts.append(
+                        f"S&P500 {s['sp500_current']} vs 20MA {s['sp500_20d_ma']} "
+                        f"({s.get('sp500_vs_20d_ma','?')})"
+                    )
+                if s.get("sp500_4w_change_pct") is not None:
+                    parts.append(f"4w {s['sp500_4w_change_pct']}%")
+                if s.get("vix_current") is not None:
+                    parts.append(f"VIX {s['vix_current']} ({s.get('vix_level','?')})")
+                if conf is not None:
+                    parts.append(f"confidence {conf}")
+                self._live_regime_summary = " | ".join(str(p) for p in parts)
             return regime or None
         except Exception as e:
             logger.warning(f"[sell] live regime fetch failed, using stale market_condition: {e}")
