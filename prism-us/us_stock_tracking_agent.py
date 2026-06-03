@@ -52,6 +52,18 @@ if _error_spec and _error_spec.loader:
 from telegram import Bot
 from telegram.error import TelegramError
 
+# O'Neil 룰베이스 매도 fallback (2026-06-04 quota 사고 대응).
+# prism-us/cores 가 sys.path 우선이라 prism-us/cores/oneil_fallback 로 해석됨.
+# 방어적 import: 실패 시 _ONEIL_FALLBACK_AVAILABLE=False 로 기존 레거시 룰 유지.
+try:
+    from cores.oneil_fallback import (
+        evaluate_oneil_sell as _oneil_eval,
+        from_stock_data as _oneil_from,
+    )
+    _ONEIL_FALLBACK_AVAILABLE = True
+except Exception:  # pragma: no cover - defensive
+    _ONEIL_FALLBACK_AVAILABLE = False
+
 # Logging configuration
 logging.basicConfig(
     level=logging.INFO,
@@ -1515,8 +1527,26 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             logger.error(f"{ticker} AI sell analysis error: {e}, falling back to rule-based decision")
             return await self._fallback_sell_decision(stock_data)
 
+    def _get_live_regime_safe(self) -> Optional[str]:
+        """매도 사이클의 '현재' 시장 레짐을 yfinance(S&P500/VIX) 기반으로 1회 계산.
+        OpenAI 와 무관하므로 quota 사고 중에도 동작. 실패 시 None → stale 폴백.
+        """
+        try:
+            from cores.data_prefetch import prefetch_us_macro_intelligence_data
+            data = prefetch_us_macro_intelligence_data() or {}
+            regime = (data.get("computed_regime") or {}).get("market_regime")
+            if regime:
+                logger.info(f"[sell] live US market regime: {regime}")
+            return regime or None
+        except Exception as e:
+            logger.warning(f"[sell] live regime fetch failed, using stale market_condition: {e}")
+            return None
+
     async def _fallback_sell_decision(self, stock_data: Dict[str, Any]) -> Tuple[bool, str]:
         """Rule-based sell decision (fallback when AI unavailable).
+
+        1차: O'Neil 추세추종 룰(cores.oneil_fallback) — 승자 보유/손실 차단.
+        2차(안전망): 모듈 import 실패 등 예외 시에만 기존 레거시 룰.
 
         Args:
             stock_data: Stock information
@@ -1524,6 +1554,21 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         Returns:
             Tuple[bool, str]: Whether to sell, sell reason
         """
+        # ── O'Neil 룰베이스 (live regime 주입) ───────────────────
+        if _ONEIL_FALLBACK_AVAILABLE:
+            try:
+                live_regime = getattr(self, "_live_regime_cache", None)
+                inp = _oneil_from(stock_data, live_regime=live_regime)
+                should_sell, reason = _oneil_eval(inp)
+                logger.info(
+                    f"{stock_data.get('ticker','')} O'Neil rule-based sell: "
+                    f"{'Sell' if should_sell else 'Hold'} | {reason}"
+                )
+                return should_sell, reason
+            except Exception as e:
+                logger.error(f"O'Neil fallback error, using legacy rules: {e}")
+
+        # ── 레거시 안전망 (O'Neil 모듈 불가/예외 시에만) ─────────
         try:
             ticker = stock_data.get('ticker', '')
             buy_price = stock_data.get('buy_price', 0)
@@ -2002,6 +2047,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         """
         try:
             logger.info("Starting US holdings update")
+
+            # 매도 판단에 쓸 '현재' 시장 레짐을 사이클당 1회 계산(OpenAI 무관).
+            # _fallback_sell_decision 이 self._live_regime_cache 로 참조한다.
+            self._live_regime_cache = self._get_live_regime_safe()
 
             # Query holdings list
             # id included for pyramiding (#288): enables per-row delete and

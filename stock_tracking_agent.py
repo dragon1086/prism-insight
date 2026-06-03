@@ -51,6 +51,17 @@ from cores.openai_error_logging import log_openai_error
 from cores.agents.trading_agents import create_trading_scenario_agent
 from cores.utils import parse_llm_json
 
+# O'Neil 룰베이스 매도 (2026-06-04 US quota 사고 동일 룰 결함 KR에도 적용).
+# 방어적 import: 실패 시 _ONEIL_FALLBACK_AVAILABLE=False 로 기존 레거시 룰 유지.
+try:
+    from cores.oneil_fallback import (
+        evaluate_oneil_sell as _oneil_eval,
+        from_stock_data as _oneil_from,
+    )
+    _ONEIL_FALLBACK_AVAILABLE = True
+except Exception:  # pragma: no cover - defensive
+    _ONEIL_FALLBACK_AVAILABLE = False
+
 # Tracking package imports (refactored helpers)
 from tracking import (
     create_all_tables,
@@ -912,9 +923,26 @@ class StockTrackingAgent:
             logger.error(traceback.format_exc())
             return False
 
+    def _get_live_regime_safe(self) -> Optional[str]:
+        """매도 판단용 '현재' KOSPI 레짐을 1회 계산(OpenAI 무관). 실패 시 None → stale 폴백."""
+        try:
+            from cores.data_prefetch import prefetch_macro_intelligence_data
+            reference_date = datetime.now().strftime("%Y%m%d")
+            data = prefetch_macro_intelligence_data(reference_date) or {}
+            regime = (data.get("computed_regime") or {}).get("market_regime")
+            if regime:
+                logger.info(f"[sell] live KR market regime: {regime}")
+            return regime or None
+        except Exception as e:
+            logger.warning(f"[sell] live regime fetch failed, using stale market_condition: {e}")
+            return None
+
     async def _analyze_sell_decision(self, stock_data: Dict[str, Any]) -> Tuple[bool, str]:
         """
         Sell decision analysis
+
+        1차: O'Neil 추세추종 룰(cores.oneil_fallback) — 승자 보유/손실 차단.
+        2차(안전망): O'Neil 모듈 불가/예외 시에만 기존 레거시 룰.
 
         Args:
             stock_data: Stock information
@@ -922,6 +950,21 @@ class StockTrackingAgent:
         Returns:
             Tuple[bool, str]: Whether to sell, sell reason
         """
+        # ── O'Neil 룰베이스 (live regime 주입) ───────────────────
+        if _ONEIL_FALLBACK_AVAILABLE:
+            try:
+                live_regime = getattr(self, "_live_regime_cache", None)
+                inp = _oneil_from(stock_data, live_regime=live_regime)
+                should_sell, reason = _oneil_eval(inp)
+                logger.info(
+                    f"{stock_data.get('ticker','')} O'Neil rule-based sell: "
+                    f"{'Sell' if should_sell else 'Hold'} | {reason}"
+                )
+                return should_sell, reason
+            except Exception as e:
+                logger.error(f"O'Neil sell rule error, using legacy rules: {e}")
+
+        # ── 레거시 안전망 (O'Neil 모듈 불가/예외 시에만) ─────────
         try:
             ticker = stock_data.get('ticker', '')
             buy_price = stock_data.get('buy_price', 0)
@@ -1218,6 +1261,10 @@ class StockTrackingAgent:
         """
         try:
             logger.info("Starting holdings info update")
+
+            # 매도 판단에 쓸 '현재' 시장 레짐을 사이클당 1회 계산(OpenAI 무관).
+            # _analyze_sell_decision 이 self._live_regime_cache 로 참조한다.
+            self._live_regime_cache = self._get_live_regime_safe()
 
             # Query holdings list
             # id included for pyramiding (#288): enables per-row delete and
