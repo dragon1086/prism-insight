@@ -510,6 +510,7 @@ def create_price_chart(ticker, company_name=None, days=730, save_path=None, adju
     df = df.sort_index()
 
     # Calculate moving averages (krx_data_client returns English column names)
+    df['MA5'] = df['Close'].rolling(window=5).mean()  # 5-day moving average
     df['MA20'] = df['Close'].rolling(window=20).mean()  # 20-day moving average
     df['MA60'] = df['Close'].rolling(window=60).mean()  # 60-day moving average
     df['MA120'] = df['Close'].rolling(window=120).mean()  # 120-day moving average
@@ -525,6 +526,7 @@ def create_price_chart(ticker, company_name=None, days=730, save_path=None, adju
 
     # Configure moving average overlay plots
     additional_plots = [
+        mpf.make_addplot(df['MA5'], color='#00aa44', width=1),  # 5-day MA (green)
         mpf.make_addplot(df['MA20'], color='#ff9500', width=1),  # 20-day MA (orange)
         mpf.make_addplot(df['MA60'], color='#0066cc', width=1.5),  # 60-day MA (blue)
         mpf.make_addplot(df['MA120'], color='#cc3300', width=1.5, linestyle='--'),  # 120-day MA (red, dashed)
@@ -564,7 +566,7 @@ def create_price_chart(ticker, company_name=None, days=730, save_path=None, adju
     ax1, ax2 = axes[0], axes[2]
 
     # Add legend for moving averages
-    ax1.legend(['MA20', 'MA60', 'MA120'], loc='upper left')
+    ax1.legend(['MA5', 'MA20', 'MA60', 'MA120'], loc='upper left')
 
     # Identify key price points for annotation
     max_point = df['Close'].idxmax()  # Highest closing price date

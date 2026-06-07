@@ -162,6 +162,8 @@ def prefetch_macro_intelligence_data(reference_date: str) -> dict:
 
     ref_dt = datetime.strptime(reference_date, "%Y%m%d")
     start_date = (ref_dt - timedelta(days=45)).strftime("%Y%m%d")
+    # regime 계산용 별도 장기 구간(60/120일선 필요). 마크다운(start_date, 45일)은 불변.
+    regime_start_date = (ref_dt - timedelta(days=250)).strftime("%Y%m%d")
 
     # 1. KOSPI index OHLCV
     kospi_md = prefetch_index_ohlcv("1001", start_date, reference_date)
@@ -194,8 +196,8 @@ def prefetch_macro_intelligence_data(reference_date: str) -> dict:
 
     # 4. Compute regime from raw KOSPI data
     try:
-        kospi_raw = server.get_index_ohlcv(start_date, reference_date, "1001")
-        kosdaq_raw = server.get_index_ohlcv(start_date, reference_date, "2001")
+        kospi_raw = server.get_index_ohlcv(regime_start_date, reference_date, "1001")
+        kosdaq_raw = server.get_index_ohlcv(regime_start_date, reference_date, "2001")
         if kospi_raw:
             result["computed_regime"] = _compute_kr_regime(kospi_raw, kosdaq_raw)
     except Exception as e:
@@ -242,9 +244,19 @@ def _compute_kr_regime(kospi_ohlcv: dict, kosdaq_ohlcv: dict = None) -> dict:
         price_2w_ago = float(df_20d[close_col].iloc[0])
     change_2w_pct = ((current_price - price_2w_ago) / price_2w_ago) * 100
 
-    # MA position
+    # MA position (short-term, 20-day = 생명선)
     ma_diff_pct = ((current_price - ma_20d) / ma_20d) * 100
     above_ma = current_price > ma_20d
+
+    # Trend MAs (60/120) from FULL history — needs ~250d fetch.
+    # KR 관례: 60일선=수급선(중기), 120일선=경기선(중장기 추세 분기).
+    closes_full = df[close_col].dropna()
+    ma_60 = float(closes_full.tail(60).mean()) if len(closes_full) >= 60 else None
+    ma_120 = float(closes_full.tail(120).mean()) if len(closes_full) >= 120 else None
+    above_60 = (current_price > ma_60) if ma_60 is not None else None
+    above_120 = (current_price > ma_120) if ma_120 is not None else None
+    # golden = 60일선 > 120일선 (정배열 경향); False = 데드크로스
+    golden = (ma_60 > ma_120) if (ma_60 is not None and ma_120 is not None) else None
 
     # simple_ma_regime (pure index-based)
     if abs(ma_diff_pct) <= 0.5:
@@ -262,22 +274,50 @@ def _compute_kr_regime(kospi_ohlcv: dict, kosdaq_ohlcv: dict = None) -> dict:
     else:
         kospi_trend = "sideways"
 
-    # Market regime classification (KR uses 2-week / ±5% thresholds)
-    if above_ma and change_2w_pct > 5:
-        regime = "strong_bull"
-        confidence = 0.85
-    elif above_ma and change_2w_pct >= 0:
-        regime = "moderate_bull"
-        confidence = 0.75
-    elif abs(ma_diff_pct) <= 1 and abs(change_2w_pct) < 2:
-        regime = "sideways"
-        confidence = 0.65
-    elif not above_ma and change_2w_pct < -5:
-        regime = "strong_bear"
-        confidence = 0.85
+    # Market regime classification.
+    # Trend-template (120일선 primary divider) when 120MA available; else legacy 20MA logic.
+    # Output strings unchanged (6 regimes) so downstream buy-matrix/prompts stay compatible.
+    if ma_120 is not None:
+        if above_120:
+            # 중장기 상승추세 (가격 > 120일선)
+            if above_60 and golden and change_2w_pct > 5:
+                regime = "strong_bull"
+                confidence = 0.90
+            elif above_60 or change_2w_pct >= 0:
+                regime = "moderate_bull"
+                confidence = 0.78
+            else:
+                regime = "sideways"
+                confidence = 0.62
+        else:
+            # 120일선 아래 = 중장기 하락추세 → 'bull' 금지. 약세장 반등 방어:
+            # 120선 아래에서의 단기 급반등은 strong_bull 이 아니라 sideways(보수)로 분류.
+            if golden is False and change_2w_pct < -5:
+                regime = "strong_bear"
+                confidence = 0.90
+            elif change_2w_pct < 0:
+                regime = "moderate_bear"
+                confidence = 0.78
+            else:
+                regime = "sideways"
+                confidence = 0.55
     else:
-        regime = "moderate_bear"
-        confidence = 0.75
+        # Legacy 20MA logic (insufficient history for 120MA) — backward compatible
+        if above_ma and change_2w_pct > 5:
+            regime = "strong_bull"
+            confidence = 0.85
+        elif above_ma and change_2w_pct >= 0:
+            regime = "moderate_bull"
+            confidence = 0.75
+        elif abs(ma_diff_pct) <= 1 and abs(change_2w_pct) < 2:
+            regime = "sideways"
+            confidence = 0.65
+        elif not above_ma and change_2w_pct < -5:
+            regime = "strong_bear"
+            confidence = 0.85
+        else:
+            regime = "moderate_bear"
+            confidence = 0.75
 
     # KOSDAQ trend (if available)
     kosdaq_trend = "sideways"
@@ -302,18 +342,29 @@ def _compute_kr_regime(kospi_ohlcv: dict, kosdaq_ohlcv: dict = None) -> dict:
         except Exception:
             pass
 
+    index_summary = {
+        "kospi_20d_trend": kospi_trend,
+        "kospi_vs_20d_ma": "above" if above_ma else "below",
+        "kospi_2w_change_pct": round(change_2w_pct, 2),
+        "kospi_current": round(current_price, 2),
+        "kospi_20d_ma": round(ma_20d, 2),
+        "kosdaq_20d_trend": kosdaq_trend,
+    }
+    # Trend MA fields (additive — present only when enough history)
+    if ma_60 is not None:
+        index_summary["kospi_60d_ma"] = round(ma_60, 2)
+        index_summary["kospi_vs_60d_ma"] = "above" if above_60 else "below"
+    if ma_120 is not None:
+        index_summary["kospi_120d_ma"] = round(ma_120, 2)
+        index_summary["kospi_vs_120d_ma"] = "above" if above_120 else "below"
+    if golden is not None:
+        index_summary["kospi_ma_60_120_cross"] = "golden" if golden else "dead"
+
     return {
         "market_regime": regime,
         "regime_confidence": confidence,
         "simple_ma_regime": simple_ma_regime,
-        "index_summary": {
-            "kospi_20d_trend": kospi_trend,
-            "kospi_vs_20d_ma": "above" if above_ma else "below",
-            "kospi_2w_change_pct": round(change_2w_pct, 2),
-            "kospi_current": round(current_price, 2),
-            "kospi_20d_ma": round(ma_20d, 2),
-            "kosdaq_20d_trend": kosdaq_trend,
-        }
+        "index_summary": index_summary,
     }
 
 

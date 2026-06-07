@@ -54,6 +54,7 @@ class SellInputs:
     #   으로 매 사이클 1회 계산한 LIVE regime 을 from_stock_data(live_regime=...) 로 주입할 것.
     primary_support: float = 0.0        # key_levels.primary_support (선택)
     regime_is_live: bool = False        # True 면 trailing 밴드를 신뢰, False(=stale)면 보수적
+    ma_50: float = 0.0                  # 개별종목 50일선(주입 시에만 TIER1.5 작동, 0이면 dormant)
 
 
 def _normalize_regime(raw: str) -> str:
@@ -95,6 +96,12 @@ def evaluate_oneil_sell(inp: SellInputs) -> Tuple[bool, str]:
     if profit <= ABS_STOP_LOSS_PCT:
         return True, f"TIER1_ABS7: loss {profit:.2f}% <= {ABS_STOP_LOSS_PCT}%"
 
+    # ── TIER 1.5: 50일선 이탈 + 손실 (보수적 손실차단) ─────────
+    # 오닐 '기관 방어선(50일선)' 이탈을 손실 포지션에 한해 적용 → 승자는 절대 안 팔림.
+    # ma_50 이 주입되지 않으면(0) 비활성(dormant) — 라이브 배선 전까지 동작 변화 없음.
+    if inp.ma_50 and inp.ma_50 > 0 and profit < 0 and cp <= inp.ma_50 * (1.0 - STOP_WICK_BUFFER):
+        return True, f"TIER1.5_MA50: below 50MA({inp.ma_50:.4f}) while losing ({profit:.2f}%)"
+
     # ── TIER 2: 트레일링 스톱 (승자 보호, +5% 활성화 이후만) ───
     activated = peak >= bp * (1.0 + TRAIL_ACTIVATION_PCT / 100.0)
     if activated:
@@ -125,7 +132,8 @@ def evaluate_oneil_sell(inp: SellInputs) -> Tuple[bool, str]:
 
 
 # ── 호출측 어댑터 (stock_data dict → SellInputs) ────────────────
-def from_stock_data(stock_data: dict, live_regime: Optional[str] = None) -> SellInputs:
+def from_stock_data(stock_data: dict, live_regime: Optional[str] = None,
+                    ma_50: Optional[float] = None) -> SellInputs:
     """KR/US 의 stock_data dict 에서 SellInputs 추출.
     scenario 는 JSON 문자열 또는 dict 둘 다 허용.
 
@@ -163,6 +171,7 @@ def from_stock_data(stock_data: dict, live_regime: Optional[str] = None) -> Sell
         market_condition=str(regime or ""),
         primary_support=_f(key_levels.get("primary_support", 0)),
         regime_is_live=is_live,
+        ma_50=_f(ma_50),
     )
 
 

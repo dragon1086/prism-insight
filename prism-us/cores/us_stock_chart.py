@@ -203,10 +203,11 @@ def create_us_price_chart(
             df.index = pd.to_datetime(df.index)
         df = df.sort_index()
 
-        # Calculate moving averages
+        # Calculate moving averages (US O'Neil standard: 10/20/50/200)
+        df['MA10'] = df['Close'].rolling(window=10).mean()
         df['MA20'] = df['Close'].rolling(window=20).mean()
-        df['MA60'] = df['Close'].rolling(window=60).mean()
-        df['MA120'] = df['Close'].rolling(window=120).mean()
+        df['MA50'] = df['Close'].rolling(window=50).mean()
+        df['MA200'] = df['Close'].rolling(window=200).mean()
 
         # Create OHLCV DataFrame
         ohlc_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
@@ -225,19 +226,24 @@ def create_us_price_chart(
             gridcolor='#e0e0e0'
         )
 
-        # Moving average plots
+        # Moving average plots (10/20/50/200)
+        # MA200 requires >=200 rows; guard so a mostly-NaN series doesn't crash the plot
         additional_plots = []
+        if not df['MA10'].isna().all():
+            additional_plots.append(
+                mpf.make_addplot(df['MA10'], color='#9933cc', width=1)
+            )
         if not df['MA20'].isna().all():
             additional_plots.append(
                 mpf.make_addplot(df['MA20'], color='#ff9500', width=1)
             )
-        if not df['MA60'].isna().all():
+        if not df['MA50'].isna().all():
             additional_plots.append(
-                mpf.make_addplot(df['MA60'], color='#0066cc', width=1.5)
+                mpf.make_addplot(df['MA50'], color='#0066cc', width=1.5)
             )
-        if not df['MA120'].isna().all():
+        if df['MA200'].notna().any():
             additional_plots.append(
-                mpf.make_addplot(df['MA120'], color='#cc3300', width=1.5, linestyle='--')
+                mpf.make_addplot(df['MA200'], color='#cc3300', width=1.5, linestyle='--')
             )
 
         # Create chart
@@ -302,12 +308,14 @@ def create_us_price_chart(
         # Legend
         if additional_plots:
             legend_labels = []
+            if not df['MA10'].isna().all():
+                legend_labels.append('MA10')
             if not df['MA20'].isna().all():
                 legend_labels.append('MA20')
-            if not df['MA60'].isna().all():
-                legend_labels.append('MA60')
-            if not df['MA120'].isna().all():
-                legend_labels.append('MA120')
+            if not df['MA50'].isna().all():
+                legend_labels.append('MA50')
+            if df['MA200'].notna().any():
+                legend_labels.append('MA200')
             if legend_labels:
                 ax1.legend(legend_labels, loc='upper left', fontsize=8)
 
@@ -542,10 +550,19 @@ def create_us_technical_indicators_chart(
         ax1.plot(df.index, df['Close'], color=PRIMARY_COLORS[0], linewidth=1.5, label='Close Price')
         ax1.fill_between(df.index, df['Close'], alpha=0.1, color=PRIMARY_COLORS[0])
 
-        # Add moving averages
+        # Add moving averages (US standard: 10/20/50/200)
+        if len(df) >= 10:
+            ma10 = df['Close'].rolling(window=10).mean()
+            ax1.plot(df.index, ma10, color='#9933cc', linewidth=1, linestyle='--', label='MA10', alpha=0.7)
         if len(df) >= 20:
             ma20 = df['Close'].rolling(window=20).mean()
             ax1.plot(df.index, ma20, color='#ff9500', linewidth=1, linestyle='--', label='MA20', alpha=0.7)
+        if len(df) >= 50:
+            ma50 = df['Close'].rolling(window=50).mean()
+            ax1.plot(df.index, ma50, color='#0066cc', linewidth=1, linestyle='--', label='MA50', alpha=0.7)
+        if len(df) >= 200:
+            ma200 = df['Close'].rolling(window=200).mean()
+            ax1.plot(df.index, ma200, color='#cc3300', linewidth=1, linestyle='--', label='MA200', alpha=0.7)
 
         ax1.set_ylabel('Price ($)', fontsize=10)
         ax1.set_title('Price', fontsize=11, loc='left')

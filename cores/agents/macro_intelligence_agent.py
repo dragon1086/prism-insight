@@ -40,9 +40,16 @@ The following regime was computed programmatically from KOSPI price data:
 - **KOSPI 2-week change**: {idx.get('kospi_2w_change_pct', 'N/A')}%
 - **KOSPI current**: {idx.get('kospi_current', 'N/A')}
 - **KOSPI 20d MA**: {idx.get('kospi_20d_ma', 'N/A')}
+- **KOSPI 60d MA**: {idx.get('kospi_60d_ma', 'N/A')}
+- **KOSPI vs 60d MA**: {idx.get('kospi_vs_60d_ma', 'N/A')}
+- **KOSPI 120d MA**: {idx.get('kospi_120d_ma', 'N/A')}
+- **KOSPI vs 120d MA**: {idx.get('kospi_vs_120d_ma', 'N/A')}
+- **KOSPI 60/120 MA cross**: {idx.get('kospi_ma_60_120_cross', 'N/A')} (golden = bull trend, dead = bear trend)
 - **KOSDAQ 20d trend**: {idx.get('kosdaq_20d_trend', 'N/A')}
 
 You MUST use these pre-computed values for market_regime, regime_confidence, simple_ma_regime, and index_summary.
+Treat the KOSPI 60/120 MA cross (golden/dead) together with the index position vs its 60-day and 120-day MAs
+as the PRIMARY bull/bear trend signal, and report it explicitly in your analysis.
 You may adjust regime_confidence (±0.1) based on perplexity analysis, but DO NOT change market_regime unless
 perplexity data provides overwhelming contradictory evidence.
 """
