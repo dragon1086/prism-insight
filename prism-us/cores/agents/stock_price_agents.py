@@ -109,7 +109,7 @@ def create_us_price_volume_analysis_agent(
 ## Analysis Elements
 1. Stock Price Trend and Pattern Analysis (uptrend/downtrend/sideways, chart patterns)
 2. Moving Average Analysis (short/medium/long-term moving average golden cross/dead cross)
-   - 20-day, 50-day, 200-day moving averages (US market standard)
+   - 10-day, 20-day, 50-day, 200-day moving averages (US O'Neil standard)
 3. Identification and explanation of major support and resistance levels
 4. Trading Volume Analysis (relationship between volume change patterns and price movements)
 5. **Technical Indicators - MUST CALCULATE from OHLCV data:**

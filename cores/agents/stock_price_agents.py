@@ -24,7 +24,8 @@ def create_price_volume_analysis_agent(company_name, company_code, reference_dat
 
                         ## Analysis Elements
                         1. Stock Price Trend and Pattern Analysis (uptrend/downtrend/sideways, chart patterns)
-                        2. Moving Average Analysis (short/medium/long-term moving average golden cross/dead cross)
+                        2. Moving Average Analysis (golden cross/dead cross)
+                           - 5-day, 20-day, 60-day, 120-day moving averages (KR market standard)
                         3. Identification and explanation of major support and resistance levels
                         4. Trading Volume Analysis (relationship between volume change patterns and price movements)
                         5. **Technical Indicators - MUST CALCULATE from OHLCV data:**
@@ -84,7 +85,8 @@ def create_price_volume_analysis_agent(company_name, company_code, reference_dat
 
                         ## 분석 요소
                         1. 주가 추세 및 패턴 분석 (상승/하락/횡보, 차트 패턴)
-                        2. 이동평균선 분석 (단기/중기/장기 이평선 골든크로스/데드크로스)
+                        2. 이동평균선 분석 (골든크로스/데드크로스)
+                           - 5일/20일/60일/120일 이동평균 (KR 시장 표준)
                         3. 주요 지지선과 저항선 식별 및 설명
                         4. 거래량 분석 (거래량 증감 패턴과 주가 움직임 관계)
                         5. **기술적 지표 - OHLCV 데이터에서 반드시 직접 계산:**

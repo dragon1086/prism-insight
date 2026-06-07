@@ -905,7 +905,7 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     # 1. S&P 500
     sp500_df = None
     try:
-        sp500_df = client.get_ohlcv("^GSPC", period="3mo", interval="1d")
+        sp500_df = client.get_ohlcv("^GSPC", period="1y", interval="1d")
         if sp500_df is not None and not sp500_df.empty:
             sp500_20d = sp500_df.tail(20)
             sp500_20d.columns = [col.title().replace("_", " ") for col in sp500_20d.columns]
@@ -917,7 +917,7 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     # 2. NASDAQ
     nasdaq_df = None
     try:
-        nasdaq_df = client.get_ohlcv("^IXIC", period="3mo", interval="1d")
+        nasdaq_df = client.get_ohlcv("^IXIC", period="1y", interval="1d")
         if nasdaq_df is not None and not nasdaq_df.empty:
             nasdaq_20d = nasdaq_df.tail(20)
             nasdaq_20d.columns = [col.title().replace("_", " ") for col in nasdaq_20d.columns]
@@ -929,7 +929,7 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     # 3. VIX
     vix_df = None
     try:
-        vix_df = client.get_ohlcv("^VIX", period="3mo", interval="1d")
+        vix_df = client.get_ohlcv("^VIX", period="1y", interval="1d")
         if vix_df is not None and not vix_df.empty:
             vix_20d = vix_df.tail(20)
             vix_20d.columns = [col.title().replace("_", " ") for col in vix_20d.columns]
@@ -983,9 +983,19 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
         price_4w_ago = float(df_20d[close_col].iloc[0])
     change_4w_pct = ((current_price - price_4w_ago) / price_4w_ago) * 100
 
-    # MA position
+    # MA position (short-term, 20-day)
     ma_diff_pct = ((current_price - ma_20d) / ma_20d) * 100
     above_ma = current_price > ma_20d
+
+    # Trend MAs (50/200) from FULL history — needs ~1y fetch.
+    # O'Neil/Minervini trend template: 200MA = primary bull/bear divider, 50MA = intermediate.
+    closes_full = sp500_df[close_col].dropna()
+    ma_50 = float(closes_full.tail(50).mean()) if len(closes_full) >= 50 else None
+    ma_200 = float(closes_full.tail(200).mean()) if len(closes_full) >= 200 else None
+    above_50 = (current_price > ma_50) if ma_50 is not None else None
+    above_200 = (current_price > ma_200) if ma_200 is not None else None
+    # golden = 50MA above 200MA (bullish alignment); False = dead cross
+    golden = (ma_50 > ma_200) if (ma_50 is not None and ma_200 is not None) else None
 
     # VIX level
     vix_current = None
@@ -1045,22 +1055,51 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
         except Exception:
             pass
 
-    # Market regime classification (US uses 4-week / ±3%/±5% thresholds + VIX)
-    if above_ma and change_4w_pct > 3 and vix_level in ("low", "moderate"):
-        regime = "strong_bull"
-        confidence = 0.85
-    elif above_ma and change_4w_pct >= 0:
-        regime = "moderate_bull"
-        confidence = 0.75
-    elif abs(ma_diff_pct) <= 1 and abs(change_4w_pct) < 2:
-        regime = "sideways"
-        confidence = 0.65
-    elif not above_ma and change_4w_pct < -5 and vix_level in ("elevated", "high"):
-        regime = "strong_bear"
-        confidence = 0.85
+    # Market regime classification.
+    # Trend-template (200MA primary divider) when 200MA available; else legacy 20MA logic.
+    # Output strings unchanged (6 regimes) so downstream buy-matrix/prompts stay compatible.
+    if ma_200 is not None:
+        if above_200:
+            # Primary uptrend (price above 200MA)
+            if above_50 and golden and change_4w_pct > 3 and vix_level in ("low", "moderate"):
+                regime = "strong_bull"
+                confidence = 0.90
+            elif above_50 or change_4w_pct >= 0:
+                regime = "moderate_bull"
+                confidence = 0.78
+            else:
+                # above primary trend but short-term pullback below 50MA
+                regime = "sideways"
+                confidence = 0.62
+        else:
+            # Primary downtrend (price below 200MA) → never 'bull'. Bear-rally protection:
+            # a sharp 4w bounce here is classified cautious (sideways), not strong_bull.
+            if golden is False and change_4w_pct < -5 and vix_level in ("elevated", "high"):
+                regime = "strong_bear"
+                confidence = 0.90
+            elif change_4w_pct < 0:
+                regime = "moderate_bear"
+                confidence = 0.78
+            else:
+                regime = "sideways"
+                confidence = 0.55
     else:
-        regime = "moderate_bear"
-        confidence = 0.75
+        # Legacy 20MA logic (insufficient history for 200MA) — backward compatible
+        if above_ma and change_4w_pct > 3 and vix_level in ("low", "moderate"):
+            regime = "strong_bull"
+            confidence = 0.85
+        elif above_ma and change_4w_pct >= 0:
+            regime = "moderate_bull"
+            confidence = 0.75
+        elif abs(ma_diff_pct) <= 1 and abs(change_4w_pct) < 2:
+            regime = "sideways"
+            confidence = 0.65
+        elif not above_ma and change_4w_pct < -5 and vix_level in ("elevated", "high"):
+            regime = "strong_bear"
+            confidence = 0.85
+        else:
+            regime = "moderate_bear"
+            confidence = 0.75
 
     index_summary = {
         "sp500_20d_trend": sp500_trend,
@@ -1070,6 +1109,15 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
         "sp500_20d_ma": round(ma_20d, 2),
         "nasdaq_20d_trend": nasdaq_trend,
     }
+    # Trend MA fields (additive — present only when enough history)
+    if ma_50 is not None:
+        index_summary["sp500_50d_ma"] = round(ma_50, 2)
+        index_summary["sp500_vs_50d_ma"] = "above" if above_50 else "below"
+    if ma_200 is not None:
+        index_summary["sp500_200d_ma"] = round(ma_200, 2)
+        index_summary["sp500_vs_200d_ma"] = "above" if above_200 else "below"
+    if golden is not None:
+        index_summary["sp500_ma_50_200_cross"] = "golden" if golden else "dead"
     if vix_current is not None:
         index_summary["vix_current"] = round(vix_current, 2)
         index_summary["vix_level"] = vix_level

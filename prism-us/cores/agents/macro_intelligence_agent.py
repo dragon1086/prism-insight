@@ -40,11 +40,18 @@ The following regime was computed programmatically from S&P 500 / VIX price data
 - **S&P 500 4-week change**: {idx.get('sp500_4w_change_pct', 'N/A')}%
 - **S&P 500 current**: {idx.get('sp500_current', 'N/A')}
 - **S&P 500 20d MA**: {idx.get('sp500_20d_ma', 'N/A')}
+- **S&P 500 50d MA**: {idx.get('sp500_50d_ma', 'N/A')}
+- **S&P 500 vs 50d MA**: {idx.get('sp500_vs_50d_ma', 'N/A')}
+- **S&P 500 200d MA**: {idx.get('sp500_200d_ma', 'N/A')}
+- **S&P 500 vs 200d MA**: {idx.get('sp500_vs_200d_ma', 'N/A')}
+- **S&P 500 50/200 MA cross**: {idx.get('sp500_ma_50_200_cross', 'N/A')} (golden = bull trend, dead = bear trend)
 - **NASDAQ 20d trend**: {idx.get('nasdaq_20d_trend', 'N/A')}
 - **VIX current**: {idx.get('vix_current', 'N/A')}
 - **VIX level**: {idx.get('vix_level', 'N/A')}
 
 You MUST use these pre-computed values for market_regime, regime_confidence, simple_ma_regime, and index_summary.
+Treat the S&P 500 50/200 MA cross (golden/dead) together with the index position vs its 50-day and 200-day MAs
+as the PRIMARY bull/bear trend signal, and report it explicitly in your analysis.
 You may adjust regime_confidence (±0.1) based on perplexity analysis, but DO NOT change market_regime unless
 perplexity data provides overwhelming contradictory evidence.
 """
