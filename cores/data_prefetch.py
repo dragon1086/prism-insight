@@ -136,6 +136,39 @@ def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str) -> s
         return ""
 
 
+def _log_regime_snapshot(market: str, computed: dict) -> None:
+    """Append a regime snapshot to logs/regime_history.jsonl for distribution analysis.
+
+    사이클당 1회 기록 → 운영에서 regime 분포/휩쏘 관측용. 실패해도 무해(파이프라인 영향 0).
+    """
+    try:
+        if not computed:
+            return
+        import json as _json
+        import os as _os
+        from datetime import datetime as _dt
+        rec = {
+            "ts": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "market": market,
+            "regime": computed.get("market_regime"),
+            "confidence": computed.get("regime_confidence"),
+        }
+        s = computed.get("index_summary") or {}
+        for k in ("sp500_vs_50d_ma", "sp500_vs_200d_ma", "sp500_ma_50_200_cross",
+                  "sp500_4w_change_pct", "vix_level",
+                  "kospi_vs_60d_ma", "kospi_vs_120d_ma", "kospi_ma_60_120_cross",
+                  "kospi_2w_change_pct"):
+            if k in s:
+                rec[k] = s[k]
+        log_dir = _os.path.join(_os.getcwd(), "logs")
+        _os.makedirs(log_dir, exist_ok=True)
+        with open(_os.path.join(log_dir, "regime_history.jsonl"), "a") as f:
+            f.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+        logger.info(f"[regime] {market}: {rec['regime']} (conf {rec['confidence']})")
+    except Exception as e:
+        logger.warning(f"[regime] snapshot log failed: {e}")
+
+
 def prefetch_macro_intelligence_data(reference_date: str) -> dict:
     """Prefetch data for macro intelligence analysis.
 
@@ -200,6 +233,7 @@ def prefetch_macro_intelligence_data(reference_date: str) -> dict:
         kosdaq_raw = server.get_index_ohlcv(regime_start_date, reference_date, "2001")
         if kospi_raw:
             result["computed_regime"] = _compute_kr_regime(kospi_raw, kosdaq_raw)
+            _log_regime_snapshot("KR", result["computed_regime"])
     except Exception as e:
         logger.error(f"Error computing regime: {e}")
 
