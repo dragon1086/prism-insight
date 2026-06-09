@@ -482,7 +482,7 @@ class USStockTrackingAgent:
         self,
         db_path: str = "stock_tracking_db.sqlite",
         telegram_token: str = None,
-        enable_journal: bool = False
+        enable_journal: bool = None
     ):
         """
         Initialize US Stock Tracking Agent.
@@ -490,7 +490,9 @@ class USStockTrackingAgent:
         Args:
             db_path: SQLite database file path
             telegram_token: Telegram bot token
-            enable_journal: Whether to enable trading journal feature
+            enable_journal: Enable trading journal feature.
+                Priority: parameter > ENABLE_TRADING_JOURNAL env > default(False).
+                (KR 에이전트와 동일 토글 — 기존엔 US가 env 무시하고 False 하드코딩이라 일지 미동작)
         """
         self.max_slots = self.MAX_SLOTS
         self.message_queue = []
@@ -502,7 +504,13 @@ class USStockTrackingAgent:
         self.conn = None
         self.cursor = None
         self.language = "en"  # Default to English for US
-        self.enable_journal = enable_journal
+        # Trading journal feature flag — Priority: parameter > env > default(False).
+        # KR 에이전트와 동일하게 ENABLE_TRADING_JOURNAL env 를 존중한다.
+        if enable_journal is not None:
+            self.enable_journal = enable_journal
+        else:
+            env_value = os.environ.get("ENABLE_TRADING_JOURNAL", "false").lower()
+            self.enable_journal = env_value in ("true", "1", "yes")
         self.account_configs: list[dict[str, Any]] = []
         self.active_account: dict[str, Any] | None = None
 
