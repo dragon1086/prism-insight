@@ -309,11 +309,11 @@ async def generate_weekly_report(db_path: str = DB_PATH) -> str:
         query = f"""
             SELECT COUNT(*)
             FROM trading_principles
-            WHERE is_active=1 AND created_at >= '{week_start_str}'
+            WHERE is_active=1 AND market='KR' AND created_at >= '{week_start_str}'
         """
         kr_new_principles = _safe_query(cursor, query, default=(0,))[0] or 0
 
-        query = "SELECT COUNT(*) FROM trading_principles WHERE is_active=1"
+        query = "SELECT COUNT(*) FROM trading_principles WHERE is_active=1 AND market='KR'"
         kr_total_principles = _safe_query(cursor, query, default=(0,))[0] or 0
 
     except sqlite3.Error as e:
@@ -324,6 +324,7 @@ async def generate_weekly_report(db_path: str = DB_PATH) -> str:
     us_missed_count, us_missed_best = 0, None
     us_best_trigger_name, us_best_trigger_rate = "데이터 없음", 0
     us_new_principles = 0
+    us_total_principles = 0
 
     try:
         query = """
@@ -366,6 +367,15 @@ async def generate_weekly_report(db_path: str = DB_PATH) -> str:
             completed, wins = result[1], result[2]
             us_best_trigger_rate = (wins / completed * 100) if completed > 0 else 0
 
+        # US 신규/누적 매매 원칙 (그동안 하드코딩 0 → 실제 집계). market='US' 분리.
+        query = f"""
+            SELECT COUNT(*) FROM trading_principles
+            WHERE is_active=1 AND market='US' AND created_at >= '{week_start_str}'
+        """
+        us_new_principles = _safe_query(cursor, query, default=(0,))[0] or 0
+        query = "SELECT COUNT(*) FROM trading_principles WHERE is_active=1 AND market='US'"
+        us_total_principles = _safe_query(cursor, query, default=(0,))[0] or 0
+
     except sqlite3.Error as e:
         logger.warning(f"US market query error: {e}")
 
@@ -404,7 +414,7 @@ async def generate_weekly_report(db_path: str = DB_PATH) -> str:
     us_avoided_str = _avoided_detail(us_avoided_count, us_avoided_avg)
     us_missed_str = _missed_detail(us_missed_count, us_missed_best)
     us_trigger_str = f"{us_best_trigger_name} (승률 {us_best_trigger_rate:.0f}%)" if us_best_trigger_rate > 0 else "데이터 축적 중"
-    us_principles_str = f"{us_new_principles}개"
+    us_principles_str = f"{us_new_principles}개 추가 (총 {us_total_principles}개)"
 
     # Actionable insights
     insights = []
