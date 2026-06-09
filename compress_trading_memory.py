@@ -239,6 +239,15 @@ async def run_compression(
                 }
             }
 
+        # 누적 코퍼스 기반 직관 재추출(#intuition-stall): 압축 skip 여부와 무관하게 항상 실행.
+        # (압축은 신규 항목이 없으면 skip 되지만, 직관은 최근 누적 저널에서 매 실행 갱신돼야 함)
+        try:
+            refresh = await agent.compression_manager.refresh_intuitions()
+            logger.info(f"💡 Intuitions Refreshed (corpus): generated={refresh.get('intuitions_generated', 0)} "
+                        f"corpus={refresh.get('corpus', 0)} extracted={refresh.get('extracted', 0)}")
+        except Exception as _re:
+            logger.warning(f"Intuition refresh skipped: {_re}")
+
         # Check minimum entries requirement
         effective_min = 1 if force else min_entries
         if layer1_count < effective_min and layer2_count < effective_min:
@@ -266,15 +275,6 @@ async def run_compression(
         logger.info(f"  Layer 1 → 2: {results.get('layer1_to_layer2', {}).get('compressed', 0)} entries compressed")
         logger.info(f"  Layer 2 → 3: {results.get('layer2_to_layer3', {}).get('compressed', 0)} entries compressed")
         logger.info(f"  Intuitions Generated: {results.get('intuitions_generated', 0)}")
-
-        # 누적 코퍼스 기반 직관 재추출(#intuition-stall): 압축 배치가 소량이라 직관이
-        # 2026-02 이후 0건이던 문제 보완. 압축과 별개·격리(실패해도 압축 영향 없음).
-        try:
-            refresh = await agent.compression_manager.refresh_intuitions()
-            logger.info(f"  Intuitions Refreshed (corpus): generated={refresh.get('intuitions_generated', 0)} "
-                        f"corpus={refresh.get('corpus', 0)} extracted={refresh.get('extracted', 0)}")
-        except Exception as _re:
-            logger.warning(f"Intuition refresh skipped: {_re}")
 
         logger.info("\n📊 Updated Status:")
         logger.info(f"  Layer 1 (Detailed): {stats_after.get('entries_by_layer', {}).get('layer1_detailed', 0)}")
