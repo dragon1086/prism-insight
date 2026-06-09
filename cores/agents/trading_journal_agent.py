@@ -14,7 +14,7 @@ Key Features:
 from mcp_agent.agents.agent import Agent
 
 
-def create_trading_journal_agent(language: str = "ko"):
+def create_trading_journal_agent(language: str = "ko", market: str = "KR"):
     """
     Create trading journal retrospective agent.
 
@@ -218,10 +218,18 @@ def create_trading_journal_agent(language: str = "ko"):
            - **low**: 종목 특화 관찰
         """
 
+    # US 시장은 kospi_kosdaq 대신 yahoo_finance 데이터 서버를 사용한다.
+    # (그동안 US 저널이 market 인자 미지원으로 TypeError 나며 미동작했던 버그 수정)
+    if market == "US":
+        instruction = instruction.replace("kospi_kosdaq", "yahoo_finance")
+        data_servers = ["yahoo_finance", "sqlite", "time"]
+    else:
+        data_servers = ["kospi_kosdaq", "sqlite", "time"]
+
     return Agent(
         name="trading_journal_agent",
         instruction=instruction,
-        server_names=["kospi_kosdaq", "sqlite", "time"]
+        server_names=data_servers
     )
 
 
