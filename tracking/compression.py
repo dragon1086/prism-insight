@@ -272,6 +272,8 @@ class CompressionManager:
                 )
             data = self._parse_response(response)
             new_intuitions = data.get('new_intuitions', [])
+            logger.info(f"[refresh_intuitions] parsed keys={list(data.keys())} "
+                        f"new_intuitions={len(new_intuitions)} resp_head={response[:200]!r}")
             results["extracted"] = len(new_intuitions)
             source_ids = [e['id'] for e in entries]
             for intuition in new_intuitions:
@@ -439,7 +441,11 @@ Extract intuitions from these compressed records.
 4. Categorize by sector/market/pattern
 5. Include both failure and success patterns
 
-Please respond in JSON.
+## Output — respond with ONLY this JSON (exact key "new_intuitions"):
+{{"new_intuitions": [
+  {{"category": "pattern", "subcategory": "", "condition": "조건 요약(예: 변동성 높은 횡보장 단기 진입)", "insight": "행동 원칙(예: 추세 정렬·강세 regime 확인 전 추격 금지)", "confidence": 0.6, "supporting_trades": 2, "success_rate": 0.5}}
+]}}
+- 반복 테마가 보이면 최소 1~3개의 가장 뚜렷한 직관을 반드시 포함하라. 없으면 빈 배열.
 """
         else:
             return f"""
@@ -455,7 +461,11 @@ Extract intuitions from these compressed records.
 4. Categorize by sector/market/pattern
 5. Include failure and success patterns
 
-Respond in JSON.
+## Output — respond with ONLY this JSON (exact key "new_intuitions"):
+{{"new_intuitions": [
+  {{"category": "pattern", "subcategory": "", "condition": "e.g. short-term entry in a volatile chop", "insight": "e.g. require trend alignment + bullish regime before re-entry", "confidence": 0.6, "supporting_trades": 2, "success_rate": 0.5}}
+]}}
+- If a repeated theme is visible, include at least the 1-3 clearest intuitions. Otherwise return an empty array.
 """
 
     def _parse_response(self, response: str) -> Dict[str, Any]:
