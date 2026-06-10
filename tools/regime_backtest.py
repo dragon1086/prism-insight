@@ -139,13 +139,13 @@ def report(market, dates, new_lab, leg_lab, dist=None):
         print(f"  {y}: bull {b}% | sideways {s}% | bear {br}%")
     # 분산일 카운트 재생 (O'Neil): 천장/급락 직전 급증해야 정상
     if dist and any(c is not None for c in dist):
-        thr = {"US": 6, "KR": 6}.get(market, 6)
-        print(f"Distribution-day count (window=25, demote≥{thr}) — yearly max | avg:")
+        ref = 6  # 참고선(정보용): O'Neil/IBD 천장 경고대(5~6). 강등 트리거 아님 — LLM 판단용 정보.
+        print(f"Distribution-day count (window=25, informational ref≥{ref}) — yearly max | avg:")
         for y, mx, av in _dist_yearly_max(dates, dist):
-            flag = "  <== tops/distribution" if mx >= thr else ""
+            flag = "  <== elevated (tops/distribution)" if mx >= ref else ""
             print(f"  {y}: max {mx} | avg {av}{flag}")
-        trig = sum(1 for c in dist if c is not None and c >= thr)
-        print(f"Days at/over demote threshold: {trig} / {sum(1 for c in dist if c is not None)}")
+        hi = sum(1 for c in dist if c is not None and c >= ref)
+        print(f"Days at/over ref {ref}: {hi} / {sum(1 for c in dist if c is not None)} (info only)")
     # spot checks
     spots = {"US": ["2020-03-23", "2022-06-16", "2024-02-15", "2025-04-07"],
              "KR": ["2020-03-19", "2022-09-30", "2024-07-11", "2025-04-09"]}.get(market, [])

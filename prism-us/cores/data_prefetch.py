@@ -982,24 +982,15 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     return result
 
 
-# --- O'Neil Distribution Day (deterministic) -------------------------------
-# 1단계 강등 사다리(강세→약세). strong_bear는 클램프(더 강등 없음).
-_REGIME_DEMOTE = {
-    "strong_bull": "moderate_bull",
-    "moderate_bull": "sideways",
-    "sideways": "moderate_bear",
-    "moderate_bear": "strong_bear",
-    "strong_bear": "strong_bear",
-}
+# --- O'Neil Distribution Day (deterministic, 정보 주입 전용) ----------------
+# 설계 결정(tasks/distribution_day_design.md): 분산일은 결정론적으로 '계산'해 index_summary에
+# 정보로만 주입하고, regime의 기계적 강등은 하지 않는다. (강등은 매수+매도 양쪽을 뒤집어
+# US melt-up에서 조기청산 손실을 유발했고, 시장별 임계는 과최적화 위험이 컸다.) 분산일을
+# 어떻게 가중할지(신규매수 보수화 등)는 프롬프트에서 LLM이 판단한다 — O'Neil 본래의 재량적 용법.
 # 분산일 파라미터 (O'Neil/IBD). drop=-0.2% 종가, 거래량 전일 초과, 25거래일 윈도우, +5% 회복 만료.
 DISTRIBUTION_WINDOW = 25
 DISTRIBUTION_DROP_PCT = 0.2
 DISTRIBUTION_RECOVERY_PCT = 5.0
-# ≥7 분산일 → regime 1단계 강등. US는 KR(=6)보다 높게 설정.
-# 근거(장기 위험기반 백테스트, S&P500 1990~2026, 닷컴·GFC 포함): S&P는 장기 강우상향이라 방어가
-# 복리손실로 과금됨 → 전 구간(1990/2000/2007)에서 T=7이 T=6보다 우월. T=7(부분축소 효과)만이
-# buy&hold Sharpe(0.55)를 상회(0.57)하고 MaxDD를 -56.8%→-51.3%로 완화. T=5/6 강한 방어는 역효과.
-US_DISTRIBUTION_THRESHOLD = 7
 
 
 def _count_distribution_days(df, close_col, volume_col=None,
@@ -1062,23 +1053,14 @@ def _count_distribution_days(df, close_col, volume_col=None,
         return None
 
 
-def _apply_distribution_demotion(regime, confidence, index_summary, df, close_col,
-                                 threshold: int) -> tuple:
-    """분산일 카운트를 계산해 index_summary에 주입하고, 임계 초과 시 regime 1단계 강등."""
+def _inject_distribution_days(index_summary, df, close_col) -> None:
+    """분산일 카운트를 결정론적으로 계산해 index_summary에 정보로 주입(강등 없음).
+
+    거래량 결측/불가 시 distribution_days=None. regime/confidence는 변경하지 않는다.
+    """
     dist = _count_distribution_days(df, close_col)
     index_summary["distribution_window"] = DISTRIBUTION_WINDOW
-    index_summary["distribution_threshold"] = threshold
-    if dist is None:
-        index_summary["distribution_days"] = None
-        return regime, confidence
-    index_summary["distribution_days"] = dist["count"]
-    if dist["count"] >= threshold and regime in _REGIME_DEMOTE:
-        demoted = _REGIME_DEMOTE[regime]
-        if demoted != regime:
-            index_summary["distribution_demoted_from"] = regime
-            regime = demoted
-            confidence = min(confidence, 0.70)
-    return regime, confidence
+    index_summary["distribution_days"] = None if dist is None else dist["count"]
 
 
 def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, vix_df: pd.DataFrame = None) -> dict:
@@ -1255,10 +1237,8 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
         index_summary["vix_current"] = round(vix_current, 2)
         index_summary["vix_level"] = vix_level
 
-    # O'Neil 분산일 결정론 카운트 → 임계 초과 시 regime 1단계 강등 (S&P 500 close+volume 사용)
-    regime, confidence = _apply_distribution_demotion(
-        regime, confidence, index_summary, sp500_df, close_col, US_DISTRIBUTION_THRESHOLD
-    )
+    # O'Neil 분산일 결정론 카운트를 index_summary에 정보로 주입(강등 없음 — LLM이 프롬프트에서 판단)
+    _inject_distribution_days(index_summary, sp500_df, close_col)
 
     return {
         "market_regime": regime,

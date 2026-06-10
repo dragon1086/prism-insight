@@ -124,11 +124,14 @@ B) 없으면 S&P 500 (^GSPC) + VIX 최근 20일 데이터(yahoo_finance-get_hist
 
 하나라도 미달 → 일반 `strong_bull` 행으로 fallback (R/R 1.0, 손절 -7%).
 
-**Distribution Day Kill Switch (parabolic 활성화를 무력화):**
-분포일(거래량 동반 -0.2%↓ 마감)은 이제 `index_summary.distribution_days`로 **결정론적으로 자동 집계**됩니다
-(최근 25거래일 윈도우, +5% 회복 시 만료). **`index_summary`의 regime은 distribution_days ≥ 7일 때 이미 1단계 강등이 반영된 값**이므로 — 이 경우 `index_summary.distribution_demoted_from`이 함께 제공됩니다 — 같은 사유로 **다시 강등하지 마십시오(이중 강등 금지)**.
-- distribution_days가 주입되지 않은 경우(거래량 결측, null)에만, 보고서/분석에서 최근 4주 내 분포일 ≥ 7건이 확인되면 parabolic 활성화를 무력화하고 regime을 1단계 보수화하십시오 (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways).
-- 강등(자동/수동 불문) 사실과 distribution_days 값을 `market_condition` 필드에 명시하십시오.
+**Distribution Day Kill Switch (신규매수 방어 전용):**
+분포일(거래량 동반 -0.2%↓ 마감)은 `index_summary.distribution_days`에 **결정론적으로 집계**됩니다
+(최근 25거래일 윈도우, +5% 회복 시 만료; 거래량 결측이면 null → 보고서 최근 4주 내 분포일로 판단).
+이 값이 높을수록 기관 분배가 진행 중이라는 천장 경고입니다.
+- 값이 높으면(통상 5~6건 이상) **신규 매수에 한해** regime을 1단계 보수적으로 적용하십시오
+  (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways): 신규 진입·parabolic 사이징의 문턱만 높입니다.
+- **보유 종목의 매도·trailing 판단은 원래 regime을 그대로 사용**하며, 분산일로 조기 청산하지 않습니다.
+- distribution_days 값과 신규매수 보수화 여부를 `market_condition` 필드에 명시하십시오.
 
 **parabolic 포지션 운영** (parabolic 행이 활성화될 때):
 - 적극 매수 권장: max_portfolio_size를 보고서 기준값 그대로 사용하십시오. **슬롯 축소 금지**.
@@ -428,17 +431,17 @@ Apply the **parabolic** row ONLY when ALL of the following hold:
 
 If any condition fails → fall back to the standard `strong_bull` row (R/R floor 1.0, stop -7%).
 
-**Distribution Day Kill Switch (overrides parabolic activation):**
-Distribution days (institutional selling sessions with ≥ -0.2% close on rising volume) are now
+**Distribution Day Kill Switch (new-buy defense only):**
+Distribution days (institutional selling sessions with ≥ -0.2% close on rising volume) are
 counted **deterministically** in `index_summary.distribution_days` (rolling 25-session window,
-expiring on a +5% recovery). **The regime in `index_summary` is ALREADY demoted by one step when
-distribution_days ≥ 7** — in that case `index_summary.distribution_demoted_from` is also supplied —
-so do **NOT** demote again for the same reason (no double demotion).
-- ONLY when distribution_days is absent (null, e.g. missing volume) fall back to manual judgment:
-  if the report/analysis shows ≥ 7 distribution days within the last 4 weeks, override parabolic
-  activation and demote regime by ONE step (parabolic → strong_bull, strong_bull → moderate_bull,
-  moderate_bull → sideways).
-- State the demotion (automatic or manual) and the distribution_days value in the `market_condition` field.
+expiring on a +5% recovery; null when volume is missing → then judge from the report's last
+4 weeks). The HIGHER this count of distribution days, the more institutional selling is underway.
+- When it is elevated (≈5-6 or more), apply ONE step of caution to NEW BUYS ONLY
+  (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways): raise the bar
+  for new entries / parabolic sizing.
+- Do NOT change sell or trailing-stop decisions for existing holdings — those keep the original
+  regime. Distribution days never force an early exit.
+- State the distribution_days value and any new-buy caution in the `market_condition` field.
 
 **Parabolic position management** (apply when parabolic row is active):
 - Active buying recommended: use the report-derived max_portfolio_size as-is. Do NOT reduce slots.

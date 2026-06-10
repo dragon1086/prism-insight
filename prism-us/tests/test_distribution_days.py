@@ -1,8 +1,8 @@
 """US cores 분산일 헬퍼 스모크 테스트.
 
 알고리즘 자체는 KR(tests/test_distribution_days.py)에서 전수 검증한다.
-여기서는 prism-us/cores.data_prefetch 의 동일 구현이 import 되고 동작하는지,
-그리고 US 임계(US_DISTRIBUTION_THRESHOLD) 강등이 적용되는지만 확인한다.
+여기서는 prism-us/cores.data_prefetch 의 동일 구현이 import 되고, 카운트/정보 주입이
+동작하는지(regime 강등 없음)만 확인한다.
 """
 import os
 import sys
@@ -15,8 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cores.data_prefetch import (  # noqa: E402
     _count_distribution_days,
-    _apply_distribution_demotion,
-    US_DISTRIBUTION_THRESHOLD,
+    _inject_distribution_days,
+    DISTRIBUTION_WINDOW,
 )
 
 
@@ -30,15 +30,12 @@ def test_us_counts_distribution_days():
     assert r["count"] == 4
 
 
-def test_us_demotion_applies_at_threshold():
-    closes = [100] + [round(100 * (0.99 ** k), 4) for k in range(1, US_DISTRIBUTION_THRESHOLD + 1)]
-    vols = [10 + k for k in range(len(closes))]
+def test_us_inject_sets_count_no_demotion():
     summary = {}
-    regime, conf = _apply_distribution_demotion(
-        "strong_bull", 0.9, summary, _mk(closes, vols), "Close", US_DISTRIBUTION_THRESHOLD,
-    )
-    assert regime == "moderate_bull"
-    assert summary["distribution_days"] >= US_DISTRIBUTION_THRESHOLD
+    _inject_distribution_days(summary, _mk([100, 99, 98, 97, 96], [10, 11, 12, 13, 14]), "Close")
+    assert summary["distribution_days"] == 4
+    assert summary["distribution_window"] == DISTRIBUTION_WINDOW
+    assert "distribution_demoted_from" not in summary
 
 
 def test_us_missing_volume_none():
