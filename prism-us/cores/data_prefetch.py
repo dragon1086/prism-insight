@@ -995,10 +995,11 @@ _REGIME_DEMOTE = {
 DISTRIBUTION_WINDOW = 25
 DISTRIBUTION_DROP_PCT = 0.2
 DISTRIBUTION_RECOVERY_PCT = 5.0
-# ≥6 분산일 → regime 1단계 강등. 6은 O'Neil/IBD canonical(4~5주간 5~6개 = 천장/Market-in-Correction)
-# 이자, 백테스트로 검증된 판별 임계: thr=4는 강세장 포함 53~66%일 과발동, thr=6은 약세/천장 연도에
-# 집중(US 2022 39%) & 강세장 저발동(US 2024 19%). 시장별 동일.
-US_DISTRIBUTION_THRESHOLD = 6
+# ≥7 분산일 → regime 1단계 강등. US는 KR(=6)보다 높게 설정.
+# 근거(장기 위험기반 백테스트, S&P500 1990~2026, 닷컴·GFC 포함): S&P는 장기 강우상향이라 방어가
+# 복리손실로 과금됨 → 전 구간(1990/2000/2007)에서 T=7이 T=6보다 우월. T=7(부분축소 효과)만이
+# buy&hold Sharpe(0.55)를 상회(0.57)하고 MaxDD를 -56.8%→-51.3%로 완화. T=5/6 강한 방어는 역효과.
+US_DISTRIBUTION_THRESHOLD = 7
 
 
 def _count_distribution_days(df, close_col, volume_col=None,

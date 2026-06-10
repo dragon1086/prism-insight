@@ -256,9 +256,10 @@ _REGIME_DEMOTE = {
 DISTRIBUTION_WINDOW = 25
 DISTRIBUTION_DROP_PCT = 0.2
 DISTRIBUTION_RECOVERY_PCT = 5.0
-# ≥6 분산일 → regime 1단계 강등. 6은 O'Neil/IBD canonical(4~5주간 5~6개 = 천장/Market-in-Correction)
-# 이자, 백테스트로 검증된 판별 임계: thr=4는 강세장 포함 53~66%일 과발동, thr=6은 약세/천장 연도에
-# 집중(KR 2021-22 34~36%) & 강세장 저발동(KR 2025-26 0~4%). 시장별 동일.
+# ≥6 분산일 → regime 1단계 강등. KR 최적값(US는 7로 더 높음 — 시장 성격 차이).
+# 근거(장기 위험기반 백테스트, KOSPI 1996~2026, IMF·2008·2020·2022 포함): T=6 방어가
+# CAGR 8.67→9.84%, MaxDD -64.7→-51.8%, Sharpe 0.45→0.52 로 수익↑·낙폭↓·샤프↑ 강건한 개선.
+# KOSPI는 박스권/순환형이라 방어 신호의 상방손실이 작고 하락회피 이득이 커 미국보다 임계가 낮아도 유효.
 KR_DISTRIBUTION_THRESHOLD = 6
 
 
