@@ -151,8 +151,13 @@ class SignalPublisher:
                 signal_data["sector"] = scenario.get("sector", "")
                 signal_data["rationale"] = scenario.get("rationale", "")
                 signal_data["buy_score"] = scenario.get("buy_score", 0)
+                # market MUST propagate: BUY signals carry market via scenario.
+                # Without this it was dropped here, so the subscriber defaulted to
+                # "KR" and mis-routed US buys (APH/MU/UNH) to the domestic KIS API
+                # → "Current price: 0 KRW" → division by zero → buy never executed.
+                signal_data["market"] = scenario.get("market", "KR")
 
-            # Merge additional data
+            # Merge additional data (SELL carries market here; it overrides if set)
             if extra_data:
                 signal_data.update(extra_data)
 
@@ -165,7 +170,7 @@ class SignalPublisher:
                 {"data": json.dumps(signal_data, ensure_ascii=False)}
             )
 
-            market = (extra_data or {}).get("market", "KR")
+            market = signal_data.get("market", "KR")
             currency = "USD" if market == "US" else "KRW"
             logger.info(
                 f"Signal published: {signal_type} {company_name}({ticker}) "
