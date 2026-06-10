@@ -123,10 +123,16 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         If any condition fails → fall back to the standard `strong_bull` row (R/R floor 1.0, stop -7%).
 
         **Distribution Day Kill Switch (overrides parabolic activation):**
-        If the report or analysis shows ≥ 4 distribution days (institutional selling sessions
-        with ≥ -0.2% close on rising volume) within the last 4 weeks → demote regime by ONE step
-        (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways).
-        State the demotion in `market_condition` field.
+        Distribution days (institutional selling sessions with ≥ -0.2% close on rising volume) are now
+        counted **deterministically** in `index_summary.distribution_days` (rolling 25-session window,
+        expiring on a +5% recovery). **The regime in `index_summary` is ALREADY demoted by one step when
+        distribution_days ≥ 6** — in that case `index_summary.distribution_demoted_from` is also supplied —
+        so do **NOT** demote again for the same reason (no double demotion).
+        - ONLY when distribution_days is absent (null, e.g. missing volume) fall back to manual judgment:
+          if the report/analysis shows ≥ 6 distribution days within the last 4 weeks, override parabolic
+          activation and demote regime by ONE step (parabolic → strong_bull, strong_bull → moderate_bull,
+          moderate_bull → sideways).
+        - State the demotion (automatic or manual) and the distribution_days value in the `market_condition` field.
 
         **Parabolic position management** (apply when parabolic row is active):
         - Active buying recommended: use the report-derived max_portfolio_size as-is. Do NOT reduce slots.
@@ -423,9 +429,10 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         하나라도 미달 → 일반 `strong_bull` 행으로 fallback (R/R 1.0, 손절 -7%).
 
         **Distribution Day Kill Switch (parabolic 활성화를 무력화):**
-        보고서 또는 분석에서 최근 4주 내 분포일(거래량 동반 -0.2%↓ 마감) ≥ 4건이 확인되면
-        regime을 1단계 보수화하십시오 (parabolic → strong_bull, strong_bull → moderate_bull,
-        moderate_bull → sideways). 보수화 사실을 `market_condition` 필드에 명시하십시오.
+        분포일(거래량 동반 -0.2%↓ 마감)은 이제 `index_summary.distribution_days`로 **결정론적으로 자동 집계**됩니다
+        (최근 25거래일 윈도우, +5% 회복 시 만료). **`index_summary`의 regime은 distribution_days ≥ 6일 때 이미 1단계 강등이 반영된 값**이므로 — 이 경우 `index_summary.distribution_demoted_from`이 함께 제공됩니다 — 같은 사유로 **다시 강등하지 마십시오(이중 강등 금지)**.
+        - distribution_days가 주입되지 않은 경우(거래량 결측, null)에만, 보고서/분석에서 최근 4주 내 분포일 ≥ 6건이 확인되면 parabolic 활성화를 무력화하고 regime을 1단계 보수화하십시오 (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways).
+        - 강등(자동/수동 불문) 사실과 distribution_days 값을 `market_condition` 필드에 명시하십시오.
 
         **parabolic 포지션 운영** (parabolic 행이 활성화될 때):
         - 적극 매수 권장: max_portfolio_size를 보고서 기준값 그대로 사용하십시오. **슬롯 축소 금지**.

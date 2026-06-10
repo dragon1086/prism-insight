@@ -75,16 +75,17 @@ def backtest_us(years):
     from cores.data_prefetch import _compute_us_regime
     gspc = _yf_download("^GSPC", years)
     vix = _yf_download("^VIX", years).reindex(gspc.index).ffill()
-    dates, new_lab, leg_lab = [], [], []
+    dates, new_lab, leg_lab, dist = [], [], [], []
     for i in range(WIN_NEW, len(gspc)):
         w = gspc.iloc[: i + 1]
         vw = vix.iloc[: i + 1]
-        new = _compute_us_regime(w.tail(WIN_NEW), None, vw.tail(WIN_NEW))["market_regime"]
+        res = _compute_us_regime(w.tail(WIN_NEW), None, vw.tail(WIN_NEW))
         leg = _compute_us_regime(w.tail(WIN_LEGACY), None, vw.tail(WIN_LEGACY))["market_regime"]
         dates.append(gspc.index[i])
-        new_lab.append(new)
+        new_lab.append(res["market_regime"])
         leg_lab.append(leg)
-    return dates, new_lab, leg_lab
+        dist.append(res.get("index_summary", {}).get("distribution_days"))
+    return dates, new_lab, leg_lab, dist
 
 
 def backtest_kr(years):
@@ -97,17 +98,32 @@ def backtest_kr(years):
             "Low": float(r.Low), "Close": float(r.Close), "Volume": float(r.Volume)}
             for idx, r in ks.iterrows()}
     keys = list(recs.keys())
-    dates, new_lab, leg_lab = [], [], []
+    dates, new_lab, leg_lab, dist = [], [], [], []
     for i in range(WIN_NEW, len(keys)):
         win = {k: recs[k] for k in keys[max(0, i + 1 - WIN_NEW): i + 1]}
         winL = {k: recs[k] for k in keys[max(0, i + 1 - WIN_LEGACY): i + 1]}
-        new_lab.append(_compute_kr_regime(win)["market_regime"])
+        res = _compute_kr_regime(win)
+        new_lab.append(res["market_regime"])
         leg_lab.append(_compute_kr_regime(winL)["market_regime"])
+        dist.append(res.get("index_summary", {}).get("distribution_days"))
         dates.append(ks.index[i])
-    return dates, new_lab, leg_lab
+    return dates, new_lab, leg_lab, dist
 
 
-def report(market, dates, new_lab, leg_lab):
+def _dist_yearly_max(dates, dist):
+    """연도별 분산일 카운트 최대/평균 (None 제외)."""
+    by = defaultdict(list)
+    for d, c in zip(dates, dist or []):
+        if c is not None:
+            by[d.year].append(c)
+    rows = []
+    for y in sorted(by):
+        vals = by[y]
+        rows.append((y, max(vals), round(sum(vals) / len(vals), 1)))
+    return rows
+
+
+def report(market, dates, new_lab, leg_lab, dist=None):
     print(f"\n========== {market} (n={len(dates)} days, {dates[0].date()}~{dates[-1].date()}) ==========")
     print(f"NEW (50/200) distribution : {_dist(new_lab)}")
     print(f"LEGACY (20MA) distribution: {_dist(leg_lab)}")
@@ -121,15 +137,27 @@ def report(market, dates, new_lab, leg_lab):
     print("Yearly bull/sideways/bear % (NEW):")
     for y, b, s, br in _yearly(dates, new_lab):
         print(f"  {y}: bull {b}% | sideways {s}% | bear {br}%")
+    # 분산일 카운트 재생 (O'Neil): 천장/급락 직전 급증해야 정상
+    if dist and any(c is not None for c in dist):
+        thr = {"US": 6, "KR": 6}.get(market, 6)
+        print(f"Distribution-day count (window=25, demote≥{thr}) — yearly max | avg:")
+        for y, mx, av in _dist_yearly_max(dates, dist):
+            flag = "  <== tops/distribution" if mx >= thr else ""
+            print(f"  {y}: max {mx} | avg {av}{flag}")
+        trig = sum(1 for c in dist if c is not None and c >= thr)
+        print(f"Days at/over demote threshold: {trig} / {sum(1 for c in dist if c is not None)}")
     # spot checks
     spots = {"US": ["2020-03-23", "2022-06-16", "2024-02-15", "2025-04-07"],
              "KR": ["2020-03-19", "2022-09-30", "2024-07-11", "2025-04-09"]}.get(market, [])
     dmap = {d.strftime("%Y-%m-%d"): lab for d, lab in zip(dates, new_lab)}
+    cmap = {d.strftime("%Y-%m-%d"): c for d, c in zip(dates, dist or [])}
     sc = []
     for s in spots:
-        near = next((dmap[k] for k in sorted(dmap) if k >= s), None)
-        sc.append(f"{s}->{near}")
-    print("Spot checks (NEW):", " | ".join(sc))
+        near = next((k for k in sorted(dmap) if k >= s), None)
+        lab = dmap.get(near)
+        dd = cmap.get(near)
+        sc.append(f"{s}->{lab}(dd={dd})")
+    print("Spot checks (NEW, regime+distribution_days):", " | ".join(sc))
 
 
 def main():
