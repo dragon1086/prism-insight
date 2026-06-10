@@ -272,8 +272,8 @@ class CompressionManager:
                 )
             data = self._parse_response(response)
             new_intuitions = data.get('new_intuitions', [])
-            logger.info(f"[refresh_intuitions] parsed keys={list(data.keys())} "
-                        f"new_intuitions={len(new_intuitions)} resp_head={response[:200]!r}")
+            logger.info(f"[refresh_intuitions] extracted {len(new_intuitions)} intuitions "
+                        f"(keys={list(data.keys())})")
             results["extracted"] = len(new_intuitions)
             source_ids = [e['id'] for e in entries]
             for intuition in new_intuitions:
