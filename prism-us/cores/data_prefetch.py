@@ -982,6 +982,87 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     return result
 
 
+# --- O'Neil Distribution Day (deterministic, 정보 주입 전용) ----------------
+# 설계 결정(tasks/distribution_day_design.md): 분산일은 결정론적으로 '계산'해 index_summary에
+# 정보로만 주입하고, regime의 기계적 강등은 하지 않는다. (강등은 매수+매도 양쪽을 뒤집어
+# US melt-up에서 조기청산 손실을 유발했고, 시장별 임계는 과최적화 위험이 컸다.) 분산일을
+# 어떻게 가중할지(신규매수 보수화 등)는 프롬프트에서 LLM이 판단한다 — O'Neil 본래의 재량적 용법.
+# 분산일 파라미터 (O'Neil/IBD). drop=-0.2% 종가, 거래량 전일 초과, 25거래일 윈도우, +5% 회복 만료.
+DISTRIBUTION_WINDOW = 25
+DISTRIBUTION_DROP_PCT = 0.2
+DISTRIBUTION_RECOVERY_PCT = 5.0
+
+
+def _count_distribution_days(df, close_col, volume_col=None,
+                             window: int = DISTRIBUTION_WINDOW,
+                             drop_threshold_pct: float = DISTRIBUTION_DROP_PCT,
+                             recovery_pct: float = DISTRIBUTION_RECOVERY_PCT):
+    """O'Neil 분산일 카운트 (결정론적).
+
+    분산일 = 지수가 전일 종가 대비 >= drop_threshold_pct% 하락 마감 AND 거래량이 전일 초과.
+    만료: (1) window 거래일 경과 시 윈도우 밖으로 자동 제외, (2) 분산일 이후 어떤 종가가
+    그 분산일 종가 대비 +recovery_pct% 이상 상승하면 카운트에서 제거.
+
+    Returns:
+        {"count": int, "window": int, "raw_count": int} 또는 거래량 불가 시 None.
+    """
+    try:
+        d = df.sort_index()
+        if volume_col is None:
+            for c in ["Volume", "거래량", "volume"]:
+                if c in d.columns:
+                    volume_col = c
+                    break
+        if volume_col is None or close_col not in d.columns:
+            return None
+        closes = d[close_col].astype(float).values
+        vols = d[volume_col].astype(float).values
+        n = len(closes)
+        if n < 2:
+            return None
+        import math as _math
+        valid_vol = [v for v in vols if not _math.isnan(v) and v > 0]
+        if not valid_vol:
+            return None
+        start = max(1, n - window)
+        raw = 0
+        kept = 0
+        running_max_after = -1.0
+        flags = []
+        for i in range(n - 1, start - 1, -1):
+            prev_c = closes[i - 1]
+            cur_c = closes[i]
+            if prev_c <= 0:
+                flags.append((i, False, running_max_after))
+                running_max_after = max(running_max_after, cur_c)
+                continue
+            pct = (cur_c - prev_c) / prev_c * 100.0
+            vol_up = vols[i] > vols[i - 1]
+            is_dist = (pct <= -drop_threshold_pct) and vol_up
+            flags.append((i, is_dist, running_max_after))
+            running_max_after = max(running_max_after, cur_c)
+        for (i, is_dist, max_after) in flags:
+            if not is_dist:
+                continue
+            raw += 1
+            if max_after >= closes[i] * (1 + recovery_pct / 100.0):
+                continue
+            kept += 1
+        return {"count": kept, "window": window, "raw_count": raw}
+    except Exception:
+        return None
+
+
+def _inject_distribution_days(index_summary, df, close_col) -> None:
+    """분산일 카운트를 결정론적으로 계산해 index_summary에 정보로 주입(강등 없음).
+
+    거래량 결측/불가 시 distribution_days=None. regime/confidence는 변경하지 않는다.
+    """
+    dist = _count_distribution_days(df, close_col)
+    index_summary["distribution_window"] = DISTRIBUTION_WINDOW
+    index_summary["distribution_days"] = None if dist is None else dist["count"]
+
+
 def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, vix_df: pd.DataFrame = None) -> dict:
     """Compute US market regime programmatically from index data.
 
@@ -1155,6 +1236,9 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
     if vix_current is not None:
         index_summary["vix_current"] = round(vix_current, 2)
         index_summary["vix_level"] = vix_level
+
+    # O'Neil 분산일 결정론 카운트를 index_summary에 정보로 주입(강등 없음 — LLM이 프롬프트에서 판단)
+    _inject_distribution_days(index_summary, sp500_df, close_col)
 
     return {
         "market_regime": regime,
