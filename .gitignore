@@ -120,3 +120,7 @@ id_ed25519*
 archive.db
 archive.db-shm
 archive.db-wal
+
+# prism-btc local state
+prism-btc/state/
+!prism-btc/engine/config.py
