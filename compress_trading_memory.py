@@ -362,6 +362,138 @@ async def run_compression(
         return {"status": "error", "error": str(e)}
 
 
+def _load_us_compression_manager():
+    """Load USCompressionManager directly from prism-us/tracking/compression.py.
+
+    Loaded via importlib from the file path so we bypass prism-us/tracking/__init__.py
+    (which imports db_schema/journal and would risk the documented KR/US 'cores'
+    shadowing when run from the root context). compression.py itself only depends on
+    the stdlib, so a standalone file load is safe.
+    """
+    import importlib.util
+
+    comp_path = Path(__file__).parent / "prism-us" / "tracking" / "compression.py"
+    spec = importlib.util.spec_from_file_location("us_compression_standalone", comp_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.USCompressionManager
+
+
+async def run_us_compression(
+    db_path: str = "stock_tracking_db.sqlite",
+    layer1_age_days: int = 7,
+    layer2_age_days: int = 30,
+    min_entries: int = 3,
+    dry_run: bool = False,
+    force: bool = False,
+    skip_cleanup: bool = False,
+    max_principles: int = 50,
+    max_intuitions: int = 50,
+    stale_days: int = 90,
+    archive_layer3_days: int = 365,
+) -> dict:
+    """Run US-market compression/cleanup on the same shared SQLite database.
+
+    US trades live in the same DB as KR (distinguished by the ``market`` column),
+    but the weekly job previously only ran the KR ``StockTrackingAgent`` pass, so US
+    intuitions were never derived from compression. This decoupled pass runs the
+    standalone ``USCompressionManager`` (deterministic, no LLM) over its own
+    connection, independent of the KR control flow.
+    """
+    import sqlite3
+
+    logger.info("=" * 60)
+    logger.info("US Trading Memory Compression Started")
+    logger.info(f"Database: {db_path}")
+    logger.info("=" * 60)
+
+    try:
+        USCompressionManager = _load_us_compression_manager()
+    except Exception as e:
+        logger.error(f"Could not load USCompressionManager (skipping US pass): {e}")
+        return {"status": "error", "error": f"load failed: {e}"}
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    try:
+        manager = USCompressionManager(cursor, conn)
+
+        stats_before = manager.get_compression_stats()
+        layers = stats_before.get("entries_by_layer", {})
+        logger.info("\n📊 US Current Status:")
+        logger.info(f"  Layer 1 (Detailed): {layers.get('layer1_detailed', 0)}")
+        logger.info(f"  Layer 2 (Summarized): {layers.get('layer2_summarized', 0)}")
+        logger.info(f"  Layer 3 (Compressed): {layers.get('layer3_compressed', 0)}")
+        logger.info(f"  Active Intuitions: {stats_before.get('active_intuitions', 0)}")
+        logger.info(f"  Active Principles: {stats_before.get('active_principles', 0)}")
+
+        if dry_run:
+            logger.info("\n🔍 US DRY RUN - showing cleanup preview only (compression not simulated)")
+            cleanup_preview = manager.cleanup_stale_data(
+                max_principles=max_principles,
+                max_intuitions=max_intuitions,
+                stale_days=stale_days,
+                archive_layer3_days=archive_layer3_days,
+                dry_run=True,
+            )
+            return {
+                "status": "dry_run",
+                "stats_before": stats_before,
+                "cleanup_preview": cleanup_preview,
+            }
+
+        effective_min = 1 if force else min_entries
+
+        logger.info("\n🔄 Running US compression...")
+        results = await manager.compress_old_journal_entries(
+            layer1_age_days=layer1_age_days,
+            layer2_age_days=layer2_age_days,
+            min_entries_for_compression=effective_min,
+        )
+        logger.info(f"  US Layer 1 → 2: {results['layer1_to_layer2']['compressed']} compressed")
+        logger.info(f"  US Layer 2 → 3: {results['layer2_to_layer3']['compressed']} compressed")
+        logger.info(f"  US Intuitions generated: {results['intuitions_generated']}")
+
+        cleanup_results = {}
+        if not skip_cleanup:
+            logger.info("\n🧹 Running US Cleanup...")
+            cleanup_results = manager.cleanup_stale_data(
+                max_principles=max_principles,
+                max_intuitions=max_intuitions,
+                stale_days=stale_days,
+                archive_layer3_days=archive_layer3_days,
+                dry_run=False,
+            )
+            logger.info(f"  US Principles deactivated: {cleanup_results.get('principles_deactivated', 0)}")
+            logger.info(f"  US Intuitions deactivated: {cleanup_results.get('intuitions_deactivated', 0)}")
+            logger.info(f"  US Journal entries archived: {cleanup_results.get('journal_entries_archived', 0)}")
+        else:
+            logger.info("\n⏭️  US Cleanup skipped (--skip-cleanup)")
+
+        stats_after = manager.get_compression_stats()
+        logger.info("\n📊 US Final Active Counts:")
+        logger.info(f"  Active Intuitions: {stats_after.get('active_intuitions', 0)}")
+        logger.info(f"  Active Principles: {stats_after.get('active_principles', 0)}")
+
+        return {
+            "status": "success",
+            "results": results,
+            "cleanup_results": cleanup_results,
+            "stats_before": stats_before,
+            "stats_after": stats_after,
+        }
+
+    except Exception as e:
+        logger.error(f"US compression failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "error": str(e)}
+    finally:
+        conn.close()
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -465,15 +597,32 @@ Examples:
         archive_layer3_days=args.archive_days
     ))
 
+    # Run US-market compression/cleanup on the same shared DB (decoupled from KR).
+    # Previously only the KR pass ran, so US intuitions were never derived (#321).
+    us_result = asyncio.run(run_us_compression(
+        db_path=args.db_path,
+        layer1_age_days=args.layer1_age,
+        layer2_age_days=args.layer2_age,
+        min_entries=args.min_entries,
+        dry_run=args.dry_run,
+        force=args.force,
+        skip_cleanup=args.skip_cleanup,
+        max_principles=args.max_principles,
+        max_intuitions=args.max_intuitions,
+        stale_days=args.stale_days,
+        archive_layer3_days=args.archive_days
+    ))
+
     # Print final summary
     logger.info("\n" + "=" * 60)
-    logger.info(f"Final Status: {result.get('status', 'unknown')}")
+    logger.info(f"Final Status (KR): {result.get('status', 'unknown')}")
+    logger.info(f"Final Status (US): {us_result.get('status', 'unknown')}")
     logger.info("=" * 60)
 
-    if result.get('status') == 'error':
+    if result.get('status') == 'error' or us_result.get('status') == 'error':
         sys.exit(1)
 
-    return result
+    return {"kr": result, "us": us_result}
 
 
 if __name__ == "__main__":
