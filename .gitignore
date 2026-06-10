@@ -123,4 +123,5 @@ archive.db-wal
 
 # prism-btc local state
 prism-btc/state/
+prism-btc/backtest/results/
 !prism-btc/engine/config.py
