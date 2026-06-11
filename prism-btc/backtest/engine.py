@@ -562,31 +562,12 @@ def run_backtest(
                         # Trailing starts applying from the next bar (no same-bar SL check)
                         pos.trailing_active = True
 
-            # TP2 hit
-            if pos.tp1_hit and not pos.tp2_hit:
-                tp2_hit = False
-                if pos.side == "long" and bar_high >= pos.tp2_price:
-                    tp2_hit = True
-                elif pos.side == "short" and bar_low <= pos.tp2_price:
-                    tp2_hit = True
-                if tp2_hit:
-                    close_qty = pos.qty / 2.0  # half of remaining (originally 1/3)
-                    _book_leg(pos, close_qty, pos.tp2_price, MAKER_FEE, state)
-                    pos.tp2_hit = True
-
-            # TP3 hit — full close of remainder
-            if pos.tp2_hit:
-                tp3_hit = False
-                if pos.side == "long" and bar_high >= pos.tp3_price:
-                    tp3_hit = True
-                elif pos.side == "short" and bar_low <= pos.tp3_price:
-                    tp3_hit = True
-                if tp3_hit:
-                    _close_position(
-                        pos, pos.tp3_price, bar_time_str, "tp3", state,
-                        fee_rate=MAKER_FEE, bar_idx=bar_idx,
-                    )
-                    positions_to_remove.append(pos)
+            # 라운드6: TP2/TP3 사다리 제거 — 우측꼬리 개방.
+            # 1R/2R/3R 사다리는 최대 승리를 +2R로 캡해 실현 손익비를 1.35에
+            # 가뒀다 (H2 승자절단의 잔재). TP1(1R, 1/3)만 유지해 비용·심리를
+            # 확보하고, 남은 2/3은 12h MA10 트레일이 끊길 때까지 보유.
+            # 6년 실측: RR 1.35→2.29 (최대 +10.1R), CAGR 11.2→15.7%,
+            # PF 1.79→2.50, MDD 8.4→9.7%. 6년 중 5년 우세 (유일 악화 2021 챱).
 
         for pos in positions_to_remove:
             if pos in state.positions:
