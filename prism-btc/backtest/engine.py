@@ -21,6 +21,18 @@ from engine.sizing import (
 )
 import engine.sizing as _sizing  # RISK_PER_TRADE 단일 소스 참조 (런타임 조회)
 
+from core.exits import PositionView, BarView, ExitContext, evaluate_exits
+from core.entries import EntryInputs, CooldownState, evaluate_entry
+from core.actions import (
+    ChargeFunding,
+    ForceReduce,
+    ClearBreachFlag,
+    UpdateStop,
+    ClosePosition,
+    BookPartial,
+    ActivateBETrail,
+)
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -465,123 +477,105 @@ def run_backtest(
                 state.pending_order = None
 
         # --- 2. Process open positions ---
+        # 결정-집행 분리: core.exits.evaluate_exits 가 순수 결정(Action 리스트)을
+        # 내고, 엔진은 그 Action들을 순서대로 집행한다. 결정 시퀀스(펀딩 → liq
+        # 강제감축 → 트레일 갱신 → SL → TP1 → BE/트레일 활성화)는 기존 인라인
+        # 루프와 동일하므로 행동 보존된다. 회계(_book_leg/_close_position/equity/
+        # TradeLog)는 어댑터인 여기 그대로 유지.
         positions_to_remove = []
         for pos in state.positions:
-            # P1-2: Funding fee every 16 bars (8h), attributed to THIS position's leg.
-            # 실펀딩 데이터 있으면 sign-aware (양수 rate = 롱 지불·숏 수취),
-            # 없으면 기존 비관 고정 |rate| 차감 폴백.
-            if bar_idx % FUNDING_INTERVAL_BARS == 0:
-                if funding_times:
+            # Resolve the funding rate for this bar (adapter owns the funding table;
+            # core only applies the precomputed formula). bar_idx % 16 == 0 boundary.
+            funding_due = bar_idx % FUNDING_INTERVAL_BARS == 0
+            funding_sign_aware = bool(funding_times)
+            if funding_due:
+                if funding_sign_aware:
                     import bisect
                     fi = bisect.bisect_right(funding_times, int(bar_time.value // 1_000_000)) - 1
-                    rate = funding_rates[fi] if fi >= 0 else abs(FUNDING_RATE)
-                    sign = 1.0 if pos.side == "long" else -1.0
-                    funding = pos.qty * bar_close * rate * sign  # 음수면 수취
+                    funding_rate = funding_rates[fi] if fi >= 0 else abs(FUNDING_RATE)
                 else:
-                    funding = pos.qty * bar_close * abs(FUNDING_RATE)
-                state.equity -= funding
-                state.total_funding += funding
-                pos.acc_funding += funding
+                    funding_rate = abs(FUNDING_RATE)
+            else:
+                funding_rate = 0.0
 
-            # P2: liq-approach = MARK price (this bar) breaching 50% of entry→liq gap.
-            # On breach, count once and simulate a forced partial reduction (halve qty).
-            gap = abs(pos.entry_price - pos.liq_price)
-            if gap > 0:
-                # worst-case mark this bar in the adverse direction
-                adverse_mark = bar_low if pos.side == "long" else bar_high
-                if pos.side == "long":
-                    mark_to_liq = adverse_mark - pos.liq_price
-                else:
-                    mark_to_liq = pos.liq_price - adverse_mark
-                in_breach = (mark_to_liq / gap) < LIQ_MONITOR_FRAC
-                if in_breach and not pos.liq_breach_flagged:
+            # Trailing MA injected so core stays pandas-free (TRAILING_TF MA10).
+            trailing_ma: float | None = None
+            if pos.trailing_active:
+                tf_trail = _get_tf_slice(tf_data, bar_time, TRAILING_TF)
+                if len(tf_trail) >= 10:
+                    _ma = tf_trail["close"].rolling(10).mean().iloc[-1]
+                    if not pd.isna(_ma):
+                        trailing_ma = float(_ma)
+
+            pos_view = PositionView(
+                side=pos.side,
+                entry_price=pos.entry_price,
+                qty=pos.qty,
+                sl_price=pos.sl_price,
+                tp1_price=pos.tp1_price,
+                liq_price=pos.liq_price,
+                trailing_active=pos.trailing_active,
+                be_stop_set=pos.be_stop_set,
+                tp1_hit=pos.tp1_hit,
+                liq_breach_flagged=pos.liq_breach_flagged,
+            )
+            bar_view = BarView(idx=bar_idx, high=bar_high, low=bar_low, close=bar_close)
+            ctx = ExitContext(
+                funding_due=funding_due,
+                funding_rate=funding_rate,
+                funding_sign_aware=funding_sign_aware,
+                trailing_ma=trailing_ma,
+                be_trail_activate_r=BE_TRAIL_ACTIVATE_R,
+                liq_monitor_frac=LIQ_MONITOR_FRAC,
+            )
+
+            actions = evaluate_exits(pos_view, bar_view, ctx)
+
+            # --- Execute the ordered actions (회계·집행) ---
+            closed = False
+            for act in actions:
+                if isinstance(act, ChargeFunding):
+                    state.equity -= act.amount
+                    state.total_funding += act.amount
+                    pos.acc_funding += act.amount
+                elif isinstance(act, ClearBreachFlag):
+                    pos.liq_breach_flagged = False
+                elif isinstance(act, ForceReduce):
+                    # liq-approach forced de-risk: count once, instrument gross PnL.
                     state.liq_approach_count += 1
                     pos.liq_breach_flagged = True
-                    # forced de-risk: reduce half the remaining qty at the adverse mark
-                    reduce_qty = pos.qty * 0.5
-                    if reduce_qty > 0:
-                        # 라운드3 C: 강제감축 레그에서 실현되는 gross PnL을 분리 계측.
-                        if pos.side == "long":
-                            reduce_gross = (adverse_mark - pos.entry_price) * reduce_qty
-                        else:
-                            reduce_gross = (pos.entry_price - adverse_mark) * reduce_qty
-                        state.liq_forced_reduce_pnl += reduce_gross
-                        pos.had_forced_reduce = True
-                        _book_leg(pos, reduce_qty, adverse_mark, TAKER_FEE + SLIPPAGE_SL, state)
-                        if pos.qty <= 0:
-                            _close_position(
-                                pos, adverse_mark, bar_time_str, "liq_forced_reduce",
-                                state, fee_rate=TAKER_FEE + SLIPPAGE_SL, bar_idx=bar_idx,
-                            )
-                            positions_to_remove.append(pos)
-                            continue
-                elif not in_breach:
-                    pos.liq_breach_flagged = False
-
-            # Trailing stop: after 1R hit, track 1h MA10
-            if pos.trailing_active:
-                # Get current 1h MA10 as trailing stop
-                tf_1h = _get_tf_slice(tf_data, bar_time, TRAILING_TF)
-                if len(tf_1h) >= 10:
-                    trailing_ma10 = tf_1h["close"].rolling(10).mean().iloc[-1]
-                    if not pd.isna(trailing_ma10):
-                        if pos.side == "long":
-                            new_sl = max(pos.sl_price, trailing_ma10)
-                            pos.sl_price = new_sl
-                        else:
-                            new_sl = min(pos.sl_price, trailing_ma10)
-                            pos.sl_price = new_sl
-
-            # SL hit check
-            sl_hit = False
-            if pos.side == "long" and bar_low <= pos.sl_price:
-                sl_hit = True
-            elif pos.side == "short" and bar_high >= pos.sl_price:
-                sl_hit = True
-
-            if sl_hit:
-                # BE stop (after TP1) closing at entry is not a real "loss" exit:
-                # classify as "be" so cooldown/win logic treats it on net terms.
-                reason = "be" if (pos.be_stop_set and pos.sl_price == pos.entry_price) else "sl"
-                _close_position(
-                    pos, pos.sl_price, bar_time_str, reason, state,
-                    fee_rate=TAKER_FEE + SLIPPAGE_SL, bar_idx=bar_idx,
-                )
-                positions_to_remove.append(pos)
-                continue
-
-            # TP1 hit
-            if not pos.tp1_hit:
-                tp1_hit = False
-                if pos.side == "long" and bar_high >= pos.tp1_price:
-                    tp1_hit = True
-                elif pos.side == "short" and bar_low <= pos.tp1_price:
-                    tp1_hit = True
-                if tp1_hit:
-                    # Close 1/3 at TP1 (partial leg — booked, no standalone trade row)
-                    close_qty = pos.qty / 3.0
-                    _book_leg(pos, close_qty, pos.tp1_price, MAKER_FEE, state)
+                    state.liq_forced_reduce_pnl += act.gross
+                    pos.had_forced_reduce = True
+                    reduce_qty = pos.qty * act.fraction
+                    _book_leg(pos, reduce_qty, act.price, TAKER_FEE + SLIPPAGE_SL, state)
+                    if pos.qty <= 0:
+                        _close_position(
+                            pos, act.price, bar_time_str, "liq_forced_reduce",
+                            state, fee_rate=TAKER_FEE + SLIPPAGE_SL, bar_idx=bar_idx,
+                        )
+                        positions_to_remove.append(pos)
+                        closed = True
+                        break
+                elif isinstance(act, UpdateStop):
+                    pos.sl_price = act.new_stop
+                elif isinstance(act, ClosePosition):
+                    _close_position(
+                        pos, act.price, bar_time_str, act.reason, state,
+                        fee_rate=TAKER_FEE + SLIPPAGE_SL, bar_idx=bar_idx,
+                    )
+                    positions_to_remove.append(pos)
+                    closed = True
+                    break
+                elif isinstance(act, BookPartial):
+                    close_qty = pos.qty * act.fraction
+                    _book_leg(pos, close_qty, act.price, MAKER_FEE, state)
                     pos.tp1_hit = True
-                    # 라운드4: BE stop / trailing은 여기서 걸지 않는다 —
-                    # BE_TRAIL_ACTIVATE_R(1.5R) 도달 시 별도 블록에서 활성화.
+                elif isinstance(act, ActivateBETrail):
+                    pos.be_stop_set = True
+                    pos.trailing_active = True
 
-            # BE stop + trailing activation at 1.5R (라운드4 — TP1과 분리)
-            if not pos.trailing_active:
-                r_dist = abs(pos.tp1_price - pos.entry_price)  # tp1 = 1R (불변)
-                if r_dist > 0:
-                    if pos.side == "long":
-                        reached = bar_high >= pos.entry_price + BE_TRAIL_ACTIVATE_R * r_dist
-                    else:
-                        reached = bar_low <= pos.entry_price - BE_TRAIL_ACTIVATE_R * r_dist
-                    if reached:
-                        # Set BE stop (never loosen an already-tighter SL)
-                        if pos.side == "long":
-                            pos.sl_price = max(pos.sl_price, pos.entry_price)
-                        else:
-                            pos.sl_price = min(pos.sl_price, pos.entry_price)
-                        pos.be_stop_set = True
-                        # Trailing starts applying from the next bar (no same-bar SL check)
-                        pos.trailing_active = True
+            if closed:
+                continue
 
             # 라운드6: TP2/TP3 사다리 제거 — 우측꼬리 개방.
             # 1R/2R/3R 사다리는 최대 승리를 +2R로 캡해 실현 손익비를 1.35에
@@ -649,6 +643,7 @@ def run_backtest(
                     if current_tranche == 0:
                         # 라운드3 A: 진입 빈도 하드캡 — 한 4h 캔들당 신규 진입 평가 최대 1회.
                         # 이 4h 캔들에서 이미 신규 진입을 평가했다면 (체결 여부 무관) 건너뛴다.
+                        # (cadence/하드캡은 어댑터의 집행 관심사 — core 결정 밖에서 게이트.)
                         if cur_4h_ns is not None and cur_4h_ns == last_new_entry_eval_4h_ns:
                             continue
                         # 평가가 열리는 시점에 이 4h 캔들을 "평가됨"으로 기록한다.
@@ -660,107 +655,101 @@ def run_backtest(
                         # N bars since last close of that side; 16 bars if the last
                         # close was a stop-loss (연속 손절 churn 방지), else 8 bars.
                         bars_since_close = bar_idx - state.last_close_bar[sig.side]
-                        cooldown = (
+                        cooldown_bars = (
                             SL_REENTRY_COOLDOWN_BARS
                             if state.last_close_was_sl[sig.side]
                             else REENTRY_COOLDOWN_BARS
                         )
-                        if bars_since_close < cooldown:
-                            continue  # still cooling down — skip this signal
 
-                        # Fresh entry
+                        # Derive pandas inputs (어댑터가 tf_data 소유 → 여기서 슬라이스).
                         entry_price = bar_close  # limit at close price (post-only)
                         tf_1h_slice = _get_tf_slice(tf_data, bar_time, "1h")
                         if len(tf_1h_slice) >= 14:
-                            atr_1h = tf_1h_slice["close"].rolling(10).mean()
-                            # Use 1h ATR from indicators
                             from engine.indicators import atr as calc_atr
                             atr_series = calc_atr(tf_1h_slice, 14)
                             atr_1h_val = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else entry_price * 0.02
                         else:
                             atr_1h_val = entry_price * 0.02
 
-                        # Swing ref: recent 10-bar low/high from 1h
-                        tf_1h_slice = _get_tf_slice(tf_data, bar_time, "1h")
                         if len(tf_1h_slice) >= 10:
                             if sig.side == "long":
                                 swing_ref = float(tf_1h_slice["low"].iloc[-10:].min())
                             else:
                                 swing_ref = float(tf_1h_slice["high"].iloc[-10:].max())
                         else:
-                            # Fallback: 2% away
                             swing_ref = entry_price * (0.98 if sig.side == "long" else 1.02)
 
-                        # MA35 from 1h
                         if len(tf_1h_slice) >= 35:
                             ma35_1h = float(tf_1h_slice["close"].rolling(35).mean().iloc[-1])
                         else:
                             ma35_1h = entry_price
 
-                        sz = compute_sizing(
-                            side=sig.side,
-                            entry=entry_price,
-                            abs_score=sig.strength,
-                            equity=state.equity,
-                            atr_1h=atr_1h_val,
-                            swing_ref=swing_ref,
-                            ma35_1h=ma35_1h,
-                            tranche_index=0,
-                        )
-
-                        if not sz.rejected and sz.qty > 0:
-                            risk_cap = state.equity * _sizing.RISK_PER_TRADE * TRANCHE_FRACS[0]
-                            po = PendingOrder(
-                                side=sig.side,
-                                limit_price=entry_price,
-                                bar_idx=bar_idx,
-                                sizing=sz,
-                                initial_risk=risk_cap,
-                                tranche_index=0,
-                            )
-                            state.pending_order = po
-
-                    elif current_tranche < 3:
-                        # Pyramid check
-                        avg_entry = sum(p.entry_price for p in same_side) / len(same_side)
-                        if can_add_tranche(current_tranche, avg_entry, bar_close, sig.side):
-                            entry_price = bar_close
-                            tf_1h_slice = _get_tf_slice(tf_data, bar_time, "1h")
-                            atr_1h_val = entry_price * 0.02
-                            if len(tf_1h_slice) >= 14:
-                                from engine.indicators import atr as calc_atr
-                                atr_series = calc_atr(tf_1h_slice, 14)
-                                if not pd.isna(atr_series.iloc[-1]):
-                                    atr_1h_val = float(atr_series.iloc[-1])
-
-                            if sig.side == "long":
-                                swing_ref = float(tf_1h_slice["low"].iloc[-10:].min()) if len(tf_1h_slice) >= 10 else entry_price * 0.98
-                            else:
-                                swing_ref = float(tf_1h_slice["high"].iloc[-10:].max()) if len(tf_1h_slice) >= 10 else entry_price * 1.02
-
-                            ma35_1h = float(tf_1h_slice["close"].rolling(35).mean().iloc[-1]) if len(tf_1h_slice) >= 35 else entry_price
-
-                            sz = compute_sizing(
-                                side=sig.side,
-                                entry=entry_price,
-                                abs_score=sig.strength,
-                                equity=state.equity,
+                        intent = evaluate_entry(
+                            sig,
+                            state.equity,
+                            current_tranche=0,
+                            inputs=EntryInputs(
+                                entry_price=entry_price,
                                 atr_1h=atr_1h_val,
                                 swing_ref=swing_ref,
                                 ma35_1h=ma35_1h,
-                                tranche_index=current_tranche,
+                            ),
+                            cooldown=CooldownState(
+                                bars_since_close=bars_since_close,
+                                cooldown_bars=cooldown_bars,
+                            ),
+                        )
+                        if intent is not None:
+                            state.pending_order = PendingOrder(
+                                side=intent.side,
+                                limit_price=intent.limit_price,
+                                bar_idx=bar_idx,
+                                sizing=intent.sizing,
+                                initial_risk=intent.initial_risk,
+                                tranche_index=intent.tranche_index,
                             )
-                            if not sz.rejected and sz.qty > 0:
-                                risk_cap = state.equity * _sizing.RISK_PER_TRADE * TRANCHE_FRACS[current_tranche]
-                                po = PendingOrder(
-                                    side=sig.side,
-                                    limit_price=entry_price,
-                                    bar_idx=bar_idx,
-                                    sizing=sz,
-                                    initial_risk=risk_cap,
-                                    tranche_index=current_tranche,
-                                )
-                                state.pending_order = po
+
+                    elif current_tranche < 3:
+                        # Pyramid: derive inputs then delegate the gate+sizing decision.
+                        avg_entry = sum(p.entry_price for p in same_side) / len(same_side)
+                        entry_price = bar_close
+                        tf_1h_slice = _get_tf_slice(tf_data, bar_time, "1h")
+                        atr_1h_val = entry_price * 0.02
+                        if len(tf_1h_slice) >= 14:
+                            from engine.indicators import atr as calc_atr
+                            atr_series = calc_atr(tf_1h_slice, 14)
+                            if not pd.isna(atr_series.iloc[-1]):
+                                atr_1h_val = float(atr_series.iloc[-1])
+
+                        if sig.side == "long":
+                            swing_ref = float(tf_1h_slice["low"].iloc[-10:].min()) if len(tf_1h_slice) >= 10 else entry_price * 0.98
+                        else:
+                            swing_ref = float(tf_1h_slice["high"].iloc[-10:].max()) if len(tf_1h_slice) >= 10 else entry_price * 1.02
+
+                        ma35_1h = float(tf_1h_slice["close"].rolling(35).mean().iloc[-1]) if len(tf_1h_slice) >= 35 else entry_price
+
+                        intent = evaluate_entry(
+                            sig,
+                            state.equity,
+                            current_tranche=current_tranche,
+                            inputs=EntryInputs(
+                                entry_price=entry_price,
+                                atr_1h=atr_1h_val,
+                                swing_ref=swing_ref,
+                                ma35_1h=ma35_1h,
+                            ),
+                            avg_entry=avg_entry,
+                            current_price=bar_close,
+                        )
+                        if intent is not None:
+                            state.pending_order = PendingOrder(
+                                side=intent.side,
+                                limit_price=intent.limit_price,
+                                bar_idx=bar_idx,
+                                sizing=intent.sizing,
+                                initial_risk=intent.initial_risk,
+                                tranche_index=intent.tranche_index,
+                            )
 
         # Record equity curve every 48 bars (~24h)
         if bar_idx % 48 == 0:
