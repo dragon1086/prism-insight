@@ -72,7 +72,10 @@ BYBIT_MAX_LIMIT: int = 1000
 BYBIT_SLEEP_BETWEEN_REQUESTS: float = 0.12  # seconds
 
 # Backfill start (Unix ms) — 2022-01-01 00:00:00 UTC
-BACKFILL_START_MS: int = 1640995200000
+# 표본 확장 (Rocky 요청): 2022-01-01 → 2020-01-01. Bybit BTCUSDT 선물은
+# 2020-03경 상장이라 API가 주는 만큼 받는다 (2020 코로나 폭락, 2020-21 메가불,
+# 2021 더블탑 레짐 추가 — 검증 표본 ~110건 → ~180건+).
+BACKFILL_START_MS: int = 1577836800000  # 2020-01-01 00:00:00 UTC
 
 # SQLite path (relative to prism-btc/ package root)
 DB_RELATIVE_PATH: str = "state/market.db"
