@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Literal, Optional
 import pandas as pd
 
+from engine.indicators import add_indicators
 from engine.regime import build_snapshot, RegimeSnapshot
 from engine.signal import generate_signal, check_exit_signal, Signal
 from engine.sizing import (
@@ -42,6 +43,22 @@ LIQ_MONITOR_FRAC: float = 0.50
 # TFs needed for indicators
 ALL_TFS = ("30m", "1h", "4h", "12h", "1d", "1w")
 
+# TF bar duration (used to enforce "only confirmed/closed candles" cutoff — no look-ahead)
+TF_DURATION: dict[str, pd.Timedelta] = {
+    "30m": pd.Timedelta(minutes=30),
+    "1h": pd.Timedelta(hours=1),
+    "4h": pd.Timedelta(hours=4),
+    "12h": pd.Timedelta(hours=12),
+    "1d": pd.Timedelta(days=1),
+    "1w": pd.Timedelta(weeks=1),
+}
+
+# --- P1-1 signal throttle (오닐: 거래를 엄선, 추세를 길게) ---
+# Re-entry cooldown: same-direction re-entry needs N bars after last close
+REENTRY_COOLDOWN_BARS: int = 8       # 8 × 30m = 4h
+# After a stop-loss, same-direction re-entry needs a longer cooldown (churn 방지)
+SL_REENTRY_COOLDOWN_BARS: int = 16   # 16 × 30m = 8h
+
 # Minimum rows per TF to compute indicators (35 for MA35 + 14 for ATR warm-up)
 MIN_ROWS = 50
 
@@ -52,21 +69,33 @@ MIN_ROWS = 50
 
 @dataclass
 class TradeLog:
+    """
+    One row == one POSITION lifecycle (all legs aggregated). A position that
+    partial-closes via TP1/TP2 and then ends on SL/BE is a SINGLE trade here.
+
+    win == net_pnl > 0 (fees + funding + slippage already deducted).
+    `r_multiple` is the NET R (net_pnl / initial_risk) and is authoritative.
+    `gross_r_multiple` / `gross_pnl` are reference-only (pre-cost) columns.
+    """
     trade_id: int
     side: Literal["long", "short"]
     entry_time: str
     entry_price: float
     exit_time: str
-    exit_price: float
-    qty: float
+    exit_price: float          # final leg exit price
+    qty: float                 # original (full) position qty
     leverage: float
     sl_price: float
-    exit_reason: str           # "sl", "tp1", "tp2", "tp3", "trailing", "signal_exit", "signal_reduce"
-    r_multiple: float          # realized R (exit_pnl / initial_risk)
-    fee_paid: float            # total fees (entry + exit)
-    funding_paid: float
+    exit_reason: str           # final close reason: "sl", "tp3", "signal_exit", "end_of_period", ...
+    r_multiple: float          # NET realized R (net_pnl / initial_risk) — authoritative
+    fee_paid: float            # total fees across all legs (entry + every exit)
+    funding_paid: float        # total funding across position lifetime
     tranche_index: int
     liq_price: float
+    net_pnl: float = 0.0       # net $ across all legs (gross - fees - funding)
+    gross_pnl: float = 0.0     # reference: pre-cost price PnL across all legs
+    gross_r_multiple: float = 0.0  # reference: gross_pnl / initial_risk
+    num_legs: int = 1          # number of partial closes that made up this position
 
 
 @dataclass
@@ -90,6 +119,14 @@ class Position:
     tp2_hit: bool = False
     entry_fee: float = 0.0
     liq_breach_flagged: bool = False  # True when currently in 50% buffer breach
+    # --- position-lifecycle accumulators (P0-2 net accounting) ---
+    initial_qty: float = 0.0        # full qty at entry (legs reduce `qty`)
+    acc_gross_pnl: float = 0.0      # sum of price PnL across closed legs
+    acc_exit_fee: float = 0.0       # sum of exit fees across closed legs
+    acc_funding: float = 0.0        # sum of funding charged over lifetime
+    legs_closed: int = 0            # number of partial legs closed so far
+    last_leg_exit_price: float = 0.0
+    last_leg_reason: str = ""
 
 
 @dataclass
@@ -112,7 +149,14 @@ class BacktestState:
     trade_id_counter: int = 0
     total_funding: float = 0.0
     total_fees: float = 0.0
-    liq_approach_count: int = 0   # SL closer than 50% of entry→liq gap
+    liq_approach_count: int = 0   # mark price breached 50% of entry→liq gap (forced-reduce events)
+    # --- P1-1 re-entry cooldown: last close bar index per side, and whether it was a SL ---
+    last_close_bar: dict[str, int] = field(
+        default_factory=lambda: {"long": -10_000, "short": -10_000}
+    )
+    last_close_was_sl: dict[str, bool] = field(
+        default_factory=lambda: {"long": False, "short": False}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -132,20 +176,39 @@ def _load_tf_data(conn: sqlite3.Connection, tf: str) -> pd.DataFrame:
     return df
 
 
+# Cache of candle end-times (int64 ns) per loaded TF frame — hot-path helper
+# for _get_tf_slice. Keyed by (id(df), tf); frames live for the whole run.
+_END_NS_CACHE: dict = {}
+
+
 def _get_tf_slice(
     tf_data: dict[str, pd.DataFrame],
     current_30m_time: pd.Timestamp,
     tf: str,
 ) -> pd.DataFrame:
     """
-    Return confirmed rows for `tf` up to (but NOT including) current_30m_time.
-    Upper TF candles: only rows whose open_time < current_30m_time (미래참조 금지).
+    Return only CLOSED/confirmed candles for `tf` as of current_30m_time.
+    A candle is closed iff open_time + tf_duration <= current_30m_time, so a
+    higher-TF candle still in progress at current_30m_time is excluded (미래참조 금지).
     """
     df = tf_data.get(tf)
     if df is None or df.empty:
         return pd.DataFrame()
-    mask = df.index < current_30m_time
-    return df[mask]
+    duration = TF_DURATION.get(tf, pd.Timedelta(0))
+    # closed iff candle end (open_time + duration) <= current time.
+    # Index is sorted, so the closed candles form a prefix — find its length
+    # with binary search on cached end-times instead of a full boolean mask
+    # (hot path: called 6x per simulated 30m bar).
+    key = (id(df), tf)
+    ends = _END_NS_CACHE.get(key)
+    if ends is None or len(ends) != len(df):
+        # as_unit("ns") matters: pandas may load the index at us/ms resolution,
+        # and asi8 returns ints in the index's own unit while Timestamp.value
+        # is always ns — without normalization the comparison is off by 1000x.
+        ends = (df.index + duration).as_unit("ns").asi8
+        _END_NS_CACHE[key] = ends
+    k = int(ends.searchsorted(current_30m_time.value, side="right"))
+    return df.iloc[:k]
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +248,35 @@ def _apply_fee(equity: float, nominal: float, fee_rate: float) -> tuple[float, f
     return equity - fee, fee
 
 
+def _book_leg(
+    pos: Position,
+    close_qty: float,
+    exit_price: float,
+    fee_rate: float,
+    state: BacktestState,
+) -> None:
+    """
+    Realize a partial (or remaining) leg: book gross price PnL minus exit fee
+    to equity, and accumulate gross/fee on the position for lifecycle aggregation.
+    Does NOT emit a TradeLog — that happens once, at final close, in _close_position.
+    """
+    nominal = close_qty * exit_price
+    if pos.side == "long":
+        gross = (exit_price - pos.entry_price) * close_qty
+    else:
+        gross = (pos.entry_price - exit_price) * close_qty
+    exit_fee = nominal * fee_rate
+
+    state.equity += gross - exit_fee
+    state.total_fees += exit_fee
+
+    pos.acc_gross_pnl += gross
+    pos.acc_exit_fee += exit_fee
+    pos.legs_closed += 1
+    pos.last_leg_exit_price = exit_price
+    pos.qty -= close_qty
+
+
 def _close_position(
     pos: Position,
     exit_price: float,
@@ -192,20 +284,22 @@ def _close_position(
     exit_reason: str,
     state: BacktestState,
     fee_rate: float = TAKER_FEE + SLIPPAGE_SL,
+    bar_idx: int = -1,
 ) -> None:
-    """Close a position, book PnL, record trade log."""
-    nominal = pos.qty * exit_price
-    if pos.side == "long":
-        pnl = (exit_price - pos.entry_price) * pos.qty
-    else:
-        pnl = (pos.entry_price - exit_price) * pos.qty
+    """
+    Close the REMAINING qty of a position and emit ONE position-lifecycle TradeLog
+    aggregating all legs. Win == net_pnl > 0 (gross - all fees - all funding).
+    """
+    # Realize the final remaining leg.
+    _book_leg(pos, pos.qty, exit_price, fee_rate, state)
 
-    exit_fee = nominal * fee_rate
-    net_pnl = pnl - exit_fee
-    state.equity += net_pnl
-    state.total_fees += exit_fee
+    gross_pnl = pos.acc_gross_pnl
+    total_fee = pos.entry_fee + pos.acc_exit_fee
+    funding = pos.acc_funding
+    net_pnl = gross_pnl - total_fee - funding
 
-    r_mult = pnl / pos.initial_risk if pos.initial_risk > 0 else 0.0
+    net_r = net_pnl / pos.initial_risk if pos.initial_risk > 0 else 0.0
+    gross_r = gross_pnl / pos.initial_risk if pos.initial_risk > 0 else 0.0
 
     log_entry = TradeLog(
         trade_id=state.trade_id_counter,
@@ -214,18 +308,27 @@ def _close_position(
         entry_price=pos.entry_price,
         exit_time=exit_time,
         exit_price=exit_price,
-        qty=pos.qty,
+        qty=pos.initial_qty if pos.initial_qty > 0 else pos.qty,
         leverage=pos.leverage,
         sl_price=pos.sl_price,
         exit_reason=exit_reason,
-        r_multiple=round(r_mult, 3),
-        fee_paid=round(pos.entry_fee + exit_fee, 6),
-        funding_paid=0.0,  # funding tracked separately at position level
+        r_multiple=round(net_r, 3),
+        fee_paid=round(total_fee, 6),
+        funding_paid=round(funding, 6),
         tranche_index=pos.tranche_index,
         liq_price=pos.liq_price,
+        net_pnl=round(net_pnl, 4),
+        gross_pnl=round(gross_pnl, 4),
+        gross_r_multiple=round(gross_r, 3),
+        num_legs=pos.legs_closed,
     )
     state.trade_logs.append(log_entry)
     state.trade_id_counter += 1
+
+    # Record cooldown info (P1-1): when and whether this side closed on a stop.
+    if bar_idx >= 0:
+        state.last_close_bar[pos.side] = bar_idx
+        state.last_close_was_sl[pos.side] = exit_reason in ("sl",)
 
 
 # ---------------------------------------------------------------------------
@@ -246,10 +349,12 @@ def run_backtest(
     2. For each open position: SL/TP/trailing/funding
     3. Build snapshot, generate signal, create pending order
     """
-    # Load all data once
+    # Load all data once and precompute indicators per TF (O(n) once instead of
+    # O(n^2) per-bar recomputation). Safe: SMA/ATR are causal, and _get_tf_slice
+    # always returns a prefix of these frames, so per-row values are identical.
     tf_data: dict[str, pd.DataFrame] = {}
     for tf in ALL_TFS:
-        tf_data[tf] = _load_tf_data(conn, tf)
+        tf_data[tf] = add_indicators(_load_tf_data(conn, tf))
 
     # Get 30m bars in range
     bars_30m = tf_data["30m"]
@@ -299,6 +404,7 @@ def run_backtest(
                     entry_bar_idx=bar_idx,
                     initial_risk=po.initial_risk,
                     entry_fee=entry_fee,
+                    initial_qty=sz.qty,
                 )
                 state.positions.append(pos)
                 state.pending_order = None
@@ -309,23 +415,39 @@ def run_backtest(
         # --- 2. Process open positions ---
         positions_to_remove = []
         for pos in state.positions:
-            # Funding fee every 16 bars (8h)
+            # P1-2: Funding fee every 16 bars (8h), attributed to THIS position's leg.
+            # Funding = notional × |rate|, charged against the position (pessimistic).
             if bar_idx % FUNDING_INTERVAL_BARS == 0:
                 funding = pos.qty * bar_close * abs(FUNDING_RATE)
                 state.equity -= funding
                 state.total_funding += funding
+                pos.acc_funding += funding
 
-            # Check liq approach (50% buffer breach) — count state transitions only
+            # P2: liq-approach = MARK price (this bar) breaching 50% of entry→liq gap.
+            # On breach, count once and simulate a forced partial reduction (halve qty).
             gap = abs(pos.entry_price - pos.liq_price)
             if gap > 0:
+                # worst-case mark this bar in the adverse direction
+                adverse_mark = bar_low if pos.side == "long" else bar_high
                 if pos.side == "long":
-                    sl_to_liq = pos.sl_price - pos.liq_price
+                    mark_to_liq = adverse_mark - pos.liq_price
                 else:
-                    sl_to_liq = pos.liq_price - pos.sl_price
-                in_breach = (sl_to_liq / gap) < LIQ_MONITOR_FRAC
+                    mark_to_liq = pos.liq_price - adverse_mark
+                in_breach = (mark_to_liq / gap) < LIQ_MONITOR_FRAC
                 if in_breach and not pos.liq_breach_flagged:
                     state.liq_approach_count += 1
                     pos.liq_breach_flagged = True
+                    # forced de-risk: reduce half the remaining qty at the adverse mark
+                    reduce_qty = pos.qty * 0.5
+                    if reduce_qty > 0:
+                        _book_leg(pos, reduce_qty, adverse_mark, TAKER_FEE + SLIPPAGE_SL, state)
+                        if pos.qty <= 0:
+                            _close_position(
+                                pos, adverse_mark, bar_time_str, "liq_forced_reduce",
+                                state, fee_rate=TAKER_FEE + SLIPPAGE_SL, bar_idx=bar_idx,
+                            )
+                            positions_to_remove.append(pos)
+                            continue
                 elif not in_breach:
                     pos.liq_breach_flagged = False
 
@@ -351,9 +473,12 @@ def run_backtest(
                 sl_hit = True
 
             if sl_hit:
+                # BE stop (after TP1) closing at entry is not a real "loss" exit:
+                # classify as "be" so cooldown/win logic treats it on net terms.
+                reason = "be" if (pos.be_stop_set and pos.sl_price == pos.entry_price) else "sl"
                 _close_position(
-                    pos, pos.sl_price, bar_time_str, "sl", state,
-                    fee_rate=TAKER_FEE + SLIPPAGE_SL,
+                    pos, pos.sl_price, bar_time_str, reason, state,
+                    fee_rate=TAKER_FEE + SLIPPAGE_SL, bar_idx=bar_idx,
                 )
                 positions_to_remove.append(pos)
                 continue
@@ -366,41 +491,15 @@ def run_backtest(
                 elif pos.side == "short" and bar_low <= pos.tp1_price:
                     tp1_hit = True
                 if tp1_hit:
-                    # Close 1/3 at TP1
+                    # Close 1/3 at TP1 (partial leg — booked, no standalone trade row)
                     close_qty = pos.qty / 3.0
-                    nominal = close_qty * pos.tp1_price
-                    exit_fee = nominal * MAKER_FEE
-                    if pos.side == "long":
-                        pnl = (pos.tp1_price - pos.entry_price) * close_qty
-                    else:
-                        pnl = (pos.entry_price - pos.tp1_price) * close_qty
-                    state.equity += pnl - exit_fee
-                    state.total_fees += exit_fee
-                    pos.qty -= close_qty
+                    _book_leg(pos, close_qty, pos.tp1_price, MAKER_FEE, state)
                     pos.tp1_hit = True
                     # Set BE stop
                     pos.sl_price = pos.entry_price
                     pos.be_stop_set = True
                     # After 1R → activate trailing
                     pos.trailing_active = True
-                    state.trade_logs.append(TradeLog(
-                        trade_id=state.trade_id_counter,
-                        side=pos.side,
-                        entry_time=pos.entry_time,
-                        entry_price=pos.entry_price,
-                        exit_time=bar_time_str,
-                        exit_price=pos.tp1_price,
-                        qty=close_qty,
-                        leverage=pos.leverage,
-                        sl_price=pos.sl_price,
-                        exit_reason="tp1",
-                        r_multiple=1.0,
-                        fee_paid=round(exit_fee, 6),
-                        funding_paid=0.0,
-                        tranche_index=pos.tranche_index,
-                        liq_price=pos.liq_price,
-                    ))
-                    state.trade_id_counter += 1
 
             # TP2 hit
             if pos.tp1_hit and not pos.tp2_hit:
@@ -411,34 +510,8 @@ def run_backtest(
                     tp2_hit = True
                 if tp2_hit:
                     close_qty = pos.qty / 2.0  # half of remaining (originally 1/3)
-                    nominal = close_qty * pos.tp2_price
-                    exit_fee = nominal * MAKER_FEE
-                    if pos.side == "long":
-                        pnl = (pos.tp2_price - pos.entry_price) * close_qty
-                    else:
-                        pnl = (pos.entry_price - pos.tp2_price) * close_qty
-                    state.equity += pnl - exit_fee
-                    state.total_fees += exit_fee
-                    pos.qty -= close_qty
+                    _book_leg(pos, close_qty, pos.tp2_price, MAKER_FEE, state)
                     pos.tp2_hit = True
-                    state.trade_logs.append(TradeLog(
-                        trade_id=state.trade_id_counter,
-                        side=pos.side,
-                        entry_time=pos.entry_time,
-                        entry_price=pos.entry_price,
-                        exit_time=bar_time_str,
-                        exit_price=pos.tp2_price,
-                        qty=close_qty,
-                        leverage=pos.leverage,
-                        sl_price=pos.sl_price,
-                        exit_reason="tp2",
-                        r_multiple=2.0,
-                        fee_paid=round(exit_fee, 6),
-                        funding_paid=0.0,
-                        tranche_index=pos.tranche_index,
-                        liq_price=pos.liq_price,
-                    ))
-                    state.trade_id_counter += 1
 
             # TP3 hit — full close of remainder
             if pos.tp2_hit:
@@ -450,7 +523,7 @@ def run_backtest(
                 if tp3_hit:
                     _close_position(
                         pos, pos.tp3_price, bar_time_str, "tp3", state,
-                        fee_rate=MAKER_FEE,
+                        fee_rate=MAKER_FEE, bar_idx=bar_idx,
                     )
                     positions_to_remove.append(pos)
 
@@ -469,24 +542,20 @@ def run_backtest(
                     if exit_sig.exit_action == "exit":
                         _close_position(
                             pos, bar_close, bar_time_str, "signal_exit", state,
-                            fee_rate=TAKER_FEE,
+                            fee_rate=TAKER_FEE, bar_idx=bar_idx,
                         )
                         if pos in state.positions:
                             state.positions.remove(pos)
                     elif exit_sig.exit_action == "reduce":
-                        # Reduce by half
+                        # Reduce by half (partial leg — booked into the position)
                         close_qty = pos.qty * 0.5
                         if close_qty > 0:
-                            nominal = close_qty * bar_close
-                            exit_fee = nominal * TAKER_FEE
-                            if pos.side == "long":
-                                pnl = (bar_close - pos.entry_price) * close_qty
-                            else:
-                                pnl = (pos.entry_price - bar_close) * close_qty
-                            state.equity += pnl - exit_fee
-                            state.total_fees += exit_fee
-                            pos.qty -= close_qty
+                            _book_leg(pos, close_qty, bar_close, TAKER_FEE, state)
                             if pos.qty <= 0:
+                                _close_position(
+                                    pos, bar_close, bar_time_str, "signal_reduce",
+                                    state, fee_rate=TAKER_FEE, bar_idx=bar_idx,
+                                )
                                 if pos in state.positions:
                                     state.positions.remove(pos)
 
@@ -498,6 +567,18 @@ def run_backtest(
                     current_tranche = len(same_side)
 
                     if current_tranche == 0:
+                        # P1-1: re-entry cooldown. Same-direction re-entry requires
+                        # N bars since last close of that side; 16 bars if the last
+                        # close was a stop-loss (연속 손절 churn 방지), else 8 bars.
+                        bars_since_close = bar_idx - state.last_close_bar[sig.side]
+                        cooldown = (
+                            SL_REENTRY_COOLDOWN_BARS
+                            if state.last_close_was_sl[sig.side]
+                            else REENTRY_COOLDOWN_BARS
+                        )
+                        if bars_since_close < cooldown:
+                            continue  # still cooling down — skip this signal
+
                         # Fresh entry
                         entry_price = bar_close  # limit at close price (post-only)
                         tf_1h_slice = _get_tf_slice(tf_data, bar_time, "1h")
@@ -601,7 +682,10 @@ def run_backtest(
         last_bar = sim_bars.iloc[-1]
         last_time = str(sim_bars.index[-1])
         for pos in list(state.positions):
-            _close_position(pos, last_bar["close"], last_time, "end_of_period", state, fee_rate=TAKER_FEE)
+            _close_position(
+                pos, last_bar["close"], last_time, "end_of_period", state,
+                fee_rate=TAKER_FEE, bar_idx=len(sim_bars) - 1,
+            )
         state.positions.clear()
 
     state.equity_curve.append((str(end_ts), round(state.equity, 2)))
@@ -625,11 +709,14 @@ def compute_metrics(state: BacktestState, initial_equity: float) -> dict:
             "trade_count": 0,
             "total_fees": round(state.total_fees, 4),
             "total_funding": round(state.total_funding, 4),
+            "total_cost_pct": round((state.total_fees + state.total_funding) / initial_equity * 100.0, 3),
             "liq_approach_count": state.liq_approach_count,
             "long_trades": 0,
             "short_trades": 0,
             "long_win_pct": 0.0,
             "short_win_pct": 0.0,
+            "gross_profit_factor": 0.0,
+            "gross_avg_r": 0.0,
         }
 
     final_equity = state.equity
@@ -646,34 +733,51 @@ def compute_metrics(state: BacktestState, initial_equity: float) -> dict:
         if dd > mdd:
             mdd = dd
 
-    # Win/loss
-    wins = [t for t in logs if t.r_multiple > 0]
-    losses = [t for t in logs if t.r_multiple <= 0]
+    # Win/loss — POSITION-LIFECYCLE, NET basis (P0-2).
+    # Each TradeLog row is one position; win == net_pnl > 0.
+    wins = [t for t in logs if t.net_pnl > 0]
+    losses = [t for t in logs if t.net_pnl <= 0]
     win_rate = len(wins) / len(logs) * 100.0 if logs else 0.0
 
-    gross_profit = sum(t.r_multiple for t in wins)
-    gross_loss = abs(sum(t.r_multiple for t in losses))
-    pf = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+    # PF on NET $ (gross profit / gross loss, both net of all costs).
+    net_profit = sum(t.net_pnl for t in wins)
+    net_loss = abs(sum(t.net_pnl for t in losses))
+    pf = net_profit / net_loss if net_loss > 0 else float("inf")
 
+    # avg_r uses NET R.
     avg_r = sum(t.r_multiple for t in logs) / len(logs) if logs else 0.0
+
+    # Reference-only gross metrics (do NOT use for pass/fail).
+    gross_wins = [t for t in logs if t.gross_pnl > 0]
+    gross_losses = [t for t in logs if t.gross_pnl <= 0]
+    gp = sum(t.gross_pnl for t in gross_wins)
+    gl = abs(sum(t.gross_pnl for t in gross_losses))
+    gross_pf = gp / gl if gl > 0 else float("inf")
+    gross_avg_r = sum(t.gross_r_multiple for t in logs) / len(logs) if logs else 0.0
 
     long_trades = [t for t in logs if t.side == "long"]
     short_trades = [t for t in logs if t.side == "short"]
-    long_wins = [t for t in long_trades if t.r_multiple > 0]
-    short_wins = [t for t in short_trades if t.r_multiple > 0]
+    long_wins = [t for t in long_trades if t.net_pnl > 0]
+    short_wins = [t for t in short_trades if t.net_pnl > 0]
+
+    total_costs = state.total_fees + state.total_funding
 
     return {
         "total_return_pct": round(total_return, 2),
         "mdd_pct": round(mdd, 2),
-        "profit_factor": round(pf, 3),
-        "win_rate_pct": round(win_rate, 1),
-        "avg_r": round(avg_r, 3),
+        "profit_factor": round(pf, 3),              # NET PF — authoritative
+        "win_rate_pct": round(win_rate, 1),          # NET, position-lifecycle
+        "avg_r": round(avg_r, 3),                    # NET R
         "trade_count": len(logs),
         "total_fees": round(state.total_fees, 4),
         "total_funding": round(state.total_funding, 4),
+        "total_cost_pct": round(total_costs / initial_equity * 100.0, 3),
         "liq_approach_count": state.liq_approach_count,
         "long_trades": len(long_trades),
         "short_trades": len(short_trades),
         "long_win_pct": round(len(long_wins) / len(long_trades) * 100, 1) if long_trades else 0.0,
         "short_win_pct": round(len(short_wins) / len(short_trades) * 100, 1) if short_trades else 0.0,
+        # --- reference-only (gross, pre-cost) ---
+        "gross_profit_factor": round(gross_pf, 3),
+        "gross_avg_r": round(gross_avg_r, 3),
     }

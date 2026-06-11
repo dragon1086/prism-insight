@@ -28,8 +28,11 @@ LEV_LOW_HIGH: float = 15.0
 ATR_HIGH_THRESHOLD: float = 0.025     # 2.5% ATR/close ratio
 LEV_ATR_CAP: float = 15.0
 
-# Liquidation buffer: SL must be >= 30% inside the gap between entry and liq price
-LIQ_BUFFER_MIN_FRAC: float = 0.30    # 30% of entry→liq distance must remain between SL and liq
+# Liquidation buffer: SL must be >= 50% inside the gap between entry and liq price.
+# P2 audit: initial SL within 50% of liq distance is unsafe → auto-deleverage until
+# satisfied; if 10x still fails, cancel entry.
+LIQ_BUFFER_MIN_FRAC: float = 0.50    # 50% of entry→liq distance must remain between SL and liq
+LEV_FLOOR_BUFFER: float = 10.0       # do not deleverage below 10x to satisfy buffer; reject instead
 
 # Pyramid tranches
 TRANCHE_FRACS: tuple[float, ...] = (0.40, 0.30, 0.30)  # 40% / 30% / 30%
@@ -224,23 +227,25 @@ def compute_sizing(
     risk_capital = equity * RISK_PER_TRADE * tranche_frac
     qty = risk_capital / (sl_dist_pct * entry)
 
-    # Compute liq price and check buffer — iterate lev down if needed
+    # Compute liq price and check buffer — auto-deleverage until SL is >= 50%
+    # inside the entry→liq gap. Floor at LEV_FLOOR_BUFFER (10x); if 10x still
+    # fails, cancel the entry (P2). Never deleverage below 10x.
     liq = approx_liq_price(entry, lev, side)
-    max_attempts = 20
+    max_attempts = 40
     for _ in range(max_attempts):
         liq = approx_liq_price(entry, lev, side)
         if _sl_passes_buffer(entry, sl_price, liq, side):
             break
-        lev = max(lev - 1.0, 1.0)
-        if lev <= 1.0:
+        if lev <= LEV_FLOOR_BUFFER:
             break
+        lev = max(lev - 1.0, LEV_FLOOR_BUFFER)
 
     liq = approx_liq_price(entry, lev, side)
     if not _sl_passes_buffer(entry, sl_price, liq, side):
         return SizingResult(
             leverage=lev, qty=0, sl_price=sl_price, tp1_price=0, tp2_price=0,
             tp3_price=0, liq_price=liq, tranche_index=tranche_index,
-            rejected=True, reject_reason="청산가 버퍼 불충족, 진입 취소",
+            rejected=True, reject_reason="청산가 버퍼(50%) 불충족 @10x, 진입 취소",
         )
 
     # TP levels: 1R / 2R / 3R

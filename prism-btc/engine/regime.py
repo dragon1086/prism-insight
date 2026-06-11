@@ -199,7 +199,11 @@ def build_tf_state(df: pd.DataFrame) -> TFState:
     Compute TFState from a DataFrame of confirmed klines (oldest first).
     df must have columns: open, high, low, close. At least 35 rows needed.
     """
-    df = add_indicators(df)
+    # Fast path: skip recomputation when indicators are precomputed (backtest).
+    # Rolling SMA/ATR are causal (past-only), so precomputed prefix values are
+    # identical to computing on the slice — no look-ahead introduced.
+    if "ma10" not in df.columns or "atr14" not in df.columns:
+        df = add_indicators(df)
     last = df.iloc[-1]
     ma10 = last["ma10"]
     ma35 = last["ma35"]

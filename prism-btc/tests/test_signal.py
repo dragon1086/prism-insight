@@ -91,18 +91,25 @@ class TestGenerateSignal:
         sig = generate_signal(snap)
         assert sig.side == "none"
 
-    def test_score_exactly_39_returns_none(self):
-        snap = all_bullish_snapshot(score=39.9)
+    def test_score_below_entry_min_returns_none(self):
+        # P1-1: entry threshold raised to 55; 54.9 must not trigger entry.
+        snap = all_bullish_snapshot(score=54.9)
         sig = generate_signal(snap)
         assert sig.side == "none"
 
-    def test_score_exactly_40_long_all_aligned(self):
+    def test_score_between_40_and_55_returns_none(self):
+        # Previously 40 entered; now 40 is below the 55 entry gate → none.
         snap = all_bullish_snapshot(score=40.0)
+        sig = generate_signal(snap)
+        assert sig.side == "none"
+
+    def test_score_at_entry_min_long_all_aligned(self):
+        snap = all_bullish_snapshot(score=55.0)
         sig = generate_signal(snap)
         assert sig.side == "long"
 
-    def test_score_negative_40_short_all_aligned(self):
-        snap = all_bearish_snapshot(score=-40.0)
+    def test_score_negative_entry_min_short_all_aligned(self):
+        snap = all_bearish_snapshot(score=-55.0)
         sig = generate_signal(snap)
         assert sig.side == "short"
 

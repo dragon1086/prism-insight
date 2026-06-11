@@ -24,6 +24,12 @@ TOUCH_TOL: float = 0.001  # 0.10%
 # When candle position aligns with trend, add this fraction of the TF weight as bonus
 CANDLE_BONUS_FRAC: float = 0.20  # up to ±20% of each TF weight
 
+# --- Entry gating (P1-1: 거래 엄선) ---
+# Minimum |alignment_score| required to open a new position. Raised 40 → 55 per
+# D4 audit to throttle signal frequency. This is the ONLY tuning of this value;
+# no parameter sweep. (Leverage bands in sizing.py are independent and unchanged.)
+ENTRY_SCORE_MIN: float = 55.0
+
 # --- Bybit API ---
 BYBIT_BASE_URL: str = "https://api.bybit.com"
 BYBIT_KLINE_ENDPOINT: str = "/v5/market/kline"

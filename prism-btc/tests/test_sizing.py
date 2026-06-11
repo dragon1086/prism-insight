@@ -136,30 +136,30 @@ class TestApproxLiqPrice:
 # ---------------------------------------------------------------------------
 
 class TestSlPassesBuffer:
-    def test_long_sl_30pct_inside_passes(self):
-        """SL exactly 30% of gap from liq → passes."""
+    def test_long_sl_above_threshold_passes(self):
+        """SL just above the buffer threshold of gap from liq → passes."""
         entry, liq = 50000.0, 47500.0  # gap = 2500
-        sl = liq + 0.30 * (entry - liq)  # = 47500 + 750 = 48250
+        sl = liq + (LIQ_BUFFER_MIN_FRAC + 0.01) * (entry - liq)
         assert _sl_passes_buffer(entry, sl, liq, "long") is True
 
-    def test_long_sl_too_close_to_liq_fails(self):
-        """SL only 10% inside → fails."""
+    def test_long_sl_below_threshold_fails(self):
+        """SL just below the buffer threshold → fails."""
         entry, liq = 50000.0, 47500.0
-        sl = liq + 0.10 * (entry - liq)  # 47750
+        sl = liq + (LIQ_BUFFER_MIN_FRAC - 0.10) * (entry - liq)
         assert _sl_passes_buffer(entry, sl, liq, "long") is False
 
     def test_long_sl_exactly_at_liq_fails(self):
         entry, liq = 50000.0, 47500.0
         assert _sl_passes_buffer(entry, liq, liq, "long") is False
 
-    def test_short_sl_30pct_inside_passes(self):
+    def test_short_sl_above_threshold_passes(self):
         entry, liq = 50000.0, 52500.0  # gap = 2500
-        sl = liq - 0.30 * (liq - entry)  # = 52500 - 750 = 51750
+        sl = liq - (LIQ_BUFFER_MIN_FRAC + 0.01) * (liq - entry)
         assert _sl_passes_buffer(entry, sl, liq, "short") is True
 
-    def test_short_sl_too_close_fails(self):
+    def test_short_sl_below_threshold_fails(self):
         entry, liq = 50000.0, 52500.0
-        sl = liq - 0.10 * (liq - entry)  # 52250 — only 10% inside
+        sl = liq - (LIQ_BUFFER_MIN_FRAC - 0.10) * (liq - entry)
         assert _sl_passes_buffer(entry, sl, liq, "short") is False
 
 

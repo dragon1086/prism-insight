@@ -116,18 +116,21 @@ def generate_signal(snapshot: RegimeSnapshot) -> Signal:
     """
     RegimeSnapshot → Signal.
 
-    롱: alignment_score >= +40 AND 장기TF 가중 방향 양수 AND 단기(30m/1h) 지지/돌파
+    롱: alignment_score >= +ENTRY_SCORE_MIN AND 장기TF 가중 방향 양수 AND 단기(30m/1h) 지지/돌파
     숏: 대칭
-    |score| < 40 → none
+    |score| < ENTRY_SCORE_MIN → none
     """
+    from engine.config import ENTRY_SCORE_MIN
+
     score = snapshot.alignment_score
     tf_states = snapshot.tf_states
     abs_score = abs(score)
 
-    if abs_score < 40:
-        return Signal(side="none", strength=abs_score, reason=f"score={score:.1f} < 40, 횡보관망")
+    if abs_score < ENTRY_SCORE_MIN:
+        return Signal(side="none", strength=abs_score,
+                      reason=f"score={score:.1f} < {ENTRY_SCORE_MIN:.0f}, 횡보관망")
 
-    if score >= 40:
+    if score >= ENTRY_SCORE_MIN:
         # 롱 후보
         if not _long_tf_direction_positive(tf_states):
             return Signal(side="none", strength=abs_score, reason="장기TF 방향 미정렬(롱)")
@@ -135,7 +138,7 @@ def generate_signal(snapshot: RegimeSnapshot) -> Signal:
             return Signal(side="none", strength=abs_score, reason="단기TF 타이밍 미충족(롱)")
         return Signal(side="long", strength=abs_score, reason=f"롱신호 score={score:.1f}")
 
-    # score <= -40
+    # score <= -ENTRY_SCORE_MIN
     if not _long_tf_direction_negative(tf_states):
         return Signal(side="none", strength=abs_score, reason="장기TF 방향 미정렬(숏)")
     if not _short_tfs_aligned(tf_states, SHORT_ENTRY_POSITIONS):
@@ -166,20 +169,20 @@ def check_exit_signal(
         return Signal(side=position_side, strength=abs(score), reason="장기정렬반전→exit", exit_action="exit")
 
     # 단기 역전 + 4h 경고
-    short_reversed = False
+    # P1-1: 추세를 길게 타기 위해 청산 민감도 완화. 30m 단독 역전으로는 reduce 금지 —
+    # 1h 확정 역전이 필수 조건. (1h가 반전돼야만 단기역전으로 인정)
     four_h_warning = False
 
-    short_tfs_reversed_count = 0
-    for tf in SHORT_TFS:
-        state = tf_states.get(tf)
-        if state is None:
-            continue
-        if position_side == "long" and state.candle_position in EXIT_SIGNAL_LONG:
-            short_tfs_reversed_count += 1
-        elif position_side == "short" and state.candle_position in EXIT_SIGNAL_SHORT:
-            short_tfs_reversed_count += 1
+    one_h_state = tf_states.get("1h")
+    one_h_reversed = False
+    if one_h_state is not None:
+        if position_side == "long" and one_h_state.candle_position in EXIT_SIGNAL_LONG:
+            one_h_reversed = True
+        elif position_side == "short" and one_h_state.candle_position in EXIT_SIGNAL_SHORT:
+            one_h_reversed = True
 
-    short_reversed = short_tfs_reversed_count >= len(SHORT_TFS)
+    # 1h 확정 역전이 없으면 단기역전으로 보지 않는다 (30m 단독 무시)
+    short_reversed = one_h_reversed
 
     four_h_state = tf_states.get("4h")
     if four_h_state is not None:

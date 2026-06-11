@@ -169,6 +169,76 @@ class TestNoLookahead:
         snapshot = _build_snapshot_at(tf_data, current_time)
         assert snapshot is None
 
+    def test_slice_only_closed_candles_synthetic(self):
+        """A higher-TF candle still in progress at current_time must be EXCLUDED.
+        4h candle open_time=00:00 closes at 04:00; at a 30m time of 02:00 it is
+        unconfirmed → must NOT appear in the slice (P0-1 look-ahead regression)."""
+        start_ms = 1640995200000  # 2022-01-01 00:00
+        interval_4h_ms = 4 * 60 * 60 * 1000
+        df_4h = _make_indexed_df(50, start_ms, interval_4h_ms)
+        # current 30m time = 02:00 → first 4h candle (00:00-04:00) NOT yet closed
+        current_time = pd.Timestamp(start_ms + 2 * 60 * 60 * 1000, unit="ms", tz="UTC")
+        sliced = _get_tf_slice({"4h": df_4h}, current_time, "4h")
+        # zero closed 4h candles at 02:00
+        assert len(sliced) == 0
+        # at exactly 04:00 the first candle is closed → exactly 1
+        at_close = pd.Timestamp(start_ms + interval_4h_ms, unit="ms", tz="UTC")
+        assert len(_get_tf_slice({"4h": df_4h}, at_close, "4h")) == 1
+
+
+# ---------------------------------------------------------------------------
+# No look-ahead regression with REAL DB data (P0-1)
+# ---------------------------------------------------------------------------
+
+class TestNoLookaheadRealDB:
+    """Validate that snapshots built from the real market.db never include any
+    higher-TF candle that has not yet closed as of the simulated 30m bar time."""
+
+    def _db_path(self):
+        from pathlib import Path
+        p = Path(__file__).resolve().parent.parent / "state" / "market.db"
+        return p
+
+    def test_no_unclosed_upper_tf_candle_in_snapshot(self):
+        import sqlite3
+        from backtest.engine import _load_tf_data, _get_tf_slice, TF_DURATION
+
+        db = self._db_path()
+        if not db.exists():
+            pytest.skip("real market.db not present")
+
+        conn = sqlite3.connect(str(db))
+        try:
+            tf_data = {tf: _load_tf_data(conn, tf) for tf in ALL_TFS}
+        finally:
+            conn.close()
+
+        bars_30m = tf_data["30m"]
+        if len(bars_30m) < 5000:
+            pytest.skip("insufficient real data")
+
+        # Sample a spread of 30m bar times across the dataset.
+        sample_idxs = [3000, 10000, 25000, 40000, 60000]
+        checked = 0
+        for idx in sample_idxs:
+            if idx >= len(bars_30m):
+                continue
+            current_time = bars_30m.index[idx]
+            for tf in ("1h", "4h", "12h", "1d", "1w"):
+                sliced = _get_tf_slice(tf_data, current_time, tf)
+                if sliced.empty:
+                    continue
+                dur = TF_DURATION[tf]
+                # Every candle in the slice must be fully closed by current_time:
+                # open_time + duration <= current_time. The last one is the binding case.
+                last_close = sliced.index.max() + dur
+                assert last_close <= current_time, (
+                    f"{tf} candle open={sliced.index.max()} closes at {last_close} "
+                    f"> current {current_time}: unclosed candle leaked"
+                )
+                checked += 1
+        assert checked > 0  # ensure the assertion actually ran
+
 
 # ---------------------------------------------------------------------------
 # Liquidation buffer rejection (integration)
@@ -176,20 +246,18 @@ class TestNoLookahead:
 
 class TestLiquidationBufferRejection:
     def test_sl_below_liq_rejected_by_buffer(self):
-        """If SL would be between entry and liq (buffer < 30%), must not pass."""
-        # Long position: entry=50000, lev=30, liq = 50000*(1-1/30*(1-0.005)) ≈ 48342
+        """SL inside the buffer (< LIQ_BUFFER_MIN_FRAC of gap) must not pass."""
         entry = 50000.0
         lev = 30.0
         liq = approx_liq_price(entry, lev, "long")
-        gap = entry - liq  # ~1658
+        gap = entry - liq
 
-        # SL at 10% of gap from liq → fails (well below threshold)
-        sl_fail = liq + 0.10 * gap
+        # SL well below threshold → fails
+        sl_fail = liq + (LIQ_BUFFER_MIN_FRAC - 0.2) * gap
         assert _sl_passes_buffer(entry, sl_fail, liq, "long") is False
 
-        # SL at 40% of gap from liq → passes (safely above 30% threshold)
-        # Use 0.31 to avoid floating-point edge at exactly 0.30
-        sl_pass = liq + 0.31 * gap
+        # SL just above threshold → passes
+        sl_pass = liq + (LIQ_BUFFER_MIN_FRAC + 0.01) * gap
         assert _sl_passes_buffer(entry, sl_pass, liq, "long") is True
 
     def test_short_buffer_logic(self):
@@ -198,11 +266,10 @@ class TestLiquidationBufferRejection:
         liq = approx_liq_price(entry, lev, "short")
         gap = liq - entry
 
-        sl_fail = liq - 0.10 * gap
+        sl_fail = liq - (LIQ_BUFFER_MIN_FRAC - 0.2) * gap
         assert _sl_passes_buffer(entry, sl_fail, liq, "short") is False
 
-        # Use 0.31 to avoid floating-point edge at exactly 0.30
-        sl_pass = liq - 0.31 * gap
+        sl_pass = liq - (LIQ_BUFFER_MIN_FRAC + 0.01) * gap
         assert _sl_passes_buffer(entry, sl_pass, liq, "short") is True
 
 
@@ -212,15 +279,17 @@ class TestLiquidationBufferRejection:
 
 class TestRMultipleCalculation:
     def test_r_positive_for_profitable_trade(self):
+        # Win is defined on NET pnl (P0-2). net_pnl > 0 → win.
         state = BacktestState(equity=10000.0)
         state.trade_logs.append(TradeLog(
             trade_id=0, side="long",
             entry_time="2022-01-01", entry_price=50000.0,
             exit_time="2022-01-02", exit_price=51000.0,
             qty=0.01, leverage=10.0, sl_price=49000.0,
-            exit_reason="tp1",
+            exit_reason="tp3",
             r_multiple=1.0, fee_paid=0.001, funding_paid=0.0,
             tranche_index=0, liq_price=45000.0,
+            net_pnl=10.0, gross_pnl=10.5, gross_r_multiple=1.05,
         ))
         metrics = compute_metrics(state, 10000.0)
         assert metrics["win_rate_pct"] == pytest.approx(100.0)
@@ -235,11 +304,13 @@ class TestRMultipleCalculation:
             exit_reason="sl",
             r_multiple=-1.0, fee_paid=0.001, funding_paid=0.0,
             tranche_index=0, liq_price=45000.0,
+            net_pnl=-10.0, gross_pnl=-9.5, gross_r_multiple=-0.95,
         ))
         metrics = compute_metrics(state, 10000.0)
         assert metrics["win_rate_pct"] == pytest.approx(0.0)
 
     def test_profit_factor_gt_1_when_wins_dominate(self):
+        # PF is computed on NET $ (P0-2): 6 wins of +10 vs 4 losses of -10 → 1.5.
         state = BacktestState(equity=11000.0)
         for i in range(6):
             state.trade_logs.append(TradeLog(
@@ -247,9 +318,10 @@ class TestRMultipleCalculation:
                 entry_time="2022-01-01", entry_price=50000.0,
                 exit_time="2022-01-02", exit_price=51000.0,
                 qty=0.01, leverage=10.0, sl_price=49000.0,
-                exit_reason="tp1",
+                exit_reason="tp3",
                 r_multiple=1.0, fee_paid=0.001, funding_paid=0.0,
                 tranche_index=0, liq_price=45000.0,
+                net_pnl=10.0, gross_pnl=10.5, gross_r_multiple=1.05,
             ))
         for i in range(4):
             state.trade_logs.append(TradeLog(
@@ -260,6 +332,7 @@ class TestRMultipleCalculation:
                 exit_reason="sl",
                 r_multiple=-1.0, fee_paid=0.001, funding_paid=0.0,
                 tranche_index=0, liq_price=45000.0,
+                net_pnl=-10.0, gross_pnl=-9.5, gross_r_multiple=-0.95,
             ))
         metrics = compute_metrics(state, 10000.0)
         assert metrics["profit_factor"] == pytest.approx(6.0 / 4.0)
