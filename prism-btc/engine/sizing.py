@@ -33,6 +33,15 @@ LEV_LOW_HIGH: float = 10.0
 ATR_HIGH_THRESHOLD: float = 0.025     # 2.5% ATR/close ratio
 LEV_ATR_CAP: float = 10.0
 
+# 멀티에셋 R1: 변동성 연동 청산거리 규칙 — liq 거리(≈1/lev)가 항상
+# 12×ATR(14,1h) 이상이 되도록 레버리지 천장을 연속적으로 제한.
+# lev ≤ 1 / (12 × atr_ratio). 자산별 튜닝이 아닌 단일 전역 규칙:
+# BTC 평상시(1h ATR ~0.5%)엔 천장 16x로 밴드(8~12x)에 안 걸리고,
+# 고변동(ETH·급락장 1h ATR 1%+)에선 8.3x 이하로 자동 축소된다.
+# 근거: ETH 교차검증에서 liq_approach 5회(2023) — BTC 변동성 기준 밴드가
+# 더 거친 자산에서 청산거리를 좁히는 문제의 구조적 해법. 스윕 없음.
+LIQ_ATR_MULT: float = 12.0
+
 # Liquidation buffer: SL must be >= 65% inside the gap between entry and liq price.
 # 라운드3 B: raised 0.50 → 0.65 to directly block liq_approach. On entry, SL must
 # sit at least 65% of the entry→liq gap away from liq; otherwise auto-deleverage
@@ -96,6 +105,10 @@ def compute_leverage(
     # ATR volatility cap
     if atr_ratio > ATR_HIGH_THRESHOLD:
         lev = min(lev, LEV_ATR_CAP)
+
+    # 멀티에셋 R1: 변동성 연동 청산거리 천장 (liq 거리 ≥ 12×ATR_1h)
+    if atr_ratio > 0:
+        lev = min(lev, 1.0 / (LIQ_ATR_MULT * atr_ratio))
 
     return lev
 

@@ -27,42 +27,49 @@ class TestComputeLeverage:
     # 라운드4: 12~18x 폐기, 라운드2 8~12x 복원 (라운드3 문서 권고 E 채택 —
     # liq_approach 전 구간 0 + 2024-25 수익 반전 확인).
     def test_score_80_low_atr_gives_11_to_12(self):
-        lev = compute_leverage(80.0, atr_ratio=0.01)
+        lev = compute_leverage(80.0, atr_ratio=0.005)
         assert 11.0 <= lev <= 12.0
 
     def test_score_100_low_atr_gives_12(self):
-        lev = compute_leverage(100.0, atr_ratio=0.01)
+        lev = compute_leverage(100.0, atr_ratio=0.005)
         assert lev == pytest.approx(12.0)
 
     def test_score_60_gives_10_to_11(self):
-        lev = compute_leverage(60.0, atr_ratio=0.01)
+        lev = compute_leverage(60.0, atr_ratio=0.005)
         assert 10.0 <= lev <= 11.0
 
     def test_score_70_interpolates(self):
-        lev = compute_leverage(70.0, atr_ratio=0.01)
+        lev = compute_leverage(70.0, atr_ratio=0.005)
         assert 10.0 <= lev <= 11.0
 
     def test_score_40_gives_8_to_10(self):
-        lev = compute_leverage(40.0, atr_ratio=0.01)
+        lev = compute_leverage(40.0, atr_ratio=0.005)
         assert 8.0 <= lev <= 10.0
 
     def test_score_50_interpolates(self):
-        lev = compute_leverage(50.0, atr_ratio=0.01)
+        lev = compute_leverage(50.0, atr_ratio=0.005)
         assert 8.0 <= lev <= 10.0
 
     def test_score_below_40_gives_zero(self):
-        lev = compute_leverage(39.9, atr_ratio=0.01)
+        lev = compute_leverage(39.9, atr_ratio=0.005)
         assert lev == 0.0
 
-    def test_high_atr_caps_at_atr_cap(self):
-        """ATR/close above threshold → cap at LEV_ATR_CAP (10x)."""
-        lev = compute_leverage(90.0, atr_ratio=ATR_HIGH_THRESHOLD + 0.01)
-        assert lev == pytest.approx(LEV_ATR_CAP)
+    def test_high_atr_caps_via_vol_ceiling(self):
+        """멀티에셋 R1: 고ATR에선 연속 천장 1/(12*atr)이 바이너리 캡(10x)보다
+        먼저 묶는다 (0.035 → 2.38x)."""
+        ratio = ATR_HIGH_THRESHOLD + 0.01
+        lev = compute_leverage(90.0, atr_ratio=ratio)
+        assert lev == pytest.approx(1.0 / (12.0 * ratio), abs=0.01)
 
-    def test_atr_exactly_at_threshold_no_cap(self):
-        """ATR at exactly threshold (not above) → no cap; 90 maps into 11~12."""
+    def test_atr_at_threshold_vol_ceiling_applies(self):
+        """threshold(0.025)에서 바이너리 캡은 미적용이나 연속 천장(3.33x)은 적용."""
         lev = compute_leverage(90.0, atr_ratio=ATR_HIGH_THRESHOLD)
-        assert lev > LEV_ATR_CAP  # uncapped 90 → ~11.5x > 10x cap
+        assert lev == pytest.approx(1.0 / (12.0 * ATR_HIGH_THRESHOLD), abs=0.01)
+
+    def test_vol_liq_ceiling_binds_at_high_atr(self):
+        # 멀티에셋 R1: lev <= 1/(12*atr_ratio). atr 1% -> ceiling 8.33x
+        lev = compute_leverage(100.0, atr_ratio=0.01)
+        assert lev == pytest.approx(1.0 / (12.0 * 0.01), abs=0.01)
 
     def test_leverage_monotone_with_score(self):
         """Higher score → higher or equal leverage."""
