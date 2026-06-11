@@ -91,52 +91,69 @@ def prep(conn):
     return f
 
 
-def run(f: pd.DataFrame, start: str, end: str):
-    s = pd.Timestamp(start, tz="UTC"); e = pd.Timestamp(end, tz="UTC")
-    g = f[(f.t >= s) & (f.t <= e)].reset_index(drop=True)
+def run(f: pd.DataFrame, start: str, end: str, exit_mode: str = "tp2r"):
+    """exit_mode:
+    - "tp2r": v0.1 — TP +2R 고정 + 24h 타임스탑 (승자 절단형 — 비교 기준)
+    - "trail": v0.2 — TP 없음. 트레일 스탑 = 돌파에 쓴 동일 8봉 레인지의 반대편
+      (롱: prev-8bar low가 올라올 때만 상향). 신규 파라미터 0개. 추세 라이딩.
+    버그수정(비관화): 갭 진입은 open 체결, 진입봉 내 SL 터치 인정(SL 우선).
+    """
+    s_ = pd.Timestamp(start, tz="UTC"); e_ = pd.Timestamp(end, tz="UTC")
+    g = f[(f.t >= s_) & (f.t <= e_)].reset_index(drop=True)
+    hh_a = g.hh.to_numpy(); ll_a = g.ll.to_numpy()
+    hi_a = g.high.to_numpy(); lo_a = g.low.to_numpy()
+    op_a = g.open.to_numpy(); cl_a = g.close.to_numpy()
+    ts_a = g.ts.to_numpy(); dir_a = g.dir.to_numpy(); d1_a = g.dir1d.to_numpy()
     trades = []
     equity = 1.0
-    i = 0
-    n = len(g)
+    i, n = 0, len(g)
     while i < n:
-        r = g.iloc[i]
-        if not (np.isfinite(r.hh) and np.isfinite(r.ts)) or r.ts < TS_MIN:
+        if not (np.isfinite(hh_a[i]) and np.isfinite(ts_a[i])) or ts_a[i] < TS_MIN \
+           or not np.isfinite(d1_a[i]) or dir_a[i] != d1_a[i]:
             i += 1; continue
-        if not np.isfinite(r.dir1d) or r.dir != r.dir1d:  # v0.1: 상위추세 일치 필수
-            i += 1; continue
-        side, entry = 0, np.nan
-        if r.dir > 0 and r.high > r.hh:
-            side, entry = 1, r.hh
-        elif r.dir < 0 and r.low < r.ll:
-            side, entry = -1, r.ll
+        side = 0
+        if dir_a[i] > 0 and hi_a[i] > hh_a[i]:
+            side, entry = 1, max(hh_a[i], op_a[i])     # 갭 시 open 체결 (비관)
+        elif dir_a[i] < 0 and lo_a[i] < ll_a[i]:
+            side, entry = -1, min(ll_a[i], op_a[i])
         if side == 0:
             i += 1; continue
-        # SL distance
-        if side == 1:
-            raw = (entry - r.ll) / entry
-        else:
-            raw = (r.hh - entry) / entry
+        raw = (entry - ll_a[i]) / entry if side == 1 else (hh_a[i] - entry) / entry
         sl_d = min(max(raw, SL_MIN), SL_MAX)
-        sl = entry * (1 - side * sl_d)
+        stop = entry * (1 - side * sl_d)
         tp = entry * (1 + side * sl_d * TP_R)
-        # walk forward
-        exit_px, reason = None, None
-        for j in range(i + 1, min(i + 1 + TIME_STOP_BARS, n)):
-            b = g.iloc[j]
-            if side == 1:
-                if b.low <= sl: exit_px, reason = sl, "sl"; break
-                if b.high >= tp: exit_px, reason = tp, "tp"; break
-            else:
-                if b.high >= sl: exit_px, reason = sl, "sl"; break
-                if b.low <= tp: exit_px, reason = tp, "tp"; break
-        if exit_px is None:
-            j = min(i + TIME_STOP_BARS, n - 1)
-            exit_px, reason = g.iloc[j].close, "time"
+        exit_px = reason = None
+        # 진입봉 내 SL: 종가 기준만 인정 (논리적 확정 — 돌파(진입) 후 종가가 스탑
+        # 아래면 경로상 entry→stop 하락이 반드시 발생. low만 아래인 경우는 돌파 전
+        # 저가일 가능성이 높아 모호 → 미히트 처리. 과소/과대 비관 모두 회피)
+        if (side == 1 and cl_a[i] <= stop) or (side == -1 and cl_a[i] >= stop):
+            exit_px, reason, j = stop, "sl", i
+        else:
+            last_j = min(i + TIME_STOP_BARS, n - 1) if exit_mode == "tp2r" else n - 1
+            j = i
+            for j in range(i + 1, last_j + 1):
+                if exit_mode == "trail":
+                    # 트레일 갱신은 직전 봉까지의 정보(ll/hh는 이미 shift됨)
+                    if side == 1 and np.isfinite(ll_a[j]):
+                        stop = max(stop, ll_a[j])
+                    elif side == -1 and np.isfinite(hh_a[j]):
+                        stop = min(stop, hh_a[j])
+                if side == 1 and lo_a[j] <= stop:
+                    px = min(stop, op_a[j])  # 갭다운 개장 시 open 체결 (비관)
+                    exit_px, reason = px, ("trail" if exit_mode == "trail" and stop > entry * (1 - sl_d) else "sl"); break
+                if side == -1 and hi_a[j] >= stop:
+                    px = max(stop, op_a[j])  # 갭업 개장 시 open 체결 (비관)
+                    exit_px, reason = px, ("trail" if exit_mode == "trail" and stop < entry * (1 + sl_d) else "sl"); break
+                if exit_mode == "tp2r":
+                    if side == 1 and hi_a[j] >= tp: exit_px, reason = tp, "tp"; break
+                    if side == -1 and lo_a[j] <= tp: exit_px, reason = tp, "tp"; break
+            if exit_px is None:
+                exit_px, reason = cl_a[j], "time"
         gross_r = side * (exit_px - entry) / entry / sl_d
         net_r = gross_r - FEE_RT / sl_d
         equity *= (1 + RISK * net_r)
-        trades.append((g.iloc[i].t, side, sl_d, reason, gross_r, net_r))
-        i = j + 1  # next bar after exit (1포지션, 재진입 즉시 가능)
+        trades.append((g.t.iloc[i], side, sl_d, reason, gross_r, net_r))
+        i = j + 1
     return trades, equity
 
 
@@ -157,15 +174,17 @@ def main():
     conn = get_connection(None)
     f = prep(conn)
     conn.close()
-    # 개발 구간만 — 2026은 OOS 봉인
-    for start, end, label in [
+    periods = [
         ("2022-01-01", "2022-12-31", "2022_bear"),
         ("2023-01-01", "2023-12-31", "2023_side"),
         ("2024-01-01", "2024-12-31", "2024_bull1"),
         ("2025-01-01", "2025-12-31", "2025_bull2"),
-    ]:
-        trades, eq = run(f, start, end)
-        report(label, trades, eq)
+    ]
+    for mode in ("tp2r", "trail"):
+        print(f"--- exit_mode={mode} ---")
+        for start, end, label in periods:
+            trades, eq = run(f, start, end, exit_mode=mode)
+            report(label, trades, eq)
 
 
 if __name__ == "__main__":
