@@ -1,0 +1,172 @@
+# analysis/intraday_proto.py — 단방향 인트라데이 변동성 돌파 프로토타입 v0
+#
+# 가설 (Rocky 데이트레이딩 컨셉): 4h 추세 방향으로, 30m 레인지 돌파 시 진입,
+# 짧은 구조 SL로 끊고(가용금 잠김 없음), 당일~24h 내 청산.
+#
+# 반과적합 원칙:
+#  - 2026 데이터는 OOS 봉인 — 룰 확정 전까지 절대 미사용
+#  - v0 룰은 모두 사전 고정(이 파일이 스펙). 그리드 스윕 금지.
+#  - 비용은 비관적(taker+슬리피지 왕복 0.13%) 적용
+#
+# v0 룰 (고정):
+#  - 방향 필터: 직전 확정 4h봉 기준 trend_strength(|MA10-MA35|/ATR14) >= 2.0
+#    AND MA10>MA35(롱만) / MA10<MA35(숏만)  ← 라운드4에서 검증된 필터 재사용
+#  - 진입: 직전 8개 30m봉(4시간) 최고가 돌파 시 stop-buy 체결 가정 (숏은 대칭)
+#  - SL: 진입가 대비 max(0.6%, min(1.5%, 직전 8봉 최저가까지 거리))
+#  - TP: +2R 고정 / 타임스탑: 진입 후 48봉(24h) 경과 시 종가 청산
+#  - 동시 1포지션, 피라미딩 없음, 같은 봉 SL·TP 동시터치 시 SL 우선(비관적)
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import numpy as np
+import pandas as pd
+
+from collector.store import get_connection
+
+FEE_RT = 0.0013          # round-trip taker 0.055%x2 + slippage 0.02% ≈ 0.13%
+TS_MIN = 2.0             # 검증된 4h 추세강도 게이트 (라운드4)
+BREAK_N = 8              # 30m x 8 = 4h 레인지
+SL_MIN, SL_MAX = 0.006, 0.015
+TP_R = 2.0
+TIME_STOP_BARS = 48      # 24h
+RISK = 0.01              # 1% per trade (복리 평가용)
+
+
+def load_tf(conn, tf: str) -> pd.DataFrame:
+    df = pd.read_sql(
+        f"SELECT open_time, open, high, low, close FROM klines "
+        f"WHERE timeframe='{tf}' AND confirmed=1 ORDER BY open_time", conn)
+    df["t"] = pd.to_datetime(df.open_time, unit="ms", utc=True)
+    return df.reset_index(drop=True)
+
+
+# NOTE: 이 venv의 pandas는 ~6.5만행 이상 Series에서 rolling 집계가 전부 NaN을
+# 반환하는 빌드 버그가 있다 (10000행 OK, 78000행 전멸 — 합성 데이터로 재현됨).
+# 30m 프레임(7.8만행)이 걸리므로 rolling은 numpy sliding_window_view로 직접 계산.
+def _roll(arr: np.ndarray, n: int, fn) -> np.ndarray:
+    out = np.full(len(arr), np.nan)
+    if len(arr) >= n:
+        w = np.lib.stride_tricks.sliding_window_view(arr, n)
+        out[n - 1:] = fn(w, axis=1)
+    return out
+
+
+def atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
+    pc = df.close.shift(1)
+    tr = pd.concat([df.high - df.low, (df.high - pc).abs(), (df.low - pc).abs()], axis=1).max(axis=1)
+    return pd.Series(_roll(tr.to_numpy(), n, np.nanmean), index=df.index)
+
+
+conn_ref = [None]  # prep 내 1d 로드용
+
+
+def prep(conn):
+    conn_ref[0] = conn
+    m30 = load_tf(conn, "30m")
+    h4 = load_tf(conn, "4h")
+    h4["ma10"] = _roll(h4.close.to_numpy(), 10, np.mean)
+    h4["ma35"] = _roll(h4.close.to_numpy(), 35, np.mean)
+    h4["atr14"] = atr(h4)
+    h4["ts"] = (h4.ma10 - h4.ma35).abs() / h4.atr14
+    h4["dir"] = np.sign(h4.ma10 - h4.ma35)
+    # 4h bar is usable only AFTER it closes: close time = open + 4h
+    h4["avail"] = h4.t + pd.Timedelta(hours=4)
+    f = pd.merge_asof(m30, h4[["avail", "ts", "dir"]], left_on="t", right_on="avail")
+    # v0.1: 1d 방향 일치 필터 (분해 분석 근거 — 2022 롱 -0.34R/2023 숏 -0.31R은
+    # 전부 4h dir이 상위추세와 역행한 구간. 부호 일치 조건만 추가, 임계값 없음)
+    d1 = load_tf(conn_ref[0], "1d")
+    d1["ma10"] = _roll(d1.close.to_numpy(), 10, np.mean)
+    d1["ma35"] = _roll(d1.close.to_numpy(), 35, np.mean)
+    d1["dir1d"] = np.sign(d1.ma10 - d1.ma35)
+    d1["avail"] = d1.t + pd.Timedelta(days=1)
+    f = pd.merge_asof(f, d1[["avail", "dir1d"]].rename(columns={"avail": "avail1d"}),
+                      left_on="t", right_on="avail1d")
+    # breakout levels from PREVIOUS BREAK_N bars (exclude current)
+    f["hh"] = pd.Series(_roll(f.high.to_numpy(), BREAK_N, np.max), index=f.index).shift(1)
+    f["ll"] = pd.Series(_roll(f.low.to_numpy(), BREAK_N, np.min), index=f.index).shift(1)
+    return f
+
+
+def run(f: pd.DataFrame, start: str, end: str):
+    s = pd.Timestamp(start, tz="UTC"); e = pd.Timestamp(end, tz="UTC")
+    g = f[(f.t >= s) & (f.t <= e)].reset_index(drop=True)
+    trades = []
+    equity = 1.0
+    i = 0
+    n = len(g)
+    while i < n:
+        r = g.iloc[i]
+        if not (np.isfinite(r.hh) and np.isfinite(r.ts)) or r.ts < TS_MIN:
+            i += 1; continue
+        if not np.isfinite(r.dir1d) or r.dir != r.dir1d:  # v0.1: 상위추세 일치 필수
+            i += 1; continue
+        side, entry = 0, np.nan
+        if r.dir > 0 and r.high > r.hh:
+            side, entry = 1, r.hh
+        elif r.dir < 0 and r.low < r.ll:
+            side, entry = -1, r.ll
+        if side == 0:
+            i += 1; continue
+        # SL distance
+        if side == 1:
+            raw = (entry - r.ll) / entry
+        else:
+            raw = (r.hh - entry) / entry
+        sl_d = min(max(raw, SL_MIN), SL_MAX)
+        sl = entry * (1 - side * sl_d)
+        tp = entry * (1 + side * sl_d * TP_R)
+        # walk forward
+        exit_px, reason = None, None
+        for j in range(i + 1, min(i + 1 + TIME_STOP_BARS, n)):
+            b = g.iloc[j]
+            if side == 1:
+                if b.low <= sl: exit_px, reason = sl, "sl"; break
+                if b.high >= tp: exit_px, reason = tp, "tp"; break
+            else:
+                if b.high >= sl: exit_px, reason = sl, "sl"; break
+                if b.low <= tp: exit_px, reason = tp, "tp"; break
+        if exit_px is None:
+            j = min(i + TIME_STOP_BARS, n - 1)
+            exit_px, reason = g.iloc[j].close, "time"
+        gross_r = side * (exit_px - entry) / entry / sl_d
+        net_r = gross_r - FEE_RT / sl_d
+        equity *= (1 + RISK * net_r)
+        trades.append((g.iloc[i].t, side, sl_d, reason, gross_r, net_r))
+        i = j + 1  # next bar after exit (1포지션, 재진입 즉시 가능)
+    return trades, equity
+
+
+def report(label, trades, equity):
+    if not trades:
+        print(f"{label:<14} n=0"); return
+    df = pd.DataFrame(trades, columns=["t", "side", "sl_d", "reason", "gross_r", "net_r"])
+    wins = df[df.net_r > 0].net_r.sum(); losses = -df[df.net_r <= 0].net_r.sum()
+    pf = wins / losses if losses > 0 else float("inf")
+    days = (df.t.iloc[-1] - df.t.iloc[0]).days or 1
+    print(f"{label:<14} n={len(df):4d} ({len(df)/days*30:4.1f}/월) win%={100*(df.net_r>0).mean():5.1f} "
+          f"avgR(net)={df.net_r.mean():+.3f} PF={pf:5.2f} ret={100*(equity-1):+7.1f}% "
+          f"sl/tp/time={sum(df.reason=='sl')}/{sum(df.reason=='tp')}/{sum(df.reason=='time')} "
+          f"long/short={sum(df.side==1)}/{sum(df.side==-1)}")
+
+
+def main():
+    conn = get_connection(None)
+    f = prep(conn)
+    conn.close()
+    # 개발 구간만 — 2026은 OOS 봉인
+    for start, end, label in [
+        ("2022-01-01", "2022-12-31", "2022_bear"),
+        ("2023-01-01", "2023-12-31", "2023_side"),
+        ("2024-01-01", "2024-12-31", "2024_bull1"),
+        ("2025-01-01", "2025-12-31", "2025_bull2"),
+    ]:
+        trades, eq = run(f, start, end)
+        report(label, trades, eq)
+
+
+if __name__ == "__main__":
+    main()
