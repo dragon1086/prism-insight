@@ -1,0 +1,164 @@
+# live/runner.py — 섀도우 데몬 루프 (CLI)
+#
+#   python -m live.runner --once   : 한 틱만 실행하고 종료 (테스트/cron용)
+#   python -m live.runner          : 상주 루프 (다음 30m 경계+10초까지 sleep → tick)
+#
+# tick 순서:
+#   1. update_all()  — market.db 증분 갱신 (실패 시 이번 틱 스킵 + 이벤트 기록)
+#   2. 새 확정 30m 봉이 있으면:
+#        지표/스냅샷 빌드 (backtest 헬퍼 재사용) → exits 평가/집행 → 진입 평가
+#        (4h 하드캡 + 쿨다운) → DB 기록
+#   3. btc_events 에 하트비트 기록
+#
+# 모든 네트워크 호출 실패에 내성: update.py 가 TF별 재시도/예외 흡수, 여기서는
+# 전체 update 실패 시 이번 틱을 스킵하고 에러 이벤트를 남긴다.
+from __future__ import annotations
+
+import argparse
+import logging
+import time
+from datetime import datetime, timezone
+
+import pandas as pd
+
+from collector.store import get_connection as market_connection
+from collector.update import update_all
+from backtest.engine import _load_tf_data, _build_snapshot_at, _get_tf_slice, ALL_TFS
+from engine.indicators import add_indicators
+
+from live import tracking
+from live.shadow import ShadowAdapter, _load_funding, bar_index_for
+
+log = logging.getLogger("live.runner")
+
+_30M_SEC = 30 * 60
+_BOUNDARY_DELAY_SEC = 10  # 30m 경계 후 confirmed 캔들이 안정적으로 들어올 여유
+
+
+def _last_processed_30m_ns(root_conn, mode: str):
+    return tracking.get_meta(root_conn, "last_processed_30m_ns", mode)
+
+
+def _confirmed_30m(tf_data) -> "pd.DataFrame":
+    """confirmed 30m 봉만 (add_indicators 후 NaN 워밍업은 build_snapshot 가 처리)."""
+    return tf_data["30m"]
+
+
+def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
+    """단일 틱 실행. 처리한 새 확정 30m 봉 수 + 하트비트 결과 dict 반환."""
+    result = {"updated": False, "new_bars": 0, "error": None, "ts": None}
+    root_conn = tracking.get_connection(root_db_path)
+    tracking.ensure_schema(root_conn)
+
+    # --- 1. market.db 증분 갱신 (실패 내성) ---
+    try:
+        upserts = update_all(market_db_path)
+        result["updated"] = True
+        tracking.log_event(root_conn, "update",
+            f"update_all ok: {sum(upserts.values())} rows upserted", mode=mode)
+    except Exception as exc:  # noqa: BLE001 — 네트워크 등 모든 실패 흡수
+        result["error"] = f"update_all failed: {exc}"
+        tracking.log_event(root_conn, "error", result["error"], level="error", mode=mode)
+        tracking.log_event(root_conn, "heartbeat", "tick skipped (update failed)", mode=mode)
+        root_conn.close()
+        return result
+
+    # --- 2. 지표/스냅샷용 tf_data 빌드 (backtest 헬퍼 재사용 — confirmed=1 만) ---
+    market_conn = market_connection(market_db_path)
+    try:
+        tf_data = {tf: add_indicators(_load_tf_data(market_conn, tf)) for tf in ALL_TFS}
+        funding_times, funding_rates = _load_funding(market_conn)
+    finally:
+        market_conn.close()
+
+    bars_30m = _confirmed_30m(tf_data)
+    if bars_30m.empty:
+        tracking.log_event(root_conn, "heartbeat", "no confirmed 30m bars yet", mode=mode)
+        root_conn.close()
+        return result
+
+    last_ns = _last_processed_30m_ns(root_conn, mode)
+    # 처리 대상: 아직 처리 안 한 확정 30m 봉들 (오름차순).
+    if last_ns is None:
+        # 콜드 스타트: 마지막 확정봉 1개만 처리 (과거 전체 재시뮬 방지).
+        new_bars = bars_30m.iloc[[-1]]
+    else:
+        new_bars = bars_30m[bars_30m.index.map(lambda t: int(t.value) > int(last_ns))]
+
+    adapter = ShadowAdapter(root_conn, tf_data, funding_times, funding_rates, mode=mode)
+
+    # 4h 확정 추적 (backtest cadence gate 미러).
+    last_confirmed_4h_ns = tracking.get_meta(root_conn, "last_confirmed_4h_ns", mode)
+    processed = 0
+    last_bar_ns = last_ns
+    for bar_time, bar in new_bars.iterrows():
+        slice_4h = _get_tf_slice(tf_data, bar_time, "4h")
+        new_4h_confirmed = False
+        cur_4h_ns = None
+        if not slice_4h.empty:
+            cur_4h_ns = int(slice_4h.index[-1].value)
+            if last_confirmed_4h_ns is None or cur_4h_ns != int(last_confirmed_4h_ns):
+                new_4h_confirmed = True
+                last_confirmed_4h_ns = cur_4h_ns
+
+        adapter.process_bar(bar_time, bar, new_4h_confirmed, cur_4h_ns)
+        processed += 1
+        last_bar_ns = int(bar_time.value)
+        result["ts"] = str(bar_time)
+
+    if last_bar_ns is not None:
+        tracking.set_meta(root_conn, "last_processed_30m_ns", int(last_bar_ns), mode)
+    if last_confirmed_4h_ns is not None:
+        tracking.set_meta(root_conn, "last_confirmed_4h_ns", int(last_confirmed_4h_ns), mode)
+
+    result["new_bars"] = processed
+    tracking.log_event(root_conn, "heartbeat",
+        f"tick ok: processed {processed} new 30m bar(s); "
+        f"last={result['ts']}", mode=mode)
+    root_conn.close()
+    return result
+
+
+def _sleep_to_next_boundary() -> None:
+    now = time.time()
+    next_boundary = (int(now // _30M_SEC) + 1) * _30M_SEC + _BOUNDARY_DELAY_SEC
+    delay = max(1.0, next_boundary - now)
+    log.info("sleeping %.0fs to next 30m boundary", delay)
+    time.sleep(delay)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="prism-btc shadow paper daemon")
+    parser.add_argument("--once", action="store_true",
+                        help="run a single tick and exit (test/cron)")
+    parser.add_argument("--mode", default="shadow", choices=["shadow", "demo", "live"])
+    parser.add_argument("--market-db", default=None, help="market.db path override")
+    parser.add_argument("--root-db", default=None, help="root tracking db path override")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    if args.once:
+        res = tick(mode=args.mode, market_db_path=args.market_db, root_db_path=args.root_db)
+        log.info("tick result: %s", res)
+        return 0 if res["error"] is None else 1
+
+    log.info("starting resident shadow loop (Ctrl-C to stop)")
+    while True:
+        try:
+            res = tick(mode=args.mode, market_db_path=args.market_db, root_db_path=args.root_db)
+            log.info("tick result: %s", res)
+        except KeyboardInterrupt:
+            log.info("interrupted — exiting")
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            log.error("tick raised (continuing): %s", exc)
+        _sleep_to_next_boundary()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
