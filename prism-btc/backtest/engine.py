@@ -34,8 +34,17 @@ FUNDING_RATE: float = -0.0001      # -0.01% per 8h (pessimistic, against positio
 # Candle cutoff: post-only entry valid for 2 bars
 ENTRY_ORDER_EXPIRY_BARS: int = 2
 
-# Trailing: after 1R, track 1h MA10
-TRAILING_TF = "1h"
+# Trailing (라운드4, tasks/v3_edge_diagnosis.md §2 처방 2): the edge lives at the
+# 14d horizon while a 1h MA10 trail kept exiting on short-term noise (capture
+# efficiency median 0.41 — 59% of favorable excursion given back). Align the exit
+# timescale with the edge timescale: trail on the 12h MA10.
+TRAILING_TF = "12h"
+
+# BE stop + trailing activate only after price reaches this R multiple
+# (라운드4: 1R → 1.5R). At 1R, 34.4% of MFE≥1R trades were truncated to <0.5R;
+# at 2R the truncation rate was only 13.8% — the 1R BE stop was the cutter.
+# TP1 partial close (1/3 at 1R) is unchanged; only BE/trailing are delayed.
+BE_TRAIL_ACTIVATE_R: float = 1.5
 
 # Liquidation buffer monitoring threshold (50% of entry→liq gap)
 LIQ_MONITOR_FRAC: float = 0.50
@@ -531,11 +540,26 @@ def run_backtest(
                     close_qty = pos.qty / 3.0
                     _book_leg(pos, close_qty, pos.tp1_price, MAKER_FEE, state)
                     pos.tp1_hit = True
-                    # Set BE stop
-                    pos.sl_price = pos.entry_price
-                    pos.be_stop_set = True
-                    # After 1R → activate trailing
-                    pos.trailing_active = True
+                    # 라운드4: BE stop / trailing은 여기서 걸지 않는다 —
+                    # BE_TRAIL_ACTIVATE_R(1.5R) 도달 시 별도 블록에서 활성화.
+
+            # BE stop + trailing activation at 1.5R (라운드4 — TP1과 분리)
+            if not pos.trailing_active:
+                r_dist = abs(pos.tp1_price - pos.entry_price)  # tp1 = 1R (불변)
+                if r_dist > 0:
+                    if pos.side == "long":
+                        reached = bar_high >= pos.entry_price + BE_TRAIL_ACTIVATE_R * r_dist
+                    else:
+                        reached = bar_low <= pos.entry_price - BE_TRAIL_ACTIVATE_R * r_dist
+                    if reached:
+                        # Set BE stop (never loosen an already-tighter SL)
+                        if pos.side == "long":
+                            pos.sl_price = max(pos.sl_price, pos.entry_price)
+                        else:
+                            pos.sl_price = min(pos.sl_price, pos.entry_price)
+                        pos.be_stop_set = True
+                        # Trailing starts applying from the next bar (no same-bar SL check)
+                        pos.trailing_active = True
 
             # TP2 hit
             if pos.tp1_hit and not pos.tp2_hit:

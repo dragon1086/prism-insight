@@ -11,38 +11,35 @@ from typing import Literal
 RISK_PER_TRADE: float = 0.02          # 2% of equity per trade
 MMR: float = 0.005                    # Bybit isolated MMR approximation (0.5%)
 
-# Leverage bands (라운드3 구조개선 B: cap restored 8~12x → 12~18x).
-# Rationale (라운드2 관찰 #2): the 8~12x cap throttled trend-market upside
-# (+20% → +1.15%). With fixed 2% risk sizing leverage doesn't change qty, but it
-# governs the liquidation distance and the residual-leg exposure after BE/trailing.
-# Round3 restores leverage to the round1 level (12~18x) for upside, and blocks
-# liquidation directly via the raised LIQ_BUFFER_MIN_FRAC (0.5 → 0.65) below.
-# Score-proportional interpolation is preserved across the full entry range:
-# |score| ENTRY_FLOOR(40) → 12x ... 100 → 18x (single linear band).
+# Leverage bands (라운드4: 12~18x 폐기, 라운드2 수준 8~12x 복원 — 라운드3 문서
+# "다음 후보 제안 E" 채택). 12~18x는 liq 거리를 좁혀 강제감축을 유발했고
+# (2024-25 강제감축 PnL -$58), 8~12x 복원 A/B에서 전 구간 liq_approach 0 +
+# 2024-25 수익 -1.1% → +8.3% 반전 확인 (analysis/round4_attribution.py 참조).
+# With fixed 2% risk sizing leverage doesn't change qty, but it governs the
+# liquidation distance and the residual-leg exposure after BE/trailing.
 LEV_BAND_HIGH_MIN: float = 80.0       # |score| >= 80 → upper sub-range
-LEV_HIGH_LOW: float = 16.0
-LEV_HIGH_HIGH: float = 18.0
+LEV_HIGH_LOW: float = 11.0
+LEV_HIGH_HIGH: float = 12.0
 
 LEV_BAND_MID_MIN: float = 60.0       # 60 <= |score| < 80
-LEV_MID_LOW: float = 14.0
-LEV_MID_HIGH: float = 16.0
+LEV_MID_LOW: float = 10.0
+LEV_MID_HIGH: float = 11.0
 
 LEV_BAND_LOW_MIN: float = 40.0       # 40 <= |score| < 60
-LEV_LOW_LOW: float = 12.0
-LEV_LOW_HIGH: float = 14.0
+LEV_LOW_LOW: float = 8.0
+LEV_LOW_HIGH: float = 10.0
 
 # ATR volatility cap: if ATR(14,1h)/close > this threshold → cap leverage.
-# Cap restored in lock-step with the band ceiling (10x → 12x under high vol).
 ATR_HIGH_THRESHOLD: float = 0.025     # 2.5% ATR/close ratio
-LEV_ATR_CAP: float = 12.0
+LEV_ATR_CAP: float = 10.0
 
 # Liquidation buffer: SL must be >= 65% inside the gap between entry and liq price.
 # 라운드3 B: raised 0.50 → 0.65 to directly block liq_approach. On entry, SL must
 # sit at least 65% of the entry→liq gap away from liq; otherwise auto-deleverage
 # until satisfied, and if the floor still fails, cancel the entry.
 LIQ_BUFFER_MIN_FRAC: float = 0.65    # 65% of entry→liq distance must remain between SL and liq
-# Deleverage floor restored 8x → 12x to match the new 12~18x band (라운드3 B).
-LEV_FLOOR_BUFFER: float = 12.0       # do not deleverage below 12x to satisfy buffer; reject instead
+# Deleverage floor restored to 8x to match the 8~12x band (라운드4).
+LEV_FLOOR_BUFFER: float = 8.0        # do not deleverage below 8x to satisfy buffer; reject instead
 
 # Pyramid tranches
 TRANCHE_FRACS: tuple[float, ...] = (0.40, 0.30, 0.30)  # 40% / 30% / 30%

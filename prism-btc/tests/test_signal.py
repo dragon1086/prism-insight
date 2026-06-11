@@ -15,7 +15,7 @@ from engine.signal import (
     LONG_ENTRY_POSITIONS,
     SHORT_ENTRY_POSITIONS,
 )
-from engine.config import TF_WEIGHTS, TS_MIN
+from engine.config import TF_WEIGHTS, TS_MIN, ENTRY_SCORE_MIN
 
 
 # ---------------------------------------------------------------------------
@@ -106,14 +106,20 @@ class TestGenerateSignal:
         assert sig.side == "none"
 
     def test_score_at_entry_min_long_all_aligned(self):
-        snap = all_bullish_snapshot(score=55.0)
+        snap = all_bullish_snapshot(score=ENTRY_SCORE_MIN)
         sig = generate_signal(snap)
         assert sig.side == "long"
 
     def test_score_negative_entry_min_short_all_aligned(self):
-        snap = all_bearish_snapshot(score=-55.0)
+        snap = all_bearish_snapshot(score=-ENTRY_SCORE_MIN)
         sig = generate_signal(snap)
         assert sig.side == "short"
+
+    def test_score_just_below_entry_min_returns_none(self):
+        # 라운드4: gate raised 55 → 85 (v3_edge_diagnosis §1). Just-below must not enter.
+        snap = all_bullish_snapshot(score=ENTRY_SCORE_MIN - 0.1)
+        sig = generate_signal(snap)
+        assert sig.side == "none"
 
     def test_strong_long_signal(self):
         snap = all_bullish_snapshot(score=85.0)
@@ -178,7 +184,7 @@ class TestGenerateSignal:
             "1d": make_tf_state("up", "above_all"),
             "1w": make_tf_state("up", "above_all"),
         }
-        snap = make_snapshot(states, score=60.0)
+        snap = make_snapshot(states, score=ENTRY_SCORE_MIN + 5.0)
         sig = generate_signal(snap)
         assert sig.side == "long"
 
@@ -192,7 +198,7 @@ class TestGenerateSignal:
             "1d": make_tf_state("down", "below_all"),
             "1w": make_tf_state("down", "below_all"),
         }
-        snap = make_snapshot(states, score=-60.0)
+        snap = make_snapshot(states, score=-(ENTRY_SCORE_MIN + 5.0))
         sig = generate_signal(snap)
         assert sig.side == "short"
 
@@ -284,7 +290,9 @@ class TestTrendStrengthChopFilter:
         snap = make_snapshot(states, score=75.0)
         assert chop_filter_passed(snap.tf_states) is False
 
-    def test_chop_filter_blocks_when_1d_weak(self):
+    def test_chop_filter_ignores_weak_1d(self):
+        # 라운드4: gate is 4h-only (TS_GATE_TFS=("4h",)) — the H1 study measured 4h ts;
+        # a weak 1d must NOT block entry anymore.
         states = {
             "30m": make_tf_state("up", "support_ma10"),
             "1h": make_tf_state("up", "support_ma10"),
@@ -295,7 +303,7 @@ class TestTrendStrengthChopFilter:
             "1w": make_tf_state("up", "above_all"),
         }
         snap = make_snapshot(states, score=75.0)
-        assert chop_filter_passed(snap.tf_states) is False
+        assert chop_filter_passed(snap.tf_states) is True
 
     def test_chop_filter_blocks_when_gate_tf_missing(self):
         states = {tf: make_tf_state("up", "above_all") for tf in ("30m", "1h", "12h", "1w")}
@@ -334,7 +342,7 @@ class TestEntryTriggerTF4h:
             "1d": make_tf_state("up", "above_all"),
             "1w": make_tf_state("up", "above_all"),
         }
-        snap = make_snapshot(states, score=70.0)
+        snap = make_snapshot(states, score=ENTRY_SCORE_MIN + 5.0)
         sig = generate_signal(snap)
         assert sig.side == "long"
 
@@ -348,7 +356,7 @@ class TestEntryTriggerTF4h:
             "1d": make_tf_state("up", "above_all"),
             "1w": make_tf_state("up", "above_all"),
         }
-        snap = make_snapshot(states, score=70.0)
+        snap = make_snapshot(states, score=ENTRY_SCORE_MIN + 5.0)
         sig = generate_signal(snap)
         assert sig.side == "none"
         assert "4h" in sig.reason
@@ -362,6 +370,6 @@ class TestEntryTriggerTF4h:
             "1d": make_tf_state("down", "below_all"),
             "1w": make_tf_state("down", "below_all"),
         }
-        snap = make_snapshot(states, score=-70.0)
+        snap = make_snapshot(states, score=-(ENTRY_SCORE_MIN + 5.0))
         sig = generate_signal(snap)
         assert sig.side == "short"
