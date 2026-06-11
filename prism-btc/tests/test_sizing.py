@@ -24,44 +24,44 @@ from engine.sizing import (
 # ---------------------------------------------------------------------------
 
 class TestComputeLeverage:
-    # 라운드2 #2: leverage band lowered 10~30x → 8~12x (score-proportional).
-    def test_score_80_low_atr_gives_11_to_12(self):
+    # 라운드3 B: leverage band restored 8~12x → 12~18x (score-proportional).
+    def test_score_80_low_atr_gives_16_to_18(self):
         lev = compute_leverage(80.0, atr_ratio=0.01)
-        assert 11.0 <= lev <= 12.0
+        assert 16.0 <= lev <= 18.0
 
-    def test_score_100_low_atr_gives_12(self):
+    def test_score_100_low_atr_gives_18(self):
         lev = compute_leverage(100.0, atr_ratio=0.01)
-        assert lev == pytest.approx(12.0)
+        assert lev == pytest.approx(18.0)
 
-    def test_score_60_gives_10_to_11(self):
+    def test_score_60_gives_14_to_16(self):
         lev = compute_leverage(60.0, atr_ratio=0.01)
-        assert 10.0 <= lev <= 11.0
+        assert 14.0 <= lev <= 16.0
 
     def test_score_70_interpolates(self):
         lev = compute_leverage(70.0, atr_ratio=0.01)
-        assert 10.0 <= lev <= 11.0
+        assert 14.0 <= lev <= 16.0
 
-    def test_score_40_gives_8_to_10(self):
+    def test_score_40_gives_12_to_14(self):
         lev = compute_leverage(40.0, atr_ratio=0.01)
-        assert 8.0 <= lev <= 10.0
+        assert 12.0 <= lev <= 14.0
 
     def test_score_50_interpolates(self):
         lev = compute_leverage(50.0, atr_ratio=0.01)
-        assert 8.0 <= lev <= 10.0
+        assert 12.0 <= lev <= 14.0
 
     def test_score_below_40_gives_zero(self):
         lev = compute_leverage(39.9, atr_ratio=0.01)
         assert lev == 0.0
 
     def test_high_atr_caps_at_atr_cap(self):
-        """ATR/close above threshold → cap at LEV_ATR_CAP (now 10x)."""
+        """ATR/close above threshold → cap at LEV_ATR_CAP (now 12x)."""
         lev = compute_leverage(90.0, atr_ratio=ATR_HIGH_THRESHOLD + 0.01)
         assert lev == pytest.approx(LEV_ATR_CAP)
 
     def test_atr_exactly_at_threshold_no_cap(self):
-        """ATR at exactly threshold (not above) → no cap; 90 maps into 11~12."""
+        """ATR at exactly threshold (not above) → no cap; 90 maps into 16~18."""
         lev = compute_leverage(90.0, atr_ratio=ATR_HIGH_THRESHOLD)
-        assert lev > LEV_ATR_CAP  # uncapped 90 → ~11.5x > 10x cap
+        assert lev > LEV_ATR_CAP  # uncapped 90 → ~17x > 12x cap
 
     def test_leverage_monotone_with_score(self):
         """Higher score → higher or equal leverage."""
@@ -165,6 +165,32 @@ class TestSlPassesBuffer:
 
 
 # ---------------------------------------------------------------------------
+# 라운드3 B: LIQ_BUFFER_MIN_FRAC raised 0.50 → 0.65 (청산 직접 차단)
+# ---------------------------------------------------------------------------
+
+class TestRound3LiqBuffer:
+    def test_buffer_constant_is_065(self):
+        assert LIQ_BUFFER_MIN_FRAC == pytest.approx(0.65)
+
+    def test_sl_in_50_to_65_band_now_blocked_long(self):
+        """An SL at 0.58 of the gap passed at 0.50 but must FAIL at 0.65 (long)."""
+        entry, liq = 50000.0, 47500.0  # gap = 2500
+        sl = liq + 0.58 * (entry - liq)  # 58% inside gap: ok@0.50, fail@0.65
+        assert _sl_passes_buffer(entry, sl, liq, "long") is False
+
+    def test_sl_in_50_to_65_band_now_blocked_short(self):
+        """Same band check on the short side."""
+        entry, liq = 50000.0, 52500.0
+        sl = liq - 0.58 * (liq - entry)
+        assert _sl_passes_buffer(entry, sl, liq, "short") is False
+
+    def test_sl_above_65_still_passes_long(self):
+        entry, liq = 50000.0, 47500.0
+        sl = liq + 0.70 * (entry - liq)  # 70% inside gap > 0.65 → passes
+        assert _sl_passes_buffer(entry, sl, liq, "long") is True
+
+
+# ---------------------------------------------------------------------------
 # Liquidation buffer rejection case (integration)
 # ---------------------------------------------------------------------------
 
@@ -221,19 +247,21 @@ class TestComputeSizingBufferRejection:
         assert result.qty == 0
 
     def test_valid_sizing_produces_positive_qty(self):
+        # 라운드3 B: SL을 entry 대비 ~2%로 (12x liq 갭의 65% 버퍼를 만족하도록).
+        # 4% SL 은 12x floor + 0.65 버퍼에서 구조적으로 거절됨 (의도된 동작).
         result = compute_sizing(
             side="long",
             entry=50000.0,
             abs_score=60.0,
             equity=10000.0,
             atr_1h=500.0,
-            swing_ref=48000.0,
-            ma35_1h=49000.0,
+            swing_ref=49000.0,
+            ma35_1h=49250.0,
             tranche_index=0,
         )
         assert result.rejected is False
         assert result.qty > 0
-        assert result.leverage >= 10.0
+        assert result.leverage >= 12.0
         assert result.sl_price < 50000.0
         assert result.tp1_price > 50000.0  # long TP above entry
 
@@ -244,8 +272,8 @@ class TestComputeSizingBufferRejection:
             abs_score=60.0,
             equity=10000.0,
             atr_1h=500.0,
-            swing_ref=48000.0,
-            ma35_1h=49000.0,
+            swing_ref=49000.0,
+            ma35_1h=49250.0,
             tranche_index=0,
         )
         assert result.rejected is False
@@ -261,8 +289,8 @@ class TestComputeSizingBufferRejection:
             abs_score=60.0,
             equity=10000.0,
             atr_1h=500.0,
-            swing_ref=52000.0,
-            ma35_1h=51000.0,
+            swing_ref=51000.0,
+            ma35_1h=50750.0,
             tranche_index=0,
         )
         assert result.rejected is False

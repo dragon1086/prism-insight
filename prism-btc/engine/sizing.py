@@ -11,35 +11,38 @@ from typing import Literal
 RISK_PER_TRADE: float = 0.02          # 2% of equity per trade
 MMR: float = 0.005                    # Bybit isolated MMR approximation (0.5%)
 
-# Leverage bands (라운드2 구조개선 #2: cap lowered 10~30x → 8~12x).
-# Rationale: with fixed 2% risk sizing, high leverage adds no expected return —
-# it only pulls the liquidation price closer. Lowering the cap targets
-# liq_approach_count == 0 without changing the risk-per-trade economics.
+# Leverage bands (라운드3 구조개선 B: cap restored 8~12x → 12~18x).
+# Rationale (라운드2 관찰 #2): the 8~12x cap throttled trend-market upside
+# (+20% → +1.15%). With fixed 2% risk sizing leverage doesn't change qty, but it
+# governs the liquidation distance and the residual-leg exposure after BE/trailing.
+# Round3 restores leverage to the round1 level (12~18x) for upside, and blocks
+# liquidation directly via the raised LIQ_BUFFER_MIN_FRAC (0.5 → 0.65) below.
 # Score-proportional interpolation is preserved across the full entry range:
-# |score| ENTRY_FLOOR(40) → 8x ... 100 → 12x (single linear band).
+# |score| ENTRY_FLOOR(40) → 12x ... 100 → 18x (single linear band).
 LEV_BAND_HIGH_MIN: float = 80.0       # |score| >= 80 → upper sub-range
-LEV_HIGH_LOW: float = 11.0
-LEV_HIGH_HIGH: float = 12.0
+LEV_HIGH_LOW: float = 16.0
+LEV_HIGH_HIGH: float = 18.0
 
 LEV_BAND_MID_MIN: float = 60.0       # 60 <= |score| < 80
-LEV_MID_LOW: float = 10.0
-LEV_MID_HIGH: float = 11.0
+LEV_MID_LOW: float = 14.0
+LEV_MID_HIGH: float = 16.0
 
 LEV_BAND_LOW_MIN: float = 40.0       # 40 <= |score| < 60
-LEV_LOW_LOW: float = 8.0
-LEV_LOW_HIGH: float = 10.0
+LEV_LOW_LOW: float = 12.0
+LEV_LOW_HIGH: float = 14.0
 
 # ATR volatility cap: if ATR(14,1h)/close > this threshold → cap leverage.
-# Cap lowered in lock-step with the band ceiling (12x → 10x under high vol).
+# Cap restored in lock-step with the band ceiling (10x → 12x under high vol).
 ATR_HIGH_THRESHOLD: float = 0.025     # 2.5% ATR/close ratio
-LEV_ATR_CAP: float = 10.0
+LEV_ATR_CAP: float = 12.0
 
-# Liquidation buffer: SL must be >= 50% inside the gap between entry and liq price.
-# P2 audit: initial SL within 50% of liq distance is unsafe → auto-deleverage until
-# satisfied; if 10x still fails, cancel entry.
-LIQ_BUFFER_MIN_FRAC: float = 0.50    # 50% of entry→liq distance must remain between SL and liq
-# Deleverage floor lowered 10x → 8x to match the new 8~12x band (라운드2 #2).
-LEV_FLOOR_BUFFER: float = 8.0        # do not deleverage below 8x to satisfy buffer; reject instead
+# Liquidation buffer: SL must be >= 65% inside the gap between entry and liq price.
+# 라운드3 B: raised 0.50 → 0.65 to directly block liq_approach. On entry, SL must
+# sit at least 65% of the entry→liq gap away from liq; otherwise auto-deleverage
+# until satisfied, and if the floor still fails, cancel the entry.
+LIQ_BUFFER_MIN_FRAC: float = 0.65    # 65% of entry→liq distance must remain between SL and liq
+# Deleverage floor restored 8x → 12x to match the new 12~18x band (라운드3 B).
+LEV_FLOOR_BUFFER: float = 12.0       # do not deleverage below 12x to satisfy buffer; reject instead
 
 # Pyramid tranches
 TRANCHE_FRACS: tuple[float, ...] = (0.40, 0.30, 0.30)  # 40% / 30% / 30%
@@ -234,9 +237,9 @@ def compute_sizing(
     risk_capital = equity * RISK_PER_TRADE * tranche_frac
     qty = risk_capital / (sl_dist_pct * entry)
 
-    # Compute liq price and check buffer — auto-deleverage until SL is >= 50%
-    # inside the entry→liq gap. Floor at LEV_FLOOR_BUFFER (10x); if 10x still
-    # fails, cancel the entry (P2). Never deleverage below 10x.
+    # Compute liq price and check buffer — auto-deleverage until SL is >= 65%
+    # inside the entry→liq gap. Floor at LEV_FLOOR_BUFFER (12x); if 12x still
+    # fails, cancel the entry (라운드3 B). Never deleverage below 12x.
     liq = approx_liq_price(entry, lev, side)
     max_attempts = 40
     for _ in range(max_attempts):
@@ -252,7 +255,7 @@ def compute_sizing(
         return SizingResult(
             leverage=lev, qty=0, sl_price=sl_price, tp1_price=0, tp2_price=0,
             tp3_price=0, liq_price=liq, tranche_index=tranche_index,
-            rejected=True, reject_reason="청산가 버퍼(50%) 불충족 @10x, 진입 취소",
+            rejected=True, reject_reason="청산가 버퍼(65%) 불충족 @12x, 진입 취소",
         )
 
     # TP levels: 1R / 2R / 3R

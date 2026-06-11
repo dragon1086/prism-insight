@@ -119,6 +119,7 @@ class Position:
     tp2_hit: bool = False
     entry_fee: float = 0.0
     liq_breach_flagged: bool = False  # True when currently in 50% buffer breach
+    had_forced_reduce: bool = False   # 라운드3 C: this position experienced a forced de-risk reduction
     # --- position-lifecycle accumulators (P0-2 net accounting) ---
     initial_qty: float = 0.0        # full qty at entry (legs reduce `qty`)
     acc_gross_pnl: float = 0.0      # sum of price PnL across closed legs
@@ -150,6 +151,15 @@ class BacktestState:
     total_funding: float = 0.0
     total_fees: float = 0.0
     liq_approach_count: int = 0   # mark price breached 50% of entry→liq gap (forced-reduce events)
+    # --- 라운드3 C: liq_approach 분리 계측 (강제감축이 실제 수익을 깎는지 vs 측정 아티팩트) ---
+    # 강제감축 레그에서 실현된 gross PnL 합계($). 음수면 감축이 손실을 조기 확정한 것.
+    liq_forced_reduce_pnl: float = 0.0
+    # 강제감축이 발생한 포지션 중, 최종적으로 SL/liq_forced_reduce 로 끝난 건수
+    # (= 감축이 없었어도 SL로 끝났을 것으로 추정되는 건수).
+    liq_reduce_would_be_sl: int = 0
+    # 강제감축이 발생한 포지션 중, 최종적으로 수익(net>0)으로 끝난 건수
+    # (= 감축이 업사이드를 깎았을 가능성이 있는 건수).
+    liq_reduce_ended_win: int = 0
     # --- P1-1 re-entry cooldown: last close bar index per side, and whether it was a SL ---
     last_close_bar: dict[str, int] = field(
         default_factory=lambda: {"long": -10_000, "short": -10_000}
@@ -325,6 +335,15 @@ def _close_position(
     state.trade_logs.append(log_entry)
     state.trade_id_counter += 1
 
+    # 라운드3 C: 강제감축을 겪은 포지션의 최종 결말 분류.
+    # SL/liq_forced_reduce 로 끝났으면 "감축 없었어도 SL이었을 것"으로 추정,
+    # net 수익으로 끝났으면 "감축이 업사이드를 깎았을 가능성"으로 카운트.
+    if pos.had_forced_reduce:
+        if exit_reason in ("sl", "liq_forced_reduce"):
+            state.liq_reduce_would_be_sl += 1
+        elif net_pnl > 0:
+            state.liq_reduce_ended_win += 1
+
     # Record cooldown info (P1-1): when and whether this side closed on a stop.
     if bar_idx >= 0:
         state.last_close_bar[pos.side] = bar_idx
@@ -368,6 +387,11 @@ def run_backtest(
     # (의사결정 cadence 자체는 30m 유지 — 청산/SL/트레일링/risk_guardian 는 매 바 동작.)
     # 직전까지 본 확정 4h 캔들의 open_time(ns)을 추적해 변화 시에만 진입 평가를 연다.
     last_confirmed_4h_ns: int | None = None
+
+    # 라운드3 A: 진입 빈도 하드캡 — 한 4h 캔들 내 신규 진입(트랜치0) 평가는 최대 1회.
+    # 체결 여부와 무관하게 "평가가 한 번 열린 4h 캔들"을 기록하고, 같은 4h 캔들에서는
+    # 미체결 만료 후에도 신규 진입 재평가를 금지한다. (피라미딩 트랜치 추가는 별개 — 미적용)
+    last_new_entry_eval_4h_ns: int | None = None
 
     for bar_idx, (bar_time, bar) in enumerate(sim_bars.iterrows()):
         bar_open = bar["open"]
@@ -445,6 +469,13 @@ def run_backtest(
                     # forced de-risk: reduce half the remaining qty at the adverse mark
                     reduce_qty = pos.qty * 0.5
                     if reduce_qty > 0:
+                        # 라운드3 C: 강제감축 레그에서 실현되는 gross PnL을 분리 계측.
+                        if pos.side == "long":
+                            reduce_gross = (adverse_mark - pos.entry_price) * reduce_qty
+                        else:
+                            reduce_gross = (pos.entry_price - adverse_mark) * reduce_qty
+                        state.liq_forced_reduce_pnl += reduce_gross
+                        pos.had_forced_reduce = True
                         _book_leg(pos, reduce_qty, adverse_mark, TAKER_FEE + SLIPPAGE_SL, state)
                         if pos.qty <= 0:
                             _close_position(
@@ -540,6 +571,7 @@ def run_backtest(
         # Update every bar regardless of position state so the tracker never lags.
         slice_4h = _get_tf_slice(tf_data, bar_time, "4h")
         new_4h_confirmed = False
+        cur_4h_ns: int | None = None
         if not slice_4h.empty:
             cur_4h_ns = int(slice_4h.index[-1].value)
             if last_confirmed_4h_ns is None:
@@ -588,6 +620,15 @@ def run_backtest(
                     current_tranche = len(same_side)
 
                     if current_tranche == 0:
+                        # 라운드3 A: 진입 빈도 하드캡 — 한 4h 캔들당 신규 진입 평가 최대 1회.
+                        # 이 4h 캔들에서 이미 신규 진입을 평가했다면 (체결 여부 무관) 건너뛴다.
+                        if cur_4h_ns is not None and cur_4h_ns == last_new_entry_eval_4h_ns:
+                            continue
+                        # 평가가 열리는 시점에 이 4h 캔들을 "평가됨"으로 기록한다.
+                        # (쿨다운/사이징 거절로 미체결이어도 같은 4h 캔들 재평가 금지.)
+                        if cur_4h_ns is not None:
+                            last_new_entry_eval_4h_ns = cur_4h_ns
+
                         # P1-1: re-entry cooldown. Same-direction re-entry requires
                         # N bars since last close of that side; 16 bars if the last
                         # close was a stop-loss (연속 손절 churn 방지), else 8 bars.
@@ -732,6 +773,9 @@ def compute_metrics(state: BacktestState, initial_equity: float) -> dict:
             "total_funding": round(state.total_funding, 4),
             "total_cost_pct": round((state.total_fees + state.total_funding) / initial_equity * 100.0, 3),
             "liq_approach_count": state.liq_approach_count,
+            "liq_forced_reduce_pnl": round(state.liq_forced_reduce_pnl, 4),
+            "liq_reduce_would_be_sl": state.liq_reduce_would_be_sl,
+            "liq_reduce_ended_win": state.liq_reduce_ended_win,
             "long_trades": 0,
             "short_trades": 0,
             "long_win_pct": 0.0,
@@ -794,6 +838,10 @@ def compute_metrics(state: BacktestState, initial_equity: float) -> dict:
         "total_funding": round(state.total_funding, 4),
         "total_cost_pct": round(total_costs / initial_equity * 100.0, 3),
         "liq_approach_count": state.liq_approach_count,
+        # 라운드3 C: 강제감축 영향 분리 계측
+        "liq_forced_reduce_pnl": round(state.liq_forced_reduce_pnl, 4),
+        "liq_reduce_would_be_sl": state.liq_reduce_would_be_sl,
+        "liq_reduce_ended_win": state.liq_reduce_ended_win,
         "long_trades": len(long_trades),
         "short_trades": len(short_trades),
         "long_win_pct": round(len(long_wins) / len(long_trades) * 100, 1) if long_trades else 0.0,

@@ -374,3 +374,60 @@ class TestRunBacktestSmoke:
         metrics = compute_metrics(state, 10_000.0)
         assert metrics["mdd_pct"] >= 0.0
         assert metrics["profit_factor"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# 라운드3 A: 진입 빈도 하드캡 — 한 4h 캔들당 신규 진입(트랜치0) 최대 1회
+# ---------------------------------------------------------------------------
+
+class TestRound3EntryHardCap:
+    def test_at_most_one_fresh_entry_per_4h_candle(self):
+        """
+        신규 진입(tranche_index == 0)의 entry_time 들을 4h 버킷으로 묶었을 때,
+        같은 (side, 4h-bucket) 에 2건 이상 들어가면 하드캡 위반.
+        피라미딩(tranche_index >= 1)은 별개이므로 제외.
+        """
+        conn = _make_in_memory_db()
+        start_ts = pd.Timestamp("2022-01-01", tz="UTC")
+        end_ts = pd.Timestamp("2022-02-01", tz="UTC")
+        state = run_backtest(conn, start_ts, end_ts, initial_equity=10_000.0)
+        conn.close()
+
+        four_h_ns = 4 * 60 * 60 * 1_000_000_000
+        seen: dict[tuple[str, int], int] = {}
+        for t in state.trade_logs:
+            if t.tranche_index != 0:
+                continue
+            ns = pd.Timestamp(t.entry_time).value
+            bucket = ns // four_h_ns
+            key = (t.side, bucket)
+            seen[key] = seen.get(key, 0) + 1
+        offenders = {k: v for k, v in seen.items() if v > 1}
+        assert not offenders, f"4h 하드캡 위반: {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# 라운드3 C: liq_approach 분리 계측 아티팩트
+# ---------------------------------------------------------------------------
+
+class TestRound3LiqApproachMeasurement:
+    def test_measurement_keys_present_and_consistent(self):
+        conn = _make_in_memory_db()
+        start_ts = pd.Timestamp("2022-01-01", tz="UTC")
+        end_ts = pd.Timestamp("2022-01-15", tz="UTC")
+        state = run_backtest(conn, start_ts, end_ts, initial_equity=10_000.0)
+        conn.close()
+        metrics = compute_metrics(state, 10_000.0)
+
+        for key in (
+            "liq_forced_reduce_pnl",
+            "liq_reduce_would_be_sl",
+            "liq_reduce_ended_win",
+        ):
+            assert key in metrics
+
+        # 분류 합계는 강제감축 발생(=청산접근) 건수를 초과할 수 없다.
+        classified = metrics["liq_reduce_would_be_sl"] + metrics["liq_reduce_ended_win"]
+        assert classified <= state.liq_approach_count
+        assert metrics["liq_reduce_would_be_sl"] >= 0
+        assert metrics["liq_reduce_ended_win"] >= 0
