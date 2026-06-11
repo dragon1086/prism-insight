@@ -19,6 +19,7 @@ from engine.sizing import (
     LIQ_BUFFER_MIN_FRAC,
     TRANCHE_FRACS,
 )
+import engine.sizing as _sizing  # RISK_PER_TRADE 단일 소스 참조 (런타임 조회)
 
 log = logging.getLogger(__name__)
 
@@ -706,7 +707,7 @@ def run_backtest(
                         )
 
                         if not sz.rejected and sz.qty > 0:
-                            risk_cap = state.equity * 0.02 * TRANCHE_FRACS[0]
+                            risk_cap = state.equity * _sizing.RISK_PER_TRADE * TRANCHE_FRACS[0]
                             po = PendingOrder(
                                 side=sig.side,
                                 limit_price=entry_price,
@@ -748,7 +749,7 @@ def run_backtest(
                                 tranche_index=current_tranche,
                             )
                             if not sz.rejected and sz.qty > 0:
-                                risk_cap = state.equity * 0.02 * TRANCHE_FRACS[current_tranche]
+                                risk_cap = state.equity * _sizing.RISK_PER_TRADE * TRANCHE_FRACS[current_tranche]
                                 po = PendingOrder(
                                     side=sig.side,
                                     limit_price=entry_price,
