@@ -385,6 +385,19 @@ def run_backtest(
     for tf in ALL_TFS:
         tf_data[tf] = add_indicators(_load_tf_data(conn, tf))
 
+    # 실펀딩 데이터 로드 (있으면 sign-aware, 없으면 기존 비관 고정값 폴백).
+    # 실측: 2020~2026 평균 +0.0121%/8h, 양수 84% — 숏은 대부분 기간 펀딩 수취.
+    funding_times: list[int] = []
+    funding_rates: list[float] = []
+    try:
+        for ft, fr in conn.execute(
+            "SELECT funding_time, rate FROM funding ORDER BY funding_time"
+        ):
+            funding_times.append(int(ft))
+            funding_rates.append(float(fr))
+    except Exception:
+        pass  # 테이블 없음 → 폴백
+
     # Get 30m bars in range
     bars_30m = tf_data["30m"]
     mask = (bars_30m.index >= start_ts) & (bars_30m.index < end_ts)
@@ -455,9 +468,17 @@ def run_backtest(
         positions_to_remove = []
         for pos in state.positions:
             # P1-2: Funding fee every 16 bars (8h), attributed to THIS position's leg.
-            # Funding = notional × |rate|, charged against the position (pessimistic).
+            # 실펀딩 데이터 있으면 sign-aware (양수 rate = 롱 지불·숏 수취),
+            # 없으면 기존 비관 고정 |rate| 차감 폴백.
             if bar_idx % FUNDING_INTERVAL_BARS == 0:
-                funding = pos.qty * bar_close * abs(FUNDING_RATE)
+                if funding_times:
+                    import bisect
+                    fi = bisect.bisect_right(funding_times, int(bar_time.value // 1_000_000)) - 1
+                    rate = funding_rates[fi] if fi >= 0 else abs(FUNDING_RATE)
+                    sign = 1.0 if pos.side == "long" else -1.0
+                    funding = pos.qty * bar_close * rate * sign  # 음수면 수취
+                else:
+                    funding = pos.qty * bar_close * abs(FUNDING_RATE)
                 state.equity -= funding
                 state.total_funding += funding
                 pos.acc_funding += funding
