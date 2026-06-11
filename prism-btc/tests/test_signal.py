@@ -10,10 +10,12 @@ from engine.signal import (
     Signal,
     generate_signal,
     check_exit_signal,
+    trend_strength,
+    chop_filter_passed,
     LONG_ENTRY_POSITIONS,
     SHORT_ENTRY_POSITIONS,
 )
-from engine.config import TF_WEIGHTS
+from engine.config import TF_WEIGHTS, TS_MIN
 
 
 # ---------------------------------------------------------------------------
@@ -138,12 +140,12 @@ class TestGenerateSignal:
         sig = generate_signal(snap)
         assert sig.side == "none"
 
-    def test_long_blocked_when_short_tf_not_aligned(self):
-        """Long TFs bullish, score >= 40, but 30m/1h in 'between' → no long."""
+    def test_long_blocked_when_entry_tf_not_aligned(self):
+        """라운드2 #3: trigger TF is 4h now. 4h 'between' → no long (30m/1h irrelevant)."""
         states = {
-            "30m": make_tf_state("up", "between"),       # not in LONG_ENTRY_POSITIONS
-            "1h": make_tf_state("up", "between"),
-            "4h": make_tf_state("up", "above_all"),
+            "30m": make_tf_state("up", "support_ma10"),
+            "1h": make_tf_state("up", "support_ma10"),
+            "4h": make_tf_state("up", "between"),        # not in LONG_ENTRY_POSITIONS
             "12h": make_tf_state("up", "above_all"),
             "1d": make_tf_state("up", "above_all"),
             "1w": make_tf_state("up", "above_all"),
@@ -152,12 +154,12 @@ class TestGenerateSignal:
         sig = generate_signal(snap)
         assert sig.side == "none"
 
-    def test_short_blocked_when_short_tf_not_aligned(self):
-        """Short TFs bearish score but candle position not in SHORT_ENTRY_POSITIONS."""
+    def test_short_blocked_when_entry_tf_not_aligned(self):
+        """라운드2 #3: 4h candle position not in SHORT_ENTRY_POSITIONS → no short."""
         states = {
-            "30m": make_tf_state("down", "between"),     # not in SHORT_ENTRY_POSITIONS
-            "1h": make_tf_state("down", "between"),
-            "4h": make_tf_state("down", "below_all"),
+            "30m": make_tf_state("down", "resist_ma10"),
+            "1h": make_tf_state("down", "resist_ma10"),
+            "4h": make_tf_state("down", "between"),      # not in SHORT_ENTRY_POSITIONS
             "12h": make_tf_state("down", "below_all"),
             "1d": make_tf_state("down", "below_all"),
             "1w": make_tf_state("down", "below_all"),
@@ -248,3 +250,118 @@ class TestCheckExitSignal:
         snap = make_snapshot(states, score=-20.0)
         sig = check_exit_signal(snap, "short")
         assert sig.exit_action == "reduce"
+
+
+# ---------------------------------------------------------------------------
+# Tests: 라운드2 #1 — 횡보 필터 (추세강도 게이트)
+# ---------------------------------------------------------------------------
+
+class TestTrendStrengthChopFilter:
+    def test_trend_strength_formula(self):
+        # |105 - 100| / 2.0 = 2.5
+        st = make_tf_state("up", "above_all", ma10=105.0, ma35=100.0, atr14=2.0)
+        assert trend_strength(st) == pytest.approx(2.5)
+
+    def test_trend_strength_zero_atr_returns_zero(self):
+        st = make_tf_state("up", "above_all", ma10=105.0, ma35=100.0, atr14=0.0)
+        assert trend_strength(st) == 0.0
+
+    def test_chop_filter_passes_when_4h_and_1d_strong(self):
+        # default fixtures give TS=2.5 (>= TS_MIN) on every TF
+        snap = all_bullish_snapshot(score=75.0)
+        assert chop_filter_passed(snap.tf_states) is True
+
+    def test_chop_filter_blocks_when_4h_weak(self):
+        states = {
+            "30m": make_tf_state("up", "support_ma10"),
+            "1h": make_tf_state("up", "support_ma10"),
+            # 4h trend_strength = |100.1-100|/2 = 0.05 < TS_MIN → chop
+            "4h": make_tf_state("up", "above_all", ma10=100.1, ma35=100.0, atr14=2.0),
+            "12h": make_tf_state("up", "above_all"),
+            "1d": make_tf_state("up", "above_all"),
+            "1w": make_tf_state("up", "above_all"),
+        }
+        snap = make_snapshot(states, score=75.0)
+        assert chop_filter_passed(snap.tf_states) is False
+
+    def test_chop_filter_blocks_when_1d_weak(self):
+        states = {
+            "30m": make_tf_state("up", "support_ma10"),
+            "1h": make_tf_state("up", "support_ma10"),
+            "4h": make_tf_state("up", "above_all"),
+            "12h": make_tf_state("up", "above_all"),
+            # 1d weak
+            "1d": make_tf_state("up", "above_all", ma10=100.1, ma35=100.0, atr14=2.0),
+            "1w": make_tf_state("up", "above_all"),
+        }
+        snap = make_snapshot(states, score=75.0)
+        assert chop_filter_passed(snap.tf_states) is False
+
+    def test_chop_filter_blocks_when_gate_tf_missing(self):
+        states = {tf: make_tf_state("up", "above_all") for tf in ("30m", "1h", "12h", "1w")}
+        # 4h and 1d absent
+        snap = make_snapshot(states, score=75.0)
+        assert chop_filter_passed(snap.tf_states) is False
+
+    def test_generate_signal_blocked_by_chop_filter(self):
+        """Strong score + aligned but 4h/1d flat (low TS) → no entry."""
+        states = {
+            "30m": make_tf_state("up", "support_ma10"),
+            "1h": make_tf_state("up", "support_ma10"),
+            "4h": make_tf_state("up", "above_all", ma10=100.1, ma35=100.0, atr14=2.0),
+            "1d": make_tf_state("up", "above_all", ma10=100.1, ma35=100.0, atr14=2.0),
+            "12h": make_tf_state("up", "above_all"),
+            "1w": make_tf_state("up", "above_all"),
+        }
+        snap = make_snapshot(states, score=80.0)
+        sig = generate_signal(snap)
+        assert sig.side == "none"
+        assert "횡보" in sig.reason or "추세강도" in sig.reason
+
+
+# ---------------------------------------------------------------------------
+# Tests: 라운드2 #3 — 진입 트리거 TF 상향 (4h 캔들 위치 기준)
+# ---------------------------------------------------------------------------
+
+class TestEntryTriggerTF4h:
+    def test_long_uses_4h_position_not_short_tfs(self):
+        """30m/1h in 'between' (would block under old rule) but 4h is above_all → long allowed."""
+        states = {
+            "30m": make_tf_state("up", "between"),
+            "1h": make_tf_state("up", "between"),
+            "4h": make_tf_state("up", "above_all"),     # entry trigger TF
+            "12h": make_tf_state("up", "above_all"),
+            "1d": make_tf_state("up", "above_all"),
+            "1w": make_tf_state("up", "above_all"),
+        }
+        snap = make_snapshot(states, score=70.0)
+        sig = generate_signal(snap)
+        assert sig.side == "long"
+
+    def test_long_blocked_when_4h_position_not_aligned(self):
+        """All long bias but 4h candle position is 'between' → no entry."""
+        states = {
+            "30m": make_tf_state("up", "support_ma10"),
+            "1h": make_tf_state("up", "support_ma10"),
+            "4h": make_tf_state("up", "between"),       # not a LONG_ENTRY_POSITION
+            "12h": make_tf_state("up", "above_all"),
+            "1d": make_tf_state("up", "above_all"),
+            "1w": make_tf_state("up", "above_all"),
+        }
+        snap = make_snapshot(states, score=70.0)
+        sig = generate_signal(snap)
+        assert sig.side == "none"
+        assert "4h" in sig.reason
+
+    def test_short_uses_4h_position(self):
+        states = {
+            "30m": make_tf_state("down", "between"),
+            "1h": make_tf_state("down", "between"),
+            "4h": make_tf_state("down", "below_all"),   # entry trigger TF
+            "12h": make_tf_state("down", "below_all"),
+            "1d": make_tf_state("down", "below_all"),
+            "1w": make_tf_state("down", "below_all"),
+        }
+        snap = make_snapshot(states, score=-70.0)
+        sig = generate_signal(snap)
+        assert sig.side == "short"

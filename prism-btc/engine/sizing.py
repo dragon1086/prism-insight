@@ -11,28 +11,35 @@ from typing import Literal
 RISK_PER_TRADE: float = 0.02          # 2% of equity per trade
 MMR: float = 0.005                    # Bybit isolated MMR approximation (0.5%)
 
-# Leverage bands (linear interpolation within each band)
-LEV_BAND_HIGH_MIN: float = 80.0       # |score| >= 80 → 25~30x
-LEV_HIGH_LOW: float = 25.0
-LEV_HIGH_HIGH: float = 30.0
+# Leverage bands (라운드2 구조개선 #2: cap lowered 10~30x → 8~12x).
+# Rationale: with fixed 2% risk sizing, high leverage adds no expected return —
+# it only pulls the liquidation price closer. Lowering the cap targets
+# liq_approach_count == 0 without changing the risk-per-trade economics.
+# Score-proportional interpolation is preserved across the full entry range:
+# |score| ENTRY_FLOOR(40) → 8x ... 100 → 12x (single linear band).
+LEV_BAND_HIGH_MIN: float = 80.0       # |score| >= 80 → upper sub-range
+LEV_HIGH_LOW: float = 11.0
+LEV_HIGH_HIGH: float = 12.0
 
-LEV_BAND_MID_MIN: float = 60.0       # 60 <= |score| < 80 → 15~25x
-LEV_MID_LOW: float = 15.0
-LEV_MID_HIGH: float = 25.0
+LEV_BAND_MID_MIN: float = 60.0       # 60 <= |score| < 80
+LEV_MID_LOW: float = 10.0
+LEV_MID_HIGH: float = 11.0
 
-LEV_BAND_LOW_MIN: float = 40.0       # 40 <= |score| < 60 → 10~15x
-LEV_LOW_LOW: float = 10.0
-LEV_LOW_HIGH: float = 15.0
+LEV_BAND_LOW_MIN: float = 40.0       # 40 <= |score| < 60
+LEV_LOW_LOW: float = 8.0
+LEV_LOW_HIGH: float = 10.0
 
-# ATR volatility cap: if ATR(14,1h)/close > this threshold → cap at 15x
+# ATR volatility cap: if ATR(14,1h)/close > this threshold → cap leverage.
+# Cap lowered in lock-step with the band ceiling (12x → 10x under high vol).
 ATR_HIGH_THRESHOLD: float = 0.025     # 2.5% ATR/close ratio
-LEV_ATR_CAP: float = 15.0
+LEV_ATR_CAP: float = 10.0
 
 # Liquidation buffer: SL must be >= 50% inside the gap between entry and liq price.
 # P2 audit: initial SL within 50% of liq distance is unsafe → auto-deleverage until
 # satisfied; if 10x still fails, cancel entry.
 LIQ_BUFFER_MIN_FRAC: float = 0.50    # 50% of entry→liq distance must remain between SL and liq
-LEV_FLOOR_BUFFER: float = 10.0       # do not deleverage below 10x to satisfy buffer; reject instead
+# Deleverage floor lowered 10x → 8x to match the new 8~12x band (라운드2 #2).
+LEV_FLOOR_BUFFER: float = 8.0        # do not deleverage below 8x to satisfy buffer; reject instead
 
 # Pyramid tranches
 TRANCHE_FRACS: tuple[float, ...] = (0.40, 0.30, 0.30)  # 40% / 30% / 30%

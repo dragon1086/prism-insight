@@ -9,7 +9,9 @@ from engine.regime import RegimeSnapshot, TFState
 Side = Literal["long", "short", "none"]
 
 LONG_TFS = ("12h", "1d", "1w")   # 장기 TF — 방향 결정권
-SHORT_TFS = ("30m", "1h")         # 단기 TF — 타이밍 결정권
+SHORT_TFS = ("30m", "1h")         # 단기 TF — 타이밍 결정권 (청산 로직 전용)
+# 라운드2 #3: 신규 진입의 "단기 캔들 위치" 판정을 30m/1h → 4h 확정봉으로 상향.
+ENTRY_TRIGGER_TF = "4h"
 
 # 단기 캔들 위치 중 롱 진입 허용 패턴
 LONG_ENTRY_POSITIONS = frozenset({
@@ -112,6 +114,45 @@ def _short_tfs_aligned(
     return True
 
 
+def _entry_tf_aligned(
+    tf_states: dict[str, TFState],
+    entry_tf: str,
+    allowed_positions: frozenset[str],
+) -> bool:
+    """진입 트리거 TF(라운드2 #3: 4h)의 캔들 위치가 허용 패턴인지 확인."""
+    state = tf_states.get(entry_tf)
+    if state is None:
+        return False
+    return state.candle_position in allowed_positions
+
+
+def trend_strength(state: TFState) -> float:
+    """추세강도 = |MA10 - MA35| / ATR14 (라운드2 #1 횡보 필터).
+
+    ATR14 가 0/음수면 측정 불가로 0.0 (게이트 통과 불가).
+    """
+    if state.atr14 <= 0:
+        return 0.0
+    return abs(state.ma10 - state.ma35) / state.atr14
+
+
+def chop_filter_passed(tf_states: dict[str, TFState]) -> bool:
+    """추세강도 게이트: TS_GATE_TFS(4h·1d) 두 TF 모두 trend_strength >= TS_MIN.
+
+    하나라도 미달이거나 상태가 없으면 횡보로 보고 신규 진입 금지.
+    보유 포지션 관리에는 영향을 주지 않는다(호출처에서 진입에만 사용).
+    """
+    from engine.config import TS_MIN, TS_GATE_TFS
+
+    for tf in TS_GATE_TFS:
+        state = tf_states.get(tf)
+        if state is None:
+            return False
+        if trend_strength(state) < TS_MIN:
+            return False
+    return True
+
+
 def generate_signal(snapshot: RegimeSnapshot) -> Signal:
     """
     RegimeSnapshot → Signal.
@@ -130,19 +171,24 @@ def generate_signal(snapshot: RegimeSnapshot) -> Signal:
         return Signal(side="none", strength=abs_score,
                       reason=f"score={score:.1f} < {ENTRY_SCORE_MIN:.0f}, 횡보관망")
 
+    # 라운드2 #1: 횡보 필터 — 4h·1d 추세강도 게이트. 둘 다 통과해야 신규 진입.
+    if not chop_filter_passed(tf_states):
+        return Signal(side="none", strength=abs_score, reason="추세강도 미달(횡보 게이트)")
+
     if score >= ENTRY_SCORE_MIN:
         # 롱 후보
         if not _long_tf_direction_positive(tf_states):
             return Signal(side="none", strength=abs_score, reason="장기TF 방향 미정렬(롱)")
-        if not _short_tfs_aligned(tf_states, LONG_ENTRY_POSITIONS):
-            return Signal(side="none", strength=abs_score, reason="단기TF 타이밍 미충족(롱)")
+        # 라운드2 #3: 진입 캔들 위치 판정을 4h 확정봉 기준으로.
+        if not _entry_tf_aligned(tf_states, ENTRY_TRIGGER_TF, LONG_ENTRY_POSITIONS):
+            return Signal(side="none", strength=abs_score, reason="4h 타이밍 미충족(롱)")
         return Signal(side="long", strength=abs_score, reason=f"롱신호 score={score:.1f}")
 
     # score <= -ENTRY_SCORE_MIN
     if not _long_tf_direction_negative(tf_states):
         return Signal(side="none", strength=abs_score, reason="장기TF 방향 미정렬(숏)")
-    if not _short_tfs_aligned(tf_states, SHORT_ENTRY_POSITIONS):
-        return Signal(side="none", strength=abs_score, reason="단기TF 타이밍 미충족(숏)")
+    if not _entry_tf_aligned(tf_states, ENTRY_TRIGGER_TF, SHORT_ENTRY_POSITIONS):
+        return Signal(side="none", strength=abs_score, reason="4h 타이밍 미충족(숏)")
     return Signal(side="short", strength=abs_score, reason=f"숏신호 score={score:.1f}")
 
 

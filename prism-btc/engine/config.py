@@ -30,6 +30,15 @@ CANDLE_BONUS_FRAC: float = 0.20  # up to ±20% of each TF weight
 # no parameter sweep. (Leverage bands in sizing.py are independent and unchanged.)
 ENTRY_SCORE_MIN: float = 55.0
 
+# --- Chop filter: trend-strength gate (라운드2 구조개선 #1) ---
+# trend_strength = |MA10 - MA35| / ATR14, computed per TF.
+# A new entry requires BOTH the 4h AND 1d TFs to have trend_strength >= TS_MIN.
+# This structurally suppresses trades during choppy/sideways regimes (e.g. 2023)
+# while leaving open-position management untouched.
+TS_MIN: float = 1.0
+# TFs that must both clear TS_MIN before a new entry is allowed.
+TS_GATE_TFS: tuple[str, ...] = ("4h", "1d")
+
 # --- Bybit API ---
 BYBIT_BASE_URL: str = "https://api.bybit.com"
 BYBIT_KLINE_ENDPOINT: str = "/v5/market/kline"

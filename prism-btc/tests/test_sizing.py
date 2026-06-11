@@ -24,43 +24,44 @@ from engine.sizing import (
 # ---------------------------------------------------------------------------
 
 class TestComputeLeverage:
-    def test_score_80_low_atr_gives_25_to_30(self):
+    # 라운드2 #2: leverage band lowered 10~30x → 8~12x (score-proportional).
+    def test_score_80_low_atr_gives_11_to_12(self):
         lev = compute_leverage(80.0, atr_ratio=0.01)
-        assert 25.0 <= lev <= 30.0
+        assert 11.0 <= lev <= 12.0
 
-    def test_score_100_low_atr_gives_30(self):
+    def test_score_100_low_atr_gives_12(self):
         lev = compute_leverage(100.0, atr_ratio=0.01)
-        assert lev == pytest.approx(30.0)
+        assert lev == pytest.approx(12.0)
 
-    def test_score_60_gives_15_to_25(self):
+    def test_score_60_gives_10_to_11(self):
         lev = compute_leverage(60.0, atr_ratio=0.01)
-        assert 15.0 <= lev <= 25.0
+        assert 10.0 <= lev <= 11.0
 
     def test_score_70_interpolates(self):
         lev = compute_leverage(70.0, atr_ratio=0.01)
-        assert 15.0 <= lev <= 25.0
+        assert 10.0 <= lev <= 11.0
 
-    def test_score_40_gives_10_to_15(self):
+    def test_score_40_gives_8_to_10(self):
         lev = compute_leverage(40.0, atr_ratio=0.01)
-        assert 10.0 <= lev <= 15.0
+        assert 8.0 <= lev <= 10.0
 
     def test_score_50_interpolates(self):
         lev = compute_leverage(50.0, atr_ratio=0.01)
-        assert 10.0 <= lev <= 15.0
+        assert 8.0 <= lev <= 10.0
 
     def test_score_below_40_gives_zero(self):
         lev = compute_leverage(39.9, atr_ratio=0.01)
         assert lev == 0.0
 
-    def test_high_atr_caps_at_15(self):
-        """ATR/close above threshold → cap at LEV_ATR_CAP."""
+    def test_high_atr_caps_at_atr_cap(self):
+        """ATR/close above threshold → cap at LEV_ATR_CAP (now 10x)."""
         lev = compute_leverage(90.0, atr_ratio=ATR_HIGH_THRESHOLD + 0.01)
         assert lev == pytest.approx(LEV_ATR_CAP)
 
     def test_atr_exactly_at_threshold_no_cap(self):
-        """ATR at exactly threshold (not above) → no cap."""
+        """ATR at exactly threshold (not above) → no cap; 90 maps into 11~12."""
         lev = compute_leverage(90.0, atr_ratio=ATR_HIGH_THRESHOLD)
-        assert lev > LEV_ATR_CAP  # should be in 25~30 range
+        assert lev > LEV_ATR_CAP  # uncapped 90 → ~11.5x > 10x cap
 
     def test_leverage_monotone_with_score(self):
         """Higher score → higher or equal leverage."""

@@ -364,6 +364,11 @@ def run_backtest(
     state = BacktestState(equity=initial_equity)
     state.equity_curve.append((str(start_ts), initial_equity))
 
+    # 라운드2 #3: 신규 진입 신호는 4h 캔들이 새로 "확정"된 30m 바에서만 평가한다.
+    # (의사결정 cadence 자체는 30m 유지 — 청산/SL/트레일링/risk_guardian 는 매 바 동작.)
+    # 직전까지 본 확정 4h 캔들의 open_time(ns)을 추적해 변화 시에만 진입 평가를 연다.
+    last_confirmed_4h_ns: int | None = None
+
     for bar_idx, (bar_time, bar) in enumerate(sim_bars.iterrows()):
         bar_open = bar["open"]
         bar_high = bar["high"]
@@ -531,6 +536,19 @@ def run_backtest(
             if pos in state.positions:
                 state.positions.remove(pos)
 
+        # --- 3a. Detect 4h candle confirmation (라운드2 #3 cadence gate) ---
+        # Update every bar regardless of position state so the tracker never lags.
+        slice_4h = _get_tf_slice(tf_data, bar_time, "4h")
+        new_4h_confirmed = False
+        if not slice_4h.empty:
+            cur_4h_ns = int(slice_4h.index[-1].value)
+            if last_confirmed_4h_ns is None:
+                # Prime the tracker on the first valid bar without firing an entry.
+                last_confirmed_4h_ns = cur_4h_ns
+            elif cur_4h_ns != last_confirmed_4h_ns:
+                new_4h_confirmed = True
+                last_confirmed_4h_ns = cur_4h_ns
+
         # --- 3. Generate new signal ---
         # Only enter new position if no pending order and <= 1 open position (simple mode)
         if state.pending_order is None and len(state.positions) < 3:
@@ -559,8 +577,11 @@ def run_backtest(
                                 if pos in state.positions:
                                     state.positions.remove(pos)
 
-                # New entry signal
-                sig = generate_signal(snapshot)
+                # New entry signal — evaluated ONLY on a freshly confirmed 4h
+                # candle (라운드2 #3). 30m/1h cadence does not open new entries.
+                sig = generate_signal(snapshot) if new_4h_confirmed else Signal(
+                    side="none", strength=0.0, reason="4h 미확정 — 진입평가 보류"
+                )
                 if sig.side != "none":
                     # Check if we already have a position in same direction
                     same_side = [p for p in state.positions if p.side == sig.side]
