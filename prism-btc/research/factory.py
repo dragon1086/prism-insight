@@ -228,6 +228,16 @@ def run_factory(conn: sqlite3.Connection, mode: str = "shadow",
             var_train, var_oos = _run_train_oos(
                 market_db_path, {**champion, param: value})
             passed, checks = evaluate_gate(base_train, var_train, base_oos, var_oos)
+            # 표본 부족이 끼어 있으면 판정 유보 (영구 기각 메모리에 박제 금지):
+            # 미달 표본의 실질 비교는 노이즈다. 가설은 hypothesis 로 남아
+            # 데이터가 쌓인 뒤 재판정된다. (워크포워드 시뮬에서 발견된 결함 수정)
+            failed_keys = {k for k, ok in checks.items() if not ok}
+            if failed_keys & {"train_min_trades", "oos_min_trades"}:
+                tracking.log_event(conn, "research",
+                                   f"가설 판정 유보 (표본 부족): {param}={value}",
+                                   mode=mode)
+                summary["skipped"] += 1
+                continue
             evidence = {
                 "champion": champion, "candidate": {param: value},
                 "gate": checks,

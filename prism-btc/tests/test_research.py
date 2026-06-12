@@ -234,6 +234,23 @@ class TestFactoryFlow:
         assert res["kept"] == 1
         assert overrides.load_active(conn) == {"TS_MIN": 2.5}
 
+    def test_insufficient_sample_defers_not_rejects(self, monkeypatch):
+        """표본 미달 = 판정 유보 — 영구 기각 메모리에 박제 금지 (워크포워드에서 발견)."""
+        conn = _conn()
+        lesson_id = _add_hypothesis(conn, "TS_MIN", 2.5)
+        def small_sample(market_db_path, cfg):
+            if cfg:
+                return _m(pf=2.4, n=20), _m(pf=2.0, n=3)  # 둘 다 표본 미달
+            return _m(), _m(n=20)
+        monkeypatch.setattr(factory, "_run_train_oos", small_sample)
+        res = factory.run_factory(conn)
+        assert res["skipped"] == 1 and res["rejected"] == 0
+        # 가설은 살아있고 (재판정 대상), 기각 메모리에 기록 안 됨
+        status = conn.execute("SELECT status FROM btc_lessons WHERE id=?",
+                              (lesson_id,)).fetchone()[0]
+        assert status == "hypothesis"
+        assert conn.execute("SELECT COUNT(*) FROM btc_research_runs").fetchone()[0] == 0
+
     def test_freetext_hypothesis_stays_for_human(self):
         """비구조 가설은 observation — 공장이 절대 집지 않는다."""
         conn = _conn()
