@@ -112,6 +112,19 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
         tracking.set_meta(root_conn, "last_confirmed_4h_ns", int(last_confirmed_4h_ns), mode)
 
     result["new_bars"] = processed
+
+    # --- 3. 매매일지/부검 (학습 기어 — 트레이딩 처리 완료 후에만, 실패 절대 비전파) ---
+    # LLM 은 주문 경로 밖: 종결 트레이드의 facts 추출 + 부검만 수행한다.
+    # 어떤 예외도 데몬을 멈출 수 없다 (이벤트 로그로 흡수, 다음 틱 재시도).
+    try:
+        from live import journal
+        jres = journal.process_pending(root_conn, tf_data, mode=mode, limit=1)
+        if jres["facts_created"] or jres["analyzed"] or jres["failed"]:
+            result["journal"] = jres
+    except Exception as exc:  # noqa: BLE001 — 학습 기어 실패는 트레이딩과 무관
+        tracking.log_event(root_conn, "error", f"journal pipeline: {exc}",
+                           level="error", mode=mode)
+
     tracking.log_event(root_conn, "heartbeat",
         f"tick ok: processed {processed} new 30m bar(s); "
         f"last={result['ts']}", mode=mode)
