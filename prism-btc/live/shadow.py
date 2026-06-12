@@ -65,9 +65,14 @@ from core.risk import compute_operating_risk
 from live import tracking
 from live.tracking import PositionRow, TradeRow
 
-# 섀도우 기본 위험: 2% (base) / 1% (drawdown reduced) — E4 오버레이.
+# 섀도우 위험: 고정 2% — E4 오버레이 비활성 (reduced == base 로 중립화).
+# 근거 (2026-06-13 전체 재시뮬, tasks/handoff_btc.md §3-1.5): E4 2%/1% 는
+# 고정 2% 대비 CAGR 8.3→6.0 / MDD 7.15→6.1 / PF 2.14→1.85 — 수익 2.3%p 를
+# 내고 MDD 1%p 를 사는 손해 보는 보험. 추세전략의 큰 승리가 손실 직후에
+# 오는 구조라, DD 트리거가 정확히 회복 트레이드의 사이즈를 반토막낸다.
+# compute_operating_risk 배관은 유지 (가변 리스크 재검토 시 값만 변경).
 SHADOW_BASE_RISK: float = 0.02
-SHADOW_REDUCED_RISK: float = 0.01
+SHADOW_REDUCED_RISK: float = 0.02  # == base → E4 비활성
 SHADOW_DD_THRESHOLD: float = 0.05
 
 INITIAL_EQUITY: float = 10_000.0
