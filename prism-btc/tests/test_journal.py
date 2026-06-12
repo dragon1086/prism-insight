@@ -214,6 +214,24 @@ class TestProcessPending:
 
 
 # ---------------------------------------------------------------------------
+# 관측 데이터 — 신호 평가 로그 (기각 포함 전수 기록)
+# ---------------------------------------------------------------------------
+
+class TestSignalLog:
+    def test_log_signal_roundtrip(self):
+        conn = tracking.get_connection(":memory:")
+        tracking.ensure_schema(conn)
+        tracking.log_signal(conn, "2026-01-01 00:00:00+00:00",
+                            score=72.5, ts_4h=2.1, ts_1d=1.0,
+                            side="none", reason="추세강도 미달(횡보 게이트)", n_open=1)
+        row = conn.execute(
+            "SELECT ts, score, ts_4h, ts_1d, side, reason, n_open "
+            "FROM btc_signal_log").fetchone()
+        assert tuple(row) == ("2026-01-01 00:00:00+00:00", 72.5, 2.1, 1.0,
+                              "none", "추세강도 미달(횡보 게이트)", 1)
+
+
+# ---------------------------------------------------------------------------
 # postmortem 계약 파서 (LLM 호출 없음)
 # ---------------------------------------------------------------------------
 

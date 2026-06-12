@@ -42,6 +42,14 @@
   설계: tasks/btc_autoloop_design.md. E2E: TS_MIN 2.5 / TRAILING_TF 1d 모두 데이터로 정당 기각 확인.
   메뉴 밖 가설(구조 변경)은 observation 으로 격리 = 유일한 사람 리뷰 지점 (자동 반영 절대 불가).
 
+## 1.9 데이터 인벤토리 (운영 감사/개선의 원천 — 전부 루트 stock_tracking_db.sqlite)
+btc_trading_history(종결 전체) / btc_positions(현재) / btc_equity_curve / btc_events(틱·에러·주문·부검·연구 전수) /
+btc_meta(트래커+code_version) / btc_journal(facts+LLM부검) / btc_lessons(교훈 수명주기) /
+btc_overrides(챔피언 채택·은퇴+증거) / btc_research_runs(공장 판정 전수) /
+**btc_signal_log(4h 신호평가 전수 — 기각 포함, 2026-06-13 추가)**.
+코드 버전은 변경 시 btc_events kind='version' 기록. /tmp 로그는 휘발 — 영구 기록은 DB가 정본.
+"운영로그와 DB 보고 개선" 세션은 이 테이블들 + tasks/*.md 만 읽으면 전체 재구성 가능.
+
 ## 2. 주요 커밋 (feature/prism-btc-v3)
 `7b465f2f` 라운드4 첫 전구간 합격 → `03a43caa` 라운드6 TP사다리 제거(RR 2.29) →
 `8d984273` 실펀딩 모델 → `cc957ba0` core 추출 리팩토링 → `c4d8b418` 섀도우 데몬 →

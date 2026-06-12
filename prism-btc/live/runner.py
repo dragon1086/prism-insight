@@ -50,6 +50,20 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
     root_conn = tracking.get_connection(root_db_path)
     tracking.ensure_schema(root_conn)
 
+    # --- 0a. 코드 버전 추적 (감사용: "이 트레이드는 어느 커밋의 코드였나") ---
+    try:
+        import subprocess
+        from pathlib import Path as _P
+        rev = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], capture_output=True,
+            text=True, timeout=5,
+            cwd=str(_P(__file__).resolve().parent.parent)).stdout.strip()
+        if rev and tracking.get_meta(root_conn, "code_version", mode) != rev:
+            tracking.set_meta(root_conn, "code_version", rev, mode)
+            tracking.log_event(root_conn, "version", f"code version: {rev}", mode=mode)
+    except Exception:  # noqa: BLE001 — 버전 추적 실패는 무해
+        pass
+
     # --- 0. 챔피언 오버라이드 적용 (자가개선 루프의 라이브 반영 지점) ---
     # 연구공장이 train+OOS 게이트로 검증·활성화한 파라미터만 여기서 적용된다.
     # 실패해도 동결 기본값으로 트레이딩 계속 (보수적 폴백).

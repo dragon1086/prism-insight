@@ -198,6 +198,23 @@ _SCHEMA = [
         PRIMARY KEY (mode, key)
     )
     """,
+    # 신호 평가 로그 — "진입하지 않은 순간"까지 전부 기록 (연구/감사용).
+    # 4h 확정봉마다 1행 (~6행/일). 없으면 기각된 신호 분석에 매번 재시뮬이 필요하다.
+    """
+    CREATE TABLE IF NOT EXISTS btc_signal_log (
+        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts       TEXT NOT NULL,                -- 평가 대상 30m 봉 시각
+        mode     TEXT NOT NULL,
+        score    REAL,                         -- alignment_score (-100~+100)
+        ts_4h    REAL,                         -- 4h trend_strength
+        ts_1d    REAL,                         -- 1d trend_strength
+        side     TEXT NOT NULL,                -- long | short | none
+        reason   TEXT NOT NULL,                -- 신호/기각 사유
+        n_open   INTEGER NOT NULL DEFAULT 0,   -- 평가 시점 보유 포지션 수
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_btc_signal_ts ON btc_signal_log(mode, ts)",
 ]
 
 # btc_positions 컬럼 순서 (PositionRow 영속 필드, id/mode 제외 — INSERT 용)
@@ -231,6 +248,20 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def log_signal(conn: sqlite3.Connection, ts: str, *, score, ts_4h, ts_1d,
+               side: str, reason: str, n_open: int = 0,
+               mode: Mode = "shadow") -> None:
+    """4h 신호 평가 1건 기록 — 진입하지 않은 평가도 전부 (연구/감사 데이터).
+
+    관측 전용: 어떤 매매 결정에도 영향을 주지 않는다. 호출측은 실패를 흡수할 것.
+    """
+    conn.execute(
+        "INSERT INTO btc_signal_log (ts, mode, score, ts_4h, ts_1d, side, reason, "
+        "n_open, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (ts, mode, score, ts_4h, ts_1d, side, reason[:200], n_open, _utcnow()))
+    conn.commit()
 
 
 # ---------------------------------------------------------------------------

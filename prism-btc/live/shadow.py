@@ -419,6 +419,22 @@ class ShadowAdapter:
                 sig = generate_signal(snapshot) if new_4h_confirmed else Signal(
                     side="none", strength=0.0, reason="4h 미확정 — 진입평가 보류"
                 )
+                if new_4h_confirmed:
+                    # 신호 평가 전수 기록 (기각 포함) — 관측 전용, 실패 비전파.
+                    # "진입 안 한 순간"의 데이터가 없으면 사후 연구마다 재시뮬이 필요하다.
+                    try:
+                        from engine.signal import trend_strength as _ts
+                        tracking.log_signal(
+                            conn, str(bar_time),
+                            score=round(snapshot.alignment_score, 2),
+                            ts_4h=(round(_ts(snapshot.tf_states["4h"]), 3)
+                                   if "4h" in snapshot.tf_states else None),
+                            ts_1d=(round(_ts(snapshot.tf_states["1d"]), 3)
+                                   if "1d" in snapshot.tf_states else None),
+                            side=sig.side, reason=sig.reason,
+                            n_open=len(positions), mode=mode)
+                    except Exception:  # noqa: BLE001 — 로깅이 매매를 못 막는다
+                        pass
                 if sig.side != "none":
                     same_side = [p for p in positions if p.side == sig.side]
                     current_tranche = len(same_side)
