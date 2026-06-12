@@ -30,8 +30,17 @@
   백분위) + `live/postmortem.py`(LLM 게이트웨이: claude CLI, 타임아웃 180s, 실패시 보류·재시도 3회).
   기록 = btc_journal/btc_lessons. 교훈 수명주기 observation→hypothesis→validated — LLM 은 주문경로
   밖, 룰 자동변경 불가. 점검: `python -m live.journal --show 5`. 주간압축: `--weekly` (수동, 아직 미스케줄).
-  설계: tasks/btc_journal_design.md. 테스트 192개. ⚠ 전략 브리프는 engine/config 동적 생성 —
+  설계: tasks/btc_journal_design.md. ⚠ 전략 브리프는 engine/config 동적 생성 —
   하드코딩 금지 (부정확 브리프 = 가짜 이상징후 교훈, E2E 실증).
+- **자가개선 자동 루프 가동** (`10476138`, 2026-06-12, Rocky 지시 "손 안대고 개선"):
+  부검 가설(손잡이 메뉴 {param,value} 구조화: ENTRY_SCORE_MIN/TS_MIN/BE_TRAIL_ACTIVATE_R/
+  TRAILING_TF, 범위 울타리) → LaunchAgent `com.prism.btc-research`(일 18:05) 가
+  train(2020~24)+OOS(2025~) 이중 게이트로 자동 판정 → 합격시 btc_overrides 자동 활성(슬롯 2)
+  → 데몬 tick 시작마다 apply_active 로 실매매 반영 → 주간 재검증 실패시 자동 은퇴(롤백).
+  판정 100% 결정적(LLM 무관여), 기각 메모리로 동일 가설 재검증 방지. 챔피언 = 동결 코드 +
+  btc_overrides(active). 점검: `python -m research.factory --status`. 테스트 219개.
+  설계: tasks/btc_autoloop_design.md. E2E: TS_MIN 2.5 / TRAILING_TF 1d 모두 데이터로 정당 기각 확인.
+  메뉴 밖 가설(구조 변경)은 observation 으로 격리 = 유일한 사람 리뷰 지점 (자동 반영 절대 불가).
 
 ## 2. 주요 커밋 (feature/prism-btc-v3)
 `7b465f2f` 라운드4 첫 전구간 합격 → `03a43caa` 라운드6 TP사다리 제거(RR 2.29) →
