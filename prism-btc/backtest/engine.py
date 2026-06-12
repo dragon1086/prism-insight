@@ -51,6 +51,10 @@ ENTRY_ORDER_EXPIRY_BARS: int = 2
 # 14d horizon while a 1h MA10 trail kept exiting on short-term noise (capture
 # efficiency median 0.41 — 59% of favorable excursion given back). Align the exit
 # timescale with the edge timescale: trail on the 12h MA10.
+# 연구 전용 훅: True 면 신규 진입 평가를 매 30m 봉마다 수행 (4h 확정 게이트 +
+# 4h당 1회 하드캡 바이패스). 기본 False = 동결 전략과 바이트 동일. 라이브 미사용.
+ENTRY_EVAL_EVERY_BAR: bool = False
+
 TRAILING_TF = "12h"
 
 # BE stop + trailing activate only after price reaches this R multiple
@@ -632,7 +636,9 @@ def run_backtest(
 
                 # New entry signal — evaluated ONLY on a freshly confirmed 4h
                 # candle (라운드2 #3). 30m/1h cadence does not open new entries.
-                sig = generate_signal(snapshot) if new_4h_confirmed else Signal(
+                # ENTRY_EVAL_EVERY_BAR 는 연구 전용 훅 (기본 False = 기존과 바이트 동일).
+                _eval_entry = new_4h_confirmed or ENTRY_EVAL_EVERY_BAR
+                sig = generate_signal(snapshot) if _eval_entry else Signal(
                     side="none", strength=0.0, reason="4h 미확정 — 진입평가 보류"
                 )
                 if sig.side != "none":
@@ -644,7 +650,8 @@ def run_backtest(
                         # 라운드3 A: 진입 빈도 하드캡 — 한 4h 캔들당 신규 진입 평가 최대 1회.
                         # 이 4h 캔들에서 이미 신규 진입을 평가했다면 (체결 여부 무관) 건너뛴다.
                         # (cadence/하드캡은 어댑터의 집행 관심사 — core 결정 밖에서 게이트.)
-                        if cur_4h_ns is not None and cur_4h_ns == last_new_entry_eval_4h_ns:
+                        if (not ENTRY_EVAL_EVERY_BAR and cur_4h_ns is not None
+                                and cur_4h_ns == last_new_entry_eval_4h_ns):
                             continue
                         # 평가가 열리는 시점에 이 4h 캔들을 "평가됨"으로 기록한다.
                         # (쿨다운/사이징 거절로 미체결이어도 같은 4h 캔들 재평가 금지.)
