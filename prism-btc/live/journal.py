@@ -376,7 +376,18 @@ def _insert_lessons(conn: sqlite3.Connection, mode: str, journal_id: Optional[in
             continue
         testable = bool(lesson.get("testable"))
         suggested = lesson.get("suggested_backtest")
-        status = "hypothesis" if (testable and suggested) else "observation"
+        # hypothesis 승격 = 자동 연구공장이 검증 가능한 구조화 가설만:
+        # {"param": <화이트리스트>, "value": <허용범위>}. 그 외는 observation
+        # (사람 리뷰 대기열) — LLM 자유텍스트가 공장에 들어갈 길은 없다.
+        status = "observation"
+        if testable and isinstance(suggested, dict) \
+                and "param" in suggested and "value" in suggested:
+            try:
+                from research.overrides import validate as _validate_override
+                _validate_override(str(suggested["param"]), suggested["value"])
+                status = "hypothesis"
+            except Exception:  # noqa: BLE001 — 화이트리스트 위반/임포트 불가
+                status = "observation"
         conn.execute(
             """
             INSERT INTO btc_lessons

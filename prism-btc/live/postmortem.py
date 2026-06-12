@@ -55,6 +55,26 @@ def _strategy_brief() -> str:
   소수의 +5R 이상 러너가 전체 수익을 만든다."""
 
 
+def _tunables_menu() -> str:
+    """자동 검증 가능한 '손잡이 메뉴' — LLM 가설을 화이트리스트로 유도.
+
+    현재값은 런타임 모듈 속성에서 읽는다 (활성 오버라이드 반영된 유효값).
+    """
+    try:
+        from research.overrides import TUNABLES
+        import importlib
+        lines = []
+        for name, t in TUNABLES.items():
+            mod = importlib.import_module(t.targets[0][0])
+            cur = getattr(mod, t.targets[0][1], t.frozen)
+            rng = (f"{t.lo}~{t.hi}" if t.kind == "float"
+                   else "|".join(t.choices))
+            lines.append(f"- {name} (현재 {cur}, 허용 {rng}) — {t.note}")
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001 — 메뉴 생성 실패 시에도 부검은 진행
+        return "(메뉴 로드 실패 — testable 가설 생성 불가, 관찰만 기록하라)"
+
+
 class PostmortemUnavailable(RuntimeError):
     """LLM 프로바이더가 하나도 없음 — 보류(재시도 카운트 미증가) 신호."""
 
@@ -171,11 +191,17 @@ def _build_prompt(facts: dict, active_lessons: list) -> str:
 
 [절대 규칙]
 1. 숫자는 아래 facts 에 있는 값만 인용한다. 새로운 숫자를 계산하거나 만들지 마라.
-2. 전략 룰은 동결 상태다. 룰 변경 아이디어는 lessons 의 suggested_backtest
-   (검증 가능한 백테스트 스펙)로만 제안할 수 있다. 그 외 방식의 룰 변경 제안 금지.
+2. 전략 룰은 동결 상태다. 룰 변경 아이디어는 lessons 의 suggested_backtest 로만
+   제안할 수 있고, 그 형식은 반드시 아래 '손잡이 메뉴'의 JSON 객체
+   {{"param": "<메뉴의 이름>", "value": <허용범위 내 값>}} 하나다.
+   메뉴 밖 아이디어(구조 변경 등)는 testable=false 로 text 에만 적어라 —
+   그것은 사람 리뷰 대기열로 가고, 메뉴 안 가설만 자동 검증된다.
 3. -1R 손절 자체는 실패가 아니다 (승률 54% 전략의 정상 비용).
    평가 대상은 "시스템이 설계 의도대로 작동했는가"와 "집행 품질"이다.
 4. 출력은 아래 JSON 스키마 하나만. 다른 텍스트 금지. 모든 값은 한국어.
+
+[손잡이 메뉴 — 자동 백테스트 검증 가능한 유일한 변경 통로]
+{_tunables_menu()}
 
 [결정적 사실 (숫자의 유일한 출처)]
 {json.dumps(facts, ensure_ascii=False, indent=1)}
@@ -192,7 +218,8 @@ def _build_prompt(facts: dict, active_lessons: list) -> str:
     {{"category": "entry|exit|sizing|regime|execution",
       "text": "교훈 한 문장",
       "testable": true,
-      "suggested_backtest": "검증 방법 (testable 일 때만; 예: 'X 조건 추가해 6년 재실행, PF/MDD 비교')"}}
+      "suggested_backtest": {{"param": "손잡이 메뉴의 이름", "value": 2.5}}
+    }}
   ],
   "pattern_tags": ["짧은 태그"],
   "one_line_summary": "한 줄 요약",
@@ -232,10 +259,15 @@ def _build_weekly_prompt(entries: list, lessons: list) -> str:
 {_strategy_brief()}
 
 [절대 규칙]
-1. 가설은 반드시 6년 백테스트로 검증 가능한 형태여야 한다 (조건/파라미터/측정지표 명시).
+1. 자동 검증 가능한 가설은 suggested_backtest 를 아래 '손잡이 메뉴'의
+   {{"param": "<이름>", "value": <허용범위 내 값>}} JSON 객체로 적은 것뿐이다.
+   메뉴 밖 아이디어는 testable=false 로 text 에만 (사람 리뷰 대기열).
 2. 단일 트레이드의 우연을 일반화하지 마라 — 반복 관찰된 패턴만 가설로 승격.
 3. 룰 변경은 여기서 일어나지 않는다. 가설 생성까지만이 너의 권한이다.
 4. 출력은 JSON 하나만. 한국어.
+
+[손잡이 메뉴 — 자동 백테스트 검증 가능한 유일한 변경 통로]
+{_tunables_menu()}
 
 [지난 7일 일지 요약]
 {json.dumps(compact, ensure_ascii=False, indent=1)}
@@ -250,7 +282,8 @@ def _build_weekly_prompt(entries: list, lessons: list) -> str:
     {{"category": "entry|exit|sizing|regime|execution",
       "text": "가설 한 문장",
       "testable": true,
-      "suggested_backtest": "정확한 검증 스펙 (변경 조건, 기간, 합격 기준)"}}
+      "suggested_backtest": {{"param": "손잡이 메뉴의 이름", "value": 2.5}}
+    }}
   ],
   "retire_suggestions": ["더 이상 유효하지 않아 보이는 기존 교훈 (있다면)"]
 }}"""

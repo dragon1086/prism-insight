@@ -50,6 +50,19 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
     root_conn = tracking.get_connection(root_db_path)
     tracking.ensure_schema(root_conn)
 
+    # --- 0. 챔피언 오버라이드 적용 (자가개선 루프의 라이브 반영 지점) ---
+    # 연구공장이 train+OOS 게이트로 검증·활성화한 파라미터만 여기서 적용된다.
+    # 실패해도 동결 기본값으로 트레이딩 계속 (보수적 폴백).
+    try:
+        from research import overrides as _overrides
+        applied = _overrides.apply_active(root_conn, mode)
+        if applied:
+            result["overrides"] = applied
+            log.info("champion overrides applied: %s", applied)
+    except Exception as exc:  # noqa: BLE001
+        tracking.log_event(root_conn, "error", f"overrides apply: {exc}",
+                           level="error", mode=mode)
+
     # --- 1. market.db 증분 갱신 (실패 내성) ---
     try:
         upserts = update_all(market_db_path)

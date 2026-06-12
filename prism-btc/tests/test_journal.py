@@ -167,7 +167,7 @@ class TestProcessPending:
                 "pattern_tags": ["trail_exit"],
                 "lessons": [
                     {"category": "exit", "text": "검증가능 교훈", "testable": True,
-                     "suggested_backtest": "6년 재실행 비교"},
+                     "suggested_backtest": {"param": "TS_MIN", "value": 2.5}},
                     {"category": "execution", "text": "관찰만"},
                 ],
             }, "mock", 5)
