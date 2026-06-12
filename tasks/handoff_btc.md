@@ -25,6 +25,13 @@
   btc_* 테이블 (positions/trading_history/equity_curve/events/meta). 로그 /tmp/btc_shadow.log.
   상태 점검: `sqlite3 stock_tracking_db.sqlite "SELECT ts,kind,message FROM btc_events ORDER BY id DESC LIMIT 5"`
 - **데이터**: prism-btc/state/market.db (klines 6TF 2020.3~ + funding 6,806건). 증분갱신은 데몬이 수행.
+- **매매일지+부검 파이프라인 가동** (`d089a45a`, 2026-06-12): 트레이드 종결 시 tick 끝에서
+  자동 부검. `live/journal.py`(결정적 facts: R분해 자가검증/MFE·MAE in R/스냅샷 재구성/백테스트
+  백분위) + `live/postmortem.py`(LLM 게이트웨이: claude CLI, 타임아웃 180s, 실패시 보류·재시도 3회).
+  기록 = btc_journal/btc_lessons. 교훈 수명주기 observation→hypothesis→validated — LLM 은 주문경로
+  밖, 룰 자동변경 불가. 점검: `python -m live.journal --show 5`. 주간압축: `--weekly` (수동, 아직 미스케줄).
+  설계: tasks/btc_journal_design.md. 테스트 192개. ⚠ 전략 브리프는 engine/config 동적 생성 —
+  하드코딩 금지 (부정확 브리프 = 가짜 이상징후 교훈, E2E 실증).
 
 ## 2. 주요 커밋 (feature/prism-btc-v3)
 `7b465f2f` 라운드4 첫 전구간 합격 → `03a43caa` 라운드6 TP사다리 제거(RR 2.29) →
@@ -32,10 +39,10 @@
 `81108fce` 리스크 프론티어 → `ef34da72`/`088aca57` 자율루프 기각 기록.
 
 ## 3. 다음 작업 (우선순위순)
-1. **매매일지+부검 자가개선 파이프라인** (Rocky 승인됨, 착수 직전이었음):
-   - 섀도우 트레이드 종결 시 자동 부검(LLM): 백테스트 기대 vs 실제 (체결, MFE 경로, 슬리피지)
-   - btc_journal / btc_lessons 테이블 (주식 시스템 trading_journal/intuitions 패턴 포팅)
-   - 주간 기억압축 → **가설 백로그** → 백테스트 검증 통과한 것만 룰 반영 (교훈이 동결 룰을 직접 바꾸는 것 금지)
+1. ~~매매일지+부검 자가개선 파이프라인~~ ✅ **완료** (`d089a45a` — §1 참조). 남은 후속:
+   - 첫 실 섀도우 트레이드 종결 후 부검 품질 확인 (`--show`)
+   - 가설 백로그(btc_lessons status='hypothesis') → 백테스트 검증 루프 (연구공장)
+   - `--weekly` 주간압축 LaunchAgent 등록 (수동 1회 검증 후)
 2. **이벤트 리스크 게이트 + 보유 중 위협 감시** (Rocky 관심 확인):
    - 1단계: FOMC/CPI 정기 이벤트 블랙아웃을 과거 캘린더로 백테스트 (룰로 검증 가능, LLM 불요)
    - 2단계: firecrawl/perplexity(주식 시스템 인프라 재사용)로 비정기 이벤트 — LLM 판단은 3개월 섀도우 수집 후 검증
