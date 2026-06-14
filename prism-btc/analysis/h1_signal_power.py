@@ -24,7 +24,7 @@ from engine.regime import RegimeSnapshot
 from engine.config import ENTRY_SCORE_MIN
 from engine import config as cfg
 
-DB = Path(__file__).resolve().parents[1] / "state" / "market.db"
+DB = Path(__file__).resolve().parents[1] / "state" / "btc_market.db"
 ALL_TFS = ("30m", "1h", "4h", "12h", "1d", "1w")
 EVAL_TF = "4h"          # we evaluate the gate at each new confirmed 4h bar (live cadence)
 FWD_TF  = "1h"          # forward returns measured on 1h closes for resolution

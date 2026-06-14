@@ -78,4 +78,5 @@ BYBIT_SLEEP_BETWEEN_REQUESTS: float = 0.12  # seconds
 BACKFILL_START_MS: int = 1577836800000  # 2020-01-01 00:00:00 UTC
 
 # SQLite path (relative to prism-btc/ package root)
-DB_RELATIVE_PATH: str = "state/market.db"
+# 비트코인 시세 원본 DB (거래/일지 장부인 루트 stock_tracking_db.sqlite 와 구분).
+DB_RELATIVE_PATH: str = "state/btc_market.db"

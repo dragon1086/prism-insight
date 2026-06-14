@@ -39,8 +39,9 @@ ON CONFLICT(timeframe, open_time) DO UPDATE SET
 def _get_db_path(db_path: str | Path | None = None) -> Path:
     if db_path is not None:
         return Path(db_path)
-    # Default: prism-btc/state/market.db relative to this file's package root
-    return Path(__file__).parent.parent / "state" / "market.db"
+    # Default: prism-btc/state/btc_market.db relative to this file's package root
+    # (비트코인 시세 원본 DB — 루트 stock_tracking_db.sqlite(거래/일지 장부)와 구분)
+    return Path(__file__).parent.parent / "state" / "btc_market.db"
 
 
 def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:

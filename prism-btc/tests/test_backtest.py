@@ -196,7 +196,7 @@ class TestNoLookaheadRealDB:
 
     def _db_path(self):
         from pathlib import Path
-        p = Path(__file__).resolve().parent.parent / "state" / "market.db"
+        p = Path(__file__).resolve().parent.parent / "state" / "btc_market.db"
         return p
 
     def test_no_unclosed_upper_tf_candle_in_snapshot(self):
