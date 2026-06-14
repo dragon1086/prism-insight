@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRISM-BTC 운영 가이드 — 시스템 전과정 & 이상감지</title>
+<style>
+  :root{
+    --bg:#0a0e17; --card:#141c2b; --card2:#1a2436; --line:#26324a;
+    --txt:#e9eef8; --sub:#9fb0c8; --dim:#697892;
+    --gold:#f5c451; --green:#34d399; --red:#f87171; --blue:#60a5fa; --violet:#a78bfa; --orange:#fb923c;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--txt);
+    font-family:"Pretendard","Apple SD Gothic Neo","Noto Sans KR",-apple-system,sans-serif;
+    line-height:1.75;letter-spacing:-.01em}
+  .wrap{max-width:880px;margin:0 auto;padding:0 20px}
+  section{padding:60px 0;border-bottom:1px solid var(--line)}
+  h1{font-size:clamp(27px,5vw,42px);font-weight:800;line-height:1.25}
+  h2{font-size:clamp(21px,3.5vw,29px);font-weight:800;margin-bottom:6px}
+  h3{font-size:17px;font-weight:700;margin-bottom:6px}
+  p{color:var(--sub);font-size:15.5px}
+  .accent{color:var(--gold)} .good{color:var(--green)} .bad{color:var(--red)} .blue{color:var(--blue)}
+  .eyebrow{display:inline-block;font-size:12.5px;font-weight:700;color:var(--gold);
+    background:rgba(245,196,81,.1);border:1px solid rgba(245,196,81,.25);
+    padding:4px 12px;border-radius:999px;margin-bottom:14px}
+  .lead{font-size:17px;color:var(--txt);margin-top:14px}
+  .sub-lead{margin-top:10px;font-size:15px}
+
+  .hero{padding:72px 0 50px;border-bottom:1px solid var(--line);
+    background:radial-gradient(1100px 460px at 72% -10%,rgba(96,165,250,.13),transparent),
+               radial-gradient(800px 360px at 8% 0%,rgba(245,196,81,.08),transparent)}
+  .toc{margin-top:22px;display:flex;flex-wrap:wrap;gap:8px}
+  .toc a{font-size:13px;color:var(--sub);text-decoration:none;border:1px solid var(--line);
+    border-radius:999px;padding:6px 13px;background:var(--card)}
+  .toc a:hover{color:var(--gold);border-color:var(--gold)}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px;margin-top:26px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:16px 14px;text-align:center}
+  .stat .v{font-size:23px;font-weight:800;color:var(--gold)}
+  .stat .k{font-size:12.5px;color:var(--dim);margin-top:3px}
+
+  .flow{margin-top:24px;display:flex;flex-direction:column;gap:0}
+  .fstep{background:var(--card);border:1px solid var(--line);border-radius:13px;
+    padding:15px 18px;display:flex;gap:13px;align-items:flex-start}
+  .fstep .n{flex:none;width:32px;height:32px;border-radius:50%;background:rgba(245,196,81,.15);
+    color:var(--gold);font-weight:800;display:flex;align-items:center;justify-content:center;
+    border:1px solid rgba(245,196,81,.35);font-size:14px}
+  .fstep h4{font-size:15px;font-weight:700}
+  .fstep p{font-size:14px;margin-top:2px}
+  .farrow{text-align:center;color:var(--dim);font-size:16px;padding:5px 0}
+
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin-top:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:20px}
+  .card .emoji{font-size:26px;margin-bottom:8px}
+  .card p{font-size:14px}
+  .tag{display:inline-block;font-size:11.5px;font-weight:700;padding:2px 9px;border-radius:999px;margin-bottom:9px}
+  .t-frozen{background:rgba(96,165,250,.12);color:var(--blue);border:1px solid rgba(96,165,250,.3)}
+  .t-llm{background:rgba(167,139,250,.12);color:var(--violet);border:1px solid rgba(167,139,250,.3)}
+  .t-data{background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.3)}
+
+  table{width:100%;border-collapse:collapse;margin-top:18px;font-size:14.5px}
+  th,td{padding:11px 13px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-size:12.5px;font-weight:700}
+
+  .alert-row{display:flex;gap:13px;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;padding:14px 17px;margin-top:11px;align-items:flex-start}
+  .alert-row .ico{flex:none;font-size:19px}
+  .alert-row b{color:var(--txt)} .alert-row .desc{color:var(--sub);font-size:14px}
+  .alert-row .means{color:var(--dim);font-size:13px;margin-top:3px}
+
+  .banner{border-radius:15px;padding:20px 22px;margin-top:22px;font-size:15px}
+  .b-green{background:linear-gradient(135deg,rgba(52,211,153,.12),rgba(96,165,250,.07));border:1px solid rgba(52,211,153,.3)}
+  .b-amber{background:rgba(251,146,60,.08);border:1px solid rgba(251,146,60,.3)}
+  .b-green b{color:var(--green)} .b-amber b{color:var(--orange)}
+
+  code{background:#0e1521;border:1px solid var(--line);border-radius:6px;padding:1.5px 7px;
+    font-size:13px;color:var(--gold);font-family:"SF Mono",Menlo,monospace}
+  .codeblock{background:#0e1521;border:1px solid var(--line);border-radius:10px;padding:14px 16px;
+    margin-top:12px;font-size:12.5px;color:var(--sub);font-family:"SF Mono",Menlo,monospace;
+    white-space:pre-wrap;line-height:1.6;overflow-x:auto}
+  .codeblock .cmt{color:var(--dim)}
+  footer{padding:38px 0 56px;text-align:center;color:var(--dim);font-size:12.5px}
+  .pill{display:inline-block;font-size:12px;font-weight:700;padding:2px 10px;border-radius:999px}
+  .p-ok{background:rgba(52,211,153,.15);color:var(--green)}
+  .p-watch{background:rgba(251,146,60,.15);color:var(--orange)}
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="hero"><div class="wrap">
+  <span class="eyebrow">PRISM-BTC · 운영 가이드 · 2026.06.15</span>
+  <h1>비트코인 AI 자동매매<br><span class="accent">시스템 전과정 & 이상감지 가이드</span></h1>
+  <p class="lead">이 문서 하나면 — 이 시스템이 <b>어떻게 돈을 벌고</b>, <b>어떻게 스스로 배우고</b>,
+  그리고 <b>잘못 돌아갈 때 어떻게 알아채는지</b>까지 전부 이해할 수 있습니다.</p>
+  <div class="stats">
+    <div class="stat"><div class="v">15.2%</div><div class="k">연 수익률(6년·risk4%)</div></div>
+    <div class="stat"><div class="v">-10.9%</div><div class="k">최대 손실폭</div></div>
+    <div class="stat"><div class="v">월 1~2회</div><div class="k">매매 빈도</div></div>
+    <div class="stat"><div class="v">269개</div><div class="k">자동 테스트 통과</div></div>
+    <div class="stat"><div class="v">🧪 시범운용</div><div class="k">현재 단계(가상자금)</div></div>
+  </div>
+  <div class="toc">
+    <a href="#what">① 한눈에</a><a href="#logic">② 매매 로직 전과정</a>
+    <a href="#gears">③ 3개의 기어</a><a href="#deploy">④ 어떻게 돌고 있나</a>
+    <a href="#telegram">⑤ 알림</a><a href="#monitor">⑥ 이상감지 (중요)</a>
+    <a href="#checklist">⑦ 내 점검 체크리스트</a>
+  </div>
+</div></div>
+
+<!-- ① WHAT -->
+<section id="what"><div class="wrap">
+  <span class="eyebrow">① 한눈에</span>
+  <h2>이게 뭔가요?</h2>
+  <p class="sub-lead">비트코인 선물을 <b style="color:var(--txt)">24시간 자동으로 매매</b>하는 시스템입니다.
+  사람이 6년치 데이터로 검증한 전략대로만 움직이고, AI가 매매를 복기하며 개선안을 내지만
+  <b style="color:var(--txt)">데이터 검증을 통과한 개선만</b> 반영됩니다.</p>
+  <div class="banner b-amber">
+    🧪 <b>지금은 시범운용(모의투자) 단계입니다.</b> 진짜 거래소(Bybit)에 실제로 주문을 넣지만,
+    <b>가상자금 1만 달러</b>로 돌립니다. 실제 돈·입출금은 없습니다. 몇 주간 실거래 환경에서
+    검증한 뒤, 문제없으면 소액 실전으로 넘어갑니다.
+  </div>
+</div></section>
+
+<!-- ② LOGIC -->
+<section id="logic"><div class="wrap">
+  <span class="eyebrow">② 매매 로직 전과정</span>
+  <h2>어떻게 돈을 버나 — 매매 한 사이클</h2>
+  <p class="sub-lead">핵심 철학: <b style="color:var(--txt)">"확실한 추세에만, 겁쟁이로 들어가서, 맞으면 끝까지 탄다."</b>
+  30분마다 시장을 보지만, 새 진입은 신중하게 따집니다.</p>
+  <div class="flow">
+    <div class="fstep"><div class="n">1</div><div>
+      <h4>🔍 시장 확인 (30분마다)</h4>
+      <p>30분~1주일까지 6개 시간대 차트를 종합해 "추세 정렬 점수"를 매깁니다. 상승·하락 양방향 모두 가능.</p></div></div>
+    <div class="farrow">▼</div>
+    <div class="fstep"><div class="n">2</div><div>
+      <h4>🚦 진입 게이트 (엄선 — 월 1~2회만 통과)</h4>
+      <p>정렬 점수 <b>70점 이상</b> + 4시간봉 추세 강도가 충분할 때만 "진입 후보". 애매하면 그냥 쉽니다.
+      안 하는 것도 전략 — 어중간한 자리는 통계적으로 손해라 데이터로 잘라냈습니다.</p></div></div>
+    <div class="farrow">▼</div>
+    <div class="fstep"><div class="n">3</div><div>
+      <h4>📦 분할 진입 (피라미딩 3트랜치 = 40% → 30% → 30%)</h4>
+      <p>한 번에 다 안 삽니다. 먼저 40%, 추세가 맞으면 30% 더, 또 맞으면 30% 더.
+      <b>틀리면 첫 40%만 손절(손실 작게), 맞으면 풀로 태움(수익 크게).</b></p></div></div>
+    <div class="farrow">▼</div>
+    <div class="fstep"><div class="n">4</div><div>
+      <h4>🛡️ 손실 통제 (진입과 동시에 손절선 설정)</h4>
+      <p>매 진입마다 "이번에 최대 얼마까지 잃을지"를 계좌의 일정 %로 미리 정합니다(예: 2%).
+      가격이 그 선을 깨면 거래소가 자동 손절. 청산가 근처엔 절대 안 갑니다.</p></div></div>
+    <div class="farrow">▼</div>
+    <div class="fstep"><div class="n">5</div><div>
+      <h4>💰 이익 관리 (1차 익절 → 본전 확보 → 무제한 추격)</h4>
+      <p>이익이 손절폭만큼(1R) 나면 1/3을 챙겨 본전을 확보하고, 나머지는 추세를 따라가는
+      자동 안전선(12시간봉 이동평균)을 깔고 <b>추세가 살아있는 한 끝까지</b> 탑니다. 정해진 목표가 없음.</p></div></div>
+    <div class="farrow">▼</div>
+    <div class="fstep"><div class="n">6</div><div>
+      <h4>🏁 청산 (추세가 꺾이면 정리)</h4>
+      <p>추격 안전선이 깨지거나 장기 추세가 반전하면 정리. 승률은 54% — 절반은 집니다.
+      그래도 버는 이유: <b>잃을 땐 -1, 딸 땐 +5·+8까지</b>. 소수의 대박이 전체 수익을 만듭니다(장타율 야구).</p></div></div>
+  </div>
+  <div class="banner b-green" style="margin-top:24px">
+    💡 <b>왜 이게 검증됐나:</b> 2020~2026 6년 데이터(실제 수수료·펀딩비 반영)로 연 15.2% / 최대손실 -10.9% /
+    손익비 2.3배. AI가 못 본 2026년 상반기 구간에서도 합격. 이더리움·솔라나에 그대로 적용해도 수익(우연 아님).
+  </div>
+</div></section>
+
+<!-- ③ GEARS -->
+<section id="gears"><div class="wrap">
+  <span class="eyebrow">③ 3개의 기어</span>
+  <h2>"감은 제안만, 결정은 데이터" — 권한 분리</h2>
+  <p class="sub-lead">시스템은 톱니바퀴 3개가 맞물려 돕니다. 각자 권한이 코드로 분리돼, 누구도 선을 못 넘습니다.</p>
+  <div class="grid2">
+    <div class="card"><div class="emoji">🚗</div><span class="tag t-frozen">동결 · 함부로 못 바꿈</span>
+      <h3>트레이딩 기어 (전략)</h3>
+      <p>6년 검증 끝난 규칙대로만 매매. 진입·청산·사이즈가 전부 수학 공식. AI가 여기 운전대를 잡는 일은 절대 없음.</p></div>
+    <div class="card"><div class="emoji">🧠</div><span class="tag t-llm">AI · 제안만</span>
+      <h3>학습 기어 (AI 복기)</h3>
+      <p>매매가 끝날 때마다 복기하고 "이렇게 바꾸면?" 제안서를 씁니다. 단, AI는 <b>숫자를 못 만들고</b>(모든 수치는 별도 계산),
+      개선안은 <b>정해진 메뉴 안</b>에서만 제출 가능.</p></div>
+    <div class="card"><div class="emoji">⚖️</div><span class="tag t-data">데이터 · 최종 결재</span>
+      <h3>검증 공장 (자가개선)</h3>
+      <p>매주 일요일, AI 제안을 6년 데이터 + 최근 미공개 구간 <b>이중 시험</b>에 올립니다. 8개 기준 전부 통과해야 합격.
+      애매하면 탈락. 합격한 것만 다음 매매부터 자동 적용, 효과 사라지면 자동 해제.</p></div>
+    <div class="card"><div class="emoji">📒</div><span class="tag t-data">전수 기록</span>
+      <h3>매매일지 + 부검</h3>
+      <p>모든 거래·판단·개선이 DB에 영구 기록. AI가 각 트레이드를 부검해 "설계대로 작동했나"를 평가.
+      나중에 운영 로그만 봐도 전부 재구성 가능.</p></div>
+  </div>
+</div></section>
+
+<!-- ④ DEPLOY -->
+<section id="deploy"><div class="wrap">
+  <span class="eyebrow">④ 어떻게 돌고 있나</span>
+  <h2>지금 서버에서 자동으로 도는 것들</h2>
+  <p class="sub-lead">운영서버(클라우드)에서 24시간 자동. 사람이 켜둘 필요 없음.</p>
+  <table>
+    <tr><th>작업</th><th>주기</th><th>하는 일</th></tr>
+    <tr><td><b>데모 매매</b></td><td>30분마다</td><td>실제 거래소에 가상자금으로 주문 — 진짜 체결값</td></tr>
+    <tr><td><b>시뮬레이션</b></td><td>30분마다</td><td>"이론상" 매매 — 데모와 비교해 체결 오차 측정용</td></tr>
+    <tr><td><b>이상감지</b></td><td>매시간</td><td>시스템 건강 점검 — 문제 있으면 DM 경보(아래 ⑥)</td></tr>
+    <tr><td><b>현황 알림</b></td><td>매일 18시</td><td>자산·포지션·성적 요약을 텔레그램으로</td></tr>
+    <tr><td><b>매매 알림</b></td><td>매매 발생 즉시</td><td>진입/청산할 때마다 텔레그램으로</td></tr>
+    <tr><td><b>자가개선</b></td><td>매주 일요일</td><td>AI 제안 검증 → 합격분 자동 반영</td></tr>
+  </table>
+  <p class="sub-lead" style="margin-top:16px"><b style="color:var(--txt)">두 개의 매매가 나란히 돕니다</b> —
+  "시뮬레이션(이론)"과 "데모(실제 거래소)". 둘을 비교하면 실제 체결이 이론과 얼마나 다른지(슬리피지)를
+  측정할 수 있고, 이게 실전 가기 전 마지막 검증입니다.</p>
+</div></section>
+
+<!-- ⑤ TELEGRAM -->
+<section id="telegram"><div class="wrap">
+  <span class="eyebrow">⑤ 알림</span>
+  <h2>텔레그램으로 오는 두 종류 메시지</h2>
+  <div class="grid2">
+    <div class="card"><div class="emoji">📲</div><h3>실시간 매매 알림</h3>
+      <p>실제로 사고팔 때마다 즉시: "🟢 새 진입 — 📈상승베팅, 진입가 X, 손절 Y" /
+      "🔵 포지션 정리 — ✅이익 +2.3배". 월 몇 번뿐이라 스팸 아님.</p></div>
+    <div class="card"><div class="emoji">📊</div><h3>매일 현황 (18시)</h3>
+      <p>"지금 자산 / 수익률 / 보유 포지션 / 최근 거래 / 누적 성적". 모든 용어는 일반인 언어로
+      (롱/숏 → 상승/하락 베팅, 배수 = 위험 대비 수익 비율).</p></div>
+  </div>
+  <p class="sub-lead" style="margin-top:14px">모든 메시지에 <b style="color:var(--txt)">🧪 시범운용(가상자금)</b>이 명시됩니다.</p>
+</div></section>
+
+<!-- ⑥ MONITOR -->
+<section id="monitor"><div class="wrap">
+  <span class="eyebrow">⑥ 이상감지 — 가장 중요</span>
+  <h2>"잘못 돌아가도 모를까봐" → 시스템이 스스로 감시합니다</h2>
+  <p class="sub-lead">매시간 <b style="color:var(--txt)">자동 건강검진(watchdog)</b>이 돕니다.
+  핵심 원칙: <b style="color:var(--txt)">정상이면 조용, 문제 있을 때만 당신 DM으로 경보.</b>
+  무소식이 희소식입니다. 6가지를 감시해요:</p>
+
+  <div class="alert-row"><div class="ico">🔴</div><div>
+    <b>데몬 정지</b> <span class="pill p-watch">긴급</span>
+    <div class="desc">70분 넘게 매매 점검이 멈추면 = 서버나 프로그램이 죽은 것.</div>
+    <div class="means">→ 경보 오면: 서버 상태 확인 필요 (가장 중요한 신호)</div></div></div>
+
+  <div class="alert-row"><div class="ico">🔴</div><div>
+    <b>에러 폭주</b> <span class="pill p-watch">긴급</span>
+    <div class="desc">2시간 안에 에러가 5건 넘게 쌓이면 = 뭔가 반복 실패 중(거래소 API, 키 만료 등).</div>
+    <div class="means">→ 경보에 최근 에러 메시지가 첨부됨</div></div></div>
+
+  <div class="alert-row"><div class="ico">🔴</div><div>
+    <b>시세 갱신 정지</b> <span class="pill p-watch">긴급</span>
+    <div class="desc">90분 넘게 새 시세를 못 받으면 = 데이터 끊김. 오래된 가격으로 매매하면 위험.</div>
+    <div class="means">→ 경보 오면: 네트워크/거래소 연결 확인</div></div></div>
+
+  <div class="alert-row"><div class="ico">🟠</div><div>
+    <b>자산 이상</b> <span class="pill p-watch">주의</span>
+    <div class="desc">자산 기록이 끊기거나 0 이하로 보이면 = 거래소 연결/계좌 동기화 문제.</div>
+    <div class="means">→ 경보 오면: 거래소 계정·키 확인</div></div></div>
+
+  <div class="alert-row"><div class="ico">🟠</div><div>
+    <b>포지션 고착</b> <span class="pill p-watch">주의</span>
+    <div class="desc">한 포지션을 20일 넘게 들고 있으면 = 청산 로직이 안 도는지 의심.</div>
+    <div class="means">→ 추세추종은 길게 타지만 너무 길면 점검 신호</div></div></div>
+
+  <div class="alert-row"><div class="ico">🟠</div><div>
+    <b>이론-실제 괴리</b> <span class="pill p-watch">주의</span>
+    <div class="desc">"시뮬레이션(이론)"과 "데모(실제)"의 자산이 15% 넘게 벌어지면 = 체결/슬리피지 이상.</div>
+    <div class="means">→ 실전 가기 전 꼭 봐야 할 핵심 지표</div></div></div>
+
+  <div class="banner b-green" style="margin-top:22px">
+    ✅ <b>안심 요소:</b> 모든 점검 결과는 DB에 기록되어 나중에 감사 가능합니다. 또 매일 1회
+    "✅ 정상 가동 중" 한 줄 요약을 받도록 설정할 수 있어, 조용한 게 진짜 정상인지 확인됩니다.
+    그리고 <b>이상감지나 알림이 실패해도 매매 자체는 절대 멈추지 않습니다</b>(권한 분리).
+  </div>
+</div></section>
+
+<!-- ⑦ CHECKLIST -->
+<section id="checklist"><div class="wrap">
+  <span class="eyebrow">⑦ 내 점검 체크리스트</span>
+  <h2>당신이 직접 확인할 수 있는 것들</h2>
+  <p class="sub-lead">대부분 자동이지만, 가끔 직접 보고 싶을 때:</p>
+  <table>
+    <tr><th>확인할 것</th><th>정상 신호</th><th>이상 신호</th></tr>
+    <tr><td>매일 18시 현황 메시지</td><td>매일 옴</td><td>이틀 이상 안 오면 → 데몬 점검</td></tr>
+    <tr><td>건강검진 경보</td><td>안 옴(=정상)</td><td>🔴/🟠 경보 오면 해당 항목 조치</td></tr>
+    <tr><td>자산 흐름</td><td>큰 등락 없이 안정</td><td>설명 없이 급락 → 로그 확인</td></tr>
+    <tr><td>매매 알림</td><td>진입 후 청산이 짝으로</td><td>진입만 있고 청산 영영 없음 → 고착</td></tr>
+  </table>
+  <h3 style="margin-top:26px">서버에서 직접 상태 보기 (개발자용)</h3>
+  <div class="codeblock"><span class="cmt"># 지금 즉시 건강검진 (경보 안 보내고 화면 출력만)</span>
+cd /root/prism-insight/prism-btc
+python -m live.healthcheck --mode demo --no-send
+
+<span class="cmt"># 최근 시스템 활동 로그 (정상이면 heartbeat 가 계속 찍힘)</span>
+sqlite3 ../stock_tracking_db.sqlite \
+  "SELECT ts,kind,message FROM btc_events WHERE mode='demo' ORDER BY id DESC LIMIT 10"
+
+<span class="cmt"># 현황 메시지 지금 받아보기</span>
+python -m live.telegram_reporter --mode demo</div>
+  <div class="banner b-amber" style="margin-top:22px">
+    🧭 <b>한 줄 요약:</b> 평소엔 아무것도 안 해도 됩니다. <b>매일 현황이 오고, 경보가 안 오면 정상.</b>
+    🔴 경보가 오면 그 항목만 보면 되고, 모르면 그 메시지를 그대로 저(AI)에게 보내주세요 — 바로 진단해 드립니다.
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  PRISM-BTC v3 · 운영 가이드 · 2026-06-15 · 데이터: Bybit BTCUSDT 2020.3~ (실수수료·실펀딩)<br>
+  본 문서는 투자 권유가 아니며 현재 시범운용(모의투자) 단계입니다. 모든 수치는 백테스트·시뮬레이션 결과입니다.
+</div></footer>
+</body>
+</html>
