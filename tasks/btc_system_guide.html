@@ -313,8 +313,10 @@
     <tr><td>매매 알림</td><td>진입 후 청산이 짝으로</td><td>진입만 있고 청산 영영 없음 → 고착</td></tr>
   </table>
   <h3 style="margin-top:26px">서버에서 직접 상태 보기 (개발자용)</h3>
-  <div class="codeblock"><span class="cmt"># 지금 즉시 건강검진 (경보 안 보내고 화면 출력만)</span>
-cd /root/prism-insight/prism-btc
+  <div class="codeblock"><span class="cmt"># 프로젝트 디렉토리로 이동 (설치 위치는 환경마다 다름)</span>
+cd &lt;프로젝트 경로&gt;/prism-btc
+
+<span class="cmt"># 지금 즉시 건강검진 (경보 안 보내고 화면 출력만)</span>
 python -m live.healthcheck --mode demo --no-send
 
 <span class="cmt"># 최근 시스템 활동 로그 (정상이면 heartbeat 가 계속 찍힘)</span>
