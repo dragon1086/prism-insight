@@ -5,6 +5,20 @@
 
 ---
 
+## 0.4 운영 배포 완료 (2026-06-15) — db-server 가 단독 운영 호스트
+- **db-server(/root/prism-insight) 에서 데모 가동 중.** PR #324 main 머지 → 서버 git pull(525b303d).
+  pybit 설치(pyenv `/root/.pyenv/shims/python`), market.db rsync(19MB), 데모키 서버 .env 추가,
+  텔레그램 토큰/채널은 서버 기존값(운영채널 -1002373898534) 재사용.
+- **서버 cron (crontab 마커 `# PRISM-BTC-START~END`, 기존 54줄 보존)**:
+  `1,31 * * * *` shadow / `2,32 * * * *` demo (병행) / `0 18 * * *` telegram(일 18시) /
+  `5 18 * * 0` journal --weekly + factory --run. 각 줄 `cd prism-btc && PYTHONPATH= PY -m ...`.
+  로그 /root/prism-insight/logs/btc_*.log.
+- **로컬 맥 BTC 데몬 전부 정지**(이중 주문 방지): LaunchAgent 4개 bootout +
+  ~/Library/LaunchAgents/disabled-btc/ 로 이동. 로컬은 개발/테스트용만, 운영은 서버.
+- 검증: 서버 데모 틱 1회 수동 OK(거래소 reconcile equity 9995.09, 에러 0), 텔레그램 DM 전송 200 OK.
+- ⚠ 텔레그램은 일 18시 **운영(주식) 채널**로 발송 — 구독자에게 BTC 시범운용 메시지 노출(Rocky 승인).
+  빈도/채널 조정 원하면 서버 crontab + .env BTC_TELEGRAM_CHANNEL_ID.
+
 ## 0.5 배포 토폴로지 (Rocky 확정 2026-06-15 — 반복설명 금지)
 - **스케줄링/데몬 베이스 = db-server** (`~/Downloads/vultr_ssh/db-server.sh` 로 접속).
   그 안 `prism-insight` 디렉토리에서 git pull 후 스케줄링·데몬 실행이 기본. BTC 운영은 여기.
