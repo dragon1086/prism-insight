@@ -22,6 +22,8 @@ import pytest
 from live import demo, tracking
 from live.demo import DemoAdapter
 from backtest.engine import ENTRY_ORDER_EXPIRY_BARS
+from engine.signal import Signal
+from engine.sizing import TRANCHE_FRACS
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +133,17 @@ class FakeExchange:
         if bad is not None:
             return bad
         return self._ok({})
+
+    # --- 통합 포지션 시뮬레이션 헬퍼 (피라미딩 테스트용) ---
+    def set_position(self, side="Buy", size="0.030", avg="100.0",
+                     lev="10", liq="80.0"):
+        """거래소 단일 통합 포지션을 갱신 (트랜치 체결로 size/avg 증가 시뮬레이트)."""
+        self._position = {"side": side, "size": str(size), "avgPrice": str(avg),
+                          "leverage": str(lev), "liqPrice": str(liq),
+                          "unrealisedPnl": "0"}
+
+    def clear_position(self):
+        self._position = None
 
     # --- call log 헬퍼 ---
     def methods_called(self):
@@ -533,3 +546,310 @@ class TestDaemonNeverCrashes:
         kinds = [r["kind"] for r in conn.execute(
             "SELECT kind FROM btc_events WHERE mode='demo'").fetchall()]
         assert "error" in kinds
+
+
+# ===========================================================================
+# 피라미딩 (3트랜치 40/30/30) — 다중 트랜치 검증
+# ===========================================================================
+#
+# Section 4 진입 게이트는 _build_snapshot_at(tf_data) 가 None 이 아니어야 평가된다.
+# 기존 케이스는 tf_data={} 라 진입신호가 절대 안 뜬다(=의도된 격리). 피라미딩
+# 진입을 결정적으로 구동하려면 demo._build_snapshot_at / demo.generate_signal 을
+# 모킹해 신호를 주입한다 (core.evaluate_entry 의 피라미딩 게이트는 실제로 통과시킴).
+# _entry_inputs 는 빈 tf_data 에서 fallback(ATR=2%, swing ±2%, MA35=entry)을 쓰므로
+# compute_sizing 이 결정적으로 qty>0 을 반환한다.
+
+
+def _force_signal(monkeypatch, side="long", strength=80.0):
+    """Section 4 가 평가되도록 snapshot/signal 을 주입.
+    snapshot 은 비-None 센티넬이면 충분 (generate_signal 을 직접 모킹하므로 내용 무관)."""
+    monkeypatch.setattr(demo, "_build_snapshot_at",
+                        lambda tf_data, bar_time: object())
+    monkeypatch.setattr(
+        demo, "generate_signal",
+        lambda snapshot: Signal(side=side, strength=strength, reason="forced"))
+
+
+def _seed_local_tranche(adapter, conn, *, tranche_index, side="long",
+                        entry=100.0, qty=0.03, sl=90.0, tp1=110.0, liq=80.0,
+                        initial_risk=50.0, mode="demo"):
+    """로컬 장부(btc_positions[demo])에 트랜치 하나를 직접 적재."""
+    pos = tracking.PositionRow(
+        side=side, entry_price=entry, qty=qty, leverage=10.0, sl_price=sl,
+        tp1_price=tp1, tp2_price=tp1 + 10, tp3_price=tp1 + 20, liq_price=liq,
+        entry_time=str(_BASE_TS), tranche_index=tranche_index,
+        entry_bar_idx=_bar_idx_for(_BASE_TS), initial_risk=initial_risk,
+        initial_qty=qty, mode=mode,
+    )
+    tracking.save_position(conn, pos)
+    return pos
+
+
+def _seed_pending_tranche(adapter, bar_idx, tranche_index, *, side="long",
+                          sl=92.0, tp1=112.0, lev=10.0, order_id="pyr-oid"):
+    """피라미딩 추가 트랜치의 pending 진입주문을 meta 로 시드."""
+    adapter._set_meta("pending_order", {
+        "order_id": order_id, "side": side, "limit_price": 102.0,
+        "bar_idx": bar_idx, "sizing_qty": 0.02, "sizing_leverage": lev,
+        "sizing_sl_price": sl, "sizing_tp1_price": tp1,
+        "sizing_tp2_price": tp1 + 10, "sizing_tp3_price": tp1 + 20,
+        "sizing_liq_price": 80.0, "initial_risk": 40.0,
+        "tranche_index": tranche_index,
+    })
+
+
+# ---------------------------------------------------------------------------
+# 1. 트랜치 1 추가 진입: 같은 방향 1개 보유 → current_tranche=1 평가 + post-only 발행
+# ---------------------------------------------------------------------------
+
+class TestPyramidAddTranche:
+    def test_second_tranche_signal_places_postonly_with_tranche_index_1(
+            self, monkeypatch):
+        # 거래소엔 통합 long 포지션(=트랜치0 체결분)이 존재, 로컬엔 트랜치0 보유.
+        fake = FakeExchange(
+            equity=10_000.0,
+            position=_ex_position(side="Buy", size="0.030", avg="100.0"),
+            open_orders=[],
+        )
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_local_tranche(conn=conn, adapter=adapter, tranche_index=0,
+                            side="long", entry=100.0, qty=0.03)
+
+        # current_price(105) > avg_entry(100) → can_add_tranche(long) 통과.
+        _force_signal(monkeypatch, side="long", strength=80.0)
+        adapter.process_bar(_BASE_TS, _bar(close=105.0, high=106.0, low=104.0),
+                            new_4h_confirmed=True, cur_4h_ns=12345)
+
+        # 추가 트랜치 = post-only Limit 진입주문 1건 (reduce-only 아님).
+        entries = [o for o in fake.placed_orders
+                   if o.get("orderType") == "Limit"
+                   and o.get("timeInForce") == "PostOnly"
+                   and "reduceOnly" not in o]
+        assert len(entries) == 1
+        assert entries[0]["side"] == "Buy"
+
+        # pending_order 가 tranche_index=1 로 기록됐다 (= evaluate_entry(current_tranche=1)).
+        pending = adapter._get_meta("pending_order", None)
+        assert pending is not None
+        assert int(pending["tranche_index"]) == 1
+
+    def test_pyramid_blocked_when_not_in_profit(self, monkeypatch):
+        # current_price(98) < avg_entry(100) → can_add_tranche(long) 차단 → 진입주문 0.
+        fake = FakeExchange(
+            equity=10_000.0,
+            position=_ex_position(side="Buy", size="0.030", avg="100.0"),
+            open_orders=[],
+        )
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_local_tranche(conn=conn, adapter=adapter, tranche_index=0,
+                            side="long", entry=100.0, qty=0.03)
+
+        _force_signal(monkeypatch, side="long", strength=80.0)
+        adapter.process_bar(_BASE_TS, _bar(close=98.0, high=99.0, low=97.0),
+                            new_4h_confirmed=True, cur_4h_ns=12345)
+
+        entries = [o for o in fake.placed_orders
+                   if o.get("orderType") == "Limit" and "reduceOnly" not in o]
+        assert entries == []
+        assert adapter._get_meta("pending_order", None) is None
+
+
+# ---------------------------------------------------------------------------
+# 2. 통합 size 증가로 트랜치 체결 감지 → 로컬 장부에 append(덮어쓰기 아님),
+#    tranche_index/initial_risk 가 트랜치별 보존
+# ---------------------------------------------------------------------------
+
+class TestPyramidFillAppends:
+    def test_tranche_fill_appends_preserving_tranche_index_and_risk(
+            self, monkeypatch):
+        bar_idx = _bar_idx_for(_BASE_TS)
+        # 거래소 통합 포지션: 트랜치0(0.03)에 트랜치1(0.02)이 더해져 0.05 로 증가.
+        # 평균단가도 갱신(거래소 평균) — 100→101.
+        fake = FakeExchange(
+            equity=10_000.0,
+            position=_ex_position(side="Buy", size="0.050", avg="101.0"),
+            open_orders=[],  # pending 진입주문 사라짐 = 체결.
+        )
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        # 직전 로컬 합계 = 트랜치0(0.03, risk 50).
+        _seed_local_tranche(conn=conn, adapter=adapter, tranche_index=0,
+                            side="long", entry=100.0, qty=0.03,
+                            initial_risk=50.0)
+        # 트랜치1 pending (risk 40, sl 92, tp1 112).
+        _seed_pending_tranche(adapter, bar_idx, tranche_index=1, side="long",
+                              sl=92.0, tp1=112.0)
+
+        adapter.process_bar(_BASE_TS, _bar(close=101.0, high=102.0, low=100.0),
+                            new_4h_confirmed=False, cur_4h_ns=None)
+
+        positions = tracking.load_open_positions(conn, "demo")
+        # 덮어쓰기가 아니라 append → 트랜치 2개 보존.
+        assert len(positions) == 2
+        by_idx = {p.tranche_index: p for p in positions}
+        assert set(by_idx) == {0, 1}
+        # 트랜치별 initial_risk 보존 (0→50, 1→40).
+        assert by_idx[0].initial_risk == pytest.approx(50.0)
+        assert by_idx[1].initial_risk == pytest.approx(40.0)
+        # 트랜치1 논리수량 = 통합총량 - 직전로컬합계 = 0.05 - 0.03 = 0.02.
+        assert by_idx[1].qty == pytest.approx(0.02)
+        # 트랜치1 SL/TP 는 그 트랜치의 sizing 값으로 보존.
+        assert by_idx[1].sl_price == pytest.approx(92.0)
+        assert by_idx[1].tp1_price == pytest.approx(112.0)
+
+
+# ---------------------------------------------------------------------------
+# 6. 피라미딩 트랜치 entry_price = 거래소 평균단가(avgPrice) 기준
+#    (executor 메모: avg_entry 는 트랜치별 저장 entry_price = 거래소 평균단가)
+# ---------------------------------------------------------------------------
+
+class TestPyramidEntryPriceIsExchangeAvg:
+    def test_filled_tranche_entry_price_uses_exchange_avg_price(
+            self, monkeypatch):
+        bar_idx = _bar_idx_for(_BASE_TS)
+        # 거래소 평균단가 101.0 — 트랜치 체결 시 이 값이 entry_price 로 저장돼야 한다.
+        fake = FakeExchange(
+            equity=10_000.0,
+            position=_ex_position(side="Buy", size="0.050", avg="101.0"),
+            open_orders=[],
+        )
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_local_tranche(conn=conn, adapter=adapter, tranche_index=0,
+                            side="long", entry=100.0, qty=0.03)
+        # pending 의 limit_price(102.0) 와 거래소 평균단가(101.0)를 다르게 둔다 —
+        # 저장값이 limit_price 가 아니라 거래소 avgPrice 임을 구분해 검증한다.
+        _seed_pending_tranche(adapter, bar_idx, tranche_index=1, side="long")
+
+        adapter.process_bar(_BASE_TS, _bar(close=101.0, high=102.0, low=100.0),
+                            new_4h_confirmed=False, cur_4h_ns=None)
+
+        positions = tracking.load_open_positions(conn, "demo")
+        by_idx = {p.tranche_index: p for p in positions}
+        # 새 트랜치의 entry_price = 거래소 평균단가(101.0), pending limit_price(102.0) 아님.
+        assert by_idx[1].entry_price == pytest.approx(101.0)
+        # entry 메타도 거래소 평균단가로 갱신된다 (r_multiple 역산 기준).
+        assert adapter._get_meta("entry_price", None) == pytest.approx(101.0)
+
+
+# ---------------------------------------------------------------------------
+# 3. 트랜치 추가 시 SL/TP 가 전체(통합) 수량 기준으로 재계산(취소→재발행)
+# ---------------------------------------------------------------------------
+
+class TestPyramidSlTpRecalcOnFullSize:
+    def test_tranche_fill_reissues_sl_tp_on_total_size(self, monkeypatch):
+        bar_idx = _bar_idx_for(_BASE_TS)
+        fake = FakeExchange(
+            equity=10_000.0,
+            position=_ex_position(side="Buy", size="0.050", avg="101.0"),
+            open_orders=[],
+        )
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_local_tranche(conn=conn, adapter=adapter, tranche_index=0,
+                            side="long", entry=100.0, qty=0.03)
+        # 기존 SL/TP 주문이 거래소에 걸려있는 상태 (트랜치0 체결 시 발행됐던 것).
+        adapter._set_meta("sl_order_id", "old-sl")
+        adapter._set_meta("tp_order_id", "old-tp")
+        _seed_pending_tranche(adapter, bar_idx, tranche_index=1, side="long",
+                              sl=92.0, tp1=112.0)
+
+        adapter.process_bar(_BASE_TS, _bar(close=101.0, high=102.0, low=100.0),
+                            new_4h_confirmed=False, cur_4h_ns=None)
+
+        # 기존 SL/TP 가 취소됐다 (수량을 못 바꾸므로 취소 후 재발행).
+        cancelled = [kw.get("orderId") for kw in fake.calls_to("cancel_order")]
+        assert "old-sl" in cancelled
+        assert "old-tp" in cancelled
+
+        # 재발행된 SL(stop-market) = 통합 총수량(0.05) 기준.
+        sl = [o for o in fake.placed_orders
+              if o.get("orderType") == "Market" and o.get("triggerPrice")
+              and o.get("reduceOnly")]
+        assert len(sl) >= 1
+        assert sl[-1]["qty"] == f"{0.05:.3f}"          # 전체 수량.
+        assert sl[-1]["side"] == "Sell"                # long 보호 → Sell.
+
+        # 재발행된 TP1(reduce-limit) = 통합 총수량의 1/3.
+        tp = [o for o in fake.placed_orders
+              if o.get("orderType") == "Limit" and o.get("reduceOnly")]
+        assert len(tp) >= 1
+        assert tp[-1]["qty"] == f"{0.05 / 3.0:.3f}"
+
+
+# ---------------------------------------------------------------------------
+# 4. 같은 방향 3트랜치 보유 시 더 이상 진입하지 않음 (current_tranche >= 3 차단)
+# ---------------------------------------------------------------------------
+
+class TestPyramidMaxThreeTranches:
+    def test_fourth_tranche_entry_blocked_at_three(self, monkeypatch):
+        fake = FakeExchange(
+            equity=10_000.0,
+            position=_ex_position(side="Buy", size="0.090", avg="100.0"),
+            open_orders=[],
+        )
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        # 같은 방향 3트랜치 적재 (current_tranche == 3).
+        for ti in range(3):
+            _seed_local_tranche(conn=conn, adapter=adapter, tranche_index=ti,
+                                side="long", entry=100.0, qty=0.03)
+
+        # 깊은 수익(can_add_tranche 자체는 통과할 가격)이어도 3 이상이면 차단돼야.
+        _force_signal(monkeypatch, side="long", strength=80.0)
+        adapter.process_bar(_BASE_TS, _bar(close=130.0, high=131.0, low=129.0),
+                            new_4h_confirmed=True, cur_4h_ns=12345)
+
+        # 신규 진입(post-only Limit, non-reduce) 주문이 나가지 않았다.
+        entries = [o for o in fake.placed_orders
+                   if o.get("orderType") == "Limit" and "reduceOnly" not in o]
+        assert entries == []
+        assert adapter._get_meta("pending_order", None) is None
+
+
+# ---------------------------------------------------------------------------
+# 5. 다중 트랜치 보유 중 청산 신호 → 전체 트랜치가 reduce-only 로 정리
+# ---------------------------------------------------------------------------
+
+class TestPyramidExitAllTranches:
+    def test_sl_cross_closes_all_tranches_reduce_only(self, monkeypatch):
+        # 통합 long 포지션 + 로컬 트랜치 3개. 봉 저가가 모든 트랜치 SL 을 관통 →
+        # 각 트랜치가 시장가 reduce-only 로 청산되고 로컬 장부가 비워진다.
+        fake = FakeExchange(
+            equity=10_000.0,
+            position=_ex_position(side="Buy", size="0.090", avg="100.0",
+                                  liq="70.0"),
+            open_orders=[],
+        )
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        for ti in range(3):
+            _seed_local_tranche(conn=conn, adapter=adapter, tranche_index=ti,
+                                side="long", entry=100.0, qty=0.03,
+                                sl=95.0, tp1=110.0, liq=70.0)
+
+        # 저가 94 < 모든 트랜치 SL(95) → 트랜치마다 ClosePosition(reason='sl').
+        adapter.process_bar(_BASE_TS, _bar(close=94.5, high=96.0, low=94.0),
+                            new_4h_confirmed=False, cur_4h_ns=None)
+
+        # 모든 reduce 는 시장가 reduce-only Sell(IOC).
+        market_reduces = [o for o in fake.placed_orders
+                          if o.get("orderType") == "Market"
+                          and o.get("reduceOnly")
+                          and o.get("timeInForce") == "IOC"]
+        # 트랜치 3개 → 최소 3건의 reduce-only 시장가 청산.
+        assert len(market_reduces) >= 3
+        for o in market_reduces:
+            assert o["side"] == "Sell"
+            assert o["reduceOnly"] is True
+        # 로컬 장부의 모든 트랜치가 정리됐다.
+        assert tracking.load_open_positions(conn, "demo") == []

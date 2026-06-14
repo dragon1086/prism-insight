@@ -439,45 +439,84 @@ class DemoAdapter:
         # btc_positions(demo) 를 거래소 포지션으로 미러 (열린 포지션 단일 가정).
         local_positions = tracking.load_open_positions(conn, mode)
 
-        # --- 2. pending 진입 주문 체결 여부 확인 (포지션 출현 또는 만료) ---
+        # --- 2. pending 진입 주문 체결 여부 확인 (포지션 출현/증가 또는 만료) ---
+        # 핵심: Bybit 데모는 같은 심볼을 단일 통합 포지션(평균단가·누적 size)으로 합산한다.
+        # 따라서 피라미딩 트랜치 체결은 "거래소 position size 증가분"으로 감지하고, 트랜치
+        # 자체는 로컬 장부(btc_positions[demo])에 별도 PositionRow 로 누적 보존한다.
+        # 체결 후 SL/TP 는 전체 포지션(평균단가·총수량) 기준으로 재계산해 amend/재발행한다.
         if pending is not None:
             pend_oid = pending.get("order_id")
             still_open = any(o["order_id"] == pend_oid for o in open_orders)
             bars_elapsed = bar_idx - int(pending["bar_idx"])
+            tranche_idx = int(pending["tranche_index"])
+            # 체결 판정: tranche 0 은 포지션 출현, 피라미딩(>=1)은 size 가 직전 로컬 합계보다
+            # 증가. 어느 쪽이든 거래소에 미체결 진입주문이 사라졌어야 한다.
+            prev_local_qty = sum(p.qty for p in local_positions
+                                 if p.side == pending["side"])
+            filled = False
             if ex_pos is not None and not still_open:
-                # 체결됨 → 진입 동반 주문(SL stop-market + TP1 reduce-limit) 발행.
+                if tranche_idx == 0:
+                    filled = ex_pos["side"] == pending["side"]
+                else:
+                    # size 증가분으로 체결 확인 (부동소수 여유 1e-9).
+                    filled = (ex_pos["side"] == pending["side"]
+                              and ex_pos["qty"] > prev_local_qty + 1e-9)
+            if filled:
                 side = ex_pos["side"]
-                qty = ex_pos["qty"]
+                total_qty = ex_pos["qty"]                 # 거래소 누적 총수량.
+                avg_entry = ex_pos["entry_price"]          # 거래소 평균단가.
+                # 이번 트랜치의 논리적 수량 = 총수량 - 직전 로컬 합계 (피라미딩),
+                # tranche 0 이면 전체.
+                tranche_qty = (total_qty if tranche_idx == 0
+                               else max(total_qty - prev_local_qty, 0.0))
+                # 이번 트랜치의 SL/TP (sizing 결과 — 트랜치별 보존).
                 sl_p = float(pending["sizing_sl_price"])
                 tp1_p = float(pending["sizing_tp1_price"])
                 self._set_leverage(float(pending["sizing_leverage"]))
-                sl_order_id = self._place_stop_market(side, qty, sl_p)
-                tp_qty = qty / 3.0  # TP1 = 1/3 부분익절.
-                tp_order_id = self._place_reduce_limit(side, tp_qty, tp1_p)
 
-                # btc_positions(demo) 기록 + 진입 메타 저장 (r_multiple 역산용).
+                # 이번 트랜치를 로컬 장부에 추가 (덮어쓰지 않고 누적 — 트랜치별 보존).
                 new_pos = tracking.PositionRow(
-                    side=side, entry_price=ex_pos["entry_price"], qty=qty,
+                    side=side, entry_price=avg_entry, qty=tranche_qty,
                     leverage=ex_pos["leverage"], sl_price=sl_p,
                     tp1_price=tp1_p, tp2_price=float(pending["sizing_tp2_price"]),
                     tp3_price=float(pending["sizing_tp3_price"]),
                     liq_price=ex_pos["liq_price"] or float(pending["sizing_liq_price"]),
-                    entry_time=bar_time_str, tranche_index=int(pending["tranche_index"]),
+                    entry_time=bar_time_str, tranche_index=tranche_idx,
                     entry_bar_idx=bar_idx, initial_risk=float(pending["initial_risk"]),
-                    initial_qty=qty, mode=mode,
+                    initial_qty=tranche_qty, mode=mode,
                 )
                 tracking.save_position(conn, new_pos)
-                local_positions = [new_pos]
+                local_positions = local_positions + [new_pos]
+
+                # 전체 포지션 기준 SL/TP 재계산·재발행 (통합 포지션이라 총수량·트리거 갱신).
+                #  - SL: 최신 트랜치의 sl_price 를 전체 총수량에 대해 stop-market 으로 건다.
+                #    (피라미딩은 직전 트랜치가 수익 중일 때만 추가되므로 최신 SL 이 더 타이트.)
+                #  - TP1: 전체 총수량의 1/3 을 최신 트랜치 tp1 가격에 reduce-limit 으로 건다.
+                same_side_local = [p for p in local_positions if p.side == side]
+                if sl_order_id:
+                    self._amend_stop(sl_order_id, sl_p)
+                    # amend 는 수량을 못 바꾼다 → 취소 후 총수량으로 재발행.
+                    self._cancel(sl_order_id)
+                    sl_order_id = None
+                sl_order_id = self._place_stop_market(side, total_qty, sl_p)
+                if tp_order_id:
+                    self._cancel(tp_order_id)
+                tp_qty = total_qty / 3.0
+                tp_order_id = self._place_reduce_limit(side, tp_qty, tp1_p)
+
+                # 진입 메타(r_multiple 역산용)는 최신 트랜치 기준으로 갱신.
                 self._set_meta("entry_initial_risk", float(pending["initial_risk"]))
                 self._set_meta("entry_time", bar_time_str)
-                self._set_meta("entry_price", ex_pos["entry_price"])
+                self._set_meta("entry_price", avg_entry)
                 self._set_meta("entry_leverage", ex_pos["leverage"])
                 self._set_meta("entry_sl_price", sl_p)
                 self._set_meta("entry_liq_price", new_pos.liq_price)
-                self._set_meta("entry_tranche_index", int(pending["tranche_index"]))
+                self._set_meta("entry_tranche_index", tranche_idx)
                 pending = None
                 tracking.log_event(conn, "fill",
-                    f"{side} entry filled @ {ex_pos['entry_price']:.2f} qty={qty:.6f}",
+                    f"{side} tranche {tranche_idx} filled @ {avg_entry:.2f} "
+                    f"tranche_qty={tranche_qty:.6f} total={total_qty:.6f} "
+                    f"(n_tranche={len(same_side_local)})",
                     mode=mode, ts=bar_time_str)
             elif bars_elapsed >= ENTRY_ORDER_EXPIRY_BARS:
                 self._cancel(pend_oid)
@@ -486,69 +525,69 @@ class DemoAdapter:
                                    mode=mode, ts=bar_time_str)
 
         # --- 3. 보유 포지션 exits 평가/집행 (core evaluate_exits, Action 순서 동일) ---
-        if ex_pos is not None and pending is None:
-            pos = local_positions[0] if local_positions else None
-            if pos is not None:
-                funding_due = bar_idx % FUNDING_INTERVAL_BARS == 0
-                sign_aware = bool(self.funding_times)
-                funding_rate = _resolve_funding_rate(
-                    funding_due, sign_aware, self.funding_times, self.funding_rates, bar_time
-                )
-                trailing_ma: Optional[float] = None
-                if pos.trailing_active:
-                    tf_trail = _get_tf_slice(self.tf_data, bar_time, TRAILING_TF)
-                    if len(tf_trail) >= 10:
-                        _ma = tf_trail["close"].rolling(10).mean().iloc[-1]
-                        if not pd.isna(_ma):
-                            trailing_ma = float(_ma)
+        # 섀도우는 트랜치별 PositionRow 마다 evaluate_exits 를 돌린다 → 데모도 동일.
+        # 다만 거래소는 단일 통합 포지션이라 집행은 "트랜치 수량을 통합 포지션에서
+        # reduce-only 로 차감"하고, SL/TP 는 남은 총수량 기준으로 재계산해 amend 한다.
+        if ex_pos is not None and pending is None and local_positions:
+            funding_due = bar_idx % FUNDING_INTERVAL_BARS == 0
+            sign_aware = bool(self.funding_times)
+            funding_rate = _resolve_funding_rate(
+                funding_due, sign_aware, self.funding_times, self.funding_rates, bar_time
+            )
+            bar_view = BarView(idx=bar_idx, high=bar_high, low=bar_low, close=bar_close)
+            # 트레일 MA 는 트랜치 공통(같은 봉) — 한 번만 계산.
+            trailing_ma_common: Optional[float] = None
+            tf_trail = _get_tf_slice(self.tf_data, bar_time, TRAILING_TF)
+            if len(tf_trail) >= 10:
+                _ma = tf_trail["close"].rolling(10).mean().iloc[-1]
+                if not pd.isna(_ma):
+                    trailing_ma_common = float(_ma)
 
+            stop_triggers: list[float] = []     # 살아남은 트랜치들의 갱신 SL → 통합 stop 재계산.
+            remaining: list[tracking.PositionRow] = []
+            # 통합 stop 은 실제 변동(트레일/감축/청산)이 있을 때만 재발행한다 — 조용한 봉
+            # (체결 직후 포함)엔 기존 보호주문을 건드리지 않아 불필요한 취소/재발행을 막는다.
+            stop_dirty = False
+            for pos in list(local_positions):
+                ctx_pos = ExitContext(
+                    funding_due=funding_due, funding_rate=funding_rate,
+                    funding_sign_aware=sign_aware,
+                    trailing_ma=(trailing_ma_common if pos.trailing_active else None),
+                    be_trail_activate_r=BE_TRAIL_ACTIVATE_R, liq_monitor_frac=LIQ_MONITOR_FRAC,
+                )
                 pos_view = PositionView(
                     side=pos.side, entry_price=pos.entry_price, qty=pos.qty,
                     sl_price=pos.sl_price, tp1_price=pos.tp1_price, liq_price=pos.liq_price,
                     trailing_active=pos.trailing_active, be_stop_set=pos.be_stop_set,
                     tp1_hit=pos.tp1_hit, liq_breach_flagged=pos.liq_breach_flagged,
                 )
-                bar_view = BarView(idx=bar_idx, high=bar_high, low=bar_low, close=bar_close)
-                ctx = ExitContext(
-                    funding_due=funding_due, funding_rate=funding_rate,
-                    funding_sign_aware=sign_aware, trailing_ma=trailing_ma,
-                    be_trail_activate_r=BE_TRAIL_ACTIVATE_R, liq_monitor_frac=LIQ_MONITOR_FRAC,
-                )
-                actions = evaluate_exits(pos_view, bar_view, ctx)
+                actions = evaluate_exits(pos_view, bar_view, ctx_pos)
 
                 closed = False
                 for act in actions:
                     if isinstance(act, ForceReduce):
-                        # 청산 임박 방어 — 시장가 reduce-only.
+                        # 청산 임박 방어 — 해당 트랜치 수량을 시장가 reduce-only 로 차감.
                         self._market_reduce(pos.side, pos.qty * act.fraction, "force_reduce")
+                        pos.qty = max(pos.qty * (1.0 - act.fraction), 0.0)
                         pos.liq_breach_flagged = True
                         pos.had_forced_reduce = True
+                        stop_dirty = True
                     elif isinstance(act, UpdateStop):
-                        # 트레일/BE — 기존 stop 주문 amend (없으면 신규 발행).
+                        # 트레일/BE — 트랜치 SL 갱신. 통합 stop 은 아래서 재계산.
                         pos.sl_price = act.new_stop
-                        if sl_order_id:
-                            self._amend_stop(sl_order_id, act.new_stop)
-                        else:
-                            sl_order_id = self._place_stop_market(
-                                pos.side, pos.qty, act.new_stop)
+                        stop_dirty = True
                     elif isinstance(act, ClosePosition):
-                        # SL/신호 청산 — 시장가 reduce-only (네이티브 SL 미체결 대비 강제).
+                        # SL/신호 청산 — 이 트랜치 수량만 통합 포지션에서 차감.
                         self._market_reduce(pos.side, pos.qty, act.reason)
-                        if sl_order_id:
-                            self._cancel(sl_order_id)
-                        if tp_order_id:
-                            self._cancel(tp_order_id)
                         last_close_bar[pos.side] = bar_idx
                         last_close_was_sl[pos.side] = act.reason in ("sl",)
                         if pos.id is not None:
                             tracking.remove_position(conn, pos.id)
-                        sl_order_id = None
-                        tp_order_id = None
                         closed = True
+                        stop_dirty = True
                         break
                     elif isinstance(act, BookPartial):
-                        # TP1 — 이미 진입 시 reduce-limit 을 걸어뒀다 (거래소가 체결).
-                        # 신호 기반이 아니라 가격 도달이므로 추가 주문 없이 플래그만.
+                        # TP1 — 통합 reduce-limit 이 거래소에서 체결한다. 플래그만.
                         pos.tp1_hit = True
                     elif isinstance(act, ActivateBETrail):
                         pos.be_stop_set = True
@@ -557,6 +596,30 @@ class DemoAdapter:
 
                 if not closed:
                     tracking.save_position(conn, pos)
+                    remaining.append(pos)
+                    stop_triggers.append(pos.sl_price)
+
+            # 통합 stop 재계산: 남은 총수량 / 가장 타이트한 SL 트리거로 stop-market amend·재발행.
+            remaining_qty = sum(p.qty for p in remaining)
+            if remaining_qty <= 0 or not remaining:
+                # 모든 트랜치 청산됨 → 잔여 보호주문 정리.
+                if sl_order_id:
+                    self._cancel(sl_order_id)
+                    sl_order_id = None
+                if tp_order_id:
+                    self._cancel(tp_order_id)
+                    tp_order_id = None
+            elif stop_dirty:
+                # 트레일/감축/부분청산으로 총수량·트리거가 바뀐 경우만 통합 stop 재발행.
+                side0 = remaining[0].side
+                # long: 가장 높은 SL 이 타이트, short: 가장 낮은 SL 이 타이트.
+                tightest = (max(stop_triggers) if side0 == "long"
+                            else min(stop_triggers))
+                if sl_order_id:
+                    self._cancel(sl_order_id)
+                    sl_order_id = None
+                sl_order_id = self._place_stop_market(side0, remaining_qty, tightest)
+            local_positions = remaining
         elif ex_pos is None and local_positions:
             # 거래소엔 포지션 없는데 로컬에 남아있음 → 거래소 체결(SL/TP)로 닫힌 것.
             for pos in local_positions:
@@ -572,9 +635,12 @@ class DemoAdapter:
             tracking.log_event(conn, "fill",
                 "거래소 포지션 종료 감지 (SL/TP 체결) — 로컬 정리", mode=mode, ts=bar_time_str)
 
-        # --- 4. 신호 청산 + 신규 진입 평가 (4h 하드캡 + 쿨다운, shadow 동일 게이트) ---
+        # --- 4. 신규 진입 평가 (4h 하드캡 + 쿨다운 + 피라미딩, shadow 동일 게이트) ---
+        # 데모는 거래소가 단일 통합 포지션(평균단가)으로 합산하지만, 트랜치는 로컬
+        # 장부(btc_positions[demo])로 관리한다. current_tranche = 같은 방향 로컬
+        # 트랜치 수 → 섀도우와 동일 (len(same_side)). 거래소엔 누적 size 만 맞춘다.
         has_position = ex_pos is not None
-        if pending is None and not has_position:
+        if pending is None:
             snapshot = _build_snapshot_at(self.tf_data, bar_time)
             if snapshot is not None:
                 sig = generate_signal(snapshot) if new_4h_confirmed else Signal(
@@ -591,32 +657,47 @@ class DemoAdapter:
                             ts_1d=(round(_ts(snapshot.tf_states["1d"]), 3)
                                    if "1d" in snapshot.tf_states else None),
                             side=sig.side, reason=sig.reason,
-                            n_open=0, mode=mode)
+                            n_open=len(local_positions), mode=mode)
                     except Exception:  # noqa: BLE001 — 로깅이 매매를 못 막는다
                         pass
 
                 if sig.side != "none":
-                    # 데모는 단일 포지션만 (current_tranche=0 진입만 — 피라미딩은 보류).
+                    # 같은 방향 로컬 트랜치 수 → current_tranche (섀도우 동일).
+                    same_side = [p for p in local_positions if p.side == sig.side]
+                    current_tranche = len(same_side)
                     intent: Optional[OpenIntent] = None
-                    if cur_4h_ns is not None and cur_4h_ns == last_new_entry_eval_4h_ns:
-                        intent = None
-                    else:
-                        if cur_4h_ns is not None:
-                            last_new_entry_eval_4h_ns = cur_4h_ns
-                        bars_since_close = bar_idx - int(last_close_bar.get(sig.side, -10_000))
-                        cooldown_bars = (
-                            SL_REENTRY_COOLDOWN_BARS
-                            if last_close_was_sl.get(sig.side, False)
-                            else REENTRY_COOLDOWN_BARS
-                        )
+
+                    if current_tranche == 0:
+                        # 4h 하드캡 + 재진입 쿨다운 (신규 진입, tranche 0).
+                        if cur_4h_ns is not None and cur_4h_ns == last_new_entry_eval_4h_ns:
+                            intent = None
+                        else:
+                            if cur_4h_ns is not None:
+                                last_new_entry_eval_4h_ns = cur_4h_ns
+                            bars_since_close = bar_idx - int(last_close_bar.get(sig.side, -10_000))
+                            cooldown_bars = (
+                                SL_REENTRY_COOLDOWN_BARS
+                                if last_close_was_sl.get(sig.side, False)
+                                else REENTRY_COOLDOWN_BARS
+                            )
+                            entry_price = bar_close
+                            ei = self._entry_inputs(bar_time, sig.side, entry_price)
+                            intent = self._evaluate_entry_with_risk(
+                                sig, equity, 0, ei,
+                                cooldown=CooldownState(
+                                    bars_since_close=bars_since_close,
+                                    cooldown_bars=cooldown_bars,
+                                ),
+                            )
+                    elif current_tranche < 3:
+                        # 피라미딩 추가 트랜치 — evaluate_entry 내부 can_add_tranche 게이트가
+                        # 직전 평균단가 대비 수익 중일 때만 통과시킨다 (섀도우 동일).
+                        avg_entry = sum(p.entry_price for p in same_side) / len(same_side)
                         entry_price = bar_close
                         ei = self._entry_inputs(bar_time, sig.side, entry_price)
                         intent = self._evaluate_entry_with_risk(
-                            sig, equity, 0, ei,
-                            cooldown=CooldownState(
-                                bars_since_close=bars_since_close,
-                                cooldown_bars=cooldown_bars,
-                            ),
+                            sig, equity, current_tranche, ei,
+                            avg_entry=avg_entry, current_price=bar_close,
                         )
 
                     if intent is not None:
@@ -642,6 +723,7 @@ class DemoAdapter:
                             }
                             tracking.log_event(conn, "signal",
                                 f"{intent.side} entry intent @ {intent.limit_price:.2f} "
+                                f"tranche={intent.tranche_index} "
                                 f"risk={intent.initial_risk:.2f} id={order_id}",
                                 mode=mode, ts=bar_time_str)
 
@@ -654,7 +736,8 @@ class DemoAdapter:
         self._set_meta("tp_order_id", tp_order_id)
         tracking.log_event(conn, "heartbeat",
             f"demo tick ok @ {bar_time_str} equity={equity:.2f} "
-            f"pos={'yes' if has_position else 'no'}", mode=mode, ts=bar_time_str)
+            f"pos={'yes' if has_position else 'no'} "
+            f"tranches={len(local_positions)}", mode=mode, ts=bar_time_str)
 
     # --- helpers (shadow 미러) ---
 

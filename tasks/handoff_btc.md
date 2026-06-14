@@ -5,6 +5,16 @@
 
 ---
 
+## 0.5 배포 토폴로지 (Rocky 확정 2026-06-15 — 반복설명 금지)
+- **스케줄링/데몬 베이스 = db-server** (`~/Downloads/vultr_ssh/db-server.sh` 로 접속).
+  그 안 `prism-insight` 디렉토리에서 git pull 후 스케줄링·데몬 실행이 기본. BTC 운영은 여기.
+- **대시보드 UI = app-server** (`~/Downloads/vultr_ssh/app-server.sh` 접속 → `su - prism` →
+  prism-insight 진입 → git pull → `examples/dashboard` 하위 프론트엔드 엔진 실행. 기존 프로세스
+  먼저 내림. 프로세스 매니저는 pm2 추정/미확인). 대시보드 데이터 생성은 crontab 으로 도는
+  기존 스크립트 참고해 필요시 추가.
+- BTC 대시보드(미래)는 한국/미국 주식처럼 examples/dashboard 에 붙인다 (지금은 텔레그램 현황만).
+- 현재 BTC 데몬 4개는 아직 **로컬 맥**에서 가동 중 — 운영(db-server) 배포는 안정성+피라미딩 검증 후.
+
 ## 0. 절대 규칙 (먹통 사고 3회의 교훈)
 - **crontab 명령 금지** (읽기 포함 — macOS에서 stdin/TCC 행 → 봇 전체 먹통). 주기 실행은 LaunchAgent.
 - **상주 프로세스를 세션에서 직접 띄우지 말 것.** 데몬은 LaunchAgent `--once` 방식.
@@ -51,11 +61,11 @@
 - **운영 LaunchAgent 4개 가동**: com.prism.btc-shadow(01/31분, 가상) +
   com.prism.btc-demo(02/32분, 실주문) + com.prism.btc-research(일 18:05, 자가개선) +
   com.prism.btc-telegram(4시간마다, 현황). 전부 --once, crontab 금지 준수.
-- **⚠⚠ 데모 v1 단일 포지션 — 피라미딩 추가 기한: 2026-06-28 (Rocky 명시 요구)**:
-  현재 데모는 단일 포지션만(피라미딩 3트랜치 40/30/30 보류). 섀도우는 풀 3트랜치라 둘의
-  진입 비중 동작이 달라 괴리분석이 왜곡됨. **2026-06-28(데모 2주 모니터링 종료)까지 reconcile
-  안정성 확인 후 피라미딩 3트랜치를 데모에 반드시 추가할 것.** 안정성 기준: 2주간 데모 tick
-  에러 0건 + 진입/SL/TP/청산 reconcile 가 거래소와 일치(불일치 이벤트 0). 이 줄을 지우지 말 것.
+- **데모 피라미딩 완료 (2026-06-15)**: ① reconcile 안정성 점검 OK(연속 틱 에러 0) ②
+  3트랜치(40/30/30) 피라미딩 데모 추가 — 거래소는 통합 단일포지션(평균단가), 트랜치는
+  로컬 장부(btc_positions[demo] 트랜치별 행)로 관리, size 증분으로 체결 감지, SL/TP 전체
+  수량 기준 재발행 ③ 테스트 241개 통과(다중트랜치 7건 포함). **남은 것: 운영서버(db-server)
+  배포 — git pull 후 LaunchAgent 가동.** 배포는 §0.5 절차. 아직 로컬에서만 가동 중.
 - **텔레그램 현황 리포터**: live/telegram_reporter.py — 일반인 한국어(롱/숏/R/PF/섀도우 용어
   전부 제거, "상승베팅/하락베팅·배수·이익/손실"로 풀어씀). 채널은 기존 주식 채널 그대로 사용
   (Rocky 결정). 주식 운영 채널 ID = -1002373898534, 상록 DM = 7726642089.
