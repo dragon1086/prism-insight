@@ -1,0 +1,203 @@
+{
+ "sim": {
+  "start": "2022-01-01",
+  "end": "2026-06-12",
+  "events": [
+   "2022-01-01",
+   "2022-07-01",
+   "2023-01-01",
+   "2023-07-01",
+   "2024-01-01",
+   "2024-07-01",
+   "2025-01-01",
+   "2025-07-01",
+   "2026-01-01"
+  ],
+  "oos_days": 183,
+  "menu": [
+   [
+    "ENTRY_SCORE_MIN",
+    60.0
+   ],
+   [
+    "ENTRY_SCORE_MIN",
+    75.0
+   ],
+   [
+    "ENTRY_SCORE_MIN",
+    80.0
+   ],
+   [
+    "TS_MIN",
+    1.5
+   ],
+   [
+    "TS_MIN",
+    2.5
+   ],
+   [
+    "TS_MIN",
+    3.0
+   ],
+   [
+    "BE_TRAIL_ACTIVATE_R",
+    1.0
+   ],
+   [
+    "BE_TRAIL_ACTIVATE_R",
+    2.0
+   ],
+   [
+    "TRAILING_TF",
+    "4h"
+   ],
+   [
+    "TRAILING_TF",
+    "1d"
+   ]
+  ],
+  "risk_per_trade": "engine default 2%"
+ },
+ "timeline": [
+  {
+   "event": "2022-07-01",
+   "action": "reject",
+   "param": "TS_MIN",
+   "value": 1.5,
+   "failed": [
+    "train_mdd_cap",
+    "train_return_keep",
+    "oos_pf_floor"
+   ]
+  },
+  {
+   "event": "2023-01-01",
+   "action": "reject",
+   "param": "ENTRY_SCORE_MIN",
+   "value": 60.0,
+   "failed": [
+    "train_pf_improve",
+    "train_mdd_cap",
+    "train_return_keep",
+    "oos_pf_floor"
+   ]
+  },
+  {
+   "event": "2023-01-01",
+   "action": "reject",
+   "param": "BE_TRAIL_ACTIVATE_R",
+   "value": 1.0,
+   "failed": [
+    "train_pf_improve",
+    "train_return_keep",
+    "oos_pf_floor"
+   ]
+  },
+  {
+   "event": "2023-01-01",
+   "action": "reject",
+   "param": "BE_TRAIL_ACTIVATE_R",
+   "value": 2.0,
+   "failed": [
+    "oos_pf_floor"
+   ]
+  },
+  {
+   "event": "2023-01-01",
+   "action": "reject",
+   "param": "TRAILING_TF",
+   "value": "4h",
+   "failed": [
+    "train_pf_improve",
+    "train_return_keep",
+    "oos_pf_floor"
+   ]
+  },
+  {
+   "event": "2023-01-01",
+   "action": "reject",
+   "param": "TRAILING_TF",
+   "value": "1d",
+   "failed": [
+    "train_pf_improve",
+    "train_mdd_cap",
+    "train_return_keep",
+    "oos_pf_floor"
+   ]
+  },
+  {
+   "event": "2023-07-01",
+   "action": "reject",
+   "param": "ENTRY_SCORE_MIN",
+   "value": 75.0,
+   "failed": [
+    "train_pf_improve",
+    "train_mdd_cap",
+    "train_return_keep",
+    "oos_pf_floor"
+   ]
+  },
+  {
+   "event": "2024-01-01",
+   "action": "reject",
+   "param": "TS_MIN",
+   "value": 2.5,
+   "failed": [
+    "train_return_keep",
+    "oos_pf_floor"
+   ]
+  },
+  {
+   "event": "2025-01-01",
+   "action": "reject",
+   "param": "ENTRY_SCORE_MIN",
+   "value": 80.0,
+   "failed": [
+    "train_pf_improve",
+    "train_return_keep",
+    "oos_pf_floor"
+   ]
+  },
+  {
+   "event": "2026-01-01",
+   "action": "reject",
+   "param": "TS_MIN",
+   "value": 3.0,
+   "failed": [
+    "train_return_keep"
+   ]
+  }
+ ],
+ "champions_at": {
+  "2022-01-01": {},
+  "2022-07-01": {},
+  "2023-01-01": {},
+  "2023-07-01": {},
+  "2024-01-01": {},
+  "2024-07-01": {},
+  "2025-01-01": {},
+  "2025-07-01": {},
+  "2026-01-01": {}
+ },
+ "loop": {
+  "final_equity": 17057.0,
+  "total_return_pct": 70.6,
+  "cagr_pct": 12.76,
+  "mdd_pct": 6.15,
+  "profit_factor": 2.471,
+  "win_rate_pct": 45.3,
+  "rr": 3.26,
+  "trade_count": 128
+ },
+ "frozen_spliced": {
+  "final_equity": 17057.0,
+  "total_return_pct": 70.6,
+  "cagr_pct": 12.76,
+  "mdd_pct": 6.15,
+  "profit_factor": 2.471,
+  "win_rate_pct": 45.3,
+  "rr": 3.26,
+  "trade_count": 128
+ },
+ "elapsed_sec": 1078.2
+}
