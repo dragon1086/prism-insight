@@ -219,14 +219,20 @@ def build_message(conn, mode: str) -> str:
         dd_pct = 100.0 * (equity - peak) / peak
 
     # 모드 라벨 — 일반인용. demo = 진짜 거래소에서 가상 자금으로 검증 중.
-    mode_kr = {"demo": "모의투자 (가상자금 1만 달러)",
-               "live": "실전투자",
-               "shadow": "시뮬레이션"}.get(mode, mode)
+    mode_kr = {"demo": "🧪 시범운용 (모의투자)",
+               "live": "🔴 실전투자",
+               "shadow": "🧮 시뮬레이션"}.get(mode, mode)
 
     lines: list[str] = []
-    lines.append("🤖 *비트코인 자동매매 현황*")
+    lines.append("🤖 *비트코인 AI 자동매매*")
+    lines.append(f"*[{mode_kr}]*")
     days_str = f"{days:.0f}일째" if days is not None else "시작 단계"
-    lines.append(f"_{mode_kr} · {days_str} · {now}_")
+    lines.append(f"_{days_str} · {now}_")
+    if mode == "demo":
+        # 시범운용 강조 배너 — 주식 메시지의 ⚠️ 주의문구 결을 따름.
+        lines.append("")
+        lines.append("⚠️ _가상자금으로 전략을 검증하는 시범운용 단계입니다._")
+        lines.append("_실제 거래·입출금은 없으며, 성과는 참고용입니다._")
     lines.append("")
 
     # 1) 지금 돈이 얼마인가
@@ -236,8 +242,11 @@ def build_message(conn, mode: str) -> str:
     else:
         lines.append(f"• 평가금액: *{equity:,.0f} 달러*")
         if ret_pct is not None:
-            verb = "수익" if ret_pct >= 0 else "손실"
-            lines.append(f"• 시작 대비: {ret_pct:+.1f}% ({verb})")
+            if abs(ret_pct) < 0.05:
+                lines.append("• 시작 대비: 거의 변동 없음")
+            else:
+                verb = "수익" if ret_pct >= 0 else "손실"
+                lines.append(f"• 시작 대비: {ret_pct:+.1f}% ({verb})")
         if dd_pct is not None and dd_pct < -0.05:
             # 고점에서 현재까지 빠진 폭 (지금 고점이면 생략).
             lines.append(f"• 고점에서 지금: {dd_pct:.1f}% (잠깐 눌린 정도)")
