@@ -112,7 +112,25 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
     else:
         new_bars = bars_30m[bars_30m.index.map(lambda t: int(t.value) > int(last_ns))]
 
-    adapter = ShadowAdapter(root_conn, tf_data, funding_times, funding_rates, mode=mode)
+    # --- 어댑터 선택 (mode 분기 — 결정로직 동일, "집행"만 다름) ---
+    # demo: 거래소 실주문 집행 (live/demo.py). 다른 모든 모드: 가상 체결 (shadow).
+    # demo 어댑터 import/생성 실패(pybit 없음·키 없음 등)는 흡수 → 에러 이벤트 +
+    # 이번 틱 스킵. 섀도우/다른 모드는 영향 0 (지연 임포트로 shadow 경로 안 깨짐).
+    if mode == "demo":
+        try:
+            from live.demo import DemoAdapter
+            adapter = DemoAdapter(root_conn, tf_data, funding_times,
+                                  funding_rates, mode=mode)
+        except Exception as exc:  # noqa: BLE001 — 어댑터 생성 실패 흡수
+            result["error"] = f"demo adapter init failed: {exc}"
+            tracking.log_event(root_conn, "error", result["error"],
+                               level="error", mode=mode)
+            tracking.log_event(root_conn, "heartbeat",
+                               "tick skipped (demo adapter init failed)", mode=mode)
+            root_conn.close()
+            return result
+    else:
+        adapter = ShadowAdapter(root_conn, tf_data, funding_times, funding_rates, mode=mode)
 
     # 4h 확정 추적 (backtest cadence gate 미러).
     last_confirmed_4h_ns = tracking.get_meta(root_conn, "last_confirmed_4h_ns", mode)

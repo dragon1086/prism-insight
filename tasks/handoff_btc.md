@@ -42,6 +42,22 @@
   설계: tasks/btc_autoloop_design.md. E2E: TS_MIN 2.5 / TRAILING_TF 1d 모두 데이터로 정당 기각 확인.
   메뉴 밖 가설(구조 변경)은 observation 으로 격리 = 유일한 사람 리뷰 지점 (자동 반영 절대 불가).
 
+## 1.8 데모 실주문 가동 (2026-06-14, Rocky 데모키 발급 완료)
+- **Bybit 데모 실주문 어댑터 LIVE**: `live/demo.py` DemoAdapter — 섀도우와 **병행** 가동
+  (섀도우=이론 가상체결, 데모=거래소 실체결 → 괴리 측정). 거래소가 진실(reconcile):
+  get_wallet_balance/positions/executions 로 동기화, mode='demo' 로 btc_* 기록.
+  접속 `HTTP(demo=True)` (★ testnet 아님, api-demo.bybit.com), 키 .env BYBIT_DEMO_API_KEY/SECRET
+  ($10k USDT 충전됨, 출금권한 없음). 키 로드는 demo.py 가 .env 직접 load_dotenv.
+- **운영 LaunchAgent 4개 가동**: com.prism.btc-shadow(01/31분, 가상) +
+  com.prism.btc-demo(02/32분, 실주문) + com.prism.btc-research(일 18:05, 자가개선) +
+  com.prism.btc-telegram(4시간마다, 현황). 전부 --once, crontab 금지 준수.
+- **⚠ 데모 v1 단순화**: 단일 포지션만 (피라미딩 3트랜치 보류 — 거래소 reconcile 복잡도↓).
+  섀도우는 풀 3트랜치라 둘의 트랜치 동작이 다름 — 괴리 분석 시 감안. 데모 안정화 후 피라미딩 추가 검토.
+- **⚠ 텔레그램 미전송 상태**: live/telegram_reporter.py 완성·메시지 포맷 검증됐으나 .env
+  TELEGRAM_BOT_TOKEN 이 placeholder("your_bot_token"). Rocky 가 BTC 전용 봇토큰 +
+  BTC_TELEGRAM_CHANNEL_ID 줘야 실제 전송. 그전까진 stdout 폴백(크래시 없음). 채널 받으면 .env 2줄 추가.
+- 테스트 234개 (FakeExchange 모킹, 네트워크 0, "출금호출 0" assert 포함). 스펙: tasks/btc_demo_adapter_spec.md.
+
 ## 1.9 데이터 인벤토리 (운영 감사/개선의 원천 — 전부 루트 stock_tracking_db.sqlite)
 btc_trading_history(종결 전체) / btc_positions(현재) / btc_equity_curve / btc_events(틱·에러·주문·부검·연구 전수) /
 btc_meta(트래커+code_version) / btc_journal(facts+LLM부검) / btc_lessons(교훈 수명주기) /
