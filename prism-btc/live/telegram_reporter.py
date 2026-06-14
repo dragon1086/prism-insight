@@ -181,7 +181,29 @@ def _unrealized_r(pos, cur_price: float | None) -> float | None:
         return None
 
 
+# 청산 사유 → 일반인 한국어. 내부 코드값을 사람이 읽는 말로 바꾼다.
+_EXIT_REASON_KR = {
+    "tp1": "1차 목표 도달", "tp2": "2차 목표 도달", "tp3": "최종 목표 도달",
+    "sl": "손절(약속한 손실선)", "trail": "추세 꺾여 익절 마감",
+    "signal_exit": "추세 종료 신호로 정리", "signal_reduce": "비중 축소",
+    "liq_forced_reduce": "위험 관리 자동 축소", "be": "본전 부근 정리",
+}
+
+
+def _reason_kr(reason: str) -> str:
+    return _EXIT_REASON_KR.get(str(reason), str(reason))
+
+
+def _side_kr(side: str) -> str:
+    # 일반인에게 롱/숏보다 직관적인 표현.
+    return "📈 상승 베팅" if side == "long" else "📉 하락 베팅"
+
+
 def build_message(conn, mode: str) -> str:
+    """비트코인 자동매매 현황 — 한국 일반인이 바로 이해하는 표현으로.
+
+    전문용어(롱/숏/R/PF/MDD/섀도우 등) 대신 쉬운 말로 풀어 쓴다.
+    """
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     equity = tracking.latest_equity(conn, mode)
     peak = tracking.peak_equity(conn, mode)
@@ -196,84 +218,94 @@ def build_message(conn, mode: str) -> str:
     if equity is not None and peak:
         dd_pct = 100.0 * (equity - peak) / peak
 
+    # 모드 라벨 — 일반인용. demo = 진짜 거래소에서 가상 자금으로 검증 중.
+    mode_kr = {"demo": "모의투자 (가상자금 1만 달러)",
+               "live": "실전투자",
+               "shadow": "시뮬레이션"}.get(mode, mode)
+
     lines: list[str] = []
-    lines.append(f"*PRISM-BTC 현황 [{mode.upper()}]*")
-    days_str = f"{days:.1f}일" if days is not None else "—"
-    lines.append(f"_{now} · 가동 {days_str}_")
+    lines.append("🤖 *비트코인 자동매매 현황*")
+    days_str = f"{days:.0f}일째" if days is not None else "시작 단계"
+    lines.append(f"_{mode_kr} · {days_str} · {now}_")
     lines.append("")
 
-    # 자산
-    lines.append("*자산*")
-    lines.append(f"• 자본: {_fmt_num(equity)} USDT")
-    lines.append(f"• 수익률: {_fmt_pct(ret_pct)}")
-    lines.append(f"• 고점대비 DD: {_fmt_pct(dd_pct)}")
+    # 1) 지금 돈이 얼마인가
+    lines.append("💰 *지금 자산*")
+    if equity is None:
+        lines.append("• 집계 준비 중")
+    else:
+        lines.append(f"• 평가금액: *{equity:,.0f} 달러*")
+        if ret_pct is not None:
+            verb = "수익" if ret_pct >= 0 else "손실"
+            lines.append(f"• 시작 대비: {ret_pct:+.1f}% ({verb})")
+        if dd_pct is not None and dd_pct < -0.05:
+            # 고점에서 현재까지 빠진 폭 (지금 고점이면 생략).
+            lines.append(f"• 고점에서 지금: {dd_pct:.1f}% (잠깐 눌린 정도)")
     lines.append("")
 
-    # 보유 포지션
-    lines.append("*보유 포지션*")
+    # 2) 지금 사고 있나
+    lines.append("📊 *지금 포지션*")
     positions = _open_positions(conn, mode)
     if not positions:
-        lines.append("• 관망 중")
+        lines.append("• 관망 중 (좋은 기회를 기다리는 중)")
     else:
         for p in positions:
             ur = _unrealized_r(p, cur_price)
-            ur_str = f"{ur:+.2f}R" if ur is not None else "—"
-            dir_kr = "롱" if p.side == "long" else "숏"
+            if ur is not None:
+                tail = f"현재 {'수익권' if ur >= 0 else '손실권'} ({ur:+.1f}배)"
+            else:
+                tail = "진행 중"
             lines.append(
-                f"• {dir_kr} | 진입 {p.entry_price:,.1f} | "
-                f"미실현 {ur_str} | {p.leverage:.0f}x"
+                f"• {_side_kr(p.side)} · 진입가 {p.entry_price:,.0f}달러 · {tail}"
             )
     lines.append("")
 
-    # 최근 종결 3건
-    lines.append("*최근 종결 (3)*")
+    # 3) 최근 거래 결과
+    lines.append("📒 *최근 거래 (최대 3건)*")
     trades = _recent_trades(conn, mode, 3)
     if not trades:
-        lines.append("• 없음")
+        lines.append("• 아직 마감된 거래 없음")
     else:
         for t in trades:
-            dir_kr = "롱" if t["side"] == "long" else "숏"
+            r = float(t["r_multiple"])
+            mark = "✅ 이익" if r > 0 else "❌ 손실"
             lines.append(
-                f"• {dir_kr} | {float(t['r_multiple']):+.2f}R | {t['exit_reason']}"
+                f"• {mark} {r:+.1f}배 · {_side_kr(t['side'])} · {_reason_kr(t['exit_reason'])}"
             )
     lines.append("")
 
-    # 누적
+    # 4) 누적 성적
     stats = _cumulative_stats(conn, mode)
-    lines.append("*누적*")
+    lines.append("🏆 *누적 성적*")
     if stats["n"] == 0:
-        lines.append("• 데이터 없음")
+        lines.append("• 아직 데이터 쌓는 중")
     else:
-        wr = f"{stats['win_rate']:.1f}%" if stats["win_rate"] is not None else "—"
-        pf = f"{stats['pf']:.2f}" if stats["pf"] is not None else "—"
-        avgr = f"{stats['avg_r']:+.2f}R" if stats["avg_r"] is not None else "—"
-        lines.append(
-            f"• {stats['n']}건 | 승률 {wr} | PF {pf} | 평균 {avgr}"
-        )
+        wr = f"{stats['win_rate']:.0f}%" if stats["win_rate"] is not None else "—"
+        avgr = f"{stats['avg_r']:+.1f}배" if stats["avg_r"] is not None else "—"
+        parts = [f"총 {stats['n']}회 거래", f"승률 {wr}", f"평균 {avgr}"]
+        if stats["pf"] is not None:
+            parts.append(f"번 돈이 잃은 돈의 {stats['pf']:.1f}배")
+        lines.append("• " + " · ".join(parts))
     lines.append("")
 
-    # 마지막 4h 신호
+    # 5) 지금 시장을 보는 눈 (신호) — 점수/추세강도 숫자 대신 말로.
     sig = _last_signal(conn, mode)
-    lines.append("*마지막 4h 신호*")
-    if sig is None:
-        lines.append("• 데이터 없음")
+    lines.append("🔭 *지금 시장 판단*")
+    if sig is None or sig.get("side") is None:
+        lines.append("• 분석 준비 중")
     else:
-        score = f"{float(sig['score']):+.1f}" if sig["score"] is not None else "—"
-        ts4h = f"{float(sig['ts_4h']):+.1f}" if sig["ts_4h"] is not None else "—"
-        lines.append(
-            f"• score {score} | 추세강도(4h) {ts4h} | {sig['side']}"
-        )
+        side = sig["side"]
+        if side == "none":
+            lines.append("• 뚜렷한 추세 없음 → 진입 보류 (무리하지 않음)")
+        else:
+            lines.append(f"• {_side_kr(side)} 신호 포착 — 조건 확인 중")
+    lines.append("")
 
-    # 푸터: 같은 기간 섀도우 equity 대비 (있으면)
-    if mode != "shadow":
-        shadow_eq = tracking.latest_equity(conn, "shadow")
-        if shadow_eq is not None and equity is not None:
-            diff = equity - shadow_eq
-            lines.append("")
-            lines.append(
-                f"_섀도우 대비: {diff:+,.2f} USDT "
-                f"(섀도우 {shadow_eq:,.2f})_"
-            )
+    # 꼬리말 — 용어 설명 한 줄 + 면책.
+    lines.append("_※ '배'는 한 번에 감수한 위험 대비 수익 비율입니다 "
+                 "(예: +2배 = 건 위험의 2배를 벌었다는 뜻)._")
+    if mode == "demo":
+        lines.append("_※ 현재는 가상자금 모의투자 단계로, 실제 입출금은 없습니다._")
 
     return "\n".join(lines)
 

@@ -51,11 +51,17 @@
 - **운영 LaunchAgent 4개 가동**: com.prism.btc-shadow(01/31분, 가상) +
   com.prism.btc-demo(02/32분, 실주문) + com.prism.btc-research(일 18:05, 자가개선) +
   com.prism.btc-telegram(4시간마다, 현황). 전부 --once, crontab 금지 준수.
-- **⚠ 데모 v1 단순화**: 단일 포지션만 (피라미딩 3트랜치 보류 — 거래소 reconcile 복잡도↓).
-  섀도우는 풀 3트랜치라 둘의 트랜치 동작이 다름 — 괴리 분석 시 감안. 데모 안정화 후 피라미딩 추가 검토.
-- **⚠ 텔레그램 미전송 상태**: live/telegram_reporter.py 완성·메시지 포맷 검증됐으나 .env
-  TELEGRAM_BOT_TOKEN 이 placeholder("your_bot_token"). Rocky 가 BTC 전용 봇토큰 +
-  BTC_TELEGRAM_CHANNEL_ID 줘야 실제 전송. 그전까진 stdout 폴백(크래시 없음). 채널 받으면 .env 2줄 추가.
+- **⚠⚠ 데모 v1 단일 포지션 — 피라미딩 추가 기한: 2026-06-28 (Rocky 명시 요구)**:
+  현재 데모는 단일 포지션만(피라미딩 3트랜치 40/30/30 보류). 섀도우는 풀 3트랜치라 둘의
+  진입 비중 동작이 달라 괴리분석이 왜곡됨. **2026-06-28(데모 2주 모니터링 종료)까지 reconcile
+  안정성 확인 후 피라미딩 3트랜치를 데모에 반드시 추가할 것.** 안정성 기준: 2주간 데모 tick
+  에러 0건 + 진입/SL/TP/청산 reconcile 가 거래소와 일치(불일치 이벤트 0). 이 줄을 지우지 말 것.
+- **텔레그램 현황 리포터**: live/telegram_reporter.py — 일반인 한국어(롱/숏/R/PF/섀도우 용어
+  전부 제거, "상승베팅/하락베팅·배수·이익/손실"로 풀어씀). 채널은 기존 주식 채널 그대로 사용
+  (Rocky 결정). 주식 운영 채널 ID = -1002373898534, 상록 DM = 7726642089.
+  ⚠ 미전송 사유: prism-insight/.env 의 TELEGRAM_BOT_TOKEN 이 placeholder. 실제 봇 토큰을
+  .env 에 넣어야 전송됨 (주식 시스템 토큰 위치 미발견 — Rocky 가 직접 .env 에 추가).
+  넣은 뒤 BTC_TELEGRAM_CHANNEL_ID=-1002373898534 추가하면 운영채널로 전송 (없으면 TELEGRAM_CHANNEL_ID 폴백).
 - 테스트 234개 (FakeExchange 모킹, 네트워크 0, "출금호출 0" assert 포함). 스펙: tasks/btc_demo_adapter_spec.md.
 
 ## 1.9 데이터 인벤토리 (운영 감사/개선의 원천 — 전부 루트 stock_tracking_db.sqlite)
