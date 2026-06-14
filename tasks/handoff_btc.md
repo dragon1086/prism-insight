@@ -22,6 +22,15 @@
   매 데모틱(30분)에 즉시 텔레그램 알림(ID 마커 멱등, 콜드스타트 가드). runner tick 훅(demo/live만).
   하루 1회 스냅샷(telegram_reporter)과 별개 — 이벤트 기반 즉시 알림. 서버 배포·콜드스타트 마커 0 확인.
 
+## 0.45 운영 이상감지 watchdog (2026-06-15, PR #327)
+- **live/healthcheck.py**: 6종 점검 — 데몬정지(heartbeat>70분)/에러폭주(2h>5건)/시세정지
+  (last_processed>90분)/자산이상/포지션고착(20일+)/이론-실제 괴리(섀도우vs데모>15%).
+  문제 있을 때만 텔레그램 경보, 정상이면 조용. btc_events(kind=health)로 감사기록.
+- **경보 채널 = 운영자 DM** (BTC_OPS_CHANNEL_ID=7726642089, 공개채널 아님). 서버 .env 설정됨.
+- **서버 cron (마커 PRISM-BTC-HEALTH)**: `15 * * * *` 매시간 점검 + `0 9 * * *` 매일 정상요약(--daily).
+- CLI 점검: `python -m live.healthcheck --mode demo --no-send`. 검증: 서버 "이슈 0 정상" + DM 200 OK.
+- 가이드: tasks/btc_system_guide.html (시스템 전과정+이상감지 일반인 설명).
+
 ## 0.5 배포 토폴로지 (Rocky 확정 2026-06-15 — 반복설명 금지)
 - **스케줄링/데몬 베이스 = db-server** (`~/Downloads/vultr_ssh/db-server.sh` 로 접속).
   그 안 `prism-insight` 디렉토리에서 git pull 후 스케줄링·데몬 실행이 기본. BTC 운영은 여기.
