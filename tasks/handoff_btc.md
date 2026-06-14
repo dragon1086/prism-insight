@@ -51,7 +51,7 @@
   `python -m live.runner --once`). 가상계좌 $10k, risk 2%. 기록 = 루트 `stock_tracking_db.sqlite`의
   btc_* 테이블 (positions/trading_history/equity_curve/events/meta). 로그 /tmp/btc_shadow.log.
   상태 점검: `sqlite3 stock_tracking_db.sqlite "SELECT ts,kind,message FROM btc_events ORDER BY id DESC LIMIT 5"`
-- **데이터**: prism-btc/state/btc_btc_market.db (klines 6TF 2020.3~ + funding 6,806건). 증분갱신은 데몬이 수행.
+- **데이터**: prism-btc/state/btc_market.db (klines 6TF 2020.3~ + funding 6,806건). 증분갱신은 데몬이 수행.
 - **매매일지+부검 파이프라인 가동** (`d089a45a`, 2026-06-12): 트레이드 종결 시 tick 끝에서
   자동 부검. `live/journal.py`(결정적 facts: R분해 자가검증/MFE·MAE in R/스냅샷 재구성/백테스트
   백분위) + `live/postmortem.py`(LLM 게이트웨이: claude CLI, 타임아웃 180s, 실패시 보류·재시도 3회).
