@@ -170,6 +170,17 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
         tracking.log_event(root_conn, "error", f"journal pipeline: {exc}",
                            level="error", mode=mode)
 
+    # --- 3b. 실시간 매매 이벤트 알림 (데모/실모드만 — shadow 는 가상 시뮬이라 미발송) ---
+    # 새 진입/비중 추가/포지션 정리를 즉시 텔레그램으로 알린다 (멱등). 어떤 예외도
+    # 데몬을 멈출 수 없다 (notify_new_events 가 내부 흡수하지만 여기서도 한 겹 더 방어).
+    if mode in ("demo", "live"):
+        try:
+            from live import notifier
+            notifier.notify_new_events(root_conn, mode)
+        except Exception as exc:  # noqa: BLE001 — 알림 실패는 트레이딩과 무관
+            tracking.log_event(root_conn, "error", f"notifier: {exc}",
+                               level="error", mode=mode)
+
     tracking.log_event(root_conn, "heartbeat",
         f"tick ok: processed {processed} new 30m bar(s); "
         f"last={result['ts']}", mode=mode)
