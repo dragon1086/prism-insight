@@ -59,9 +59,11 @@
 - **텔레그램 현황 리포터**: live/telegram_reporter.py — 일반인 한국어(롱/숏/R/PF/섀도우 용어
   전부 제거, "상승베팅/하락베팅·배수·이익/손실"로 풀어씀). 채널은 기존 주식 채널 그대로 사용
   (Rocky 결정). 주식 운영 채널 ID = -1002373898534, 상록 DM = 7726642089.
-  ⚠ 미전송 사유: prism-insight/.env 의 TELEGRAM_BOT_TOKEN 이 placeholder. 실제 봇 토큰을
-  .env 에 넣어야 전송됨 (주식 시스템 토큰 위치 미발견 — Rocky 가 직접 .env 에 추가).
-  넣은 뒤 BTC_TELEGRAM_CHANNEL_ID=-1002373898534 추가하면 운영채널로 전송 (없으면 TELEGRAM_CHANNEL_ID 폴백).
+  **배포 모델 (Rocky 확인)**: 로컬 .env = 테스트 채널 + placeholder 토큰 (그래서 로컬에선
+  전송 안 됨, 정상). 진짜 운영 토큰/채널은 운영서버에 설정됨. 리포터는 환경별로
+  TELEGRAM_BOT_TOKEN + 채널(BTC_TELEGRAM_CHANNEL_ID > TELEGRAM_CHANNEL_ID)을 자동으로 집으므로,
+  운영서버에 배포되면 그 서버의 실제 자격증명으로 자동 전송됨. 로컬은 테스트 채널로 안전 검증.
+  운영 채널 ID = -1002373898534 (주식 운영채널 그대로 사용 — Rocky 결정). 코드 변경 불요.
 - 테스트 234개 (FakeExchange 모킹, 네트워크 0, "출금호출 0" assert 포함). 스펙: tasks/btc_demo_adapter_spec.md.
 
 ## 1.9 데이터 인벤토리 (운영 감사/개선의 원천 — 전부 루트 stock_tracking_db.sqlite)
