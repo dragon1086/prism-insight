@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-DB = ROOT / "state" / "market.db"
+DB = ROOT / "state" / "btc_market.db"
 RESULTS = ROOT / "backtest" / "results"
 # 3 clean periods (these CSVs are the authoritative round2/3 logs)
 CSVS = ["2022-01-01_to_2022-12-31_trades.csv",
