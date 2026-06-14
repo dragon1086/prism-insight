@@ -74,6 +74,12 @@
   TELEGRAM_BOT_TOKEN + 채널(BTC_TELEGRAM_CHANNEL_ID > TELEGRAM_CHANNEL_ID)을 자동으로 집으므로,
   운영서버에 배포되면 그 서버의 실제 자격증명으로 자동 전송됨. 로컬은 테스트 채널로 안전 검증.
   운영 채널 ID = -1002373898534 (주식 운영채널 그대로 사용 — Rocky 결정). 코드 변경 불요.
+  **로컬 테스트 전송 가동(2026-06-15)**: 주식 봇 토큰(~/prism-docs/prism-daily-card.py 하드코딩,
+  TELEGRAM_BOT_TOKEN) 을 로컬 .env(gitignore됨)에 복사 + BTC_TELEGRAM_CHANNEL_ID=7726642089(상록 DM,
+  안전 테스트 타깃, 구독자 채널 아님). 리포터 수동 전송 200 OK 확인 — DM 수신됨.
+  com.prism.btc-telegram(4h)가 이제 DM 으로 자동 전송. 운영 배포 시 db-server 는 채널을
+  -1002373898534 로(BTC_TELEGRAM_CHANNEL_ID 또는 TELEGRAM_CHANNEL) 설정. (참고: TelegramSender
+  루트모듈 임포트는 prism-btc cwd 에서 실패 → 직접 Bot.send_message 폴백으로 정상 전송, 무해.)
 - 테스트 234개 (FakeExchange 모킹, 네트워크 0, "출금호출 0" assert 포함). 스펙: tasks/btc_demo_adapter_spec.md.
 
 ## 1.9 데이터 인벤토리 (운영 감사/개선의 원천 — 전부 루트 stock_tracking_db.sqlite)
