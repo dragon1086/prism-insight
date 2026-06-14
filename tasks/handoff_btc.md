@@ -18,6 +18,9 @@
 - 검증: 서버 데모 틱 1회 수동 OK(거래소 reconcile equity 9995.09, 에러 0), 텔레그램 DM 전송 200 OK.
 - ⚠ 텔레그램은 일 18시 **운영(주식) 채널**로 발송 — 구독자에게 BTC 시범운용 메시지 노출(Rocky 승인).
   빈도/채널 조정 원하면 서버 crontab + .env BTC_TELEGRAM_CHANNEL_ID.
+- **실시간 매매 시그널 알림 (PR #325, 3aa150a6)**: live/notifier.py — 진입/비중추가/청산 발생 시
+  매 데모틱(30분)에 즉시 텔레그램 알림(ID 마커 멱등, 콜드스타트 가드). runner tick 훅(demo/live만).
+  하루 1회 스냅샷(telegram_reporter)과 별개 — 이벤트 기반 즉시 알림. 서버 배포·콜드스타트 마커 0 확인.
 
 ## 0.5 배포 토폴로지 (Rocky 확정 2026-06-15 — 반복설명 금지)
 - **스케줄링/데몬 베이스 = db-server** (`~/Downloads/vultr_ssh/db-server.sh` 로 접속).
