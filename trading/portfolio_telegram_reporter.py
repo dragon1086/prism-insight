@@ -70,6 +70,12 @@ class PortfolioTelegramReporter:
     SEASON2_START_DATE = "2025.09.29"
     SEASON2_START_AMOUNT = 9_969_801  # Starting capital in KRW
 
+    # US account start constants
+    # Funding ran 2026.01.26~2026.03.20 ($1,373.34 -> $10,036 total converted);
+    # simplified to a single start date/amount, consistent with the KR season model.
+    US_START_DATE = "2026.01.20"
+    US_START_AMOUNT = 10_000  # Starting capital in USD
+
     def __init__(self, telegram_token: str = None, chat_id: str = None, trading_mode: str = None, broadcast_languages: list = None):
         """
         Initialize
@@ -215,6 +221,7 @@ class PortfolioTelegramReporter:
         # ========== US Account Summary ==========
         if us_portfolio or us_account_summary:
             message += f"🇺🇸 *미국주식 계좌*\n"
+            message += f"🗓 시작: {self.US_START_DATE} | 💵 시작금액: `{self.format_currency(self.US_START_AMOUNT, 'USD')}`\n"
 
             if us_account_summary:
                 us_total_eval = us_account_summary.get('total_eval_amount', 0)
@@ -222,6 +229,18 @@ class PortfolioTelegramReporter:
                 us_total_profit_rate = us_account_summary.get('total_profit_rate', 0)
                 us_cash = us_account_summary.get('usd_cash', 0)
                 exchange_rate = us_account_summary.get('exchange_rate', 0)
+
+                # Total assets = stock evaluation + USD cash
+                us_total_assets = us_total_eval + us_cash
+
+                # Season profit measured from the US start amount
+                us_season_profit = us_total_assets - self.US_START_AMOUNT
+                us_season_rate = (us_season_profit / self.US_START_AMOUNT) * 100 if self.US_START_AMOUNT > 0 else 0
+                season_emoji = "📈" if us_season_profit >= 0 else "📉"
+
+                message += f"💰 총 자산: `{self.format_currency(us_total_assets, 'USD')}`\n"
+                message += f"{season_emoji} 시즌 수익: `{self.format_currency_with_sign(us_season_profit, 'USD')}` "
+                message += f"({self.format_percentage(us_season_rate)})\n"
 
                 # Show stock evaluation if any holdings
                 if us_total_eval > 0:
