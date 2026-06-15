@@ -950,6 +950,25 @@ class StockTrackingAgent:
         Returns:
             Tuple[bool, str]: Whether to sell, sell reason
         """
+        # ── TIER0: 법인 이벤트 강제청산 (가격/레짐 무관, 최우선) ──────
+        # 상폐/공개매수/거래정지/관리종목 등 기술적 매도(추세·손절)로 못 잡는 이벤트.
+        # override 목록(cores/event_force_exit.json) 또는 KIS 종목상태코드로 판정.
+        # 여기서 True면 시뮬+KIS 양쪽이 다음 사이클에 시장가 자동 청산(정규장 기준).
+        try:
+            from cores.corporate_status import check_event_exit
+            ev_sell, ev_reason = check_event_exit(
+                stock_data.get("ticker", ""),
+                kis_status_code=stock_data.get("_kis_stat_code"),
+                market="KR",
+            )
+            if ev_sell:
+                logger.warning(
+                    f"{stock_data.get('ticker','')} TIER0 event force-exit: {ev_reason}"
+                )
+                return True, ev_reason
+        except Exception as e:
+            logger.warning(f"{stock_data.get('ticker','')} TIER0 event check skipped: {e}")
+
         # ── O'Neil 룰베이스 (live regime 주입) ───────────────────
         if _ONEIL_FALLBACK_AVAILABLE:
             try:
