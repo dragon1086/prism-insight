@@ -951,8 +951,8 @@ class StockTrackingAgent:
             Tuple[bool, str]: Whether to sell, sell reason
         """
         # ── TIER0: 법인 이벤트 강제청산 (가격/레짐 무관, 최우선) ──────
-        # 상폐/공개매수/거래정지/관리종목 등 기술적 매도(추세·손절)로 못 잡는 이벤트.
-        # override 목록(cores/event_force_exit.json) 또는 KIS 종목상태코드로 판정.
+        # KIS 종목상태코드(관리종목 51) 결정론 자동탐지. 상폐/공개매수 등 뉴스성
+        # 이벤트는 매도 AI 프롬프트(핵심-0)의 perplexity 뉴스 점검이 자율 처리.
         # 여기서 True면 시뮬+KIS 양쪽이 다음 사이클에 시장가 자동 청산(정규장 기준).
         try:
             from cores.corporate_status import check_event_exit
