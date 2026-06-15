@@ -796,6 +796,23 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             target_price = stock_data.get('target_price', 0)
             stop_loss = stock_data.get('stop_loss', 0)
 
+            # ── TIER0: 법인 이벤트 강제청산 (AI 판단 이전, 결정론 안전망) ──────
+            # KIS 관리종목(51) 자동탐지 + (선택)override 목록. AI 매도 프롬프트의
+            # 핵심-0 뉴스 판단이 놓쳐도 명백한 부실/등록 건은 여기서 확정 청산한다.
+            # _kis_stat_code는 update_holdings가 사이클당 주입 → 운영자 개입 불필요.
+            try:
+                from cores.corporate_status import check_event_exit
+                ev_sell, ev_reason = check_event_exit(
+                    ticker,
+                    kis_status_code=stock_data.get("_kis_stat_code"),
+                    market="KR",
+                )
+                if ev_sell:
+                    logger.warning(f"{ticker} TIER0 event force-exit: {ev_reason}")
+                    return True, ev_reason
+            except Exception as e:
+                logger.warning(f"{ticker} TIER0 event check skipped: {e}")
+
             # Calculate profit rate
             profit_rate = ((current_price - buy_price) / buy_price) * 100
 

@@ -694,6 +694,22 @@ def create_sell_decision_agent(language: str = "ko"):
 
         ### Priority 0: Core Principles for Sell Judgement (MUST follow)
 
+        **Core-0) Corporate-Event Check First (news-driven forced exit):**
+        - On EVERY decision, FIRST use the perplexity tool to search recent news for this stock
+          (company name + ticker) and check for a "holding-is-dangerous" corporate event:
+          delisting (voluntary/administrative), public tender offer, liquidation trading (정리매매),
+          trading halt/suspension, audit opinion refusal/qualification, listing-eligibility review,
+          or delisting due to merger/share swap.
+        - If such an event is confirmed with **clear evidence (filing / multiple reports, date & source)**,
+          set **should_sell = true (full exit)** regardless of price/trend/PnL, and prefix sell_reason with
+          `[CORP_EVENT]` plus the event type and evidence (source/date).
+          (E.g. when the price is pinned at a tender-offer price no technical signal fires, but you must
+           exit before delisting to keep liquidity and avoid being stuck with unlisted shares.)
+        - **If only an unconfirmed rumor / single speculative article exists, do NOT sell**; hold and note
+          "event suspected (unconfirmed)" in sell_reason. Force-sell ONLY on clear evidence (confirmed
+          filing or multiple credible reports) — be precise so a healthy stock is never sold by mistake.
+        - If no event, proceed normally with Core-1~4 technical judgement below.
+
         **Core-1) Closing-Price Rule:**
         - All stop_loss and trailing-stop judgements are based on the **closing price**.
         - An intraday low that briefly touches stop_loss (intraday wick) is NEVER a sell reason on its own.
@@ -889,6 +905,21 @@ def create_sell_decision_agent(language: str = "ko"):
         → **약세장/횡보장**: 위 조건 미충족
 
         ### 0순위: 매도 판단의 핵심 원칙 (반드시 준수)
+
+        **핵심-0) 법인 이벤트 최우선 점검 (뉴스 기반 강제청산):**
+        - 매 판단 시 **반드시 먼저** perplexity 도구로 해당 종목(회사명 + 종목코드)의 최신 뉴스를 검색하여
+          '보유 지속이 위험한 법인 이벤트'가 있는지 확인하십시오. 대상 이벤트:
+          상장폐지(자진/관리종목)·공개매수(tender offer)·정리매매·매매거래정지·
+          감사의견 거절/한정·상장적격성 실질심사·합병/주식교환으로 인한 상장폐지.
+        - 이런 이벤트가 **명확한 근거(공시/복수 보도, 날짜·출처)** 와 함께 확인되면, 가격·추세·수익률과
+          무관하게 **should_sell = true (전량 매도)** 로 판단하고, sell_reason 맨 앞에 `[법인이벤트]`와
+          이벤트 유형·근거(출처/날짜)를 명시하십시오.
+          (예: 공개매수가에 주가가 고정되면 기술적 매도 신호가 안 나오지만, 상장폐지 전에 청산해야
+           비상장 전환으로 묶이지 않고 유동성을 확보할 수 있습니다.)
+        - **단, 미확정 루머·추측성 단독 기사만 있을 때는 매도하지 말고** 보유하되 sell_reason에
+          "이벤트 의심(미확정)"으로 기록하십시오. 확정 공시 또는 복수 신뢰 보도 등 명확한 근거가 있을 때만
+          강제 매도합니다 (오탐으로 멀쩡한 종목을 팔지 않도록 정밀하게 판단).
+        - 이벤트가 없으면 아래 핵심-1~4의 기술적 판단을 정상 진행하십시오.
 
         **핵심-1) 종가 기준 (Closing-Price Rule):**
         - 모든 손절가·trailing stop 판단은 **종가(closing price)** 기준입니다.
