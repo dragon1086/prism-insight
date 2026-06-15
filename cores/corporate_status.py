@@ -105,3 +105,34 @@ def check_event_exit(
             return True, reason
 
     return False, ""
+
+
+async def fetch_status_codes(tickers, account_name: Optional[str] = None) -> dict:
+    """보유종목들의 KIS 종목상태코드(iscd_stat_cls_code)를 일괄 조회.
+
+    KIS 토큰 발급 레이트리밋을 피하려고 **AsyncTradingContext를 1회만** 열고
+    종목별 시세조회(quotation, 계좌 무관)로 상태코드만 수집한다.
+    어떤 단계가 실패해도(자격증명 없음/네트워크/레이트리밋) 절대 예외를 올리지
+    않고, 가능한 만큼만 채운 dict를 반환한다(override 경로는 독립적으로 동작).
+
+    Returns: { ticker: "iscd_stat_cls_code" }  (조회 실패 종목은 누락)
+    """
+    import asyncio
+
+    out: dict = {}
+    uniq = [str(t).strip() for t in (tickers or []) if str(t or "").strip()]
+    if not uniq:
+        return out
+    try:
+        from trading.domestic_stock_trading import AsyncTradingContext
+        async with AsyncTradingContext(account_name=account_name) as trading:
+            for t in uniq:
+                try:
+                    info = await asyncio.to_thread(trading.get_current_price, t)
+                    if info:
+                        out[t] = str(info.get("iscd_stat_cls_code", "") or "")
+                except Exception as e:  # 개별 종목 실패는 건너뜀
+                    logger.warning(f"{t} KIS 상태코드 조회 실패: {e}")
+    except Exception as e:  # 컨텍스트/자격증명 실패 → 전체 스킵(안전)
+        logger.warning(f"KIS 상태코드 prefetch 스킵: {e}")
+    return out

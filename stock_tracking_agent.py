@@ -1304,6 +1304,19 @@ class StockTrackingAgent:
 
             sold_stocks = []
 
+            # 이벤트 강제청산 자동탐지: 사이클당 1회 KIS 종목상태코드 일괄 prefetch.
+            # (관리종목/투자위험/거래정지 자동 포착 → _analyze_sell_decision의 TIER0.)
+            # 실패해도 override 경로는 독립 동작하므로 빈 dict로 안전 폴백.
+            kis_status_map: Dict[str, str] = {}
+            try:
+                from cores.corporate_status import fetch_status_codes
+                kis_status_map = await fetch_status_codes(
+                    [h.get("ticker") for h in holdings],
+                    account_name=holdings[0].get("account_name") if holdings else None,
+                )
+            except Exception as e:
+                logger.warning(f"KIS status prefetch skipped: {e}")
+
             # Pyramiding (#288) FIX 2 — in-pass over-sell guard:
             # When several rows of the SAME ticker sell within one update pass,
             # limit/reserved orders may not have filled yet, so re-reading the
@@ -1329,6 +1342,9 @@ class StockTrackingAgent:
 
                 # Update stock price information
                 stock['current_price'] = current_price
+
+                # 이벤트 자동탐지용 KIS 종목상태코드 주입(TIER0가 _analyze_sell_decision에서 사용)
+                stock['_kis_stat_code'] = kis_status_map.get(ticker)
 
                 # Check scenario JSON string
                 scenario_str = stock.get('scenario', '{}')
