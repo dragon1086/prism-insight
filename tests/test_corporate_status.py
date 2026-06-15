@@ -1,40 +1,13 @@
-"""cores.corporate_status (이벤트 강제청산 TIER0) 단위테스트.
+"""cores.corporate_status (이벤트 강제청산 TIER0 — KIS 상태코드 자동탐지) 단위테스트.
 
 순수 모듈이라 root pytest 세션에서 실행 가능(KR/US cores shadowing 무관).
 실행: .venv/bin/python -m pytest tests/test_corporate_status.py -q
 """
-import json
+import asyncio
+import sys
+import types
 
 from cores import corporate_status as cs
-
-
-def _write_overrides(tmp_path, tickers: dict):
-    f = tmp_path / "event_force_exit.json"
-    f.write_text(json.dumps({"tickers": tickers}, ensure_ascii=False), encoding="utf-8")
-    return str(f)
-
-
-def test_override_force_exit(tmp_path, monkeypatch):
-    path = _write_overrides(tmp_path, {"012510": {"reason": "자진상폐", "market": "KR"}})
-    monkeypatch.setenv("EVENT_FORCE_EXIT_FILE", path)
-    ok, reason = cs.check_event_exit("012510", market="KR")
-    assert ok is True
-    assert "OVERRIDE" in reason and "자진상폐" in reason
-
-
-def test_override_market_mismatch_skips(tmp_path, monkeypatch):
-    # market 지정이 다르면 적용 안 됨(오등록 방지)
-    path = _write_overrides(tmp_path, {"012510": {"reason": "x", "market": "US"}})
-    monkeypatch.setenv("EVENT_FORCE_EXIT_FILE", path)
-    ok, _ = cs.check_event_exit("012510", market="KR")
-    assert ok is False
-
-
-def test_not_listed(tmp_path, monkeypatch):
-    path = _write_overrides(tmp_path, {})
-    monkeypatch.setenv("EVENT_FORCE_EXIT_FILE", path)
-    ok, _ = cs.check_event_exit("000660", market="KR")
-    assert ok is False
 
 
 def test_kis_status_codes():
@@ -51,33 +24,20 @@ def test_kis_status_codes():
     assert cs.classify_kis_status(None)[0] is False
 
 
-def test_kis_status_injection_triggers(tmp_path, monkeypatch):
-    path = _write_overrides(tmp_path, {})
-    monkeypatch.setenv("EVENT_FORCE_EXIT_FILE", path)
+def test_check_event_exit_kis_code():
     ok, reason = cs.check_event_exit("000660", kis_status_code="51", market="KR")
     assert ok is True and "KIS_STATUS" in reason
     # 급등 시장경고(52) 종목은 자동청산되지 않음(수익반납 방지)
-    ok2, _ = cs.check_event_exit("000660", kis_status_code="52", market="KR")
-    assert ok2 is False
-
-
-def test_missing_file_is_safe(tmp_path, monkeypatch):
-    monkeypatch.setenv("EVENT_FORCE_EXIT_FILE", str(tmp_path / "nope.json"))
-    ok, _ = cs.check_event_exit("012510", market="KR")
-    assert ok is False
+    assert cs.check_event_exit("000660", kis_status_code="52", market="KR")[0] is False
+    # 코드 미주입이면 미평가(뉴스 프롬프트가 담당)
+    assert cs.check_event_exit("000660", kis_status_code=None, market="KR")[0] is False
 
 
 def test_empty_ticker():
-    ok, _ = cs.check_event_exit("", market="KR")
-    assert ok is False
+    assert cs.check_event_exit("", kis_status_code="51", market="KR")[0] is False
 
 
 # ── fetch_status_codes (KIS 상태코드 일괄 prefetch) ─────────────────
-import asyncio
-import sys
-import types
-
-
 class _FakeTrader:
     def __init__(self, mapping):
         self._m = mapping
@@ -117,15 +77,14 @@ def _install_fake_trading(monkeypatch, mapping=None, boom=False):
 
 
 def test_fetch_status_codes_ok(monkeypatch):
-    _install_fake_trading(monkeypatch, {"012510": "58", "000660": "00"})
+    _install_fake_trading(monkeypatch, {"012510": "57", "000660": "51"})
     out = asyncio.run(cs.fetch_status_codes(["012510", "000660", "  ", ""]))
-    assert out == {"012510": "58", "000660": "00"}
+    assert out == {"012510": "57", "000660": "51"}
 
 
 def test_fetch_status_codes_context_failure_safe(monkeypatch):
     _install_fake_trading(monkeypatch, boom=True)
-    out = asyncio.run(cs.fetch_status_codes(["012510"]))
-    assert out == {}  # 예외 없이 빈 dict
+    assert asyncio.run(cs.fetch_status_codes(["012510"])) == {}
 
 
 def test_fetch_status_codes_empty_input():
@@ -133,7 +92,6 @@ def test_fetch_status_codes_empty_input():
 
 
 def test_fetch_then_classify_integration(monkeypatch):
-    # prefetch로 받은 코드를 check_event_exit에 주입하면 자동 강제청산
     _install_fake_trading(monkeypatch, {"000660": "51"})  # 관리종목
     out = asyncio.run(cs.fetch_status_codes(["000660"]))
     ok, reason = cs.check_event_exit("000660", kis_status_code=out.get("000660"), market="KR")
