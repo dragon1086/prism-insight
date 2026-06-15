@@ -63,3 +63,71 @@ def test_missing_file_is_safe(tmp_path, monkeypatch):
 def test_empty_ticker():
     ok, _ = cs.check_event_exit("", market="KR")
     assert ok is False
+
+
+# ── fetch_status_codes (KIS 상태코드 일괄 prefetch) ─────────────────
+import asyncio
+import sys
+import types
+
+
+class _FakeTrader:
+    def __init__(self, mapping):
+        self._m = mapping
+
+    def get_current_price(self, ticker):
+        if ticker in self._m:
+            return {"current_price": 1, "iscd_stat_cls_code": self._m[ticker]}
+        return None
+
+
+class _FakeCtx:
+    def __init__(self, mapping):
+        self._t = _FakeTrader(mapping)
+
+    async def __aenter__(self):
+        return self._t
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _BoomCtx:
+    async def __aenter__(self):
+        raise RuntimeError("no credentials")
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _install_fake_trading(monkeypatch, mapping=None, boom=False):
+    parent = types.ModuleType("trading")
+    sub = types.ModuleType("trading.domestic_stock_trading")
+    sub.AsyncTradingContext = (lambda *a, **k: _BoomCtx()) if boom else (lambda *a, **k: _FakeCtx(mapping or {}))
+    parent.domestic_stock_trading = sub
+    monkeypatch.setitem(sys.modules, "trading", parent)
+    monkeypatch.setitem(sys.modules, "trading.domestic_stock_trading", sub)
+
+
+def test_fetch_status_codes_ok(monkeypatch):
+    _install_fake_trading(monkeypatch, {"012510": "58", "000660": "00"})
+    out = asyncio.run(cs.fetch_status_codes(["012510", "000660", "  ", ""]))
+    assert out == {"012510": "58", "000660": "00"}
+
+
+def test_fetch_status_codes_context_failure_safe(monkeypatch):
+    _install_fake_trading(monkeypatch, boom=True)
+    out = asyncio.run(cs.fetch_status_codes(["012510"]))
+    assert out == {}  # 예외 없이 빈 dict
+
+
+def test_fetch_status_codes_empty_input():
+    assert asyncio.run(cs.fetch_status_codes([])) == {}
+
+
+def test_fetch_then_classify_integration(monkeypatch):
+    # prefetch로 받은 코드를 check_event_exit에 주입하면 자동 강제청산
+    _install_fake_trading(monkeypatch, {"000660": "58"})  # 거래정지
+    out = asyncio.run(cs.fetch_status_codes(["000660"]))
+    ok, reason = cs.check_event_exit("000660", kis_status_code=out.get("000660"), market="KR")
+    assert ok is True and "KIS_STATUS" in reason

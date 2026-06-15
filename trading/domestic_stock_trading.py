@@ -268,7 +268,11 @@ class DomesticStockTrading:
                     'stock_name': data.get('rprs_mrkt_kor_name', ''),
                     'current_price': int(data.get('stck_prpr', 0)),  # Current price
                     'change_rate': float(data.get('prdy_ctrt', 0)),  # Change rate from previous day
-                    'volume': int(data.get('acml_vol', 0))  # Cumulative volume
+                    'volume': int(data.get('acml_vol', 0)),  # Cumulative volume
+                    # 종목상태/시장경고 (이벤트 강제청산 자동탐지용 — cores.corporate_status)
+                    # iscd_stat_cls_code: 00/55 정상, 51 관리종목, 52 투자위험, 53 투자경고, 58 거래정지
+                    'iscd_stat_cls_code': data.get('iscd_stat_cls_code', ''),
+                    'mrkt_warn_cls_code': data.get('mrkt_warn_cls_code', ''),  # 00 없음/01 주의/02 경고/03 위험
                 }
 
                 logger.info(f"[{stock_code}] Current price: {result['current_price']:,} KRW ({result['change_rate']:+.2f}%)")
