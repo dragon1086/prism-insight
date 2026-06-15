@@ -38,10 +38,14 @@ def test_not_listed(tmp_path, monkeypatch):
 
 
 def test_kis_status_codes():
-    assert cs.classify_kis_status("58")[0] is True   # 거래정지
-    assert cs.classify_kis_status("51")[0] is True   # 관리종목
-    assert cs.classify_kis_status("52")[0] is True   # 투자위험
-    assert cs.classify_kis_status("53")[0] is False  # 투자경고(청산 X)
+    assert cs.classify_kis_status("51")[0] is True   # 관리종목(부실) → 청산
+    # 시장경고 단계(급등 종목)는 청산 X — 승자 수익반납 방지
+    assert cs.classify_kis_status("52")[0] is False  # 투자위험
+    assert cs.classify_kis_status("53")[0] is False  # 투자경고
+    assert cs.classify_kis_status("54")[0] is False  # 투자주의
+    assert cs.classify_kis_status("58")[0] is False  # 거래정지(모호 → 자동청산 제외)
+    assert cs.classify_kis_status("57")[0] is False  # 증거금100%(정상)
+    assert cs.classify_kis_status("55")[0] is False  # 신용가능(정상)
     assert cs.classify_kis_status("00")[0] is False  # 정상
     assert cs.classify_kis_status("")[0] is False
     assert cs.classify_kis_status(None)[0] is False
@@ -50,8 +54,11 @@ def test_kis_status_codes():
 def test_kis_status_injection_triggers(tmp_path, monkeypatch):
     path = _write_overrides(tmp_path, {})
     monkeypatch.setenv("EVENT_FORCE_EXIT_FILE", path)
-    ok, reason = cs.check_event_exit("000660", kis_status_code="58", market="KR")
+    ok, reason = cs.check_event_exit("000660", kis_status_code="51", market="KR")
     assert ok is True and "KIS_STATUS" in reason
+    # 급등 시장경고(52) 종목은 자동청산되지 않음(수익반납 방지)
+    ok2, _ = cs.check_event_exit("000660", kis_status_code="52", market="KR")
+    assert ok2 is False
 
 
 def test_missing_file_is_safe(tmp_path, monkeypatch):
@@ -127,7 +134,7 @@ def test_fetch_status_codes_empty_input():
 
 def test_fetch_then_classify_integration(monkeypatch):
     # prefetch로 받은 코드를 check_event_exit에 주입하면 자동 강제청산
-    _install_fake_trading(monkeypatch, {"000660": "58"})  # 거래정지
+    _install_fake_trading(monkeypatch, {"000660": "51"})  # 관리종목
     out = asyncio.run(cs.fetch_status_codes(["000660"]))
     ok, reason = cs.check_event_exit("000660", kis_status_code=out.get("000660"), market="KR")
     assert ok is True and "KIS_STATUS" in reason
