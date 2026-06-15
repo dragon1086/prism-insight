@@ -1098,5 +1098,6 @@ def create_sell_decision_agent(language: str = "ko"):
     return Agent(
         name="sell_decision_agent",
         instruction=instruction,
-        server_names=["kospi_kosdaq", "sqlite", "time"]
+        # perplexity: 핵심-0 법인 이벤트(상폐/공개매수 등) 뉴스 자율 점검에 필요
+        server_names=["kospi_kosdaq", "sqlite", "time", "perplexity"]
     )
