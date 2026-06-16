@@ -1395,10 +1395,37 @@ class DomesticStockTrading:
                             result['current_price'] = current_price_info['current_price']
                             logger.info(f"[Async Sell API] {stock_code} current price: {current_price_info['current_price']:,} KRW")
 
-                        # Defensive logic 2: Check holding quantity once more before selling
-                        holding_quantity = await asyncio.to_thread(
-                            self.get_holding_quantity, stock_code
-                        )
+                        # Defensive logic 2: Re-confirm holding quantity once more before selling.
+                        # ⚠️ get_portfolio() returns [] on a transient balance-inquiry failure, so a
+                        # single re-check could read a FALSE 0 and abort a legitimate sell (sim already
+                        # deleted the row -> sim/real divergence). Distinguish "empty portfolio (likely
+                        # API failure)" from "ticker genuinely absent (sold)": retry on empty, and only
+                        # then fall back to the quantity confirmed by the FIRST portfolio read above.
+                        prev_confirmed_qty = int(target_stock.get('quantity', 0) or 0)
+                        holding_quantity = 0
+                        for _chk_attempt in range(3):
+                            portfolio_recheck = await asyncio.to_thread(self.get_portfolio)
+                            if portfolio_recheck:  # non-empty -> trustworthy snapshot
+                                _match = next(
+                                    (s for s in portfolio_recheck if s.get('stock_code') == stock_code),
+                                    None
+                                )
+                                holding_quantity = int(_match['quantity']) if _match else 0
+                                break
+                            # empty list -> almost certainly a transient API failure, NOT a real 0
+                            logger.warning(
+                                f"[Async Sell API] {stock_code} portfolio empty on final check "
+                                f"(attempt {_chk_attempt + 1}/3) — retrying"
+                            )
+                            await asyncio.sleep(1.0)
+                        else:
+                            # all retries returned empty -> treat as API failure, not 0 holdings;
+                            # fall back to the first-confirmed quantity so a valid sell is not dropped.
+                            holding_quantity = prev_confirmed_qty
+                            logger.warning(
+                                f"[Async Sell API] {stock_code} final check kept returning empty portfolio "
+                                f"— falling back to first-confirmed qty {prev_confirmed_qty}"
+                            )
 
                         if holding_quantity <= 0:
                             result['message'] = f'{stock_code} holding quantity is 0 at final check'
