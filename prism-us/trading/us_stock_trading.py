@@ -1731,6 +1731,17 @@ class USStockTrading:
                             exchange_rate = _safe_float(item.get('frst_bltn_exrt'))
                             break
 
+                # KIS-computed total account asset (KRW). This is settlement-coherent:
+                # it already includes stock eval + USD cash + KRW deposit + net unsettled
+                # trade proceeds. Using it avoids the see-saw caused by summing a real-time
+                # stock eval against a settlement-lagged USD deposit (frcr_dncl_amt_2).
+                o3 = output3
+                if isinstance(o3, list):
+                    o3 = o3[0] if o3 else {}
+                o3 = o3 if isinstance(o3, dict) else {}
+                total_asset_krw = _safe_float(o3.get('tot_asst_amt'))
+                total_asset_usd = (total_asset_krw / exchange_rate) if exchange_rate > 0 else 0.0
+
                 # Calculate from portfolio for stock totals
                 portfolio = self.get_portfolio()
                 total_eval = sum(s['eval_amount'] for s in portfolio)
@@ -1744,12 +1755,16 @@ class USStockTrading:
                     'available_amount': usd_cash,  # USD cash available for trading
                     'usd_cash': usd_cash,
                     'exchange_rate': exchange_rate,
+                    'total_asset_krw': total_asset_krw,
+                    # Settlement-coherent total assets in USD; 0 if unavailable (callers fall back).
+                    'total_asset_usd': total_asset_usd,
                 }
 
                 logger.info(f"Account Summary: Stock Eval ${summary['total_eval_amount']:.2f}, "
                            f"P/L ${summary['total_profit_amount']:+.2f} "
                            f"({summary['total_profit_rate']:+.2f}%), "
-                           f"USD Cash ${summary['usd_cash']:.2f}")
+                           f"USD Cash ${summary['usd_cash']:.2f}, "
+                           f"Total Asset ${summary['total_asset_usd']:.2f}")
 
                 return summary
 

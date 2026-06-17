@@ -230,8 +230,12 @@ class PortfolioTelegramReporter:
                 us_cash = us_account_summary.get('usd_cash', 0)
                 exchange_rate = us_account_summary.get('exchange_rate', 0)
 
-                # Total assets = stock evaluation + USD cash
-                us_total_assets = us_total_eval + us_cash
+                # Total assets: prefer KIS settlement-coherent total (stock + USD cash +
+                # KRW deposit + net unsettled trades). Summing real-time stock eval against
+                # the settlement-lagged USD deposit alone makes the season return see-saw
+                # day to day, so only fall back to that when the KIS total is unavailable.
+                us_total_asset_usd = us_account_summary.get('total_asset_usd', 0) or 0
+                us_total_assets = us_total_asset_usd if us_total_asset_usd > 0 else (us_total_eval + us_cash)
 
                 # Season profit measured from the US start amount
                 us_season_profit = us_total_assets - self.US_START_AMOUNT
