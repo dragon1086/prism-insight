@@ -71,6 +71,14 @@ def _bootstrap_path(market: str) -> None:
 
 logger = logging.getLogger("loop_a")
 
+# Load .env so env-driven config below (TELEGRAM_CHANNEL_ID, LOOP_A_*, journal flag)
+# is visible — a fresh cron process does not inherit .env otherwise.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except Exception:
+    pass
+
 
 # ── Configuration (env-driven) ────────────────────────────────────────────────
 def _env_bool(name: str, default: bool) -> bool:
