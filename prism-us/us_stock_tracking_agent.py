@@ -524,13 +524,19 @@ class USStockTrackingAgent:
         if self.telegram_token:
             self.telegram_bot = Bot(token=self.telegram_token)
 
-    async def initialize(self, language: str = "ko", sector_names: list = None):
+    async def initialize(self, language: str = "ko", sector_names: list = None,
+                         skip_llm_agent: bool = False):
         """
         Create necessary tables and initialize.
 
         Args:
             language: Language code for agents (default: "ko")
             sector_names: List of valid sector names for trading agent (optional)
+            skip_llm_agent: When True, skip creating the LLM trading-scenario agent.
+                The sell path (sell_stock / send_telegram_message) does NOT use
+                self.trading_agent, so the LLM-free Loop A hard-stop loop can reuse
+                the sell/journal/telegram plumbing without the heavy LLM agent.
+                Default False keeps batch behaviour byte-for-byte unchanged.
         """
         logger.info("Starting US tracking agent initialization")
 
@@ -541,8 +547,9 @@ class USStockTrackingAgent:
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
 
-        # Initialize trading scenario agent for US
-        self.trading_agent = create_us_trading_scenario_agent(language=language, sector_names=sector_names)
+        # Initialize trading scenario agent for US (skipped for lightweight consumers).
+        self.trading_agent = None if skip_llm_agent else \
+            create_us_trading_scenario_agent(language=language, sector_names=sector_names)
 
         # Initialize sell decision agent for US
         self.sell_decision_agent = create_us_sell_decision_agent(language=language)
