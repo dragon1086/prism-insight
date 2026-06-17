@@ -22,8 +22,10 @@ SAFETY (read before enabling):
 Usage:
     python tools/loop_a_hardstop.py [--market kr|us|both] [--once]
 
-Intended cron (SHADOW until reviewed), market hours only:
-    */7 * * * 1-5  cd /root/prism-insight && python tools/loop_a_hardstop.py --market both
+Intended cron (SHADOW until reviewed) — KR and US as SEPARATE processes
+(cores-shadowing isolation; --market both fans out to these two automatically):
+    */7 9-15 * * 1-5  cd /root/prism-insight && python tools/loop_a_hardstop.py --market kr
+    */7 22-23,0-5 * * 1-5  cd /root/prism-insight && python tools/loop_a_hardstop.py --market us
 """
 from __future__ import annotations
 
@@ -38,13 +40,28 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# ── Path bootstrap (mirror portfolio_telegram_reporter) ────────────────────────
 TOOLS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TOOLS_DIR.parent
-sys.path.insert(0, str(PROJECT_ROOT / "prism-us"))   # US modules
-sys.path.insert(0, str(PROJECT_ROOT))                # project root
 
-from cores.oneil_fallback import SellInputs, evaluate_tier1_hardstop  # noqa: E402
+# ── Market-aware path bootstrap (cores-shadowing safety) ──────────────────────
+# The `cores` package is imported once per process and cached, and the US runtime
+# resolves `from cores.X` to prism-us/cores while KR resolves to the root cores.
+# A single process therefore CANNOT serve both markets without cross-wiring KR/US
+# modules. Each market runs in its own process (see main(): `both` spawns two
+# subprocesses), and we set sys.path so the active market's modules win.
+def _bootstrap_path(market: str) -> None:
+    root = str(PROJECT_ROOT)
+    us = str(PROJECT_ROOT / "prism-us")
+    us_trading = str(PROJECT_ROOT / "prism-us" / "trading")
+    if market == "US":
+        # prism-us must be highest priority so `cores` == prism-us/cores and the
+        # bare `import kis_auth` inside us_stock_trading resolves to prism-us/trading.
+        for p in (root, us_trading, us):
+            sys.path.insert(0, p)
+    else:  # KR: root highest priority so `cores`/`trading` == repo root.
+        for p in (us, root):
+            sys.path.insert(0, p)
+
 
 logger = logging.getLogger("loop_a")
 
@@ -215,6 +232,8 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
     Never raises: any failure degrades to a no-op for that ticker/market.
     """
     summary = {"market": market, "checked": 0, "triggered": 0, "sold": 0, "shadow": 0, "skipped": 0}
+    # Lazy import after path bootstrap so the correct (KR vs US) cores wins.
+    from cores.oneil_fallback import SellInputs, evaluate_tier1_hardstop
     conn = _connect()
     try:
         _ensure_schema(conn)
@@ -335,14 +354,32 @@ def _setup_logging() -> None:
     )
 
 
+def _run_both_isolated() -> int:
+    """Run KR and US as SEPARATE subprocesses (cores-shadowing isolation)."""
+    import subprocess
+    rc = 0
+    for m in ("kr", "us"):
+        try:
+            proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--market", m])
+            rc = rc or proc.returncode
+        except Exception as e:
+            logger.error("subprocess for market=%s failed: %s", m, e)
+            rc = rc or 1
+    return rc
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Loop A high-frequency hard-stop loop")
     parser.add_argument("--market", choices=["kr", "us", "both"], default="both")
     parser.add_argument("--once", action="store_true", help="(default) run a single cycle")
     args = parser.parse_args()
     _setup_logging()
-    markets = {"kr": ["KR"], "us": ["US"], "both": ["KR", "US"]}[args.market]
-    return asyncio.run(main_async(markets))
+    if args.market == "both":
+        # Cannot serve both markets in one process (cores package is cached) -> fan out.
+        return _run_both_isolated()
+    market = {"kr": "KR", "us": "US"}[args.market]
+    _bootstrap_path(market)
+    return asyncio.run(main_async([market]))
 
 
 if __name__ == "__main__":
