@@ -146,13 +146,20 @@ class StockTrackingAgent:
         if self.telegram_token:
             self.telegram_bot = Bot(token=self.telegram_token)
 
-    async def initialize(self, language: str = "ko", sector_names: list = None):
+    async def initialize(self, language: str = "ko", sector_names: list = None,
+                         skip_llm_agent: bool = False):
         """
         Create necessary tables and initialize
 
         Args:
             language: Language code for agents (default: "ko")
             sector_names: List of valid sector names for trading agent (optional)
+            skip_llm_agent: When True, skip creating the LLM trading-scenario agent.
+                The sell path (sell_stock / send_telegram_message) does NOT use
+                self.trading_agent, so lightweight consumers (e.g. the LLM-free
+                Loop A hard-stop loop) can reuse the sell/journal/telegram plumbing
+                without pulling in the heavy LLM agent. Default False keeps the
+                batch behaviour byte-for-byte unchanged.
         """
         logger.info("Starting tracking agent initialization")
         logger.info(f"Trading journal feature: {'enabled' if self.enable_journal else 'disabled'}")
@@ -165,8 +172,10 @@ class StockTrackingAgent:
         self.conn.row_factory = sqlite3.Row  # Return results as dictionary
         self.cursor = self.conn.cursor()
 
-        # Initialize trading scenario generation agent with language and sector names
-        self.trading_agent = create_trading_scenario_agent(language=language, sector_names=sector_names)
+        # Initialize trading scenario generation agent with language and sector names.
+        # Skipped for lightweight sell-only consumers (see skip_llm_agent docstring).
+        self.trading_agent = None if skip_llm_agent else \
+            create_trading_scenario_agent(language=language, sector_names=sector_names)
 
         # Create database tables
         await self._create_tables()

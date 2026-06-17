@@ -2,22 +2,29 @@
 """Loop A — high-frequency catastrophic hard-stop loop (LLM-free).
 
 Runs as a standalone intraday cron, SEPARATE from the 2-3x/day batch sell cycle.
-For each real holding it fetches the live price and applies ONLY the O'Neil
-TIER1 hard stop (scenario stop-loss / absolute -7%). On a trigger it sells at
-market, so a stop that the slow batch cadence would only catch at -12~-15% is
-hit much closer to its intended level.
+For each tracked holding it fetches the live price and applies ONLY the O'Neil
+TIER1 hard stop (scenario stop-loss / absolute -7%). On a trigger it closes the
+position the SAME way the batch does — so the simulator, the real KIS account
+and the Telegram channel all stay consistent:
+
+    1. agent.sell_stock(stock_data, reason)   # simulator close + journal + queue msg
+    2. trading.async_sell_stock(ticker)       # real KIS market order
+    3. agent.send_telegram_message(chat_id)   # flush the queued sell message
+
+This is exactly the batch's sequence (stock_tracking_agent.py ~1380-1452),
+reused rather than re-implemented, so there is one source of truth. Loop A only
+adds the high-frequency TIER1 decision in front of it.
 
 SAFETY (read before enabling):
-  - Live selling is gated behind  LOOP_A_LIVE=true .  Default = SHADOW mode:
-    it logs exactly what it WOULD sell and places NO orders. Turn it on only
-    after reviewing the slippage backtest.
-  - LOOP_A_ENABLED=false  disables the loop entirely (kill switch).
-  - Loop A runs in its own process, so the batch's in-process asyncio locks do
-    NOT apply. We guard against double-selling with (a) a SQLite owner_lock
-    claimed via BEGIN IMMEDIATE, (b) an inflight-order uniqueness guard, and
-    (c) a fresh KIS holding-quantity reconcile immediately before every live
-    sell (KIS is the single source of truth; if the batch already sold, qty is
-    0 and we skip).
+  - Live selling is gated behind  LOOP_A_LIVE=true . Default = SHADOW: it logs
+    what it WOULD sell, touches NO agent and places NO order. The heavy agent is
+    only imported/instantiated on an actual LIVE sell.
+  - LOOP_A_ENABLED=false disables the loop entirely (kill switch).
+  - Separate process, so the batch's in-process asyncio locks do NOT apply:
+    guards via a SQLite owner_lock (BEGIN IMMEDIATE), an inflight-order
+    uniqueness guard, and a fresh KIS holding-qty reconcile before every sell.
+  - Pyramided tickers (>1 holding row) are SKIPPED — the batch owns the
+    fractional-sell logic; Loop A only handles clean single-row positions.
 
 Usage:
     python tools/loop_a_hardstop.py [--market kr|us|both] [--once]
@@ -38,32 +45,32 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 TOOLS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TOOLS_DIR.parent
+
 
 # ── Market-aware path bootstrap (cores-shadowing safety) ──────────────────────
 # The `cores` package is imported once per process and cached, and the US runtime
 # resolves `from cores.X` to prism-us/cores while KR resolves to the root cores.
 # A single process therefore CANNOT serve both markets without cross-wiring KR/US
-# modules. Each market runs in its own process (see main(): `both` spawns two
+# modules. Each market runs in its own process (main(): `both` spawns two
 # subprocesses), and we set sys.path so the active market's modules win.
 def _bootstrap_path(market: str) -> None:
     root = str(PROJECT_ROOT)
     us = str(PROJECT_ROOT / "prism-us")
     us_trading = str(PROJECT_ROOT / "prism-us" / "trading")
     if market == "US":
-        # prism-us must be highest priority so `cores` == prism-us/cores and the
-        # bare `import kis_auth` inside us_stock_trading resolves to prism-us/trading.
         for p in (root, us_trading, us):
             sys.path.insert(0, p)
-    else:  # KR: root highest priority so `cores`/`trading` == repo root.
+    else:  # KR
         for p in (us, root):
             sys.path.insert(0, p)
 
 
 logger = logging.getLogger("loop_a")
+
 
 # ── Configuration (env-driven) ────────────────────────────────────────────────
 def _env_bool(name: str, default: bool) -> bool:
@@ -75,6 +82,7 @@ LOOP_A_LIVE = _env_bool("LOOP_A_LIVE", False)          # False => SHADOW (no rea
 LOCK_TTL_SEC = int(os.getenv("LOOP_A_LOCK_TTL_SEC", "300"))
 DB_PATH = os.getenv("LOOP_A_DB") or os.getenv("STOCK_TRACKING_DB") \
     or str(PROJECT_ROOT / "stock_tracking_db.sqlite")
+CHAT_ID = os.getenv("LOOP_A_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or None
 
 _HOLDINGS_TABLE = {"KR": "stock_holdings", "US": "us_stock_holdings"}
 
@@ -124,20 +132,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def load_stop_map(conn: sqlite3.Connection, market: str) -> Dict[str, float]:
-    """ticker -> scenario stop_loss from the holdings table (any account)."""
+def load_holdings_by_ticker(conn: sqlite3.Connection, market: str) -> Dict[str, List[Dict[str, Any]]]:
+    """All holding rows (full dicts) grouped by ticker. Empty on error."""
     table = _HOLDINGS_TABLE[market]
-    out: Dict[str, float] = {}
+    out: Dict[str, List[Dict[str, Any]]] = {}
     try:
-        for row in conn.execute(
-            f"SELECT ticker, MAX(COALESCE(stop_loss, 0)) AS sl FROM {table} GROUP BY ticker"
-        ):
-            try:
-                out[str(row["ticker"]).strip()] = float(row["sl"] or 0)
-            except (TypeError, ValueError):
-                continue
+        for row in conn.execute(f"SELECT * FROM {table}"):
+            d = dict(row)
+            ticker = str(d.get("ticker") or "").strip()
+            if ticker:
+                out.setdefault(ticker, []).append(d)
     except sqlite3.Error as e:
-        logger.warning("stop_loss map load failed (%s): %s", market, e)
+        logger.warning("holdings load failed (%s): %s", market, e)
     return out
 
 
@@ -151,11 +157,7 @@ def has_open_inflight(conn: sqlite3.Connection, ticker: str, market: str) -> boo
 
 
 def claim_lock(conn: sqlite3.Connection, ticker: str, market: str, run_id: str) -> bool:
-    """Atomically claim the position owner_lock. Returns True if acquired.
-
-    BEGIN IMMEDIATE serialises competing writers (other loops/processes). A lock
-    older than LOCK_TTL_SEC is treated as stale and may be re-claimed.
-    """
+    """Atomically claim the position owner_lock. Returns True if acquired."""
     now = _now()
     expires = _iso(now + timedelta(seconds=LOCK_TTL_SEC))
     try:
@@ -212,71 +214,98 @@ def record_inflight(conn: sqlite3.Connection, ticker: str, market: str, run_id: 
         logger.warning("inflight record failed %s/%s: %s", ticker, market, e)
 
 
-# ── Trader context factories (KR / US) ────────────────────────────────────────
-def _open_context(market: str):
+# ── Trader context + agent factories (KR / US) ────────────────────────────────
+def _open_context(market: str, account_name: Optional[str] = None):
     if market == "KR":
         from trading.domestic_stock_trading import AsyncTradingContext
-        return AsyncTradingContext()
+        return AsyncTradingContext(account_name=account_name)
     from us_stock_trading import AsyncUSTradingContext
-    return AsyncUSTradingContext()
+    return AsyncUSTradingContext(account_name=account_name)
 
 
-def _ticker_of(holding: Dict[str, Any], market: str) -> str:
-    return str(holding.get("ticker") or holding.get("stock_code") or "").strip()
+async def _make_agent(market: str):
+    """Instantiate + lightweight-init the tracking agent (LLM agent skipped).
+
+    Only called for a LIVE sell, so SHADOW runs never pull in the agent deps.
+    """
+    if market == "KR":
+        from stock_tracking_agent import StockTrackingAgent
+        agent = StockTrackingAgent(db_path=DB_PATH)
+    else:
+        from us_stock_tracking_agent import USStockTrackingAgent
+        agent = USStockTrackingAgent(db_path=DB_PATH)
+    await agent.initialize(skip_llm_agent=True)
+    return agent
 
 
 # ── Core evaluation for one market ─────────────────────────────────────────────
 async def run_market(market: str, run_id: str) -> Dict[str, Any]:
-    """Evaluate TIER1 hard stop for every real holding in one market.
+    """Evaluate the TIER1 hard stop for every clean single-row holding.
 
     Never raises: any failure degrades to a no-op for that ticker/market.
     """
-    summary = {"market": market, "checked": 0, "triggered": 0, "sold": 0, "shadow": 0, "skipped": 0}
-    # Lazy import after path bootstrap so the correct (KR vs US) cores wins.
+    summary = {"market": market, "checked": 0, "triggered": 0, "sold": 0,
+               "shadow": 0, "skipped": 0, "pyramided_skipped": 0}
     from cores.oneil_fallback import SellInputs, evaluate_tier1_hardstop
     conn = _connect()
+    agent = {"ref": None}  # lazily created on first LIVE sell
     try:
         _ensure_schema(conn)
-        stop_map = load_stop_map(conn, market)
+        by_ticker = load_holdings_by_ticker(conn, market)
+        if not by_ticker:
+            return summary
         try:
-            async with _open_context(market) as trader:
-                try:
-                    portfolio: List[Dict[str, Any]] = await asyncio.to_thread(trader.get_portfolio)
-                except Exception as e:
-                    logger.warning("%s get_portfolio failed: %s", market, e)
-                    return summary
-                for h in (portfolio or []):
-                    ticker = _ticker_of(h, market)
-                    if not ticker:
+            async with _open_context(market) as trader:  # primary ctx, prices only (account-agnostic)
+                for ticker, rows in by_ticker.items():
+                    if len(rows) > 1:
+                        # Pyramided position -> leave to the batch's fractional logic.
+                        summary["pyramided_skipped"] += 1
+                        logger.info("[%s] %s pyramided (%d rows) -> skip (batch handles)",
+                                    market, ticker, len(rows))
                         continue
+                    h = rows[0]
                     try:
-                        qty = int(h.get("quantity", 0) or 0)
-                        avg_price = float(h.get("avg_price", 0) or 0)
-                        cur_price = float(h.get("current_price", 0) or 0)
+                        buy_price = float(h.get("buy_price", 0) or 0)
+                        stop_loss = float(h.get("stop_loss", 0) or 0)
                     except (TypeError, ValueError):
                         continue
-                    if qty <= 0 or avg_price <= 0 or cur_price <= 0:
+                    if buy_price <= 0:
+                        continue
+                    try:
+                        info = await asyncio.to_thread(trader.get_current_price, ticker)
+                        cur_price = float((info or {}).get("current_price", 0) or 0)
+                    except Exception as e:
+                        logger.warning("[%s] %s price fetch failed: %s", market, ticker, e)
+                        continue
+                    if cur_price <= 0:
                         continue
                     summary["checked"] += 1
-                    inp = SellInputs(
-                        buy_price=avg_price,
-                        current_price=cur_price,
-                        stop_loss=stop_map.get(ticker, 0.0),
+                    should_sell, reason = evaluate_tier1_hardstop(
+                        SellInputs(buy_price=buy_price, current_price=cur_price, stop_loss=stop_loss)
                     )
-                    should_sell, reason = evaluate_tier1_hardstop(inp)
                     if not should_sell:
                         continue
                     summary["triggered"] += 1
-                    await _act_on_trigger(conn, trader, market, ticker, qty, reason, run_id, summary)
+                    h = dict(h)
+                    h["current_price"] = cur_price
+                    await _act_on_trigger(conn, market, ticker, h, reason, run_id, agent, summary)
         except Exception as e:  # context/credential failure -> skip whole market safely
             logger.warning("%s trading context failed: %s", market, e)
     finally:
         conn.close()
+        if agent["ref"] is not None:
+            try:
+                if getattr(agent["ref"], "conn", None):
+                    agent["ref"].conn.close()
+            except Exception:
+                pass
     return summary
 
 
-async def _act_on_trigger(conn, trader, market: str, ticker: str, qty: int,
-                          reason: str, run_id: str, summary: Dict[str, Any]) -> None:
+async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, Any],
+                          reason: str, run_id: str, agent: Dict[str, Any],
+                          summary: Dict[str, Any]) -> None:
+    qty_hint = 0
     # Guard 1: an inflight SELL for this ticker already exists -> leave it alone.
     if has_open_inflight(conn, ticker, market):
         summary["skipped"] += 1
@@ -289,34 +318,54 @@ async def _act_on_trigger(conn, trader, market: str, ticker: str, qty: int,
         return
     try:
         if not LOOP_A_LIVE:
-            # SHADOW: log intended sell, place no order.
+            # SHADOW: log intended sell; touch no agent, place no order.
             summary["shadow"] += 1
-            logger.info("[SHADOW][%s] WOULD SELL %s qty=%d reason=%s", market, ticker, qty, reason)
-            record_inflight(conn, ticker, market, run_id, qty, "SHADOW", reason, None)
+            logger.info("[SHADOW][%s] WOULD SELL %s reason=%s (buy=%.4f cur=%.4f)",
+                        market, ticker, reason, stock_data.get("buy_price", 0),
+                        stock_data.get("current_price", 0))
+            record_inflight(conn, ticker, market, run_id, 0, "SHADOW", reason, None)
             release_lock(conn, ticker, market, run_id, new_state="HOLDING")
             return
-        # LIVE: reconcile against KIS (single source of truth) right before selling.
+
+        # LIVE: 1) simulator close (+journal +telegram queue) via the SAME path as batch.
+        if agent["ref"] is None:
+            agent["ref"] = await _make_agent(market)
+        ag = agent["ref"]
+        logger.warning("[LIVE][%s] SELLING %s reason=%s", market, ticker, reason)
+        sim_ok = await ag.sell_stock(stock_data, reason)
+        if not sim_ok:
+            logger.error("[%s] %s sell_stock (sim) failed -> aborting, no KIS order", market, ticker)
+            release_lock(conn, ticker, market, run_id, new_state="HOLDING")
+            return
+
+        # 2) real KIS market order on the holding's own account; reconcile qty first.
+        order_no, ok, sold_qty = None, False, 0
         try:
-            live_qty = await asyncio.to_thread(trader.get_holding_quantity, ticker)
+            async with _open_context(market, account_name=stock_data.get("account_name")) as seller:
+                live_qty = await asyncio.to_thread(seller.get_holding_quantity, ticker)
+                sold_qty = int(live_qty or 0)
+                if sold_qty <= 0:
+                    logger.info("[%s] %s already flat at KIS (qty=0); sim closed", market, ticker)
+                else:
+                    result = await seller.async_sell_stock(ticker, quantity=sold_qty)
+                    ok = bool(result and result.get("success"))
+                    order_no = (result or {}).get("order_no")
+                    logger.warning("[LIVE][%s] %s KIS sell success=%s order_no=%s msg=%s",
+                                   market, ticker, ok, order_no, (result or {}).get("message"))
         except Exception as e:
-            logger.warning("[%s] %s holding reconcile failed, aborting sell: %s", market, ticker, e)
-            release_lock(conn, ticker, market, run_id, new_state="HOLDING")
-            return
-        sell_qty = min(qty, int(live_qty or 0))
-        if sell_qty <= 0:
-            logger.info("[%s] %s already flat at KIS (qty=0) -> skip", market, ticker)
-            release_lock(conn, ticker, market, run_id, new_state="SOLD")
-            return
-        logger.warning("[LIVE][%s] SELLING %s qty=%d reason=%s", market, ticker, sell_qty, reason)
-        result = await trader.async_sell_stock(ticker, quantity=sell_qty)  # market order
-        ok = bool(result and result.get("success"))
-        order_no = (result or {}).get("order_no")
-        record_inflight(conn, ticker, market, run_id, sell_qty,
-                        "FILLED" if ok else "REJECTED", reason, str(order_no) if order_no else None)
-        release_lock(conn, ticker, market, run_id, new_state="SOLD" if ok else "HOLDING")
-        summary["sold"] += 1 if ok else 0
-        logger.warning("[LIVE][%s] %s sell result success=%s order_no=%s msg=%s",
-                       market, ticker, ok, order_no, (result or {}).get("message"))
+            logger.error("[%s] %s KIS sell failed after sim close: %s", market, ticker, e)
+
+        # 3) flush the queued telegram message (instant notification).
+        try:
+            await ag.send_telegram_message(CHAT_ID)
+        except Exception as e:
+            logger.warning("[%s] %s telegram flush failed: %s", market, ticker, e)
+
+        record_inflight(conn, ticker, market, run_id, sold_qty,
+                        "FILLED" if (ok or sold_qty == 0) else "REJECTED",
+                        reason, str(order_no) if order_no else None)
+        release_lock(conn, ticker, market, run_id, new_state="SOLD")
+        summary["sold"] += 1
     except Exception as e:
         logger.error("[%s] %s sell action failed: %s", market, ticker, e)
         release_lock(conn, ticker, market, run_id, new_state="HOLDING")
@@ -329,11 +378,12 @@ async def main_async(markets: List[str]) -> int:
     run_id = uuid.uuid4().hex[:12]
     mode = "LIVE" if LOOP_A_LIVE else "SHADOW"
     logger.info("Loop A start run_id=%s mode=%s markets=%s db=%s", run_id, mode, markets, DB_PATH)
-    totals = {"checked": 0, "triggered": 0, "sold": 0, "shadow": 0, "skipped": 0}
+    totals: Dict[str, int] = {}
     for market in markets:
         s = await run_market(market, run_id)
-        for k in totals:
-            totals[k] += s.get(k, 0)
+        for k, v in s.items():
+            if isinstance(v, int):
+                totals[k] = totals.get(k, 0) + v
         logger.info("Loop A %s summary: %s", market, s)
     logger.info("Loop A done run_id=%s mode=%s totals=%s", run_id, mode, totals)
     return 0
@@ -342,7 +392,7 @@ async def main_async(markets: List[str]) -> int:
 def _setup_logging() -> None:
     log_dir = PROJECT_ROOT / "logs"
     log_dir.mkdir(exist_ok=True)
-    handlers = [logging.StreamHandler(sys.stdout)]
+    handlers: List[logging.Handler] = [logging.StreamHandler(sys.stdout)]
     try:
         handlers.append(logging.FileHandler(log_dir / "loop_a_hardstop.log"))
     except OSError:
@@ -375,7 +425,6 @@ def main() -> int:
     args = parser.parse_args()
     _setup_logging()
     if args.market == "both":
-        # Cannot serve both markets in one process (cores package is cached) -> fan out.
         return _run_both_isolated()
     market = {"kr": "KR", "us": "US"}[args.market]
     _bootstrap_path(market)

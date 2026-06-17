@@ -1,16 +1,17 @@
 """Tests for Loop A high-frequency hard-stop loop (tools/loop_a_hardstop.py).
 
-Safety-critical guards covered:
-  - SHADOW mode (default) places NO real order, but logs an intended sell.
-  - LIVE mode places a market sell and reconciles qty against KIS first.
-  - owner_lock prevents two concurrent runs from double-selling.
-  - inflight guard prevents re-issuing a sell for a ticker already in flight.
-  - TIER1-only: trailing/target winners are NOT sold by Loop A.
+Loop A reuses the batch's sell path so the simulator, the real KIS account and
+Telegram stay consistent. Safety-critical guards covered:
+  - SHADOW (default): touches NO agent and places NO order, only logs.
+  - LIVE: runs sell_stock (sim) -> async_sell_stock (KIS) -> send_telegram_message
+    (telegram), in that order; reconciles qty against KIS first.
+  - Pyramided tickers (>1 row) are skipped (batch owns fractional sells).
+  - owner_lock exclusivity + inflight guard prevent double-selling.
+  - TIER1-only: a winner is never sold by Loop A.
 
 Run in the KR (root) pytest session.
 """
 import asyncio
-import os
 import sys
 import sqlite3
 from pathlib import Path
@@ -24,21 +25,21 @@ import tools.loop_a_hardstop as la  # noqa: E402
 
 # ── Fakes ──────────────────────────────────────────────────────────────────────
 class FakeTrader:
-    def __init__(self, portfolio, holding_qty=None, sell_result=None):
-        self._portfolio = portfolio
+    def __init__(self, prices, holding_qty=None, sell_result=None, calls=None):
+        self._prices = prices
         self._holding_qty = holding_qty or {}
         self._sell_result = sell_result or {"success": True, "order_no": "ORD1", "message": "ok"}
-        self.sell_calls = []
+        self.calls = calls if calls is not None else []
 
-    def get_portfolio(self):
-        return self._portfolio
+    def get_current_price(self, ticker, exchange=None):
+        return {"current_price": self._prices.get(ticker, 0)}
 
     def get_holding_quantity(self, ticker):
         return self._holding_qty.get(ticker, 0)
 
     async def async_sell_stock(self, ticker, exchange=None, timeout=30.0,
                                limit_price=None, use_moo=False, quantity=None):
-        self.sell_calls.append((ticker, quantity))
+        self.calls.append(f"kis:{ticker}:{quantity}")
         return self._sell_result
 
 
@@ -53,24 +54,63 @@ class FakeCtx:
         return False
 
 
+class FakeAgent:
+    def __init__(self, calls):
+        self.calls = calls
+        self.conn = None
+
+    async def sell_stock(self, stock_data, sell_reason):
+        self.calls.append(f"sim:{stock_data.get('ticker')}")
+        return True
+
+    async def send_telegram_message(self, chat_id, language="ko"):
+        self.calls.append("tg")
+        return True
+
+
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
     db = tmp_path / "t.sqlite"
-    # seed holdings table so load_stop_map works
     conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE stock_holdings (ticker TEXT, stop_loss REAL)")
-    conn.execute("INSERT INTO stock_holdings VALUES ('005930', 0)")
+    conn.execute(
+        "CREATE TABLE stock_holdings (id INTEGER PRIMARY KEY, ticker TEXT, company_name TEXT, "
+        "buy_price REAL, buy_date TEXT, scenario TEXT, target_price REAL, stop_loss REAL, "
+        "account_key TEXT, account_name TEXT)"
+    )
     conn.commit()
     conn.close()
     monkeypatch.setattr(la, "DB_PATH", str(db))
     return str(db)
 
 
-def _patch_trader(monkeypatch, trader):
-    monkeypatch.setattr(la, "_open_context", lambda market: FakeCtx(trader))
+def _seed(db, rows):
+    conn = sqlite3.connect(db)
+    conn.executemany(
+        "INSERT INTO stock_holdings (id, ticker, company_name, buy_price, buy_date, scenario, "
+        "target_price, stop_loss, account_key, account_name) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
 
 
-def _count_inflight(db, status=None):
+def _row(id_, ticker, buy_price, stop_loss=0.0):
+    return (id_, ticker, ticker, buy_price, "2026-06-01 10:00:00", "{}", 0.0,
+            stop_loss, "acc1", "primary")
+
+
+def _patch(monkeypatch, trader, agent_holder=None, make_agent_counter=None):
+    monkeypatch.setattr(la, "_open_context", lambda market, account_name=None: FakeCtx(trader))
+
+    async def _fake_make_agent(market):
+        if make_agent_counter is not None:
+            make_agent_counter.append(1)
+        return agent_holder
+
+    monkeypatch.setattr(la, "_make_agent", _fake_make_agent)
+
+
+def _inflight(db, status=None):
     conn = sqlite3.connect(db)
     try:
         if status:
@@ -82,69 +122,88 @@ def _count_inflight(db, status=None):
         conn.close()
 
 
-# a -8% loser (buy 100, now 92) -> TIER1 abs-7 fires
-_LOSER = [{"stock_code": "005930", "quantity": 10, "avg_price": 100.0, "current_price": 92.0}]
-
-
-def test_shadow_mode_places_no_order(tmp_db, monkeypatch):
+def test_shadow_touches_no_agent_and_no_order(tmp_db, monkeypatch):
     monkeypatch.setattr(la, "LOOP_A_LIVE", False)
     monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
-    trader = FakeTrader(_LOSER)
-    _patch_trader(monkeypatch, trader)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])  # buy 100, price 92 => -8% TIER1
+    calls = []
+    trader = FakeTrader({"005930": 92.0}, calls=calls)
+    made = []
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls), make_agent_counter=made)
 
     summary = asyncio.run(la.run_market("KR", "run1"))
 
-    assert summary["triggered"] == 1
-    assert summary["shadow"] == 1
-    assert trader.sell_calls == []  # NO real order in shadow mode
-    assert _count_inflight(tmp_db, "SHADOW") == 1
+    assert summary["triggered"] == 1 and summary["shadow"] == 1
+    assert made == []                 # agent NEVER created in shadow
+    assert calls == []                # no sim, no kis, no telegram
+    assert _inflight(tmp_db, "SHADOW") == 1
 
 
-def test_live_mode_sells_and_reconciles(tmp_db, monkeypatch):
+def test_live_order_is_sim_then_kis_then_telegram(tmp_db, monkeypatch):
     monkeypatch.setattr(la, "LOOP_A_LIVE", True)
     monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
-    trader = FakeTrader(_LOSER, holding_qty={"005930": 10})
-    _patch_trader(monkeypatch, trader)
+    monkeypatch.setattr(la, "CHAT_ID", "chat1")
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader({"005930": 92.0}, holding_qty={"005930": 10}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls))
 
     summary = asyncio.run(la.run_market("KR", "run1"))
 
     assert summary["sold"] == 1
-    assert trader.sell_calls == [("005930", 10)]  # market sell of full reconciled qty
-    assert _count_inflight(tmp_db, "FILLED") == 1
+    assert calls == ["sim:005930", "kis:005930:10", "tg"]   # exact order
+    assert _inflight(tmp_db, "FILLED") == 1
 
 
-def test_live_mode_skips_when_already_flat_at_kis(tmp_db, monkeypatch):
-    # KIS says qty 0 (batch already sold) -> Loop A must NOT sell.
+def test_live_skips_kis_when_flat_but_still_closes_sim(tmp_db, monkeypatch):
+    # KIS says qty 0 (batch already sold real) -> no KIS order, sim still closed.
     monkeypatch.setattr(la, "LOOP_A_LIVE", True)
     monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
-    trader = FakeTrader(_LOSER, holding_qty={"005930": 0})
-    _patch_trader(monkeypatch, trader)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader({"005930": 92.0}, holding_qty={"005930": 0}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls))
+
+    asyncio.run(la.run_market("KR", "run1"))
+
+    assert "sim:005930" in calls
+    assert not any(c.startswith("kis:") for c in calls)   # no real order placed
+
+
+def test_pyramided_ticker_is_skipped(tmp_db, monkeypatch):
+    monkeypatch.setattr(la, "LOOP_A_LIVE", False)
+    monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
+    _seed(tmp_db, [_row(1, "005930", 100.0), _row(2, "005930", 110.0)])  # 2 rows = pyramided
+    calls = []
+    trader = FakeTrader({"005930": 80.0}, calls=calls)  # deep loss, but must be skipped
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls))
 
     summary = asyncio.run(la.run_market("KR", "run1"))
 
-    assert trader.sell_calls == []
-    assert summary["sold"] == 0
+    assert summary["pyramided_skipped"] == 1
+    assert summary["checked"] == 0 and summary["triggered"] == 0
+    assert calls == []
 
 
 def test_inflight_guard_blocks_second_trigger(tmp_db, monkeypatch):
     monkeypatch.setattr(la, "LOOP_A_LIVE", False)
     monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
-    trader = FakeTrader(_LOSER)
-    _patch_trader(monkeypatch, trader)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader({"005930": 92.0}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls))
 
-    asyncio.run(la.run_market("KR", "run1"))      # creates SHADOW inflight
-    summary2 = asyncio.run(la.run_market("KR", "run2"))  # different run id
+    asyncio.run(la.run_market("KR", "run1"))
+    summary2 = asyncio.run(la.run_market("KR", "run2"))
 
-    # second cycle sees the open SHADOW inflight and skips
     assert summary2["skipped"] == 1
-    assert _count_inflight(tmp_db) == 1
+    assert _inflight(tmp_db) == 1
 
 
-def test_owner_lock_is_exclusive(tmp_db, monkeypatch):
+def test_owner_lock_is_exclusive(tmp_db):
     conn = la._connect()
     la._ensure_schema(conn)
     assert la.claim_lock(conn, "005930", "KR", "runA") is True
-    # second claimant cannot take a live lock
     assert la.claim_lock(conn, "005930", "KR", "runB") is False
     la.release_lock(conn, "005930", "KR", "runA")
     assert la.claim_lock(conn, "005930", "KR", "runB") is True
@@ -152,18 +211,17 @@ def test_owner_lock_is_exclusive(tmp_db, monkeypatch):
 
 
 def test_winner_not_sold_tier1_only(tmp_db, monkeypatch):
-    # +20% winner well above a trailing peak: evaluate_oneil_sell might trail, but
-    # Loop A is TIER1-only and must HOLD.
     monkeypatch.setattr(la, "LOOP_A_LIVE", False)
     monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
-    winner = [{"stock_code": "005930", "quantity": 10, "avg_price": 100.0, "current_price": 120.0}]
-    trader = FakeTrader(winner)
-    _patch_trader(monkeypatch, trader)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader({"005930": 120.0}, calls=calls)  # +20% winner
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls))
 
     summary = asyncio.run(la.run_market("KR", "run1"))
 
     assert summary["triggered"] == 0
-    assert trader.sell_calls == []
+    assert calls == []
 
 
 def test_disabled_flag_is_noop(tmp_db, monkeypatch):
