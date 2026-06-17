@@ -82,7 +82,9 @@ LOOP_A_LIVE = _env_bool("LOOP_A_LIVE", False)          # False => SHADOW (no rea
 LOCK_TTL_SEC = int(os.getenv("LOOP_A_LOCK_TTL_SEC", "300"))
 DB_PATH = os.getenv("LOOP_A_DB") or os.getenv("STOCK_TRACKING_DB") \
     or str(PROJECT_ROOT / "stock_tracking_db.sqlite")
-CHAT_ID = os.getenv("LOOP_A_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or None
+# Reuse the same channel the batch/system already broadcasts to (TELEGRAM_CHANNEL_ID).
+# LOOP_A_CHAT_ID is only an optional override.
+CHAT_ID = os.getenv("LOOP_A_CHAT_ID") or os.getenv("TELEGRAM_CHANNEL_ID") or None
 
 _HOLDINGS_TABLE = {"KR": "stock_holdings", "US": "us_stock_holdings"}
 
