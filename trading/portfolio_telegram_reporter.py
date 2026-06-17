@@ -229,11 +229,12 @@ class PortfolioTelegramReporter:
                 us_total_profit_rate = us_account_summary.get('total_profit_rate', 0)
                 us_cash = us_account_summary.get('usd_cash', 0)
                 exchange_rate = us_account_summary.get('exchange_rate', 0)
+                us_net_unsettled = us_account_summary.get('net_unsettled_usd', 0)
 
-                # Total assets: prefer KIS settlement-coherent total (stock + USD cash +
-                # KRW deposit + net unsettled trades). Summing real-time stock eval against
-                # the settlement-lagged USD deposit alone makes the season return see-saw
-                # day to day, so only fall back to that when the KIS total is unavailable.
+                # USD-denominated total assets = stock eval + USD cash + net unsettled trades
+                # (excludes KRW cash). The net-unsettled term keeps cash on the same
+                # trade-date basis as the eval so the season return does not see-saw with
+                # D+2 settlement; falls back to eval+cash if the field is unavailable.
                 us_total_asset_usd = us_account_summary.get('total_asset_usd', 0) or 0
                 us_total_assets = us_total_asset_usd if us_total_asset_usd > 0 else (us_total_eval + us_cash)
 
@@ -261,6 +262,10 @@ class PortfolioTelegramReporter:
                     message += f"📈 환율: `{exchange_rate:,.2f}원/USD`\n"
                 else:
                     message += "\n"
+
+                # In-transit settlement so 총자산 reconciles with 보유주식 + USD현금
+                if abs(us_net_unsettled) >= 0.01:
+                    message += f"🔄 정산중(미결제): `{self.format_currency_with_sign(us_net_unsettled, 'USD')}`\n"
             else:
                 message += "❌ 계좌 정보를 가져올 수 없습니다\n"
 

@@ -1720,33 +1720,37 @@ class USStockTrading:
                 output2 = body.output2 if hasattr(body, 'output2') else []
                 output3 = body.output3 if hasattr(body, 'output3') else {}
 
-                # Extract USD info from output2
+                # Extract USD info from output2. unsettled buy/sell amounts let us put cash
+                # on a trade-date basis (see total_asset_usd below).
                 usd_cash = 0.0
                 exchange_rate = 0.0
+                unsettled_buy = 0.0   # executed buys not yet settled (cash not yet debited)
+                unsettled_sell = 0.0  # executed sells not yet settled (proceeds not yet credited)
 
                 if output2 and isinstance(output2, list):
                     for item in output2:
                         if item.get('crcy_cd') == 'USD':
                             usd_cash = _safe_float(item.get('frcr_dncl_amt_2'))
                             exchange_rate = _safe_float(item.get('frst_bltn_exrt'))
+                            unsettled_buy = _safe_float(item.get('frcr_buy_amt_smtl'))
+                            unsettled_sell = _safe_float(item.get('frcr_sll_amt_smtl'))
                             break
-
-                # KIS-computed total account asset (KRW). This is settlement-coherent:
-                # it already includes stock eval + USD cash + KRW deposit + net unsettled
-                # trade proceeds. Using it avoids the see-saw caused by summing a real-time
-                # stock eval against a settlement-lagged USD deposit (frcr_dncl_amt_2).
-                o3 = output3
-                if isinstance(o3, list):
-                    o3 = o3[0] if o3 else {}
-                o3 = o3 if isinstance(o3, dict) else {}
-                total_asset_krw = _safe_float(o3.get('tot_asst_amt'))
-                total_asset_usd = (total_asset_krw / exchange_rate) if exchange_rate > 0 else 0.0
 
                 # Calculate from portfolio for stock totals
                 portfolio = self.get_portfolio()
                 total_eval = sum(s['eval_amount'] for s in portfolio)
                 total_profit = sum(s['profit_amount'] for s in portfolio)
                 total_cost = sum(s['avg_price'] * s['quantity'] for s in portfolio)
+
+                # USD-denominated total assets on a trade-date basis (excludes KRW cash).
+                # frcr_dncl_amt_2 is settlement-based (D+2), so summing it against a
+                # real-time stock eval makes the season return see-saw: a sell drops eval
+                # immediately but its proceeds reach the deposit days later. Adding net
+                # unsettled trades (sells in transit minus buys in transit) realigns cash to
+                # the same trade-date basis as the eval, removing the see-saw. Dividends are
+                # already reflected in usd_cash, so they are captured here too.
+                net_unsettled = unsettled_sell - unsettled_buy
+                total_asset_usd = total_eval + usd_cash + net_unsettled
 
                 summary = {
                     'total_eval_amount': total_eval,
@@ -1755,8 +1759,10 @@ class USStockTrading:
                     'available_amount': usd_cash,  # USD cash available for trading
                     'usd_cash': usd_cash,
                     'exchange_rate': exchange_rate,
-                    'total_asset_krw': total_asset_krw,
-                    # Settlement-coherent total assets in USD; 0 if unavailable (callers fall back).
+                    'unsettled_buy_usd': unsettled_buy,
+                    'unsettled_sell_usd': unsettled_sell,
+                    'net_unsettled_usd': net_unsettled,
+                    # USD-denominated trade-date total assets (stock + USD cash + net unsettled).
                     'total_asset_usd': total_asset_usd,
                 }
 
@@ -1764,7 +1770,8 @@ class USStockTrading:
                            f"P/L ${summary['total_profit_amount']:+.2f} "
                            f"({summary['total_profit_rate']:+.2f}%), "
                            f"USD Cash ${summary['usd_cash']:.2f}, "
-                           f"Total Asset ${summary['total_asset_usd']:.2f}")
+                           f"Net Unsettled ${net_unsettled:+.2f}, "
+                           f"Total Asset(USD) ${summary['total_asset_usd']:.2f}")
 
                 return summary
 
