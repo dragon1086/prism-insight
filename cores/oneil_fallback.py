@@ -131,6 +131,31 @@ def evaluate_oneil_sell(inp: SellInputs) -> Tuple[bool, str]:
     return False, f"HOLD: trend intact (profit {profit:.2f}%, regime {regime})"
 
 
+def evaluate_tier1_hardstop(inp: SellInputs) -> Tuple[bool, str]:
+    """TIER1-only catastrophic hard stop for the high-frequency loop (Loop A).
+
+    Evaluates ONLY the two TIER1 rules from evaluate_oneil_sell — scenario
+    stop-loss breach (1A) and the absolute -7% stop (1B) — and nothing else.
+    Trailing (TIER2), 50MA (TIER1.5) and target (TIER3) are deliberately
+    excluded: Loop A runs every few minutes on raw last-trade prices, where
+    those slower trend signals would whipsaw on intraday noise. Uses the same
+    wick buffer and constants as evaluate_oneil_sell so the two never diverge.
+
+    Returns: (should_sell, reason_key). No trigger -> (False, "HOLD: ...").
+    """
+    bp, cp = inp.buy_price, inp.current_price
+    if bp <= 0 or cp <= 0:
+        return False, "HOLD: invalid price data"  # never sell on bad data
+    # 1A. scenario stop-loss breach (clear break below, wick buffer)
+    if inp.stop_loss > 0 and cp <= inp.stop_loss * (1.0 - STOP_WICK_BUFFER):
+        return True, f"TIER1_STOPLOSS: price<=stop_loss({inp.stop_loss:.4f})"
+    # 1B. absolute -7% stop
+    profit = (cp - bp) / bp * 100.0
+    if profit <= ABS_STOP_LOSS_PCT:
+        return True, f"TIER1_ABS7: loss {profit:.2f}% <= {ABS_STOP_LOSS_PCT}%"
+    return False, f"HOLD: above hard stop (profit {profit:.2f}%)"
+
+
 # ── 호출측 어댑터 (stock_data dict → SellInputs) ────────────────
 def from_stock_data(stock_data: dict, live_regime: Optional[str] = None,
                     ma_50: Optional[float] = None) -> SellInputs:
