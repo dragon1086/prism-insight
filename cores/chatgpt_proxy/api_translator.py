@@ -26,6 +26,46 @@ def _map_model(model: str) -> str:
     return _MODEL_MAP.get(model, model)
 
 
+def prepare_responses_passthrough(body: dict) -> dict:
+    """Prepare a Responses API request for passthrough to the Codex backend.
+
+    The openai-agents Runner already produces a Responses-shaped body (with
+    ``input``, ``instructions``, ``tools`` flat, ``text.format``, etc.), so
+    this function must NOT re-translate the payload.  It only:
+
+    - Maps the model name via ``_map_model`` (e.g. gpt-4o -> gpt-5.4-mini).
+    - Forces ``store=False`` and ``stream=True`` (mandatory for Codex backend).
+    - Injects a default ``instructions`` value when the caller omitted it
+      (Codex requires the field to be present and non-empty).
+
+    All other Responses API fields (``input``, ``tools``, ``tool_choice``,
+    ``text``, ``reasoning``, ``max_output_tokens``, ``temperature``,
+    ``top_p``) are left untouched.
+
+    Does not mutate the caller's dict.
+    """
+    out = dict(body)
+    out["model"] = _map_model(body.get("model", "gpt-5.4-mini"))
+    out["store"] = False   # MANDATORY: store:true returns 400
+    out["stream"] = True   # MANDATORY: always stream upstream
+    if not out.get("instructions"):
+        out["instructions"] = "You are a helpful assistant."
+    # Codex backend requires `input` to be a LIST of items; the openai SDK may
+    # send a bare string for simple text input -> normalize to a user message.
+    inp = out.get("input")
+    if isinstance(inp, str):
+        out["input"] = [{"role": "user", "content": inp}]
+    # The Codex backend rejects several Responses parameters the openai-agents
+    # Runner adds by default (observed: "Unsupported parameter: max_output_tokens").
+    # Strip them so subscription requests succeed.
+    for unsupported in ("max_output_tokens", "include"):
+        out.pop(unsupported, None)
+    # Drop empty tool list (Codex dislikes an empty `tools: []`).
+    if out.get("tools") == []:
+        out.pop("tools", None)
+    return out
+
+
 def translate_request(body: dict) -> dict:
     """Translate Chat Completions request to Responses API format.
 

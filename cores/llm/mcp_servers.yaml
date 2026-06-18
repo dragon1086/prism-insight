@@ -1,0 +1,56 @@
+servers:
+  webresearch:
+    command: npx
+    args:
+    - -y
+    - '@mzxrai/mcp-webresearch@latest'
+    read_timeout_seconds: 120
+  firecrawl:
+    command: npx
+    args:
+    - -y
+    - firecrawl-mcp
+    env:
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
+  kospi_kosdaq:
+    command: python3
+    args:
+    - -m
+    - kospi_kosdaq_stock_server
+    env:
+      KAKAO_ID: ${KAKAO_ID}
+      KAKAO_PW: ${KAKAO_PW}
+      KRX_LOGIN_METHOD: ${KRX_LOGIN_METHOD}
+  perplexity:
+    command: node
+    args:
+    - perplexity-ask/dist/index.js
+    env:
+      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY}
+  sqlite:
+    command: uv
+    args:
+    - --directory
+    - sqlite
+    - run
+    - mcp-server-sqlite
+    - --db-path
+    - ../stock_tracking_db.sqlite
+  time:
+    command: uvx
+    args:
+    - mcp-server-time
+  deepsearch:
+    command: npx
+    args:
+    - -y
+    - mcp-remote
+    - http://localhost:8000/sse
+    read_timeout_seconds: 120
+  yahoo_finance:
+    command: uvx
+    args:
+    - --from
+    - yahoo-finance-mcp
+    - yahoo-finance-mcp
+    read_timeout_seconds: 120
