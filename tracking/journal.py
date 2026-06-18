@@ -85,19 +85,39 @@ class JournalManager:
             # Create journal agent
             journal_agent = create_trading_journal_agent(self.language)
 
-            async with journal_agent:
-                llm = await journal_agent.attach_llm(OpenAIAugmentedLLM)
+            # Build prompt once — shared by both execution paths
+            prompt = self._build_analysis_prompt(
+                company_name, ticker, buy_price, buy_date,
+                scenario_data, sell_price, profit_rate, holding_days, sell_reason
+            )
 
-                prompt = self._build_analysis_prompt(
-                    company_name, ticker, buy_price, buy_date,
-                    scenario_data, sell_price, profit_rate, holding_days, sell_reason
+            import os as _os
+            if _os.getenv("LLM_BACKEND", "mcp_agent") == "openai_agents":
+                from cores.llm.agent_bridge import (
+                    ensure_openai_agents_configured,
+                    get_llm_backend,
+                    spec_from_mcp_agent,
                 )
+                from cores.llm.config_loader import load_mcp_registry
+                from cores.llm.ports import LLMParams
 
-                response = await llm.generate_str(
-                    message=prompt,
-                    request_params=RequestParams(model="gpt-5.4-mini", reasoning_effort="none", maxTokens=16000)
+                ensure_openai_agents_configured()
+                registry = load_mcp_registry()
+                spec = spec_from_mcp_agent(
+                    journal_agent,
+                    model="gpt-5.4-mini",
+                    params=LLMParams(max_tokens=16000, reasoning_effort="none"),
                 )
-                logger.info(f"Journal agent response received: {len(response)} chars")
+                result = await get_llm_backend(registry).run(spec, prompt)
+                response = result.text
+            else:
+                async with journal_agent:
+                    llm = await journal_agent.attach_llm(OpenAIAugmentedLLM)
+                    response = await llm.generate_str(
+                        message=prompt,
+                        request_params=RequestParams(model="gpt-5.4-mini", reasoning_effort="none", maxTokens=16000)
+                    )
+            logger.info(f"Journal agent response received: {len(response)} chars")
 
             # Parse and save
             journal_data = self._parse_response(response)
