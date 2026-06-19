@@ -8,6 +8,9 @@
   <img src="https://img.shields.io/badge/ChatGPT_Plus-Codex_OAuth-ff6b35.svg" alt="ChatGPT Plus">
 </div>
 
+[![CI](https://github.com/dragon1086/prism-insight/actions/workflows/ci.yml/badge.svg)](https://github.com/dragon1086/prism-insight/actions/workflows/ci.yml)
+<!-- CODACY_BADGE: pending Codacy GitHub connection — replace with [![Codacy Badge](https://app.codacy.com/project/badge/Grade/<PROJECT_ID>)](https://app.codacy.com/gh/dragon1086/prism-insight/dashboard) -->
+
 # PRISM-INSIGHT
 
 [![GitHub Sponsors](https://img.shields.io/github/sponsors/dragon1086?style=for-the-badge&logo=github-sponsors&color=ff69b4&label=Sponsors)](https://github.com/sponsors/dragon1086)

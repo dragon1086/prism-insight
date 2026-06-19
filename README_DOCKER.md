@@ -1,5 +1,8 @@
 # 🐳 PRISM-INSIGHT Docker Installation Guide
 
+[![CI](https://github.com/dragon1086/prism-insight/actions/workflows/ci.yml/badge.svg)](https://github.com/dragon1086/prism-insight/actions/workflows/ci.yml)
+<!-- CODACY_BADGE: pending Codacy GitHub connection — replace with [![Codacy Badge](https://app.codacy.com/project/badge/Grade/<PROJECT_ID>)](https://app.codacy.com/gh/dragon1086/prism-insight/dashboard) -->
+
 > 📖 [한국어 문서](README_DOCKER_ko.md)
 
 Run Ubuntu 24.04-based AI stock analysis system easily with Docker.
