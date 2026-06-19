@@ -89,6 +89,17 @@ def _resolve_sell_quantity(holding_quantity: int, quantity: int = None) -> int:
     return min(q, holding_quantity)
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Coerce a KIS response field (often an empty string) to int. Never raises."""
+    try:
+        s = str(value).strip()
+        if not s:
+            return default
+        return int(float(s))
+    except (TypeError, ValueError):
+        return default
+
+
 class DomesticStockTrading:
     """Domestic stock trading class"""
 
@@ -1638,6 +1649,207 @@ class DomesticStockTrading:
         except Exception as e:
             logger.error(f"Error during account summary inquiry: {str(e)}")
             return {}
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Loop C prerequisites — order amend/cancel + unfilled inquiry TR wrappers.
+    #
+    # These mirror the existing order-cash wrappers above (same _request/auth/
+    # tr_id real-vs-paper switching, same result-dict shape). They are NEW TRs
+    # and were NOT exercised against live KIS at authoring time — see the
+    # TODO(live-validate) markers and tasks/loop_c_design_notes.md.
+    #
+    # TR ids confirmed against koreainvestment/open-trading-api (2025-06-01):
+    #   - amend/cancel : real TTTC0013U / paper VTTC0013U  (order-rvsecncl)
+    #     ⚠️ NOT the legacy TTTC0803U/VTTC0803U.
+    #   - revisable inquiry : real TTTC0084R (paper VTTC0084R UNVERIFIED)
+    # ──────────────────────────────────────────────────────────────────────────
+    def amend_cancel_order(
+        self,
+        stock_code: str,
+        orgn_odno: str,
+        rvse_cncl_dvsn_cd: str,
+        krx_fwdg_ord_orgno: str = "",
+        ord_dvsn: str = "00",
+        quantity: int = 0,
+        limit_price: int = 0,
+        qty_all_ord_yn: str = "Y",
+        excg_id_dvsn_cd: str = "KRX",
+    ) -> Dict[str, Any]:
+        """Amend (정정) or cancel (취소) an existing domestic order.
+
+        KIS uses ONE TR for both, distinguished by ``rvse_cncl_dvsn_cd``:
+          - "01" = 정정 (amend): supply the NEW ``limit_price`` (and ``quantity``
+            if amending a partial qty).
+          - "02" = 취소 (cancel): price is ignored by KIS; pass 0.
+
+        Args:
+            stock_code: 6-digit code (informational; KIS keys off orgn_odno).
+            orgn_odno: Original order number (ORGN_ODNO) being amended/cancelled.
+            rvse_cncl_dvsn_cd: "01" amend, "02" cancel.
+            krx_fwdg_ord_orgno: Original KRX forwarding order org no
+                (KRX_FWDG_ORD_ORGNO) returned when the original order was placed.
+            ord_dvsn: Order division of the ORIGINAL order ("00" limit, etc).
+            quantity: Quantity to amend/cancel. Ignored when qty_all_ord_yn="Y".
+            limit_price: New limit price for an amend; 0 for cancel.
+            qty_all_ord_yn: "Y" = whole remaining qty, "N" = partial (uses quantity).
+            excg_id_dvsn_cd: Exchange id division ("KRX"/"NXT"/"SOR").
+
+        Returns:
+            Result dict: {success, order_no, stock_code, message}.
+        """
+        if not self.auto_trading:
+            return {
+                'success': False,
+                'order_no': None,
+                'stock_code': stock_code,
+                'message': 'Auto trading is disabled. Cannot amend/cancel order. (AUTO_TRADING=False)'
+            }
+
+        api_url = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
+
+        # Real vs paper switching, exactly like order-cash above.
+        if self.mode == "real":
+            tr_id = "TTTC0013U"  # Real amend/cancel (NOT legacy TTTC0803U)
+        else:
+            tr_id = "VTTC0013U"  # Demo amend/cancel
+
+        action = "Amend" if rvse_cncl_dvsn_cd == "01" else "Cancel"
+
+        # TODO(live-validate): TR field layout (esp. EXCG_ID_DVSN_CD requirement,
+        # ORD_UNPR semantics on cancel) unverified against live KIS. Confirmed
+        # only against the KIS GitHub sample, not a live order.
+        params = {
+            "CANO": self.trenv.my_acct,
+            "ACNT_PRDT_CD": self.trenv.my_prod,
+            "KRX_FWDG_ORD_ORGNO": krx_fwdg_ord_orgno,
+            "ORGN_ODNO": str(orgn_odno),
+            "ORD_DVSN": ord_dvsn,
+            "RVSE_CNCL_DVSN_CD": rvse_cncl_dvsn_cd,  # 01: amend, 02: cancel
+            "ORD_QTY": str(int(quantity)),
+            "ORD_UNPR": str(int(limit_price)),
+            "QTY_ALL_ORD_YN": qty_all_ord_yn,
+            "EXCG_ID_DVSN_CD": excg_id_dvsn_cd,
+            "CNDT_PRIC": "",
+        }
+
+        try:
+            res = self._request(api_url, tr_id, params, postFlag=True)
+
+            if res.isOK():
+                output = res.getBody().output
+                order_no = output.get('odno', '')
+                logger.info(
+                    f"[{stock_code}] {action} order success: orgn={orgn_odno}, "
+                    f"new_no={order_no}, price={limit_price}"
+                )
+                return {
+                    'success': True,
+                    'order_no': order_no,
+                    'stock_code': stock_code,
+                    'message': f'{action} order completed (orgn={orgn_odno})'
+                }
+            else:
+                error_msg = f"{res.getErrorCode()} - {res.getErrorMessage()}"
+                logger.error(f"[{stock_code}] {action} order failed: {error_msg}")
+                return {
+                    'success': False,
+                    'order_no': None,
+                    'stock_code': stock_code,
+                    'message': f'{action} order failed: {error_msg}'
+                }
+
+        except Exception as e:
+            logger.error(f"Error during {action.lower()} order: {str(e)}")
+            return {
+                'success': False,
+                'order_no': None,
+                'stock_code': stock_code,
+                'message': f'Error during {action.lower()} order: {str(e)}'
+            }
+
+    def amend_order(self, stock_code: str, orgn_odno: str, limit_price: int,
+                    krx_fwdg_ord_orgno: str = "", ord_dvsn: str = "00",
+                    quantity: int = 0, qty_all_ord_yn: str = "Y") -> Dict[str, Any]:
+        """Convenience wrapper: amend (정정) an order's limit price to ``limit_price``."""
+        return self.amend_cancel_order(
+            stock_code=stock_code, orgn_odno=orgn_odno, rvse_cncl_dvsn_cd="01",
+            krx_fwdg_ord_orgno=krx_fwdg_ord_orgno, ord_dvsn=ord_dvsn,
+            quantity=quantity, limit_price=limit_price, qty_all_ord_yn=qty_all_ord_yn,
+        )
+
+    def cancel_order(self, stock_code: str, orgn_odno: str,
+                     krx_fwdg_ord_orgno: str = "", ord_dvsn: str = "00",
+                     quantity: int = 0, qty_all_ord_yn: str = "Y") -> Dict[str, Any]:
+        """Convenience wrapper: cancel (취소) an existing order."""
+        return self.amend_cancel_order(
+            stock_code=stock_code, orgn_odno=orgn_odno, rvse_cncl_dvsn_cd="02",
+            krx_fwdg_ord_orgno=krx_fwdg_ord_orgno, ord_dvsn=ord_dvsn,
+            quantity=quantity, limit_price=0, qty_all_ord_yn=qty_all_ord_yn,
+        )
+
+    def get_revisable_orders(self, stock_code: str = None) -> List[Dict[str, Any]]:
+        """Inquire revisable/cancellable (= still-open / unfilled) orders.
+
+        TR: 주식정정취소가능주문조회 — real TTTC0084R. Returns a normalised list of
+        open orders, optionally filtered to ``stock_code``. Returns [] on any
+        failure (degrade to no-op — Loop C must treat empty as "nothing to chase",
+        never as "everything filled").
+
+        Each dict: {order_no, orgn_odno, stock_code, ord_qty, ord_unpr,
+                    tot_ccld_qty, psbl_qty, sll_buy_dvsn_cd, ord_dvsn,
+                    krx_fwdg_ord_orgno}.
+        """
+        api_url = "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
+
+        # TODO(live-validate): paper tr_id VTTC0084R is UNVERIFIED in the KIS
+        # sample repo. Real TTTC0084R confirmed. Loop C runs SHADOW by default.
+        if self.mode == "real":
+            tr_id = "TTTC0084R"
+        else:
+            tr_id = "VTTC0084R"
+
+        params = {
+            "CANO": self.trenv.my_acct,
+            "ACNT_PRDT_CD": self.trenv.my_prod,
+            "INQR_DVSN_1": "1",
+            "INQR_DVSN_2": "0",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+        out: List[Dict[str, Any]] = []
+        try:
+            res = self._request(api_url, tr_id, params)
+            if not res.isOK():
+                error_msg = f"{res.getErrorCode()} - {res.getErrorMessage()}"
+                logger.warning(f"Revisable-order inquiry failed: {error_msg}")
+                return out
+
+            output1 = res.getBody().output
+            if not isinstance(output1, list):
+                output1 = [output1] if output1 else []
+
+            for row in output1:
+                code = str(row.get('pdno', '') or '').strip()
+                if stock_code and code != stock_code:
+                    continue
+                out.append({
+                    'order_no': row.get('odno', ''),
+                    'orgn_odno': row.get('orgn_odno', ''),
+                    'stock_code': code,
+                    'ord_qty': _safe_int(row.get('ord_qty')),
+                    'ord_unpr': _safe_int(row.get('ord_unpr')),
+                    'tot_ccld_qty': _safe_int(row.get('tot_ccld_qty')),
+                    'psbl_qty': _safe_int(row.get('psbl_qty')),  # cancellable/amendable qty
+                    'sll_buy_dvsn_cd': row.get('sll_buy_dvsn_cd', ''),  # 01 sell / 02 buy
+                    'ord_dvsn': row.get('ord_dvsn_cd', ''),
+                    'krx_fwdg_ord_orgno': row.get('ord_gno_brno', ''),
+                })
+            return out
+
+        except Exception as e:
+            logger.warning(f"Error during revisable-order inquiry: {str(e)}")
+            return out
 
 
 class MultiAccountDomesticStockTrading:
