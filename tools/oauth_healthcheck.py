@@ -51,7 +51,9 @@ EXPIRY_WARN_HOURS = int(os.getenv("OAUTH_HEALTH_EXPIRY_WARN_HOURS", "24"))
 ALERT_COOLDOWN_MIN = int(os.getenv("OAUTH_HEALTH_ALERT_COOLDOWN_MIN", "180"))
 STATE_FILE = Path(os.getenv("OAUTH_HEALTH_STATE_FILE", "/tmp/oauth_health_state"))
 ALERT_CHAT_ID = os.getenv("OAUTH_ALERT_CHAT_ID") or os.getenv("TELEGRAM_CHANNEL_ID")
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Alerts may need a DIFFERENT bot than the public broadcast bot (the admin/personal
+# channel is often served by a separate bot). Prefer OAUTH_ALERT_BOT_TOKEN.
+BOT_TOKEN = os.getenv("OAUTH_ALERT_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Patterns that indicate auth/usage problems in orchestrator logs.
 # Deliberately SPECIFIC: must match real OpenAI/proxy error strings and NOT
@@ -198,4 +200,9 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--test-alert" in sys.argv:
+        # Validate the alert delivery path (bot token + chat id) end-to-end.
+        _ok = _send_telegram("✅ PRISM OAuth 워치독 테스트 — 이 메시지가 보이면 알림 경로 정상입니다.")
+        print(f"[oauth-health] test alert sent={_ok} chat={ALERT_CHAT_ID}")
+        raise SystemExit(0 if _ok else 1)
     raise SystemExit(asyncio.run(main()))
