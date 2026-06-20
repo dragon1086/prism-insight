@@ -1782,6 +1782,187 @@ class USStockTrading:
             logger.error(f"Error getting account summary: {str(e)}")
             return None
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Loop C prerequisites — overseas order amend/cancel + unfilled inquiry.
+    #
+    # Mirror the existing overseas order wrappers above (same _request/auth,
+    # OVRS_EXCG_CD handling, tr_id real-vs-paper switching, result-dict shape).
+    # NEW TRs — NOT exercised against live KIS at authoring time. See the
+    # TODO(live-validate) markers and tasks/loop_c_design_notes.md.
+    #
+    # TR ids confirmed against koreainvestment/open-trading-api (overseas):
+    #   - amend/cancel : real TTTT1004U / paper VTTT1004U (order-rvsecncl)
+    #   - unfilled (nccs): real TTTS3018R (paper VTTS3018R UNVERIFIED)
+    # ──────────────────────────────────────────────────────────────────────────
+    def amend_cancel_order(
+        self,
+        ticker: str,
+        orgn_odno: str,
+        rvse_cncl_dvsn_cd: str,
+        quantity: int,
+        exchange: str = None,
+        limit_price: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Amend (정정) or cancel (취소) an existing overseas order.
+
+        ``rvse_cncl_dvsn_cd``: "01" = amend (new ``limit_price``), "02" = cancel.
+        For cancel, KIS expects price 0.
+
+        Returns: {success, order_no, ticker, quantity, message}.
+        """
+        if not self.auto_trading:
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': quantity,
+                'message': 'Auto trading is disabled (AUTO_TRADING=False)'
+            }
+
+        if exchange is None:
+            exchange = self._resolve_exchange(ticker)
+        else:
+            exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
+
+        api_url = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
+
+        if self.mode == "real":
+            tr_id = "TTTT1004U"  # Real overseas amend/cancel
+        else:
+            tr_id = "VTTT1004U"  # Demo overseas amend/cancel
+
+        action = "Amend" if rvse_cncl_dvsn_cd == "01" else "Cancel"
+        ord_unpr = f"{limit_price:.2f}" if rvse_cncl_dvsn_cd == "01" else "0"
+
+        # TODO(live-validate): TR field layout (PDNO requirement, ORD_SVR_DVSN_CD,
+        # whether OVRS_ORD_UNPR is mandatory on cancel) unverified against live KIS.
+        params = {
+            "CANO": self.trenv.my_acct,
+            "ACNT_PRDT_CD": self.trenv.my_prod,
+            "OVRS_EXCG_CD": exchange,
+            "PDNO": ticker.upper(),
+            "ORGN_ODNO": str(orgn_odno),
+            "RVSE_CNCL_DVSN_CD": rvse_cncl_dvsn_cd,  # 01: amend, 02: cancel
+            "ORD_QTY": str(int(quantity)),
+            "OVRS_ORD_UNPR": ord_unpr,
+            "ORD_SVR_DVSN_CD": "0",
+        }
+
+        try:
+            res = self._request(api_url, tr_id, params, postFlag=True)
+
+            if res.isOK():
+                output = res.getBody().output
+                order_no = output.get('ODNO', '')
+                logger.info(
+                    f"[{ticker}] {action} order success: orgn={orgn_odno}, "
+                    f"new_no={order_no}, price={ord_unpr}"
+                )
+                return {
+                    'success': True,
+                    'order_no': order_no,
+                    'ticker': ticker,
+                    'quantity': quantity,
+                    'message': f'{action} order completed (orgn={orgn_odno})'
+                }
+            else:
+                error_msg = f"{res.getErrorCode()} - {res.getErrorMessage()}"
+                logger.error(f"[{ticker}] {action} order failed: {error_msg}")
+                return {
+                    'success': False,
+                    'order_no': None,
+                    'ticker': ticker,
+                    'quantity': quantity,
+                    'message': f'{action} order failed: {error_msg}'
+                }
+
+        except Exception as e:
+            logger.error(f"Error during {action.lower()} order: {str(e)}")
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': quantity,
+                'message': f'Error during {action.lower()} order: {str(e)}'
+            }
+
+    def amend_order(self, ticker: str, orgn_odno: str, limit_price: float,
+                    quantity: int, exchange: str = None) -> Dict[str, Any]:
+        """Convenience wrapper: amend (정정) an overseas order's limit price."""
+        return self.amend_cancel_order(
+            ticker=ticker, orgn_odno=orgn_odno, rvse_cncl_dvsn_cd="01",
+            quantity=quantity, exchange=exchange, limit_price=limit_price,
+        )
+
+    def cancel_order(self, ticker: str, orgn_odno: str, quantity: int,
+                     exchange: str = None) -> Dict[str, Any]:
+        """Convenience wrapper: cancel (취소) an overseas order."""
+        return self.amend_cancel_order(
+            ticker=ticker, orgn_odno=orgn_odno, rvse_cncl_dvsn_cd="02",
+            quantity=quantity, exchange=exchange, limit_price=0.0,
+        )
+
+    def get_unfilled_orders(self, ticker: str = None,
+                            exchange: str = "NASD") -> List[Dict[str, Any]]:
+        """Inquire overseas unfilled (미체결) orders via 미체결내역 (nccs).
+
+        TR: real TTTS3018R. ``exchange="NASD"`` queries the whole US day session.
+        Returns a normalised list, optionally filtered to ``ticker``. Returns []
+        on any failure (degrade to no-op — never treat empty as "all filled").
+
+        Each dict: {order_no, ticker, ord_qty, ccld_qty, nccs_qty, ord_unpr,
+                    sll_buy_dvsn_cd, exchange}.
+        """
+        api_url = "/uapi/overseas-stock/v1/trading/inquire-nccs"
+
+        # TODO(live-validate): paper tr_id VTTS3018R UNVERIFIED. Real TTTS3018R
+        # confirmed against the KIS overseas sample. Loop C runs SHADOW by default.
+        if self.mode == "real":
+            tr_id = "TTTS3018R"
+        else:
+            tr_id = "VTTS3018R"
+
+        params = {
+            "CANO": self.trenv.my_acct,
+            "ACNT_PRDT_CD": self.trenv.my_prod,
+            "OVRS_EXCG_CD": exchange,
+            "SORT_SQN": "DS",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": "",
+        }
+
+        out: List[Dict[str, Any]] = []
+        try:
+            res = self._request(api_url, tr_id, params)
+            if not res.isOK():
+                error_msg = f"{res.getErrorCode()} - {res.getErrorMessage()}"
+                logger.warning(f"Unfilled-order inquiry failed: {error_msg}")
+                return out
+
+            output = res.getBody().output
+            if not isinstance(output, list):
+                output = [output] if output else []
+
+            for row in output:
+                code = str(row.get('pdno', '') or '').strip().upper()
+                if ticker and code != ticker.upper():
+                    continue
+                out.append({
+                    'order_no': row.get('odno', ''),
+                    'ticker': code,
+                    'ord_qty': _safe_int(row.get('ft_ord_qty')),
+                    'ccld_qty': _safe_int(row.get('ft_ccld_qty')),
+                    'nccs_qty': _safe_int(row.get('nccs_qty')),  # unfilled remaining
+                    'ord_unpr': _safe_float(row.get('ft_ord_unpr3')),
+                    'sll_buy_dvsn_cd': row.get('sll_buy_dvsn_cd', ''),  # 01 sell / 02 buy
+                    'exchange': row.get('ovrs_excg_cd', exchange),
+                })
+            return out
+
+        except Exception as e:
+            logger.warning(f"Error during unfilled-order inquiry: {str(e)}")
+            return out
+
 
 class MultiAccountUSStockTrading:
     """Fan out trading orders to all configured US accounts for the current mode."""
