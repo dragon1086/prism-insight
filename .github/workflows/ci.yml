@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            pydantic \
+            pyyaml \
+            "openai>=2.9,<3" \
+            "openai-agents==0.7.0" \
+            mcp \
+            pytest \
+            pytest-asyncio
+
+      - name: Run tests
+        run: python -m pytest cores/llm/tests/ -q
