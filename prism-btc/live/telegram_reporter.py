@@ -129,7 +129,7 @@ def _cumulative_stats(conn, mode: str) -> dict:
 def _last_signal(conn, mode: str) -> dict | None:
     try:
         r = conn.execute(
-            "SELECT ts, score, ts_4h, side FROM btc_signal_log "
+            "SELECT ts, score, ts_4h, ts_1d, side, reason FROM btc_signal_log "
             "WHERE mode=? ORDER BY id DESC LIMIT 1",
             (mode,),
         ).fetchone()
@@ -137,7 +137,41 @@ def _last_signal(conn, mode: str) -> dict | None:
         return None
     if r is None:
         return None
-    return {"ts": r["ts"], "score": r["score"], "ts_4h": r["ts_4h"], "side": r["side"]}
+    return {"ts": r["ts"], "score": r["score"], "ts_4h": r["ts_4h"],
+            "ts_1d": r["ts_1d"], "side": r["side"], "reason": r["reason"]}
+
+
+def _recent_scores(conn, mode: str, limit: int = 4) -> list[float]:
+    """최근 신호 점수 흐름 (오래된→최신 순). 없으면 빈 리스트."""
+    try:
+        rows = conn.execute(
+            "SELECT score FROM btc_signal_log WHERE mode=? ORDER BY id DESC LIMIT ?",
+            (mode, limit),
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        return []
+    return [float(r["score"]) for r in reversed(rows) if r["score"] is not None]
+
+
+def _entry_gates() -> tuple[float, float]:
+    """진입 게이트 상수 (점수문턱, 추세강도최소). import 실패 시 현행 기본값."""
+    try:
+        from engine.config import ENTRY_SCORE_MIN, TS_MIN
+        return float(ENTRY_SCORE_MIN), float(TS_MIN)
+    except Exception:  # noqa: BLE001
+        return 70.0, 2.0
+
+
+# 게이트 사유(내부 문자열) → 일반인 한국어 설명. 부분일치로 매칭.
+def _hold_reason_kr(reason: str | None) -> str:
+    r = str(reason or "")
+    if "횡보관망" in r or "추세강도 미달" in r or "횡보 게이트" in r:
+        return "추세가 또렷하지 않은 횡보 구간이라 보류"
+    if "장기TF 방향 미정렬" in r:
+        return "큰 흐름(장기 추세)의 방향이 맞지 않아 보류"
+    if "4h 타이밍" in r:
+        return "방향은 맞지만 진입 타이밍(4시간봉)이 아직이라 보류"
+    return r if r else "조건 미충족으로 보류"
 
 
 def _last_price(conn) -> float | None:
@@ -297,17 +331,67 @@ def build_message(conn, mode: str) -> str:
         lines.append("• " + " · ".join(parts))
     lines.append("")
 
-    # 5) 지금 시장을 보는 눈 (신호) — 점수/추세강도 숫자 대신 말로.
+    # 5) 지금 시장을 보는 눈 (신호) — 보류여도 판단근거를 상세히.
     sig = _last_signal(conn, mode)
+    score_min, ts_min = _entry_gates()
     lines.append("🔭 *지금 시장 판단*")
-    if sig is None or sig.get("side") is None:
+    if sig is None:
         lines.append("• 분석 준비 중")
     else:
-        side = sig["side"]
+        side = sig.get("side")
+        score = sig.get("score")
+        ts_4h = sig.get("ts_4h")
+        ts_1d = sig.get("ts_1d")
         if side == "none":
-            lines.append("• 뚜렷한 추세 없음 → 진입 보류 (무리하지 않음)")
+            lines.append("• 종합 판단: *관망 (진입 보류)* — 무리하지 않음")
+            # 방향 기울기 + 점수
+            if score is not None:
+                if score > 5:
+                    lean = "📈 상승 쪽으로 기움"
+                elif score < -5:
+                    lean = "📉 하락 쪽으로 기움"
+                else:
+                    lean = "⚖️ 뚜렷한 방향 없음(중립)"
+                lines.append(f"• 방향 기울기: {lean} (점수 {score:+.0f})")
+                # 진입 문턱까지 거리 (|점수| 기준)
+                gap = score_min - abs(score)
+                if gap > 0:
+                    lines.append(
+                        f"• 진입 문턱까지: {gap:.0f}점 부족 "
+                        f"(문턱 ±{score_min:.0f}점, 강하게 정렬돼야 진입)"
+                    )
+                else:
+                    lines.append(f"• 점수는 문턱 통과(±{score_min:.0f}) — 세부 조건 확인 중")
+            # 구체적 보류 사유
+            lines.append(f"• 보류 이유: {_hold_reason_kr(sig.get('reason'))}")
+            # 추세 강도 게이트 (게이트가 소수에서 갈리므로 2자리 표시 — 표시·판정 일치)
+            if ts_4h is not None:
+                d1 = f" · 하루 {ts_1d:.2f}" if ts_1d is not None else ""
+                gate_ok = "통과" if ts_4h >= ts_min else "미달"
+                lines.append(
+                    f"• 추세 힘: 4시간 {ts_4h:.2f}{d1} "
+                    f"(진입 최소 {ts_min:.1f} → {gate_ok})"
+                )
+            # 최근 점수 흐름 — 표시 정수와 추세 판정을 같은 값으로 (반올림 불일치 방지)
+            hist = [round(s) for s in _recent_scores(conn, mode, 4)]
+            if len(hist) >= 2:
+                arrow = " → ".join(f"{s:+d}" for s in hist)
+                if hist[-1] > hist[0] + 3:
+                    trend = "상승 쪽으로 강해지는 중"
+                elif hist[-1] < hist[0] - 3:
+                    trend = "하락 쪽으로 강해지는 중"
+                else:
+                    trend = "큰 변화 없음"
+                lines.append(f"• 최근 점수 흐름: {arrow} ({trend})")
+        elif side in ("long", "short"):
+            lines.append(f"• 종합 판단: {_side_kr(side)} *신호 포착* — 진입 조건 확인 중")
+            if score is not None:
+                lines.append(f"• 신호 점수: {score:+.0f} (문턱 ±{score_min:.0f} 돌파)")
+            if ts_4h is not None:
+                d1 = f" · 하루 {ts_1d:.1f}" if ts_1d is not None else ""
+                lines.append(f"• 추세 힘: 4시간 {ts_4h:.1f}{d1}")
         else:
-            lines.append(f"• {_side_kr(side)} 신호 포착 — 조건 확인 중")
+            lines.append("• 분석 준비 중")
     lines.append("")
 
     # 꼬리말 — 용어 설명 한 줄 + 면책.
