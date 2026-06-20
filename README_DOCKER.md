@@ -1,7 +1,7 @@
 # 🐳 PRISM-INSIGHT Docker Installation Guide
 
 [![CI](https://github.com/dragon1086/prism-insight/actions/workflows/ci.yml/badge.svg)](https://github.com/dragon1086/prism-insight/actions/workflows/ci.yml)
-<!-- CODACY_BADGE: pending Codacy GitHub connection — replace with [![Codacy Badge](https://app.codacy.com/project/badge/Grade/<PROJECT_ID>)](https://app.codacy.com/gh/dragon1086/prism-insight/dashboard) -->
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/2f8fd766b0634c068ff9da57ccda00c6)](https://app.codacy.com/gh/dragon1086/prism-insight/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 
 > 📖 [한국어 문서](README_DOCKER_ko.md)
 
