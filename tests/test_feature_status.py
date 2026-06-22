@@ -1,0 +1,229 @@
+"""
+Tests for tools/feature_status.py — mock-only, no real crontab or .env reads.
+
+Cross-reference: docs/FEATURE_FLAGS.md (intended state registry)
+"""
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT))
+
+import tools.feature_status as fs  # noqa: E402
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _results_by_id(results):
+    return {r["id"]: r for r in results}
+
+
+CRON_WITH_ALL = """
+# system crontab
+*/10 * * * * /usr/bin/python tools/loop_a_hardstop.py
+0 18 * * * /usr/bin/python tools/loop_b_trend_exit.py
+*/5 * * * * /usr/bin/python tools/loop_c_fill_chaser.py
+"""
+
+CRON_LOOP_A_ONLY = """
+*/10 * * * * /usr/bin/python tools/loop_a_hardstop.py
+# 0 18 * * * /usr/bin/python tools/loop_b_trend_exit.py   (commented out)
+"""
+
+CRON_EMPTY = ""
+
+
+# ── OAuth LLM backend ─────────────────────────────────────────────────────────
+
+def test_oauth_llm_live():
+    env = {"PRISM_OPENAI_AUTH_MODE": "chatgpt_oauth"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+    assert r["oauth_llm"]["state"] == "LIVE"
+    assert "chatgpt_oauth" in r["oauth_llm"]["evidence"]
+
+
+def test_oauth_llm_off_api_key():
+    env = {"PRISM_OPENAI_AUTH_MODE": "api_key"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+    assert r["oauth_llm"]["state"] == "OFF"
+
+
+def test_oauth_llm_off_unset():
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
+    assert r["oauth_llm"]["state"] == "OFF"
+
+
+# ── Loop A ────────────────────────────────────────────────────────────────────
+
+def test_loop_a_live_env_and_cron():
+    env = {"LOOP_A_LIVE": "true"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_LOOP_A_ONLY))
+    assert r["loop_a"]["state"] == "LIVE"
+    assert "cron=있음" in r["loop_a"]["evidence"]
+
+
+def test_loop_a_misscheduled_env_live_no_cron():
+    env = {"LOOP_A_LIVE": "true"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+    assert r["loop_a"]["state"] == "미스케줄"
+
+
+def test_loop_a_shadow_cron_but_no_live_flag():
+    env = {}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_LOOP_A_ONLY))
+    assert r["loop_a"]["state"] == "SHADOW"
+
+
+def test_loop_a_off_kill_switch():
+    env = {"LOOP_A_LIVE": "true", "LOOP_A_ENABLED": "false"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_WITH_ALL))
+    assert r["loop_a"]["state"] == "OFF"
+    assert "킬스위치" in r["loop_a"]["evidence"]
+
+
+def test_loop_a_off_no_env_no_cron():
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
+    assert r["loop_a"]["state"] == "OFF"
+
+
+# ── Loop B ────────────────────────────────────────────────────────────────────
+
+def test_loop_b_misscheduled_no_cron():
+    """Default registry state: cron 없음 → 미스케줄 regardless of env."""
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
+    assert r["loop_b"]["state"] == "미스케줄"
+
+
+def test_loop_b_live_when_env_and_cron():
+    env = {"LOOP_B_LIVE": "true"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_WITH_ALL))
+    assert r["loop_b"]["state"] == "LIVE"
+
+
+def test_loop_b_shadow_cron_no_live_flag():
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_WITH_ALL))
+    assert r["loop_b"]["state"] == "SHADOW"
+
+
+def test_loop_b_off_disabled():
+    env = {"LOOP_B_ENABLED": "false"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_WITH_ALL))
+    assert r["loop_b"]["state"] == "OFF"
+
+
+# ── Loop C ────────────────────────────────────────────────────────────────────
+
+def test_loop_c_misscheduled_no_cron():
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
+    assert r["loop_c"]["state"] == "미스케줄"
+
+
+def test_loop_c_live_when_env_and_cron():
+    env = {"LOOP_C_LIVE": "true"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_WITH_ALL))
+    assert r["loop_c"]["state"] == "LIVE"
+
+
+def test_loop_c_shadow_cron_no_live_flag():
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_WITH_ALL))
+    assert r["loop_c"]["state"] == "SHADOW"
+
+
+def test_loop_c_off_disabled():
+    env = {"LOOP_C_ENABLED": "false"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_WITH_ALL))
+    assert r["loop_c"]["state"] == "OFF"
+
+
+# ── Vision pipeline (S1/S2) ───────────────────────────────────────────────────
+
+def test_vision_pipeline_live_on_no_shadow():
+    env = {"PRISM_FEATURE_VISION": "on"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+    assert r["vision_pipeline"]["state"] == "LIVE"
+
+
+def test_vision_pipeline_shadow_when_shadow_true():
+    env = {"PRISM_FEATURE_VISION": "on", "PRISM_VISION_SHADOW": "true"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+    assert r["vision_pipeline"]["state"] == "SHADOW"
+
+
+def test_vision_pipeline_off_unset():
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
+    assert r["vision_pipeline"]["state"] == "OFF"
+
+
+# ── Vision buy QA (S3/S3.5) ───────────────────────────────────────────────────
+
+def test_vision_buy_qa_shadow_on_plus_shadow_true():
+    env = {"PRISM_FEATURE_VISION": "on", "PRISM_VISION_SHADOW": "true"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+    assert r["vision_buy_qa"]["state"] == "SHADOW"
+
+
+def test_vision_buy_qa_live_on_no_shadow():
+    env = {"PRISM_FEATURE_VISION": "on"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+    assert r["vision_buy_qa"]["state"] == "LIVE"
+
+
+def test_vision_buy_qa_off_vision_unset():
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
+    assert r["vision_buy_qa"]["state"] == "OFF"
+
+
+# ── Vision publish (S6) ───────────────────────────────────────────────────────
+
+def test_vision_publish_always_off():
+    """S6 publish wiring is not yet implemented — must always be OFF."""
+    for env in [
+        {},
+        {"PRISM_FEATURE_VISION": "on"},
+        {"PRISM_FEATURE_VISION": "on", "PRISM_VISION_SHADOW": "false"},
+    ]:
+        r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+        assert r["vision_publish"]["state"] == "OFF", f"Expected OFF for env={env}"
+
+
+# ── --json output ─────────────────────────────────────────────────────────────
+
+def test_json_output_contains_all_features(capsys):
+    env = {
+        "PRISM_OPENAI_AUTH_MODE": "chatgpt_oauth",
+        "LOOP_A_LIVE": "true",
+        "PRISM_FEATURE_VISION": "on",
+        "PRISM_VISION_SHADOW": "true",
+    }
+    results = fs.evaluate_all(env=env, crontab=CRON_LOOP_A_ONLY)
+    # Simulate --json path
+    out = {r["id"]: {"state": r["state"], "evidence": r["evidence"]} for r in results}
+    data = json.loads(json.dumps(out, ensure_ascii=False))
+
+    expected_ids = {"oauth_llm", "loop_a", "loop_b", "loop_c",
+                    "vision_pipeline", "vision_buy_qa", "vision_publish"}
+    assert expected_ids == set(data.keys())
+    assert data["oauth_llm"]["state"] == "LIVE"
+    assert data["loop_a"]["state"] == "LIVE"
+    assert data["vision_pipeline"]["state"] == "SHADOW"
+
+
+# ── Robustness: missing env / bad crontab ─────────────────────────────────────
+
+def test_empty_env_and_crontab_does_not_raise():
+    """evaluate_all must never raise even with completely empty inputs."""
+    results = fs.evaluate_all(env={}, crontab="")
+    assert len(results) == 7  # one entry per feature
+
+
+def test_cron_commented_line_not_counted():
+    cron = "# */10 * * * * /usr/bin/python tools/loop_a_hardstop.py\n"
+    assert not fs._cron_has_script(cron, "loop_a_hardstop.py")
+
+
+def test_cron_active_line_counted():
+    cron = "*/10 * * * * /usr/bin/python tools/loop_a_hardstop.py\n"
+    assert fs._cron_has_script(cron, "loop_a_hardstop.py")
