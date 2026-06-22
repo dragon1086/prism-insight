@@ -1,0 +1,42 @@
+# PRISM feature toggles — Phase 6 vision plumbing (S1)
+#
+# All features are OFF by default. Set the corresponding env var to opt in.
+# This file is documentation only — capabilities.py reads env vars directly.
+# To activate features, export the env vars in your shell or .env file.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Vision pipeline (Phase 6 S1)
+# ─────────────────────────────────────────────────────────────────────────────
+features:
+  vision:
+    # Master toggle. Must be "on" to enable any vision calls.
+    # Default: off (safe for all environments)
+    enabled_env: PRISM_FEATURE_VISION
+    enabled_default: "off"
+    valid_values: ["off", "on"]
+
+    # Shadow mode: when true, vision results are logged only (not used in decisions).
+    # Set to "false" only after S3 BaseAnalysis integration is validated.
+    shadow_env: PRISM_VISION_SHADOW
+    shadow_default: "true"
+
+    # Vision model. Must support image inputs (multimodal).
+    # Default gpt-4o is OpenAI's standard vision-capable model.
+    model_env: PRISM_VISION_MODEL
+    model_default: "gpt-4o"
+
+    # Auth path for vision calls. "api" uses OPENAI_API_KEY directly,
+    # bypassing any OAuth proxy (required for base64 image inputs).
+    auth_env: PRISM_VISION_AUTH
+    auth_default: "api"
+    valid_values: ["api", "oauth"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Activation example (add to your .env or shell profile):
+#
+#   export OPENAI_API_KEY=sk-...          # real API key (not proxy placeholder)
+#   export PRISM_FEATURE_VISION=on        # enable vision
+#   export PRISM_VISION_SHADOW=true       # shadow-only (default; safe)
+#   export PRISM_VISION_MODEL=gpt-4o      # or gpt-4o-mini for lower cost
+#   export PRISM_VISION_AUTH=api          # force API-key path
+# ─────────────────────────────────────────────────────────────────────────────
