@@ -33,6 +33,19 @@ CRON_LOOP_A_ONLY = """
 # 0 18 * * * /usr/bin/python tools/loop_b_trend_exit.py   (commented out)
 """
 
+# Crontab with PRISM_OPENAI_AUTH_MODE set inline on a batch line (no .env)
+CRON_WITH_OAUTH_INLINE = """
+# system crontab
+*/10 * * * * /usr/bin/python tools/loop_a_hardstop.py
+30 09 * * 1-5 cd /Users/rocky/prism && PRISM_OPENAI_AUTH_MODE=chatgpt_oauth /usr/bin/python stock_analysis_orchestrator.py
+"""
+
+# Crontab with OAuth inline but line is commented out — must NOT count
+CRON_OAUTH_COMMENTED = """
+# 30 09 * * 1-5 PRISM_OPENAI_AUTH_MODE=chatgpt_oauth /usr/bin/python stock_analysis_orchestrator.py
+*/10 * * * * /usr/bin/python tools/loop_a_hardstop.py
+"""
+
 CRON_EMPTY = ""
 
 
@@ -53,6 +66,19 @@ def test_oauth_llm_off_api_key():
 
 def test_oauth_llm_off_unset():
     r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
+    assert r["oauth_llm"]["state"] == "OFF"
+
+
+def test_oauth_llm_live_from_crontab_inline():
+    """PRISM_OPENAI_AUTH_MODE absent from env but present inline in crontab → LIVE."""
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_WITH_OAUTH_INLINE))
+    assert r["oauth_llm"]["state"] == "LIVE"
+    assert "crontab inline" in r["oauth_llm"]["evidence"]
+
+
+def test_oauth_llm_not_live_when_commented_in_crontab():
+    """Commented-out crontab line must not count as OAuth evidence → OFF."""
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_OAUTH_COMMENTED))
     assert r["oauth_llm"]["state"] == "OFF"
 
 

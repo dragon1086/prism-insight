@@ -71,6 +71,22 @@ def _cron_has_script(crontab_text: str, script_name: str) -> bool:
     return False
 
 
+def _cron_get_inline_env(crontab_text: str, var_name: str) -> str:
+    """Return the value of var_name if it appears as an inline env assignment
+    (e.g. ``VAR=value``) on any active (uncommented) crontab line.
+    Returns empty string if not found.
+    """
+    prefix = f"{var_name}="
+    for line in crontab_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        for token in stripped.split():
+            if token.startswith(prefix):
+                return token[len(prefix):]
+    return ""
+
+
 # ── Feature definitions ───────────────────────────────────────────────────────
 # Each tuple: (feature_id, label_ko, decision_fn)
 # decision_fn(env, crontab) -> (state, evidence)
@@ -79,9 +95,18 @@ def _cron_has_script(crontab_text: str, script_name: str) -> bool:
 def _decide_oauth_llm(env: dict, crontab: str):
     mode = env.get("PRISM_OPENAI_AUTH_MODE", "")
     if mode == "chatgpt_oauth":
-        return "LIVE", f"PRISM_OPENAI_AUTH_MODE={mode}"
-    val = mode if mode else "(unset)"
-    return "OFF", f"PRISM_OPENAI_AUTH_MODE={val} (chatgpt_oauth 필요)"
+        return "LIVE", f"PRISM_OPENAI_AUTH_MODE={mode} (env)"
+
+    # Also check for inline env assignment on active crontab lines
+    cron_mode = _cron_get_inline_env(crontab, "PRISM_OPENAI_AUTH_MODE")
+    if cron_mode == "chatgpt_oauth":
+        return "LIVE", f"PRISM_OPENAI_AUTH_MODE={cron_mode} (crontab inline)"
+
+    # Determine label: API key mode vs fully unset
+    effective_mode = mode or cron_mode
+    if effective_mode and effective_mode != "chatgpt_oauth":
+        return "OFF", f"PRISM_OPENAI_AUTH_MODE={effective_mode} (API 키 모드, chatgpt_oauth 필요)"
+    return "OFF", f"PRISM_OPENAI_AUTH_MODE=(unset) (chatgpt_oauth 필요)"
 
 
 def _decide_loop_a(env: dict, crontab: str):
