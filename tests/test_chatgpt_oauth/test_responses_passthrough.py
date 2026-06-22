@@ -37,6 +37,26 @@ class TestPrepareResponsesPassthrough:
         result = prepare_responses_passthrough(body)
         assert result["model"] == "my-custom-model-v2"
 
+    def test_strips_previous_response_id(self):
+        # Codex/ChatGPT-account endpoint rejects previous_response_id and it is
+        # non-functional under the forced store=False. Multi-turn tool-calling
+        # agents (e.g. gpt-5.5 buy decision) carry full history in `input`, so
+        # dropping it is lossless and prevents the 400 that fell decisions back
+        # to default_scenario (No Entry).
+        body = {
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": "hi"}],
+            "previous_response_id": "resp_abc123",
+        }
+        result = prepare_responses_passthrough(body)
+        assert "previous_response_id" not in result
+        assert result["model"] == "gpt-5.5"
+
+    def test_maps_gpt5_nano_to_gpt54mini(self):
+        body = {"model": "gpt-5-nano", "input": []}
+        result = prepare_responses_passthrough(body)
+        assert result["model"] == "gpt-5.4-mini"
+
     def test_injects_default_instructions_when_missing(self):
         body = {"model": "gpt-5.4-mini", "input": []}
         result = prepare_responses_passthrough(body)
