@@ -1668,7 +1668,7 @@ def create_oneil_daily_chart(
 def create_oneil_weekly_chart(
     ticker,
     company_name=None,
-    weeks=156,
+    weeks=104,
     adjusted=True,
     save_path=None,
     market=None,
@@ -1684,7 +1684,7 @@ def create_oneil_weekly_chart(
     Args:
         ticker:       Stock ticker symbol.
         company_name: Company name for the title (auto-fetched if None).
-        weeks:        Number of weeks to display (default 156 ~= 3 years).
+        weeks:        Number of weeks to display (default 104 ~= 2 years).
         adjusted:     Use adjusted prices (default True).
         save_path:    If given, save the figure there; otherwise just return it.
         market:       Optional 'KOSPI'/'KOSDAQ' hint to pick the index.
@@ -1694,7 +1694,9 @@ def create_oneil_weekly_chart(
         matplotlib figure, or None if stock data is unavailable.
     """
     # Fetch daily ONCE with a buffer, then resample to weekly.
-    days = weeks * 7 + 40
+    # KRX rejects periods longer than ~730 days (INVALIDPERIOD2), so clamp.
+    _KRX_MAX_DAYS = 730
+    days = min(weeks * 7 + 40, _KRX_MAX_DAYS)
     end_date = datetime.now().strftime('%Y%m%d')
     start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
 
