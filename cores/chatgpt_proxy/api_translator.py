@@ -18,6 +18,12 @@ _MODEL_MAP: dict[str, str] = {
     "gpt-3.5-turbo": "gpt-5.4-mini",
     "o4-mini": "gpt-5.4-mini",
     "o3-mini": "gpt-5.4-mini",
+    # gpt-5-nano is rejected by the Codex/ChatGPT-account endpoint
+    # ("model is not supported when using Codex with a ChatGPT account").
+    # Map to the lightest Codex-compatible model so OAuth-mode callers
+    # (telegram_translator, dashboards, weekly intelligence) keep working.
+    # API-key mode bypasses this proxy, so it still uses real gpt-5-nano.
+    "gpt-5-nano": "gpt-5.4-mini",
 }
 
 
