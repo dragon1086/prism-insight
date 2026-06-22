@@ -143,6 +143,32 @@ proper_or_faulty, quality_score, confidence, rationale.
 """
 
 
+# Two-timeframe (daily + weekly) variant of the prompt. Used by
+# analyze_base_oneil, which sends two labeled images in one message.
+_BASE_PROMPT_TWO_TF = (
+    _BASE_PROMPT
+    + """
+
+IMPORTANT — you are given TWO images of the SAME stock, in this order:
+- IMAGE 1 = DAILY chart (candles + MA5/20/60/120 + volume + an RS line panel \
+labeled "RS vs <index>").
+- IMAGE 2 = WEEKLY chart (weekly candles + 10-week and 40-week MAs + weekly \
+volume + the same RS line, weekly).
+
+How to read them:
+- Read the BASE and HANDLE structure PRIMARILY on the WEEKLY chart (image 2): \
+base_type, base_length_weeks, depth_pct, handle position, tightness, and \
+weekly volume behavior are best judged there.
+- Read the PIVOT / breakout level and the ENTRY TIMING (dist_to_pivot_pct) \
+PRIMARILY on the DAILY chart (image 1).
+- Judge rs_line_new_high from the LABELED RS line panel: it is true only if \
+the RS line is making a NEW HIGH (a green ^ marker / RS at its running max), \
+ideally BEFORE price confirms (O'Neil's strongest tell). Do NOT infer RS from \
+price alone — use the dedicated RS panel.
+"""
+)
+
+
 def _apply_pivot_cross_check(
     analysis: BaseAnalysis,
     numeric_pivot: float | None,
@@ -222,6 +248,139 @@ async def analyze_base(
     if not isinstance(result, BaseAnalysis):
         logger.warning(
             "[BUY_QUALITY] unexpected result type=%s", type(result).__name__
+        )
+        return None
+
+    return _apply_pivot_cross_check(result, numeric_pivot)
+
+
+def _fig_to_bytes(fig, *, image_format: str = "jpg", dpi: int = 80) -> bytes | None:
+    """Render a matplotlib figure to raw image bytes (JPEG/PNG).
+
+    Mirrors the buffer/compression approach in
+    stock_chart.get_chart_as_base64_html, but returns raw bytes (not HTML).
+    Closes the figure to avoid leaks. Returns None on error.
+    """
+    try:
+        from io import BytesIO
+
+        import matplotlib.pyplot as plt
+
+        buffer = BytesIO()
+        fig.savefig(buffer, format=image_format, bbox_inches="tight", dpi=dpi)
+        plt.close(fig)
+        buffer.seek(0)
+
+        if image_format.lower() in ("jpg", "jpeg"):
+            try:
+                from PIL import Image
+
+                img = Image.open(buffer)
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                new_buffer = BytesIO()
+                img.save(new_buffer, format="JPEG", quality=85, optimize=True)
+                return new_buffer.getvalue()
+            except ImportError:
+                return buffer.getvalue()
+        return buffer.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[BUY_QUALITY] fig->bytes failed: %s", exc)
+        return None
+
+
+async def analyze_base_oneil(
+    ticker: str,
+    company_name: str | None = None,
+    *,
+    regime: str | None = None,
+    numeric_pivot: float | None = None,
+    current_price: float | None = None,
+    market: str | None = None,
+) -> BaseAnalysis | None:
+    """Two-timeframe O'Neil base analysis: generate DAILY + WEEKLY charts (with
+    RS line) for *ticker* and analyse both in a single multi-image vision call.
+
+    Grounds BaseAnalysis.rs_line_new_high (RS line panel) and the weekly base
+    reading instead of relying on a single daily image.
+
+    Args:
+        ticker:        Stock ticker symbol.
+        company_name:  Company name for chart titles (auto-fetched if None).
+        regime:        Optional market regime (informational; not used here —
+                        gate_verdict applies the regime threshold downstream).
+        numeric_pivot: Optional externally-computed pivot for cross-check.
+        current_price: Optional current price (informational).
+        market:        Optional 'KOSPI'/'KOSDAQ' hint for index selection.
+
+    Returns:
+        - ``None`` when vision is unavailable, chart generation fails, or on
+          any error.
+        - :class:`BaseAnalysis` instance on success.
+
+    Never raises.
+    """
+    if not vision_available():
+        return None
+
+    # Lazy import — chart generation pulls in matplotlib/pykrx; only do it when
+    # vision is actually on.
+    try:
+        from cores.stock_chart import (
+            create_oneil_daily_chart,
+            create_oneil_weekly_chart,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[BUY_QUALITY] oneil chart import failed: %s", exc)
+        return None
+
+    try:
+        daily_fig = create_oneil_daily_chart(
+            ticker, company_name=company_name, market=market
+        )
+        weekly_fig = create_oneil_weekly_chart(
+            ticker, company_name=company_name, market=market
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[BUY_QUALITY] oneil chart generation failed: %s", exc)
+        return None
+
+    if daily_fig is None or weekly_fig is None:
+        logger.warning("[BUY_QUALITY] oneil chart(s) unavailable for %s", ticker)
+        return None
+
+    daily_bytes = _fig_to_bytes(daily_fig)
+    weekly_bytes = _fig_to_bytes(weekly_fig)
+    if daily_bytes is None or weekly_bytes is None:
+        return None
+
+    prompt = _BASE_PROMPT_TWO_TF
+    if numeric_pivot is not None or current_price is not None:
+        hints = []
+        if numeric_pivot is not None:
+            hints.append(f"numeric pivot estimate = {numeric_pivot:g}")
+        if current_price is not None:
+            hints.append(f"current price = {current_price:g}")
+        prompt = (
+            f"{_BASE_PROMPT_TWO_TF}\n"
+            f"Reference values (for sanity-checking your pivot, not to copy "
+            f"blindly): {', '.join(hints)}.\n"
+        )
+
+    try:
+        result = await analyze_image(
+            [daily_bytes, weekly_bytes], prompt, schema=BaseAnalysis
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[BUY_QUALITY] error during oneil analyze_image: %s", exc)
+        return None
+
+    if result is None:
+        return None
+
+    if not isinstance(result, BaseAnalysis):
+        logger.warning(
+            "[BUY_QUALITY] unexpected oneil result type=%s", type(result).__name__
         )
         return None
 

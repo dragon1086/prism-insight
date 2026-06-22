@@ -1404,6 +1404,412 @@ def create_comprehensive_report(ticker, company_name=None, days=730, output_dir=
 
     return report_paths
 
+
+# =========================================================================== #
+# O'Neil / CAN SLIM vision-only charts (Phase 6 S3.5).                         #
+#                                                                              #
+# These are ADDITIVE, vision-only helpers. They do NOT replace or modify the  #
+# existing human-report charts above. They add an RS (Relative Strength) line  #
+# vs the market index and a weekly timeframe so the vision buy-quality         #
+# analyzer can ground BaseAnalysis.rs_line_new_high and weekly-base reading    #
+# instead of hallucinating. Both return a matplotlib `fig` (like               #
+# create_price_chart) so get_chart_as_base64_html can render them.             #
+# =========================================================================== #
+
+# KRX index tickers (pykrx get_index_ohlcv): composite index per market.
+_KOSPI_INDEX_TICKER = "1001"
+_KOSDAQ_INDEX_TICKER = "2001"
+
+# Module-level cache of the KOSPI ticker set, used for market detection.
+# Populated lazily on first call; failures fall back to KOSPI default.
+_KOSPI_TICKERS_CACHE: set | None = None
+
+
+def _detect_index_ticker(ticker: str) -> str:
+    """Return the index ticker for *ticker*'s listing market.
+
+    KOSPI(1001) if the stock is KOSPI-listed, otherwise KOSDAQ(2001).
+    On any detection failure, defaults to KOSPI (1001). Never raises.
+    """
+    global _KOSPI_TICKERS_CACHE
+    try:
+        from pykrx import stock as _pykrx_stock
+
+        if _KOSPI_TICKERS_CACHE is None:
+            _KOSPI_TICKERS_CACHE = set(
+                _pykrx_stock.get_market_ticker_list(market="KOSPI")
+            )
+        if ticker in _KOSPI_TICKERS_CACHE:
+            return _KOSPI_INDEX_TICKER
+        return _KOSDAQ_INDEX_TICKER
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"[ONEIL] market detection failed for {ticker}, "
+            f"defaulting to KOSPI index: {e}"
+        )
+        return _KOSPI_INDEX_TICKER
+
+
+def _fetch_index_close(index_ticker: str, start_date: str, end_date: str):
+    """Fetch index daily close series via pykrx get_index_ohlcv.
+
+    Returns a pandas Series indexed by DatetimeIndex (close prices), or None on
+    failure. Uses the Korean '종가' (close) column. Never raises.
+    """
+    try:
+        from pykrx import stock as _pykrx_stock
+
+        idf = _pykrx_stock.get_index_ohlcv(start_date, end_date, index_ticker)
+        if idf is None or len(idf) == 0:
+            return None
+        if not isinstance(idf.index, pd.DatetimeIndex):
+            idf.index = pd.to_datetime(idf.index)
+        close_col = "종가" if "종가" in idf.columns else (
+            "Close" if "Close" in idf.columns else None
+        )
+        if close_col is None:
+            return None
+        s = idf[close_col].sort_index()
+        s = s[s > 0]
+        return s if len(s) > 0 else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[ONEIL] index fetch failed for {index_ticker}: {e}")
+        return None
+
+
+def _compute_rs_line(stock_close, index_close):
+    """Compute the O'Neil RS line = (stock/index) normalized to 100 at window start.
+
+    Aligns both series on their common dates, then normalizes the ratio to 100
+    at the first common date. Returns a pandas Series aligned to the stock's
+    index (reindexed/forward-filled to the stock dates), or None if alignment
+    yields nothing usable.
+    """
+    try:
+        idx = index_close.reindex(stock_close.index).ffill().bfill()
+        ratio = stock_close / idx
+        ratio = ratio.replace([np.inf, -np.inf], np.nan).dropna()
+        if len(ratio) == 0:
+            return None
+        base = ratio.iloc[0]
+        if base == 0:
+            return None
+        rs = ratio / base * 100.0
+        return rs.reindex(stock_close.index)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[ONEIL] RS line computation failed: {e}")
+        return None
+
+
+def _add_rs_panel(fig, rs_series, label):
+    """Draw the RS line as a thin dedicated bottom subpanel on *fig*.
+
+    Adds a small axis spanning the bottom strip of the figure (kept out of the
+    way of the mplfinance price/volume panels). Highlights the most recent RS
+    new-high point if one exists. Never raises; on error the chart is unchanged.
+    """
+    try:
+        if rs_series is None:
+            return
+        rs_clean = rs_series.dropna()
+        if len(rs_clean) == 0:
+            return
+        # Dedicated thin axis at the very bottom of the figure.
+        rs_ax = fig.add_axes([0.08, 0.02, 0.84, 0.10])
+        x = range(len(rs_clean))
+        rs_ax.plot(x, rs_clean.values, color="#8e44ad", linewidth=1.0)
+        # Mark the most recent RS new high (running-max equals current value).
+        running_max = rs_clean.cummax()
+        is_new_high = rs_clean.values >= running_max.values
+        if bool(is_new_high[-1]):
+            rs_ax.plot(
+                len(rs_clean) - 1,
+                rs_clean.values[-1],
+                marker="^",
+                color="#27ae60",
+                markersize=7,
+            )
+        rs_ax.set_xticks([])
+        rs_ax.tick_params(axis="y", labelsize=6)
+        rs_ax.margins(x=0.01)
+        rs_title = f"RS vs {label} (norm=100 at start)"
+        if KOREAN_FONT_PROP:
+            rs_ax.set_ylabel(rs_title, fontsize=7, fontproperties=KOREAN_FONT_PROP)
+        else:
+            rs_ax.set_ylabel(rs_title, fontsize=7)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[ONEIL] RS panel draw failed: {e}")
+
+
+def create_oneil_daily_chart(
+    ticker,
+    company_name=None,
+    days=400,
+    adjusted=True,
+    save_path=None,
+    market=None,
+    index_ticker=None,
+):
+    """Generate an O'Neil DAILY chart (vision-only): candles + MA5/20/60/120 +
+    volume + an RS line vs the market index.
+
+    Reuses create_price_chart's data-fetch + styling + Korean-font setup.
+    ~400 trading days so the most recent base is not over-compressed.
+
+    Args:
+        ticker:       Stock ticker symbol.
+        company_name: Company name for the title (auto-fetched if None).
+        days:         Lookback window in calendar days (default 400).
+        adjusted:     Use adjusted prices (default True).
+        save_path:    If given, save the figure there; otherwise just return it.
+        market:       Optional 'KOSPI'/'KOSDAQ' hint to pick the index.
+        index_ticker: Optional explicit index ticker override (e.g. '1001').
+
+    Returns:
+        matplotlib figure, or None if stock data is unavailable.
+    """
+    end_date = datetime.now().strftime('%Y%m%d')
+    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
+
+    if company_name is None:
+        try:
+            company_name = get_market_ticker_name(ticker)
+        except Exception:
+            company_name = ticker
+
+    df = get_market_ohlcv_by_date(start_date, end_date, ticker, adjusted=adjusted)
+    if df is None or len(df) == 0:
+        logger.info(f"[ONEIL] No daily data for {ticker}.")
+        return None
+
+    ohlc_cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in df.columns]
+    if ohlc_cols:
+        df = df[df[ohlc_cols].sum(axis=1) > 0]
+        if len(df) == 0:
+            logger.info(f"[ONEIL] No valid daily OHLCV for {ticker}.")
+            return None
+
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+
+    df['MA5'] = df['Close'].rolling(window=5).mean()
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['MA60'] = df['Close'].rolling(window=60).mean()
+    df['MA120'] = df['Close'].rolling(window=120).mean()
+
+    ohlc_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+    s = create_mpf_style()
+
+    # Resolve index for RS line.
+    if index_ticker is None:
+        if market and market.upper() == "KOSPI":
+            index_ticker = _KOSPI_INDEX_TICKER
+        elif market and market.upper() in ("KOSDAQ", "KOSDAK"):
+            index_ticker = _KOSDAQ_INDEX_TICKER
+        else:
+            index_ticker = _detect_index_ticker(ticker)
+    index_label = "KOSPI" if index_ticker == _KOSPI_INDEX_TICKER else "KOSDAQ"
+    index_close = _fetch_index_close(index_ticker, start_date, end_date)
+    rs_series = _compute_rs_line(df['Close'], index_close) if index_close is not None else None
+    if rs_series is None:
+        logger.warning(
+            f"[ONEIL] RS line omitted for {ticker} (daily); chart still rendered."
+        )
+
+    additional_plots = [
+        mpf.make_addplot(df['MA5'], color='#00aa44', width=1),
+        mpf.make_addplot(df['MA20'], color='#ff9500', width=1),
+        mpf.make_addplot(df['MA60'], color='#0066cc', width=1.5),
+        mpf.make_addplot(df['MA120'], color='#cc3300', width=1.5, linestyle='--'),
+    ]
+
+    if KOREAN_FONT_PATH:
+        font_prop = fm.FontProperties(fname=KOREAN_FONT_PATH)
+        plt.rcParams['font.family'] = font_prop.get_name()
+        mpl.rcParams['font.family'] = font_prop.get_name()
+
+    title = f"{company_name} ({ticker}) - O'Neil Daily (RS vs {index_label})"
+    fig, axes = mpf.plot(
+        ohlc_df,
+        type='candle',
+        style=s,
+        title=title,
+        ylabel='Price',
+        volume=True,
+        figsize=(12, 9),
+        tight_layout=True,
+        addplot=additional_plots,
+        panel_ratios=(4, 1),
+        returnfig=True,
+    )
+
+    if KOREAN_FONT_PROP:
+        fig.suptitle(title, fontproperties=KOREAN_FONT_PROP, fontsize=15, fontweight='bold')
+
+    ax1 = axes[0]
+    ax1.legend(['MA5', 'MA20', 'MA60', 'MA120'], loc='upper left')
+    max_price = df['High'].max()
+    ax1.yaxis.set_major_formatter(select_number_formatter(max_price))
+
+    # RS line as a dedicated thin bottom panel (clearly labeled).
+    _add_rs_panel(fig, rs_series, index_label)
+
+    fig.text(0.99, 0.005, "AI Stock Analysis", ha='right', va='bottom',
+             color='#cccccc', fontsize=8)
+
+    if save_path:
+        fig.savefig(save_path, bbox_inches='tight', dpi=80)
+        logger.info(f"[ONEIL] daily chart saved: {save_path}")
+
+    return fig
+
+
+def create_oneil_weekly_chart(
+    ticker,
+    company_name=None,
+    weeks=156,
+    adjusted=True,
+    save_path=None,
+    market=None,
+    index_ticker=None,
+):
+    """Generate an O'Neil WEEKLY chart (vision-only): weekly candles + 10-week
+    and 40-week MAs (O'Neil standard) + weekly volume + an RS line vs the index.
+
+    Fetches ~ (weeks*7 + buffer) days of DAILY OHLCV ONCE and resamples to
+    weekly with pandas (open=first, high=max, low=min, close=last, volume=sum)
+    — no extra per-bar fetch.
+
+    Args:
+        ticker:       Stock ticker symbol.
+        company_name: Company name for the title (auto-fetched if None).
+        weeks:        Number of weeks to display (default 156 ~= 3 years).
+        adjusted:     Use adjusted prices (default True).
+        save_path:    If given, save the figure there; otherwise just return it.
+        market:       Optional 'KOSPI'/'KOSDAQ' hint to pick the index.
+        index_ticker: Optional explicit index ticker override.
+
+    Returns:
+        matplotlib figure, or None if stock data is unavailable.
+    """
+    # Fetch daily ONCE with a buffer, then resample to weekly.
+    days = weeks * 7 + 40
+    end_date = datetime.now().strftime('%Y%m%d')
+    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
+
+    if company_name is None:
+        try:
+            company_name = get_market_ticker_name(ticker)
+        except Exception:
+            company_name = ticker
+
+    daily = get_market_ohlcv_by_date(start_date, end_date, ticker, adjusted=adjusted)
+    if daily is None or len(daily) == 0:
+        logger.info(f"[ONEIL] No daily data for {ticker} (weekly).")
+        return None
+
+    ohlc_cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in daily.columns]
+    if ohlc_cols:
+        daily = daily[daily[ohlc_cols].sum(axis=1) > 0]
+        if len(daily) == 0:
+            logger.info(f"[ONEIL] No valid daily OHLCV for {ticker} (weekly).")
+            return None
+
+    if not isinstance(daily.index, pd.DatetimeIndex):
+        daily.index = pd.to_datetime(daily.index)
+    daily = daily.sort_index()
+
+    # Resample daily -> weekly (O'Neil aggregation).
+    weekly = daily.resample('W').agg({
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
+        'Close': 'last',
+        'Volume': 'sum',
+    }).dropna(subset=['Open', 'High', 'Low', 'Close'])
+
+    if len(weekly) == 0:
+        logger.info(f"[ONEIL] Weekly resample empty for {ticker}.")
+        return None
+
+    # Keep only the most recent `weeks` bars.
+    weekly = weekly.tail(weeks)
+
+    # O'Neil standard weekly MAs: 10-week and 40-week.
+    weekly['MA10'] = weekly['Close'].rolling(window=10).mean()
+    weekly['MA40'] = weekly['Close'].rolling(window=40).mean()
+
+    ohlc_df = weekly[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+    s = create_mpf_style()
+
+    # Resolve index for RS line, fetch over the same window, resample to weekly.
+    if index_ticker is None:
+        if market and market.upper() == "KOSPI":
+            index_ticker = _KOSPI_INDEX_TICKER
+        elif market and market.upper() in ("KOSDAQ", "KOSDAK"):
+            index_ticker = _KOSDAQ_INDEX_TICKER
+        else:
+            index_ticker = _detect_index_ticker(ticker)
+    index_label = "KOSPI" if index_ticker == _KOSPI_INDEX_TICKER else "KOSDAQ"
+    index_daily = _fetch_index_close(index_ticker, start_date, end_date)
+    rs_series = None
+    if index_daily is not None:
+        try:
+            index_weekly = index_daily.resample('W').last()
+            rs_series = _compute_rs_line(weekly['Close'], index_weekly)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[ONEIL] weekly RS resample failed for {ticker}: {e}")
+    if rs_series is None:
+        logger.warning(
+            f"[ONEIL] RS line omitted for {ticker} (weekly); chart still rendered."
+        )
+
+    additional_plots = [
+        mpf.make_addplot(weekly['MA10'], color='#ff9500', width=1.2),
+        mpf.make_addplot(weekly['MA40'], color='#cc3300', width=1.5, linestyle='--'),
+    ]
+
+    if KOREAN_FONT_PATH:
+        font_prop = fm.FontProperties(fname=KOREAN_FONT_PATH)
+        plt.rcParams['font.family'] = font_prop.get_name()
+        mpl.rcParams['font.family'] = font_prop.get_name()
+
+    title = f"{company_name} ({ticker}) - O'Neil Weekly (RS vs {index_label})"
+    fig, axes = mpf.plot(
+        ohlc_df,
+        type='candle',
+        style=s,
+        title=title,
+        ylabel='Price',
+        volume=True,
+        figsize=(12, 9),
+        tight_layout=True,
+        addplot=additional_plots,
+        panel_ratios=(4, 1),
+        returnfig=True,
+    )
+
+    if KOREAN_FONT_PROP:
+        fig.suptitle(title, fontproperties=KOREAN_FONT_PROP, fontsize=15, fontweight='bold')
+
+    ax1 = axes[0]
+    ax1.legend(['MA10 (10wk)', 'MA40 (40wk)'], loc='upper left')
+    max_price = weekly['High'].max()
+    ax1.yaxis.set_major_formatter(select_number_formatter(max_price))
+
+    _add_rs_panel(fig, rs_series, index_label)
+
+    fig.text(0.99, 0.005, "AI Stock Analysis", ha='right', va='bottom',
+             color='#cccccc', fontsize=8)
+
+    if save_path:
+        fig.savefig(save_path, bbox_inches='tight', dpi=80)
+        logger.info(f"[ONEIL] weekly chart saved: {save_path}")
+
+    return fig
+
+
 def check_font_available():
     """
     Check Korean font availability and provide installation guidance
