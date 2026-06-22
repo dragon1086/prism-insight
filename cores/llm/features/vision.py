@@ -31,19 +31,25 @@ logger = logging.getLogger(__name__)
 
 # Type alias for caller convenience
 ImageInput = Union[str, bytes, "os.PathLike[str]"]
+# A single image, or an ordered list of images (multi-image vision).
+ImageInputs = Union[ImageInput, "list[ImageInput]"]
 
 
 async def analyze_image(
-    image_path_or_bytes: ImageInput,
+    image_path_or_bytes: ImageInputs,
     prompt: str,
     *,
     schema: "type[BaseModel] | None" = None,
     model: str | None = None,
 ) -> Any | None:
-    """Analyse an image with GPT-4o (or configured vision model).
+    """Analyse one OR several images with GPT-4o (or configured vision model).
 
     Args:
-        image_path_or_bytes: File path (str/Path) or raw bytes of the image.
+        image_path_or_bytes: EITHER a single image (file path str/Path or raw
+                             bytes) OR a ``list`` of images. When a list is
+                             given, every image is attached (in order) as its
+                             own ``input_image`` part, followed by the text
+                             prompt, all in ONE Responses API message.
         prompt:              Text prompt describing the analysis task.
         schema:              Optional Pydantic model for structured output.
                              When provided, the response is parsed and returned
@@ -85,32 +91,43 @@ async def analyze_image(
 
     resolved_model = model or vision_model()
 
+    def _to_data_url(image: ImageInput) -> str:
+        if isinstance(image, (str, pathlib.Path)):
+            raw = pathlib.Path(image).read_bytes()
+        else:
+            raw = bytes(image)
+        b64 = base64.b64encode(raw).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+
     try:
         # ------------------------------------------------------------------ #
-        # Encode image to base64 data URL                                     #
+        # Normalize to an ordered list of images (single OR multi-image).     #
+        # bytes/str/PathLike count as a SINGLE image; an actual list is the   #
+        # multi-image path. (bytes is not treated as an iterable of images.)  #
         # ------------------------------------------------------------------ #
-        if isinstance(image_path_or_bytes, (str, pathlib.Path)):
-            raw = pathlib.Path(image_path_or_bytes).read_bytes()
+        if isinstance(image_path_or_bytes, list):
+            images = list(image_path_or_bytes)
         else:
-            raw = bytes(image_path_or_bytes)
-
-        b64 = base64.b64encode(raw).decode("ascii")
-        data_url = f"data:image/png;base64,{b64}"
+            images = [image_path_or_bytes]
 
         # ------------------------------------------------------------------ #
         # Build input_items in Responses API format (mirrors                  #
-        # openai_responses_llm.py's input_items list structure)               #
+        # openai_responses_llm.py's input_items list structure). All images   #
+        # (in order) precede the single text part, in ONE message.            #
         # ------------------------------------------------------------------ #
         image_content: list[dict] = [
             {
                 "type": "input_image",
-                "image_url": data_url,
-            },
+                "image_url": _to_data_url(image),
+            }
+            for image in images
+        ]
+        image_content.append(
             {
                 "type": "input_text",
                 "text": prompt,
-            },
-        ]
+            }
+        )
         input_items: list[dict] = [
             {
                 "role": "user",

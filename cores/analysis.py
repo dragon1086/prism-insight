@@ -258,32 +258,44 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 import base64 as _bq_base64
                 import re as _bq_re
                 from cores.llm.capabilities import vision_shadow
-                from cores.llm.features.buy_quality import analyze_base, gate_verdict
+                from cores.llm.features.buy_quality import (
+                    analyze_base,
+                    analyze_base_oneil,
+                    gate_verdict,
+                )
                 _bq_html = price_chart_html
                 _bq_regime = (macro_context or {}).get("market_regime", "sideways")
-                if _bq_html:
+                # Phase 6 S3.5: prefer the two-timeframe O'Neil path (daily +
+                # weekly with RS line), which grounds rs_line_new_high and the
+                # weekly base reading. Falls back to the single daily report
+                # image when the two-timeframe generation returns None (e.g.
+                # pykrx/index data unavailable). Still SHADOW/log-only.
+                _bq_analysis = await analyze_base_oneil(
+                    company_code, company_name, regime=_bq_regime
+                )
+                if _bq_analysis is None and _bq_html:
                     _bq_m = _bq_re.search(r'base64,([^"]+)"', _bq_html)
                     if _bq_m:
                         _bq_img = _bq_base64.b64decode(_bq_m.group(1))
                         _bq_analysis = await analyze_base(_bq_img)
-                        if _bq_analysis is not None:
-                            _bq_verdict = gate_verdict(_bq_analysis, _bq_regime)
-                            logger.info(
-                                "[BUY_QUALITY][SHADOW] code=%s regime=%s would_buy=%s "
-                                "qscore=%s thr=%s base=%s",
-                                company_code,
-                                _bq_regime,
-                                _bq_verdict["would_buy"],
-                                _bq_verdict["quality_score"],
-                                _bq_verdict["threshold"],
-                                _bq_analysis.base_type,
-                            )
-                            # TODO(S5/LIVE): when not vision_shadow(), inject
-                            # _bq_verdict into the entry matrix (Step 2 of the
-                            # trading_scenario_agent prompt) so it gates real
-                            # buys. Do NOT implement live injection until S4
-                            # backtest passes and the user confirms (S5).
-                            _ = vision_shadow  # referenced to mark the LIVE seam
+                if _bq_analysis is not None:
+                    _bq_verdict = gate_verdict(_bq_analysis, _bq_regime)
+                    logger.info(
+                        "[BUY_QUALITY][SHADOW] code=%s regime=%s would_buy=%s "
+                        "qscore=%s thr=%s base=%s",
+                        company_code,
+                        _bq_regime,
+                        _bq_verdict["would_buy"],
+                        _bq_verdict["quality_score"],
+                        _bq_verdict["threshold"],
+                        _bq_analysis.base_type,
+                    )
+                    # TODO(S5/LIVE): when not vision_shadow(), inject
+                    # _bq_verdict into the entry matrix (Step 2 of the
+                    # trading_scenario_agent prompt) so it gates real
+                    # buys. Do NOT implement live injection until S4
+                    # backtest passes and the user confirms (S5).
+                    _ = vision_shadow  # referenced to mark the LIVE seam
             except Exception:
                 pass  # buy-quality gate must never affect the pipeline
 

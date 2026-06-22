@@ -271,3 +271,98 @@ class TestShadowLoggingPath:
             )
 
         assert any("[BUY_QUALITY][SHADOW]" in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# analyze_base_oneil — two-timeframe (daily + weekly) path (Phase 6 S3.5)       #
+# All chart generation + vision are mocked: NO network / NO pykrx.             #
+# --------------------------------------------------------------------------- #
+class TestAnalyzeBaseOneil:
+    @pytest.mark.asyncio
+    async def test_returns_none_when_vision_off(self, monkeypatch):
+        monkeypatch.delenv("PRISM_FEATURE_VISION", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-realkey")
+
+        from cores.llm.features.buy_quality import analyze_base_oneil
+
+        called = {"charts": 0}
+
+        def _fake_daily(*a, **k):  # pragma: no cover
+            called["charts"] += 1
+            return object()
+
+        monkeypatch.setattr(
+            "cores.stock_chart.create_oneil_daily_chart", _fake_daily, raising=False
+        )
+
+        result = await analyze_base_oneil("005930", "삼성전자")
+        assert result is None
+        assert called["charts"] == 0  # no chart work when vision off
+
+    @pytest.mark.asyncio
+    async def test_two_timeframe_sends_two_images(self, monkeypatch):
+        monkeypatch.setenv("PRISM_FEATURE_VISION", "on")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-realkey")
+
+        import cores.llm.features.buy_quality as bq
+
+        # Mock chart generators (avoid matplotlib/pykrx) — return sentinels.
+        monkeypatch.setattr(
+            "cores.stock_chart.create_oneil_daily_chart",
+            lambda *a, **k: "DAILY_FIG",
+        )
+        monkeypatch.setattr(
+            "cores.stock_chart.create_oneil_weekly_chart",
+            lambda *a, **k: "WEEKLY_FIG",
+        )
+        # Mock fig->bytes so no real rendering happens.
+        monkeypatch.setattr(
+            bq, "_fig_to_bytes", lambda fig, **k: f"{fig}_BYTES".encode()
+        )
+
+        captured = {}
+
+        async def _fake_analyze_image(images, prompt, *, schema=None, model=None):
+            captured["images"] = images
+            captured["prompt"] = prompt
+            captured["schema"] = schema
+            return _make_analysis(quality_score=88, rs_line_new_high=True)
+
+        monkeypatch.setattr(bq, "analyze_image", _fake_analyze_image)
+
+        result = await bq.analyze_base_oneil("005930", "삼성전자", regime="strong_bull")
+
+        assert isinstance(result, BaseAnalysis)
+        assert result.quality_score == 88
+        # A list of EXACTLY two images (daily first, weekly second).
+        assert isinstance(captured["images"], list)
+        assert len(captured["images"]) == 2
+        assert captured["images"][0] == b"DAILY_FIG_BYTES"
+        assert captured["images"][1] == b"WEEKLY_FIG_BYTES"
+        assert captured["schema"] is BaseAnalysis
+        # Prompt names the two timeframes for the model.
+        assert "DAILY" in captured["prompt"] and "WEEKLY" in captured["prompt"]
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_chart_unavailable(self, monkeypatch):
+        monkeypatch.setenv("PRISM_FEATURE_VISION", "on")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-realkey")
+
+        import cores.llm.features.buy_quality as bq
+
+        # Daily chart returns None (e.g. no data) -> whole call returns None.
+        monkeypatch.setattr(
+            "cores.stock_chart.create_oneil_daily_chart", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "cores.stock_chart.create_oneil_weekly_chart",
+            lambda *a, **k: "WEEKLY_FIG",
+        )
+
+        async def _fake_analyze_image(*a, **k):  # pragma: no cover
+            raise AssertionError("analyze_image must not be called")
+
+        monkeypatch.setattr(bq, "analyze_image", _fake_analyze_image)
+
+        result = await bq.analyze_base_oneil("005930", "삼성전자")
+        assert result is None

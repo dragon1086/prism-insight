@@ -327,3 +327,83 @@ class TestAnalyzeImageErrorPath:
 
         assert result is None
         assert any("[VISION_ERROR]" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Multi-image path (Phase 6 S3.5)
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeImageMultiImage:
+    @pytest.mark.asyncio
+    async def test_list_of_two_images_makes_two_input_image_parts(
+        self, monkeypatch
+    ):
+        """A list of 2 images -> 2 input_image parts + 1 input_text in ONE call."""
+        monkeypatch.setenv("PRISM_FEATURE_VISION", "on")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-realkey")
+
+        mock_response = _make_mock_response("two-timeframe analysis")
+
+        mock_client = MagicMock()
+        mock_client.responses = MagicMock()
+        mock_client.responses.create = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        daily_bytes = b"\x89PNG\r\n\x1a\nDAILY"
+        weekly_bytes = b"\x89PNG\r\n\x1a\nWEEKLY"
+
+        with patch("openai.AsyncOpenAI", return_value=mock_client):
+            from cores.llm.features import vision as vision_module
+            result = await vision_module.analyze_image(
+                [daily_bytes, weekly_bytes],
+                "image 1 = DAILY, image 2 = WEEKLY",
+            )
+
+        assert result == "two-timeframe analysis"
+        # Exactly ONE Responses API call for the whole multi-image message.
+        mock_client.responses.create.assert_called_once()
+
+        call_args = mock_client.responses.create.call_args
+        input_items = call_args.kwargs["input"]
+        content = input_items[0]["content"]
+
+        image_parts = [p for p in content if p.get("type") == "input_image"]
+        text_parts = [p for p in content if p.get("type") == "input_text"]
+
+        assert len(image_parts) == 2  # two images, in order
+        assert len(text_parts) == 1   # single text prompt
+        # Image parts must precede the text part.
+        assert content[0]["type"] == "input_image"
+        assert content[1]["type"] == "input_image"
+        assert content[2]["type"] == "input_text"
+
+    @pytest.mark.asyncio
+    async def test_single_image_still_single_input_image(self, monkeypatch):
+        """Backward compat: a single (non-list) image -> exactly 1 input_image."""
+        monkeypatch.setenv("PRISM_FEATURE_VISION", "on")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-realkey")
+
+        mock_response = _make_mock_response("single-image analysis")
+
+        mock_client = MagicMock()
+        mock_client.responses = MagicMock()
+        mock_client.responses.create = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("openai.AsyncOpenAI", return_value=mock_client):
+            from cores.llm.features import vision as vision_module
+            result = await vision_module.analyze_image(
+                b"\x89PNG\r\n\x1a\n", "single image"
+            )
+
+        assert result == "single-image analysis"
+        mock_client.responses.create.assert_called_once()
+
+        content = mock_client.responses.create.call_args.kwargs["input"][0]["content"]
+        image_parts = [p for p in content if p.get("type") == "input_image"]
+        text_parts = [p for p in content if p.get("type") == "input_text"]
+        assert len(image_parts) == 1
+        assert len(text_parts) == 1
