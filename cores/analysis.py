@@ -228,6 +228,28 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             market_cap_chart_html = None
             fundamentals_chart_html = None
 
+        # 10b. Render QA (Phase 6 S2) — OFF by default, non-blocking
+        from cores.llm.capabilities import vision_available
+        if vision_available():
+            try:
+                import base64
+                import re
+                import tempfile
+                from cores.llm.features.render_qa import qa_and_log
+                _qa_html = price_chart_html or volume_chart_html
+                if _qa_html:
+                    _m = re.search(r'base64,([^"]+)"', _qa_html)
+                    if _m:
+                        _img_bytes = base64.b64decode(_m.group(1))
+                        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as _tf:
+                            _tf.write(_img_bytes)
+                            _tf_path = _tf.name
+                        await qa_and_log(_tf_path, context_label=f"{company_code}_{company_name}")
+                        import os as _os
+                        _os.unlink(_tf_path)
+            except Exception:
+                pass  # render QA must never affect the pipeline
+
         # 11. Build macro section (before final report composition)
         macro_section = ""
         if macro_context:
