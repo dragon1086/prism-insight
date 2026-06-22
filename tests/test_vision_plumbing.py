@@ -47,17 +47,32 @@ class TestCapabilities:
     def test_has_api_key_false_when_missing(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         from cores.llm import capabilities
+        monkeypatch.setattr(capabilities, "_secrets_api_key", lambda: "")
         assert capabilities.has_api_key() is False
 
     def test_has_api_key_false_for_placeholder(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "chatgpt-oauth-placeholder")
         from cores.llm import capabilities
+        monkeypatch.setattr(capabilities, "_secrets_api_key", lambda: "")
         assert capabilities.has_api_key() is False
 
     def test_has_api_key_true_for_real_key(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-realkey")
         from cores.llm import capabilities
         assert capabilities.has_api_key() is True
+
+    def test_has_api_key_true_from_secrets_when_env_missing(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        from cores.llm import capabilities
+        monkeypatch.setattr(capabilities, "_secrets_api_key", lambda: "sk-secret")
+        assert capabilities.has_api_key() is True
+        assert capabilities.resolve_openai_api_key() == "sk-secret"
+
+    def test_resolve_env_takes_priority_over_secrets(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+        from cores.llm import capabilities
+        monkeypatch.setattr(capabilities, "_secrets_api_key", lambda: "sk-secret")
+        assert capabilities.resolve_openai_api_key() == "sk-env"
 
     def test_vision_enabled_default_off(self, monkeypatch):
         monkeypatch.delenv("PRISM_FEATURE_VISION", raising=False)
@@ -82,7 +97,7 @@ class TestCapabilities:
     def test_vision_model_default(self, monkeypatch):
         monkeypatch.delenv("PRISM_VISION_MODEL", raising=False)
         from cores.llm import capabilities
-        assert capabilities.vision_model() == "gpt-4o"
+        assert capabilities.vision_model() == "gpt-5.4-mini"
 
     def test_vision_model_override(self, monkeypatch):
         monkeypatch.setenv("PRISM_VISION_MODEL", "gpt-4o-mini")
@@ -104,6 +119,7 @@ class TestCapabilities:
         monkeypatch.setenv("PRISM_FEATURE_VISION", "on")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         from cores.llm import capabilities
+        monkeypatch.setattr(capabilities, "_secrets_api_key", lambda: "")
         assert capabilities.vision_available() is False
 
     def test_vision_available_true_when_on_and_key(self, monkeypatch):
@@ -159,6 +175,8 @@ class TestAnalyzeImageOnNoKey:
     async def test_returns_none_when_no_api_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PRISM_FEATURE_VISION", "on")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        from cores.llm import capabilities
+        monkeypatch.setattr(capabilities, "_secrets_api_key", lambda: "")
 
         img = tmp_path / "chart.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\n")

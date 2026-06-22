@@ -19,8 +19,48 @@ import os
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-_DEFAULT_VISION_MODEL = "gpt-4o"
+# Default to the project's standard multimodal model (registered in models.py).
+_DEFAULT_VISION_MODEL = "gpt-5.4-mini"
 _PLACEHOLDER_KEY = "chatgpt-oauth-placeholder"
+
+
+def _secrets_api_key() -> str:
+    """Read ``openai.api_key`` from mcp_agent.secrets.yaml at the project root.
+
+    Returns "" if the file/key is absent or not a real key. Never raises.
+    Split out as a seam so tests can stub the filesystem dependency.
+    """
+    try:
+        import pathlib
+
+        import yaml
+
+        # capabilities.py -> cores/llm/ -> cores/ -> <project root>
+        root = pathlib.Path(__file__).resolve().parents[2]
+        for path in (root / "mcp_agent.secrets.yaml",
+                     pathlib.Path.cwd() / "mcp_agent.secrets.yaml"):
+            if path.is_file():
+                data = yaml.safe_load(path.read_text()) or {}
+                key = str((data.get("openai") or {}).get("api_key", "")).strip()
+                if key.startswith("sk-"):
+                    return key
+    except Exception:  # noqa: BLE001 — key resolution must never crash callers
+        pass
+    return ""
+
+
+def resolve_openai_api_key() -> str:
+    """Resolve a real OpenAI API key: env first, then mcp_agent.secrets.yaml.
+
+    Under OAuth mode the key is not exported to OPENAI_API_KEY; the project's
+    long-standing real key lives in ``mcp_agent.secrets.yaml`` (``openai.api_key``).
+    Vision needs a genuine API key, so we fall back to that file. Returns "" when
+    no real key is found. Never raises.
+    """
+    env_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if env_key and env_key != _PLACEHOLDER_KEY:
+        return env_key
+    return _secrets_api_key()
 
 
 # ---------------------------------------------------------------------------
@@ -29,13 +69,12 @@ _PLACEHOLDER_KEY = "chatgpt-oauth-placeholder"
 # ---------------------------------------------------------------------------
 
 def has_api_key() -> bool:
-    """Return True if a real OpenAI API key is present (not a proxy placeholder).
+    """Return True if a real OpenAI API key is resolvable (env or secrets file).
 
     Vision requires a genuine API key because it uses base64 image inputs that
     the ChatGPT OAuth proxy does not support.
     """
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    return bool(key) and key != _PLACEHOLDER_KEY
+    return bool(resolve_openai_api_key())
 
 
 def vision_enabled() -> bool:

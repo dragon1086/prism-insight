@@ -22,7 +22,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Union
 
-from cores.llm.capabilities import vision_available, vision_model
+from cores.llm.capabilities import resolve_openai_api_key, vision_available, vision_model
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -79,8 +79,9 @@ async def analyze_image(
     # ------------------------------------------------------------------ #
     # Build dedicated API-key client (bypass any OAuth proxy)             #
     # ------------------------------------------------------------------ #
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    # vision_available() already guarantees key is present & non-placeholder
+    # Resolve from env or mcp_agent.secrets.yaml; vision_available() already
+    # guarantees a real key is present (env or secrets file).
+    api_key = resolve_openai_api_key()
 
     resolved_model = model or vision_model()
 
