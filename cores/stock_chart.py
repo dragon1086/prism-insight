@@ -411,7 +411,8 @@ from krx_data_client import (
     get_market_trading_value_by_investor,
     get_market_trading_volume_by_date,
     get_market_trading_value_by_date,
-    get_market_ticker_name
+    get_market_ticker_name,
+    get_index_ohlcv_by_date,
 )
 
 # Professional chart style configuration
@@ -1451,15 +1452,15 @@ def _detect_index_ticker(ticker: str) -> str:
 
 
 def _fetch_index_close(index_ticker: str, start_date: str, end_date: str):
-    """Fetch index daily close series via pykrx get_index_ohlcv.
+    """Fetch index daily close series via the authenticated krx_data_client.
 
+    Uses get_index_ohlcv_by_date (the project-standard authenticated wrapper)
+    instead of raw pykrx, which fails under the auth layer and returns empty.
     Returns a pandas Series indexed by DatetimeIndex (close prices), or None on
-    failure. Uses the Korean '종가' (close) column. Never raises.
+    failure. Never raises.
     """
     try:
-        from pykrx import stock as _pykrx_stock
-
-        idf = _pykrx_stock.get_index_ohlcv(start_date, end_date, index_ticker)
+        idf = get_index_ohlcv_by_date(start_date, end_date, index_ticker)
         if idf is None or len(idf) == 0:
             return None
         if not isinstance(idf.index, pd.DatetimeIndex):
@@ -1629,7 +1630,10 @@ def create_oneil_daily_chart(
         plt.rcParams['font.family'] = font_prop.get_name()
         mpl.rcParams['font.family'] = font_prop.get_name()
 
-    title = f"{company_name} ({ticker}) - O'Neil Daily (RS vs {index_label})"
+    if rs_series is not None:
+        title = f"{company_name} ({ticker}) - O'Neil Daily (RS vs {index_label})"
+    else:
+        title = f"{company_name} ({ticker}) - O'Neil Daily"
     fig, axes = mpf.plot(
         ohlc_df,
         type='candle',
@@ -1777,7 +1781,10 @@ def create_oneil_weekly_chart(
         plt.rcParams['font.family'] = font_prop.get_name()
         mpl.rcParams['font.family'] = font_prop.get_name()
 
-    title = f"{company_name} ({ticker}) - O'Neil Weekly (RS vs {index_label})"
+    if rs_series is not None:
+        title = f"{company_name} ({ticker}) - O'Neil Weekly (RS vs {index_label})"
+    else:
+        title = f"{company_name} ({ticker}) - O'Neil Weekly"
     fig, axes = mpf.plot(
         ohlc_df,
         type='candle',
