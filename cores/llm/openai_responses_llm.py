@@ -2,8 +2,18 @@
 OpenAI Responses API LLM for mcp-agent trading agents.
 
 Replaces Chat Completions (client.chat.completions.create) with the Responses API
-(client.responses.create), using previous_response_id so only tool results—not the
-full accumulated message history—are re-sent on each tool-call iteration.
+(client.responses.create), driving the agentic tool-call loop turn by turn.
+
+Conversation state is carried *client-side*: each turn we append the model's
+function_call items and our function_call_output items to the running ``input``
+list, and re-send the whole list. We deliberately do NOT use
+``previous_response_id`` for state, because the ChatGPT/Codex (OAuth account)
+backend forces ``store=False`` (``store=true`` returns 400) and the proxy strips
+``previous_response_id`` — there is no server-side response to reference, so a
+tool result sent alone (without its originating function_call in ``input``)
+fails with "No tool call found for function call output with call_id ...".
+Re-sending the full input is the only correct multi-turn flow under store=False,
+and remains correct under store=True (API-key mode).
 
 Drop-in replacement: swap attach_llm(OpenAIAugmentedLLM) →
                                attach_llm(OpenAIResponsesLLM)
@@ -93,7 +103,6 @@ class OpenAIResponsesLLM(OpenAIAugmentedLLM):
         if provider_config is None:
             raise RuntimeError("OpenAI provider config is missing from mcp_agent.config.yaml")
 
-        previous_response_id: Optional[str] = None
         final_text = ""
 
         async with AsyncOpenAI(
@@ -103,12 +112,13 @@ class OpenAIResponsesLLM(OpenAIAugmentedLLM):
             for i in range(params.max_iterations):
                 self._log_chat_progress(chat_turn=i, model=model)
 
+                # Always send the full accumulated conversation as `input`.
+                # State is carried client-side (no previous_response_id) so the
+                # loop works under store=False (OAuth/Codex) where the originating
+                # function_call must accompany its function_call_output.
                 call_kwargs = {**base_kwargs, "input": input_items}
-                if previous_response_id:
-                    call_kwargs["previous_response_id"] = previous_response_id
 
                 response = await client.responses.create(**call_kwargs)  # type: ignore[attr-defined]
-                previous_response_id = response.id
 
                 # Separate text content and function calls from output items
                 text_parts: List[str] = []
@@ -125,24 +135,32 @@ class OpenAIResponsesLLM(OpenAIAugmentedLLM):
                     final_text = "\n".join(text_parts)
                     break
 
-                # Execute all tool calls via MCP and collect results
-                tool_result_items = []
+                # Append the model's function_call items to the running input so
+                # the next turn pairs each output with its originating call.
+                for fc in function_calls:
+                    input_items.append(
+                        {
+                            "type": "function_call",
+                            "name": fc.name,
+                            "call_id": fc.call_id,
+                            "arguments": fc.arguments,
+                        }
+                    )
+
+                # Execute all tool calls via MCP and append their results.
                 for fc in function_calls:
                     result_str = await self._call_mcp_tool(
                         name=fc.name,
                         arguments=fc.arguments,
                         call_id=fc.call_id,
                     )
-                    tool_result_items.append(
+                    input_items.append(
                         {
                             "type": "function_call_output",
                             "call_id": fc.call_id,
                             "output": result_str,
                         }
                     )
-
-                # Next iteration only sends tool results; full context lives server-side
-                input_items = tool_result_items
 
         self._log_chat_finished(model=model)
         return final_text
