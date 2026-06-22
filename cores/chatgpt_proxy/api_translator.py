@@ -64,7 +64,15 @@ def prepare_responses_passthrough(body: dict) -> dict:
     # The Codex backend rejects several Responses parameters the openai-agents
     # Runner adds by default (observed: "Unsupported parameter: max_output_tokens").
     # Strip them so subscription requests succeed.
-    for unsupported in ("max_output_tokens", "include"):
+    #
+    # previous_response_id: rejected by the Codex/ChatGPT-account endpoint
+    # ("Unsupported parameter: previous_response_id"), which broke multi-turn
+    # tool-calling agents (e.g. the gpt-5.5 trading-scenario / buy decision ->
+    # 400 -> default_scenario -> No Entry). It is also non-functional here:
+    # store=False is forced above, so there is no server-side response to
+    # reference. The full conversation is already carried in `input` (mcp_agent
+    # sends the entire message history every turn), so dropping it is lossless.
+    for unsupported in ("max_output_tokens", "include", "previous_response_id"):
         out.pop(unsupported, None)
     # Drop empty tool list (Codex dislikes an empty `tools: []`).
     if out.get("tools") == []:
