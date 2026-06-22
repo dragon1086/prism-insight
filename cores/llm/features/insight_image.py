@@ -15,6 +15,14 @@ exact y-coordinates, dropping any level that falls outside a plausible price
 band (validate_levels). This avoids hallucinated annotations on a financial
 image.
 
+Layout (subscriber-ready, S6 polish): the incoming mplfinance figure has three
+stacked panels (price / volume / RS). We grow the figure taller and re-stack
+those panels into clean, non-overlapping bands using explicit fractions
+(price : volume : RS ≈ 6 : 1.5 : 2.5), then add a dedicated CAPTION BAND at the
+bottom (its own ``axis('off')`` axes) carrying a tidy KOREAN summary + the full
+(wrapped) rationale + a disclaimer. The verdict text therefore never overlaps
+the candles, and S/R price labels sit INSIDE the plot near the left edge.
+
 Public API::
 
     img = render_insight_image(daily_fig, analysis, ticker=..., company_name=...,
@@ -32,6 +40,7 @@ Constraints (mirror S1/S2/S3):
 from __future__ import annotations
 
 import logging
+import textwrap
 
 from cores.llm.capabilities import vision_available
 from cores.llm.features.buy_quality import BaseAnalysis, validate_levels
@@ -44,7 +53,25 @@ _COLOR_RESISTANCE = "#c0392b"   # red
 _COLOR_BUY = "#1f6feb"          # blue
 _COLOR_STOP = "#e67e22"         # orange
 
-_DISCLAIMER = "분석 의견 · 투자 조언 아님"
+_DISCLAIMER = "※ 분석 의견이며 투자 조언이 아닙니다."
+
+# Korean labels for the enum fields (numeric/enum stay as data; we map here for
+# display only). Anything unmapped falls back to the raw value.
+_BASE_TYPE_KO = {
+    "cup-handle": "컵앤핸들",
+    "cup-with-handle": "컵앤핸들",
+    "flat": "플랫 베이스",
+    "double-bottom": "더블바텀",
+    "high-tight-flag": "하이트 플래그",
+    "ascending": "상승 베이스",
+    "saucer": "소서 베이스",
+    "none": "베이스 없음",
+    "faulty": "부적합/결함",
+}
+_VERDICT_KO = {
+    "proper": "적합",
+    "faulty": "부적합/결함",
+}
 
 
 def _format_won(value: float) -> str:
@@ -55,16 +82,104 @@ def _format_won(value: float) -> str:
         return f"₩{value}"
 
 
+def _ko_base_type(value: str) -> str:
+    return _BASE_TYPE_KO.get(str(value), str(value))
+
+
+def _ko_verdict(value: str) -> str:
+    return _VERDICT_KO.get(str(value), str(value))
+
+
 def _draw_level(ax, price: float, color: str, label: str, *, linestyle: str,
-                font_prop) -> None:
-    """Draw one horizontal price line + right-edge text label on *ax*."""
-    ax.axhline(price, color=color, linestyle=linestyle, linewidth=1.3, alpha=0.9)
-    txt_kw = dict(color=color, fontsize=8, va="center", ha="right",
-                  transform=ax.get_yaxis_transform())
+                linewidth: float, font_prop) -> None:
+    """Draw one horizontal price line + an IN-PLOT text label near the left edge.
+
+    The label is anchored just inside the left axis edge (x in axes-fraction via
+    a blended transform; y in data coords) so it never collides with the legend
+    (upper-left) nor gets clipped at the right edge.
+    """
+    ax.axhline(price, color=color, linestyle=linestyle, linewidth=linewidth,
+               alpha=0.9)
+    txt_kw = dict(color=color, fontsize=9, fontweight="bold", va="bottom",
+                  ha="left", transform=ax.get_yaxis_transform(),
+                  bbox=dict(boxstyle="round,pad=0.2", facecolor="white",
+                            edgecolor="none", alpha=0.75))
     if font_prop is not None:
         txt_kw["fontproperties"] = font_prop
-    # x=0.995 in axes-fraction (via get_yaxis_transform), y in data coords.
-    ax.text(0.995, price, label, **txt_kw)
+    # x=0.015 axes-fraction (left), nudged up off the line; y in data coords.
+    ax.text(0.015, price, label, **txt_kw)
+
+
+def _classify_axes(fig):
+    """Best-effort split of an mplfinance O'Neil fig into (price, volume, rs).
+
+    The O'Neil daily fig is candles+volume via ``mpf.plot(panel_ratios=(4,1))``
+    (so ``axes[0]``=price, a later axes=volume) plus an RS axes added LAST by
+    ``_add_rs_panel`` as a thin bottom strip. We pick:
+      - price  = axes[0]
+      - rs     = the LAST axes (added after mpf), if there are >= 3 axes
+      - volume = the shortest remaining axes (the 1-ratio volume panel)
+    Returns (price_ax, volume_ax_or_None, rs_ax_or_None). Robust to the simple
+    single-axes test figures (returns price only).
+    """
+    axes = [a for a in getattr(fig, "axes", []) if a is not None]
+    if not axes:
+        return None, None, None
+    price_ax = axes[0]
+    rs_ax = None
+    volume_ax = None
+    others = axes[1:]
+    if len(axes) >= 3:
+        rs_ax = axes[-1]
+        others = axes[1:-1]
+    if others:
+        # The volume panel is the shortest of the remaining axes.
+        def _h(a):
+            try:
+                return a.get_position().height
+            except Exception:  # noqa: BLE001
+                return 1.0
+        volume_ax = min(others, key=_h)
+    return price_ax, volume_ax, rs_ax
+
+
+def _build_caption(analysis: BaseAnalysis, *, ticker: str,
+                   company_name: str | None,
+                   supports, resistances, buy, stop) -> str:
+    """Compose the KOREAN caption-band text (tidy summary + wrapped rationale).
+
+    Numeric/enum fields are mapped to Korean labels; the rationale is shown as
+    returned by the model (the prompt now requests Korean) and WRAPPED with
+    textwrap so nothing is truncated.
+    """
+    header = f"{company_name or ''} ({ticker})".strip()
+    rs_status = "예" if analysis.rs_line_new_high else "아니오"
+
+    def _won_list(levels):
+        return " · ".join(_format_won(v) for v in levels) if levels else "-"
+
+    buy_txt = _format_won(buy[0]) if buy else "-"
+    stop_txt = _format_won(stop[0]) if stop else "-"
+
+    lines = [
+        f"{header}",
+        f"베이스 유형: {_ko_base_type(analysis.base_type)}    "
+        f"품질점수: {analysis.quality_score}/100    "
+        f"판정: {_ko_verdict(analysis.proper_or_faulty)}",
+        f"RS 신고가: {rs_status}    매수 피벗: {buy_txt}    손절: {stop_txt}",
+        f"지지: {_won_list(supports)}    저항: {_won_list(resistances)}",
+    ]
+
+    rationale = (analysis.rationale or "").strip().replace("\n", " ")
+    if rationale:
+        # Wrap to a readable width; never truncate.
+        wrapped = textwrap.fill(f"분석: {rationale}", width=58)
+        lines.append("")
+        lines.append(wrapped)
+
+    lines.append("")
+    lines.append(_DISCLAIMER)
+    return "\n".join(lines)
 
 
 def render_insight_image(
@@ -76,24 +191,25 @@ def render_insight_image(
     price_min: float,
     price_max: float,
 ) -> bytes | None:
-    """Overlay deterministic O'Neil annotations on the DAILY chart.
+    """Overlay deterministic O'Neil annotations on the DAILY chart and add a
+    clean Korean caption band below it.
 
     Draws (on the price axis, ``daily_fig.axes[0]``):
-      - support lines (green dashed + ``₩X`` label),
-      - resistance lines (red dashed + ``₩X`` label),
-      - buy_point / pivot (blue solid + ``BUY PIVOT ₩X`` + arrow),
-      - stop_loss (orange dashed + ``STOP ₩X``).
+      - support lines (green dashed + in-plot ``지지 ₩X`` label),
+      - resistance lines (red dashed + in-plot ``저항 ₩X`` label),
+      - buy_point / pivot (blue solid + in-plot ``매수 피벗 ₩X`` label),
+      - stop_loss (orange dashed + in-plot ``손절 ₩X`` label).
     All levels are passed through :func:`validate_levels` first, so absurd /
-    out-of-band values are dropped. Then adds a right-margin TEXT PANEL
-    summarising base_type, quality_score/100, proper-or-faulty, RS new-high
-    status, and a truncated takeaway, plus a small disclaimer line.
+    out-of-band values are dropped. The verdict/analysis summary lives in a
+    dedicated CAPTION BAND below the chart (its own ``axis('off')`` axes), in
+    Korean, with the full rationale wrapped (no truncation).
 
     Args:
         daily_fig:    A matplotlib figure from create_oneil_daily_chart (or a
                       compatible fig whose ``axes[0]`` is the price axis).
         analysis:     The BaseAnalysis carrying the structured price levels.
-        ticker:       Stock ticker (used in the text-panel header).
-        company_name: Company name (used in the text-panel header).
+        ticker:       Stock ticker (used in the caption header).
+        company_name: Company name (used in the caption header).
         price_min:    The chart's actual visible minimum price.
         price_max:    The chart's actual visible maximum price.
 
@@ -106,7 +222,10 @@ def render_insight_image(
         if daily_fig is None or not getattr(daily_fig, "axes", None):
             logger.warning("[INSIGHT_IMAGE] no price axis on figure for %s", ticker)
             return None
-        price_ax = daily_fig.axes[0]
+
+        price_ax, volume_ax, rs_ax = _classify_axes(daily_fig)
+        if price_ax is None:
+            return None
 
         # Reuse stock_chart's Korean font setup so labels render correctly.
         try:
@@ -125,66 +244,29 @@ def render_insight_image(
         stop = validate_levels([analysis.stop_loss], price_min, price_max)
 
         for lv in supports:
-            _draw_level(price_ax, lv, _COLOR_SUPPORT, f"S {_format_won(lv)}",
-                        linestyle="--", font_prop=font_prop)
+            _draw_level(price_ax, lv, _COLOR_SUPPORT, f"지지 {_format_won(lv)}",
+                        linestyle="--", linewidth=1.3, font_prop=font_prop)
         for lv in resistances:
-            _draw_level(price_ax, lv, _COLOR_RESISTANCE, f"R {_format_won(lv)}",
-                        linestyle="--", font_prop=font_prop)
+            _draw_level(price_ax, lv, _COLOR_RESISTANCE, f"저항 {_format_won(lv)}",
+                        linestyle="--", linewidth=1.3, font_prop=font_prop)
         if stop:
             _draw_level(price_ax, stop[0], _COLOR_STOP,
-                        f"STOP {_format_won(stop[0])}", linestyle="--",
-                        font_prop=font_prop)
+                        f"손절 {_format_won(stop[0])}", linestyle="--",
+                        linewidth=1.3, font_prop=font_prop)
         if buy:
-            bp = buy[0]
-            price_ax.axhline(bp, color=_COLOR_BUY, linestyle="-", linewidth=1.8,
-                             alpha=0.95)
-            ann_kw = dict(color=_COLOR_BUY, fontsize=9, fontweight="bold",
-                          va="bottom", ha="left",
-                          xycoords=price_ax.get_yaxis_transform(),
-                          arrowprops=dict(arrowstyle="->", color=_COLOR_BUY))
-            if font_prop is not None:
-                ann_kw["fontproperties"] = font_prop
-            # Arrow pointing to the pivot line from slightly inside the axis.
-            price_ax.annotate(
-                f"BUY PIVOT {_format_won(bp)}",
-                xy=(0.02, bp), xytext=(0.18, bp),
-                **ann_kw,
-            )
+            _draw_level(price_ax, buy[0], _COLOR_BUY,
+                        f"매수 피벗 {_format_won(buy[0])}", linestyle="-",
+                        linewidth=1.8, font_prop=font_prop)
 
-        # --- Right-margin text panel summarising the verdict ---
-        rs_status = "RS new high: YES" if analysis.rs_line_new_high else "RS new high: no"
-        takeaway = (analysis.rationale or "").strip().replace("\n", " ")
-        if len(takeaway) > 140:
-            takeaway = takeaway[:137] + "..."
-        header = f"{company_name or ''} ({ticker})".strip()
-        panel_lines = [
-            header,
-            f"Base: {analysis.base_type}",
-            f"Quality: {analysis.quality_score}/100",
-            f"Verdict: {analysis.proper_or_faulty}",
-            rs_status,
-            "",
-            takeaway,
-        ]
-        panel_text = "\n".join(line for line in panel_lines if line is not None)
-
-        # Make room on the right for the panel, then place it in figure coords.
-        try:
-            daily_fig.subplots_adjust(right=0.80)
-        except Exception:  # noqa: BLE001
-            pass
-        panel_kw = dict(fontsize=8, va="top", ha="left",
-                        bbox=dict(boxstyle="round", facecolor="#f7f7f7",
-                                  edgecolor="#cccccc", alpha=0.95))
-        if font_prop is not None:
-            panel_kw["fontproperties"] = font_prop
-        daily_fig.text(0.815, 0.88, panel_text, **panel_kw)
-
-        # Small disclaimer line (subscriber-facing, not investment advice).
-        disc_kw = dict(fontsize=7, color="#888888", ha="left", va="bottom")
-        if font_prop is not None:
-            disc_kw["fontproperties"] = font_prop
-        daily_fig.text(0.815, 0.05, _DISCLAIMER, **disc_kw)
+        # --- Re-stack the panels into clean bands + add a caption band ---
+        _relayout_with_caption(
+            daily_fig, price_ax, volume_ax, rs_ax,
+            caption=_build_caption(
+                analysis, ticker=ticker, company_name=company_name,
+                supports=supports, resistances=resistances, buy=buy, stop=stop,
+            ),
+            font_prop=font_prop,
+        )
 
         return _fig_to_jpeg(daily_fig)
     except Exception as exc:  # noqa: BLE001
@@ -192,7 +274,79 @@ def render_insight_image(
         return None
 
 
-def _fig_to_jpeg(fig, *, dpi: int = 90) -> bytes | None:
+def _relayout_with_caption(fig, price_ax, volume_ax, rs_ax, *, caption,
+                           font_prop) -> None:
+    """Grow the figure taller and re-stack panels into clean, spaced bands.
+
+    Band layout (figure fraction, top→bottom), x-span 0.09..0.95:
+      price  : 0.620 .. 0.955   (h 0.335)  — ratio ~6
+      volume : 0.520 .. 0.605   (h 0.085)  — ratio ~1.5
+      rs     : 0.395 .. 0.490   (h 0.095)  — ratio ~2.5
+      caption: 0.020 .. 0.355   (own axis('off'))
+
+    Missing panels (e.g. the tiny single-axes test fig) simply expand the price
+    band downward. Never raises; on error the figure is left as-is.
+    """
+    try:
+        # Taller, balanced aspect for subscriber publishing.
+        try:
+            fig.set_size_inches(12, 14, forward=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+        left, width = 0.09, 0.86
+
+        have_vol = volume_ax is not None
+        have_rs = rs_ax is not None
+
+        if have_vol and have_rs:
+            price_box = (left, 0.620, width, 0.335)
+            vol_box = (left, 0.520, width, 0.085)
+            rs_box = (left, 0.395, width, 0.095)
+            cap_top = 0.355
+        elif have_vol:
+            price_box = (left, 0.560, width, 0.395)
+            vol_box = (left, 0.430, width, 0.110)
+            rs_box = None
+            cap_top = 0.380
+        else:
+            # Minimal fig (tests): big price band, large caption.
+            price_box = (left, 0.480, width, 0.475)
+            vol_box = None
+            rs_box = None
+            cap_top = 0.430
+
+        price_ax.set_position(price_box)
+        if have_vol and vol_box is not None:
+            volume_ax.set_position(vol_box)
+        if have_rs and rs_box is not None:
+            rs_ax.set_position(rs_box)
+            # Clean, compact Korean-ish label; no title overlapping neighbours.
+            try:
+                rs_ax.set_title("")  # drop any prior title text
+            except Exception:  # noqa: BLE001
+                pass
+            ylbl_kw = dict(fontsize=8)
+            if font_prop is not None:
+                ylbl_kw["fontproperties"] = font_prop
+            try:
+                rs_ax.set_ylabel("RS (상대강도)", **ylbl_kw)
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Caption band: dedicated, borderless axes carrying the Korean summary.
+        cap_ax = fig.add_axes([left, 0.020, width, cap_top - 0.020])
+        cap_ax.axis("off")
+        txt_kw = dict(fontsize=11, va="top", ha="left", linespacing=1.45,
+                      color="#1a1a1a")
+        if font_prop is not None:
+            txt_kw["fontproperties"] = font_prop
+        cap_ax.text(0.0, 1.0, caption, transform=cap_ax.transAxes, **txt_kw)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[INSIGHT_IMAGE] relayout failed: %s", exc)
+
+
+def _fig_to_jpeg(fig, *, dpi: int = 110) -> bytes | None:
     """Render a matplotlib figure to JPEG bytes; closes the figure. None on error."""
     try:
         from io import BytesIO
@@ -200,7 +354,9 @@ def _fig_to_jpeg(fig, *, dpi: int = 90) -> bytes | None:
         import matplotlib.pyplot as plt
 
         buffer = BytesIO()
-        fig.savefig(buffer, format="jpg", bbox_inches="tight", dpi=dpi)
+        # No bbox_inches='tight' here: our explicit band positions ARE the
+        # layout, and 'tight' would re-crop/undo the careful spacing.
+        fig.savefig(buffer, format="jpg", dpi=dpi)
         plt.close(fig)
         buffer.seek(0)
         data = buffer.getvalue()

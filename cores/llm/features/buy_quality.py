@@ -174,7 +174,10 @@ Score the base:
 - quality_score (0-100): overall O'Neil base quality. Tight proper cup-with-handle \
 with RS new high and volume dry-up scores high; wide/loose/faulty/no-base scores low.
 - confidence (0-100): your confidence in this assessment.
-- rationale: one or two sentences justifying the scores.
+- rationale: one or two sentences justifying the scores. WRITE THE rationale IN \
+KOREAN (한국어), in a natural, concise tone suitable for retail subscribers. All \
+other fields stay as specified (numbers, booleans, and the fixed enum strings \
+for base_type / tightness / proper_or_faulty remain in English exactly as listed).
 
 Also return KEY PRICE LEVELS so they can be drawn on the chart. Report ALL of \
 these in WON (₩) price units, consistent with the chart's y-axis (NOT \

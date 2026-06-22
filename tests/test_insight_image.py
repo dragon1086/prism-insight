@@ -21,6 +21,10 @@ from cores.llm.features import insight_image  # noqa: E402
 from cores.llm.features.insight_image import (  # noqa: E402
     build_insight_image_for,
     render_insight_image,
+    _build_caption,
+    _classify_axes,
+    _ko_base_type,
+    _ko_verdict,
 )
 
 
@@ -57,6 +61,23 @@ def _tiny_fig():
     fig, ax = plt.subplots(figsize=(4, 3))
     ax.plot([0, 1, 2, 3], [67000, 70000, 71000, 73000])
     ax.set_ylim(65000, 76000)
+    return fig
+
+
+def _three_panel_fig():
+    """A price+volume+RS fig mimicking the mplfinance O'Neil daily layout.
+
+    axes[0] = price (tall), then a shorter volume panel, then a thin RS panel
+    added LAST (matching ``_add_rs_panel``'s add-after-mpf ordering).
+    """
+    fig = plt.figure(figsize=(12, 9))
+    price_ax = fig.add_axes([0.08, 0.40, 0.84, 0.50])
+    price_ax.plot([0, 1, 2, 3], [67000, 70000, 71000, 73000])
+    price_ax.set_ylim(65000, 76000)
+    vol_ax = fig.add_axes([0.08, 0.20, 0.84, 0.15])
+    vol_ax.bar([0, 1, 2, 3], [10, 12, 9, 14])
+    rs_ax = fig.add_axes([0.08, 0.02, 0.84, 0.10])  # thin, added LAST
+    rs_ax.plot([0, 1, 2, 3], [100, 102, 101, 105])
     return fig
 
 
@@ -126,6 +147,81 @@ class TestRenderInsightImage:
         )
         assert isinstance(out, bytes)
         assert len(out) > 0
+
+    def test_three_panel_fig_renders_and_adds_caption_band(self):
+        # price + volume + RS panels -> relayout must add a caption-band axes
+        # (one MORE axes than the 3 input panels) and still return JPEG bytes.
+        fig = _three_panel_fig()
+        n_before = len(fig.axes)
+        analysis = _make_analysis()
+        out = render_insight_image(
+            fig, analysis,
+            ticker="005930", company_name="삼성전자",
+            price_min=65000.0, price_max=76000.0,
+        )
+        assert isinstance(out, bytes)
+        assert len(out) > 0
+        # A dedicated caption-band axes was added on top of the 3 panels.
+        assert len(fig.axes) == n_before + 1
+
+
+# --------------------------------------------------------------------------- #
+# Korean caption + helpers                                                     #
+# --------------------------------------------------------------------------- #
+class TestKoreanCaption:
+    def test_enum_to_korean_labels(self):
+        assert _ko_base_type("cup-handle") == "컵앤핸들"
+        assert _ko_base_type("faulty") == "부적합/결함"
+        assert _ko_verdict("proper") == "적합"
+        assert _ko_verdict("faulty") == "부적합/결함"
+        # Unknown values fall back to the raw string (no crash).
+        assert _ko_base_type("mystery-base") == "mystery-base"
+
+    def test_caption_is_korean_and_untruncated(self):
+        long_rationale = (
+            "타이트한 컵앤핸들 베이스이며 상대강도 신고가를 동반합니다. "
+            "거래량은 핸들 구간에서 뚜렷하게 감소했고 피벗 돌파 시 진입을 "
+            "고려할 수 있는 구조입니다. 다만 시장 환경에 따라 변동성이 있으니 "
+            "분할 접근이 바람직합니다."
+        )
+        analysis = _make_analysis(rationale=long_rationale)
+        caption = _build_caption(
+            analysis, ticker="005930", company_name="삼성전자",
+            supports=[68000.0], resistances=[75000.0],
+            buy=[72000.0], stop=[66000.0],
+        )
+        # Korean labels present.
+        assert "베이스 유형" in caption
+        assert "품질점수" in caption
+        assert "판정" in caption
+        assert "RS 신고가" in caption
+        assert "매수 피벗" in caption
+        assert "손절" in caption
+        assert "지지" in caption and "저항" in caption
+        assert "컵앤핸들" in caption
+        assert "적합" in caption
+        # Disclaimer present and rationale NOT truncated (no ellipsis).
+        assert "투자 조언이 아닙니다" in caption
+        assert "..." not in caption
+        # Full rationale retained (textwrap may insert line breaks, so compare
+        # with whitespace collapsed — the point is nothing was truncated).
+        collapsed = "".join(caption.split())
+        assert "분할접근이바람직합니다" in collapsed
+
+    def test_classify_axes_three_panels(self):
+        fig = _three_panel_fig()
+        price_ax, vol_ax, rs_ax = _classify_axes(fig)
+        assert price_ax is fig.axes[0]
+        assert rs_ax is fig.axes[-1]          # RS added last
+        assert vol_ax is not None and vol_ax is not price_ax and vol_ax is not rs_ax
+        plt.close(fig)
+
+    def test_classify_axes_single_panel(self):
+        fig = _tiny_fig()
+        price_ax, vol_ax, rs_ax = _classify_axes(fig)
+        assert price_ax is fig.axes[0]
+        assert vol_ax is None and rs_ax is None
+        plt.close(fig)
 
 
 # --------------------------------------------------------------------------- #
