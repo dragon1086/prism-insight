@@ -398,9 +398,14 @@ async def analyze_base_oneil(
     numeric_pivot: float | None = None,
     current_price: float | None = None,
     market: str | None = None,
+    extra_context: str | None = None,
 ) -> BaseAnalysis | None:
     """Two-timeframe O'Neil base analysis: generate DAILY + WEEKLY charts (with
     RS line) for *ticker* and analyse both in a single multi-image vision call.
+
+    *extra_context* (optional) is appended to the prompt as additional grounding
+    text — e.g. a concise summary of the ticker's PAST trades for the insight
+    image. Purely informational; never changes the structured output schema.
 
     Grounds BaseAnalysis.rs_line_new_high (RS line panel) and the weekly base
     reading instead of relying on a single daily image.
@@ -466,6 +471,13 @@ async def analyze_base_oneil(
             f"{_BASE_PROMPT_TWO_TF}\n"
             f"Reference values (for sanity-checking your pivot, not to copy "
             f"blindly): {', '.join(hints)}.\n"
+        )
+
+    if extra_context:
+        prompt = (
+            f"{prompt}\n"
+            f"추가 참고 정보 (구조화 출력에는 영향 없음, 분석 근거로만 활용):\n"
+            f"{extra_context}\n"
         )
 
     try:

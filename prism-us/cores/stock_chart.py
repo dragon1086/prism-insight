@@ -344,6 +344,7 @@ def create_oneil_daily_chart(
     save_path=None,
     market="us",
     index_ticker=None,
+    return_df=False,
 ):
     """Generate an O'Neil DAILY chart for a US ticker (vision-only).
 
@@ -358,10 +359,14 @@ def create_oneil_daily_chart(
         save_path:    If given, save the figure there; otherwise just return it.
         market:       Market hint (default ``"us"``); informational here.
         index_ticker: Optional explicit index symbol override (e.g. ``"^IXIC"``).
+        return_df:    If True, return ``(fig, ohlc_df)`` so callers can map
+                      trade dates to mplfinance candle index positions.
 
     Returns:
         matplotlib Figure (``axes[0]`` is the price axis), or None on failure.
-        Never raises.
+        When ``return_df=True``, returns ``(fig, ohlc_df)`` so callers can map
+        trade dates to mplfinance candle index positions (position i <->
+        ohlc_df.index[i]). Never raises.
     """
     try:
         client = _get_client()
@@ -442,6 +447,8 @@ def create_oneil_daily_chart(
             fig.savefig(save_path, bbox_inches="tight", dpi=80)
             logger.info(f"[ONEIL][US] daily chart saved: {save_path}")
 
+        if return_df:
+            return fig, ohlc_df
         return fig
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[ONEIL][US] daily chart build failed for {ticker}: {e}")

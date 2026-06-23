@@ -61,6 +61,8 @@ _COLOR_RESISTANCE = "#f85149"   # red
 _COLOR_BUY = _GOLD              # gold pivot (hero)
 _COLOR_STOP = "#d29922"         # amber
 _COLOR_BASEBOX = _GOLD          # base highlight box
+_COLOR_TRADE_BUY = "#3fb950"    # past-trade buy marker (green ▲)
+_COLOR_TRADE_SELL = "#f85149"   # past-trade sell marker (red ▼)
 
 _DISCLAIMER = "※ 분석 의견이며 투자 조언이 아닙니다."
 
@@ -342,6 +344,55 @@ def _draw_pivot_marker(price_ax, analysis, *, price_min, price_max,
         logger.warning("[INSIGHT_IMAGE] pivot marker failed: %s", exc)
 
 
+def _draw_trade_markers(price_ax, trades, *, price_min, price_max,
+                        font_prop=None) -> None:
+    """Plot past buy/sell markers on the price axis. Best-effort, never raises.
+
+    *trades* is a list of ``(x, price, side)`` tuples where ``x`` is the
+    mplfinance candle-index position (float) and ``side`` is ``"buy"`` /
+    ``"sell"``. Buys render as a green ▲ below the trade price, sells as a red
+    ▼ above it. A tiny legend is added. Markers whose price falls outside the
+    visible band are dropped (the trade may pre-date the visible window).
+    """
+    try:
+        if not trades:
+            return
+        xmin, xmax = price_ax.get_xlim()
+        pad = (price_max - price_min) * 0.02
+        drew_buy = drew_sell = False
+        for x, price, side in trades:
+            try:
+                xf = float(x)
+                pf = float(price)
+            except (TypeError, ValueError):
+                continue
+            if not (xmin <= xf <= xmax):
+                continue
+            if not (price_min <= pf <= price_max):
+                continue
+            if side == "buy":
+                price_ax.scatter(
+                    [xf], [pf - pad], marker="^", s=130,
+                    color=_COLOR_TRADE_BUY, edgecolors="#0b0e14",
+                    linewidths=0.8, zorder=9,
+                    label=("과거 매수" if not drew_buy else None))
+                drew_buy = True
+            else:
+                price_ax.scatter(
+                    [xf], [pf + pad], marker="v", s=130,
+                    color=_COLOR_TRADE_SELL, edgecolors="#0b0e14",
+                    linewidths=0.8, zorder=9,
+                    label=("과거 매도" if not drew_sell else None))
+                drew_sell = True
+        if drew_buy or drew_sell:
+            leg = price_ax.legend(loc="lower left", fontsize=8, framealpha=0.85)
+            if leg is not None and font_prop is not None:
+                for txt in leg.get_texts():
+                    txt.set_fontproperties(font_prop)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[INSIGHT_IMAGE] trade markers failed: %s", exc)
+
+
 def render_insight_image(
     daily_fig,
     analysis: BaseAnalysis,
@@ -352,6 +403,7 @@ def render_insight_image(
     price_max: float,
     currency_symbol: str = "₩",
     price_decimals: int = 0,
+    trades=None,
 ) -> bytes | None:
     """Overlay deterministic O'Neil annotations on the DAILY chart and add a
     clean Korean caption band below it.
@@ -374,6 +426,9 @@ def render_insight_image(
         company_name: Company name (used in the caption header).
         price_min:    The chart's actual visible minimum price.
         price_max:    The chart's actual visible maximum price.
+        trades:       Optional list of ``(x, price, side)`` past-trade tuples
+                      (x = candle-index position) to overlay as buy ▲ / sell ▼
+                      markers. Empty/None -> no markers (no-op).
 
     Returns:
         JPEG bytes on success, or ``None`` on any failure. Never raises.
@@ -431,6 +486,11 @@ def render_insight_image(
                         f"손절 {_fmt(stop[0])}", linestyle="--",
                         linewidth=1.2, font_prop=font_prop)
         # buy pivot is rendered by _draw_pivot_marker (circle + callout) above
+
+        # --- Past-trade markers (subscriber-facing; from the tracking DB) -----
+        if trades:
+            _draw_trade_markers(price_ax, trades, price_min=price_min,
+                                price_max=price_max, font_prop=font_prop)
 
         # --- Re-stack the panels into clean bands + add a caption band ---
         _relayout_with_caption(
@@ -551,6 +611,38 @@ def _fig_to_jpeg(fig, *, dpi: int = 110) -> bytes | None:
         return None
 
 
+def _map_trades_to_x(events, ohlc_df):
+    """Map each TradeEvent date to its nearest mplfinance candle-index position.
+
+    mplfinance (default ``show_nontrading=False``) plots candle ``i`` at integer
+    x-position ``i`` where ``i`` indexes ``ohlc_df``. We map each trade date to
+    the position of the nearest df date. Returns a list of ``(x, price, side)``
+    tuples. Best-effort; returns ``[]`` on any error.
+    """
+    try:
+        if ohlc_df is None or len(ohlc_df) == 0 or not events:
+            return []
+        import pandas as pd
+
+        idx = ohlc_df.index
+        if not isinstance(idx, pd.DatetimeIndex):
+            idx = pd.to_datetime(idx)
+        idx_norm = idx.normalize()
+        out = []
+        for ev in events:
+            try:
+                ts = pd.Timestamp(ev.date).normalize()
+            except Exception:  # noqa: BLE001
+                continue
+            # Nearest candle position by absolute day distance.
+            pos = int((idx_norm - ts).map(lambda d: abs(d.days)).values.argmin())
+            out.append((float(pos), float(ev.price), ev.side))
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[INSIGHT_IMAGE] trade x-mapping failed: %s", exc)
+        return []
+
+
 async def build_insight_image_for(
     ticker: str,
     company_name: str | None = None,
@@ -570,20 +662,56 @@ async def build_insight_image_for(
     if not vision_available():
         return None
 
+    _is_us = isinstance(market, str) and market.strip().lower() in (
+        "us", "usa", "united states"
+    )
+
+    # --- Past-trade lookup (NON-BLOCKING; no trades -> no markers/context) ----
+    # Fetched BEFORE the vision call so a concise text summary can be injected
+    # into analyze_base_oneil as grounding context. Any failure here must NOT
+    # break image generation, so it is fully isolated.
+    trade_events = []
+    trade_context = None
+    try:
+        from cores.llm.features.trade_history import (
+            get_trade_events,
+            summarize_trades,
+        )
+
+        trade_events = get_trade_events(ticker, market=market)
+        if trade_events:
+            # Plain text for the LLM (no matplotlib "$" escaping needed here).
+            _ctx_sym, _ctx_dec = ("$", 2) if _is_us else ("₩", 0)
+            trade_context = summarize_trades(
+                trade_events, currency_symbol=_ctx_sym, price_decimals=_ctx_dec
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[INSIGHT_IMAGE] trade-history lookup failed for %s: %s",
+                       ticker, exc)
+        trade_events, trade_context = [], None
+
     try:
         from cores.llm.features.buy_quality import analyze_base_oneil
 
         analysis = await analyze_base_oneil(
-            ticker, company_name=company_name, market=market
+            ticker, company_name=company_name, market=market,
+            extra_context=trade_context,
         )
         if analysis is None:
             return None
 
         from cores.stock_chart import create_oneil_daily_chart
 
-        daily_fig = create_oneil_daily_chart(
-            ticker, company_name=company_name, market=market
+        # Request the df so trade dates can be mapped to candle-index x-positions.
+        chart_out = create_oneil_daily_chart(
+            ticker, company_name=company_name, market=market, return_df=True
         )
+        if chart_out is None:
+            return None
+        if isinstance(chart_out, tuple):
+            daily_fig, ohlc_df = chart_out
+        else:  # defensive: older signature returned fig only
+            daily_fig, ohlc_df = chart_out, None
         if daily_fig is None:
             return None
 
@@ -593,9 +721,9 @@ async def build_insight_image_for(
             return None
         price_min, price_max = price_ax.get_ylim()
 
-        _is_us = isinstance(market, str) and market.strip().lower() in (
-            "us", "usa", "united states"
-        )
+        # Map trade dates -> candle-index x positions (best-effort, isolated).
+        trade_xy = _map_trades_to_x(trade_events, ohlc_df) if trade_events else []
+
         # Escape "$" as "\\$": matplotlib treats a bare "$" as mathtext, which
         # corrupts adjacent Korean glyphs (renders them via the math 'rm' font).
         _currency_symbol, _price_decimals = ("\\$", 2) if _is_us else ("₩", 0)
@@ -608,6 +736,7 @@ async def build_insight_image_for(
             price_max=price_max,
             currency_symbol=_currency_symbol,
             price_decimals=_price_decimals,
+            trades=trade_xy,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[INSIGHT_IMAGE] build failed for %s: %s", ticker, exc)
