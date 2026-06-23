@@ -25,6 +25,12 @@ from pathlib import Path
 # ── Load .env from project root (best-effort) ────────────────────────────────
 _ROOT = Path(__file__).resolve().parent.parent
 
+# Make the repo root importable even when invoked as `python tools/feature_status.py`
+# (sys.path[0] would be tools/, so `from cores.llm...` in _vision_available would
+# fail and wrongly report vision 미가용). Idempotent.
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 
 def _load_dotenv() -> None:
     """Load .env into os.environ if python-dotenv is available; silently skip."""
