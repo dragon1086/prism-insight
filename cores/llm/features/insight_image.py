@@ -198,6 +198,19 @@ def _build_caption(analysis: BaseAnalysis, *, ticker: str,
         lines.append("")
         lines.append(wrapped)
 
+    # Plain-language glossary so non-experts can read the O'Neil jargon used
+    # in the labels/tags above (베이스/N주/매수 피벗/RS 신고가/적합·부적합 …).
+    glossary_terms = [
+        "베이스=주가가 다지는 조정·횡보 구간('N주'=그 베이스가 형성된 기간)",
+        "매수 피벗=베이스 상단을 돌파할 때의 매수 기준가",
+        "RS 신고가=시장(지수) 대비 상대강도가 신고가 → 강세 신호",
+        "지지/저항=하락을 받쳐주는/상승을 막는 가격대",
+        "적합·부적합=오닐 기준 매수자리로 적절/부적절한 베이스 형태",
+    ]
+    glossary = "ℹ️ 용어 안내 — " + " · ".join(glossary_terms)
+    lines.append("")
+    lines.append(textwrap.fill(glossary, width=58))
+
     lines.append("")
     lines.append(_DISCLAIMER)
     return "\n".join(lines)
