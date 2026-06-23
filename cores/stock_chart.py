@@ -1581,6 +1581,7 @@ def create_oneil_daily_chart(
     save_path=None,
     market=None,
     index_ticker=None,
+    return_df=False,
 ):
     """Generate an O'Neil DAILY chart (vision-only): candles + MA5/20/60/120 +
     volume + an RS line vs the market index.
@@ -1596,9 +1597,14 @@ def create_oneil_daily_chart(
         save_path:    If given, save the figure there; otherwise just return it.
         market:       Optional 'KOSPI'/'KOSDAQ' hint to pick the index.
         index_ticker: Optional explicit index ticker override (e.g. '1001').
+        return_df:    If True, return ``(fig, ohlc_df)`` so callers can map
+                      dates to mplfinance candle index positions. The returned
+                      df has the SAME row ordering as the plotted candles
+                      (position i <-> df.index[i]).
 
     Returns:
-        matplotlib figure, or None if stock data is unavailable.
+        matplotlib figure (or ``(fig, df)`` when ``return_df=True``), or None
+        if stock data is unavailable.
     """
     end_date = datetime.now().strftime('%Y%m%d')
     start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
@@ -1697,6 +1703,8 @@ def create_oneil_daily_chart(
         fig.savefig(save_path, bbox_inches='tight', dpi=80)
         logger.info(f"[ONEIL] daily chart saved: {save_path}")
 
+    if return_df:
+        return fig, ohlc_df
     return fig
 
 
