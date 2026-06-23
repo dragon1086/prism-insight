@@ -204,15 +204,31 @@ def test_vision_buy_qa_off_vision_unset():
 
 # ── Vision publish (S6) ───────────────────────────────────────────────────────
 
-def test_vision_publish_always_off():
-    """S6 publish wiring is not yet implemented — must always be OFF."""
-    for env in [
-        {},
-        {"PRISM_FEATURE_VISION": "on"},
-        {"PRISM_FEATURE_VISION": "on", "PRISM_VISION_SHADOW": "false"},
-    ]:
-        r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
-        assert r["vision_publish"]["state"] == "OFF", f"Expected OFF for env={env}"
+def test_vision_publish_off_when_insight_image_unset(monkeypatch):
+    """S6 broadcast OFF when PRISM_FEATURE_INSIGHT_IMAGE is unset, even if vision available."""
+    monkeypatch.setattr(fs, "_vision_available", lambda: True)
+    r = _results_by_id(fs.evaluate_all(env={"PRISM_FEATURE_VISION": "on"}, crontab=CRON_EMPTY))
+    assert r["vision_publish"]["state"] == "OFF"
+    assert "PRISM_FEATURE_INSIGHT_IMAGE" in r["vision_publish"]["evidence"]
+
+
+def test_vision_publish_off_when_vision_unavailable(monkeypatch):
+    """S6 broadcast OFF when image flag is on but vision is not available (no key / vision off)."""
+    monkeypatch.setattr(fs, "_vision_available", lambda: False)
+    env = {"PRISM_FEATURE_INSIGHT_IMAGE": "on"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+    assert r["vision_publish"]["state"] == "OFF"
+    assert "미가용" in r["vision_publish"]["evidence"]
+
+
+def test_vision_publish_live_when_image_flag_and_vision_available(monkeypatch):
+    """S6 broadcast LIVE only when PRISM_FEATURE_INSIGHT_IMAGE=on AND vision available."""
+    monkeypatch.setattr(fs, "_vision_available", lambda: True)
+    env = {"PRISM_FEATURE_INSIGHT_IMAGE": "on"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+    assert r["vision_publish"]["state"] == "LIVE"
+    # No stale "미구현" claim.
+    assert "미구현" not in r["vision_publish"]["evidence"]
 
 
 # ── --json output ─────────────────────────────────────────────────────────────
