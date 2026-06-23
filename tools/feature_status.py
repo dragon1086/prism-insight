@@ -178,12 +178,33 @@ def _decide_vision_buy_qa(env: dict, crontab: str):
     return "OFF", f"PRISM_FEATURE_VISION={vision or '(unset)'}"
 
 
+def _vision_available() -> bool:
+    """Seam over cores.llm.capabilities.vision_available() (vision on + real API key).
+
+    Split out so tests can monkeypatch the key-dependent gate without a real key.
+    Returns False if capabilities can't be imported (keeps the reporter robust).
+    """
+    try:
+        from cores.llm.capabilities import vision_available
+        return vision_available()
+    except Exception:
+        return False
+
+
 def _decide_vision_publish(env: dict, crontab: str):
-    vision = env.get("PRISM_FEATURE_VISION", "").lower()
-    # S6 publish wiring not yet implemented — always OFF regardless of env
-    if vision == "on":
-        return "OFF", "PRISM_FEATURE_VISION=on but 발행 배선 미구현(S6)"
-    return "OFF", f"PRISM_FEATURE_VISION={vision or '(unset)'}, 배선 미구현"
+    """S6 subscriber-facing insight-image broadcast.
+
+    The broadcast (cores/llm/features/insight_broadcast.py, wired into the KR/US
+    orchestrators) fires only when BOTH gates are true:
+      - PRISM_FEATURE_INSIGHT_IMAGE=on  (independent broadcast gate)
+      - vision_available()              (PRISM_FEATURE_VISION=on + real API key)
+    """
+    insight = env.get("PRISM_FEATURE_INSIGHT_IMAGE", "").lower()
+    if insight != "on":
+        return "OFF", f"PRISM_FEATURE_INSIGHT_IMAGE={insight or '(unset)'}"
+    if not _vision_available():
+        return "OFF", "PRISM_FEATURE_INSIGHT_IMAGE=on but vision 미가용(PRISM_FEATURE_VISION=on + API 키 필요)"
+    return "LIVE", "PRISM_FEATURE_INSIGHT_IMAGE=on + vision 가용"
 
 
 # Registry: (id, korean label, decision function)
