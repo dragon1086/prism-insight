@@ -206,7 +206,7 @@ def test_vision_buy_qa_off_vision_unset():
 
 def test_vision_publish_off_when_insight_image_unset(monkeypatch):
     """S6 broadcast OFF when PRISM_FEATURE_INSIGHT_IMAGE is unset, even if vision available."""
-    monkeypatch.setattr(fs, "_vision_available", lambda: True)
+    monkeypatch.setattr(fs, "_vision_available", lambda env: True)
     r = _results_by_id(fs.evaluate_all(env={"PRISM_FEATURE_VISION": "on"}, crontab=CRON_EMPTY))
     assert r["vision_publish"]["state"] == "OFF"
     assert "PRISM_FEATURE_INSIGHT_IMAGE" in r["vision_publish"]["evidence"]
@@ -214,7 +214,7 @@ def test_vision_publish_off_when_insight_image_unset(monkeypatch):
 
 def test_vision_publish_off_when_vision_unavailable(monkeypatch):
     """S6 broadcast OFF when image flag is on but vision is not available (no key / vision off)."""
-    monkeypatch.setattr(fs, "_vision_available", lambda: False)
+    monkeypatch.setattr(fs, "_vision_available", lambda env: False)
     env = {"PRISM_FEATURE_INSIGHT_IMAGE": "on"}
     r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
     assert r["vision_publish"]["state"] == "OFF"
@@ -223,7 +223,7 @@ def test_vision_publish_off_when_vision_unavailable(monkeypatch):
 
 def test_vision_publish_live_when_image_flag_and_vision_available(monkeypatch):
     """S6 broadcast LIVE only when PRISM_FEATURE_INSIGHT_IMAGE=on AND vision available."""
-    monkeypatch.setattr(fs, "_vision_available", lambda: True)
+    monkeypatch.setattr(fs, "_vision_available", lambda env: True)
     env = {"PRISM_FEATURE_INSIGHT_IMAGE": "on"}
     r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
     assert r["vision_publish"]["state"] == "LIVE"
