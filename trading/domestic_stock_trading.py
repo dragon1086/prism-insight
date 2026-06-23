@@ -1674,6 +1674,7 @@ class DomesticStockTrading:
         limit_price: int = 0,
         qty_all_ord_yn: str = "Y",
         excg_id_dvsn_cd: str = "KRX",
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Amend (정정) or cancel (취소) an existing domestic order.
 
@@ -1693,11 +1694,16 @@ class DomesticStockTrading:
             limit_price: New limit price for an amend; 0 for cancel.
             qty_all_ord_yn: "Y" = whole remaining qty, "N" = partial (uses quantity).
             excg_id_dvsn_cd: Exchange id division ("KRX"/"NXT"/"SOR").
+            dry_run: When True (Loop C SHADOW verification), build the FULL request
+                exactly as it would be sent and RETURN it WITHOUT any auth/hashkey/
+                HTTP — no network, no order. Default False = LIVE behaviour
+                unchanged.
 
         Returns:
-            Result dict: {success, order_no, stock_code, message}.
+            Result dict: {success, order_no, stock_code, message}. When
+            ``dry_run`` is True instead returns {dry_run, tr_id, api_url, params}.
         """
-        if not self.auto_trading:
+        if not self.auto_trading and not dry_run:
             return {
                 'success': False,
                 'order_no': None,
@@ -1731,6 +1737,16 @@ class DomesticStockTrading:
             "EXCG_ID_DVSN_CD": excg_id_dvsn_cd,
             "CNDT_PRIC": "",
         }
+
+        if dry_run:
+            # Loop C SHADOW verification: return the exact request that WOULD be
+            # sent — tr_id + endpoint + full body — without auth/hashkey/HTTP.
+            return {
+                'dry_run': True,
+                'tr_id': tr_id,
+                'api_url': api_url,
+                'params': dict(params),
+            }
 
         try:
             res = self._request(api_url, tr_id, params, postFlag=True)
@@ -1769,22 +1785,26 @@ class DomesticStockTrading:
 
     def amend_order(self, stock_code: str, orgn_odno: str, limit_price: int,
                     krx_fwdg_ord_orgno: str = "", ord_dvsn: str = "00",
-                    quantity: int = 0, qty_all_ord_yn: str = "Y") -> Dict[str, Any]:
+                    quantity: int = 0, qty_all_ord_yn: str = "Y",
+                    dry_run: bool = False) -> Dict[str, Any]:
         """Convenience wrapper: amend (정정) an order's limit price to ``limit_price``."""
         return self.amend_cancel_order(
             stock_code=stock_code, orgn_odno=orgn_odno, rvse_cncl_dvsn_cd="01",
             krx_fwdg_ord_orgno=krx_fwdg_ord_orgno, ord_dvsn=ord_dvsn,
             quantity=quantity, limit_price=limit_price, qty_all_ord_yn=qty_all_ord_yn,
+            dry_run=dry_run,
         )
 
     def cancel_order(self, stock_code: str, orgn_odno: str,
                      krx_fwdg_ord_orgno: str = "", ord_dvsn: str = "00",
-                     quantity: int = 0, qty_all_ord_yn: str = "Y") -> Dict[str, Any]:
+                     quantity: int = 0, qty_all_ord_yn: str = "Y",
+                     dry_run: bool = False) -> Dict[str, Any]:
         """Convenience wrapper: cancel (취소) an existing order."""
         return self.amend_cancel_order(
             stock_code=stock_code, orgn_odno=orgn_odno, rvse_cncl_dvsn_cd="02",
             krx_fwdg_ord_orgno=krx_fwdg_ord_orgno, ord_dvsn=ord_dvsn,
             quantity=quantity, limit_price=0, qty_all_ord_yn=qty_all_ord_yn,
+            dry_run=dry_run,
         )
 
     def get_revisable_orders(self, stock_code: str = None) -> List[Dict[str, Any]]:

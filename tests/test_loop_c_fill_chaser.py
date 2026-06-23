@@ -46,11 +46,39 @@ class FakeTrader:
     def get_current_price(self, stock_code):
         return {"current_price": self._prices.get(stock_code, 0)}
 
-    def amend_order(self, stock_code, orgn_odno, limit_price, krx_fwdg_ord_orgno=""):
+    def amend_order(self, stock_code, orgn_odno, limit_price, krx_fwdg_ord_orgno="",
+                    dry_run=False):
+        if dry_run:
+            # Mirror the real wrapper's dry-run dict (tr_id/api_url/params).
+            return {
+                "dry_run": True, "tr_id": "TTTC0013U",
+                "api_url": "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+                "params": {
+                    "CANO": "X", "ACNT_PRDT_CD": "01",
+                    "KRX_FWDG_ORD_ORGNO": krx_fwdg_ord_orgno,
+                    "ORGN_ODNO": str(orgn_odno), "ORD_DVSN": "00",
+                    "RVSE_CNCL_DVSN_CD": "01", "ORD_QTY": "0",
+                    "ORD_UNPR": str(int(limit_price)), "QTY_ALL_ORD_YN": "Y",
+                    "EXCG_ID_DVSN_CD": "KRX", "CNDT_PRIC": "",
+                },
+            }
         self.calls.append(f"amend:{stock_code}:{orgn_odno}:{limit_price}")
         return self._amend_result
 
-    def cancel_order(self, stock_code, orgn_odno, krx_fwdg_ord_orgno=""):
+    def cancel_order(self, stock_code, orgn_odno, krx_fwdg_ord_orgno="",
+                     dry_run=False):
+        if dry_run:
+            return {
+                "dry_run": True, "tr_id": "TTTC0013U",
+                "api_url": "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+                "params": {
+                    "CANO": "X", "ACNT_PRDT_CD": "01",
+                    "KRX_FWDG_ORD_ORGNO": krx_fwdg_ord_orgno,
+                    "ORGN_ODNO": str(orgn_odno), "ORD_DVSN": "00",
+                    "RVSE_CNCL_DVSN_CD": "02", "ORD_QTY": "0", "ORD_UNPR": "0",
+                    "QTY_ALL_ORD_YN": "Y", "EXCG_ID_DVSN_CD": "KRX", "CNDT_PRIC": "",
+                },
+            }
         self.calls.append(f"cancel:{stock_code}:{orgn_odno}")
         return self._cancel_result
 
@@ -305,3 +333,64 @@ def test_inquiry_failure_degrades_to_noop(tmp_db, monkeypatch):
     summary = _run()
     assert summary["open_orders"] == 0
     assert trader.calls == []
+
+
+# ── SHADOW verification helpers (dry-run payload + fill plausibility) ────────────
+def test_dry_run_payload_has_required_kr_fields(tmp_db, monkeypatch):
+    """dry_run=True returns the exact KR amend body without any network/order."""
+    trader = FakeTrader([], {})
+    order = {"ticker": "005930", "side": "SELL", "order_no": "O1",
+             "ord_unpr": 70000, "unfilled_qty": 10, "krx_fwdg_ord_orgno": "GNO1"}
+    payload = lc._build_dry_run_payload(trader, "KR", order, "AMEND", 69500)
+    assert payload["tr_id"] and "order-rvsecncl" in payload["api_url"]
+    p = payload["params"]
+    for k in ("CANO", "ACNT_PRDT_CD", "KRX_FWDG_ORD_ORGNO", "ORGN_ODNO",
+              "RVSE_CNCL_DVSN_CD", "ORD_QTY", "ORD_UNPR", "QTY_ALL_ORD_YN",
+              "EXCG_ID_DVSN_CD"):
+        assert k in p
+    assert p["RVSE_CNCL_DVSN_CD"] == "01"        # amend
+    assert trader.calls == []                    # no real call
+
+
+def test_fill_verdict_sell_and_buy():
+    """SELL fills if new<=mkt; BUY fills if new>=mkt; else UNLIKELY."""
+    assert lc._fill_verdict("SELL", 69000, 69000) == "FILL_LIKELY"
+    assert lc._fill_verdict("SELL", 69500, 69000) == "FILL_UNLIKELY"
+    assert lc._fill_verdict("BUY", 10100, 10100) == "FILL_LIKELY"
+    assert lc._fill_verdict("BUY", 10050, 10100) == "FILL_UNLIKELY"
+    assert lc._fill_verdict("SELL", 0, 100) == "FILL_UNKNOWN"
+
+
+def test_shadow_amend_logs_payload_and_verdict(tmp_db, monkeypatch, caplog):
+    """SHADOW amend records fill-verdict + dry-run payload, issues no real TR."""
+    import logging
+    trader = FakeTrader([_row("O1", "005930", "01", 10, 70000)], {"005930": 69000})
+    _patch_ctx(monkeypatch, trader)
+    _seed_seen(tmp_db, "O1")
+    with caplog.at_level(logging.INFO, logger="loop_c"):
+        _run()
+    assert trader.calls == []                    # SHADOW: still no real amend
+    assert any("[LOOP_C][SHADOW]" in r.message and "fill=" in r.message
+               for r in caplog.records)
+    # The audit row persists the verdict + payload text.
+    conn = sqlite3.connect(tmp_db)
+    reason = conn.execute(
+        "SELECT reason FROM loop_c_chase_log WHERE action='AMEND'"
+    ).fetchone()[0]
+    conn.close()
+    assert "fill=" in reason and "payload=" in reason
+
+
+def test_selftest_runs_without_api_or_orders(monkeypatch, caplog):
+    """--selftest path exercises chase->payload->verdict->log; no API, no orders."""
+    import logging
+    # If anything tried to open a trading context, this would explode the test.
+    monkeypatch.setattr(lc, "_open_context", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("selftest must NOT open a trading context")))
+    with caplog.at_level(logging.INFO, logger="loop_c"):
+        summary = lc.run_selftest("KR")
+    assert summary["market"] == "KR"
+    assert summary["amend"] == 2                 # one SELL + one BUY
+    assert summary["cancel"] == 1                # the BUY also exercises cancel
+    assert summary["likely"] + summary["unlikely"] == 2
+    assert any("[LOOP_C][SHADOW] selftest" in r.message for r in caplog.records)

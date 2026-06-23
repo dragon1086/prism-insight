@@ -338,6 +338,56 @@ def _round_price(market: str, price: float) -> float:
     return round(price, 2)
 
 
+# ── SHADOW verification helpers (dry-run payload + fill plausibility) ───────────
+def _build_dry_run_payload(trader, market: str, order: Dict[str, Any],
+                           action: str, new_price: float) -> Dict[str, Any]:
+    """Call the amend/cancel TR wrapper with dry_run=True and return the exact
+    request that WOULD be sent (tr_id + endpoint + full body). No network, no
+    order. ``action`` is "AMEND" or "CANCEL". Returns {} if the wrapper does not
+    support dry_run or raises (never blocks SHADOW logging)."""
+    ticker = order["ticker"]
+    order_no = order["order_no"]
+    unfilled_qty = int(order["unfilled_qty"] or 0)
+    try:
+        if market == "KR":
+            if action == "AMEND":
+                return trader.amend_order(
+                    ticker, order_no, int(new_price),
+                    order.get("krx_fwdg_ord_orgno", ""), dry_run=True,
+                ) or {}
+            return trader.cancel_order(
+                ticker, order_no, order.get("krx_fwdg_ord_orgno", ""),
+                dry_run=True,
+            ) or {}
+        else:  # US
+            if action == "AMEND":
+                return trader.amend_order(
+                    ticker, order_no, float(new_price), unfilled_qty,
+                    order.get("exchange"), dry_run=True,
+                ) or {}
+            return trader.cancel_order(
+                ticker, order_no, unfilled_qty, order.get("exchange"),
+                dry_run=True,
+            ) or {}
+    except Exception as e:  # never let dry-run verification break SHADOW logging
+        logger.warning("[%s] %s dry-run payload build failed: %s", market, ticker, e)
+        return {}
+
+
+def _fill_verdict(side: str, new_price: float, market_price: float) -> str:
+    """Fill-plausibility: would the chased limit plausibly fill at the market?
+
+    SELL chasing DOWN  -> FILL_LIKELY if new_price <= market_price.
+    BUY  chasing UP    -> FILL_LIKELY if new_price >= market_price.
+    Otherwise FILL_UNLIKELY. Used only for SHADOW eyeballing, never gates trades.
+    """
+    if new_price <= 0 or market_price <= 0:
+        return "FILL_UNKNOWN"
+    if side == "SELL":
+        return "FILL_LIKELY" if new_price <= market_price else "FILL_UNLIKELY"
+    return "FILL_LIKELY" if new_price >= market_price else "FILL_UNLIKELY"
+
+
 # ── Core evaluation for one market ─────────────────────────────────────────────
 async def _act_on_order(conn, trader, market: str, order: Dict[str, Any],
                         run_id: str, summary: Dict[str, Any]) -> None:
@@ -396,8 +446,9 @@ async def _act_on_order(conn, trader, market: str, order: Dict[str, Any],
                 if CANCEL_ON_CEILING:
                     await _do_cancel(conn, trader, market, order, run_id, summary,
                                      mode, order_price,
-                                     reason=f"buy ceiling hit (mkt {market_price:.4f} > "
-                                            f"ceiling {ceiling_price:.4f})")
+                                     reason=f"buy-ceiling: mkt {market_price:.4f} > "
+                                            f"ceiling {ceiling_price:.4f}",
+                                     market_price=market_price)
                 else:
                     summary["ceiling_skipped"] += 1
                     record_chase(conn, ticker, market, side, order_no, "SKIP", mode,
@@ -411,7 +462,8 @@ async def _act_on_order(conn, trader, market: str, order: Dict[str, Any],
             if side == "BUY" and CANCEL_ON_CEILING:
                 await _do_cancel(conn, trader, market, order, run_id, summary,
                                  mode, order_price,
-                                 reason=f"max chases reached ({already})")
+                                 reason=f"max-chases reached ({already})",
+                                 market_price=market_price)
             else:
                 summary["exhausted"] += 1
                 record_chase(conn, ticker, market, side, order_no, "SKIP", mode,
@@ -433,24 +485,43 @@ async def _act_on_order(conn, trader, market: str, order: Dict[str, Any],
             logger.info("[%s] %s already at market -> no amend", market, ticker)
             return
 
+        # Reason annotation for SHADOW eyeballing (normal chase vs floored/capped).
+        if side == "SELL" and new_price <= market_price:
+            reason = "floor-at-market"
+        elif side == "BUY" and new_price >= _round_price(market, ceiling_price):
+            reason = "buy-cap-at-ceiling"
+        else:
+            reason = "normal chase"
         await _do_amend(conn, trader, market, order, run_id, summary, mode,
-                        order_price, new_price, already)
+                        order_price, new_price, already,
+                        market_price=market_price, reason=reason)
     finally:
         release_lock(conn, ticker, market, run_id)
 
 
 async def _do_amend(conn, trader, market, order, run_id, summary, mode,
-                    old_price, new_price, already) -> None:
+                    old_price, new_price, already, market_price=0.0,
+                    reason="normal chase") -> None:
     ticker, side, order_no = order["ticker"], order["side"], order["order_no"]
     unfilled_qty = int(order["unfilled_qty"] or 0)
 
     if not LOOP_C_LIVE:
         summary["shadow"] += 1
-        logger.info("[SHADOW][%s] WOULD AMEND %s %s order=%s qty=%d %.4f -> %.4f (chase #%d)",
-                    market, side, ticker, order_no, unfilled_qty, old_price, new_price, already + 1)
+        verdict = _fill_verdict(side, new_price, market_price)
+        payload = _build_dry_run_payload(trader, market, order, "AMEND", new_price)
+        logger.info(
+            "[LOOP_C][SHADOW] decision=WOULD_AMEND market=%s ticker=%s order_no=%s "
+            "side=%s unfilled_qty=%d chase=#%d/%d reason=%s "
+            "orig_limit=%.4f new_price=%.4f market_price=%.4f fill=%s "
+            "tr_id=%s path=%s payload=%s",
+            market, ticker, order_no, side, unfilled_qty, already + 1, MAX_CHASES,
+            reason, old_price, new_price, market_price, verdict,
+            payload.get("tr_id"), payload.get("api_url"), payload.get("params"),
+        )
         record_chase(conn, ticker, market, side, order_no, "AMEND", mode,
                      old_price, new_price, unfilled_qty, already + 1,
-                     "shadow chase", run_id)
+                     f"shadow chase ({reason}) fill={verdict} payload={payload.get('params')}",
+                     run_id)
         return
 
     logger.warning("[LIVE][%s] AMEND %s %s order=%s %.4f -> %.4f",
@@ -478,17 +549,25 @@ async def _do_amend(conn, trader, market, order, run_id, summary, mode,
 
 
 async def _do_cancel(conn, trader, market, order, run_id, summary, mode,
-                     old_price, reason) -> None:
+                     old_price, reason, market_price=0.0) -> None:
     ticker, side, order_no = order["ticker"], order["side"], order["order_no"]
     unfilled_qty = int(order["unfilled_qty"] or 0)
 
     if not LOOP_C_LIVE:
         summary["shadow"] += 1
-        logger.info("[SHADOW][%s] WOULD CANCEL %s %s order=%s qty=%d (%s)",
-                    market, side, ticker, order_no, unfilled_qty, reason)
+        payload = _build_dry_run_payload(trader, market, order, "CANCEL", 0.0)
+        logger.info(
+            "[LOOP_C][SHADOW] decision=WOULD_CANCEL market=%s ticker=%s order_no=%s "
+            "side=%s unfilled_qty=%d orig_limit=%.4f market_price=%.4f reason=%s "
+            "fill=N/A tr_id=%s path=%s payload=%s",
+            market, ticker, order_no, side, unfilled_qty, old_price, market_price,
+            reason, payload.get("tr_id"), payload.get("api_url"),
+            payload.get("params"),
+        )
         record_chase(conn, ticker, market, side, order_no, "CANCEL", mode,
                      old_price, old_price, unfilled_qty,
-                     chase_count_for(conn, order_no, market), reason, run_id)
+                     chase_count_for(conn, order_no, market),
+                     f"{reason} payload={payload.get('params')}", run_id)
         return
 
     logger.warning("[LIVE][%s] CANCEL %s %s order=%s (%s)",
@@ -575,13 +654,153 @@ def _setup_logging() -> None:
     )
 
 
-def _run_both_isolated() -> int:
+# ── --selftest: exercise chase->payload->verdict->log with NO DB lock / API ────
+class _SelftestTrader:
+    """Synthetic trader for --selftest: serves only dry-run amend/cancel payloads.
+
+    It NEVER places/modifies orders and makes NO network calls — it just forwards
+    to the real TR wrappers' dry_run path so the exact SHADOW payload is built and
+    logged. A real trader is import-light to construct (needs credentials), so the
+    selftest uses this stand-in that mimics the wrapper signatures + dry_run=True.
+    """
+
+    def __init__(self, market: str):
+        self._market = market
+
+    def _payload(self, action: str, ticker: str, order_no: str, qty: int,
+                 price: float, fwdg: str, exchange: str) -> Dict[str, Any]:
+        # Mirror the real wrapper's dry-run dict shape (tr_id/api_url/params) so
+        # selftest output looks identical to a live SHADOW run — without importing
+        # credential-bound trading classes.
+        if self._market == "KR":
+            tr_id = "TTTC0013U"
+            api_url = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
+            params = {
+                "CANO": "SELFTEST", "ACNT_PRDT_CD": "01",
+                "KRX_FWDG_ORD_ORGNO": fwdg, "ORGN_ODNO": str(order_no),
+                "ORD_DVSN": "00",
+                "RVSE_CNCL_DVSN_CD": "01" if action == "AMEND" else "02",
+                "ORD_QTY": "0", "ORD_UNPR": str(int(price if action == "AMEND" else 0)),
+                "QTY_ALL_ORD_YN": "Y", "EXCG_ID_DVSN_CD": "KRX", "CNDT_PRIC": "",
+            }
+        else:
+            tr_id = "TTTT1004U"
+            api_url = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
+            params = {
+                "CANO": "SELFTEST", "ACNT_PRDT_CD": "01",
+                "OVRS_EXCG_CD": exchange or "NASD", "PDNO": ticker.upper(),
+                "ORGN_ODNO": str(order_no),
+                "RVSE_CNCL_DVSN_CD": "01" if action == "AMEND" else "02",
+                "ORD_QTY": str(int(qty)),
+                "OVRS_ORD_UNPR": (f"{price:.2f}" if action == "AMEND" else "0"),
+                "ORD_SVR_DVSN_CD": "0",
+            }
+        return {"dry_run": True, "tr_id": tr_id, "api_url": api_url, "params": params}
+
+    def amend_order(self, ticker, order_no, price, *a, dry_run=False, **kw):
+        exchange = a[1] if (self._market == "US" and len(a) > 1) else kw.get("exchange")
+        fwdg = a[0] if (self._market == "KR" and a) else kw.get("krx_fwdg_ord_orgno", "")
+        qty = a[0] if (self._market == "US" and a) else 0
+        return self._payload("AMEND", ticker, order_no, qty, price, fwdg, exchange)
+
+    def cancel_order(self, ticker, order_no, *a, dry_run=False, **kw):
+        if self._market == "KR":
+            fwdg = a[0] if a else kw.get("krx_fwdg_ord_orgno", "")
+            return self._payload("CANCEL", ticker, order_no, 0, 0.0, fwdg, None)
+        qty = a[0] if a else 0
+        exchange = a[1] if len(a) > 1 else kw.get("exchange")
+        return self._payload("CANCEL", ticker, order_no, qty, 0.0, "", exchange)
+
+
+def _selftest_orders(market: str) -> List[Dict[str, Any]]:
+    """Two hypothetical unfilled orders (one BUY, one SELL) with plausible prices."""
+    if market == "KR":
+        return [
+            {"ticker": "005930", "side": "SELL", "order_no": "ST-SELL-KR",
+             "ord_unpr": 70000.0, "unfilled_qty": 10, "krx_fwdg_ord_orgno": "GNO1"},
+            {"ticker": "000660", "side": "BUY", "order_no": "ST-BUY-KR",
+             "ord_unpr": 10000.0, "unfilled_qty": 5, "krx_fwdg_ord_orgno": "GNO2"},
+        ]
+    return [
+        {"ticker": "AAPL", "side": "SELL", "order_no": "ST-SELL-US",
+         "ord_unpr": 200.00, "unfilled_qty": 10, "exchange": "NASD",
+         "krx_fwdg_ord_orgno": ""},
+        {"ticker": "TSLA", "side": "BUY", "order_no": "ST-BUY-US",
+         "ord_unpr": 250.00, "unfilled_qty": 3, "exchange": "NASD",
+         "krx_fwdg_ord_orgno": ""},
+    ]
+
+
+def run_selftest(market: str) -> Dict[str, Any]:
+    """Exercise compute-chase -> dry-run payload -> fill-plausibility -> SHADOW log
+    on synthetic orders, with NO DB owner-lock, NO API calls and NO orders. Always
+    SHADOW (never sends). Returns a concise summary dict."""
+    trader = _SelftestTrader(market)
+    summary: Dict[str, Any] = {"market": market, "amend": 0, "cancel": 0,
+                               "likely": 0, "unlikely": 0}
+    # Chase one full step toward the market for the selftest so the synthetic
+    # orders land AT the market (floor/cap clamp) — this exercises the
+    # FILL_LIKELY verdict deterministically. Production CHASE_STEP_PCT is
+    # untouched (local override only).
+    step = CHASE_STEP_PCT
+    globals()["CHASE_STEP_PCT"] = 1.0
+    try:
+        return _run_selftest_body(market, trader, summary)
+    finally:
+        globals()["CHASE_STEP_PCT"] = step
+
+
+def _run_selftest_body(market: str, trader, summary: Dict[str, Any]) -> Dict[str, Any]:
+    # Plausible market prices: SELL market just below limit (chase down fills),
+    # BUY market just above limit but within ceiling (chase up fills).
+    for order in _selftest_orders(market):
+        side = order["side"]
+        order_price = float(order["ord_unpr"])
+        if side == "SELL":
+            market_price = _round_price(market, order_price * 0.985)
+        else:
+            market_price = _round_price(market, order_price * 1.003)
+        new_price = _round_price(market, _compute_chase_price(side, order_price, market_price))
+        verdict = _fill_verdict(side, new_price, market_price)
+        payload = _build_dry_run_payload(trader, market, order, "AMEND", new_price)
+        summary["amend"] += 1
+        summary["likely" if verdict == "FILL_LIKELY" else "unlikely"] += 1
+        logger.info(
+            "[LOOP_C][SHADOW] selftest decision=WOULD_AMEND market=%s ticker=%s "
+            "order_no=%s side=%s unfilled_qty=%d reason=normal chase "
+            "orig_limit=%.4f new_price=%.4f market_price=%.4f fill=%s "
+            "tr_id=%s path=%s payload=%s",
+            market, order["ticker"], order["order_no"], side,
+            int(order["unfilled_qty"]), order_price, new_price, market_price,
+            verdict, payload.get("tr_id"), payload.get("api_url"),
+            payload.get("params"),
+        )
+        # Also exercise the cancel payload path (e.g. a buy that would be abandoned).
+        if side == "BUY":
+            cxl = _build_dry_run_payload(trader, market, order, "CANCEL", 0.0)
+            summary["cancel"] += 1
+            logger.info(
+                "[LOOP_C][SHADOW] selftest decision=WOULD_CANCEL market=%s ticker=%s "
+                "order_no=%s side=%s unfilled_qty=%d reason=buy-ceiling (synthetic) "
+                "orig_limit=%.4f market_price=%.4f fill=N/A tr_id=%s path=%s payload=%s",
+                market, order["ticker"], order["order_no"], side,
+                int(order["unfilled_qty"]), order_price, market_price,
+                cxl.get("tr_id"), cxl.get("api_url"), cxl.get("params"),
+            )
+    logger.info("[LOOP_C][SHADOW] selftest %s summary: %s", market, summary)
+    return summary
+
+
+def _run_both_isolated(selftest: bool = False) -> int:
     """Run KR and US as SEPARATE subprocesses (cores-shadowing isolation)."""
     import subprocess
     rc = 0
     for m in ("kr", "us"):
+        cmd = [sys.executable, str(Path(__file__).resolve()), "--market", m]
+        if selftest:
+            cmd.append("--selftest")
         try:
-            proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--market", m])
+            proc = subprocess.run(cmd)
             rc = rc or proc.returncode
         except Exception as e:
             logger.error("subprocess for market=%s failed: %s", m, e)
@@ -593,12 +812,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Loop C fill-chaser (미체결 추격)")
     parser.add_argument("--market", choices=["kr", "us", "both"], default="both")
     parser.add_argument("--once", action="store_true", help="(default) run a single cycle")
+    parser.add_argument(
+        "--selftest", action="store_true",
+        help="SHADOW-safe self-test: synthesize hypothetical unfilled orders and "
+             "exercise chase->dry-run-payload->fill-plausibility->log with NO DB "
+             "lock, NO API calls and NO orders.",
+    )
     args = parser.parse_args()
     _setup_logging()
     if args.market == "both":
-        return _run_both_isolated()
+        return _run_both_isolated(selftest=args.selftest)
     market = {"kr": "KR", "us": "US"}[args.market]
     _bootstrap_path(market)
+    if args.selftest:
+        run_selftest(market)
+        return 0
     return asyncio.run(main_async([market]))
 
 
