@@ -636,6 +636,16 @@ class USStockAnalysisOrchestrator:
                     logger.error(f"PDF file transmission failed: {pdf_path}")
                 await asyncio.sleep(1)
 
+            # Phase 6 S6: broadcast annotated insight images (default-OFF, non-blocking).
+            # One image per company AFTER its PDF. Gated on PRISM_FEATURE_INSIGHT_IMAGE;
+            # never raises. (Under US `cores` shadowing the KR chart path is absent,
+            # so build_insight_image_for degrades to None and this no-ops safely.)
+            try:
+                from cores.llm.features.insight_broadcast import broadcast_insight_images
+                await broadcast_insight_images(bot_agent, chat_id, pdf_paths, market="us")
+            except Exception as e:
+                logger.warning(f"[INSIGHT_IMAGE] US broadcast skipped: {e}")
+
             # Send translated PDFs to broadcast channels asynchronously (non-blocking)
             if self.telegram_config.broadcast_languages and report_paths:
                 self._broadcast_tasks.append(

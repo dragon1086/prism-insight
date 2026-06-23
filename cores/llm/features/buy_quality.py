@@ -27,14 +27,33 @@ Design constraints (mirror S1/S2):
 from __future__ import annotations
 
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
+from pydantic.json_schema import GenerateJsonSchema
 
 from cores.llm.capabilities import vision_available
 from cores.llm.features.vision import ImageInput, analyze_image
 
 logger = logging.getLogger(__name__)
+
+
+class _AllFieldsRequired(GenerateJsonSchema):
+    """JSON-schema generator that forces EVERY property into ``required``.
+
+    OpenAI's ``strict`` json_schema mode requires every property to be listed
+    in ``required`` even when the Pydantic field carries a default. We add
+    coordinate-bearing fields (support/resistance/buy/stop) with empty-ish
+    defaults so existing callers that don't supply them keep working, while
+    this generator keeps the emitted schema strict-compatible
+    (``required == properties``).
+    """
+
+    def generate(self, schema: Any, mode: str = "validation") -> dict:
+        js = super().generate(schema, mode=mode)
+        if js.get("type") == "object" and "properties" in js:
+            js["required"] = list(js["properties"].keys())
+        return js
 
 
 # --------------------------------------------------------------------------- #
@@ -72,6 +91,27 @@ class BaseAnalysis(BaseModel):
     quality_score: int          # 0-100
     confidence: int             # 0-100
     rationale: str
+
+    # --- Coordinate-bearing annotation fields (Phase 6 S6, display-only). ---
+    # All in WON price units (KR), consistent with the chart's y-axis. These
+    # let us DRAW annotations deterministically (we never let the model draw on
+    # the image). Empty list / 0.0 means "none". Defaults keep older callers
+    # working; _AllFieldsRequired keeps the emitted JSON schema strict-safe.
+    support_levels: list[float] = []      # price levels of support
+    resistance_levels: list[float] = []   # price levels of resistance
+    buy_point: float = 0.0                # entry/buy-pivot price (0.0 = none)
+    stop_loss: float = 0.0                # protective stop price (0.0 = none)
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):  # type: ignore[override]
+        """Emit a strict-compatible schema (every property in ``required``).
+
+        Routes through :class:`_AllFieldsRequired` so fields carrying defaults
+        (the S6 annotation fields) are still marked required, satisfying
+        OpenAI's strict json_schema mode and the existing strictness tests.
+        """
+        kwargs.setdefault("schema_generator", _AllFieldsRequired)
+        return super().model_json_schema(*args, **kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -134,12 +174,26 @@ Score the base:
 - quality_score (0-100): overall O'Neil base quality. Tight proper cup-with-handle \
 with RS new high and volume dry-up scores high; wide/loose/faulty/no-base scores low.
 - confidence (0-100): your confidence in this assessment.
-- rationale: one or two sentences justifying the scores.
+- rationale: one or two sentences justifying the scores. WRITE THE rationale IN \
+KOREAN (한국어), in a natural, concise tone suitable for retail subscribers. All \
+other fields stay as specified (numbers, booleans, and the fixed enum strings \
+for base_type / tightness / proper_or_faulty remain in English exactly as listed).
+
+Also return KEY PRICE LEVELS so they can be drawn on the chart. Report ALL of \
+these in WON (₩) price units, consistent with the chart's y-axis (NOT \
+percentages, NOT chart pixel coordinates):
+- support_levels: a list of price levels (₩) acting as support (empty list if none).
+- resistance_levels: a list of price levels (₩) acting as resistance (empty list if none).
+- buy_point: the entry/buy-pivot price (₩); use 0.0 if there is no valid buy point.
+- stop_loss: a sensible protective stop price (₩) below the base; use 0.0 if none.
+Keep each list short (typically 1-3 levels) and only include levels you can read \
+off the chart's price axis.
 
 Return a strict JSON object with exactly these fields: base_type, \
 base_length_weeks, depth_pct, handle_present, handle_in_upper_half, tightness, \
 volume_dryup_in_handle, pivot_price, dist_to_pivot_pct, rs_line_new_high, \
-proper_or_faulty, quality_score, confidence, rationale.
+proper_or_faulty, quality_score, confidence, rationale, support_levels, \
+resistance_levels, buy_point, stop_loss.
 """
 
 
@@ -196,6 +250,53 @@ def _apply_pivot_cross_check(
             f"{original}->{analysis.quality_score}]"
         ).strip()
     return analysis
+
+
+def validate_levels(
+    levels: list[float],
+    price_min: float,
+    price_max: float,
+    pad: float = 0.25,
+) -> list[float]:
+    """Keep only price levels that fall within a plausible band of the chart.
+
+    A deterministic guard so we never DRAW an absurd (hallucinated) line on a
+    subscriber-facing image. Levels outside
+    ``[price_min*(1-pad), price_max*(1+pad)]`` are dropped. Non-positive levels
+    are always dropped. Logs how many were dropped. Never raises.
+
+    Args:
+        levels:    Candidate price levels (WON), as returned by the vision model.
+        price_min: The chart's actual visible minimum price.
+        price_max: The chart's actual visible maximum price.
+        pad:       Fractional padding around the visible band (default 0.25).
+
+    Returns:
+        The in-band subset of *levels*, order preserved.
+    """
+    if not levels:
+        return []
+    try:
+        lo, hi = float(price_min), float(price_max)
+        if lo > hi:
+            lo, hi = hi, lo
+        lower = lo * (1.0 - pad)
+        upper = hi * (1.0 + pad)
+        kept = [lv for lv in levels if lv > 0 and lower <= lv <= upper]
+        dropped = len(levels) - len(kept)
+        if dropped:
+            logger.info(
+                "[INSIGHT_IMAGE] validate_levels dropped %d/%d out-of-band level(s) "
+                "(band=[%.4g, %.4g])",
+                dropped,
+                len(levels),
+                lower,
+                upper,
+            )
+        return kept
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[INSIGHT_IMAGE] validate_levels failed: %s", exc)
+        return []
 
 
 async def analyze_base(

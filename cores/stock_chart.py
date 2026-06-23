@@ -1503,11 +1503,13 @@ def _compute_rs_line(stock_close, index_close):
 
 
 def _add_rs_panel(fig, rs_series, label):
-    """Draw the RS line as a thin dedicated bottom subpanel on *fig*.
+    """Draw the RS line as a clearly readable dedicated bottom subpanel on *fig*.
 
-    Adds a small axis spanning the bottom strip of the figure (kept out of the
-    way of the mplfinance price/volume panels). Highlights the most recent RS
-    new-high point if one exists. Never raises; on error the chart is unchanged.
+    Adds a taller bottom axis (kept out of the way of the mplfinance
+    price/volume panels) so the RS line is legible rather than a thin strip.
+    Marks EVERY point where the RS line makes a new high (running-max), with the
+    most recent new high emphasised and annotated. Never raises; on error the
+    chart is unchanged.
     """
     try:
         if rs_series is None:
@@ -1515,29 +1517,58 @@ def _add_rs_panel(fig, rs_series, label):
         rs_clean = rs_series.dropna()
         if len(rs_clean) == 0:
             return
-        # Dedicated thin axis at the very bottom of the figure.
-        rs_ax = fig.add_axes([0.08, 0.02, 0.84, 0.10])
-        x = range(len(rs_clean))
-        rs_ax.plot(x, rs_clean.values, color="#8e44ad", linewidth=1.0)
-        # Mark the most recent RS new high (running-max equals current value).
+        # Dedicated, clearly-sized axis at the bottom of the figure. Taller than
+        # the previous 0.10 strip so the RS structure is actually readable.
+        rs_ax = fig.add_axes([0.08, 0.02, 0.84, 0.18])
+        x = list(range(len(rs_clean)))
+        rs_vals = rs_clean.values
+        rs_ax.plot(x, rs_vals, color="#8e44ad", linewidth=1.3)
+
+        # Mark ALL RS new highs (running-max equals current value).
         running_max = rs_clean.cummax()
-        is_new_high = rs_clean.values >= running_max.values
-        if bool(is_new_high[-1]):
-            rs_ax.plot(
-                len(rs_clean) - 1,
-                rs_clean.values[-1],
+        is_new_high = rs_vals >= running_max.values
+        nh_x = [i for i, flag in enumerate(is_new_high) if bool(flag)]
+        if nh_x:
+            rs_ax.scatter(
+                nh_x,
+                [rs_vals[i] for i in nh_x],
                 marker="^",
                 color="#27ae60",
-                markersize=7,
+                s=18,
+                zorder=3,
+                label="RS new high",
             )
+        # Emphasise + annotate the most recent new high (O'Neil's strongest tell).
+        # Guard against an empty new-high array (avoids "index -1 out of bounds
+        # for axis 0 with size 0" when the RS series degenerates).
+        if len(is_new_high) > 0 and bool(is_new_high[-1]):
+            last_i = len(rs_vals) - 1
+            rs_ax.scatter(
+                [last_i],
+                [rs_vals[last_i]],
+                marker="^",
+                color="#1e8449",
+                s=70,
+                zorder=4,
+            )
+            ann_kw = dict(fontsize=7, color="#1e8449", ha="right", va="bottom")
+            if KOREAN_FONT_PROP:
+                ann_kw["fontproperties"] = KOREAN_FONT_PROP
+            rs_ax.annotate("RS 신고가", (last_i, rs_vals[last_i]), **ann_kw)
+
         rs_ax.set_xticks([])
-        rs_ax.tick_params(axis="y", labelsize=6)
+        rs_ax.tick_params(axis="y", labelsize=7)
         rs_ax.margins(x=0.01)
+        rs_ax.grid(True, axis="y", alpha=0.2)
+        # Clear, fixed y-label per S6 spec (independent of which index was used).
+        rs_ylabel = "RS vs KOSPI/KOSDAQ"
         rs_title = f"RS vs {label} (norm=100 at start)"
         if KOREAN_FONT_PROP:
-            rs_ax.set_ylabel(rs_title, fontsize=7, fontproperties=KOREAN_FONT_PROP)
+            rs_ax.set_ylabel(rs_ylabel, fontsize=8, fontproperties=KOREAN_FONT_PROP)
+            rs_ax.set_title(rs_title, fontsize=7, fontproperties=KOREAN_FONT_PROP)
         else:
-            rs_ax.set_ylabel(rs_title, fontsize=7)
+            rs_ax.set_ylabel(rs_ylabel, fontsize=8)
+            rs_ax.set_title(rs_title, fontsize=7)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[ONEIL] RS panel draw failed: {e}")
 
