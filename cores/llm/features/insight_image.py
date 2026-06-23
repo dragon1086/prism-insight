@@ -209,7 +209,9 @@ def _build_caption(analysis: BaseAnalysis, *, ticker: str,
         "지지/저항=하락을 받쳐주는/상승을 막는 가격대",
         "적합·부적합=오닐 기준 매수자리로 적절/부적절한 베이스 형태",
     ]
-    glossary = "ℹ️ 용어 안내 — " + " · ".join(glossary_terms)
+    # Use a font-safe marker ("▸") instead of the ℹ️ emoji: the Korean chart
+    # font (NanumGothicCoding) has no glyph for ℹ️, so it rendered as a tofu box.
+    glossary = "▸ 용어 안내 — " + " · ".join(glossary_terms)
     lines.append("")
     lines.append(textwrap.fill(glossary, width=58))
 
