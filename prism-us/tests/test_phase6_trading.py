@@ -277,6 +277,15 @@ class TestTrackingAgentHelpers:
         for key in required_keys:
             assert key in result, f"Missing key: {key}"
 
+    def test_default_scenario_marks_analysis_failed(self):
+        """default_scenario() must flag analysis_failed so downstream code
+        skips the ticker instead of broadcasting a misleading '매수 보류'
+        message for a stock it could not actually analyze."""
+        from us_stock_tracking_agent import default_scenario
+
+        result = default_scenario()
+        assert result.get('analysis_failed') is True
+
 
 # =============================================================================
 # Test: Sector Diversity Check

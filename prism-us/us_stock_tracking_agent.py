@@ -442,7 +442,13 @@ def parse_price_value(value: Any) -> float:
 
 
 def default_scenario() -> Dict[str, Any]:
-    """Return default trading scenario for US stocks."""
+    """Return default trading scenario for US stocks.
+
+    NOTE: This is a *failure* sentinel, not a real trading decision. The
+    `analysis_failed` flag lets downstream code distinguish a genuine
+    "no_entry" judgment from an analysis/LLM failure, so we never broadcast a
+    misleading "매수 보류" message for a stock we couldn't actually analyze.
+    """
     return {
         "portfolio_analysis": "Analysis failed",
         "buy_score": 0,
@@ -452,7 +458,8 @@ def default_scenario() -> Dict[str, Any]:
         "investment_period": "short",
         "rationale": "Analysis failed",
         "sector": "Unknown",
-        "considerations": "Analysis failed"
+        "considerations": "Analysis failed",
+        "analysis_failed": True
     }
 
 
@@ -798,16 +805,40 @@ class USStockTrackingAgent:
             {report_content}
             """
 
-            response = await llm.generate_str(
-                message=prompt_message,
-                request_params=RequestParams(
-                    model="gpt-5.5",
-                    maxTokens=30000
-                )
-            )
+            # LLM scenario generation with retry+backoff. Transient API/parse
+            # failures (rate limits, truncated responses) were silently turning
+            # into default_scenario() — i.e. a misleading "Analysis failed" skip.
+            # Retry a couple of times before giving up.
+            ticker_tag = ticker or "?"
+            max_attempts = 3
+            response = None
+            scenario_json = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    response = await llm.generate_str(
+                        message=prompt_message,
+                        request_params=RequestParams(
+                            model="gpt-5.5",
+                            maxTokens=30000
+                        )
+                    )
+                    # JSON parsing (consolidated in cores/utils.py)
+                    scenario_json = parse_llm_json(response, context='US trading scenario')
+                    if scenario_json is not None:
+                        break
+                    logger.warning(
+                        f"[{ticker_tag}] US trading scenario parse returned None "
+                        f"(attempt {attempt}/{max_attempts})"
+                    )
+                except Exception as call_err:
+                    log_openai_error(logger, call_err, f"US trading scenario LLM call [{ticker_tag}]")
+                    logger.warning(
+                        f"[{ticker_tag}] US trading scenario LLM call failed "
+                        f"(attempt {attempt}/{max_attempts}): {call_err}"
+                    )
+                if attempt < max_attempts:
+                    await asyncio.sleep(2 * attempt)  # linear backoff: 2s, 4s
 
-            # JSON parsing (consolidated in cores/utils.py)
-            scenario_json = parse_llm_json(response, context='US trading scenario')
             if scenario_json is not None:
                 # Persist the experience-based score adjustment alongside the scenario.
                 # It rides inside the scenario JSON, stored in us_stock_holdings.scenario and
@@ -818,7 +849,10 @@ class USStockTrackingAgent:
                 logger.info(f"Scenario parsed: {json.dumps(scenario_json, ensure_ascii=False)[:200]}")
                 return scenario_json
 
-            logger.error(f"US trading scenario parse failed. Full response: {response}")
+            logger.error(
+                f"[ANALYSIS_FAILED][{ticker_tag}] US trading scenario unavailable after "
+                f"{max_attempts} attempts. Last response (truncated): {str(response)[:500]}"
+            )
             return default_scenario()
 
         except Exception as e:
@@ -868,6 +902,17 @@ class USStockTrackingAgent:
                 trigger_mode=trigger_mode
             )
 
+            # Analysis/LLM failure sentinel: do NOT emit a misleading "매수 보류"
+            # message or watchlist entry. Log clearly and skip the ticker via the
+            # same path as a hard failure (success=False), unifying both failure modes.
+            if scenario.get("analysis_failed"):
+                logger.error(
+                    f"[ANALYSIS_FAILED][{ticker}] {company_name}: trading scenario unavailable "
+                    f"after retries — skipping (no trade, no skip message, no watchlist)"
+                )
+                return {"success": False, "error": "analysis_failed",
+                        "ticker": ticker, "company_name": company_name}
+
             raw_decision = scenario.get("decision", "no_entry")
             sector = scenario.get("sector", "Unknown")
 
@@ -885,7 +930,7 @@ class USStockTrackingAgent:
             }
 
         except Exception as e:
-            logger.error(f"Error analyzing report: {str(e)}")
+            logger.error(f"[ANALYSIS_FAILED] Error analyzing report ({pdf_report_path}): {str(e)}")
             logger.error(traceback.format_exc())
             return {"success": False, "error": str(e)}
 
@@ -2501,7 +2546,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             for pdf_report_path in pdf_report_paths:
                 analysis_result = await self._analyze_report_core(pdf_report_path)
                 if not analysis_result.get("success", False):
-                    logger.error(f"Report analysis failed: {pdf_report_path}")
+                    logger.error(
+                        f"[ANALYSIS_FAILED] Report analysis skipped "
+                        f"({analysis_result.get('ticker', '?')}/{analysis_result.get('company_name', '?')}): "
+                        f"{analysis_result.get('error')} — {pdf_report_path}"
+                    )
                     continue
                 analysis_states.append(
                     {
