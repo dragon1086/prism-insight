@@ -44,11 +44,37 @@ class FakeTrader:
     def get_current_price(self, ticker):
         return {"current_price": self._prices.get(ticker, 0)}
 
-    def amend_order(self, ticker, orgn_odno, limit_price, quantity, exchange=None):
+    def amend_order(self, ticker, orgn_odno, limit_price, quantity, exchange=None,
+                    dry_run=False):
+        if dry_run:
+            return {
+                "dry_run": True, "tr_id": "TTTT1004U",
+                "api_url": "/uapi/overseas-stock/v1/trading/order-rvsecncl",
+                "params": {
+                    "CANO": "X", "ACNT_PRDT_CD": "01",
+                    "OVRS_EXCG_CD": exchange or "NASD", "PDNO": ticker.upper(),
+                    "ORGN_ODNO": str(orgn_odno), "RVSE_CNCL_DVSN_CD": "01",
+                    "ORD_QTY": str(int(quantity)),
+                    "OVRS_ORD_UNPR": f"{limit_price:.2f}", "ORD_SVR_DVSN_CD": "0",
+                },
+            }
         self.calls.append(f"amend:{ticker}:{orgn_odno}:{limit_price}:{quantity}:{exchange}")
         return self._amend_result
 
-    def cancel_order(self, ticker, orgn_odno, quantity, exchange=None):
+    def cancel_order(self, ticker, orgn_odno, quantity, exchange=None,
+                     dry_run=False):
+        if dry_run:
+            return {
+                "dry_run": True, "tr_id": "TTTT1004U",
+                "api_url": "/uapi/overseas-stock/v1/trading/order-rvsecncl",
+                "params": {
+                    "CANO": "X", "ACNT_PRDT_CD": "01",
+                    "OVRS_EXCG_CD": exchange or "NASD", "PDNO": ticker.upper(),
+                    "ORGN_ODNO": str(orgn_odno), "RVSE_CNCL_DVSN_CD": "02",
+                    "ORD_QTY": str(int(quantity)),
+                    "OVRS_ORD_UNPR": "0", "ORD_SVR_DVSN_CD": "0",
+                },
+            }
         self.calls.append(f"cancel:{ticker}:{orgn_odno}:{quantity}:{exchange}")
         return self._cancel_result
 
@@ -279,3 +305,60 @@ def test_inquiry_failure_degrades_to_noop(tmp_db, monkeypatch):
     summary = _run()
     assert summary["open_orders"] == 0
     assert trader.calls == []
+
+
+# ── SHADOW verification helpers (dry-run payload + fill plausibility) ────────────
+def test_dry_run_payload_has_required_us_fields(tmp_db, monkeypatch):
+    """dry_run=True returns the exact US amend body incl. the TODO(live-validate)
+    fields (PDNO/ORD_SVR_DVSN_CD/OVRS_EXCG_CD/OVRS_ORD_UNPR) — no network/order."""
+    trader = FakeTrader([], {})
+    order = {"ticker": "AAPL", "side": "SELL", "order_no": "O1",
+             "ord_unpr": 190.00, "unfilled_qty": 10, "exchange": "NASD",
+             "krx_fwdg_ord_orgno": ""}
+    payload = lc._build_dry_run_payload(trader, "US", order, "AMEND", 189.50)
+    assert payload["tr_id"] and "order-rvsecncl" in payload["api_url"]
+    p = payload["params"]
+    for k in ("CANO", "ACNT_PRDT_CD", "OVRS_EXCG_CD", "PDNO", "ORGN_ODNO",
+              "RVSE_CNCL_DVSN_CD", "ORD_QTY", "OVRS_ORD_UNPR", "ORD_SVR_DVSN_CD"):
+        assert k in p
+    assert p["PDNO"] == "AAPL" and p["OVRS_EXCG_CD"] == "NASD"
+    assert p["RVSE_CNCL_DVSN_CD"] == "01"
+    assert trader.calls == []
+
+
+def test_fill_verdict_sell_and_buy_us():
+    assert lc._fill_verdict("SELL", 189.00, 189.00) == "FILL_LIKELY"
+    assert lc._fill_verdict("SELL", 189.50, 189.00) == "FILL_UNLIKELY"
+    assert lc._fill_verdict("BUY", 101.00, 101.00) == "FILL_LIKELY"
+    assert lc._fill_verdict("BUY", 100.50, 101.00) == "FILL_UNLIKELY"
+
+
+def test_shadow_amend_logs_payload_and_verdict(tmp_db, monkeypatch, caplog):
+    import logging
+    trader = FakeTrader([_row("O1", "AAPL", "01", 10, 190.00)], {"AAPL": 189.00})
+    _patch_ctx(monkeypatch, trader)
+    _seed_seen(tmp_db, "O1")
+    with caplog.at_level(logging.INFO, logger="loop_c"):
+        _run()
+    assert trader.calls == []
+    assert any("[LOOP_C][SHADOW]" in r.message and "fill=" in r.message
+               for r in caplog.records)
+    conn = sqlite3.connect(tmp_db)
+    reason = conn.execute(
+        "SELECT reason FROM loop_c_chase_log WHERE action='AMEND'"
+    ).fetchone()[0]
+    conn.close()
+    assert "fill=" in reason and "payload=" in reason
+
+
+def test_selftest_runs_without_api_or_orders(monkeypatch, caplog):
+    import logging
+    monkeypatch.setattr(lc, "_open_context", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("selftest must NOT open a trading context")))
+    with caplog.at_level(logging.INFO, logger="loop_c"):
+        summary = lc.run_selftest("US")
+    assert summary["market"] == "US"
+    assert summary["amend"] == 2
+    assert summary["cancel"] == 1
+    assert summary["likely"] + summary["unlikely"] == 2
+    assert any("[LOOP_C][SHADOW] selftest" in r.message for r in caplog.records)

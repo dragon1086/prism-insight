@@ -1802,15 +1802,23 @@ class USStockTrading:
         quantity: int,
         exchange: str = None,
         limit_price: float = 0.0,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """Amend (정정) or cancel (취소) an existing overseas order.
 
         ``rvse_cncl_dvsn_cd``: "01" = amend (new ``limit_price``), "02" = cancel.
         For cancel, KIS expects price 0.
 
-        Returns: {success, order_no, ticker, quantity, message}.
+        ``dry_run``: when True (Loop C SHADOW verification), build the FULL request
+        exactly as it would be sent — tr_id + endpoint + full body, including the
+        ``# TODO(live-validate)`` fields (PDNO/ORD_SVR_DVSN_CD/OVRS_EXCG_CD/
+        OVRS_ORD_UNPR) — and RETURN it WITHOUT auth/hashkey/HTTP. Default False =
+        LIVE behaviour unchanged.
+
+        Returns: {success, order_no, ticker, quantity, message}. When ``dry_run``
+        is True instead returns {dry_run, tr_id, api_url, params}.
         """
-        if not self.auto_trading:
+        if not self.auto_trading and not dry_run:
             return {
                 'success': False,
                 'order_no': None,
@@ -1847,6 +1855,17 @@ class USStockTrading:
             "OVRS_ORD_UNPR": ord_unpr,
             "ORD_SVR_DVSN_CD": "0",
         }
+
+        if dry_run:
+            # Loop C SHADOW verification: return the exact request that WOULD be
+            # sent — tr_id + endpoint + full body (incl. the TODO(live-validate)
+            # fields above) — without auth/hashkey/HTTP.
+            return {
+                'dry_run': True,
+                'tr_id': tr_id,
+                'api_url': api_url,
+                'params': dict(params),
+            }
 
         try:
             res = self._request(api_url, tr_id, params, postFlag=True)
@@ -1887,19 +1906,22 @@ class USStockTrading:
             }
 
     def amend_order(self, ticker: str, orgn_odno: str, limit_price: float,
-                    quantity: int, exchange: str = None) -> Dict[str, Any]:
+                    quantity: int, exchange: str = None,
+                    dry_run: bool = False) -> Dict[str, Any]:
         """Convenience wrapper: amend (정정) an overseas order's limit price."""
         return self.amend_cancel_order(
             ticker=ticker, orgn_odno=orgn_odno, rvse_cncl_dvsn_cd="01",
             quantity=quantity, exchange=exchange, limit_price=limit_price,
+            dry_run=dry_run,
         )
 
     def cancel_order(self, ticker: str, orgn_odno: str, quantity: int,
-                     exchange: str = None) -> Dict[str, Any]:
+                     exchange: str = None, dry_run: bool = False) -> Dict[str, Any]:
         """Convenience wrapper: cancel (취소) an overseas order."""
         return self.amend_cancel_order(
             ticker=ticker, orgn_odno=orgn_odno, rvse_cncl_dvsn_cd="02",
             quantity=quantity, exchange=exchange, limit_price=0.0,
+            dry_run=dry_run,
         )
 
     def get_unfilled_orders(self, ticker: str = None,
