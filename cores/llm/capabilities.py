@@ -10,6 +10,8 @@ Environment variables (all off/safe by default):
     PRISM_VISION_SHADOW     — "false" to disable shadow-only mode (default: true)
     PRISM_VISION_MODEL      — override vision model id (default: gpt-4o)
     PRISM_VISION_AUTH       — "api" or "oauth" for vision auth path (default: api)
+    PRISM_FEATURE_INSIGHT_IMAGE — "on" to broadcast insight images to subscribers
+                              (default: off; INDEPENDENT of the vision SHADOW flag)
 """
 
 from __future__ import annotations
@@ -109,3 +111,15 @@ def vision_available() -> bool:
     When False, skip entirely — no encoding, no client, no network.
     """
     return vision_enabled() and has_api_key()
+
+
+def insight_image_enabled() -> bool:
+    """Return True only when PRISM_FEATURE_INSIGHT_IMAGE=on (default: off).
+
+    INDEPENDENT broadcast gate for the subscriber-facing insight image. This is
+    deliberately SEPARATE from the vision SHADOW flag: deploying the broadcast
+    code sends NOTHING to subscribers until this env is explicitly set to "on".
+    Callers should require BOTH insight_image_enabled() AND vision_available()
+    before producing/sending an image.
+    """
+    return os.environ.get("PRISM_FEATURE_INSIGHT_IMAGE", "off").strip().lower() == "on"

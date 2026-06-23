@@ -47,11 +47,20 @@ from cores.llm.features.buy_quality import BaseAnalysis, validate_levels
 
 logger = logging.getLogger(__name__)
 
-# Annotation colours (deterministic, subscriber-facing styling).
-_COLOR_SUPPORT = "#27ae60"      # green
-_COLOR_RESISTANCE = "#c0392b"   # red
-_COLOR_BUY = "#1f6feb"          # blue
-_COLOR_STOP = "#e67e22"         # orange
+# --- Premium dark theme palette (subscriber-facing "card" styling) --------- #
+_BG = "#0b0e14"          # figure background (near-black navy)
+_PANEL = "#0f1320"       # axes panel background
+_GRID = "#1e2636"        # subtle gridlines
+_TXT = "#d6deeb"         # primary text (light)
+_TXT_DIM = "#8b97b0"     # secondary/dim text
+_GOLD = "#e5c07b"        # premium accent (pivot + base box = the hero)
+
+# Annotation colours (deterministic; we draw, never the LLM).
+_COLOR_SUPPORT = "#3fb950"      # green
+_COLOR_RESISTANCE = "#f85149"   # red
+_COLOR_BUY = _GOLD              # gold pivot (hero)
+_COLOR_STOP = "#d29922"         # amber
+_COLOR_BASEBOX = _GOLD          # base highlight box
 
 _DISCLAIMER = "※ 분석 의견이며 투자 조언이 아닙니다."
 
@@ -99,11 +108,11 @@ def _draw_level(ax, price: float, color: str, label: str, *, linestyle: str,
     (upper-left) nor gets clipped at the right edge.
     """
     ax.axhline(price, color=color, linestyle=linestyle, linewidth=linewidth,
-               alpha=0.9)
+               alpha=0.85, zorder=4)
     txt_kw = dict(color=color, fontsize=9, fontweight="bold", va="bottom",
-                  ha="left", transform=ax.get_yaxis_transform(),
-                  bbox=dict(boxstyle="round,pad=0.2", facecolor="white",
-                            edgecolor="none", alpha=0.75))
+                  ha="left", transform=ax.get_yaxis_transform(), zorder=6,
+                  bbox=dict(boxstyle="round,pad=0.25", facecolor=_PANEL,
+                            edgecolor=color, linewidth=0.8, alpha=0.92))
     if font_prop is not None:
         txt_kw["fontproperties"] = font_prop
     # x=0.015 axes-fraction (left), nudged up off the line; y in data coords.
@@ -182,6 +191,132 @@ def _build_caption(analysis: BaseAnalysis, *, ticker: str,
     return "\n".join(lines)
 
 
+def _apply_premium_theme(fig, axes_list, *, font_prop=None) -> None:
+    """Restyle the (light) mplfinance figure into a premium dark 'card' in-place.
+
+    Candle/MA colours set at plot time read well on the dark panel; we only
+    repaint backgrounds, spines, ticks and gridlines. Never raises.
+    """
+    try:
+        fig.patch.set_facecolor(_BG)
+        for ax in axes_list:
+            if ax is None:
+                continue
+            ax.set_facecolor(_PANEL)
+            ax.tick_params(colors=_TXT_DIM, labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_color(_GRID)
+            ax.grid(True, color=_GRID, alpha=0.55, linewidth=0.6)
+            try:
+                ax.yaxis.label.set_color(_TXT_DIM)
+                ax.xaxis.label.set_color(_TXT_DIM)
+            except Exception:  # noqa: BLE001
+                pass
+            if ax.get_title():
+                ax.title.set_color(_TXT)
+        try:
+            if getattr(fig, "_suptitle", None) is not None:
+                fig._suptitle.set_color(_TXT)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[INSIGHT_IMAGE] theme failed: %s", exc)
+
+
+def _draw_base_box(price_ax, analysis, *, price_min, price_max,
+                   font_prop=None) -> None:
+    """Highlight the most-recent base region with a box + a pattern tag.
+
+    X is mplfinance candle-index space (0..N-1); N is read from the axis xlim,
+    and the box spans the last ``base_length_weeks*5`` trading days. Y spans the
+    base from a support/stop up to the pivot/resistance. Best-effort; on any
+    issue it is skipped silently.
+    """
+    try:
+        from matplotlib.patches import Rectangle
+
+        xmin, xmax = price_ax.get_xlim()
+        weeks = int(getattr(analysis, "base_length_weeks", 0) or 0)
+        base_days = weeks * 5
+        if base_days < 8:
+            base_days = max(20, int((xmax - xmin) * 0.12))
+        x_end = xmax - 2.0
+        x_start = max(xmin + 1.0, x_end - base_days)
+
+        sup = validate_levels(list(analysis.support_levels), price_min, price_max)
+        res = validate_levels(list(analysis.resistance_levels), price_min, price_max)
+        buy = validate_levels([analysis.buy_point], price_min, price_max)
+        stop = validate_levels([analysis.stop_loss], price_min, price_max)
+        tops = (res or []) + (buy or [])
+        bottoms = (sup or []) + (stop or [])
+        if tops and bottoms:
+            top, bottom = max(tops), min(bottoms)
+        else:
+            span = price_max - price_min
+            top, bottom = price_max - span * 0.18, price_min + span * 0.20
+        if top <= bottom:
+            return
+        pad = (top - bottom) * 0.08
+        bottom -= pad
+        top += pad
+
+        # Soft fill + crisp gold border = the "hero" pattern highlight.
+        price_ax.add_patch(Rectangle(
+            (x_start, bottom), x_end - x_start, top - bottom,
+            linewidth=0, facecolor=_COLOR_BASEBOX, alpha=0.12, zorder=2.4))
+        price_ax.add_patch(Rectangle(
+            (x_start, bottom), x_end - x_start, top - bottom,
+            linewidth=2.0, edgecolor=_COLOR_BASEBOX, facecolor="none",
+            alpha=0.95, zorder=3.0))
+
+        tag = (f"{_ko_base_type(analysis.base_type)} · {weeks}주"
+               if weeks else _ko_base_type(analysis.base_type))
+        txt_kw = dict(color="#0b0e14", fontsize=10, fontweight="bold",
+                      va="center", ha="left", zorder=7,
+                      bbox=dict(boxstyle="round,pad=0.35", facecolor=_COLOR_BASEBOX,
+                                edgecolor="none", alpha=0.97))
+        if font_prop is not None:
+            txt_kw["fontproperties"] = font_prop
+        price_ax.text(x_start + 0.6, top, tag, **txt_kw)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[INSIGHT_IMAGE] base box failed: %s", exc)
+
+
+def _draw_pivot_marker(price_ax, analysis, *, price_min, price_max,
+                       font_prop=None) -> None:
+    """Circle the buy pivot near the right edge + an arrow callout. Best-effort."""
+    try:
+        from matplotlib.patches import Ellipse
+
+        buy = validate_levels([analysis.buy_point], price_min, price_max)
+        if not buy:
+            return
+        pivot = buy[0]
+        xmin, xmax = price_ax.get_xlim()
+        cx = xmax - 6.0
+        w = max(6.0, (xmax - xmin) * 0.045)
+        h = (price_max - price_min) * 0.055
+        price_ax.add_patch(Ellipse(
+            (cx, pivot), width=w, height=h, fill=False, edgecolor=_GOLD,
+            linewidth=2.4, zorder=6))
+        txt_kw = dict(color="#0b0e14", fontsize=10, fontweight="bold", zorder=8,
+                      ha="left", va="center",
+                      bbox=dict(boxstyle="round,pad=0.35", facecolor=_GOLD,
+                                edgecolor="none", alpha=0.97))
+        if font_prop is not None:
+            txt_kw["fontproperties"] = font_prop
+        price_ax.annotate(
+            f"매수 피벗 {_format_won(pivot)}",
+            xy=(cx, pivot), xycoords="data",
+            xytext=(xmin + (xmax - xmin) * 0.50,
+                    price_max - (price_max - price_min) * 0.08),
+            textcoords="data",
+            arrowprops=dict(arrowstyle="-|>", color=_GOLD, linewidth=2.0),
+            **txt_kw)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[INSIGHT_IMAGE] pivot marker failed: %s", exc)
+
+
 def render_insight_image(
     daily_fig,
     analysis: BaseAnalysis,
@@ -233,7 +368,11 @@ def render_insight_image(
         except Exception:  # noqa: BLE001
             font_prop = None
 
-        # --- Validate then draw price levels (deterministic; we draw, not LLM) ---
+        # --- Premium dark theme FIRST (patches then sit on dark panels) ------
+        _apply_premium_theme(daily_fig, [price_ax, volume_ax, rs_ax],
+                             font_prop=font_prop)
+
+        # --- Validate price levels (deterministic; we draw, not the LLM) -----
         supports = validate_levels(
             list(analysis.support_levels), price_min, price_max
         )
@@ -243,20 +382,24 @@ def render_insight_image(
         buy = validate_levels([analysis.buy_point], price_min, price_max)
         stop = validate_levels([analysis.stop_loss], price_min, price_max)
 
+        # --- HERO annotations: pattern box + pivot circle/callout ------------
+        _draw_base_box(price_ax, analysis, price_min=price_min,
+                       price_max=price_max, font_prop=font_prop)
+        _draw_pivot_marker(price_ax, analysis, price_min=price_min,
+                           price_max=price_max, font_prop=font_prop)
+
+        # --- Supporting levels (de-emphasised dashed lines + labels) ---------
         for lv in supports:
             _draw_level(price_ax, lv, _COLOR_SUPPORT, f"지지 {_format_won(lv)}",
-                        linestyle="--", linewidth=1.3, font_prop=font_prop)
+                        linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
         for lv in resistances:
             _draw_level(price_ax, lv, _COLOR_RESISTANCE, f"저항 {_format_won(lv)}",
-                        linestyle="--", linewidth=1.3, font_prop=font_prop)
+                        linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
         if stop:
             _draw_level(price_ax, stop[0], _COLOR_STOP,
                         f"손절 {_format_won(stop[0])}", linestyle="--",
-                        linewidth=1.3, font_prop=font_prop)
-        if buy:
-            _draw_level(price_ax, buy[0], _COLOR_BUY,
-                        f"매수 피벗 {_format_won(buy[0])}", linestyle="-",
-                        linewidth=1.8, font_prop=font_prop)
+                        linewidth=1.2, font_prop=font_prop)
+        # buy pivot is rendered by _draw_pivot_marker (circle + callout) above
 
         # --- Re-stack the panels into clean bands + add a caption band ---
         _relayout_with_caption(
@@ -336,9 +479,13 @@ def _relayout_with_caption(fig, price_ax, volume_ax, rs_ax, *, caption,
 
         # Caption band: dedicated, borderless axes carrying the Korean summary.
         cap_ax = fig.add_axes([left, 0.020, width, cap_top - 0.020])
-        cap_ax.axis("off")
-        txt_kw = dict(fontsize=11, va="top", ha="left", linespacing=1.45,
-                      color="#1a1a1a")
+        cap_ax.set_facecolor(_PANEL)
+        for _sp in cap_ax.spines.values():
+            _sp.set_color(_GRID)
+        cap_ax.set_xticks([])
+        cap_ax.set_yticks([])
+        txt_kw = dict(fontsize=11, va="top", ha="left", linespacing=1.5,
+                      color=_TXT)
         if font_prop is not None:
             txt_kw["fontproperties"] = font_prop
         cap_ax.text(0.0, 1.0, caption, transform=cap_ax.transAxes, **txt_kw)

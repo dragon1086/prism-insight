@@ -1539,7 +1539,9 @@ def _add_rs_panel(fig, rs_series, label):
                 label="RS new high",
             )
         # Emphasise + annotate the most recent new high (O'Neil's strongest tell).
-        if bool(is_new_high[-1]):
+        # Guard against an empty new-high array (avoids "index -1 out of bounds
+        # for axis 0 with size 0" when the RS series degenerates).
+        if len(is_new_high) > 0 and bool(is_new_high[-1]):
             last_i = len(rs_vals) - 1
             rs_ax.scatter(
                 [last_i],

@@ -187,6 +187,59 @@ class TelegramBotAgent:
             logger.error(f"Telegram file send failed: {e}")
             return False
 
+    async def send_photo_bytes(self, chat_id, image_bytes, caption=None, retry_count=0, max_retries=3, market=None):
+        """
+        Send an in-memory image (JPEG/PNG bytes) to a Telegram channel as a photo.
+
+        Used by the Phase 6 S6 insight-image broadcast: the renderer returns raw
+        JPEG bytes, so we send them inline (not as a downloadable document).
+
+        Args:
+            chat_id (str): Telegram channel ID
+            image_bytes (bytes): Encoded image content (JPEG/PNG)
+            caption (str, optional): Short caption shown under the photo
+            retry_count (int): Current retry count
+            max_retries (int): Maximum retry attempts
+            market (str, optional): Market identifier ('kr' or 'us')
+
+        Returns:
+            bool: Transmission success status
+        """
+        try:
+            from io import BytesIO
+            buf = BytesIO(image_bytes)
+            buf.name = "insight.jpg"
+            await self.bot.send_photo(
+                chat_id=chat_id,
+                photo=buf,
+                caption=caption,
+                parse_mode="Markdown",
+                read_timeout=60,
+                write_timeout=60,
+                connect_timeout=30,
+            )
+            logger.info("Insight image sent successfully")
+            return True
+        except RetryAfter as e:
+            wait_time = e.retry_after + 1
+            logger.warning(f"Rate limit hit (photo). Waiting {wait_time}s before retry...")
+            await asyncio.sleep(wait_time)
+            if retry_count < max_retries:
+                return await self.send_photo_bytes(chat_id, image_bytes, caption, retry_count + 1, max_retries, market=market)
+            logger.error("Max retries reached after rate limit (photo)")
+            return False
+        except TimedOut:
+            if retry_count < max_retries:
+                wait_time = 2 ** retry_count
+                logger.warning(f"Timeout (photo). Retrying in {wait_time}s... (attempt {retry_count + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
+                return await self.send_photo_bytes(chat_id, image_bytes, caption, retry_count + 1, max_retries, market=market)
+            logger.error("Max retries reached after timeout (photo)")
+            return False
+        except TelegramError as e:
+            logger.error(f"Telegram photo send failed: {e}")
+            return False
+
     async def process_messages_directory(self, directory, chat_id, sent_dir=None, msg_type=None):
         """
         Process and send all Telegram message files in directory

@@ -643,6 +643,15 @@ class StockAnalysisOrchestrator:
                 # Transmission interval
                 await asyncio.sleep(1)
 
+            # Phase 6 S6: broadcast annotated insight images (default-OFF, non-blocking).
+            # One image per company AFTER its PDF. KR -> market=None (auto
+            # KOSPI/KOSDAQ). Gated on PRISM_FEATURE_INSIGHT_IMAGE; never raises.
+            try:
+                from cores.llm.features.insight_broadcast import broadcast_insight_images
+                await broadcast_insight_images(bot_agent, chat_id, pdf_paths, market=None)
+            except Exception as e:
+                logger.warning(f"[INSIGHT_IMAGE] KR broadcast skipped: {e}")
+
             # Send translated PDFs to broadcast channels asynchronously (non-blocking)
             if self.telegram_config.broadcast_languages and report_paths:
                 self._broadcast_tasks.append(
