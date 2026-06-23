@@ -83,12 +83,20 @@ _VERDICT_KO = {
 }
 
 
-def _format_won(value: float) -> str:
-    """Format a WON price level compactly (e.g. ``₩72,500``)."""
+def _format_price(value: float, *, symbol: str = "₩", decimals: int = 0) -> str:
+    """Format a price with the given currency symbol/precision.
+
+    KR uses ``₩72,500`` (no decimals); US uses ``$189.76`` (2 decimals).
+    """
     try:
-        return f"₩{value:,.0f}"
+        return f"{symbol}{value:,.{decimals}f}"
     except Exception:  # noqa: BLE001
-        return f"₩{value}"
+        return f"{symbol}{value}"
+
+
+def _format_won(value: float) -> str:
+    """Backward-compatible KR (won) formatter."""
+    return _format_price(value, symbol="₩", decimals=0)
 
 
 def _ko_base_type(value: str) -> str:
@@ -154,7 +162,8 @@ def _classify_axes(fig):
 
 def _build_caption(analysis: BaseAnalysis, *, ticker: str,
                    company_name: str | None,
-                   supports, resistances, buy, stop) -> str:
+                   supports, resistances, buy, stop,
+                   currency_symbol="₩", price_decimals=0) -> str:
     """Compose the KOREAN caption-band text (tidy summary + wrapped rationale).
 
     Numeric/enum fields are mapped to Korean labels; the rationale is shown as
@@ -165,10 +174,13 @@ def _build_caption(analysis: BaseAnalysis, *, ticker: str,
     rs_status = "예" if analysis.rs_line_new_high else "아니오"
 
     def _won_list(levels):
-        return " · ".join(_format_won(v) for v in levels) if levels else "-"
+        return " · ".join(
+            _format_price(v, symbol=currency_symbol, decimals=price_decimals)
+            for v in levels
+        ) if levels else "-"
 
-    buy_txt = _format_won(buy[0]) if buy else "-"
-    stop_txt = _format_won(stop[0]) if stop else "-"
+    buy_txt = _format_price(buy[0], symbol=currency_symbol, decimals=price_decimals) if buy else "-"
+    stop_txt = _format_price(stop[0], symbol=currency_symbol, decimals=price_decimals) if stop else "-"
 
     lines = [
         f"{header}",
@@ -283,7 +295,7 @@ def _draw_base_box(price_ax, analysis, *, price_min, price_max,
 
 
 def _draw_pivot_marker(price_ax, analysis, *, price_min, price_max,
-                       font_prop=None) -> None:
+                       font_prop=None, currency_symbol="₩", price_decimals=0) -> None:
     """Circle the buy pivot near the right edge + an arrow callout. Best-effort."""
     try:
         from matplotlib.patches import Ellipse
@@ -306,7 +318,7 @@ def _draw_pivot_marker(price_ax, analysis, *, price_min, price_max,
         if font_prop is not None:
             txt_kw["fontproperties"] = font_prop
         price_ax.annotate(
-            f"매수 피벗 {_format_won(pivot)}",
+            f"매수 피벗 {_format_price(pivot, symbol=currency_symbol, decimals=price_decimals)}",
             xy=(cx, pivot), xycoords="data",
             xytext=(xmin + (xmax - xmin) * 0.50,
                     price_max - (price_max - price_min) * 0.08),
@@ -325,6 +337,8 @@ def render_insight_image(
     company_name: str | None = None,
     price_min: float,
     price_max: float,
+    currency_symbol: str = "₩",
+    price_decimals: int = 0,
 ) -> bytes | None:
     """Overlay deterministic O'Neil annotations on the DAILY chart and add a
     clean Korean caption band below it.
@@ -382,22 +396,26 @@ def render_insight_image(
         buy = validate_levels([analysis.buy_point], price_min, price_max)
         stop = validate_levels([analysis.stop_loss], price_min, price_max)
 
+        def _fmt(v):
+            return _format_price(v, symbol=currency_symbol, decimals=price_decimals)
+
         # --- HERO annotations: pattern box + pivot circle/callout ------------
         _draw_base_box(price_ax, analysis, price_min=price_min,
                        price_max=price_max, font_prop=font_prop)
         _draw_pivot_marker(price_ax, analysis, price_min=price_min,
-                           price_max=price_max, font_prop=font_prop)
+                           price_max=price_max, font_prop=font_prop,
+                           currency_symbol=currency_symbol, price_decimals=price_decimals)
 
         # --- Supporting levels (de-emphasised dashed lines + labels) ---------
         for lv in supports:
-            _draw_level(price_ax, lv, _COLOR_SUPPORT, f"지지 {_format_won(lv)}",
+            _draw_level(price_ax, lv, _COLOR_SUPPORT, f"지지 {_fmt(lv)}",
                         linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
         for lv in resistances:
-            _draw_level(price_ax, lv, _COLOR_RESISTANCE, f"저항 {_format_won(lv)}",
+            _draw_level(price_ax, lv, _COLOR_RESISTANCE, f"저항 {_fmt(lv)}",
                         linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
         if stop:
             _draw_level(price_ax, stop[0], _COLOR_STOP,
-                        f"손절 {_format_won(stop[0])}", linestyle="--",
+                        f"손절 {_fmt(stop[0])}", linestyle="--",
                         linewidth=1.2, font_prop=font_prop)
         # buy pivot is rendered by _draw_pivot_marker (circle + callout) above
 
@@ -407,6 +425,7 @@ def render_insight_image(
             caption=_build_caption(
                 analysis, ticker=ticker, company_name=company_name,
                 supports=supports, resistances=resistances, buy=buy, stop=stop,
+                currency_symbol=currency_symbol, price_decimals=price_decimals,
             ),
             font_prop=font_prop,
         )
@@ -561,6 +580,12 @@ async def build_insight_image_for(
             return None
         price_min, price_max = price_ax.get_ylim()
 
+        _is_us = isinstance(market, str) and market.strip().lower() in (
+            "us", "usa", "united states"
+        )
+        # Escape "$" as "\\$": matplotlib treats a bare "$" as mathtext, which
+        # corrupts adjacent Korean glyphs (renders them via the math 'rm' font).
+        _currency_symbol, _price_decimals = ("\\$", 2) if _is_us else ("₩", 0)
         return render_insight_image(
             daily_fig,
             analysis,
@@ -568,6 +593,8 @@ async def build_insight_image_for(
             company_name=company_name,
             price_min=price_min,
             price_max=price_max,
+            currency_symbol=_currency_symbol,
+            price_decimals=_price_decimals,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[INSIGHT_IMAGE] build failed for %s: %s", ticker, exc)
