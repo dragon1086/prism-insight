@@ -178,15 +178,24 @@ def _decide_vision_buy_qa(env: dict, crontab: str):
     return "OFF", f"PRISM_FEATURE_VISION={vision or '(unset)'}"
 
 
-def _vision_available() -> bool:
-    """Seam over cores.llm.capabilities.vision_available() (vision on + real API key).
+def _vision_available(env: dict) -> bool:
+    """Mirror cores.llm.capabilities.vision_available() = vision on + real API key.
 
-    Split out so tests can monkeypatch the key-dependent gate without a real key.
+    PRISM_FEATURE_VISION is read from the parsed .env dict — this reporter does
+    NOT load .env into os.environ, so calling capabilities.vision_available()
+    directly would read an empty os.environ and wrongly report 미가용. The real
+    API key is resolved via capabilities, which falls back to
+    mcp_agent.secrets.yaml when OPENAI_API_KEY is not exported (OAuth mode).
     Returns False if capabilities can't be imported (keeps the reporter robust).
     """
+    if env.get("PRISM_FEATURE_VISION", "").lower() != "on":
+        return False
+    envkey = env.get("OPENAI_API_KEY", "").strip()
+    if envkey and envkey != "chatgpt-oauth-placeholder":
+        return True
     try:
-        from cores.llm.capabilities import vision_available
-        return vision_available()
+        from cores.llm.capabilities import _secrets_api_key
+        return bool(_secrets_api_key())
     except Exception:
         return False
 
@@ -202,7 +211,7 @@ def _decide_vision_publish(env: dict, crontab: str):
     insight = env.get("PRISM_FEATURE_INSIGHT_IMAGE", "").lower()
     if insight != "on":
         return "OFF", f"PRISM_FEATURE_INSIGHT_IMAGE={insight or '(unset)'}"
-    if not _vision_available():
+    if not _vision_available(env):
         return "OFF", "PRISM_FEATURE_INSIGHT_IMAGE=on but vision 미가용(PRISM_FEATURE_VISION=on + API 키 필요)"
     return "LIVE", "PRISM_FEATURE_INSIGHT_IMAGE=on + vision 가용"
 
