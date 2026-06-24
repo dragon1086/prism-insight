@@ -187,14 +187,16 @@ def _draw_forecast_band(price_ax, *, ohlc_len, current_price, target, stop,
         price_ax.plot(xs, flat, color=_TXT_DIM, linewidth=1.0,
                       linestyle=(0, (2, 3)), alpha=0.6, zorder=3)
 
+        # Callouts sit INSIDE the forward whitespace (right-aligned at the band
+        # tip) so they never clip at the figure's right edge.
         def _tag(y, color, text):
             kw = dict(color="#0b0e14", fontsize=9, fontweight="bold",
-                      va="center", ha="left", zorder=7,
+                      va="center", ha="right", zorder=7,
                       bbox=dict(boxstyle="round,pad=0.3", facecolor=color,
                                 edgecolor="none", alpha=0.95))
             if font_prop is not None:
                 kw["fontproperties"] = font_prop
-            price_ax.annotate(text, xy=(proj_x, y), xytext=(5, 0),
+            price_ax.annotate(text, xy=(proj_x, y), xytext=(-3, 0),
                               textcoords="offset points", **kw)
 
         if has_t:
@@ -206,11 +208,14 @@ def _draw_forecast_band(price_ax, *, ohlc_len, current_price, target, stop,
                  f"손절 {_format_price(stop, symbol=currency_symbol, decimals=price_decimals)}"
                  f" ({_pct_str(stop / current_price - 1)})")
 
-        title_kw = dict(color=_TXT_DIM, fontsize=8, va="top", ha="left", zorder=6)
+        # Title floats centered above the forward band, clear of the base box.
+        title_kw = dict(color=_TXT_DIM, fontsize=8.5, va="bottom", ha="center",
+                        zorder=6)
         if font_prop is not None:
             title_kw["fontproperties"] = font_prop
-        price_ax.text(last_x, price_ax.get_ylim()[1], " 예측 밴드(시나리오) →",
-                      **title_kw)
+        y_lo, y_hi = price_ax.get_ylim()
+        price_ax.text((last_x + proj_x) / 2.0, y_lo + (y_hi - y_lo) * 0.985,
+                      "← 예측 밴드(시나리오) →", **title_kw)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[INSIGHT_IMAGE] forecast band failed: %s", exc)
 
