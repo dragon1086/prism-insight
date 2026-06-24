@@ -265,6 +265,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 )
                 _bq_html = price_chart_html
                 _bq_regime = (macro_context or {}).get("market_regime", "sideways")
+                logger.info("[BUY_QUALITY][SHADOW] hook reached: code=%s regime=%s",
+                            company_code, _bq_regime)
                 # Phase 6 S3.5: prefer the two-timeframe O'Neil path (daily +
                 # weekly with RS line), which grounds rs_line_new_high and the
                 # weekly base reading. Falls back to the single daily report
@@ -296,8 +298,16 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                     # buys. Do NOT implement live injection until S4
                     # backtest passes and the user confirms (S5).
                     _ = vision_shadow  # referenced to mark the LIVE seam
-            except Exception:
-                pass  # buy-quality gate must never affect the pipeline
+                else:
+                    logger.warning(
+                        "[BUY_QUALITY][SHADOW] no analysis for %s "
+                        "(analyze_base_oneil + fallback both None)",
+                        company_code,
+                    )
+            except Exception as _bqe:
+                # Log (do NOT silently swallow) — still never affects pipeline.
+                logger.warning("[BUY_QUALITY][SHADOW] hook failed for %s: %s",
+                               company_code, _bqe, exc_info=True)
 
         # 11. Build macro section (before final report composition)
         macro_section = ""
