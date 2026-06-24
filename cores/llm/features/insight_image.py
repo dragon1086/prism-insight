@@ -305,7 +305,7 @@ def _draw_prob_bar(ax, dist, *, font_prop, target_reach=None,
                       color=_TXT_DIM, fontsize=9)
         if font_prop is not None:
             sub_kw["fontproperties"] = font_prop
-        sub = "※ 이 종목의 예측이 아니라, 과거 비슷한 종목들의 실제 결과 (올랐다=+10%↑·빠졌다=−10%↓)"
+        sub = "※ 이 종목의 예측이 아니라, 과거 비슷한 종목들의 실제 결과 (올랐다=+10%이상·빠졌다=-10%이하)"
         if target_reach and target_reach.get("rate") is not None:
             approx = "≈" if target_reach.get("proxy") else ""
             sub = f"이 중 목표가까지 도달 {approx}{target_reach['rate']}%   ·   " + sub
@@ -400,7 +400,7 @@ def _build_caption(analysis: BaseAnalysis, *, ticker: str,
     ]
     # Use a font-safe marker ("▸") instead of the ℹ️ emoji: the Korean chart
     # font (NanumGothicCoding) has no glyph for ℹ️, so it rendered as a tofu box.
-    glossary = "▸ 용어 안내 — " + " · ".join(glossary_terms)
+    glossary = "※ 용어 안내 — " + " · ".join(glossary_terms)
     lines.append("")
     lines.append(textwrap.fill(glossary, width=58))
 
