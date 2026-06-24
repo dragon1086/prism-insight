@@ -316,6 +316,14 @@ class DomesticStockTrading:
 
         current_price = current_price_info['current_price']
 
+        # Defensive guard: reject when the current price is missing/zero (e.g. a
+        # failed quote, or a non-KR ticker mis-routed to this domestic path).
+        # Without this, `amount / current_price` raises ZeroDivisionError and we
+        # must NEVER attempt to buy at an unknown price.
+        if not current_price or current_price <= 0:
+            logger.warning(f"[{stock_code}] Invalid current price ({current_price}) - rejecting buy")
+            return 0
+
         # Calculate buyable quantity (floor division)
         current_quantity = math.floor(amount / current_price)
 
@@ -475,6 +483,19 @@ class DomesticStockTrading:
             }
 
         amount = buy_amount if buy_amount else self.buy_amount
+
+        # Defensive guard: a missing/zero limit price would raise
+        # ZeroDivisionError, and we must never buy at an unknown price.
+        if not limit_price or limit_price <= 0:
+            logger.warning(f"[{stock_code}] Invalid limit price ({limit_price}) - rejecting buy")
+            return {
+                'success': False,
+                'order_no': None,
+                'stock_code': stock_code,
+                'quantity': 0,
+                'limit_price': limit_price,
+                'message': f'Invalid limit price ({limit_price}). Cannot execute buy order.'
+            }
 
         # Calculate buyable quantity (based on limit price)
         buy_quantity = math.floor(amount / limit_price)
