@@ -129,6 +129,191 @@ def _draw_level(ax, price: float, color: str, label: str, *, linestyle: str,
     ax.text(0.015, price, label, **txt_kw)
 
 
+def _pct_str(ratio: float) -> str:
+    """Format a ratio as a signed percent (``0.123`` -> ``+12%``)."""
+    try:
+        return f"{ratio * 100:+.0f}%"
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _draw_forecast_band(price_ax, *, ohlc_len, current_price, target, stop,
+                        pcts=None, font_prop, currency_symbol="₩",
+                        price_decimals=0) -> None:
+    """Draw a forward UNCERTAINTY FAN of where similar past picks actually ended.
+
+    Rather than a straight target/stop wedge, this projects the cohort's REALIZED
+    30-day return distribution (``pcts`` = p10..p90, ratios) forward from today's
+    price, widening with sqrt(time) so the cone edges CURVE naturally (honest:
+    it's the historical outcome spread, not a predicted squiggle). The analysis's
+    own target/stop live in a compact top-right plan box, kept OFF the fan so
+    nothing is occluded. Falls back to a simple target/stop wedge when no
+    distribution is available. Never raises.
+    """
+    try:
+        import math
+
+        if not current_price or current_price <= 0 or not ohlc_len or ohlc_len < 2:
+            return
+        last_x = ohlc_len - 1
+        x0, _x1 = price_ax.get_xlim()
+        fwd = max(8, min(40, int(round(ohlc_len * 0.16))))
+        proj_x = last_x + fwd
+        price_ax.set_xlim(x0, proj_x + max(1.0, fwd * 0.08))
+
+        has_t = bool(target and target > 0 and abs(target - current_price) > 1e-9)
+        has_s = bool(stop and stop > 0 and abs(stop - current_price) > 1e-9)
+        have_fan = bool(pcts) and pcts.get("p90") is not None and pcts.get("p10") is not None
+        if not has_t and not has_s and not have_fan:
+            return
+
+        # Pad y so the fan + target/stop all fit.
+        ymin, ymax = price_ax.get_ylim()
+        ext = [current_price]
+        if has_t:
+            ext.append(target)
+        if has_s:
+            ext.append(stop)
+        if have_fan:
+            ext.append(current_price * (1.0 + pcts["p90"]))
+            ext.append(current_price * (1.0 + pcts["p10"]))
+        new_min, new_max = min([ymin] + ext), max([ymax] + ext)
+        pad = (new_max - new_min) * 0.06 or max(new_max * 0.02, 1.0)
+        price_ax.set_ylim(new_min - pad, new_max + pad)
+
+        # "Today" divider between history and the projection.
+        price_ax.axvline(last_x, color=_TXT_DIM, linestyle=":", linewidth=1.0,
+                         alpha=0.55, zorder=3)
+
+        if have_fan:
+            M = 24
+            tfs = [i / (M - 1) for i in range(M)]
+            xs = [last_x + tf * fwd for tf in tfs]
+
+            def _curve(p):
+                # sqrt(time) widening from today's price -> curved cone edge.
+                return [current_price * (1.0 + p * math.sqrt(tf)) for tf in tfs]
+
+            y10 = _curve(pcts["p10"])
+            y25 = _curve(pcts.get("p25") if pcts.get("p25") is not None else pcts["p10"])
+            y50 = _curve(pcts["p50"] if pcts.get("p50") is not None else 0.0)
+            y75 = _curve(pcts.get("p75") if pcts.get("p75") is not None else pcts["p90"])
+            y90 = _curve(pcts["p90"])
+            _FAN = "#5aa9e6"
+            price_ax.fill_between(xs, y10, y90, color=_FAN, alpha=0.10,
+                                  zorder=2, linewidth=0)
+            price_ax.fill_between(xs, y25, y75, color=_FAN, alpha=0.20,
+                                  zorder=2, linewidth=0)
+            price_ax.plot(xs, y50, color=_GOLD, linewidth=1.6, linestyle="--",
+                          alpha=0.95, zorder=4)
+            mk = dict(color="#0b0e14", fontsize=8.5, fontweight="bold",
+                      va="center", ha="right", zorder=7,
+                      bbox=dict(boxstyle="round,pad=0.25", facecolor=_GOLD,
+                                edgecolor="none", alpha=0.95))
+            if font_prop is not None:
+                mk["fontproperties"] = font_prop
+            price_ax.annotate(f"중앙값 {_pct_str(pcts['p50'])}",
+                              xy=(proj_x, y50[-1]), xytext=(-3, 0),
+                              textcoords="offset points", **mk)
+        else:
+            xs = [last_x, proj_x]
+            flat = [current_price, current_price]
+            if has_t:
+                price_ax.fill_between(xs, flat, [current_price, target],
+                                      color=_COLOR_SUPPORT, alpha=0.11, zorder=2)
+                price_ax.plot(xs, [current_price, target], color=_COLOR_SUPPORT,
+                              linewidth=1.7, linestyle="--", alpha=0.9, zorder=4)
+            if has_s:
+                price_ax.fill_between(xs, [current_price, stop], flat,
+                                      color=_COLOR_RESISTANCE, alpha=0.11, zorder=2)
+                price_ax.plot(xs, [current_price, stop], color=_COLOR_RESISTANCE,
+                              linewidth=1.7, linestyle="--", alpha=0.9, zorder=4)
+
+        # Plan levels (target/stop) in a compact LEFT-CENTRE box — sits in the
+        # empty sky above the early (low-price) candles, OFF the fan, and large
+        # enough to read (the top-right corner was too cramped/high).
+        def _plan(yfrac, color, text):
+            kw = dict(transform=price_ax.transAxes, color=color, fontsize=10,
+                      fontweight="bold", va="center", ha="left", zorder=8,
+                      bbox=dict(boxstyle="round,pad=0.35", facecolor=_PANEL,
+                                edgecolor=color, linewidth=1.0, alpha=0.93))
+            if font_prop is not None:
+                kw["fontproperties"] = font_prop
+            price_ax.text(0.02, yfrac, text, **kw)
+
+        if has_t:
+            _plan(0.56, _COLOR_SUPPORT,
+                  f"목표 {_format_price(target, symbol=currency_symbol, decimals=price_decimals)}"
+                  f" ({_pct_str(target / current_price - 1)})")
+        if has_s:
+            _plan(0.47 if has_t else 0.56, _COLOR_RESISTANCE,
+                  f"손절 {_format_price(stop, symbol=currency_symbol, decimals=price_decimals)}"
+                  f" ({_pct_str(stop / current_price - 1)})")
+
+        title_kw = dict(color=_TXT_DIM, fontsize=8.5, va="bottom", ha="center",
+                        zorder=6)
+        if font_prop is not None:
+            title_kw["fontproperties"] = font_prop
+        y_lo, y_hi = price_ax.get_ylim()
+        price_ax.text((last_x + proj_x) / 2.0, y_lo + (y_hi - y_lo) * 0.985,
+                      "비슷한 종목들의 30일 결과 분포 →", **title_kw)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[INSIGHT_IMAGE] forecast band failed: %s", exc)
+
+
+def _draw_prob_bar(ax, dist, *, font_prop, target_reach=None,
+                   y=0.945, h=0.038) -> None:
+    """Draw a stacked 상승/횡보/하락 probability bar (axes-fraction) atop *ax*.
+
+    ``dist`` is a forecast_stats distribution dict {up, side, down, n, ...}. The
+    bar width-encodes each share; segments wide enough get an inline label. A
+    line below states the historical target-reach rate + disclaimer.
+    """
+    try:
+        from matplotlib.patches import Rectangle
+
+        up, side, down = (int(dist.get("up", 0)), int(dist.get("side", 0)),
+                          int(dist.get("down", 0)))
+        n = int(dist.get("n", 0))
+        total = max(1, up + side + down)
+        title_kw = dict(transform=ax.transAxes, va="center", ha="left",
+                        color=_TXT, fontsize=10, fontweight="bold")
+        if font_prop is not None:
+            title_kw["fontproperties"] = font_prop
+        ax.text(0.0, y + h + 0.030,
+                f"프리즘이 비슷한 종목 {n}번 분석 → 30일 뒤 실제로:", **title_kw)
+
+        cur = 0.0
+        for name, val, color in (("올랐다", up, _COLOR_SUPPORT),
+                                 ("제자리", side, _TXT_DIM),
+                                 ("빠졌다", down, _COLOR_RESISTANCE)):
+            w = val / total
+            if w <= 0:
+                continue
+            ax.add_patch(Rectangle((cur, y), w, h, transform=ax.transAxes,
+                                   facecolor=color, edgecolor=_BG, linewidth=1.0,
+                                   alpha=0.92, zorder=5, clip_on=False))
+            if w > 0.10:
+                lkw = dict(transform=ax.transAxes, va="center", ha="center",
+                           color="#0b0e14", fontsize=9, fontweight="bold", zorder=6)
+                if font_prop is not None:
+                    lkw["fontproperties"] = font_prop
+                ax.text(cur + w / 2, y + h / 2, f"{name} {val}%", **lkw)
+            cur += w
+
+        sub_kw = dict(transform=ax.transAxes, va="center", ha="left",
+                      color=_TXT_DIM, fontsize=9)
+        if font_prop is not None:
+            sub_kw["fontproperties"] = font_prop
+        sub = "※ 이 종목의 예측이 아니라, 과거 비슷한 종목들의 실제 결과 (올랐다=+10%이상·빠졌다=-10%이하)"
+        if target_reach and target_reach.get("rate") is not None:
+            approx = "≈" if target_reach.get("proxy") else ""
+            sub = f"이 중 목표가까지 도달 {approx}{target_reach['rate']}%   ·   " + sub
+        ax.text(0.0, y - 0.045, sub, **sub_kw)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[INSIGHT_IMAGE] prob bar failed: %s", exc)
+
+
 def _classify_axes(fig):
     """Best-effort split of an mplfinance O'Neil fig into (price, volume, rs).
 
@@ -165,7 +350,8 @@ def _classify_axes(fig):
 def _build_caption(analysis: BaseAnalysis, *, ticker: str,
                    company_name: str | None,
                    supports, resistances, buy, stop,
-                   currency_symbol="₩", price_decimals=0) -> str:
+                   currency_symbol="₩", price_decimals=0,
+                   forecast_line: str | None = None) -> str:
     """Compose the KOREAN caption-band text (tidy summary + wrapped rationale).
 
     Numeric/enum fields are mapped to Korean labels; the rationale is shown as
@@ -193,6 +379,9 @@ def _build_caption(analysis: BaseAnalysis, *, ticker: str,
         f"지지: {_won_list(supports)}    저항: {_won_list(resistances)}",
     ]
 
+    if forecast_line:
+        lines.append(forecast_line)
+
     rationale = (analysis.rationale or "").strip().replace("\n", " ")
     if rationale:
         # Wrap to a readable width; never truncate.
@@ -211,7 +400,7 @@ def _build_caption(analysis: BaseAnalysis, *, ticker: str,
     ]
     # Use a font-safe marker ("▸") instead of the ℹ️ emoji: the Korean chart
     # font (NanumGothicCoding) has no glyph for ℹ️, so it rendered as a tofu box.
-    glossary = "▸ 용어 안내 — " + " · ".join(glossary_terms)
+    glossary = "※ 용어 안내 — " + " · ".join(glossary_terms)
     lines.append("")
     lines.append(textwrap.fill(glossary, width=58))
 
@@ -289,21 +478,22 @@ def _draw_base_box(price_ax, analysis, *, price_min, price_max,
         bottom -= pad
         top += pad
 
-        # Soft fill + crisp gold border = the "hero" pattern highlight.
+        # Subtle fill + soft dashed gold border = a light pattern highlight
+        # (kept de-emphasised so it never dominates the candles or the fan).
         price_ax.add_patch(Rectangle(
             (x_start, bottom), x_end - x_start, top - bottom,
-            linewidth=0, facecolor=_COLOR_BASEBOX, alpha=0.12, zorder=2.4))
+            linewidth=0, facecolor=_COLOR_BASEBOX, alpha=0.05, zorder=2.4))
         price_ax.add_patch(Rectangle(
             (x_start, bottom), x_end - x_start, top - bottom,
-            linewidth=2.0, edgecolor=_COLOR_BASEBOX, facecolor="none",
-            alpha=0.95, zorder=3.0))
+            linewidth=1.1, edgecolor=_COLOR_BASEBOX, facecolor="none",
+            linestyle=(0, (5, 3)), alpha=0.55, zorder=3.0))
 
         tag = (f"{_ko_base_type(analysis.base_type)} · {weeks}주"
                if weeks else _ko_base_type(analysis.base_type))
-        txt_kw = dict(color="#0b0e14", fontsize=10, fontweight="bold",
+        txt_kw = dict(color=_GOLD, fontsize=9, fontweight="bold",
                       va="center", ha="left", zorder=7,
-                      bbox=dict(boxstyle="round,pad=0.35", facecolor=_COLOR_BASEBOX,
-                                edgecolor="none", alpha=0.97))
+                      bbox=dict(boxstyle="round,pad=0.3", facecolor=_PANEL,
+                                edgecolor=_COLOR_BASEBOX, linewidth=0.8, alpha=0.9))
         if font_prop is not None:
             txt_kw["fontproperties"] = font_prop
         price_ax.text(x_start + 0.6, top, tag, **txt_kw)
@@ -406,6 +596,8 @@ def render_insight_image(
     currency_symbol: str = "₩",
     price_decimals: int = 0,
     trades=None,
+    forecast: dict | None = None,
+    ohlc_len: int | None = None,
 ) -> bytes | None:
     """Overlay deterministic O'Neil annotations on the DAILY chart and add a
     clean Korean caption band below it.
@@ -477,22 +669,53 @@ def render_insight_image(
                            currency_symbol=currency_symbol, price_decimals=price_decimals)
 
         # --- Supporting levels (de-emphasised dashed lines + labels) ---------
-        for lv in supports:
-            _draw_level(price_ax, lv, _COLOR_SUPPORT, f"지지 {_fmt(lv)}",
-                        linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
-        for lv in resistances:
-            _draw_level(price_ax, lv, _COLOR_RESISTANCE, f"저항 {_fmt(lv)}",
-                        linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
-        if stop:
-            _draw_level(price_ax, stop[0], _COLOR_STOP,
-                        f"손절 {_fmt(stop[0])}", linestyle="--",
-                        linewidth=1.2, font_prop=font_prop)
+        # Decluttered: when a forecast band is drawn (production), the price
+        # panel keeps only the HERO (base box + pivot + forward band). The
+        # support/resistance/stop numbers still live in the caption text, so we
+        # skip the busy stack of on-plot lines. Without a forecast (tests /
+        # fallback) we keep them for the standalone annotated chart.
+        if not forecast:
+            for lv in supports:
+                _draw_level(price_ax, lv, _COLOR_SUPPORT, f"지지 {_fmt(lv)}",
+                            linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
+            for lv in resistances:
+                _draw_level(price_ax, lv, _COLOR_RESISTANCE, f"저항 {_fmt(lv)}",
+                            linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
+            if stop:
+                _draw_level(price_ax, stop[0], _COLOR_STOP,
+                            f"손절 {_fmt(stop[0])}", linestyle="--",
+                            linewidth=1.2, font_prop=font_prop)
         # buy pivot is rendered by _draw_pivot_marker (circle + callout) above
 
         # --- Past-trade markers (subscriber-facing; from the tracking DB) -----
         if trades:
             _draw_trade_markers(price_ax, trades, price_min=price_min,
                                 price_max=price_max, font_prop=font_prop)
+
+        # --- Forecast band (forward scenario cone) + probability panel -------
+        prob = None
+        target_reach = None
+        forecast_line = None
+        if forecast:
+            prob = forecast.get("dist")
+            _draw_forecast_band(
+                price_ax,
+                ohlc_len=ohlc_len,
+                current_price=forecast.get("current_price"),
+                target=forecast.get("target"),
+                stop=forecast.get("stop"),
+                pcts=(prob or {}).get("pcts"),
+                font_prop=font_prop,
+                currency_symbol=currency_symbol,
+                price_decimals=price_decimals,
+            )
+            target_reach = forecast.get("target_reach")
+            if isinstance(prob, dict) and prob.get("n"):
+                forecast_line = (
+                    f"비슷한 종목 {prob['n']}번 중 30일 뒤 → "
+                    f"올랐다 {prob.get('up', 0)}% · 제자리 {prob.get('side', 0)}% · "
+                    f"빠졌다 {prob.get('down', 0)}%  (이 종목 보장 아님)"
+                )
 
         # --- Re-stack the panels into clean bands + add a caption band ---
         _relayout_with_caption(
@@ -501,8 +724,11 @@ def render_insight_image(
                 analysis, ticker=ticker, company_name=company_name,
                 supports=supports, resistances=resistances, buy=buy, stop=stop,
                 currency_symbol=currency_symbol, price_decimals=price_decimals,
+                forecast_line=forecast_line,
             ),
             font_prop=font_prop,
+            prob=prob,
+            target_reach=target_reach,
         )
 
         return _fig_to_jpeg(daily_fig)
@@ -512,7 +738,7 @@ def render_insight_image(
 
 
 def _relayout_with_caption(fig, price_ax, volume_ax, rs_ax, *, caption,
-                           font_prop) -> None:
+                           font_prop, prob=None, target_reach=None) -> None:
     """Grow the figure taller and re-stack panels into clean, spaced bands.
 
     Band layout (figure fraction, top→bottom), x-span 0.09..0.95:
@@ -578,11 +804,20 @@ def _relayout_with_caption(fig, price_ax, volume_ax, rs_ax, *, caption,
             _sp.set_color(_GRID)
         cap_ax.set_xticks([])
         cap_ax.set_yticks([])
+
+        # Probability bar occupies the top strip of the caption band; the text
+        # then starts below it. Without a bar, the text uses the full height.
+        text_top = 1.0
+        if isinstance(prob, dict) and prob.get("n"):
+            _draw_prob_bar(cap_ax, prob, font_prop=font_prop,
+                           target_reach=target_reach)
+            text_top = 0.84
+
         txt_kw = dict(fontsize=11, va="top", ha="left", linespacing=1.5,
                       color=_TXT)
         if font_prop is not None:
             txt_kw["fontproperties"] = font_prop
-        cap_ax.text(0.0, 1.0, caption, transform=cap_ax.transAxes, **txt_kw)
+        cap_ax.text(0.0, text_top, caption, transform=cap_ax.transAxes, **txt_kw)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[INSIGHT_IMAGE] relayout failed: %s", exc)
 
@@ -726,6 +961,46 @@ async def build_insight_image_for(
         # Map trade dates -> candle-index x positions (best-effort, isolated).
         trade_xy = _map_trades_to_x(trade_events, ohlc_df) if trade_events else []
 
+        # --- Forecast band + probability (best-effort; isolated) -------------
+        # Reads THIS analysis's scenario (target/stop/score/trigger) from the
+        # tracking DB and the matching historical cohort distribution. Any
+        # failure -> forecast stays None and the image renders without it.
+        forecast = None
+        ohlc_len = None
+        try:
+            ohlc_len = int(len(ohlc_df)) if ohlc_df is not None else None
+            current_price = None
+            if ohlc_df is not None and len(ohlc_df):
+                for _c in ("Close", "close", "Adj Close"):
+                    if _c in getattr(ohlc_df, "columns", []):
+                        current_price = float(ohlc_df[_c].iloc[-1])
+                        break
+            from cores.llm.features.forecast_stats import (
+                get_forecast_distribution,
+                get_stock_scenario,
+                get_target_reach_rate,
+            )
+
+            scenario = get_stock_scenario(ticker, market=market) or {}
+            if current_price is None and scenario.get("analyzed_price"):
+                current_price = float(scenario["analyzed_price"])
+            dist = get_forecast_distribution(
+                market, scenario.get("buy_score"), scenario.get("trigger_type")
+            )
+            reach = get_target_reach_rate(market, scenario.get("buy_score"))
+            if current_price and (scenario.get("target_price") or scenario.get("stop_loss") or dist):
+                forecast = {
+                    "current_price": current_price,
+                    "target": scenario.get("target_price"),
+                    "stop": scenario.get("stop_loss"),
+                    "dist": dist,
+                    "target_reach": reach,
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[INSIGHT_IMAGE] forecast lookup failed for %s: %s",
+                           ticker, exc)
+            forecast, ohlc_len = None, None
+
         # Escape "$" as "\\$": matplotlib treats a bare "$" as mathtext, which
         # corrupts adjacent Korean glyphs (renders them via the math 'rm' font).
         _currency_symbol, _price_decimals = ("\\$", 2) if _is_us else ("₩", 0)
@@ -739,6 +1014,8 @@ async def build_insight_image_for(
             currency_symbol=_currency_symbol,
             price_decimals=_price_decimals,
             trades=trade_xy,
+            forecast=forecast,
+            ohlc_len=ohlc_len,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[INSIGHT_IMAGE] build failed for %s: %s", ticker, exc)
