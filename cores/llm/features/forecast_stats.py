@@ -160,8 +160,21 @@ def get_stock_scenario(ticker: str, market: Optional[str] = None) -> Optional[di
         conn.close()
 
 
+def _pctile(sorted_vals, q):
+    """Linear-interpolated percentile (q in 0..1) of an ascending list."""
+    if not sorted_vals:
+        return None
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    idx = q * (len(sorted_vals) - 1)
+    lo = int(idx)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = idx - lo
+    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
 def _distribution_for(conn, sc, where_sql, params, threshold):
-    """Compute (n, up%, side%, down%, avg) for completed rows matching where_sql."""
+    """Compute (n, up%, side%, down%, avg, pcts) for completed matching rows."""
     rows = conn.execute(
         f"SELECT {sc['ret30']} AS r FROM {sc['table']} "
         f"WHERE tracking_status = 'completed' AND {sc['ret30']} IS NOT NULL {where_sql}",
@@ -175,12 +188,16 @@ def _distribution_for(conn, sc, where_sql, params, threshold):
     dn = sum(1 for v in vals if v < -threshold)
     sd = n - up - dn
     avg = sum(vals) / n
+    sv = sorted(vals)
+    pcts = {f"p{int(q*100)}": _pctile(sv, q)
+            for q in (0.10, 0.25, 0.50, 0.75, 0.90)}
     return {
         "n": n,
         "up": round(100.0 * up / n),
         "side": round(100.0 * sd / n),
         "down": round(100.0 * dn / n),
         "avg": avg,
+        "pcts": pcts,
     }
 
 

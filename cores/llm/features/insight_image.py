@@ -138,16 +138,21 @@ def _pct_str(ratio: float) -> str:
 
 
 def _draw_forecast_band(price_ax, *, ohlc_len, current_price, target, stop,
-                        font_prop, currency_symbol="₩", price_decimals=0) -> None:
-    """Draw a forward "forecast band" (cone) to the RIGHT of the last candle.
+                        pcts=None, font_prop, currency_symbol="₩",
+                        price_decimals=0) -> None:
+    """Draw a forward UNCERTAINTY FAN of where similar past picks actually ended.
 
-    Webull-style projection from today's price: an upper guide to the analysis
-    TARGET (green) and a lower guide to the STOP (red), with each half lightly
-    shaded. These are the analysis's OWN scenario levels projected forward — a
-    visual of the trade plan, NOT a price prediction. Extends the x-range into
-    empty forward space and pads y so the levels stay visible. Never raises.
+    Rather than a straight target/stop wedge, this projects the cohort's REALIZED
+    30-day return distribution (``pcts`` = p10..p90, ratios) forward from today's
+    price, widening with sqrt(time) so the cone edges CURVE naturally (honest:
+    it's the historical outcome spread, not a predicted squiggle). The analysis's
+    own target/stop live in a compact top-right plan box, kept OFF the fan so
+    nothing is occluded. Falls back to a simple target/stop wedge when no
+    distribution is available. Never raises.
     """
     try:
+        import math
+
         if not current_price or current_price <= 0 or not ohlc_len or ohlc_len < 2:
             return
         last_x = ohlc_len - 1
@@ -158,64 +163,98 @@ def _draw_forecast_band(price_ax, *, ohlc_len, current_price, target, stop,
 
         has_t = bool(target and target > 0 and abs(target - current_price) > 1e-9)
         has_s = bool(stop and stop > 0 and abs(stop - current_price) > 1e-9)
-        if not has_t and not has_s:
+        have_fan = bool(pcts) and pcts.get("p90") is not None and pcts.get("p10") is not None
+        if not has_t and not has_s and not have_fan:
             return
 
-        # Pad y so target/stop are inside the visible band.
+        # Pad y so the fan + target/stop all fit.
         ymin, ymax = price_ax.get_ylim()
-        pts = [current_price] + ([target] if has_t else []) + ([stop] if has_s else [])
-        new_min, new_max = min([ymin] + pts), max([ymax] + pts)
-        pad = (new_max - new_min) * 0.05 or max(new_max * 0.02, 1.0)
+        ext = [current_price]
+        if has_t:
+            ext.append(target)
+        if has_s:
+            ext.append(stop)
+        if have_fan:
+            ext.append(current_price * (1.0 + pcts["p90"]))
+            ext.append(current_price * (1.0 + pcts["p10"]))
+        new_min, new_max = min([ymin] + ext), max([ymax] + ext)
+        pad = (new_max - new_min) * 0.06 or max(new_max * 0.02, 1.0)
         price_ax.set_ylim(new_min - pad, new_max + pad)
 
-        # "Today" divider between history and the projected band.
+        # "Today" divider between history and the projection.
         price_ax.axvline(last_x, color=_TXT_DIM, linestyle=":", linewidth=1.0,
                          alpha=0.55, zorder=3)
-        xs = [last_x, proj_x]
-        flat = [current_price, current_price]
-        if has_t:
-            price_ax.fill_between(xs, flat, [current_price, target],
-                                  color=_COLOR_SUPPORT, alpha=0.11, zorder=2)
-            price_ax.plot(xs, [current_price, target], color=_COLOR_SUPPORT,
-                          linewidth=1.7, linestyle="--", alpha=0.92, zorder=4)
-        if has_s:
-            price_ax.fill_between(xs, [current_price, stop], flat,
-                                  color=_COLOR_RESISTANCE, alpha=0.11, zorder=2)
-            price_ax.plot(xs, [current_price, stop], color=_COLOR_RESISTANCE,
-                          linewidth=1.7, linestyle="--", alpha=0.92, zorder=4)
-        # Flat "today's price" guide across the forward region.
-        price_ax.plot(xs, flat, color=_TXT_DIM, linewidth=1.0,
-                      linestyle=(0, (2, 3)), alpha=0.6, zorder=3)
 
-        # Callouts sit INSIDE the forward whitespace (right-aligned at the band
-        # tip) so they never clip at the figure's right edge.
-        def _tag(y, color, text):
-            kw = dict(color="#0b0e14", fontsize=9, fontweight="bold",
+        if have_fan:
+            M = 24
+            tfs = [i / (M - 1) for i in range(M)]
+            xs = [last_x + tf * fwd for tf in tfs]
+
+            def _curve(p):
+                # sqrt(time) widening from today's price -> curved cone edge.
+                return [current_price * (1.0 + p * math.sqrt(tf)) for tf in tfs]
+
+            y10 = _curve(pcts["p10"])
+            y25 = _curve(pcts.get("p25") if pcts.get("p25") is not None else pcts["p10"])
+            y50 = _curve(pcts["p50"] if pcts.get("p50") is not None else 0.0)
+            y75 = _curve(pcts.get("p75") if pcts.get("p75") is not None else pcts["p90"])
+            y90 = _curve(pcts["p90"])
+            _FAN = "#5aa9e6"
+            price_ax.fill_between(xs, y10, y90, color=_FAN, alpha=0.10,
+                                  zorder=2, linewidth=0)
+            price_ax.fill_between(xs, y25, y75, color=_FAN, alpha=0.20,
+                                  zorder=2, linewidth=0)
+            price_ax.plot(xs, y50, color=_GOLD, linewidth=1.6, linestyle="--",
+                          alpha=0.95, zorder=4)
+            mk = dict(color="#0b0e14", fontsize=8.5, fontweight="bold",
                       va="center", ha="right", zorder=7,
-                      bbox=dict(boxstyle="round,pad=0.3", facecolor=color,
+                      bbox=dict(boxstyle="round,pad=0.25", facecolor=_GOLD,
                                 edgecolor="none", alpha=0.95))
             if font_prop is not None:
+                mk["fontproperties"] = font_prop
+            price_ax.annotate(f"중앙값 {_pct_str(pcts['p50'])}",
+                              xy=(proj_x, y50[-1]), xytext=(-3, 0),
+                              textcoords="offset points", **mk)
+        else:
+            xs = [last_x, proj_x]
+            flat = [current_price, current_price]
+            if has_t:
+                price_ax.fill_between(xs, flat, [current_price, target],
+                                      color=_COLOR_SUPPORT, alpha=0.11, zorder=2)
+                price_ax.plot(xs, [current_price, target], color=_COLOR_SUPPORT,
+                              linewidth=1.7, linestyle="--", alpha=0.9, zorder=4)
+            if has_s:
+                price_ax.fill_between(xs, [current_price, stop], flat,
+                                      color=_COLOR_RESISTANCE, alpha=0.11, zorder=2)
+                price_ax.plot(xs, [current_price, stop], color=_COLOR_RESISTANCE,
+                              linewidth=1.7, linestyle="--", alpha=0.9, zorder=4)
+
+        # Plan levels (target/stop) in a compact top-right box — OFF the fan.
+        def _plan(yfrac, color, text):
+            kw = dict(transform=price_ax.transAxes, color=color, fontsize=9,
+                      fontweight="bold", va="top", ha="right", zorder=8,
+                      bbox=dict(boxstyle="round,pad=0.3", facecolor=_PANEL,
+                                edgecolor=color, linewidth=0.8, alpha=0.92))
+            if font_prop is not None:
                 kw["fontproperties"] = font_prop
-            price_ax.annotate(text, xy=(proj_x, y), xytext=(-3, 0),
-                              textcoords="offset points", **kw)
+            price_ax.text(0.985, yfrac, text, **kw)
 
         if has_t:
-            _tag(target, _COLOR_SUPPORT,
-                 f"목표 {_format_price(target, symbol=currency_symbol, decimals=price_decimals)}"
-                 f" ({_pct_str(target / current_price - 1)})")
+            _plan(0.975, _COLOR_SUPPORT,
+                  f"목표 {_format_price(target, symbol=currency_symbol, decimals=price_decimals)}"
+                  f" ({_pct_str(target / current_price - 1)})")
         if has_s:
-            _tag(stop, _COLOR_RESISTANCE,
-                 f"손절 {_format_price(stop, symbol=currency_symbol, decimals=price_decimals)}"
-                 f" ({_pct_str(stop / current_price - 1)})")
+            _plan(0.905 if has_t else 0.975, _COLOR_RESISTANCE,
+                  f"손절 {_format_price(stop, symbol=currency_symbol, decimals=price_decimals)}"
+                  f" ({_pct_str(stop / current_price - 1)})")
 
-        # Title floats centered above the forward band, clear of the base box.
         title_kw = dict(color=_TXT_DIM, fontsize=8.5, va="bottom", ha="center",
                         zorder=6)
         if font_prop is not None:
             title_kw["fontproperties"] = font_prop
         y_lo, y_hi = price_ax.get_ylim()
         price_ax.text((last_x + proj_x) / 2.0, y_lo + (y_hi - y_lo) * 0.985,
-                      "← 예측 밴드(시나리오) →", **title_kw)
+                      "비슷한 종목들의 30일 결과 분포 →", **title_kw)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[INSIGHT_IMAGE] forecast band failed: %s", exc)
 
@@ -655,17 +694,18 @@ def render_insight_image(
         target_reach = None
         forecast_line = None
         if forecast:
+            prob = forecast.get("dist")
             _draw_forecast_band(
                 price_ax,
                 ohlc_len=ohlc_len,
                 current_price=forecast.get("current_price"),
                 target=forecast.get("target"),
                 stop=forecast.get("stop"),
+                pcts=(prob or {}).get("pcts"),
                 font_prop=font_prop,
                 currency_symbol=currency_symbol,
                 price_decimals=price_decimals,
             )
-            prob = forecast.get("dist")
             target_reach = forecast.get("target_reach")
             if isinstance(prob, dict) and prob.get("n"):
                 forecast_line = (
