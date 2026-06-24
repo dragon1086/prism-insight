@@ -116,51 +116,54 @@ def _decide_oauth_llm(env: dict, crontab: str):
 
 
 def _decide_loop_a(env: dict, crontab: str):
-    live = env.get("LOOP_A_LIVE", "").lower()
-    enabled = env.get("LOOP_A_ENABLED", "true").lower()
+    # Canonical HARDSTOP_* with deprecated LOOP_A_* alias fallback.
+    live = (env.get("HARDSTOP_LIVE") or env.get("LOOP_A_LIVE") or "").lower()
+    enabled = (env.get("HARDSTOP_ENABLED") or env.get("LOOP_A_ENABLED") or "true").lower()
     has_cron = _cron_has_script(crontab, "loop_a_hardstop.py")
 
     if enabled == "false":
-        return "OFF", f"LOOP_A_ENABLED=false (킬스위치 ON)"
+        return "OFF", f"HARDSTOP_ENABLED=false (킬스위치 ON)"
     if live == "true" and has_cron:
-        return "LIVE", f"LOOP_A_LIVE=true, cron=있음"
+        return "LIVE", f"HARDSTOP_LIVE=true, cron=있음"
     if live == "true" and not has_cron:
-        return "미스케줄", f"LOOP_A_LIVE=true but cron=없음"
+        return "미스케줄", f"HARDSTOP_LIVE=true but cron=없음"
     if live != "true" and has_cron:
-        return "SHADOW", f"LOOP_A_LIVE={live or '(unset)'}, cron=있음"
-    return "OFF", f"LOOP_A_LIVE={live or '(unset)'}, cron=없음"
+        return "SHADOW", f"HARDSTOP_LIVE={live or '(unset)'}, cron=있음"
+    return "OFF", f"HARDSTOP_LIVE={live or '(unset)'}, cron=없음"
 
 
 def _decide_loop_b(env: dict, crontab: str):
-    live = env.get("LOOP_B_LIVE", "").lower()
-    enabled = env.get("LOOP_B_ENABLED", "").lower()
+    # Canonical TREND_EXIT_* with deprecated LOOP_B_* alias fallback.
+    live = (env.get("TREND_EXIT_LIVE") or env.get("LOOP_B_LIVE") or "").lower()
+    enabled = (env.get("TREND_EXIT_ENABLED") or env.get("LOOP_B_ENABLED") or "").lower()
     has_cron = _cron_has_script(crontab, "loop_b_trend_exit.py")
 
     if enabled == "false":
-        return "OFF", "LOOP_B_ENABLED=false"
+        return "OFF", "TREND_EXIT_ENABLED=false"
     if live == "true" and has_cron:
-        return "LIVE", "LOOP_B_LIVE=true, cron=있음"
+        return "LIVE", "TREND_EXIT_LIVE=true, cron=있음"
     if live == "true" and not has_cron:
-        return "미스케줄", "LOOP_B_LIVE=true but cron=없음"
+        return "미스케줄", "TREND_EXIT_LIVE=true but cron=없음"
     if not has_cron:
-        return "미스케줄", f"cron=없음, LOOP_B_LIVE={live or '(unset)'}"
-    return "SHADOW", f"LOOP_B_LIVE={live or '(unset)'}, cron=있음"
+        return "미스케줄", f"cron=없음, TREND_EXIT_LIVE={live or '(unset)'}"
+    return "SHADOW", f"TREND_EXIT_LIVE={live or '(unset)'}, cron=있음"
 
 
 def _decide_loop_c(env: dict, crontab: str):
-    live = env.get("LOOP_C_LIVE", "").lower()
-    enabled = env.get("LOOP_C_ENABLED", "").lower()
+    # Canonical FILL_CHASER_* with deprecated LOOP_C_* alias fallback.
+    live = (env.get("FILL_CHASER_LIVE") or env.get("LOOP_C_LIVE") or "").lower()
+    enabled = (env.get("FILL_CHASER_ENABLED") or env.get("LOOP_C_ENABLED") or "").lower()
     has_cron = _cron_has_script(crontab, "loop_c_fill_chaser.py")
 
     if enabled == "false":
-        return "OFF", "LOOP_C_ENABLED=false"
+        return "OFF", "FILL_CHASER_ENABLED=false"
     if live == "true" and has_cron:
-        return "LIVE", "LOOP_C_LIVE=true, cron=있음"
+        return "LIVE", "FILL_CHASER_LIVE=true, cron=있음"
     if live == "true" and not has_cron:
-        return "미스케줄", "LOOP_C_LIVE=true but cron=없음"
+        return "미스케줄", "FILL_CHASER_LIVE=true but cron=없음"
     if not has_cron:
-        return "미스케줄", f"cron=없음, LOOP_C_LIVE={live or '(unset)'}"
-    return "SHADOW", f"LOOP_C_LIVE={live or '(unset)'}, cron=있음"
+        return "미스케줄", f"cron=없음, FILL_CHASER_LIVE={live or '(unset)'}"
+    return "SHADOW", f"FILL_CHASER_LIVE={live or '(unset)'}, cron=있음"
 
 
 def _decide_vision_pipeline(env: dict, crontab: str):

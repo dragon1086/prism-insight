@@ -81,18 +81,39 @@ except Exception:
 
 
 # ── Configuration (env-driven) ────────────────────────────────────────────────
-def _env_bool(name: str, default: bool) -> bool:
-    return str(os.getenv(name, str(default))).strip().lower() in ("1", "true", "yes", "on")
+# Canonical env prefix is HARDSTOP_ (this is the hard stop-loss loop). The legacy
+# LOOP_A_ prefix is a DEPRECATED alias, still honored so existing prod .env /
+# crontab survive the rename; main() warns once for any legacy key in use.
+_DEPRECATED_ENV = []
 
 
-LOOP_A_ENABLED = _env_bool("LOOP_A_ENABLED", True)     # master kill switch
-LOOP_A_LIVE = _env_bool("LOOP_A_LIVE", False)          # False => SHADOW (no real orders)
-LOCK_TTL_SEC = int(os.getenv("LOOP_A_LOCK_TTL_SEC", "300"))
-DB_PATH = os.getenv("LOOP_A_DB") or os.getenv("STOCK_TRACKING_DB") \
+def _env(suffix, default=None):
+    """Read HARDSTOP_<suffix>, falling back to the deprecated LOOP_A_<suffix>."""
+    val = os.getenv("HARDSTOP_" + suffix)
+    if val is not None:
+        return val
+    legacy = os.getenv("LOOP_A_" + suffix)
+    if legacy is not None:
+        _DEPRECATED_ENV.append("LOOP_A_" + suffix)
+        return legacy
+    return default
+
+
+def _env_flag(suffix, default):
+    raw = _env(suffix)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+LOOP_A_ENABLED = _env_flag("ENABLED", True)            # master kill switch
+LOOP_A_LIVE = _env_flag("LIVE", False)                 # False => SHADOW (no real orders)
+LOCK_TTL_SEC = int(_env("LOCK_TTL_SEC", "300"))
+DB_PATH = _env("DB") or os.getenv("STOCK_TRACKING_DB") \
     or str(PROJECT_ROOT / "stock_tracking_db.sqlite")
 # Reuse the same channel the batch/system already broadcasts to (TELEGRAM_CHANNEL_ID).
-# LOOP_A_CHAT_ID is only an optional override.
-CHAT_ID = os.getenv("LOOP_A_CHAT_ID") or os.getenv("TELEGRAM_CHANNEL_ID") or None
+# HARDSTOP_CHAT_ID is only an optional override.
+CHAT_ID = _env("CHAT_ID") or os.getenv("TELEGRAM_CHANNEL_ID") or None
 
 _HOLDINGS_TABLE = {"KR": "stock_holdings", "US": "us_stock_holdings"}
 
@@ -426,6 +447,11 @@ def _setup_logging() -> None:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=handlers,
     )
+    if _DEPRECATED_ENV:
+        logger.warning(
+            "deprecated env keys in use (rename to HARDSTOP_*): %s",
+            ", ".join(sorted(set(_DEPRECATED_ENV))),
+        )
 
 
 def _run_both_isolated() -> int:

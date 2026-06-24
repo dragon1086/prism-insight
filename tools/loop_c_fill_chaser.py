@@ -89,36 +89,57 @@ logger = logging.getLogger("loop_c")
 
 
 # ── Configuration (env-driven) ────────────────────────────────────────────────
-def _env_bool(name: str, default: bool) -> bool:
-    return str(os.getenv(name, str(default))).strip().lower() in ("1", "true", "yes", "on")
+# Canonical env prefix is FILL_CHASER_. The legacy LOOP_C_ prefix is a DEPRECATED
+# alias, still honored so existing prod .env / crontab survive the rename; main()
+# warns once for any legacy key in use.
+_DEPRECATED_ENV: List[str] = []
 
 
-LOOP_C_ENABLED = _env_bool("LOOP_C_ENABLED", True)        # master kill switch
-LOOP_C_LIVE = _env_bool("LOOP_C_LIVE", False)             # False => SHADOW (no real amend/cancel)
-LOCK_TTL_SEC = int(os.getenv("LOOP_C_LOCK_TTL_SEC", "300"))
+def _env(suffix: str, default: Optional[str] = None) -> Optional[str]:
+    """Read FILL_CHASER_<suffix>, falling back to the deprecated LOOP_C_<suffix>."""
+    val = os.getenv("FILL_CHASER_" + suffix)
+    if val is not None:
+        return val
+    legacy = os.getenv("LOOP_C_" + suffix)
+    if legacy is not None:
+        _DEPRECATED_ENV.append("LOOP_C_" + suffix)
+        return legacy
+    return default
+
+
+def _env_flag(suffix: str, default: bool) -> bool:
+    raw = _env(suffix)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+LOOP_C_ENABLED = _env_flag("ENABLED", True)               # master kill switch
+LOOP_C_LIVE = _env_flag("LIVE", False)                    # False => SHADOW (no real amend/cancel)
+LOCK_TTL_SEC = int(_env("LOCK_TTL_SEC", "300"))
 # Chase an order only after it has been unfilled this long.
-CHASE_AFTER_SEC = int(os.getenv("LOOP_C_CHASE_AFTER_SEC", "60"))
+CHASE_AFTER_SEC = int(_env("CHASE_AFTER_SEC", "60"))
 # Leave brand-new orders alone for this long (another loop may have just placed it).
-GRACE_SEC = int(os.getenv("LOOP_C_GRACE_SEC", "20"))
+GRACE_SEC = int(_env("GRACE_SEC", "20"))
 # Each chase step moves the limit this fraction toward the market.
-CHASE_STEP_PCT = float(os.getenv("LOOP_C_CHASE_STEP_PCT", "0.3"))
+CHASE_STEP_PCT = float(_env("CHASE_STEP_PCT", "0.3"))
 # BUY ceiling = slippage budget: how far above the original limit we are willing
 # to pay to secure a fill. Env value is a percent (e.g. "3.0" = 3%); stored as a
 # fraction. Beyond it -> CANCEL (don't chase into the top of a runaway spike).
-BUY_MAX_PREMIUM_PCT = float(os.getenv("LOOP_C_BUY_MAX_PREMIUM_PCT", "3.0")) / 100.0
+BUY_MAX_PREMIUM_PCT = float(_env("BUY_MAX_PREMIUM_PCT", "3.0")) / 100.0
 # Fill-priority for BUY: when the market is within the slippage budget, place a
 # MARKETABLE limit (cross the spread) so the order fills NOW instead of trailing
 # the market CHASE_STEP_PCT-per-step and never catching a still-rising price.
 # The limit is set BUY_CROSS_PAD_PCT above the live market, then capped at the
 # budget ceiling. Disable to fall back to the legacy sub-market creep.
-BUY_CROSS = _env_bool("LOOP_C_BUY_CROSS", True)
-BUY_CROSS_PAD_PCT = float(os.getenv("LOOP_C_BUY_CROSS_PAD_PCT", "0.1")) / 100.0
+BUY_CROSS = _env_flag("BUY_CROSS", True)
+BUY_CROSS_PAD_PCT = float(_env("BUY_CROSS_PAD_PCT", "0.1")) / 100.0
 # Max number of amend steps before giving up and (optionally) cancelling.
-MAX_CHASES = int(os.getenv("LOOP_C_MAX_CHASES", "5"))
+MAX_CHASES = int(_env("MAX_CHASES", "5"))
 # Whether to cancel a buy order once the ceiling is hit (else just stop chasing).
-CANCEL_ON_CEILING = _env_bool("LOOP_C_CANCEL_ON_CEILING", True)
+CANCEL_ON_CEILING = _env_flag("CANCEL_ON_CEILING", True)
 
-DB_PATH = os.getenv("LOOP_C_DB") or os.getenv("STOCK_TRACKING_DB") \
+DB_PATH = _env("DB") or os.getenv("STOCK_TRACKING_DB") \
     or str(PROJECT_ROOT / "stock_tracking_db.sqlite")
 
 
@@ -675,6 +696,11 @@ def _setup_logging() -> None:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=handlers,
     )
+    if _DEPRECATED_ENV:
+        logger.warning(
+            "deprecated env keys in use (rename to FILL_CHASER_*): %s",
+            ", ".join(sorted(set(_DEPRECATED_ENV))),
+        )
 
 
 # ── --selftest: exercise chase->payload->verdict->log with NO DB lock / API ────
