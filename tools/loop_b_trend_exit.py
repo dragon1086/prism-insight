@@ -113,20 +113,41 @@ except Exception:
 
 
 # ── Configuration (env-driven) ────────────────────────────────────────────────
-def _env_bool(name: str, default: bool) -> bool:
-    return str(os.getenv(name, str(default))).strip().lower() in ("1", "true", "yes", "on")
+# Canonical env prefix is TREND_EXIT_ (this is the trend-exit loop). The legacy
+# LOOP_B_ prefix is a DEPRECATED alias, still honored so existing prod .env /
+# crontab survive the rename; main() warns once for any legacy key in use.
+_DEPRECATED_ENV = []
 
 
-LOOP_B_ENABLED = _env_bool("LOOP_B_ENABLED", True)      # master kill switch
-LOOP_B_LIVE = _env_bool("LOOP_B_LIVE", False)           # False => SHADOW (no real orders)
-LOOP_B_CONFIRM_CHECKS = int(os.getenv("LOOP_B_CONFIRM_CHECKS", "2"))   # N consecutive day-breaches to act
-LOOP_B_CLOSE_WINDOW = _env_bool("LOOP_B_CLOSE_WINDOW", False)          # set true on the close-time cron line
-LOCK_TTL_SEC = int(os.getenv("LOOP_B_LOCK_TTL_SEC", "300"))
-DB_PATH = os.getenv("LOOP_B_DB") or os.getenv("STOCK_TRACKING_DB") \
+def _env(suffix, default=None):
+    """Read TREND_EXIT_<suffix>, falling back to the deprecated LOOP_B_<suffix>."""
+    val = os.getenv("TREND_EXIT_" + suffix)
+    if val is not None:
+        return val
+    legacy = os.getenv("LOOP_B_" + suffix)
+    if legacy is not None:
+        _DEPRECATED_ENV.append("LOOP_B_" + suffix)
+        return legacy
+    return default
+
+
+def _env_flag(suffix, default):
+    raw = _env(suffix)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+LOOP_B_ENABLED = _env_flag("ENABLED", True)             # master kill switch
+LOOP_B_LIVE = _env_flag("LIVE", False)                  # False => SHADOW (no real orders)
+LOOP_B_CONFIRM_CHECKS = int(_env("CONFIRM_CHECKS", "2"))   # N consecutive day-breaches to act
+LOOP_B_CLOSE_WINDOW = _env_flag("CLOSE_WINDOW", False)     # set true on the close-time cron line
+LOCK_TTL_SEC = int(_env("LOCK_TTL_SEC", "300"))
+DB_PATH = _env("DB") or os.getenv("STOCK_TRACKING_DB") \
     or str(PROJECT_ROOT / "stock_tracking_db.sqlite")
 # Reuse the same channel the batch/system already broadcasts to (TELEGRAM_CHANNEL_ID).
-# LOOP_B_CHAT_ID is only an optional override.
-CHAT_ID = os.getenv("LOOP_B_CHAT_ID") or os.getenv("TELEGRAM_CHANNEL_ID") or None
+# TREND_EXIT_CHAT_ID is only an optional override.
+CHAT_ID = _env("CHAT_ID") or os.getenv("TELEGRAM_CHANNEL_ID") or None
 
 _HOLDINGS_TABLE = {"KR": "stock_holdings", "US": "us_stock_holdings"}
 
@@ -633,6 +654,11 @@ def _setup_logging() -> None:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=handlers,
     )
+    if _DEPRECATED_ENV:
+        logger.warning(
+            "deprecated env keys in use (rename to TREND_EXIT_*): %s",
+            ", ".join(sorted(set(_DEPRECATED_ENV))),
+        )
 
 
 def _run_both_isolated() -> int:
