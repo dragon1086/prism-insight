@@ -302,6 +302,20 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
         except Exception as e:  # context/credential failure -> skip whole market safely
             logger.warning("%s trading context failed: %s", market, e)
     finally:
+        # Run-end: if anything sold this run, send ONE realtime portfolio summary
+        # (matches the batch flow). Done at run-end — NOT inside the per-sell
+        # action — so generate_report_summary's DB reads never corrupt the
+        # per-sell cursor state (the bug behind the reverted #372). Sent exactly
+        # once per run. Fully wrapped; never breaks the loop.
+        if summary.get("sold", 0) > 0 and agent["ref"] is not None:
+            try:
+                _ag = agent["ref"]
+                _msg = await _ag.generate_report_summary()
+                if _msg:
+                    _ag.message_queue.append(_msg)
+                    await _ag.send_telegram_message(CHAT_ID)
+            except Exception as _e:
+                logger.warning("[%s] run-end portfolio summary failed: %s", market, _e)
         conn.close()
         if agent["ref"] is not None:
             try:
