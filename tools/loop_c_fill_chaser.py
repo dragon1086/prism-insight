@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 import os
 import sqlite3
 import sys
@@ -101,9 +102,17 @@ CHASE_AFTER_SEC = int(os.getenv("LOOP_C_CHASE_AFTER_SEC", "60"))
 GRACE_SEC = int(os.getenv("LOOP_C_GRACE_SEC", "20"))
 # Each chase step moves the limit this fraction toward the market.
 CHASE_STEP_PCT = float(os.getenv("LOOP_C_CHASE_STEP_PCT", "0.3"))
-# BUY ceiling: never chase a buy limit more than this PERCENT over its original
-# price. Env value is a percent (e.g. "0.5" = 0.5%); stored as a fraction.
-BUY_MAX_PREMIUM_PCT = float(os.getenv("LOOP_C_BUY_MAX_PREMIUM_PCT", "0.5")) / 100.0
+# BUY ceiling = slippage budget: how far above the original limit we are willing
+# to pay to secure a fill. Env value is a percent (e.g. "3.0" = 3%); stored as a
+# fraction. Beyond it -> CANCEL (don't chase into the top of a runaway spike).
+BUY_MAX_PREMIUM_PCT = float(os.getenv("LOOP_C_BUY_MAX_PREMIUM_PCT", "3.0")) / 100.0
+# Fill-priority for BUY: when the market is within the slippage budget, place a
+# MARKETABLE limit (cross the spread) so the order fills NOW instead of trailing
+# the market CHASE_STEP_PCT-per-step and never catching a still-rising price.
+# The limit is set BUY_CROSS_PAD_PCT above the live market, then capped at the
+# budget ceiling. Disable to fall back to the legacy sub-market creep.
+BUY_CROSS = _env_bool("LOOP_C_BUY_CROSS", True)
+BUY_CROSS_PAD_PCT = float(os.getenv("LOOP_C_BUY_CROSS_PAD_PCT", "0.1")) / 100.0
 # Max number of amend steps before giving up and (optionally) cancelling.
 MAX_CHASES = int(os.getenv("LOOP_C_MAX_CHASES", "5"))
 # Whether to cancel a buy order once the ceiling is hit (else just stop chasing).
@@ -318,7 +327,9 @@ def _compute_chase_price(side: str, order_price: float, market_price: float) -> 
     """Move the limit a CHASE_STEP_PCT fraction toward the market price.
 
     SELL: chase DOWN toward market (floored at market — never below).
-    BUY:  chase UP toward market (capped at market — never above).
+    BUY:  if BUY_CROSS, jump to a MARKETABLE limit (cross the spread) for an
+          immediate fill; else legacy creep UP toward market (never crossing).
+          Either way the caller caps the result at the slippage-budget ceiling.
     """
     if order_price <= 0 or market_price <= 0:
         return order_price
@@ -327,15 +338,24 @@ def _compute_chase_price(side: str, order_price: float, market_price: float) -> 
         target = order_price - (order_price - market_price) * CHASE_STEP_PCT
         return max(target, market_price)
     else:  # BUY
+        if BUY_CROSS:
+            # Fill-priority: cross the spread now; caller caps at the ceiling.
+            return market_price * (1.0 + BUY_CROSS_PAD_PCT)
+        # Legacy creep: move only a fraction toward market, never crossing it.
         target = order_price + (market_price - order_price) * CHASE_STEP_PCT
         return min(target, market_price)
 
 
-def _round_price(market: str, price: float) -> float:
-    """KR limit prices are integers (KRW); US allows cents."""
+def _round_price(market: str, price: float, round_up: bool = False) -> float:
+    """KR limit prices are integers (KRW); US allows cents.
+
+    round_up=True ceilings to the tick — used for marketable BUY limits so the
+    rounding step never drops the price back below the live market (which would
+    defeat the cross / fill-priority intent).
+    """
     if market == "KR":
-        return float(int(round(price)))
-    return round(price, 2)
+        return float(math.ceil(price)) if round_up else float(int(round(price)))
+    return math.ceil(price * 100.0) / 100.0 if round_up else round(price, 2)
 
 
 # ── SHADOW verification helpers (dry-run payload + fill plausibility) ───────────
@@ -474,8 +494,11 @@ async def _act_on_order(conn, trader, market: str, order: Dict[str, Any],
 
         # ── Compute the chased price ────────────────────────────────────────
         raw_new = _compute_chase_price(side, order_price, market_price)
-        new_price = _round_price(market, raw_new)
-        # Cap a buy's chased price at the ceiling too.
+        # Round BUY cross prices UP to the tick so rounding never pushes the
+        # limit back below the live market (which would lose the fill).
+        new_price = _round_price(market, raw_new,
+                                 round_up=(side == "BUY" and BUY_CROSS))
+        # Cap a buy's chased price at the budget ceiling too.
         if side == "BUY":
             new_price = min(new_price, _round_price(market, ceiling_price))
 
