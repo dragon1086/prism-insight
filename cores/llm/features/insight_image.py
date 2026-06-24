@@ -476,21 +476,22 @@ def _draw_base_box(price_ax, analysis, *, price_min, price_max,
         bottom -= pad
         top += pad
 
-        # Soft fill + crisp gold border = the "hero" pattern highlight.
+        # Subtle fill + soft dashed gold border = a light pattern highlight
+        # (kept de-emphasised so it never dominates the candles or the fan).
         price_ax.add_patch(Rectangle(
             (x_start, bottom), x_end - x_start, top - bottom,
-            linewidth=0, facecolor=_COLOR_BASEBOX, alpha=0.12, zorder=2.4))
+            linewidth=0, facecolor=_COLOR_BASEBOX, alpha=0.05, zorder=2.4))
         price_ax.add_patch(Rectangle(
             (x_start, bottom), x_end - x_start, top - bottom,
-            linewidth=2.0, edgecolor=_COLOR_BASEBOX, facecolor="none",
-            alpha=0.95, zorder=3.0))
+            linewidth=1.1, edgecolor=_COLOR_BASEBOX, facecolor="none",
+            linestyle=(0, (5, 3)), alpha=0.55, zorder=3.0))
 
         tag = (f"{_ko_base_type(analysis.base_type)} · {weeks}주"
                if weeks else _ko_base_type(analysis.base_type))
-        txt_kw = dict(color="#0b0e14", fontsize=10, fontweight="bold",
+        txt_kw = dict(color=_GOLD, fontsize=9, fontweight="bold",
                       va="center", ha="left", zorder=7,
-                      bbox=dict(boxstyle="round,pad=0.35", facecolor=_COLOR_BASEBOX,
-                                edgecolor="none", alpha=0.97))
+                      bbox=dict(boxstyle="round,pad=0.3", facecolor=_PANEL,
+                                edgecolor=_COLOR_BASEBOX, linewidth=0.8, alpha=0.9))
         if font_prop is not None:
             txt_kw["fontproperties"] = font_prop
         price_ax.text(x_start + 0.6, top, tag, **txt_kw)
