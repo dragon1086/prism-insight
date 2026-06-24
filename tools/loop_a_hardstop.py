@@ -365,16 +365,6 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
         except Exception as e:
             logger.error("[%s] %s KIS sell failed after sim close: %s", market, ticker, e)
 
-        # 2.5) append the realtime portfolio summary so it rides WITH the sell
-        # message — matches the batch flow (process_reports), which the loops
-        # previously skipped, so loop-driven sells now also send 실시간 포트폴리오.
-        try:
-            summary = await ag.generate_report_summary()
-            if summary:
-                ag.message_queue.append(summary)
-        except Exception as e:
-            logger.warning("[%s] %s portfolio summary append failed: %s", market, ticker, e)
-
         # 3) flush the queued telegram message (instant notification).
         try:
             await ag.send_telegram_message(CHAT_ID)
