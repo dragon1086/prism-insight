@@ -15,11 +15,11 @@
 | OAuth LLM 백엔드(ChatGPT 구독) | **LIVE** | crontab `PRISM_OPENAI_AUTH_MODE=chatgpt_oauth` | 카나리 검증 완료 | 전 배치 적용 |
 | TIER0 이벤트 강제청산(뉴스 자율매도 + KIS 51 관리종목) | **LIVE** | 코드 상시 | 더존 등 실증 | KR+US 매도 프롬프트 핵심-0 |
 | Loop A — 고빈도 하드스톱(−7%/시나리오손절) | **LIVE** | `.env LOOP_A_LIVE=true` + cron 10분 | SHADOW 관측 후 승격(06-20) | KR 9–15 / US 9–16. 킬: `LOOP_A_ENABLED=false` |
-| Loop B — 50MA 종가확인 추세이탈 | **SHADOW/미스케줄** | (cron·env 없음) | **cadence-aware 백테스트 순효과(휩쏘 vs 드로다운) 검증** | 코드: `tools/loop_b_trend_exit.py` |
-| Loop C — 미체결 추격 + KIS TR 래퍼 | **SHADOW/미스케줄** | (cron·env 없음) | **신규 KIS 정정/취소 TR 소액 왕복 실주문 검증** | 코드: `tools/loop_c_fill_chaser.py` |
+| Loop B — 50MA 종가확인 추세이탈 | **LIVE** | `.env LOOP_B_LIVE=true` + cron(KR 9–15 / US 9–16) | 백테스트 KR/US 순효과(휩쏘0·추가DD0) + 사용자 승인(06-24) | 코드: `tools/loop_b_trend_exit.py`. 킬: `LOOP_B_ENABLED=false` |
+| Loop C — 미체결 추격 + KIS TR 래퍼 | **SHADOW** | cron(KR/US */2분, `LOOP_C_LIVE` 미설정) | **신규 KIS 정정/취소 TR 실 KIS 수락 검증**(dry-run/`--selftest`로 페이로드 필드는 검증됨) | 코드: `tools/loop_c_fill_chaser.py`. 상세로깅 `[LOOP_C][SHADOW]` |
 | 비전 배관(S1) / 렌더QA(S2) | **ON(log-only)** | `PRISM_FEATURE_VISION=on` | 무손상 인프라 | 렌더QA 비차단 경고만 |
 | 비전 매수 품질검사(S3 + S3.5 오닐 일/주봉·RS) | **SHADOW** | `PRISM_FEATURE_VISION=on` + `PRISM_VISION_SHADOW=true` | **A/B 홀드아웃 측정(승률·손절률·MDD 순효과)** → 미정 | 관측 로그 `[BUY_QUALITY][SHADOW]`. 매매영향 0 |
-| 비전 인사이트 이미지 발행(S6) | **OFF(기본)** | `.env PRISM_FEATURE_INSIGHT_IMAGE=on` **AND** `vision_available()`(`PRISM_FEATURE_VISION=on` + 실 API 키) | **샘플 사용자 승인 → `PRISM_FEATURE_INSIGHT_IMAGE=on`** | 발행 배선 구현됨(`cores/llm/features/insight_broadcast.py`, KR/US 오케스트레이터 배선). 둘 다 참일 때만 LIVE. 구독자 대상 = 발행 전 승인 필수 |
+| 비전 인사이트 이미지 발행(S6) | **LIVE** | `.env PRISM_FEATURE_INSIGHT_IMAGE=on` **AND** `vision_available()`(`PRISM_FEATURE_VISION=on` + 실 API 키) | 샘플 사용자 승인 후 활성화(06-24) | KR(₩)/US($) 발송 중. 차트에 매수▲/매도▼ 마커·용어설명 포함. 끄기: `PRISM_FEATURE_INSIGHT_IMAGE=off` |
 
 ## 자동 승격 정책 (에이전트가 따른다)
 SHADOW→LIVE **자동 승격**은 아래를 **모두** 충족할 때만:
@@ -34,10 +34,11 @@ SHADOW→LIVE **자동 승격**은 아래를 **모두** 충족할 때만:
 - one-way door(되돌리기 어려운) 변경.
 
 ## 승격 대기열 (다음 LIVE 후보)
-- **Loop B**: cadence-aware 백테스트 작성·실행 → 순효과 양수면 자동 승격 후보.
-- **Loop C**: 신규 KIS TR 소액 왕복 1회 검증 → 통과 시 후보.
+- ✅ **Loop B**: LIVE 승격 완료(06-24, 백테스트 KR/US 통과 + 사용자 승인).
+- **Loop C**: 실 KIS 수락 검증(소액 왕복 1회) → 통과 시 후보. (SHADOW 상세로깅·`--selftest`로 페이로드는 검증됨.)
 - **비전 매수게이트(S3)**: A/B 측정 설계 확정·데이터 축적 후 — **수익영향이라 사용자 확인 후**.
 
 ## 변경 이력
 - 2026-06-23: 레지스트리 신설. 현황 기록(Loop A LIVE / B·C SHADOW미스케줄 / 비전 SHADOW관측).
 - 2026-06-24: S6 발행 게이트 갱신 — 배선 구현 완료 반영. 게이트 `PRISM_FEATURE_INSIGHT_IMAGE=on` + `vision_available()`(이전 "발행 배선 미구현" 기재 정정). `feature_status.py`도 동일 로직으로 LIVE/OFF 보고.
+- 2026-06-24: **승격·활성화 반영** — Loop B → **LIVE**(`LOOP_B_LIVE=true`+cron, 백테스트 KR/US 통과+승인). Loop C → **SHADOW**(cron 설치, `LOOP_C_LIVE` 미설정; 상세로깅+selftest 추가). S6 발행 → **LIVE**(`PRISM_FEATURE_INSIGHT_IMAGE=on`, 사용자 승인; 매매마커·용어설명 포함).
