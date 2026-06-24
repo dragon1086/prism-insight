@@ -5,6 +5,14 @@ from dotenv import load_dotenv
 
 from mcp_agent.app import MCPApp
 
+# Standard logger for the buy-quality SHADOW hook. The function-local `logger`
+# (parallel_app.logger) is an mcp_agent context-bound logger that RAISES when
+# called outside an active logging context — which silently killed the
+# [BUY_QUALITY][SHADOW] verdict logs (swallowed by the hook's except). This
+# plain logger writes to stdout (captured by the cron logs) and never raises.
+import logging as _logging
+_BQ_LOG = _logging.getLogger("prism.buy_quality")
+
 from cores.agents import get_agent_directory
 from cores.report_generation import generate_report, generate_summary, generate_investment_strategy, get_disclaimer, generate_market_report
 
@@ -265,8 +273,8 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                 )
                 _bq_html = price_chart_html
                 _bq_regime = (macro_context or {}).get("market_regime", "sideways")
-                logger.info("[BUY_QUALITY][SHADOW] hook reached: code=%s regime=%s",
-                            company_code, _bq_regime)
+                _BQ_LOG.info("[BUY_QUALITY][SHADOW] hook reached: code=%s regime=%s",
+                             company_code, _bq_regime)
                 # Phase 6 S3.5: prefer the two-timeframe O'Neil path (daily +
                 # weekly with RS line), which grounds rs_line_new_high and the
                 # weekly base reading. Falls back to the single daily report
@@ -282,7 +290,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                         _bq_analysis = await analyze_base(_bq_img)
                 if _bq_analysis is not None:
                     _bq_verdict = gate_verdict(_bq_analysis, _bq_regime)
-                    logger.info(
+                    _BQ_LOG.info(
                         "[BUY_QUALITY][SHADOW] code=%s regime=%s would_buy=%s "
                         "qscore=%s thr=%s base=%s",
                         company_code,
@@ -299,15 +307,15 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                     # backtest passes and the user confirms (S5).
                     _ = vision_shadow  # referenced to mark the LIVE seam
                 else:
-                    logger.warning(
+                    _BQ_LOG.warning(
                         "[BUY_QUALITY][SHADOW] no analysis for %s "
                         "(analyze_base_oneil + fallback both None)",
                         company_code,
                     )
             except Exception as _bqe:
                 # Log (do NOT silently swallow) — still never affects pipeline.
-                logger.warning("[BUY_QUALITY][SHADOW] hook failed for %s: %s",
-                               company_code, _bqe, exc_info=True)
+                _BQ_LOG.warning("[BUY_QUALITY][SHADOW] hook failed for %s: %s",
+                                company_code, _bqe, exc_info=True)
 
         # 11. Build macro section (before final report composition)
         macro_section = ""
