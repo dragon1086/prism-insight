@@ -240,12 +240,12 @@ def _draw_prob_bar(ax, dist, *, font_prop, target_reach=None,
         if font_prop is not None:
             title_kw["fontproperties"] = font_prop
         ax.text(0.0, y + h + 0.030,
-                f"프리즘 트랙레코드 · 30일 후 분포 (유사 {n}건)", **title_kw)
+                f"프리즘이 비슷한 종목 {n}번 분석 → 30일 뒤 실제로:", **title_kw)
 
         cur = 0.0
-        for name, val, color in (("상승", up, _COLOR_SUPPORT),
-                                 ("횡보", side, _TXT_DIM),
-                                 ("하락", down, _COLOR_RESISTANCE)):
+        for name, val, color in (("올랐다", up, _COLOR_SUPPORT),
+                                 ("제자리", side, _TXT_DIM),
+                                 ("빠졌다", down, _COLOR_RESISTANCE)):
             w = val / total
             if w <= 0:
                 continue
@@ -264,10 +264,10 @@ def _draw_prob_bar(ax, dist, *, font_prop, target_reach=None,
                       color=_TXT_DIM, fontsize=9)
         if font_prop is not None:
             sub_kw["fontproperties"] = font_prop
-        sub = "※ 프리즘이 고른 종목들의 과거 실제 분포 (개별 예측·미래 보장 아님)"
+        sub = "※ 이 종목의 예측이 아니라, 과거 비슷한 종목들의 실제 결과 (올랐다=+10%↑·빠졌다=−10%↓)"
         if target_reach and target_reach.get("rate") is not None:
             approx = "≈" if target_reach.get("proxy") else ""
-            sub = f"목표가 도달 {approx}{target_reach['rate']}%   ·   " + sub
+            sub = f"이 중 목표가까지 도달 {approx}{target_reach['rate']}%   ·   " + sub
         ax.text(0.0, y - 0.045, sub, **sub_kw)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[INSIGHT_IMAGE] prob bar failed: %s", exc)
@@ -627,16 +627,22 @@ def render_insight_image(
                            currency_symbol=currency_symbol, price_decimals=price_decimals)
 
         # --- Supporting levels (de-emphasised dashed lines + labels) ---------
-        for lv in supports:
-            _draw_level(price_ax, lv, _COLOR_SUPPORT, f"지지 {_fmt(lv)}",
-                        linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
-        for lv in resistances:
-            _draw_level(price_ax, lv, _COLOR_RESISTANCE, f"저항 {_fmt(lv)}",
-                        linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
-        if stop:
-            _draw_level(price_ax, stop[0], _COLOR_STOP,
-                        f"손절 {_fmt(stop[0])}", linestyle="--",
-                        linewidth=1.2, font_prop=font_prop)
+        # Decluttered: when a forecast band is drawn (production), the price
+        # panel keeps only the HERO (base box + pivot + forward band). The
+        # support/resistance/stop numbers still live in the caption text, so we
+        # skip the busy stack of on-plot lines. Without a forecast (tests /
+        # fallback) we keep them for the standalone annotated chart.
+        if not forecast:
+            for lv in supports:
+                _draw_level(price_ax, lv, _COLOR_SUPPORT, f"지지 {_fmt(lv)}",
+                            linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
+            for lv in resistances:
+                _draw_level(price_ax, lv, _COLOR_RESISTANCE, f"저항 {_fmt(lv)}",
+                            linestyle=(0, (4, 3)), linewidth=1.1, font_prop=font_prop)
+            if stop:
+                _draw_level(price_ax, stop[0], _COLOR_STOP,
+                            f"손절 {_fmt(stop[0])}", linestyle="--",
+                            linewidth=1.2, font_prop=font_prop)
         # buy pivot is rendered by _draw_pivot_marker (circle + callout) above
 
         # --- Past-trade markers (subscriber-facing; from the tracking DB) -----
@@ -663,9 +669,9 @@ def render_insight_image(
             target_reach = forecast.get("target_reach")
             if isinstance(prob, dict) and prob.get("n"):
                 forecast_line = (
-                    f"프리즘 30일 분포(유사 {prob['n']}건): "
-                    f"상승 {prob.get('up', 0)}% · 횡보 {prob.get('side', 0)}% · "
-                    f"하락 {prob.get('down', 0)}%"
+                    f"비슷한 종목 {prob['n']}번 중 30일 뒤 → "
+                    f"올랐다 {prob.get('up', 0)}% · 제자리 {prob.get('side', 0)}% · "
+                    f"빠졌다 {prob.get('down', 0)}%  (이 종목 보장 아님)"
                 )
 
         # --- Re-stack the panels into clean bands + add a caption band ---
