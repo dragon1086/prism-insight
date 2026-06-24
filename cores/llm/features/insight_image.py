@@ -229,22 +229,24 @@ def _draw_forecast_band(price_ax, *, ohlc_len, current_price, target, stop,
                 price_ax.plot(xs, [current_price, stop], color=_COLOR_RESISTANCE,
                               linewidth=1.7, linestyle="--", alpha=0.9, zorder=4)
 
-        # Plan levels (target/stop) in a compact top-right box — OFF the fan.
+        # Plan levels (target/stop) in a compact LEFT-CENTRE box — sits in the
+        # empty sky above the early (low-price) candles, OFF the fan, and large
+        # enough to read (the top-right corner was too cramped/high).
         def _plan(yfrac, color, text):
-            kw = dict(transform=price_ax.transAxes, color=color, fontsize=9,
-                      fontweight="bold", va="top", ha="right", zorder=8,
-                      bbox=dict(boxstyle="round,pad=0.3", facecolor=_PANEL,
-                                edgecolor=color, linewidth=0.8, alpha=0.92))
+            kw = dict(transform=price_ax.transAxes, color=color, fontsize=10,
+                      fontweight="bold", va="center", ha="left", zorder=8,
+                      bbox=dict(boxstyle="round,pad=0.35", facecolor=_PANEL,
+                                edgecolor=color, linewidth=1.0, alpha=0.93))
             if font_prop is not None:
                 kw["fontproperties"] = font_prop
-            price_ax.text(0.985, yfrac, text, **kw)
+            price_ax.text(0.02, yfrac, text, **kw)
 
         if has_t:
-            _plan(0.975, _COLOR_SUPPORT,
+            _plan(0.56, _COLOR_SUPPORT,
                   f"목표 {_format_price(target, symbol=currency_symbol, decimals=price_decimals)}"
                   f" ({_pct_str(target / current_price - 1)})")
         if has_s:
-            _plan(0.905 if has_t else 0.975, _COLOR_RESISTANCE,
+            _plan(0.47 if has_t else 0.56, _COLOR_RESISTANCE,
                   f"손절 {_format_price(stop, symbol=currency_symbol, decimals=price_decimals)}"
                   f" ({_pct_str(stop / current_price - 1)})")
 
