@@ -87,6 +87,15 @@ def _bootstrap_path(market: str) -> None:
 
 logger = logging.getLogger("loop_c")
 
+# Load .env so env-driven config below (FILL_CHASER_*, incl. FILL_CHASER_LIVE) is
+# visible — a fresh cron process does not inherit .env otherwise. loop_a/loop_b do
+# the same; without it loop_c silently used code defaults and ignored .env.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except Exception:
+    pass
+
 
 # ── Configuration (env-driven) ────────────────────────────────────────────────
 # Canonical env prefix is FILL_CHASER_. The legacy LOOP_C_ prefix is a DEPRECATED
