@@ -1707,7 +1707,24 @@ class StockTrackingAgent:
                     min_score = scenario.get("min_score", 0)
                     logger.info(f"Buy score check: {company_name}({ticker}) - Score: {buy_score}")
 
+                    # Re-entry cooldown gate (SHADOW logs only; LIVE vetoes a churn
+                    # re-entry into a name just sold — longer cooldown after a loss).
+                    _cd_block = False
                     if analysis_result.get("decision") == "Enter":
+                        try:
+                            from reentry_cooldown import reentry_block, COOLDOWN_LIVE
+                            _cd = reentry_block("KR", ticker)
+                        except Exception:
+                            _cd, COOLDOWN_LIVE = None, False
+                        if _cd:
+                            logger.warning(
+                                "[REENTRY_COOLDOWN][%s] %s ticker=%s last_sell=%s ret=%.1f%% gap=%.1fh<%sh after_loss=%s",
+                                "LIVE" if COOLDOWN_LIVE else "SHADOW", _cd["action"], ticker,
+                                _cd["last_sell"], _cd["last_ret"], _cd["gap_hours"],
+                                _cd["window_hours"], _cd["after_loss"])
+                            _cd_block = COOLDOWN_LIVE
+
+                    if analysis_result.get("decision") == "Enter" and not _cd_block:
                         buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
 
                         if buy_success:
