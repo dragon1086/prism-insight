@@ -247,7 +247,10 @@ def test_us_live_sim_kis_telegram_order(tmp_db, monkeypatch):
 
     summary = asyncio.run(lb.run_market(MKT, "run1"))
     assert summary["sold"] == 1
-    assert calls == ["sim:AAPL", "kis:AAPL:5", "tg"]
+    # per-sell flush + run-end flush each invoke send_telegram_message; the run-end
+    # portfolio summary is de-duplicated (portfolio_broadcast) so only ONE actual
+    # portfolio message goes out in prod (see tests/test_portfolio_broadcast.py).
+    assert calls == ["sim:AAPL", "kis:AAPL:5", "tg", "tg"]
     assert _inflight(tmp_db, "FILLED") == 1
 
 

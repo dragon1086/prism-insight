@@ -1886,10 +1886,20 @@ class StockTrackingAgent:
                 self._msg_types = []
                 return False
 
-            # Generate summary report
-            summary = await self.generate_report_summary()
-            self._msg_types.append("portfolio")
-            self.message_queue.append(summary)
+            # Generate summary report — de-duplicated so near-simultaneous run-ends
+            # (KR batch + intraday loops A/B) don't emit 2-3 identical portfolio
+            # summaries. Other queued messages (sell notices) are unaffected.
+            try:
+                from portfolio_broadcast import should_send_portfolio
+                _emit_portfolio = should_send_portfolio("KR")
+            except Exception:
+                _emit_portfolio = True  # fail-open
+            if _emit_portfolio:
+                summary = await self.generate_report_summary()
+                self._msg_types.append("portfolio")
+                self.message_queue.append(summary)
+            else:
+                logger.info("[portfolio-dedup] KR portfolio summary skipped (sent within debounce window)")
 
             # Translate messages if English is requested
             if language == "en":
