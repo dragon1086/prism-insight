@@ -17,6 +17,7 @@
 | Loop A — 고빈도 하드스톱(−7%/시나리오손절) | **LIVE** | `.env HARDSTOP_LIVE=true` (구 `LOOP_A_LIVE`, alias 유효) + cron 10분 | SHADOW 관측 후 승격(06-20) | KR 9–15 / US 9–16. 킬: `HARDSTOP_ENABLED=false` |
 | Loop B — 50MA 종가확인 추세이탈 | **LIVE** | `.env TREND_EXIT_LIVE=true` (구 `LOOP_B_LIVE`) + cron(KR 9–15 / US 9–16) | 백테스트 KR/US 순효과(휩쏘0·추가DD0) + 사용자 승인(06-24) | 코드: `tools/loop_b_trend_exit.py`. 킬: `TREND_EXIT_ENABLED=false` |
 | Loop C — 미체결 추격 + KIS TR 래퍼 | **SHADOW** | cron(KR/US */2분, `FILL_CHASER_LIVE` 미설정; 구 `LOOP_C_LIVE` alias) | **신규 KIS 정정/취소 TR 실 KIS 수락 검증**(dry-run/`--selftest`로 페이로드 필드는 검증됨) | 코드: `tools/loop_c_fill_chaser.py`. 매수=체결우선 cross(예산 `FILL_CHASER_BUY_MAX_PREMIUM_PCT`=3%, `FILL_CHASER_BUY_CROSS`=on). 상세로깅 `[LOOP_C][SHADOW]` |
+| 재진입 쿨다운 게이트(매수측) | **SHADOW** | `REENTRY_COOLDOWN_LIVE` 미설정 | SHADOW 며칠 관측(`[REENTRY_COOLDOWN][SHADOW] WOULD_BLOCK` ↔ 실매수 대조) → LIVE 승격 | 코드: `reentry_cooldown.py` (KR/US 매수 caller 훅). 손실매도 후 24h 재매수 차단(승리후 0h). prod 이력검증=리벤지 3건 차단·오탐0 |
 | 비전 배관(S1) / 렌더QA(S2) | **ON(log-only)** | `PRISM_FEATURE_VISION=on` | 무손상 인프라 | 렌더QA 비차단 경고만 |
 | 비전 매수 품질검사(S3 + S3.5 오닐 일/주봉·RS) | **SHADOW** | `PRISM_FEATURE_VISION=on` + `PRISM_VISION_SHADOW=true` | **A/B 홀드아웃 측정(승률·손절률·MDD 순효과)** → 미정 | 관측 로그 `[BUY_QUALITY][SHADOW]`. 매매영향 0 |
 | 비전 인사이트 이미지 발행(S6) | **LIVE** | `.env PRISM_FEATURE_INSIGHT_IMAGE=on` **AND** `vision_available()`(`PRISM_FEATURE_VISION=on` + 실 API 키) | 샘플 사용자 승인 후 활성화(06-24) | KR(₩)/US($) 발송 중. 차트에 매수▲/매도▼ 마커·용어설명 포함. 끄기: `PRISM_FEATURE_INSIGHT_IMAGE=off` |
@@ -43,3 +44,4 @@ SHADOW→LIVE **자동 승격**은 아래를 **모두** 충족할 때만:
 - 2026-06-24: S6 발행 게이트 갱신 — 배선 구현 완료 반영. 게이트 `PRISM_FEATURE_INSIGHT_IMAGE=on` + `vision_available()`(이전 "발행 배선 미구현" 기재 정정). `feature_status.py`도 동일 로직으로 LIVE/OFF 보고.
 - 2026-06-24: **승격·활성화 반영** — Loop B → **LIVE**(`LOOP_B_LIVE=true`+cron, 백테스트 KR/US 통과+승인). Loop C → **SHADOW**(cron 설치, `LOOP_C_LIVE` 미설정; 상세로깅+selftest 추가). S6 발행 → **LIVE**(`PRISM_FEATURE_INSIGHT_IMAGE=on`, 사용자 승인; 매매마커·용어설명 포함).
 - 2026-06-25: **env 키 리네임(코드네임 누수 제거)** — `LOOP_A_*`→`HARDSTOP_*`, `LOOP_B_*`→`TREND_EXIT_*`, `LOOP_C_*`→`FILL_CHASER_*`. **구 키는 deprecated alias로 계속 유효**(코드가 신규 먼저 읽고 구 키 폴백+경고). prod `.env`/crontab 점진 교체 가능. + **Loop C 매수추격 체결우선화**: 예산 `FILL_CHASER_BUY_MAX_PREMIUM_PCT` 0.5%→3%, `FILL_CHASER_BUY_CROSS`(on)로 예산 내 마케터블 cross 즉시체결(예산 초과 시 여전히 CANCEL). SHADOW 유지.
+- 2026-06-25: **재진입 쿨다운 게이트 신설(SHADOW)** — `reentry_cooldown.py` + KR/US 매수 caller 훅. 손실매도 후 같은 종목 24h 재매수 차단(승리후 0h=정당 연속진입 허용). MU 과매매(당일왕복 −5.6% 31건·손절후 재매수) 대응. `REENTRY_COOLDOWN_LIVE` 미설정=SHADOW(로그만). prod 이력검증: 리벤지 재매수 3건 차단·오탐 0.

@@ -2650,7 +2650,25 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     if rationale:
                         logger.info(f"Scenario rationale ({company_name}/{ticker}): {rationale[:300]}")
 
-                    if normalized_decision == "entry" and adjusted_score >= min_score and sector_diverse:
+                    # Re-entry cooldown gate (SHADOW logs only; LIVE vetoes a churn
+                    # re-entry — longer cooldown after a loss). Fresh entries only;
+                    # pyramiding adds (is_add) are exempt.
+                    _cd_block = False
+                    if normalized_decision == "entry" and not is_add:
+                        try:
+                            from reentry_cooldown import reentry_block, COOLDOWN_LIVE
+                            _cd = reentry_block("US", ticker)
+                        except Exception:
+                            _cd, COOLDOWN_LIVE = None, False
+                        if _cd:
+                            logger.warning(
+                                "[REENTRY_COOLDOWN][%s] %s ticker=%s last_sell=%s ret=%.1f%% gap=%.1fh<%sh after_loss=%s",
+                                "LIVE" if COOLDOWN_LIVE else "SHADOW", _cd["action"], ticker,
+                                _cd["last_sell"], _cd["last_ret"], _cd["gap_hours"],
+                                _cd["window_hours"], _cd["after_loss"])
+                            _cd_block = COOLDOWN_LIVE
+
+                    if normalized_decision == "entry" and adjusted_score >= min_score and sector_diverse and not _cd_block:
                         # is_add => pyramiding additional independent row (#288)
                         buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg, is_add=is_add)
 
