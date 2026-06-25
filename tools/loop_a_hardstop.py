@@ -330,11 +330,11 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
         # once per run. Fully wrapped; never breaks the loop.
         if summary.get("sold", 0) > 0 and agent["ref"] is not None:
             try:
-                _ag = agent["ref"]
-                _msg = await _ag.generate_report_summary()
-                if _msg:
-                    _ag.message_queue.append(_msg)
-                    await _ag.send_telegram_message(CHAT_ID)
+                # send_telegram_message() itself appends the (de-duplicated)
+                # portfolio summary, so do NOT generate+append it here as well —
+                # doing both queued the portfolio twice (the double-send bug). Flush
+                # the queue once; cross-run de-dup lives in portfolio_broadcast.
+                await agent["ref"].send_telegram_message(CHAT_ID)
             except Exception as _e:
                 logger.warning("[%s] run-end portfolio summary failed: %s", market, _e)
         conn.close()
