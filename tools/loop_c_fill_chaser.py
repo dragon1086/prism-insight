@@ -376,15 +376,49 @@ def _compute_chase_price(side: str, order_price: float, market_price: float) -> 
         return min(target, market_price)
 
 
-def _round_price(market: str, price: float, round_up: bool = False) -> float:
-    """KR limit prices are integers (KRW); US allows cents.
+# KRX 호가단위 (tick size) by price tier. Each entry is (price_below, tick):
+# a price strictly LESS than ``price_below`` uses ``tick``. The final open-ended
+# tier (>= 500,000) uses 1,000 KRW. Mirrors the KRX domestic-equity tick schedule
+# (post-2023 unified table). KIS rejects off-tick limit prices with APBK0506, so
+# every KR limit price Loop C sends MUST be snapped to its tier's tick.
+_KR_TICK_TABLE = (
+    (2_000, 1),
+    (5_000, 5),
+    (20_000, 10),
+    (50_000, 50),
+    (200_000, 100),
+    (500_000, 500),
+)
+_KR_TICK_TOP = 1_000  # >= 500,000 KRW
 
-    round_up=True ceilings to the tick — used for marketable BUY limits so the
-    rounding step never drops the price back below the live market (which would
-    defeat the cross / fill-priority intent).
+
+def _kr_tick_size(price: float) -> int:
+    """Return the KRX 호가단위 (tick) for a KR price tier."""
+    for ceiling, tick in _KR_TICK_TABLE:
+        if price < ceiling:
+            return tick
+    return _KR_TICK_TOP
+
+
+def _round_price(market: str, price: float, round_up: bool = False) -> float:
+    """Snap a limit price to a tradable unit.
+
+    KR prices must align to the KRX 호가단위 (tick), which varies by price tier; an
+    off-tick limit is rejected by KIS (APBK0506). We snap DOWN to the tick grid by
+    default (a chase-preserving, conservative direction). round_up=True ceilings to
+    the tick instead — used for marketable BUY limits so the rounding step never
+    drops the price back below the live market (which would defeat the cross /
+    fill-priority intent of #378). price<=0 falls back to integer rounding.
+
+    US allows cents -> round to 2 decimals (unchanged).
     """
     if market == "KR":
-        return float(math.ceil(price)) if round_up else float(int(round(price)))
+        if price <= 0:
+            return float(math.ceil(price)) if round_up else float(int(round(price)))
+        tick = _kr_tick_size(price)
+        if round_up:
+            return float(math.ceil(price / tick) * tick)
+        return float((int(price) // tick) * tick)
     return math.ceil(price * 100.0) / 100.0 if round_up else round(price, 2)
 
 

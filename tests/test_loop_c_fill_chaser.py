@@ -394,3 +394,63 @@ def test_selftest_runs_without_api_or_orders(monkeypatch, caplog):
     assert summary["cancel"] == 1                # the BUY also exercises cancel
     assert summary["likely"] + summary["unlikely"] == 2
     assert any("[LOOP_C][SHADOW] selftest" in r.message for r in caplog.records)
+
+
+# ── KR 호가단위 (tick size) snapping ─────────────────────────────────────────────
+def test_kr_tick_size_tiers():
+    """KRX tick (호가단위) varies by price tier; verify each tier + its boundary."""
+    assert lc._kr_tick_size(1_500) == 1          # < 2,000
+    assert lc._kr_tick_size(3_000) == 5          # 2,000 ~ 5,000
+    assert lc._kr_tick_size(12_000) == 10        # 5,000 ~ 20,000
+    assert lc._kr_tick_size(23_000) == 50        # 20,000 ~ 50,000
+    assert lc._kr_tick_size(80_000) == 100       # 50,000 ~ 200,000
+    assert lc._kr_tick_size(300_000) == 500      # 200,000 ~ 500,000
+    assert lc._kr_tick_size(700_000) == 1_000    # >= 500,000
+    # Tier boundaries are exclusive on the lower side: a price exactly at the
+    # boundary belongs to the HIGHER tier (5,000 / 20,000 / 50,000 / 200,000 / 500,000).
+    assert lc._kr_tick_size(2_000) == 5
+    assert lc._kr_tick_size(5_000) == 10
+    assert lc._kr_tick_size(20_000) == 50
+    assert lc._kr_tick_size(50_000) == 100
+    assert lc._kr_tick_size(200_000) == 500
+    assert lc._kr_tick_size(500_000) == 1_000
+
+
+def test_round_price_kr_snaps_to_tick_regression_085620():
+    """Regression for APBK0506: 085620 (~23,000 KRW) off-tick amend prices.
+
+    Loop C used to integer-round only (23,205 stayed 23,205) -> KIS rejected the
+    amend with APBK0506 (주식주문호가단위). 23,000-won stocks trade on a 50-won tick,
+    so every chased limit MUST snap to a 50-won grid. We snap DOWN (conservative).
+    """
+    assert lc._round_price("KR", 23_205) == 23_200.0
+    assert lc._round_price("KR", 23_295) == 23_250.0
+    assert lc._round_price("KR", 23_370) == 23_350.0
+    # Already on-tick -> unchanged.
+    assert lc._round_price("KR", 23_250) == 23_250.0
+
+
+def test_round_price_kr_tier_boundaries_snap_down():
+    """Snap-down lands on the correct tick across every price tier boundary."""
+    assert lc._round_price("KR", 1_999) == 1_999.0       # 1-won tick (< 2,000)
+    assert lc._round_price("KR", 3_007) == 3_005.0       # 5-won tick
+    assert lc._round_price("KR", 12_344) == 12_340.0     # 10-won tick
+    assert lc._round_price("KR", 49_999) == 49_950.0     # 50-won tick (< 50,000)
+    assert lc._round_price("KR", 87_654) == 87_600.0     # 100-won tick
+    assert lc._round_price("KR", 199_999) == 199_900.0   # 100-won tick (< 200,000)
+    assert lc._round_price("KR", 333_333) == 333_000.0   # 500-won tick
+    assert lc._round_price("KR", 777_777) == 777_000.0   # 1,000-won tick (>= 500,000)
+
+
+def test_round_price_kr_round_up_snaps_up_to_tick():
+    """round_up=True (BUY cross, #378) ceilings to the tick, not below market."""
+    assert lc._round_price("KR", 23_205, round_up=True) == 23_250.0
+    assert lc._round_price("KR", 23_250, round_up=True) == 23_250.0
+    assert lc._round_price("KR", 3_001, round_up=True) == 3_005.0
+
+
+def test_round_price_kr_nonpositive_and_us_unchanged():
+    assert lc._round_price("KR", 0) == 0.0               # guard: non-positive
+    # US still allows cents (unchanged behaviour).
+    assert lc._round_price("US", 189.567) == 189.57
+    assert lc._round_price("US", 189.561, round_up=True) == 189.57
