@@ -94,6 +94,17 @@ class TestCapabilities:
         from cores.llm import capabilities
         assert capabilities.vision_shadow() is False
 
+    def test_vision_in_report_default_off(self, monkeypatch):
+        # Safety contract: report is byte-identical unless explicitly enabled.
+        monkeypatch.delenv("PRISM_FEATURE_VISION_IN_REPORT", raising=False)
+        from cores.llm import capabilities
+        assert capabilities.vision_in_report() is False
+
+    def test_vision_in_report_on(self, monkeypatch):
+        monkeypatch.setenv("PRISM_FEATURE_VISION_IN_REPORT", "on")
+        from cores.llm import capabilities
+        assert capabilities.vision_in_report() is True
+
     def test_vision_model_default(self, monkeypatch):
         monkeypatch.delenv("PRISM_VISION_MODEL", raising=False)
         from cores.llm import capabilities

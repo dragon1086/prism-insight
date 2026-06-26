@@ -17,6 +17,7 @@ from cores.llm.features.buy_quality import (
     REGIME_THRESHOLDS,
     BaseAnalysis,
     analyze_base,
+    format_vision_pattern_md,
     gate_verdict,
 )
 
@@ -366,3 +367,55 @@ class TestAnalyzeBaseOneil:
 
         result = await bq.analyze_base_oneil("005930", "삼성전자")
         assert result is None
+
+
+# --------------------------------------------------------------------------- #
+# format_vision_pattern_md — report subsection rendering (soft, not a gate)     #
+# --------------------------------------------------------------------------- #
+class TestFormatVisionPatternMd:
+    def test_ko_renders_descriptive_subsection(self):
+        a = _make_analysis(
+            base_type="cup-handle",
+            quality_score=80,
+            confidence=75,
+            pivot_price=23250.0,
+            dist_to_pivot_pct=-1.2,
+            support_levels=[22000.0, 21500.0],
+            resistance_levels=[24000.0],
+            stop_loss=21000.0,
+            rationale="타이트한 손잡이컵, RS 신고가.",
+        )
+        md = format_vision_pattern_md(a, "ko")
+        assert md  # non-empty
+        assert "### 차트 패턴 분석" in md
+        assert "참고용" in md            # framed as informational, not a directive
+        assert "cup-handle" in md
+        assert "80/100" in md
+        assert "23,250" in md            # pivot rendered with thousands separator
+        assert "22,000" in md and "24,000" in md  # support & resistance
+        assert "타이트한 손잡이컵" in md  # rationale surfaced
+        # Contract: this is SOFT report content, never a buy gate.
+        assert "would_buy" not in md
+        assert md.endswith("\n\n")
+
+    def test_en_renders_english_header(self):
+        a = _make_analysis(rationale="tight cup, RS new high")
+        md = format_vision_pattern_md(a, "en")
+        assert "### Chart Pattern Analysis" in md
+        assert "would_buy" not in md
+
+    def test_empty_levels_and_no_pivot_do_not_break(self):
+        a = _make_analysis(
+            pivot_price=0.0,
+            stop_loss=0.0,
+            support_levels=[],
+            resistance_levels=[],
+        )
+        md = format_vision_pattern_md(a, "ko")
+        assert md
+        assert "없음" in md              # empty level lists render as 없음
+        assert "피벗" not in md          # no pivot line when pivot_price <= 0
+
+    def test_never_raises_on_bad_input(self):
+        # A malformed object must not blow up the report pipeline -> returns "".
+        assert format_vision_pattern_md(object(), "ko") == ""  # type: ignore[arg-type]
