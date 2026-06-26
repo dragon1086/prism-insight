@@ -46,11 +46,39 @@ class FakeTrader:
     def get_current_price(self, stock_code):
         return {"current_price": self._prices.get(stock_code, 0)}
 
-    def amend_order(self, stock_code, orgn_odno, limit_price, krx_fwdg_ord_orgno=""):
+    def amend_order(self, stock_code, orgn_odno, limit_price, krx_fwdg_ord_orgno="",
+                    dry_run=False):
+        if dry_run:
+            # Mirror the real wrapper's dry-run dict (tr_id/api_url/params).
+            return {
+                "dry_run": True, "tr_id": "TTTC0013U",
+                "api_url": "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+                "params": {
+                    "CANO": "X", "ACNT_PRDT_CD": "01",
+                    "KRX_FWDG_ORD_ORGNO": krx_fwdg_ord_orgno,
+                    "ORGN_ODNO": str(orgn_odno), "ORD_DVSN": "00",
+                    "RVSE_CNCL_DVSN_CD": "01", "ORD_QTY": "0",
+                    "ORD_UNPR": str(int(limit_price)), "QTY_ALL_ORD_YN": "Y",
+                    "EXCG_ID_DVSN_CD": "KRX", "CNDT_PRIC": "",
+                },
+            }
         self.calls.append(f"amend:{stock_code}:{orgn_odno}:{limit_price}")
         return self._amend_result
 
-    def cancel_order(self, stock_code, orgn_odno, krx_fwdg_ord_orgno=""):
+    def cancel_order(self, stock_code, orgn_odno, krx_fwdg_ord_orgno="",
+                     dry_run=False):
+        if dry_run:
+            return {
+                "dry_run": True, "tr_id": "TTTC0013U",
+                "api_url": "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+                "params": {
+                    "CANO": "X", "ACNT_PRDT_CD": "01",
+                    "KRX_FWDG_ORD_ORGNO": krx_fwdg_ord_orgno,
+                    "ORGN_ODNO": str(orgn_odno), "ORD_DVSN": "00",
+                    "RVSE_CNCL_DVSN_CD": "02", "ORD_QTY": "0", "ORD_UNPR": "0",
+                    "QTY_ALL_ORD_YN": "Y", "EXCG_ID_DVSN_CD": "KRX", "CNDT_PRIC": "",
+                },
+            }
         self.calls.append(f"cancel:{stock_code}:{orgn_odno}")
         return self._cancel_result
 
@@ -305,3 +333,103 @@ def test_inquiry_failure_degrades_to_noop(tmp_db, monkeypatch):
     summary = _run()
     assert summary["open_orders"] == 0
     assert trader.calls == []
+
+
+# ── SHADOW verification helpers (dry-run payload + fill plausibility) ────────────
+def test_dry_run_payload_has_required_kr_fields(tmp_db, monkeypatch):
+    """dry_run=True returns the exact KR amend body without any network/order."""
+    trader = FakeTrader([], {})
+    order = {"ticker": "005930", "side": "SELL", "order_no": "O1",
+             "ord_unpr": 70000, "unfilled_qty": 10, "krx_fwdg_ord_orgno": "GNO1"}
+    payload = lc._build_dry_run_payload(trader, "KR", order, "AMEND", 69500)
+    assert payload["tr_id"] and "order-rvsecncl" in payload["api_url"]
+    p = payload["params"]
+    for k in ("CANO", "ACNT_PRDT_CD", "KRX_FWDG_ORD_ORGNO", "ORGN_ODNO",
+              "RVSE_CNCL_DVSN_CD", "ORD_QTY", "ORD_UNPR", "QTY_ALL_ORD_YN",
+              "EXCG_ID_DVSN_CD"):
+        assert k in p
+    assert p["RVSE_CNCL_DVSN_CD"] == "01"        # amend
+    assert trader.calls == []                    # no real call
+
+
+def test_fill_verdict_sell_and_buy():
+    """SELL fills if new<=mkt; BUY fills if new>=mkt; else UNLIKELY."""
+    assert lc._fill_verdict("SELL", 69000, 69000) == "FILL_LIKELY"
+    assert lc._fill_verdict("SELL", 69500, 69000) == "FILL_UNLIKELY"
+    assert lc._fill_verdict("BUY", 10100, 10100) == "FILL_LIKELY"
+    assert lc._fill_verdict("BUY", 10050, 10100) == "FILL_UNLIKELY"
+    assert lc._fill_verdict("SELL", 0, 100) == "FILL_UNKNOWN"
+
+
+def test_shadow_amend_logs_payload_and_verdict(tmp_db, monkeypatch, caplog):
+    """SHADOW amend records fill-verdict + dry-run payload, issues no real TR."""
+    import logging
+    trader = FakeTrader([_row("O1", "005930", "01", 10, 70000)], {"005930": 69000})
+    _patch_ctx(monkeypatch, trader)
+    _seed_seen(tmp_db, "O1")
+    with caplog.at_level(logging.INFO, logger="loop_c"):
+        _run()
+    assert trader.calls == []                    # SHADOW: still no real amend
+    assert any("[LOOP_C][SHADOW]" in r.message and "fill=" in r.message
+               for r in caplog.records)
+    # The audit row persists the verdict + payload text.
+    conn = sqlite3.connect(tmp_db)
+    reason = conn.execute(
+        "SELECT reason FROM loop_c_chase_log WHERE action='AMEND'"
+    ).fetchone()[0]
+    conn.close()
+    assert "fill=" in reason and "payload=" in reason
+
+
+def test_selftest_runs_without_api_or_orders(monkeypatch, caplog):
+    """--selftest path exercises chase->payload->verdict->log; no API, no orders."""
+    import logging
+    # If anything tried to open a trading context, this would explode the test.
+    monkeypatch.setattr(lc, "_open_context", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("selftest must NOT open a trading context")))
+    with caplog.at_level(logging.INFO, logger="loop_c"):
+        summary = lc.run_selftest("KR")
+    assert summary["market"] == "KR"
+    assert summary["amend"] == 2                 # one SELL + one BUY
+    assert summary["cancel"] == 1                # the BUY also exercises cancel
+    assert summary["likely"] + summary["unlikely"] == 2
+    assert any("[LOOP_C][SHADOW] selftest" in r.message for r in caplog.records)
+
+
+# ── KR 호가단위 (tick size) snapping ─────────────────────────────────────────────
+def test_kr_tick_size_tiers():
+    """KRX tick (호가단위) varies by price tier; verify each boundary."""
+    assert lc._kr_tick_size(1_500) == 1          # < 2,000
+    assert lc._kr_tick_size(3_000) == 5          # 2,000 ~ 5,000
+    assert lc._kr_tick_size(12_000) == 10        # 5,000 ~ 20,000
+    assert lc._kr_tick_size(23_000) == 50        # 20,000 ~ 50,000
+    assert lc._kr_tick_size(80_000) == 100       # 50,000 ~ 200,000
+    assert lc._kr_tick_size(300_000) == 500      # 200,000 ~ 500,000
+    assert lc._kr_tick_size(700_000) == 1_000    # >= 500,000
+    # tier boundaries are exclusive on the lower side: a price exactly at the
+    # boundary belongs to the HIGHER tier.
+    assert lc._kr_tick_size(20_000) == 50
+    assert lc._kr_tick_size(50_000) == 100
+
+
+def test_round_price_kr_snaps_to_tick_regression_085620():
+    """Regression for APBK0506: 085620 (~23,000 KRW) off-tick amend prices.
+
+    Loop C used to integer-round only (23,205 stayed 23,205) -> KIS rejected the
+    amend with APBK0506 (주식주문호가단위). 23,000-won stocks trade on a 50-won tick,
+    so every chased limit MUST snap to a 50-won grid. We snap DOWN (conservative).
+    """
+    assert lc._round_price("KR", 23_205) == 23_200.0
+    assert lc._round_price("KR", 23_295) == 23_250.0
+    assert lc._round_price("KR", 23_370) == 23_350.0
+    # already on-tick -> unchanged
+    assert lc._round_price("KR", 23_250) == 23_250.0
+
+
+def test_round_price_kr_other_tiers_and_us_unchanged():
+    assert lc._round_price("KR", 3_007) == 3_005.0       # 5-won tick
+    assert lc._round_price("KR", 12_344) == 12_340.0     # 10-won tick
+    assert lc._round_price("KR", 87_654) == 87_600.0     # 100-won tick
+    assert lc._round_price("KR", 0) == 0.0               # guard: non-positive
+    # US still allows cents (unchanged behaviour).
+    assert lc._round_price("US", 189.567) == 189.57
