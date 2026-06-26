@@ -37,11 +37,11 @@ class TestTranslateRequest:
         assert "max_tokens" not in result
 
     def test_gpt5_nano_mapped_to_codex_compatible(self):
-        # gpt-5-nano is rejected by the Codex/ChatGPT-account endpoint;
+        # gpt-5.4-nano is rejected by the Codex/ChatGPT-account endpoint;
         # it must be mapped to the lightest Codex-compatible model so that
         # OAuth-mode callers (e.g. telegram_translator) keep working.
         body = {
-            "model": "gpt-5-nano",
+            "model": "gpt-5.4-nano",
             "messages": [{"role": "user", "content": "안녕하세요"}],
         }
         result = translate_request(body)
