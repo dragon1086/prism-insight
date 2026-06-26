@@ -164,7 +164,7 @@ async def _send_broadcast(message: str, broadcast_languages: list):
 
                 logger.info(f"Translating intelligence report to {lang}")
                 translated = await translate_telegram_message(
-                    message, model="gpt-5-nano", from_lang="ko", to_lang=lang
+                    message, model="gpt-5.4-nano", from_lang="ko", to_lang=lang
                 )
                 if len(translated) > 4096:
                     for i in range(0, len(translated), 4096):

@@ -104,7 +104,7 @@ Only return the translated text without any explanations or metadata.
 
 async def translate_telegram_message(
     message: str,
-    model: str = "gpt-5-nano",
+    model: str = "gpt-5.4-nano",
     from_lang: str = "ko",
     to_lang: str = "en"
 ) -> str:
@@ -113,7 +113,7 @@ async def translate_telegram_message(
 
     Args:
         message: Telegram message to translate
-        model: OpenAI model to use (default: gpt-5-nano for cost efficiency)
+        model: OpenAI model to use (default: gpt-5.4-nano for cost efficiency)
         from_lang: Source language code (default: "ko" for Korean)
         to_lang: Target language code (default: "en" for English)
 

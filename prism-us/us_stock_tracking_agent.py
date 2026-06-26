@@ -2876,7 +2876,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     translated_queue = []
                     for idx, message in enumerate(self.message_queue, 1):
                         logger.info(f"Translating US message {idx}/{len(self.message_queue)}")
-                        translated = await translate_telegram_message(message, model="gpt-5-nano")
+                        translated = await translate_telegram_message(message, model="gpt-5.4-nano")
                         translated_queue.append(translated)
                     self.message_queue = translated_queue
                     logger.info("All US messages translated successfully")
@@ -2989,7 +2989,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             logger.info(f"Translating US tracking message to {lang}")
                             translated_message = await translate_telegram_message(
                                 message,
-                                model="gpt-5-nano",
+                                model="gpt-5.4-nano",
                                 from_lang="ko",
                                 to_lang=lang
                             )

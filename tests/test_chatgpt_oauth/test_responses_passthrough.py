@@ -53,7 +53,7 @@ class TestPrepareResponsesPassthrough:
         assert result["model"] == "gpt-5.5"
 
     def test_maps_gpt5_nano_to_gpt54mini(self):
-        body = {"model": "gpt-5-nano", "input": []}
+        body = {"model": "gpt-5.4-nano", "input": []}
         result = prepare_responses_passthrough(body)
         assert result["model"] == "gpt-5.4-mini"
 
