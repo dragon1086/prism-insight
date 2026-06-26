@@ -93,6 +93,19 @@ def vision_shadow() -> bool:
     return os.environ.get("PRISM_VISION_SHADOW", "true").strip().lower() != "false"
 
 
+def vision_in_report() -> bool:
+    """Return True when the vision base analysis should be rendered into the
+    analysis report's technical section (default: off).
+
+    Independent, opt-in sub-flag of the vision pipeline. When on (and vision is
+    available), the CAN SLIM base analysis already computed in the S3 hook is
+    surfaced as a descriptive markdown subsection that the buy agent reads —
+    a SOFT input, never a gate. Default off keeps the report byte-identical and
+    adds no work. Requires PRISM_FEATURE_VISION=on (vision must already run).
+    """
+    return os.environ.get("PRISM_FEATURE_VISION_IN_REPORT", "off").strip().lower() == "on"
+
+
 def vision_model() -> str:
     """Return the vision model id (default: gpt-4o)."""
     return os.environ.get("PRISM_VISION_MODEL", _DEFAULT_VISION_MODEL).strip() or _DEFAULT_VISION_MODEL

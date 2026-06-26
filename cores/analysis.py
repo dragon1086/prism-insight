@@ -261,14 +261,19 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         # 10c. Buy-quality vision gate (Phase 6 S3) — SHADOW by default, log-only.
         # Computes a CAN SLIM base analysis + per-regime verdict and LOGS it.
         # In shadow mode it has ZERO effect on the report or any buy decision.
+        # When PRISM_FEATURE_VISION_IN_REPORT=on, the descriptive base analysis is
+        # ALSO surfaced as a markdown subsection in the technical section below —
+        # a SOFT input the buy agent reads, never a buy gate (that stays S5/TODO).
+        vision_pattern_md = ""
         if vision_available():
             try:
                 import base64 as _bq_base64
                 import re as _bq_re
-                from cores.llm.capabilities import vision_shadow
+                from cores.llm.capabilities import vision_shadow, vision_in_report
                 from cores.llm.features.buy_quality import (
                     analyze_base,
                     analyze_base_oneil,
+                    format_vision_pattern_md,
                     gate_verdict,
                 )
                 _bq_html = price_chart_html
@@ -300,6 +305,14 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                         _bq_verdict["threshold"],
                         _bq_analysis.base_type,
                     )
+                    # Opt-in (PRISM_FEATURE_VISION_IN_REPORT=on): surface the
+                    # descriptive base analysis into the report's technical
+                    # section. SOFT report content the buy agent reads — this is
+                    # NOT the buy gate (that remains the S5/TODO below).
+                    if vision_in_report():
+                        vision_pattern_md = format_vision_pattern_md(
+                            _bq_analysis, language
+                        )
                     # TODO(S5/LIVE): when not vision_shadow(), inject
                     # _bq_verdict into the entry matrix (Step 2 of the
                     # trading_scenario_agent prompt) so it gates real
@@ -412,6 +425,11 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             final_report += main_headers["tech_analysis"]
             if "price_volume_analysis" in section_reports:
                 final_report += section_reports["price_volume_analysis"] + "\n\n"
+                # Vision chart-pattern analysis (opt-in; empty unless
+                # PRISM_FEATURE_VISION_IN_REPORT=on). Placed right after the
+                # price/volume prose and before the chart images.
+                if vision_pattern_md:
+                    final_report += vision_pattern_md
                 # Add price and volume charts
                 if price_chart_html or volume_chart_html:
                     chart_title = "### 가격 및 거래량 차트\n\n" if language == "ko" else "### Price and Volume Charts\n\n"

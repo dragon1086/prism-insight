@@ -299,6 +299,75 @@ def validate_levels(
         return []
 
 
+def format_vision_pattern_md(
+    analysis: BaseAnalysis,
+    language: str = "ko",
+) -> str:
+    """Render a :class:`BaseAnalysis` as a descriptive markdown subsection.
+
+    SOFT, descriptive chart-pattern content that the buy agent reads as one more
+    input in the report's technical section — it is NOT a buy/sell gate and does
+    not inject a would_buy verdict. Never raises; returns "" on any error so the
+    report pipeline is never broken.
+    """
+    try:
+        def _levels(xs: list[float]) -> str:
+            vals = [x for x in (xs or []) if x and x > 0]
+            if not vals:
+                return "없음" if language == "ko" else "none"
+            return ", ".join(f"{x:,.0f}" for x in vals)
+
+        a = analysis
+        if language == "ko":
+            out = ["### 차트 패턴 분석 (AI 비전·참고용)\n"]
+            out.append(f"- **베이스 유형**: {a.base_type} ({a.proper_or_faulty})")
+            out.append(f"- **베이스 품질**: {a.quality_score}/100 (신뢰도 {a.confidence})")
+            if a.pivot_price and a.pivot_price > 0:
+                out.append(
+                    f"- **피벗(매수 기준선)**: {a.pivot_price:,.0f}원 "
+                    f"(현재가 대비 {a.dist_to_pivot_pct:+.1f}%)"
+                )
+            out.append(
+                f"- **지지선**: {_levels(a.support_levels)}  ·  "
+                f"**저항선**: {_levels(a.resistance_levels)}"
+            )
+            if a.stop_loss and a.stop_loss > 0:
+                out.append(f"- **참고 손절선**: {a.stop_loss:,.0f}원")
+            out.append(
+                f"- **RS선 신고가**: {'예' if a.rs_line_new_high else '아니오'}  ·  "
+                f"**핸들 거래량 위축**: {'예' if a.volume_dryup_in_handle else '아니오'}"
+            )
+            if a.rationale:
+                out.append(f"\n{a.rationale}")
+            out.append("\n> ⓘ AI 차트 비전의 보조 분석입니다(참고용). 최종 판단은 종합 분석을 따릅니다.")
+        else:
+            out = ["### Chart Pattern Analysis (AI vision — informational)\n"]
+            out.append(f"- **Base type**: {a.base_type} ({a.proper_or_faulty})")
+            out.append(f"- **Base quality**: {a.quality_score}/100 (confidence {a.confidence})")
+            if a.pivot_price and a.pivot_price > 0:
+                out.append(
+                    f"- **Pivot (buy point)**: {a.pivot_price:,.0f} "
+                    f"({a.dist_to_pivot_pct:+.1f}% vs current)"
+                )
+            out.append(
+                f"- **Support**: {_levels(a.support_levels)}  ·  "
+                f"**Resistance**: {_levels(a.resistance_levels)}"
+            )
+            if a.stop_loss and a.stop_loss > 0:
+                out.append(f"- **Stop reference**: {a.stop_loss:,.0f}")
+            out.append(
+                f"- **RS line new high**: {a.rs_line_new_high}  ·  "
+                f"**Handle volume dry-up**: {a.volume_dryup_in_handle}"
+            )
+            if a.rationale:
+                out.append(f"\n{a.rationale}")
+            out.append("\n> ⓘ Supplementary AI chart-vision read (informational).")
+        return "\n".join(out) + "\n\n"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[VISION_REPORT] format_vision_pattern_md failed: %s", exc)
+        return ""
+
+
 async def analyze_base(
     chart_image: ImageInput,
     *,
