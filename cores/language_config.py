@@ -252,7 +252,7 @@ class LanguageConfig:
             date_obj = datetime.strptime(date_str, "%Y%m%d")
             templates = self.get_telegram_template()
             return date_obj.strftime(templates["date_format"])
-        except:
+        except Exception:
             return date_str
 
     def get_trigger_emojis(self) -> Dict[str, str]:
