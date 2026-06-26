@@ -485,7 +485,7 @@ def create_price_chart(ticker, company_name=None, days=730, save_path=None, adju
     if company_name is None:
         try:
             company_name = get_market_ticker_name(ticker)
-        except:
+        except Exception:
             company_name = ticker
 
     # Fetch stock data
@@ -675,7 +675,7 @@ def create_market_cap_chart(ticker, company_name=None, days=730, save_path=None)
     if company_name is None:
         try:
             company_name = get_market_ticker_name(ticker)
-        except:
+        except Exception:
             company_name = ticker
 
     # Fetch stock data
@@ -866,7 +866,7 @@ def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=Non
     if company_name is None:
         try:
             company_name = get_market_ticker_name(ticker)
-        except:
+        except Exception:
             company_name = ticker
 
     # Fetch stock data
@@ -1114,7 +1114,7 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
     if company_name is None:
         try:
             company_name = get_market_ticker_name(ticker)
-        except:
+        except Exception:
             company_name = ticker
 
     # Fetch stock data - trading volume by investor
@@ -1356,7 +1356,7 @@ def create_comprehensive_report(ticker, company_name=None, days=730, output_dir=
     if company_name is None:
         try:
             company_name = get_market_ticker_name(ticker)
-        except:
+        except Exception:
             company_name = ticker
 
     # Create output directory (if not exists)

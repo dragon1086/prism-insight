@@ -84,7 +84,7 @@ os.makedirs(config_root, exist_ok=True)
 if os.name != 'nt':
     try:
         os.chmod(config_root, stat.S_IRWXU)  # 700 permission
-    except:
+    except Exception:
         pass  # Ignore permission change failure
 
 # Generate security-enhanced token filename
@@ -421,7 +421,7 @@ def _get_or_create_encryption_key():
             try:
                 import ctypes
                 ctypes.windll.kernel32.SetFileAttributesW(key_file, 2)  # FILE_ATTRIBUTE_HIDDEN
-            except:
+            except Exception:
                 pass
 
     return key
@@ -592,7 +592,7 @@ def read_token(account_key: Optional[str] = None) -> Optional[str]:
                             if token_data and 'valid_date' in token_data and 'token' in token_data:
                                 valid_date_str = token_data['valid_date']
                                 token = token_data['token']
-                    except:
+                    except Exception:
                         # Try YAML format (oldest format)
                         try:
                             with open(token_file, 'r', encoding='UTF-8') as f:
@@ -681,7 +681,7 @@ def _set_secure_file_permissions(file_path):
                     import ctypes
                     ctypes.windll.kernel32.SetFileAttributesW(file_path, 2)  # FILE_ATTRIBUTE_HIDDEN
                     logging.warning(f"Set hidden attribute for: {file_path} (install pywin32 for better security)")
-                except:
+                except Exception:
                     logging.warning(f"Could not set Windows file attributes for: {file_path}")
         else:  # Unix/Linux/Mac
             # 600 permissions (owner read/write only)
@@ -802,12 +802,12 @@ class CrossPlatformFileLock:
         if self._lock_fd is not None:
             try:
                 os.close(self._lock_fd)
-            except:
+            except Exception:
                 pass
             self._lock_fd = None
         try:
             self.lock_path.unlink()
-        except:
+        except Exception:
             pass
 
     def __enter__(self):
@@ -920,7 +920,7 @@ def _atomic_write(file_path_str: str, data: bytes) -> bool:
                 backup_path = file_path.with_suffix('.old')
                 try:
                     shutil.move(str(file_path), str(backup_path))
-                except:
+                except Exception:
                     raise TokenFileError(f"Cannot replace locked file: {file_path}")
 
         # Atomic rename
@@ -932,7 +932,7 @@ def _atomic_write(file_path_str: str, data: bytes) -> bool:
         if temp_path and os.path.exists(temp_path):
             try:
                 os.unlink(temp_path)
-            except:
+            except Exception:
                 pass
         raise TokenFileError(f"Atomic write failed: {e}")
 
@@ -1263,7 +1263,7 @@ class APIResp:
                 return True
             else:
                 return False
-        except:
+        except Exception:
             return False
 
     def getErrorCode(self):

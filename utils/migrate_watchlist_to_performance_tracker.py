@@ -313,7 +313,7 @@ def determine_trigger_mode(analyzed_date: str) -> str:
             time_part = analyzed_date.split()[1]
             hour = int(time_part.split(':')[0])
             return 'morning' if hour < 12 else 'afternoon'
-    except:
+    except Exception:
         pass
     return 'afternoon'  # Default
 
@@ -335,7 +335,7 @@ def check_was_traded(ticker: str, analyzed_date: str, traded_tickers: dict) -> i
 
             if 0 <= (bought - analyzed).days <= 3:
                 return 1
-    except:
+    except Exception:
         pass
 
     return 0
@@ -348,7 +348,7 @@ def parse_scenario(scenario_str: str) -> dict:
     try:
         import json
         return json.loads(scenario_str)
-    except:
+    except Exception:
         return {}
 
 

@@ -159,7 +159,7 @@ def determine_trigger_info(
                     info = trigger_map[check_key]
                     logger.debug(f"[{ticker}] Found trigger match on {check_date} (original: {date_part})")
                     return info['trigger_type'], info['trigger_mode']
-        except:
+        except Exception:
             pass
 
     # 3. Fall back to text analysis from scenario
@@ -191,7 +191,7 @@ def determine_trigger_info(
                 trigger_type = 'News Catalyst'
             else:
                 trigger_type = 'Comprehensive Analysis'
-        except:
+        except Exception:
             pass
 
     # Determine trigger_mode from time if available
@@ -201,7 +201,7 @@ def determine_trigger_info(
             if time_part:
                 hour = int(time_part.split(':')[0])
                 trigger_mode = 'morning' if hour < 12 else 'afternoon'
-        except:
+        except Exception:
             pass
 
     return trigger_type, trigger_mode
