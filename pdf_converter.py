@@ -981,6 +981,127 @@ async def _markdown_to_pdf_playwright_async(md_file_path, pdf_file_path, add_the
 
     logger.info(f"PDF conversion complete with Playwright: {pdf_file_path}")
 
+async def _render_markdown_page(
+    browser,
+    md_file_path,
+    pdf_file_path,
+    *,
+    add_theme=True,
+    logo_path=None,
+    enable_watermark=False,
+    watermark_opacity=0.02,
+):
+    """Render ONE markdown file to PDF using an already-launched *browser*.
+
+    Mirrors :func:`_markdown_to_pdf_playwright_async`'s page logic (file:// load,
+    A4 margins, print_background) but reuses a shared browser instead of
+    launching a new Chromium per call. A fresh page is created and closed per
+    file. Returns the pdf path string on success; raises on failure.
+    """
+    html_content = markdown_to_html(
+        md_file_path,
+        add_theme=add_theme,
+        logo_path=logo_path,
+        enable_watermark=enable_watermark,
+        watermark_opacity=watermark_opacity,
+    )
+
+    temp_html = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix='.html', delete=False, mode='w', encoding='utf-8'
+        ) as f:
+            f.write(html_content)
+            temp_html = f.name
+
+        page = await browser.new_page()
+        try:
+            await page.goto(
+                f'file://{os.path.abspath(temp_html)}', wait_until='networkidle'
+            )
+            await page.pdf(
+                path=str(pdf_file_path),
+                format='A4',
+                margin={'top': '20mm', 'right': '20mm', 'bottom': '20mm', 'left': '20mm'},
+                print_background=True,
+            )
+        finally:
+            await page.close()
+        logger.info(f"PDF conversion complete (shared browser): {pdf_file_path}")
+        return str(pdf_file_path)
+    finally:
+        if temp_html and os.path.exists(temp_html):
+            try:
+                os.unlink(temp_html)
+            except OSError:
+                pass
+
+
+class PdfRenderer:
+    """Reusable single-Chromium PDF renderer for the multilingual broadcast.
+
+    Launching Chromium is slow and memory-heavy. The translated-PDF broadcast
+    used to launch a fresh browser per file (N launches for N PDFs). This keeps
+    ONE browser alive across the whole loop and renders files through it one at a
+    time, so the per-file launch overhead is paid once while the memory ceiling
+    stays at a single Chromium (safe on small hosts).
+
+    Usage::
+
+        async with PdfRenderer() as renderer:
+            for ...:
+                pdf = await renderer.render(md_path, pdf_path)  # None on failure
+    """
+
+    def __init__(self, *, add_theme=True, logo_path=None, enable_watermark=False,
+                 watermark_opacity=0.02):
+        self._opts = dict(
+            add_theme=add_theme,
+            logo_path=logo_path,
+            enable_watermark=enable_watermark,
+            watermark_opacity=watermark_opacity,
+        )
+        self._pw = None
+        self._browser = None
+
+    async def __aenter__(self):
+        from playwright.async_api import async_playwright
+
+        self._pw = await async_playwright().start()
+        self._browser = await self._pw.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-gpu',
+            ],
+        )
+        return self
+
+    async def render(self, md_file_path, pdf_file_path):
+        """Render one file; returns the pdf path or None on failure (never raises)."""
+        if self._browser is None:
+            raise RuntimeError("PdfRenderer used outside of 'async with'")
+        try:
+            return await _render_markdown_page(
+                self._browser, md_file_path, pdf_file_path, **self._opts
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Shared-browser PDF render failed for {md_file_path}: {e}")
+            return None
+
+    async def __aexit__(self, *exc):
+        try:
+            if self._browser is not None:
+                await self._browser.close()
+        finally:
+            self._browser = None
+            if self._pw is not None:
+                await self._pw.stop()
+                self._pw = None
+
+
 def _markdown_to_pdf_playwright_sync(md_file_path, pdf_file_path, add_theme, logo_path, enable_watermark, watermark_opacity):
     """PDF conversion using Playwright Sync API (for regular environments)"""
     from playwright.sync_api import sync_playwright

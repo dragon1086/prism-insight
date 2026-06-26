@@ -722,8 +722,9 @@ class StockAnalysisOrchestrator:
         """
         try:
             from cores.agents.telegram_translator_agent import translate_telegram_message
+            from pdf_converter import PdfRenderer
 
-            async def _translate_pdfs_for_lang(lang, channel_id):
+            async def _translate_pdfs_for_lang(lang, channel_id, renderer):
                 for report_path in report_paths:
                     try:
                         logger.info(f"Translating markdown report {report_path} to {lang}")
@@ -752,10 +753,12 @@ class StockAnalysisOrchestrator:
 
                         logger.info(f"Translated report saved: {translated_report_path}")
 
-                        translated_pdf_paths = await self.convert_to_pdf([str(translated_report_path)])
+                        translated_pdf_file = PDF_REPORTS_DIR / f"{Path(translated_report_path).stem}.pdf"
+                        translated_pdf_path = await renderer.render(
+                            str(translated_report_path), str(translated_pdf_file)
+                        )
 
-                        if translated_pdf_paths and len(translated_pdf_paths) > 0:
-                            translated_pdf_path = translated_pdf_paths[0]
+                        if translated_pdf_path:
                             logger.info(f"Sending translated PDF {translated_pdf_path} to {lang} channel")
                             success = await bot_agent.send_document(channel_id, str(translated_pdf_path), msg_type="pdf")
 
@@ -775,18 +778,21 @@ class StockAnalysisOrchestrator:
                             await send_openai_quota_alert(self.telegram_config, market="KR")
                             return
 
-            # Process languages sequentially to limit memory usage
-            # (each PDF generation spawns a Playwright/Chromium instance)
-            for lang in self.telegram_config.broadcast_languages:
-                channel_id = self.telegram_config.get_broadcast_channel_id(lang)
-                if not channel_id:
-                    logger.warning(f"No channel ID configured for language: {lang}")
-                    continue
-                logger.info(f"Processing PDF translation for {lang} channel (sequential)")
-                try:
-                    await _translate_pdfs_for_lang(lang, channel_id)
-                except Exception as lang_err:
-                    logger.error(f"PDF translation failed for {lang}: {lang_err}")
+            # Languages are still processed one page at a time (memory ceiling stays
+            # at a single Chromium), but a SHARED browser is reused across all of
+            # them so the Chromium launch cost is paid ONCE instead of once per file
+            # (previously N launches for N PDFs — the batch's main slow tail).
+            async with PdfRenderer() as renderer:
+                for lang in self.telegram_config.broadcast_languages:
+                    channel_id = self.telegram_config.get_broadcast_channel_id(lang)
+                    if not channel_id:
+                        logger.warning(f"No channel ID configured for language: {lang}")
+                        continue
+                    logger.info(f"Processing PDF translation for {lang} channel (shared browser)")
+                    try:
+                        await _translate_pdfs_for_lang(lang, channel_id, renderer)
+                    except Exception as lang_err:
+                        logger.error(f"PDF translation failed for {lang}: {lang_err}")
 
         except Exception as e:
             logger.error(f"Error in _send_translated_pdfs: {str(e)}")
