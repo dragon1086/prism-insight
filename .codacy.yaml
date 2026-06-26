@@ -1,0 +1,20 @@
+# Codacy analysis configuration
+# https://docs.codacy.com/repositories-configure/codacy-configuration-file/
+#
+# Why this file exists
+# --------------------
+# Codacy's security grade was dominated by Bandit B101 ("Use of assert detected").
+# Bandit flags every `assert` because asserts are stripped under `python -O`, but
+# in TEST code asserts are the correct idiom — not a security risk. As of 2026-06,
+# ~1,000 of the repo's ~2,300 "security" findings were B101, and 100% of them were
+# in test directories (tests/, prism-us/tests/, prism-btc/tests/, cores/llm/tests/).
+#
+# Excluding test/example paths from analysis removes those false positives so the
+# grade reflects production code. (Test code is still run by CI; it is simply not
+# graded for security/style here.)
+exclude_paths:
+  - 'tests/**'
+  - '**/tests/**'
+  - '**/test_*.py'
+  - '**/*_test.py'
+  - 'examples/**'
