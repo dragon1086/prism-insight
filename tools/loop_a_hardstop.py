@@ -406,6 +406,22 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
         except Exception as e:
             logger.warning("[%s] %s telegram flush failed: %s", market, ticker, e)
 
+        # 4) Broadcast the sell to subscribers (Redis/GCP). sim close is the source
+        # of truth so we publish on sim_ok even if our own KIS leg failed; loop sells
+        # were previously batch-only and never broadcast (subscribers diverged).
+        try:
+            from loop_publish import publish_loop_sell
+            await publish_loop_sell(
+                market=market, ticker=ticker,
+                company_name=stock_data.get("company_name", ticker),
+                price=float(stock_data.get("current_price", 0) or 0),
+                buy_price=float(stock_data.get("buy_price", 0) or 0),
+                sell_reason=reason,
+                trade_result={"success": bool(ok or sold_qty == 0), "order_no": order_no},
+            )
+        except Exception as e:
+            logger.warning("[%s] %s sell signal publish failed (non-critical): %s", market, ticker, e)
+
         record_inflight(conn, ticker, market, run_id, sold_qty,
                         "FILLED" if (ok or sold_qty == 0) else "REJECTED",
                         reason, str(order_no) if order_no else None)
