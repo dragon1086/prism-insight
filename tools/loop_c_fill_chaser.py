@@ -415,10 +415,16 @@ def _round_price(market: str, price: float, round_up: bool = False) -> float:
     if market == "KR":
         if price <= 0:
             return float(math.ceil(price)) if round_up else float(int(round(price)))
-        tick = _kr_tick_size(price)
+        # KRW prices are integer-valued; collapse to a whole number FIRST so float
+        # noise from upstream arithmetic (e.g. 23199.9999996) cannot push the
+        # tick-grid math onto the wrong rung (which would itself re-trigger
+        # APBK0506). Integer ceil/floor division then keeps the snap fully
+        # float-free.
+        whole = int(round(price))
+        tick = _kr_tick_size(whole)
         if round_up:
-            return float(math.ceil(price / tick) * tick)
-        return float((int(price) // tick) * tick)
+            return float(-(-whole // tick) * tick)   # ceil to tick (integer math)
+        return float((whole // tick) * tick)          # floor to tick
     return math.ceil(price * 100.0) / 100.0 if round_up else round(price, 2)
 
 

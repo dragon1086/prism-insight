@@ -449,6 +449,22 @@ def test_round_price_kr_round_up_snaps_up_to_tick():
     assert lc._round_price("KR", 3_001, round_up=True) == 3_005.0
 
 
+def test_round_price_kr_float_noise_does_not_missnap():
+    """Upstream float noise must not push the snap onto the wrong tick rung.
+
+    KRW prices are integer-valued, but prior arithmetic can yield values like
+    23199.9999996 / 23200.0000004. Without collapsing to a whole number first,
+    floor/ceil tick math would jump a full tick (e.g. 23150 / 23250) and could
+    itself re-trigger APBK0506.
+    """
+    # floor (default): noise just below/above a grid point still lands on 23,200.
+    assert lc._round_price("KR", 23_199.9999996) == 23_200.0
+    assert lc._round_price("KR", 23_200.0000004) == 23_200.0
+    # ceil (round_up): an on-grid price with noise must NOT over-ceil to 23,250.
+    assert lc._round_price("KR", 23_200.0000004, round_up=True) == 23_200.0
+    assert lc._round_price("KR", 23_199.9999996, round_up=True) == 23_200.0
+
+
 def test_round_price_kr_nonpositive_and_us_unchanged():
     assert lc._round_price("KR", 0) == 0.0               # guard: non-positive
     # US still allows cents (unchanged behaviour).
