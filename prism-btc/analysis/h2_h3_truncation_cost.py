@@ -114,7 +114,7 @@ def main():
     valid = tr.dropna(subset=["mfe_R"])
     reached2 = valid[valid.mfe_R>=2.0]
     truncated = reached2[reached2.r_multiple<0.5]
-    print(f"\n=== H2 truncation metric ===")
+    print("\n=== H2 truncation metric ===")
     print(f"trades reaching MFE>=2R: {len(reached2)} / {len(valid)} ({len(reached2)/len(valid)*100:.1f}%)")
     if len(reached2):
         print(f"  of those, ended netR<0.5R: {len(truncated)} ({len(truncated)/len(reached2)*100:.1f}%)  <-- H2 indicator")
@@ -129,11 +129,11 @@ def main():
     # capture efficiency: netR / MFE_R for winners
     win = valid[valid.r_multiple>0]
     cap = (win.r_multiple/win.mfe_R.replace(0,np.nan)).dropna()
-    print(f"\n=== capture efficiency (winners only) ===")
+    print("\n=== capture efficiency (winners only) ===")
     print(f"median netR/MFE_R = {cap.median():.3f}  mean = {cap.mean():.3f}  (1.0 = captured the whole favorable move)")
 
     # ---- post-exit continuation ----
-    print(f"\n=== post-exit trend continuation (signed, in trade direction) ===")
+    print("\n=== post-exit trend continuation (signed, in trade direction) ===")
     for h,col in [("+3d","post3"),("+7d","post7")]:
         v = tr[col].dropna()
         cont = (v>0).mean()*100
@@ -147,7 +147,7 @@ def main():
             print(f"  [early-exits only] {h}: continued {(v>0).mean()*100:.1f}%  mean {v.mean()*100:+.2f}%  n={len(v)}")
 
     # ---- H3 cost decomposition (per trade, R units) ----
-    print(f"\n=== H3 cost decomposition (per-trade R units) ===")
+    print("\n=== H3 cost decomposition (per-trade R units) ===")
     # net_pnl not in CSV; reconstruct: r_multiple is NET R. gross R unavailable in
     # CSV, but fee_paid & funding_paid ARE. Convert $ cost to R via initial_risk$.
     # initial_risk$ = equity*2%*tranche_frac is unknown per row, but cost_R =
@@ -165,12 +165,12 @@ def main():
     print(f"per-trade means (R):  gross={tr.gross_R_est.mean():+.3f}  fee=-{tr.fee_R.mean():.3f}  "
           f"funding=-{tr.fund_R.mean():.3f}  net={tr.r_multiple.mean():+.3f}")
     print(f"  (assumes 1R$={R_DOLLAR:.0f}; tranche_frac=1 => cost_R is a LOWER bound, gross is LOWER bound)")
-    print(f"per-period:")
+    print("per-period:")
     for per,g in tr.groupby("period"):
         print(f"  {per}: gross={g.gross_R_est.mean():+.3f}  cost=-{g.cost_R.mean():.3f}  net={g.r_multiple.mean():+.3f}  n={len(g)}")
 
     tr.to_csv(Path(__file__).resolve().parent/"h2_h3_trades_enriched.csv", index=False)
-    print(f"\n[saved] analysis/h2_h3_trades_enriched.csv")
+    print("\n[saved] analysis/h2_h3_trades_enriched.csv")
 
 if __name__=="__main__":
     main()

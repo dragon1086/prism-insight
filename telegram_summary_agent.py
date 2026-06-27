@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 import cores.openai_debug  # noqa: F401 — OpenAI 400/429 request metadata logging
-from mcp_agent.agents.agent import Agent
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM

@@ -231,12 +231,12 @@ def get_forecast_distribution(
             if trigger_type:
                 tiers.append((
                     "band+trigger",
-                    f"AND buy_score >= ? AND buy_score < ? AND trigger_type = ?",
+                    "AND buy_score >= ? AND buy_score < ? AND trigger_type = ?",
                     (lo, hi, str(trigger_type)),
                 ))
             tiers.append((
                 "band",
-                f"AND buy_score >= ? AND buy_score < ?",
+                "AND buy_score >= ? AND buy_score < ?",
                 (lo, hi),
             ))
         tiers.append(("global", "", ()))

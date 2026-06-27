@@ -207,7 +207,7 @@ async def run_compression(
         """, (cutoff_layer2,))
         layer2_count = agent.cursor.fetchone()[0]
 
-        logger.info(f"\n📦 Entries to Compress:")
+        logger.info("\n📦 Entries to Compress:")
         logger.info(f"  Layer 1 → 2: {layer1_count} entries (older than {layer1_age_days} days)")
         logger.info(f"  Layer 2 → 3: {layer2_count} entries (older than {layer2_age_days} days)")
 
@@ -334,7 +334,7 @@ async def run_compression(
             agent.cursor.execute("SELECT COUNT(*) FROM trading_intuitions WHERE is_active = 1")
             active_intuitions = agent.cursor.fetchone()[0]
 
-            logger.info(f"\n📊 Final Active Counts:")
+            logger.info("\n📊 Final Active Counts:")
             logger.info(f"  Active Principles: {active_principles}")
             logger.info(f"  Active Intuitions: {active_intuitions}")
         else:

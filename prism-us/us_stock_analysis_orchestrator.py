@@ -588,7 +588,7 @@ class USStockAnalysisOrchestrator:
             report_paths: List of markdown report file paths (for translation)
         """
         if not self.telegram_config.use_telegram:
-            logger.info(f"Telegram disabled - skipping US message and PDF transmission")
+            logger.info("Telegram disabled - skipping US message and PDF transmission")
             return
 
         logger.info(f"Starting US telegram message transmission for {len(message_paths)} messages")
@@ -816,7 +816,7 @@ class USStockAnalysisOrchestrator:
                     all_results[key] = value
 
             if not all_results:
-                logger.warning(f"No US trigger results found.")
+                logger.warning("No US trigger results found.")
                 return False
 
             # Include metadata for hybrid selection info in alert message

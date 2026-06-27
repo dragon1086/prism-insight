@@ -17,17 +17,16 @@ from __future__ import annotations
 import argparse
 import logging
 import time
-from datetime import datetime, timezone
 
 import pandas as pd
 
 from collector.store import get_connection as market_connection
 from collector.update import update_all
-from backtest.engine import _load_tf_data, _build_snapshot_at, _get_tf_slice, ALL_TFS
+from backtest.engine import _load_tf_data, _get_tf_slice, ALL_TFS
 from engine.indicators import add_indicators
 
 from live import tracking
-from live.shadow import ShadowAdapter, _load_funding, bar_index_for
+from live.shadow import ShadowAdapter, _load_funding
 
 log = logging.getLogger("live.runner")
 

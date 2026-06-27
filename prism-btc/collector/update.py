@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import logging
-import time
 
 from collector.bybit_public import fetch_klines_page
-from collector.store import get_connection, upsert_rows, get_latest_open_time, get_row_count
+from collector.store import get_connection, upsert_rows
 from engine.config import TF_INTERVAL_MAP
 
 log = logging.getLogger(__name__)

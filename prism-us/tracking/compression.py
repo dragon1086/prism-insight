@@ -8,7 +8,7 @@ Based on compress_trading_memory.py but adapted for US market with market='US' f
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 

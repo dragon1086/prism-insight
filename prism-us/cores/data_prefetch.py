@@ -691,7 +691,7 @@ def _parse_10k_segment_revenue(html_content: str) -> str:
             vals = [_fmt_value(product_service.get((seg_type, p), 0)) for p in periods]
             result += f"| {seg_type}s | " + " | ".join(vals) + " |\n"
         total_vals = [_fmt_value(totals.get(p, 0)) for p in periods]
-        result += f"| **Total** | " + " | ".join(total_vals) + " |\n\n"
+        result += "| **Total** | " + " | ".join(total_vals) + " |\n\n"
 
     # Product lines
     if product_lines:
@@ -725,7 +725,7 @@ def _parse_10k_segment_revenue(html_content: str) -> str:
             vals = [_fmt_value(geographic.get((region, p), 0)) for p in periods]
             result += f"| {label} | " + " | ".join(vals) + " |\n"
         total_vals = [_fmt_value(totals.get(p, 0)) for p in periods]
-        result += f"| **Total** | " + " | ".join(total_vals) + " |\n\n"
+        result += "| **Total** | " + " | ".join(total_vals) + " |\n\n"
 
     # Country-level (skip if geographic segments already provide regional breakdown)
     if geo_country and not geographic:

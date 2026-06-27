@@ -283,7 +283,7 @@ def main():
 
     args = parser.parse_args()
 
-    logger.info(f"Starting migration...")
+    logger.info("Starting migration...")
     logger.info(f"Database: {args.db_path}")
     logger.info(f"Dry run: {args.dry_run}")
 

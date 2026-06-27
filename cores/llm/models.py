@@ -5,7 +5,6 @@ Keeps model selection out of domain code so swapping models is config-only.
 Default roles reflect real production usage (KR side).
 """
 
-from typing import Optional
 from cores.llm.ports import LLMParams
 
 # Production-derived defaults.  model_id strings are plain — no SDK coupling.

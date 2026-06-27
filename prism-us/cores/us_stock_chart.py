@@ -13,11 +13,9 @@ All charts are returned as matplotlib figures or base64 HTML img tags.
 import logging
 from io import BytesIO
 import base64
-from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 

@@ -79,12 +79,12 @@ async def generate_report(ticker: str, company_name: str, language: str = "ko") 
     include_news = check_perplexity_configured()
 
     print(f"\n{'='*60}")
-    print(f"  PRISM-INSIGHT AI Stock Analysis")
+    print("  PRISM-INSIGHT AI Stock Analysis")
     print(f"  Ticker: {ticker}")
     print(f"  Company: {company_name}")
     print(f"  Language: {'English' if language == 'en' else 'Korean'}")
     if not include_news:
-        print(f"  Note: News analysis skipped (Perplexity API not configured)")
+        print("  Note: News analysis skipped (Perplexity API not configured)")
     print(f"{'='*60}\n")
 
     print("[1/3] Generating AI analysis report...")
@@ -176,7 +176,7 @@ Examples:
         print(f"{'='*60}")
         print(f"\n  Markdown: {md_path}")
         print(f"  PDF:      {pdf_path}")
-        print(f"\n  Open the PDF to view your AI-generated analysis report.")
+        print("\n  Open the PDF to view your AI-generated analysis report.")
         print(f"\n{'='*60}")
 
         # Try to open PDF on macOS

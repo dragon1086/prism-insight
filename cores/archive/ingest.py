@@ -318,7 +318,7 @@ async def ingest_directory(
 
     files = sorted(dir_.glob(pattern))
     if backfill:
-        logger.info(f"Backfill mode: report_path will be updated for all matched tracker rows")
+        logger.info("Backfill mode: report_path will be updated for all matched tracker rows")
     logger.info(f"Found {len(files)} files in {dir_path}")
 
     semaphore = asyncio.Semaphore(5)

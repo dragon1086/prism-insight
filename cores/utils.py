@@ -1,7 +1,6 @@
 import json
 import logging
 import re
-import subprocess
 from typing import Any, Dict, Optional
 
 # WiseReport URL template configuration
@@ -172,7 +171,7 @@ def clean_markdown(text: str) -> str:
     for starter in sentence_starters:
         # Handle patterns with numbered sections
         # Pattern matches: "n) Korean_title (plan|status|analysis|trend|overview|background)" + sentence_starter
-        text = re.sub(rf'(\d+\)\s*[가-힣]+\s*(?:계획|현황|분석|동향|개요|배경))({starter})', rf'\1\n\n\2', text)
+        text = re.sub(rf'(\d+\)\s*[가-힣]+\s*(?:계획|현황|분석|동향|개요|배경))({starter})', r'\1\n\n\2', text)
 
     return text
 

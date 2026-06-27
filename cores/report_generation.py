@@ -345,7 +345,6 @@ async def generate_investment_strategy(section_reports, combined_reports, compan
         logger: Logger
         language: Report language code (default: "ko")
     """
-    from mcp_agent.agents.agent import Agent
     from mcp_agent.workflows.llm.augmented_llm import RequestParams
     from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
 

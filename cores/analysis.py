@@ -103,10 +103,10 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                         agent = agents[section]
                         if section == "market_index_analysis":
                             if "report" in _market_analysis_cache:
-                                section_logger.info(f"Using cached market analysis")
+                                section_logger.info("Using cached market analysis")
                                 return section, _market_analysis_cache["report"]
                             else:
-                                section_logger.info(f"Generating new market analysis")
+                                section_logger.info("Generating new market analysis")
                                 report = await generate_market_report(agent, section, reference_date, section_logger, language)
                                 _market_analysis_cache["report"] = report
                                 return section, report
@@ -134,10 +134,10 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                         if section == "market_index_analysis":
                             # Check if data exists in cache
                             if "report" in _market_analysis_cache:
-                                logger.info(f"Using cached market analysis")
+                                logger.info("Using cached market analysis")
                                 report = _market_analysis_cache["report"]
                             else:
-                                logger.info(f"Generating new market analysis")
+                                logger.info("Generating new market analysis")
                                 report = await generate_market_report(agent, section, reference_date, logger, language)
                                 # Save to cache
                                 _market_analysis_cache["report"] = report
@@ -391,21 +391,21 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             main_headers = {
                 "title": f"# {company_name} ({company_code}) 분석 보고서",
                 "pub_date": "발행일",
-                "tech_analysis": f"## 1. 기술적 분석\n\n",
-                "fundamental": f"## 2. 펀더멘털 분석\n\n",
-                "news": f"## 3. 뉴스 분석\n\n",
-                "market": f"## 4. 시장 분석\n\n",
-                "strategy": f"## 5. 투자 전략\n\n"
+                "tech_analysis": "## 1. 기술적 분석\n\n",
+                "fundamental": "## 2. 펀더멘털 분석\n\n",
+                "news": "## 3. 뉴스 분석\n\n",
+                "market": "## 4. 시장 분석\n\n",
+                "strategy": "## 5. 투자 전략\n\n"
             }
         else:
             main_headers = {
                 "title": f"# {company_name} ({company_code}) Analysis Report",
                 "pub_date": "Publication Date",
-                "tech_analysis": f"## 1. Technical Analysis\n\n",
-                "fundamental": f"## 2. Fundamental Analysis\n\n",
-                "news": f"## 3. News Analysis\n\n",
-                "market": f"## 4. Market Analysis\n\n",
-                "strategy": f"## 5. Investment Strategy\n\n"
+                "tech_analysis": "## 1. Technical Analysis\n\n",
+                "fundamental": "## 2. Fundamental Analysis\n\n",
+                "news": "## 3. News Analysis\n\n",
+                "market": "## 4. Market Analysis\n\n",
+                "strategy": "## 5. Investment Strategy\n\n"
             }
 
         # Build final report with title first (disclaimer at the end like US version)

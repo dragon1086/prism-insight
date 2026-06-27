@@ -296,7 +296,7 @@ class USStockTrading:
         self._semaphore = asyncio.Semaphore(3)
         self._stock_locks = {}
 
-        logger.info(f"USStockTrading initialized (Async Enabled)")
+        logger.info("USStockTrading initialized (Async Enabled)")
         logger.info(f"Mode: {mode}, Buy Amount: ${self.buy_amount:,.2f} USD")
         logger.info(f"Account: {self.account_name} ({ka.mask_account_number(self.trenv.my_acct)}-{self.trenv.my_prod})")
 
@@ -865,7 +865,6 @@ class USStockTrading:
         Returns:
             True if reserved order can be placed, False otherwise
         """
-        import pytz
         now_kst = datetime.datetime.now(KST)
         current_time = now_kst.time()
 

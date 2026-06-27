@@ -19,7 +19,6 @@ import asyncio
 import json
 import logging
 import sqlite3
-from datetime import datetime
 
 from dotenv import load_dotenv
 load_dotenv()

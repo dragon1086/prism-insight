@@ -8,21 +8,17 @@ Run from prism-btc/ package root:  python -m analysis.h1_signal_power
 Pure analysis. Reads market.db only. No code/param modification.
 """
 from __future__ import annotations
-import sqlite3, math
+import sqlite3
 from pathlib import Path
 import pandas as pd
 import numpy as np
 
 from engine.indicators import add_indicators
-from engine.regime import build_tf_state, compute_alignment_score, TFState
+from engine.regime import build_tf_state, compute_alignment_score
 from engine.signal import (
-    generate_signal, _long_tf_direction_positive, _long_tf_direction_negative,
-    _entry_tf_aligned, chop_filter_passed, trend_strength,
-    LONG_ENTRY_POSITIONS, SHORT_ENTRY_POSITIONS, ENTRY_TRIGGER_TF,
+    generate_signal, chop_filter_passed, trend_strength,
 )
 from engine.regime import RegimeSnapshot
-from engine.config import ENTRY_SCORE_MIN
-from engine import config as cfg
 
 DB = Path(__file__).resolve().parents[1] / "state" / "btc_market.db"
 ALL_TFS = ("30m", "1h", "4h", "12h", "1d", "1w")

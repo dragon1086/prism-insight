@@ -149,7 +149,7 @@ class TelegramConfig:
     def log_status(self) -> None:
         """Log current telegram configuration status"""
         if self._use_telegram:
-            logger.info(f"✅ Telegram messaging enabled")
+            logger.info("✅ Telegram messaging enabled")
             logger.info(f"   - Channel ID: {self._channel_id[:10] if self._channel_id else 'None'}...")
             logger.info(f"   - Bot token: {'Configured' if self._bot_token else 'Not configured'}")
         else:

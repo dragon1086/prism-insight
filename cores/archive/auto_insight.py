@@ -330,7 +330,7 @@ class AutoInsight:
         accuracy = (correct / triggered * 100) if triggered else 0
 
         lines = [
-            f"**손절 통계**",
+            "**손절 통계**",
             f"- 전체 리포트: {total}건",
             f"- 손절가 설정: {with_sl}건",
             f"- 손절 발동: {triggered}건 ({trigger_rate:.1f}%)",
@@ -693,7 +693,7 @@ class AutoInsight:
         from .archive_db import ARCHIVE_DB_PATH
         from .persistent_insights import (
             upsert_semantic_fact, get_semantic_facts_for_tickers,
-            supersede_semantic_fact, fetch_outcomes_for_tickers,
+            fetch_outcomes_for_tickers,
         )
 
         path = self.db_path or str(ARCHIVE_DB_PATH)

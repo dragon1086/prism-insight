@@ -16,7 +16,6 @@ trade_date 는 실제 sell_date 로 기록 → get_context_for_ticker 의
 실행: cd /root/prism-insight && python tools/backfill_us_journal.py --days 60 [--dry-run]
 """
 import os
-import sys
 import json
 import argparse
 import sqlite3
