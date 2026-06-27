@@ -43,8 +43,11 @@ def main():
     m30 = load_30m()
     d1  = load_1d()
     t30 = m30["dt"].values
-    hi30 = m30["high"].values; lo30 = m30["low"].values; cl30 = m30["close"].values
-    td1 = d1["dt"].values; cd1 = d1["close"].values
+    hi30 = m30["high"].values
+    lo30 = m30["low"].values
+    cl30 = m30["close"].values
+    td1 = d1["dt"].values
+    cd1 = d1["close"].values
 
     frames = []
     for c in CSVS:
@@ -76,20 +79,32 @@ def main():
     print(f"[1R] canonical initial-risk fraction (median of SL exits) = {R_FRAC*100:.3f}% "
           f"(n_sl={len(sl_trades)})")
 
-    mfe_R=[]; mae_R=[]; post3=[]; post7=[]
+    mfe_R = []
+    mae_R = []
+    post3 = []
+    post7 = []
     for _,row in tr.iterrows():
-        e = np.datetime64(row.entry_time); x = np.datetime64(row.exit_time)
+        e = np.datetime64(row.entry_time)
+        x = np.datetime64(row.exit_time)
         i = np.searchsorted(t30, e, side="left")
         j = np.searchsorted(t30, x, side="right")
         if j<=i or i>=len(t30):
-            mfe_R.append(np.nan); mae_R.append(np.nan); post3.append(np.nan); post7.append(np.nan); continue
-        seg_hi = hi30[i:j]; seg_lo = lo30[i:j]
+            mfe_R.append(np.nan)
+            mae_R.append(np.nan)
+            post3.append(np.nan)
+            post7.append(np.nan)
+            continue
+        seg_hi = hi30[i:j]
+        seg_lo = lo30[i:j]
         ep = row.entry_price
         if row.side=="long":
-            mfe = (seg_hi.max()-ep)/ep; mae = (seg_lo.min()-ep)/ep
+            mfe = (seg_hi.max()-ep)/ep
+            mae = (seg_lo.min()-ep)/ep
         else:
-            mfe = (ep-seg_lo.min())/ep; mae = (ep-seg_hi.max())/ep
-        mfe_R.append(mfe/R_FRAC); mae_R.append(mae/R_FRAC)
+            mfe = (ep-seg_lo.min())/ep
+            mae = (ep-seg_hi.max())/ep
+        mfe_R.append(mfe/R_FRAC)
+        mae_R.append(mae/R_FRAC)
         # post-exit continuation: did price keep going in trade direction after exit?
         xp = row.exit_price
         kx = np.searchsorted(td1, x, side="left")
@@ -100,7 +115,10 @@ def main():
                 store.append(sgn*(cd1[kk]-xp)/xp)
             else:
                 store.append(np.nan)
-    tr["mfe_R"]=mfe_R; tr["mae_R"]=mae_R; tr["post3"]=post3; tr["post7"]=post7
+    tr["mfe_R"] = mfe_R
+    tr["mae_R"] = mae_R
+    tr["post3"] = post3
+    tr["post7"] = post7
 
     # ---- exit_reason breakdown ----
     print("\n=== exit_reason breakdown (net R authoritative) ===")
@@ -155,7 +173,8 @@ def main():
     # report cost as fraction of |net pnl| proxy: use fee+funding in $ and the
     # aggregate metrics JSON gross vs net (already known). Here: per-trade fee/funding
     # in $ and the ratio to the canonical 1R$ if we assume equity~10k & 2% risk.
-    EQUITY=10000.0; RISK=0.02
+    EQUITY = 10000.0
+    RISK = 0.02
     # tranche_frac unknown; assume full (1.0) as upper bound on 1R$ => lower bound on cost_R
     R_DOLLAR = EQUITY*RISK
     tr["fee_R"]=tr.fee_paid/R_DOLLAR

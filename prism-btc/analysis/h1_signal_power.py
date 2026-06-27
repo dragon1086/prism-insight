@@ -61,12 +61,14 @@ def main():
             arr = tf_arr[tf]
             idx = np.searchsorted(arr, t, side="right") - 1
             if idx < 34:  # need >=35 rows for MA35
-                ok = False; break
+                ok = False
+                break
             sub = data[tf].iloc[:idx+1]
             try:
                 tf_states[tf] = build_tf_state(sub)
             except ValueError:
-                ok = False; break
+                ok = False
+                break
         if not ok:
             continue
         score = compute_alignment_score(tf_states)

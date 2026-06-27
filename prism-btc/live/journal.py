@@ -327,7 +327,7 @@ def _active_lessons(conn: sqlite3.Connection, mode: str, limit: int = 12) -> lis
         """,
         (mode, limit),
     )
-    return [{"category": c, "lesson": l, "status": s} for c, l, s in cur.fetchall()]
+    return [{"category": c, "lesson": lesson, "status": s} for c, lesson, s in cur.fetchall()]
 
 
 def _save_analysis(conn: sqlite3.Connection, journal_id: int, analysis: dict,

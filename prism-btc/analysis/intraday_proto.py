@@ -98,26 +98,34 @@ def run(f: pd.DataFrame, start: str, end: str, exit_mode: str = "tp2r"):
       (롱: prev-8bar low가 올라올 때만 상향). 신규 파라미터 0개. 추세 라이딩.
     버그수정(비관화): 갭 진입은 open 체결, 진입봉 내 SL 터치 인정(SL 우선).
     """
-    s_ = pd.Timestamp(start, tz="UTC"); e_ = pd.Timestamp(end, tz="UTC")
+    s_ = pd.Timestamp(start, tz="UTC")
+    e_ = pd.Timestamp(end, tz="UTC")
     g = f[(f.t >= s_) & (f.t <= e_)].reset_index(drop=True)
-    hh_a = g.hh.to_numpy(); ll_a = g.ll.to_numpy()
-    hi_a = g.high.to_numpy(); lo_a = g.low.to_numpy()
-    op_a = g.open.to_numpy(); cl_a = g.close.to_numpy()
-    ts_a = g.ts.to_numpy(); dir_a = g.dir.to_numpy(); d1_a = g.dir1d.to_numpy()
+    hh_a = g.hh.to_numpy()
+    ll_a = g.ll.to_numpy()
+    hi_a = g.high.to_numpy()
+    lo_a = g.low.to_numpy()
+    op_a = g.open.to_numpy()
+    cl_a = g.close.to_numpy()
+    ts_a = g.ts.to_numpy()
+    dir_a = g.dir.to_numpy()
+    d1_a = g.dir1d.to_numpy()
     trades = []
     equity = 1.0
     i, n = 0, len(g)
     while i < n:
         if not (np.isfinite(hh_a[i]) and np.isfinite(ts_a[i])) or ts_a[i] < TS_MIN \
            or not np.isfinite(d1_a[i]) or dir_a[i] != d1_a[i]:
-            i += 1; continue
+            i += 1
+            continue
         side = 0
         if dir_a[i] > 0 and hi_a[i] > hh_a[i]:
             side, entry = 1, max(hh_a[i], op_a[i])     # 갭 시 open 체결 (비관)
         elif dir_a[i] < 0 and lo_a[i] < ll_a[i]:
             side, entry = -1, min(ll_a[i], op_a[i])
         if side == 0:
-            i += 1; continue
+            i += 1
+            continue
         raw = (entry - ll_a[i]) / entry if side == 1 else (hh_a[i] - entry) / entry
         sl_d = min(max(raw, SL_MIN), SL_MAX)
         stop = entry * (1 - side * sl_d)
@@ -140,13 +148,19 @@ def run(f: pd.DataFrame, start: str, end: str, exit_mode: str = "tp2r"):
                         stop = min(stop, hh_a[j])
                 if side == 1 and lo_a[j] <= stop:
                     px = min(stop, op_a[j])  # 갭다운 개장 시 open 체결 (비관)
-                    exit_px, reason = px, ("trail" if exit_mode == "trail" and stop > entry * (1 - sl_d) else "sl"); break
+                    exit_px, reason = px, ("trail" if exit_mode == "trail" and stop > entry * (1 - sl_d) else "sl")
+                    break
                 if side == -1 and hi_a[j] >= stop:
                     px = max(stop, op_a[j])  # 갭업 개장 시 open 체결 (비관)
-                    exit_px, reason = px, ("trail" if exit_mode == "trail" and stop < entry * (1 + sl_d) else "sl"); break
+                    exit_px, reason = px, ("trail" if exit_mode == "trail" and stop < entry * (1 + sl_d) else "sl")
+                    break
                 if exit_mode == "tp2r":
-                    if side == 1 and hi_a[j] >= tp: exit_px, reason = tp, "tp"; break
-                    if side == -1 and lo_a[j] <= tp: exit_px, reason = tp, "tp"; break
+                    if side == 1 and hi_a[j] >= tp:
+                        exit_px, reason = tp, "tp"
+                        break
+                    if side == -1 and lo_a[j] <= tp:
+                        exit_px, reason = tp, "tp"
+                        break
             if exit_px is None:
                 exit_px, reason = cl_a[j], "time"
         gross_r = side * (exit_px - entry) / entry / sl_d
@@ -159,9 +173,11 @@ def run(f: pd.DataFrame, start: str, end: str, exit_mode: str = "tp2r"):
 
 def report(label, trades, equity):
     if not trades:
-        print(f"{label:<14} n=0"); return
+        print(f"{label:<14} n=0")
+        return
     df = pd.DataFrame(trades, columns=["t", "side", "sl_d", "reason", "gross_r", "net_r"])
-    wins = df[df.net_r > 0].net_r.sum(); losses = -df[df.net_r <= 0].net_r.sum()
+    wins = df[df.net_r > 0].net_r.sum()
+    losses = -df[df.net_r <= 0].net_r.sum()
     pf = wins / losses if losses > 0 else float("inf")
     days = (df.t.iloc[-1] - df.t.iloc[0]).days or 1
     print(f"{label:<14} n={len(df):4d} ({len(df)/days*30:4.1f}/월) win%={100*(df.net_r>0).mean():5.1f} "

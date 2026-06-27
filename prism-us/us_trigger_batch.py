@@ -284,7 +284,7 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame,
     candidates = scored.head(top_n)
 
     # Secondary filter: Only rising stocks
-    result = candidates[candidates["IsRising"] == True].copy()
+    result = candidates[candidates["IsRising"]].copy()
 
     if result.empty:
         logger.debug("trigger_morning_volume_surge: No qualifying stocks")
@@ -347,7 +347,7 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame,
     candidates = snap.sort_values("CompositeScore", ascending=False).head(top_n)
 
     # Secondary filter: Momentum continuing stocks only
-    result = candidates[candidates["MomentumContinuing"] == True].copy()
+    result = candidates[candidates["MomentumContinuing"]].copy()
 
     if result.empty:
         logger.debug("trigger_morning_gap_up_momentum: No qualifying stocks")
@@ -429,7 +429,7 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame,
         candidates = merged.sort_values("CompositeScore", ascending=False).head(top_n)
 
         # Secondary filter: Rising stocks only
-        result = candidates[candidates["IsRising"] == True].copy()
+        result = candidates[candidates["IsRising"]].copy()
 
         if result.empty:
             return pd.DataFrame()
@@ -530,7 +530,7 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame,
     snap["IsRising"] = snap["Close"] > snap["Open"]
 
     # Primary filter: Volume increase stocks
-    candidates = snap[snap["VolumeIncreased"] == True].copy()
+    candidates = snap[snap["VolumeIncreased"]].copy()
 
     if candidates.empty:
         logger.debug("trigger_afternoon_closing_strength: No volume increase stocks")
@@ -552,7 +552,7 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame,
     candidates = candidates.sort_values("CompositeScore", ascending=False).head(top_n)
 
     # Secondary filter: Rising stocks only
-    result = candidates[candidates["IsRising"] == True].copy()
+    result = candidates[candidates["IsRising"]].copy()
 
     if result.empty:
         logger.debug("trigger_afternoon_closing_strength: No qualifying stocks")
@@ -628,7 +628,7 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
     candidates = scored.head(top_n)
 
     # Secondary filter: Sideways stocks only
-    result = candidates[candidates["IsSideways"] == True].copy()
+    result = candidates[candidates["IsSideways"]].copy()
 
     if result.empty:
         logger.debug("trigger_afternoon_volume_surge_flat: No sideways stocks")
@@ -713,9 +713,9 @@ def trigger_macro_sector_leader(trade_date: str, snapshot: pd.DataFrame,
         if stock_sector in leading_names:
             matched_sector = stock_sector
         else:
-            for l in leading_names:
-                if stock_sector in l or l in stock_sector:
-                    matched_sector = l
+            for lead_name in leading_names:
+                if stock_sector in lead_name or lead_name in stock_sector:
+                    matched_sector = lead_name
                     break
         if matched_sector:
             matched_rows.append(ticker)
@@ -935,9 +935,9 @@ def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_col
             if stock_sector in leading_names:
                 matched_sector = stock_sector
             else:
-                for l in leading_names:
-                    if stock_sector in l or l in stock_sector:
-                        matched_sector = l
+                for lead_name in leading_names:
+                    if stock_sector in lead_name or lead_name in stock_sector:
+                        matched_sector = lead_name
                         break
             if matched_sector:
                 base_score = df.loc[ticker, score_column]

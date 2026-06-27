@@ -204,7 +204,7 @@ class USCompressionManager:
                                 "profit_rate": entry[3],
                                 "lessons": json.loads(entry[6]) if entry[6] else []
                             })
-                    except:
+                    except Exception:
                         pass
 
                 # Generate intuitions from patterns
