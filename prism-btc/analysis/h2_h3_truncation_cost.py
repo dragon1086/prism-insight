@@ -45,7 +45,6 @@ def main():
     t30 = m30["dt"].values
     hi30 = m30["high"].values
     lo30 = m30["low"].values
-    cl30 = m30["close"].values
     td1 = d1["dt"].values
     cd1 = d1["close"].values
 
