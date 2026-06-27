@@ -183,7 +183,7 @@ def _validate_analysis(obj: dict) -> dict:
 
 def _build_prompt(facts: dict, active_lessons: list) -> str:
     lessons_txt = "\n".join(
-        f"- [{l['status']}/{l['category']}] {l['lesson']}" for l in active_lessons
+        f"- [{item['status']}/{item['category']}] {item['lesson']}" for item in active_lessons
     ) or "(아직 없음)"
     return f"""너는 시스템 트레이딩 부검 분석가다. 아래 종결 트레이드 1건을 부검하라.
 
@@ -251,7 +251,7 @@ def _build_weekly_prompt(entries: list, lessons: list) -> str:
         for e in entries
     ]
     lessons_txt = "\n".join(
-        f"- [{l['status']}/{l['category']}] {l['lesson']}" for l in lessons
+        f"- [{item['status']}/{item['category']}] {item['lesson']}" for item in lessons
     ) or "(없음)"
     return f"""너는 시스템 트레이딩 연구 책임자다. 지난 7일의 매매일지와 누적 교훈을 압축해
 "백테스트로 검증 가능한 가설"만 추려라.

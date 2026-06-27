@@ -116,7 +116,7 @@ class USJournalManager:
             if isinstance(scenario_json, str):
                 try:
                     scenario_data = json.loads(scenario_json)
-                except:
+                except Exception:
                     scenario_data = {}
 
             # Create journal agent (uses yahoo_finance instead of kospi_kosdaq)
@@ -529,9 +529,9 @@ Please review the following completed US stock trade:
                     lessons = json.loads(entry[5]) if entry[5] else []
                     if lessons:
                         lessons_str = " / Lessons: " + ", ".join(
-                            [l.get('action', '') for l in lessons[:2] if isinstance(l, dict)]
+                            [item.get('action', '') for item in lessons[:2] if isinstance(item, dict)]
                         )
-                except:
+                except Exception:
                     pass
 
                 profit_emoji = "✅" if entry[2] > 0 else "❌"

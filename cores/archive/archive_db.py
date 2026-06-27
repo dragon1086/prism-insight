@@ -462,13 +462,17 @@ async def get_report_ids(
     path = db_path or str(ARCHIVE_DB_PATH)
     clauses, params = [], []
     if ticker:
-        clauses.append("ticker = ?"); params.append(ticker)
+        clauses.append("ticker = ?")
+        params.append(ticker)
     if market:
-        clauses.append("market = ?"); params.append(market)
+        clauses.append("market = ?")
+        params.append(market)
     if date_from:
-        clauses.append("report_date >= ?"); params.append(date_from)
+        clauses.append("report_date >= ?")
+        params.append(date_from)
     if date_to:
-        clauses.append("report_date <= ?"); params.append(date_to)
+        clauses.append("report_date <= ?")
+        params.append(date_to)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row

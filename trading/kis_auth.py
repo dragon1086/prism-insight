@@ -1213,7 +1213,7 @@ def getTREnv():
 def set_order_hash_key(h, p):
     url = f"{getTREnv().my_url}/uapi/hashkey"  # hashkey issuance API URL
 
-    res = requests.post(url, data=json.dumps(p), headers=h)
+    res = requests.post(url, data=json.dumps(p), headers=h, timeout=30)
     rescode = res.status_code
     if rescode == 200:
         h["hashkey"] = _getResultObject(res.json()).HASH
@@ -1380,9 +1380,9 @@ def _url_fetch(
 
     if postFlag:
         # if (hashFlag): set_order_hash_key(headers, params)
-        res = requests.post(url, headers=headers, data=json.dumps(params))
+        res = requests.post(url, headers=headers, data=json.dumps(params), timeout=30)
     else:
-        res = requests.get(url, headers=headers, params=params)
+        res = requests.get(url, headers=headers, params=params, timeout=30)
 
     if res.status_code == 200:
         ar = APIResp(res)
@@ -1425,7 +1425,7 @@ def auth_ws(svr="prod", product=DEFAULT_PRODUCT_CODE, account_name=None, account
     p["secretkey"] = _cfg[ak2]
 
     url = f"{_cfg[svr]}/oauth2/Approval"
-    res = requests.post(url, data=json.dumps(p), headers=_getBaseHeader())  # Token issuance
+    res = requests.post(url, data=json.dumps(p), headers=_getBaseHeader(), timeout=30)  # Token issuance
     rescode = res.status_code
     if rescode == 200:  # Token issued successfully
         approval_key = _getResultObject(res.json()).approval_key

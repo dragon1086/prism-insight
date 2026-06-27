@@ -281,7 +281,7 @@ def _get_last_price_from_db(cursor, ticker: str, account_key: str | None = None)
             last_price = float(row[0])
             logger.warning(f"{ticker} price query failed, using last price: ${last_price:.2f}")
             return last_price
-    except:
+    except Exception:
         pass
     return 0.0
 
@@ -381,7 +381,7 @@ def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentrat
                     scenario_data = json.loads(row[0])
                     if 'sector' in scenario_data:
                         sectors.append(scenario_data['sector'])
-                except:
+                except Exception:
                     pass
 
         same_sector_count = sum(1 for s in sectors if s and s.lower() == sector.lower())
@@ -740,7 +740,7 @@ class USStockTrackingAgent:
                         sector_distribution[sector_name] = sector_distribution.get(sector_name, 0) + 1
                         period = scenario_data.get('investment_period', 'medium')
                         investment_periods[period] = investment_periods.get(period, 0) + 1
-                except:
+                except Exception:
                     pass
 
             # Portfolio info string
@@ -1485,8 +1485,12 @@ class USStockTrackingAgent:
                 if adj_rows:
                     lines = ["### Portfolio Adjustment History:"]
                     for r in adj_rows:
-                        ot = r[1] or 0; nt = r[2] or 0; os_ = r[3] or 0; ns = r[4] or 0
-                        reason = r[5] or "N/A"; urg = r[6] or "N/A"
+                        ot = r[1] or 0
+                        nt = r[2] or 0
+                        os_ = r[3] or 0
+                        ns = r[4] or 0
+                        reason = r[5] or "N/A"
+                        urg = r[6] or "N/A"
                         lines.append(
                             f"- [{r[0][:16]}] Target: ${ot:,.2f}→${nt:,.2f} / "
                             f"Stop: ${os_:,.2f}→${ns:,.2f} ({urg}) — {reason}"
@@ -1684,7 +1688,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 if isinstance(scenario_str, str):
                     scenario_data = json.loads(scenario_str)
                     investment_period = scenario_data.get('investment_period', 'medium')
-            except:
+            except Exception:
                 pass
 
             # Check stop-loss condition (same format as KR template)
@@ -2466,7 +2470,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         if isinstance(scenario_str, str):
                             scenario_data = json.loads(scenario_str)
                             sector = scenario_data.get('sector', '알 수 없음')
-                    except:
+                    except Exception:
                         sector = stock.get('sector', '알 수 없음')
 
                     # Update sector count
@@ -3265,7 +3269,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             if hasattr(self, 'conn') and self.conn:
                 try:
                     self.conn.close()
-                except:
+                except Exception:
                     pass
 
             return False

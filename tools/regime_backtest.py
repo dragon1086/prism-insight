@@ -129,7 +129,7 @@ def report(market, dates, new_lab, leg_lab, dist=None):
     print(f"LEGACY (20MA) distribution: {_dist(leg_lab)}")
     print(f"Whipsaw (regime changes)  : NEW {_whipsaw(new_lab)} | LEGACY {_whipsaw(leg_lab)}")
     # bear-rally 오판 정량화: legacy=strong_bull 인데 new!=strong_bull 인 일수
-    flips = sum(1 for n, l in zip(new_lab, leg_lab) if l == "strong_bull" and n != "strong_bull")
+    flips = sum(1 for n, leg in zip(new_lab, leg_lab) if leg == "strong_bull" and n != "strong_bull")
     sb_new = sum(1 for x in new_lab if x == "strong_bull")
     sb_leg = sum(1 for x in leg_lab if x == "strong_bull")
     print(f"strong_bull days          : NEW {sb_new} | LEGACY {sb_leg}  "
