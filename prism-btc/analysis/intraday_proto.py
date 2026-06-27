@@ -38,8 +38,9 @@ RISK = 0.01              # 1% per trade (복리 평가용)
 
 def load_tf(conn, tf: str) -> pd.DataFrame:
     df = pd.read_sql(
-        f"SELECT open_time, open, high, low, close FROM klines "
-        f"WHERE timeframe='{tf}' AND confirmed=1 ORDER BY open_time", conn)
+        "SELECT open_time, open, high, low, close FROM klines "
+        "WHERE timeframe=? AND confirmed=1 ORDER BY open_time",
+        conn, params=(tf,))
     df["t"] = pd.to_datetime(df.open_time, unit="ms", utc=True)
     return df.reset_index(drop=True)
 
