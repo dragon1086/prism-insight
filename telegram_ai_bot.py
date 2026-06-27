@@ -636,24 +636,11 @@ class TelegramAIBot:
 
     def check_daily_limit(self, user_id: int, command: str) -> bool:
         """
-        Check daily usage limit.
+        Daily usage limit for report/us_report — removed (issue #307).
 
-        Args:
-            user_id: User ID
-            command: Command (report, us_report)
-
-        Returns:
-            bool: True if available, False if already used
+        Always returns True (unlimited). Kept as a no-op so existing call
+        sites and refund_daily_limit() stay valid without further changes.
         """
-        today = datetime.now().strftime("%Y-%m-%d")
-        key = f"{user_id}:{command}"
-
-        if self.daily_report_usage.get(key) == today:
-            logger.info(f"Daily limit exceeded: user={user_id}, command={command}")
-            return False
-
-        self.daily_report_usage[key] = today
-        logger.info(f"Daily usage recorded: user={user_id}, command={command}")
         return True
 
     def refund_daily_limit(self, user_id: int, command: str):
