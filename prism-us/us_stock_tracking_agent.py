@@ -24,14 +24,13 @@ load_dotenv()
 import asyncio
 import json
 import logging
-import math
 import os
 import re
 import sqlite3
 import sys
 import traceback
 import importlib.util as _ilu
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -1121,7 +1120,7 @@ class USStockTrackingAgent:
                     primary_resistance = parse_price_value(key_levels.get('primary_resistance', 0))
                     secondary_resistance = parse_price_value(key_levels.get('secondary_resistance', 0))
                     if primary_resistance or secondary_resistance:
-                        message += f"  📈 Resistance:\n"
+                        message += "  📈 Resistance:\n"
                         if secondary_resistance:
                             message += f"    • 2차: ${secondary_resistance:,.2f}\n"
                         if primary_resistance:
@@ -1134,7 +1133,7 @@ class USStockTrackingAgent:
                     primary_support = parse_price_value(key_levels.get('primary_support', 0))
                     secondary_support = parse_price_value(key_levels.get('secondary_support', 0))
                     if primary_support or secondary_support:
-                        message += f"  📉 Support:\n"
+                        message += "  📉 Support:\n"
                         if primary_support:
                             message += f"    • 1차: ${primary_support:,.2f}\n"
                         if secondary_support:
@@ -2450,7 +2449,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             sector_counts = {}
 
             if holdings and len(holdings) > 0:
-                message += f"🔸 Holdings List:\n"
+                message += "🔸 Holdings List:\n"
                 for stock in holdings:
                     ticker = stock.get('ticker', '')
                     company_name = stock.get('company_name', '')
@@ -2485,7 +2484,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     message += f"  수익률: {arrow} {profit_rate:.2f}% / 보유기간: {days_passed}일\n\n"
 
                 # Add sector distribution
-                message += f"🔸 Sector Distribution:\n"
+                message += "🔸 Sector Distribution:\n"
                 for sector, count in sector_counts.items():
                     percentage = (count / len(holdings)) * 100
                     message += f"- {sector}: {count}개 ({percentage:.1f}%)\n"
@@ -2494,7 +2493,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 message += "No holdings.\n\n"
 
             # 3. Trading history statistics
-            message += f"🔸 매매 이력 통계\n"
+            message += "🔸 매매 이력 통계\n"
             message += f"- 총 거래 건수: {total_trades}건\n"
             message += f"- 수익 거래: {successful_trades}건\n"
             message += f"- 손실 거래: {total_trades - successful_trades}건\n"
@@ -2502,7 +2501,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             if total_trades > 0:
                 message += f"- 승률: {(successful_trades / total_trades * 100):.2f}%\n"
             else:
-                message += f"- 승률: 0.00%\n"
+                message += "- 승률: 0.00%\n"
 
             message += f"- 누적 수익률: {total_profit:.2f}%\n\n"
 

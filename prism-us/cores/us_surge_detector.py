@@ -14,11 +14,11 @@ import numpy as np
 import yfinance as yf
 import sys
 from pathlib import Path
-from typing import Tuple, Optional, List
+from typing import Tuple, List
 
 # Import check_market_day functions for US holiday handling
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from check_market_day import get_last_trading_day, get_next_trading_day, is_us_market_day
+from check_market_day import get_last_trading_day, get_next_trading_day
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -245,7 +245,7 @@ def get_previous_snapshot(trade_date: str, tickers: List[str] = None) -> Tuple[p
         )
 
         if data.empty:
-            logger.error(f"No previous snapshot data")
+            logger.error("No previous snapshot data")
             raise ValueError(f"No previous snapshot data for {prev_date}")
 
         # Get the last available date before trade_date

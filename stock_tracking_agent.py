@@ -18,12 +18,10 @@ import asyncio
 import json
 import logging
 import os
-import re
 import sqlite3
 import sys
 import traceback
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from typing import List, Dict, Any, Tuple, Optional
 
 import cores.openai_debug  # noqa: F401 — OpenAI 400/429 request metadata logging
@@ -80,11 +78,6 @@ from tracking import (
     get_existing_position_for_ticker,
     evaluate_pyramid_add_gate,
     compute_fractional_sell_quantity,
-    analyze_sell_decision,
-    format_buy_message,
-    format_sell_message,
-    calculate_profit_rate,
-    calculate_holding_days,
     JournalManager,
     CompressionManager,
     TelegramSender,
@@ -864,7 +857,7 @@ class StockTrackingAgent:
                     primary_resistance = self._parse_price_value(key_levels.get('primary_resistance', 0))
                     secondary_resistance = self._parse_price_value(key_levels.get('secondary_resistance', 0))
                     if primary_resistance or secondary_resistance:
-                        message += f"  📈 저항선:\n"
+                        message += "  📈 저항선:\n"
                         if secondary_resistance:
                             message += f"    • 2차: {secondary_resistance:,.0f}원\n"
                         if primary_resistance:
@@ -877,7 +870,7 @@ class StockTrackingAgent:
                     primary_support = self._parse_price_value(key_levels.get('primary_support', 0))
                     secondary_support = self._parse_price_value(key_levels.get('secondary_support', 0))
                     if primary_support or secondary_support:
-                        message += f"  📉 지지선:\n"
+                        message += "  📉 지지선:\n"
                         if primary_support:
                             message += f"    • 1차: {primary_support:,.0f}원\n"
                         if secondary_support:
@@ -1551,7 +1544,7 @@ class StockTrackingAgent:
             sector_counts = {}
 
             if holdings and len(holdings) > 0:
-                message += f"🔸 보유 종목:\n"
+                message += "🔸 보유 종목:\n"
                 for stock in holdings:
                     ticker = stock.get('ticker', '')
                     company_name = stock.get('company_name', '')
@@ -1586,7 +1579,7 @@ class StockTrackingAgent:
                     message += f"  수익률: {arrow} {profit_rate:.2f}% / 보유기간: {days_passed}일\n\n"
 
                 # Add sector distribution
-                message += f"🔸 섹터 분포:\n"
+                message += "🔸 섹터 분포:\n"
                 for sector, count in sector_counts.items():
                     percentage = (count / len(holdings)) * 100
                     message += f"- {sector}: {count}개 ({percentage:.1f}%)\n"
@@ -1595,7 +1588,7 @@ class StockTrackingAgent:
                 message += "현재 보유 종목이 없습니다.\n\n"
 
             # 3. Trading history statistics
-            message += f"🔸 매매 이력 통계\n"
+            message += "🔸 매매 이력 통계\n"
             message += f"- 총 거래: {total_trades}건\n"
             message += f"- 수익 거래: {successful_trades}건\n"
             message += f"- 손실 거래: {total_trades - successful_trades}건\n"
@@ -1603,7 +1596,7 @@ class StockTrackingAgent:
             if total_trades > 0:
                 message += f"- 승률: {(successful_trades / total_trades * 100):.2f}%\n"
             else:
-                message += f"- 승률: 0.00%\n"
+                message += "- 승률: 0.00%\n"
 
             message += f"- 누적 수익률: {total_profit:.2f}%\n\n"
 

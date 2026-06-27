@@ -52,7 +52,6 @@ sys.path.insert(0, str(_prism_us_dir))
 
 # Import from prism-us local cores.agents using relative import path
 # We need to import the local agents module directly
-import importlib.util
 _agents_path = _prism_us_dir / "cores" / "agents" / "__init__.py"
 _spec = importlib.util.spec_from_file_location("us_agents", _agents_path)
 _us_agents_module = importlib.util.module_from_spec(_spec)
@@ -182,10 +181,10 @@ async def analyze_us_stock(
                         agent = agents[section]
                         if section == "market_index_analysis":
                             if "report" in _us_market_analysis_cache:
-                                logger.info(f"Using cached US market analysis")
+                                logger.info("Using cached US market analysis")
                                 report = _us_market_analysis_cache["report"]
                             else:
-                                logger.info(f"Generating new US market analysis")
+                                logger.info("Generating new US market analysis")
                                 report = await generate_market_report(
                                     agent, section, reference_date, logger, language
                                 )

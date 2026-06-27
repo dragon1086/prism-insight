@@ -13,13 +13,11 @@ Usage:
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
-import sys
 import sqlite3
 import argparse
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Tuple
+from datetime import datetime
+from typing import Dict, List, Any, Optional
 from pathlib import Path
 from collections import defaultdict
 
@@ -498,7 +496,7 @@ class PerformanceAnalyzer:
         sep = "="*70
 
         lines.append(sep)
-        lines.append(f"📊 PRISM-INSIGHT Trigger Performance Analysis Report")
+        lines.append("📊 PRISM-INSIGHT Trigger Performance Analysis Report")
         lines.append(f"Generated: {self.today}")
         lines.append(sep)
         lines.append("")
@@ -635,8 +633,8 @@ class PerformanceAnalyzer:
         """Generate markdown format report"""
         lines = []
 
-        lines.append(f"# 📊 PRISM-INSIGHT Trigger Performance Analysis Report")
-        lines.append(f"")
+        lines.append("# 📊 PRISM-INSIGHT Trigger Performance Analysis Report")
+        lines.append("")
         lines.append(f"**Generated**: {self.today}")
         lines.append("")
 

@@ -12,7 +12,7 @@ Supported Languages:
 import os
 from enum import Enum
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict
 
 
 class Language(Enum):

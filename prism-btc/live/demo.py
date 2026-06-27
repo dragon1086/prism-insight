@@ -35,7 +35,7 @@ from backtest.engine import (
     _get_tf_slice,
 )
 from engine.indicators import atr as calc_atr
-from engine.signal import generate_signal, check_exit_signal, Signal
+from engine.signal import generate_signal, Signal
 
 from core.exits import PositionView, BarView, ExitContext, evaluate_exits
 from core.entries import EntryInputs, CooldownState, evaluate_entry
@@ -60,7 +60,6 @@ from live.shadow import (
     _resolve_funding_rate,
 )
 from backtest.engine import REENTRY_COOLDOWN_BARS, SL_REENTRY_COOLDOWN_BARS
-from engine.sizing import TRANCHE_FRACS
 import engine.sizing as _sizing
 from core.risk import compute_operating_risk
 

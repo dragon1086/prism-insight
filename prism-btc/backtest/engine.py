@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import timezone
 from typing import Literal, Optional
 import pandas as pd
 
@@ -12,14 +12,8 @@ from engine.indicators import add_indicators
 from engine.regime import build_snapshot, RegimeSnapshot
 from engine.signal import generate_signal, check_exit_signal, Signal
 from engine.sizing import (
-    compute_sizing,
-    can_add_tranche,
-    approx_liq_price,
     SizingResult,
-    LIQ_BUFFER_MIN_FRAC,
-    TRANCHE_FRACS,
 )
-import engine.sizing as _sizing  # RISK_PER_TRADE 단일 소스 참조 (런타임 조회)
 
 from core.exits import PositionView, BarView, ExitContext, evaluate_exits
 from core.entries import EntryInputs, CooldownState, evaluate_entry

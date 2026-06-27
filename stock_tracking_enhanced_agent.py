@@ -9,7 +9,6 @@ from stock_tracking_agent import StockTrackingAgent
 import logging
 import json
 import traceback
-import re
 
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM

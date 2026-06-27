@@ -236,11 +236,11 @@ class StockAnalysisOrchestrator:
                     img_num = match.group(1)
                     # Look for common translation patterns (both HTML and markdown)
                     patterns = [
-                        rf'<img\s+[^>]*>',  # HTML img tag (translated or not)
-                        rf'\[Image[^\]]*\]',  # [Image: ...]
-                        rf'!\[[^\]]*\]\([^\)]*\)',  # ![alt](url) that's not base64
-                        rf'\[图片[^\]]*\]',  # Chinese: [图片...]
-                        rf'\[画像[^\]]*\]',  # Japanese: [画像...]
+                        r'<img\s+[^>]*>',  # HTML img tag (translated or not)
+                        r'\[Image[^\]]*\]',  # [Image: ...]
+                        r'!\[[^\]]*\]\([^\)]*\)',  # ![alt](url) that's not base64
+                        r'\[图片[^\]]*\]',  # Chinese: [图片...]
+                        r'\[画像[^\]]*\]',  # Japanese: [画像...]
                     ]
 
                     replaced = False
@@ -592,7 +592,7 @@ class StockAnalysisOrchestrator:
         """
         # Skip if telegram is disabled
         if not self.telegram_config.use_telegram:
-            logger.info(f"Telegram disabled - skipping message and PDF transmission")
+            logger.info("Telegram disabled - skipping message and PDF transmission")
             return
 
         logger.info(f"Starting telegram message transmission for {len(message_paths)} messages")
@@ -830,7 +830,7 @@ class StockAnalysisOrchestrator:
                     all_results[key] = value
 
             if not all_results:
-                logger.warning(f"No trigger results found.")
+                logger.warning("No trigger results found.")
                 return False
 
             # Include metadata for hybrid selection info in alert message

@@ -7,7 +7,6 @@ Based on tracking/journal.py but adapted for US market with market='US' filter.
 
 import json
 import logging
-import re
 import traceback
 from datetime import datetime
 from pathlib import Path

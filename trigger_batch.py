@@ -3,7 +3,6 @@
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file (required before krx_data_client import)
 
-import sys
 import datetime
 import pandas as pd
 import numpy as np

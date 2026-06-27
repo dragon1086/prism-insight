@@ -165,7 +165,7 @@ async def login(force: bool = False) -> dict:
         logger.info(f"Callback server started on port {OAUTH_CALLBACK_PORT}")
 
         # Open browser
-        print(f"\nOpening browser for ChatGPT login...")
+        print("\nOpening browser for ChatGPT login...")
         print(f"If browser doesn't open, visit:\n{auth_url}\n")
         webbrowser.open(auth_url)
 
@@ -216,7 +216,7 @@ async def login(force: bool = False) -> dict:
     _save_auth(auth_data)
 
     masked_token = auth_data["access_token"][:20] + "..."
-    print(f"\nAuthentication successful!")
+    print("\nAuthentication successful!")
     print(f"Token: {masked_token}")
     print(f"Expires: {time.ctime(auth_data['expires_at'])}")
     print(f"Saved to: {AUTH_FILE}")

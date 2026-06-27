@@ -13,13 +13,11 @@ Usage:
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
-import sys
 import sqlite3
 import argparse
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from pathlib import Path
 
 # Logging setup

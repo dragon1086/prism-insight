@@ -298,7 +298,7 @@ def create_us_market_index_analysis_agent(
     if prefetched_indices:
         if language == "ko":
             # Replace items 1-5 (index data collection) but keep item 6 (perplexity search)
-            old_data_section = f"""## 수집할 데이터
+            old_data_section = """## 수집할 데이터
 1. S&P 500 지수 데이터: 도구 호출(yahoo_finance-get_historical_stock_prices), ticker="^GSPC", period="1y", interval="1d"
 2. NASDAQ 종합 데이터: 도구 호출(yahoo_finance-get_historical_stock_prices), ticker="^IXIC", period="1y", interval="1d"
 3. 다우존스 산업평균: 도구 호출(yahoo_finance-get_historical_stock_prices), ticker="^DJI", period="1y", interval="1d"
@@ -314,7 +314,7 @@ def create_us_market_index_analysis_agent(
 1. 종합 시장 분석: perplexity_ask 도구로"""
             instruction = instruction.replace(old_data_section, new_data_section)
         else:
-            old_data_section = f"""## Data to Collect
+            old_data_section = """## Data to Collect
 1. S&P 500 Index Data: Use tool call(yahoo_finance-get_historical_stock_prices) with ticker="^GSPC", period="1y", interval="1d"
 2. NASDAQ Composite Data: Use tool call(yahoo_finance-get_historical_stock_prices) with ticker="^IXIC", period="1y", interval="1d"
 3. Dow Jones Industrial Average: Use tool call(yahoo_finance-get_historical_stock_prices) with ticker="^DJI", period="1y", interval="1d"

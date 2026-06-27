@@ -408,9 +408,7 @@ from krx_data_client import (
     get_market_cap_by_date,
     get_market_fundamental_by_date,
     get_market_trading_volume_by_investor,
-    get_market_trading_value_by_investor,
     get_market_trading_volume_by_date,
-    get_market_trading_value_by_date,
     get_market_ticker_name,
     get_index_ohlcv_by_date,
 )
@@ -1926,7 +1924,7 @@ def main():
     # Generate comprehensive analysis report with all charts
     report_paths = create_comprehensive_report(ticker, company_name)
 
-    logger.info(f"Generated comprehensive report with the following charts:")
+    logger.info("Generated comprehensive report with the following charts:")
     for chart_type, path in report_paths.items():
         logger.info(f"- {chart_type}: {path}")
 

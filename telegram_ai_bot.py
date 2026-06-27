@@ -41,7 +41,7 @@ from report_generator import (
 from tracking.user_memory import UserMemoryManager
 from firecrawl_client import firecrawl_agent
 from cores.disclaimer_utils import strip_trailing_disclaimer as _strip_trailing_disclaimer
-from datetime import datetime, timedelta
+from datetime import timedelta
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -1365,12 +1365,12 @@ class TelegramAIBot:
             # Statistics by ticker
             by_ticker = stats.get('by_ticker', {})
             if by_ticker:
-                msg_parts.append(f"\n🏷️ <b>종목별 기록:</b>")
+                msg_parts.append("\n🏷️ <b>종목별 기록:</b>")
                 for ticker, count in list(by_ticker.items())[:5]:
                     msg_parts.append(f"  • {ticker}: {count}개")
 
             # Recent memory details
-            msg_parts.append(f"\n\n📜 <b>최근 기억 (최대 10개):</b>\n")
+            msg_parts.append("\n\n📜 <b>최근 기억 (최대 10개):</b>\n")
             for i, mem in enumerate(memories[:10], 1):
                 created = mem.get('created_at', '')[:10]
                 mem_type = mem.get('memory_type', '')
@@ -1708,8 +1708,8 @@ class TelegramAIBot:
             context.user_data['avg_price'] = avg_price
 
             await update.message.reply_text(
-                f"보유 기간을 입력해주세요. (월 단위)\n"
-                f"예: 6 (6개월)"
+                "보유 기간을 입력해주세요. (월 단위)\n"
+                "예: 6 (6개월)"
             )
             return ENTERING_PERIOD
 
@@ -1969,7 +1969,7 @@ class TelegramAIBot:
                          f"Unicode: {[ord(c) for c in stock_input]}")
 
         # Partial stock name match search
-        logger.info(f"Starting partial match search")
+        logger.info("Starting partial match search")
         possible_matches = []
 
         try:
@@ -2136,8 +2136,8 @@ class TelegramAIBot:
             context.user_data['us_avg_price'] = avg_price
 
             await update.message.reply_text(
-                f"보유 기간을 입력해주세요. (월 단위)\n"
-                f"예: 6 (6개월)"
+                "보유 기간을 입력해주세요. (월 단위)\n"
+                "예: 6 (6개월)"
             )
             return US_ENTERING_PERIOD
 

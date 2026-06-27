@@ -305,15 +305,15 @@ if __name__ == "__main__":
                 # Check if there's error log in stderr
                 if process.stderr:
                     logger.error(f"US external process error output: {process.stderr[:500]}")
-                return f"US 주식 분석 결과를 찾을 수 없습니다. 로그를 확인하세요."
+                return "US 주식 분석 결과를 찾을 수 없습니다. 로그를 확인하세요."
         except json.JSONDecodeError as e:
             logger.error(f"US 외부 프로세스 출력 파싱 실패: {e}")
             logger.error(f"출력 내용: {output[:1000]}")
-            return f"US 주식 분석 결과 파싱 중 오류가 발생했습니다. 로그를 확인하세요."
+            return "US 주식 분석 결과 파싱 중 오류가 발생했습니다. 로그를 확인하세요."
 
     except subprocess.TimeoutExpired:
         logger.error(f"US 외부 프로세스 타임아웃: {ticker}")
-        return f"US 주식 분석 시간이 초과되었습니다. 다시 시도해주세요."
+        return "US 주식 분석 시간이 초과되었습니다. 다시 시도해주세요."
     except Exception as e:
         logger.error(f"US 동기식 보고서 생성 중 오류: {str(e)}")
         import traceback
@@ -554,7 +554,7 @@ if __name__ == "__main__":
         with open(log_file, "w", encoding="utf-8") as f:
             f.write(f"=== Subprocess Log for {stock_code} ({company_name}) ===\n")
             f.write(f"Started at: {datetime.now().isoformat()}\n")
-            f.write(f"Timeout: 1800 seconds (30 min)\n")
+            f.write("Timeout: 1800 seconds (30 min)\n")
             f.write("=" * 60 + "\n\n")
             f.flush()
 
@@ -724,7 +724,7 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
 
         # 응답 생성
         response = await llm.generate_str(
-            message=f"""사용자의 추가 질문에 대해 답변해주세요.
+            message="""사용자의 추가 질문에 대해 답변해주세요.
                     
                     이전 대화를 참고하되, 사용자의 새 질문에 집중하여 답변하세요.
                     필요한 경우 최신 데이터를 조회하여 정확한 정보를 제공하세요.
@@ -1215,7 +1215,7 @@ async def generate_us_follow_up_response(ticker, ticker_name, conversation_conte
 
         # Generate response
         response = await llm.generate_str(
-            message=f"""사용자의 추가 질문에 대해 답변해주세요.
+            message="""사용자의 추가 질문에 대해 답변해주세요.
 
                     이전 대화를 참고하되, 사용자의 새 질문에 집중하여 답변하세요.
                     필요한 경우 yahoo_finance를 통해 최신 데이터를 조회하여 정확한 정보를 제공하세요.

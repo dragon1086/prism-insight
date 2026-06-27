@@ -82,9 +82,9 @@ class TelegramBotAgent:
             if retry_count < max_retries:
                 return await self.send_message(chat_id, message, parse_mode, retry_count + 1, max_retries, msg_type=msg_type)
             else:
-                logger.error(f"Max retries reached after rate limit")
+                logger.error("Max retries reached after rate limit")
                 return False
-        except TimedOut as e:
+        except TimedOut:
             # Timeout occurred, retry with exponential backoff
             if retry_count < max_retries:
                 wait_time = 2 ** retry_count  # 1, 2, 4 seconds
@@ -92,7 +92,7 @@ class TelegramBotAgent:
                 await asyncio.sleep(wait_time)
                 return await self.send_message(chat_id, message, parse_mode, retry_count + 1, max_retries, msg_type=msg_type)
             else:
-                logger.error(f"Max retries reached after timeout")
+                logger.error("Max retries reached after timeout")
                 return False
         except TelegramError as e:
             logger.error(f"Telegram message send failed ({parse_mode}): {e}")
@@ -171,9 +171,9 @@ class TelegramBotAgent:
             if retry_count < max_retries:
                 return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries, msg_type=msg_type, market=market)
             else:
-                logger.error(f"Max retries reached after rate limit")
+                logger.error("Max retries reached after rate limit")
                 return False
-        except TimedOut as e:
+        except TimedOut:
             # Timeout occurred, retry with exponential backoff
             if retry_count < max_retries:
                 wait_time = 2 ** retry_count  # 1, 2, 4 seconds
@@ -181,7 +181,7 @@ class TelegramBotAgent:
                 await asyncio.sleep(wait_time)
                 return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries, msg_type=msg_type, market=market)
             else:
-                logger.error(f"Max retries reached after timeout")
+                logger.error("Max retries reached after timeout")
                 return False
         except TelegramError as e:
             logger.error(f"Telegram file send failed: {e}")

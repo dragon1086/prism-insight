@@ -39,7 +39,6 @@ from cores.us_surge_detector import (
     get_previous_snapshot,
     get_multi_day_ohlcv,
     get_major_tickers,
-    get_ticker_name,
     get_nearest_business_day,
     apply_absolute_filters,
     normalize_and_score,

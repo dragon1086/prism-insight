@@ -9,7 +9,6 @@ import asyncio
 import datetime
 import logging
 import math
-import time
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from zoneinfo import ZoneInfo
@@ -226,7 +225,7 @@ class DomesticStockTrading:
         self._semaphore = asyncio.Semaphore(3)  # Maximum 3 concurrent requests
         self._stock_locks = {}  # Per-stock locks
 
-        logger.info(f"✅ DomesticStockTrading initialized (Async Enabled)")
+        logger.info("✅ DomesticStockTrading initialized (Async Enabled)")
         logger.info(f"   Mode: {mode}, Buy Amount: {self.buy_amount:,} KRW")
         logger.info(f"   Account: {self.account_name} ({ka.mask_account_number(self.trenv.my_acct)}-{self.trenv.my_prod})")
 

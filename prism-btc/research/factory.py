@@ -297,7 +297,7 @@ def run_factory(conn: sqlite3.Connection, mode: str = "shadow",
                     f"오버라이드 자동 은퇴: {param}={value} — 최신 데이터 게이트 재통과 실패",
                     level="warn", mode=mode)
                 summary["retired"] += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             log.exception("revalidation %s 오류 — 활성 유지(보수적)", param)
             summary["errors"] += 1
 

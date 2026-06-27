@@ -43,7 +43,7 @@ from telegram_bot_agent import TelegramBotAgent
 try:
     from us_stock_trading import USStockTrading
     US_TRADING_AVAILABLE = True
-except ImportError as e:
+except ImportError:
     US_TRADING_AVAILABLE = False
 
 # Logging configuration
@@ -105,7 +105,7 @@ class PortfolioTelegramReporter:
         self.trading_mode = trading_mode if trading_mode is not None else _cfg["default_mode"]
         self.telegram_bot = TelegramBotAgent(token=self.telegram_token)
 
-        logger.info(f"PortfolioTelegramReporter initialized")
+        logger.info("PortfolioTelegramReporter initialized")
         logger.info(f"Trading mode: {self.trading_mode} (yaml config: {_cfg['default_mode']})")
 
     def _load_broadcast_channels(self):
@@ -205,7 +205,7 @@ class PortfolioTelegramReporter:
             # Total assets and season profit
             season_profit_emoji = "📈" if season_profit >= 0 else "📉"
 
-            message += f"🇰🇷 *한국주식 계좌*\n"
+            message += "🇰🇷 *한국주식 계좌*\n"
             message += f"💰 총 자산: `{self.format_currency(total_assets)}`\n"
             message += f"{season_profit_emoji} 시즌 수익: `{self.format_currency_with_sign(season_profit)}` "
             message += f"({self.format_percentage(season_profit_rate)})\n"
@@ -220,7 +220,7 @@ class PortfolioTelegramReporter:
 
         # ========== US Account Summary ==========
         if us_portfolio or us_account_summary:
-            message += f"🇺🇸 *미국주식 계좌*\n"
+            message += "🇺🇸 *미국주식 계좌*\n"
             message += f"🗓 시작: {self.US_START_DATE} | 💵 시작금액: `{self.format_currency(self.US_START_AMOUNT, 'USD')}`\n"
 
             if us_account_summary:
@@ -524,7 +524,7 @@ class PortfolioTelegramReporter:
 
                 profit_emoji = "📈" if total_profit >= 0 else "📉"
 
-                message += f"🇰🇷 *Korea*\n"
+                message += "🇰🇷 *Korea*\n"
                 message += f"💼 Total Value: {self.format_currency(total_eval)}\n"
                 message += f"{profit_emoji} P/L: {self.format_currency_with_sign(total_profit)} ({self.format_percentage(total_profit_rate)})\n"
             else:
@@ -537,7 +537,7 @@ class PortfolioTelegramReporter:
                 us_total_profit_rate = us_account_summary.get('total_profit_rate', 0)
                 us_cash = us_account_summary.get('usd_cash', 0)
 
-                message += f"\n🇺🇸 *USA*\n"
+                message += "\n🇺🇸 *USA*\n"
                 if us_total_eval > 0:
                     us_profit_emoji = "📈" if us_total_profit >= 0 else "📉"
                     message += f"📊 Holdings: {self.format_currency(us_total_eval, 'USD')}\n"

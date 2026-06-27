@@ -1336,10 +1336,10 @@ class APIRespError(APIResp):
         return EmptyHeader()
 
     def printAll(self):
-        print(f"=== ERROR RESPONSE ===")
+        print("=== ERROR RESPONSE ===")
         print(f"Status Code: {self.status_code}")
         print(f"Error Message: {self.error_text}")
-        print(f"======================")
+        print("======================")
 
     def printError(self, url=""):
         print(f"Error Code : {self.status_code} | {self.error_text}")

@@ -19,7 +19,6 @@ from __future__ import annotations
 import bisect
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import timezone
 from typing import Optional
 
 import pandas as pd
@@ -35,17 +34,13 @@ from backtest.engine import (
     TRAILING_TF,
     BE_TRAIL_ACTIVATE_R,
     LIQ_MONITOR_FRAC,
-    ALL_TFS,
-    MIN_ROWS,
     REENTRY_COOLDOWN_BARS,
     SL_REENTRY_COOLDOWN_BARS,
-    _load_tf_data,
     _build_snapshot_at,
     _get_tf_slice,
 )
-from engine.indicators import add_indicators, atr as calc_atr
+from engine.indicators import atr as calc_atr
 from engine.signal import generate_signal, check_exit_signal, Signal
-from engine.sizing import RISK_PER_TRADE, TRANCHE_FRACS
 import engine.sizing as _sizing
 
 from core.exits import PositionView, BarView, ExitContext, evaluate_exits

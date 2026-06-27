@@ -112,7 +112,7 @@ def _decide_oauth_llm(env: dict, crontab: str):
     effective_mode = mode or cron_mode
     if effective_mode and effective_mode != "chatgpt_oauth":
         return "OFF", f"PRISM_OPENAI_AUTH_MODE={effective_mode} (API 키 모드, chatgpt_oauth 필요)"
-    return "OFF", f"PRISM_OPENAI_AUTH_MODE=(unset) (chatgpt_oauth 필요)"
+    return "OFF", "PRISM_OPENAI_AUTH_MODE=(unset) (chatgpt_oauth 필요)"
 
 
 def _decide_loop_a(env: dict, crontab: str):
@@ -122,11 +122,11 @@ def _decide_loop_a(env: dict, crontab: str):
     has_cron = _cron_has_script(crontab, "loop_a_hardstop.py")
 
     if enabled == "false":
-        return "OFF", f"HARDSTOP_ENABLED=false (킬스위치 ON)"
+        return "OFF", "HARDSTOP_ENABLED=false (킬스위치 ON)"
     if live == "true" and has_cron:
-        return "LIVE", f"HARDSTOP_LIVE=true, cron=있음"
+        return "LIVE", "HARDSTOP_LIVE=true, cron=있음"
     if live == "true" and not has_cron:
-        return "미스케줄", f"HARDSTOP_LIVE=true but cron=없음"
+        return "미스케줄", "HARDSTOP_LIVE=true but cron=없음"
     if live != "true" and has_cron:
         return "SHADOW", f"HARDSTOP_LIVE={live or '(unset)'}, cron=있음"
     return "OFF", f"HARDSTOP_LIVE={live or '(unset)'}, cron=없음"

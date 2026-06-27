@@ -16,7 +16,6 @@ Flow:
   5. Expire old pending orders (created before today)
 """
 
-import os
 import sys
 import json
 import sqlite3

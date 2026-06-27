@@ -400,12 +400,12 @@ def main():
         print("\n" + "=" * 60)
         print("Backfill Summary")
         print("=" * 60)
-        print(f"\nstock_holdings:")
+        print("\nstock_holdings:")
         print(f"  Total records:   {holdings_stats['total']}")
         print(f"  Updated:         {holdings_stats['updated']}")
         print(f"  Skipped:         {holdings_stats['skipped']}")
 
-        print(f"\ntrading_history:")
+        print("\ntrading_history:")
         print(f"  Total records:   {history_stats['total']}")
         print(f"  Updated:         {history_stats['updated']}")
         print(f"  Skipped:         {history_stats['skipped']}")
@@ -414,7 +414,7 @@ def main():
         if args.dry_run:
             print("\nTo execute backfill, run without --dry-run flag")
         else:
-            print(f"\nSuccessfully backfilled trigger_type data")
+            print("\nSuccessfully backfilled trigger_type data")
 
     finally:
         conn.close()
