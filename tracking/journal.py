@@ -7,15 +7,22 @@ Extracted from stock_tracking_agent.py for LLM context efficiency.
 
 import json
 import logging
+import os
 import re
+import sys
 import traceback
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from cores.openai_error_logging import log_openai_error
 from cores.utils import parse_llm_json
 
 logger = logging.getLogger(__name__)
+
+# Recent stop-out churn guard — env-configurable, fail-open
+JOURNAL_RECENT_LOSS_HOURS = float(os.getenv("JOURNAL_RECENT_LOSS_HOURS", "48"))
+JOURNAL_RECENT_LOSS_PENALTY = int(os.getenv("JOURNAL_RECENT_LOSS_PENALTY", "2"))
 
 
 class JournalManager:
@@ -680,6 +687,25 @@ Please review the following completed trade:
                                 f"Trigger '{trigger_type}' high win rate "
                                 f"{t['win_rate']*100:.0f}% (n={t['total']}, actual 30d data)"
                             )
+
+            # Recent stop-out churn guard (KR market)
+            # Must come last so it can cancel any net-positive bonus from above.
+            if JOURNAL_RECENT_LOSS_PENALTY > 0:
+                try:
+                    # Import reentry_cooldown from repo root (works under both runtimes)
+                    _rc_root = str(Path(__file__).resolve().parent.parent)
+                    if _rc_root not in sys.path:
+                        sys.path.insert(0, _rc_root)
+                    import reentry_cooldown as _rc
+                    _loss_info = _rc.recent_loss(ticker, market="KR")
+                    if _loss_info is not None and _loss_info["gap_hours"] <= JOURNAL_RECENT_LOSS_HOURS:
+                        adjustment = min(adjustment, 0) - JOURNAL_RECENT_LOSS_PENALTY
+                        reasons.append(
+                            f"Recent stop-out {_loss_info['gap_hours']:.1f}h ago "
+                            f"({_loss_info['last_ret']:.1f}%) — churn guard"
+                        )
+                except Exception:
+                    pass  # fail-open: never raise into the buy path
 
             return max(-3, min(3, adjustment)), reasons
 

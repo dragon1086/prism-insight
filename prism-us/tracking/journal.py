@@ -7,12 +7,18 @@ Based on tracking/journal.py but adapted for US market with market='US' filter.
 
 import json
 import logging
+import os
+import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Recent stop-out churn guard — env-configurable, fail-open
+JOURNAL_RECENT_LOSS_HOURS = float(os.getenv("JOURNAL_RECENT_LOSS_HOURS", "48"))
+JOURNAL_RECENT_LOSS_PENALTY = int(os.getenv("JOURNAL_RECENT_LOSS_PENALTY", "2"))
 
 
 # =============================================================================
@@ -670,6 +676,26 @@ Please review the following completed US stock trade:
                                 f"Trigger '{trigger_type}' high win rate "
                                 f"{t['win_rate']*100:.0f}% (n={t['total']}, actual 30d data)"
                             )
+
+            # Recent stop-out churn guard (US market)
+            # Must come last so it can cancel any net-positive bonus from above.
+            if JOURNAL_RECENT_LOSS_PENALTY > 0:
+                try:
+                    # Import reentry_cooldown from repo root — parent of parent of parent
+                    # (prism-us/tracking -> prism-us -> prism-insight)
+                    _rc_root = str(Path(__file__).resolve().parent.parent.parent)
+                    if _rc_root not in sys.path:
+                        sys.path.insert(0, _rc_root)
+                    import reentry_cooldown as _rc
+                    _loss_info = _rc.recent_loss(ticker, market="US")
+                    if _loss_info is not None and _loss_info["gap_hours"] <= JOURNAL_RECENT_LOSS_HOURS:
+                        adjustment = min(adjustment, 0) - JOURNAL_RECENT_LOSS_PENALTY
+                        reasons.append(
+                            f"Recent stop-out {_loss_info['gap_hours']:.1f}h ago "
+                            f"({_loss_info['last_ret']:.1f}%) — churn guard"
+                        )
+                except Exception:
+                    pass  # fail-open: never raise into the buy path
 
             return max(-3, min(3, adjustment)), reasons
 
