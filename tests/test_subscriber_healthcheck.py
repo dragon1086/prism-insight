@@ -191,6 +191,40 @@ def test_failures_over_threshold_warn(tmp_path, tmp_state, mock_send, mock_alive
 
 
 # ---------------------------------------------------------------------------
+# TEST: US log format (regression for false zero_success CRITICAL)
+#   The subscriber emits US trades as "🇺🇸 US buy successful" / "❌ 🇺🇸 US buy
+#   failed" — NOT the KR "Actual ..." form. The old regexes matched only "Actual",
+#   so every US success/failure went uncounted and a US-only batch with a real
+#   success still tripped zero_success. These lock the US format.
+# ---------------------------------------------------------------------------
+
+def test_us_success_counted_no_alert(tmp_path, tmp_state, mock_send, mock_alive):
+    # US buy attempt + US success (real subscriber format). Success MUST be
+    # counted, so zero_success must NOT fire. (Old regex => false CRITICAL.)
+    log = _make_log(
+        f"{_ts()} INFO 🚀 Executing buy order: 🇺🇸 Alphabet Inc.(GOOGL)",
+        f"{_ts()} INFO ✅ 🇺🇸 US buy successful: Alphabet Inc.(GOOGL) - Buy completed: 2 shares",
+    )
+    mock_send = _run(log, tmp_path, tmp_state, mock_send)
+    mock_send.assert_not_called()
+
+
+def test_us_failures_over_threshold_warn(tmp_path, tmp_state, mock_send, mock_alive):
+    # 1 US success (so zero_success does not fire) + 3 US failures (meets
+    # threshold) => WARN. Old regex counted neither => would mis-fire CRITICAL.
+    log = _make_log(
+        f"{_ts()} INFO 🚀 Executing buy order: 🇺🇸 Alphabet Inc.(GOOGL)",
+        f"{_ts()} INFO ✅ 🇺🇸 US buy successful: Alphabet Inc.(GOOGL) - Buy completed: 2 shares",
+        f"{_ts()} ERROR ❌ 🇺🇸 US sell failed: Micron Technology, Inc.(MU) - MU not found in portfolio",
+        f"{_ts()} ERROR ❌ 🇺🇸 US buy failed: Micron Technology, Inc.(MU) - Buy quantity is 0",
+        f"{_ts()} ERROR ❌ 🇺🇸 US buy failed: NVIDIA Corporation(NVDA) - APBK0952 주문가능금액을 초과",
+    )
+    mock_send = _run(log, tmp_path, tmp_state, mock_send, fail_threshold=3)
+    mock_send.assert_called_once()
+    assert "WARN" in mock_send.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
 # TEST: process down -> DOWN alert
 # ---------------------------------------------------------------------------
 
