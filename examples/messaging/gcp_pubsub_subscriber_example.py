@@ -91,15 +91,33 @@ def is_market_hours(market: str = "KR") -> bool:
     return market_open <= now <= market_close
 
 
+_US_CMD_MODULE = None
+
+
+def _us_check_market_day():
+    """Load prism-us/check_market_day.py under a distinct module name via importlib,
+    WITHOUT inserting prism-us onto sys.path. Inserting it would shadow the
+    repo-root `trading` package (prism-us has its own trading/ dir) and break KR
+    order execution. There is also a name collision with the repo-root
+    check_market_day.py (KR), so we load the US one explicitly by path. Cached."""
+    global _US_CMD_MODULE
+    if _US_CMD_MODULE is None:
+        import importlib.util
+        _spec = importlib.util.spec_from_file_location(
+            "us_check_market_day", str(PROJECT_ROOT / "prism-us" / "check_market_day.py"))
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _US_CMD_MODULE = _mod
+    return _US_CMD_MODULE
+
+
 def is_us_market_hours() -> bool:
     """Check if current time is during US market hours (09:30~16:00 EST, trading days only)"""
     try:
-        # Use prism-us/check_market_day.py (NYSE calendar based)
-        import sys
-        sys.path.insert(0, str(PROJECT_ROOT / "prism-us"))
-        from check_market_day import is_market_open
-        return is_market_open()
-    except ImportError:
+        # Use prism-us/check_market_day.py via importlib, without polluting sys.path
+        # (avoids shadowing the repo-root `trading` package).
+        return _us_check_market_day().is_market_open()
+    except Exception:
         # fallback: calculate directly with pytz
         try:
             import pytz
@@ -189,11 +207,9 @@ def get_next_us_market_open() -> datetime:
         datetime: Next US trading day's market open time (KST)
     """
     try:
-        # Use prism-us/check_market_day.py (NYSE calendar based)
-        import sys
-        sys.path.insert(0, str(PROJECT_ROOT / "prism-us"))
-        from check_market_day import get_next_trading_day, EST, KST
-
+        # Use prism-us/check_market_day.py via importlib, without polluting sys.path.
+        _cmd = _us_check_market_day()
+        get_next_trading_day, EST, KST = _cmd.get_next_trading_day, _cmd.EST, _cmd.KST
         next_trading_day = get_next_trading_day()
         if next_trading_day:
             import pytz
@@ -205,7 +221,7 @@ def get_next_us_market_open() -> datetime:
             market_open_kst = market_open_est.astimezone(KST)
             return market_open_kst.replace(tzinfo=None)  # Return naive datetime
 
-    except ImportError:
+    except Exception:
         pass
 
     # fallback: calculate directly with pytz
@@ -638,6 +654,23 @@ def main():
     else:
         logger.info("🔹 LIVE mode: Actual trading will be executed!")
         logger.info(f"🔹 Trading mode: {trading_mode.upper()}")
+
+        # --- Startup precondition self-check (LIVE/REAL mode only) ---
+        try:
+            from trading.domestic_stock_trading import AsyncTradingContext  # noqa: F401
+            from Crypto.Cipher import AES  # noqa: F401
+            logger.info("[STARTUP_SELFCHECK] OK (trading modules importable)")
+        except Exception as _selfcheck_err:
+            logger.critical(f"[STARTUP_SELFCHECK] FAILED: {_selfcheck_err}")
+            try:
+                import sys as _sys
+                _sys.path.insert(0, str(PROJECT_ROOT))
+                from tools.subscriber_healthcheck import send_alert
+                send_alert(f"🔴 [STARTUP_SELFCHECK] FAILED on startup: {_selfcheck_err}")
+            except Exception as _alert_err:
+                logger.error(f"[STARTUP_SELFCHECK] Could not send alert: {_alert_err}")
+            import sys as _sys2
+            _sys2.exit(1)
 
     # Initialize scheduled order manager (for demo mode off-market hours scheduling)
     global scheduled_order_manager
