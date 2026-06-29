@@ -153,10 +153,16 @@ _IMPORT_FAIL_RE = re.compile(
 )
 _BUY_ATTEMPT_RE = re.compile(r"Executing buy order")
 _SELL_ATTEMPT_RE = re.compile(r"Executing sell order")
-_BUY_SUCCESS_RE = re.compile(r"Actual buy successful|Actual US buy successful")
-_SELL_SUCCESS_RE = re.compile(r"Actual sell successful|Actual US sell successful")
+# Match BOTH log formats the subscriber emits:
+#   KR: "✅ Actual buy successful"      / "❌ Actual buy failed"
+#   US: "✅ 🇺🇸 US buy successful"       / "❌ 🇺🇸 US buy failed"
+# (the older regexes only matched the KR "Actual ..." form, so every US trade —
+#  success AND failure — went uncounted, firing a false zero_success CRITICAL
+#  whenever activity was US-only. See subscriber_20260629 MU/NVDA/GOOGL batch.)
+_BUY_SUCCESS_RE = re.compile(r"(?:Actual|US) buy successful")
+_SELL_SUCCESS_RE = re.compile(r"(?:Actual|US) sell successful")
 _EXEC_ERROR_RE = re.compile(r"Error during buy execution|Error during sell execution|Actual")
-_ACTUAL_FAIL_RE = re.compile(r"❌ Actual")
+_ACTUAL_FAIL_RE = re.compile(r"(?:Actual|US) (?:buy|sell)(?: execution)? failed")
 
 
 def _resolve_log_path(log_path: str | None) -> Path | None:
