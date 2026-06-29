@@ -113,3 +113,51 @@ def reentry_block(market: str, ticker: str, account_key: Optional[str] = None,
         "window_hours": window,
         "after_loss": after_loss,
     }
+
+
+def recent_loss(ticker: str, market: str | None = None) -> Optional[dict]:
+    """Return the most-recent sell's gap info if that sell was a loss, else None.
+
+    Used by the journal score adjustment to penalise fresh stop-outs regardless
+    of whether the (longer) COOLDOWN_LOSS_HOURS window has elapsed.
+
+    Returns: {"gap_hours": float, "last_ret": float, "last_sell": str} or None.
+    Fail-open: returns None on any error.
+    """
+    table = _TABLE.get(((market or "KR") or "KR").upper())
+    if not table or not ticker:
+        return None
+    path = _db_path()
+    try:
+        conn = sqlite3.connect(path, timeout=5)
+        try:
+            row = conn.execute(
+                f"SELECT sell_date, profit_rate FROM {table} "
+                f"WHERE ticker=? AND sell_date IS NOT NULL AND sell_date<>'' "
+                f"ORDER BY sell_date DESC LIMIT 1",
+                (ticker,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return None  # fail-open
+
+    if not row or not row[0]:
+        return None
+    sell_dt = _parse_dt(row[0])
+    if sell_dt is None:
+        return None
+    try:
+        last_ret = float(row[1]) if row[1] is not None else 0.0
+    except (TypeError, ValueError):
+        last_ret = 0.0
+    if last_ret >= 0:
+        return None  # not a loss — no penalty
+    gap_hours = (datetime.now() - sell_dt).total_seconds() / 3600.0
+    if gap_hours < 0:
+        return None  # clock skew
+    return {
+        "gap_hours": round(gap_hours, 2),
+        "last_ret": last_ret,
+        "last_sell": row[0],
+    }
