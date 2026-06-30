@@ -1,91 +1,114 @@
-# PRISM-INSIGHT v2.16.0 — 인사이트 이미지 발행(S6) · 실시간 루프 LIVE · churn 2중방어 · 구독자 실매매 안정화 · 코드품질 B
+# PRISM-INSIGHT v2.16.0 — 인사이트 이미지 발행(Phase 6 / S6) · 실시간 루프 LIVE · churn 2중방어 · 구독자 실매매 안정화 · 코드품질 B
 
 > **Release Date**: 2026-06-30
 > **Range**: `v2.15.0`(73afc671) → `main`(b7263df9) · 105 commits / 44 PRs (#356–#399)
 
 ## 개요
 
-v2.16.0은 v2.15.0에서 SHADOW로 출시했던 장치들을 **실거래/실서비스로 승격**하고, 그 과정에서 드러난 안정성·품질·지연 문제를 정리한 릴리즈입니다. 일곱 갈래입니다.
+v2.16.0은 v2.15.0에서 SHADOW/OFF로 출시했던 장치들을 **실서비스/실거래로 승격**하고, 그 과정에서 드러난 안정성·지연·품질 문제를 정리한 대형 릴리즈입니다. 여덟 갈래입니다.
 
-1. **인사이트 이미지 발행 (S6) ⭐ LIVE** — 종목별 분석을 **예측 밴드(시나리오 cone) + 실현 트랙레코드 분포**가 있는 한 장의 이미지로 발행. 통화기호(KR ₩ / US $), 용어 캡션, 매매 마커, 오닐(O'Neil) 차트 패턴을 포함. KR·US 양 시장 LIVE.
-2. **실시간 리스크 루프 LIVE 전환·강화 (Loop A/B/C)** — Loop C 미체결 추격을 **LIVE 승격**(체결우선 cross 매수, KR 호가단위 스냅, .env 로딩 버그 수정)하고, Loop A/B 매도를 **Redis+GCP로 발행**해 구독자 미러링과 정합. 포트폴리오 메시지 중복 발송 수정.
-3. **손절후 재매수(churn) 2중방어** — **재진입 쿨다운 게이트**(손실 후 24h 동일종목 재매수 차단)와 **매매일지 churn guard**(최근 48h 손절 종목 점수 감점)로, 손절→재매수 과매매를 두 겹으로 차단.
-4. **구독자(실매매 미러) 안정화 + 모니터** — 5일 장애(import 실패) 복구 + 시작 자가점검, "살아있는데 0체결" 헬스 모니터 신설 및 오탐 정정.
-5. **성능/지연 최적화** — 다국어 PDF 발송을 **단일 브라우저 재사용**으로, KR 배치 매수단계는 **보유종목 LLM 스킵**으로 단축.
-6. **모델 마이그레이션** — 기본 경량 모델을 `gpt-5-nano` → `gpt-5.4-nano`로 갱신.
-7. **코드품질 Codacy C → B** + 운영 가시성 — 실이슈 ~262건 정리, `/report` 1일 한도 제거 등.
+1. **인사이트 이미지 발행 — Phase 6 (S1→S6) ⭐ LIVE** — 비전 배관(S1)부터 렌더 QA(S2), 오닐 매수품질 게이트(S3, SHADOW), 오닐 차트+RS선(S3.5), 그리고 **예측 밴드 + 실현 트랙레코드 분포가 있는 인사이트 이미지 발행(S6)**까지의 단계적 프로그램. KR·US 양 시장 LIVE.
+2. **실시간 리스크 루프 LIVE 전환·강화 (Loop A/B/C)** — Loop C 미체결 추격 LIVE 승격(체결우선 cross·KR 호가단위 스냅·.env 로딩 수정), Loop A/B 매도 Redis+GCP 발행, 포트폴리오 메시지 중복 정리, env 키 리네임.
+3. **손절후 재매수(churn) 2중방어** — 재진입 쿨다운 게이트 + 매매일지 churn guard.
+4. **구독자(실매매 미러) 안정화 + 모니터** — 5일 장애 복구·시작 자가점검·헬스 모니터·오탐 정정.
+5. **성능/지연 최적화** — 다국어 PDF 단일 브라우저 재사용, KR 매수단계 보유종목 LLM 스킵.
+6. **모델 마이그레이션** — `gpt-5-nano` → `gpt-5.4-nano`.
+7. **코드품질 Codacy C → B** — 실이슈 ~262건 정리 + 테스트 제외.
+8. **운영 가시성·견고성** — 기능 플래그 레지스트리/상태도구, US 분석 실패 처리, 매수 0원 가드 등.
 
 모든 주식 매매 로직 변경은 5인 투자 페르소나(William O'Neil / Mark Minervini / Stanley Druckenmiller / Warren Buffett / Quant Risk Manager) 관점으로 검토해 합의 영역만 채택했습니다.
 
 ---
 
-## 1. 인사이트 이미지 발행 (S6) ⭐ LIVE
+## 1. 인사이트 이미지 발행 — Phase 6 비전 프로그램 (S1→S6) ⭐
 
-분석 결과를 텍스트가 아니라 **한 장의 인포그래픽 이미지**로 발행합니다. 단순 차트가 아니라 "이 종목이 앞으로 어떻게 될지(예측)"와 "과거 비슷한 신호가 실제로 어떻게 됐는지(트랙레코드)"를 함께 보여주는 것이 핵심입니다.
+분석 결과를 텍스트가 아니라 **한 장의 인포그래픽**으로 발행하기까지, 비전 기능을 단계(Stage)로 쌓아 올렸습니다. 각 단계는 기본 OFF/SHADOW로 안전하게 들어온 뒤 검증을 거쳐 켜졌습니다.
 
-- **예측 밴드(시나리오 cone)** (#377) — 코호트 30일 수익 분위수를 √시간으로 펼친 불확실성 부채꼴 + "올랐다/제자리/빠졌다 %" 확률 막대 + 좌측 목표/손절 박스. 공용 엔진 `cores/llm/features/forecast_stats.py`(조건부 base-rate + 분위수).
-- **통화기호 정합** (#364) — KR는 ₩, US는 $로 표기.
-- **용어 캡션 + 글리프 정리** (#365·#371) — 캡션에 용어 설명, tofu(□) 글리프 제거.
-- **매매 마커** (#369) — 이미지에 진입/청산 지점 표시.
-- **오닐 차트 패턴 (비전)** (#359·#363) — KR/US 차트 패턴 분석(컵앤핸들 등) 생성, 보고서 기술분석 섹션에 **soft 삽입**(#385, 기본 off — 켜면 매수에이전트가 읽음, 추가 API콜 0).
-- **비전 매수품질 S3 (SHADOW)** (#356·#357·#358·#362) — 비전 기반 매수품질 게이트 배관·키소스 격리. 현재 SHADOW(로그 전용, 매매 미반영).
+### 1-1. 비전 배관 · 렌더 QA · 매수품질 게이트 (S1~S3) (#356·#357)
+- **S1 — 비전 배관 + 능력 탐지** (#356): 비전 호출 인프라와 capability detection. 기본 OFF.
+- **S2 — 렌더 QA**: 이미지 렌더 품질 점검 단계(기본 OFF, 비차단).
+- **S3 — 오닐 매수품질 비전 게이트 (SHADOW)** (#357): 차트 이미지를 보고 매수품질을 평가하는 게이트. **로그 전용(SHADOW)** — 매매 미반영.
 
-> 비전 호출은 API키/OAuth와 격리(`PRISM_VISION_AUTH`)되어 구독 정책과 충돌하지 않습니다.
+### 1-2. 비전 키소스 격리 · 오닐 차트 + RS선 (S3.5) (#358·#359)
+- **비전 API 키 격리** (#358): 비전 키를 `mcp_agent.secrets.yaml`에서 해석, 기본 모델 `gpt-5.4-mini` — API키/OAuth 정책과 충돌 방지.
+- **오닐 차트 (일봉+주봉) + RS선 + 멀티이미지 비전** (#359): 일봉·주봉 오닐 차트에 상대강도(RS) 라인을 얹고 여러 이미지를 비전에 투입. 주봉 fetch를 KRX 730일 한도로 클램프, RS선은 `krx_data_client` 인덱스 fetch로 정직하게 산출.
+
+### 1-3. 인사이트 이미지 (S6) — 예측 밴드 + 트랙레코드 ⭐ (#362·#363·#364·#365·#369·#371·#377)
+- **예측 밴드(시나리오 cone) + Prism 트랙레코드 확률 패널** (#377): 코호트 30일 수익 분위수를 √시간으로 펼친 **불확실성 부채꼴(곡선)** + "올랐다/제자리/빠졌다 %" 평이한 확률 막대. 밴드가 차트를 가리지 않도록 목표/손절 콜아웃을 우상단 플랜박스로 이동, 베이스박스는 은은하게(점선·연한 채움) 디엠퍼사이즈. 공용 엔진 `cores/llm/features/forecast_stats.py`(조건부 base-rate + 분위수) 신설 + 단위테스트.
+- **US 인사이트 이미지 활성화** (#363): US 오닐 인사이트 차트 추가로 US도 이미지 발행.
+- **통화기호 정합** (#364): US $, KR ₩.
+- **평이한 용어 캡션(글로서리)** (#365) + **폰트 안전 글리프** (#371): 캡션 용어 설명, tofu(□) 유발 글리프(U+2212 −, U+25B8 ▸, ℹ️)를 폰트 안전 문자로 교체(NanumGothicCoding).
+- **과거 매매 마커** (#369): 인사이트 이미지에 과거 진입/청산 지점 표시 + LLM 컨텍스트 주입.
+- **레이아웃 폴리시** (#362): 한국어 캡션 밴드·여백·플롯 내 라벨 정리(표시 전용, OFF 게이트).
+
+### 1-4. 비전을 보고서에 soft 삽입 + 매수품질 SHADOW 로깅 복구 (#377·#385)
+- **매수품질 SHADOW 로깅 복구** (#377): `cores/analysis.py` 훅이 예외를 `except:pass`로 삼켜 verdict 0건이던 것을 표준 `logging` 로거로 교체 → `[BUY_QUALITY][SHADOW]` 기록 정상화.
+- **비전 차트패턴을 보고서 기술분석 섹션에 soft 삽입** (#385, 기본 OFF): 켜면 S3가 이미 계산한 분석을 보고서에 렌더해 매수에이전트가 읽음(추가 API콜 0).
+
+> 비전 매수품질(S3)은 여전히 **SHADOW**입니다 — 매매결정·텔레그램 메시지에 반영되지 않고, 인사이트 이미지의 품질점수는 정보용 표시입니다.
 
 ---
 
 ## 2. 실시간 리스크 루프 LIVE 전환·강화 (Loop A/B/C)
 
-v2.15.0에서 SHADOW로 낸 Loop A/B/C를 검증·강화하고 Loop C를 LIVE로 올렸습니다.
+v2.15.0에서 SHADOW로 낸 루프를 검증·강화하고 Loop C를 LIVE로 올렸습니다.
 
-- **Loop C 미체결 추격 LIVE** (#370·#378·#381·#384) — SHADOW 관측 검증(#370) 후 LIVE. **체결우선 cross 매수**(예산 내 마케터블 cross 즉시체결, 초과 시 취소, #378), **KR 호가단위(tick) 스냅**(APBK0506 정렬오류 수정, #384), **`.env` 로딩 버그 수정**(load_dotenv 누락으로 LIVE 켜도 무시되던 것, #381).
-- **Loop A/B 매도 Redis+GCP 발행** (#382) — 루프 매도가 배치에만 있던 publish를 안 타 구독자가 미수신·발산하던 것 수정(`loop_publish.py`).
-- **포트폴리오 메시지 중복 수정** (#372·#375·#376·#379) — 루프/배치 매도 시 포트폴리오 메시지가 2~3중으로 가던 것 → debounce + per-sell/run-end/수동 append 중복 제거.
-- **매수 0원 가드** (#373) — 국내 매수 시 0원 지정가 방어.
+- **Loop C SHADOW 검증 강화** (#370): 풍부한 SHADOW 로깅 + dry-run 페이로드 + selftest.
+- **Loop C 체결우선 cross 매수** (#378): 예산(`FILL_CHASER_BUY_MAX_PREMIUM_PCT`) 내 마케터블 cross로 즉시체결, 초과 시 취소. 동시에 **env 키 리네임**(`LOOP_A/B/C_*` → `HARDSTOP_*`/`TREND_EXIT_*`/`FILL_CHASER_*`, 구 키 alias 유지).
+- **Loop C `.env` 로딩 버그 수정** (#381): load_dotenv 누락으로 LIVE 켜도 무시되던 것 수정 → LIVE 승격.
+- **Loop C KR 호가단위(tick) 스냅** (#384): 추격 정정가를 KRX 호가단위로 정수 스냅(APBK0506 미정렬 오류 수정 + float 노이즈 가드).
+- **Loop A/B 매도 Redis+GCP 발행** (#382): 루프 매도가 배치에만 있던 publish를 안 타 구독자 미수신·발산하던 것 수정(`loop_publish.py`).
+- **포트폴리오 메시지 중복 정리** (#372 → #375 revert → #376 redo → #379): 루프/배치 매도 시 실시간 포트폴리오 요약이 2~3중 발송되던 것을, 시도 끝에 **run-end 1회 + debounce**로 정리.
 
 ---
 
 ## 3. 손절후 재매수(churn) 2중방어
 
-손절 직후 같은 종목을 다시 사는 과매매(MU 사례에서 실증)를 두 겹으로 막습니다.
+손절 직후 같은 종목을 다시 사는 과매매(MU 사례 실증)를 두 겹으로 차단.
 
-- **재진입 쿨다운 게이트** (#380) — 손실 매도 후 24h 내 동일종목 재매수를 차단(승리 후 0h=미차단). SHADOW 관측 후 LIVE(`REENTRY_COOLDOWN_LIVE`).
-- **매매일지 churn guard** (#396) — 최근 48h 내 손절 종목은 점수조정을 `min(adj,0)−2`로 만들어 섹터/동일종목 보너스를 무효화하고 감점(`JOURNAL_RECENT_LOSS_HOURS/PENALTY`, fail-open). 일지의 섹터평균 기반 점수가 오히려 재매수를 부추기던 것을 교정.
-
-> 소프트 advisory(⚠️경고·손절이력 주입)만으로는 LLM이 override해 churn이 반복됨을 실증했고, 그래서 하드 게이트로 대응했습니다.
+- **재진입 쿨다운 게이트** (#380): 손실 매도 후 24h 내 동일종목 재매수 차단(승리 후 0h). SHADOW-first(`REENTRY_COOLDOWN_LIVE`).
+- **매매일지 churn guard** (#396): 최근 48h 내 손절 종목은 점수조정을 `min(adj,0)−2`로 만들어 섹터/동일종목 보너스를 무효화+감점(`JOURNAL_RECENT_LOSS_HOURS/PENALTY`, fail-open). 일지의 섹터평균 점수가 오히려 재매수를 부추기던 것 교정.
 
 ---
 
 ## 4. 구독자(실매매 미러) 안정화 + 모니터
 
-실매매 미러 컨슈머의 5일 장애를 복구하고 재발 감시 장치를 추가했습니다.
-
-- **장애 복구 + 시작 자가점검** (#395) — 매 주문 import 실패의 원인(① 인터프리터 ② 경로 shadowing)을 importlib 로더로 수정, 시작 시 `[STARTUP_SELFCHECK]`로 거래모듈 import 가능 여부를 확인(실패 시 경보+즉시종료).
-- **헬스 모니터 신설** (#395) — "프로세스는 살아있는데 0체결/ import 실패"를 5분 주기로 탐지, 별도 알림봇으로 경보.
-- **모니터 오탐 정정** (#397·#398) — 미국 거래 로그 포맷 미집계로 인한 가짜 CRITICAL 수정(#397), **정당한 거부**(보유종목 아님·예산초과·현금부족)를 실패에서 분리해 인프라 장애만 경보하도록 정정(#398, 알람 피로 방지).
+- **5일 장애 복구 + 시작 자가점검** (#395): 매 주문 import 실패(인터프리터·경로 shadowing)를 importlib 로더로 수정, 시작 시 `[STARTUP_SELFCHECK]`로 거래모듈 import 확인(실패 시 경보+종료). + **헬스 모니터** 신설("살아있는데 0체결/import실패"를 5분 주기 탐지, 별도 알림봇).
+- **모니터 US 로그 미집계 정정** (#397): 미국 거래 로그 포맷(`🇺🇸 US ... successful/failed`)을 못 세 가짜 CRITICAL이 뜨던 것 수정.
+- **모니터 양성 거부 제외** (#398): 정당한 거부(보유아님·예산초과·현금부족)를 실패에서 분리(`benign_rejections`)해 인프라 장애만 경보 — 알람 피로 방지.
 
 ---
 
 ## 5. 성능 / 지연 최적화
 
-- **다국어 PDF 발송 단일 브라우저 재사용 (KR·US)** (#386·#387) — 번역 PDF마다 Chromium을 새로 띄우던 것(4언어×3종목=12 launch)을 **브라우저 1개 재사용**(launch 12→1). 메모리 천장(서버 RAM 제약) 유지하며 순차 렌더.
-- **KR 매수단계 보유종목 LLM 스킵** (#399) — 매수 루프가 분석 픽 전 종목에 시나리오 LLM을 돌리던 중, **이미 보유 중이라 추가매수(피라미딩) 불가능한 종목**은 LLM 전에 싼 사전게이트(보유 row수·수익률, DB+현재가만)로 걸러 스킵. 동작 보존(결과·메시지 동일, 낭비 LLM 콜만 제거), 피라미딩(#288)은 유지.
+- **다국어 PDF 발송 단일 브라우저 재사용 (KR·US)** (#386·#387): 번역 PDF마다 Chromium을 새로 띄우던 것(4언어×3종목=12 launch)을 **브라우저 1개 재사용**(launch 12→1), 메모리 천장 유지하며 순차 렌더.
+- **KR 매수단계 보유종목 LLM 스킵** (#399): 매수 루프가 분석 픽 전 종목에 시나리오 LLM을 돌리던 중, **이미 보유 중이라 추가매수(피라미딩 #288) 불가능한 종목**은 LLM 전에 싼 사전게이트(보유 row수·수익률, DB+현재가)로 걸러 스킵. 동작 보존(결과·메시지 동일, 낭비 LLM 콜만 제거).
 
 ---
 
 ## 6. 모델 마이그레이션 (#388)
 
-- 코드 기본 경량 모델을 `gpt-5-nano`(2025-08) → `gpt-5.4-nano`(2026-03)로 교체(14파일). 프록시 모델맵에 `gpt-5.4-nano → gpt-5.4-mini` 추가(Codex가 nano 거부 시 remap). 프로덕션(OAuth)은 어차피 nano→5.4-mini remap이라 영향 0.
+- 코드 기본 경량 모델 `gpt-5-nano`(2025-08) → `gpt-5.4-nano`(2026-03), 14파일. 프록시 모델맵에 `gpt-5.4-nano → gpt-5.4-mini` remap 추가(Codex가 nano 거부 대비). 프로덕션(OAuth)은 remap 경유라 영향 0.
 
 ---
 
-## 7. 코드품질 (Codacy C → B) · 운영 가시성
+## 7. 코드품질 — Codacy C → B (#389~#393)
 
-- **Codacy 등급 C → B 달성** (#389~#393) — 실이슈 ~262건 정리(bare except → `except Exception`, ruff safe-autofix 191건, E722/B113/E702/E712/E741 등 70건, 진짜 SQL injection 1건 파라미터화) + 테스트 false positive 제외(`.codacy.yaml`). 밀도 8.78% → 2.68%.
-- **`/report`·`/us_report` 1일 한도 제거** (#394, 이슈 #307) — 텔레그램 봇 온디맨드 리포트의 1일 횟수 제한 해제.
-- **기능 상태 점검 도구** (#360·#366·#367·#368) — `feature_status` 도구 신설 + S6/루프/비전 env 반영 수정.
-- **US 분석 실패 처리** (#361) — 재시도 후 실패 시 `[ANALYSIS_FAILED]` 명시.
-- **기능 플래그 문서 동기화** (#374).
+- **등급 C → B 달성.** 실이슈 ~262건 정리: bare except 22건 → `except Exception`(#390), ruff safe-autofix 191건(#391), E722/B113 timeout/E702/E712/E741 등 70건(#392), 진짜 SQL injection 1건 파라미터화(#393), Codacy new-issue 게이트에 걸린 미사용 변수 정리. + 테스트/예제 경로 분석 제외(`.codacy.yaml`, #389). 밀도 8.78% → 2.68%.
+- ⚠️ Codacy 게이트 = 신규 이슈 0개 정책 — PR마다 커밋 전 `ruff check` 필요.
+
+---
+
+## 8. 운영 가시성 · 견고성 · 문서
+
+| # | 변경 | PR |
+|---|------|-----|
+| 8-1 | **`/report`·`/us_report` 1일 한도 제거** (이슈 #307) | #394 |
+| 8-2 | **기능 플래그 레지스트리(LIVE/SHADOW/OFF) + 자동승격 정책 문서** | (docs) |
+| 8-3 | **`feature_status.py` 런타임 상태 리포터** 신설 + 수정(OAuth 인라인 cron 감지·S6/Loop·비전 env·sys.path) | #360, #366, #367, #368 |
+| 8-4 | **US 분석 실패 처리 견고화** + 날짜기반 로그 압축 | #361 |
+| 8-5 | **KR 매수 0원/무효가 가드** (ZeroDivisionError 방지) | #373 |
+| 8-6 | **기능 플래그 문서 런타임 동기화** (Loop B LIVE / Loop C SHADOW / S6 LIVE 반영) | #374 |
 
 ---
 
@@ -93,19 +116,20 @@ v2.15.0에서 SHADOW로 낸 Loop A/B/C를 검증·강화하고 Loop C를 LIVE로
 
 | 파일 | 변경 | PR |
 |------|------|-----|
-| `cores/insight_image.py` · `cores/llm/features/forecast_stats.py` | 인사이트 이미지: 예측 밴드·트랙레코드 분포·통화·캡션·마커 | #377, #364, #365, #369 |
-| `cores/analysis.py` · `cores/buy_quality.py` (비전) | 오닐 차트패턴·비전 매수품질 S3(SHADOW)·보고서 soft 삽입 | #356~#359, #362, #363, #385 |
-| `tools/loop_c_fill_chaser.py` · `trading/domestic_stock_trading.py` | Loop C LIVE: 체결우선 cross·KR tick 스냅·.env 로딩 | #370, #378, #381, #384 |
-| `tools/loop_publish.py` · `portfolio_broadcast.py` | Loop A/B 매도 Redis+GCP 발행, 포트폴리오 메시지 debounce | #382, #379, #375, #376 |
-| `reentry_cooldown.py` · `tracking/journal.py` | 재진입 쿨다운 게이트 + 일지 churn guard | #380, #396 |
+| `cores/insight_image.py` · `cores/llm/features/forecast_stats.py` | 인사이트 이미지: 예측 밴드·트랙레코드·통화·캡션·마커·레이아웃 | #377, #362~#365, #369, #371 |
+| `cores/analysis.py` · `cores/buy_quality.py` | 비전 배관(S1~S3)·매수품질 SHADOW 로깅 복구·보고서 soft 삽입 | #356~#359, #377, #385 |
+| `cores/stock_chart.py` · 비전 차트 | 오닐 일봉/주봉 차트 + RS선 + 멀티이미지(US 포함) | #359, #363 |
+| `tools/loop_c_fill_chaser.py` · `trading/domestic_stock_trading.py` | Loop C LIVE: 체결우선 cross·KR tick 스냅·.env·검증로깅 | #370, #378, #381, #384 |
+| `tools/loop_publish.py` · `portfolio_broadcast.py` | Loop A/B 매도 발행, 포트폴리오 메시지 1회/debounce | #382, #372, #375, #376, #379 |
+| `reentry_cooldown.py` · `tracking/journal.py` | 재진입 쿨다운 + 일지 churn guard | #380, #396 |
 | `examples/messaging/gcp_pubsub_subscriber_example.py` · `tools/subscriber_healthcheck.py` | 구독자 importlib/자가점검 + 헬스 모니터·오탐 정정 | #395, #397, #398 |
-| `pdf_converter.py` · `prism-us/us_stock_analysis_orchestrator.py` | 다국어 PDF 단일 브라우저 재사용 | #386, #387 |
-| `stock_tracking_agent.py` · `tracking/helpers.py` | 보유종목 매수 시나리오 LLM 사전스킵(피라미딩 보존) | #399 |
-| 14파일 · `cores/chatgpt_proxy/api_translator.py` | 모델 `gpt-5.4-nano` 마이그레이션 + 프록시 remap | #388 |
+| `pdf_converter.py` · `prism-us/us_stock_analysis_orchestrator.py` | 다국어 PDF 단일 브라우저 | #386, #387 |
+| `stock_tracking_agent.py` · `tracking/helpers.py` | 보유종목 매수 LLM 사전스킵(피라미딩 보존) | #399 |
+| 14파일 · `cores/chatgpt_proxy/api_translator.py` | `gpt-5.4-nano` 마이그레이션 + remap | #388 |
 | `.codacy.yaml` · 다수 | Codacy 실이슈 정리·테스트 제외 | #389~#393 |
 | `telegram_ai_bot.py` | `/report` 1일 한도 제거(#307) | #394 |
-| `tools/feature_status.py` (신규) | 기능 상태 점검 | #360, #366~#368 |
-| `tests/**` | 인사이트·루프·쿨다운·모니터·피라미딩 회귀 테스트 다수 | 전반 |
+| `tools/feature_status.py` (신규) · `docs/` | 기능 상태 도구 + 플래그 레지스트리/자동승격 정책 | #360, #366~#368, #374 |
+| `tests/**` | 인사이트/forecast/루프/쿨다운/모니터/피라미딩 회귀 테스트 다수 | 전반 |
 
 ---
 
@@ -121,18 +145,19 @@ cd /root/prism-insight
 git pull --ff-only origin main
 ```
 
-> **기본 동작 불변**: 인사이트 이미지(`PRISM_FEATURE_INSIGHT_IMAGE`), 비전(`PRISM_FEATURE_VISION`), 보고서 삽입(`PRISM_FEATURE_VISION_IN_REPORT`), 루프 LIVE(`FILL_CHASER_LIVE` 등), 쿨다운(`REENTRY_COOLDOWN_LIVE`)은 모두 env 게이트입니다. 미설정 시 종전 동작 유지.
+> **기본 동작 불변(전부 env 게이트)**: 인사이트 이미지(`PRISM_FEATURE_INSIGHT_IMAGE`)·비전(`PRISM_FEATURE_VISION`)·보고서 삽입(`PRISM_FEATURE_VISION_IN_REPORT`)·루프 LIVE(`FILL_CHASER_LIVE` 등)·쿨다운(`REENTRY_COOLDOWN_LIVE`)은 미설정 시 종전 동작 유지.
 >
-> **env 키 리네임**: `LOOP_A_*→HARDSTOP_*`, `LOOP_B_*→TREND_EXIT_*`, `LOOP_C_*→FILL_CHASER_*` (구 키 alias 유효).
+> **env 키 리네임**: `LOOP_A_*→HARDSTOP_*`, `LOOP_B_*→TREND_EXIT_*`, `LOOP_C_*→FILL_CHASER_*` (구 키 alias 유효, deprecation 경고만). 런타임 상태는 `tools/feature_status.py`로 확인.
 
 ---
 
 ## 알려진 제한사항
 
-1. **비전 매수품질 S3 = SHADOW**: 비전 `would_buy` 게이트는 로그 전용으로, 실제 매수결정·텔레그램 메시지에 반영되지 않습니다(정보용 품질점수만 이미지 캡션에 표시).
-2. **루프/쿨다운 LIVE는 단계 검증 기반**: Loop C는 실 amend/cancel 수락 검증, 쿨다운은 SHADOW 오탐 0 확인 후 전환했습니다. env 게이트로 롤백 가능.
-3. **다국어 PDF 단축효과 제한적**: 단일 브라우저 재사용은 정상 동작하나, 실측상 배치 시간은 크게 줄지 않았습니다(병목이 브라우저 launch가 아님). 추가 진단 대상.
-4. **#399 매수 LLM 스킵**은 분석 픽이 보유종목과 겹칠 때만 효과가 있습니다(상시 단축 아님).
+1. **비전 매수품질 S3 = SHADOW**: `would_buy` 게이트는 로그 전용으로 매매 미반영(품질점수는 이미지 캡션 정보 표시).
+2. **루프/쿨다운 LIVE는 단계 검증 기반**: Loop C는 실 amend/cancel 수락 검증, 쿨다운은 SHADOW 오탐 0 확인 후 전환. env 게이트로 롤백 가능.
+3. **다국어 PDF 단축효과 제한적**: 단일 브라우저는 정상 동작하나 실측상 배치 시간이 크게 줄지 않음(병목이 브라우저 launch가 아님) — 추가 진단 대상.
+4. **#399 매수 LLM 스킵**은 분석 픽이 보유종목과 겹칠 때만 효과(상시 단축 아님).
+5. **Codacy 분모(LOC) 주의**: 테스트/일부 디렉토리가 분석에서 빠져 있어, 등급(B)과 별개로 해당 영역은 품질 사각지대로 남음.
 
 ---
 
@@ -150,7 +175,7 @@ git pull --ff-only origin main
 종목 분석을 한 장의 인포그래픽으로 발행합니다. 단순 차트가 아니라
 '앞으로 어떻게 될지(예측 밴드)'와 '과거 비슷한 신호가 실제로 어땠는지
 (트랙레코드 분포)'를 함께 보여줍니다. 통화기호(₩/$), 목표·손절 박스,
-매매 지점 마커, 차트 패턴까지 한눈에.
+매매 지점 마커, 오닐 차트 패턴(일봉·주봉+상대강도선)까지 한눈에.
 
 🛡️ 2) 실시간 리스크 루프 LIVE 전환
 배치 사이 공백을 메우는 Loop A/B/C 중 미체결 추격(Loop C)을 실거래로
@@ -158,7 +183,7 @@ git pull --ff-only origin main
 정확히 전파하도록 정비했습니다.
 
 🔁 3) 손절후 재매수(과매매) 2중 방어
-손실로 판 종목을 곧바로 다시 사는 과매매를, '재진입 쿨다운(24h 차단)'과
+손실로 판 종목을 곧바로 다시 사는 과매매를 '재진입 쿨다운(24h 차단)'과
 '매매일지 감점' 두 겹으로 막습니다.
 
 ⚙️ 4) 실매매 미러 안정화 · 성능 · 품질
@@ -182,7 +207,8 @@ version, and shows each analysis as a single, readable image.
 Each stock analysis is published as one infographic — not just a chart, but
 "what may happen next" (a forecast band) alongside "how similar past signals
 actually played out" (a track-record distribution). Currency symbols (₩/$),
-target/stop boxes, trade markers, and chart patterns at a glance.
+target/stop boxes, trade markers, and O'Neil chart patterns (daily/weekly +
+relative-strength line) at a glance.
 
 🛡️ 2) Real-time risk loops go LIVE
 Among Loop A/B/C that fill the gaps between batches, the unfilled-order
