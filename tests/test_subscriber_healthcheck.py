@@ -258,6 +258,21 @@ def test_all_benign_zero_success_no_critical(tmp_path, tmp_state, mock_send, moc
     mock_send.assert_not_called()
 
 
+def test_order_window_and_drift_no_critical(tmp_path, tmp_state, mock_send, mock_alive):
+    # Real 2026-06-30 case: a late-batch sell hits portfolio drift and a buy lands
+    # in the KST 15:30–16:00 dead zone ("Order window unavailable"). Both are
+    # deterministic both-sides timing/operational rejections, so zero successes
+    # here must NOT raise CRITICAL.
+    log = _make_log(
+        f"{_ts()} INFO 🚀 Executing sell order: 🇰🇷 삼성E&A(028050)",
+        f"{_ts()} ERROR ❌ Actual sell failed: 삼성E&A(028050) - Stock 028050 not found in portfolio",
+        f"{_ts()} INFO 🚀 Executing buy order: 🇰🇷 이오테크닉스(039030)",
+        f"{_ts()} ERROR ❌ Actual buy failed: 이오테크닉스(039030) - Buy failed: Order window unavailable in KST (reserved orders are accepted 16:00~23:40 and 00:10~07:30)",
+    )
+    mock_send = _run(log, tmp_path, tmp_state, mock_send)
+    mock_send.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # TEST: process down -> DOWN alert
 # ---------------------------------------------------------------------------

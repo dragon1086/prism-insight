@@ -169,9 +169,12 @@ _ACTUAL_FAIL_RE = re.compile(r"(?:Actual|US) (?:buy|sell)(?: execution)? failed"
 #     (portfolio drift) — nothing to sell, correct no-op.
 #   - "quantity is 0": per-trade budget too small for even one share.
 #   - "주문가능금액": insufficient buying power (KIS APBK0952 등) — account out of cash.
+#   - "Order window unavailable": signal arrived in the post-close / pre-reserved-window
+#     dead zone (KST 15:30–16:00). The publisher hits the SAME KIS window rule and also
+#     fails, so it is a deterministic both-sides timing limitation, not a subscriber fault.
 # These are counted separately (benign_rejections) for visibility but excluded from
 # the failure thresholds and from the zero-success fault check.
-_BENIGN_FAIL_RE = re.compile(r"not found in portfolio|quantity is 0|주문가능금액")
+_BENIGN_FAIL_RE = re.compile(r"not found in portfolio|quantity is 0|주문가능금액|Order window unavailable")
 
 
 def _resolve_log_path(log_path: str | None) -> Path | None:
