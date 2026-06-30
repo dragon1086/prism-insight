@@ -163,6 +163,15 @@ _BUY_SUCCESS_RE = re.compile(r"(?:Actual|US) buy successful")
 _SELL_SUCCESS_RE = re.compile(r"(?:Actual|US) sell successful")
 _EXEC_ERROR_RE = re.compile(r"Error during buy execution|Error during sell execution|Actual")
 _ACTUAL_FAIL_RE = re.compile(r"(?:Actual|US) (?:buy|sell)(?: execution)? failed")
+# Benign business rejections — expected outcomes, NOT system faults, so they must
+# not trip WARN/CRITICAL (they only cause alert fatigue):
+#   - "not found in portfolio": sell signal for a stock the subscriber doesn't hold
+#     (portfolio drift) — nothing to sell, correct no-op.
+#   - "quantity is 0": per-trade budget too small for even one share.
+#   - "주문가능금액": insufficient buying power (KIS APBK0952 등) — account out of cash.
+# These are counted separately (benign_rejections) for visibility but excluded from
+# the failure thresholds and from the zero-success fault check.
+_BENIGN_FAIL_RE = re.compile(r"not found in portfolio|quantity is 0|주문가능금액")
 
 
 def _resolve_log_path(log_path: str | None) -> Path | None:
@@ -205,6 +214,7 @@ def _scan_log(log_path: Path, window_min: int, fail_threshold: int) -> dict:
         "sell_successes": 0,
         "exec_errors": 0,
         "actual_failures": 0,
+        "benign_rejections": 0,
         "lines_scanned": 0,
     }
     try:
@@ -225,7 +235,10 @@ def _scan_log(log_path: Path, window_min: int, fail_threshold: int) -> dict:
                 if _SELL_SUCCESS_RE.search(line):
                     counts["sell_successes"] += 1
                 if _ACTUAL_FAIL_RE.search(line):
-                    counts["actual_failures"] += 1
+                    if _BENIGN_FAIL_RE.search(line):
+                        counts["benign_rejections"] += 1
+                    else:
+                        counts["actual_failures"] += 1
                 if _EXEC_ERROR_RE.search(line) and "Error during" in line:
                     counts["exec_errors"] += 1
     except Exception as exc:
@@ -297,7 +310,13 @@ def run_check(
         key = "zero_success"
         total_attempts = counts["buy_attempts"] + counts["sell_attempts"]
         total_successes = counts["buy_successes"] + counts["sell_successes"]
-        zero_success_critical = total_attempts > 0 and total_successes == 0
+        # Benign rejections (no buying power / drift / sub-share budget) are not a
+        # fault: an account that is simply out of cash will log attempts with zero
+        # successes, but that is an operational state, not a broken subscriber. Only
+        # flag zero-success when ≥1 attempt was NOT explained by a benign rejection
+        # (i.e. a real failure or an unexplained/silent no-fill).
+        non_benign_attempts = total_attempts - counts["benign_rejections"]
+        zero_success_critical = total_successes == 0 and non_benign_attempts > 0
         if zero_success_critical:
             if _should_alert(state, key, realert_min):
                 msg = (
@@ -324,7 +343,8 @@ def run_check(
                 msg = (
                     f"{prefix} ⚠️ WARN: execution failures in last {window_min} min: "
                     f"actual_failures={counts['actual_failures']}, exec_errors={counts['exec_errors']} "
-                    f"(threshold={fail_threshold}). Log: {resolved_log}"
+                    f"(benign_rejections={counts['benign_rejections']} excluded; "
+                    f"threshold={fail_threshold}). Log: {resolved_log}"
                 )
                 send_alert(msg, dry_run=dry_run)
                 _record_alert(state, key)
@@ -340,7 +360,7 @@ def run_check(
     status = "DOWN" if not alive else "ALIVE"
     print(
         f"[subscriber-health] status={status} alerts={alerts_sent} clears={clears_sent} "
-        + (f"log_lines={counts['lines_scanned']}" if resolved_log else "no_log")
+        + (f"log_lines={counts['lines_scanned']} benign={counts['benign_rejections']}" if resolved_log else "no_log")
     )
     return 0
 
