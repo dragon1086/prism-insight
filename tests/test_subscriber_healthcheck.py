@@ -210,8 +210,30 @@ def test_us_success_counted_no_alert(tmp_path, tmp_state, mock_send, mock_alive)
 
 
 def test_us_failures_over_threshold_warn(tmp_path, tmp_state, mock_send, mock_alive):
-    # 1 US success (so zero_success does not fire) + 3 US failures (meets
+    # 1 US success (so zero_success does not fire) + 3 REAL US failures (meets
     # threshold) => WARN. Old regex counted neither => would mis-fire CRITICAL.
+    log = _make_log(
+        f"{_ts()} INFO 🚀 Executing buy order: 🇺🇸 Alphabet Inc.(GOOGL)",
+        f"{_ts()} INFO ✅ 🇺🇸 US buy successful: Alphabet Inc.(GOOGL) - Buy completed: 2 shares",
+        f"{_ts()} ERROR ❌ 🇺🇸 US buy failed: Apple Inc.(AAPL) - Buy order failed: APBK1999 시스템 오류",
+        f"{_ts()} ERROR ❌ 🇺🇸 US sell failed: Tesla, Inc.(TSLA) - Connection timeout to KIS",
+        f"{_ts()} ERROR ❌ 🇺🇸 US buy failed: Amazon.com, Inc.(AMZN) - Unexpected broker response",
+    )
+    mock_send = _run(log, tmp_path, tmp_state, mock_send, fail_threshold=3)
+    mock_send.assert_called_once()
+    assert "WARN" in mock_send.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# TEST: benign business rejections must NOT alert (alert-fatigue guard)
+#   "not found in portfolio" (drift), "quantity is 0" (sub-share budget),
+#   "주문가능금액" (no buying power) are expected outcomes, not faults. With a
+#   success present (so zero_success is moot) AND in an all-rejection batch.
+# ---------------------------------------------------------------------------
+
+def test_benign_rejections_no_alert(tmp_path, tmp_state, mock_send, mock_alive):
+    # 1 success + 3 benign rejections meeting the numeric threshold => still NO
+    # WARN, because benign rejections are excluded from actual_failures.
     log = _make_log(
         f"{_ts()} INFO 🚀 Executing buy order: 🇺🇸 Alphabet Inc.(GOOGL)",
         f"{_ts()} INFO ✅ 🇺🇸 US buy successful: Alphabet Inc.(GOOGL) - Buy completed: 2 shares",
@@ -220,8 +242,20 @@ def test_us_failures_over_threshold_warn(tmp_path, tmp_state, mock_send, mock_al
         f"{_ts()} ERROR ❌ 🇺🇸 US buy failed: NVIDIA Corporation(NVDA) - APBK0952 주문가능금액을 초과",
     )
     mock_send = _run(log, tmp_path, tmp_state, mock_send, fail_threshold=3)
-    mock_send.assert_called_once()
-    assert "WARN" in mock_send.call_args[0][0]
+    mock_send.assert_not_called()
+
+
+def test_all_benign_zero_success_no_critical(tmp_path, tmp_state, mock_send, mock_alive):
+    # Account out of cash: every buy attempt benign-rejected, zero successes.
+    # This is an operational state, NOT a broken subscriber => no CRITICAL.
+    log = _make_log(
+        f"{_ts()} INFO 🚀 Executing buy order: 🇺🇸 Micron Technology, Inc.(MU)",
+        f"{_ts()} ERROR ❌ 🇺🇸 US buy failed: Micron Technology, Inc.(MU) - Buy quantity is 0",
+        f"{_ts()} INFO 🚀 Executing buy order: 🇺🇸 NVIDIA Corporation(NVDA)",
+        f"{_ts()} ERROR ❌ 🇺🇸 US buy failed: NVIDIA Corporation(NVDA) - APBK0952 주문가능금액을 초과",
+    )
+    mock_send = _run(log, tmp_path, tmp_state, mock_send)
+    mock_send.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
