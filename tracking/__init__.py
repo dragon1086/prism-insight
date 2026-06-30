@@ -23,6 +23,7 @@ from tracking.helpers import (
     default_scenario,
     get_existing_position_for_ticker,
     evaluate_pyramid_add_gate,
+    pyramid_add_possible_ignoring_regime,
     compute_fractional_sell_quantity,
 )
 from tracking.trading_ops import (
@@ -54,6 +55,7 @@ __all__ = [
     "default_scenario",
     "get_existing_position_for_ticker",
     "evaluate_pyramid_add_gate",
+    "pyramid_add_possible_ignoring_regime",
     "compute_fractional_sell_quantity",
     # Trading ops
     "analyze_sell_decision",

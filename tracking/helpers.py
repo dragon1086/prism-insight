@@ -305,6 +305,35 @@ def _regime_label(market_condition: str | None) -> str:
     return text
 
 
+def pyramid_add_possible_ignoring_regime(
+    existing_avg_buy_price: float,
+    current_price: float,
+    existing_row_count: int,
+    min_profit_pct: float = PYRAMID_MIN_PROFIT_PCT,
+    max_rows: int = PYRAMID_MAX_ROWS,
+) -> Tuple[bool, str]:
+    """Regime-independent necessary conditions for a pyramiding add (#288).
+
+    These are exactly conditions (2) row-count and (3) aggregate-profit of
+    ``evaluate_pyramid_add_gate`` — the parts that need NO LLM output (computed
+    from the DB position + current price only). If this returns False, the full
+    gate can never allow an add regardless of regime, so a held stock can be
+    skipped BEFORE its per-stock scenario LLM runs, with the same end result.
+    Single source of truth: ``evaluate_pyramid_add_gate`` delegates here.
+    """
+    if existing_row_count >= max_rows:
+        return False, f"row count {existing_row_count} >= max {max_rows}"
+
+    if not existing_avg_buy_price or existing_avg_buy_price <= 0 or not current_price or current_price <= 0:
+        return False, "insufficient price data for profit check"
+
+    profit_pct = (current_price - existing_avg_buy_price) / existing_avg_buy_price * 100.0
+    if profit_pct < min_profit_pct:
+        return False, f"profit {profit_pct:.2f}% < required {min_profit_pct:.1f}%"
+
+    return True, f"profit={profit_pct:.2f}%, rows={existing_row_count}"
+
+
 def evaluate_pyramid_add_gate(
     market_condition: str | None,
     existing_avg_buy_price: float,
@@ -327,17 +356,15 @@ def evaluate_pyramid_add_gate(
     if regime not in PYRAMID_ALLOWED_REGIMES:
         return False, f"regime '{regime or 'unknown'}' not in {PYRAMID_ALLOWED_REGIMES}"
 
-    if existing_row_count >= max_rows:
-        return False, f"row count {existing_row_count} >= max {max_rows}"
+    # Conditions (2) and (3) are regime-independent — delegate so the cheap
+    # pre-gate that skips the scenario LLM stays in lock-step with this gate.
+    ok, reason = pyramid_add_possible_ignoring_regime(
+        existing_avg_buy_price, current_price, existing_row_count, min_profit_pct, max_rows
+    )
+    if not ok:
+        return False, reason
 
-    if not existing_avg_buy_price or existing_avg_buy_price <= 0 or not current_price or current_price <= 0:
-        return False, "insufficient price data for profit check"
-
-    profit_pct = (current_price - existing_avg_buy_price) / existing_avg_buy_price * 100.0
-    if profit_pct < min_profit_pct:
-        return False, f"profit {profit_pct:.2f}% < required {min_profit_pct:.1f}%"
-
-    return True, f"add allowed (regime={regime}, profit={profit_pct:.2f}%, rows={existing_row_count})"
+    return True, f"add allowed (regime={regime}, {reason})"
 
 
 def compute_fractional_sell_quantity(total_quantity: int, remaining_rows: int) -> int:

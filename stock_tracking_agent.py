@@ -77,6 +77,7 @@ from tracking import (
     default_scenario,
     get_existing_position_for_ticker,
     evaluate_pyramid_add_gate,
+    pyramid_add_possible_ignoring_regime,
     compute_fractional_sell_quantity,
     JournalManager,
     CompressionManager,
@@ -516,6 +517,46 @@ class StockTrackingAgent:
         Returns:
             Dict: Trading decision result
         """
+        # Cheap pre-gate: skip the per-stock scenario LLM for a held stock that
+        # cannot pyramid-add (#288) regardless of regime. The full add-gate requires
+        # (row_count < max) AND (profit >= min) — both regime-independent and computed
+        # from DB + price only. When they fail, the full path returns "Already holding"
+        # anyway, so we return that here without paying for the ~2.5min scenario LLM.
+        # Winners with room fall through to full analysis (the LLM supplies
+        # market_condition for the regime check), so pyramiding is fully preserved.
+        # Fail-open: any error in the cheap check falls back to full analysis.
+        try:
+            pre_ticker, pre_company = await self._extract_ticker_info(pdf_report_path)
+        except Exception:
+            pre_ticker, pre_company = None, None
+        if pre_ticker and await self._is_ticker_in_holdings(pre_ticker):
+            try:
+                account_key, _ = self._account_scope()
+                existing = get_existing_position_for_ticker(self.cursor, pre_ticker, account_key=account_key)
+                pre_price = await self._get_current_stock_price(pre_ticker)
+                can_add, why = pyramid_add_possible_ignoring_regime(
+                    existing_avg_buy_price=existing.get("avg_buy_price", 0.0),
+                    current_price=pre_price,
+                    existing_row_count=existing.get("row_count", 0),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"{pre_ticker} pyramid pre-gate check failed ({e}); running full analysis"
+                )
+                can_add = True  # fail-open: never skip analysis on uncertainty
+            if not can_add:
+                logger.info(
+                    f"{pre_ticker}({pre_company}) already in holdings — pyramid pre-gate "
+                    f"blocked ({why}); skipping scenario LLM"
+                )
+                return {
+                    "success": True,
+                    "decision": "Already holding",
+                    "ticker": pre_ticker,
+                    "company_name": pre_company,
+                    "current_price": pre_price,
+                }
+
         analysis_result = await self._analyze_report_core(pdf_report_path)
         if not analysis_result.get("success", False):
             return analysis_result
