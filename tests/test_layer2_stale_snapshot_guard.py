@@ -48,6 +48,7 @@ get_us_existing_position_for_ticker = _us_db_schema.get_us_existing_position_for
 TABLE_US_STOCK_HOLDINGS = _us_db_schema.TABLE_US_STOCK_HOLDINGS
 
 _AGENT_PATH = os.path.join(PROJECT_ROOT, "prism-us", "us_stock_tracking_agent.py")
+_KR_AGENT_PATH = os.path.join(PROJECT_ROOT, "stock_tracking_agent.py")
 
 _PASS = 0
 _FAIL = 0
@@ -182,11 +183,37 @@ def test_guard_present_in_source():
           "guard runs BEFORE the sell-signal publish (kills duplicate at source)")
 
 
+# ── Test 5: sell_stock chokepoint guard wired into BOTH agents ────────────────
+def test_sell_stock_chokepoint_guard():
+    print("\n[Test 5] sell_stock chokepoint guard (KR + US) — covers loops too")
+    for label, path, marker, insert_tbl in (
+        ("KR", _KR_AGENT_PATH, "[SELL-GUARD][KR]", "INSERT INTO trading_history"),
+        ("US", _AGENT_PATH, "[SELL-GUARD][US]", "INSERT INTO us_trading_history"),
+    ):
+        with open(path, "r", encoding="utf-8") as fh:
+            src = fh.read()
+        sell_idx = src.find("async def sell_stock(")
+        check(sell_idx > 0, f"{label}: sell_stock defined")
+        guard_idx = src.find(marker)
+        insert_idx = src.find(insert_tbl, sell_idx)
+        check(guard_idx > sell_idx, f"{label}: guard marker inside sell_stock")
+        # The guard MUST run BEFORE the trading_history INSERT, else a phantom
+        # sale row is written for an already-closed position.
+        check(0 < guard_idx < insert_idx,
+              f"{label}: guard precedes trading_history INSERT (no phantom P&L row)")
+        # And it must abort via `return False` so callers (orchestrator + loops)
+        # skip the real order + signal publish.
+        seg = src[guard_idx - 400:insert_idx]
+        check("return False" in seg, f"{label}: guard aborts via return False")
+        check('row_count", 0) == 0' in seg, f"{label}: guard predicate row_count == 0")
+
+
 def _run():
     test_guard_detects_concurrent_close()
     test_guard_is_account_scoped()
     test_guard_multirow_still_held()
     test_guard_present_in_source()
+    test_sell_stock_chokepoint_guard()
     print(f"\n===== RESULT: {_PASS} passed, {_FAIL} failed =====")
     return _FAIL
 
