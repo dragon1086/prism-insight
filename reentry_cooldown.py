@@ -90,6 +90,21 @@ def _parse_dt(s: str) -> Optional[datetime]:
         return None
 
 
+# Fully static, pre-written queries (no runtime SQL string construction) keyed by
+# (table, account_scoped, want_exit_kind). Selecting a literal by table name is
+# injection-proof by construction — the table can only ever be one we authored.
+_LAST_SELL_SQL = {
+    ("trading_history", False, True): "SELECT sell_date, profit_rate, exit_kind FROM trading_history WHERE ticker=? AND sell_date IS NOT NULL AND sell_date<>'' ORDER BY sell_date DESC LIMIT 1",
+    ("trading_history", True, True): "SELECT sell_date, profit_rate, exit_kind FROM trading_history WHERE ticker=? AND sell_date IS NOT NULL AND sell_date<>'' AND account_key=? ORDER BY sell_date DESC LIMIT 1",
+    ("trading_history", False, False): "SELECT sell_date, profit_rate FROM trading_history WHERE ticker=? AND sell_date IS NOT NULL AND sell_date<>'' ORDER BY sell_date DESC LIMIT 1",
+    ("trading_history", True, False): "SELECT sell_date, profit_rate FROM trading_history WHERE ticker=? AND sell_date IS NOT NULL AND sell_date<>'' AND account_key=? ORDER BY sell_date DESC LIMIT 1",
+    ("us_trading_history", False, True): "SELECT sell_date, profit_rate, exit_kind FROM us_trading_history WHERE ticker=? AND sell_date IS NOT NULL AND sell_date<>'' ORDER BY sell_date DESC LIMIT 1",
+    ("us_trading_history", True, True): "SELECT sell_date, profit_rate, exit_kind FROM us_trading_history WHERE ticker=? AND sell_date IS NOT NULL AND sell_date<>'' AND account_key=? ORDER BY sell_date DESC LIMIT 1",
+    ("us_trading_history", False, False): "SELECT sell_date, profit_rate FROM us_trading_history WHERE ticker=? AND sell_date IS NOT NULL AND sell_date<>'' ORDER BY sell_date DESC LIMIT 1",
+    ("us_trading_history", True, False): "SELECT sell_date, profit_rate FROM us_trading_history WHERE ticker=? AND sell_date IS NOT NULL AND sell_date<>'' AND account_key=? ORDER BY sell_date DESC LIMIT 1",
+}
+
+
 def _query_last_sell(path: str, table: str, ticker: str,
                      account_key: Optional[str]) -> Optional[tuple]:
     """Most recent completed sell -> (sell_date, profit_rate, exit_kind) or None.
@@ -97,32 +112,19 @@ def _query_last_sell(path: str, table: str, ticker: str,
     exit_kind is None when the column does not exist yet (DB not migrated) so
     callers transparently fall back to the legacy P&L-sign behaviour. Fail-open.
     """
-    where = "WHERE ticker=? AND sell_date IS NOT NULL AND sell_date<>'' "
-    params = [ticker]
-    if account_key:
-        where += "AND account_key=? "
-        params.append(account_key)
-    tail = "ORDER BY sell_date DESC LIMIT 1"
-    # `table` is always one of our own fixed constants (never user input) and every
-    # value is bound via ? placeholders; whitelist it so the interpolation is
-    # provably injection-safe.
-    if table not in _TABLE.values():
-        return None
+    scoped = bool(account_key)
+    if (table, scoped, True) not in _LAST_SELL_SQL:
+        return None  # table is always an internal constant; defensive guard
+    params = [ticker, account_key] if scoped else [ticker]
     try:
         conn = sqlite3.connect(path, timeout=5)
         try:
             try:
-                row = conn.execute(
-                    f"SELECT sell_date, profit_rate, exit_kind FROM {table} {where}{tail}",  # nosec B608
-                    params,
-                ).fetchone()
+                row = conn.execute(_LAST_SELL_SQL[(table, scoped, True)], params).fetchone()
                 return (row[0], row[1], row[2]) if row else None
             except sqlite3.OperationalError:
                 # exit_kind column absent (pre-migration) -> legacy fallback.
-                row = conn.execute(
-                    f"SELECT sell_date, profit_rate FROM {table} {where}{tail}",  # nosec B608
-                    params,
-                ).fetchone()
+                row = conn.execute(_LAST_SELL_SQL[(table, scoped, False)], params).fetchone()
                 return (row[0], row[1], None) if row else None
         finally:
             conn.close()
