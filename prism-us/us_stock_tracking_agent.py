@@ -2018,13 +2018,19 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             logger.error(f"{ticker} US holding decision delete failed: {str(e)}")
             return False
 
-    async def sell_stock(self, stock_data: Dict[str, Any], sell_reason: str) -> bool:
+    async def sell_stock(self, stock_data: Dict[str, Any], sell_reason: str,
+                         exit_kind: Optional[str] = None) -> bool:
         """
         Process stock sale.
 
         Args:
             stock_data: Stock information to sell
             sell_reason: Sell reason
+            exit_kind: Optional explicit exit classification (stop | trend_exit |
+                target | ai). Loops pass it deterministically (loop_a=stop,
+                loop_b=trend_exit); when None it is inferred from sell_reason. Stored
+                in us_trading_history so the re-entry cooldown treats a stop-out at a
+                marginal profit as churn-risk.
 
         Returns:
             bool: Sell success status
@@ -2075,18 +2081,25 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             holding_days = (datetime.now() - buy_datetime).days
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+            # Classify the exit (stop/trend_exit/target/ai) for the churn guard.
+            try:
+                from reentry_cooldown import classify_exit_kind
+                _exit_kind = classify_exit_kind(sell_reason, exit_kind)
+            except Exception:
+                _exit_kind = exit_kind  # fail-open: store caller hint or None
+
             # Add to trading history
             self.cursor.execute(
                 """
                 INSERT INTO us_trading_history
                 (account_key, account_name, ticker, company_name, buy_price, buy_date, sell_price, sell_date,
-                 profit_rate, holding_days, scenario, trigger_type, trigger_mode, sector)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 profit_rate, holding_days, scenario, trigger_type, trigger_mode, sector, exit_kind)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account_key, account_name, ticker, company_name, buy_price, buy_date,
                     current_price, now, profit_rate, holding_days,
-                    scenario_json, trigger_type, trigger_mode, sector
+                    scenario_json, trigger_type, trigger_mode, sector, _exit_kind
                 )
             )
 
@@ -2708,17 +2721,21 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     _cd_block = False
                     if normalized_decision == "entry" and not is_add:
                         try:
-                            from reentry_cooldown import reentry_block, COOLDOWN_LIVE
+                            from reentry_cooldown import reentry_block, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE
                             _cd = reentry_block("US", ticker)
                         except Exception:
-                            _cd, COOLDOWN_LIVE = None, False
+                            _cd, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE = None, False, False
                         if _cd:
+                            # A stop/trend-exit block that is NOT also a loss is the new
+                            # exit-kind branch -> SHADOW unless COOLDOWN_RISK_EXIT_LIVE.
+                            _risk_only = bool(_cd.get("risk_exit")) and not _cd.get("after_loss")
+                            _enforce = COOLDOWN_LIVE and (COOLDOWN_RISK_EXIT_LIVE or not _risk_only)
                             logger.warning(
-                                "[REENTRY_COOLDOWN][%s] %s ticker=%s last_sell=%s ret=%.1f%% gap=%.1fh<%sh after_loss=%s",
-                                "LIVE" if COOLDOWN_LIVE else "SHADOW", _cd["action"], ticker,
+                                "[REENTRY_COOLDOWN][%s] %s ticker=%s last_sell=%s ret=%.1f%% gap=%.1fh<%sh after_loss=%s exit_kind=%s risk_only=%s",
+                                "LIVE" if _enforce else "SHADOW", _cd["action"], ticker,
                                 _cd["last_sell"], _cd["last_ret"], _cd["gap_hours"],
-                                _cd["window_hours"], _cd["after_loss"])
-                            _cd_block = COOLDOWN_LIVE
+                                _cd["window_hours"], _cd["after_loss"], _cd.get("exit_kind"), _risk_only)
+                            _cd_block = _enforce
 
                     if normalized_decision == "entry" and adjusted_score >= min_score and sector_diverse and not _cd_block:
                         # is_add => pyramiding additional independent row (#288)

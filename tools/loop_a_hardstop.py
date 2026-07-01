@@ -377,7 +377,10 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             agent["ref"] = await _make_agent(market)
         ag = agent["ref"]
         logger.warning("[LIVE][%s] SELLING %s reason=%s", market, ticker, reason)
-        sim_ok = await ag.sell_stock(stock_data, reason)
+        # Loop A is the catastrophic hard-stop => always a 'stop' exit (recorded in
+        # trading_history.exit_kind so the re-entry cooldown treats it as churn-risk
+        # even if it tags out at a marginal profit).
+        sim_ok = await ag.sell_stock(stock_data, reason, exit_kind="stop")
         if not sim_ok:
             logger.error("[%s] %s sell_stock (sim) failed -> aborting, no KIS order", market, ticker)
             release_lock(conn, ticker, market, run_id, new_state="HOLDING")

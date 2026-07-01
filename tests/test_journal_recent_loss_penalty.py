@@ -104,7 +104,7 @@ class TestJournalRecentLossPenaltyKR(unittest.TestCase):
         loss_info = {"gap_hours": 1.3, "last_ret": -7.5, "last_sell": "2026-06-30 10:00:00"}
         with patch.dict(sys.modules, {}):
             import reentry_cooldown
-            with patch.object(reentry_cooldown, "recent_loss", return_value=loss_info):
+            with patch.object(reentry_cooldown, "recent_risk_exit", return_value=loss_info):
                 # Inject a sector bonus: insert 3 profitable trades for sector "Tech"
                 for i in range(3):
                     self.cur.execute(
@@ -130,7 +130,7 @@ class TestJournalRecentLossPenaltyKR(unittest.TestCase):
         jm = self._get_jm()
 
         import reentry_cooldown
-        with patch.object(reentry_cooldown, "recent_loss", return_value=None):
+        with patch.object(reentry_cooldown, "recent_risk_exit", return_value=None):
             adj, reasons = jm.get_score_adjustment("AAPL")
 
         self.assertEqual(adj, 0)
@@ -144,7 +144,7 @@ class TestJournalRecentLossPenaltyKR(unittest.TestCase):
 
         import reentry_cooldown
         loss_info = {"gap_hours": 1.0, "last_ret": -5.0, "last_sell": "2026-06-30 10:00:00"}
-        with patch.object(reentry_cooldown, "recent_loss", return_value=loss_info):
+        with patch.object(reentry_cooldown, "recent_risk_exit", return_value=loss_info):
             adj, reasons = jm.get_score_adjustment("MU")
 
         self.assertEqual(adj, 0)
@@ -158,7 +158,7 @@ class TestJournalRecentLossPenaltyKR(unittest.TestCase):
 
         import reentry_cooldown
         # recent_loss returns None when the sell was a win
-        with patch.object(reentry_cooldown, "recent_loss", return_value=None):
+        with patch.object(reentry_cooldown, "recent_risk_exit", return_value=None):
             adj, reasons = jm.get_score_adjustment("NVDA")
 
         self.assertEqual(adj, 0)
@@ -212,7 +212,7 @@ class TestJournalRecentLossPenaltyKR(unittest.TestCase):
         import reentry_cooldown
         # gap_hours=5 > window=1 -> no penalty
         loss_info = {"gap_hours": 5.0, "last_ret": -7.5, "last_sell": "2026-06-30 05:00:00"}
-        with patch.object(reentry_cooldown, "recent_loss", return_value=loss_info):
+        with patch.object(reentry_cooldown, "recent_risk_exit", return_value=loss_info):
             adj, reasons = jm.get_score_adjustment("MU")
 
         self.assertEqual(adj, 0)

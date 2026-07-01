@@ -1099,13 +1099,19 @@ class StockTrackingAgent:
             logger.error(f"{stock_data.get('ticker', '') if 'ticker' in locals() else 'Unknown stock'} Error analyzing sell: {str(e)}")
             return False, "Analysis error"
 
-    async def sell_stock(self, stock_data: Dict[str, Any], sell_reason: str) -> bool:
+    async def sell_stock(self, stock_data: Dict[str, Any], sell_reason: str,
+                         exit_kind: Optional[str] = None) -> bool:
         """
         Stock sell processing
 
         Args:
             stock_data: Stock information to sell
             sell_reason: Sell reason
+            exit_kind: Optional explicit exit classification (stop | trend_exit |
+                target | ai). Loops pass it deterministically (loop_a=stop,
+                loop_b=trend_exit); when None it is inferred from sell_reason. Stored
+                in trading_history so the re-entry cooldown treats a stop-out at a
+                marginal profit as churn-risk.
 
         Returns:
             bool: Sell success status
@@ -1157,12 +1163,19 @@ class StockTrackingAgent:
             # Current time
             now = now_datetime.strftime("%Y-%m-%d %H:%M:%S")
 
+            # Classify the exit (stop/trend_exit/target/ai) for the churn guard.
+            try:
+                from reentry_cooldown import classify_exit_kind
+                _exit_kind = classify_exit_kind(sell_reason, exit_kind)
+            except Exception:
+                _exit_kind = exit_kind  # fail-open: store caller hint or None
+
             # Add to trading history table
             self.cursor.execute(
                 """
                 INSERT INTO trading_history
-                (account_key, account_name, ticker, company_name, buy_price, buy_date, sell_price, sell_date, profit_rate, holding_days, scenario, trigger_type, trigger_mode, sector)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (account_key, account_name, ticker, company_name, buy_price, buy_date, sell_price, sell_date, profit_rate, holding_days, scenario, trigger_type, trigger_mode, sector, exit_kind)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account_key,
@@ -1179,6 +1192,7 @@ class StockTrackingAgent:
                     trigger_type,
                     trigger_mode,
                     stock_data.get('sector'),
+                    _exit_kind,
                 )
             )
 
@@ -1770,17 +1784,21 @@ class StockTrackingAgent:
                     _cd_block = False
                     if analysis_result.get("decision") == "Enter":
                         try:
-                            from reentry_cooldown import reentry_block, COOLDOWN_LIVE
+                            from reentry_cooldown import reentry_block, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE
                             _cd = reentry_block("KR", ticker)
                         except Exception:
-                            _cd, COOLDOWN_LIVE = None, False
+                            _cd, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE = None, False, False
                         if _cd:
+                            # A stop/trend-exit block that is NOT also a loss is the new
+                            # exit-kind branch -> SHADOW unless COOLDOWN_RISK_EXIT_LIVE.
+                            _risk_only = bool(_cd.get("risk_exit")) and not _cd.get("after_loss")
+                            _enforce = COOLDOWN_LIVE and (COOLDOWN_RISK_EXIT_LIVE or not _risk_only)
                             logger.warning(
-                                "[REENTRY_COOLDOWN][%s] %s ticker=%s last_sell=%s ret=%.1f%% gap=%.1fh<%sh after_loss=%s",
-                                "LIVE" if COOLDOWN_LIVE else "SHADOW", _cd["action"], ticker,
+                                "[REENTRY_COOLDOWN][%s] %s ticker=%s last_sell=%s ret=%.1f%% gap=%.1fh<%sh after_loss=%s exit_kind=%s risk_only=%s",
+                                "LIVE" if _enforce else "SHADOW", _cd["action"], ticker,
                                 _cd["last_sell"], _cd["last_ret"], _cd["gap_hours"],
-                                _cd["window_hours"], _cd["after_loss"])
-                            _cd_block = COOLDOWN_LIVE
+                                _cd["window_hours"], _cd["after_loss"], _cd.get("exit_kind"), _risk_only)
+                            _cd_block = _enforce
 
                     if analysis_result.get("decision") == "Enter" and not _cd_block:
                         buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)

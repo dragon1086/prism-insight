@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS trading_history (
     scenario TEXT,
     trigger_type TEXT,
     trigger_mode TEXT,
-    sector TEXT
+    sector TEXT,
+    exit_kind TEXT
 )
 """
 
@@ -738,6 +739,28 @@ def migrate_analysis_performance_tracker_columns(cursor, conn):
         logger.warning(f"Error updating KR tracking_status: {exc}")
 
 
+def migrate_trading_history_columns(cursor, conn):
+    """Add churn-guard columns to trading_history if missing (idempotent, no backfill).
+
+    exit_kind: compact exit classification (stop | trend_exit | target | ai) used by
+    the re-entry cooldown / journal churn guard so a stop-out at a marginal profit is
+    treated as churn-risk. Existing rows stay NULL (legacy P&L-sign behaviour).
+    """
+    migrations = [
+        ("trading_history", "exit_kind TEXT"),
+    ]
+    for table_name, column_def in migrations:
+        try:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
+            conn.commit()
+            logger.info(f"Added column to {table_name}: {column_def}")
+        except Exception as exc:
+            if "duplicate column name" in str(exc).lower():
+                logger.debug(f"Column already exists in {table_name}: {column_def}")
+            else:
+                logger.warning(f"Migration warning for {table_name}: {exc}")
+
+
 def create_all_tables(cursor, conn):
     """
     Create all database tables.
@@ -766,6 +789,7 @@ def create_all_tables(cursor, conn):
     migrate_drop_holdings_unique_constraint(cursor, conn)
     migrate_watchlist_history_columns(cursor, conn)
     migrate_analysis_performance_tracker_columns(cursor, conn)
+    migrate_trading_history_columns(cursor, conn)
     conn.commit()
     logger.info("Database tables created")
 

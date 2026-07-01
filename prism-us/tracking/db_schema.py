@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS us_trading_history (
     scenario TEXT,                     -- JSON trading scenario
     trigger_type TEXT,
     trigger_mode TEXT,
-    sector TEXT                        -- GICS sector
+    sector TEXT,                       -- GICS sector
+    exit_kind TEXT                     -- churn-guard: stop | trend_exit | target | ai
 )
 """
 
@@ -679,8 +680,31 @@ def create_us_tables(cursor, conn):
 
     migrate_multi_account_schema(cursor, conn)
     migrate_drop_us_holdings_unique_constraint(cursor, conn)
+    migrate_us_trading_history_columns(cursor, conn)
     conn.commit()
     logger.info("US database tables created")
+
+
+def migrate_us_trading_history_columns(cursor, conn):
+    """Add churn-guard columns to us_trading_history if missing (idempotent, no backfill).
+
+    exit_kind: compact exit classification (stop | trend_exit | target | ai) used by
+    the re-entry cooldown / journal churn guard so a stop-out at a marginal profit is
+    treated as churn-risk. Existing rows stay NULL (legacy P&L-sign behaviour).
+    """
+    migrations = [
+        ("us_trading_history", "exit_kind TEXT"),
+    ]
+    for table_name, column_def in migrations:
+        try:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
+            conn.commit()
+            logger.info(f"Added column to {table_name}: {column_def}")
+        except Exception as e:
+            if "duplicate column name" in str(e).lower():
+                logger.debug(f"Column already exists in {table_name}: {column_def}")
+            else:
+                logger.warning(f"Migration warning for {table_name}: {e}")
 
 
 def create_us_indexes(cursor, conn):
