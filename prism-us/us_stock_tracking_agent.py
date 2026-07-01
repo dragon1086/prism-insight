@@ -2202,9 +2202,33 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 should_sell, sell_reason = await self._analyze_sell_decision(stock)
 
                 if should_sell:
+                    acct_key = stock.get("account_key")
+
+                    # ── Layer 2: fresh holding re-check (cross-cycle stale-snapshot guard) ──
+                    # update_holdings iterates a holdings snapshot taken at pipeline
+                    # start (~40 min earlier). A concurrent intraday loop
+                    # (loop_a_hardstop / loop_b_trend_exit, both */10 on cron) may have
+                    # already closed this position minutes ago. Re-read the live DB row
+                    # right before acting; if it is gone, abort THIS ticker entirely —
+                    # no real order, NO signal publish, no journal — so subscribers never
+                    # receive a duplicate/ghost SELL.
+                    # Incident 2026-07-01: loop_a stop-sold MU 23:50 (+published SELL),
+                    # then the batch re-hit the same stop off its stale snapshot 23:54,
+                    # its real sell no-op'd ("not found in portfolio") yet it still
+                    # published a 2nd SELL 23:55. This guard closes that gap at the source.
+                    self.conn.commit()  # end any read snapshot so other-process commits are visible (WAL)
+                    if get_us_existing_position_for_ticker(
+                        self.cursor, ticker, account_key=acct_key
+                    ).get("row_count", 0) == 0:
+                        logger.warning(
+                            f"[LAYER2][US] {ticker} already closed by another cycle "
+                            f"(stale snapshot) — skipping sell + signal publish"
+                        )
+                        continue
+                    # ── end Layer 2 guard ──
+
                     # Pyramiding (#288): compute remaining row count N for this
                     # (ticker, account) BEFORE any DB row is deleted by sell_stock.
-                    acct_key = stock.get("account_key")
                     remaining_rows = get_us_existing_position_for_ticker(
                         self.cursor, ticker, account_key=acct_key
                     ).get("row_count", 1)
