@@ -687,7 +687,9 @@ Please review the following completed US stock trade:
                     if _rc_root not in sys.path:
                         sys.path.insert(0, _rc_root)
                     import reentry_cooldown as _rc
-                    _loss_info = _rc.recent_loss(ticker, market="US")
+                    # risk-exit aware (loss OR stop/trend-exit); falls back to
+                    # loss-only on an older reentry_cooldown build.
+                    _loss_info = getattr(_rc, "recent_risk_exit", _rc.recent_loss)(ticker, market="US")
                     if _loss_info is not None and _loss_info["gap_hours"] <= JOURNAL_RECENT_LOSS_HOURS:
                         adjustment = min(adjustment, 0) - JOURNAL_RECENT_LOSS_PENALTY
                         reasons.append(

@@ -108,7 +108,7 @@ class TestJournalRecentLossPenaltyUS(unittest.TestCase):
 
         loss_info = {"gap_hours": 1.3, "last_ret": -7.5, "last_sell": "2026-06-30 10:00:00"}
         import reentry_cooldown
-        with patch.object(reentry_cooldown, "recent_loss", return_value=loss_info):
+        with patch.object(reentry_cooldown, "recent_risk_exit", return_value=loss_info):
             # Give sector bonus: 3 profitable US trades for sector "Technology"
             for i in range(3):
                 self.cur.execute(
@@ -133,7 +133,7 @@ class TestJournalRecentLossPenaltyUS(unittest.TestCase):
         jm = self._get_jm()
 
         import reentry_cooldown
-        with patch.object(reentry_cooldown, "recent_loss", return_value=None):
+        with patch.object(reentry_cooldown, "recent_risk_exit", return_value=None):
             adj, reasons = jm.get_score_adjustment("AAPL")
 
         self.assertEqual(adj, 0)
@@ -147,7 +147,7 @@ class TestJournalRecentLossPenaltyUS(unittest.TestCase):
 
         import reentry_cooldown
         loss_info = {"gap_hours": 1.0, "last_ret": -5.0, "last_sell": "2026-06-30 10:00:00"}
-        with patch.object(reentry_cooldown, "recent_loss", return_value=loss_info):
+        with patch.object(reentry_cooldown, "recent_risk_exit", return_value=loss_info):
             adj, reasons = jm.get_score_adjustment("MU")
 
         self.assertEqual(adj, 0)
@@ -160,7 +160,7 @@ class TestJournalRecentLossPenaltyUS(unittest.TestCase):
         jm = self._get_jm()
 
         import reentry_cooldown
-        with patch.object(reentry_cooldown, "recent_loss", return_value=None):
+        with patch.object(reentry_cooldown, "recent_risk_exit", return_value=None):
             adj, reasons = jm.get_score_adjustment("NVDA")
 
         self.assertEqual(adj, 0)
@@ -211,7 +211,7 @@ class TestJournalRecentLossPenaltyUS(unittest.TestCase):
 
         import reentry_cooldown
         loss_info = {"gap_hours": 5.0, "last_ret": -7.5, "last_sell": "2026-06-30 05:00:00"}
-        with patch.object(reentry_cooldown, "recent_loss", return_value=loss_info):
+        with patch.object(reentry_cooldown, "recent_risk_exit", return_value=loss_info):
             adj, reasons = jm.get_score_adjustment("MU")
 
         self.assertEqual(adj, 0)
