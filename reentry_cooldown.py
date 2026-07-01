@@ -103,19 +103,24 @@ def _query_last_sell(path: str, table: str, ticker: str,
         where += "AND account_key=? "
         params.append(account_key)
     tail = "ORDER BY sell_date DESC LIMIT 1"
+    # `table` is always one of our own fixed constants (never user input) and every
+    # value is bound via ? placeholders; whitelist it so the interpolation is
+    # provably injection-safe.
+    if table not in _TABLE.values():
+        return None
     try:
         conn = sqlite3.connect(path, timeout=5)
         try:
             try:
                 row = conn.execute(
-                    f"SELECT sell_date, profit_rate, exit_kind FROM {table} {where}{tail}",
+                    f"SELECT sell_date, profit_rate, exit_kind FROM {table} {where}{tail}",  # nosec B608
                     params,
                 ).fetchone()
                 return (row[0], row[1], row[2]) if row else None
             except sqlite3.OperationalError:
                 # exit_kind column absent (pre-migration) -> legacy fallback.
                 row = conn.execute(
-                    f"SELECT sell_date, profit_rate FROM {table} {where}{tail}",
+                    f"SELECT sell_date, profit_rate FROM {table} {where}{tail}",  # nosec B608
                     params,
                 ).fetchone()
                 return (row[0], row[1], None) if row else None
