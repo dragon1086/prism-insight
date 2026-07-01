@@ -1122,6 +1122,30 @@ class StockTrackingAgent:
             account_key = stock_data.get('account_key') or self._account_scope()[0]
             account_name = stock_data.get('account_name') or self._account_scope()[1]
 
+            # ── Cross-cycle sell guard (single source of truth) ──────────────
+            # EVERY sell path routes its real order + signal publish through
+            # sell_stock and gates on this bool return: the batch update_holdings,
+            # loop_a_hardstop, and loop_b_trend_exit (KR + US). A concurrent cycle
+            # may have already closed this position seconds/minutes ago, so refresh
+            # the connection snapshot (commit ends any stale WAL read-txn so other
+            # processes' commits are visible) and abort if the row is gone — no
+            # trading_history row, no delete, no journal, no queued message — so the
+            # caller publishes NO duplicate/ghost SELL and P&L is not double-counted.
+            # Incident 2026-07-01 (MU): loop_a stop-sold 23:50 (+published SELL),
+            # the batch re-hit the same stop off a stale snapshot and re-published a
+            # 2nd SELL 23:55. sell_stock is the chokepoint that closes this for all
+            # paths in both markets.
+            self.conn.commit()
+            if get_existing_position_for_ticker(
+                self.cursor, ticker, account_key=account_key
+            ).get("row_count", 0) == 0:
+                logger.warning(
+                    f"[SELL-GUARD][KR] {ticker}({company_name}) already closed by "
+                    f"another cycle — sell_stock aborting (no duplicate record/signal)"
+                )
+                return False
+            # ─────────────────────────────────────────────────────────────────
+
             # Calculate profit rate
             profit_rate = ((current_price - buy_price) / buy_price) * 100
 
