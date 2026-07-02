@@ -934,7 +934,7 @@ class TelegramAIBot:
         # ==========================================================================
         # Firecrawl AI Research commands — interactive ConversationHandlers
         # Each command first asks for the required parameter, then calls Firecrawl.
-        # Subsequent replies to the bot's response continue via Anthropic Sonnet 4.6.
+        # Subsequent replies to the bot's response continue via Anthropic Sonnet 5.
         # BotFather commands to register:
         #   signal - 이벤트/뉴스 임팩트 분석 (한국)
         #   us_signal - 이벤트/뉴스 임팩트 분석 (미국)
@@ -2746,7 +2746,7 @@ class TelegramAIBot:
 
     async def _run_search_and_claude(self, update: Update, search_query: str, analysis_prompt: str, disclaimer: str):
         """
-        Cost-efficient helper using Firecrawl /search (2 credits) + Claude Sonnet 4.6.
+        Cost-efficient helper using Firecrawl /search (2 credits) + Claude Sonnet 5.
         Uses the same global MCPApp + AnthropicAugmentedLLM pattern as /evaluate.
 
         Returns:
@@ -3422,7 +3422,7 @@ class TelegramAIBot:
     # ==========================================================================
 
     async def _handle_firecrawl_reply(self, update: Update, fc_ctx: FirecrawlConversationContext):
-        """Handle a reply to a Firecrawl bot message — continue via Anthropic Sonnet 4.6."""
+        """Handle a reply to a Firecrawl bot message — continue via Anthropic Sonnet 5."""
         user_question = update.message.text.strip()
         chat_id = update.effective_chat.id
 
