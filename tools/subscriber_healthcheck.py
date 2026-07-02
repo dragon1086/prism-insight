@@ -49,7 +49,7 @@ except Exception:
 # Config
 # ---------------------------------------------------------------------------
 BOT_TOKEN: str | None = os.getenv("OAUTH_ALERT_BOT_TOKEN")
-ALERT_CHAT_ID: str = os.getenv("SUBSCRIBER_ALERT_CHAT_ID", "-1002989735551")
+ALERT_CHAT_ID: str = os.getenv("SUBSCRIBER_ALERT_CHAT_ID", "")
 LOG_DIR = PROJECT_ROOT / "logs"
 DEFAULT_STATE_FILE = LOG_DIR / "subscriber_healthcheck_state.json"
 
@@ -63,8 +63,8 @@ def send_alert(text: str, dry_run: bool = False) -> bool:
     if dry_run:
         print(f"[subscriber-health][DRY-RUN] Would send: {text}")
         return True
-    if not BOT_TOKEN:
-        print(f"[subscriber-health] BOT_TOKEN missing, cannot send: {text}")
+    if not BOT_TOKEN or not ALERT_CHAT_ID:
+        print(f"[subscriber-health] BOT_TOKEN or ALERT_CHAT_ID missing, cannot send: {text}")
         return False
     try:
         import requests

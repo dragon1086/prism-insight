@@ -37,7 +37,7 @@ CRON_LOOP_A_ONLY = """
 CRON_WITH_OAUTH_INLINE = """
 # system crontab
 */10 * * * * /usr/bin/python tools/loop_a_hardstop.py
-30 09 * * 1-5 cd /Users/rocky/prism && PRISM_OPENAI_AUTH_MODE=chatgpt_oauth /usr/bin/python stock_analysis_orchestrator.py
+30 09 * * 1-5 cd /opt/prism && PRISM_OPENAI_AUTH_MODE=chatgpt_oauth /usr/bin/python stock_analysis_orchestrator.py
 """
 
 # Crontab with OAuth inline but line is commented out — must NOT count

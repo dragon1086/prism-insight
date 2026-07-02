@@ -19,7 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT))       # Add project root to path
 # Load config file
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
 with open(CONFIG_FILE, encoding="UTF-8") as f:
-    _cfg = yaml.load(f, Loader=yaml.FullLoader)
+    _cfg = yaml.load(f, Loader=yaml.SafeLoader)
 
 from trading.portfolio_telegram_reporter import PortfolioTelegramReporter
 

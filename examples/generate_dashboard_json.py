@@ -64,7 +64,7 @@ except ImportError:
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
 try:
     with open(CONFIG_FILE, encoding="UTF-8") as f:
-        _cfg = yaml.load(f, Loader=yaml.FullLoader)
+        _cfg = yaml.load(f, Loader=yaml.SafeLoader)
 except FileNotFoundError:
     _cfg = {"default_mode": "demo"}
     logger.warning(f"Configuration file not found: {CONFIG_FILE}. Using default mode (demo).")

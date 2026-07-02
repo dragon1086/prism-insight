@@ -27,14 +27,14 @@ prism-btc/
 ## Running Tests (offline, no network)
 
 ```bash
-cd /Users/rocky/Downloads/prism-insight
+cd /path/to/prism-insight
 .venv/bin/python -m pytest prism-btc/tests -x -q
 ```
 
 ## Backfill (all 6 timeframes, from 2022-01-01)
 
 ```bash
-cd /Users/rocky/Downloads/prism-insight
+cd /path/to/prism-insight
 .venv/bin/python -m prism-btc.collector.backfill
 # or:
 .venv/bin/python -c "

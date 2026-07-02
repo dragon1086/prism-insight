@@ -21,6 +21,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import sys
@@ -56,10 +57,10 @@ _bearer = HTTPBearer(auto_error=True)
 
 def _verify_key(creds: HTTPAuthorizationCredentials = Security(_bearer)) -> str:
     if not _API_KEY:
-        # No key configured → open (dev mode, warn loudly)
-        logger.warning("ARCHIVE_API_KEY not set — running in open mode!")
-        return "open"
-    if creds.credentials != _API_KEY:
+        # No key configured → refuse instead of silently running open
+        logger.error("ARCHIVE_API_KEY not set — rejecting request")
+        raise HTTPException(status_code=503, detail="API key not configured on server")
+    if not hmac.compare_digest(creds.credentials, _API_KEY):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return creds.credentials
 
@@ -186,7 +187,7 @@ async def stats(_key: str = Depends(_verify_key)):
         })
     except Exception as e:
         logger.error(f"/stats error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="internal server error")
 
 
 @app.get("/search", response_model=SearchResponse)
@@ -218,7 +219,7 @@ async def search(
         return SearchResponse(results=results, total=len(results))
     except Exception as e:
         logger.error(f"/search error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="internal server error")
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -249,7 +250,7 @@ async def query(req: QueryRequest, _key: str = Depends(_verify_key)):
         )
     except Exception as e:
         logger.error(f"/query error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="internal server error")
 
 
 @app.post("/insight_agent", response_model=InsightAgentResponse)
@@ -286,7 +287,7 @@ async def insight_agent_endpoint(
         raise
     except Exception as e:
         logger.error(f"/insight_agent error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="internal server error")
 
 
 @app.post("/feedback", response_model=FeedbackResponse)
@@ -320,7 +321,7 @@ async def feedback_endpoint(
         raise
     except Exception as e:
         logger.error(f"/feedback error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="internal server error")
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +330,8 @@ async def feedback_endpoint(
 
 if __name__ == "__main__":
     import uvicorn
-    host = os.getenv("ARCHIVE_API_HOST", "0.0.0.0")
+    # Default to loopback; set ARCHIVE_API_HOST=0.0.0.0 explicitly to expose externally
+    host = os.getenv("ARCHIVE_API_HOST", "127.0.0.1")
     port = int(os.getenv("ARCHIVE_API_PORT", "8765"))
     logger.info(f"Starting PRISM Archive API on {host}:{port}")
     if not _API_KEY:

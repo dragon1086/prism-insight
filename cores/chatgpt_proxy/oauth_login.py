@@ -215,7 +215,7 @@ async def login(force: bool = False) -> dict:
     # Save tokens
     _save_auth(auth_data)
 
-    masked_token = auth_data["access_token"][:20] + "..."
+    masked_token = auth_data["access_token"][:6] + "..."
     print("\nAuthentication successful!")
     print(f"Token: {masked_token}")
     print(f"Expires: {time.ctime(auth_data['expires_at'])}")
