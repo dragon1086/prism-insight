@@ -730,8 +730,8 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
                     필요한 경우 최신 데이터를 조회하여 정확한 정보를 제공하세요.
                     """,
             request_params=RequestParams(
-                model="claude-sonnet-4-6",
-                maxTokens=2000
+                model="claude-sonnet-5",
+                maxTokens=4000
             )
         )
         app_logger.info(f"추가 질문 응답 생성 결과: {str(response)[:100]}...")
@@ -927,7 +927,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                     {report_content if report_content else "관련 보고서가 없습니다. 시장 데이터 조회와 perplexity 검색을 통해 최신 정보를 수집하여 평가해주세요."}
                     """,
             request_params=RequestParams(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-5",
                 maxTokens=8000
             )
         )
@@ -1124,7 +1124,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                     perplexity로 최신 뉴스와 시장 동향을 검색한 후 종합적인 평가를 제공해주세요.
                     """,
             request_params=RequestParams(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-5",
                 maxTokens=8000
             )
         )
@@ -1221,8 +1221,8 @@ async def generate_us_follow_up_response(ticker, ticker_name, conversation_conte
                     필요한 경우 yahoo_finance를 통해 최신 데이터를 조회하여 정확한 정보를 제공하세요.
                     """,
             request_params=RequestParams(
-                model="claude-sonnet-4-6",
-                maxTokens=2000
+                model="claude-sonnet-5",
+                maxTokens=4000
             )
         )
         app_logger.info(f"US follow-up response generated: {str(response)[:100]}...")
@@ -1339,8 +1339,8 @@ async def generate_journal_conversation_response(
 
 위 메시지에 자연스럽게 응답해주세요. 사용자의 과거 기록(저널, 평가 등)을 참고하여 개인화된 답변을 제공하세요.""",
             request_params=RequestParams(
-                model="claude-sonnet-4-6",
-                maxTokens=2000
+                model="claude-sonnet-5",
+                maxTokens=4000
             )
         )
         app_logger.info(f"Journal conversation response generated: user_id={user_id}, response_len={len(response)}")
@@ -1428,8 +1428,8 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
         response = await llm.generate_str(
             message=f"다음은 웹 검색 결과입니다:\n\n{context}\n\n---\n\n{analysis_prompt}",
             request_params=RequestParams(
-                model="claude-sonnet-4-6",
-                maxTokens=2000
+                model="claude-sonnet-5",
+                maxTokens=4000
             )
         )
         app.logger.info(f"Firecrawl search+Claude response: {len(response)} chars")
@@ -1535,8 +1535,8 @@ async def generate_firecrawl_followup_response(
         response = await llm.generate_str(
             message=user_question,
             request_params=RequestParams(
-                model="claude-sonnet-4-6",
-                maxTokens=2000,
+                model="claude-sonnet-5",
+                maxTokens=4000,
             ),
         )
         app.logger.info(f"firecrawl_followup ({command}): {len(response)} chars")
