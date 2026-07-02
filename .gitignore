@@ -1,11 +1,25 @@
 # 환경 변수
 .env
 *.env
-.env.local
+.env.*
+*.env.*
+!.env.example
+!*.env.example
 mcp_agent.config.yaml
 mcp_agent.secrets.yaml
 config.py
 .mcp.json
+
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Databases (keep none tracked; use *.example if a schema sample is needed)
+*.db
+*.db-shm
+*.db-wal
 
 # System files
 .DS_Store
