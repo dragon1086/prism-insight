@@ -226,18 +226,18 @@ def generate_us_report_response_sync(ticker: str, company_name: str) -> str:
 
         # Run US analysis in separate process
         # Uses analyze_us_stock function from prism-us/cores/us_analysis.py
+        # Values are passed via argv (never interpolated into the source string)
+        # so ticker/company_name cannot inject code into the child interpreter.
         cmd = [
             sys.executable,  # 현재 Python 인터프리터
             "-c",
-            f"""
+            """
 import asyncio
 import json
 import sys
 import os
 
-# Use absolute paths (Docker compatibility)
-project_root = r'{project_root}'
-prism_us_dir = r'{prism_us_dir}'
+project_root, prism_us_dir, ticker, company_name = sys.argv[1:5]
 sys.path.insert(0, prism_us_dir)
 os.chdir(project_root)
 
@@ -249,24 +249,28 @@ async def run():
         # Auto-detect last trading day
         ref_date = get_reference_date()
         result = await analyze_us_stock(
-            ticker="{ticker}",
-            company_name="{company_name}",
+            ticker=ticker,
+            company_name=company_name,
             reference_date=ref_date,
             language="ko"
         )
         # Use delimiters to mark start and end of result output
         print("RESULT_START")
-        print(json.dumps({{"success": True, "result": result}}))
+        print(json.dumps({"success": True, "result": result}))
         print("RESULT_END")
     except Exception as e:
         # Use delimiters to mark start and end of error output
         print("RESULT_START")
-        print(json.dumps({{"success": False, "error": str(e)}}))
+        print(json.dumps({"success": False, "error": str(e)}))
         print("RESULT_END")
 
 if __name__ == "__main__":
     asyncio.run(run())
-            """
+            """,
+            project_root,
+            prism_us_dir,
+            ticker,
+            company_name,
         ]
 
         logger.info(f"US external process execution: {ticker} (cwd: {project_root})")
@@ -499,15 +503,19 @@ def generate_report_response_sync(stock_code: str, company_name: str) -> str:
 
         # 별도의 프로세스로 분석 수행
         # 이 방법은 새로운 Python 프로세스를 생성하여 분석을 수행하므로 이벤트 루프 충돌 없음
+        # Values are passed via argv (never interpolated into the source string)
+        # so stock_code/company_name cannot inject code into the child interpreter.
         cmd = [
             sys.executable,  # 현재 Python 인터프리터
             "-c",
-            f"""
+            """
 import asyncio
 import json
 import sys
 import logging
 from datetime import datetime
+
+stock_code, company_name, reference_date = sys.argv[1:4]
 
 # subprocess 내부 로깅 설정
 logging.basicConfig(
@@ -516,7 +524,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stderr)]
 )
 subprocess_logger = logging.getLogger("subprocess_report")
-subprocess_logger.info("Subprocess 시작: {stock_code} ({company_name})")
+subprocess_logger.info(f"Subprocess 시작: {stock_code} ({company_name})")
 
 from cores.analysis import analyze_stock
 
@@ -524,25 +532,28 @@ async def run():
     try:
         subprocess_logger.info("analyze_stock 호출 시작")
         result = await analyze_stock(
-            company_code="{stock_code}",
-            company_name="{company_name}",
-            reference_date="{reference_date}"
+            company_code=stock_code,
+            company_name=company_name,
+            reference_date=reference_date
         )
-        subprocess_logger.info(f"analyze_stock 완료: {{len(result) if result else 0}} 글자")
+        subprocess_logger.info(f"analyze_stock 완료: {len(result) if result else 0} 글자")
         # 구분자를 사용하여 결과 출력의 시작과 끝을 표시
         print("RESULT_START")
-        print(json.dumps({{"success": True, "result": result}}))
+        print(json.dumps({"success": True, "result": result}))
         print("RESULT_END")
     except Exception as e:
-        subprocess_logger.error(f"analyze_stock 오류: {{str(e)}}", exc_info=True)
+        subprocess_logger.error(f"analyze_stock 오류: {str(e)}", exc_info=True)
         # 구분자를 사용하여 에러 출력의 시작과 끝을 표시
         print("RESULT_START")
-        print(json.dumps({{"success": False, "error": str(e)}}))
+        print(json.dumps({"success": False, "error": str(e)}))
         print("RESULT_END")
 
 if __name__ == "__main__":
     asyncio.run(run())
-            """
+            """,
+            stock_code,
+            company_name,
+            reference_date,
         ]
 
         # Set project root directory (required for cores module import)
