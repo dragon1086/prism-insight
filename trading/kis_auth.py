@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import threading
@@ -68,7 +69,7 @@ class TokenRequestError(KISAuthError):
         self.status_code = status_code
         self.response_text = response_text
 
-clearConsole = lambda: os.system("cls" if os.name in ("nt", "dos") else "clear")
+clearConsole = lambda: subprocess.run(["cls" if os.name in ("nt", "dos") else "clear"], check=False, shell=(os.name in ("nt", "dos")))
 
 key_bytes = 32
 # Find config folder based on kis_auth.py file directory
@@ -410,14 +411,15 @@ def _get_or_create_encryption_key():
     else:
         # Generate new encryption key
         key = Fernet.generate_key()
-        with open(key_file, 'wb') as f:
-            f.write(key)
-
-        # Set key file permissions (maximum security)
         if os.name != 'nt':
-            os.chmod(key_file, 0o600)
+            # Atomic create with 0o600 — no world-readable window
+            fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(key)
         else:
-            # Windows: Set file hidden attribute
+            # Windows: write key then set hidden attribute
+            with open(key_file, 'wb') as f:
+                f.write(key)
             try:
                 import ctypes
                 ctypes.windll.kernel32.SetFileAttributesW(key_file, 2)  # FILE_ATTRIBUTE_HIDDEN

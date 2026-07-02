@@ -65,7 +65,7 @@ def get_trading_mode() -> str:
         import yaml
         config_path = PROJECT_ROOT / "trading" / "config" / "kis_devlp.yaml"
         with open(config_path, encoding="UTF-8") as f:
-            cfg = yaml.load(f, Loader=yaml.FullLoader)
+            cfg = yaml.load(f, Loader=yaml.SafeLoader)
         return cfg.get("default_mode", "real")
     except Exception:
         return "real"
