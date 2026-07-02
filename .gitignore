@@ -13,6 +13,10 @@ config.py
 
 # Claude Code plugin state
 .omc/
+.omx/
+
+# Internal working docs (handoffs, strategy notes, ops runbooks) — never publish
+tasks/
 
 # Logs
 *.log
