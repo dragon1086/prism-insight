@@ -1053,8 +1053,10 @@ class TelegramAIBot:
         # handle_reply_to_evaluation (filters.TEXT) — no handler conflict.
         reply_msg = update.message.reply_to_message
         replied_to_msg_id = reply_msg.message_id if reply_msg else None
-        context_block = None   # prior-conversation summary to prepend, or None
+        context_block = None   # FULL prior-conversation text to prepend, or None
         reregister = None      # (store_dict, context_obj) to re-register, or None
+        ctx_kind = None        # 'eval'|'firecrawl'|'insight'|'journal' — for history recording
+        ctx_obj = None         # the live context object (to append the image turn to)
 
         if replied_to_msg_id is not None:
             # 1. journal_contexts — plain dict, created_at-based 30min expiry
@@ -1072,6 +1074,7 @@ class TelegramAIBot:
                 t_code = jctx.get('ticker') or ''
                 context_block = f"매매일지 종목: {t_name} ({t_code})".strip()
                 reregister = (self.journal_contexts, jctx)
+                ctx_kind, ctx_obj = 'journal', jctx
 
             # 2. firecrawl_contexts — FirecrawlConversationContext, 24h expiry
             elif replied_to_msg_id in self.firecrawl_contexts:
@@ -1082,10 +1085,13 @@ class TelegramAIBot:
                     )
                     del self.firecrawl_contexts[replied_to_msg_id]
                     return
-                cmd = getattr(fctx, 'command', '') or ''
-                query = getattr(fctx, 'query', '') or ''
-                context_block = f"이전 리서치 명령어: /{cmd}, 질의: {query}".strip()
+                # Full research thread (command + query + every prior Q/A)
+                try:
+                    context_block = fctx.get_context_summary()
+                except Exception:
+                    context_block = f"이전 리서치 명령어: /{getattr(fctx, 'command', '')}, 질의: {getattr(fctx, 'query', '')}".strip()
                 reregister = (self.firecrawl_contexts, fctx)
+                ctx_kind, ctx_obj = 'firecrawl', fctx
 
             # 2.5 insight_contexts — InsightConversationContext, 30min expiry
             elif replied_to_msg_id in self.insight_contexts:
@@ -1096,9 +1102,14 @@ class TelegramAIBot:
                     )
                     del self.insight_contexts[replied_to_msg_id]
                     return
-                q = getattr(ictx, 'original_question', '') or ''
-                context_block = f"이전 /insight 질문: {q}".strip()
+                # Build the full insight thread (original question + every prior turn)
+                lines = [f"초기 질문: {getattr(ictx, 'original_question', '') or ''}", "", "대화 내역:"]
+                for turn in getattr(ictx, 'conversation_history', []) or []:
+                    lines.append(f"\n사용자 질문: {turn.get('q', '')}")
+                    lines.append(f"AI 답변: {turn.get('a', '')}")
+                context_block = "\n".join(lines)
                 reregister = (self.insight_contexts, ictx)
+                ctx_kind, ctx_obj = 'insight', ictx
 
             # 3. conversation_contexts — ConversationContext (report/eval), 24h expiry
             elif replied_to_msg_id in self.conversation_contexts:
@@ -1114,12 +1125,17 @@ class TelegramAIBot:
                         )
                     del self.conversation_contexts[replied_to_msg_id]
                     return
-                t_name = getattr(cctx, 'ticker_name', '') or ''
-                t_code = getattr(cctx, 'ticker', '') or ''
-                market = getattr(cctx, 'market_type', 'kr')
-                market_label = "미국" if market == "us" else "한국"
-                context_block = f"평가 종목: {t_name} ({t_code}), 시장: {market_label}".strip()
+                # Full evaluation context: ticker, price, holding, TONE (피드백 스타일),
+                # trade background, AND the entire prior conversation history.
+                try:
+                    context_block = cctx.get_context_for_llm()
+                except Exception:
+                    t_name = getattr(cctx, 'ticker_name', '') or ''
+                    t_code = getattr(cctx, 'ticker', '') or ''
+                    market_label = "미국" if getattr(cctx, 'market_type', 'kr') == "us" else "한국"
+                    context_block = f"평가 종목: {t_name} ({t_code}), 시장: {market_label}"
                 reregister = (self.conversation_contexts, cctx)
+                ctx_kind, ctx_obj = 'eval', cctx
 
         # Reply-only: a bare photo (no active bot-conversation context) is not a
         # supported entry point. In group chats Telegram privacy mode never even
@@ -1163,14 +1179,20 @@ class TelegramAIBot:
             "확정적 매수·매도 지시는 하지 말고, 관찰과 시나리오 위주로 서술하세요. "
             "종목명이나 가격이 이미지에서 불명확하면 추측하지 말고 그렇게 밝히세요."
         )
-        # Prepend the prior-conversation summary so the vision model answers in
-        # the context of the ongoing thread (analyze_image is text-prompt + image,
-        # so multi-turn is emulated by injecting this "이전 대화 맥락" block).
+        # Prepend the FULL prior conversation so the vision model continues the
+        # thread — same tone/voice, aware of everything said so far. analyze_image
+        # is text-prompt + image, so multi-turn is emulated by injecting this block.
         if context_block:
             prompt = (
-                "이전 대화 맥락:\n"
-                f"{context_block}\n\n"
-                "위 맥락을 참고하여, 첨부된 이미지를 분석하고 이어지는 대화로 답변하세요.\n\n"
+                "아래는 사용자와 나눈 지금까지의 대화입니다. 여기에 '피드백 스타일'이 "
+                "있으면 그 말투를, 없으면 직전 대화의 어투를 그대로 유지하세요.\n"
+                "===== 이전 대화 =====\n"
+                f"{context_block}\n"
+                "====================\n\n"
+                "사용자가 위 대화에 이어서 아래 차트 이미지를 첨부했습니다. 새로 시작하는 "
+                "설명이 아니라, 지금까지의 대화를 이어받아 같은 종목·맥락·말투로 자연스럽게 "
+                "답변하세요. 이전에 이미 말한 내용은 반복하지 말고 차트에서 새로 보이는 "
+                "점 위주로 짚어주세요.\n\n"
                 + prompt
             )
         if caption:
@@ -1194,6 +1216,21 @@ class TelegramAIBot:
             return
 
         text = str(result).strip()
+
+        # Record this image turn into the conversation history so subsequent
+        # replies (text or photo) remember what the chart analysis said — the
+        # same mechanism the text-reply handlers use to keep the thread coherent.
+        user_turn = "[차트 이미지 첨부]" + (f" {caption}" if caption else "")
+        try:
+            if ctx_kind in ('eval', 'firecrawl') and ctx_obj is not None:
+                ctx_obj.add_to_history("user", user_turn)
+                ctx_obj.add_to_history("assistant", text)
+            elif ctx_kind == 'insight' and ctx_obj is not None:
+                ctx_obj.add_turn(user_turn, text, None)
+            # journal_contexts is a plain dict with no history — nothing to record
+        except Exception as exc:
+            logger.warning(f"[CHART] history record skipped: {exc}")
+
         # Telegram hard limit is 4096 chars per message — chunk safely
         sent_message = None
         for i in range(0, len(text), 4000):
@@ -1202,8 +1239,8 @@ class TelegramAIBot:
         # Re-register the context on the sent reply so a follow-up reply (text or
         # photo) continues the same thread, mirroring the text-reply handlers.
         if reregister and sent_message is not None:
-            store, ctx_obj = reregister
-            store[sent_message.message_id] = ctx_obj
+            store, obj = reregister
+            store[sent_message.message_id] = obj
 
     async def handle_reply_to_evaluation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle replies to evaluation responses"""
