@@ -771,6 +771,12 @@ class TelegramAIBot:
             self.handle_reply_to_evaluation
         ), group=1)
 
+        # Photo handler - analyze attached images (e.g. chart screenshots) via vision LLM
+        self.application.add_handler(MessageHandler(
+            filters.PHOTO & ~filters.COMMAND,
+            self.handle_photo
+        ), group=1)
+
         # Report command handler
         report_conv_handler = ConversationHandler(
             entry_points=[
@@ -1023,6 +1029,73 @@ class TelegramAIBot:
         # Error handler
         self.application.add_error_handler(self.handle_error)
     
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Analyze an attached image (e.g. a chart screenshot) with the vision LLM.
+
+        The user sends a photo, optionally with a caption for extra context; the
+        largest available resolution is downloaded and passed to analyze_image().
+        Rate-limited per user like the other on-demand LLM commands.
+        """
+        if not update.message or not update.message.photo:
+            return
+
+        user_id = update.effective_user.id if update.effective_user else 0
+
+        # Rate limit (shared daily-count bucket, same cap as signal/theme commands)
+        allowed, remaining = self.check_daily_limit_count(user_id, "chart", max_count=10)
+        if not allowed:
+            await update.message.reply_text(
+                "오늘 이미지 분석 사용 한도(10회)를 모두 사용하셨습니다. 내일 다시 시도해주세요."
+            )
+            return
+
+        try:
+            # Largest resolution is the last entry in the PhotoSize list
+            photo = update.message.photo[-1]
+            tg_file = await photo.get_file()
+            image_bytes = bytes(await tg_file.download_as_bytearray())
+        except Exception as exc:
+            logger.error(f"[CHART] image download failed: {exc}")
+            self.refund_daily_limit_count(user_id, "chart")
+            await update.message.reply_text("이미지를 받지 못했습니다. 다시 보내주세요.")
+            return
+
+        caption = (update.message.caption or "").strip()
+
+        prompt = (
+            "당신은 주식 차트를 읽는 전문 트레이더입니다. 첨부된 이미지를 분석해 "
+            "한국어로 설명하세요.\n"
+            "- 이미지가 주식/코인 차트라면: 추세(상승/하락/횡보), 주요 지지·저항 구간, "
+            "거래량 특징, 눈에 띄는 캔들/패턴, 그리고 유의할 리스크를 짚어주세요.\n"
+            "- 차트가 아니라면: 이미지에 무엇이 보이는지 간단히 설명하세요.\n"
+            "확정적 매수·매도 지시는 하지 말고, 관찰과 시나리오 위주로 서술하세요. "
+            "종목명이나 가격이 이미지에서 불명확하면 추측하지 말고 그렇게 밝히세요."
+        )
+        if caption:
+            prompt += f"\n\n[사용자 메모] {caption}"
+
+        try:
+            await update.message.chat.send_action(action="typing")
+        except Exception:
+            pass
+
+        # analyze_image never raises: returns None on error / when vision is off
+        from cores.llm.features.vision import analyze_image
+
+        result = await analyze_image(image_bytes, prompt)
+
+        if not result:
+            self.refund_daily_limit_count(user_id, "chart")
+            await update.message.reply_text(
+                "이미지 분석 기능을 사용할 수 없습니다. (비전 모델 비활성화 또는 일시적 오류)"
+            )
+            return
+
+        text = str(result).strip()
+        # Telegram hard limit is 4096 chars per message — chunk safely
+        for i in range(0, len(text), 4000):
+            await update.message.reply_text(text[i:i + 4000])
+
     async def handle_reply_to_evaluation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle replies to evaluation responses"""
         if not update.message or not update.message.reply_to_message:
@@ -1291,6 +1364,9 @@ class TelegramAIBot:
             "/ask [질문] - AI에게 투자 관련 자유 질문 (일 3회)\n"
             "  예: <code>/ask 코스피 17년래 최강 상승 다음주도 오를까?</code>\n"
             "  예: <code>/ask 워렌 버핏이 올해 뭘 샀어?</code>\n\n"
+            "🖼️ <b>차트 이미지 분석 (일 10회):</b>\n"
+            "차트 스크린샷을 그냥 사진으로 보내면 AI가 추세·지지/저항·거래량·리스크를 분석해 드립니다.\n"
+            "  • 사진에 캡션을 달면 참고 정보로 활용됩니다\n\n"
             "<b>보유 종목 평가 방법 (한국/미국 동일):</b>\n"
             "1. /evaluate 또는 /us_evaluate 명령어 입력\n"
             "2. 종목 코드/티커 입력 (예: 005930 또는 AAPL)\n"
