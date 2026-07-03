@@ -1030,11 +1030,14 @@ class TelegramAIBot:
         self.application.add_error_handler(self.handle_error)
     
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Analyze an attached image (e.g. a chart screenshot) with the vision LLM.
+        """Analyze a chart image sent as a reply to an ongoing bot conversation.
 
-        The user sends a photo, optionally with a caption for extra context; the
-        largest available resolution is downloaded and passed to analyze_image().
-        Rate-limited per user like the other on-demand LLM commands.
+        Reply-only: the photo must reply to a bot message that still carries a
+        conversation context (journal / firecrawl / insight / evaluation). A
+        summary of that context is folded into the vision prompt and the context
+        is re-registered on the sent reply so the thread continues. A context-less
+        photo gets a short usage hint instead (bare photos never reach the bot in
+        group chats under Telegram privacy mode). Rate-limited per user.
         """
         if not update.message or not update.message.photo:
             return
@@ -1117,6 +1120,18 @@ class TelegramAIBot:
                 market_label = "미국" if market == "us" else "한국"
                 context_block = f"평가 종목: {t_name} ({t_code}), 시장: {market_label}".strip()
                 reregister = (self.conversation_contexts, cctx)
+
+        # Reply-only: a bare photo (no active bot-conversation context) is not a
+        # supported entry point. In group chats Telegram privacy mode never even
+        # delivers such messages to the bot; in DMs it would, but analyzing a
+        # context-less image is not the intended flow. Guide the user instead.
+        if reregister is None:
+            await update.message.reply_text(
+                "📈 차트 이미지 분석은 봇과의 대화에 이어서 사용해주세요.\n"
+                "먼저 /evaluate · /report · /signal · /insight 등으로 대화를 시작한 뒤, "
+                "봇 답변에 차트 이미지로 답장하시면 그 맥락에 맞춰 분석해 드립니다."
+            )
+            return
 
         # Rate limit (shared daily-count bucket, same cap as signal/theme commands)
         allowed, remaining = self.check_daily_limit_count(user_id, "chart", max_count=10)
