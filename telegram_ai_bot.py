@@ -1041,6 +1041,83 @@ class TelegramAIBot:
 
         user_id = update.effective_user.id if update.effective_user else 0
 
+        # --- Context-aware reply detection ---------------------------------
+        # When this photo is a reply to a prior bot message that still carries
+        # a conversation context, fold a short summary of that context into the
+        # vision prompt and re-register the same context on the sent reply so
+        # the user can keep the thread going (mirrors the text-reply handlers).
+        # A photo message has a caption (not .text) so it never reaches
+        # handle_reply_to_evaluation (filters.TEXT) — no handler conflict.
+        reply_msg = update.message.reply_to_message
+        replied_to_msg_id = reply_msg.message_id if reply_msg else None
+        context_block = None   # prior-conversation summary to prepend, or None
+        reregister = None      # (store_dict, context_obj) to re-register, or None
+
+        if replied_to_msg_id is not None:
+            # 1. journal_contexts — plain dict, created_at-based 30min expiry
+            if replied_to_msg_id in self.journal_contexts:
+                jctx = self.journal_contexts[replied_to_msg_id]
+                created_at = jctx.get('created_at')
+                if created_at and (datetime.now() - created_at).total_seconds() > 1800:
+                    await update.message.reply_text(
+                        "이전 대화 세션이 만료되었습니다.\n"
+                        "/journal 명령어로 새로운 대화를 시작해주세요. 💭"
+                    )
+                    del self.journal_contexts[replied_to_msg_id]
+                    return
+                t_name = jctx.get('ticker_name') or ''
+                t_code = jctx.get('ticker') or ''
+                context_block = f"매매일지 종목: {t_name} ({t_code})".strip()
+                reregister = (self.journal_contexts, jctx)
+
+            # 2. firecrawl_contexts — FirecrawlConversationContext, 24h expiry
+            elif replied_to_msg_id in self.firecrawl_contexts:
+                fctx = self.firecrawl_contexts[replied_to_msg_id]
+                if fctx.is_expired():
+                    await update.message.reply_text(
+                        "이전 리서치 세션이 만료되었습니다. 명령어를 다시 입력해주세요."
+                    )
+                    del self.firecrawl_contexts[replied_to_msg_id]
+                    return
+                cmd = getattr(fctx, 'command', '') or ''
+                query = getattr(fctx, 'query', '') or ''
+                context_block = f"이전 리서치 명령어: /{cmd}, 질의: {query}".strip()
+                reregister = (self.firecrawl_contexts, fctx)
+
+            # 2.5 insight_contexts — InsightConversationContext, 30min expiry
+            elif replied_to_msg_id in self.insight_contexts:
+                ictx = self.insight_contexts[replied_to_msg_id]
+                if ictx.is_expired():
+                    await update.message.reply_text(
+                        "이전 /insight 세션이 만료되었습니다. /insight로 새로 시작해주세요."
+                    )
+                    del self.insight_contexts[replied_to_msg_id]
+                    return
+                q = getattr(ictx, 'original_question', '') or ''
+                context_block = f"이전 /insight 질문: {q}".strip()
+                reregister = (self.insight_contexts, ictx)
+
+            # 3. conversation_contexts — ConversationContext (report/eval), 24h expiry
+            elif replied_to_msg_id in self.conversation_contexts:
+                cctx = self.conversation_contexts[replied_to_msg_id]
+                if cctx.is_expired():
+                    if getattr(cctx, 'market_type', 'kr') == "us":
+                        await update.message.reply_text(
+                            "이전 대화 세션이 만료되었습니다. 새로운 평가를 시작하려면 /us_evaluate 명령어를 사용해주세요."
+                        )
+                    else:
+                        await update.message.reply_text(
+                            "이전 대화 세션이 만료되었습니다. 새로운 평가를 시작하려면 /evaluate 명령어를 사용해주세요."
+                        )
+                    del self.conversation_contexts[replied_to_msg_id]
+                    return
+                t_name = getattr(cctx, 'ticker_name', '') or ''
+                t_code = getattr(cctx, 'ticker', '') or ''
+                market = getattr(cctx, 'market_type', 'kr')
+                market_label = "미국" if market == "us" else "한국"
+                context_block = f"평가 종목: {t_name} ({t_code}), 시장: {market_label}".strip()
+                reregister = (self.conversation_contexts, cctx)
+
         # Rate limit (shared daily-count bucket, same cap as signal/theme commands)
         allowed, remaining = self.check_daily_limit_count(user_id, "chart", max_count=10)
         if not allowed:
@@ -1071,6 +1148,16 @@ class TelegramAIBot:
             "확정적 매수·매도 지시는 하지 말고, 관찰과 시나리오 위주로 서술하세요. "
             "종목명이나 가격이 이미지에서 불명확하면 추측하지 말고 그렇게 밝히세요."
         )
+        # Prepend the prior-conversation summary so the vision model answers in
+        # the context of the ongoing thread (analyze_image is text-prompt + image,
+        # so multi-turn is emulated by injecting this "이전 대화 맥락" block).
+        if context_block:
+            prompt = (
+                "이전 대화 맥락:\n"
+                f"{context_block}\n\n"
+                "위 맥락을 참고하여, 첨부된 이미지를 분석하고 이어지는 대화로 답변하세요.\n\n"
+                + prompt
+            )
         if caption:
             prompt += f"\n\n[사용자 메모] {caption}"
 
@@ -1093,8 +1180,15 @@ class TelegramAIBot:
 
         text = str(result).strip()
         # Telegram hard limit is 4096 chars per message — chunk safely
+        sent_message = None
         for i in range(0, len(text), 4000):
-            await update.message.reply_text(text[i:i + 4000])
+            sent_message = await update.message.reply_text(text[i:i + 4000])
+
+        # Re-register the context on the sent reply so a follow-up reply (text or
+        # photo) continues the same thread, mirroring the text-reply handlers.
+        if reregister and sent_message is not None:
+            store, ctx_obj = reregister
+            store[sent_message.message_id] = ctx_obj
 
     async def handle_reply_to_evaluation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle replies to evaluation responses"""
