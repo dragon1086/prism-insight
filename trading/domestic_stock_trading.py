@@ -9,6 +9,7 @@ import asyncio
 import datetime
 import logging
 import math
+import time
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from zoneinfo import ZoneInfo
@@ -1512,6 +1513,35 @@ class DomesticStockTrading:
 
         return result
 
+    def _request_with_retry(self, api_url: str, tr_id: str, params: Dict[str, Any], attempts: int = 3):
+        """
+        Retry wrapper for read-only inquiries.
+
+        Transient gateway errors (e.g. EGW00215 "초당 거래건수 초과" per-second
+        rate limit) must not surface as a normal failure: callers such as
+        get_holding_quantity() interpret an empty portfolio as "no holdings"
+        and abort sell orders. The per-second quota resets quickly, so a short
+        backoff retry recovers. Returns the last response (caller checks isOK()).
+        """
+        res = None
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(attempt)  # 1s, 2s — per-second quota resets each second
+            try:
+                res = self._request(api_url, tr_id, params)
+            except Exception as e:
+                if attempt == attempts - 1:
+                    raise
+                logger.warning(f"Inquiry error, retrying ({attempt + 1}/{attempts}): {e}")
+                continue
+            if res.isOK():
+                return res
+            logger.warning(
+                f"Inquiry failed, retrying ({attempt + 1}/{attempts}): "
+                f"{res.getErrorCode()} - {res.getErrorMessage()}"
+            )
+        return res
+
     def get_portfolio(self) -> List[Dict[str, Any]]:
         """
         Get current account portfolio
@@ -1551,7 +1581,7 @@ class DomesticStockTrading:
         }
 
         try:
-            res = self._request(api_url, tr_id, params)
+            res = self._request_with_retry(api_url, tr_id, params)
 
             if res.isOK():
                 current_portfolio = []
