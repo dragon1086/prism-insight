@@ -48,16 +48,14 @@ def test_enhance_dataframe_fetches_ticker_names_in_one_batch(monkeypatch):
 
 
 def test_enhance_dataframe_keeps_rows_when_name_lookup_times_out(monkeypatch):
+    calls = []
+
     class TimeoutClient:
         def get_market_ticker_name(self, market="ALL"):
+            calls.append(market)
             raise TimeoutError("KRX timeout")
 
     monkeypatch.setattr(t, "_get_client", lambda: TimeoutClient(), raising=False)
-    monkeypatch.setattr(
-        t.stock_api,
-        "get_market_ticker_name",
-        lambda ticker: (_ for _ in ()).throw(TimeoutError("KRX timeout")),
-    )
 
     df = pd.DataFrame({"Close": [70000, 120000]}, index=["005930", "000660"])
 
@@ -67,4 +65,42 @@ def test_enhance_dataframe_keeps_rows_when_name_lookup_times_out(monkeypatch):
     assert result["stock_name"].to_dict() == {
         "005930": "005930",
         "000660": "000660",
+    }
+    assert calls == ["ALL"]
+
+
+def test_enhance_dataframe_caches_failed_lookup_for_process(monkeypatch):
+    calls = []
+
+    class TimeoutClient:
+        def get_market_ticker_name(self, market="ALL"):
+            calls.append(market)
+            raise TimeoutError("KRX timeout")
+
+    monkeypatch.setattr(t, "_get_client", lambda: TimeoutClient(), raising=False)
+
+    df = pd.DataFrame({"Close": [70000]}, index=["005930"])
+
+    first = t.enhance_dataframe(df)
+    second = t.enhance_dataframe(df)
+
+    assert calls == ["ALL"]
+    assert first["stock_name"].to_dict() == {"005930": "005930"}
+    assert second["stock_name"].to_dict() == {"005930": "005930"}
+
+
+def test_enhance_dataframe_normalizes_numeric_ticker_index(monkeypatch):
+    class FakeClient:
+        def get_market_ticker_name(self, market="ALL"):
+            return {"005930": "SAMSUNG"}
+
+    monkeypatch.setattr(t, "_get_client", lambda: FakeClient(), raising=False)
+
+    df = pd.DataFrame({"Close": [70000, 120000]}, index=[5930, 660])
+
+    result = t.enhance_dataframe(df)
+
+    assert result["stock_name"].to_dict() == {
+        5930: "SAMSUNG",
+        660: "000660",
     }
