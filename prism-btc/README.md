@@ -76,3 +76,31 @@ print(snap.to_json())
 | 40–60 | Weak alignment — entry caution (10–15x, 1 tranche only) |
 | < 40  | No trade (sideways / conflicted) |
 | < 0   | Short bias |
+
+## ⚠️ Local Environment — pandas rolling bug on Python 3.14
+
+루트 `.venv`(Python 3.14)에서는 pandas 2.x의 `rolling()` 계열이 **약 2.1만 행
+이상 시리즈에서 전부 NaN**을 반환한다 (2026-07 확인; 30m/1h TF가 해당 →
+지표 전-NaN → 신호 0으로 백테스트/분석이 조용히 오염됨). pandas 2.x는
+cp314 wheel이 있어도 windowed aggregation이 깨져 있고 pandas 3.0에서만
+정상이다.
+
+**맥 로컬에서 백테스트/분석 실행 시 반드시 `.venv-bt` 사용** (Python 3.12 +
+pandas 2.2.3 — db-server와 동일 버전, 결과 일치 검증됨):
+
+```bash
+cd /path/to/prism-insight
+.venv-bt/bin/python -m pytest prism-btc/tests -q          # 275 passed
+cd prism-btc && ../.venv-bt/bin/python -m analysis.round5_gate_cross
+```
+
+없으면 재생성:
+
+```bash
+/opt/homebrew/bin/python3.12 -m venv .venv-bt
+.venv-bt/bin/pip install "pandas==2.2.3" "numpy==2.2.6" pytest requests python-dotenv
+```
+
+`analysis/round5_gate_cross.py` 에는 전-NaN 즉시-실패 가드가 있다.
+루트 `.venv` 자체의 근본 수리는 Python 3.12 재구축이 정답이나, 라이브
+subscriber(tmux)가 사용 중이므로 장 마감 유지보수 창에서만 수행할 것.

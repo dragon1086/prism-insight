@@ -13,6 +13,7 @@ config.py
 # Python virtual environments
 venv/
 .venv/
+.venv-bt/
 env/
 ENV/
 
