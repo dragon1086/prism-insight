@@ -153,6 +153,37 @@ def _recent_scores(conn, mode: str, limit: int = 4) -> list[float]:
     return [float(r["score"]) for r in reversed(rows) if r["score"] is not None]
 
 
+def _near_miss_7d(conn, mode: str, score_min: float, ts_min: float,
+                  now: str | None = None) -> dict | None:
+    """최근 7일 중 진입 게이트에 가장 근접했던 평가 1건.
+
+    우선순위: 점수 게이트(|score|>=score_min)를 통과한 행 중 ts_4h 최대
+    → 없으면 |score| 최대 행. 무매매 기간에도 "얼마나 아깝게 관망했는지"를
+    보여주기 위한 것. now 주입으로 결정적 테스트 가능(healthcheck와 동일 원칙).
+    실패는 전부 흡수(None) — 리포트 비중단.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT ts, score, ts_4h FROM btc_signal_log "
+            "WHERE mode=? AND datetime(ts) >= datetime(COALESCE(?, 'now'), '-7 days') "
+            "AND score IS NOT NULL AND ts_4h IS NOT NULL",
+            (mode, now),
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        return None
+    if not rows:
+        return None
+    passed = [r for r in rows if abs(r["score"]) >= score_min]
+    if passed:
+        best = max(passed, key=lambda r: r["ts_4h"])
+        blocked_by = "ts"
+    else:
+        best = max(rows, key=lambda r: abs(r["score"]))
+        blocked_by = "score"
+    return {"ts": best["ts"], "score": float(best["score"]),
+            "ts_4h": float(best["ts_4h"]), "blocked_by": blocked_by}
+
+
 def _entry_gates() -> tuple[float, float]:
     """진입 게이트 상수 (점수문턱, 추세강도최소). import 실패 시 현행 기본값."""
     try:
@@ -383,6 +414,21 @@ def build_message(conn, mode: str) -> str:
                 else:
                     trend = "큰 변화 없음"
                 lines.append(f"• 최근 점수 흐름: {arrow} ({trend})")
+            # 최근 7일 게이트 최접근 — 무매매여도 시스템이 뭘 보고 참았는지.
+            nm = _near_miss_7d(conn, mode, score_min, ts_min)
+            if nm is not None:
+                when = str(nm["ts"])[5:13].replace("T", " ") + "시(UTC)"
+                if nm["blocked_by"] == "ts":
+                    lines.append(
+                        f"• 최근 7일 최접근: {when} 점수 {nm['score']:+.0f} 통과 · "
+                        f"추세 힘 {nm['ts_4h']:.2f} (최소 {ts_min:.1f}, "
+                        f"{max(ts_min - nm['ts_4h'], 0):.2f} 부족)"
+                    )
+                else:
+                    lines.append(
+                        f"• 최근 7일 최접근: {when} 점수 {nm['score']:+.0f} "
+                        f"(문턱 ±{score_min:.0f}, {max(score_min - abs(nm['score']), 0):.0f}점 부족)"
+                    )
         elif side in ("long", "short"):
             lines.append(f"• 종합 판단: {_side_kr(side)} *신호 포착* — 진입 조건 확인 중")
             if score is not None:

@@ -32,6 +32,11 @@ CANDLE_BONUS_FRAC: float = 0.20  # up to ±20% of each TF weight
 # realized trading (first-gate-crossing entries land at trend saturation; 21 trades,
 # avg -0.5R). 70 keeps the 70–85 bucket (14d +1.78%) and passed 2026H1 OOS.
 # See analysis/round4_attribution.py — attribution cells only, no grid sweep.
+# 라운드5 재검증 (2026-07, 라이브 20일 무매매 관찰 후 게이트 완화 가설 검토):
+# 2020-11~2026-06 전체 표본(n=5,073)의 score×ts_4h 교차셀에서 현행 셀
+# (|score|>=70 & ts>=2.0)은 14d +5.10%/hit 65% (n=793)로 3개 분리 기간 모두 유효.
+# 완화 후보 55-70×ts>=2 (14d -0.05%), 조기레인 55-70×ts>=3.5 (n=10, 3d 음수) 모두
+# 기각 — 게이트 유지. See analysis/round5_gate_cross.py, tasks/btc_round5_gate_review.md.
 ENTRY_SCORE_MIN: float = 70.0
 
 # --- Chop filter: trend-strength gate (라운드2 구조개선 #1) ---
@@ -42,6 +47,8 @@ ENTRY_SCORE_MIN: float = 70.0
 # 1.0 → 2.0 (라운드4, tasks/v3_edge_diagnosis.md §1): 4h ts 1–2 is a proven
 # anti-edge bucket (7d hit 41.0%, mean -0.58%, p=0.0001, n=504); the edge only
 # exists at ts 2+ (2–3.5: 14d hit 64.9%; 3.5+: 77.4%). No parameter sweep.
+# 라운드5 (2026-07): 2020-2026 교차셀에서도 ts<2 는 score 85+ 조차 무엣지
+# (n=1,046, 14d +1.37%/49%) — 게이트 유지 재확인. analysis/round5_gate_cross.py.
 TS_MIN: float = 2.0
 # TFs that must clear TS_MIN before a new entry is allowed.
 # 라운드4: ("4h","1d") → ("4h",). The H1 study measured the *4h* ts buckets;
