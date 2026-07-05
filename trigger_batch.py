@@ -7,7 +7,9 @@ import datetime
 import pandas as pd
 import numpy as np
 import logging
+from typing import Optional
 from krx_data_client import (
+    _get_client,
     get_market_ohlcv_by_ticker,
     get_nearest_business_day_in_a_week,
     get_market_cap_by_ticker,
@@ -28,6 +30,35 @@ ch = logging.StreamHandler()
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
+
+
+_TICKER_NAME_CACHE: Optional[dict[str, str]] = None
+
+
+def _normalize_ticker_code(ticker) -> str:
+    ticker_code = str(ticker).strip()
+    if ticker_code.isdigit():
+        return ticker_code.zfill(6)
+    return ticker_code
+
+
+def _get_ticker_name_map() -> dict[str, str]:
+    """Fetch all ticker names once per process to avoid repeated KRX calls."""
+    global _TICKER_NAME_CACHE
+    if _TICKER_NAME_CACHE is None:
+        try:
+            client = _get_client()
+            names = client.get_market_ticker_name(market="ALL")
+            _TICKER_NAME_CACHE = {_normalize_ticker_code(ticker): str(name) for ticker, name in names.items()}
+        except Exception as e:
+            logger.warning(f"KRX ticker name lookup failed; using ticker codes as names: {e}")
+            _TICKER_NAME_CACHE = {}
+    return _TICKER_NAME_CACHE
+
+
+def _get_display_ticker_name(ticker, name_map: dict[str, str]) -> str:
+    ticker_code = _normalize_ticker_code(ticker)
+    return name_map.get(ticker_code, ticker_code)
 
 
 # --- Data collection and caching functions ---
@@ -187,7 +218,8 @@ def enhance_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """
     if not df.empty:
         df = df.copy()  # Explicitly create copy to prevent SettingWithCopyWarning
-        df["stock_name"] = df.index.map(lambda ticker: stock_api.get_market_ticker_name(ticker))
+        name_map = _get_ticker_name_map()
+        df["stock_name"] = df.index.map(lambda ticker: _get_display_ticker_name(ticker, name_map))
     return df
 
 
