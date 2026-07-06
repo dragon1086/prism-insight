@@ -2670,8 +2670,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                     current_slots = await self._get_current_slots_count()
                     if current_slots >= self.max_slots:
-                        reason = f"Max slots reached for {label}"
-                        logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
+                        # User-facing reason must NOT include the account label (leaks
+                        # masked account number to broadcast channels). Keep detail in logs only.
+                        reason = "Max slots reached (portfolio full)"
+                        logger.info(f"Purchase deferred: {company_name} ({ticker}) - Max slots reached for {label}")
                         state["should_save_watchlist"] = True
                         state["skip_reason"] = state["skip_reason"] or reason
                         continue
