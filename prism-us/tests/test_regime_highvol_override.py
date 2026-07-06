@@ -46,10 +46,13 @@ def _sp_df(closes):
 
 
 def test_integration_us_crash_whipsaw_downgraded():
-    # 50일선 '위'를 유지(→moderate_bull 성립)하면서 최근 고점 대비 급락형 고변동.
-    # (50일선 아래로 내려가면 기존 로직이 이미 sideways 처리 → override는 이 사각지대용)
-    closes = list(np.linspace(3000, 6000, 205)) + \
-        [6100, 6300, 6600, 6200, 6500, 6000, 6400, 5950, 6350, 6050]
+    # override가 가치를 더하는 좁은 사각지대: 최근 급등(spike)으로 50일선 '위'를 유지하면서
+    # 그 고점 대비 순하락(net<=-3%)·고변동으로 되밀리는 경우. (순하락이 크면 보통 50선을
+    # 깨고 기존 로직이 sideways 처리하므로, spike 로 50MA 를 낮게 눌러둔 구성)
+    # 고점(peak)은 11~20일 전, 최근 11일은 net<=-3%로 되밀림 → override 발동(검증된 계열).
+    closes = list(np.linspace(3000, 5600, 200)) + \
+        [5750, 6000, 6250, 6400, 6500] + \
+        [6250, 6450, 6000, 6300, 5800, 6150, 5650, 6000, 5650, 5950]
     r = _compute_us_regime(_sp_df(closes), None, None)
     assert r["index_summary"]["highvol_drawdown_override"] is not None
     assert r["market_regime"] == "sideways"

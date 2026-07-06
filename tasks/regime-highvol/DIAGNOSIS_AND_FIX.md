@@ -52,9 +52,14 @@ if above_120:                              # 가격 > 120일선
 
 `cores/data_prefetch.py`:
 - `_high_vol_drawdown_override(closes, regime, confidence)` 순수 함수 추가.
-- `_compute_kr_regime` 반환 직전 1회 호출. bull 계열이고
-  **① 최근 10일 실현변동성 ≥ 2.5%** **AND ② 20일 고점 대비 낙폭 ≥ 8%** 이면
-  `sideways`로 강등 + confidence 하향. `index_summary["highvol_drawdown_override"]`에 사유 기록.
+- `_compute_kr_regime` 반환 직전 1회 호출. bull 계열이고 **3중 조건**
+  **① 최근 10일 실현변동성 ≥ 2.5% AND ② 20일 고점 대비 낙폭 ≥ 8% AND ③ 최근 10일 순변화 ≤ -3%**
+  이면 `sideways`로 강등 + confidence 하향. `index_summary["highvol_drawdown_override"]`에 사유 기록.
+
+  ⚠️ **조건 ③(순변화)이 반드시 필요**: 스윕 검증에서 ①+②만으로는 **낙폭 0%인 횡보·급등형
+  고변동장도 강등**되는 것이 발견됨(고변동이면 20일 고점이 자동으로 높아져 낙폭 게이트가 무력화).
+  순변화 ≤ -3% 조건을 추가해 "실제로 하락 중"일 때만 발동하도록 교정 → melt-up/횡보 오강등 제거.
+  (dd=0% 행이 재스윕에서 전부 moderate_bull 유지됨을 확인.)
 
 ### 왜 이 설계인가 (팀의 과거 결정 존중)
 

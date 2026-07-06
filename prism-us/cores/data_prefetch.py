@@ -1001,7 +1001,8 @@ DISTRIBUTION_RECOVERY_PCT = 5.0
 # 참고: US 는 VIX 를 이미 strong_bull/strong_bear 조건에 쓰지만 moderate_bull 분기엔 없어
 # 동일 사각지대가 존재 → 여기서 실현변동성+낙폭으로 보강(시장 무관 대칭 구현).
 HIVOL_DD_VOL_PCT = 2.5       # 최근 10일 일간수익률 표준편차 임계(%). S&P500 평시 ~1%.
-HIVOL_DD_DRAWDOWN_PCT = 8.0  # 최근 20일 고점 대비 낙폭 임계(%). melt-up(≈0%) 배제용.
+HIVOL_DD_DRAWDOWN_PCT = 8.0  # 최근 20일 고점 대비 낙폭 임계(%).
+HIVOL_DD_NET_DECLINE_PCT = -3.0  # 최근 10일 '순변화' 임계(%). 급등형(net +) 배제 핵심조건.
 HIVOL_DD_CONFIDENCE = 0.55   # 강등 시 신뢰도(낮춤).
 _BULL_REGIMES = ("strong_bull", "moderate_bull")
 
@@ -1026,13 +1027,19 @@ def _high_vol_drawdown_override(closes, regime: str, confidence: float):
     recent = arr[-11:]
     rets = np.diff(recent) / recent[:-1]
     vol_pct = float(np.std(rets) * 100)
+    net_change_pct = (float(arr[-1]) - float(recent[0])) / float(recent[0]) * 100  # 최근 순변화
     window = arr[-20:] if len(arr) >= 20 else arr
     peak = float(np.max(window))
     drawdown_pct = (peak - float(arr[-1])) / peak * 100 if peak > 0 else 0.0
-    if vol_pct >= HIVOL_DD_VOL_PCT and drawdown_pct >= HIVOL_DD_DRAWDOWN_PCT:
+    # 3중 조건: 고변동 AND 고점대비 낙폭 AND '실제로 하락 중'(순변화 마이너스).
+    # 순변화 조건이 급등형(net +)/횡보 고변동을 배제 → melt-up 오강등 방지 핵심.
+    if (vol_pct >= HIVOL_DD_VOL_PCT
+            and drawdown_pct >= HIVOL_DD_DRAWDOWN_PCT
+            and net_change_pct <= HIVOL_DD_NET_DECLINE_PCT):
         reason = (
             f"{regime}->sideways (vol10d={vol_pct:.1f}%>={HIVOL_DD_VOL_PCT}, "
-            f"dd20d={drawdown_pct:.1f}%>={HIVOL_DD_DRAWDOWN_PCT})"
+            f"dd20d={drawdown_pct:.1f}%>={HIVOL_DD_DRAWDOWN_PCT}, "
+            f"net10d={net_change_pct:.1f}%<={HIVOL_DD_NET_DECLINE_PCT})"
         )
         return "sideways", min(confidence, HIVOL_DD_CONFIDENCE), reason
     return regime, confidence, None
