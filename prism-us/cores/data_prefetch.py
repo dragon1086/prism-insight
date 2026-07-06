@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 import importlib.util
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -992,6 +993,50 @@ DISTRIBUTION_WINDOW = 25
 DISTRIBUTION_DROP_PCT = 0.2
 DISTRIBUTION_RECOVERY_PCT = 5.0
 
+# 고변동·낙폭 override 파라미터 (TUNABLE — 배포 전 tools/regime_backtest.py 로 검증/튜닝 권장).
+# KR cores/data_prefetch.py 와 동일 구현(포크 병렬). 장기이평(50/200일선) 위에 '가격 레벨이
+# 지연되어' 떠 있으나 실제로는 급락형 고변동(whipsaw) 국면이 strong/moderate_bull 로 관대하게
+# 분류돼 고점매수→손절이 반복되는 것을 방지. 낙폭 조건으로 melt-up(신고가 부근 고변동)은 배제
+# → 989줄에서 우려한 'melt-up 조기청산' 문제를 구조적으로 회피(과최적화 경계 존중).
+# 참고: US 는 VIX 를 이미 strong_bull/strong_bear 조건에 쓰지만 moderate_bull 분기엔 없어
+# 동일 사각지대가 존재 → 여기서 실현변동성+낙폭으로 보강(시장 무관 대칭 구현).
+HIVOL_DD_VOL_PCT = 2.5       # 최근 10일 일간수익률 표준편차 임계(%). S&P500 평시 ~1%.
+HIVOL_DD_DRAWDOWN_PCT = 8.0  # 최근 20일 고점 대비 낙폭 임계(%). melt-up(≈0%) 배제용.
+HIVOL_DD_CONFIDENCE = 0.55   # 강등 시 신뢰도(낮춤).
+_BULL_REGIMES = ("strong_bull", "moderate_bull")
+
+
+def _high_vol_drawdown_override(closes, regime: str, confidence: float):
+    """급락형 고변동 국면이면 bull 라벨을 sideways 로 강등(순수 함수, 부작용 없음).
+
+    발동 조건(모두 충족): regime 이 bull 계열 AND 최근 10일 실현변동성 >= HIVOL_DD_VOL_PCT
+    AND 최근 20일 고점 대비 낙폭 >= HIVOL_DD_DRAWDOWN_PCT (= melt-up 이 아님).
+    강등은 sideways 까지만 — 기존 REGIME 매수 문턱/슬롯/가중치가 자동 보수화된다.
+
+    Returns: (regime, confidence, reason) — 미발동 시 reason 은 None.
+    """
+    if regime not in _BULL_REGIMES:
+        return regime, confidence, None
+    if closes is None or len(closes) < 11:
+        return regime, confidence, None
+    arr = np.asarray(closes, dtype=float)
+    arr = arr[~np.isnan(arr)]
+    if len(arr) < 11:
+        return regime, confidence, None
+    recent = arr[-11:]
+    rets = np.diff(recent) / recent[:-1]
+    vol_pct = float(np.std(rets) * 100)
+    window = arr[-20:] if len(arr) >= 20 else arr
+    peak = float(np.max(window))
+    drawdown_pct = (peak - float(arr[-1])) / peak * 100 if peak > 0 else 0.0
+    if vol_pct >= HIVOL_DD_VOL_PCT and drawdown_pct >= HIVOL_DD_DRAWDOWN_PCT:
+        reason = (
+            f"{regime}->sideways (vol10d={vol_pct:.1f}%>={HIVOL_DD_VOL_PCT}, "
+            f"dd20d={drawdown_pct:.1f}%>={HIVOL_DD_DRAWDOWN_PCT})"
+        )
+        return "sideways", min(confidence, HIVOL_DD_CONFIDENCE), reason
+    return regime, confidence, None
+
 
 def _count_distribution_days(df, close_col, volume_col=None,
                              window: int = DISTRIBUTION_WINDOW,
@@ -1239,6 +1284,12 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
 
     # O'Neil 분산일 결정론 카운트를 index_summary에 정보로 주입(강등 없음 — LLM이 프롬프트에서 판단)
     _inject_distribution_days(index_summary, sp500_df, close_col)
+
+    # 고변동·낙폭 override: 장기이평 위이나 '급락형 휩쏘'면 bull->sideways 강등(melt-up 배제).
+    regime, confidence, _hivol_reason = _high_vol_drawdown_override(
+        closes_full.to_numpy(), regime, confidence
+    )
+    index_summary["highvol_drawdown_override"] = _hivol_reason
 
     return {
         "market_regime": regime,
