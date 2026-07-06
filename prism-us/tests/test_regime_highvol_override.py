@@ -53,7 +53,11 @@ def test_integration_us_crash_whipsaw_downgraded():
     closes = list(np.linspace(3000, 5600, 200)) + \
         [5750, 6000, 6250, 6400, 6500] + \
         [6250, 6450, 6000, 6300, 5800, 6150, 5650, 6000, 5650, 5950]
-    r = _compute_us_regime(_sp_df(closes), None, None)
+    os.environ["REGIME_HIVOL_OVERRIDE"] = "active"
+    try:
+        r = _compute_us_regime(_sp_df(closes), None, None)
+    finally:
+        os.environ.pop("REGIME_HIVOL_OVERRIDE", None)
     assert r["index_summary"]["highvol_drawdown_override"] is not None
     assert r["market_regime"] == "sideways"
 

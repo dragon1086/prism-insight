@@ -93,13 +93,38 @@ def _ohlcv(closes):
     return d
 
 
-def test_integration_july_crash_whipsaw_downgraded():
-    # 실제 7월형: 랠리로 120/60선 위 + 최근 급락형 휩쏘 → sideways 로 강등되어야
-    closes = list(np.linspace(3100, 8300, 110)) + \
-        [8600, 8550, 8500, 8450, 8400, 8380, 8350, 8303, 7648, 7900]
-    r = _compute_kr_regime(_ohlcv(closes), None)
+_JULY_CRASH = list(np.linspace(3100, 8300, 110)) + \
+    [8600, 8550, 8500, 8450, 8400, 8380, 8350, 8303, 7648, 7900]
+
+
+def test_integration_active_mode_downgrades():
+    # active 모드: 실제 7월형 급락 휩쏘 → sideways 로 강등
+    os.environ["REGIME_HIVOL_OVERRIDE"] = "active"
+    try:
+        r = _compute_kr_regime(_ohlcv(_JULY_CRASH), None)
+    finally:
+        os.environ.pop("REGIME_HIVOL_OVERRIDE", None)
     assert r["market_regime"] == "sideways"
     assert r["index_summary"]["highvol_drawdown_override"] is not None
+
+
+def test_integration_shadow_mode_logs_but_does_not_apply():
+    # shadow(기본): 강등 '판단'은 기록하되 regime 은 그대로(매매 무영향)
+    os.environ.pop("REGIME_HIVOL_OVERRIDE", None)  # 기본값 = shadow
+    r = _compute_kr_regime(_ohlcv(_JULY_CRASH), None)
+    assert r["market_regime"] == "moderate_bull"          # 미적용
+    assert r["index_summary"]["highvol_override_mode"] == "shadow"
+    assert r["index_summary"]["highvol_drawdown_override"] is not None  # 사유는 기록
+
+
+def test_integration_off_mode_no_field():
+    os.environ["REGIME_HIVOL_OVERRIDE"] = "off"
+    try:
+        r = _compute_kr_regime(_ohlcv(_JULY_CRASH), None)
+    finally:
+        os.environ.pop("REGIME_HIVOL_OVERRIDE", None)
+    assert r["market_regime"] == "moderate_bull"
+    assert r["index_summary"]["highvol_drawdown_override"] is None
 
 
 def test_integration_calm_bull_stays_moderate_bull():

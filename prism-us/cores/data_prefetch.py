@@ -900,7 +900,9 @@ def _log_regime_snapshot(market: str, computed: dict) -> None:
         for k in ("sp500_vs_50d_ma", "sp500_vs_200d_ma", "sp500_ma_50_200_cross",
                   "sp500_4w_change_pct", "vix_level",
                   "kospi_vs_60d_ma", "kospi_vs_120d_ma", "kospi_ma_60_120_cross",
-                  "kospi_2w_change_pct"):
+                  "kospi_2w_change_pct",
+                  "highvol_override_mode", "highvol_drawdown_override",
+                  "distribution_days"):
             if k in s:
                 rec[k] = s[k]
         log_dir = _os.path.join(_os.getcwd(), "logs")
@@ -1292,11 +1294,24 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
     # O'Neil 분산일 결정론 카운트를 index_summary에 정보로 주입(강등 없음 — LLM이 프롬프트에서 판단)
     _inject_distribution_days(index_summary, sp500_df, close_col)
 
-    # 고변동·낙폭 override: 장기이평 위이나 '급락형 휩쏘'면 bull->sideways 강등(melt-up 배제).
-    regime, confidence, _hivol_reason = _high_vol_drawdown_override(
-        closes_full.to_numpy(), regime, confidence
-    )
-    index_summary["highvol_drawdown_override"] = _hivol_reason
+    # 고변동·낙폭 override (모드: shadow[기본]/active/off). KR 과 동일 시맨틱.
+    #   shadow = 강등 '판단'만 계산·로깅, regime 은 그대로(매매 무영향, 관찰용).
+    #   active = 실제 강등 적용.  off = 완전 비활성.
+    import os as _os
+    _mode = _os.environ.get("REGIME_HIVOL_OVERRIDE", "shadow").strip().lower()
+    index_summary["highvol_override_mode"] = _mode
+    index_summary["highvol_drawdown_override"] = None
+    if _mode != "off":
+        _new_regime, _new_conf, _reason = _high_vol_drawdown_override(
+            closes_full.to_numpy(), regime, confidence
+        )
+        index_summary["highvol_drawdown_override"] = _reason
+        if _reason:
+            if _mode == "active":
+                logger.info(f"[regime] US HIVOL override ACTIVE: {_reason}")
+                regime, confidence = _new_regime, _new_conf
+            else:
+                logger.info(f"[regime] US HIVOL override SHADOW(관찰,미적용): would {_reason}")
 
     return {
         "market_regime": regime,

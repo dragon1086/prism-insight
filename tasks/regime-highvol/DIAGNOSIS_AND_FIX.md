@@ -108,6 +108,23 @@ override 조건에 결합 가능. 지금은 KR과 대칭 유지를 위해 실현
 시작값(placeholder). **`tools/regime_backtest.py`로 최근 수년 리플레이 → 강등 빈도·휩쏘 감소·
 melt-up 미발동을 확인해 튜닝** 후 features.yaml 이관 권장. demo 배포 검증도 필요.
 
+## 6.5 관찰 모드(shadow) & 로깅 — 실계좌 투입 전 며칠 관찰용
+
+override는 환경변수 `REGIME_HIVOL_OVERRIDE`로 3모드:
+- `shadow` (**기본값**): 강등 '판단'만 계산·로깅하고 **regime은 그대로 반환**(매매 무영향).
+- `active`: 실제 강등 적용.
+- `off`: 완전 비활성.
+
+매 사이클 `logs/regime_history.jsonl`에 다음이 기록된다(기존 스냅샷 로거 확장):
+`regime, confidence, highvol_override_mode, highvol_drawdown_override(사유/None),
+distribution_days`, 그리고 kospi/sp500 이평·변화율. → shadow로 며칠 돌려
+"강등이 실제로 급락 구간에만, 과하지 않게 찍히는지" 관찰 후 `active`로 수동 전환.
+
+**스케줄러**: regime 계산은 이미 orchestrator의 trigger batch cron에서 매 사이클
+수행되므로 **로그 생성용 신규 스케줄러는 불필요**(shadow 배포만 하면 자동 축적).
+선택: 장마감 후 `regime_history.jsonl` 요약(발동 횟수/날짜)을 텔레그램으로 보내는
+경량 일일 다이제스트만 별도 cron으로 둘 수 있음(analysis 서버 기준).
+
 ## 7. 남은 확증 (서버 데이터)
 
 이 머신엔 orchestrator 미실행 → `logs/regime_history.jsonl`은 06-30 2줄(폴백)뿐,
