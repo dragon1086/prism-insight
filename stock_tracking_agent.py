@@ -1944,7 +1944,8 @@ class StockTrackingAgent:
                     raise
 
     async def send_telegram_message(self, chat_id: str, language: str = "ko",
-                                    portfolio_force: bool = False) -> bool:
+                                    portfolio_force: bool = False,
+                                    await_broadcast: bool = False) -> bool:
         """
         Send message via Telegram
 
@@ -2066,10 +2067,19 @@ class StockTrackingAgent:
             if firebase_tasks:
                 await asyncio.gather(*firebase_tasks, return_exceptions=True)
 
-            # Send to broadcast channels if configured (awaited in run() finally block)
+            # Send to broadcast channels if configured (awaited in run() finally block,
+            # or inline here when await_broadcast=True — intraday loops don't call run()
+            # so the task would be cancelled on process exit unless awaited now).
             if hasattr(self, 'telegram_config') and self.telegram_config and self.telegram_config.broadcast_languages:
                 self._broadcast_task = asyncio.create_task(self._send_to_translation_channels(self.message_queue.copy(), self._msg_types.copy()))
                 logger.info("Broadcast channel translation dispatched")
+                if await_broadcast:
+                    try:
+                        await self._broadcast_task
+                    except Exception as e:
+                        logger.warning(f"Broadcast translation await failed (non-critical): {e}")
+                    finally:
+                        self._broadcast_task = None
 
             # Clear message queue
             self.message_queue = []
