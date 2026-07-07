@@ -526,8 +526,28 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                     continue
 
+                # Re-entry cooldown gate. base StockTrackingAgent가 적용하는 쿨다운을
+                # enhanced 매수 루프가 그동안 우회하고 있었다(=삼성전기 익일 재매수 미차단 버그).
+                # 손실/리스크 청산 후 window(기본 loss 24h) 내 재매수를 veto. is_add(피라미딩)는 제외.
+                _cd_block = False
+                if decision == "Enter" and not is_add:
+                    try:
+                        from reentry_cooldown import reentry_block, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE
+                        _cd = reentry_block("KR", ticker)
+                    except Exception:
+                        _cd, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE = None, False, False
+                    if _cd:
+                        _risk_only = bool(_cd.get("risk_exit")) and not _cd.get("after_loss")
+                        _enforce = COOLDOWN_LIVE and (COOLDOWN_RISK_EXIT_LIVE or not _risk_only)
+                        logger.warning(
+                            "[REENTRY_COOLDOWN][%s] %s ticker=%s last_sell=%s ret=%.1f%% gap=%.1fh<%sh after_loss=%s exit_kind=%s risk_only=%s",
+                            "LIVE" if _enforce else "SHADOW", _cd["action"], ticker,
+                            _cd["last_sell"], _cd["last_ret"], _cd["gap_hours"],
+                            _cd["window_hours"], _cd["after_loss"], _cd.get("exit_kind"), _risk_only)
+                        _cd_block = _enforce
+
                 # Process buy if entry decision
-                if decision == "Enter" and buy_score >= min_score and sector_diverse:
+                if decision == "Enter" and buy_score >= min_score and sector_diverse and not _cd_block:
                     # Process buy (is_add => pyramiding additional independent row, #288)
                     buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg, is_add=is_add)
 
