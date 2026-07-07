@@ -7,6 +7,7 @@ import datetime
 import pandas as pd
 import numpy as np
 import logging
+import os
 from typing import Optional
 from krx_data_client import (
     _get_client,
@@ -1227,7 +1228,17 @@ def _get_regime_slots(market_regime: str) -> tuple:
         "moderate_bear": (1, 2),
         "strong_bear": (0, 3),
     }
-    return REGIME_SLOTS.get(market_regime, (1, 2))  # default: sideways ratios
+    td, bu = REGIME_SLOTS.get(market_regime, (1, 2))  # default: sideways ratios
+    # 약세·횡보장 모멘텀추격(top-down) 억제 옵션 (env-gated, 기본 off = 현행 유지).
+    # ON 시 sideways/moderate_bear의 top-down 슬롯을 0으로 → 급락 휩쏘장에서 momentum chase
+    # 매수를 접고 가치형 bottom-up만 남긴다(총 슬롯도 감소 = 매수 절제). strong_bear는 이미 (0,3).
+    if (td > 0 and market_regime in ("sideways", "moderate_bear")
+            and os.getenv("REGIME_WEAK_NO_TOPDOWN", "false").strip().lower()
+            in ("1", "true", "yes", "on")):
+        logger.info("[REGIME_SLOTS] weak-regime top-down 억제: %s (%d,%d)->(0,%d)",
+                    market_regime, td, bu, bu)
+        return (0, bu)
+    return (td, bu)
 
 
 def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_column: str) -> list:
