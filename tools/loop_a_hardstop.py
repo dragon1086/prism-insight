@@ -275,6 +275,16 @@ async def _make_agent(market: str):
         from us_stock_tracking_agent import USStockTrackingAgent
         agent = USStockTrackingAgent(db_path=DB_PATH)
     await agent.initialize(skip_llm_agent=True)
+    # 루프 매도 메시지도 배치와 동일하게 다국어 채널로 브로드캐스트되게 config 주입.
+    # (미설정 시 send_telegram_message가 KR 채널로만 발송.) 채널ID는 TelegramConfig가
+    # env TELEGRAM_CHANNEL_ID_{LANG}에서 자동 로드. send 시 await_broadcast=True로 완결.
+    try:
+        _langs = [x.strip() for x in os.getenv("LOOP_BROADCAST_LANGUAGES", "en,ja,zh,es").split(",") if x.strip()]
+        if _langs:
+            from telegram_config import TelegramConfig
+            agent.telegram_config = TelegramConfig(use_telegram=True, broadcast_languages=_langs)
+    except Exception as e:
+        logger.warning("loop broadcast config init failed (non-critical): %s", e)
     return agent
 
 
@@ -343,7 +353,7 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
                 # portfolio summary, so do NOT generate+append it here as well —
                 # doing both queued the portfolio twice (the double-send bug). Flush
                 # the queue once; cross-run de-dup lives in portfolio_broadcast.
-                await agent["ref"].send_telegram_message(CHAT_ID)
+                await agent["ref"].send_telegram_message(CHAT_ID, await_broadcast=True)
             except Exception as _e:
                 logger.warning("[%s] run-end portfolio summary failed: %s", market, _e)
         conn.close()
@@ -414,7 +424,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
 
         # 3) flush the queued telegram message (instant notification).
         try:
-            await ag.send_telegram_message(CHAT_ID)
+            await ag.send_telegram_message(CHAT_ID, await_broadcast=True)
         except Exception as e:
             logger.warning("[%s] %s telegram flush failed: %s", market, ticker, e)
 
