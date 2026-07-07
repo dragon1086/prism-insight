@@ -109,6 +109,10 @@ def _env_flag(suffix, default):
 LOOP_A_ENABLED = _env_flag("ENABLED", True)            # master kill switch
 LOOP_A_LIVE = _env_flag("LIVE", False)                 # False => SHADOW (no real orders)
 LOCK_TTL_SEC = int(_env("LOCK_TTL_SEC", "300"))
+# inflight SELL 레코드 TTL. 이보다 오래된 OPEN 레코드는 stale로 보고 중복방지 대상에서 제외한다.
+# (loop_a 하드스탑은 장중 시장가라 정상 주문은 수 초 내 체결됨. fill-chaser가 SHADOW라
+#  미정리된 레코드가 손절을 영구 차단하던 버그 방지.)
+INFLIGHT_TTL_SEC = int(_env("INFLIGHT_TTL_SEC", "900"))  # 15분
 DB_PATH = _env("DB") or os.getenv("STOCK_TRACKING_DB") \
     or str(PROJECT_ROOT / "stock_tracking_db.sqlite")
 # Reuse the same channel the batch/system already broadcasts to (TELEGRAM_CHANNEL_ID).
@@ -179,10 +183,15 @@ def load_holdings_by_ticker(conn: sqlite3.Connection, market: str) -> Dict[str, 
 
 
 def has_open_inflight(conn: sqlite3.Connection, ticker: str, market: str) -> bool:
+    # 실제 미체결 주문(status='OPEN')만 중복방지 대상. SHADOW 레코드는 실주문이 아니므로
+    # LIVE 매도를 막으면 안 된다(과거 SHADOW 레코드가 3주간 손절을 영구 차단하던 버그).
+    # TTL 지난 stale OPEN 레코드도 차단에서 제외(fill-chaser 미정리로 영구 차단 방지).
+    cutoff = _iso(_now() - timedelta(seconds=INFLIGHT_TTL_SEC))
     row = conn.execute(
         "SELECT 1 FROM loop_a_inflight_orders "
-        "WHERE ticker=? AND market=? AND side='SELL' AND status IN ('OPEN','SHADOW') LIMIT 1",
-        (ticker, market),
+        "WHERE ticker=? AND market=? AND side='SELL' AND status='OPEN' "
+        "AND submitted_ts >= ? LIMIT 1",
+        (ticker, market, cutoff),
     ).fetchone()
     return row is not None
 
