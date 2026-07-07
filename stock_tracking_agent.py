@@ -1943,7 +1943,8 @@ class StockTrackingAgent:
                 else:
                     raise
 
-    async def send_telegram_message(self, chat_id: str, language: str = "ko") -> bool:
+    async def send_telegram_message(self, chat_id: str, language: str = "ko",
+                                    portfolio_force: bool = False) -> bool:
         """
         Send message via Telegram
 
@@ -1986,7 +1987,8 @@ class StockTrackingAgent:
             # summaries. Other queued messages (sell notices) are unaffected.
             try:
                 from portfolio_broadcast import should_send_portfolio
-                _emit_portfolio = should_send_portfolio("KR")
+                # 배치 run-end(portfolio_force=True)는 완전한 최종 요약이므로 디바운스 우회.
+                _emit_portfolio = should_send_portfolio("KR", force=portfolio_force)
             except Exception:
                 _emit_portfolio = True  # fail-open
             if _emit_portfolio:
@@ -2222,7 +2224,7 @@ class StockTrackingAgent:
 
                 # Send Telegram message (only if chat_id is provided)
                 if chat_id:
-                    message_sent = await self.send_telegram_message(chat_id, language)
+                    message_sent = await self.send_telegram_message(chat_id, language, portfolio_force=True)
                     if message_sent:
                         logger.info("Telegram message sent successfully")
                     else:
@@ -2230,7 +2232,7 @@ class StockTrackingAgent:
                 else:
                     logger.info("Telegram channel ID not provided, skipping message send")
                     # Call even if chat_id is None to clean up message queue
-                    await self.send_telegram_message(None, language)
+                    await self.send_telegram_message(None, language, portfolio_force=True)
 
                 logger.info("Tracking system batch execution complete")
                 return True

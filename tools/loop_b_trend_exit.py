@@ -143,6 +143,10 @@ LOOP_B_LIVE = _env_flag("LIVE", False)                  # False => SHADOW (no re
 LOOP_B_CONFIRM_CHECKS = int(_env("CONFIRM_CHECKS", "2"))   # N consecutive day-breaches to act
 LOOP_B_CLOSE_WINDOW = _env_flag("CLOSE_WINDOW", False)     # set true on the close-time cron line
 LOCK_TTL_SEC = int(_env("LOCK_TTL_SEC", "300"))
+# 신규매수 유예(분): buy_date 기준 이보다 어린 포지션은 추세이탈 청산 제외.
+# 매수 배치와 loop 청산이 같은 시간대(마감 윈도우 등)에 부딪혀 20초 만에 churn되던 것 방지.
+# 추세는 갓 산 포지션에서 판정 불가. 0이면 비활성. KR 마감 15:30 고려해 기본 30분.
+MIN_HOLD_MIN = int(_env("MIN_HOLD_MIN", "30"))
 DB_PATH = _env("DB") or os.getenv("STOCK_TRACKING_DB") \
     or str(PROJECT_ROOT / "stock_tracking_db.sqlite")
 # Reuse the same channel the batch/system already broadcasts to (TELEGRAM_CHANNEL_ID).
@@ -554,9 +558,29 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
     return summary
 
 
+def _holding_age_min(buy_date) -> Optional[float]:
+    """보유 나이(분). buy_date='YYYY-MM-DD HH:MM:SS'(KST naive). 실패 시 None(fail-open=제외 안 함)."""
+    if not buy_date:
+        return None
+    try:
+        bd = datetime.strptime(str(buy_date)[:19], "%Y-%m-%d %H:%M:%S")
+        return (datetime.now() - bd).total_seconds() / 60.0
+    except Exception:
+        return None
+
+
 async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, Any],
                           reason: str, streak: int, run_id: str, agent: Dict[str, Any],
                           summary: Dict[str, Any]) -> None:
+    # Grace: 방금 산 포지션은 추세이탈 청산 제외(매수 배치 vs loop 청산 시간대 충돌로
+    # 20초 만에 churn되던 것 방지). buy_date 기준 나이 < MIN_HOLD_MIN 이면 skip.
+    if MIN_HOLD_MIN > 0:
+        _age = _holding_age_min(stock_data.get("buy_date"))
+        if _age is not None and _age < MIN_HOLD_MIN:
+            summary["skipped"] += 1
+            logger.info("[%s] %s gate open but fresh buy (age %.1fm < %dm grace) -> skip (%s)",
+                        market, ticker, _age, MIN_HOLD_MIN, reason)
+            return
     # Guard 1: an inflight SELL for this ticker already exists -> leave it alone.
     if has_open_inflight(conn, ticker, market):
         summary["skipped"] += 1
