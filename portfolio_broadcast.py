@@ -38,9 +38,13 @@ def _db_path() -> str:
 
 
 def should_send_portfolio(market: str, debounce_sec: int | None = None,
-                          db_path: str | None = None) -> bool:
+                          db_path: str | None = None, force: bool = False) -> bool:
     """Return True iff no portfolio summary was broadcast for `market` within the
     debounce window, recording 'now' atomically when it returns True.
+
+    force=True: 배치 run-end의 '완전한 최종 요약'은 항상 발송(디바운스 우회). 직전에
+    루프 매도가 이른(덜 완전한) 요약을 보내 슬롯을 먹어도 최종 요약이 눌리지 않게 함.
+    발송 시각은 여전히 기록해 이후 루프 요약은 디바운스된다.
 
     Fail-open: returns True on any error (never suppresses on a DB hiccup).
     """
@@ -63,7 +67,7 @@ def should_send_portfolio(market: str, debounce_sec: int | None = None,
                 "SELECT last_sent_ts FROM portfolio_broadcast_log WHERE market=?",
                 (key,),
             ).fetchone()
-            if row is not None and (now - float(row[0])) < window:
+            if not force and row is not None and (now - float(row[0])) < window:
                 conn.execute("ROLLBACK")
                 return False
             conn.execute(
