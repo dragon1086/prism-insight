@@ -468,6 +468,7 @@ async def analyze_base_oneil(
     current_price: float | None = None,
     market: str | None = None,
     extra_context: str | None = None,
+    end_date: Any = None,
 ) -> BaseAnalysis | None:
     """Two-timeframe O'Neil base analysis: generate DAILY + WEEKLY charts (with
     RS line) for *ticker* and analyse both in a single multi-image vision call.
@@ -487,6 +488,9 @@ async def analyze_base_oneil(
         numeric_pivot: Optional externally-computed pivot for cross-check.
         current_price: Optional current price (informational).
         market:        Optional 'KOSPI'/'KOSDAQ' hint for index selection.
+        end_date:      Optional as-of cutoff (datetime/date/'YYYYMMDD'/
+                        'YYYY-MM-DD') passed through to the chart builders for
+                        look-ahead-free historical rendering. None → today.
 
     Returns:
         - ``None`` when vision is unavailable, chart generation fails, or on
@@ -511,10 +515,10 @@ async def analyze_base_oneil(
 
     try:
         daily_fig = create_oneil_daily_chart(
-            ticker, company_name=company_name, market=market
+            ticker, company_name=company_name, market=market, end_date=end_date
         )
         weekly_fig = create_oneil_weekly_chart(
-            ticker, company_name=company_name, market=market
+            ticker, company_name=company_name, market=market, end_date=end_date
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[BUY_QUALITY] oneil chart generation failed: %s", exc)

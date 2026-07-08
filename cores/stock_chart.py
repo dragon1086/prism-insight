@@ -1571,6 +1571,30 @@ def _add_rs_panel(fig, rs_series, label):
         logger.warning(f"[ONEIL] RS panel draw failed: {e}")
 
 
+def _resolve_chart_window(days, end_date=None):
+    """Resolve ``(start_date, end_date)`` as ``'YYYYMMDD'`` strings for a chart.
+
+    Look-ahead control for historical (as-of) rendering:
+
+    - ``end_date=None`` → live behaviour (unchanged): end = today,
+      start = today - ``days``.
+    - otherwise ``end_date`` is the as-of cutoff and may be a ``datetime`` /
+      ``date`` / ``'YYYYMMDD'`` / ``'YYYY-MM-DD'`` string; end = that date,
+      start = end - ``days``. Nothing after the cutoff is ever fetched.
+    """
+    if end_date is None:
+        end_dt = datetime.now()
+    elif isinstance(end_date, str):
+        s = end_date.replace('-', '').replace('/', '').strip()[:8]
+        end_dt = datetime.strptime(s, '%Y%m%d')
+    else:
+        # datetime.datetime or datetime.date
+        end_dt = datetime(end_date.year, end_date.month, end_date.day)
+    end_s = end_dt.strftime('%Y%m%d')
+    start_s = (end_dt - timedelta(days=days)).strftime('%Y%m%d')
+    return start_s, end_s
+
+
 def create_oneil_daily_chart(
     ticker,
     company_name=None,
@@ -1580,6 +1604,7 @@ def create_oneil_daily_chart(
     market=None,
     index_ticker=None,
     return_df=False,
+    end_date=None,
 ):
     """Generate an O'Neil DAILY chart (vision-only): candles + MA5/20/60/120 +
     volume + an RS line vs the market index.
@@ -1599,13 +1624,16 @@ def create_oneil_daily_chart(
                       dates to mplfinance candle index positions. The returned
                       df has the SAME row ordering as the plotted candles
                       (position i <-> df.index[i]).
+        end_date:     Optional as-of cutoff (datetime/date/'YYYYMMDD'/
+                      'YYYY-MM-DD'). None → today (unchanged). When given, the
+                      window is [end_date - days, end_date] so no future data
+                      leaks into the rendered chart (look-ahead-free backtest).
 
     Returns:
         matplotlib figure (or ``(fig, df)`` when ``return_df=True``), or None
         if stock data is unavailable.
     """
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
+    start_date, end_date = _resolve_chart_window(days, end_date)
 
     if company_name is None:
         try:
@@ -1714,6 +1742,7 @@ def create_oneil_weekly_chart(
     save_path=None,
     market=None,
     index_ticker=None,
+    end_date=None,
 ):
     """Generate an O'Neil WEEKLY chart (vision-only): weekly candles + 10-week
     and 40-week MAs (O'Neil standard) + weekly volume + an RS line vs the index.
@@ -1730,6 +1759,10 @@ def create_oneil_weekly_chart(
         save_path:    If given, save the figure there; otherwise just return it.
         market:       Optional 'KOSPI'/'KOSDAQ' hint to pick the index.
         index_ticker: Optional explicit index ticker override.
+        end_date:     Optional as-of cutoff (datetime/date/'YYYYMMDD'/
+                      'YYYY-MM-DD'). None → today (unchanged). When given, the
+                      window ends at end_date so no future data leaks into the
+                      rendered weekly chart (look-ahead-free backtest).
 
     Returns:
         matplotlib figure, or None if stock data is unavailable.
@@ -1738,8 +1771,7 @@ def create_oneil_weekly_chart(
     # KRX rejects periods longer than ~730 days (INVALIDPERIOD2), so clamp.
     _KRX_MAX_DAYS = 730
     days = min(weeks * 7 + 40, _KRX_MAX_DAYS)
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
+    start_date, end_date = _resolve_chart_window(days, end_date)
 
     if company_name is None:
         try:
