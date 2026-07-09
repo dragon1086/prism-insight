@@ -1299,6 +1299,34 @@ async def main():
 
     args = parser.parse_args()
 
+    # --- Market Pulse (O'Neil M) batch policy hook (SHADOW-first; §7 Rev.3) ---
+    # Lazy + guarded: a broken import/compute can NEVER kill a production batch.
+    try:
+        from cores.regime_policy import (
+            market_pulse_mode,
+            get_market_pulse_state,
+            decide_batch_policy,
+        )
+        _mp_mode = market_pulse_mode()
+        if _mp_mode != "off":
+            _mp_state = get_market_pulse_state("kr")
+            _mp_pol = decide_batch_policy("kr", args.mode, _mp_state)
+            logger.info(
+                f"[MARKET_PULSE] state={_mp_state} batch={args.mode} "
+                f"run={_mp_pol.run_batch} ({_mp_pol.reason}) mode={_mp_mode}"
+            )
+            if not _mp_pol.run_batch:
+                if _mp_mode == "live":
+                    logger.info("[MARKET_PULSE] LIVE: resting this batch "
+                                "(agents rest; exit loops unaffected)")
+                    return
+                else:
+                    logger.info("[MARKET_PULSE][SHADOW] WOULD_SKIP this batch "
+                                "— continuing normally")
+    except Exception as _mp_e:  # fail-open: batch continues on any error
+        logger.warning(f"[MARKET_PULSE] hook failed, fail-open (batch continues): {_mp_e}")
+    # --- end Market Pulse hook ---
+
     # Parse broadcast languages
     broadcast_languages = [lang.strip() for lang in args.broadcast_languages.split(",") if lang.strip()]
 

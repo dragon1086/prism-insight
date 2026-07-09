@@ -1220,6 +1220,34 @@ async def main():
 
     args = parser.parse_args()
 
+    # --- Market Pulse (O'Neil M) batch policy hook (SHADOW-first; §7 Rev.3) ---
+    # prism-us/cores shadows root cores/ on sys.path, so regime_policy is loaded
+    # by file path via _import_from_main_cores (same pattern as the translator/
+    # utils modules above). Lazy + guarded: never kills a production batch.
+    try:
+        _rp_mod = _import_from_main_cores(
+            "prism_root_regime_policy", "cores/regime_policy.py"
+        )
+        _mp_mode = _rp_mod.market_pulse_mode()
+        if _mp_mode != "off":
+            _mp_state = _rp_mod.get_market_pulse_state("us")
+            _mp_pol = _rp_mod.decide_batch_policy("us", args.mode, _mp_state)
+            logger.info(
+                f"[MARKET_PULSE] state={_mp_state} batch={args.mode} "
+                f"run={_mp_pol.run_batch} ({_mp_pol.reason}) mode={_mp_mode}"
+            )
+            if not _mp_pol.run_batch:
+                if _mp_mode == "live":
+                    logger.info("[MARKET_PULSE] LIVE: resting this batch "
+                                "(agents rest; exit loops unaffected)")
+                    return
+                else:
+                    logger.info("[MARKET_PULSE][SHADOW] WOULD_SKIP this batch "
+                                "— continuing normally")
+    except Exception as _mp_e:  # fail-open: batch continues on any error
+        logger.warning(f"[MARKET_PULSE] hook failed, fail-open (batch continues): {_mp_e}")
+    # --- end Market Pulse hook ---
+
     # Parse broadcast languages
     broadcast_languages = [lang.strip() for lang in args.broadcast_languages.split(",") if lang.strip()]
 
