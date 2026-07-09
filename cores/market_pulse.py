@@ -5,8 +5,13 @@ sequence of index daily bars into one of three states::
 
     UPTREND         — normal; distribution days (DD) <= 3 in the rolling window
     UNDER_PRESSURE  — 4 or 5 accumulated distribution days
-    CORRECTION      — 6+ distribution days, OR repeated failed rally attempts;
-                      exited ONLY by a valid Follow-Through Day (FTD)
+    CORRECTION      — 6+ distribution days, a price drawdown of >=10% below the
+                      rolling reference peak close (edge-trigger, Rev.2), OR
+                      repeated failed rally attempts; exited by a valid
+                      Follow-Through Day (FTD) OR by a price-recovery close above
+                      the pre-correction peak (O'Neil: a new high is by
+                      definition an uptrend; FTD is an early-bottom catch, not the
+                      sole exit). See §7 Rev.1/Rev.2.
 
 The single source of truth for the whole regime/buy/rest policy. It is pure:
 input is a sequence of ``DailyBar`` values, output is a state string. No network,
@@ -22,11 +27,16 @@ history; NOT tuned on our 156 trades). See tasks/market_pulse/00_VALIDATION_PLAN
     | DD expiry               | 25 sessions, or  | IBD standard                             |
     |                         | +5% recovery     |                                          |
     | Correction entry        | DD >= 6          | IBD "market in correction"               |
+    | Correction 진입(가격)   | 롤링 피크 종가   | 시장사 보편 정의(10% correction);        |
+    |                         | 대비 -10%        | edge-trigger, 탈출 시 피크 리셋; Rev.2   |
+    |                         | (edge-trigger)   |                                          |
     | Under-pressure          | DD in {4, 5}     | IBD                                      |
     | Rally attempt Day 1     | first up-close   | O'Neil, "How to Make Money in Stocks"    |
     |                         | after new low    |                                          |
-    | Follow-Through Day      | rally day >= 4 & | O'Neil HTMMIS (1.25–1.7%; conservative   |
-    |                         | +1.7% & vol up   | 1.7 adopted)                             |
+    | Follow-Through Day      | rally day >= 4 & | O'Neil HTMMIS canonical (1.25%+); §7     |
+    |                         | +1.25% & vol up  | Rev.1 (1.7→1.25, was over-conservative)  |
+    | Price-recovery exit     | close > pre-     | O'Neil — a new high IS an uptrend;       |
+    |                         | correction peak  | §7 Rev.1 (added exit besides FTD)        |
     | Rally reset             | close < rally    | O'Neil standard                          |
     |                         | start low        |                                          |
 
@@ -48,7 +58,7 @@ Missing-volume handling summary:
     day cannot be a DD (never counted). Matches IBD.
   * Follow-Through Day: normally requires volume(t) > volume(t-1). If volume data
     is missing for the comparison, FTD falls back to the price condition only
-    (rally day >= 4 AND gain >= +1.7%) — a documented, deliberate degradation so
+    (rally day >= 4 AND gain >= +1.25%) — a documented, deliberate degradation so
     indices without reliable volume still transition out of CORRECTION.
 """
 
@@ -67,8 +77,15 @@ DISTRIBUTION_RECOVERY_PCT: float = 5.0  # DD expires early on +5% recovery (IBD)
 UNDER_PRESSURE_MIN_DD: int = 4         # 4-5 DD => under pressure (IBD)
 CORRECTION_MIN_DD: int = 6             # >=6 DD => market in correction (IBD)
 
+# Rev.2: price-drawdown correction entry. A close >=10% below the rolling
+# reference peak (a standard "10% = correction" market-history definition, not
+# tuned) enters CORRECTION even with zero DDs — waterfall/gap crashes skip the
+# distribution-day (topping) stage. Edge-triggered; the reference peak is reset
+# on CORRECTION exit so a NEW >=10% decline from post-exit levels is required.
+DRAWDOWN_CORRECTION_PCT: float = 10.0  # >=10% below rolling peak => correction
+
 FTD_MIN_RALLY_DAY: int = 4             # follow-through on day 4+ (O'Neil HTMMIS)
-FTD_MIN_GAIN_PCT: float = 1.7          # +1.7% (O'Neil; conservative end of 1.25-1.7)
+FTD_MIN_GAIN_PCT: float = 1.25         # +1.25% (O'Neil HTMMIS canonical; §7 Rev.1, was 1.7)
 
 # PulseState values (enum-ish string constants).
 UPTREND: str = "UPTREND"
@@ -162,6 +179,16 @@ class MarketPulse:
         self._rally_active: bool = False
         self._rally_day: int = 0
         self._rally_start_low: Optional[float] = None
+        # Highest close observed before/at the moment CORRECTION was entered.
+        # A later close above this pre-correction peak = new high = uptrend exit
+        # (§7 Rev.1). Tracked per-episode: re-captured on each _enter_correction.
+        self._pre_correction_peak: Optional[float] = None
+        # Rev.2: rolling reference peak close — max close since machine start OR
+        # since the last CORRECTION exit. Drives the >=10% price-drawdown entry
+        # (edge-trigger) and is reset to the exit close when leaving CORRECTION so
+        # the market must make a NEW >=10% decline from post-exit levels before it
+        # can re-trigger (standard trailing correction/bear labeling; anti-flap).
+        self._reference_peak: Optional[float] = None
 
     @property
     def state(self) -> PulseState:
@@ -177,6 +204,13 @@ class MarketPulse:
         self._closes.append(float(bar.close))
         self._vols.append(None if bar.volume is None else float(bar.volume))
         n = len(self._closes)
+        cur = self._closes[-1]
+
+        # Rev.2: maintain the rolling reference peak (max close since start or the
+        # last CORRECTION exit). Updated every bar, before entry checks so a new
+        # high simply lifts the peak (drawdown 0) and never self-triggers.
+        if self._reference_peak is None or cur > self._reference_peak:
+            self._reference_peak = cur
 
         dd = _count_distribution_days(
             self._closes, self._vols, DISTRIBUTION_WINDOW, self._dd_window_start
@@ -187,8 +221,14 @@ class MarketPulse:
             self._update_correction(n)
         else:
             # UPTREND / UNDER_PRESSURE are re-derived from DD count each day;
-            # only CORRECTION is "sticky" (exited via FTD only).
-            if dd >= CORRECTION_MIN_DD:
+            # only CORRECTION is "sticky" (exited via FTD / price-recovery).
+            drawdown_trigger = (
+                self._reference_peak is not None
+                and cur < self._reference_peak * (1.0 - DRAWDOWN_CORRECTION_PCT / 100.0)
+            )
+            if drawdown_trigger or dd >= CORRECTION_MIN_DD:
+                # Rev.2: a >=10% drawdown from the rolling peak enters CORRECTION
+                # even with zero DDs (waterfall crashes skip the topping stage).
                 self._enter_correction()
             elif dd >= UNDER_PRESSURE_MIN_DD:
                 self._state = UNDER_PRESSURE
@@ -210,6 +250,13 @@ class MarketPulse:
     def _enter_correction(self) -> None:
         self._state = CORRECTION
         self._correction_low = self._closes[-1]
+        # Pre-correction peak = the rolling reference peak at trigger time (max
+        # close since start or the last CORRECTION exit). Identical to the highest
+        # close for a DD-triggered entry, and exactly the drawdown reference for a
+        # price-drawdown entry (Rev.2). Captured fresh per episode, so a later
+        # episode uses its own peak and the new-high recovery exit compares against
+        # the current episode's peak.
+        self._pre_correction_peak = self._reference_peak
         self._rally_active = False
         self._rally_day = 0
         self._rally_start_low = None
@@ -222,6 +269,13 @@ class MarketPulse:
 
         if self._correction_low is None:
             self._correction_low = cur
+
+        # Price-recovery exit (§7 Rev.1): a close above the pre-correction peak
+        # is by definition a new high => uptrend. Checked every day, independent
+        # of any rally attempt. FTD is an early-bottom catch, not the sole exit.
+        if self._pre_correction_peak is not None and cur > self._pre_correction_peak:
+            self._exit_to_uptrend(n)
+            return
 
         if not self._rally_active:
             # Day 1 of a rally attempt = first close up from the prior close.
@@ -254,6 +308,10 @@ class MarketPulse:
 
     def _follow_through(self, n: int) -> None:
         """Valid FTD: return to UPTREND and reset the DD window."""
+        self._exit_to_uptrend(n)
+
+    def _exit_to_uptrend(self, n: int) -> None:
+        """Shared CORRECTION exit (FTD or price-recovery): UPTREND + DD reset."""
         self._state = UPTREND
         self._dd_window_start = n  # exclude all DDs up to and including today
         self._last_dd = 0
@@ -261,3 +319,8 @@ class MarketPulse:
         self._rally_day = 0
         self._rally_start_low = None
         self._correction_low = None
+        self._pre_correction_peak = None
+        # Rev.2 anti-flap: reset the rolling reference peak to today's close so a
+        # NEW >=10% decline from post-exit levels is required to re-trigger a
+        # price-drawdown CORRECTION. Thereafter the peak grows with new highs.
+        self._reference_peak = self._closes[-1]

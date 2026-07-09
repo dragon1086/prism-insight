@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Market Pulse V1 backtest — 6y index replay + pre-registered auto-judgment.
 
-Replays :class:`cores.market_pulse.MarketPulse` over KOSPI (ticker '1001', via
-the repo's authenticated krx_data_client wrapper — the same source production
-uses) and S&P 500 (^GSPC via yfinance), applying the IDENTICAL O'Neil rules to
-both markets (no per-market tuning = robustness evidence).
+Replays :class:`cores.market_pulse.MarketPulse` over KOSPI (^KS11 via yfinance,
+the same fetch tools/regime_backtest.py uses successfully on db-server) and
+S&P 500 (^GSPC via yfinance), applying the IDENTICAL O'Neil rules to both
+markets (no per-market tuning = robustness evidence).
 
 Produces a deterministic markdown report (also printed to console) with:
   (a) per-year state distribution % + transition counts,
@@ -16,7 +16,7 @@ Usage:
     .venv/bin/python tools/market_pulse_backtest.py [--market {kr,us,both}]
                                                      [--years N] [--out PATH]
 
-The heavy 6y data replay is intended to run on db-server (network + krx auth).
+The heavy 6y data replay is intended to run on db-server (network for yfinance).
 Importing this module performs no I/O beyond dotenv; data fetch is lazy.
 """
 
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -60,26 +60,40 @@ C5_END = "2026-07-09"
 # Data fetch (lazy; network/auth only when actually called)                    #
 # --------------------------------------------------------------------------- #
 def fetch_kr_bars(years: int) -> List[DailyBar]:
-    """KOSPI index ('1001') daily OHLCV via the authenticated krx wrapper."""
+    """KOSPI index (1001) daily OHLCV via the authenticated KRX client.
+
+    market_pulse는 거래량이 필수(DD 판정)다. yfinance ^KS11은 거래량이
+    결측/0인 구간이 많아(2026년 등) DD가 전혀 안 잡히는 무의미한 재생이
+    나온다(regime_backtest는 종가만 써서 ^KS11로 충분했던 것과 다름).
+    → 운영과 동일한 krx_data_client 기반 ``get_index_ohlcv_by_date``('1001')를
+    쓰되, 6년 단일요청이 INVALIDPERIOD2로 실패하므로 **연 단위 청크**로 나눠
+    받아 합친다.
+    """
     import pandas as pd
+    from datetime import datetime, timedelta
+    from cores.stock_chart import get_index_ohlcv_by_date
 
-    try:
-        from cores.stock_chart import get_index_ohlcv_by_date
-    except Exception:  # noqa: BLE001
-        from krx_data_client import get_index_ohlcv_by_date
-
-    end = datetime.now()
-    start = end - timedelta(days=int(years * 365.25) + 15)
-    df = get_index_ohlcv_by_date(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), "1001")
-    if df is None or len(df) == 0:
-        raise RuntimeError("KOSPI index fetch returned empty")
-    if not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(df.index)
-    close_col = "종가" if "종가" in df.columns else ("Close" if "Close" in df.columns else None)
-    vol_col = "거래량" if "거래량" in df.columns else ("Volume" if "Volume" in df.columns else None)
-    if close_col is None:
-        raise RuntimeError(f"KOSPI: no close column in {list(df.columns)}")
-    return _df_to_bars(df.sort_index(), close_col, vol_col)
+    end_dt = datetime.now()
+    start_dt = end_dt - timedelta(days=int(years * 365.25) + 10)
+    chunks = []
+    y = start_dt.year
+    while y <= end_dt.year:
+        s = max(start_dt, datetime(y, 1, 1)).strftime("%Y%m%d")
+        e = min(end_dt, datetime(y, 12, 31)).strftime("%Y%m%d")
+        cdf = get_index_ohlcv_by_date(s, e, "1001")
+        if cdf is not None and len(cdf):
+            chunks.append(cdf)
+        y += 1
+    if not chunks:
+        raise RuntimeError("KOSPI(1001) KRX fetch returned empty for all chunks")
+    df = pd.concat(chunks)
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+    close_col = "종가" if "종가" in df.columns else "Close"
+    vol_col = ("거래량" if "거래량" in df.columns
+               else ("Volume" if "Volume" in df.columns else None))
+    if vol_col is None:
+        raise RuntimeError("KOSPI(1001) frame has no volume column — DD 판정 불가")
+    return _df_to_bars(df, close_col, vol_col)
 
 
 def fetch_us_bars(years: int) -> List[DailyBar]:
@@ -222,15 +236,19 @@ def judge(market: str, bars: List[DailyBar], rows) -> Tuple[List[dict], bool]:
                     "pass": c1_pass if c1_months else True,
                     "detail": c1_months, "na": not c1_months})
 
-    # C2: months with return >= +3% -> UPTREND days >= 70%.
+    # C2: months with return >= +3% -> UPTREND days >= 70% (official metric).
+    # 참고: also record the non-CORRECTION day ratio (UPTREND + UNDER_PRESSURE),
+    # since policy allows buys in UNDER_PRESSURE (top-down 0 only) — §7 Rev.2.
+    # This is reported alongside but does NOT affect the official PASS/FAIL.
     c2_months = []
     c2_pass = True
     for m, r in mret:
         if r >= 3.0 and m in spm:
             up = spm[m][UPTREND]
+            non_corr = 100.0 - spm[m][CORRECTION]  # non-CORRECTION ratio (참고)
             ok = up >= 70.0
             c2_pass = c2_pass and ok
-            c2_months.append((m, round(r, 1), round(up, 1), ok))
+            c2_months.append((m, round(r, 1), round(up, 1), round(non_corr, 1), ok))
     results.append({"id": "C2", "desc": "강세월(≥+3%) UPTREND ≥70%",
                     "pass": c2_pass if c2_months else True,
                     "detail": c2_months, "na": not c2_months})
@@ -270,7 +288,7 @@ def render_market(market: str, bars: List[DailyBar]) -> str:
     mp = MarketPulse()
     rows = mp.replay(bars)
     lines: List[str] = []
-    name = {"kr": "KOSPI (1001)", "us": "S&P 500 (^GSPC)"}[market]
+    name = {"kr": "KOSPI (KRX 1001)", "us": "S&P 500 (^GSPC)"}[market]
     lines.append(f"## {name} — {len(rows)} sessions "
                  f"({rows[0][0]} → {rows[-1][0]})")
     lines.append("")
@@ -309,10 +327,15 @@ def render_market(market: str, bars: List[DailyBar]) -> str:
         verdict = "N/A" if r.get("na") else ("PASS" if r["pass"] else "FAIL")
         lines.append(f"- **{r['id']} [{verdict}]** {r['desc']}")
         d = r["detail"]
-        if r["id"] in ("C1", "C2") and d:
+        if r["id"] == "C1" and d:
             for m, ret, val, ok in d:
                 tag = "OK" if ok else "MISS"
-                lines.append(f"    - {m}: 월수익률 {ret}%, 지표 {val}% [{tag}]")
+                lines.append(f"    - {m}: 월수익률 {ret}%, 비-UPTREND {val}% [{tag}]")
+        elif r["id"] == "C2" and d:
+            for m, ret, up, non_corr, ok in d:
+                tag = "OK" if ok else "MISS"
+                lines.append(f"    - {m}: 월수익률 {ret}%, UPTREND {up}% [{tag}] "
+                             f"(참고 비-CORRECTION {non_corr}%)")
         elif r["id"] == "C3":
             lines.append(f"    - 전체 CORRECTION 비율: {d}%")
         elif r["id"] == "C4":

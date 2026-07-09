@@ -187,6 +187,37 @@ class TestRallyAndFTD:
         st = mp.feed(DailyBar("2026-02-01", c1, 5000.0))
         assert st == CORRECTION
 
+    def test_ftd_fires_at_new_1_25_threshold(self):
+        # §7 Rev.1: threshold lowered 1.7% -> 1.25%. A +1.4% day-4 gain (between
+        # the old and new thresholds) is now a valid FTD. All closes stay well
+        # below the pre-correction peak (100), so price-recovery does not fire.
+        mp = self._into_correction()
+        low = self._low
+        c1 = low * 1.005
+        mp.feed(DailyBar("2026-02-01", c1, 1000.0))
+        c2 = c1 * 1.003
+        mp.feed(DailyBar("2026-02-02", c2, 1100.0))
+        c3 = c2 * 1.002
+        mp.feed(DailyBar("2026-02-03", c3, 1200.0))
+        c4 = c3 * 1.014          # +1.4% >= 1.25% (would fail the old 1.7%)
+        st = mp.feed(DailyBar("2026-02-04", c4, 2000.0))
+        assert st == UPTREND
+        assert mp.distribution_days == 0
+
+    def test_no_ftd_below_1_25_threshold(self):
+        # A +1.0% day-4 gain is below the 1.25% threshold -> not an FTD.
+        mp = self._into_correction()
+        low = self._low
+        c1 = low * 1.005
+        mp.feed(DailyBar("2026-02-01", c1, 1000.0))
+        c2 = c1 * 1.003
+        mp.feed(DailyBar("2026-02-02", c2, 1100.0))
+        c3 = c2 * 1.002
+        mp.feed(DailyBar("2026-02-03", c3, 1200.0))
+        c4 = c3 * 1.01           # +1.0% < 1.25% -> no FTD
+        st = mp.feed(DailyBar("2026-02-04", c4, 2000.0))
+        assert st == CORRECTION
+
     def test_ftd_requires_volume_up_when_volume_present(self):
         mp = self._into_correction()
         low = self._low
@@ -228,6 +259,107 @@ class TestRallyAndFTD:
         c4 = c3 * 1.02        # +2% on day 4, volume missing -> gain-only FTD
         st = mp.feed(DailyBar("2026-02-04", c4, None))
         assert st == UPTREND
+
+
+# --------------------------------------------------------------------------- #
+# Price-recovery exit (§7 Rev.1)                                              #
+# --------------------------------------------------------------------------- #
+class TestPriceRecoveryExit:
+    def _into_correction(self) -> MarketPulse:
+        # 6-DD run from start=100 -> CORRECTION; pre-correction peak = 100.0
+        # (the first close, highest observed before/at entry); low ~= 94.15.
+        closes, vols = _make_dd_run(6)
+        mp = MarketPulse()
+        for i, (c, v) in enumerate(zip(closes, vols)):
+            mp.feed(DailyBar(f"2026-01-{i+1:02d}", c, v))
+        assert mp.state == CORRECTION
+        return mp
+
+    def test_close_above_peak_exits_and_resets_dd(self):
+        mp = self._into_correction()
+        st = mp.feed(DailyBar("2026-02-01", 101.0, 5000.0))  # 101 > peak 100
+        assert st == UPTREND
+        assert mp.distribution_days == 0  # DD window reset (same as FTD exit)
+
+    def test_no_recovery_while_below_peak(self):
+        mp = self._into_correction()
+        # up close but still below the pre-correction peak (100) -> stays CORRECTION
+        st = mp.feed(DailyBar("2026-02-01", 99.0, 5000.0))
+        assert st == CORRECTION
+
+    def test_peak_tracked_per_episode(self):
+        # Episode 1 peak = 100; exit via a new high, climb to a higher high,
+        # then a second episode must use ITS OWN (higher) peak.
+        mp = self._into_correction()
+        assert mp.feed(DailyBar("2026-02-01", 101.0, 5000.0)) == UPTREND  # exit ep1
+        # Climb to a new cumulative high of 110 (up closes, never DDs).
+        mp.feed(DailyBar("2026-02-02", 106.0, 900.0))
+        mp.feed(DailyBar("2026-02-03", 110.0, 900.0))
+        # 6 fresh distribution days from 110 -> episode 2 CORRECTION, peak = 110.
+        c, vol, day = 110.0, 1000.0, 4
+        for _ in range(6):
+            c *= 0.99
+            vol += 100.0
+            mp.feed(DailyBar(f"2026-02-{day:02d}", c, vol))
+            day += 1
+        assert mp.state == CORRECTION
+        # 105 exceeds episode-1's peak (100) but NOT episode-2's peak (110):
+        # must stay CORRECTION -> proves the peak is per-episode.
+        assert mp.feed(DailyBar(f"2026-02-{day:02d}", 105.0, 5000.0)) == CORRECTION
+        day += 1
+        # A close above episode-2's own peak (110) exits.
+        assert mp.feed(DailyBar(f"2026-02-{day:02d}", 111.0, 5000.0)) == UPTREND
+
+
+# --------------------------------------------------------------------------- #
+# Price-drawdown CORRECTION entry (§7 Rev.2)                                   #
+# --------------------------------------------------------------------------- #
+class TestDrawdownEntry:
+    def test_waterfall_crash_falling_volume_enters_correction(self):
+        # A waterfall crash with FALLING volume produces ZERO distribution days
+        # (a DD needs volume > prev). Rev.2: a >=10% drawdown from the rolling
+        # peak must still enter CORRECTION. This is the exact case DD-count
+        # missed (KOSPI 2026-03 −19.1% stayed UPTREND under the old rule).
+        mp = MarketPulse()
+        mp.feed(DailyBar("2026-03-01", 100.0, 5000.0))          # rolling peak
+        prices = [97.0, 94.0, 91.0, 89.0]                       # 89 = -11% vs peak
+        vol = 5000.0
+        st = UPTREND
+        for i, p in enumerate(prices):
+            vol -= 500.0                                        # volume FALLING => no DD
+            st = mp.feed(DailyBar(f"2026-03-{i + 2:02d}", p, vol))
+        assert mp.distribution_days == 0                        # zero DDs (falling vol)
+        assert st == CORRECTION                                 # entered via -10% drawdown
+
+    def test_no_reenter_after_ftd_exit_still_below_old_peak(self):
+        # After an FTD exit the reference peak is RESET to the exit close, so a
+        # day still >10% below the OLD peak — but not below the reset peak — must
+        # NOT immediately re-enter (anti-flap).
+        mp = MarketPulse()
+        mp.feed(DailyBar("2026-04-01", 100.0, 5000.0))          # peak
+        assert mp.feed(DailyBar("2026-04-02", 84.0, 4000.0)) == CORRECTION  # -16%
+        mp.feed(DailyBar("2026-04-03", 84.5, 4100.0))           # rally day 1
+        mp.feed(DailyBar("2026-04-06", 85.0, 4200.0))           # day 2
+        mp.feed(DailyBar("2026-04-07", 85.3, 4300.0))           # day 3
+        # day 4: +1.5% (>=1.25) on rising volume -> FTD -> UPTREND, peak reset ~86.58
+        assert mp.feed(DailyBar("2026-04-08", 86.58, 6000.0)) == UPTREND
+        # 84.0 is still >10% below the OLD peak (100) yet only ~3% below the reset
+        # peak (~86.58) -> stays UPTREND (does NOT re-enter).
+        assert mp.feed(DailyBar("2026-04-09", 84.0, 3000.0)) == UPTREND
+
+    def test_reenter_on_new_decline_from_post_exit_peak(self):
+        # A genuinely NEW >=10% decline measured from the post-exit (reset) peak
+        # DOES re-trigger CORRECTION.
+        mp = MarketPulse()
+        mp.feed(DailyBar("2026-05-01", 100.0, 5000.0))          # peak
+        assert mp.feed(DailyBar("2026-05-04", 84.0, 4000.0)) == CORRECTION
+        mp.feed(DailyBar("2026-05-05", 84.5, 4100.0))
+        mp.feed(DailyBar("2026-05-06", 85.0, 4200.0))
+        mp.feed(DailyBar("2026-05-07", 85.3, 4300.0))
+        # FTD exit -> reference peak reset to ~86.58 (86.58 * 0.90 = 77.92).
+        assert mp.feed(DailyBar("2026-05-08", 86.58, 6000.0)) == UPTREND
+        # 77.0 < 77.92 -> a new >=10% decline from the post-exit peak re-enters.
+        assert mp.feed(DailyBar("2026-05-11", 77.0, 3000.0)) == CORRECTION
 
 
 # --------------------------------------------------------------------------- #
