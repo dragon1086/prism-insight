@@ -90,6 +90,26 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         Passing the gate = quality baseline established → matrix below is applied with confidence.
 
+        ## Step 1.5 — Individual Stock Trend Gate (mandatory · takes precedence over the matrix)
+
+        O'Neil principle: **never buy a stock below a declining moving average (no falling knives).**
+        Regardless of market regime, momentum, capital inflow, or a bullish report, if the stock's OWN
+        trend matches any below → **No Entry**:
+        - (T1) Close below the 50-day (or 60-day) MA — a break of O'Neil's 10-week line (a pullback above a rising MA is fine; losing the line is trend damage)
+        - (T2) The 20-day MA is sloping down AND close is ≥5% below the 20-day MA — a sharp early breakdown
+        Use the provided '개별 추세 팩트 / Individual Trend Facts' input and report section '1-1 Price'
+        (if facts absent, judge conservatively from the report).
+        **Exception (entry allowed)** only when the stock reclaims/breaks above the declining MA with
+        volume, confirming a trend change. "It looks like it will bounce soon" is NOT an exception.
+        State the trend basis in rejection_reason (No Entry) or rationale (exception entry).
+
+        ## Step 1.6 — Repeat Stop-Out Gate (mandatory)
+
+        If the same stock was **stopped out ≥2 times within the last ~2 weeks** (see provided journal /
+        past experience), **No Entry** unless a clearly NEW structural catalyst — different from the prior
+        failed attempts — is explicitly present in the report. "Good fundamentals" / "oversold" are NOT
+        new catalysts. Repeated stop-outs are a discipline failure; raise the entry bar hard.
+
         ## Step 2 — Market-Regime Entry Matrix (single source of truth)
 
         Apply only after the Fundamental Gate is evaluated.
@@ -152,6 +172,8 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         Trigger-type credit: if the trigger is one of "Volume Surge / Gap Up / Daily Rise Top /
         Closing Strength / Capital Inflow Ratio / Volume Surge Flat", count 1 momentum signal automatically.
+        However, **this automatic credit does NOT apply to downtrend stocks caught by the Step 1.5 gate
+        (T1/T2)** — transient inflow/volume during a downtrend is noise, not an entry reason.
 
         ## Step 4 — Extra Confirmations (sideways / bear only)
 
@@ -397,6 +419,24 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         게이트 통과 = 종목 품질 베이스라인 확보 → 아래 매트릭스를 자신감 있게 적용하십시오.
 
+        ## 1.5단계 — 개별 종목 추세 게이트 (필수 · 매트릭스보다 우선)
+
+        오닐 원칙: **하락하는 이동평균 아래의 종목은 사지 않는다(떨어지는 칼 금지).**
+        시장 체제·모멘텀·자금 유입·보고서 강세와 무관하게, 종목 자신의 추세가 아래에 해당하면 **미진입**:
+        - (T1) 종가가 50일선(또는 60일선) 아래 — 오닐 10주선 이탈 (상승 이동평균 위 눌림목은 정상, 라인 이탈은 추세 훼손)
+        - (T2) 20일선이 하향이고 종가가 20일선 대비 5% 이상 아래 — 급격한 초기 붕괴
+        입력으로 제공되는 '개별 추세 팩트' 섹션과 보고서 '1-1 가격'을 사용해 판정하십시오
+        (팩트가 없으면 보고서로 보수적으로 판단).
+        **예외(진입 허용)**: 하락 이동평균을 거래량 동반으로 상향 돌파·회복하여 추세 전환이
+        확인된 경우에 한함. "곧 반등할 것 같다"는 기대는 예외가 아니다.
+        미진입 시 rejection_reason에, 예외 진입 시 rationale에 추세 근거를 명시하십시오.
+
+        ## 1.6단계 — 상습 손절 종목 게이트 (필수)
+
+        동일 종목이 **최근 약 2주 내 손절(stop) 2회 이상**(제공된 매매일지 / 과거 경험 참조)이면,
+        직전 실패들과 **명백히 다른 새로운 구조적 촉매**가 보고서에 구체적으로 제시되지 않는 한 **미진입**.
+        "좋은 펀더멘털"·"낙폭 과대"는 새로운 촉매가 아니다. 반복 손절은 규율 실패이므로 진입 문턱을 강하게 높인다.
+
         ## 2단계 — 시장 체제별 진입 매트릭스 (단일 기준점)
 
         펀더 게이트 평가가 끝난 후에만 적용하십시오.
@@ -455,6 +495,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         5. 직전 박스 상단 거래량 동반 돌파 (단순 터치 X, 박스 업그레이드 O)
 
         트리거 유형 자동 가산: 트리거가 "거래량 급증 / 갭 상승 / 일중 상승률 / 마감 강도 / 시총 대비 자금 유입 / 거래량 증가 횡보주" 중 하나면 모멘텀 신호 1점을 자동 인정합니다.
+        단, **1.5단계 추세 게이트에 걸리는 하락추세(T1/T2) 종목에는 이 자동 가산을 적용하지 않습니다** — 하락추세 중의 일시적 자금 유입·거래량은 진입 근거가 아니라 노이즈입니다.
 
         ## 4단계 — 추가 확인 요소 (sideways / bear 한정)
 

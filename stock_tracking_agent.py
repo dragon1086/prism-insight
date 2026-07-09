@@ -262,6 +262,137 @@ class StockTrackingAgent:
             self.MAX_SAME_SECTOR, self.SECTOR_CONCENTRATION_RATIO, account_key=account_key
         )
 
+    def _get_trend_facts(self, ticker: str) -> str:
+        """Compute deterministic individual-stock trend facts for the buy prompt's trend gate.
+
+        Fail-open: on ANY error returns "" and logs a warning; never raises into the buy path.
+        Reuses the resilient cores.stock_chart wrappers (db-server backed on prod).
+        """
+        try:
+            from datetime import timedelta
+            from cores.stock_chart import (
+                get_market_ohlcv_by_date,
+                get_index_ohlcv_by_date,
+                _detect_index_ticker,
+            )
+
+            end_dt = datetime.now()
+            start_dt = end_dt - timedelta(days=120)
+            end = end_dt.strftime("%Y%m%d")
+            start = start_dt.strftime("%Y%m%d")
+
+            df = get_market_ohlcv_by_date(start, end, ticker, adjusted=True)
+            if df is None or len(df) < 25 or 'Close' not in df.columns:
+                logger.warning(f"[TrendFacts] {ticker} insufficient OHLCV rows; skipping")
+                return ""
+
+            close_s = df['Close'].astype(float)
+            close = float(close_s.iloc[-1])
+
+            ma20_s = close_s.rolling(window=20).mean()
+            ma50_s = close_s.rolling(window=50).mean()
+            ma60_s = close_s.rolling(window=60).mean()
+
+            def _val(s):
+                try:
+                    v = s.iloc[-1]
+                    return float(v) if v == v else None  # NaN check
+                except Exception:
+                    return None
+
+            def _slope_up(s, lookback=5):
+                # rising if MA today > MA ~lookback trading days ago
+                try:
+                    if len(s) <= lookback:
+                        return None
+                    cur = s.iloc[-1]
+                    prev = s.iloc[-1 - lookback]
+                    if cur != cur or prev != prev:
+                        return None
+                    return bool(cur > prev)
+                except Exception:
+                    return None
+
+            ma20 = _val(ma20_s)
+            ma50 = _val(ma50_s)
+            ma60 = _val(ma60_s)
+            ma20_up = _slope_up(ma20_s)
+            ma50_up = _slope_up(ma50_s)
+            ma60_up = _slope_up(ma60_s)
+
+            # 50일선 우선, 없으면 60일선 fallback (T1용)
+            ma_mid = ma50 if ma50 is not None else ma60
+            ma_mid_up = ma50_up if ma50 is not None else ma60_up
+            ma_mid_label = "MA50" if ma50 is not None else "MA60"
+
+            def _pct(a, b):
+                if a is None or b is None or b == 0:
+                    return None
+                return (a - b) / b * 100.0
+
+            # RS proxy: 60거래일 종목 수익률 - 지수 60거래일 수익률
+            rs = None
+            stock_ret = None
+            idx_ret = None
+            n = min(60, len(close_s) - 1)
+            if n > 0:
+                base = float(close_s.iloc[-1 - n])
+                if base:
+                    stock_ret = (close / base - 1.0) * 100.0
+                try:
+                    index_ticker = _detect_index_ticker(ticker)
+                    idf = get_index_ohlcv_by_date(start, end, index_ticker)
+                    if idf is not None and len(idf) > 1:
+                        icol = "종가" if "종가" in idf.columns else (
+                            "Close" if "Close" in idf.columns else None)
+                        if icol:
+                            iclose = idf[icol].astype(float)
+                            m = min(n, len(iclose) - 1)
+                            ibase = float(iclose.iloc[-1 - m])
+                            if ibase:
+                                idx_ret = (float(iclose.iloc[-1]) / ibase - 1.0) * 100.0
+                except Exception as _ie:
+                    logger.warning(f"[TrendFacts] {ticker} index return failed: {_ie}")
+                if stock_ret is not None and idx_ret is not None:
+                    rs = stock_ret - idx_ret
+
+            # 게이트 판정 (deterministic)
+            # T1: 종가가 50일선(오닐 10주선) 아래 = 핵심 라인 이탈. 기울기 무관 —
+            #     라인 아래면 정당한 눌림이 아니라 추세 훼손으로 본다.
+            t1_hit = bool(ma_mid is not None and close < ma_mid)
+            # T2: 20일선 하향 + 종가가 20일선 대비 5% 이상 아래 = 급격한 초기 붕괴.
+            #     (RS 60일은 직전 급등 잔상으로 stale → 게이트 조건에서 제외, 정보로만 표기)
+            t2_hit = bool(ma20 is not None and ma20_up is not None
+                          and ma20_up is False and close <= ma20 * 0.95)
+
+            def _above(a, b):
+                if a is None or b is None:
+                    return "n/a"
+                return "위" if a >= b else "아래"
+
+            def _dir(up):
+                return "n/a" if up is None else ("상승" if up else "하락")
+
+            def _fmt(v, suffix=""):
+                return f"{v:+.1f}{suffix}" if v is not None else "n/a"
+
+            lines = [
+                "### 📉 개별 추세 팩트 (추세 게이트용 · as-of 오늘)",
+                f"- 종가: {close:,.0f}",
+                f"- vs MA20: {_above(close, ma20)} ({_fmt(_pct(close, ma20), '%')}), MA20 기울기: {_dir(ma20_up)}",
+                f"- vs MA50: {_above(close, ma50)} ({_fmt(_pct(close, ma50), '%')}), MA50 기울기: {_dir(ma50_up)}",
+                f"- vs MA60: {_above(close, ma60)} ({_fmt(_pct(close, ma60), '%')}), MA60 기울기: {_dir(ma60_up)}",
+                f"- RS(60일, 종목-지수): {_fmt(rs, '%p')} (종목 {_fmt(stock_ret, '%')} / 지수 {_fmt(idx_ret, '%')})",
+                f"- T1_hit(종가<{ma_mid_label}, 오닐 10주선 이탈): {t1_hit} / "
+                f"T2_hit(MA20 하락 and 종가 MA20 대비 -5%↓): {t2_hit}",
+            ]
+            trend_facts = "\n".join(lines)
+            logger.info(f"[TrendFacts] {ticker} T1={t1_hit} T2={t2_hit}")
+            return trend_facts
+        except Exception as e:
+            logger.warning(f"[TrendFacts] {ticker} failed, fail-open: {e}")
+            return ""
+
     async def _extract_trading_scenario(
         self,
         report_content: str,
@@ -326,9 +457,12 @@ class StockTrackingAgent:
 
             # Get trading journal context for informed decisions
             journal_context = ""
+            trend_facts = ""
             score_adjustment_info = ""
             adjustment, reasons = 0, []
             if ticker:
+                # Deterministic individual-stock trend facts for the 1.5단계 trend gate (fail-open)
+                trend_facts = self._get_trend_facts(ticker)
                 journal_context = self._get_relevant_journal_context(
                     ticker=ticker,
                     sector=sector,
@@ -390,6 +524,7 @@ class StockTrackingAgent:
                 ### Trading Value Analysis:
                 {rank_change_msg}
                 {score_adjustment_info}
+                {trend_facts}
                 {journal_context}
 
                 ### Report Content:
@@ -405,6 +540,7 @@ class StockTrackingAgent:
                 ### Trading Value Analysis:
                 {rank_change_msg}
                 {score_adjustment_info}
+                {trend_facts}
                 {journal_context}
 
                 ### Report Content:
