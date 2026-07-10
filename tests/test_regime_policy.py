@@ -27,9 +27,9 @@ from cores.regime_policy import (
 #   US: midday runs, morning & afternoon rest.
 # All non-CORRECTION / unknown states run everything (fail-open).
 _CASES = [
-    # --- KR, CORRECTION ---
-    ("kr", "morning", CORRECTION, True),
-    ("kr", "afternoon", CORRECTION, False),
+    # --- KR, CORRECTION (Rev.4: 종가확인 오후 유지, 아침 갭페이드 회피) ---
+    ("kr", "morning", CORRECTION, False),
+    ("kr", "afternoon", CORRECTION, True),
     ("kr", "both", CORRECTION, True),         # unknown mode fails open -> run
     # --- KR, non-CORRECTION ---
     ("kr", "morning", UPTREND, True),
@@ -76,15 +76,15 @@ def test_only_correction_ever_rests():
 
 def test_correction_rest_sets():
     """Exactly the documented batches rest during CORRECTION."""
-    assert decide_batch_policy("kr", "afternoon", CORRECTION).run_batch is False
-    assert decide_batch_policy("kr", "morning", CORRECTION).run_batch is True
+    assert decide_batch_policy("kr", "morning", CORRECTION).run_batch is False
+    assert decide_batch_policy("kr", "afternoon", CORRECTION).run_batch is True
     assert decide_batch_policy("us", "morning", CORRECTION).run_batch is False
     assert decide_batch_policy("us", "afternoon", CORRECTION).run_batch is False
     assert decide_batch_policy("us", "midday", CORRECTION).run_batch is True
 
 
 def test_decide_is_case_insensitive():
-    assert decide_batch_policy("KR", "AFTERNOON", CORRECTION).run_batch is False
+    assert decide_batch_policy("KR", "MORNING", CORRECTION).run_batch is False
     assert decide_batch_policy("US", "Midday", CORRECTION).run_batch is True
 
 
