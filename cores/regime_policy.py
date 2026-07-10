@@ -57,7 +57,11 @@ _DEFAULT_MODE = "shadow"
 # Table (§7 Rev.3): batches that REST during CORRECTION, per market. Any batch
 # NOT listed here still runs during CORRECTION (the retained daily window).
 _CORRECTION_REST_BATCHES = {
-    "kr": frozenset({"afternoon"}),               # morning runs, afternoon rests
+    # §7 Rev.4: KR keeps the AFTERNOON (14:50, close-confirmation) window and
+    # rests the morning one — in corrections, morning gap-strength fades
+    # intraday (distribution into early hope); buy what HELD through the day,
+    # not what looks like it will rise. Same open-noise principle as US.
+    "kr": frozenset({"morning"}),                 # afternoon runs, morning rests
     "us": frozenset({"morning", "afternoon"}),    # only midday runs
 }
 
@@ -96,9 +100,10 @@ def decide_batch_policy(
                      ("both" or any unknown mode fails open -> run.)
         pulse_state: UPTREND / UNDER_PRESSURE / CORRECTION / None.
 
-    Rationale (§7 Rev.3): CORRECTION is not a buy stop; it reduces the agent to a
-    single daily window (KR morning-only, US midday-only) to dodge the open-hour
-    noise and the overnight-gap-on-late-buy windows, while keeping one shot at the
+    Rationale (§7 Rev.3, batch choice revised by Rev.4): CORRECTION is not a buy
+    stop; it reduces the agent to a single daily window (KR afternoon-only =
+    close-confirmation entry, US midday-only) to dodge the open-hour noise where
+    gap-strength fades intraday in weak markets, while keeping one shot at the
     post-crash rebound. Exit loops are unaffected. Any non-CORRECTION or unknown
     state runs everything (fail-open).
     """
