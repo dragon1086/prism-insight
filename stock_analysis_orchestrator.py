@@ -1319,6 +1319,24 @@ async def main():
                 if _mp_mode == "live":
                     logger.info("[MARKET_PULSE] LIVE: resting this batch "
                                 "(agents rest; exit loops unaffected)")
+                    # Notify subscriber channels so the rest is not silent.
+                    # Own try/except: a Telegram failure must NOT block the
+                    # clean early-exit below. cron runs once per (mode, day),
+                    # so no dedup is needed here.
+                    try:
+                        from telegram_config import (
+                            TelegramConfig,
+                            send_market_pulse_rest_notice,
+                        )
+                        _mp_bl = [l.strip() for l in args.broadcast_languages.split(",") if l.strip()]
+                        _mp_tc = TelegramConfig(
+                            use_telegram=not args.no_telegram, broadcast_languages=_mp_bl
+                        )
+                        await send_market_pulse_rest_notice(_mp_tc, args.mode, market="KR")
+                    except Exception as _mp_notice_e:
+                        logger.warning(
+                            f"[MARKET_PULSE] rest notice failed (ignored): {_mp_notice_e}"
+                        )
                     return
                 else:
                     logger.info("[MARKET_PULSE][SHADOW] WOULD_SKIP this batch "

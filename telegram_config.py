@@ -212,3 +212,116 @@ async def send_openai_quota_alert(telegram_config: "TelegramConfig", market: str
         logger.info(f"[{market}] OpenAI quota alert sent to Telegram")
     except Exception as e:
         logger.error(f"[{market}] Failed to send OpenAI quota alert: {e}")
+
+
+# --- Market Pulse "batch resting" subscriber notice (static, no LLM) -----------
+# When the Market Pulse hook rests a LIVE batch, subscribers would otherwise see
+# silence. These pre-translated notices explain the pause. Deterministic /
+# fast / free (no translation agent). The batch label ({label}) is the only
+# per-batch variable. dedup: cron runs each (mode, day) exactly once, so a
+# resting batch fires this at most once per language channel — no dedup needed.
+_MP_REST_BATCH_LABELS = {
+    "ko": {"morning": "오전", "midday": "오후(장중)", "afternoon": "오후", "both": "오늘"},
+    "en": {"morning": "morning", "midday": "midday", "afternoon": "afternoon", "both": "today's"},
+    "ja": {"morning": "午前", "midday": "日中", "afternoon": "午後", "both": "本日"},
+    "zh": {"morning": "上午", "midday": "盘中", "afternoon": "下午", "both": "今日"},
+    "es": {"morning": "de la mañana", "midday": "de mediodía", "afternoon": "de la tarde", "both": "de hoy"},
+}
+
+_MP_REST_MESSAGES = {
+    "ko": (
+        "📉 시장 조정 구간 감지 — 이번 {label} 분석은 쉬어갑니다.\n\n"
+        "시장이 고점 대비 크게 하락한 조정 구간이라, 무리한 신규 진입을 줄이기 위해 "
+        "오늘은 오전 분석만 진행합니다. 보유 종목의 손절·청산 모니터링은 평소처럼 계속 "
+        "가동 중입니다. 시장 회복 신호가 확인되면 자동으로 재개됩니다. 🙏"
+    ),
+    "en": (
+        "📉 Market correction detected — this {label} analysis is taking a break.\n\n"
+        "The market is in a correction (well off recent highs), so to avoid forcing new "
+        "entries we run only one analysis window per day. Position monitoring "
+        "(stop-loss / trend exits) continues as usual. Normal schedule resumes "
+        "automatically once the market confirms recovery."
+    ),
+    "ja": (
+        "📉 相場の調整局面を検知 — 今回の{label}の分析はお休みします。\n\n"
+        "相場は直近高値から大きく下落した調整局面にあるため、無理な新規エントリーを避けるべく、"
+        "本日は分析を1回のみ実施します。保有銘柄のモニタリング（損切り・トレンド離脱）は"
+        "通常どおり継続しています。相場の回復が確認され次第、自動的に通常スケジュールへ再開します。"
+    ),
+    "zh": (
+        "📉 检测到市场回调阶段 — 本次{label}分析暂停一次。\n\n"
+        "当前市场处于较高点大幅回落的回调阶段，为避免勉强开新仓，今日仅进行一轮分析。"
+        "持仓监控（止损／趋势离场）照常运行。一旦市场确认回暖，将自动恢复正常节奏。"
+    ),
+    "es": (
+        "📉 Corrección del mercado detectada — este análisis {label} se toma un descanso.\n\n"
+        "El mercado está en corrección (muy por debajo de los máximos recientes), por lo que, "
+        "para evitar forzar nuevas entradas, ejecutamos solo una ventana de análisis por día. "
+        "El seguimiento de posiciones (stop-loss / salidas por tendencia) continúa como de "
+        "costumbre. El horario normal se reanuda automáticamente una vez que el mercado "
+        "confirme la recuperación."
+    ),
+}
+
+
+def _mp_rest_message(language: str, batch_mode: str) -> str:
+    """Render the static resting notice for a language + batch mode (fallbacks safe)."""
+    template = _MP_REST_MESSAGES.get(language, _MP_REST_MESSAGES["en"])
+    labels = _MP_REST_BATCH_LABELS.get(language, _MP_REST_BATCH_LABELS["en"])
+    label = labels.get(batch_mode, batch_mode)
+    return template.format(label=label)
+
+
+async def send_market_pulse_rest_notice(
+    telegram_config: "TelegramConfig", batch_mode: str, market: str = "KR"
+) -> None:
+    """
+    Notify subscriber channels that a Market Pulse LIVE batch is resting.
+
+    Static, pre-translated (no LLM). Fail-open: any Telegram error is logged and
+    swallowed so it can NEVER block the batch's clean early exit. Sends the ko
+    notice to the main channel and each configured broadcast-language channel.
+
+    Args:
+        telegram_config: TelegramConfig (main channel + broadcast languages)
+        batch_mode: resting batch mode (e.g. "morning"/"afternoon") -> label
+        market: "KR" or "US" (for logging only)
+    """
+    if not telegram_config or not telegram_config.use_telegram:
+        return
+
+    try:
+        from telegram_bot_agent import TelegramBotAgent
+
+        bot_agent = TelegramBotAgent()
+
+        # Main channel is Korean for both KR and US pipelines.
+        targets = []
+        if telegram_config.channel_id:
+            targets.append(("ko", telegram_config.channel_id))
+        for lang in telegram_config.broadcast_languages:
+            channel_id = telegram_config.get_broadcast_channel_id(lang)
+            if channel_id:
+                targets.append((lang, channel_id))
+            else:
+                logger.warning(
+                    f"[MARKET_PULSE][{market}] rest notice: no channel for '{lang}', skipping"
+                )
+
+        for lang, channel_id in targets:
+            try:
+                message = _mp_rest_message(lang, batch_mode)
+                # Plain text (no Markdown) so the static copy never trips parsing.
+                ok = await bot_agent.send_message(
+                    channel_id, message, parse_mode=None, msg_type="market_pulse_rest"
+                )
+                logger.info(
+                    f"[MARKET_PULSE][{market}] rest notice -> {lang} "
+                    f"({'ok' if ok else 'failed'})"
+                )
+            except Exception as e:  # per-channel: one failure must not skip the rest
+                logger.warning(
+                    f"[MARKET_PULSE][{market}] rest notice to '{lang}' failed: {e}"
+                )
+    except Exception as e:  # fail-open: never propagate
+        logger.error(f"[MARKET_PULSE][{market}] rest notice aborted: {e}")
