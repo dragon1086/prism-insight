@@ -404,15 +404,16 @@ def _reset_state_cache() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Post-FTD progressive re-exposure — pilot (half) sizing (env-gated, default OFF) #
+# Post-FTD progressive re-exposure — pilot new-entry throttle (env-gated, OFF)  #
 # --------------------------------------------------------------------------- #
 # After a CORRECTION ends (FTD or price-recovery exit), the first buys back into
 # the market are the riskiest (early re-entry can be a bull trap). PULSE_PILOT_REEXPOSURE
 # ON => for the first PULSE_PILOT_WINDOW_SESSIONS trading sessions after the
-# CORRECTION -> (UPTREND/UNDER_PRESSURE) transition, size new buys at
-# PULSE_PILOT_FACTOR (half). Default OFF = full size (현행 유지). Fail-open: any
-# error -> full size.
-PULSE_PILOT_FACTOR: float = 0.5
+# CORRECTION -> (UPTREND/UNDER_PRESSURE) transition, THROTTLE THE NUMBER of new
+# entries (배치당 신규 진입 1종목 + 중복매수 동결) at the decision layer shared by the
+# simulator and real orders. 금액은 항상 100% 정상 (all-in/all-out per position 계약을
+# 지키기 위해 fractional sizing 은 절대 사용하지 않는다 — sim/real parity). Default OFF =
+# 현행 유지. Fail-open: any error -> 원래 동작(정상 진입).
 PULSE_PILOT_WINDOW_SESSIONS: int = 5
 
 
@@ -458,12 +459,12 @@ def is_pilot_window(sessions_ago: Optional[int], flag_on: Optional[bool] = None)
 
 
 def pilot_reexposure_active(market: str, use_cache: bool = True) -> bool:
-    """Return True when pilot (half) sizing applies for ``market`` ("kr" | "us").
+    """Return True when the pilot new-entry throttle applies for ``market`` ("kr" | "us").
 
     Flag OFF -> False (no replay, zero cost). Otherwise replays MarketPulse over
     ~400d of index bars, finds the last CORRECTION exit, and checks the window.
     Memoized per process (:data:`_PILOT_CACHE`). Fail-open: ANY error -> False
-    (full size), so this never raises into a production buy path.
+    (정상 진입), so this never raises into a production buy path.
     """
     if not pilot_reexposure_enabled():
         return False

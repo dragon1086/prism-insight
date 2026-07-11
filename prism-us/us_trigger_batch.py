@@ -880,6 +880,34 @@ def trigger_contrarian_value(trade_date: str, snapshot: pd.DataFrame,
 
 # === Final Selection ===
 
+# Post-FTD 파일럿 재진입 판정은 root cores/regime_policy.py 에 있다. prism-us/cores 가
+# sys.path 우선이라 `from cores.regime_policy import ...` 는 shadowing 되므로, 파일경로로
+# 직접 1회 로드해 캐시한다(us_stock_tracking_agent._import_from_main_cores 와 동일 패턴).
+_REGIME_POLICY_MOD = "__UNSET__"
+
+
+def _load_root_regime_policy():
+    """root cores/regime_policy.py 를 파일경로로 1회 로드해 캐시. 실패 시 None(호출부 fail-open)."""
+    global _REGIME_POLICY_MOD
+    if _REGIME_POLICY_MOD == "__UNSET__":
+        try:
+            import importlib.util
+            _name = "prism_root_regime_policy_uspilot"
+            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            _fp = os.path.join(_root, "cores", "regime_policy.py")
+            spec = importlib.util.spec_from_file_location(_name, _fp)
+            _m = importlib.util.module_from_spec(spec)
+            # py3.14 @dataclass(frozen=True) 는 exec 중 sys.modules[cls.__module__] 를 조회하므로
+            # exec_module 전에 반드시 등록해야 한다(미등록 시 NoneType.__dict__ AttributeError).
+            sys.modules[_name] = _m
+            spec.loader.exec_module(_m)
+            _REGIME_POLICY_MOD = _m
+        except Exception as e:
+            logger.warning("[PULSE_PILOT] regime_policy 로드 실패, fail-open: %s", e)
+            _REGIME_POLICY_MOD = None
+    return _REGIME_POLICY_MOD
+
+
 def _get_regime_slots(market_regime: str) -> tuple:
     """Return (topdown_slots, bottomup_slots) based on market regime."""
     REGIME_SLOTS = {
@@ -890,6 +918,19 @@ def _get_regime_slots(market_regime: str) -> tuple:
         "strong_bear": (0, 3),
     }
     td, bu = REGIME_SLOTS.get(market_regime, (1, 2))  # default: sideways ratios
+    # Post-FTD 정찰(파일럿) 재진입: PULSE_PILOT_REEXPOSURE ON + US 파일럿 윈도우면 배치당
+    # 신규 진입 슬롯을 총 1개로 캡한다. post-FTD 정찰 진입은 주도주(top-down) 우선, 정상 금액
+    # 1종목만. 금액은 절대 건드리지 않는다(sim/real parity). 신규 진입 수만 조인다.
+    # fail-open: 파일럿 판정 중 예외 발생 시 원래 슬롯 유지(기존 약세장 브랜치 스타일).
+    try:
+        _rp = _load_root_regime_policy()
+        if (td + bu) > 1 and _rp is not None and _rp.pilot_reexposure_active("us"):
+            capped = (1, 0) if td >= 1 else (0, min(bu, 1))
+            logger.info("[PULSE_PILOT] 파일럿 신규진입 캡: %s (%d,%d)->(%d,%d)",
+                        market_regime, td, bu, capped[0], capped[1])
+            return capped
+    except Exception as _pe:
+        logger.debug("[PULSE_PILOT] slot-cap fail-open: %s", _pe)
     # 약세·횡보장 모멘텀추격(top-down) 억제 옵션 (env-gated, 기본 off = 현행 유지).
     # ON 시 sideways/moderate_bear의 top-down 슬롯을 0으로 → 급락 휩쏘장에서 momentum chase
     # 매수를 접고 가치형 bottom-up만 남긴다(총 슬롯도 감소 = 매수 절제). strong_bear는 이미 (0,3).
