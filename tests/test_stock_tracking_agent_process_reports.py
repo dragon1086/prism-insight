@@ -23,7 +23,9 @@ class _FakeAsyncTradingContext:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def async_buy_stock(self, stock_code, limit_price=None):
+    async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None):
+        # buy_amount mirrors the real DomesticStockTrading.async_buy_stock signature
+        # (None = full size; set only under PULSE_PILOT_REEXPOSURE pilot sizing).
         return {
             "success": True,
             "message": f"bought for {self.account_name}",

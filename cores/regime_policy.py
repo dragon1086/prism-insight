@@ -11,7 +11,7 @@ production orchestrators. It answers three questions, and nothing else:
   3. :func:`market_pulse_mode` — read the ``MARKET_PULSE_MODE`` env flag
      (``shadow`` | ``live`` | ``off``; default ``shadow``).
 
-Policy rationale (tasks/market_pulse/00_VALIDATION_PLAN.md §7 Rev.3):
+Policy rationale (tasks/market_pulse/00_VALIDATION_PLAN.md §7 Rev.5):
     The V2 trade-sample audit REJECTED the original "CORRECTION = full stop"
     policy — CORRECTION-window buys had a scary 38% stop-out rate but a NET
     +25.3% P&L (the post-crash rebound monsters live in this window). So the
@@ -24,9 +24,16 @@ Policy rationale (tasks/market_pulse/00_VALIDATION_PLAN.md §7 Rev.3):
           morning (open-hour noise is maximal) and afternoon (overnight gap risk
           on a late buy) both rest.
 
-    Non-CORRECTION states — UPTREND, UNDER_PRESSURE, and None (unknown / fail-open)
-    — run every batch normally. Exit/sell loops are NEVER affected by this policy;
-    only the new-analysis agents rest.
+    Rev.5 adds a lighter deceleration for the intermediate UNDER_PRESSURE state
+    (4-5 distribution days = market weakening but not yet in correction). Here
+    only US rests its MORNING batch (open-hour gap-strength is the least reliable
+    signal in a softening tape); US midday + afternoon still run, and KR is left
+    UNCHANGED (its two windows already trade the calmer mid/close hours). This is
+    a partial, market-specific brake — strictly weaker than the CORRECTION rest.
+
+    Remaining states — UPTREND and None (unknown / fail-open) — run every batch
+    normally, as does KR under UNDER_PRESSURE. Exit/sell loops are NEVER affected
+    by this policy; only the new-analysis agents rest.
 
 Import safety: this module performs NO heavy imports at module load. All data
 fetching and market_pulse/stock_chart imports are lazy (inside functions) and
@@ -65,11 +72,23 @@ _CORRECTION_REST_BATCHES = {
     "us": frozenset({"morning", "afternoon"}),    # only midday runs
 }
 
+# Table (§7 Rev.5): batches that REST during UNDER_PRESSURE, per market. A lighter,
+# market-specific brake than CORRECTION. KR is intentionally absent (no rest); only
+# US rests its morning batch (open-hour gap-strength least reliable in a softening
+# tape). Any batch NOT listed here runs normally under UNDER_PRESSURE.
+_UNDER_PRESSURE_REST_BATCHES = {
+    "us": frozenset({"morning"}),                 # midday + afternoon run, morning rests
+}
+
 # Module-level cache: pulse state is computed once per (short-lived) process and
 # reused by the orchestrator hook and by per-ticker trend-fact injection so we do
 # not re-fetch the index for every ticker. A None result is cached too, so a
 # failed/network-less run does not retry on every call.
 _STATE_CACHE: dict = {}
+
+# Item 4: post-FTD pilot re-exposure cache (per-process). True/False memoized so
+# the ~400d index replay runs at most once per market per process. Fail-open False.
+_PILOT_CACHE: dict = {}
 
 
 @dataclass(frozen=True)
@@ -100,12 +119,13 @@ def decide_batch_policy(
                      ("both" or any unknown mode fails open -> run.)
         pulse_state: UPTREND / UNDER_PRESSURE / CORRECTION / None.
 
-    Rationale (§7 Rev.3, batch choice revised by Rev.4): CORRECTION is not a buy
-    stop; it reduces the agent to a single daily window (KR afternoon-only =
+    Rationale (§7 Rev.3, batch choice revised by Rev.4/Rev.5): CORRECTION is not a
+    buy stop; it reduces the agent to a single daily window (KR afternoon-only =
     close-confirmation entry, US midday-only) to dodge the open-hour noise where
     gap-strength fades intraday in weak markets, while keeping one shot at the
-    post-crash rebound. Exit loops are unaffected. Any non-CORRECTION or unknown
-    state runs everything (fail-open).
+    post-crash rebound. Rev.5: UNDER_PRESSURE additionally rests the US morning
+    batch only (KR unchanged). Exit loops are unaffected. Any state/mode not in a
+    rest table runs (fail-open on None/unknown).
     """
     m = (market or "").strip().lower()
     mode = (batch_mode or "").strip().lower()
@@ -130,7 +150,27 @@ def decide_batch_policy(
             pulse_state=pulse_state,
         )
 
-    # UPTREND / UNDER_PRESSURE / None(unknown) -> run everything (fail-open).
+    if pulse_state == UNDER_PRESSURE:
+        rest_batches = _UNDER_PRESSURE_REST_BATCHES.get(m, frozenset())
+        if mode in rest_batches:
+            return BatchPolicy(
+                run_batch=False,
+                reason=(
+                    f"UNDER_PRESSURE: {m or '?'} '{mode or '?'}' batch rests "
+                    "(Rev.5 partial brake; exit loops unaffected)"
+                ),
+                pulse_state=pulse_state,
+            )
+        return BatchPolicy(
+            run_batch=True,
+            reason=(
+                f"UNDER_PRESSURE: {m or '?'} '{mode or '?'}' batch runs "
+                "(Rev.5 partial brake)"
+            ),
+            pulse_state=pulse_state,
+        )
+
+    # UPTREND / None(unknown) -> run everything (fail-open).
     return BatchPolicy(
         run_batch=True,
         reason=f"{pulse_state or 'UNKNOWN'}: run all batches",
@@ -145,6 +185,60 @@ def market_pulse_mode() -> str:
     """
     raw = (os.getenv("MARKET_PULSE_MODE") or "").strip().lower()
     return raw if raw in _VALID_MODES else _DEFAULT_MODE
+
+
+# --------------------------------------------------------------------------- #
+# Regime-adaptive hard min_score floor (env-gated, default OFF)               #
+# --------------------------------------------------------------------------- #
+# 7월 -42%p 손실 재발 방지책의 하나: 매수 임계(min_score)는 지금 LLM이 시나리오마다
+# 자유롭게 정한다(약세장에서 낮아질 수 있음). 아래 표는 시장 레짐별 "절대 하한선"을
+# 강제해, 약세장에서는 LLM이 무슨 값을 주더라도 그 밑으로는 못 사게 한다(안전 게이트).
+# 기본 OFF(REGIME_MIN_SCORE_FLOOR 미설정) = 현행 유지(LLM 값 그대로).
+_REGIME_MIN_SCORE_FLOORS = {
+    "strong_bear": 9,
+    "moderate_bear": 8,
+    "sideways": 8,
+    "moderate_bull": 0,
+    "strong_bull": 0,
+    "unknown": 0,
+}
+
+
+def regime_min_score_floor_enabled() -> bool:
+    """Return True when REGIME_MIN_SCORE_FLOOR is truthy (1/true/yes/on). Default OFF.
+
+    Same truthy parsing as trigger_batch's REGIME_WEAK_NO_TOPDOWN gate.
+    """
+    return os.getenv("REGIME_MIN_SCORE_FLOOR", "false").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def min_score_floor(market_regime: Optional[str]) -> int:
+    """Hard buy-score floor for ``market_regime`` (0 for bullish / unknown regimes).
+
+    Tolerant of decorated labels (e.g. ``"strong_bear (하락)"`` -> ``strong_bear``):
+    only the leading whitespace-delimited token is matched. Unmapped -> 0.
+    """
+    raw = (market_regime or "").strip().lower()
+    key = raw.split()[0] if raw else "unknown"
+    return _REGIME_MIN_SCORE_FLOORS.get(key, 0)
+
+
+def effective_min_score(llm_min_score, market_regime: Optional[str]) -> int:
+    """Return ``max(llm_min_score, regime_floor)`` when the flag is ON; else the
+    LLM value unchanged.
+
+    NEVER lowers the LLM threshold (floor is a one-way raise). Pure, no I/O beyond
+    the single env read. ``llm_min_score`` non-int/None is treated as 0.
+    """
+    try:
+        base = int(llm_min_score or 0)
+    except (TypeError, ValueError):
+        base = 0
+    if not regime_min_score_floor_enabled():
+        return base
+    return max(base, min_score_floor(market_regime))
 
 
 # --------------------------------------------------------------------------- #
@@ -304,5 +398,103 @@ def get_market_pulse_state(market: str, use_cache: bool = True) -> Optional[str]
 
 
 def _reset_state_cache() -> None:
-    """Test/utility hook: clear the memoized pulse-state cache."""
+    """Test/utility hook: clear the memoized pulse-state + pilot caches."""
     _STATE_CACHE.clear()
+    _PILOT_CACHE.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Post-FTD progressive re-exposure — pilot (half) sizing (env-gated, default OFF) #
+# --------------------------------------------------------------------------- #
+# After a CORRECTION ends (FTD or price-recovery exit), the first buys back into
+# the market are the riskiest (early re-entry can be a bull trap). PULSE_PILOT_REEXPOSURE
+# ON => for the first PULSE_PILOT_WINDOW_SESSIONS trading sessions after the
+# CORRECTION -> (UPTREND/UNDER_PRESSURE) transition, size new buys at
+# PULSE_PILOT_FACTOR (half). Default OFF = full size (현행 유지). Fail-open: any
+# error -> full size.
+PULSE_PILOT_FACTOR: float = 0.5
+PULSE_PILOT_WINDOW_SESSIONS: int = 5
+
+
+def pilot_reexposure_enabled() -> bool:
+    """Return True when PULSE_PILOT_REEXPOSURE is truthy (1/true/yes/on). Default OFF."""
+    return os.getenv("PULSE_PILOT_REEXPOSURE", "false").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def _sessions_since_correction_exit(states) -> Optional[int]:
+    """Pure. Given a chronological list of pulse-state strings, return the number
+    of trading sessions since the most recent CORRECTION -> non-CORRECTION
+    transition (0 on the exit session itself, 1 the next session, ...).
+
+    Returns ``None`` when the series currently ends in CORRECTION (no re-exposure
+    window active yet) or no such transition exists in the series.
+    """
+    if not states:
+        return None
+    if states[-1] == CORRECTION:
+        return None
+    exit_idx = None
+    for i in range(1, len(states)):
+        if states[i - 1] == CORRECTION and states[i] != CORRECTION:
+            exit_idx = i
+    if exit_idx is None:
+        return None
+    return (len(states) - 1) - exit_idx
+
+
+def is_pilot_window(sessions_ago: Optional[int], flag_on: Optional[bool] = None) -> bool:
+    """Pure. True iff the flag is ON and ``0 <= sessions_ago < PULSE_PILOT_WINDOW_SESSIONS``.
+
+    ``flag_on`` defaults to :func:`pilot_reexposure_enabled` when not supplied
+    (injectable for tests). ``sessions_ago is None`` -> False (full size).
+    """
+    if flag_on is None:
+        flag_on = pilot_reexposure_enabled()
+    if not flag_on or sessions_ago is None:
+        return False
+    return 0 <= sessions_ago < PULSE_PILOT_WINDOW_SESSIONS
+
+
+def pilot_reexposure_active(market: str, use_cache: bool = True) -> bool:
+    """Return True when pilot (half) sizing applies for ``market`` ("kr" | "us").
+
+    Flag OFF -> False (no replay, zero cost). Otherwise replays MarketPulse over
+    ~400d of index bars, finds the last CORRECTION exit, and checks the window.
+    Memoized per process (:data:`_PILOT_CACHE`). Fail-open: ANY error -> False
+    (full size), so this never raises into a production buy path.
+    """
+    if not pilot_reexposure_enabled():
+        return False
+    m = (market or "").strip().lower()
+    if use_cache and m in _PILOT_CACHE:
+        return _PILOT_CACHE[m]
+    try:
+        mp_mod = _load_root_cores("market_pulse")
+        MarketPulse = mp_mod.MarketPulse
+        DailyBar = mp_mod.DailyBar
+
+        if m == "kr":
+            bars = _fetch_kr_bars(DailyBar)
+        elif m == "us":
+            bars = _fetch_us_bars(DailyBar)
+        else:
+            logger.warning("[PULSE_PILOT] unknown market %r -> full size", market)
+            _PILOT_CACHE[m] = False
+            return False
+
+        if not bars or len(bars) < 30:
+            raise RuntimeError(f"insufficient index bars: {len(bars) if bars else 0}")
+
+        mp = MarketPulse()
+        states = [mp.feed(bar) for bar in bars]
+        ago = _sessions_since_correction_exit(states)
+        active = is_pilot_window(ago, flag_on=True)
+        _PILOT_CACHE[m] = active
+        return active
+    except Exception as e:  # noqa: BLE001 - fail-open, never raise
+        logger.warning("[PULSE_PILOT] active-check failed for %s, fail-open full-size: %s",
+                       m or "?", e)
+        _PILOT_CACHE[m] = False
+        return False

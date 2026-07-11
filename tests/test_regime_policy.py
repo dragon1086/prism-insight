@@ -22,10 +22,11 @@ from cores.regime_policy import (
 # --------------------------------------------------------------------------- #
 # decide_batch_policy — table-driven (market, mode, state) -> expected run_batch #
 # --------------------------------------------------------------------------- #
-# §7 Rev.3: CORRECTION reduces to one daily window.
-#   KR: morning runs, afternoon rests.
+# §7 Rev.3/Rev.4: CORRECTION reduces to one daily window.
+#   KR: morning rests, afternoon runs.
 #   US: midday runs, morning & afternoon rest.
-# All non-CORRECTION / unknown states run everything (fail-open).
+# §7 Rev.5: UNDER_PRESSURE partial brake — US morning rests (midday/afternoon run),
+#   KR unchanged (all run). UPTREND / None(unknown) run everything (fail-open).
 _CASES = [
     # --- KR, CORRECTION (Rev.4: 종가확인 오후 유지, 아침 갭페이드 회피) ---
     ("kr", "morning", CORRECTION, False),
@@ -47,9 +48,11 @@ _CASES = [
     ("us", "morning", UPTREND, True),
     ("us", "midday", UPTREND, True),
     ("us", "afternoon", UPTREND, True),
-    ("us", "morning", UNDER_PRESSURE, True),
+    # Rev.5: US morning rests under UNDER_PRESSURE; midday/afternoon run.
+    ("us", "morning", UNDER_PRESSURE, False),
     ("us", "midday", UNDER_PRESSURE, True),
     ("us", "afternoon", UNDER_PRESSURE, True),
+    ("us", "both", UNDER_PRESSURE, True),      # unknown mode fails open -> run
     ("us", "morning", None, True),
     ("us", "midday", None, True),
     ("us", "afternoon", None, True),
@@ -65,13 +68,39 @@ def test_decide_batch_policy_table(market, mode, state, expected):
     assert isinstance(pol.reason, str) and pol.reason
 
 
-def test_only_correction_ever_rests():
-    """No non-CORRECTION state can ever produce run_batch=False."""
+def test_only_documented_batches_rest():
+    """Only the documented (state, market, mode) combos rest; everything else runs.
+
+    Rev.5: rest set = {CORRECTION: kr-morning, us-morning, us-afternoon;
+                       UNDER_PRESSURE: us-morning}. All other combos run.
+    """
+    rest = {
+        (CORRECTION, "kr", "morning"),
+        (CORRECTION, "us", "morning"),
+        (CORRECTION, "us", "afternoon"),
+        (UNDER_PRESSURE, "us", "morning"),
+    }
     for market in ("kr", "us"):
         for mode in ("morning", "midday", "afternoon", "both"):
-            for state in (UPTREND, UNDER_PRESSURE, None):
+            for state in (UPTREND, UNDER_PRESSURE, CORRECTION, None):
                 pol = decide_batch_policy(market, mode, state)
-                assert pol.run_batch is True, (market, mode, state)
+                expected_run = (state, market, mode) not in rest
+                assert pol.run_batch is expected_run, (market, mode, state)
+
+
+def test_under_pressure_rev5_partial_brake():
+    """Rev.5: US morning rests under UNDER_PRESSURE; US midday/afternoon and all KR run."""
+    # US: only morning rests.
+    assert decide_batch_policy("us", "morning", UNDER_PRESSURE).run_batch is False
+    assert decide_batch_policy("us", "midday", UNDER_PRESSURE).run_batch is True
+    assert decide_batch_policy("us", "afternoon", UNDER_PRESSURE).run_batch is True
+    # KR: unchanged — everything runs under UNDER_PRESSURE.
+    assert decide_batch_policy("kr", "morning", UNDER_PRESSURE).run_batch is True
+    assert decide_batch_policy("kr", "afternoon", UNDER_PRESSURE).run_batch is True
+    # None (fail-open) runs everything on both markets.
+    for market in ("kr", "us"):
+        for mode in ("morning", "midday", "afternoon"):
+            assert decide_batch_policy(market, mode, None).run_batch is True
 
 
 def test_correction_rest_sets():

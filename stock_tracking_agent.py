@@ -1128,6 +1128,15 @@ class StockTrackingAgent:
             logger.warning(f"[sell] live regime fetch failed, using stale market_condition: {e}")
             return None
 
+    def _buy_floor_regime(self) -> Optional[str]:
+        """레짐 하한선 게이트(REGIME_MIN_SCORE_FLOOR)용 '현재' 시장 레짐을 프로세스당 1회
+        캐시한다. _get_live_regime_safe 재사용(OpenAI 무관, fail-open None → 하한 0)."""
+        _c = getattr(self, "_buy_floor_regime_cache", "__UNSET__")
+        if _c == "__UNSET__":
+            _c = self._get_live_regime_safe()
+            self._buy_floor_regime_cache = _c
+        return _c
+
     async def _analyze_sell_decision(self, stock_data: Dict[str, Any]) -> Tuple[bool, str]:
         """
         Sell decision analysis
@@ -1929,6 +1938,31 @@ class StockTrackingAgent:
                     min_score = scenario.get("min_score", 0)
                     logger.info(f"Buy score check: {company_name}({ticker}) - Score: {buy_score}")
 
+                    # 레짐 적응 하한선 게이트(env-gated REGIME_MIN_SCORE_FLOOR, 기본 off).
+                    # KR 진입은 LLM decision=="Enter" 로만 결정되고 min_score 는 정보용이었다.
+                    # 플래그 ON 시 약세장 하한(strong_bear 9 / bear·sideways 8)을 강제해,
+                    # buy_score 가 하한 미만이면 LLM 이 Enter 라 해도 매수를 차단한다(안전 게이트).
+                    # 기본 off = 현행 유지(하한 계산·차단 없음). fail-open: 레짐 조회 실패 시 하한 0.
+                    _regime_floor_block = False
+                    try:
+                        from cores.regime_policy import (
+                            effective_min_score,
+                            regime_min_score_floor_enabled,
+                        )
+                        if regime_min_score_floor_enabled():
+                            _fr = self._buy_floor_regime()
+                            _eff = effective_min_score(min_score, _fr)
+                            if _eff > min_score:
+                                logger.info(
+                                    f"[REGIME_MIN_SCORE_FLOOR] {company_name}({ticker}) "
+                                    f"min_score {min_score}->{_eff} (regime={_fr})"
+                                )
+                                min_score = _eff
+                            if buy_score < min_score:
+                                _regime_floor_block = True
+                    except Exception as _fe:
+                        logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {_fe}")
+
                     # Re-entry cooldown gate (SHADOW logs only; LIVE vetoes a churn
                     # re-entry into a name just sold — longer cooldown after a loss).
                     _cd_block = False
@@ -1950,14 +1984,30 @@ class StockTrackingAgent:
                                 _cd["window_hours"], _cd["after_loss"], _cd.get("exit_kind"), _risk_only)
                             _cd_block = _enforce
 
-                    if analysis_result.get("decision") == "Enter" and not _cd_block:
+                    if analysis_result.get("decision") == "Enter" and not _cd_block and not _regime_floor_block:
                         buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
 
                         if buy_success:
                             from trading.domestic_stock_trading import AsyncTradingContext
 
                             async with AsyncTradingContext(account_name=account["name"]) as trading:
-                                trade_result = await trading.async_buy_stock(stock_code=ticker, limit_price=current_price)
+                                # 파일럿 재진입 축소매수(env-gated PULSE_PILOT_REEXPOSURE, 기본 off).
+                                # CORRECTION 종료 직후 N세션은 buy_amount 를 절반으로. fail-open 정상매수.
+                                _pilot_buy_amt = None
+                                try:
+                                    from cores.regime_policy import (
+                                        pilot_reexposure_active,
+                                        PULSE_PILOT_FACTOR,
+                                    )
+                                    if pilot_reexposure_active("kr") and getattr(trading, "buy_amount", None):
+                                        _pilot_buy_amt = int(trading.buy_amount * PULSE_PILOT_FACTOR)
+                                        logger.info(
+                                            f"[PULSE_PILOT] {company_name}({ticker}) 파일럿 재진입 축소매수: "
+                                            f"{int(trading.buy_amount):,}->{_pilot_buy_amt:,} KRW (x{PULSE_PILOT_FACTOR})"
+                                        )
+                                except Exception as _pe:
+                                    logger.warning(f"[PULSE_PILOT] fail-open 정상매수: {_pe}")
+                                trade_result = await trading.async_buy_stock(stock_code=ticker, limit_price=current_price, buy_amount=_pilot_buy_amt)
 
                             if trade_result['success']:
                                 logger.info(f"Actual purchase successful: {trade_result['message']}")

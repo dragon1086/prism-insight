@@ -1781,6 +1781,30 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             logger.warning(f"[sell] live regime fetch failed, using stale market_condition: {e}")
             return None
 
+    def _buy_floor_regime(self) -> Optional[str]:
+        """레짐 하한선 게이트(REGIME_MIN_SCORE_FLOOR)용 '현재' 시장 레짐을 프로세스당 1회
+        캐시한다. _get_live_regime_safe 재사용(OpenAI 무관, fail-open None → 하한 0)."""
+        _c = getattr(self, "_buy_floor_regime_cache", "__UNSET__")
+        if _c == "__UNSET__":
+            _c = self._get_live_regime_safe()
+            self._buy_floor_regime_cache = _c
+        return _c
+
+    def _regime_policy_mod(self):
+        """root cores/regime_policy.py 를 파일경로로 1회 로드해 캐시(prism-us/cores 섀도잉 회피).
+        실패 시 None → 호출부 fail-open."""
+        _m = getattr(self, "_regime_policy_mod_cache", "__UNSET__")
+        if _m == "__UNSET__":
+            try:
+                _m = _import_from_main_cores(
+                    "prism_root_regime_policy_floor", "cores/regime_policy.py"
+                )
+            except Exception as e:
+                logger.warning(f"[REGIME_MIN_SCORE_FLOOR] regime_policy 로드 실패, fail-open: {e}")
+                _m = None
+            self._regime_policy_mod_cache = _m
+        return _m
+
     async def _fallback_sell_decision(self, stock_data: Dict[str, Any]) -> Tuple[bool, str]:
         """Rule-based sell decision (fallback when AI unavailable).
 
@@ -2829,6 +2853,25 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     buy_score = scenario.get("buy_score", 0)
                     min_score = scenario.get("min_score", 0)
 
+                    # 레짐 적응 하한선(env-gated REGIME_MIN_SCORE_FLOOR, 기본 off). 플래그 ON 시
+                    # 약세장 하한(strong_bear 9 / bear·sideways 8)을 강제해 min_score 를 끌어올린다.
+                    # 진입 게이트(아래 adjusted_score >= min_score)가 그대로 차단을 수행한다.
+                    # 기본 off = 현행 유지. fail-open: 레짐/모듈 로드 실패 시 LLM min_score 유지.
+                    # prism-us/cores 섀도잉 회피: root cores/regime_policy.py 를 파일경로로 로드.
+                    try:
+                        _rp = self._regime_policy_mod()
+                        if _rp is not None and _rp.regime_min_score_floor_enabled():
+                            _fr = self._buy_floor_regime()
+                            _eff = _rp.effective_min_score(min_score, _fr)
+                            if _eff > min_score:
+                                logger.info(
+                                    f"[REGIME_MIN_SCORE_FLOOR] {company_name}({ticker}) "
+                                    f"min_score {min_score}->{_eff} (regime={_fr})"
+                                )
+                                min_score = _eff
+                    except Exception as _fe:
+                        logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {_fe}")
+
                     score_adjustment = 0
                     adjustment_reasons = []
                     trigger_info = getattr(self, 'trigger_info_map', {}).get(ticker, {})
@@ -2896,7 +2939,21 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     except ImportError:
                                         from prism_us.trading.us_stock_trading import AsyncUSTradingContext
                                     async with AsyncUSTradingContext(account_name=account["name"]) as trading:
-                                        trade_result = await trading.async_buy_stock(ticker=ticker, limit_price=current_price)
+                                        # 파일럿 재진입 축소매수(env-gated PULSE_PILOT_REEXPOSURE, 기본 off).
+                                        # CORRECTION 종료 직후 N세션은 buy_amount 를 절반으로. fail-open 정상매수.
+                                        _pilot_buy_amt = None
+                                        try:
+                                            _rp = self._regime_policy_mod()
+                                            if (_rp is not None and _rp.pilot_reexposure_active("us")
+                                                    and getattr(trading, "buy_amount", None)):
+                                                _pilot_buy_amt = round(trading.buy_amount * _rp.PULSE_PILOT_FACTOR, 2)
+                                                logger.info(
+                                                    f"[PULSE_PILOT] {company_name}({ticker}) pilot re-exposure half-size buy: "
+                                                    f"${trading.buy_amount:,.2f}->${_pilot_buy_amt:,.2f} (x{_rp.PULSE_PILOT_FACTOR})"
+                                                )
+                                        except Exception as _pe:
+                                            logger.warning(f"[PULSE_PILOT] fail-open full-size buy: {_pe}")
+                                        trade_result = await trading.async_buy_stock(ticker=ticker, limit_price=current_price, buy_amount=_pilot_buy_amt)
 
                                     if trade_result['success']:
                                         logger.info(f"Actual purchase successful: {trade_result['message']}")
