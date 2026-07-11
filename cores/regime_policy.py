@@ -86,6 +86,10 @@ _UNDER_PRESSURE_REST_BATCHES = {
 # failed/network-less run does not retry on every call.
 _STATE_CACHE: dict = {}
 
+# Item 4: post-FTD pilot re-exposure cache (per-process). True/False memoized so
+# the ~400d index replay runs at most once per market per process. Fail-open False.
+_PILOT_CACHE: dict = {}
+
 
 @dataclass(frozen=True)
 class BatchPolicy:
@@ -394,5 +398,103 @@ def get_market_pulse_state(market: str, use_cache: bool = True) -> Optional[str]
 
 
 def _reset_state_cache() -> None:
-    """Test/utility hook: clear the memoized pulse-state cache."""
+    """Test/utility hook: clear the memoized pulse-state + pilot caches."""
     _STATE_CACHE.clear()
+    _PILOT_CACHE.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Post-FTD progressive re-exposure — pilot (half) sizing (env-gated, default OFF) #
+# --------------------------------------------------------------------------- #
+# After a CORRECTION ends (FTD or price-recovery exit), the first buys back into
+# the market are the riskiest (early re-entry can be a bull trap). PULSE_PILOT_REEXPOSURE
+# ON => for the first PULSE_PILOT_WINDOW_SESSIONS trading sessions after the
+# CORRECTION -> (UPTREND/UNDER_PRESSURE) transition, size new buys at
+# PULSE_PILOT_FACTOR (half). Default OFF = full size (현행 유지). Fail-open: any
+# error -> full size.
+PULSE_PILOT_FACTOR: float = 0.5
+PULSE_PILOT_WINDOW_SESSIONS: int = 5
+
+
+def pilot_reexposure_enabled() -> bool:
+    """Return True when PULSE_PILOT_REEXPOSURE is truthy (1/true/yes/on). Default OFF."""
+    return os.getenv("PULSE_PILOT_REEXPOSURE", "false").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def _sessions_since_correction_exit(states) -> Optional[int]:
+    """Pure. Given a chronological list of pulse-state strings, return the number
+    of trading sessions since the most recent CORRECTION -> non-CORRECTION
+    transition (0 on the exit session itself, 1 the next session, ...).
+
+    Returns ``None`` when the series currently ends in CORRECTION (no re-exposure
+    window active yet) or no such transition exists in the series.
+    """
+    if not states:
+        return None
+    if states[-1] == CORRECTION:
+        return None
+    exit_idx = None
+    for i in range(1, len(states)):
+        if states[i - 1] == CORRECTION and states[i] != CORRECTION:
+            exit_idx = i
+    if exit_idx is None:
+        return None
+    return (len(states) - 1) - exit_idx
+
+
+def is_pilot_window(sessions_ago: Optional[int], flag_on: Optional[bool] = None) -> bool:
+    """Pure. True iff the flag is ON and ``0 <= sessions_ago < PULSE_PILOT_WINDOW_SESSIONS``.
+
+    ``flag_on`` defaults to :func:`pilot_reexposure_enabled` when not supplied
+    (injectable for tests). ``sessions_ago is None`` -> False (full size).
+    """
+    if flag_on is None:
+        flag_on = pilot_reexposure_enabled()
+    if not flag_on or sessions_ago is None:
+        return False
+    return 0 <= sessions_ago < PULSE_PILOT_WINDOW_SESSIONS
+
+
+def pilot_reexposure_active(market: str, use_cache: bool = True) -> bool:
+    """Return True when pilot (half) sizing applies for ``market`` ("kr" | "us").
+
+    Flag OFF -> False (no replay, zero cost). Otherwise replays MarketPulse over
+    ~400d of index bars, finds the last CORRECTION exit, and checks the window.
+    Memoized per process (:data:`_PILOT_CACHE`). Fail-open: ANY error -> False
+    (full size), so this never raises into a production buy path.
+    """
+    if not pilot_reexposure_enabled():
+        return False
+    m = (market or "").strip().lower()
+    if use_cache and m in _PILOT_CACHE:
+        return _PILOT_CACHE[m]
+    try:
+        mp_mod = _load_root_cores("market_pulse")
+        MarketPulse = mp_mod.MarketPulse
+        DailyBar = mp_mod.DailyBar
+
+        if m == "kr":
+            bars = _fetch_kr_bars(DailyBar)
+        elif m == "us":
+            bars = _fetch_us_bars(DailyBar)
+        else:
+            logger.warning("[PULSE_PILOT] unknown market %r -> full size", market)
+            _PILOT_CACHE[m] = False
+            return False
+
+        if not bars or len(bars) < 30:
+            raise RuntimeError(f"insufficient index bars: {len(bars) if bars else 0}")
+
+        mp = MarketPulse()
+        states = [mp.feed(bar) for bar in bars]
+        ago = _sessions_since_correction_exit(states)
+        active = is_pilot_window(ago, flag_on=True)
+        _PILOT_CACHE[m] = active
+        return active
+    except Exception as e:  # noqa: BLE001 - fail-open, never raise
+        logger.warning("[PULSE_PILOT] active-check failed for %s, fail-open full-size: %s",
+                       m or "?", e)
+        _PILOT_CACHE[m] = False
+        return False

@@ -1991,7 +1991,23 @@ class StockTrackingAgent:
                             from trading.domestic_stock_trading import AsyncTradingContext
 
                             async with AsyncTradingContext(account_name=account["name"]) as trading:
-                                trade_result = await trading.async_buy_stock(stock_code=ticker, limit_price=current_price)
+                                # 파일럿 재진입 축소매수(env-gated PULSE_PILOT_REEXPOSURE, 기본 off).
+                                # CORRECTION 종료 직후 N세션은 buy_amount 를 절반으로. fail-open 정상매수.
+                                _pilot_buy_amt = None
+                                try:
+                                    from cores.regime_policy import (
+                                        pilot_reexposure_active,
+                                        PULSE_PILOT_FACTOR,
+                                    )
+                                    if pilot_reexposure_active("kr") and getattr(trading, "buy_amount", None):
+                                        _pilot_buy_amt = int(trading.buy_amount * PULSE_PILOT_FACTOR)
+                                        logger.info(
+                                            f"[PULSE_PILOT] {company_name}({ticker}) 파일럿 재진입 축소매수: "
+                                            f"{int(trading.buy_amount):,}->{_pilot_buy_amt:,} KRW (x{PULSE_PILOT_FACTOR})"
+                                        )
+                                except Exception as _pe:
+                                    logger.warning(f"[PULSE_PILOT] fail-open 정상매수: {_pe}")
+                                trade_result = await trading.async_buy_stock(stock_code=ticker, limit_price=current_price, buy_amount=_pilot_buy_amt)
 
                             if trade_result['success']:
                                 logger.info(f"Actual purchase successful: {trade_result['message']}")

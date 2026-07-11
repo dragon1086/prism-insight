@@ -2939,7 +2939,21 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     except ImportError:
                                         from prism_us.trading.us_stock_trading import AsyncUSTradingContext
                                     async with AsyncUSTradingContext(account_name=account["name"]) as trading:
-                                        trade_result = await trading.async_buy_stock(ticker=ticker, limit_price=current_price)
+                                        # 파일럿 재진입 축소매수(env-gated PULSE_PILOT_REEXPOSURE, 기본 off).
+                                        # CORRECTION 종료 직후 N세션은 buy_amount 를 절반으로. fail-open 정상매수.
+                                        _pilot_buy_amt = None
+                                        try:
+                                            _rp = self._regime_policy_mod()
+                                            if (_rp is not None and _rp.pilot_reexposure_active("us")
+                                                    and getattr(trading, "buy_amount", None)):
+                                                _pilot_buy_amt = round(trading.buy_amount * _rp.PULSE_PILOT_FACTOR, 2)
+                                                logger.info(
+                                                    f"[PULSE_PILOT] {company_name}({ticker}) pilot re-exposure half-size buy: "
+                                                    f"${trading.buy_amount:,.2f}->${_pilot_buy_amt:,.2f} (x{_rp.PULSE_PILOT_FACTOR})"
+                                                )
+                                        except Exception as _pe:
+                                            logger.warning(f"[PULSE_PILOT] fail-open full-size buy: {_pe}")
+                                        trade_result = await trading.async_buy_stock(ticker=ticker, limit_price=current_price, buy_amount=_pilot_buy_amt)
 
                                     if trade_result['success']:
                                         logger.info(f"Actual purchase successful: {trade_result['message']}")
