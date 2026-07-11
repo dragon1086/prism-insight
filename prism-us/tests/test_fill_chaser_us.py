@@ -1,4 +1,4 @@
-"""Tests for Loop C fill-chaser (tools/loop_c_fill_chaser.py) — US side.
+"""Tests for Fill-chaser fill-chaser (tools/fill_chaser.py) — US side.
 
 Network-free: the KIS overseas unfilled-inquiry / amend / cancel / current-price
 calls are served by a FakeTrader and the async context by a FakeCtx. No real TR
@@ -23,7 +23,7 @@ import pytest
 _PRISM_US = Path(__file__).resolve().parent.parent
 _ROOT = _PRISM_US.parent
 sys.path.insert(0, str(_ROOT))
-import tools.loop_c_fill_chaser as lc  # noqa: E402
+import tools.fill_chaser as lc  # noqa: E402
 
 MARKET = "US"
 
@@ -111,8 +111,8 @@ def tmp_db(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fast_defaults(monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_ENABLED", True)
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", False)
+    monkeypatch.setattr(lc, "FILL_CHASER_ENABLED", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", False)
     monkeypatch.setattr(lc, "GRACE_SEC", 0)
     monkeypatch.setattr(lc, "CHASE_AFTER_SEC", 0)
     monkeypatch.setattr(lc, "CHASE_STEP_PCT", 1.0)
@@ -155,7 +155,7 @@ def _run():
 
 # ── Tests ───────────────────────────────────────────────────────────────────────
 def test_disabled_kill_switch(tmp_db, monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_ENABLED", False)
+    monkeypatch.setattr(lc, "FILL_CHASER_ENABLED", False)
     rc = asyncio.run(lc.main_async([MARKET]))
     assert rc == 0
     assert not Path(tmp_db).exists() or _logs(tmp_db) == []
@@ -186,7 +186,7 @@ def test_sell_chase_amends_toward_market_shadow(tmp_db, monkeypatch):
 
 
 def test_sell_chase_amends_live(tmp_db, monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     trader = FakeTrader([_row("O1", "AAPL", "01", 10, 190.00)], {"AAPL": 189.00})
     _patch_ctx(monkeypatch, trader)
     _seed_seen(tmp_db, "O1")
@@ -198,7 +198,7 @@ def test_sell_chase_amends_live(tmp_db, monkeypatch):
 
 
 def test_buy_within_ceiling_chases(tmp_db, monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     # ceiling = 100 * 1.02 = 102; market 101 < ceiling => chase up.
     trader = FakeTrader([_row("O1", "TSLA", "02", 5, 100.00)], {"TSLA": 101.00})
     _patch_ctx(monkeypatch, trader)
@@ -210,7 +210,7 @@ def test_buy_within_ceiling_chases(tmp_db, monkeypatch):
 
 
 def test_buy_ceiling_hit_cancels_instead_of_overpaying(tmp_db, monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     # ceiling = 100 * 1.02 = 102; market 105 > ceiling => cancel.
     trader = FakeTrader([_row("O1", "TSLA", "02", 5, 100.00)], {"TSLA": 105.00})
     _patch_ctx(monkeypatch, trader)
@@ -232,7 +232,7 @@ def test_buy_ceiling_shadow_no_real_call(tmp_db, monkeypatch):
 
 
 def test_max_chases_cancels_buy(tmp_db, monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     monkeypatch.setattr(lc, "MAX_CHASES", 2)
     trader = FakeTrader([_row("O1", "TSLA", "02", 5, 100.00)], {"TSLA": 100.50})
     _patch_ctx(monkeypatch, trader)
@@ -252,7 +252,7 @@ def test_max_chases_cancels_buy(tmp_db, monkeypatch):
 
 
 def test_owner_lock_blocks_chase(tmp_db, monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     trader = FakeTrader([_row("O1", "AAPL", "01", 10, 190.00)], {"AAPL": 189.00})
     _patch_ctx(monkeypatch, trader)
     conn = sqlite3.connect(tmp_db)
@@ -269,7 +269,7 @@ def test_owner_lock_blocks_chase(tmp_db, monkeypatch):
 
 
 def test_partial_fill_reconcile_uses_inquiry_remaining(tmp_db, monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     trader = FakeTrader([_row("O1", "AAPL", "01", 4, 190.00)], {"AAPL": 189.00})
     _patch_ctx(monkeypatch, trader)
     _seed_seen(tmp_db, "O1")
@@ -285,7 +285,7 @@ def test_partial_fill_reconcile_uses_inquiry_remaining(tmp_db, monkeypatch):
 
 
 def test_fully_filled_order_is_ignored(tmp_db, monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     trader = FakeTrader([_row("O1", "AAPL", "01", 0, 190.00)], {"AAPL": 189.00})
     _patch_ctx(monkeypatch, trader)
     summary = _run()
@@ -294,7 +294,7 @@ def test_fully_filled_order_is_ignored(tmp_db, monkeypatch):
 
 
 def test_inquiry_failure_degrades_to_noop(tmp_db, monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
 
     class Boom(FakeTrader):
         def get_unfilled_orders(self):
@@ -338,10 +338,10 @@ def test_shadow_amend_logs_payload_and_verdict(tmp_db, monkeypatch, caplog):
     trader = FakeTrader([_row("O1", "AAPL", "01", 10, 190.00)], {"AAPL": 189.00})
     _patch_ctx(monkeypatch, trader)
     _seed_seen(tmp_db, "O1")
-    with caplog.at_level(logging.INFO, logger="loop_c"):
+    with caplog.at_level(logging.INFO, logger="fill_chaser"):
         _run()
     assert trader.calls == []
-    assert any("[LOOP_C][SHADOW]" in r.message and "fill=" in r.message
+    assert any("[FILL_CHASER][SHADOW]" in r.message and "fill=" in r.message
                for r in caplog.records)
     conn = sqlite3.connect(tmp_db)
     reason = conn.execute(
@@ -355,10 +355,10 @@ def test_selftest_runs_without_api_or_orders(monkeypatch, caplog):
     import logging
     monkeypatch.setattr(lc, "_open_context", lambda *a, **k: (_ for _ in ()).throw(
         AssertionError("selftest must NOT open a trading context")))
-    with caplog.at_level(logging.INFO, logger="loop_c"):
+    with caplog.at_level(logging.INFO, logger="fill_chaser"):
         summary = lc.run_selftest("US")
     assert summary["market"] == "US"
     assert summary["amend"] == 2
     assert summary["cancel"] == 1
     assert summary["likely"] + summary["unlikely"] == 2
-    assert any("[LOOP_C][SHADOW] selftest" in r.message for r in caplog.records)
+    assert any("[FILL_CHASER][SHADOW] selftest" in r.message for r in caplog.records)

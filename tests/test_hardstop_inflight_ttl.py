@@ -10,7 +10,7 @@ from datetime import timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tools.loop_a_hardstop import has_open_inflight, INFLIGHT_TTL_SEC, _iso, _now  # noqa: E402
+from tools.hardstop_seller import has_open_inflight, INFLIGHT_TTL_SEC, _iso, _now  # noqa: E402
 
 
 def _conn():

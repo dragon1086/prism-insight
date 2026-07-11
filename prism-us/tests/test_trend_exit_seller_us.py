@@ -1,12 +1,12 @@
-"""US-market tests for Loop B closing-confirmation trend-exit loop.
+"""US-market tests for Trend-exit closing-confirmation trend-exit loop.
 
-Mirrors tests/test_loop_b_trend_exit.py but exercises the US path: the
+Mirrors tests/test_trend_exit_seller.py but exercises the US path: the
 us_stock_holdings table and run_market("US", ...). The trader context, agent,
 ma_50 fetch and LIVE regime are all monkeypatched, so this is network-free and
 does NOT need the real US runtime. Per the cores-shadowing rule, KR and US tests
 must run in SEPARATE pytest sessions; this file is the US session.
 
-Run:  .venv/bin/python -m pytest prism-us/tests/test_loop_b_trend_exit_us.py -q
+Run:  .venv/bin/python -m pytest prism-us/tests/test_trend_exit_seller_us.py -q
 """
 import asyncio
 import sys
@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
-# tools/loop_b_trend_exit.py lives at repo root /tools.
+# tools/trend_exit_seller.py lives at repo root /tools.
 _ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_ROOT))
-import tools.loop_b_trend_exit as lb  # noqa: E402
+import tools.trend_exit_seller as lb  # noqa: E402
 
 MKT = "US"
 
@@ -138,13 +138,13 @@ def _streak(db, ticker, market=MKT):
 
 
 def _enable(monkeypatch, live=False, confirm=2, close_window=False):
-    monkeypatch.setattr(lb, "LOOP_B_LIVE", live)
-    monkeypatch.setattr(lb, "LOOP_B_ENABLED", True)
-    monkeypatch.setattr(lb, "LOOP_B_CONFIRM_CHECKS", confirm)
-    monkeypatch.setattr(lb, "LOOP_B_CLOSE_WINDOW", close_window)
+    monkeypatch.setattr(lb, "TREND_EXIT_LIVE", live)
+    monkeypatch.setattr(lb, "TREND_EXIT_ENABLED", True)
+    monkeypatch.setattr(lb, "TREND_EXIT_CONFIRM_CHECKS", confirm)
+    monkeypatch.setattr(lb, "TREND_EXIT_CLOSE_WINDOW", close_window)
 
 
-# ── TIER1 skipped (Loop A territory) ───────────────────────────────────────────
+# ── TIER1 skipped (Hardstop territory) ───────────────────────────────────────────
 def test_us_tier1_hardstop_is_skipped(tmp_db, monkeypatch):
     _enable(monkeypatch, live=False, confirm=1)
     _seed(tmp_db, [_row(1, "AAPL", 100.0)])

@@ -1701,7 +1701,7 @@ class DomesticStockTrading:
             return {}
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Loop C prerequisites — order amend/cancel + unfilled inquiry TR wrappers.
+    # Fill-chaser (구 Loop C) prerequisites — order amend/cancel + unfilled inquiry TR wrappers.
     #
     # These mirror the existing order-cash wrappers above (same _request/auth/
     # tr_id real-vs-paper switching, same result-dict shape). They are NEW TRs
@@ -1744,7 +1744,7 @@ class DomesticStockTrading:
             limit_price: New limit price for an amend; 0 for cancel.
             qty_all_ord_yn: "Y" = whole remaining qty, "N" = partial (uses quantity).
             excg_id_dvsn_cd: Exchange id division ("KRX"/"NXT"/"SOR").
-            dry_run: When True (Loop C SHADOW verification), build the FULL request
+            dry_run: When True (Fill-chaser SHADOW verification), build the FULL request
                 exactly as it would be sent and RETURN it WITHOUT any auth/hashkey/
                 HTTP — no network, no order. Default False = LIVE behaviour
                 unchanged.
@@ -1789,7 +1789,7 @@ class DomesticStockTrading:
         }
 
         if dry_run:
-            # Loop C SHADOW verification: return the exact request that WOULD be
+            # Fill-chaser SHADOW verification: return the exact request that WOULD be
             # sent — tr_id + endpoint + full body — without auth/hashkey/HTTP.
             return {
                 'dry_run': True,
@@ -1862,7 +1862,7 @@ class DomesticStockTrading:
 
         TR: 주식정정취소가능주문조회 — real TTTC0084R. Returns a normalised list of
         open orders, optionally filtered to ``stock_code``. Returns [] on any
-        failure (degrade to no-op — Loop C must treat empty as "nothing to chase",
+        failure (degrade to no-op — Fill-chaser must treat empty as "nothing to chase",
         never as "everything filled").
 
         Each dict: {order_no, orgn_odno, stock_code, ord_qty, ord_unpr,
@@ -1872,7 +1872,7 @@ class DomesticStockTrading:
         api_url = "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
 
         # TODO(live-validate): paper tr_id VTTC0084R is UNVERIFIED in the KIS
-        # sample repo. Real TTTC0084R confirmed. Loop C runs SHADOW by default.
+        # sample repo. Real TTTC0084R confirmed. Fill-chaser runs SHADOW by default.
         if self.mode == "real":
             tr_id = "TTTC0084R"
         else:

@@ -151,7 +151,7 @@ class StockTrackingAgent:
             skip_llm_agent: When True, skip creating the LLM trading-scenario agent.
                 The sell path (sell_stock / send_telegram_message) does NOT use
                 self.trading_agent, so lightweight consumers (e.g. the LLM-free
-                Loop A hard-stop loop) can reuse the sell/journal/telegram plumbing
+                Hardstop (구 Loop A) hard-stop loop) can reuse the sell/journal/telegram plumbing
                 without pulling in the heavy LLM agent. Default False keeps the
                 batch behaviour byte-for-byte unchanged.
         """
@@ -1256,8 +1256,8 @@ class StockTrackingAgent:
             stock_data: Stock information to sell
             sell_reason: Sell reason
             exit_kind: Optional explicit exit classification (stop | trend_exit |
-                target | ai). Loops pass it deterministically (loop_a=stop,
-                loop_b=trend_exit); when None it is inferred from sell_reason. Stored
+                target | ai). Loops pass it deterministically (hardstop→'stop',
+                trend_exit→'trend_exit' (구 loop_a/loop_b)); when None it is inferred from sell_reason. Stored
                 in trading_history so the re-entry cooldown treats a stop-out at a
                 marginal profit as churn-risk.
 
@@ -1279,13 +1279,13 @@ class StockTrackingAgent:
             # ── Cross-cycle sell guard (single source of truth) ──────────────
             # EVERY sell path routes its real order + signal publish through
             # sell_stock and gates on this bool return: the batch update_holdings,
-            # loop_a_hardstop, and loop_b_trend_exit (KR + US). A concurrent cycle
+            # hardstop_seller, and trend_exit_seller (구 loop_a_hardstop/loop_b_trend_exit) (KR + US). A concurrent cycle
             # may have already closed this position seconds/minutes ago, so refresh
             # the connection snapshot (commit ends any stale WAL read-txn so other
             # processes' commits are visible) and abort if the row is gone — no
             # trading_history row, no delete, no journal, no queued message — so the
             # caller publishes NO duplicate/ghost SELL and P&L is not double-counted.
-            # Incident 2026-07-01 (MU): loop_a stop-sold 23:50 (+published SELL),
+            # Incident 2026-07-01 (MU): hardstop (구 loop_a) stop-sold 23:50 (+published SELL),
             # the batch re-hit the same stop off a stale snapshot and re-published a
             # 2nd SELL 23:55. sell_stock is the chokepoint that closes this for all
             # paths in both markets.

@@ -119,7 +119,7 @@ def _decide_loop_a(env: dict, crontab: str):
     # Canonical HARDSTOP_* with deprecated LOOP_A_* alias fallback.
     live = (env.get("HARDSTOP_LIVE") or env.get("LOOP_A_LIVE") or "").lower()
     enabled = (env.get("HARDSTOP_ENABLED") or env.get("LOOP_A_ENABLED") or "true").lower()
-    has_cron = _cron_has_script(crontab, "loop_a_hardstop.py")
+    has_cron = (_cron_has_script(crontab, "loop_a_hardstop.py") or _cron_has_script(crontab, "hardstop_seller.py"))
 
     if enabled == "false":
         return "OFF", "HARDSTOP_ENABLED=false (킬스위치 ON)"
@@ -136,7 +136,7 @@ def _decide_loop_b(env: dict, crontab: str):
     # Canonical TREND_EXIT_* with deprecated LOOP_B_* alias fallback.
     live = (env.get("TREND_EXIT_LIVE") or env.get("LOOP_B_LIVE") or "").lower()
     enabled = (env.get("TREND_EXIT_ENABLED") or env.get("LOOP_B_ENABLED") or "").lower()
-    has_cron = _cron_has_script(crontab, "loop_b_trend_exit.py")
+    has_cron = (_cron_has_script(crontab, "loop_b_trend_exit.py") or _cron_has_script(crontab, "trend_exit_seller.py"))
 
     if enabled == "false":
         return "OFF", "TREND_EXIT_ENABLED=false"
@@ -153,7 +153,7 @@ def _decide_loop_c(env: dict, crontab: str):
     # Canonical FILL_CHASER_* with deprecated LOOP_C_* alias fallback.
     live = (env.get("FILL_CHASER_LIVE") or env.get("LOOP_C_LIVE") or "").lower()
     enabled = (env.get("FILL_CHASER_ENABLED") or env.get("LOOP_C_ENABLED") or "").lower()
-    has_cron = _cron_has_script(crontab, "loop_c_fill_chaser.py")
+    has_cron = (_cron_has_script(crontab, "loop_c_fill_chaser.py") or _cron_has_script(crontab, "fill_chaser.py"))
 
     if enabled == "false":
         return "OFF", "FILL_CHASER_ENABLED=false"
@@ -228,9 +228,9 @@ def _decide_vision_publish(env: dict, crontab: str):
 # Registry: (id, korean label, decision function)
 FEATURES = [
     ("oauth_llm",        "OAuth LLM 백엔드(ChatGPT 구독)",          _decide_oauth_llm),
-    ("loop_a",           "Loop A — 고빈도 하드스톱",                  _decide_loop_a),
-    ("loop_b",           "Loop B — 50MA 추세이탈",                   _decide_loop_b),
-    ("loop_c",           "Loop C — 미체결 추격",                     _decide_loop_c),
+    ("loop_a",           "Hardstop — 고빈도 손절 (구 Loop A)",                  _decide_loop_a),
+    ("loop_b",           "Trend-exit — 50MA 추세이탈 매도 (구 Loop B)",                   _decide_loop_b),
+    ("loop_c",           "Fill-chaser — 미체결 추격 (구 Loop C)",                     _decide_loop_c),
     ("vision_pipeline",  "비전 배관·렌더QA (S1/S2)",                  _decide_vision_pipeline),
     ("vision_buy_qa",    "비전 매수 품질검사 (S3/S3.5)",               _decide_vision_buy_qa),
     ("vision_publish",   "비전 이미지 발행 (S6)",                     _decide_vision_publish),
