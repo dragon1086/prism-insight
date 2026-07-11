@@ -184,6 +184,60 @@ def market_pulse_mode() -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Regime-adaptive hard min_score floor (env-gated, default OFF)               #
+# --------------------------------------------------------------------------- #
+# 7월 -42%p 손실 재발 방지책의 하나: 매수 임계(min_score)는 지금 LLM이 시나리오마다
+# 자유롭게 정한다(약세장에서 낮아질 수 있음). 아래 표는 시장 레짐별 "절대 하한선"을
+# 강제해, 약세장에서는 LLM이 무슨 값을 주더라도 그 밑으로는 못 사게 한다(안전 게이트).
+# 기본 OFF(REGIME_MIN_SCORE_FLOOR 미설정) = 현행 유지(LLM 값 그대로).
+_REGIME_MIN_SCORE_FLOORS = {
+    "strong_bear": 9,
+    "moderate_bear": 8,
+    "sideways": 8,
+    "moderate_bull": 0,
+    "strong_bull": 0,
+    "unknown": 0,
+}
+
+
+def regime_min_score_floor_enabled() -> bool:
+    """Return True when REGIME_MIN_SCORE_FLOOR is truthy (1/true/yes/on). Default OFF.
+
+    Same truthy parsing as trigger_batch's REGIME_WEAK_NO_TOPDOWN gate.
+    """
+    return os.getenv("REGIME_MIN_SCORE_FLOOR", "false").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def min_score_floor(market_regime: Optional[str]) -> int:
+    """Hard buy-score floor for ``market_regime`` (0 for bullish / unknown regimes).
+
+    Tolerant of decorated labels (e.g. ``"strong_bear (하락)"`` -> ``strong_bear``):
+    only the leading whitespace-delimited token is matched. Unmapped -> 0.
+    """
+    raw = (market_regime or "").strip().lower()
+    key = raw.split()[0] if raw else "unknown"
+    return _REGIME_MIN_SCORE_FLOORS.get(key, 0)
+
+
+def effective_min_score(llm_min_score, market_regime: Optional[str]) -> int:
+    """Return ``max(llm_min_score, regime_floor)`` when the flag is ON; else the
+    LLM value unchanged.
+
+    NEVER lowers the LLM threshold (floor is a one-way raise). Pure, no I/O beyond
+    the single env read. ``llm_min_score`` non-int/None is treated as 0.
+    """
+    try:
+        base = int(llm_min_score or 0)
+    except (TypeError, ValueError):
+        base = 0
+    if not regime_min_score_floor_enabled():
+        return base
+    return max(base, min_score_floor(market_regime))
+
+
+# --------------------------------------------------------------------------- #
 # Pulse-state computation (lazy, fail-open, shadow-safe imports)               #
 # --------------------------------------------------------------------------- #
 def _load_root_cores(name: str):
