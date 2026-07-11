@@ -1,13 +1,13 @@
-"""Tests for Loop A high-frequency hard-stop loop (tools/loop_a_hardstop.py).
+"""Tests for Hardstop high-frequency hard-stop loop (tools/hardstop_seller.py).
 
-Loop A reuses the batch's sell path so the simulator, the real KIS account and
+Hardstop reuses the batch's sell path so the simulator, the real KIS account and
 Telegram stay consistent. Safety-critical guards covered:
   - SHADOW (default): touches NO agent and places NO order, only logs.
   - LIVE: runs sell_stock (sim) -> async_sell_stock (KIS) -> send_telegram_message
     (telegram), in that order; reconciles qty against KIS first.
   - Pyramided tickers (>1 row) are skipped (batch owns fractional sells).
   - owner_lock exclusivity + inflight guard prevent double-selling.
-  - TIER1-only: a winner is never sold by Loop A.
+  - TIER1-only: a winner is never sold by Hardstop.
 
 Run in the KR (root) pytest session.
 """
@@ -20,7 +20,7 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
-import tools.loop_a_hardstop as la  # noqa: E402
+import tools.hardstop_seller as la  # noqa: E402
 
 
 # ── Fakes ──────────────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ class FakeAgent:
         self.calls = calls
         self.conn = None
 
-    async def sell_stock(self, stock_data, sell_reason):
+    async def sell_stock(self, stock_data, sell_reason, **kwargs):
         self.calls.append(f"sim:{stock_data.get('ticker')}")
         return True
 
@@ -123,8 +123,8 @@ def _inflight(db, status=None):
 
 
 def test_shadow_touches_no_agent_and_no_order(tmp_db, monkeypatch):
-    monkeypatch.setattr(la, "LOOP_A_LIVE", False)
-    monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
+    monkeypatch.setattr(la, "HARDSTOP_LIVE", False)
+    monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
     _seed(tmp_db, [_row(1, "005930", 100.0)])  # buy 100, price 92 => -8% TIER1
     calls = []
     trader = FakeTrader({"005930": 92.0}, calls=calls)
@@ -140,8 +140,8 @@ def test_shadow_touches_no_agent_and_no_order(tmp_db, monkeypatch):
 
 
 def test_live_order_is_sim_then_kis_then_telegram(tmp_db, monkeypatch):
-    monkeypatch.setattr(la, "LOOP_A_LIVE", True)
-    monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
+    monkeypatch.setattr(la, "HARDSTOP_LIVE", True)
+    monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
     monkeypatch.setattr(la, "CHAT_ID", "chat1")
     _seed(tmp_db, [_row(1, "005930", 100.0)])
     calls = []
@@ -160,8 +160,8 @@ def test_live_order_is_sim_then_kis_then_telegram(tmp_db, monkeypatch):
 
 def test_live_skips_kis_when_flat_but_still_closes_sim(tmp_db, monkeypatch):
     # KIS says qty 0 (batch already sold real) -> no KIS order, sim still closed.
-    monkeypatch.setattr(la, "LOOP_A_LIVE", True)
-    monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
+    monkeypatch.setattr(la, "HARDSTOP_LIVE", True)
+    monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
     _seed(tmp_db, [_row(1, "005930", 100.0)])
     calls = []
     trader = FakeTrader({"005930": 92.0}, holding_qty={"005930": 0}, calls=calls)
@@ -174,8 +174,8 @@ def test_live_skips_kis_when_flat_but_still_closes_sim(tmp_db, monkeypatch):
 
 
 def test_pyramided_ticker_is_skipped(tmp_db, monkeypatch):
-    monkeypatch.setattr(la, "LOOP_A_LIVE", False)
-    monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
+    monkeypatch.setattr(la, "HARDSTOP_LIVE", False)
+    monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
     _seed(tmp_db, [_row(1, "005930", 100.0), _row(2, "005930", 110.0)])  # 2 rows = pyramided
     calls = []
     trader = FakeTrader({"005930": 80.0}, calls=calls)  # deep loss, but must be skipped
@@ -189,8 +189,8 @@ def test_pyramided_ticker_is_skipped(tmp_db, monkeypatch):
 
 
 def test_inflight_guard_blocks_second_trigger(tmp_db, monkeypatch):
-    monkeypatch.setattr(la, "LOOP_A_LIVE", False)
-    monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
+    monkeypatch.setattr(la, "HARDSTOP_LIVE", False)
+    monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
     _seed(tmp_db, [_row(1, "005930", 100.0)])
     calls = []
     trader = FakeTrader({"005930": 92.0}, calls=calls)
@@ -214,8 +214,8 @@ def test_owner_lock_is_exclusive(tmp_db):
 
 
 def test_winner_not_sold_tier1_only(tmp_db, monkeypatch):
-    monkeypatch.setattr(la, "LOOP_A_LIVE", False)
-    monkeypatch.setattr(la, "LOOP_A_ENABLED", True)
+    monkeypatch.setattr(la, "HARDSTOP_LIVE", False)
+    monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
     _seed(tmp_db, [_row(1, "005930", 100.0)])
     calls = []
     trader = FakeTrader({"005930": 120.0}, calls=calls)  # +20% winner
@@ -228,7 +228,7 @@ def test_winner_not_sold_tier1_only(tmp_db, monkeypatch):
 
 
 def test_disabled_flag_is_noop(tmp_db, monkeypatch):
-    monkeypatch.setattr(la, "LOOP_A_ENABLED", False)
+    monkeypatch.setattr(la, "HARDSTOP_ENABLED", False)
     rc = asyncio.run(la.main_async(["KR"]))
     assert rc == 0
 

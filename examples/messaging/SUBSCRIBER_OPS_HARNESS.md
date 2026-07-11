@@ -127,37 +127,41 @@ env -i date                    # 셸 TZ 오염 없이 시스템 시간 확인
 
 ---
 
-## 7. Loop C (미체결 추격 fill-chaser) — SHADOW로 시작
+## 7. Fill-chaser (미체결 추격, 구 Loop C) — SHADOW로 시작
 
 **왜 로컬에서 돌아야 하나**: 지정가 매수가 미체결로 남았을 때 정정/취소하는 기능인데,
 정정 대상 주문은 **구독자 본인 계좌**에 접수돼 있으므로 신호 발행측이 대신해 줄 수 없다.
 
-**왜 loop_a(하드스톱)/loop_b(추세이탈)는 등록하지 않나**:
+> **리네임 안내**: 스크립트는 `tools/loop_c_fill_chaser.py` → `tools/fill_chaser.py`로 이름이 바뀌었다.
+> 구 경로는 deprecation shim으로 **그대로 동작**(1회 경고 후 새 모듈 실행)하므로 기존 crontab은 수정 없이 유지 가능하다. 아래 예시는 신규 경로 기준이다.
+
+**왜 hardstop(구 loop_a, 하드스톱)/trend_exit(구 loop_b, 추세이탈)는 등록하지 않나**:
 발행측의 loop 매도는 Pub/Sub SELL 시그널로 전파되어 subscriber가 이미 미러링한다.
 또한 두 loop는 tracking agent의 holdings DB 테이블에 의존하는데 subscriber 로컬에는
 그 테이블이 없어서 동작 자체가 불가능하다(`checked: 0`으로 헛돈다). 등록하면 중복+무의미.
 
 ```cron
 # 시간은 반드시 §5에서 환산한 값으로 채울 것 — 아래 <...>는 자리표시자다
-*/2 <KR장-현지시간> * * <KR장-현지요일> cd <REPO_DIR> && .venv/bin/python tools/loop_c_fill_chaser.py --market kr >> logs/loop_c_fill_chaser.log 2>&1
-*/2 <US장-현지시간> * * <US장-현지요일> cd <REPO_DIR> && .venv/bin/python tools/loop_c_fill_chaser.py --market us >> logs/loop_c_fill_chaser.log 2>&1
+# (구 경로 tools/loop_c_fill_chaser.py 도 shim으로 동작하나 신규 경로 권장)
+*/2 <KR장-현지시간> * * <KR장-현지요일> cd <REPO_DIR> && .venv/bin/python tools/fill_chaser.py --market kr >> logs/fill_chaser.log 2>&1
+*/2 <US장-현지시간> * * <US장-현지요일> cd <REPO_DIR> && .venv/bin/python tools/fill_chaser.py --market us >> logs/fill_chaser.log 2>&1
 ```
 
 기본값은 SHADOW(관측만, 주문 없음)다. 운영 순서:
 
-1. SHADOW로 최소 하루 이상 장중 구동. 로그에서 `mode=SHADOW` 와 `Loop C done` 요약 확인.
+1. SHADOW로 최소 하루 이상 장중 구동. 로그에서 `mode=SHADOW` 와 `Fill-chaser done` 요약 확인.
 2. 사용자 승인 후 `.env`에 `FILL_CHASER_LIVE=true` 추가.
 3. 수동 1회 실행으로 LIVE 확인:
    ```bash
-   .venv/bin/python tools/loop_c_fill_chaser.py --market us --once
+   .venv/bin/python tools/fill_chaser.py --market us --once
    # 로그에 mode=LIVE 가 떠야 한다. 장외+미체결 0건이면 아무 액션 없이 종료되므로 안전.
    ```
 
 세부 튜닝(`FILL_CHASER_GRACE_SEC`, `FILL_CHASER_BUY_MAX_PREMIUM_PCT` 등)은
-[docs/FEATURE_FLAGS.md](../../docs/FEATURE_FLAGS.md)와 `tools/loop_c_fill_chaser.py` 상단 주석 참고.
+[docs/FEATURE_FLAGS.md](../../docs/FEATURE_FLAGS.md)와 `tools/fill_chaser.py` 상단 주석 참고.
 `FILL_CHASER_ENABLED=false` 는 킬스위치다.
 
-**[검증 게이트]** 장중 크론틱 후 `logs/loop_c_fill_chaser.log`에 `Loop C done ... mode=LIVE`.
+**[검증 게이트]** 장중 크론틱 후 `logs/fill_chaser.log`에 `Fill-chaser done ... mode=LIVE`.
 
 ---
 

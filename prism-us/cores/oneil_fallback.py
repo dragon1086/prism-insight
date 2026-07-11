@@ -132,12 +132,12 @@ def evaluate_oneil_sell(inp: SellInputs) -> Tuple[bool, str]:
 
 
 def evaluate_tier1_hardstop(inp: SellInputs) -> Tuple[bool, str]:
-    """TIER1-only catastrophic hard stop for the high-frequency loop (Loop A).
+    """TIER1-only catastrophic hard stop for the high-frequency loop (Hardstop, 구 Loop A).
 
     Evaluates ONLY the two TIER1 rules from evaluate_oneil_sell — scenario
     stop-loss breach (1A) and the absolute -7% stop (1B) — and nothing else.
     Trailing (TIER2), 50MA (TIER1.5) and target (TIER3) are deliberately
-    excluded: Loop A runs every few minutes on raw last-trade prices, where
+    excluded: Hardstop runs every few minutes on raw last-trade prices, where
     those slower trend signals would whipsaw on intraday noise. Uses the same
     wick buffer and constants as evaluate_oneil_sell so the two never diverge.
 

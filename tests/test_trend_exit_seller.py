@@ -1,10 +1,10 @@
-"""Tests for Loop B closing-confirmation trend-exit loop (tools/loop_b_trend_exit.py).
+"""Tests for Trend-exit closing-confirmation trend-exit loop (tools/trend_exit_seller.py).
 
-Loop B owns the slower O'Neil trend-exit tiers (TIER1.5_MA50 / TIER2_TRAIL /
+Trend-exit owns the slower O'Neil trend-exit tiers (TIER1.5_MA50 / TIER2_TRAIL /
 TIER3_TARGET) and gates them behind a consecutive-breach / close-window confirm
 so a single intraday dip below the 50MA does NOT whipsaw the position. Safety-
 critical behaviour covered:
-  - TIER1 (pure hard stop) reasons are SKIPPED (Loop A owns them).
+  - TIER1 (pure hard stop) reasons are SKIPPED (Hardstop owns them).
   - TIER1.5 / TIER2 / TIER3 signals are recognised and acted on (after the gate).
   - breach_streak increments at most once per calendar day, resets on recovery.
   - the gate fires only at streak >= N, OR in the close window.
@@ -26,7 +26,7 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
-import tools.loop_b_trend_exit as lb  # noqa: E402
+import tools.trend_exit_seller as lb  # noqa: E402
 
 
 # ── Fakes ──────────────────────────────────────────────────────────────────────
@@ -146,28 +146,28 @@ def _streak(db, ticker, market="KR"):
 
 
 def _enable(monkeypatch, live=False, confirm=2, close_window=False):
-    monkeypatch.setattr(lb, "LOOP_B_LIVE", live)
-    monkeypatch.setattr(lb, "LOOP_B_ENABLED", True)
-    monkeypatch.setattr(lb, "LOOP_B_CONFIRM_CHECKS", confirm)
-    monkeypatch.setattr(lb, "LOOP_B_CLOSE_WINDOW", close_window)
+    monkeypatch.setattr(lb, "TREND_EXIT_LIVE", live)
+    monkeypatch.setattr(lb, "TREND_EXIT_ENABLED", True)
+    monkeypatch.setattr(lb, "TREND_EXIT_CONFIRM_CHECKS", confirm)
+    monkeypatch.setattr(lb, "TREND_EXIT_CLOSE_WINDOW", close_window)
 
 
 # ── Pure reason-classifier tests ───────────────────────────────────────────────
 def test_tier1_reason_is_not_a_loop_b_signal():
-    assert lb._is_loop_b_signal("TIER1_STOPLOSS: price<=stop_loss(90.0)") is False
-    assert lb._is_loop_b_signal("TIER1_ABS7: loss -8.00% <= -7%") is False
+    assert lb._is_trend_exit_signal("TIER1_STOPLOSS: price<=stop_loss(90.0)") is False
+    assert lb._is_trend_exit_signal("TIER1_ABS7: loss -8.00% <= -7%") is False
 
 
 def test_tier15_and_trail_and_target_are_loop_b_signals():
-    assert lb._is_loop_b_signal("TIER1.5_MA50: below 50MA(95.0) while losing (-3.00%)") is True
-    assert lb._is_loop_b_signal("TIER2_TRAIL: regime=moderate_bull peak=120 trail(-8%)=110 >= price") is True
-    assert lb._is_loop_b_signal("TIER3_TARGET(weak): regime=sideways target reached") is True
-    assert lb._is_loop_b_signal("HOLD: trend intact") is False
+    assert lb._is_trend_exit_signal("TIER1.5_MA50: below 50MA(95.0) while losing (-3.00%)") is True
+    assert lb._is_trend_exit_signal("TIER2_TRAIL: regime=moderate_bull peak=120 trail(-8%)=110 >= price") is True
+    assert lb._is_trend_exit_signal("TIER3_TARGET(weak): regime=sideways target reached") is True
+    assert lb._is_trend_exit_signal("HOLD: trend intact") is False
 
 
-# ── TIER1 must be skipped (Loop A's territory) ─────────────────────────────────
+# ── TIER1 must be skipped (Hardstop's territory) ─────────────────────────────────
 def test_tier1_hardstop_is_skipped_by_loop_b(tmp_db, monkeypatch):
-    # buy 100, cur 92 = -8% -> TIER1_ABS7 in oneil. Loop B must NOT signal/act.
+    # buy 100, cur 92 = -8% -> TIER1_ABS7 in oneil. Trend-exit must NOT signal/act.
     _enable(monkeypatch, live=False, confirm=1)  # confirm=1 so any signal would act
     _seed(tmp_db, [_row(1, "005930", 100.0)])
     calls = []
@@ -177,7 +177,7 @@ def test_tier1_hardstop_is_skipped_by_loop_b(tmp_db, monkeypatch):
     summary = asyncio.run(lb.run_market("KR", "run1"))
 
     assert summary["checked"] == 1
-    assert summary["signaled"] == 0  # TIER1 not owned by Loop B
+    assert summary["signaled"] == 0  # TIER1 not owned by Trend-exit
     assert summary["acted"] == 0
     assert calls == []
     assert _inflight(tmp_db) == 0
@@ -277,7 +277,7 @@ def test_gate_fires_when_streak_reaches_n(tmp_db, monkeypatch):
 
 
 def test_gate_fires_in_close_window_even_at_streak_1(tmp_db, monkeypatch):
-    # confirm=2 normally gates streak=1, but LOOP_B_CLOSE_WINDOW=true confirms now.
+    # confirm=2 normally gates streak=1, but TREND_EXIT_CLOSE_WINDOW=true confirms now.
     _enable(monkeypatch, live=False, confirm=2, close_window=True)
     _seed(tmp_db, [_row(1, "005930", 100.0)])
     calls = []

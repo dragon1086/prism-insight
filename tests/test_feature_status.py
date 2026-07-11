@@ -46,6 +46,17 @@ CRON_OAUTH_COMMENTED = """
 */10 * * * * /usr/bin/python tools/loop_a_hardstop.py
 """
 
+# New descriptive script names — the loops were renamed
+# (loop_a_hardstop->hardstop_seller, loop_b_trend_exit->trend_exit_seller,
+# loop_c_fill_chaser->fill_chaser). A cron line with EITHER the old or the new
+# filename must count as scheduled.
+CRON_WITH_NEW_NAMES = """
+# system crontab (post-rename)
+*/10 * * * * /usr/bin/python tools/hardstop_seller.py
+0 18 * * * /usr/bin/python tools/trend_exit_seller.py
+*/5 * * * * /usr/bin/python tools/fill_chaser.py
+"""
+
 CRON_EMPTY = ""
 
 
@@ -269,3 +280,29 @@ def test_cron_commented_line_not_counted():
 def test_cron_active_line_counted():
     cron = "*/10 * * * * /usr/bin/python tools/loop_a_hardstop.py\n"
     assert fs._cron_has_script(cron, "loop_a_hardstop.py")
+
+
+# ── Rename compat: new descriptive script names must also count as scheduled ────
+
+def test_loops_detected_with_new_script_names():
+    """A crontab using the renamed scripts (hardstop_seller / trend_exit_seller /
+    fill_chaser) must resolve LIVE exactly like the old loop_* names."""
+    env = {"HARDSTOP_LIVE": "true", "TREND_EXIT_LIVE": "true", "FILL_CHASER_LIVE": "true"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_WITH_NEW_NAMES))
+    assert r["loop_a"]["state"] == "LIVE"
+    assert r["loop_b"]["state"] == "LIVE"
+    assert r["loop_c"]["state"] == "LIVE"
+
+
+def test_cron_new_filename_counted_for_each_loop():
+    assert fs._cron_has_script(CRON_WITH_NEW_NAMES, "hardstop_seller.py")
+    assert fs._cron_has_script(CRON_WITH_NEW_NAMES, "trend_exit_seller.py")
+    assert fs._cron_has_script(CRON_WITH_NEW_NAMES, "fill_chaser.py")
+
+
+def test_labels_are_descriptive_first_with_legacy_marker():
+    """Display labels lead with the descriptive name and keep a (구 Loop X) marker."""
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
+    assert r["loop_a"]["label"].startswith("Hardstop") and "구 Loop A" in r["loop_a"]["label"]
+    assert r["loop_b"]["label"].startswith("Trend-exit") and "구 Loop B" in r["loop_b"]["label"]
+    assert r["loop_c"]["label"].startswith("Fill-chaser") and "구 Loop C" in r["loop_c"]["label"]

@@ -1,4 +1,4 @@
-"""Tests for Loop C fill-chaser (tools/loop_c_fill_chaser.py) — KR side.
+"""Tests for Fill-chaser fill-chaser (tools/fill_chaser.py) — KR side.
 
 Network-free: the KIS unfilled-inquiry / amend / cancel / current-price calls
 are all served by a FakeTrader, and the async trading context is replaced with a
@@ -25,7 +25,7 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
-import tools.loop_c_fill_chaser as lc  # noqa: E402
+import tools.fill_chaser as lc  # noqa: E402
 
 
 # ── Fakes ──────────────────────────────────────────────────────────────────────
@@ -117,8 +117,8 @@ def tmp_db(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def _fast_defaults(monkeypatch):
     """Deterministic, fast config for every test (overridable per-test)."""
-    monkeypatch.setattr(lc, "LOOP_C_ENABLED", True)
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", False)        # SHADOW by default
+    monkeypatch.setattr(lc, "FILL_CHASER_ENABLED", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", False)        # SHADOW by default
     monkeypatch.setattr(lc, "GRACE_SEC", 0)              # no grace unless a test wants it
     monkeypatch.setattr(lc, "CHASE_AFTER_SEC", 0)
     monkeypatch.setattr(lc, "CHASE_STEP_PCT", 1.0)       # chase straight to market
@@ -144,7 +144,7 @@ def _logs(db, action=None):
 
 def _seed_seen(db, order_no, ticker="005930", side="SELL", market="KR"):
     """Pre-mark an order as already SEEN with an old timestamp so the grace window
-    has elapsed — Loop C marks a fresh order SEEN on its first sighting and only
+    has elapsed — Fill-chaser marks a fresh order SEEN on its first sighting and only
     acts on a subsequent cycle. Tests that exercise the act path seed this row."""
     conn = sqlite3.connect(db)
     lc._ensure_schema(conn)
@@ -164,7 +164,7 @@ def _run(market="KR"):
 
 # ── Tests ───────────────────────────────────────────────────────────────────────
 def test_disabled_kill_switch(tmp_db, monkeypatch):
-    monkeypatch.setattr(lc, "LOOP_C_ENABLED", False)
+    monkeypatch.setattr(lc, "FILL_CHASER_ENABLED", False)
     rc = asyncio.run(lc.main_async(["KR"]))
     assert rc == 0
     # Loop never opened a context / wrote a log.
@@ -200,7 +200,7 @@ def test_sell_chase_amends_toward_market_shadow(tmp_db, monkeypatch):
 
 def test_sell_chase_amends_live(tmp_db, monkeypatch):
     """LIVE SELL: a real amend_order TR is issued toward the market."""
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     trader = FakeTrader([_row("O1", "005930", "01", 10, 70000)], {"005930": 69000})
     _patch_ctx(monkeypatch, trader)
     _seed_seen(tmp_db, "O1")
@@ -211,7 +211,7 @@ def test_sell_chase_amends_live(tmp_db, monkeypatch):
 
 def test_buy_within_ceiling_chases(tmp_db, monkeypatch):
     """BUY: market just under the 2% ceiling => chase UP (no cancel)."""
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     # ceiling = 10000 * 1.02 = 10200; market 10100 < ceiling => chase.
     trader = FakeTrader([_row("O1", "000660", "02", 5, 10000)], {"000660": 10100})
     _patch_ctx(monkeypatch, trader)
@@ -224,7 +224,7 @@ def test_buy_within_ceiling_chases(tmp_db, monkeypatch):
 
 def test_buy_ceiling_hit_cancels_instead_of_overpaying(tmp_db, monkeypatch):
     """BUY: market above the 2% ceiling => CANCEL, never chase into a bad fill."""
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     # ceiling = 10000 * 1.02 = 10200; market 10500 > ceiling => cancel.
     trader = FakeTrader([_row("O1", "000660", "02", 5, 10000)], {"000660": 10500})
     _patch_ctx(monkeypatch, trader)
@@ -250,7 +250,7 @@ def test_buy_ceiling_shadow_no_real_call(tmp_db, monkeypatch):
 
 def test_max_chases_cancels_buy(tmp_db, monkeypatch):
     """After MAX_CHASES amends already logged, a buy is cancelled."""
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     monkeypatch.setattr(lc, "MAX_CHASES", 2)
     # market under ceiling so we don't trip the ceiling branch first.
     trader = FakeTrader([_row("O1", "000660", "02", 5, 10000)], {"000660": 10050})
@@ -273,8 +273,8 @@ def test_max_chases_cancels_buy(tmp_db, monkeypatch):
 
 
 def test_owner_lock_blocks_chase(tmp_db, monkeypatch):
-    """If another loop holds the owner_lock, Loop C defers (no amend)."""
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    """If another loop holds the owner_lock, Fill-chaser defers (no amend)."""
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     trader = FakeTrader([_row("O1", "005930", "01", 10, 70000)], {"005930": 69000})
     _patch_ctx(monkeypatch, trader)
     conn = sqlite3.connect(tmp_db)
@@ -293,7 +293,7 @@ def test_owner_lock_blocks_chase(tmp_db, monkeypatch):
 
 def test_partial_fill_reconcile_uses_inquiry_remaining(tmp_db, monkeypatch):
     """unfilled_qty comes from the live inquiry's psbl_qty, not any local cache."""
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     # psbl_qty=3 means 3 remain after a partial fill of the original order.
     trader = FakeTrader([_row("O1", "005930", "01", 3, 70000)], {"005930": 69000})
     _patch_ctx(monkeypatch, trader)
@@ -312,7 +312,7 @@ def test_partial_fill_reconcile_uses_inquiry_remaining(tmp_db, monkeypatch):
 
 def test_fully_filled_order_is_ignored(tmp_db, monkeypatch):
     """psbl_qty == 0 (nothing left to amend) is filtered out by the inquiry layer."""
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     trader = FakeTrader([_row("O1", "005930", "01", 0, 70000)], {"005930": 69000})
     _patch_ctx(monkeypatch, trader)
     summary = _run()
@@ -322,7 +322,7 @@ def test_fully_filled_order_is_ignored(tmp_db, monkeypatch):
 
 def test_inquiry_failure_degrades_to_noop(tmp_db, monkeypatch):
     """A throwing inquiry must NOT be treated as 'everything filled' — just no-op."""
-    monkeypatch.setattr(lc, "LOOP_C_LIVE", True)
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
 
     class Boom(FakeTrader):
         def get_revisable_orders(self):
@@ -367,10 +367,10 @@ def test_shadow_amend_logs_payload_and_verdict(tmp_db, monkeypatch, caplog):
     trader = FakeTrader([_row("O1", "005930", "01", 10, 70000)], {"005930": 69000})
     _patch_ctx(monkeypatch, trader)
     _seed_seen(tmp_db, "O1")
-    with caplog.at_level(logging.INFO, logger="loop_c"):
+    with caplog.at_level(logging.INFO, logger="fill_chaser"):
         _run()
     assert trader.calls == []                    # SHADOW: still no real amend
-    assert any("[LOOP_C][SHADOW]" in r.message and "fill=" in r.message
+    assert any("[FILL_CHASER][SHADOW]" in r.message and "fill=" in r.message
                for r in caplog.records)
     # The audit row persists the verdict + payload text.
     conn = sqlite3.connect(tmp_db)
@@ -387,13 +387,13 @@ def test_selftest_runs_without_api_or_orders(monkeypatch, caplog):
     # If anything tried to open a trading context, this would explode the test.
     monkeypatch.setattr(lc, "_open_context", lambda *a, **k: (_ for _ in ()).throw(
         AssertionError("selftest must NOT open a trading context")))
-    with caplog.at_level(logging.INFO, logger="loop_c"):
+    with caplog.at_level(logging.INFO, logger="fill_chaser"):
         summary = lc.run_selftest("KR")
     assert summary["market"] == "KR"
     assert summary["amend"] == 2                 # one SELL + one BUY
     assert summary["cancel"] == 1                # the BUY also exercises cancel
     assert summary["likely"] + summary["unlikely"] == 2
-    assert any("[LOOP_C][SHADOW] selftest" in r.message for r in caplog.records)
+    assert any("[FILL_CHASER][SHADOW] selftest" in r.message for r in caplog.records)
 
 
 # ── KR 호가단위 (tick size) snapping ─────────────────────────────────────────────
@@ -419,7 +419,7 @@ def test_kr_tick_size_tiers():
 def test_round_price_kr_snaps_to_tick_regression_085620():
     """Regression for APBK0506: 085620 (~23,000 KRW) off-tick amend prices.
 
-    Loop C used to integer-round only (23,205 stayed 23,205) -> KIS rejected the
+    Fill-chaser used to integer-round only (23,205 stayed 23,205) -> KIS rejected the
     amend with APBK0506 (주식주문호가단위). 23,000-won stocks trade on a 50-won tick,
     so every chased limit MUST snap to a 50-won grid. We snap DOWN (conservative).
     """

@@ -1782,7 +1782,7 @@ class USStockTrading:
             return None
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Loop C prerequisites — overseas order amend/cancel + unfilled inquiry.
+    # Fill-chaser (구 Loop C) prerequisites — overseas order amend/cancel + unfilled inquiry.
     #
     # Mirror the existing overseas order wrappers above (same _request/auth,
     # OVRS_EXCG_CD handling, tr_id real-vs-paper switching, result-dict shape).
@@ -1808,7 +1808,7 @@ class USStockTrading:
         ``rvse_cncl_dvsn_cd``: "01" = amend (new ``limit_price``), "02" = cancel.
         For cancel, KIS expects price 0.
 
-        ``dry_run``: when True (Loop C SHADOW verification), build the FULL request
+        ``dry_run``: when True (Fill-chaser SHADOW verification), build the FULL request
         exactly as it would be sent — tr_id + endpoint + full body, including the
         ``# TODO(live-validate)`` fields (PDNO/ORD_SVR_DVSN_CD/OVRS_EXCG_CD/
         OVRS_ORD_UNPR) — and RETURN it WITHOUT auth/hashkey/HTTP. Default False =
@@ -1856,7 +1856,7 @@ class USStockTrading:
         }
 
         if dry_run:
-            # Loop C SHADOW verification: return the exact request that WOULD be
+            # Fill-chaser SHADOW verification: return the exact request that WOULD be
             # sent — tr_id + endpoint + full body (incl. the TODO(live-validate)
             # fields above) — without auth/hashkey/HTTP.
             return {
@@ -1937,7 +1937,7 @@ class USStockTrading:
         api_url = "/uapi/overseas-stock/v1/trading/inquire-nccs"
 
         # TODO(live-validate): paper tr_id VTTS3018R UNVERIFIED. Real TTTS3018R
-        # confirmed against the KIS overseas sample. Loop C runs SHADOW by default.
+        # confirmed against the KIS overseas sample. Fill-chaser runs SHADOW by default.
         if self.mode == "real":
             tr_id = "TTTS3018R"
         else:

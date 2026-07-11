@@ -8,6 +8,19 @@
 ## 상태 정의
 - **LIVE** = 실거래/실발행에 실제 영향. **SHADOW** = 코드 동작하나 로그/관측만(영향 0). **OFF** = 미실행(코드만 존재). **N/A** = 미구현.
 
+## 네이밍 용어집 (loop_a/b/c → descriptive rename)
+
+암호적이던 `loop_a/loop_b/loop_c` 이름을 자기설명적 이름으로 리네임했다. **구 스크립트 경로는 deprecation shim으로 그대로 동작**하므로 기존 prod/구독자 crontab은 수정 없이 유지된다.
+
+| 레거시 이름 | 새 이름 (descriptive) | env prefix (canonical) | 스크립트 경로 (신규) | 구 경로 (deprecated shim, 여전히 동작) |
+|---|---|---|---|---|
+| Loop A | Hardstop — 고빈도 손절 | `HARDSTOP_` (구 `LOOP_A_` alias 유효) | `tools/hardstop_seller.py` | `tools/loop_a_hardstop.py` |
+| Loop B | Trend-exit — 50MA 추세이탈 매도 | `TREND_EXIT_` (구 `LOOP_B_` alias 유효) | `tools/trend_exit_seller.py` | `tools/loop_b_trend_exit.py` |
+| Loop C | Fill-chaser — 미체결 추격 | `FILL_CHASER_` (구 `LOOP_C_` alias 유효) | `tools/fill_chaser.py` | `tools/loop_c_fill_chaser.py` |
+| loop_publish | sell_broadcast | — | `sell_broadcast.py` | `loop_publish.py` (re-export shim) |
+
+> **DB 테이블 이름은 불변**: `loop_a_position_state`, `loop_a_inflight_orders`, `loop_b_position_state`, `loop_b_inflight_orders`, `loop_c_chase_log` 는 라이브 상태·크로스루프 락을 담고 있어 **상태 연속성**을 위해 레거시 이름을 유지한다. Pub/Sub 페이로드/프로토콜 값도 불변.
+
 ## 현황 한눈에
 
 | 기능 | 상태 | 게이트 | 승격 기준 | 비고 |
@@ -15,8 +28,8 @@
 | OAuth LLM 백엔드(ChatGPT 구독) | **LIVE** | crontab `PRISM_OPENAI_AUTH_MODE=chatgpt_oauth` | 카나리 검증 완료 | 전 배치 적용 |
 | TIER0 이벤트 강제청산(뉴스 자율매도 + KIS 51 관리종목) | **LIVE** | 코드 상시 | 더존 등 실증 | KR+US 매도 프롬프트 핵심-0 |
 | Loop A — 고빈도 하드스톱(−7%/시나리오손절) | **LIVE** | `.env HARDSTOP_LIVE=true` (구 `LOOP_A_LIVE`, alias 유효) + cron 10분 | SHADOW 관측 후 승격(06-20) | KR 9–15 / US 9–16. 킬: `HARDSTOP_ENABLED=false` |
-| Loop B — 50MA 종가확인 추세이탈 | **LIVE** | `.env TREND_EXIT_LIVE=true` (구 `LOOP_B_LIVE`) + cron(KR 9–15 / US 9–16) | 백테스트 KR/US 순효과(휩쏘0·추가DD0) + 사용자 승인(06-24) | 코드: `tools/loop_b_trend_exit.py`. 킬: `TREND_EXIT_ENABLED=false` |
-| Loop C — 미체결 추격 + KIS TR 래퍼 | **SHADOW** | cron(KR/US */2분, `FILL_CHASER_LIVE` 미설정; 구 `LOOP_C_LIVE` alias) | **신규 KIS 정정/취소 TR 실 KIS 수락 검증**(dry-run/`--selftest`로 페이로드 필드는 검증됨) | 코드: `tools/loop_c_fill_chaser.py`. 매수=체결우선 cross(예산 `FILL_CHASER_BUY_MAX_PREMIUM_PCT`=3%, `FILL_CHASER_BUY_CROSS`=on). 상세로깅 `[LOOP_C][SHADOW]` |
+| Loop B — 50MA 종가확인 추세이탈 | **LIVE** | `.env TREND_EXIT_LIVE=true` (구 `LOOP_B_LIVE`) + cron(KR 9–15 / US 9–16) | 백테스트 KR/US 순효과(휩쏘0·추가DD0) + 사용자 승인(06-24) | 코드: `tools/trend_exit_seller.py` (구 `tools/loop_b_trend_exit.py` shim 유효). 킬: `TREND_EXIT_ENABLED=false` |
+| Loop C — 미체결 추격 + KIS TR 래퍼 | **SHADOW** | cron(KR/US */2분, `FILL_CHASER_LIVE` 미설정; 구 `LOOP_C_LIVE` alias) | **신규 KIS 정정/취소 TR 실 KIS 수락 검증**(dry-run/`--selftest`로 페이로드 필드는 검증됨) | 코드: `tools/fill_chaser.py` (구 `tools/loop_c_fill_chaser.py` shim 유효). 매수=체결우선 cross(예산 `FILL_CHASER_BUY_MAX_PREMIUM_PCT`=3%, `FILL_CHASER_BUY_CROSS`=on). 상세로깅 `[LOOP_C][SHADOW]` |
 | 재진입 쿨다운 게이트(매수측) | **SHADOW** | `REENTRY_COOLDOWN_LIVE` 미설정 | SHADOW 며칠 관측(`[REENTRY_COOLDOWN][SHADOW] WOULD_BLOCK` ↔ 실매수 대조) → LIVE 승격 | 코드: `reentry_cooldown.py` (KR/US 매수 caller 훅). 손실매도 후 24h 재매수 차단(승리후 0h). prod 이력검증=리벤지 3건 차단·오탐0 |
 | 비전 배관(S1) / 렌더QA(S2) | **ON(log-only)** | `PRISM_FEATURE_VISION=on` | 무손상 인프라 | 렌더QA 비차단 경고만 |
 | 비전 매수 품질검사(S3 + S3.5 오닐 일/주봉·RS) | **SHADOW** | `PRISM_FEATURE_VISION=on` + `PRISM_VISION_SHADOW=true` | **A/B 홀드아웃 측정(승률·손절률·MDD 순효과)** → 미정 | 관측 로그 `[BUY_QUALITY][SHADOW]`. 매매영향 0 |

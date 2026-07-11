@@ -540,7 +540,7 @@ class USStockTrackingAgent:
             sector_names: List of valid sector names for trading agent (optional)
             skip_llm_agent: When True, skip creating the LLM trading-scenario agent.
                 The sell path (sell_stock / send_telegram_message) does NOT use
-                self.trading_agent, so the LLM-free Loop A hard-stop loop can reuse
+                self.trading_agent, so the LLM-free Hardstop (구 Loop A) hard-stop loop can reuse
                 the sell/journal/telegram plumbing without the heavy LLM agent.
                 Default False keeps batch behaviour byte-for-byte unchanged.
         """
@@ -2170,8 +2170,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             stock_data: Stock information to sell
             sell_reason: Sell reason
             exit_kind: Optional explicit exit classification (stop | trend_exit |
-                target | ai). Loops pass it deterministically (loop_a=stop,
-                loop_b=trend_exit); when None it is inferred from sell_reason. Stored
+                target | ai). Loops pass it deterministically (hardstop→'stop',
+                trend_exit→'trend_exit' (구 loop_a/loop_b)); when None it is inferred from sell_reason. Stored
                 in us_trading_history so the re-entry cooldown treats a stop-out at a
                 marginal profit as churn-risk.
 
@@ -2194,13 +2194,13 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # ── Cross-cycle sell guard (single source of truth) ──────────────
             # EVERY sell path routes its real order + signal publish through
             # sell_stock and gates on this bool return: the batch update_holdings,
-            # loop_a_hardstop, and loop_b_trend_exit (KR + US). A concurrent cycle
+            # hardstop_seller, and trend_exit_seller (구 loop_a_hardstop/loop_b_trend_exit) (KR + US). A concurrent cycle
             # may have already closed this position seconds/minutes ago, so refresh
             # the connection snapshot (commit ends any stale WAL read-txn so other
             # processes' commits are visible) and abort if the row is gone — no
             # trading_history row, no delete, no journal, no queued message — so the
             # caller publishes NO duplicate/ghost SELL and P&L is not double-counted.
-            # Incident 2026-07-01 (MU): loop_a stop-sold 23:50 (+published SELL),
+            # Incident 2026-07-01 (MU): hardstop (구 loop_a) stop-sold 23:50 (+published SELL),
             # the batch re-hit the same stop off a stale snapshot and re-published a
             # 2nd SELL 23:55. sell_stock is the chokepoint that closes this for all
             # paths in both markets. (update_holdings also has an earlier Layer 2
@@ -2388,12 +2388,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     # ── Layer 2: fresh holding re-check (cross-cycle stale-snapshot guard) ──
                     # update_holdings iterates a holdings snapshot taken at pipeline
                     # start (~40 min earlier). A concurrent intraday loop
-                    # (loop_a_hardstop / loop_b_trend_exit, both */10 on cron) may have
+                    # (hardstop_seller / trend_exit_seller — 구 loop_a_hardstop/loop_b_trend_exit — both */10 on cron) may have
                     # already closed this position minutes ago. Re-read the live DB row
                     # right before acting; if it is gone, abort THIS ticker entirely —
                     # no real order, NO signal publish, no journal — so subscribers never
                     # receive a duplicate/ghost SELL.
-                    # Incident 2026-07-01: loop_a stop-sold MU 23:50 (+published SELL),
+                    # Incident 2026-07-01: hardstop (구 loop_a) stop-sold MU 23:50 (+published SELL),
                     # then the batch re-hit the same stop off its stale snapshot 23:54,
                     # its real sell no-op'd ("not found in portfolio") yet it still
                     # published a 2nd SELL 23:55. This guard closes that gap at the source.
