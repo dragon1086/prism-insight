@@ -11,7 +11,7 @@ production orchestrators. It answers three questions, and nothing else:
   3. :func:`market_pulse_mode` — read the ``MARKET_PULSE_MODE`` env flag
      (``shadow`` | ``live`` | ``off``; default ``shadow``).
 
-Policy rationale (tasks/market_pulse/00_VALIDATION_PLAN.md §7 Rev.3):
+Policy rationale (tasks/market_pulse/00_VALIDATION_PLAN.md §7 Rev.5):
     The V2 trade-sample audit REJECTED the original "CORRECTION = full stop"
     policy — CORRECTION-window buys had a scary 38% stop-out rate but a NET
     +25.3% P&L (the post-crash rebound monsters live in this window). So the
@@ -24,9 +24,16 @@ Policy rationale (tasks/market_pulse/00_VALIDATION_PLAN.md §7 Rev.3):
           morning (open-hour noise is maximal) and afternoon (overnight gap risk
           on a late buy) both rest.
 
-    Non-CORRECTION states — UPTREND, UNDER_PRESSURE, and None (unknown / fail-open)
-    — run every batch normally. Exit/sell loops are NEVER affected by this policy;
-    only the new-analysis agents rest.
+    Rev.5 adds a lighter deceleration for the intermediate UNDER_PRESSURE state
+    (4-5 distribution days = market weakening but not yet in correction). Here
+    only US rests its MORNING batch (open-hour gap-strength is the least reliable
+    signal in a softening tape); US midday + afternoon still run, and KR is left
+    UNCHANGED (its two windows already trade the calmer mid/close hours). This is
+    a partial, market-specific brake — strictly weaker than the CORRECTION rest.
+
+    Remaining states — UPTREND and None (unknown / fail-open) — run every batch
+    normally, as does KR under UNDER_PRESSURE. Exit/sell loops are NEVER affected
+    by this policy; only the new-analysis agents rest.
 
 Import safety: this module performs NO heavy imports at module load. All data
 fetching and market_pulse/stock_chart imports are lazy (inside functions) and
@@ -65,6 +72,14 @@ _CORRECTION_REST_BATCHES = {
     "us": frozenset({"morning", "afternoon"}),    # only midday runs
 }
 
+# Table (§7 Rev.5): batches that REST during UNDER_PRESSURE, per market. A lighter,
+# market-specific brake than CORRECTION. KR is intentionally absent (no rest); only
+# US rests its morning batch (open-hour gap-strength least reliable in a softening
+# tape). Any batch NOT listed here runs normally under UNDER_PRESSURE.
+_UNDER_PRESSURE_REST_BATCHES = {
+    "us": frozenset({"morning"}),                 # midday + afternoon run, morning rests
+}
+
 # Module-level cache: pulse state is computed once per (short-lived) process and
 # reused by the orchestrator hook and by per-ticker trend-fact injection so we do
 # not re-fetch the index for every ticker. A None result is cached too, so a
@@ -100,12 +115,13 @@ def decide_batch_policy(
                      ("both" or any unknown mode fails open -> run.)
         pulse_state: UPTREND / UNDER_PRESSURE / CORRECTION / None.
 
-    Rationale (§7 Rev.3, batch choice revised by Rev.4): CORRECTION is not a buy
-    stop; it reduces the agent to a single daily window (KR afternoon-only =
+    Rationale (§7 Rev.3, batch choice revised by Rev.4/Rev.5): CORRECTION is not a
+    buy stop; it reduces the agent to a single daily window (KR afternoon-only =
     close-confirmation entry, US midday-only) to dodge the open-hour noise where
     gap-strength fades intraday in weak markets, while keeping one shot at the
-    post-crash rebound. Exit loops are unaffected. Any non-CORRECTION or unknown
-    state runs everything (fail-open).
+    post-crash rebound. Rev.5: UNDER_PRESSURE additionally rests the US morning
+    batch only (KR unchanged). Exit loops are unaffected. Any state/mode not in a
+    rest table runs (fail-open on None/unknown).
     """
     m = (market or "").strip().lower()
     mode = (batch_mode or "").strip().lower()
@@ -130,7 +146,27 @@ def decide_batch_policy(
             pulse_state=pulse_state,
         )
 
-    # UPTREND / UNDER_PRESSURE / None(unknown) -> run everything (fail-open).
+    if pulse_state == UNDER_PRESSURE:
+        rest_batches = _UNDER_PRESSURE_REST_BATCHES.get(m, frozenset())
+        if mode in rest_batches:
+            return BatchPolicy(
+                run_batch=False,
+                reason=(
+                    f"UNDER_PRESSURE: {m or '?'} '{mode or '?'}' batch rests "
+                    "(Rev.5 partial brake; exit loops unaffected)"
+                ),
+                pulse_state=pulse_state,
+            )
+        return BatchPolicy(
+            run_batch=True,
+            reason=(
+                f"UNDER_PRESSURE: {m or '?'} '{mode or '?'}' batch runs "
+                "(Rev.5 partial brake)"
+            ),
+            pulse_state=pulse_state,
+        )
+
+    # UPTREND / None(unknown) -> run everything (fail-open).
     return BatchPolicy(
         run_batch=True,
         reason=f"{pulse_state or 'UNKNOWN'}: run all batches",
