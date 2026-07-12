@@ -15,6 +15,7 @@ Usage:
             scenario=scenario_dict
         )
 """
+import asyncio
 import os
 import json
 import logging
@@ -164,10 +165,11 @@ class SignalPublisher:
             # Publish to Redis Streams (XADD)
             # upstash-redis 1.5.0+ signature: xadd(key, id, data)
             # Use id="*" for auto-generated ID
-            message_id = self._redis.xadd(
+            message_id = await asyncio.to_thread(
+                self._redis.xadd,
                 self.STREAM_NAME,
                 "*",  # auto-generate message ID
-                {"data": json.dumps(signal_data, ensure_ascii=False)}
+                {"data": json.dumps(signal_data, ensure_ascii=False)},
             )
 
             market = signal_data.get("market", "KR")
