@@ -42,7 +42,6 @@ from cores.us_surge_detector import (
 
 from us_trigger_batch import (
     TRIGGER_CRITERIA,
-    MIN_MARKET_CAP,
     MIN_TRADING_VALUE,
     calculate_agent_fit_metrics,
     score_candidates_by_agent_criteria,
@@ -265,10 +264,6 @@ class TestTriggerCriteria:
         """Test each trigger has sl_max."""
         for trigger, criteria in TRIGGER_CRITERIA.items():
             assert 'sl_max' in criteria, f"{trigger} missing sl_max"
-
-    def test_min_market_cap_value(self):
-        """Test MIN_MARKET_CAP is $20B."""
-        assert MIN_MARKET_CAP == 20_000_000_000
 
     def test_min_trading_value(self):
         """Test MIN_TRADING_VALUE is $100M."""
