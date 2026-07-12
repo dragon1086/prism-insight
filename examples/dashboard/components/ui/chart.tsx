@@ -126,6 +126,10 @@ function ChartTooltipContent({
     nameKey?: string
     labelKey?: string
     payload?: any[]
+    label?: any
+    labelFormatter?: (...args: any[]) => React.ReactNode
+    formatter?: (...args: any[]) => React.ReactNode
+    color?: string
   }) {
   const { config } = useChart()
 
