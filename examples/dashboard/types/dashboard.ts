@@ -78,6 +78,7 @@ export interface Holding {
     sector?: string
     market_condition?: string
     max_portfolio_size?: string
+    entry_checklist_passed?: number
     trading_scenarios?: {
       key_levels?: Record<string, any>
       sell_triggers?: string[]
