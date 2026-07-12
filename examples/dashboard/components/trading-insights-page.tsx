@@ -557,14 +557,14 @@ export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPage
                           <p className={`font-bold text-lg ${
                             (data.performance_analysis.actual_trading.avg_profit_rate || 0) >= 0 ? "text-green-600" : "text-red-600"
                           }`}>
-                            {formatPercent(data.performance_analysis.actual_trading.avg_profit_rate)}
+                            {formatPercent(data.performance_analysis.actual_trading.avg_profit_rate ?? 0)}
                           </p>
                         </div>
                         {/* 승률 */}
                         <div>
                           <span className="text-muted-foreground text-xs">{language === "ko" ? "승률" : "Win Rate"}</span>
                           <p className="font-bold text-lg">
-                            {data.performance_analysis.actual_trading.win_rate !== null
+                            {data.performance_analysis.actual_trading.win_rate != null
                               ? `${(data.performance_analysis.actual_trading.win_rate * 100).toFixed(0)}%`
                               : "-"}
                             <span className="text-xs font-normal text-muted-foreground ml-1">
