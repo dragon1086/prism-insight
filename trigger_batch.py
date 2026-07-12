@@ -1229,6 +1229,19 @@ def _get_regime_slots(market_regime: str) -> tuple:
         "strong_bear": (0, 3),
     }
     td, bu = REGIME_SLOTS.get(market_regime, (1, 2))  # default: sideways ratios
+    # Post-FTD 정찰(파일럿) 재진입: PULSE_PILOT_REEXPOSURE ON + 해당 시장 파일럿 윈도우면
+    # 배치당 신규 진입 슬롯을 총 1개로 캡한다. post-FTD 정찰 진입은 주도주(top-down) 우선,
+    # 정상 금액 1종목만. 금액은 절대 건드리지 않는다(sim/real parity). 신규 진입 수만 조인다.
+    # fail-open: 파일럿 판정 중 예외 발생 시 원래 슬롯 유지(기존 약세장 브랜치 스타일).
+    try:
+        from cores.regime_policy import pilot_reexposure_active
+        if (td + bu) > 1 and pilot_reexposure_active("kr"):
+            capped = (1, 0) if td >= 1 else (0, min(bu, 1))
+            logger.info("[PULSE_PILOT] 파일럿 신규진입 캡: %s (%d,%d)->(%d,%d)",
+                        market_regime, td, bu, capped[0], capped[1])
+            return capped
+    except Exception as _pe:
+        logger.debug("[PULSE_PILOT] slot-cap fail-open: %s", _pe)
     # 약세·횡보장 모멘텀추격(top-down) 억제 옵션 (env-gated, 기본 off = 현행 유지).
     # ON 시 sideways/moderate_bear의 top-down 슬롯을 0으로 → 급락 휩쏘장에서 momentum chase
     # 매수를 접고 가치형 bottom-up만 남긴다(총 슬롯도 감소 = 매수 절제). strong_bear는 이미 (0,3).

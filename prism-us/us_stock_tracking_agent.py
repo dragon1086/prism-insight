@@ -115,6 +115,10 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     file_path = PROJECT_ROOT / relative_path
     spec = importlib.util.spec_from_file_location(module_name, file_path)
     module = importlib.util.module_from_spec(spec)
+    # py3.14: @dataclass(frozen=True) resolves sys.modules[cls.__module__].__dict__ during
+    # exec, so the module MUST be registered before exec_module (else NoneType.__dict__
+    # AttributeError → fail-open None). Affects cores/regime_policy.py (frozen dataclass).
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -1093,6 +1097,22 @@ class USStockTrackingAgent:
         ticker = analysis_result.get("ticker")
         company_name = analysis_result.get("company_name")
         if await self._is_ticker_in_holdings(ticker):
+            # Post-FTD 파일럿 윈도우: 중복매수(피라미딩) 동결. 매수 전 결정 경로에서 차단해
+            # sim/real 이 동일하게 스킵된다. fail-open: 판정 예외 시 기존 로직 유지.
+            try:
+                _rp_pilot = self._regime_policy_mod()
+                _pilot_freeze = _rp_pilot is not None and _rp_pilot.pilot_reexposure_active("us")
+            except Exception:
+                _pilot_freeze = False
+            if _pilot_freeze:
+                logger.info(f"[PULSE_PILOT] 중복매수 동결: {ticker} ({company_name}) already in holdings")
+                return {
+                    "success": True,
+                    "decision": "holding",
+                    "ticker": ticker,
+                    "company_name": company_name,
+                    "current_price": analysis_result.get("current_price", 0),
+                }
             # Pyramiding (#288): allow an additional independent entry only when the
             # strong-bull add-gate passes. Otherwise keep the legacy hard block.
             scenario = analysis_result.get("scenario", {}) or {}
@@ -2821,6 +2841,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     # keep the legacy skip. Computed per active account.
                     is_add = False
                     if await self._is_ticker_in_holdings(ticker):
+                        # Post-FTD 파일럿 윈도우: 중복매수(피라미딩) 동결. sim/real 공통 매수 전에
+                        # 차단해 시뮬레이터/실주문이 동일하게 스킵된다. fail-open: 예외 시 기존 로직.
+                        _pilot_freeze = False
+                        try:
+                            _rp_pilot = self._regime_policy_mod()
+                            if _rp_pilot is not None:
+                                _pilot_freeze = _rp_pilot.pilot_reexposure_active("us")
+                        except Exception:
+                            _pilot_freeze = False
+                        if _pilot_freeze:
+                            logger.info(f"[PULSE_PILOT] 중복매수 동결: {ticker} ({company_name}) already in holdings")
+                            continue
                         acct_key = self._account_scope()[0]
                         existing = get_us_existing_position_for_ticker(self.cursor, ticker, account_key=acct_key)
                         allowed, gate_reason = evaluate_us_pyramid_add_gate(
@@ -2939,21 +2971,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     except ImportError:
                                         from prism_us.trading.us_stock_trading import AsyncUSTradingContext
                                     async with AsyncUSTradingContext(account_name=account["name"]) as trading:
-                                        # 파일럿 재진입 축소매수(env-gated PULSE_PILOT_REEXPOSURE, 기본 off).
-                                        # CORRECTION 종료 직후 N세션은 buy_amount 를 절반으로. fail-open 정상매수.
-                                        _pilot_buy_amt = None
-                                        try:
-                                            _rp = self._regime_policy_mod()
-                                            if (_rp is not None and _rp.pilot_reexposure_active("us")
-                                                    and getattr(trading, "buy_amount", None)):
-                                                _pilot_buy_amt = round(trading.buy_amount * _rp.PULSE_PILOT_FACTOR, 2)
-                                                logger.info(
-                                                    f"[PULSE_PILOT] {company_name}({ticker}) pilot re-exposure half-size buy: "
-                                                    f"${trading.buy_amount:,.2f}->${_pilot_buy_amt:,.2f} (x{_rp.PULSE_PILOT_FACTOR})"
-                                                )
-                                        except Exception as _pe:
-                                            logger.warning(f"[PULSE_PILOT] fail-open full-size buy: {_pe}")
-                                        trade_result = await trading.async_buy_stock(ticker=ticker, limit_price=current_price, buy_amount=_pilot_buy_amt)
+                                        trade_result = await trading.async_buy_stock(ticker=ticker, limit_price=current_price)
 
                                     if trade_result['success']:
                                         logger.info(f"Actual purchase successful: {trade_result['message']}")
