@@ -332,8 +332,12 @@ function IndexCharts({ data }: { data: MarketCondition[] }) {
     return [Math.floor(min - padding), Math.ceil(max + padding)]
   }
 
-  const kospiValues = data.map(d => d.kospi_index).filter(v => v > 0)
-  const kosdaqValues = data.map(d => d.kosdaq_index).filter(v => v > 0)
+  const kospiValues = data
+    .map(d => d.kospi_index)
+    .filter((v): v is number => typeof v === "number" && v > 0)
+  const kosdaqValues = data
+    .map(d => d.kosdaq_index)
+    .filter((v): v is number => typeof v === "number" && v > 0)
   
   const [kospiMin, kospiMax] = getYAxisDomain(kospiValues)
   const [kosdaqMin, kosdaqMax] = getYAxisDomain(kosdaqValues)
