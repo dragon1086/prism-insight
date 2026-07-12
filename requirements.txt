@@ -15,14 +15,13 @@ openai>=2.9,<3
 openai-agents==0.7.0
 anthropic~=0.64.0
 markdown>=3.3.0
-python-telegram-bot>=20.0
+python-telegram-bot[job-queue]>=20.0
 aiosqlite>=0.17.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
 mcp-server-sqlite
 
 # 파일 처리 및 로깅
-pathlib>=1.0.1
 python-dotenv>=1.0.0
 
 
@@ -50,10 +49,7 @@ Pillow>=10.0.0
 
 holidays~=0.68
 
-python-telegram-bot[job-queue]>=20.0
-
 kospi_kosdaq_stock_server>=0.4.0
-DateTime~=5.5
 matplotlib~=3.10.1
 seaborn~=0.13.2
 mplfinance~=0.12.10b0
@@ -72,11 +68,6 @@ APScheduler==3.11.0
 
 upstash-redis>=1.0.0
 google-cloud-pubsub>=2.18.0
-
-# YouTube Event Fund Crawler
-yt-dlp>=2024.0.0  # YouTube video/audio downloader
-feedparser>=6.0.0  # RSS feed parser
-pydub>=0.25.1  # Audio file manipulation (for splitting large files)
 
 # US Stock Market (prism-us module)
 yfinance>=0.2.0  # Yahoo Finance data
