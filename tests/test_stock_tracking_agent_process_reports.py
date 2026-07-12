@@ -34,7 +34,7 @@ class _FakeAsyncTradingContext:
             "failed_accounts": ["kr-secondary"],
         }
 
-    async def async_sell_stock(self, stock_code, limit_price=None):
+    async def async_sell_stock(self, stock_code, limit_price=None, quantity=None):
         return {
             "success": True,
             "message": f"sold for {self.account_name}",
