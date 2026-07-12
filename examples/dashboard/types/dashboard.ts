@@ -108,6 +108,16 @@ export interface Trade {
     investment_period?: string
     sector?: string
     rationale?: string
+    portfolio_analysis?: string
+    valuation_analysis?: string
+    sector_outlook?: string
+    market_condition?: string
+    trading_scenarios?: {
+      key_levels?: Record<string, string>
+      sell_triggers?: string[]
+      hold_conditions?: string[]
+      portfolio_context?: string
+    }
   }
 }
 
