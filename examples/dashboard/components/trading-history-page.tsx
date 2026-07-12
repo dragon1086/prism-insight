@@ -498,7 +498,7 @@ export function TradingHistoryPage({ history, summary, prismPerformance = [], ma
       </div>
 
       {/* 위험조정 성과 지표 (알파, 베타, 샤프비율, 정보비율) */}
-      {(prismPerformance.length > 0 && marketCondition.length > 0 && dataPoints > 0) && (
+      {(prismPerformance.length > 0 && marketCondition.length > 0 && (dataPoints ?? 0) > 0) && (
         <>
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold text-foreground">{t("trading.riskAdjustedMetrics")}</h3>
