@@ -205,13 +205,17 @@ def detect_type(message: str) -> str:
     # '포트폴리오 관점' (portfolio perspective in buy/sell messages) must NOT match here.
     if any(kw in msg_lower for kw in [
         '포트폴리오 현황', '포트폴리오 요약', '포트폴리오 리포트',
+        '포트폴리오 수익률',
         '보유 종목', '잔고',
         'portfolio summary', 'portfolio status', 'portfolio report', 'holdings',
     ]):
         return 'portfolio'
 
     # PDF report detection
-    if any(kw in msg_lower for kw in ['.pdf', 'pdf 리포트', 'pdf report']):
+    if (
+        any(kw in msg_lower for kw in ['.pdf', 'pdf 리포트', 'pdf report'])
+        or re.search(r'(?<![a-z0-9])pdf(?![a-z0-9])', msg_lower)
+    ):
         return 'pdf'
 
     # Trigger/signal detection BEFORE analysis — trigger alerts contain '매수'/'buy'
