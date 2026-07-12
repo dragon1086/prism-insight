@@ -40,3 +40,27 @@ jobs:
             tests/test_redis_async_boundaries.py \
             tests/test_subscriber_trading_mode.py \
             -q
+
+  frontend:
+    name: Frontend (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [dashboard, landing]
+
+    defaults:
+      run:
+        working-directory: examples/${{ matrix.app }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: examples/${{ matrix.app }}/package-lock.json
+
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm run build
