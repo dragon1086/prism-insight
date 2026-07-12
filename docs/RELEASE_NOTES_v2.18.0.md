@@ -107,6 +107,7 @@ hardstop / trend_exit / fill_chaser로 리네임했다(구 경로 shim 유지, c
 ### 한국어
 
 📢 PRISM-INSIGHT v2.18.0 배포
+(Release Note : https://github.com/dragon1086/prism-insight/releases/tag/v2.18.0)
 
 "확실한 기회가 없으면 기다린다" — 오닐의 시장 판독(M)이 코드가 됐습니다.
 
@@ -118,6 +119,7 @@ hardstop / trend_exit / fill_chaser로 리네임했다(구 경로 shim 유지, c
 ### English
 
 📢 PRISM-INSIGHT v2.18.0 released
+(Release Note : https://github.com/dragon1086/prism-insight/releases/tag/v2.18.0)
 
 "When the market offers no clear opportunity, wait." — O'Neil's market read (M) is now code.
 
