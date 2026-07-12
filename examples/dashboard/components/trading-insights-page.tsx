@@ -245,7 +245,7 @@ export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPage
                   (data.performance_analysis?.actual_trading?.avg_profit_rate || 0) >= 0
                     ? "text-green-600" : "text-red-600"
                 }`}>
-                  {data.performance_analysis?.actual_trading?.avg_profit_rate !== undefined
+                  {data.performance_analysis?.actual_trading?.avg_profit_rate != null
                     ? formatPercent(data.performance_analysis.actual_trading.avg_profit_rate)
                     : "-"}
                 </p>
