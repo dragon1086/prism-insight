@@ -39,8 +39,11 @@ jobs:
           python -m pytest tests cores/llm/tests -q
           root_status=$?
 
-          (cd prism-us && PYTHONPATH=. python -m pytest tests -q)
-          us_status=$?
+          us_status=0
+          for us_test in prism-us/tests/test_*.py; do
+            test_name=$(basename "$us_test")
+            (cd prism-us && PYTHONPATH=. python -m pytest "tests/$test_name" -q) || us_status=1
+          done
 
           (cd prism-btc && PYTHONPATH=. python -m pytest tests -q)
           btc_status=$?
@@ -53,4 +56,4 @@ jobs:
             exit 1
           fi
 
-# verification revision 3
+# verification revision 4
