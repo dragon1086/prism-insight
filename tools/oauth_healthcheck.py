@@ -15,11 +15,13 @@ It can ALSO report proactive subscription quota usage (--quota mode):
 
   3. QUOTA  — the ChatGPT/Codex backend returns the same rate-limit telemetry
      Codex CLI displays ("주간 한도 X% 사용") as `x-codex-*` response headers on
-     every successful call. We fire ONE cheap probe and read:
-       primary   window = ~300 min  (the "5h" limit)  -> x-codex-primary-*
-       secondary window = ~10080 min (the WEEKLY limit) -> x-codex-secondary-*
-     plus x-codex-plan-type / x-codex-active-limit. This lets us detect quota
-     exhaustion (429) BEFORE the batch hits it. See tasks/oauth_quota_monitor.md.
+     every successful call. We fire ONE cheap probe and read every *available*
+     primary/secondary window. The backend may change which slot carries a
+     window (for example, current telemetry exposes a 7-day primary window and
+     no secondary window), so labels are derived from `*-window-minutes`, never
+     from the primary/secondary slot name. We also read x-codex-plan-type /
+     x-codex-active-limit. This lets us detect quota exhaustion (429) BEFORE
+     the batch hits it.
 
 On a problem it sends a Telegram alert (to OAUTH_ALERT_CHAT_ID, falling back to
 TELEGRAM_CHANNEL_ID) using TELEGRAM_BOT_TOKEN. A small state file suppresses
@@ -30,8 +32,8 @@ sends a Telegram message. Intended cron lines (db-server):
 
     # health (every 30 min)
     */30 * * * * cd /root/prism-insight && /root/.pyenv/shims/python tools/oauth_healthcheck.py >> logs/oauth_health.log 2>&1
-    # quota status report (hourly; --quota always posts a status line)
-    0 * * * * cd /root/prism-insight && /root/.pyenv/shims/python tools/oauth_healthcheck.py --quota >> logs/oauth_health.log 2>&1
+    # quota status report (every 3 hours; --quota always posts a status line)
+    0 */3 * * * cd /root/prism-insight && /root/.pyenv/shims/python tools/oauth_healthcheck.py --quota >> logs/oauth_health.log 2>&1
 
 Exit code: 0 = healthy, 1 = problem detected (alert attempted).
 """
@@ -210,6 +212,41 @@ def _fmt_reset(reset_at: int, reset_after_s: int) -> str:
     return f"{local} ({rel})"
 
 
+def _quota_window_label(window_min: int) -> tuple[str, str]:
+    """Return a display icon and label derived from a backend window length."""
+    if window_min % (24 * 60) == 0:
+        days = window_min // (24 * 60)
+        return "🗓", f"주간({days}일)" if days == 7 else f"{days}일"
+    if window_min % 60 == 0:
+        return "⏱", f"{window_min // 60}시간"
+    return "⏱", f"{window_min}분"
+
+
+def _available_quota_windows(q: dict) -> list[dict]:
+    """Normalize only quota windows the backend explicitly made available.
+
+    `primary` and `secondary` are transport slot names, not stable 5-hour or
+    weekly semantics. A zero/missing `*-window-minutes` means that slot must
+    not appear in reports or influence low-quota warnings.
+    """
+    windows: list[dict] = []
+    for slot in ("secondary", "primary"):
+        window_min = int(q.get(f"{slot}_window_min", 0) or 0)
+        if window_min <= 0:
+            continue
+        icon, label = _quota_window_label(window_min)
+        used_pct = int(q.get(f"{slot}_used_pct", 0) or 0)
+        windows.append({
+            "icon": icon,
+            "label": label,
+            "used_pct": used_pct,
+            "remaining_pct": max(0, 100 - used_pct),
+            "reset_at": int(q.get(f"{slot}_reset_at", 0) or 0),
+            "reset_after_s": int(q.get(f"{slot}_reset_after_s", 0) or 0),
+        })
+    return windows
+
+
 async def _probe_quota() -> tuple[dict | None, str]:
     """Fire ONE cheap Codex call and read x-codex-* rate-limit headers.
 
@@ -295,31 +332,30 @@ async def _probe_quota() -> tuple[dict | None, str]:
 
 def _format_quota_report(q: dict) -> tuple[str, bool]:
     """Build the Korean Telegram body. Returns (text, danger)."""
-    wk_used = q["secondary_used_pct"]
-    wk_left = max(0, 100 - wk_used)
-    pr_used = q["primary_used_pct"]
-    pr_left = max(0, 100 - pr_used)
-
+    windows = _available_quota_windows(q)
     is_429 = q["status"] == 429
-    low_week = wk_left < QUOTA_WARN_REMAINING_PCT
-    low_5h = pr_left < QUOTA_WARN_REMAINING_PCT
-    danger = is_429 or low_week or low_5h
+    danger = is_429 or any(
+        window["remaining_pct"] < QUOTA_WARN_REMAINING_PCT
+        for window in windows
+    )
 
     head = "⚠️ ChatGPT 쿼터 경고" if danger else "📊 ChatGPT 쿼터 현황"
-    wk_mark = " ⚠️" if (is_429 or low_week) else ""
-    pr_mark = " ⚠️" if (is_429 or low_5h) else ""
 
     lines = [
         head,
         f"플랜: {q['plan_type']} (active={q['active_limit']})",
         "",
-        f"🗓 주간(7일): 사용 {wk_used}% · 잔량 {wk_left}%{wk_mark}",
-        f"   리셋: {_fmt_reset(q['secondary_reset_at'], q['secondary_reset_after_s'])}",
-        f"⏱ 5시간: 사용 {pr_used}% · 잔량 {pr_left}%{pr_mark}",
-        f"   리셋: {_fmt_reset(q['primary_reset_at'], q['primary_reset_after_s'])}",
     ]
+    for window in windows:
+        low_window = window["remaining_pct"] < QUOTA_WARN_REMAINING_PCT
+        mark = " ⚠️" if (is_429 or low_window) else ""
+        lines.extend([
+            f"{window['icon']} {window['label']}: 사용 {window['used_pct']}% · "
+            f"잔량 {window['remaining_pct']}%{mark}",
+            f"   리셋: {_fmt_reset(window['reset_at'], window['reset_after_s'])}",
+        ])
     if is_429:
-        lines.insert(1, "🚨 429 — 쿼터 소진됨. 위 리셋시각까지 대기 필요.")
+        lines.insert(1, "🚨 429 — 쿼터 소진됨. 표시된 리셋시각까지 대기 필요.")
     if str(q.get("credits_unlimited")).lower() == "true":
         lines.append("크레딧: 무제한")
     elif str(q.get("credits_has")).lower() == "true":
@@ -341,8 +377,11 @@ async def _run_quota(force_send: bool) -> int:
         return 0
 
     text, danger = _format_quota_report(quota)
-    print(f"[oauth-health] quota: {detail} "
-          f"week_used={quota['secondary_used_pct']}% 5h_used={quota['primary_used_pct']}% danger={danger}")
+    window_summary = " ".join(
+        f"{window['label']}_used={window['used_pct']}%"
+        for window in _available_quota_windows(quota)
+    ) or "no_quota_windows"
+    print(f"[oauth-health] quota: {detail} {window_summary} danger={danger}")
 
     if danger:
         # Cooldown-suppressed critical alert (so cron does not spam on sustained low).

@@ -60,7 +60,7 @@ ChatGPT 계정(Codex) 엔드포인트는 일부 모델/파라미터를 거부합
 
 ### 2-3. OAuth 워치독 · 주간 쿼터 모니터 (#348·#355)
 - **OAuth 헬스/사용량 워치독**(`tools/oauth_healthcheck.py`, #348 + 기반 #347): 토큰 건강·로그 에러 버스트 감시, **별도 알림 봇 토큰** 지원(`OAUTH_ALERT_BOT_TOKEN`) + `--test-alert`.
-- **주간 쿼터 모니터(#355)**: Codex 200 응답 헤더(`x-codex-secondary-*`=주간 7일, `x-codex-primary-*`=5시간, `x-codex-plan-type`)를 파싱해 **사용량/잔량/리셋시각**을 테스트 채널로 보고(`--quota`). 잔량 부족·429 시 경보 → 구독 한도 소진을 사전 감지.
+- **주간 쿼터 모니터(#355)**: Codex 200 응답 헤더의 `x-codex-*-window-minutes`를 기준으로 제공되는 쿼터 창만 동적으로 라벨링하여 **사용량/잔량/리셋시각**을 테스트 채널로 보고(`--quota`). `primary`/`secondary`는 고정된 5시간·주간 의미가 아니며, 잔량 부족·429 시 경보로 구독 한도 소진을 사전 감지.
 
 ---
 
@@ -122,7 +122,7 @@ git pull --ff-only origin main
 > **ChatGPT 구독(OAuth) 운용 시(선택)**:
 > - `PRISM_OPENAI_AUTH_MODE=chatgpt_oauth`를 해당 배치 cron에 적용하면 그 프로세스의 LLM 호출이 로컬 OAuth 프록시 경유.
 > - 토큰: `python -m cores.chatgpt_proxy.oauth_login`(브라우저 로그인) → `~/.config/prism-insight/chatgpt_auth.json`. **ChatGPT Plus 이상 계정 필요**(무료 플랜은 쿼터 부족).
-> - 워치독/쿼터: `tools/oauth_healthcheck.py`(헬스 `*/30`), `--quota`(주간/5시간 한도 보고). 알림봇 `OAUTH_ALERT_BOT_TOKEN`/`OAUTH_ALERT_CHAT_ID`.
+> - 워치독/쿼터: `tools/oauth_healthcheck.py`(헬스 `*/30`), `--quota`(헤더가 제공한 쿼터 창만 동적 보고, 권장 cron `0 */3 * * *`). 알림봇 `OAUTH_ALERT_BOT_TOKEN`/`OAUTH_ALERT_CHAT_ID`.
 >
 > **Loop A/B/C(선택)**: 기본 SHADOW(관측 전용, 주문 없음). 실거래 전환은 env 게이트(`LOOP_A_LIVE` 등) + 단계 검증. cron 10분 주기(장중) 권장.
 
@@ -132,7 +132,7 @@ git pull --ff-only origin main
 
 1. **Loop A/B/C는 SHADOW 기본**: Loop A는 env 게이트로 LIVE 전환 가능하나 단계적 모니터링 필요. Loop B(50MA)는 cadence-aware 백테스트 순효과 검증 후, Loop C는 신규 KIS TR **소액 왕복 실주문 검증** 후 LIVE 권장.
 2. **OAuth/Codex 호환은 비공식 표면 의존**: `x-codex-*` 쿼터 헤더·Codex 모델/파라미터 정책은 비공식이라 변경 시 영향 가능. 워치독/쿼터 모니터로 사전 감지하나, 멀티턴 stateless 전환은 매 턴 전체 input 재전송이라 토큰 비용이 소폭 증가합니다(저빈도 결정 경로라 영향 제한적).
-3. **OAuth는 구독 한도 내**: ChatGPT Plus 주간/5시간 한도를 초과하면 429. 전 배치 OAuth 운용 시 쿼터 모니터로 관측 필수.
+3. **OAuth는 구독 한도 내**: ChatGPT 구독 한도는 백엔드가 제공하는 창별로 429를 낼 수 있다. 전 배치 OAuth 운용 시 쿼터 모니터로 관측이 필수이며, 창 길이는 응답 헤더를 기준으로 해석한다.
 4. **#338·#339 US 시즌수익**: KIS 결제 타이밍·환율 반영 기준 변경으로, 과거 표기와 수치가 달라질 수 있습니다.
 
 ---
