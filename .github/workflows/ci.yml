@@ -35,4 +35,8 @@ jobs:
       - name: Run tests
         run: |
           python -m pytest cores/llm/tests/ -q
-          python -m pytest tests/test_gcp_pubsub_signal_publisher_async.py -q
+          python -m pytest \
+            tests/test_gcp_pubsub_signal_publisher_async.py \
+            tests/test_redis_async_boundaries.py \
+            tests/test_subscriber_trading_mode.py \
+            -q
