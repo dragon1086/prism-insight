@@ -15,6 +15,7 @@ Usage:
             scenario=scenario_dict
         )
 """
+import asyncio
 import os
 import json
 import logging
@@ -189,7 +190,9 @@ class SignalPublisher:
             message_bytes = message_json.encode("utf-8")
 
             future = self._publisher.publish(self._topic_path, message_bytes)
-            message_id = future.result()
+            # Pub/Sub's future is synchronous; wait in a worker thread so this async
+            # path does not block trading, Telegram, or other event-loop tasks.
+            message_id = await asyncio.to_thread(future.result)
 
             logger.info(
                 f"Signal published: {signal_type} {company_name}({ticker}) "
