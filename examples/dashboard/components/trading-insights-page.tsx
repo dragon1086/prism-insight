@@ -576,28 +576,28 @@ export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPage
                         <div>
                           <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 수익 (수익건)" : "Avg Profit (wins)"}</span>
                           <p className="font-bold text-green-600">
-                            {formatPercent(data.performance_analysis.actual_trading.avg_profit)}
+                            {formatPercent(data.performance_analysis.actual_trading.avg_profit ?? 0)}
                           </p>
                         </div>
                         {/* 평균 손실 (손실건) */}
                         <div>
                           <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 손실 (손실건)" : "Avg Loss (losses)"}</span>
                           <p className="font-bold text-red-600">
-                            {formatPercent(data.performance_analysis.actual_trading.avg_loss)}
+                            {formatPercent(data.performance_analysis.actual_trading.avg_loss ?? 0)}
                           </p>
                         </div>
                         {/* 최대 수익 */}
                         <div>
                           <span className="text-muted-foreground text-xs">{language === "ko" ? "최대 수익" : "Max Profit"}</span>
                           <p className="font-bold text-green-600">
-                            {formatPercent(data.performance_analysis.actual_trading.max_profit)}
+                            {formatPercent(data.performance_analysis.actual_trading.max_profit ?? 0)}
                           </p>
                         </div>
                         {/* 최대 손실 */}
                         <div>
                           <span className="text-muted-foreground text-xs">{language === "ko" ? "최대 손실" : "Max Loss"}</span>
                           <p className="font-bold text-red-600">
-                            {formatPercent(data.performance_analysis.actual_trading.max_loss)}
+                            {formatPercent(data.performance_analysis.actual_trading.max_loss ?? 0)}
                           </p>
                         </div>
                         {/* Profit Factor */}
