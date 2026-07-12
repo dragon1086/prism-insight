@@ -230,7 +230,7 @@ export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPage
                 </span>
                 <p className="font-bold text-green-600">
                   {data.performance_analysis?.actual_trading?.count || 0}{language === "ko" ? "건" : ""}
-                  {data.performance_analysis?.actual_trading?.win_rate !== undefined && (
+                  {data.performance_analysis?.actual_trading?.win_rate != null && (
                     <span className="text-muted-foreground font-normal text-xs ml-1">
                       ({language === "ko" ? "승률" : "WR"} {(data.performance_analysis.actual_trading.win_rate * 100).toFixed(0)}%)
                     </span>
