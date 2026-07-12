@@ -11,7 +11,8 @@ production orchestrators. It answers three questions, and nothing else:
   3. :func:`market_pulse_mode` — read the ``MARKET_PULSE_MODE`` env flag
      (``shadow`` | ``live`` | ``off``; default ``shadow``).
 
-Policy rationale (tasks/market_pulse/00_VALIDATION_PLAN.md §7 Rev.5):
+Policy rationale (US two-batch follow-up to
+tasks/market_pulse/00_VALIDATION_PLAN.md §7 Rev.5):
     The V2 trade-sample audit REJECTED the original "CORRECTION = full stop"
     policy — CORRECTION-window buys had a scary 38% stop-out rate but a NET
     +25.3% P&L (the post-crash rebound monsters live in this window). So the
@@ -19,17 +20,13 @@ Policy rationale (tasks/market_pulse/00_VALIDATION_PLAN.md §7 Rev.5):
     the agent to a single daily batch window, cutting exposure to the two noisiest
     micro-structure windows while keeping one shot at the rebound:
 
-        * KR (morning / afternoon): CORRECTION -> afternoon rests, morning runs.
-        * US (morning / midday / afternoon): CORRECTION -> only midday runs;
-          morning (open-hour noise is maximal) and afternoon (overnight gap risk
-          on a late buy) both rest.
+        * KR (morning / afternoon): CORRECTION -> afternoon only.
+        * US (morning / afternoon): CORRECTION -> afternoon only.
 
-    Rev.5 adds a lighter deceleration for the intermediate UNDER_PRESSURE state
-    (4-5 distribution days = market weakening but not yet in correction). Here
-    only US rests its MORNING batch (open-hour gap-strength is the least reliable
-    signal in a softening tape); US midday + afternoon still run, and KR is left
-    UNCHANGED (its two windows already trade the calmer mid/close hours). This is
-    a partial, market-specific brake — strictly weaker than the CORRECTION rest.
+    US now has the same two analysis windows as KR. The 10-minute hardstop and
+    trend-exit loops own intraday downside response, so a third analysis batch
+    is no longer needed. UNDER_PRESSURE therefore keeps both US windows:
+    otherwise it would have the same one-batch result as CORRECTION.
 
     Remaining states — UPTREND and None (unknown / fail-open) — run every batch
     normally, as does KR under UNDER_PRESSURE. Exit/sell loops are NEVER affected
@@ -61,24 +58,18 @@ CORRECTION: str = "CORRECTION"
 _VALID_MODES = ("shadow", "live", "off")
 _DEFAULT_MODE = "shadow"
 
-# Table (§7 Rev.3): batches that REST during CORRECTION, per market. Any batch
-# NOT listed here still runs during CORRECTION (the retained daily window).
+# Table: batches that REST during CORRECTION, per market. Any batch NOT listed
+# here still runs during CORRECTION (the retained daily window).
 _CORRECTION_REST_BATCHES = {
-    # §7 Rev.4: KR keeps the AFTERNOON (14:50, close-confirmation) window and
-    # rests the morning one — in corrections, morning gap-strength fades
-    # intraday (distribution into early hope); buy what HELD through the day,
-    # not what looks like it will rise. Same open-noise principle as US.
-    "kr": frozenset({"morning"}),                 # afternoon runs, morning rests
-    "us": frozenset({"morning", "afternoon"}),    # only midday runs
+    # Both markets retain the close-confirmation afternoon window and rest the
+    # morning one. This keeps correction behavior consistent across KR and US.
+    "kr": frozenset({"morning"}),
+    "us": frozenset({"morning"}),
 }
 
-# Table (§7 Rev.5): batches that REST during UNDER_PRESSURE, per market. A lighter,
-# market-specific brake than CORRECTION. KR is intentionally absent (no rest); only
-# US rests its morning batch (open-hour gap-strength least reliable in a softening
-# tape). Any batch NOT listed here runs normally under UNDER_PRESSURE.
-_UNDER_PRESSURE_REST_BATCHES = {
-    "us": frozenset({"morning"}),                 # midday + afternoon run, morning rests
-}
+# UNDER_PRESSURE has no batch rests. With two scheduled US windows, resting its
+# morning batch would make it operationally identical to CORRECTION.
+_UNDER_PRESSURE_REST_BATCHES: dict[str, frozenset[str]] = {}
 
 # Module-level cache: pulse state is computed once per (short-lived) process and
 # reused by the orchestrator hook and by per-ticker trend-fact injection so we do
@@ -115,17 +106,15 @@ def decide_batch_policy(
 
     Args:
         market:      "kr" or "us" (case-insensitive).
-        batch_mode:  KR: "morning"/"afternoon"; US: "morning"/"midday"/"afternoon".
+        batch_mode:  KR/US: "morning" or "afternoon".
                      ("both" or any unknown mode fails open -> run.)
         pulse_state: UPTREND / UNDER_PRESSURE / CORRECTION / None.
 
-    Rationale (§7 Rev.3, batch choice revised by Rev.4/Rev.5): CORRECTION is not a
-    buy stop; it reduces the agent to a single daily window (KR afternoon-only =
-    close-confirmation entry, US midday-only) to dodge the open-hour noise where
-    gap-strength fades intraday in weak markets, while keeping one shot at the
-    post-crash rebound. Rev.5: UNDER_PRESSURE additionally rests the US morning
-    batch only (KR unchanged). Exit loops are unaffected. Any state/mode not in a
-    rest table runs (fail-open on None/unknown).
+    Rationale: CORRECTION is not a buy stop; it reduces both markets to the
+    afternoon close-confirmation window while keeping one shot at the post-crash
+    rebound. UNDER_PRESSURE keeps the normal morning + afternoon schedule. Exit
+    loops are unaffected. Any state/mode not in a rest table runs (fail-open on
+    None/unknown).
     """
     m = (market or "").strip().lower()
     mode = (batch_mode or "").strip().lower()
@@ -157,7 +146,7 @@ def decide_batch_policy(
                 run_batch=False,
                 reason=(
                     f"UNDER_PRESSURE: {m or '?'} '{mode or '?'}' batch rests "
-                    "(Rev.5 partial brake; exit loops unaffected)"
+                    "(exit loops unaffected)"
                 ),
                 pulse_state=pulse_state,
             )
@@ -165,7 +154,7 @@ def decide_batch_policy(
             run_batch=True,
             reason=(
                 f"UNDER_PRESSURE: {m or '?'} '{mode or '?'}' batch runs "
-                "(Rev.5 partial brake)"
+                "(normal two-batch schedule)"
             ),
             pulse_state=pulse_state,
         )

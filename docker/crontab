@@ -54,9 +54,6 @@ PYTHONPATH=/app/prism-insight
 # US Morning batch at 00:15 KST (10:15 EST) - Tue-Sat (Mon-Fri US)
 15 0 * * 2-6 cd /app/prism-insight && python3 prism-us/us_stock_analysis_orchestrator.py --mode morning >> /app/prism-insight/logs/us_morning_$(date +\%Y\%m\%d).log 2>&1
 
-# US Midday batch at 02:30 KST (12:30 EST) - Tue-Sat (Mon-Fri US)
-30 2 * * 2-6 cd /app/prism-insight && python3 prism-us/us_stock_analysis_orchestrator.py --mode midday >> /app/prism-insight/logs/us_midday_$(date +\%Y\%m\%d).log 2>&1
-
 # US Afternoon batch at 06:30 KST (16:30 EST) - Tue-Sat (Mon-Fri US)
 30 6 * * 2-6 cd /app/prism-insight && python3 prism-us/us_stock_analysis_orchestrator.py --mode afternoon >> /app/prism-insight/logs/us_afternoon_$(date +\%Y\%m\%d).log 2>&1
 
