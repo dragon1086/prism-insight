@@ -226,6 +226,7 @@ async def test_update_holdings_masks_sold_account_payload(monkeypatch):
     agent.cursor.execute(
         """
         CREATE TABLE stock_holdings (
+            id INTEGER PRIMARY KEY,
             ticker TEXT,
             company_name TEXT,
             buy_price REAL,
