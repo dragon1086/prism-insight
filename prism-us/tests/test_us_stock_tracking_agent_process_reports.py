@@ -52,9 +52,16 @@ def _load_us_agent_module():
         tracking_db_schema.migrate_us_watchlist_history_columns = lambda *args, **kwargs: None
         tracking_db_schema.is_us_ticker_in_holdings = lambda *args, **kwargs: False
         tracking_db_schema.get_us_holdings_count = lambda *args, **kwargs: 0
-        tracking_db_schema.get_us_existing_position_for_ticker = (
-            lambda *args, **kwargs: {"row_count": 0, "avg_buy_price": 0.0}
-        )
+        def get_existing_position(cursor, ticker, account_key=None):
+            cursor.execute(
+                "SELECT COUNT(*), COALESCE(AVG(buy_price), 0) "
+                "FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
+                (ticker, account_key),
+            )
+            count, average = cursor.fetchone()
+            return {"row_count": count, "avg_buy_price": average}
+
+        tracking_db_schema.get_us_existing_position_for_ticker = get_existing_position
         tracking_db_schema.evaluate_us_pyramid_add_gate = (
             lambda *args, **kwargs: (False, "test stub")
         )
@@ -202,7 +209,9 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
         sector_checks.append((agent.active_account["name"], sector))
         return True
 
-    async def fake_buy_stock(ticker, company_name, current_price, scenario, rank_change_msg):
+    async def fake_buy_stock(
+        ticker, company_name, current_price, scenario, rank_change_msg, **kwargs
+    ):
         buy_calls.append((agent.active_account["name"], ticker))
         return True
 
