@@ -193,10 +193,9 @@ class TestUtilityFunctions:
 
     def test_get_nearest_business_day_next(self):
         """Test next business day from weekend."""
-        # Saturday -> should return Monday
+        # Saturday -> Monday is MLK Day, so the next session is Tuesday
         result = get_nearest_business_day("20250118", prev=False)
-        # Result should be Monday (20th)
-        assert result == "20250120"
+        assert result == "20250121"
 
     def test_filter_low_liquidity(self, sample_snapshot):
         """Test filter_low_liquidity removes low volume stocks."""
