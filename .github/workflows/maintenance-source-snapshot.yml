@@ -40,7 +40,7 @@ jobs:
           root_status=$?
 
           us_status=0
-          for us_test in prism-us/tests/test_phase6_trading.py prism-us/tests/test_us_stock_tracking_agent_process_reports.py; do
+          for us_test in prism-us/tests/test_*.py; do
             test_name=$(basename "$us_test")
             (cd prism-us && PYTHONPATH=. python -m pytest "tests/$test_name" -q) || us_status=1
           done
@@ -56,4 +56,4 @@ jobs:
             exit 1
           fi
 
-# verification revision 6 targeted
+# verification revision 7 final full matrix
