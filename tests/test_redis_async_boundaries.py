@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -21,6 +22,22 @@ class _ThreadRecordingRedis:
         self.args = args
         if self.error:
             raise self.error
+        return "123-0"
+
+
+class _ConcurrencyRecordingRedis:
+    def __init__(self):
+        self.active = 0
+        self.max_active = 0
+        self._lock = threading.Lock()
+
+    def xadd(self, *args):
+        with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        time.sleep(0.02)
+        with self._lock:
+            self.active -= 1
         return "123-0"
 
 
@@ -50,6 +67,22 @@ class RedisAsyncBoundaryTests(unittest.TestCase):
         self.assertIsNone(
             asyncio.run(publisher.publish_signal("BUY", "005930", "Samsung", 82000))
         )
+
+    def test_concurrent_publishes_serialize_shared_client_access(self):
+        redis = _ConcurrencyRecordingRedis()
+        publisher = SignalPublisher(
+            redis_url="https://example.invalid", redis_token="token"
+        )
+        publisher._redis = redis
+
+        async def publish_both():
+            return await asyncio.gather(
+                publisher.publish_signal("BUY", "AAPL", "Apple", 210.0),
+                publisher.publish_signal("SELL", "MSFT", "Microsoft", 510.0),
+            )
+
+        self.assertEqual(asyncio.run(publish_both()), ["123-0", "123-0"])
+        self.assertEqual(redis.max_active, 1)
 
     def test_async_health_check_runs_sync_client_off_event_loop(self):
         worker_thread = None
