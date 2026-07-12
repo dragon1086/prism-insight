@@ -1,7 +1,5 @@
 name: Maintenance verification
 
-# verification wave: async messaging and safe subscriber defaults
-
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -49,8 +47,20 @@ jobs:
       - name: Install complete test environment
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest pytest-asyncio
+          python -m pip install -r requirements.txt pytest pytest-asyncio pip-audit
           python -m pip check
+          cp trading/config/kis_devlp.yaml.example trading/config/kis_devlp.yaml
 
-      - name: Run complete Python test suite
-        run: python -m pytest tests cores/llm/tests prism-us/tests prism-btc/tests -q
+      - name: Run Korean and shared tests
+        run: python -m pytest tests cores/llm/tests -q
+
+      - name: Run US tests in isolated import context
+        working-directory: prism-us
+        run: PYTHONPATH=. python -m pytest tests -q
+
+      - name: Run BTC tests in isolated import context
+        working-directory: prism-btc
+        run: PYTHONPATH=. python -m pytest tests -q
+
+      - name: Audit installed Python dependencies
+        run: pip-audit --local
