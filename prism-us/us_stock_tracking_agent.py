@@ -95,18 +95,18 @@ sys.path.insert(0, str(_prism_us_dir))
 
 
 # =============================================================================
-# Helper function to import modules from main project cores/ (avoid namespace collision)
+# Helper for explicit project-relative imports (avoid namespace collisions)
 # =============================================================================
-def _import_from_main_cores(module_name: str, relative_path: str):
+def _import_project_module(module_name: str, relative_path: str):
     """
-    Import module directly from main project cores/ directory.
+    Import a module directly from a project-relative file.
 
     This function avoids namespace collision where prism-us/cores/ shadows
     the main project's cores/ directory in sys.path.
 
     Args:
         module_name: Module name for sys.modules registration
-        relative_path: Path relative to PROJECT_ROOT (e.g., "cores/agents/telegram_translator_agent.py")
+        relative_path: Path relative to PROJECT_ROOT.
 
     Returns:
         Loaded module object
@@ -124,7 +124,7 @@ def _import_from_main_cores(module_name: str, relative_path: str):
 
 
 # Pre-load telegram_translator_agent from main project (used in multiple methods)
-_translator_module = _import_from_main_cores(
+_translator_module = _import_project_module(
     "telegram_translator_agent",
     "cores/agents/telegram_translator_agent.py"
 )
@@ -132,12 +132,25 @@ translate_telegram_message = _translator_module.translate_telegram_message
 
 # Load parse_llm_json from main project cores/utils.py
 # (avoids prism-us/cores/ namespace collision)
-_utils_module = _import_from_main_cores("cores_utils", "cores/utils.py")
+_utils_module = _import_project_module("cores_utils", "cores/utils.py")
 parse_llm_json = _utils_module.parse_llm_json
+
+# Load US trading agents by file path. Importing them through the top-level
+# ``cores`` namespace is order-dependent because this module also loads helpers
+# from the root project's package with the same name.
+_us_trading_agents_module = _import_project_module(
+    "prism_us_trading_agents",
+    "prism-us/cores/agents/trading_agents.py",
+)
+create_us_trading_scenario_agent = (
+    _us_trading_agents_module.create_us_trading_scenario_agent
+)
+create_us_sell_decision_agent = (
+    _us_trading_agents_module.create_us_sell_decision_agent
+)
 
 try:
     # First try direct import from prism-us directory
-    from cores.agents.trading_agents import create_us_trading_scenario_agent, create_us_sell_decision_agent
     from tracking.db_schema import (
         create_us_tables,
         create_us_indexes,
@@ -160,7 +173,6 @@ except ImportError as e:
     _prism_us_fallback = Path(__file__).parent
     if str(_prism_us_fallback) not in sys.path:
         sys.path.insert(0, str(_prism_us_fallback))
-    from cores.agents.trading_agents import create_us_trading_scenario_agent, create_us_sell_decision_agent
     from tracking.db_schema import (
         create_us_tables,
         create_us_indexes,
