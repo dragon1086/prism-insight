@@ -155,7 +155,7 @@ export function PerformanceChart({ data, prismPerformance = [], holdings = [], s
     ])
   }
 
-  const getYDomain = (values: number[]) => {
+  const getYDomain = (values: number[]): [number, number] => {
     const minValue = Math.min(...values)
     const maxValue = Math.max(...values)
     const padding = Math.max(Math.abs(maxValue - minValue) * 0.15, 2)
