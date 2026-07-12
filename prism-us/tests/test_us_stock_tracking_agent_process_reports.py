@@ -112,7 +112,7 @@ class _FakeAsyncUSTradingContext:
             "failed_accounts": ["us-secondary"],
         }
 
-    async def async_sell_stock(self, ticker, limit_price=None):
+    async def async_sell_stock(self, ticker, limit_price=None, quantity=None):
         return {
             "success": True,
             "message": f"sold for {self.account_name}",
@@ -198,7 +198,7 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
         slot_checks.append(agent.active_account["name"])
         return 0
 
-    async def fake_check_sector_diversity(sector):
+    async def fake_check_sector_diversity(sector, **kwargs):
         sector_checks.append((agent.active_account["name"], sector))
         return True
 
@@ -276,7 +276,7 @@ async def test_process_reports_saves_watchlist_once_when_not_traded(monkeypatch)
     async def fake_get_current_slots_count():
         return 0
 
-    async def fake_check_sector_diversity(sector):
+    async def fake_check_sector_diversity(sector, **kwargs):
         return True
 
     async def fake_buy_stock(*args, **kwargs):
@@ -327,6 +327,7 @@ async def test_update_holdings_masks_sold_account_payload(monkeypatch):
     agent.cursor.execute(
         """
         CREATE TABLE us_stock_holdings (
+            id INTEGER PRIMARY KEY,
             ticker TEXT,
             company_name TEXT,
             buy_price REAL,
