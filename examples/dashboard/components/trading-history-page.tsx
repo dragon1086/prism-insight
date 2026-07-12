@@ -205,8 +205,8 @@ export function TradingHistoryPage({ history, summary, prismPerformance = [], ma
       const prismDailyReturn = currPrism - prevPrism // 이미 % 단위
 
       // 시장: KOSPI 일별 수익률
-      const prevKospi = filteredMarket[i - 1].kospi_index
-      const currKospi = filteredMarket[i].kospi_index
+      const prevKospi = filteredMarket[i - 1].kospi_index ?? 0
+      const currKospi = filteredMarket[i].kospi_index ?? 0
       const marketDailyReturn = prevKospi > 0 ? ((currKospi - prevKospi) / prevKospi) * 100 : 0
 
       prismDailyReturns.push(prismDailyReturn)
