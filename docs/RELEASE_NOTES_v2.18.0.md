@@ -106,24 +106,58 @@ hardstop / trend_exit / fill_chaser로 리네임했다(구 경로 shim 유지, c
 
 ### 한국어
 
-📢 PRISM-INSIGHT v2.18.0 배포
+```
+🚀 PRISM-INSIGHT v2.18.0 — 오닐 Market Pulse · 약세장 매수 절제 · 파일럿 재진입
 (Release Note : https://github.com/dragon1086/prism-insight/releases/tag/v2.18.0)
 
-"확실한 기회가 없으면 기다린다" — 오닐의 시장 판독(M)이 코드가 됐습니다.
+이번 릴리즈는 '확실한 기회가 없으면 기다린다'(오닐)를 코드로 옮기는 데 집중했습니다.
 
-- 분산일→조정→팔로우스루(FTD) 상태머신이 6년 검증을 거쳐 LIVE로 가동, 조정장엔 분석 배치가 스스로 쉽니다
-- 약세·횡보장 신규 매수 하드게이트 4종 (미국장 추격 차단 버그픽스 포함)
-- 조정 탈출 직후엔 정찰 1종목만 — 가짜 반등에 당해도 노출 최소
-- 매도·손절 루프는 어떤 국면에도 쉬지 않습니다
+📡 1) Market Pulse — 오닐 M 상태머신 (최대 비중)
+· 분산일 카운팅 → 조정 → 팔로우스루(FTD) 상태머신을 6년 리플레이로 검증 후 LIVE 가동
+· 조정장에는 분석 배치가 하루 1회로 스스로 감속 (KR 오후, US 미드데이만)
+· 매도·손절 루프는 어떤 국면에도 쉬지 않습니다
+
+🛡️ 2) 약세·횡보장 매수 하드게이트
+· 미국장이 약세장에서도 모멘텀 추격을 계속하던 비대칭(버그) 수정
+· 약세장일수록 매수 문턱(점수 하한)을 자동으로 올리는 하드 게이트
+· 조정 판정 전 압박 구간에도 US 아침 배치 휴식
+
+🎯 3) 파일럿 재진입 (조정 탈출 직후)
+· 5거래일간 배치당 신규 진입 1종목만(주도주 우선), 비중 싣기(중복매수)는 동결
+· 금액은 항상 100% — 시뮬레이터와 실계좌가 한 주도 어긋나지 않습니다
+
+🔧 4) 내부 품질
+· 암호명 loop_a/b/c를 hardstop / trend_exit / fill_chaser로 정리 (하위호환 유지)
+· 루프발 매도도 다국어 채널로 방송, 배치-루프 충돌 교통정리
+
+📊 새 게이트는 모두 fail-open 설계 — 판정 오류 시 항상 정상 매수로 동작합니다.
+```
 
 ### English
 
-📢 PRISM-INSIGHT v2.18.0 released
+```
+🚀 PRISM-INSIGHT v2.18.0 — O'Neil Market Pulse · weak-market buy restraint · pilot re-entry
 (Release Note : https://github.com/dragon1086/prism-insight/releases/tag/v2.18.0)
 
-"When the market offers no clear opportunity, wait." — O'Neil's market read (M) is now code.
+This release turns O'Neil's "when there is no clear opportunity, wait" into code.
 
-- Distribution-day → Correction → Follow-Through-Day state machine, validated over 6 years of replay, now LIVE — analysis batches rest themselves during corrections
-- 4 hard gates against new buying in weak/sideways regimes (incl. a US-side chase-suppression bug fix)
-- Right after a correction ends, only one scout position per batch — minimal exposure to false rallies
-- Sell/stop-loss loops never rest, in any regime
+📡 1) Market Pulse — O'Neil M state machine (biggest theme)
+· Distribution-day counting → Correction → Follow-Through-Day, validated on 6 years of replay, now LIVE
+· During corrections, analysis batches throttle themselves to once a day (KR afternoon, US midday only)
+· Sell/stop-loss loops never rest, in any regime
+
+🛡️ 2) Hard gates against buying in weak/sideways markets
+· Fixed an asymmetry where the US side kept momentum-chasing in weak regimes
+· A hard floor that raises the buy-score bar as the regime weakens
+· US morning batch also rests in the pre-correction UNDER_PRESSURE state
+
+🎯 3) Pilot re-entry (right after a correction ends)
+· For 5 sessions: one new position per batch (leaders first), pyramiding frozen
+· Position size stays 100% — simulator and real account never diverge by a single share
+
+🔧 4) Internal quality
+· Cryptic loop_a/b/c renamed to hardstop / trend_exit / fill_chaser (fully backward compatible)
+· Loop-driven sells now broadcast to multilingual channels; batch-vs-loop conflicts resolved
+
+📊 All new gates are fail-open by design — on any detection error they fall back to normal buying.
+```
