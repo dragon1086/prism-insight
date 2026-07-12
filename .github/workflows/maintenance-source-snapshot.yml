@@ -1,5 +1,7 @@
 name: Maintenance verification
 
+# verification wave: async messaging and safe subscriber defaults
+
 on:
   pull_request:
     types: [opened, synchronize, reopened]
