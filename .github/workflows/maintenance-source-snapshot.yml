@@ -1,0 +1,31 @@
+name: Maintenance source snapshot
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/maintenance-source-snapshot.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Archive tracked source
+        shell: bash
+        run: git ls-files -z | tar --null -T - -czf repository-source.tar.gz
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintenance-source-${{ github.sha }}
+          path: repository-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
