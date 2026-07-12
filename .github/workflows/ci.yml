@@ -26,6 +26,7 @@ jobs:
           pip install \
             pydantic \
             pyyaml \
+            aiohttp \
             "openai>=2.9,<3" \
             "openai-agents==0.7.0" \
             mcp \
@@ -39,6 +40,7 @@ jobs:
             tests/test_gcp_pubsub_signal_publisher_async.py \
             tests/test_redis_async_boundaries.py \
             tests/test_subscriber_trading_mode.py \
+            tests/test_chatgpt_oauth/test_token_manager_storage.py \
             -q
 
   frontend:
