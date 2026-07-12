@@ -161,6 +161,11 @@ export interface WatchlistStock {
     sector?: string
     market_condition?: string
     max_portfolio_size?: string
+    entry_checklist_passed?: number
+    rejection_reason?: string
+    expected_loss_pct?: number
+    expected_return_pct?: number
+    risk_reward_ratio?: number
     trading_scenarios?: {
       key_levels?: Record<string, string>
       sell_triggers?: string[]
