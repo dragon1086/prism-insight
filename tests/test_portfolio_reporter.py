@@ -24,7 +24,7 @@ with open(CONFIG_FILE, encoding="UTF-8") as f:
 from trading.portfolio_telegram_reporter import PortfolioTelegramReporter
 
 
-async def test_portfolio_reporter():
+async def run_portfolio_reporter_check():
     """Portfolio reporter test"""
 
     print("=== Portfolio Telegram Reporter Test ===")
@@ -108,7 +108,7 @@ async def test_portfolio_reporter():
         return False
 
 
-async def test_simple_messages():
+async def run_simple_messages_check():
     """Simple messages test"""
 
     print("\n=== Simple Message Test ===")
@@ -138,7 +138,7 @@ async def test_simple_messages():
         print(f"❌ Error during simple message test: {str(e)}")
 
 
-async def test_both_modes():
+async def run_both_modes_check():
     """Test both modes"""
 
     print("\n=== Both Modes Test ===")
@@ -181,18 +181,18 @@ async def main():
     print()
 
     # Basic test (use yaml settings)
-    success = await test_portfolio_reporter()
+    success = await run_portfolio_reporter_check()
 
     if success:
         # Additional tests
         response = input("\nDo you want to test simple messages too? (y/N): ").strip().lower()
         if response in ['y', 'yes']:
-            await test_simple_messages()
+            await run_simple_messages_check()
 
         # Both modes test
         response = input("\nDo you want to test both modes (demo/real)? (y/N): ").strip().lower()
         if response in ['y', 'yes']:
-            await test_both_modes()
+            await run_both_modes_check()
 
     print("\nTest completed.")
 
