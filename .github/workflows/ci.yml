@@ -26,6 +26,7 @@ jobs:
           pip install \
             pydantic \
             pyyaml \
+            aiohttp \
             "openai>=2.9,<3" \
             "openai-agents==0.7.0" \
             mcp \
@@ -35,4 +36,33 @@ jobs:
       - name: Run tests
         run: |
           python -m pytest cores/llm/tests/ -q
-          python -m pytest tests/test_gcp_pubsub_signal_publisher_async.py -q
+          python -m pytest \
+            tests/test_gcp_pubsub_signal_publisher_async.py \
+            tests/test_redis_async_boundaries.py \
+            tests/test_subscriber_trading_mode.py \
+            tests/test_chatgpt_oauth/test_token_manager_storage.py \
+            -q
+
+  frontend:
+    name: Frontend (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [dashboard, landing]
+
+    defaults:
+      run:
+        working-directory: examples/${{ matrix.app }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: examples/${{ matrix.app }}/package-lock.json
+
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm run build

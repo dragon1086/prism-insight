@@ -58,11 +58,11 @@ class FakeAgent:
         self.calls = calls
         self.conn = None
 
-    async def sell_stock(self, stock_data, sell_reason):
+    async def sell_stock(self, stock_data, sell_reason, **kwargs):
         self.calls.append(f"sim:{stock_data.get('ticker')}")
         return True
 
-    async def send_telegram_message(self, chat_id, language="en"):
+    async def send_telegram_message(self, chat_id, language="en", **kwargs):
         self.calls.append("tg")
         return True
 

@@ -345,7 +345,7 @@ def test_recovery_cleared_message(tmp_path, tmp_state, mock_send, mock_alive):
 #   - trading.domestic_stock_trading must be importable after the call
 # ---------------------------------------------------------------------------
 
-def test_importlib_does_not_pollute_syspath():
+def test_importlib_does_not_pollute_syspath(monkeypatch):
     """is_us_market_hours() uses importlib; prism-us must never appear in sys.path.
 
     Separately verifies that trading.domestic_stock_trading is importable when
@@ -353,9 +353,13 @@ def test_importlib_does_not_pollute_syspath():
     test worktree, but that's a deployment concern — the module itself must be
     importable without prism-us on sys.path shadowing it).
     """
-    # Ensure repo root is on path
-    if str(REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(REPO_ROOT))
+    # Other test modules may temporarily add prism-us while being imported.
+    # Start from the same clean path the subscriber is expected to preserve;
+    # monkeypatch restores the process-wide list after this test.
+    clean_path = [p for p in sys.path if "prism-us" not in str(p)]
+    if str(REPO_ROOT) not in clean_path:
+        clean_path.insert(0, str(REPO_ROOT))
+    monkeypatch.setattr(sys, "path", clean_path)
 
     # Import the subscriber module
     spec = importlib.util.spec_from_file_location(

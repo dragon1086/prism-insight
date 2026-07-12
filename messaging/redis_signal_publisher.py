@@ -15,6 +15,7 @@ Usage:
             scenario=scenario_dict
         )
 """
+import asyncio
 import os
 import json
 import logging
@@ -58,6 +59,10 @@ class SignalPublisher:
         self.redis_url = redis_url or os.environ.get("UPSTASH_REDIS_REST_URL")
         self.redis_token = redis_token or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
         self._redis = None
+        # The synchronous client instance is shared. Serialize worker-thread
+        # access so moving HTTP calls off the event loop does not introduce
+        # concurrent access that the client was never required to support.
+        self._publish_lock = asyncio.Lock()
 
         if not self.redis_url or not self.redis_token:
             logger.warning(
@@ -164,11 +169,13 @@ class SignalPublisher:
             # Publish to Redis Streams (XADD)
             # upstash-redis 1.5.0+ signature: xadd(key, id, data)
             # Use id="*" for auto-generated ID
-            message_id = self._redis.xadd(
-                self.STREAM_NAME,
-                "*",  # auto-generate message ID
-                {"data": json.dumps(signal_data, ensure_ascii=False)}
-            )
+            async with self._publish_lock:
+                message_id = await asyncio.to_thread(
+                    self._redis.xadd,
+                    self.STREAM_NAME,
+                    "*",  # auto-generate message ID
+                    {"data": json.dumps(signal_data, ensure_ascii=False)},
+                )
 
             market = signal_data.get("market", "KR")
             currency = "USD" if market == "US" else "KRW"

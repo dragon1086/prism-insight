@@ -21,6 +21,9 @@ class TestJSONParser:
     """JSON parsing test class"""
     
     def test_broken_json_from_error_log(self):
+        assert self.check_broken_json_from_error_log()
+
+    def check_broken_json_from_error_log(self):
         """Test JSON parsing from actual error log"""
         print("\n=== Test 1: Actual Error JSON ===")
 
@@ -90,6 +93,9 @@ class TestJSONParser:
         return True
 
     def test_various_broken_json_patterns(self):
+        assert self.check_various_broken_json_patterns()
+
+    def check_various_broken_json_patterns(self):
         """Test various JSON syntax error patterns"""
         print("\n=== Test 3: Various Syntax Error Patterns ===")
 
@@ -166,6 +172,9 @@ class TestJSONParser:
         return all_passed
 
     def test_json_repair_fallback(self):
+        assert self.check_json_repair_fallback()
+
+    def check_json_repair_fallback(self):
         """Test json-repair library fallback"""
         print("\n=== Test 4: json-repair Library Fallback ===")
 
@@ -214,9 +223,9 @@ def main():
 
     # Run each test
     results = {
-        "Actual Error JSON": tester.test_broken_json_from_error_log(),
-        "Various Error Patterns": tester.test_various_broken_json_patterns(),
-        "json-repair Fallback": tester.test_json_repair_fallback(),
+        "Actual Error JSON": tester.check_broken_json_from_error_log(),
+        "Various Error Patterns": tester.check_various_broken_json_patterns(),
+        "json-repair Fallback": tester.check_json_repair_fallback(),
     }
 
     # Summary

@@ -65,10 +65,16 @@ def get_trading_mode() -> str:
         import yaml
         config_path = PROJECT_ROOT / "trading" / "config" / "kis_devlp.yaml"
         with open(config_path, encoding="UTF-8") as f:
-            cfg = yaml.load(f, Loader=yaml.SafeLoader)
-        return cfg.get("default_mode", "real")
-    except Exception:
-        return "real"
+            cfg = yaml.safe_load(f)
+        mode = str(cfg.get("default_mode", "demo")).strip().lower()
+        return mode if mode in {"demo", "real"} else "demo"
+    except Exception as exc:
+        # A missing or malformed config must never escalate the subscriber from
+        # paper trading to a real brokerage account.
+        logging.getLogger(__name__).warning(
+            "Unable to read trading mode; defaulting to demo: %s", exc
+        )
+        return "demo"
 
 
 def is_market_hours(market: str = "KR") -> bool:

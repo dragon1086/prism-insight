@@ -12,12 +12,10 @@ import {
   Play,
   Github,
   ExternalLink,
-  Bot,
   TrendingUp,
   Bell,
   Zap,
   Globe,
-  Shield,
   ChevronRight,
   Terminal,
   Heart

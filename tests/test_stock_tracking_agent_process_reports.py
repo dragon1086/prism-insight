@@ -34,7 +34,7 @@ class _FakeAsyncTradingContext:
             "failed_accounts": ["kr-secondary"],
         }
 
-    async def async_sell_stock(self, stock_code, limit_price=None):
+    async def async_sell_stock(self, stock_code, limit_price=None, quantity=None):
         return {
             "success": True,
             "message": f"sold for {self.account_name}",
@@ -226,6 +226,7 @@ async def test_update_holdings_masks_sold_account_payload(monkeypatch):
     agent.cursor.execute(
         """
         CREATE TABLE stock_holdings (
+            id INTEGER PRIMARY KEY,
             ticker TEXT,
             company_name TEXT,
             buy_price REAL,

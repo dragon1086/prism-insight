@@ -9,7 +9,6 @@ import base64
 import hashlib
 import json
 import logging
-import os
 import secrets
 import time
 import webbrowser
@@ -25,9 +24,9 @@ from .constants import (
     OAUTH_SCOPE,
     OAUTH_CALLBACK_PORT,
     OAUTH_REDIRECT_URI,
-    AUTH_DIR,
     AUTH_FILE,
 )
+from .token_manager import save_auth_data
 
 logger = logging.getLogger(__name__)
 
@@ -226,12 +225,7 @@ async def login(force: bool = False) -> dict:
 
 def _save_auth(auth_data: dict) -> None:
     """Save auth data with restricted permissions (atomic write)."""
-    AUTH_DIR.mkdir(parents=True, exist_ok=True)
-    tmp_file = AUTH_FILE.with_suffix(".tmp")
-    with open(tmp_file, "w") as f:
-        json.dump(auth_data, f, indent=2)
-    os.chmod(tmp_file, 0o600)
-    os.rename(tmp_file, AUTH_FILE)
+    save_auth_data(auth_data)
     logger.debug("Auth data saved to %s", AUTH_FILE)
 
 

@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
 import time
 
 import aiohttp
@@ -21,6 +22,48 @@ from .constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def save_auth_data(auth_data: dict) -> None:
+    """Atomically replace the OAuth token file with private permissions.
+
+    A unique temporary file avoids collisions between a login and a background
+    refresh in separate processes. ``os.replace`` also works when the target
+    already exists on Windows, unlike ``os.rename``.
+    """
+    AUTH_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(AUTH_DIR, 0o700)
+    except OSError:
+        # Some Windows filesystems do not implement POSIX permission bits.
+        pass
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=AUTH_DIR,
+            prefix=f".{AUTH_FILE.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = tmp.name
+            json.dump(auth_data, tmp, indent=2)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp_path, AUTH_FILE)
+    except Exception:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+        raise
 
 
 class ChatGPTAuthExpiredError(Exception):
@@ -47,12 +90,7 @@ class TokenManager:
 
     def _save_to_disk(self, auth_data: dict) -> None:
         """Save auth data atomically with restricted permissions."""
-        AUTH_DIR.mkdir(parents=True, exist_ok=True)
-        tmp_file = AUTH_FILE.with_suffix(".tmp")
-        with open(tmp_file, "w") as f:
-            json.dump(auth_data, f, indent=2)
-        os.chmod(tmp_file, 0o600)
-        os.rename(tmp_file, AUTH_FILE)
+        save_auth_data(auth_data)
 
     def validate_or_fail(self) -> None:
         """Check that auth file exists and has a refresh token. Call at startup."""
