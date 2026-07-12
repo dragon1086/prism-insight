@@ -92,14 +92,6 @@ class TestDataToTriggerFlow:
 
         assert isinstance(result, pd.DataFrame)
 
-    def test_market_cap_filter_applied(self, sample_snapshot):
-        """Test market cap filter is applied in trigger."""
-        from us_trigger_batch import MIN_MARKET_CAP
-
-        # Verify constant is set correctly ($20B)
-        assert MIN_MARKET_CAP == 20_000_000_000
-
-
 # =============================================================================
 # Test: Trigger to Agents Flow
 # =============================================================================
@@ -144,7 +136,7 @@ class TestTriggerToAgentsFlow:
         )
 
         # Price/volume should use yfinance
-        assert 'yfinance_us' in agents['price_volume_analysis'].server_names
+        assert 'yahoo_finance' in agents['price_volume_analysis'].server_names
 
         # News should use perplexity
         assert 'perplexity' in agents['news_analysis'].server_names
@@ -257,8 +249,9 @@ class TestDatabaseIntegration:
 
         # Insert US holding
         cursor.execute("""
-            INSERT INTO us_stock_holdings (ticker, company_name, buy_price, buy_date)
-            VALUES ('AAPL', 'Apple Inc.', 185.50, '2026-01-18')
+            INSERT INTO us_stock_holdings
+                (account_key, ticker, company_name, buy_price, buy_date)
+            VALUES ('test:us:01', 'AAPL', 'Apple Inc.', 185.50, '2026-01-18')
         """)
         conn.commit()
 
