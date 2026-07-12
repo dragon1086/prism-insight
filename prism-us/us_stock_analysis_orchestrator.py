@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import sys
+import importlib
 from datetime import datetime
 from pathlib import Path
 import importlib.util as _ilu
@@ -83,6 +84,24 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _import_root_archive_ingest():
+    """Load the root archive package without touching the ambiguous ``cores`` name."""
+    package_name = "prism_root_archive"
+    archive_dir = PROJECT_ROOT / "cores" / "archive"
+    if package_name not in sys.modules:
+        spec = _ilu.spec_from_file_location(
+            package_name,
+            archive_dir / "__init__.py",
+            submodule_search_locations=[str(archive_dir)],
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError("Unable to load root archive package")
+        package = _ilu.module_from_spec(spec)
+        sys.modules[package_name] = package
+        spec.loader.exec_module(package)
+    return importlib.import_module(f"{package_name}.ingest")
 
 
 def _import_proxy_safe():
@@ -157,6 +176,7 @@ class USStockAnalysisOrchestrator:
         self.selected_tickers = {}
         self.telegram_config = telegram_config or TelegramConfig(use_telegram=True)
         self._broadcast_tasks = []  # Collect fire-and-forget broadcast tasks
+        self._archive_tasks = []
 
     @staticmethod
     def _extract_base64_images(markdown_text: str) -> tuple:
@@ -1108,10 +1128,15 @@ class USStockAnalysisOrchestrator:
                 logger.warning("No US reports generated. Terminating process.")
                 return
 
-            # 3. Archive ingest (fire-and-forget, does not block pipeline)
+            # 3. Archive ingest. Keep the task alive and await it before exit so
+            # asyncio.run() cannot silently cancel the archive write.
             try:
-                from cores.archive.ingest import ingest_reports_async  # type: ignore[import]
-                asyncio.create_task(ingest_reports_async(report_paths, market="us"))
+                ingest_module = _import_root_archive_ingest()
+                self._archive_tasks.append(
+                    asyncio.create_task(
+                        ingest_module.ingest_reports_async(report_paths, market="us")
+                    )
+                )
             except Exception as _e:
                 logger.warning(f"Archive ingest hook skipped: {_e}")
 
@@ -1189,6 +1214,20 @@ class USStockAnalysisOrchestrator:
                 await send_openai_quota_alert(self.telegram_config, market="US")
 
         finally:
+            if self._archive_tasks:
+                logger.info("Waiting for %d archive ingest task(s) to complete...", len(self._archive_tasks))
+                try:
+                    results = await asyncio.wait_for(
+                        asyncio.gather(*self._archive_tasks, return_exceptions=True),
+                        timeout=120,
+                    )
+                    for result in results:
+                        if isinstance(result, Exception):
+                            logger.error("Archive ingest failed: %s", result)
+                except asyncio.TimeoutError:
+                    logger.error("Archive ingest exceeded 120 seconds and was cancelled")
+                self._archive_tasks.clear()
+
             # Always wait for background broadcast tasks, even on error/early return
             if self._broadcast_tasks:
                 logger.info(f"Waiting for {len(self._broadcast_tasks)} broadcast translation task(s) to complete...")

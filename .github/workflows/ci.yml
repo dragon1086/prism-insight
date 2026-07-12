@@ -27,6 +27,7 @@ jobs:
             pydantic \
             pyyaml \
             aiohttp \
+            pytz \
             "openai>=2.9,<3" \
             "openai-agents==0.7.0" \
             mcp \
@@ -41,7 +42,35 @@ jobs:
             tests/test_redis_async_boundaries.py \
             tests/test_subscriber_trading_mode.py \
             tests/test_chatgpt_oauth/test_token_manager_storage.py \
+            tests/test_maintenance_safety_regressions.py \
+            prism-us/tests/test_pending_order_batch_safety.py \
             -q
+
+  btc:
+    name: BTC offline tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install offline-test dependencies
+        run: |
+          pip install \
+            "pandas==2.2.3" \
+            "numpy==2.2.6" \
+            pytest \
+            requests \
+            python-dotenv
+
+      - name: Run BTC tests
+        env:
+          PYTHONPATH: prism-btc
+        run: python -m pytest prism-btc/tests/ -q
 
   frontend:
     name: Frontend (${{ matrix.app }})

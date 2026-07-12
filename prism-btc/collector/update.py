@@ -32,12 +32,21 @@ def update_tf(tf: str, db_path=None) -> int:
 
 
 def update_all(db_path=None) -> dict[str, int]:
-    """Update all timeframes. Returns dict of tf → rows upserted."""
+    """Update all timeframes or raise after collecting every failure.
+
+    A zero count is a valid no-change result. Exceptions indicate that the
+    daemon cannot prove its multi-timeframe snapshot is fresh and must skip the
+    tick rather than advertise a successful update using stale data.
+    """
     results: dict[str, int] = {}
+    failures: dict[str, Exception] = {}
     for tf in TF_INTERVAL_MAP:
         try:
             results[tf] = update_tf(tf, db_path)
         except Exception as exc:
             log.error("update_tf failed for %s: %s", tf, exc)
-            results[tf] = 0
+            failures[tf] = exc
+    if failures:
+        details = ", ".join(f"{tf}: {exc}" for tf, exc in failures.items())
+        raise RuntimeError(f"timeframe update failed ({details})")
     return results

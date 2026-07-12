@@ -64,6 +64,7 @@ cd prism-insight
 # 핵심 설정 (필수)
 cp mcp_agent.config.yaml.example mcp_agent.config.yaml
 cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
+cp .env.example .env
 
 # 설정 파일에 API 키 입력
 # - mcp_agent.secrets.yaml: OpenAI API 키
@@ -154,13 +155,11 @@ cp ./trading/config/kis_devlp.yaml.example ./trading/config/kis_devlp.yaml
 `mcp_agent.secrets.yaml`에 API 키를 입력합니다:
 
 ```yaml
-# 필수
-OPENAI_API_KEY: "sk-..."
+openai:
+  api_key: "sk-..."
 
-# 선택 (전체 기능용)
-ANTHROPIC_API_KEY: "sk-ant-..."
-FIRECRAWL_API_KEY: "fc-..."
-PERPLEXITY_API_KEY: "pplx-..."
+anthropic:
+  api_key: "sk-ant-..."  # 선택 사항
 ```
 
 ### 5단계: MCP 서버 설정

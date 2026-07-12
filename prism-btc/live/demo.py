@@ -143,6 +143,8 @@ class DemoAdapter:
         self.funding_rates = funding_rates
         self.mode = mode
         self.sess, self._sess_err = _make_session()
+        if self.sess is None:
+            raise RuntimeError(self._sess_err or "Bybit demo session unavailable")
 
     # --- meta 헬퍼 (shadow 미러) ---
     def _get_meta(self, key, default=None):

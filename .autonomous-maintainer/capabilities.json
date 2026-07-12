@@ -1,0 +1,25 @@
+{
+  "filesystem": true,
+  "patching": true,
+  "terminal": true,
+  "process_control": true,
+  "git_local": true,
+  "git_remote_auth": false,
+  "github_connector": true,
+  "pull_request_creation": true,
+  "planning": true,
+  "native_subagents": true,
+  "public_research": true,
+  "language_analysis": "python-and-typescript-tools-pending-detection",
+  "coverage": "pending-detection",
+  "mutation": "pending-detection",
+  "fuzzing": "pending-detection",
+  "profiling": "stdlib-available",
+  "tracing": "stdlib-available",
+  "dependency_audit": "pending-detection",
+  "browser_archive_checkout": true,
+  "blind_spots": [
+    "No authenticated local Git remote; delivery must use the GitHub connector",
+    "Archive checkout contains no upstream Git history"
+  ]
+}

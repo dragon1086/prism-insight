@@ -2566,7 +2566,22 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     # the ticker was already added to fully_exited_tickers above.
                                     # Pass limit_price for reserved orders (required for US market)
                                     # If limit_price is 0, trading module will use MOO (Market On Open)
-                                    trade_result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price, quantity=sell_quantity)
+                                    if sell_quantity == 0:
+                                        trade_result = {
+                                            'success': False,
+                                            'quantity': 0,
+                                            'order_no': None,
+                                            'message': (
+                                                'No whole brokerage share allocated to '
+                                                'this fractional exit'
+                                            ),
+                                        }
+                                    else:
+                                        trade_result = await trading.async_sell_stock(
+                                            ticker=ticker,
+                                            limit_price=current_price,
+                                            quantity=sell_quantity,
+                                        )
 
                                 if trade_result['success']:
                                     logger.info(f"Actual sell successful: {trade_result['message']}")

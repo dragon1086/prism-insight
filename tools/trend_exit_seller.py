@@ -42,7 +42,7 @@ SAFETY (read before enabling):
   - Separate process, so the batch's in-process asyncio locks do NOT apply:
     guards via a SQLite owner_lock (BEGIN IMMEDIATE), an inflight-order
     uniqueness guard, and a fresh KIS holding-qty reconcile before every sell.
-  - Pyramided tickers (>1 holding row) are SKIPPED — the batch owns the
+  - Pyramided positions (>1 holding row in the same account) are SKIPPED — the batch owns the
     fractional-sell logic; Trend-exit only handles clean single-row positions.
   - Trend-exit owns ONLY loop_b_* tables. It never touches existing tables nor
     Hardstop's loop_a_* tables.
@@ -143,6 +143,9 @@ TREND_EXIT_LIVE = _env_flag("LIVE", False)                  # False => SHADOW (n
 TREND_EXIT_CONFIRM_CHECKS = int(_env("CONFIRM_CHECKS", "2"))   # N consecutive day-breaches to act
 TREND_EXIT_CLOSE_WINDOW = _env_flag("CLOSE_WINDOW", False)     # set true on the close-time cron line
 LOCK_TTL_SEC = int(_env("LOCK_TTL_SEC", "300"))
+# Only a fresh real OPEN order suppresses another exit. SHADOW observations and
+# stale records must never disable trend protection indefinitely.
+INFLIGHT_TTL_SEC = int(_env("INFLIGHT_TTL_SEC", "900"))
 # 신규매수 유예(분): buy_date 기준 이보다 어린 포지션은 추세이탈 청산 제외.
 # 매수 배치와 loop 청산이 같은 시간대(마감 윈도우 등)에 부딪혀 20초 만에 churn되던 것 방지.
 # 추세는 갓 산 포지션에서 판정 불가. 0이면 비활성. KR 마감 15:30 고려해 기본 30분.
@@ -242,11 +245,26 @@ def load_holdings_by_ticker(conn: sqlite3.Connection, market: str) -> Dict[str, 
     return out
 
 
+def iter_account_position_groups(by_ticker):
+    """Yield ticker rows grouped by account before applying pyramid rules."""
+    for ticker, rows in by_ticker.items():
+        by_account: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            account = str(row.get("account_key") or row.get("account_name") or "")
+            by_account.setdefault(account, []).append(row)
+        for account_rows in by_account.values():
+            yield ticker, account_rows
+
+
 def has_open_inflight(conn: sqlite3.Connection, ticker: str, market: str) -> bool:
+    # SHADOW is an observation, not a broker order. Only a fresh OPEN order can
+    # suppress another live exit; stale rows must not block protection forever.
+    cutoff = _iso(_now() - timedelta(seconds=INFLIGHT_TTL_SEC))
     row = conn.execute(
         "SELECT 1 FROM loop_b_inflight_orders "
-        "WHERE ticker=? AND market=? AND side='SELL' AND status IN ('OPEN','SHADOW') LIMIT 1",
-        (ticker, market),
+        "WHERE ticker=? AND market=? AND side='SELL' AND status='OPEN' "
+        "AND submitted_ts >= ? LIMIT 1",
+        (ticker, market, cutoff),
     ).fetchone()
     return row is not None
 
@@ -476,7 +494,7 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
             return summary
         try:
             async with _open_context(market) as trader:  # primary ctx, prices only (account-agnostic)
-                for ticker, rows in by_ticker.items():
+                for ticker, rows in iter_account_position_groups(by_ticker):
                     if len(rows) > 1:
                         # Pyramided position -> leave to the batch's fractional logic.
                         summary["pyramided_skipped"] += 1

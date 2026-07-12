@@ -29,9 +29,7 @@ export const metadata: Metadata = {
     description: '13 specialized AI agents analyze Korean & US stocks in real-time. Open source, free to use.',
     images: [
       {
-        url: '/og-image.png',
-        width: 1200,
-        height: 630,
+        url: '/screenshots/dashboard_screenshot.png',
         alt: 'PRISM-INSIGHT - AI Stock Analysis',
       },
     ],
@@ -40,7 +38,7 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     title: 'PRISM-INSIGHT | AI Stock Analysis',
     description: '13 AI agents for Korean & US stock analysis with automated trading',
-    images: ['/og-image.png'],
+    images: ['/screenshots/dashboard_screenshot.png'],
   },
   alternates: {
     canonical: 'https://prism-insight.vercel.app/landing',
