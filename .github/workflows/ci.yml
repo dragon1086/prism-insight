@@ -33,4 +33,6 @@ jobs:
             pytest-asyncio
 
       - name: Run tests
-        run: python -m pytest cores/llm/tests/ -q
+        run: |
+          python -m pytest cores/llm/tests/ -q
+          python -m pytest tests/test_gcp_pubsub_signal_publisher_async.py -q
