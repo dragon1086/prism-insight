@@ -5,8 +5,8 @@ numpy~=2.2.3
 # Pin to commit SHA so pip detects fork updates without --force-reinstall.
 # Branch ref alone is ignored when version (0.2.6) already matches.
 mcp-agent @ git+https://github.com/dragon1086/mcp-agent.git@430b9e4dcf3fa3bed8ac7921cedc8602e01cbd7d
-requests~=2.32.3
-aiohttp~=3.11.13
+requests>=2.33.0,<3
+aiohttp>=3.14.1,<4
 python-dateutil~=2.9.0.post0
 email-validator
 # openai bumped from <2.0.0: openai-agents requires >=2.9; verified mcp-agent 0.2.6
@@ -27,7 +27,6 @@ python-dotenv>=1.0.0
 
 # PDF 변환 관련 패키지
 playwright>=1.40.0  # Chromium 기반 PDF 변환 (권장)
-pdfkit>=1.0.0  # wkhtmltopdf 기반 PDF 변환 (레거시, 백업용)
 reportlab>=4.0.0  # 직접 PDF 생성 (대체 방식)
 mdpdf>=0.0.9  # 간편한 마크다운 변환 (대체 방식)
 
@@ -56,13 +55,13 @@ mplfinance~=0.12.10b0
 
 tenacity
 
-PyPDF2
+pypdf>=6.1.3
 html2text
 
 scipy
 
 
-cryptography>=42.0.8,<45.0.0
+cryptography>=48.0.1,<49.0.0
 
 APScheduler==3.11.0
 
