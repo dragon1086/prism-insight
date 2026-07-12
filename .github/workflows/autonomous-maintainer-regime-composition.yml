@@ -1,0 +1,276 @@
+name: Autonomous maintainer - regime flag composition
+
+on:
+  push:
+    branches:
+      - autonomous-maintainer/20260712-regime-flag-composition
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply deterministic maintenance patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding="utf-8")
+              if new in text:
+                  print(f"{path}: patch already applied")
+                  return
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one patch target, found {count}")
+              file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+              print(f"{path}: patched")
+
+          kr_old = '''    td, bu = REGIME_SLOTS.get(market_regime, (1, 2))  # default: sideways ratios
+    # Post-FTD 정찰(파일럿) 재진입: PULSE_PILOT_REEXPOSURE ON + 해당 시장 파일럿 윈도우면
+    # 배치당 신규 진입 슬롯을 총 1개로 캡한다. post-FTD 정찰 진입은 주도주(top-down) 우선,
+    # 정상 금액 1종목만. 금액은 절대 건드리지 않는다(sim/real parity). 신규 진입 수만 조인다.
+    # fail-open: 파일럿 판정 중 예외 발생 시 원래 슬롯 유지(기존 약세장 브랜치 스타일).
+    try:
+        from cores.regime_policy import pilot_reexposure_active
+        if (td + bu) > 1 and pilot_reexposure_active("kr"):
+            capped = (1, 0) if td >= 1 else (0, min(bu, 1))
+            logger.info("[PULSE_PILOT] 파일럿 신규진입 캡: %s (%d,%d)->(%d,%d)",
+                        market_regime, td, bu, capped[0], capped[1])
+            return capped
+    except Exception as _pe:
+        logger.debug("[PULSE_PILOT] slot-cap fail-open: %s", _pe)
+    # 약세·횡보장 모멘텀추격(top-down) 억제 옵션 (env-gated, 기본 off = 현행 유지).
+    # ON 시 sideways/moderate_bear의 top-down 슬롯을 0으로 → 급락 휩쏘장에서 momentum chase
+    # 매수를 접고 가치형 bottom-up만 남긴다(총 슬롯도 감소 = 매수 절제). strong_bear는 이미 (0,3).
+    if (td > 0 and market_regime in ("sideways", "moderate_bear")
+            and os.getenv("REGIME_WEAK_NO_TOPDOWN", "false").strip().lower()
+            in ("1", "true", "yes", "on")):
+        logger.info("[REGIME_SLOTS] weak-regime top-down 억제: %s (%d,%d)->(0,%d)",
+                    market_regime, td, bu, bu)
+        return (0, bu)
+    return (td, bu)
+'''
+
+          kr_new = '''    td, bu = REGIME_SLOTS.get(market_regime, (1, 2))  # default: sideways ratios
+    # Apply independent restrictions cumulatively. The weak-regime safety gate must run
+    # before the pilot cap; otherwise an early pilot return can re-enable one top-down slot.
+    if (td > 0 and market_regime in ("sideways", "moderate_bear")
+            and os.getenv("REGIME_WEAK_NO_TOPDOWN", "false").strip().lower()
+            in ("1", "true", "yes", "on")):
+        logger.info("[REGIME_SLOTS] weak-regime top-down 억제: %s (%d,%d)->(0,%d)",
+                    market_regime, td, bu, bu)
+        td = 0
+
+    # Post-FTD 정찰(파일럿) 재진입: PULSE_PILOT_REEXPOSURE ON + 해당 시장 파일럿 윈도우면
+    # 앞에서 적용된 레짐 제약을 보존한 채 배치당 신규 진입 슬롯을 총 1개로 캡한다.
+    # 정상 금액 1종목만 허용하며 금액은 절대 건드리지 않는다(sim/real parity).
+    try:
+        from cores.regime_policy import pilot_reexposure_active
+        if (td + bu) > 1 and pilot_reexposure_active("kr"):
+            capped = (1, 0) if td >= 1 else (0, min(bu, 1))
+            logger.info("[PULSE_PILOT] 파일럿 신규진입 캡: %s (%d,%d)->(%d,%d)",
+                        market_regime, td, bu, capped[0], capped[1])
+            return capped
+    except Exception as _pe:
+        logger.debug("[PULSE_PILOT] slot-cap fail-open: %s", _pe)
+    return (td, bu)
+'''
+
+          us_old = '''    td, bu = REGIME_SLOTS.get(market_regime, (1, 2))  # default: sideways ratios
+    # Post-FTD 정찰(파일럿) 재진입: PULSE_PILOT_REEXPOSURE ON + US 파일럿 윈도우면 배치당
+    # 신규 진입 슬롯을 총 1개로 캡한다. post-FTD 정찰 진입은 주도주(top-down) 우선, 정상 금액
+    # 1종목만. 금액은 절대 건드리지 않는다(sim/real parity). 신규 진입 수만 조인다.
+    # fail-open: 파일럿 판정 중 예외 발생 시 원래 슬롯 유지(기존 약세장 브랜치 스타일).
+    try:
+        _rp = _load_root_regime_policy()
+        if (td + bu) > 1 and _rp is not None and _rp.pilot_reexposure_active("us"):
+            capped = (1, 0) if td >= 1 else (0, min(bu, 1))
+            logger.info("[PULSE_PILOT] 파일럿 신규진입 캡: %s (%d,%d)->(%d,%d)",
+                        market_regime, td, bu, capped[0], capped[1])
+            return capped
+    except Exception as _pe:
+        logger.debug("[PULSE_PILOT] slot-cap fail-open: %s", _pe)
+    # 약세·횡보장 모멘텀추격(top-down) 억제 옵션 (env-gated, 기본 off = 현행 유지).
+    # ON 시 sideways/moderate_bear의 top-down 슬롯을 0으로 → 급락 휩쏘장에서 momentum chase
+    # 매수를 접고 가치형 bottom-up만 남긴다(총 슬롯도 감소 = 매수 절제). strong_bear는 이미 (0,3).
+    # KR trigger_batch._get_regime_slots 와 동일 로직/동일 env var (bug-fix parity).
+    if (td > 0 and market_regime in ("sideways", "moderate_bear")
+            and os.getenv("REGIME_WEAK_NO_TOPDOWN", "false").strip().lower()
+            in ("1", "true", "yes", "on")):
+        logger.info("[REGIME_SLOTS] weak-regime top-down 억제: %s (%d,%d)->(0,%d)",
+                    market_regime, td, bu, bu)
+        return (0, bu)
+    return (td, bu)
+'''
+
+          us_new = '''    td, bu = REGIME_SLOTS.get(market_regime, (1, 2))  # default: sideways ratios
+    # Apply independent restrictions cumulatively. The weak-regime safety gate must run
+    # before the pilot cap; otherwise an early pilot return can re-enable one top-down slot.
+    if (td > 0 and market_regime in ("sideways", "moderate_bear")
+            and os.getenv("REGIME_WEAK_NO_TOPDOWN", "false").strip().lower()
+            in ("1", "true", "yes", "on")):
+        logger.info("[REGIME_SLOTS] weak-regime top-down 억제: %s (%d,%d)->(0,%d)",
+                    market_regime, td, bu, bu)
+        td = 0
+
+    # Post-FTD 정찰(파일럿) 재진입: PULSE_PILOT_REEXPOSURE ON + US 파일럿 윈도우면
+    # 앞에서 적용된 레짐 제약을 보존한 채 배치당 신규 진입 슬롯을 총 1개로 캡한다.
+    # 정상 금액 1종목만 허용하며 금액은 절대 건드리지 않는다(sim/real parity).
+    try:
+        _rp = _load_root_regime_policy()
+        if (td + bu) > 1 and _rp is not None and _rp.pilot_reexposure_active("us"):
+            capped = (1, 0) if td >= 1 else (0, min(bu, 1))
+            logger.info("[PULSE_PILOT] 파일럿 신규진입 캡: %s (%d,%d)->(%d,%d)",
+                        market_regime, td, bu, capped[0], capped[1])
+            return capped
+    except Exception as _pe:
+        logger.debug("[PULSE_PILOT] slot-cap fail-open: %s", _pe)
+    return (td, bu)
+'''
+
+          replace_once("trigger_batch.py", kr_old, kr_new)
+          replace_once("prism-us/us_trigger_batch.py", us_old, us_new)
+
+          test_path = Path("tests/test_regime_slot_policy_composition.py")
+          test_path.write_text(r'''"""Regression tests for composing independent entry-slot restrictions.
+
+The production batch modules have heavy market-data imports. These tests execute the exact
+``_get_regime_slots`` function bodies from their source AST with only their external policy
+lookups stubbed, so the flag-composition contract remains part of the lightweight CI suite.
+"""
+from __future__ import annotations
+
+import ast
+import logging
+import os
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_function(path: Path, name: str, namespace: dict):
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    function = next(
+        node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    ast.fix_missing_locations(module)
+    globals_dict = {"os": os, "logger": logging.getLogger(f"test.{path.stem}"), **namespace}
+    exec(compile(module, str(path), "exec"), globals_dict)
+    return globals_dict[name]
+
+
+def _install_kr_policy(monkeypatch: pytest.MonkeyPatch, pilot_active: bool):
+    calls = []
+    cores = types.ModuleType("cores")
+    cores.__path__ = []
+    policy = types.ModuleType("cores.regime_policy")
+
+    def active(market: str):
+        calls.append(market)
+        return pilot_active
+
+    policy.pilot_reexposure_active = active
+    cores.regime_policy = policy
+    monkeypatch.setitem(sys.modules, "cores", cores)
+    monkeypatch.setitem(sys.modules, "cores.regime_policy", policy)
+    return calls
+
+
+class _USPolicy:
+    def __init__(self, active: bool):
+        self.active = active
+        self.calls = []
+
+    def pilot_reexposure_active(self, market: str):
+        self.calls.append(market)
+        return self.active
+
+
+CASES = [
+    ("sideways", False, False, (1, 2)),
+    ("sideways", False, True, (0, 2)),
+    ("sideways", True, False, (1, 0)),
+    ("sideways", True, True, (0, 1)),
+    ("moderate_bear", True, True, (0, 1)),
+    ("moderate_bull", True, True, (1, 0)),
+    ("strong_bear", True, True, (0, 1)),
+]
+
+
+@pytest.mark.parametrize("regime,pilot,weak,expected", CASES)
+def test_kr_restrictions_compose(monkeypatch, regime, pilot, weak, expected):
+    calls = _install_kr_policy(monkeypatch, pilot)
+    if weak:
+        monkeypatch.setenv("REGIME_WEAK_NO_TOPDOWN", "true")
+    else:
+        monkeypatch.delenv("REGIME_WEAK_NO_TOPDOWN", raising=False)
+    slots = _load_function(ROOT / "trigger_batch.py", "_get_regime_slots", {})
+    assert slots(regime) == expected
+    assert calls == ["kr"]
+
+
+@pytest.mark.parametrize("regime,pilot,weak,expected", CASES)
+def test_us_restrictions_compose(monkeypatch, regime, pilot, weak, expected):
+    policy = _USPolicy(pilot)
+    if weak:
+        monkeypatch.setenv("REGIME_WEAK_NO_TOPDOWN", "true")
+    else:
+        monkeypatch.delenv("REGIME_WEAK_NO_TOPDOWN", raising=False)
+    slots = _load_function(
+        ROOT / "prism-us" / "us_trigger_batch.py",
+        "_get_regime_slots",
+        {"_load_root_regime_policy": lambda: policy},
+    )
+    assert slots(regime) == expected
+    assert policy.calls == ["us"]
+''', encoding="utf-8")
+
+          ci_path = Path(".github/workflows/ci.yml")
+          ci_text = ci_path.read_text(encoding="utf-8")
+          old_ci = "      - name: Run tests\n        run: python -m pytest cores/llm/tests/ -q\n"
+          new_ci = "      - name: Run tests\n        run: |\n          python -m pytest cores/llm/tests/ -q\n          python -m pytest tests/test_regime_slot_policy_composition.py -q\n"
+          if new_ci not in ci_text:
+              if ci_text.count(old_ci) != 1:
+                  raise SystemExit(".github/workflows/ci.yml: expected test command not found exactly once")
+              ci_path.write_text(ci_text.replace(old_ci, new_ci, 1), encoding="utf-8")
+          PY
+
+      - name: Run focused regression tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pytest tests/test_regime_slot_policy_composition.py -q
+          python -m compileall -q trigger_batch.py prism-us/us_trigger_batch.py tests/test_regime_slot_policy_composition.py
+
+      - name: Commit verified changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "autonomous-maintainer[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add trigger_batch.py prism-us/us_trigger_batch.py tests/test_regime_slot_policy_composition.py .github/workflows/ci.yml
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No source changes to commit"
+            exit 0
+          fi
+          git commit -m "fix: compose regime entry-slot restrictions"
+          git push origin HEAD:${GITHUB_REF_NAME}
