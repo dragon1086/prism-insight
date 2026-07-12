@@ -56,13 +56,11 @@ USER_HOME="${HOME:-/home/$(whoami)}"
 # =============================================================================
 # Adjust these if your server is in a different timezone
 # Yahoo Finance has 15-20 min data delay - schedules adjusted accordingly
-# US market has no price limits - 3 runs per day for better coverage
+# US analysis runs twice per day; high-frequency sell loops handle intraday risk.
 
 # === EST (Standard Time: November - March) ===
 # Morning batch: 10:15 EST = 00:15 KST (45 min after open for data delay)
 US_MORNING_BATCH_TIME_EST="15 0"
-# Midday batch: 12:30 EST = 02:30 KST (lunch time monitoring)
-US_MIDDAY_BATCH_TIME_EST="30 2"
 # Afternoon batch: 16:30 EST = 06:30 KST (30 min after close)
 US_AFTERNOON_BATCH_TIME_EST="30 6"
 # Performance tracker: 17:30 EST = 07:30 KST
@@ -73,8 +71,6 @@ US_DASHBOARD_TIME_EST="0 8"
 # === EDT (Daylight Time: March - November) ===
 # Morning batch: 10:15 EDT = 23:15 KST (previous day)
 US_MORNING_BATCH_TIME_EDT="15 23"
-# Midday batch: 12:30 EDT = 01:30 KST
-US_MIDDAY_BATCH_TIME_EDT="30 1"
 # Afternoon batch: 16:30 EDT = 05:30 KST
 US_AFTERNOON_BATCH_TIME_EDT="30 5"
 # Performance tracker: 17:30 EDT = 06:30 KST
@@ -88,13 +84,11 @@ TIMEZONE_MODE="${TIMEZONE_MODE:-EST}"
 
 if [ "$TIMEZONE_MODE" = "EDT" ]; then
     US_MORNING_BATCH_TIME="$US_MORNING_BATCH_TIME_EDT"
-    US_MIDDAY_BATCH_TIME="$US_MIDDAY_BATCH_TIME_EDT"
     US_AFTERNOON_BATCH_TIME="$US_AFTERNOON_BATCH_TIME_EDT"
     US_PERFORMANCE_TRACKER_TIME="$US_PERFORMANCE_TRACKER_TIME_EDT"
     US_DASHBOARD_TIME="$US_DASHBOARD_TIME_EDT"
 else
     US_MORNING_BATCH_TIME="$US_MORNING_BATCH_TIME_EST"
-    US_MIDDAY_BATCH_TIME="$US_MIDDAY_BATCH_TIME_EST"
     US_AFTERNOON_BATCH_TIME="$US_AFTERNOON_BATCH_TIME_EST"
     US_PERFORMANCE_TRACKER_TIME="$US_PERFORMANCE_TRACKER_TIME_EST"
     US_DASHBOARD_TIME="$US_DASHBOARD_TIME_EST"
@@ -214,7 +208,7 @@ PATH=$(generate_path)
 PYTHONPATH=$PROJECT_DIR
 
 # -----------------------------------------------------------------------------
-# US Stock Analysis Batch Jobs (3 runs per day)
+# US Stock Analysis Batch Jobs (2 runs per day)
 # -----------------------------------------------------------------------------
 
 # US Morning batch: 45 min after market open (for Yahoo Finance data delay)
@@ -222,11 +216,6 @@ PYTHONPATH=$PROJECT_DIR
 # EST: 10:15 EST = 00:15 KST | EDT: 10:15 EDT = 23:15 KST
 # Runs Tuesday-Saturday (Mon-Fri US time crosses midnight in KST)
 $US_MORNING_BATCH_TIME * * 2-6 cd $PROJECT_DIR && $PYTHON_PATH prism-us/us_stock_analysis_orchestrator.py --mode morning >> $LOG_DIR/us_morning_\$(date +\%Y\%m\%d).log 2>&1
-
-# US Midday batch: Lunch time monitoring for intraday movements
-# Current mode: $TIMEZONE_MODE
-# EST: 12:30 EST = 02:30 KST | EDT: 12:30 EDT = 01:30 KST
-$US_MIDDAY_BATCH_TIME * * 2-6 cd $PROJECT_DIR && $PYTHON_PATH prism-us/us_stock_analysis_orchestrator.py --mode midday >> $LOG_DIR/us_midday_\$(date +\%Y\%m\%d).log 2>&1
 
 # US Afternoon batch: 30 min after market close
 # Current mode: $TIMEZONE_MODE
@@ -366,10 +355,6 @@ US Market Schedule (in KST):
     - EST: 00:15 KST (10:15 EST)
     - EDT: 23:15 KST (10:15 EDT)
 
-  Midday batch (lunch time):
-    - EST: 02:30 KST (12:30 EST)
-    - EDT: 01:30 KST (12:30 EDT)
-
   Afternoon batch (30 min after close):
     - EST: 06:30 KST (16:30 EST)
     - EDT: 05:30 KST (16:30 EDT)
@@ -424,7 +409,6 @@ interactive_setup() {
     echo "  Python path: $PYTHON_PATH"
     echo "  Timezone: $TIMEZONE_MODE"
     echo "  Morning batch: $US_MORNING_BATCH_TIME (KST)"
-    echo "  Midday batch: $US_MIDDAY_BATCH_TIME (KST)"
     echo "  Afternoon batch: $US_AFTERNOON_BATCH_TIME (KST)"
     echo "  Performance tracker: $US_PERFORMANCE_TRACKER_TIME (KST)"
     echo "  Dashboard refresh: $US_DASHBOARD_TIME (KST)"

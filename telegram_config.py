@@ -221,11 +221,11 @@ async def send_openai_quota_alert(telegram_config: "TelegramConfig", market: str
 # per-batch variable. dedup: cron runs each (mode, day) exactly once, so a
 # resting batch fires this at most once per language channel — no dedup needed.
 _MP_REST_BATCH_LABELS = {
-    "ko": {"morning": "오전", "midday": "오후(장중)", "afternoon": "오후", "both": "오늘"},
-    "en": {"morning": "morning", "midday": "midday", "afternoon": "afternoon", "both": "today's"},
-    "ja": {"morning": "午前", "midday": "日中", "afternoon": "午後", "both": "本日"},
-    "zh": {"morning": "上午", "midday": "盘中", "afternoon": "下午", "both": "今日"},
-    "es": {"morning": "de la mañana", "midday": "de mediodía", "afternoon": "de la tarde", "both": "de hoy"},
+    "ko": {"morning": "오전", "afternoon": "오후", "both": "오늘"},
+    "en": {"morning": "morning", "afternoon": "afternoon", "both": "today's"},
+    "ja": {"morning": "午前", "afternoon": "午後", "both": "本日"},
+    "zh": {"morning": "上午", "afternoon": "下午", "both": "今日"},
+    "es": {"morning": "de la mañana", "afternoon": "de la tarde", "both": "de hoy"},
 }
 
 _MP_REST_MESSAGES = {

@@ -32,6 +32,10 @@ ENV/
 
 # Internal working docs (handoffs, strategy notes, ops runbooks) — never publish
 tasks/
+!tasks/
+tasks/*
+!tasks/us_two_batch_policy/
+!tasks/us_two_batch_policy/00_VALIDATION_AND_DEPLOYMENT_PLAN.md
 
 # Logs
 *.log

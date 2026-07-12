@@ -26,6 +26,7 @@
 | 기능 | 상태 | 게이트 | 승격 기준 | 비고 |
 |---|---|---|---|---|
 | OAuth LLM 백엔드(ChatGPT 구독) | **LIVE** | crontab `PRISM_OPENAI_AUTH_MODE=chatgpt_oauth` | 카나리 검증 완료 | 전 배치 적용 |
+| Market Pulse 배치 정책 | **LIVE** | `.env MARKET_PULSE_MODE=live` | 정책 단위테스트 + 정규장 관측 | KR/US 모두 오전·오후 2회. `UNDER_PRESSURE`는 두 배치 유지, `CORRECTION`은 오후만 실행. 10분 hardstop/trend-exit 및 2분 fill-chaser는 모든 상태에서 유지 |
 | TIER0 이벤트 강제청산(뉴스 자율매도 + KIS 51 관리종목) | **LIVE** | 코드 상시 | 더존 등 실증 | KR+US 매도 프롬프트 핵심-0 |
 | Loop A — 고빈도 하드스톱(−7%/시나리오손절) | **LIVE** | `.env HARDSTOP_LIVE=true` (구 `LOOP_A_LIVE`, alias 유효) + cron 10분 | SHADOW 관측 후 승격(06-20) | KR 9–15 / US 9–16. 킬: `HARDSTOP_ENABLED=false` |
 | Loop B — 50MA 종가확인 추세이탈 | **LIVE** | `.env TREND_EXIT_LIVE=true` (구 `LOOP_B_LIVE`) + cron(KR 9–15 / US 9–16) | 백테스트 KR/US 순효과(휩쏘0·추가DD0) + 사용자 승인(06-24) | 코드: `tools/trend_exit_seller.py` (구 `tools/loop_b_trend_exit.py` shim 유효). 킬: `TREND_EXIT_ENABLED=false` |
@@ -60,3 +61,4 @@ SHADOW→LIVE **자동 승격**은 아래를 **모두** 충족할 때만:
 - 2026-06-25: **env 키 리네임(코드네임 누수 제거)** — `LOOP_A_*`→`HARDSTOP_*`, `LOOP_B_*`→`TREND_EXIT_*`, `LOOP_C_*`→`FILL_CHASER_*`. **구 키는 deprecated alias로 계속 유효**(코드가 신규 먼저 읽고 구 키 폴백+경고). prod `.env`/crontab 점진 교체 가능. + **Loop C 매수추격 체결우선화**: 예산 `FILL_CHASER_BUY_MAX_PREMIUM_PCT` 0.5%→3%, `FILL_CHASER_BUY_CROSS`(on)로 예산 내 마케터블 cross 즉시체결(예산 초과 시 여전히 CANCEL). SHADOW 유지.
 - 2026-06-25: **재진입 쿨다운 게이트 신설(SHADOW)** — `reentry_cooldown.py` + KR/US 매수 caller 훅. 손실매도 후 같은 종목 24h 재매수 차단(승리후 0h=정당 연속진입 허용). MU 과매매(당일왕복 −5.6% 31건·손절후 재매수) 대응. `REENTRY_COOLDOWN_LIVE` 미설정=SHADOW(로그만). prod 이력검증: 리벤지 재매수 3건 차단·오탐 0.
 - 2026-07-12: **Post-FTD 파일럿 재진입 재설계(sim/real parity 결함 수정)** — 구 `PULSE_PILOT_FACTOR` 금액 절반매수를 **제거**했다. 결함: 실 KIS 주문(`buy_amount`)만 절반이고 시뮬레이터(방송/저널의 진실원)는 전량 기록 → sim-vs-real 괴리. 본 시스템은 포지션당 all-in/all-out이고 포트폴리오 비중은 **중복매수(피라미딩) 허용**으로만 표현하므로 fractional sizing 자체가 계약 위반이었다. 신규 세만틱: `PULSE_PILOT_REEXPOSURE` ON 시 조정 종료 후 5거래일간 **신규 진입 배치당 1종목(주도주 top-down 우선) + 중복매수 동결**을 시뮬레이터/실주문 공통 결정 레이어(`_get_regime_slots` + tracking agents 보유중복 프리체크)에서 적용. **금액은 항상 100% 정상.** 기본 off, fail-open.
+- 2026-07-13: **US 분석 배치 3회→2회** — 장중 분석 배치를 제거했다. US는 정상·UNDER_PRESSURE에서 오전+오후를 실행하고, CORRECTION에서는 KR과 동일하게 오전을 쉬고 오후만 실행한다. 고빈도 hardstop/trend-exit/fill-chaser 스케줄은 변경하지 않는다. 상세 검증·배포 체크는 `docs/US_TWO_BATCH_POLICY.md`를 따른다.

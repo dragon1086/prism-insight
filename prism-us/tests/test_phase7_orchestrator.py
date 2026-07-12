@@ -357,11 +357,11 @@ class TestOrchestratorIntegration:
             monkeypatch.setitem(sys.modules, "us_stock_tracking_agent", fake_tracking_module)
 
             caplog.set_level("INFO")
-            await orchestrator.run_full_pipeline("midday", language="en", override_date="20260401")
+            await orchestrator.run_full_pipeline("afternoon", language="en", override_date="20260401")
 
         assert "US tracking system batch execution failed" in caplog.text
-        assert "US full pipeline completed with tracking errors - mode: midday" in caplog.text
-        assert "US full pipeline complete - mode: midday" not in caplog.text
+        assert "US full pipeline completed with tracking errors - mode: afternoon" in caplog.text
+        assert "US full pipeline complete - mode: afternoon" not in caplog.text
 
 
 # =============================================================================
