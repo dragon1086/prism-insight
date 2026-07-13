@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from stock_tracking_agent import StockTrackingAgent
 import logging
 import json
+import os
 import traceback
 
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
@@ -384,12 +385,16 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 logger.info("No stocks sold")
 
             # 2. Analyze new reports and make buy decisions
+            analysis_failures = []
             for pdf_report_path in pdf_report_paths:
                 # Analyze report
                 analysis_result = await self.analyze_report(pdf_report_path)
 
                 if not analysis_result.get("success", False):
                     logger.error(f"Report analysis failed: {pdf_report_path} - {analysis_result.get('error', 'Unknown error')}")
+                    analysis_failures.append(
+                        f"{os.path.basename(pdf_report_path)}: {analysis_result.get('error', 'Unknown error')}"
+                    )
                     continue
 
                 # Skip if already holding this stock (no telegram message for already held stocks)
@@ -620,6 +625,20 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         logger.info(f"Purchase complete: {company_name}({ticker}) @ {current_price:,.0f} KRW")
                     else:
                         logger.warning(f"Purchase failed: {company_name}({ticker})")
+
+            # A silently skipped candidate is a buy decision that never ran —
+            # surface it to the channel (2026-07-13: KRX outage skipped all 3
+            # candidates and nobody was notified).
+            if analysis_failures:
+                try:
+                    if getattr(self, "telegram_config", None):
+                        from telegram_config import send_buy_analysis_failure_alert
+                        await send_buy_analysis_failure_alert(
+                            self.telegram_config, len(analysis_failures), len(pdf_report_paths),
+                            market="KR", detail="; ".join(analysis_failures[:3])
+                        )
+                except Exception as alert_err:
+                    logger.error(f"Buy-analysis failure alert send failed: {alert_err}")
 
             logger.info(f"Report processing complete - Purchased: {buy_count} items, Sold: {sell_count} items")
             return buy_count, sell_count
