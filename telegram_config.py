@@ -214,6 +214,41 @@ async def send_openai_quota_alert(telegram_config: "TelegramConfig", market: str
         logger.error(f"[{market}] Failed to send OpenAI quota alert: {e}")
 
 
+async def send_buy_analysis_failure_alert(telegram_config: "TelegramConfig", failed: int, total: int,
+                                          market: str = "KR", detail: str = ""):
+    """Alert the main channel when buy-candidate report analyses failed.
+
+    Without this the batch stays silent when e.g. a KRX outage kills the price
+    query for every candidate (2026-07-13): subscribers see no buy messages and
+    the operator only notices by absence.
+    """
+    if not telegram_config or not telegram_config.use_telegram:
+        return
+
+    try:
+        from telegram import Bot
+        from telegram.request import HTTPXRequest
+
+        request = HTTPXRequest(connect_timeout=10.0, read_timeout=10.0)
+        bot = Bot(token=telegram_config.bot_token, request=request)
+
+        alert_message = (
+            f"⚠️ [{market}] 매수 후보 분석 실패\n\n"
+            f"이번 배치의 매수 후보 {total}종목 중 {failed}종목의 분석이 실패해 "
+            f"해당 종목의 매수 판단이 이루어지지 않았습니다.\n"
+            + (f"\n• 사유: {detail}\n" if detail else "")
+            + "• 조치: 서버 로그(stock_analysis_*.log)에서 원인 확인"
+        )
+
+        await bot.send_message(
+            chat_id=telegram_config.channel_id,
+            text=alert_message
+        )
+        logger.info(f"[{market}] Buy-analysis failure alert sent ({failed}/{total})")
+    except Exception as e:
+        logger.error(f"[{market}] Failed to send buy-analysis failure alert: {e}")
+
+
 # --- Market Pulse "batch resting" subscriber notice (static, no LLM) -----------
 # When the Market Pulse hook rests a LIVE batch, subscribers would otherwise see
 # silence. These pre-translated notices explain the pause. Deterministic /

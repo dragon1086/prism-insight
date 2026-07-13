@@ -94,7 +94,35 @@ async def get_current_stock_price(cursor, ticker: str, account_key: str | None =
                 await asyncio.sleep(wait)
             else:
                 logger.error(traceback.format_exc())
+                # KRX exhausted — try KIS before the DB fallback. A new buy
+                # candidate has no stock_holdings row, so the DB fallback
+                # returns 0 and the whole report analysis is silently skipped
+                # (2026-07-13 KRX outage dropped all 3 afternoon candidates).
+                kis_price = await _get_price_from_kis(ticker)
+                if kis_price > 0:
+                    return kis_price
                 return _get_last_price_from_db(cursor, ticker, account_key=account_key)
+
+
+async def _get_price_from_kis(ticker: str) -> float:
+    """KIS quote fallback for when KRX (data.krx.co.kr) is down.
+
+    KIS is an independent provider whose credentials are already configured
+    wherever the tracking agents run (same creds the order path uses).
+    Returns 0.0 on any failure — caller falls back to the last DB price.
+    """
+    import asyncio
+    try:
+        from trading.domestic_stock_trading import AsyncTradingContext
+        async with AsyncTradingContext() as trading:
+            info = await asyncio.to_thread(trading.get_current_price, ticker)
+        price = float((info or {}).get("current_price") or 0)
+        if price > 0:
+            logger.warning(f"{ticker} current price via KIS fallback: {price:,.0f} KRW (KRX unavailable)")
+        return price
+    except Exception as e:
+        logger.error(f"{ticker} KIS price fallback failed: {e}")
+        return 0.0
 
 
 def _get_last_price_from_db(cursor, ticker: str, account_key: str | None = None) -> float:
