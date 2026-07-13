@@ -49,9 +49,12 @@ CLAIM_LEASE_MINUTES = 15
 def ensure_claim_columns(conn: sqlite3.Connection) -> None:
     """Migrate older pending-order tables before using the claim lifecycle."""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(us_pending_orders)")}
-    for column in ("claimed_at", "submission_started_at"):
-        if column not in columns:
-            conn.execute(f"ALTER TABLE us_pending_orders ADD COLUMN {column} TEXT")
+    if "claimed_at" not in columns:
+        conn.execute("ALTER TABLE us_pending_orders ADD COLUMN claimed_at TEXT")
+    if "submission_started_at" not in columns:
+        conn.execute(
+            "ALTER TABLE us_pending_orders ADD COLUMN submission_started_at TEXT"
+        )
     conn.commit()
 
 

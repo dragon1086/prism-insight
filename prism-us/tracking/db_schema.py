@@ -691,9 +691,12 @@ def create_us_tables(cursor, conn):
 def migrate_us_pending_order_claim_columns(cursor, conn):
     """Add crash-safe claim lifecycle timestamps to existing pending-order DBs."""
     columns = {row[1] for row in cursor.execute("PRAGMA table_info(us_pending_orders)")}
-    for name in ("claimed_at", "submission_started_at"):
-        if name not in columns:
-            cursor.execute(f"ALTER TABLE us_pending_orders ADD COLUMN {name} TEXT")
+    if "claimed_at" not in columns:
+        cursor.execute("ALTER TABLE us_pending_orders ADD COLUMN claimed_at TEXT")
+    if "submission_started_at" not in columns:
+        cursor.execute(
+            "ALTER TABLE us_pending_orders ADD COLUMN submission_started_at TEXT"
+        )
     conn.commit()
 
 

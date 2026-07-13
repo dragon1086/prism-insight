@@ -952,11 +952,15 @@ class USStockTrading:
             existing_columns = {
                 row[1] for row in cursor.execute("PRAGMA table_info(us_pending_orders)")
             }
-            for column in ("claimed_at", "submission_started_at"):
-                if column not in existing_columns:
-                    cursor.execute(
-                        f"ALTER TABLE us_pending_orders ADD COLUMN {column} TEXT"
-                    )
+            if "claimed_at" not in existing_columns:
+                cursor.execute(
+                    "ALTER TABLE us_pending_orders ADD COLUMN claimed_at TEXT"
+                )
+            if "submission_started_at" not in existing_columns:
+                cursor.execute(
+                    "ALTER TABLE us_pending_orders "
+                    "ADD COLUMN submission_started_at TEXT"
+                )
 
             now_kst = datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute(

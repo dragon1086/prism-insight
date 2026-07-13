@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import stat
 import tempfile
 import time
 
@@ -31,9 +32,9 @@ def save_auth_data(auth_data: dict) -> None:
     refresh in separate processes. ``os.replace`` also works when the target
     already exists on Windows, unlike ``os.rename``.
     """
-    AUTH_DIR.mkdir(parents=True, exist_ok=True)
+    AUTH_DIR.mkdir(mode=stat.S_IRWXU, parents=True, exist_ok=True)
     try:
-        os.chmod(AUTH_DIR, 0o700)
+        os.chmod(AUTH_DIR, stat.S_IRWXU)
     except OSError:
         # Some Windows filesystems do not implement POSIX permission bits.
         pass
