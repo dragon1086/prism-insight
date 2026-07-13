@@ -26,7 +26,7 @@ _HELPERS_SPEC = importlib.util.spec_from_file_location(
     "maintenance_tracking_helpers", Path(__file__).parents[1] / "tracking" / "helpers.py"
 )
 _HELPERS = importlib.util.module_from_spec(_HELPERS_SPEC)
-assert _HELPERS_SPEC.loader is not None
+assert _HELPERS_SPEC.loader is not None  # nosec B101
 _HELPERS_SPEC.loader.exec_module(_HELPERS)
 compute_fractional_sell_quantity = _HELPERS.compute_fractional_sell_quantity
 parse_price_value = _HELPERS.parse_price_value

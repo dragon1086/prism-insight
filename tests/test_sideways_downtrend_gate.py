@@ -88,7 +88,7 @@ print(f"\n===== RESULT: {passed} passed, {failed} failed =====")
 
 def test_sideways_downtrend_gate_script_checks():
     """Report the legacy script checks through pytest's normal lifecycle."""
-    assert failed == 0, f"{failed} of {passed + failed} gate checks failed"
+    assert failed == 0, f"{failed} of {passed + failed} gate checks failed"  # nosec B101
 
 
 if __name__ == "__main__":

@@ -199,9 +199,9 @@ def test_shadow_record_does_not_block_later_evaluation(tmp_db, monkeypatch):
     asyncio.run(la.run_market("KR", "run1"))
     summary2 = asyncio.run(la.run_market("KR", "run2"))
 
-    assert summary2["skipped"] == 0
-    assert summary2["shadow"] == 1
-    assert _inflight(tmp_db) == 2
+    assert summary2["skipped"] == 0  # nosec B101
+    assert summary2["shadow"] == 1  # nosec B101
+    assert _inflight(tmp_db) == 2  # nosec B101
 
 
 def test_owner_lock_is_exclusive(tmp_db):

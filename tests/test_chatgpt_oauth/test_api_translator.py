@@ -26,9 +26,9 @@ class TestTranslateRequest:
         result = translate_request(body)
 
         assert result["model"] == "gpt-5"
-        assert result["instructions"] == "You are a stock analyst."
-        assert result["input"][0]["role"] == "user"
-        assert result["input"][0]["content"] == "Analyze AAPL"
+        assert result["instructions"] == "You are a stock analyst."  # nosec B101
+        assert result["input"][0]["role"] == "user"  # nosec B101
+        assert result["input"][0]["content"] == "Analyze AAPL"  # nosec B101
         assert result["max_output_tokens"] == 4096
         assert result["temperature"] == 0.7
         assert result["store"] is False

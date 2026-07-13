@@ -21,7 +21,7 @@ class TestJSONParser:
     """JSON parsing test class"""
     
     def test_broken_json_from_error_log(self):
-        assert self.check_broken_json_from_error_log()
+        assert self.check_broken_json_from_error_log()  # nosec B101
 
     def check_broken_json_from_error_log(self):
         """Test JSON parsing from actual error log"""
@@ -93,7 +93,7 @@ class TestJSONParser:
         return True
 
     def test_various_broken_json_patterns(self):
-        assert self.check_various_broken_json_patterns()
+        assert self.check_various_broken_json_patterns()  # nosec B101
 
     def check_various_broken_json_patterns(self):
         """Test various JSON syntax error patterns"""
@@ -172,7 +172,7 @@ class TestJSONParser:
         return all_passed
 
     def test_json_repair_fallback(self):
-        assert self.check_json_repair_fallback()
+        assert self.check_json_repair_fallback()  # nosec B101
 
     def check_json_repair_fallback(self):
         """Test json-repair library fallback"""

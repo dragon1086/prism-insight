@@ -60,16 +60,16 @@ def test_publish_signal_does_not_block_event_loop():
         )
     )
 
-    assert message_id == "message-123"
-    assert future.result_thread_id is not None
-    assert future.result_thread_id != event_loop_thread_id
-    assert fake_publisher.topic_path == "projects/test-project/topics/signals"
+    assert message_id == "message-123"  # nosec B101
+    assert future.result_thread_id is not None  # nosec B101
+    assert future.result_thread_id != event_loop_thread_id  # nosec B101
+    assert fake_publisher.topic_path == "projects/test-project/topics/signals"  # nosec B101
 
     payload = json.loads(fake_publisher.message_bytes.decode("utf-8"))
-    assert payload["type"] == "SELL"
-    assert payload["ticker"] == "AAPL"
-    assert payload["market"] == "US"
-    assert payload["sell_reason"] == "TEST"
+    assert payload["type"] == "SELL"  # nosec B101
+    assert payload["ticker"] == "AAPL"  # nosec B101
+    assert payload["market"] == "US"  # nosec B101
+    assert payload["sell_reason"] == "TEST"  # nosec B101
 
 
 def test_publish_signal_returns_none_when_acknowledgement_fails():
@@ -86,6 +86,6 @@ def test_publish_signal_returns_none_when_acknowledgement_fails():
         )
     )
 
-    assert message_id is None
-    assert future.result_thread_id is not None
-    assert future.result_thread_id != event_loop_thread_id
+    assert message_id is None  # nosec B101
+    assert future.result_thread_id is not None  # nosec B101
+    assert future.result_thread_id != event_loop_thread_id  # nosec B101

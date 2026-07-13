@@ -133,7 +133,7 @@ def test_price_query_retry_contract():
     global passed, failed
     passed = failed = 0
     asyncio.run(_run())
-    assert failed == 0, f"{failed} of {passed + failed} retry checks failed"
+    assert failed == 0, f"{failed} of {passed + failed} retry checks failed"  # nosec B101
 
 
 if __name__ == "__main__":

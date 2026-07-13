@@ -13,7 +13,7 @@ from unittest.mock import patch
 MODULE_PATH = Path(__file__).resolve().parents[1] / "us_pending_order_batch.py"
 SPEC = importlib.util.spec_from_file_location("pending_batch_safety", MODULE_PATH)
 pending_batch = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader is not None
+assert SPEC.loader is not None  # nosec B101
 SPEC.loader.exec_module(pending_batch)
 
 

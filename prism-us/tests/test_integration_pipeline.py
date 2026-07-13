@@ -136,7 +136,7 @@ class TestTriggerToAgentsFlow:
         )
 
         # Price/volume should use yfinance
-        assert 'yahoo_finance' in agents['price_volume_analysis'].server_names
+        assert 'yahoo_finance' in agents['price_volume_analysis'].server_names  # nosec B101
 
         # News should use perplexity
         assert 'perplexity' in agents['news_analysis'].server_names
