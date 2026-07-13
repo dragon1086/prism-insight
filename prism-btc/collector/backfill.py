@@ -20,8 +20,14 @@ def backfill_tf(tf: str, db_path=None) -> int:
     conn = get_connection(db_path)
     log.info("Backfilling %s ...", tf)
     total_fetched = 0
+    first_page = True
     for page in iter_klines_backwards(tf, start_ms=BACKFILL_START_MS):
-        n = upsert_rows(conn, tf, page)
+        # The newest Bybit page includes the still-forming candle. Match the
+        # incremental updater's contract so a fresh backfill cannot expose it
+        # to snapshots/backtests as confirmed market data.
+        current_open_time = int(page[0][0]) if first_page and page else None
+        n = upsert_rows(conn, tf, page, current_open_time=current_open_time)
+        first_page = False
         total_fetched += n
         oldest = int(page[-1][0])
         log.info(

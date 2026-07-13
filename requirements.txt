@@ -68,6 +68,9 @@ APScheduler==3.11.0
 upstash-redis>=1.0.0
 google-cloud-pubsub>=2.18.0
 
+# Official Bybit connector used by prism-btc demo execution.
+pybit>=5.16.1,<6
+
 # US Stock Market (prism-us module)
 yfinance>=0.2.0  # Yahoo Finance data
 pandas-market-calendars>=4.0.0  # US market holidays

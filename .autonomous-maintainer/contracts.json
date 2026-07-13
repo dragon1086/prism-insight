@@ -1,0 +1,5 @@
+{
+  "status": "in-progress",
+  "compatibility": "observable-output",
+  "authorities": ["AGENTS.md", "tests", ".github/workflows/ci.yml", "README.md", "docs", "public CLI behavior"]
+}

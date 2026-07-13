@@ -71,14 +71,22 @@ echo -e "${BLUE}[4/5]${NC} Configuring API keys..."
 cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
 cp mcp_agent.config.yaml.example mcp_agent.config.yaml
 
-# Update the secrets file with the API key
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
-    sed -i '' "s/example key/$OPENAI_API_KEY/" mcp_agent.secrets.yaml
-else
-    # Linux
-    sed -i "s/example key/$OPENAI_API_KEY/" mcp_agent.secrets.yaml
-fi
+# Update only the OpenAI field. A global text replacement also overwrote the
+# Anthropic placeholder with the OpenAI credential.
+OPENAI_API_KEY="$OPENAI_API_KEY" python3 - <<'PY'
+import os
+from pathlib import Path
+
+import yaml
+
+path = Path("mcp_agent.secrets.yaml")
+config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+config.setdefault("openai", {})["api_key"] = os.environ["OPENAI_API_KEY"]
+path.write_text(
+    yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+    encoding="utf-8",
+)
+PY
 echo -e "       API key configured ✓"
 
 # Run demo analysis (single stock report, not full pipeline)

@@ -74,18 +74,18 @@ def _resolve_sell_quantity(holding_quantity: int, quantity: int = None) -> int:
     """Resolve the number of shares to sell.
 
     When ``quantity`` is None the full holding is sold (unchanged behavior).
-    When given, the requested partial quantity is used, clamped to the range
-    [1, holding_quantity] to avoid over-selling. Used by pyramiding fractional
-    sells (#288).
+    When given, the requested partial quantity is clamped to the holding.
+    Explicit zero/negative or malformed quantities are rejected as zero rather
+    than being reinterpreted as a full-position liquidation.
     """
     if quantity is None:
         return holding_quantity
     try:
         q = int(quantity)
     except (TypeError, ValueError):
-        return holding_quantity
+        return 0
     if q <= 0:
-        return holding_quantity
+        return 0
     return min(q, holding_quantity)
 
 
@@ -881,6 +881,14 @@ class DomesticStockTrading:
 
         # Determine sell quantity (partial when quantity given, else full holding)
         buy_quantity = _resolve_sell_quantity(holding_quantity, quantity)
+        if buy_quantity <= 0:
+            return {
+                'success': False,
+                'order_no': None,
+                'stock_code': stock_code,
+                'quantity': 0,
+                'message': 'Sell quantity must be a positive whole number',
+            }
 
         # Execute sell order
         api_url = "/uapi/domestic-stock/v1/trading/order-cash"
@@ -1027,6 +1035,14 @@ class DomesticStockTrading:
             }
 
         buy_quantity = _resolve_sell_quantity(holding_quantity, quantity)
+        if buy_quantity <= 0:
+            return {
+                'success': False,
+                'order_no': None,
+                'stock_code': stock_code,
+                'quantity': 0,
+                'message': 'Sell quantity must be a positive whole number',
+            }
 
         # After-hours closing price sell
         api_url = "/uapi/domestic-stock/v1/trading/order-cash"
@@ -1119,6 +1135,14 @@ class DomesticStockTrading:
             }
 
         buy_quantity = _resolve_sell_quantity(holding_quantity, quantity)
+        if buy_quantity <= 0:
+            return {
+                'success': False,
+                'order_no': None,
+                'stock_code': stock_code,
+                'quantity': 0,
+                'message': 'Sell quantity must be a positive whole number',
+            }
 
         # Set order type and unit price
         if limit_price and limit_price > 0:
@@ -1471,6 +1495,9 @@ class DomesticStockTrading:
 
                         # Resolve partial sell quantity (None = full holding)
                         sell_quantity = _resolve_sell_quantity(holding_quantity, quantity)
+                        if sell_quantity <= 0:
+                            result['message'] = 'Sell quantity must be a positive whole number'
+                            return result
 
                         if effective_limit_price:
                             logger.info(f"[Async Sell API] {stock_code} executing sell (qty: {sell_quantity}/{holding_quantity} shares, limit: {effective_limit_price:,} KRW)")

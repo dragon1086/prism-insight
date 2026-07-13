@@ -2,6 +2,7 @@ import os
 import sys
 import sqlite3
 import logging
+import re
 from contextlib import closing
 from pathlib import Path
 from mcp.server.models import InitializationOptions
@@ -158,6 +159,18 @@ class SqliteDatabase:
         except Exception as e:
             logger.error(f"Database error executing query: {e}")
             raise
+
+
+def _write_statement_type(query: str) -> str | None:
+    """Return the allowed row-level DML type after leading comments."""
+    without_comments = re.sub(
+        r"\A(?:\s+|--[^\n]*(?:\n|\Z)|/\*.*?\*/)*",
+        "",
+        query,
+        flags=re.DOTALL,
+    )
+    match = re.match(r"(INSERT|UPDATE|DELETE)\b", without_comments, re.IGNORECASE)
+    return match.group(1).upper() if match else None
 
 async def main(db_path: str):
     logger.info(f"Starting SQLite MCP Server with DB path: {db_path}")
@@ -321,7 +334,9 @@ async def main(db_path: str):
                 if not arguments or "table_name" not in arguments:
                     raise ValueError("Missing table_name argument")
                 results = db._execute_query(
-                    f"PRAGMA table_info({arguments['table_name']})"
+                    """SELECT cid, name, type, \"notnull\", dflt_value, pk
+                       FROM pragma_table_info(:table_name)""",
+                    {"table_name": str(arguments["table_name"])},
                 )
                 return [types.TextContent(type="text", text=str(results))]
 
@@ -347,8 +362,11 @@ async def main(db_path: str):
                 return [types.TextContent(type="text", text=str(results))]
 
             elif name == "write_query":
-                if arguments["query"].strip().upper().startswith("SELECT"):
-                    raise ValueError("SELECT queries are not allowed for write_query")
+                if _write_statement_type(arguments["query"]) is None:
+                    raise ValueError(
+                        "Only INSERT, UPDATE, or DELETE statements are allowed "
+                        "for write_query"
+                    )
                 results = db._execute_query(arguments["query"])
                 return [types.TextContent(type="text", text=str(results))]
 

@@ -1664,10 +1664,25 @@ class StockTrackingAgent:
                                     f"(available {available} of snapshot {pass_total_qty[ticker]}, "
                                     f"remaining rows={remaining_rows})"
                                 )
-                            # Execute async sell with limit price for reserved orders
-                            trade_result = await trading.async_sell_stock(
-                                stock_code=ticker, limit_price=current_price, quantity=sell_quantity
-                            )
+                            if sell_quantity == 0:
+                                # More simulated pyramid rows can exist than
+                                # whole broker shares. This row receives no
+                                # share; never reinterpret that explicit zero
+                                # as a full-position liquidation.
+                                trade_result = {
+                                    'success': False,
+                                    'quantity': 0,
+                                    'order_no': None,
+                                    'message': (
+                                        'No whole brokerage share allocated to '
+                                        'this fractional exit'
+                                    ),
+                                }
+                            else:
+                                # Execute async sell with limit price for reserved orders
+                                trade_result = await trading.async_sell_stock(
+                                    stock_code=ticker, limit_price=current_price, quantity=sell_quantity
+                                )
 
                         if trade_result['success']:
                             logger.info(f"Actual sell successful: {trade_result['message']}")

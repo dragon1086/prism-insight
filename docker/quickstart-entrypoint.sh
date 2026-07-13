@@ -35,6 +35,23 @@ anthropic:
 EOF
 fi
 
+# Refresh the runtime OpenAI credential on every start while preserving any
+# independently configured provider fields in the persistent file.
+OPENAI_API_KEY="${OPENAI_API_KEY}" SECRETS_PATH="${SECRETS_PATH}" python3 - <<'PY'
+import os
+from pathlib import Path
+
+import yaml
+
+path = Path(os.environ["SECRETS_PATH"])
+config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+config.setdefault("openai", {})["api_key"] = os.environ["OPENAI_API_KEY"]
+path.write_text(
+    yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+    encoding="utf-8",
+)
+PY
+
 echo "[INIT] Writing quickstart MCP config..."
 {
     cat <<EOF

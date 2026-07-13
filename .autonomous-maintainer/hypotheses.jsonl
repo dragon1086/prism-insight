@@ -1,0 +1,1 @@
+{"id":"H-001","target":"prism-us/cores/llm","hypothesis":"The symlink target is non-portable and breaks US imports in a fresh checkout","falsification":"Resolve the tracked symlink and run the documented isolated US import/test"}

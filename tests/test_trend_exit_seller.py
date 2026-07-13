@@ -340,7 +340,7 @@ def test_pyramided_ticker_is_skipped(tmp_db, monkeypatch):
     assert calls == []
 
 
-def test_inflight_guard_blocks_second_trigger(tmp_db, monkeypatch):
+def test_shadow_record_does_not_block_second_trigger(tmp_db, monkeypatch):
     _enable(monkeypatch, live=False, confirm=1, close_window=True)
     _seed(tmp_db, [_row(1, "005930", 100.0)])
     calls = []
@@ -350,8 +350,8 @@ def test_inflight_guard_blocks_second_trigger(tmp_db, monkeypatch):
     asyncio.run(lb.run_market("KR", "run1"))
     summary2 = asyncio.run(lb.run_market("KR", "run2"))
 
-    assert summary2["skipped"] == 1
-    assert _inflight(tmp_db) == 1  # only the first SHADOW row
+    assert summary2["shadow"] == 1
+    assert _inflight(tmp_db) == 2
 
 
 def test_owner_lock_is_exclusive(tmp_db):

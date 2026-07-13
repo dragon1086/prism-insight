@@ -1,0 +1,21 @@
+{
+  "run_id": "20260712-post-merge-rescan",
+  "repository": "tkgo11/prism-insight",
+  "base_branch": "main",
+  "base_sha": "62722067c98a5932e526444654144b2efc945e1b",
+  "branch": "autonomous-maintainer/20260712-post-merge-rescan",
+  "status": "inventory",
+  "result": null,
+  "options": {
+    "mode": "apply",
+    "focus": "all",
+    "feature_policy": "strong-evidence",
+    "commit": "checkpoint",
+    "max_epochs": 50,
+    "quiescence_scans": 3,
+    "rewrite_policy": "aggressive",
+    "compatibility": "observable-output",
+    "delivery": "pull-request",
+    "pr_state": "ready"
+  }
+}

@@ -331,6 +331,7 @@ async def get_signal_publisher() -> SignalPublisher:
     global _global_publisher
     if _global_publisher is None:
         _global_publisher = SignalPublisher()
+    if _global_publisher._publisher is None:
         await _global_publisher.connect()
     return _global_publisher
 

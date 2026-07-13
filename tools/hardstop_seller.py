@@ -23,7 +23,7 @@ SAFETY (read before enabling):
   - Separate process, so the batch's in-process asyncio locks do NOT apply:
     guards via a SQLite owner_lock (BEGIN IMMEDIATE), an inflight-order
     uniqueness guard, and a fresh KIS holding-qty reconcile before every sell.
-  - Pyramided tickers (>1 holding row) are SKIPPED — the batch owns the
+  - Pyramided positions (>1 holding row in the same account) are SKIPPED — the batch owns the
     fractional-sell logic; Hardstop only handles clean single-row positions.
 
 Usage:
@@ -182,6 +182,17 @@ def load_holdings_by_ticker(conn: sqlite3.Connection, market: str) -> Dict[str, 
     return out
 
 
+def iter_account_position_groups(by_ticker):
+    """Yield ticker rows grouped by account before applying pyramid rules."""
+    for ticker, rows in by_ticker.items():
+        by_account: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            account = str(row.get("account_key") or row.get("account_name") or "")
+            by_account.setdefault(account, []).append(row)
+        for account_rows in by_account.values():
+            yield ticker, account_rows
+
+
 def has_open_inflight(conn: sqlite3.Connection, ticker: str, market: str) -> bool:
     # 실제 미체결 주문(status='OPEN')만 중복방지 대상. SHADOW 레코드는 실주문이 아니므로
     # LIVE 매도를 막으면 안 된다(과거 SHADOW 레코드가 3주간 손절을 영구 차단하던 버그).
@@ -306,7 +317,7 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
             return summary
         try:
             async with _open_context(market) as trader:  # primary ctx, prices only (account-agnostic)
-                for ticker, rows in by_ticker.items():
+                for ticker, rows in iter_account_position_groups(by_ticker):
                     if len(rows) > 1:
                         # Pyramided position -> leave to the batch's fractional logic.
                         summary["pyramided_skipped"] += 1

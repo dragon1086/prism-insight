@@ -133,7 +133,7 @@ def get_kodex_prices(date: str = None) -> dict:
     }
 
 
-def get_current_price(stock_code: str) -> int:
+def get_current_price(stock_code: str) -> int | None:
     """
     Get current closing price (simplified)
 
@@ -141,21 +141,18 @@ def get_current_price(stock_code: str) -> int:
         stock_code: Stock code
 
     Returns:
-        Current closing price (integer)
+        Current closing price, or ``None`` when authoritative data is unavailable.
     """
     price_info = get_stock_price(stock_code)
 
     if price_info:
         return price_info['close']
-    else:
-        # Fallback to mock prices if API fails
-        logger.warning(f"Using mock price for {stock_code}")
-        if stock_code == KODEX_LEVERAGE:
-            return 20000  # Mock for Leverage
-        elif stock_code == KODEX_INVERSE_2X:
-            return 5000  # Mock for Inverse 2X
-        else:
-            return 10000
+    logger.error(
+        "Current price unavailable for %s; deferring simulation instead of "
+        "recording fabricated performance",
+        stock_code,
+    )
+    return None
 
 
 # Test function

@@ -230,7 +230,7 @@ export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPage
                 </span>
                 <p className="font-bold text-green-600">
                   {data.performance_analysis?.actual_trading?.count || 0}{language === "ko" ? "건" : ""}
-                  {data.performance_analysis?.actual_trading?.win_rate !== undefined && (
+                  {data.performance_analysis?.actual_trading?.win_rate != null && (
                     <span className="text-muted-foreground font-normal text-xs ml-1">
                       ({language === "ko" ? "승률" : "WR"} {(data.performance_analysis.actual_trading.win_rate * 100).toFixed(0)}%)
                     </span>
@@ -245,7 +245,7 @@ export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPage
                   (data.performance_analysis?.actual_trading?.avg_profit_rate || 0) >= 0
                     ? "text-green-600" : "text-red-600"
                 }`}>
-                  {data.performance_analysis?.actual_trading?.avg_profit_rate !== undefined
+                  {data.performance_analysis?.actual_trading?.avg_profit_rate != null
                     ? formatPercent(data.performance_analysis.actual_trading.avg_profit_rate)
                     : "-"}
                 </p>
@@ -557,14 +557,14 @@ export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPage
                           <p className={`font-bold text-lg ${
                             (data.performance_analysis.actual_trading.avg_profit_rate || 0) >= 0 ? "text-green-600" : "text-red-600"
                           }`}>
-                            {formatPercent(data.performance_analysis.actual_trading.avg_profit_rate)}
+                            {formatPercent(data.performance_analysis.actual_trading.avg_profit_rate ?? 0)}
                           </p>
                         </div>
                         {/* 승률 */}
                         <div>
                           <span className="text-muted-foreground text-xs">{language === "ko" ? "승률" : "Win Rate"}</span>
                           <p className="font-bold text-lg">
-                            {data.performance_analysis.actual_trading.win_rate !== null
+                            {data.performance_analysis.actual_trading.win_rate != null
                               ? `${(data.performance_analysis.actual_trading.win_rate * 100).toFixed(0)}%`
                               : "-"}
                             <span className="text-xs font-normal text-muted-foreground ml-1">
@@ -576,28 +576,28 @@ export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPage
                         <div>
                           <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 수익 (수익건)" : "Avg Profit (wins)"}</span>
                           <p className="font-bold text-green-600">
-                            {formatPercent(data.performance_analysis.actual_trading.avg_profit)}
+                            {formatPercent(data.performance_analysis.actual_trading.avg_profit ?? 0)}
                           </p>
                         </div>
                         {/* 평균 손실 (손실건) */}
                         <div>
                           <span className="text-muted-foreground text-xs">{language === "ko" ? "평균 손실 (손실건)" : "Avg Loss (losses)"}</span>
                           <p className="font-bold text-red-600">
-                            {formatPercent(data.performance_analysis.actual_trading.avg_loss)}
+                            {formatPercent(data.performance_analysis.actual_trading.avg_loss ?? 0)}
                           </p>
                         </div>
                         {/* 최대 수익 */}
                         <div>
                           <span className="text-muted-foreground text-xs">{language === "ko" ? "최대 수익" : "Max Profit"}</span>
                           <p className="font-bold text-green-600">
-                            {formatPercent(data.performance_analysis.actual_trading.max_profit)}
+                            {formatPercent(data.performance_analysis.actual_trading.max_profit ?? 0)}
                           </p>
                         </div>
                         {/* 최대 손실 */}
                         <div>
                           <span className="text-muted-foreground text-xs">{language === "ko" ? "최대 손실" : "Max Loss"}</span>
                           <p className="font-bold text-red-600">
-                            {formatPercent(data.performance_analysis.actual_trading.max_loss)}
+                            {formatPercent(data.performance_analysis.actual_trading.max_loss ?? 0)}
                           </p>
                         </div>
                         {/* Profit Factor */}

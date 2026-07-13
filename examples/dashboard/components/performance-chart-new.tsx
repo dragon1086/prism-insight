@@ -99,7 +99,8 @@ export function PerformanceChart({ data, prismPerformance = [], holdings = [], s
 
   // KOSPI 기준 차트 데이터 - 누적 실현 수익률만 사용
   const kospiChartData = filteredData.map((item) => {
-    const kospiReturn = startKospi > 0 ? ((item.kospi_index - startKospi) / startKospi) * 100 : 0
+    const kospiIndex = item.kospi_index ?? startKospi
+    const kospiReturn = startKospi > 0 ? ((kospiIndex - startKospi) / startKospi) * 100 : 0
 
     // 해당 날짜의 프리즘 퍼포먼스 찾기
     const prismData = prismPerformanceMap.get(item.date)
@@ -118,7 +119,8 @@ export function PerformanceChart({ data, prismPerformance = [], holdings = [], s
 
   // KOSDAQ 기준 차트 데이터
   const kosdaqChartData = filteredData.map((item) => {
-    const kosdaqReturn = startKosdaq > 0 ? ((item.kosdaq_index - startKosdaq) / startKosdaq) * 100 : 0
+    const kosdaqIndex = item.kosdaq_index ?? startKosdaq
+    const kosdaqReturn = startKosdaq > 0 ? ((kosdaqIndex - startKosdaq) / startKosdaq) * 100 : 0
 
     // 해당 날짜의 프리즘 퍼포먼스 찾기
     const prismData = prismPerformanceMap.get(item.date)
@@ -148,7 +150,7 @@ export function PerformanceChart({ data, prismPerformance = [], holdings = [], s
     ])
   }
   
-  const getYDomain = (values: number[]) => {
+  const getYDomain = (values: number[]): [number, number] => {
     const minValue = Math.min(...values)
     const maxValue = Math.max(...values)
     const padding = Math.max(Math.abs(maxValue - minValue) * 0.15, 2)
@@ -330,8 +332,12 @@ function IndexCharts({ data }: { data: MarketCondition[] }) {
     return [Math.floor(min - padding), Math.ceil(max + padding)]
   }
 
-  const kospiValues = data.map(d => d.kospi_index).filter(v => v > 0)
-  const kosdaqValues = data.map(d => d.kosdaq_index).filter(v => v > 0)
+  const kospiValues = data
+    .map(d => d.kospi_index)
+    .filter((v): v is number => typeof v === "number" && v > 0)
+  const kosdaqValues = data
+    .map(d => d.kosdaq_index)
+    .filter((v): v is number => typeof v === "number" && v > 0)
   
   const [kospiMin, kospiMax] = getYAxisDomain(kospiValues)
   const [kosdaqMin, kosdaqMax] = getYAxisDomain(kosdaqValues)
