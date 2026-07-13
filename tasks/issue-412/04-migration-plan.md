@@ -1,5 +1,8 @@
 # 04. 단계별 마이그레이션 계획 (Strangler)
 
+> 2026-07-13 갱신: Phase 2의 전제(주문 경로 4곳, KR 가드 부재)가 main 변경으로
+> 깨져서 재작성. Phase 5에 amend/미체결 조회 흡수 추가. Phase 6 수치 갱신.
+
 원칙: 각 Phase는 **독립 배포 가능, 독립 롤백 가능, 서버 demo 검증 통과 후 다음 단계 진입.**
 검증 절차의 상세는 05-verification-plan.md.
 
@@ -17,7 +20,11 @@
 - `_normalize_decision`, `_parse_price_value`, `_safe_number_conversion`
   → `prism_core/parsing.py`
 - `compute_fractional_sell_quantity` 및 #288 스냅샷 분배 로직 → 순수 함수화
+  (현 위치 `stock_tracking_agent.py:1575-1655`)
 - 주문 시간대 판정 (KST/ET 거래소 timezone 기준) → `time_windows.py`
+- 주의 (07-13): `sell_stock`에 exit_kind 분류·재진입 cooldown 기록·브로드캐스트
+  큐잉이 추가돼 07-06 시점보다 무겁다. 추출 대상을 "계산"으로 한정하고
+  가드/원장/알림은 Phase 2~3까지 건드리지 않는다.
 - 완료 조건:
   - 추출된 함수 전부에 단위 테스트 (기존 동작 고정, #288 over-sell 케이스 포함)
   - 기존 호출부는 import 경로만 변경, diff에 로직 변화 없음
@@ -25,13 +32,30 @@
 
 ## Phase 2 — ExecutionService chokepoint (동작 불변 래핑)
 
-- `AsyncTradingContext` 직접 호출 4곳(KR 매수/매도 × base/enhanced)을
-  `ExecutionService.execute_buy/execute_sell` 뒤로 이동. **내부는 기존 코드 그대로 위임.**
-- 이때 함께: US의 중복 SELL 가드(fresh snapshot)를 ExecutionService에 구현해
-  KR에도 적용 (현재 KR에는 없음 — 2026-07-01 MU 사고의 KR 재발 방지)
+(07-13 재작성 — 구버전의 "4곳, KR 가드 이식" 전제 폐기)
+
+- `AsyncTradingContext` 직접 호출 **9곳**(01 문서 §1 표: KR batch 매수/매도,
+  enhanced 매수, hardstop/trend_exit/fill_chaser 루프, US batch 매수/매도,
+  US 예약주문 배치)을 `ExecutionService.execute_buy/execute_sell/amend_or_cancel`
+  뒤로 이동. **내부는 기존 코드 그대로 위임.**
+  - 순서 제안: KR batch 3곳 → 루프 3곳 → US 3곳 (루프는 LLM-free이므로
+    ExecutionService의 DecisionPort 비의존이 이 단계에서 강제 검증된다)
+- ~~US의 중복 SELL 가드를 KR에 적용~~ → **이미 main에 이식 완료**
+  (`stock_tracking_agent.py:1300-1327`). 이 Phase에서 할 일은:
+  - 기존 KR/US 가드 시맨틱을 ExecutionService로 **1:1 이관** (동작 불변)
+  - 동시 2-프로세스 중복 SELL 회귀 테스트를 CI에 고정 (지금은 코드에만 존재,
+    테스트 부재 — 이관 중 시맨틱 훼손을 잡을 안전망이 없다)
+- 루프의 owner_lock(`loop_a_position_state`)은 이 Phase에서 **건드리지 않는다**
+  (제거·통합은 Phase 5에서 lock 일반화와 함께).
 - 완료 조건:
-  - 주문 경로 grep 검사: `AsyncTradingContext` 사용처가 ExecutionService 내부 1곳뿐
-  - 중복 SELL 회귀 테스트 (동시 2 프로세스 시나리오) 통과
+  - 주문 경로 grep 검사 (07-13 정정 — US는 `AsyncUSTradingContext`로 문자열이 다르고
+    #9는 컨텍스트 없이 직접 호출이므로 단일 패턴으로는 US가 통째로 빠진다):
+    `AsyncTradingContext|AsyncUSTradingContext|buy_reserved_order|sell_reserved_order`
+    사용처가 ExecutionService 내부뿐일 것. 제외 목록: `tests/`, `prism-us/tests/`,
+    `examples/`, `cores/corporate_status.py`(시세 조회 전용 — Phase 6에서
+    MarketDataPort로 이관). 구 loop shim(`tools/loop_*.py`)은 runpy 셸이라 애초에
+    안 잡힘 — 제외 불필요.
+  - 중복 SELL 회귀 테스트 (동시 2 프로세스 시나리오, KR+US) 통과
   - 서버 demo 3일 운영: 주문 결과가 리팩토링 전과 동일 패턴
 
 ## Phase 3 — OrderIntent 영속화 + 쓰기 순서 교정
@@ -59,7 +83,15 @@
 ## Phase 5 — BrokerAdapter 추출 + Reconciliation (alert-only)
 
 - KIS 국내 어댑터를 BrokerAdapter Protocol로 정리, **체결 조회 메서드 구현**
-- 예약주문 익일 체결 확인 로직 흡수
+- `amend_order`/`list_open_orders`는 fill_chaser의 기존 TR wrapper를 흡수
+  (라이브 검증 체크리스트 `tasks/loop_c_design.md` 선행 — 07-13 추가)
+- 크로스 프로세스 lock 일반화: `loop_a_position_state` owner_lock을 batch까지
+  포괄하는 형태로 승격 (테이블명 중립화 포함). **trend_exit의 별도
+  `loop_b_position_state`/`loop_b_inflight_orders`도 이때 통합** — 현재
+  hardstop↔trend_exit 미직렬화 갭을 닫는 것이 이 작업의 실질 가치다 (01 §4.5)
+- US 예약주문 지연 제출 큐(`prism-us/us_pending_order_batch.py`,
+  `us_pending_orders`)를 order_intents 상태기계로 흡수 (03 §2.2 — Phase 3에서
+  테이블이 생기면 이 큐가 첫 마이그레이션 후보)
 - reconciliation job: positions(OPEN) vs `get_portfolio()` 대조.
   빈 응답 가드 필수. **자동 수정 금지, 불일치는 `ReconciliationMismatch` 이벤트
   → Telegram 알림만** (자동 보정은 운영 신뢰 쌓인 뒤 별도 결정)
@@ -69,10 +101,14 @@
 ## Phase 6 — 코어/어댑터 패키지 분리 + prism-us 흡수
 
 - 이벤트 버스 도입, Telegram/Redis/GCP/일지/Firebase를 구독자로 이동
+  (`sell_broadcast.publish_loop_sell` 포함 — 발행 시점 계약은 03 §6 결정 준수.
+  `cores/corporate_status.py`의 ATC 시세 조회는 MarketDataPort로 이관)
 - `prism_core` / `prism_kr` / `prism_us` 패키지 분리
 - MarketProfile, PortfolioPolicy 도입 (하드코딩 상수 제거)
 - Enhanced 상속 → Strategy 합성 전환
-- **prism-us의 us_stock_tracking_agent 포크를 코어+어댑터 조합으로 대체**
+- **prism-us의 us_stock_tracking_agent 포크(07-13 기준 3,600줄, 일주일에 +700줄로
+  성장 중)를 코어+어댑터 조합으로 대체.** `prism-us/trading/us_stock_trading.py`
+  어댑터 포크도 흡수 대상.
 - 완료 조건 (= 이식성 합격 기준):
   - prism-us 전용 tracking 코드가 프로파일/어댑터/전략 등록 수준으로 축소
   - KR/US 모두 코어 엔진 하나로 서버 demo 5 거래일 무사고
