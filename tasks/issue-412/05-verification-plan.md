@@ -27,12 +27,25 @@ L1  단위 테스트 (순수 함수, payload builder, 상태 전이)
 1. **MU 중복 SELL (2026-07-01)**: 두 실행 경로가 같은 포지션을 초 단위 간격으로
    매도 시도 → 두 번째는 chokepoint에서 abort, SELL publish 정확히 1회.
    (동시 프로세스 시뮬레이션: 별도 커넥션 2개, WAL 모드)
+   *07-13 갱신: 가드는 이미 KR/US 코드에 존재한다 (`stock_tracking_agent.py:1300-1327`,
+   `prism-us/us_stock_tracking_agent.py:2242-2261`). 이 테스트의 역할은 새 동작
+   구현이 아니라 **기존 가드를 회귀로 고정**해 ExecutionService 이관(Phase 2) 중
+   시맨틱 훼손을 잡는 것 — 따라서 Phase 2 착수 전에 먼저 작성한다.*
 2. **#288 over-sell**: 피라미딩 3행, 첫 2행 지정가 미체결 상태에서 마지막 행 매도
    → 스냅샷 잔량 기준 수량, broker 재조회 금지.
 3. **빈 portfolio 응답**: get_portfolio 1회 빈 리스트 → 보유 없음 확정 금지, 재확인.
 4. **주문 실패 보상**: broker 예외/타임아웃 주입 → 매수 원장 보상, 매도 원장 복원,
    OrderFailed 알림 발생, UNKNOWN 경로는 체결조회 대조.
-5. **shadow/live 격리**: shadow 포지션이 live 매도 판단 쿼리에 절대 잡히지 않음.
+5. **shadow/live 격리 (양방향)**: shadow 포지션이 live 매도 판단 쿼리에 절대
+   잡히지 않음 **+ shadow 기록이 live 주문의 중복 판정에 입력되지 않음**
+   (hardstop에서 과거 SHADOW 레코드가 LIVE 손절을 3주간 차단한 실사고 —
+   `tools/hardstop_seller.py:186-187`).
+6. **크로스 프로세스 owner_lock (07-13 추가)**: 두 프로세스가 같은 티커의 lock을
+   경합 → 한쪽만 획득, 만료 시각 경과 후 재획득 가능. Phase 5의 lock 일반화 시
+   기존 루프 동작(`loop_a_position_state`)이 깨지지 않음을 고정. **특히
+   hardstop↔trend_exit 동시 경합 케이스 포함** — 현재 둘은 서로 다른 lock 테이블
+   (`loop_a_*` vs `loop_b_*`)이라 직렬화되지 않는 상태이므로, 통합 후 이 케이스가
+   새로 막히는지가 핵심 검증점이다.
 
 모의 broker(fake adapter)로 구현. 실제 KIS 호출 없음.
 
@@ -51,6 +64,17 @@ L1  단위 테스트 (순수 함수, payload builder, 상태 전이)
    runtime env flag 동시 충족 — 이슈 #412 채택)
 2. 실제 장 시간에 정규 cron 스케줄로 최소 N 거래일 운영
    (Phase 1: 1일, Phase 2: 3일, Phase 4: 5일+3일, Phase 6: 5일)
+   — batch뿐 아니라 **루프 cron(hardstop/trend_exit/fill_chaser, */10)도 포함**해서
+   돌린다. Phase 2부터는 루프 경로도 chokepoint를 지나므로 루프 없는 검증은 무효.
+   - **선행 실사 (07-13)**: 루프 3종의 서버 crontab 설치 상태를 먼저 확인할 것.
+     코드 주석 기준 셋 다 "Intended cron (SHADOW until reviewed)"이고 특히
+     fill_chaser는 "NOT installed" 명시 (`tools/fill_chaser.py:47`) — 미설치
+     루프는 검증 시작 전 SHADOW로 설치한다.
+   - **게이트 일수 정의 (07-13)**: market-pulse batch-rest(`cores/regime_policy.py`)가
+     CORRECTION/UNDER_PRESSURE 레짐에서 배치를 통째로 쉬게 하므로, "N 거래일"은
+     달력이 아니라 **주문 경로가 실제 실행된 거래일 N일**로 센다 (batch-rest로
+     쉰 날은 카운트 제외). 나쁜 레짐 주간에 무실행 통과를 막기 위함.
+   (참고: #431로 US 분석 배치는 아침/오후 2회 — 검증 일정 산정 시 반영)
 3. 매일 확인 항목:
    - `order_intents` ↔ `broker_orders` ↔ KIS demo 계좌 잔고 3자 대조
    - 에러 로그 grep: `Actual purchase failed`, `Actual sell failed`, UNKNOWN 상태 잔존
