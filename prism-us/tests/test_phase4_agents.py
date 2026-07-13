@@ -241,7 +241,7 @@ class TestAgentCreation:
 
         assert agent is not None
         assert hasattr(agent, 'name')
-        assert 'yahoo_finance' in agent.server_names  # nosec B101
+        assert 'yahoo_finance' in agent.server_names
 
     def test_institutional_agent_creation(self, sample_ticker, sample_reference_date):
         """Test institutional holdings analysis agent creation."""
@@ -260,7 +260,7 @@ class TestAgentCreation:
         )
 
         assert agent is not None
-        assert 'yahoo_finance' in agent.server_names  # nosec B101
+        assert 'yahoo_finance' in agent.server_names
 
     def test_company_status_agent_creation(self, sample_ticker, sample_reference_date):
         """Test company status agent creation."""
@@ -354,7 +354,7 @@ class TestAgentServerAssignments:
             ['price_volume_analysis'], "en"
         )
         agent = agents['price_volume_analysis']
-        assert 'yahoo_finance' in agent.server_names  # nosec B101
+        assert 'yahoo_finance' in agent.server_names
 
     def test_institutional_uses_yfinance(self, sample_ticker, sample_reference_date):
         """Test institutional holdings agent uses the Yahoo Finance server."""
@@ -363,7 +363,7 @@ class TestAgentServerAssignments:
             ['institutional_holdings_analysis'], "en"
         )
         agent = agents['institutional_holdings_analysis']
-        assert 'yahoo_finance' in agent.server_names  # nosec B101
+        assert 'yahoo_finance' in agent.server_names
 
     def test_company_status_uses_firecrawl(self, sample_ticker, sample_reference_date):
         """Test company status agent uses firecrawl server."""

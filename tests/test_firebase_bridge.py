@@ -52,7 +52,7 @@ def test_detect_type_portfolio():
     assert detect_type(msg) == 'portfolio'
 
     # A perspective section inside a stock signal is not a portfolio summary.
-    assert detect_type("매수 분석 - 포트폴리오 관점") == 'analysis'  # nosec B101
+    assert detect_type("매수 분석 - 포트폴리오 관점") == 'analysis'
 
 
 def test_detect_type_pdf():

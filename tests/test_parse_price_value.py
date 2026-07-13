@@ -17,7 +17,7 @@ _helpers_spec = importlib.util.spec_from_file_location(
     "test_tracking_helpers", project_root / "tracking" / "helpers.py"
 )
 _helpers = importlib.util.module_from_spec(_helpers_spec)
-assert _helpers_spec.loader is not None  # nosec B101
+assert _helpers_spec.loader is not None
 _helpers_spec.loader.exec_module(_helpers)
 parse_price_value = _helpers.parse_price_value
 
