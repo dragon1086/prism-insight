@@ -1300,7 +1300,13 @@ class DashboardDataGenerator:
                         if PRICE_FETCHER_AVAILABLE and stock_code:
                             try:
                                 current_price = get_current_price(stock_code)
-                                logger.info(f"실시간 현재가 조회: {stock_code} = {current_price:,}원")
+                                # get_current_price now RETURNS None (does not raise) on failure,
+                                # so guard explicitly and fall back to buy_price.
+                                if current_price is None:
+                                    logger.warning(f"현재가 조회 불가: {stock_code}, 매수가 사용")
+                                    current_price = buy_price
+                                else:
+                                    logger.info(f"실시간 현재가 조회: {stock_code} = {current_price:,}원")
                             except Exception as e:
                                 logger.warning(f"현재가 조회 실패: {e}, 매수가 사용")
                                 current_price = buy_price
