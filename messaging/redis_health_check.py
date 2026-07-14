@@ -17,6 +17,7 @@ Usage:
     from messaging.redis_health_check import run_health_check
     asyncio.run(run_health_check())
 """
+import asyncio
 import os
 import logging
 from datetime import datetime
@@ -187,7 +188,9 @@ async def run_health_check_async() -> Dict[str, Any]:
     Returns:
         Dict containing health check results
     """
-    return run_health_check()
+    # The Upstash client is synchronous HTTP. Keep its network operations off
+    # callers' event loop while preserving the existing synchronous API.
+    return await asyncio.to_thread(run_health_check)
 
 
 if __name__ == "__main__":

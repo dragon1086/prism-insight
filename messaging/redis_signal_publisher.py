@@ -15,6 +15,7 @@ Usage:
             scenario=scenario_dict
         )
 """
+import asyncio
 import os
 import json
 import logging
@@ -58,6 +59,11 @@ class SignalPublisher:
         self.redis_url = redis_url or os.environ.get("UPSTASH_REDIS_REST_URL")
         self.redis_token = redis_token or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
         self._redis = None
+        # Serializes worker-thread access to the shared synchronous client.
+        # Created lazily inside the running loop (see publish_signal) so it
+        # always binds to the loop that awaits it and construction never
+        # depends on a running event loop.
+        self._publish_lock = None
 
         if not self.redis_url or not self.redis_token:
             logger.warning(
@@ -164,11 +170,16 @@ class SignalPublisher:
             # Publish to Redis Streams (XADD)
             # upstash-redis 1.5.0+ signature: xadd(key, id, data)
             # Use id="*" for auto-generated ID
-            message_id = self._redis.xadd(
-                self.STREAM_NAME,
-                "*",  # auto-generate message ID
-                {"data": json.dumps(signal_data, ensure_ascii=False)}
-            )
+            lock = getattr(self, "_publish_lock", None)
+            if lock is None:
+                lock = self._publish_lock = asyncio.Lock()
+            async with lock:
+                message_id = await asyncio.to_thread(
+                    self._redis.xadd,
+                    self.STREAM_NAME,
+                    "*",  # auto-generate message ID
+                    {"data": json.dumps(signal_data, ensure_ascii=False)},
+                )
 
             market = signal_data.get("market", "KR")
             currency = "USD" if market == "US" else "KRW"
@@ -309,6 +320,7 @@ async def get_signal_publisher() -> SignalPublisher:
     global _global_publisher
     if _global_publisher is None:
         _global_publisher = SignalPublisher()
+    if not _global_publisher._is_connected():
         await _global_publisher.connect()
     return _global_publisher
 
