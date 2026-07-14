@@ -110,6 +110,33 @@ def get_previous_snapshot(trade_date: str) -> (pd.DataFrame, str):
 
     return df, prev_date
 
+import time as _time
+import random as _random
+import threading as _threading
+
+# --- KRX request throttle ---------------------------------------------------
+# data.krx.co.kr는 IP 차단(403/RST)이 아니라 버스트 요청·장마감 트래픽에 응답이
+# 느려져 Read timeout을 낸다. 요청 사이 최소 간격 + 지터로 연타를 눌러 timeout
+# 빈도를 낮춘다. env로 조절 — KRX_MIN_GAP_SEC=0 이면 스로틀 비활성(기본 0.4s).
+_KRX_THROTTLE_LOCK = _threading.Lock()
+_KRX_LAST_CALL = [0.0]
+
+
+def _krx_throttle() -> None:
+    """Enforce a minimum spacing (+jitter) between consecutive KRX requests."""
+    try:
+        min_gap = float(os.getenv("KRX_MIN_GAP_SEC", "0.4"))
+    except (TypeError, ValueError):
+        min_gap = 0.4
+    if min_gap <= 0:
+        return
+    with _KRX_THROTTLE_LOCK:
+        elapsed = _time.monotonic() - _KRX_LAST_CALL[0]
+        wait = min_gap - elapsed
+        if wait > 0:
+            _time.sleep(wait + _random.uniform(0.0, 0.2))
+        _KRX_LAST_CALL[0] = _time.monotonic()
+
 
 def get_multi_day_ohlcv(ticker: str, end_date: str, days: int = 10) -> pd.DataFrame:
     """
@@ -133,6 +160,7 @@ def get_multi_day_ohlcv(ticker: str, end_date: str, days: int = 10) -> pd.DataFr
 
     krx_failed = False
     try:
+        _krx_throttle()  # 버스트 스로틀: KRX 연타 방지로 read-timeout 빈도↓
         df = get_market_ohlcv_by_date(start_date, end_date, ticker)
         if df.empty:
             logger.warning(f"No {days}-day data for {ticker} from KRX; attempting FinanceDataReader fallback.")
