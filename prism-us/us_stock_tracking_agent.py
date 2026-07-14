@@ -3103,13 +3103,23 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         """Schedule Firebase notification as non-blocking task. Returns the task."""
         return asyncio.create_task(self._notify_firebase(message, chat_id, message_id, msg_type=msg_type))
 
-    async def send_telegram_message(self, chat_id: str, language: str = "ko") -> bool:
+    async def send_telegram_message(self, chat_id: str, language: str = "ko",
+                                    portfolio_force: bool = False,
+                                    await_broadcast: bool = False) -> bool:
         """
         Send message via Telegram.
 
         Args:
             chat_id: Telegram channel ID (no sending if None)
             language: Message language ("ko" or "en")
+            portfolio_force: Bypass portfolio-summary debounce (batch run-end sends
+                the complete final summary; mirrors KR).
+            await_broadcast: Await the broadcast-translation task inline before
+                returning. Intraday loops (trend_exit/hardstop) don't call run(),
+                so without this the translation task is cancelled on process exit
+                and non-KR channels miss the sell notice. (Signature parity with KR —
+                the missing params raised TypeError, dropping ALL US loop-sell
+                Telegram notices, e.g. AVGO/NVDA 2026-07-14.)
 
         Returns:
             bool: Send success status
@@ -3146,7 +3156,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # summaries. Other queued messages (sell notices) are unaffected.
             try:
                 from portfolio_broadcast import should_send_portfolio
-                _emit_portfolio = should_send_portfolio("US")
+                _emit_portfolio = should_send_portfolio("US", force=portfolio_force)
             except Exception:
                 _emit_portfolio = True  # fail-open
             if _emit_portfolio:
@@ -3231,10 +3241,19 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             if firebase_tasks:
                 await asyncio.gather(*firebase_tasks, return_exceptions=True)
 
-            # Send to broadcast channels if configured (awaited in run() finally block)
+            # Send to broadcast channels if configured (awaited in run() finally block,
+            # or inline here when await_broadcast=True — intraday loops don't call run()
+            # so the task would be cancelled on process exit unless awaited now).
             if hasattr(self, 'telegram_config') and self.telegram_config and self.telegram_config.broadcast_languages:
                 self._broadcast_task = asyncio.create_task(self._send_to_translation_channels(self.message_queue.copy(), self._msg_types.copy()))
                 logger.info("US broadcast channel translation dispatched")
+                if await_broadcast:
+                    try:
+                        await self._broadcast_task
+                    except Exception as e:
+                        logger.warning(f"US broadcast translation await failed (non-critical): {e}")
+                    finally:
+                        self._broadcast_task = None
 
             # Clear message queue
             self.message_queue = []
