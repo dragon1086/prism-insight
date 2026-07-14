@@ -144,7 +144,7 @@ class TestFetchFailureDefaults:
     def test_zero_price_returns_defaults(self):
         """current_price <= 0 short-circuits immediately."""
         result = calculate_screening_signals("ZERO", 0.0, "2025-01-01")
-        assert result == {"extension_in_adr": 0.0, "extension_score": 1.0, "return_nd": 0.0}
+        assert result == {"extension_in_adr": 0.0, "extension_score": 1.0, "return_nd": 0.0, "oneil_raw": None}
 
 
 # ---------------------------------------------------------------------------

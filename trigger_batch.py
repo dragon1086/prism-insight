@@ -9,6 +9,7 @@ import numpy as np
 import logging
 import os
 from typing import Optional
+from cores.rs_rating import oneil_weighted_return, percentile_ratings
 from krx_data_client import (
     _get_client,
     get_market_ohlcv_by_ticker,
@@ -413,6 +414,8 @@ SIDEWAYS_MA20_SUPPORT_TOLERANCE = 0.97
 
 # Multi-week relative-strength lookback (trading days, ~3 months).
 SCREENING_SIGNAL_LOOKBACK_DAYS = 60
+# O'Neil 다개월 RS Rating 히스토리 (252일 + 버퍼, Phase B SHADOW-gate).
+RS_RATING_LOOKBACK_DAYS = 260
 
 
 def _compute_extension_score(extension_in_adr: float) -> float:
@@ -443,7 +446,7 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
         - return_nd:        N-day price return % (raw multi-week relative-strength input;
                             benchmark subtraction cancels under cross-candidate normalization)
     """
-    result = {"extension_in_adr": 0.0, "extension_score": 1.0, "return_nd": 0.0}
+    result = {"extension_in_adr": 0.0, "extension_score": 1.0, "return_nd": 0.0, "oneil_raw": None}
     if current_price <= 0:
         return result
 
@@ -478,6 +481,15 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
                 ext = ((current_price - ma20) / ma20 * 100) / adr_pct
                 result["extension_in_adr"] = float(ext)
                 result["extension_score"] = _compute_extension_score(ext)
+
+    # O'Neil 다개월 RS Rating (Phase B SHADOW-gate): 별도 260일 fetch, 기존 로직 불변.
+    df260 = get_multi_day_ohlcv(ticker, trade_date, RS_RATING_LOOKBACK_DAYS)
+    if not df260.empty:
+        c260 = "Close" if "Close" in df260.columns else "종가"
+        if c260 in df260.columns:
+            cl260 = df260[c260][df260[c260] > 0]
+            result["oneil_raw"] = oneil_weighted_return(cl260)
+
     return result
 
 
@@ -1371,6 +1383,22 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
             _r_range = _r_max - _r_min if _r_max > _r_min else 0.0
             for _ticker, s in screening_signals.items():
                 rs_score_map[_ticker] = ((s["return_nd"] - _r_min) / _r_range) if _r_range > 0 else 0.5
+
+        # Phase B: RS Rating SHADOW/LIVE gate (env: RS_RATING_ENABLED, 기본 false=SHADOW).
+        # SHADOW: 기존 return_nd 기반 rs_score 100% 불변, oneil 백분위 로그만.
+        # LIVE:   rs_score를 oneil 백분위(pct/99.0)로 교체; oneil_raw=None은 기존 값 유지.
+        _rs_rating_enabled = os.getenv("RS_RATING_ENABLED", "false").strip().lower() == "true"
+        _oneil_raw_map = {t: s["oneil_raw"] for t, s in screening_signals.items()
+                          if s.get("oneil_raw") is not None}
+        _oneil_pct_map = percentile_ratings(_oneil_raw_map) if _oneil_raw_map else {}
+        if not _rs_rating_enabled:
+            for _ticker, pct in _oneil_pct_map.items():
+                logger.info("[RS-RATING][SHADOW] %s oneil_pct=%.0f cur_rs=%.2f",
+                            _ticker, pct, rs_score_map.get(_ticker, 0.5))
+        else:
+            for _ticker in list(screening_signals.keys()):
+                if _ticker in _oneil_pct_map:
+                    rs_score_map[_ticker] = _oneil_pct_map[_ticker] / 99.0
 
         for name, candidates_df in trigger_candidates.items():
             # v1.16.6: Calculate agent scores by trigger type (agent_fit_score unchanged)
