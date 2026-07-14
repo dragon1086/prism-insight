@@ -135,8 +135,20 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
     if current_price <= 0:
         return result
 
-    df = get_multi_day_ohlcv(ticker, trade_date, lookback_days)
-    if df.empty or len(df) < 5:
+    # 최적화(B): 260일 1회 fetch 후 60일 슬라이싱 → fetch 2→1 절감.
+    # df260.tail(lookback_days) == 독립 60일 fetch의 tail(60)과 동일한 마지막 행.
+    df260 = get_multi_day_ohlcv(ticker, trade_date, RS_RATING_LOOKBACK_DAYS)
+    if df260.empty:
+        return result
+
+    # O'Neil 다개월 RS Rating (Phase B SHADOW-gate): 260일 전체 종가 사용.
+    if "Close" in df260.columns:
+        cl260 = df260["Close"][df260["Close"] > 0]
+        result["oneil_raw"] = oneil_weighted_return(cl260)
+
+    # 60일 구간 슬라이싱 (return_nd / MA20 / ADR extension 계산용).
+    df = df260.tail(lookback_days)
+    if len(df) < 5:
         return result
 
     # US data source (yfinance) always uses capitalized English column names
@@ -167,12 +179,6 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
                 ext = ((current_price - ma20) / ma20 * 100) / adr_pct
                 result["extension_in_adr"] = float(ext)
                 result["extension_score"] = _compute_extension_score(ext)
-
-    # O'Neil 다개월 RS Rating (Phase B SHADOW-gate): 별도 260일 fetch, 기존 로직 불변.
-    df260 = get_multi_day_ohlcv(ticker, trade_date, RS_RATING_LOOKBACK_DAYS)
-    if not df260.empty and "Close" in df260.columns:
-        cl260 = df260["Close"][df260["Close"] > 0]
-        result["oneil_raw"] = oneil_weighted_return(cl260)
 
     return result
 

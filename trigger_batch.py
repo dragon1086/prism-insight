@@ -131,17 +131,46 @@ def get_multi_day_ohlcv(ticker: str, end_date: str, days: int = 10) -> pd.DataFr
     start_dt = end_dt - datetime.timedelta(days=days * 2)  # 2x margin for business days
     start_date = start_dt.strftime('%Y%m%d')
 
+    krx_failed = False
     try:
         df = get_market_ohlcv_by_date(start_date, end_date, ticker)
         if df.empty:
-            logger.warning(f"No {days}-day data for {ticker}.")
+            logger.warning(f"No {days}-day data for {ticker} from KRX; attempting FinanceDataReader fallback.")
+            krx_failed = True
+        else:
+            # Select only recent N days
+            return df.tail(days)
+    except Exception as e:
+        logger.warning(f"KRX query failed for {ticker}: {e}; attempting FinanceDataReader fallback.")
+        krx_failed = True
+
+    if krx_failed:
+        try:
+            import FinanceDataReader as fdr
+            fdr_start = start_dt.strftime('%Y-%m-%d')
+            fdr_end = end_dt.strftime('%Y-%m-%d')
+            fdr_df = fdr.DataReader(ticker, fdr_start, fdr_end)
+            if fdr_df.empty:
+                logger.warning(f"FinanceDataReader also returned empty data for {ticker}.")
+                return pd.DataFrame()
+            # Normalize columns to KRX schema (English: Open/High/Low/Close/Volume)
+            col_map = {
+                'open': 'Open', 'high': 'High', 'low': 'Low',
+                'close': 'Close', 'volume': 'Volume',
+                '시가': 'Open', '고가': 'High', '저가': 'Low',
+                '종가': 'Close', '거래량': 'Volume',
+            }
+            fdr_df = fdr_df.rename(columns={
+                c: col_map[c.lower()] for c in fdr_df.columns
+                if c.lower() in col_map
+            })
+            logger.warning(f"[FDR-FALLBACK] {ticker}: FinanceDataReader(네이버) used (KRX unavailable).")
+            return fdr_df.tail(days)
+        except Exception as fe:
+            logger.error(f"FinanceDataReader fallback also failed for {ticker}: {fe}")
             return pd.DataFrame()
 
-        # Select only recent N days
-        return df.tail(days)
-    except Exception as e:
-        logger.error(f"Multi-day query failed for {ticker}: {e}")
-        return pd.DataFrame()
+    return pd.DataFrame()
 
 
 def get_market_cap_df(trade_date: str, market: str = "ALL") -> pd.DataFrame:
@@ -450,8 +479,21 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
     if current_price <= 0:
         return result
 
-    df = get_multi_day_ohlcv(ticker, trade_date, lookback_days)
-    if df.empty or len(df) < 5:
+    # 최적화(B): 260일 1회 fetch 후 60일 슬라이싱 → fetch 2→1 절감.
+    # df260.tail(lookback_days) == 독립 60일 fetch의 tail(60)과 동일한 마지막 행.
+    df260 = get_multi_day_ohlcv(ticker, trade_date, RS_RATING_LOOKBACK_DAYS)
+    if df260.empty:
+        return result
+
+    # O'Neil 다개월 RS Rating (Phase B SHADOW-gate): 260일 전체 종가 사용.
+    c260 = "Close" if "Close" in df260.columns else "종가"
+    if c260 in df260.columns:
+        cl260 = df260[c260][df260[c260] > 0]
+        result["oneil_raw"] = oneil_weighted_return(cl260)
+
+    # 60일 구간 슬라이싱 (return_nd / MA20 / ADR extension 계산용).
+    df = df260.tail(lookback_days)
+    if len(df) < 5:
         return result
 
     high_col = "High" if "High" in df.columns else "고가"
@@ -481,14 +523,6 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
                 ext = ((current_price - ma20) / ma20 * 100) / adr_pct
                 result["extension_in_adr"] = float(ext)
                 result["extension_score"] = _compute_extension_score(ext)
-
-    # O'Neil 다개월 RS Rating (Phase B SHADOW-gate): 별도 260일 fetch, 기존 로직 불변.
-    df260 = get_multi_day_ohlcv(ticker, trade_date, RS_RATING_LOOKBACK_DAYS)
-    if not df260.empty:
-        c260 = "Close" if "Close" in df260.columns else "종가"
-        if c260 in df260.columns:
-            cl260 = df260[c260][df260[c260] > 0]
-            result["oneil_raw"] = oneil_weighted_return(cl260)
 
     return result
 
