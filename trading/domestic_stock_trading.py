@@ -83,9 +83,11 @@ def _resolve_sell_quantity(holding_quantity: int, quantity: int = None) -> int:
     try:
         q = int(quantity)
     except (TypeError, ValueError):
-        return holding_quantity
+        logger.warning("sell quantity %r invalid; refusing full-liquidation fallback", quantity)
+        return 0
     if q <= 0:
-        return holding_quantity
+        logger.warning("sell quantity %r invalid; refusing full-liquidation fallback", quantity)
+        return 0
     return min(q, holding_quantity)
 
 
@@ -881,6 +883,15 @@ class DomesticStockTrading:
 
         # Determine sell quantity (partial when quantity given, else full holding)
         buy_quantity = _resolve_sell_quantity(holding_quantity, quantity)
+        if buy_quantity <= 0:
+            logger.warning("Rejecting sell for %s: requested quantity resolved to 0 (refusing full-liquidation fallback)", stock_code)
+            return {
+                'success': False,
+                'order_no': None,
+                'stock_code': stock_code,
+                'quantity': 0,
+                'message': 'Sell quantity must be a positive whole number'
+            }
 
         # Execute sell order
         api_url = "/uapi/domestic-stock/v1/trading/order-cash"
@@ -1027,6 +1038,15 @@ class DomesticStockTrading:
             }
 
         buy_quantity = _resolve_sell_quantity(holding_quantity, quantity)
+        if buy_quantity <= 0:
+            logger.warning("Rejecting sell for %s: requested quantity resolved to 0 (refusing full-liquidation fallback)", stock_code)
+            return {
+                'success': False,
+                'order_no': None,
+                'stock_code': stock_code,
+                'quantity': 0,
+                'message': 'Sell quantity must be a positive whole number'
+            }
 
         # After-hours closing price sell
         api_url = "/uapi/domestic-stock/v1/trading/order-cash"
@@ -1119,6 +1139,15 @@ class DomesticStockTrading:
             }
 
         buy_quantity = _resolve_sell_quantity(holding_quantity, quantity)
+        if buy_quantity <= 0:
+            logger.warning("Rejecting sell for %s: requested quantity resolved to 0 (refusing full-liquidation fallback)", stock_code)
+            return {
+                'success': False,
+                'order_no': None,
+                'stock_code': stock_code,
+                'quantity': 0,
+                'message': 'Sell quantity must be a positive whole number'
+            }
 
         # Set order type and unit price
         if limit_price and limit_price > 0:
@@ -1471,6 +1500,10 @@ class DomesticStockTrading:
 
                         # Resolve partial sell quantity (None = full holding)
                         sell_quantity = _resolve_sell_quantity(holding_quantity, quantity)
+                        if sell_quantity <= 0:
+                            logger.warning("Rejecting sell for %s: requested quantity resolved to 0 (refusing full-liquidation fallback)", stock_code)
+                            result['message'] = 'Sell quantity must be a positive whole number'
+                            return result
 
                         if effective_limit_price:
                             logger.info(f"[Async Sell API] {stock_code} executing sell (qty: {sell_quantity}/{holding_quantity} shares, limit: {effective_limit_price:,} KRW)")

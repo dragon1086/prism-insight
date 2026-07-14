@@ -108,9 +108,11 @@ def _resolve_sell_quantity(holding_quantity: int, quantity: int = None) -> int:
     try:
         q = int(quantity)
     except (TypeError, ValueError):
-        return holding_quantity
+        logger.warning("sell quantity %r invalid; refusing full-liquidation fallback", quantity)
+        return 0
     if q <= 0:
-        return holding_quantity
+        logger.warning("sell quantity %r invalid; refusing full-liquidation fallback", quantity)
+        return 0
     return min(q, holding_quantity)
 
 
@@ -763,6 +765,15 @@ class USStockTrading:
 
         # Determine sell quantity (partial when quantity given, else full holding)
         quantity = _resolve_sell_quantity(holding_quantity, quantity)
+        if quantity <= 0:
+            logger.warning("Rejecting sell for %s: requested quantity resolved to 0 (refusing full-liquidation fallback)", ticker)
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'message': 'Sell quantity must be a positive whole number'
+            }
 
         # Fetch current price if not provided
         if not limit_price or limit_price <= 0:
@@ -1163,6 +1174,15 @@ class USStockTrading:
 
         # Determine sell quantity (partial when quantity given, else full holding)
         quantity = _resolve_sell_quantity(holding_quantity, quantity)
+        if quantity <= 0:
+            logger.warning("Rejecting sell for %s: requested quantity resolved to 0 (refusing full-liquidation fallback)", ticker)
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'message': 'Sell quantity must be a positive whole number'
+            }
 
         # Reserved order API
         api_url = "/uapi/overseas-stock/v1/trading/order-resv"
@@ -1566,6 +1586,10 @@ class USStockTrading:
 
                         # Resolve partial sell quantity (None = full holding)
                         sell_quantity = _resolve_sell_quantity(target_stock['quantity'], quantity)
+                        if sell_quantity <= 0:
+                            logger.warning("Rejecting sell for %s: requested quantity resolved to 0 (refusing full-liquidation fallback)", ticker)
+                            result['message'] = 'Sell quantity must be a positive whole number'
+                            return result
 
                         logger.info(f"[Async Sell] {ticker} limit_price: ${effective_limit_price:.2f}, use_moo: {effective_use_moo}, qty: {sell_quantity}/{target_stock['quantity']}")
 
