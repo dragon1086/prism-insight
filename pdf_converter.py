@@ -4,17 +4,16 @@ Module for converting Markdown files to PDF
 
 Provides various conversion methods:
 1. Playwright-based HTML conversion (Recommended) - Uses Chromium browser engine
-2. pdfkit-based HTML conversion (Legacy) - Requires wkhtmltopdf, archived in 2023
-3. reportlab direct rendering - Theme not supported
-4. mdpdf simple conversion - Theme not supported
+2. reportlab direct rendering - Theme not supported
+3. mdpdf simple conversion - Theme not supported
 
-Recommended order: Playwright > pdfkit > reportlab > mdpdf
+Recommended order: Playwright > reportlab > mdpdf
 """
 import os
 import logging
 import markdown
 import tempfile
-import PyPDF2
+from pypdf import PdfReader
 import html2text
 import base64
 from datetime import datetime
@@ -1159,71 +1158,21 @@ def _markdown_to_pdf_playwright_sync(md_file_path, pdf_file_path, add_theme, log
     logger.info(f"PDF conversion complete with Playwright: {pdf_file_path}")
 
 def markdown_to_pdf_pdfkit(md_file_path, pdf_file_path, add_theme=False, logo_path=None, enable_watermark=False, watermark_opacity=0.02):
+    """Compatibility alias for the retired pdfkit backend.
+
+    pdfkit/wkhtmltopdf is unmaintained and has no patched release for its known
+    command-injection issue. Existing callers retain the same public method name
+    but are served by the supported Playwright renderer.
     """
-    Convert Markdown to PDF using pdfkit (wkhtmltopdf)
-
-    ⚠️ Warning: wkhtmltopdf was archived in 2023 and is no longer maintained.
-    Using Playwright is recommended.
-
-    Linux installation: dnf install wkhtmltopdf
-
-    Args:
-        md_file_path (str): Markdown file path
-        pdf_file_path (str): Output PDF file path
-        add_theme (bool): Whether to add theme and logo
-        logo_path (str): Logo image path (uses default logo if None)
-        enable_watermark (bool): Whether to apply logo watermark to background
-        watermark_opacity (float): Watermark opacity (0.0-1.0)
-    """
-    try:
-        # Import pdfkit (requires installation: pip install pdfkit + wkhtmltopdf binary)
-        import pdfkit
-
-        # Convert markdown to HTML
-        html_content = markdown_to_html(
-            md_file_path,
-            add_theme=add_theme,
-            logo_path=logo_path,
-            enable_watermark=enable_watermark,
-            watermark_opacity=watermark_opacity
-        )
-
-        # Save HTML to temporary file
-        with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as f:
-            f.write(html_content.encode('utf-8'))
-            temp_html = f.name
-
-        # Option settings
-        options = {
-            'encoding': 'UTF-8',
-            'page-size': 'A4',
-            'margin-top': '20mm',
-            'margin-right': '20mm',
-            'margin-bottom': '20mm',
-            'margin-left': '20mm',
-            'enable-local-file-access': None,
-            'quiet': '',
-            # Additional options for wkhtmltopdf
-            'enable-javascript': None,
-            'javascript-delay': '1000',  # Wait time for JavaScript execution (milliseconds)
-            'no-stop-slow-scripts': None,
-            'debug-javascript': None
-        }
-
-        # Convert HTML to PDF
-        pdfkit.from_file(temp_html, pdf_file_path, options=options)
-
-        # Delete temporary file
-        os.unlink(temp_html)
-
-        logger.info(f"PDF conversion complete with pdfkit: {pdf_file_path}")
-
-    except ImportError:
-        logger.error("pdfkit library is not installed. Install with pip install pdfkit.")
-        raise
-    except Exception as e:
-        logger.error(f"Error during pdfkit conversion: {str(e)}")
-        raise
+    logger.warning("The pdfkit backend is retired; using Playwright instead")
+    return markdown_to_pdf_playwright(
+        md_file_path,
+        pdf_file_path,
+        add_theme,
+        logo_path,
+        enable_watermark,
+        watermark_opacity,
+    )
 
 def markdown_to_pdf_reportlab(md_file_path, pdf_file_path):
     """
@@ -1381,7 +1330,8 @@ def markdown_to_pdf(md_file_path, pdf_file_path, method='playwright', add_theme=
     Args:
         md_file_path (str): Markdown file path
         pdf_file_path (str): Output PDF file path
-        method (str): Conversion method ('playwright', 'pdfkit', 'reportlab', 'mdpdf')
+        method (str): Conversion method ('playwright', 'pdfkit', 'reportlab', 'mdpdf').
+                     'pdfkit' is retained as a compatibility alias for Playwright.
                      Default: 'playwright' (recommended)
         add_theme (bool): Whether to add theme and logo
         logo_path (str): Logo image path (uses default logo if None)
@@ -1402,20 +1352,16 @@ def markdown_to_pdf(md_file_path, pdf_file_path, method='playwright', add_theme=
             # Note: mdpdf method currently does not support themes
             markdown_to_pdf_mdpdf(md_file_path, pdf_file_path)
         else:
-            # Default tries playwright first, then pdfkit, reportlab, and finally mdpdf
+            # Default tries Playwright first, then ReportLab and finally mdpdf.
             try:
                 markdown_to_pdf_playwright(md_file_path, pdf_file_path, add_theme, logo_path, enable_watermark, watermark_opacity)
             except Exception as e1:
-                logger.warning(f"Playwright failed, trying pdfkit: {str(e1)}")
+                logger.warning(f"Playwright failed, trying ReportLab: {str(e1)}")
                 try:
-                    markdown_to_pdf_pdfkit(md_file_path, pdf_file_path, add_theme, logo_path, enable_watermark, watermark_opacity)
+                    markdown_to_pdf_reportlab(md_file_path, pdf_file_path)
                 except Exception as e2:
-                    logger.warning(f"pdfkit failed, trying ReportLab: {str(e2)}")
-                    try:
-                        markdown_to_pdf_reportlab(md_file_path, pdf_file_path)
-                    except Exception as e3:
-                        logger.warning(f"ReportLab failed, trying mdpdf: {str(e3)}")
-                        markdown_to_pdf_mdpdf(md_file_path, pdf_file_path)
+                    logger.warning(f"ReportLab failed, trying mdpdf: {str(e2)}")
+                    markdown_to_pdf_mdpdf(md_file_path, pdf_file_path)
 
     except Exception as e:
         logger.error(f"PDF conversion failed: {str(e)}")
@@ -1425,7 +1371,7 @@ def markdown_to_pdf(md_file_path, pdf_file_path, method='playwright', add_theme=
 # Extract text from PDF
 def extract_text_from_pdf(pdf_path):
     with open(pdf_path, 'rb') as file:
-        reader = PyPDF2.PdfReader(file)
+        reader = PdfReader(file)
         text = ""
         for page in reader.pages:
             text += page.extract_text()

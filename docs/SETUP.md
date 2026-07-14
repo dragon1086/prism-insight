@@ -64,6 +64,7 @@ cd prism-insight
 # Core configuration (required)
 cp mcp_agent.config.yaml.example mcp_agent.config.yaml
 cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
+cp .env.example .env
 
 # Edit config files with your API keys
 # - mcp_agent.secrets.yaml: OpenAI API key
@@ -154,13 +155,11 @@ cp ./trading/config/kis_devlp.yaml.example ./trading/config/kis_devlp.yaml
 Edit `mcp_agent.secrets.yaml` with your API keys:
 
 ```yaml
-# Required
-OPENAI_API_KEY: "sk-..."
+openai:
+  api_key: "sk-..."
 
-# Optional (for full features)
-ANTHROPIC_API_KEY: "sk-ant-..."
-FIRECRAWL_API_KEY: "fc-..."
-PERPLEXITY_API_KEY: "pplx-..."
+anthropic:
+  api_key: "sk-ant-..."  # Optional
 ```
 
 ### Step 5: Configure MCP Servers

@@ -107,12 +107,11 @@ function DashboardContent() {
         setData(jsonData)
       } catch (error) {
         console.error("[v0] Failed to fetch dashboard data:", error)
-        if (market === "US") {
-          setDataError(language === "ko"
-            ? "미국 시장 데이터를 불러올 수 없습니다."
-            : "Failed to load US market data."
-          )
-        }
+        setData(null)
+        setDataError(language === "ko"
+          ? `${market === "US" ? "미국" : "한국"} 시장 데이터를 불러올 수 없습니다.`
+          : `Failed to load ${market} market data.`
+        )
       }
     }
 

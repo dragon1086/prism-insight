@@ -78,6 +78,11 @@ export interface Holding {
     sector?: string
     market_condition?: string
     max_portfolio_size?: string
+    entry_checklist_passed?: number
+    rejection_reason?: string
+    expected_loss_pct?: number
+    expected_return_pct?: number
+    risk_reward_ratio?: number
     trading_scenarios?: {
       key_levels?: Record<string, any>
       sell_triggers?: string[]
@@ -103,6 +108,16 @@ export interface Trade {
     investment_period?: string
     sector?: string
     rationale?: string
+    portfolio_analysis?: string
+    valuation_analysis?: string
+    sector_outlook?: string
+    market_condition?: string
+    trading_scenarios?: {
+      key_levels?: Record<string, string>
+      sell_triggers?: string[]
+      hold_conditions?: string[]
+      portfolio_context?: string
+    }
   }
 }
 
@@ -146,6 +161,11 @@ export interface WatchlistStock {
     sector?: string
     market_condition?: string
     max_portfolio_size?: string
+    entry_checklist_passed?: number
+    rejection_reason?: string
+    expected_loss_pct?: number
+    expected_return_pct?: number
+    risk_reward_ratio?: number
     trading_scenarios?: {
       key_levels?: Record<string, string>
       sell_triggers?: string[]

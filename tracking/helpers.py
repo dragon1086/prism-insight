@@ -502,20 +502,32 @@ def parse_price_value(value: Any) -> float:
 
         if isinstance(value, str):
             value = value.replace(',', '')
+            number = r'[+-]?\d+(?:\.\d+)?'
 
-            range_patterns = [
-                r'(\d+(?:\.\d+)?)\s*[-~]\s*(\d+(?:\.\d+)?)',
-                r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)',
-            ]
+            # Tilde ranges often contain units or labels around each endpoint
+            # (for example ``1,700원~2,000원`` or ``최소 1500 ~ 최대 2000``).
+            # Preserve endpoint signs so negative support/resistance bands are
+            # not silently converted to positive values.
+            tilde_match = re.search(
+                rf'({number})[^0-9+\-~]*~[^0-9+\-]*({number})', value
+            )
+            if tilde_match:
+                low = float(tilde_match.group(1))
+                high = float(tilde_match.group(2))
+                return (low + high) / 2
 
-            for pattern in range_patterns:
-                match = re.search(pattern, value)
-                if match:
-                    low = float(match.group(1))
-                    high = float(match.group(2))
-                    return (low + high) / 2
+            # A hyphen is both a range separator and a sign. Treat it as a
+            # separator only after a complete first endpoint; negative ranges
+            # should use the unambiguous tilde form handled above.
+            hyphen_match = re.search(
+                rf'({number})\s*-\s*(\d+(?:\.\d+)?)', value
+            )
+            if hyphen_match:
+                low = float(hyphen_match.group(1))
+                high = float(hyphen_match.group(2))
+                return (low + high) / 2
 
-            number_match = re.search(r'(\d+(?:\.\d+)?)', value)
+            number_match = re.search(rf'({number})', value)
             if number_match:
                 return float(number_match.group(1))
 

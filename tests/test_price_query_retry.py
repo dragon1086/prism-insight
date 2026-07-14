@@ -128,6 +128,15 @@ async def _run():
         K.get_market_ohlcv_by_ticker = _o_ohlcv
 
 
-asyncio.run(_run())
-print(f"\n===== RESULT: {passed} passed, {failed} failed =====")
-sys.exit(1 if failed else 0)
+def test_price_query_retry_contract():
+    """Expose the legacy script checks to pytest without exiting collection."""
+    global passed, failed
+    passed = failed = 0
+    asyncio.run(_run())
+    assert failed == 0, f"{failed} of {passed + failed} retry checks failed"
+
+
+if __name__ == "__main__":
+    asyncio.run(_run())
+    print(f"\n===== RESULT: {passed} passed, {failed} failed =====")
+    sys.exit(1 if failed else 0)

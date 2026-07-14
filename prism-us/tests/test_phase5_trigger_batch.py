@@ -42,7 +42,6 @@ from cores.us_surge_detector import (
 
 from us_trigger_batch import (
     TRIGGER_CRITERIA,
-    MIN_MARKET_CAP,
     MIN_TRADING_VALUE,
     calculate_agent_fit_metrics,
     score_candidates_by_agent_criteria,
@@ -194,10 +193,9 @@ class TestUtilityFunctions:
 
     def test_get_nearest_business_day_next(self):
         """Test next business day from weekend."""
-        # Saturday -> should return Monday
+        # Saturday -> Monday is MLK Day, so the next session is Tuesday
         result = get_nearest_business_day("20250118", prev=False)
-        # Result should be Monday (20th)
-        assert result == "20250120"
+        assert result == "20250121"
 
     def test_filter_low_liquidity(self, sample_snapshot):
         """Test filter_low_liquidity removes low volume stocks."""
@@ -265,10 +263,6 @@ class TestTriggerCriteria:
         """Test each trigger has sl_max."""
         for trigger, criteria in TRIGGER_CRITERIA.items():
             assert 'sl_max' in criteria, f"{trigger} missing sl_max"
-
-    def test_min_market_cap_value(self):
-        """Test MIN_MARKET_CAP is $20B."""
-        assert MIN_MARKET_CAP == 20_000_000_000
 
     def test_min_trading_value(self):
         """Test MIN_TRADING_VALUE is $100M."""

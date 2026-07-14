@@ -84,4 +84,12 @@ finally:
     t.get_multi_day_ohlcv = _orig
 
 print(f"\n===== RESULT: {passed} passed, {failed} failed =====")
-sys.exit(1 if failed else 0)
+
+
+def test_sideways_downtrend_gate_script_checks():
+    """Report the legacy script checks through pytest's normal lifecycle."""
+    assert failed == 0, f"{failed} of {passed + failed} gate checks failed"
+
+
+if __name__ == "__main__":
+    sys.exit(1 if failed else 0)

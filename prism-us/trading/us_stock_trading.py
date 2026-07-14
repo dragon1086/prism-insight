@@ -29,6 +29,13 @@ from typing import Optional, Dict, List, Any
 import yaml
 import pytz
 
+try:
+    from .market_session import is_exchange_session_open
+    from .order_submission import OrderOutcomeUnknown, submit_blocking_order
+except ImportError:  # Standalone import when prism-us/trading is directly on sys.path
+    from market_session import is_exchange_session_open
+    from order_submission import OrderOutcomeUnknown, submit_blocking_order
+
 # Path to directory where current file is located
 TRADING_DIR = Path(__file__).parent
 PROJECT_ROOT = TRADING_DIR.parent.parent
@@ -100,17 +107,18 @@ def _resolve_sell_quantity(holding_quantity: int, quantity: int = None) -> int:
     """Resolve the number of shares to sell (US, #288).
 
     When ``quantity`` is None the full holding is sold (unchanged behavior).
-    When given, the requested partial quantity is used, clamped to
-    [1, holding_quantity] to avoid over-selling.
+    When given, the requested partial quantity is clamped to the holding.
+    Explicit zero/negative or malformed quantities are rejected as zero rather
+    than being reinterpreted as a full-position liquidation.
     """
     if quantity is None:
         return holding_quantity
     try:
         q = int(quantity)
     except (TypeError, ValueError):
-        return holding_quantity
+        return 0
     if q <= 0:
-        return holding_quantity
+        return 0
     return min(q, holding_quantity)
 
 
@@ -295,6 +303,7 @@ class USStockTrading:
         self._global_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(3)
         self._stock_locks = {}
+        self._pending_order_tasks = set()
 
         logger.info("USStockTrading initialized (Async Enabled)")
         logger.info(f"Mode: {mode}, Buy Amount: ${self.buy_amount:,.2f} USD")
@@ -313,6 +322,12 @@ class USStockTrading:
         with ka.get_trading_env_lock():
             self._activate_account()
             return ka._url_fetch(api_url, tr_id, "", params, **kwargs)
+
+    async def _submit_blocking_order(self, func, *args):
+        """Start one broker call and preserve its task if the API timeout fires."""
+        return await submit_blocking_order(
+            self._pending_order_tasks, func, *args, logger=logger
+        )
 
     def _probe_exchange(self, ticker: str) -> Optional[str]:
         """
@@ -763,6 +778,14 @@ class USStockTrading:
 
         # Determine sell quantity (partial when quantity given, else full holding)
         quantity = _resolve_sell_quantity(holding_quantity, quantity)
+        if quantity <= 0:
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'message': 'Sell quantity must be a positive whole number',
+            }
 
         # Fetch current price if not provided
         if not limit_price or limit_price <= 0:
@@ -843,17 +866,14 @@ class USStockTrading:
             True if market is open, False otherwise
         """
         now_et = datetime.datetime.now(US_EASTERN)
-        current_time = now_et.time()
-
-        # US market hours: 09:30 - 16:00 ET
-        market_open = datetime.time(9, 30)
-        market_close = datetime.time(16, 0)
-
-        # Check if it's a weekday
-        if now_et.weekday() >= 5:  # Saturday = 5, Sunday = 6
+        try:
+            import pandas_market_calendars as mcal
+            return is_exchange_session_open(now_et, mcal.get_calendar('NYSE'), US_EASTERN)
+        except Exception as exc:
+            # Fail closed: a missing/corrupt calendar must not route a holiday
+            # or early-close order through the normal-session endpoint.
+            logger.error("Unable to resolve NYSE session; treating market as closed: %s", exc)
             return False
-
-        return market_open <= current_time <= market_close
 
     def is_reserved_order_available(self) -> bool:
         """
@@ -923,10 +943,24 @@ class USStockTrading:
                     status TEXT DEFAULT 'pending',
                     failure_reason TEXT,
                     created_at TEXT NOT NULL,
+                    claimed_at TEXT,
+                    submission_started_at TEXT,
                     executed_at TEXT,
                     order_result TEXT
                 )
             """)
+            existing_columns = {
+                row[1] for row in cursor.execute("PRAGMA table_info(us_pending_orders)")
+            }
+            if "claimed_at" not in existing_columns:
+                cursor.execute(
+                    "ALTER TABLE us_pending_orders ADD COLUMN claimed_at TEXT"
+                )
+            if "submission_started_at" not in existing_columns:
+                cursor.execute(
+                    "ALTER TABLE us_pending_orders "
+                    "ADD COLUMN submission_started_at TEXT"
+                )
 
             now_kst = datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute(
@@ -1163,6 +1197,14 @@ class USStockTrading:
 
         # Determine sell quantity (partial when quantity given, else full holding)
         quantity = _resolve_sell_quantity(holding_quantity, quantity)
+        if quantity <= 0:
+            return {
+                'success': False,
+                'order_no': None,
+                'ticker': ticker,
+                'quantity': 0,
+                'message': 'Sell quantity must be a positive whole number',
+            }
 
         # Reserved order API
         api_url = "/uapi/overseas-stock/v1/trading/order-resv"
@@ -1447,7 +1489,7 @@ class USStockTrading:
                         effective_limit_price = limit_price if (limit_price and limit_price > 0) else current_price
                         logger.info(f"[Async Buy] {ticker} limit_price: ${effective_limit_price:.2f} (provided: {limit_price})")
 
-                        buy_result = await asyncio.to_thread(
+                        buy_result = await self._submit_blocking_order(
                             self.smart_buy, ticker, amount, exchange, effective_limit_price
                         )
 
@@ -1458,6 +1500,11 @@ class USStockTrading:
                         else:
                             result['message'] = f"Buy failed: {buy_result['message']}"
 
+                    except OrderOutcomeUnknown as e:
+                        result['unknown_outcome'] = True
+                        result['retry_safe'] = False
+                        result['message'] = str(e)
+                        logger.error("[Async Buy] %s outcome unknown: %s", ticker, e)
                     except Exception as e:
                         result['message'] = f'Async buy error: {str(e)}'
                         logger.error(f"[Async Buy] {ticker} error: {str(e)}")
@@ -1566,11 +1613,14 @@ class USStockTrading:
 
                         # Resolve partial sell quantity (None = full holding)
                         sell_quantity = _resolve_sell_quantity(target_stock['quantity'], quantity)
+                        if sell_quantity <= 0:
+                            result['message'] = 'Sell quantity must be a positive whole number'
+                            return result
 
                         logger.info(f"[Async Sell] {ticker} limit_price: ${effective_limit_price:.2f}, use_moo: {effective_use_moo}, qty: {sell_quantity}/{target_stock['quantity']}")
 
                         # Execute sell
-                        sell_result = await asyncio.to_thread(
+                        sell_result = await self._submit_blocking_order(
                             self.smart_sell_all, ticker, exchange, effective_limit_price if effective_limit_price > 0 else None, effective_use_moo, sell_quantity
                         )
 
@@ -1593,6 +1643,11 @@ class USStockTrading:
                         else:
                             result['message'] = f"Sell failed: {sell_result['message']}"
 
+                    except OrderOutcomeUnknown as e:
+                        result['unknown_outcome'] = True
+                        result['retry_safe'] = False
+                        result['message'] = str(e)
+                        logger.error("[Async Sell] %s outcome unknown: %s", ticker, e)
                     except Exception as e:
                         result['message'] = f'Async sell error: {str(e)}'
                         logger.error(f"[Async Sell] {ticker} error: {str(e)}")

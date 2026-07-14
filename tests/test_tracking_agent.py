@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-async def test_agent():
+async def run_agent_check():
     """Test function"""
     # Specify report file paths to test
     report_paths = [
@@ -48,4 +48,4 @@ async def test_agent():
 
 if __name__ == "__main__":
     # Run test
-    asyncio.run(test_agent())
+    asyncio.run(run_agent_check())

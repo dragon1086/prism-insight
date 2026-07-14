@@ -155,7 +155,7 @@ export function PerformanceChart({ data, prismPerformance = [], holdings = [], s
     ])
   }
 
-  const getYDomain = (values: number[]) => {
+  const getYDomain = (values: number[]): [number, number] => {
     const minValue = Math.min(...values)
     const maxValue = Math.max(...values)
     const padding = Math.max(Math.abs(maxValue - minValue) * 0.15, 2)
@@ -346,10 +346,10 @@ function IndexCharts({ data, market = "KR" }: { data: MarketCondition[], market?
   // Get index values based on market
   const index1Values = isUSMarket
     ? data.map(d => d.spx_index || 0).filter(v => v > 0)
-    : data.map(d => d.kospi_index).filter(v => v > 0)
+    : data.map(d => d.kospi_index ?? 0).filter(v => v > 0)
   const index2Values = isUSMarket
     ? data.map(d => d.nasdaq_index || 0).filter(v => v > 0)
-    : data.map(d => d.kosdaq_index).filter(v => v > 0)
+    : data.map(d => d.kosdaq_index ?? 0).filter(v => v > 0)
 
   const [index1Min, index1Max] = getYAxisDomain(index1Values)
   const [index2Min, index2Max] = getYAxisDomain(index2Values)

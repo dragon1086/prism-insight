@@ -5,8 +5,8 @@ numpy~=2.2.3
 # Pin to commit SHA so pip detects fork updates without --force-reinstall.
 # Branch ref alone is ignored when version (0.2.6) already matches.
 mcp-agent @ git+https://github.com/dragon1086/mcp-agent.git@430b9e4dcf3fa3bed8ac7921cedc8602e01cbd7d
-requests~=2.32.3
-aiohttp~=3.11.13
+requests>=2.33.0,<3
+aiohttp>=3.14.1,<4
 python-dateutil~=2.9.0.post0
 email-validator
 # openai bumped from <2.0.0: openai-agents requires >=2.9; verified mcp-agent 0.2.6
@@ -15,20 +15,18 @@ openai>=2.9,<3
 openai-agents==0.7.0
 anthropic~=0.64.0
 markdown>=3.3.0
-python-telegram-bot>=20.0
+python-telegram-bot[job-queue]>=20.0
 aiosqlite>=0.17.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
 mcp-server-sqlite
 
 # 파일 처리 및 로깅
-pathlib>=1.0.1
 python-dotenv>=1.0.0
 
 
 # PDF 변환 관련 패키지
 playwright>=1.40.0  # Chromium 기반 PDF 변환 (권장)
-pdfkit>=1.0.0  # wkhtmltopdf 기반 PDF 변환 (레거시, 백업용)
 reportlab>=4.0.0  # 직접 PDF 생성 (대체 방식)
 mdpdf>=0.0.9  # 간편한 마크다운 변환 (대체 방식)
 
@@ -51,33 +49,28 @@ Pillow>=10.0.0
 
 holidays~=0.68
 
-python-telegram-bot[job-queue]>=20.0
-
 kospi_kosdaq_stock_server>=0.4.0
-DateTime~=5.5
 matplotlib~=3.10.1
 seaborn~=0.13.2
 mplfinance~=0.12.10b0
 
 tenacity
 
-PyPDF2
+pypdf>=6.14.2
 html2text
 
 scipy
 
 
-cryptography>=42.0.8,<45.0.0
+cryptography>=48.0.1,<49.0.0
 
 APScheduler==3.11.0
 
 upstash-redis>=1.0.0
 google-cloud-pubsub>=2.18.0
 
-# YouTube Event Fund Crawler
-yt-dlp>=2024.0.0  # YouTube video/audio downloader
-feedparser>=6.0.0  # RSS feed parser
-pydub>=0.25.1  # Audio file manipulation (for splitting large files)
+# Official Bybit connector used by prism-btc demo execution.
+pybit>=5.16.1,<6
 
 # US Stock Market (prism-us module)
 yfinance>=0.2.0  # Yahoo Finance data

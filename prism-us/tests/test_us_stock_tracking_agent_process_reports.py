@@ -52,6 +52,23 @@ def _load_us_agent_module():
         tracking_db_schema.migrate_us_watchlist_history_columns = lambda *args, **kwargs: None
         tracking_db_schema.is_us_ticker_in_holdings = lambda *args, **kwargs: False
         tracking_db_schema.get_us_holdings_count = lambda *args, **kwargs: 0
+        def get_existing_position(cursor, ticker, account_key=None):
+            cursor.execute(
+                "SELECT COUNT(*), COALESCE(AVG(buy_price), 0) "
+                "FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
+                (ticker, account_key),
+            )
+            count, average = cursor.fetchone()
+            return {"row_count": count, "avg_buy_price": average}
+
+        tracking_db_schema.get_us_existing_position_for_ticker = get_existing_position
+        tracking_db_schema.evaluate_us_pyramid_add_gate = (
+            lambda *args, **kwargs: (False, "test stub")
+        )
+        tracking_db_schema.compute_us_fractional_sell_quantity = (
+            lambda available, remaining: available
+        )
+        tracking_db_schema.decide_us_sell_plan = lambda *args, **kwargs: "full"
         sys.modules["tracking.db_schema"] = tracking_db_schema
 
         tracking_journal = types.ModuleType("tracking.journal")
@@ -102,7 +119,7 @@ class _FakeAsyncUSTradingContext:
             "failed_accounts": ["us-secondary"],
         }
 
-    async def async_sell_stock(self, ticker, limit_price=None):
+    async def async_sell_stock(self, ticker, limit_price=None, quantity=None):
         return {
             "success": True,
             "message": f"sold for {self.account_name}",
@@ -188,11 +205,13 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
         slot_checks.append(agent.active_account["name"])
         return 0
 
-    async def fake_check_sector_diversity(sector):
+    async def fake_check_sector_diversity(sector, **kwargs):
         sector_checks.append((agent.active_account["name"], sector))
         return True
 
-    async def fake_buy_stock(ticker, company_name, current_price, scenario, rank_change_msg):
+    async def fake_buy_stock(
+        ticker, company_name, current_price, scenario, rank_change_msg, **kwargs
+    ):
         buy_calls.append((agent.active_account["name"], ticker))
         return True
 
@@ -266,7 +285,7 @@ async def test_process_reports_saves_watchlist_once_when_not_traded(monkeypatch)
     async def fake_get_current_slots_count():
         return 0
 
-    async def fake_check_sector_diversity(sector):
+    async def fake_check_sector_diversity(sector, **kwargs):
         return True
 
     async def fake_buy_stock(*args, **kwargs):
@@ -317,6 +336,7 @@ async def test_update_holdings_masks_sold_account_payload(monkeypatch):
     agent.cursor.execute(
         """
         CREATE TABLE us_stock_holdings (
+            id INTEGER PRIMARY KEY,
             ticker TEXT,
             company_name TEXT,
             buy_price REAL,

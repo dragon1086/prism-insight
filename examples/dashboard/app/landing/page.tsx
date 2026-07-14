@@ -12,12 +12,10 @@ import {
   Play,
   Github,
   ExternalLink,
-  Bot,
   TrendingUp,
   Bell,
   Zap,
   Globe,
-  Shield,
   ChevronRight,
   Terminal,
   Heart
@@ -29,8 +27,14 @@ function useGitHubStars() {
 
   useEffect(() => {
     fetch('https://api.github.com/repos/dragon1086/prism-insight')
-      .then(res => res.json())
-      .then(data => setStars(data.stargazers_count))
+      .then(res => {
+        if (!res.ok) throw new Error(`GitHub API returned ${res.status}`)
+        return res.json()
+      })
+      .then(data => {
+        const count = Number(data.stargazers_count)
+        setStars(Number.isFinite(count) ? count : null)
+      })
       .catch(() => setStars(null))
   }, [])
 

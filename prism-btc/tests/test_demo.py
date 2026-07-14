@@ -224,28 +224,16 @@ def _seed_open_position(adapter, conn, side="long", entry=100.0, qty=0.03,
 
 
 # ===========================================================================
-# Case 1 — 키 없을 때 graceful 스킵
+# Case 1 — 키 없을 때 fail-fast
 # ===========================================================================
 
 class TestKeylessSkip:
-    def test_no_session_skips_without_exception_and_logs_error(self, monkeypatch):
+    def test_no_session_rejects_adapter_initialization(self, monkeypatch):
         monkeypatch.setattr(demo, "_make_session",
                             lambda: (None, "BYBIT_DEMO_API_KEY/SECRET 미설정"))
         conn = _conn()
-        adapter = _make_adapter(conn, fake=None)
-        assert adapter.sess is None
-
-        # 예외 없이 조용히 스킵해야 한다.
-        adapter.process_bar(_BASE_TS, _bar(close=100.0),
-                            new_4h_confirmed=True, cur_4h_ns=None)
-
-        # error 이벤트가 기록됐다.
-        kinds = [r["kind"] for r in conn.execute(
-            "SELECT kind FROM btc_events WHERE mode='demo'").fetchall()]
-        assert "error" in kinds
-        # 거래소엔 접근 자체를 안 했으니 equity/position 테이블은 비어있다.
-        assert conn.execute(
-            "SELECT COUNT(*) FROM btc_equity_curve").fetchone()[0] == 0
+        with pytest.raises(RuntimeError, match="BYBIT_DEMO_API_KEY/SECRET"):
+            _make_adapter(conn, fake=None)
 
 
 # ===========================================================================

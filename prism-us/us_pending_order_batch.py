@@ -43,6 +43,19 @@ KST = pytz.timezone('Asia/Seoul')
 
 # DB path (same as trading module)
 DB_PATH = Path(__file__).resolve().parent.parent / "stock_tracking_db.sqlite"
+CLAIM_LEASE_MINUTES = 15
+
+
+def ensure_claim_columns(conn: sqlite3.Connection) -> None:
+    """Migrate older pending-order tables before using the claim lifecycle."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(us_pending_orders)")}
+    if "claimed_at" not in columns:
+        conn.execute("ALTER TABLE us_pending_orders ADD COLUMN claimed_at TEXT")
+    if "submission_started_at" not in columns:
+        conn.execute(
+            "ALTER TABLE us_pending_orders ADD COLUMN submission_started_at TEXT"
+        )
+    conn.commit()
 
 
 def get_pending_orders(conn: sqlite3.Connection, today_str: str) -> list:
@@ -66,10 +79,60 @@ def update_order_status(conn: sqlite3.Connection, order_id: int,
     conn.execute(
         """UPDATE us_pending_orders
            SET status = ?, executed_at = ?, order_result = ?, failure_reason = ?
-           WHERE id = ?""",
+           WHERE id = ? AND status IN ('claimed', 'submitting')""",
         (status, now_kst, json.dumps(result) if result else None, failure_reason, order_id)
     )
     conn.commit()
+
+
+def claim_pending_order(conn: sqlite3.Connection, order_id: int) -> bool:
+    """Atomically claim one order so concurrent batch runs cannot duplicate it."""
+    now_kst = datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
+    cursor = conn.execute(
+        """UPDATE us_pending_orders
+           SET status = 'claimed', claimed_at = ?, submission_started_at = NULL,
+               failure_reason = NULL
+           WHERE id = ? AND status = 'pending'""",
+        (now_kst, order_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def mark_submission_started(conn: sqlite3.Connection, order_id: int) -> bool:
+    """Mark the exact boundary after which broker outcome may be ambiguous."""
+    now_kst = datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
+    cursor = conn.execute(
+        """UPDATE us_pending_orders
+           SET status = 'submitting', submission_started_at = ?,
+               failure_reason = 'Broker submission started; reconcile before retry after a crash'
+           WHERE id = ? AND status = 'claimed'""",
+        (now_kst, order_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def recover_stale_claims(conn: sqlite3.Connection, now_kst: datetime.datetime) -> tuple[int, int]:
+    """Retry safe pre-submit claims; quarantine ambiguous post-submit claims."""
+    cutoff = (now_kst - datetime.timedelta(minutes=CLAIM_LEASE_MINUTES)).strftime(
+        '%Y-%m-%d %H:%M:%S'
+    )
+    safe = conn.execute(
+        """UPDATE us_pending_orders
+           SET status = 'pending', claimed_at = NULL, failure_reason = NULL
+           WHERE status = 'claimed' AND claimed_at < ?""",
+        (cutoff,),
+    ).rowcount
+    unknown = conn.execute(
+        """UPDATE us_pending_orders
+           SET status = 'unknown',
+               failure_reason = 'Submission outcome unknown; manual broker reconciliation required'
+           WHERE status = 'submitting' AND submission_started_at < ?""",
+        (cutoff,),
+    ).rowcount
+    conn.commit()
+    return safe, unknown
 
 
 def expire_old_orders(conn: sqlite3.Connection, today_str: str) -> int:
@@ -97,7 +160,36 @@ def process_pending_orders(dry_run: bool = False):
         logger.warning(f"Database not found: {DB_PATH}")
         return
 
+    if dry_run:
+        # A dry run is a read-only inspection: no expiry commits, trading imports,
+        # KIS authentication, or order claims.
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        pending_orders = get_pending_orders(conn, today_str)
+        old_count = conn.execute(
+            """SELECT COUNT(*) FROM us_pending_orders
+               WHERE status = 'pending' AND date(created_at) < ?""",
+            (today_str,),
+        ).fetchone()[0]
+        logger.info("[DRY RUN] Would expire %d old pending order(s)", old_count)
+        for order in pending_orders:
+            logger.info(
+                "[DRY RUN] Would execute %s for %s (order #%s)",
+                order['order_type'], order['ticker'], order['id'],
+            )
+        conn.close()
+        logger.info("=== Dry Run Complete: %d order(s) inspected ===", len(pending_orders))
+        return
+
     conn = sqlite3.connect(str(DB_PATH))
+    ensure_claim_columns(conn)
+    recovered_count, unknown_count = recover_stale_claims(conn, now_kst)
+    if recovered_count:
+        logger.warning("Recovered %d stale pre-submit claim(s)", recovered_count)
+    if unknown_count:
+        logger.error(
+            "Quarantined %d stale submission(s) with unknown broker outcome",
+            unknown_count,
+        )
 
     # Expire old orders first
     expired_count = expire_old_orders(conn, today_str)
@@ -147,12 +239,15 @@ def process_pending_orders(dry_run: bool = False):
 
         logger.info(f"Processing order #{order_id}: {order_type} {ticker} @ ${limit_price:.2f} for {account_name}")
 
-        if dry_run:
-            logger.info(f"  [DRY RUN] Would execute {order_type} for {ticker}")
+        if not claim_pending_order(conn, order_id):
+            logger.info("Order #%s was claimed by another batch; skipping", order_id)
             continue
 
         try:
             trader = USStockTrading(mode=mode, account_name=account_name, product_code=product_code)
+            if not mark_submission_started(conn, order_id):
+                logger.warning("Order #%s lost its claim before submission; skipping", order_id)
+                continue
             if order_type == 'buy':
                 result = trader.buy_reserved_order(
                     ticker=ticker,

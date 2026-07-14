@@ -46,6 +46,11 @@ def _confirmed_30m(tf_data) -> "pd.DataFrame":
 def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
     """단일 틱 실행. 처리한 새 확정 30m 봉 수 + 하트비트 결과 dict 반환."""
     result = {"updated": False, "new_bars": 0, "error": None, "ts": None}
+    if mode not in {"shadow", "demo"}:
+        result["error"] = (
+            f"unsupported trading mode {mode!r}: real BTC execution is not implemented"
+        )
+        return result
     root_conn = tracking.get_connection(root_db_path)
     tracking.ensure_schema(root_conn)
 
@@ -199,7 +204,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="prism-btc shadow paper daemon")
     parser.add_argument("--once", action="store_true",
                         help="run a single tick and exit (test/cron)")
-    parser.add_argument("--mode", default="shadow", choices=["shadow", "demo", "live"])
+    parser.add_argument("--mode", default="shadow", choices=["shadow", "demo"])
     parser.add_argument("--market-db", default=None, help="market.db path override")
     parser.add_argument("--root-db", default=None, help="root tracking db path override")
     parser.add_argument("-v", "--verbose", action="store_true")

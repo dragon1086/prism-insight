@@ -8,7 +8,7 @@ Self-contained package. Does **not** import anything from `cores/` or `prism-us/
 prism-btc/
 ├── collector/
 │   ├── bybit_public.py   Bybit v5 public REST client (no API key)
-│   ├── store.py          SQLite upsert layer (state/market.db)
+│   ├── store.py          SQLite upsert layer (state/btc_market.db)
 │   ├── backfill.py       Historical backfill CLI (__main__)
 │   └── update.py         Incremental update library (for daemon)
 ├── engine/
@@ -20,7 +20,7 @@ prism-btc/
 │   ├── test_regime.py
 │   └── test_store.py
 ├── state/
-│   └── market.db         (auto-created on first run)
+│   └── btc_market.db     (auto-created on first run)
 └── README.md
 ```
 
@@ -28,15 +28,19 @@ prism-btc/
 
 ```bash
 cd /path/to/prism-insight
-.venv/bin/python -m pytest prism-btc/tests -x -q
+PYTHONPATH=prism-btc .venv/bin/python -m pytest prism-btc/tests -x -q
 ```
 
-## Backfill (all 6 timeframes, from 2022-01-01)
+## Backfill (all 6 timeframes, from 2020-01-01)
 
 ```bash
-cd /path/to/prism-insight
-.venv/bin/python -m prism-btc.collector.backfill
-# or:
+cd /path/to/prism-insight/prism-btc
+../.venv/bin/python -m collector.backfill
+```
+
+Or from the repository root:
+
+```bash
 .venv/bin/python -c "
 import sys; sys.path.insert(0, 'prism-btc')
 from collector.backfill import backfill_all
@@ -71,9 +75,9 @@ print(snap.to_json())
 
 | Score | Meaning |
 |-------|---------|
-| ≥ 80  | Strong full-alignment — high leverage allowed (25–30x) |
-| 60–80 | Good alignment (15–25x) |
-| 40–60 | Weak alignment — entry caution (10–15x, 1 tranche only) |
+| ≥ 80  | Strong full-alignment — 11–12x |
+| 60–80 | Good alignment — 10–11x |
+| 40–60 | Weak alignment — 8–10x, 1 tranche only |
 | < 40  | No trade (sideways / conflicted) |
 | < 0   | Short bias |
 

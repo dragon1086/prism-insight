@@ -202,9 +202,11 @@ CREATE TABLE IF NOT EXISTS us_pending_orders (
     exchange TEXT,                     -- NASD, NYSE, AMEX
     trigger_type TEXT,
     trigger_mode TEXT,
-    status TEXT DEFAULT 'pending',     -- pending, executed, failed, expired, cancelled
+    status TEXT DEFAULT 'pending',     -- pending, claimed, submitting, unknown, executed, failed, expired, cancelled
     failure_reason TEXT,
     created_at TEXT NOT NULL,
+    claimed_at TEXT,
+    submission_started_at TEXT,
     executed_at TEXT,
     order_result TEXT                  -- JSON result from KIS API
 )
@@ -679,10 +681,23 @@ def create_us_tables(cursor, conn):
             logger.error(f"Error creating table {table_name}: {e}")
 
     migrate_multi_account_schema(cursor, conn)
+    migrate_us_pending_order_claim_columns(cursor, conn)
     migrate_drop_us_holdings_unique_constraint(cursor, conn)
     migrate_us_trading_history_columns(cursor, conn)
     conn.commit()
     logger.info("US database tables created")
+
+
+def migrate_us_pending_order_claim_columns(cursor, conn):
+    """Add crash-safe claim lifecycle timestamps to existing pending-order DBs."""
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(us_pending_orders)")}
+    if "claimed_at" not in columns:
+        cursor.execute("ALTER TABLE us_pending_orders ADD COLUMN claimed_at TEXT")
+    if "submission_started_at" not in columns:
+        cursor.execute(
+            "ALTER TABLE us_pending_orders ADD COLUMN submission_started_at TEXT"
+        )
+    conn.commit()
 
 
 def migrate_us_trading_history_columns(cursor, conn):

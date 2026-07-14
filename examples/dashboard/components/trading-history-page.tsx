@@ -205,8 +205,8 @@ export function TradingHistoryPage({ history, summary, prismPerformance = [], ma
       const prismDailyReturn = currPrism - prevPrism // 이미 % 단위
 
       // 시장: KOSPI 일별 수익률
-      const prevKospi = filteredMarket[i - 1].kospi_index
-      const currKospi = filteredMarket[i].kospi_index
+      const prevKospi = filteredMarket[i - 1].kospi_index ?? 0
+      const currKospi = filteredMarket[i].kospi_index ?? 0
       const marketDailyReturn = prevKospi > 0 ? ((currKospi - prevKospi) / prevKospi) * 100 : 0
 
       prismDailyReturns.push(prismDailyReturn)
@@ -498,7 +498,7 @@ export function TradingHistoryPage({ history, summary, prismPerformance = [], ma
       </div>
 
       {/* 위험조정 성과 지표 (알파, 베타, 샤프비율, 정보비율) */}
-      {(prismPerformance.length > 0 && marketCondition.length > 0 && dataPoints > 0) && (
+      {(prismPerformance.length > 0 && marketCondition.length > 0 && (dataPoints ?? 0) > 0) && (
         <>
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold text-foreground">{t("trading.riskAdjustedMetrics")}</h3>

@@ -5,63 +5,27 @@ _parse_price_value function test script
 This test validates the _parse_price_value method from stock_tracking_agent.py under various input conditions.
 """
 
+import importlib.util
 import sys
-import re
 from pathlib import Path
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+_helpers_spec = importlib.util.spec_from_file_location(
+    "test_tracking_helpers", project_root / "tracking" / "helpers.py"
+)
+_helpers = importlib.util.module_from_spec(_helpers_spec)
+assert _helpers_spec.loader is not None
+_helpers_spec.loader.exec_module(_helpers)
+parse_price_value = _helpers.parse_price_value
+
 
 class TestParsePriceValue:
-    """Independent class for testing _parse_price_value function"""
+    """Exercise the production parser rather than a duplicated implementation."""
 
-    @staticmethod
-    def _parse_price_value(value) -> float:
-        """
-        Parse price value and convert to number
-        (same logic as method in stock_tracking_agent.py)
-
-        Args:
-            value: Price value (number, string, range, etc.)
-
-        Returns:
-            float: Parsed price (0 if failed)
-        """
-        try:
-            # If already a number
-            if isinstance(value, (int, float)):
-                return float(value)
-
-            # If string
-            if isinstance(value, str):
-                # Remove commas
-                value = value.replace(',', '')
-
-                # Check range expression (e.g., "2000~2050", "1,700-1,800")
-                range_patterns = [
-                    r'(\d+(?:\.\d+)?)\s*[-~]\s*(\d+(?:\.\d+)?)',  # 2000~2050 or 2000-2050
-                    r'(\d+(?:\.\d+)?)\s*~\s*(\d+(?:\.\d+)?)',     # 2000 ~ 2050
-                ]
-
-                for pattern in range_patterns:
-                    match = re.search(pattern, value)
-                    if match:
-                        # Use midpoint of range
-                        low = float(match.group(1))
-                        high = float(match.group(2))
-                        return (low + high) / 2
-
-                # Try to extract single number
-                number_match = re.search(r'(\d+(?:\.\d+)?)', value)
-                if number_match:
-                    return float(number_match.group(1))
-
-            return 0
-        except Exception as e:
-            print(f"⚠️  Price value parsing failed: {value} - {str(e)}")
-            return 0
+    _parse_price_value = staticmethod(parse_price_value)
 
 
 def run_tests():

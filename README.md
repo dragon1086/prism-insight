@@ -200,6 +200,7 @@ git clone https://github.com/dragon1086/prism-insight.git
 cd prism-insight
 cp mcp_agent.config.yaml.example mcp_agent.config.yaml
 cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
+cp .env.example .env
 # Edit config files with your API keys
 
 # 2. Build & Run
@@ -391,7 +392,7 @@ Free under AGPL-3.0 for personal use, non-commercial projects, and open-source d
 Separate commercial license required for SaaS companies.
 
 **Contact**: dragon1086@naver.com
-**Details**: [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md)
+**Details**: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)
 
 ---
 

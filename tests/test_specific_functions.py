@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-async def test_specific_functions():
+async def run_specific_functions_check():
     """Specific function test"""
 
     async with app.run():
@@ -52,4 +52,4 @@ async def test_specific_functions():
 
 if __name__ == "__main__":
     # Run test
-    asyncio.run(test_specific_functions())
+    asyncio.run(run_specific_functions_check())

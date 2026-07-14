@@ -748,7 +748,7 @@ click the <b>'Lab'</b> tab!
             logger.error(f"Portfolio status send error: {e}")
             return None
 
-    async def execute_trading_strategy(self, analysis: Dict):
+    async def execute_trading_strategy(self, analysis: Dict) -> bool:
         """
         Execute trading strategy based on analysis
 
@@ -763,7 +763,7 @@ click the <b>'Lab'</b> tab!
             # Check if this video was already processed
             if await self.db.video_id_exists(video_info['video_id']):
                 logger.warning(f"Video {video_info['video_id']} already processed, skipping trade execution")
-                return
+                return True
 
             sentiment = analysis.get('jeon_sentiment')
             action = analysis.get('contrarian_action')
@@ -787,6 +787,12 @@ click the <b>'Lab'</b> tab!
                 if current_position:
                     # Sell current position - get real price
                     sell_price = get_current_price(current_position['stock_code'])
+                    if not sell_price or sell_price <= 0:
+                        logger.error(
+                            "Price unavailable for %s; leaving video unprocessed for retry",
+                            current_position['stock_code'],
+                        )
+                        return False
                     sell_amount = current_position['quantity'] * sell_price
                     profit_loss = sell_amount - current_position['buy_amount']
                     profit_loss_pct = (profit_loss / current_position['buy_amount']) * 100
@@ -849,12 +855,32 @@ click the <b>'Lab'</b> tab!
 
                 if not target_code:
                     logger.warning(f"No target stock for sentiment: {sentiment}")
-                    return
+                    return False
+
+                # Resolve every price required for a switch before committing
+                # its first leg. This prevents a valid SELL from being recorded
+                # when the subsequent BUY price is unavailable.
+                buy_price = None
+                needs_buy = not current_position or current_position['stock_code'] != target_code
+                if needs_buy:
+                    buy_price = get_current_price(target_code)
+                    if not buy_price or buy_price <= 0:
+                        logger.error(
+                            "Price unavailable for %s; leaving video unprocessed for retry",
+                            target_code,
+                        )
+                        return False
 
                 # Step 1: Sell current position if different stock
                 if current_position and current_position['stock_code'] != target_code:
                     # Sell different stock - get real price
                     sell_price = get_current_price(current_position['stock_code'])
+                    if not sell_price or sell_price <= 0:
+                        logger.error(
+                            "Price unavailable for %s; leaving video unprocessed for retry",
+                            current_position['stock_code'],
+                        )
+                        return False
                     sell_amount = current_position['quantity'] * sell_price
                     profit_loss = sell_amount - current_position['buy_amount']
                     profit_loss_pct = (profit_loss / current_position['buy_amount']) * 100
@@ -911,10 +937,9 @@ click the <b>'Lab'</b> tab!
                     }
                     await self.db.insert_trade(record)
                     logger.info(f"Already holding {target_name}")
-                    return
+                    return True
 
                 # Step 2: Buy target stock with FULL BALANCE - get real price
-                buy_price = get_current_price(target_code)
                 quantity = int(current_balance / buy_price)  # Full balance investment
                 buy_amount = quantity * buy_price
 
@@ -954,9 +979,11 @@ click the <b>'Lab'</b> tab!
             # Log performance metrics
             metrics = await self.db.calculate_performance_metrics()
             logger.info(f"Performance: Win {metrics['win_rate']:.1f}%, Return {metrics['cumulative_return']:.2f}%")
+            return True
 
         except Exception as e:
             logger.error(f"Trading execution error: {e}", exc_info=True)
+            return False
 
     def cleanup_temp_files(self):
         """Cleanup temporary audio files"""
@@ -1005,7 +1032,9 @@ click the <b>'Lab'</b> tab!
             await self.send_telegram_message(analysis)
 
             # Execute trading
-            await self.execute_trading_strategy(analysis)
+            if not await self.execute_trading_strategy(analysis):
+                logger.warning("Trading deferred; video will remain eligible for retry")
+                return None
 
             # Send portfolio status message
             await self.send_portfolio_status_message()
@@ -1092,13 +1121,18 @@ click the <b>'Lab'</b> tab!
             logger.info(f"Processing {len(new_videos_chronological)} videos in chronological order")
 
             # Process each new video
+            deferred_ids = set()
             for video in new_videos_chronological:
                 analysis = await self.process_new_video(video)
                 if analysis:
                     print(json.dumps(analysis, ensure_ascii=False, indent=2))
+                else:
+                    deferred_ids.add(video['id'])
 
-            # Save history
-            self.save_video_history(current_videos)
+            # Preserve failed/deferred videos for a future retry while recording
+            # every successfully processed or intentionally filtered item.
+            history_videos = [v for v in current_videos if v['id'] not in deferred_ids]
+            self.save_video_history(history_videos)
 
             logger.info("="*80)
             logger.info("Completed")
