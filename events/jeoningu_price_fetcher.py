@@ -133,7 +133,7 @@ def get_kodex_prices(date: str = None) -> dict:
     }
 
 
-def get_current_price(stock_code: str) -> int:
+def get_current_price(stock_code: str) -> int | None:
     """
     Get current closing price (simplified)
 
@@ -141,21 +141,17 @@ def get_current_price(stock_code: str) -> int:
         stock_code: Stock code
 
     Returns:
-        Current closing price (integer)
+        Current closing price (integer), or None if the price is unavailable.
+        Callers MUST guard for None and defer instead of fabricating a price.
     """
     price_info = get_stock_price(stock_code)
 
     if price_info:
         return price_info['close']
     else:
-        # Fallback to mock prices if API fails
-        logger.warning(f"Using mock price for {stock_code}")
-        if stock_code == KODEX_LEVERAGE:
-            return 20000  # Mock for Leverage
-        elif stock_code == KODEX_INVERSE_2X:
-            return 5000  # Mock for Inverse 2X
-        else:
-            return 10000
+        # Do NOT fabricate a price: returning a mock would record fake performance.
+        logger.error("Current price unavailable for %s; deferring instead of fabricating", stock_code)
+        return None
 
 
 # Test function
@@ -176,5 +172,7 @@ if __name__ == "__main__":
     # Get current price
     current_leverage = get_current_price(KODEX_LEVERAGE)
     current_inverse_2x = get_current_price(KODEX_INVERSE_2X)
-    print(f"\nCurrent KODEX Leverage: {current_leverage:,} KRW")
-    print(f"Current KODEX Inverse 2X: {current_inverse_2x:,} KRW")
+    leverage_str = f"{current_leverage:,} KRW" if current_leverage is not None else "unavailable"
+    inverse_2x_str = f"{current_inverse_2x:,} KRW" if current_inverse_2x is not None else "unavailable"
+    print(f"\nCurrent KODEX Leverage: {leverage_str}")
+    print(f"Current KODEX Inverse 2X: {inverse_2x_str}")

@@ -641,9 +641,6 @@ click the <b>'Lab'</b> tab!
             if position:
                 # Holding position
                 current_price = get_current_price(position['stock_code'])
-                current_value = position['quantity'] * current_price
-                unrealized_pl = current_value - position['buy_amount']
-                unrealized_pl_pct = (unrealized_pl / position['buy_amount']) * 100 if position['buy_amount'] > 0 else 0
 
                 # Calculate holding period
                 buy_date = datetime.fromisoformat(position['buy_date'].replace('Z', '+00:00')) if position.get('buy_date') else None
@@ -651,13 +648,29 @@ click the <b>'Lab'</b> tab!
 
                 message_parts.append("📊 **Current Position**\n")
                 message_parts.append(f"🎯 {position['stock_name']}")
-                message_parts.append(f"┣ Holdings: {position['quantity']:,} shares × {current_price:,.0f} KRW")
-                message_parts.append(f"┣ Market Value: {current_value:,.0f} KRW")
-                message_parts.append(f"┣ Avg Cost: {position['buy_price']:,.0f} KRW")
 
-                # Unrealized P&L (emoji for color indication)
-                pl_emoji = "🔴" if unrealized_pl < 0 else "🟢" if unrealized_pl > 0 else "⚪"
-                message_parts.append(f"┗ Unrealized P&L: {pl_emoji} {unrealized_pl:+,.0f} KRW ({unrealized_pl_pct:+.2f}%)")
+                if current_price is None:
+                    # Price unavailable: skip valuation for this position, do not fabricate.
+                    logger.warning(
+                        f"Current price unavailable for {position['stock_code']}; "
+                        f"skipping market valuation in portfolio status"
+                    )
+                    unrealized_pl = 0  # Unknown; treated as no realized/unrealized change for display
+                    message_parts.append(f"┣ Holdings: {position['quantity']:,} shares")
+                    message_parts.append("┣ Market Value: unavailable (price fetch failed)")
+                    message_parts.append(f"┗ Avg Cost: {position['buy_price']:,.0f} KRW")
+                else:
+                    current_value = position['quantity'] * current_price
+                    unrealized_pl = current_value - position['buy_amount']
+                    unrealized_pl_pct = (unrealized_pl / position['buy_amount']) * 100 if position['buy_amount'] > 0 else 0
+
+                    message_parts.append(f"┣ Holdings: {position['quantity']:,} shares × {current_price:,.0f} KRW")
+                    message_parts.append(f"┣ Market Value: {current_value:,.0f} KRW")
+                    message_parts.append(f"┣ Avg Cost: {position['buy_price']:,.0f} KRW")
+
+                    # Unrealized P&L (emoji for color indication)
+                    pl_emoji = "🔴" if unrealized_pl < 0 else "🟢" if unrealized_pl > 0 else "⚪"
+                    message_parts.append(f"┗ Unrealized P&L: {pl_emoji} {unrealized_pl:+,.0f} KRW ({unrealized_pl_pct:+.2f}%)")
 
                 if holding_days > 0:
                     message_parts.append(f"\n⏱ Day {holding_days} holding")
@@ -787,6 +800,13 @@ click the <b>'Lab'</b> tab!
                 if current_position:
                     # Sell current position - get real price
                     sell_price = get_current_price(current_position['stock_code'])
+                    if sell_price is None:
+                        # Price unavailable: defer this sell, do NOT fabricate a trade.
+                        logger.warning(
+                            f"Current price unavailable for {current_position['stock_code']}; "
+                            f"deferring SELL (neutral sentiment) this cycle"
+                        )
+                        return
                     sell_amount = current_position['quantity'] * sell_price
                     profit_loss = sell_amount - current_position['buy_amount']
                     profit_loss_pct = (profit_loss / current_position['buy_amount']) * 100
@@ -851,10 +871,30 @@ click the <b>'Lab'</b> tab!
                     logger.warning(f"No target stock for sentiment: {sentiment}")
                     return
 
+                # Fetch the BUY price up-front. A missing price must defer the whole
+                # position change BEFORE any sell executes; otherwise the sell would
+                # commit and the paired buy would be skipped, leaving a half-completed
+                # switch (position sold, balance left uninvested).
+                buy_price = get_current_price(target_code)
+                if buy_price is None:
+                    logger.warning(
+                        f"Current price unavailable for {target_code}; "
+                        f"deferring position change (no SELL/BUY executed) this cycle"
+                    )
+                    return
+
                 # Step 1: Sell current position if different stock
                 if current_position and current_position['stock_code'] != target_code:
                     # Sell different stock - get real price
                     sell_price = get_current_price(current_position['stock_code'])
+                    if sell_price is None:
+                        # Price unavailable: defer the position switch (sell+buy) this cycle,
+                        # do NOT fabricate a sell price.
+                        logger.warning(
+                            f"Current price unavailable for {current_position['stock_code']}; "
+                            f"deferring position switch (SELL then BUY) this cycle"
+                        )
+                        return
                     sell_amount = current_position['quantity'] * sell_price
                     profit_loss = sell_amount - current_position['buy_amount']
                     profit_loss_pct = (profit_loss / current_position['buy_amount']) * 100
@@ -913,8 +953,7 @@ click the <b>'Lab'</b> tab!
                     logger.info(f"Already holding {target_name}")
                     return
 
-                # Step 2: Buy target stock with FULL BALANCE - get real price
-                buy_price = get_current_price(target_code)
+                # Step 2: Buy target stock with FULL BALANCE (buy_price fetched & guarded above)
                 quantity = int(current_balance / buy_price)  # Full balance investment
                 buy_amount = quantity * buy_price
 
