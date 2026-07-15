@@ -768,22 +768,11 @@ class StockTrackingAgent:
     def _normalize_decision(decision: str) -> str:
         """Normalize AI decision string to canonical English form.
 
-        LLM may return decision in Korean or various English forms.
-        Maps all variants to a consistent set: 'Enter', 'Watch', 'Skip'.
+        Delegates to prism_core.parsing.normalize_decision_kr (issue #412 Phase 1).
+        Behavior unchanged: maps variants to {'Enter', 'Watch', 'Skip'}.
         """
-        if not decision:
-            return "Skip"
-        normalized = decision.strip()
-        enter_variants = {"진입", "Entry", "enter", "entry", "Enter", "매수", "Buy", "buy"}
-        watch_variants = {"관망", "Watch", "watch", "Hold", "hold", "보류"}
-        skip_variants = {"미진입", "Skip", "skip", "No entry", "no entry", "패스", "Pass", "pass"}
-        if normalized in enter_variants:
-            return "Enter"
-        if normalized in watch_variants:
-            return "Watch"
-        if normalized in skip_variants:
-            return "Skip"
-        return normalized
+        from prism_core.parsing import normalize_decision_kr
+        return normalize_decision_kr(decision)
 
     def _parse_price_value(self, value: Any) -> float:
         """Parse price value and convert to number (delegates to tracking.helpers)"""

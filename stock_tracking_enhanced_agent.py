@@ -1410,32 +1410,13 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.error(traceback.format_exc())
 
     def _safe_number_conversion(self, value) -> float:
-        """Safely convert various value types to numbers"""
-        try:
-            # If already a numeric type
-            if isinstance(value, (int, float)):
-                return float(value)
+        """Safely convert various value types to numbers.
 
-            # If string
-            if isinstance(value, str):
-                # Remove commas and spaces
-                cleaned_value = value.replace(',', '').replace(' ', '')
-                # Remove currency symbols (KRW, 원)
-                cleaned_value = cleaned_value.replace('KRW', '').replace('원', '')
-
-                # Check for empty string
-                if not cleaned_value:
-                    return 0.0
-
-                # Convert to number
-                return float(cleaned_value)
-
-            # If null or other type
-            return 0.0
-
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Number conversion failed: {value} -> {str(e)}")
-            return 0.0
+        Delegates to prism_core.parsing.safe_number_conversion (issue #412 Phase 1).
+        Behavior unchanged.
+        """
+        from prism_core.parsing import safe_number_conversion
+        return safe_number_conversion(value)
 
     async def _save_holding_decision(self, ticker: str, current_price: float, decision_json: Dict[str, Any]) -> bool:
         """
