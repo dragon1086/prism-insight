@@ -657,7 +657,7 @@ click the <b>'Lab'</b> tab!
                     )
                     unrealized_pl = 0  # Unknown; treated as no realized/unrealized change for display
                     message_parts.append(f"┣ Holdings: {position['quantity']:,} shares")
-                    message_parts.append(f"┣ Market Value: unavailable (price fetch failed)")
+                    message_parts.append("┣ Market Value: unavailable (price fetch failed)")
                     message_parts.append(f"┗ Avg Cost: {position['buy_price']:,.0f} KRW")
                 else:
                     current_value = position['quantity'] * current_price
