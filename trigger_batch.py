@@ -1135,6 +1135,9 @@ def trigger_macro_sector_leader(trade_date: str, snapshot: pd.DataFrame,
     # Calculate daily change for relative strength
     snap_filtered["DailyChange"] = ((snap_filtered["Close"] - prev.loc[matched_rows, "Close"]) /
                                      prev.loc[matched_rows, "Close"]) * 100
+    # Expose as prev_day_change_rate so the downstream dispatch (which only reads
+    # prev_day_change_rate) reports the real change rate instead of 0.
+    snap_filtered["prev_day_change_rate"] = snap_filtered["DailyChange"]
 
     # Market average change for relative strength calculation
     market_avg_change = (
@@ -1264,6 +1267,9 @@ def trigger_contrarian_value(trade_date: str, snapshot: pd.DataFrame,
         return pd.DataFrame()
 
     result_df = pd.DataFrame(rows).set_index("Ticker")
+    # Same fix as trigger_macro_sector_leader: downstream dispatch reads only
+    # prev_day_change_rate, so mirror DailyChange into it (was reported as 0).
+    result_df["prev_day_change_rate"] = result_df["DailyChange"]
 
     def _norm_col(series: pd.Series) -> pd.Series:
         col_min = series.min()
