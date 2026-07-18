@@ -201,6 +201,83 @@ async def test_kr_buy_dual_writes_open_position():
     )
 
 
+@pytest.mark.asyncio
+async def test_kr_mirror_failures_keep_buy_and_sell_legacy_commits(monkeypatch):
+    """Shadow failures must be observable without blocking the legacy ledger."""
+    from prism_core.positions import PositionStore
+
+    agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent.conn = sqlite3.connect(":memory:")
+    agent.conn.row_factory = sqlite3.Row
+    agent.cursor = agent.conn.cursor()
+    agent.cursor.execute(TABLE_STOCK_HOLDINGS)
+    agent.cursor.execute(TABLE_TRADING_HISTORY)
+    PositionStore(agent.cursor).ensure_schema()
+    agent.conn.commit()
+    agent.position_ledger_shadow_enabled = True
+    agent.max_slots = 10
+    agent.message_queue = []
+    agent._msg_types = []
+    agent._account_scope = lambda: ("ACC1", "primary")
+    agent._get_trigger_win_rate = lambda _trigger: ""
+
+    async def no_holding(_ticker):
+        return False
+
+    async def no_slots():
+        return 0
+
+    async def no_journal(**_kwargs):
+        return True
+
+    agent._is_ticker_in_holdings = no_holding
+    agent._get_current_slots_count = no_slots
+    agent._create_journal_entry = no_journal
+
+    original_open = PositionStore.open_legacy_position
+
+    def fail_open(*_args, **_kwargs):
+        raise RuntimeError("open mirror injected failure token=top-secret")
+
+    monkeypatch.setattr(PositionStore, "open_legacy_position", fail_open)
+    assert await agent.buy_stock(
+        "005930", "Samsung", 70000, {"sector": "Technology"}
+    )
+    holding = dict(agent.conn.execute("SELECT * FROM stock_holdings").fetchone())
+    assert agent.conn.execute("SELECT COUNT(*) FROM stock_holdings").fetchone()[0] == 1
+    assert agent.conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+    open_comparison = PositionStore(agent.conn).compare_legacy_positions("KR")
+    assert not open_comparison["matches"]
+    assert len(open_comparison["missing_positions"]) == 1
+    assert [row["operation"] for row in open_comparison["unresolved_mirror_errors"]] == [
+        "open"
+    ]
+
+    monkeypatch.setattr(PositionStore, "open_legacy_position", original_open)
+    assert PositionStore(agent.conn).backfill_legacy_positions("KR")["inserted"] == 1
+    agent.conn.commit()
+
+    def fail_close(*_args, **_kwargs):
+        raise RuntimeError("close mirror injected failure password=hunter2")
+
+    monkeypatch.setattr(PositionStore, "close_legacy_position", fail_close)
+    holding["current_price"] = 71000
+    assert await agent.sell_stock(holding, "fail-open regression")
+
+    assert agent.conn.execute("SELECT COUNT(*) FROM stock_holdings").fetchone()[0] == 0
+    assert agent.conn.execute("SELECT COUNT(*) FROM trading_history").fetchone()[0] == 1
+    assert agent.conn.execute("SELECT status FROM positions").fetchone()[0] == "OPEN"
+    comparison = PositionStore(agent.conn).compare_legacy_positions("KR")
+    assert not comparison["matches"]
+    assert len(comparison["extra_open_positions"]) == 1
+    assert [row["operation"] for row in comparison["unresolved_mirror_errors"]] == [
+        "open",
+        "close",
+    ]
+    assert "top-secret" not in str(comparison)
+    assert "hunter2" not in str(comparison)
+
+
 def test_kr_position_kill_switch_skips_shadow_write():
     agent = StockTrackingAgent.__new__(StockTrackingAgent)
     agent.conn = sqlite3.connect(":memory:")
