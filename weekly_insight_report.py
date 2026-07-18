@@ -533,7 +533,7 @@ async def _send_broadcast(message: str, broadcast_languages: list):
 
                 logger.info(f"Translating weekly report to {lang}")
                 translated = await translate_telegram_message(
-                    message, model="gpt-5.4-nano", from_lang="ko", to_lang=lang
+                    message, model="gpt-5.6-luna", from_lang="ko", to_lang=lang
                 )
                 await bot.send_message(chat_id=channel_id, text=translated, parse_mode="HTML")
                 logger.info(f"Weekly report sent to {lang} channel")
