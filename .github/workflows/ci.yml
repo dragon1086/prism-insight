@@ -40,6 +40,9 @@ jobs:
           # shadow one another.
           python -m pytest tests/test_execution_service.py -q \
             -k "not transient_empty_portfolio"
+          python -m pytest --noconftest \
+            tests/test_report_agent_contract.py \
+            tests/test_report_generation_backend.py -q
           python -m pytest \
             tests/test_issue_288_pyramiding.py \
             tests/test_layer2_stale_snapshot_guard.py -q
