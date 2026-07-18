@@ -45,24 +45,18 @@ def _now_kst() -> datetime.datetime:
 def _domestic_order_window(now: Optional[datetime.datetime] = None) -> str:
     """Classify the Korean domestic stock order window using KST.
 
+    Thin wrapper that delegates to ``prism_core.time_windows`` (issue #412
+    Phase 1-b). Kept so existing call sites and tests stay unchanged; the
+    calculation itself now lives in the dependency-free core module.
+
     Returns one of:
     - regular: 09:00~15:30 market orders
     - closing: 15:40~16:00 after-hours closing-price orders
     - reserved: KIS reserved-order window, excluding 23:40~00:10
     - unavailable: gaps where neither regular/closing nor reserved orders are accepted
     """
-    now = now or _now_kst()
-    current_time = now.astimezone(KST).time() if now.tzinfo else now.time()
-
-    if datetime.time(9, 0) <= current_time <= datetime.time(15, 30):
-        return "regular"
-    if datetime.time(15, 40) <= current_time <= datetime.time(16, 0):
-        return "closing"
-    if datetime.time(16, 0) < current_time <= datetime.time(23, 40):
-        return "reserved"
-    if datetime.time(0, 10) <= current_time <= datetime.time(7, 30):
-        return "reserved"
-    return "unavailable"
+    from prism_core.time_windows import domestic_order_window
+    return domestic_order_window(now)
 
 # Load configuration file
 CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
