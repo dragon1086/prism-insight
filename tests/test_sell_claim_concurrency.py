@@ -167,6 +167,10 @@ def test_real_sell_stock_claim_is_atomic(tmp_path, market, journal_mode, pyramid
         agent._msg_types = []
         agent._account_scope = lambda: ("ACC1", "primary")
         agent._get_trigger_win_rate = lambda _trigger: ""
+        # This dependency-light fixture compiles only sell_stock's AST. The real
+        # agents provide this helper; shadow-ledger behavior is covered by the
+        # full caller tests in the KR/US process-report suites.
+        agent._mirror_position_closed = lambda **_kwargs: True
         agent.enable_journal = False
         agent.journal_manager = None
 
