@@ -585,6 +585,7 @@ class USStockTrading:
             logger.error(f"Error during buy order: {str(e)}")
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'order_no': None,
                 'ticker': ticker,
                 'quantity': buy_quantity,
@@ -692,6 +693,7 @@ class USStockTrading:
             logger.error(f"Error during limit buy: {str(e)}")
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'order_no': None,
                 'ticker': ticker,
                 'quantity': buy_quantity,
@@ -840,6 +842,7 @@ class USStockTrading:
             logger.error(f"Error during sell order: {str(e)}")
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'order_no': None,
                 'ticker': ticker,
                 'quantity': quantity,
@@ -1102,6 +1105,7 @@ class USStockTrading:
             logger.error(f"Error during reserved buy order: {str(e)}")
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'order_no': None,
                 'ticker': ticker,
                 'quantity': buy_quantity,
@@ -1245,6 +1249,7 @@ class USStockTrading:
             logger.error(f"Error during reserved sell order: {str(e)}")
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'order_no': None,
                 'ticker': ticker,
                 'quantity': quantity,
@@ -1390,6 +1395,7 @@ class USStockTrading:
         except asyncio.TimeoutError:
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'ticker': ticker,
                 'current_price': 0,
                 'quantity': 0,
@@ -1476,9 +1482,12 @@ class USStockTrading:
                             result['order_no'] = buy_result['order_no']
                             result['message'] = f"Buy completed: {buy_quantity} shares x ${current_price:.2f} = ${result['total_amount']:.2f}"
                         else:
+                            if buy_result.get('outcome_unknown'):
+                                result['outcome_unknown'] = True
                             result['message'] = f"Buy failed: {buy_result['message']}"
 
                     except Exception as e:
+                        result['outcome_unknown'] = True
                         result['message'] = f'Async buy error: {str(e)}'
                         logger.error(f"[Async Buy] {ticker} error: {str(e)}")
 
@@ -1511,6 +1520,7 @@ class USStockTrading:
         except asyncio.TimeoutError:
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'ticker': ticker,
                 'current_price': 0,
                 'quantity': 0,
@@ -1615,9 +1625,12 @@ class USStockTrading:
                                                f"est: ${result['estimated_amount']:.2f}, "
                                                f"P/L: {result['profit_rate']:+.2f}%)")
                         else:
+                            if sell_result.get('outcome_unknown'):
+                                result['outcome_unknown'] = True
                             result['message'] = f"Sell failed: {sell_result['message']}"
 
                     except Exception as e:
+                        result['outcome_unknown'] = True
                         result['message'] = f'Async sell error: {str(e)}'
                         logger.error(f"[Async Sell] {ticker} error: {str(e)}")
 

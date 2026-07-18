@@ -19,6 +19,7 @@ from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmented
 from cores.agents.trading_agents import create_sell_decision_agent
 from cores.utils import parse_llm_json
 from prism_core.execution_service import ExecutionService
+from prism_core.order_intents import OrderIntent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -637,10 +638,29 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg, is_add=is_add)
 
                     if buy_success:
+                        account_key, account_name = self._account_scope()
+                        order_intent = OrderIntent.create(
+                            market="KR",
+                            account_id=account_key,
+                            symbol=ticker,
+                            side="buy",
+                            order_style="smart",
+                            source="kr_enhanced_batch",
+                            source_decision_id=f"report:{os.path.basename(pdf_report_path)}",
+                            limit_price=current_price,
+                            reason="AI analysis entry",
+                        )
                         # Call actual account trading function (async)
-                        async with ExecutionService.domestic() as trading:
+                        async with ExecutionService.domestic(
+                            account_name=account_name,
+                            db_path=self.db_path,
+                        ) as trading:
                             # Execute async buy with limit price for reserved orders
-                            trade_result = await trading.execute_buy(stock_code=ticker, limit_price=current_price)
+                            trade_result = await trading.execute_buy(
+                                stock_code=ticker,
+                                limit_price=current_price,
+                                intent=order_intent,
+                            )
 
                         if trade_result['success']:
                             logger.info(f"Actual purchase successful: {trade_result['message']}")

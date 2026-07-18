@@ -259,8 +259,8 @@ def _open_context(market: str, account_name: Optional[str] = None):
     from prism_core.execution_service import ExecutionService
 
     if market == "KR":
-        return ExecutionService.domestic(account_name=account_name)
-    return ExecutionService.us(account_name=account_name)
+        return ExecutionService.domestic(account_name=account_name, db_path=DB_PATH)
+    return ExecutionService.us(account_name=account_name, db_path=DB_PATH)
 
 
 async def _make_agent(market: str):
@@ -407,6 +407,10 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
 
         # 2) real KIS market order on the holding's own account; reconcile qty first.
         order_no, ok, sold_qty = None, False, 0
+        outcome_unknown = False
+        intent_status = None
+        from prism_core.execution_service import OrderOutcomeUnknown
+
         try:
             async with _open_context(market, account_name=stock_data.get("account_name")) as seller:
                 live_qty = await asyncio.to_thread(seller.get_holding_quantity, ticker)
@@ -414,11 +418,38 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 if sold_qty <= 0:
                     logger.info("[%s] %s already flat at KIS (qty=0); sim closed", market, ticker)
                 else:
-                    result = await seller.execute_sell(ticker, quantity=sold_qty)
+                    from prism_core.order_intents import OrderIntent
+
+                    order_intent = OrderIntent.create(
+                        market=market,
+                        account_id=stock_data.get("account_key") or stock_data.get("account_name") or "default",
+                        symbol=ticker,
+                        side="sell",
+                        order_style="market",
+                        source="hardstop",
+                        source_position_id=stock_data.get("id"),
+                        quantity=sold_qty,
+                        reason=reason,
+                    )
+                    result = await seller.execute_sell(
+                        ticker,
+                        quantity=sold_qty,
+                        intent=order_intent,
+                    )
+                    intent_status = (result or {}).get("intent_status")
+                    if intent_status in {"UNKNOWN", "QUEUED"}:
+                        outcome_unknown = intent_status == "UNKNOWN"
                     ok = bool(result and result.get("success"))
                     order_no = (result or {}).get("order_no")
                     logger.warning("[LIVE][%s] %s KIS sell success=%s order_no=%s msg=%s",
                                    market, ticker, ok, order_no, (result or {}).get("message"))
+        except OrderOutcomeUnknown as e:
+            outcome_unknown = True
+            order_no = (e.broker_result or {}).get("order_no")
+            logger.critical(
+                "[%s] %s KIS sell outcome UNKNOWN after sim close: intent=%s",
+                market, ticker, e.intent_id,
+            )
         except Exception as e:
             logger.error("[%s] %s KIS sell failed after sim close: %s", market, ticker, e)
 
@@ -445,7 +476,10 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             logger.warning("[%s] %s sell signal publish failed (non-critical): %s", market, ticker, e)
 
         record_inflight(conn, ticker, market, run_id, sold_qty,
-                        "FILLED" if (ok or sold_qty == 0) else "REJECTED",
+                        "UNKNOWN" if outcome_unknown else (
+                            "QUEUED" if intent_status == "QUEUED" else
+                            "FILLED" if (ok or sold_qty == 0) else "REJECTED"
+                        ),
                         reason, str(order_no) if order_no else None)
         release_lock(conn, ticker, market, run_id, new_state="SOLD")
         summary["sold"] += 1
