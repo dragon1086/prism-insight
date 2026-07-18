@@ -39,6 +39,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 from prism_core.execution_service import ExecutionService  # noqa: E402
 from prism_core.order_intents import OrderIntent  # noqa: E402
+from prism_core.positions import PositionStore, mirror_write_fail_open  # noqa: E402
 
 _openai_debug_spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
 if _openai_debug_spec and _openai_debug_spec.loader:
@@ -526,6 +527,9 @@ class USStockTrackingAgent:
             self.enable_journal = env_value in ("true", "1", "yes")
         self.account_configs: list[dict[str, Any]] = []
         self.active_account: dict[str, Any] | None = None
+        self.position_ledger_shadow_enabled = os.environ.get(
+            "POSITION_LEDGER_SHADOW_ENABLED", "true"
+        ).strip().lower() not in {"0", "false", "no", "off"}
 
         # Journal and compression managers (initialized in initialize())
         self.journal_manager = None
@@ -569,6 +573,7 @@ class USStockTrackingAgent:
 
         # Create US database tables
         await self._create_tables()
+        self._initialize_position_ledger()
 
         # Initialize journal manager
         self.journal_manager = USJournalManager(
@@ -603,6 +608,130 @@ class USStockTrackingAgent:
         migrate_us_performance_tracker_columns(self.cursor, self.conn)
         # Migrate watchlist history columns for 7/14/30-day performance tracking
         migrate_us_watchlist_history_columns(self.cursor, self.conn)
+
+    def _position_ledger_enabled(self) -> bool:
+        return getattr(
+            self,
+            "position_ledger_shadow_enabled",
+            os.environ.get("POSITION_LEDGER_SHADOW_ENABLED", "true")
+            .strip()
+            .lower()
+            not in {"0", "false", "no", "off"},
+        )
+
+    def _initialize_position_ledger(self) -> None:
+        """Create/backfill the additive US shadow ledger without blocking startup."""
+        if not self._position_ledger_enabled():
+            logger.warning("[POSITION-SHADOW][US] disabled by kill switch")
+            return
+
+        self.conn.commit()
+        store = PositionStore(self.cursor)
+        try:
+            store.ensure_schema()
+            self.conn.commit()
+        except Exception as error:
+            self.conn.rollback()
+            logger.critical(
+                "[POSITION-SHADOW][US] schema initialization failed (%s)",
+                type(error).__name__,
+            )
+            return
+
+        self.conn.execute("BEGIN")
+        self.conn.execute("SAVEPOINT position_shadow_init")
+        try:
+            result = store.backfill_legacy_positions("US")
+        except Exception as error:
+            self.conn.execute("ROLLBACK TO position_shadow_init")
+            self.conn.execute("RELEASE position_shadow_init")
+            logger.critical(
+                "[POSITION-SHADOW][US] initialization failed (%s)",
+                type(error).__name__,
+            )
+            try:
+                store.record_mirror_error(
+                    market="US",
+                    legacy_holding_id=None,
+                    account_id=None,
+                    operation="initialize",
+                    error=error,
+                )
+            except Exception as audit_error:
+                logger.critical(
+                    "[POSITION-SHADOW][US] initialization audit failed (%s)",
+                    type(audit_error).__name__,
+                )
+            self.conn.commit()
+            return
+        self.conn.execute("RELEASE position_shadow_init")
+        self.conn.commit()
+        logger.info(
+            "[POSITION-SHADOW][US] initialized inserted=%s existing=%s skipped=%s",
+            result["inserted"],
+            result["existing"],
+            result["skipped"],
+        )
+
+    def _mirror_position_open(
+        self,
+        *,
+        legacy_holding_id: int,
+        account_key: str,
+        account_name: str,
+        ticker: str,
+        entry_price: float,
+        opened_at: str,
+    ) -> bool:
+        if not self._position_ledger_enabled():
+            return True
+        return mirror_write_fail_open(
+            self.cursor,
+            logger=logger,
+            market="US",
+            legacy_holding_id=legacy_holding_id,
+            account_id=account_key,
+            operation="open",
+            write=lambda store: store.open_legacy_position(
+                market="US",
+                legacy_holding_id=legacy_holding_id,
+                account_id=account_key,
+                account_name=account_name,
+                symbol=ticker,
+                entry_price=entry_price,
+                opened_at=opened_at,
+            ),
+        )
+
+    def _mirror_position_closed(
+        self,
+        *,
+        legacy_holding_id: int,
+        account_key: str,
+        exit_price: float,
+        realized_pnl_pct: float,
+        exit_kind: str | None,
+        closed_at: str,
+    ) -> bool:
+        if not self._position_ledger_enabled():
+            return True
+        return mirror_write_fail_open(
+            self.cursor,
+            logger=logger,
+            market="US",
+            legacy_holding_id=legacy_holding_id,
+            account_id=account_key,
+            operation="close",
+            write=lambda store: store.close_legacy_position(
+                market="US",
+                legacy_holding_id=legacy_holding_id,
+                account_id=account_key,
+                exit_price=exit_price,
+                realized_pnl_pct=realized_pnl_pct,
+                exit_kind=exit_kind,
+                closed_at=closed_at,
+            ),
+        )
 
     def _get_trading_accounts(self) -> List[Dict[str, Any]]:
         default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
@@ -1196,6 +1325,15 @@ class USStockTrackingAgent:
                     trigger_mode,
                     scenario.get('sector', 'Unknown')
                 )
+            )
+            legacy_holding_id = self.cursor.lastrowid
+            self._mirror_position_open(
+                legacy_holding_id=legacy_holding_id,
+                account_key=account_key,
+                account_name=account_name,
+                ticker=ticker,
+                entry_price=current_price,
+                opened_at=now,
             )
             self.conn.commit()
 
@@ -2248,15 +2386,20 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             row_id = stock_data.get('id')
             if row_id is not None:
                 self.cursor.execute(
-                    "SELECT 1 FROM us_stock_holdings "
+                    "SELECT id FROM us_stock_holdings "
                     "WHERE id = ? AND ticker = ? AND account_key = ? LIMIT 1",
                     (row_id, ticker, account_key),
                 )
-                position_exists = self.cursor.fetchone() is not None
+                matched = self.cursor.fetchone()
+                legacy_holding_ids = [matched[0]] if matched is not None else []
             else:
-                position_exists = get_us_existing_position_for_ticker(
-                    self.cursor, ticker, account_key=account_key
-                ).get("row_count", 0) > 0
+                self.cursor.execute(
+                    "SELECT id FROM us_stock_holdings "
+                    "WHERE ticker = ? AND account_key = ? ORDER BY id",
+                    (ticker, account_key),
+                )
+                legacy_holding_ids = [row[0] for row in self.cursor.fetchall()]
+            position_exists = bool(legacy_holding_ids)
             if not position_exists:
                 logger.warning(
                     f"[SELL-GUARD][US] {ticker} ({company_name}) already closed by "
@@ -2322,6 +2465,16 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     )
                 except Exception as e:
                     logger.debug(f"{ticker} Cleanup adjustment log skipped: {e}")
+
+            for legacy_holding_id in legacy_holding_ids:
+                self._mirror_position_closed(
+                    legacy_holding_id=legacy_holding_id,
+                    account_key=account_key,
+                    exit_price=current_price,
+                    realized_pnl_pct=profit_rate,
+                    exit_kind=_exit_kind,
+                    closed_at=now,
+                )
             self.conn.commit()
 
             # Build sell message (same format as KR template)

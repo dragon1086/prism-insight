@@ -48,6 +48,7 @@ class _FakeAsyncTradingContext:
 @pytest.mark.parametrize("pyramiding", [False, True], ids=["single", "pyramiding"])
 def test_concurrent_sell_guard_allows_one_kr_order_and_publish(tmp_path, pyramiding):
     from prism_core.execution_service import ExecutionService
+    from prism_core.positions import PositionStore
 
     db_path = tmp_path / "kr-concurrent-sell.sqlite"
     setup = sqlite3.connect(db_path)
@@ -67,6 +68,11 @@ def test_concurrent_sell_guard_allows_one_kr_order_and_publish(tmp_path, pyramid
                VALUES ('ACC1', 'primary', '005930', 'Samsung', 68000,
                        '2026-06-15 09:00:00')"""
         )
+    position_store = PositionStore(setup)
+    position_store.ensure_schema()
+    assert position_store.backfill_legacy_positions("KR")["inserted"] == (
+        2 if pyramiding else 1
+    )
     setup.commit()
     setup.close()
 
@@ -132,13 +138,166 @@ def test_concurrent_sell_guard_allows_one_kr_order_and_publish(tmp_path, pyramid
     remaining_prices = verify.execute(
         "SELECT buy_price FROM stock_holdings ORDER BY id"
     ).fetchall()
+    position_states = verify.execute(
+        "SELECT legacy_holding_id, status FROM positions ORDER BY legacy_holding_id"
+    ).fetchall()
     verify.close()
 
     assert sorted(sold for sold, _messages in results) == [False, True]
     assert sum(messages for _sold, messages in results) == 1
     assert history_count == 1
     assert remaining_prices == ([(68000.0,)] if pyramiding else [])
+    assert position_states == (
+        [(str(target_row_id), "CLOSED"), (str(target_row_id + 1), "OPEN")]
+        if pyramiding
+        else [(str(target_row_id), "CLOSED")]
+    )
     assert effects == {"broker": 1, "publish": 1, "journal": 1}
+
+
+@pytest.mark.asyncio
+async def test_kr_buy_dual_writes_open_position():
+    from prism_core.positions import PositionStore
+
+    agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent.conn = sqlite3.connect(":memory:")
+    agent.cursor = agent.conn.cursor()
+    agent.cursor.execute(TABLE_STOCK_HOLDINGS)
+    PositionStore(agent.cursor).ensure_schema()
+    agent.conn.commit()
+    agent.position_ledger_shadow_enabled = True
+    agent.max_slots = 10
+    agent.message_queue = []
+    agent._msg_types = []
+    agent._account_scope = lambda: ("ACC1", "primary")
+    agent._get_trigger_win_rate = lambda _trigger: ""
+
+    async def no_holding(_ticker):
+        return False
+
+    async def no_slots():
+        return 0
+
+    agent._is_ticker_in_holdings = no_holding
+    agent._get_current_slots_count = no_slots
+
+    assert await agent.buy_stock(
+        "005930", "Samsung", 70000, {"sector": "Technology"}
+    )
+    legacy = agent.conn.execute(
+        "SELECT id, account_key, ticker, buy_price, buy_date FROM stock_holdings"
+    ).fetchone()
+    mirror = agent.conn.execute(
+        "SELECT legacy_holding_id, account_id, symbol, entry_price, opened_at, status "
+        "FROM positions"
+    ).fetchone()
+    assert mirror == (
+        str(legacy[0]),
+        legacy[1],
+        legacy[2],
+        legacy[3],
+        legacy[4],
+        "OPEN",
+    )
+
+
+@pytest.mark.asyncio
+async def test_kr_mirror_failures_keep_buy_and_sell_legacy_commits(monkeypatch):
+    """Shadow failures must be observable without blocking the legacy ledger."""
+    from prism_core.positions import PositionStore
+
+    agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent.conn = sqlite3.connect(":memory:")
+    agent.conn.row_factory = sqlite3.Row
+    agent.cursor = agent.conn.cursor()
+    agent.cursor.execute(TABLE_STOCK_HOLDINGS)
+    agent.cursor.execute(TABLE_TRADING_HISTORY)
+    PositionStore(agent.cursor).ensure_schema()
+    agent.conn.commit()
+    agent.position_ledger_shadow_enabled = True
+    agent.max_slots = 10
+    agent.message_queue = []
+    agent._msg_types = []
+    agent._account_scope = lambda: ("ACC1", "primary")
+    agent._get_trigger_win_rate = lambda _trigger: ""
+
+    async def no_holding(_ticker):
+        return False
+
+    async def no_slots():
+        return 0
+
+    async def no_journal(**_kwargs):
+        return True
+
+    agent._is_ticker_in_holdings = no_holding
+    agent._get_current_slots_count = no_slots
+    agent._create_journal_entry = no_journal
+
+    original_open = PositionStore.open_legacy_position
+
+    def fail_open(*_args, **_kwargs):
+        raise RuntimeError("open mirror injected failure token=top-secret")
+
+    monkeypatch.setattr(PositionStore, "open_legacy_position", fail_open)
+    assert await agent.buy_stock(
+        "005930", "Samsung", 70000, {"sector": "Technology"}
+    )
+    holding = dict(agent.conn.execute("SELECT * FROM stock_holdings").fetchone())
+    assert agent.conn.execute("SELECT COUNT(*) FROM stock_holdings").fetchone()[0] == 1
+    assert agent.conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+    open_comparison = PositionStore(agent.conn).compare_legacy_positions("KR")
+    assert not open_comparison["matches"]
+    assert len(open_comparison["missing_positions"]) == 1
+    assert [row["operation"] for row in open_comparison["unresolved_mirror_errors"]] == [
+        "open"
+    ]
+
+    monkeypatch.setattr(PositionStore, "open_legacy_position", original_open)
+    assert PositionStore(agent.conn).backfill_legacy_positions("KR")["inserted"] == 1
+    agent.conn.commit()
+
+    def fail_close(*_args, **_kwargs):
+        raise RuntimeError("close mirror injected failure password=hunter2")
+
+    monkeypatch.setattr(PositionStore, "close_legacy_position", fail_close)
+    holding["current_price"] = 71000
+    assert await agent.sell_stock(holding, "fail-open regression")
+
+    assert agent.conn.execute("SELECT COUNT(*) FROM stock_holdings").fetchone()[0] == 0
+    assert agent.conn.execute("SELECT COUNT(*) FROM trading_history").fetchone()[0] == 1
+    assert agent.conn.execute("SELECT status FROM positions").fetchone()[0] == "OPEN"
+    comparison = PositionStore(agent.conn).compare_legacy_positions("KR")
+    assert not comparison["matches"]
+    assert len(comparison["extra_open_positions"]) == 1
+    assert [row["operation"] for row in comparison["unresolved_mirror_errors"]] == [
+        "open",
+        "close",
+    ]
+    assert "top-secret" not in str(comparison)
+    assert "hunter2" not in str(comparison)
+
+
+def test_kr_position_kill_switch_skips_shadow_write():
+    agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent.conn = sqlite3.connect(":memory:")
+    agent.cursor = agent.conn.cursor()
+    agent.position_ledger_shadow_enabled = False
+
+    assert agent._mirror_position_open(
+        legacy_holding_id=1,
+        account_key="ACC1",
+        account_name="primary",
+        ticker="005930",
+        entry_price=70000,
+        opened_at="2026-07-18",
+    )
+    assert (
+        agent.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'"
+        ).fetchone()
+        is None
+    )
 
 
 def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):
