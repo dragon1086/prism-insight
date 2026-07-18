@@ -29,6 +29,7 @@ jobs:
             "openai>=2.9,<3" \
             "openai-agents==0.7.0" \
             mcp \
+            tenacity \
             pytest \
             pytest-asyncio
 
