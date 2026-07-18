@@ -1,9 +1,16 @@
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from mcp_agent.agents.agent import Agent
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
-from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
 
+import os
 from cores.openai_error_logging import log_openai_error
+
+# Report LLM model/effort (env-overridable). gpt-5.6-terra + reasoning_effort="medium"
+# selected 2026-07-16 (report-quality eval, see tasks/eval). Requires the Responses API
+# path above: gpt-5.6 rejects function tools + reasoning_effort on chat.completions.
+REPORT_MODEL = os.environ.get("REPORT_MODEL", "gpt-5.6-terra")
+REPORT_EFFORT = os.environ.get("REPORT_EFFORT", "medium")
 
 
 # Language name mapping for report generation
@@ -106,8 +113,8 @@ async def generate_report(agent, section, company_name, company_code, reference_
         report = await llm.generate_str(
             message=message,
             request_params=RequestParams(
-                model="gpt-5.4-mini",
-                reasoning_effort="none",
+                model=REPORT_MODEL,
+                reasoning_effort=REPORT_EFFORT,
                 maxTokens=32000,
                 parallel_tool_calls=True,
                 use_history=True
@@ -200,8 +207,8 @@ async def generate_market_report(agent, section, reference_date, logger, languag
         report = await llm.generate_str(
             message=message,
             request_params=RequestParams(
-                model="gpt-5.4-mini",
-                reasoning_effort="none",
+                model=REPORT_MODEL,
+                reasoning_effort=REPORT_EFFORT,
                 maxTokens=32000,
                 max_iterations=3,
                 parallel_tool_calls=True,
@@ -230,7 +237,7 @@ async def generate_summary(section_reports, company_name, company_code, referenc
     try:
         from mcp_agent.agents.agent import Agent
         from mcp_agent.workflows.llm.augmented_llm import RequestParams
-        from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+        from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
 
         language_name = LANGUAGE_NAMES.get(language, language.upper())
 
@@ -314,8 +321,8 @@ Comprehensive Analysis Report:
         executive_summary = await llm.generate_str(
             message=message,
             request_params=RequestParams(
-                model="gpt-5.4-mini",
-                reasoning_effort="none",
+                model=REPORT_MODEL,
+                reasoning_effort=REPORT_EFFORT,
                 maxTokens=16000,
                 max_iterations=2,
                 parallel_tool_calls=True,
@@ -346,7 +353,7 @@ async def generate_investment_strategy(section_reports, combined_reports, compan
         language: Report language code (default: "ko")
     """
     from mcp_agent.workflows.llm.augmented_llm import RequestParams
-    from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+    from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
 
     language_name = LANGUAGE_NAMES.get(language, language.upper())
 
@@ -551,8 +558,8 @@ Please present a consistent and executable investment strategy that investors ca
         investment_strategy = await llm.generate_str(
             message=message,
             request_params=RequestParams(
-                model="gpt-5.4-mini",
-                reasoning_effort="none",
+                model=REPORT_MODEL,
+                reasoning_effort=REPORT_EFFORT,
                 maxTokens=32000,
                 max_iterations=3,
                 parallel_tool_calls=True,
