@@ -634,28 +634,14 @@ class USStockTrackingAgent:
         return f"{account_name} ({ka.mask_account_number(account_key)})"
 
     def _normalize_decision(self, decision: str) -> str:
+        """Normalize decision string for comparison.
+
+        Delegates to prism_core.parsing.normalize_decision_us (issue #412 Phase 1).
+        Lazy import keeps module load independent of sys.path setup order.
+        Behavior unchanged: maps variants to {'entry', 'no_entry'}.
         """
-        Normalize decision string for comparison.
-
-        The agent prompt uses "Enter" or "No Entry" but code checks may use
-        lowercase variants. This method normalizes all variants to a consistent format.
-
-        Args:
-            decision: Raw decision string from agent
-
-        Returns:
-            str: Normalized decision ("entry" or "no_entry")
-        """
-        if not decision:
-            return "no_entry"
-        d = decision.lower().strip()
-        # Handle various entry formats
-        if d in ("enter", "entry", "진입", "yes", "buy"):
-            return "entry"
-        # Handle various no-entry formats
-        elif d in ("no entry", "no_entry", "no-entry", "미진입", "no", "skip", "pass"):
-            return "no_entry"
-        return d
+        from prism_core.parsing import normalize_decision_us
+        return normalize_decision_us(decision)
 
     async def _extract_ticker_info(self, report_path: str) -> Tuple[str, str]:
         """Extract ticker and company name from report path."""
