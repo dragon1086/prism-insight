@@ -2,8 +2,8 @@
 
 > 이슈: [#412 매수/매도 Agent 분리와 KIS 실제 주문 실행 구조 이식 설계](https://github.com/dragon1086/prism-insight/issues/412)
 > 브랜치: `feature/issue-412-execution-architecture`
-> 상태: Phase 2 착수 (2026-07-06 시작, 2026-07-13 main #432 기준 전면 재검토,
-> **2026-07-18 Phase 1-a/1-b main 배포 완료 후 Phase 2 실행 브랜치 시작**)
+> 상태: Phase 4-a 착수 (2026-07-06 시작, 2026-07-13 main #432 기준 전면 재검토,
+> **2026-07-19 Phase 3 main 배포 완료 후 position shadow ledger 시작**)
 
 ## 목적
 
@@ -36,9 +36,10 @@ greenfield 이식이 아니라 **라이브 시스템의 strangler 방식 단계 
 - [x] Phase 0.5: main #432 기준 재검토 — 앵커/전제 갱신, 주문 경로 9곳 재인벤토리 (2026-07-13)
 - [x] Phase 1-a: 파싱/정규화 순수 함수 추출 (PR #447, main `36e6e5ec`)
 - [x] Phase 1-b: KST 주문시간대 순수 함수 추출 (PR #455, main `c4c2539d`)
-- [ ] Phase 2: ExecutionService chokepoint 도입 (동작 불변, 9곳 커버 + 기존 가드 CI 고정) — 진행 중
-- [ ] Phase 3: OrderIntent 영속화 + 쓰기 순서 교정
-- [ ] Phase 4: 포지션 상태기계 전환 (delete → 상태 전이)
+- [x] Phase 2: ExecutionService chokepoint 도입 (PR #456, main `1aca6029`)
+- [x] Phase 3: OrderIntent 영속화 (PR #459, main `8ff33b17`)
+- [ ] Phase 4-a: position OPEN/CLOSED shadow 병행 기록 + 대조 — 진행 중
+- [ ] Phase 4-b: PENDING 전이 + 5 실행일 무불일치 후 읽기 전환
 - [ ] Phase 5: BrokerAdapter 추출 (체결/미체결/정정 포함) + lock 일반화 + reconciliation (alert-only)
 - [ ] Phase 6: 이벤트 버스 / 코어-어댑터 패키지 분리 / prism-us 흡수
 
@@ -52,3 +53,4 @@ greenfield 이식이 아니라 **라이브 시스템의 strangler 방식 단계 
   빈 portfolio 응답)는 자동화 테스트로 고정한다.
 
 Phase 2의 구체적인 작업 순서와 비목표는 [07-phase2-execution-plan.md](07-phase2-execution-plan.md)를 따른다.
+Phase 4-a의 안전한 shadow 범위와 관찰 gate는 [09-phase4a-execution-plan.md](09-phase4a-execution-plan.md)를 따른다.
