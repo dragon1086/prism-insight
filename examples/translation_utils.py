@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class DashboardTranslator:
     """Dashboard data translation class"""
     
-    def __init__(self, model: str = "gpt-5.4-nano"):
+    def __init__(self, model: str = "gpt-5.6-luna"):
         """
         Initialize translator
 
@@ -444,7 +444,7 @@ if __name__ == "__main__":
     import os
 
     async def test():
-        translator = DashboardTranslator(model="gpt-5.4-nano")
+        translator = DashboardTranslator(model="gpt-5.6-luna")
 
         # Single translation test
         result = await translator.translate_text("The automotive industry outlook is bright.")

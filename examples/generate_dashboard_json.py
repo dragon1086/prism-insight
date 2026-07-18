@@ -96,7 +96,7 @@ class DashboardDataGenerator:
         # Initialize translator
         if self.enable_translation:
             try:
-                self.translator = DashboardTranslator(model="gpt-5.4-nano")
+                self.translator = DashboardTranslator(model="gpt-5.6-luna")
                 logger.info("Translation enabled.")
             except Exception as e:
                 self.enable_translation = False
