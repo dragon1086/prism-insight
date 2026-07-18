@@ -1,4 +1,4 @@
-from mcp_agent.agents.agent import Agent
+from cores.agents.report_agent import ReportAgent as Agent
 
 def create_price_volume_analysis_agent(company_name, company_code, reference_date, max_years_ago, max_years, language: str = "ko", prefetched_data: str = None):
     """Create stock price and trading volume analysis agent

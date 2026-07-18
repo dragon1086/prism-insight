@@ -5,7 +5,6 @@ All tests are network-free and filesystem-contained (tmp_path fixtures).
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 import yaml
@@ -14,6 +13,8 @@ from cores.llm.config_loader import (
     _interpolate_obj,
     interpolate_env,
     load_mcp_registry,
+    load_report_mcp_registry,
+    resolve_openai_api_key,
     resolve_secret,
 )
 
@@ -99,6 +100,26 @@ class TestResolveSecret:
         assert resolve_secret("REQUIRED_KEY", required=True) == "present"
 
 
+class TestResolveOpenaiApiKey:
+    def test_env_takes_precedence(self, tmp_path, monkeypatch):
+        legacy = tmp_path / "legacy-secrets.yaml"
+        legacy.write_text("openai:\n  api_key: legacy-key\n")
+        monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+
+        assert resolve_openai_api_key(legacy) == "env-key"
+
+    def test_legacy_yaml_is_transitional_fallback(self, tmp_path, monkeypatch):
+        legacy = tmp_path / "legacy-secrets.yaml"
+        legacy.write_text("openai:\n  api_key: legacy-key\n")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        assert resolve_openai_api_key(legacy) == "legacy-key"
+
+    def test_missing_sources_return_none(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert resolve_openai_api_key(tmp_path / "missing.yaml") is None
+
+
 # ---------------------------------------------------------------------------
 # load_mcp_registry
 # ---------------------------------------------------------------------------
@@ -177,6 +198,14 @@ class TestLoadMcpRegistry:
         finally:
             config_mod._NATIVE_CONFIG = orig_native
         assert "myserver" in registry.names()
+
+    def test_report_registry_explicit_config_preserves_current_servers(self, tmp_path):
+        cfg = tmp_path / "report-mcp.yaml"
+        cfg.write_text(_LEGACY_YAML)
+
+        registry = load_report_mcp_registry(cfg)
+
+        assert "legacyserver" in registry.names()
 
 
 # ---------------------------------------------------------------------------

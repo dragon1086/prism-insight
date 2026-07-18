@@ -1,4 +1,4 @@
-from mcp_agent.agents.agent import Agent
+from cores.agents.report_agent import ReportAgent as Agent
 
 
 def create_market_index_analysis_agent(reference_date, max_years_ago, max_years, language: str = "ko", prefetched_kospi: str = None, prefetched_kosdaq: str = None):

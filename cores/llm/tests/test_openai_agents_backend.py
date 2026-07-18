@@ -7,7 +7,6 @@ All SDK interactions are replaced with fakes/monkeypatches so no real API
 calls are made.  Each async test is decorated with @pytest.mark.asyncio.
 """
 
-import contextlib
 from typing import Any
 
 import pytest
@@ -128,6 +127,12 @@ def test_build_model_settings_temperature_set():
     params = LLMParams(temperature=0.7)
     ms = build_model_settings(params)
     assert ms.temperature == 0.7
+
+
+def test_build_model_settings_parallel_tool_calls_set():
+    params = LLMParams(parallel_tool_calls=True)
+    ms = build_model_settings(params)
+    assert ms.parallel_tool_calls is True
 
 
 # ---------------------------------------------------------------------------

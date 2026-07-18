@@ -23,6 +23,7 @@ class LLMParams:
     max_tokens: int = 8000
     reasoning_effort: Optional[str] = None
     temperature: Optional[float] = None
+    parallel_tool_calls: Optional[bool] = None
     max_iterations: int = 10
     stop_sequences: tuple = ()
 

@@ -3,15 +3,25 @@ import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 
-from mcp_agent.app import MCPApp
-
 # Standard logger for the buy-quality SHADOW hook. The function-local `logger`
-# (parallel_app.logger) is an mcp_agent context-bound logger that RAISES when
-# called outside an active logging context — which silently killed the
-# [BUY_QUALITY][SHADOW] verdict logs (swallowed by the hook's except). This
-# plain logger writes to stdout (captured by the cron logs) and never raises.
 import logging as _logging
 _BQ_LOG = _logging.getLogger("prism.buy_quality")
+
+
+class _ReportRunContext:
+    """Keep the existing async scope while using a standard process logger."""
+
+    def __init__(self, name: str):
+        self.logger = _logging.getLogger(name)
+
+    def run(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 from cores.agents import get_agent_directory
 from cores.report_generation import generate_report, generate_summary, generate_investment_strategy, get_disclaimer, generate_market_report
@@ -45,7 +55,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         str: Generated final report markdown text
     """
     # 1. Initial setup and preprocessing
-    app = MCPApp(name="stock_analysis")
+    app = _ReportRunContext(name="stock_analysis")
 
     # Use today's date if reference_date is not provided
     if reference_date is None:
@@ -85,16 +95,15 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         if parallel_enabled:
             # Parallel execution mode
-            # Create independent MCPApp context for each section to prevent MCP server conflicts
+            # Keep independent section loggers; the backend owns MCP server lifecycles.
             logger.info(f"Running analysis in PARALLEL mode for {company_name}...")
 
             async def process_section(section):
-                """Process a single section with its own MCPApp context"""
+                """Process a single section with its own logger context."""
                 if section not in agents:
                     return section, None
 
-                # Create independent MCPApp instance for each section
-                section_app = MCPApp(name=f"stock_analysis_{section}")
+                section_app = _ReportRunContext(name=f"stock_analysis_{section}")
 
                 async with section_app.run() as section_context:
                     section_logger = section_context.logger
@@ -117,7 +126,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                         section_logger.error(f"Final failure processing {section}: {e}")
                         return section, f"Analysis failed: {section}"
 
-            # Execute all sections in parallel (each with its own MCPApp context)
+            # Execute all sections in parallel (each with its own logger context).
             results = await asyncio.gather(*[process_section(section) for section in base_sections])
             for section, report in results:
                 if report is not None:

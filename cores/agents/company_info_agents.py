@@ -1,4 +1,4 @@
-from mcp_agent.agents.agent import Agent
+from cores.agents.report_agent import ReportAgent as Agent
 
 
 def create_company_status_agent(company_name, company_code, reference_date, urls, language: str = "ko"):

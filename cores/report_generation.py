@@ -1,7 +1,9 @@
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from mcp_agent.agents.agent import Agent
-from mcp_agent.workflows.llm.augmented_llm import RequestParams
-from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
+from cores.agents.report_agent import ReportAgent
+from cores.llm.agent_bridge import ensure_openai_agents_configured
+from cores.llm.backends.openai_agents_backend import OpenAIAgentsBackend
+from cores.llm.config_loader import load_report_mcp_registry
+from cores.llm.ports import AgentSpec, LLMParams
 
 import os
 from cores.openai_error_logging import log_openai_error
@@ -11,6 +13,41 @@ from cores.openai_error_logging import log_openai_error
 # path above: gpt-5.6 rejects function tools + reasoning_effort on chat.completions.
 REPORT_MODEL = os.environ.get("REPORT_MODEL", "gpt-5.6-terra")
 REPORT_EFFORT = os.environ.get("REPORT_EFFORT", "medium")
+
+_report_backend = None
+
+
+def _get_report_backend():
+    """Lazily configure the SDK and native MCP registry for report calls."""
+    global _report_backend
+    if _report_backend is None:
+        ensure_openai_agents_configured()
+        _report_backend = OpenAIAgentsBackend(load_report_mcp_registry())
+    return _report_backend
+
+
+async def _generate_agent_text(
+    agent,
+    message: str,
+    *,
+    max_tokens: int,
+    max_iterations: int,
+) -> str:
+    """Run one SDK-neutral report definition through the shared LLM port."""
+    spec = AgentSpec(
+        name=agent.name,
+        instructions=agent.instruction,
+        model=REPORT_MODEL,
+        mcp_servers=tuple(agent.server_names),
+        params=LLMParams(
+            max_tokens=max_tokens,
+            reasoning_effort=REPORT_EFFORT,
+            parallel_tool_calls=True,
+            max_iterations=max_iterations,
+        ),
+    )
+    result = await _get_report_backend().run(spec, message)
+    return result.text
 
 
 # Language name mapping for report generation
@@ -44,8 +81,6 @@ async def generate_report(agent, section, company_name, company_code, reference_
         language: Report language code (default: "ko")
     """
     language_name = LANGUAGE_NAMES.get(language, language.upper())
-
-    llm = await agent.attach_llm(OpenAIAugmentedLLM)
 
     # Create language-specific message
     if language == "ko":
@@ -110,15 +145,11 @@ async def generate_report(agent, section, company_name, company_code, reference_
 """
 
     try:
-        report = await llm.generate_str(
-            message=message,
-            request_params=RequestParams(
-                model=REPORT_MODEL,
-                reasoning_effort=REPORT_EFFORT,
-                maxTokens=32000,
-                parallel_tool_calls=True,
-                use_history=True
-            )
+        report = await _generate_agent_text(
+            agent,
+            message,
+            max_tokens=32000,
+            max_iterations=10,
         )
     except Exception as e:
         log_openai_error(logger, e, f"report generation for {section}")
@@ -138,8 +169,6 @@ async def generate_market_report(agent, section, reference_date, logger, languag
         language: Report language code (default: "ko")
     """
     language_name = LANGUAGE_NAMES.get(language, language.upper())
-
-    llm = await agent.attach_llm(OpenAIAugmentedLLM)
 
     # Create language-specific message
     if language == "ko":
@@ -204,16 +233,11 @@ async def generate_market_report(agent, section, reference_date, logger, languag
 """
 
     try:
-        report = await llm.generate_str(
-            message=message,
-            request_params=RequestParams(
-                model=REPORT_MODEL,
-                reasoning_effort=REPORT_EFFORT,
-                maxTokens=32000,
-                max_iterations=3,
-                parallel_tool_calls=True,
-                use_history=True
-            )
+        report = await _generate_agent_text(
+            agent,
+            message,
+            max_tokens=32000,
+            max_iterations=3,
         )
     except Exception as e:
         log_openai_error(logger, e, f"market report generation for {section}")
@@ -235,10 +259,6 @@ async def generate_summary(section_reports, company_name, company_code, referenc
         language: Report language code (default: "ko")
     """
     try:
-        from mcp_agent.agents.agent import Agent
-        from mcp_agent.workflows.llm.augmented_llm import RequestParams
-        from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
-
         language_name = LANGUAGE_NAMES.get(language, language.upper())
 
         # Generate comprehensive report including all sections
@@ -312,22 +332,16 @@ Comprehensive Analysis Report:
 {all_reports}
 """
 
-        summary_agent = Agent(
+        summary_agent = ReportAgent(
             name="summary_agent",
             instruction=instruction
         )
 
-        llm = await summary_agent.attach_llm(OpenAIAugmentedLLM)
-        executive_summary = await llm.generate_str(
-            message=message,
-            request_params=RequestParams(
-                model=REPORT_MODEL,
-                reasoning_effort=REPORT_EFFORT,
-                maxTokens=16000,
-                max_iterations=2,
-                parallel_tool_calls=True,
-                use_history=True
-            )
+        executive_summary = await _generate_agent_text(
+            summary_agent,
+            message,
+            max_tokens=16000,
+            max_iterations=2,
         )
         return executive_summary
     except Exception as e:
@@ -352,9 +366,6 @@ async def generate_investment_strategy(section_reports, combined_reports, compan
         logger: Logger
         language: Report language code (default: "ko")
     """
-    from mcp_agent.workflows.llm.augmented_llm import RequestParams
-    from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
-
     language_name = LANGUAGE_NAMES.get(language, language.upper())
 
     try:
@@ -549,22 +560,16 @@ Please present a consistent and executable investment strategy that investors ca
 ## ⚠️ CHARACTER LIMIT: Keep the report under 3000 characters. Be concise and focus on key insights!
 """
 
-        investment_strategy_agent = Agent(
+        investment_strategy_agent = ReportAgent(
             name="investment_strategy_agent",
             instruction=instruction
         )
 
-        llm = await investment_strategy_agent.attach_llm(OpenAIAugmentedLLM)
-        investment_strategy = await llm.generate_str(
-            message=message,
-            request_params=RequestParams(
-                model=REPORT_MODEL,
-                reasoning_effort=REPORT_EFFORT,
-                maxTokens=32000,
-                max_iterations=3,
-                parallel_tool_calls=True,
-                use_history=True
-            )
+        investment_strategy = await _generate_agent_text(
+            investment_strategy_agent,
+            message,
+            max_tokens=32000,
+            max_iterations=3,
         )
         logger.info(f"Completed investment_strategy - {len(investment_strategy)} characters")
         return investment_strategy

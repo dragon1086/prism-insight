@@ -73,6 +73,10 @@ def ensure_openai_agents_configured() -> None:
 
     base_url = os.environ.get("OPENAI_BASE_URL")
     api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        from cores.llm.config_loader import resolve_openai_api_key
+
+        api_key = resolve_openai_api_key()
 
     if base_url:
         # Proxy branch — delegate entirely to the existing helper which already
