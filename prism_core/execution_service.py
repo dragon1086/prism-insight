@@ -1,18 +1,23 @@
 """Transitional single entry point for broker order execution.
 
 Phase 2 of issue #412 is intentionally a behaviour-preserving strangler step.
-This wrapper owns no retry, persistence, locking, or idempotency policy; it only
-forwards the existing trading-context calls behind explicit order methods.
-Those policies belong to later phases after the current behaviour is covered by
-regression tests.
+Phase 3 adds optional additive OrderIntent persistence around new broker orders.
+Callers without an intent retain the Phase 2 behaviour-preserving delegation;
+production call sites pass an intent and store explicitly.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from typing import Any
+
+from prism_core.order_intents import IntentStore, OrderIntent
+
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionService:
@@ -27,19 +32,39 @@ class ExecutionService:
         "sell_reserved_order",
     }
 
-    def __init__(self, context_or_trader: Any):
+    def __init__(
+        self,
+        context_or_trader: Any,
+        *,
+        intent_store: IntentStore | None = None,
+    ):
         self._resource = context_or_trader
         self._trader: Any | None = None
         self._entered_context = False
+        self._intent_store = intent_store
 
     @classmethod
-    def domestic(cls, account_name: str | None = None) -> "ExecutionService":
+    def domestic(
+        cls,
+        account_name: str | None = None,
+        *,
+        db_path: str | Path | None = None,
+    ) -> "ExecutionService":
         from trading.domestic_stock_trading import AsyncTradingContext
 
-        return cls(AsyncTradingContext(account_name=account_name))
+        store = IntentStore(db_path) if db_path is not None else None
+        return cls(
+            AsyncTradingContext(account_name=account_name),
+            intent_store=store,
+        )
 
     @classmethod
-    def us(cls, account_name: str | None = None) -> "ExecutionService":
+    def us(
+        cls,
+        account_name: str | None = None,
+        *,
+        db_path: str | Path | None = None,
+    ) -> "ExecutionService":
         try:
             from trading.us_stock_trading import AsyncUSTradingContext
         except ModuleNotFoundError as exc:
@@ -58,7 +83,11 @@ class ExecutionService:
                 sys.path.insert(0, path)
             from us_stock_trading import AsyncUSTradingContext
 
-        return cls(AsyncUSTradingContext(account_name=account_name))
+        store = IntentStore(db_path) if db_path is not None else None
+        return cls(
+            AsyncUSTradingContext(account_name=account_name),
+            intent_store=store,
+        )
 
     async def __aenter__(self) -> "ExecutionService":
         enter = getattr(self._resource, "__aenter__", None)
@@ -87,11 +116,157 @@ class ExecutionService:
             )
         return getattr(self._active_trader, name)
 
-    async def execute_buy(self, *args, **kwargs):
-        return await self._active_trader.async_buy_stock(*args, **kwargs)
+    async def _execute_order(
+        self,
+        method,
+        *args,
+        intent: OrderIntent | None = None,
+        **kwargs,
+    ):
+        if intent is None:
+            return await method(*args, **kwargs)
+        if self._intent_store is None:
+            raise RuntimeError(
+                "OrderIntent was provided without an IntentStore; broker call blocked"
+            )
 
-    async def execute_sell(self, *args, **kwargs):
-        return await self._active_trader.async_sell_stock(*args, **kwargs)
+        created, existing = await asyncio.to_thread(
+            self._intent_store.reserve, intent
+        )
+        if not created:
+            logger.warning(
+                "[ORDER_INTENT] duplicate blocked id=%s status=%s market=%s side=%s symbol=%s",
+                existing["id"], existing["status"], intent.market, intent.side,
+                intent.symbol,
+            )
+            return self._intent_store.blocked_result(existing)
+        await asyncio.to_thread(self._intent_store.mark_submitting, intent.id)
+
+        try:
+            result = await method(*args, **kwargs)
+        except BaseException as exc:
+            await asyncio.to_thread(
+                self._intent_store.record_result,
+                intent,
+                status="UNKNOWN",
+                accepted=False,
+                response=None,
+                error=exc,
+            )
+            logger.error(
+                "[ORDER_INTENT] UNKNOWN id=%s market=%s side=%s symbol=%s error=%s",
+                intent.id, intent.market, intent.side, intent.symbol,
+                type(exc).__name__,
+            )
+            raise
+
+        accepted = bool(
+            isinstance(result, dict)
+            and (result.get("success") or result.get("partial_success"))
+        )
+        await asyncio.to_thread(
+            self._intent_store.record_result,
+            intent,
+            status="SUBMITTED" if accepted else "FAILED",
+            accepted=accepted,
+            response=result,
+        )
+        logger.log(
+            logging.INFO if accepted else logging.ERROR,
+            "[ORDER_INTENT] %s id=%s market=%s side=%s symbol=%s",
+            "SUBMITTED" if accepted else "FAILED",
+            intent.id,
+            intent.market,
+            intent.side,
+            intent.symbol,
+        )
+        return result
+
+    def _execute_order_sync(
+        self,
+        method,
+        *args,
+        intent: OrderIntent | None = None,
+        **kwargs,
+    ):
+        if intent is None:
+            return method(*args, **kwargs)
+        if self._intent_store is None:
+            raise RuntimeError(
+                "OrderIntent was provided without an IntentStore; broker call blocked"
+            )
+
+        created, existing = self._intent_store.reserve(intent)
+        if not created:
+            logger.warning(
+                "[ORDER_INTENT] duplicate blocked id=%s status=%s market=%s side=%s symbol=%s",
+                existing["id"], existing["status"], intent.market, intent.side,
+                intent.symbol,
+            )
+            return self._intent_store.blocked_result(existing)
+        self._intent_store.mark_submitting(intent.id)
+        try:
+            result = method(*args, **kwargs)
+        except BaseException as exc:
+            self._intent_store.record_result(
+                intent,
+                status="UNKNOWN",
+                accepted=False,
+                response=None,
+                error=exc,
+            )
+            logger.error(
+                "[ORDER_INTENT] UNKNOWN id=%s market=%s side=%s symbol=%s error=%s",
+                intent.id, intent.market, intent.side, intent.symbol,
+                type(exc).__name__,
+            )
+            raise
+        accepted = bool(
+            isinstance(result, dict)
+            and (result.get("success") or result.get("partial_success"))
+        )
+        self._intent_store.record_result(
+            intent,
+            status="SUBMITTED" if accepted else "FAILED",
+            accepted=accepted,
+            response=result,
+        )
+        logger.log(
+            logging.INFO if accepted else logging.ERROR,
+            "[ORDER_INTENT] %s id=%s market=%s side=%s symbol=%s",
+            "SUBMITTED" if accepted else "FAILED",
+            intent.id,
+            intent.market,
+            intent.side,
+            intent.symbol,
+        )
+        return result
+
+    async def execute_buy(
+        self,
+        *args,
+        intent: OrderIntent | None = None,
+        **kwargs,
+    ):
+        return await self._execute_order(
+            self._active_trader.async_buy_stock,
+            *args,
+            intent=intent,
+            **kwargs,
+        )
+
+    async def execute_sell(
+        self,
+        *args,
+        intent: OrderIntent | None = None,
+        **kwargs,
+    ):
+        return await self._execute_order(
+            self._active_trader.async_sell_stock,
+            *args,
+            intent=intent,
+            **kwargs,
+        )
 
     async def amend_or_cancel(self, action: str, *args, **kwargs):
         return await asyncio.to_thread(
@@ -108,11 +283,31 @@ class ExecutionService:
             raise ValueError(f"unsupported order action: {action}")
         return method(*args, **kwargs)
 
-    def execute_reserved_buy(self, *args, **kwargs):
-        return self._active_trader.buy_reserved_order(*args, **kwargs)
+    def execute_reserved_buy(
+        self,
+        *args,
+        intent: OrderIntent | None = None,
+        **kwargs,
+    ):
+        return self._execute_order_sync(
+            self._active_trader.buy_reserved_order,
+            *args,
+            intent=intent,
+            **kwargs,
+        )
 
-    def execute_reserved_sell(self, *args, **kwargs):
-        return self._active_trader.sell_reserved_order(*args, **kwargs)
+    def execute_reserved_sell(
+        self,
+        *args,
+        intent: OrderIntent | None = None,
+        **kwargs,
+    ):
+        return self._execute_order_sync(
+            self._active_trader.sell_reserved_order,
+            *args,
+            intent=intent,
+            **kwargs,
+        )
 
 
 __all__ = ["ExecutionService"]

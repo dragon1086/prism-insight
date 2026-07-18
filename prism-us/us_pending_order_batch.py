@@ -31,6 +31,7 @@ sys.path.insert(0, _project_root)
 sys.path.insert(0, _prism_us_dir)
 
 from prism_core.execution_service import ExecutionService  # noqa: E402
+from prism_core.order_intents import IntentStore, OrderIntent  # noqa: E402
 
 import pytz
 
@@ -135,6 +136,7 @@ def process_pending_orders(dry_run: bool = False):
     # Process each order
     success_count = 0
     fail_count = 0
+    intent_store = IntentStore(DB_PATH)
 
     for order in pending_orders:
         order_id = order['id']
@@ -155,19 +157,37 @@ def process_pending_orders(dry_run: bool = False):
 
         try:
             trader = USStockTrading(mode=mode, account_name=account_name, product_code=product_code)
-            execution = ExecutionService(trader)
+            execution = ExecutionService(
+                trader,
+                intent_store=intent_store,
+            )
+            order_intent = OrderIntent.create(
+                market="US",
+                account_id=order.get("account_key") or account_name or "default",
+                symbol=ticker,
+                side=order_type,
+                order_style="reserved",
+                source="us_pending_order_batch",
+                source_decision_id=f"us_pending_order:{order_id}",
+                execution_mode=mode,
+                cash_amount=buy_amount if order_type == "buy" else None,
+                limit_price=limit_price,
+                reason="delayed reserved order submission",
+            )
             if order_type == 'buy':
                 result = execution.execute_reserved_buy(
                     ticker=ticker,
                     limit_price=limit_price,
                     buy_amount=buy_amount,
-                    exchange=exchange
+                    exchange=exchange,
+                    intent=order_intent,
                 )
             elif order_type == 'sell':
                 result = execution.execute_reserved_sell(
                     ticker=ticker,
                     limit_price=limit_price if limit_price > 0 else None,
-                    exchange=exchange
+                    exchange=exchange,
+                    intent=order_intent,
                 )
             else:
                 logger.warning(f"  Unknown order type: {order_type}")

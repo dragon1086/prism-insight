@@ -101,11 +101,14 @@ def _row(id_, ticker, buy_price, stop_loss=0.0):
 
 def _patch(monkeypatch, trader, agent_holder=None, make_agent_counter=None):
     from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
 
     monkeypatch.setattr(
         la,
         "_open_context",
-        lambda market, account_name=None: ExecutionService(FakeCtx(trader)),
+        lambda market, account_name=None: ExecutionService(
+            FakeCtx(trader), intent_store=IntentStore(la.DB_PATH)
+        ),
     )
 
     async def _fake_make_agent(market):

@@ -38,6 +38,7 @@ from typing import List, Dict, Any, Tuple, Optional
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 from prism_core.execution_service import ExecutionService  # noqa: E402
+from prism_core.order_intents import OrderIntent  # noqa: E402
 
 _openai_debug_spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
 if _openai_debug_spec and _openai_debug_spec.loader:
@@ -2523,7 +2524,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         # Only execute trading if we have a valid price
                         if current_price > 0:
                             try:
-                                async with ExecutionService.us(account_name=stock.get("account_name")) as trading:
+                                async with ExecutionService.us(
+                                    account_name=stock.get("account_name"),
+                                    db_path=self.db_path,
+                                ) as trading:
                                     # Determine sell quantity.
                                     # FIX 1: full_exit -> quantity=None (sell whole position).
                                     # FIX 2: fractional -> distribute from a per-pass snapshot
@@ -2552,7 +2556,29 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     # the ticker was already added to fully_exited_tickers above.
                                     # Pass limit_price for reserved orders (required for US market)
                                     # If limit_price is 0, trading module will use MOO (Market On Open)
-                                    trade_result = await trading.execute_sell(ticker=ticker, limit_price=current_price, quantity=sell_quantity)
+                                    source_position_id = (
+                                        ",".join(sorted(str(row["id"]) for row in sibling_rows))
+                                        if plan == "full_exit"
+                                        else stock.get("id")
+                                    )
+                                    order_intent = OrderIntent.create(
+                                        market="US",
+                                        account_id=stock.get("account_key") or stock.get("account_name") or "default",
+                                        symbol=ticker,
+                                        side="sell",
+                                        order_style="smart",
+                                        source="us_batch",
+                                        source_position_id=source_position_id,
+                                        quantity=sell_quantity,
+                                        limit_price=current_price,
+                                        reason=sell_reason,
+                                    )
+                                    trade_result = await trading.execute_sell(
+                                        ticker=ticker,
+                                        limit_price=current_price,
+                                        quantity=sell_quantity,
+                                        intent=order_intent,
+                                    )
 
                                 if trade_result['success']:
                                     logger.info(f"Actual sell successful: {trade_result['message']}")
@@ -2805,6 +2831,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 analysis_states.append(
                     {
                         "analysis": analysis_result,
+                        "report_path": pdf_report_path,
                         "traded": False,
                         "should_save_watchlist": False,
                         "skip_reason": None,
@@ -2827,6 +2854,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                 for state in analysis_states:
                     analysis_result = state["analysis"]
+                    source_decision_id = f"report:{os.path.basename(state['report_path'])}"
                     ticker = analysis_result.get("ticker")
                     company_name = analysis_result.get("company_name")
                     current_price = analysis_result.get("current_price", 0)
@@ -2964,8 +2992,27 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                             if current_price > 0:
                                 try:
-                                    async with ExecutionService.us(account_name=account["name"]) as trading:
-                                        trade_result = await trading.execute_buy(ticker=ticker, limit_price=current_price)
+                                    account_key, _ = self._account_scope()
+                                    order_intent = OrderIntent.create(
+                                        market="US",
+                                        account_id=account_key,
+                                        symbol=ticker,
+                                        side="buy",
+                                        order_style="smart",
+                                        source="us_batch",
+                                        source_decision_id=source_decision_id,
+                                        limit_price=current_price,
+                                        reason="AI analysis entry",
+                                    )
+                                    async with ExecutionService.us(
+                                        account_name=account["name"],
+                                        db_path=self.db_path,
+                                    ) as trading:
+                                        trade_result = await trading.execute_buy(
+                                            ticker=ticker,
+                                            limit_price=current_price,
+                                            intent=order_intent,
+                                        )
 
                                     if trade_result['success']:
                                         logger.info(f"Actual purchase successful: {trade_result['message']}")

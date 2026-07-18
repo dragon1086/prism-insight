@@ -425,8 +425,8 @@ def _open_context(market: str, account_name: Optional[str] = None):
     from prism_core.execution_service import ExecutionService
 
     if market == "KR":
-        return ExecutionService.domestic(account_name=account_name)
-    return ExecutionService.us(account_name=account_name)
+        return ExecutionService.domestic(account_name=account_name, db_path=DB_PATH)
+    return ExecutionService.us(account_name=account_name, db_path=DB_PATH)
 
 
 async def _make_agent(market: str):
@@ -635,7 +635,24 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 if sold_qty <= 0:
                     logger.info("[%s] %s already flat at KIS (qty=0); sim closed", market, ticker)
                 else:
-                    result = await seller.execute_sell(ticker, quantity=sold_qty)
+                    from prism_core.order_intents import OrderIntent
+
+                    order_intent = OrderIntent.create(
+                        market=market,
+                        account_id=stock_data.get("account_key") or stock_data.get("account_name") or "default",
+                        symbol=ticker,
+                        side="sell",
+                        order_style="market",
+                        source="trend_exit",
+                        source_position_id=stock_data.get("id"),
+                        quantity=sold_qty,
+                        reason=reason,
+                    )
+                    result = await seller.execute_sell(
+                        ticker,
+                        quantity=sold_qty,
+                        intent=order_intent,
+                    )
                     ok = bool(result and result.get("success"))
                     order_no = (result or {}).get("order_no")
                     logger.warning("[LIVE][%s] %s KIS sell success=%s order_no=%s msg=%s",

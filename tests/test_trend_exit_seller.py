@@ -109,11 +109,14 @@ def _row(id_, ticker, buy_price, stop_loss=0.0, target_price=0.0, highest_price=
 def _patch(monkeypatch, trader, agent_holder=None, make_agent_counter=None,
            ma50=0.0, regime="moderate_bull"):
     from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
 
     monkeypatch.setattr(
         lb,
         "_open_context",
-        lambda market, account_name=None: ExecutionService(FakeCtx(trader)),
+        lambda market, account_name=None: ExecutionService(
+            FakeCtx(trader), intent_store=IntentStore(lb.DB_PATH)
+        ),
     )
     # Network-free: fixed ma_50 + regime.
     monkeypatch.setattr(lb, "_fetch_ma50", lambda market, ticker: ma50)
