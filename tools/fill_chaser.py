@@ -837,7 +837,9 @@ def run_selftest(market: str) -> Dict[str, Any]:
     """Exercise compute-chase -> dry-run payload -> fill-plausibility -> SHADOW log
     on synthetic orders, with NO DB owner-lock, NO API calls and NO orders. Always
     SHADOW (never sends). Returns a concise summary dict."""
-    trader = _SelftestTrader(market)
+    from prism_core.execution_service import ExecutionService
+
+    trader = ExecutionService(_SelftestTrader(market))
     summary: Dict[str, Any] = {"market": market, "amend": 0, "cancel": 0,
                                "likely": 0, "unlikely": 0}
     # Chase one full step toward the market for the selftest so the synthetic
@@ -865,6 +867,7 @@ def _run_selftest_body(market: str, trader, summary: Dict[str, Any]) -> Dict[str
         new_price = _round_price(market, _compute_chase_price(side, order_price, market_price))
         verdict = _fill_verdict(side, new_price, market_price)
         payload = _build_dry_run_payload(trader, market, order, "AMEND", new_price)
+        _validate_selftest_payload(payload, market, "AMEND")
         summary["amend"] += 1
         summary["likely" if verdict == "FILL_LIKELY" else "unlikely"] += 1
         logger.info(
@@ -880,6 +883,7 @@ def _run_selftest_body(market: str, trader, summary: Dict[str, Any]) -> Dict[str
         # Also exercise the cancel payload path (e.g. a buy that would be abandoned).
         if side == "BUY":
             cxl = _build_dry_run_payload(trader, market, order, "CANCEL", 0.0)
+            _validate_selftest_payload(cxl, market, "CANCEL")
             summary["cancel"] += 1
             logger.info(
                 "[FILL_CHASER][SHADOW] selftest decision=WOULD_CANCEL market=%s ticker=%s "
@@ -891,6 +895,16 @@ def _run_selftest_body(market: str, trader, summary: Dict[str, Any]) -> Dict[str
             )
     logger.info("[FILL_CHASER][SHADOW] selftest %s summary: %s", market, summary)
     return summary
+
+
+def _validate_selftest_payload(payload: Dict[str, Any], market: str, action: str) -> None:
+    """Fail closed when the deployment smoke test cannot build an order payload."""
+    required = ("tr_id", "api_url", "params")
+    missing = [key for key in required if not payload.get(key)]
+    if missing:
+        raise RuntimeError(
+            f"{market} {action} selftest payload missing required fields: {missing}"
+        )
 
 
 def _run_both_isolated(selftest: bool = False) -> int:

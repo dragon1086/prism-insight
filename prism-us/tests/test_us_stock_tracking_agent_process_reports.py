@@ -1,8 +1,11 @@
+import asyncio
 import importlib.util
 import logging
 import sqlite3
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -142,6 +145,116 @@ class _FakeAsyncUSTradingContext:
             "success": True,
             "message": f"sold for {self.account_name}",
         }
+
+
+@pytest.mark.parametrize("pyramiding", [False, True], ids=["single", "pyramiding"])
+def test_concurrent_sell_guard_allows_one_us_order_and_publish(tmp_path, pyramiding):
+    from prism_core.execution_service import ExecutionService
+
+    db_path = tmp_path / "us-concurrent-sell.sqlite"
+    setup = sqlite3.connect(db_path)
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute(
+        """CREATE TABLE us_stock_holdings (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               account_key TEXT NOT NULL, account_name TEXT, ticker TEXT NOT NULL,
+               company_name TEXT NOT NULL, buy_price REAL NOT NULL,
+               buy_date TEXT NOT NULL, current_price REAL, scenario TEXT,
+               trigger_type TEXT, trigger_mode TEXT, sector TEXT
+           )"""
+    )
+    setup.execute(
+        """CREATE TABLE us_trading_history (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               account_key TEXT NOT NULL, account_name TEXT, ticker TEXT NOT NULL,
+               company_name TEXT NOT NULL, buy_price REAL NOT NULL,
+               buy_date TEXT NOT NULL, sell_price REAL NOT NULL,
+               sell_date TEXT NOT NULL, profit_rate REAL NOT NULL,
+               holding_days INTEGER NOT NULL, scenario TEXT, trigger_type TEXT,
+               trigger_mode TEXT, sector TEXT, exit_kind TEXT
+           )"""
+    )
+    target_row_id = setup.execute(
+        """INSERT INTO us_stock_holdings
+           (account_key, account_name, ticker, company_name, buy_price, buy_date)
+           VALUES ('ACC1', 'us-primary', 'AAPL', 'Apple', 180,
+                   '2026-07-01 09:00:00')"""
+    ).lastrowid
+    if pyramiding:
+        setup.execute(
+            """INSERT INTO us_stock_holdings
+               (account_key, account_name, ticker, company_name, buy_price, buy_date)
+               VALUES ('ACC1', 'us-primary', 'AAPL', 'Apple', 175,
+                       '2026-06-15 09:00:00')"""
+        )
+    setup.commit()
+    setup.close()
+
+    barrier = threading.Barrier(2)
+
+    effects = {"broker": 0, "publish": 0}
+    effects_lock = threading.Lock()
+
+    class Broker:
+        async def async_sell_stock(self, *args, **kwargs):
+            with effects_lock:
+                effects["broker"] += 1
+            return {"success": True}
+
+    stock = {
+        "ticker": "AAPL",
+        "company_name": "Apple",
+        "buy_price": 180,
+        "buy_date": "2026-07-01 09:00:00",
+        "current_price": 185,
+        "account_key": "ACC1",
+        "account_name": "us-primary",
+        "sector": "Technology",
+        "id": target_row_id,
+    }
+
+    def run_competitor():
+        conn = sqlite3.connect(db_path, timeout=1, check_same_thread=False)
+        conn.execute("PRAGMA busy_timeout=1000")
+        agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+        agent.conn = conn
+        agent.cursor = conn.cursor()
+        agent.message_queue = []
+        agent._msg_types = []
+        agent.enable_journal = False
+        agent.journal_manager = None
+        agent._account_scope = lambda: ("ACC1", "us-primary")
+        agent._get_trigger_win_rate = lambda _trigger: ""
+
+        async def exercise():
+            barrier.wait(timeout=5)
+            sold = await agent.sell_stock(dict(stock), "concurrency regression")
+            if sold:
+                await ExecutionService(Broker()).execute_sell("AAPL", quantity=1)
+                with effects_lock:
+                    effects["publish"] += 1
+            return sold, len(agent.message_queue)
+
+        try:
+            return asyncio.run(exercise())
+        finally:
+            conn.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: run_competitor(), range(2)))
+
+    verify = sqlite3.connect(db_path)
+    history_count = verify.execute("SELECT COUNT(*) FROM us_trading_history").fetchone()[0]
+    remaining_prices = verify.execute(
+        "SELECT buy_price FROM us_stock_holdings ORDER BY id"
+    ).fetchall()
+    verify.close()
+
+    assert sorted(sold for sold, _messages in results) == [False, True]
+    assert sum(messages for _sold, messages in results) == 1
+    assert history_count == 1
+    assert remaining_prices == ([(175.0,)] if pyramiding else [])
+    assert effects == {"broker": 1, "publish": 1}
 
 
 def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):

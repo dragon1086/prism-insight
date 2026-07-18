@@ -26,6 +26,21 @@
 - 보유수량/fresh-position 조회는 현재 주문 직전 안전검사를 보존하기 위한 과도기
   pass-through로만 제공하고 Phase 5/6에서 BrokerAdapter/MarketDataPort로 분리한다.
 
+### 리뷰 중 발견된 안전 수정
+
+두 SQLite 연결을 동시에 출발시킨 실제 `sell_stock` 회귀에서 기존 guard가 모두 같은
+holding 행을 읽고 둘 다 성공하는 TOCTOU가 재현됐다. 서비스에는 DB 정책을 추가하지 않고,
+KR/US `sell_stock`의 기존 guard-read → history INSERT → holding DELETE 구간만
+`BEGIN IMMEDIATE` 트랜잭션으로 원자화한다. 이는 새 owner-lock 설계가 아니라 기존 guard의
+의도(중복 SELL 차단)를 실제 프로세스 경합에서도 성립시키는 결함 수정이다. Phase 5의
+hardstop/trend/fill owner-lock 통합은 계속 비목표로 남긴다.
+
+피라미딩 포지션에서는 ticker/account 집계만 확인하면 이미 매도된 동일 `row_id`의 두 번째
+작업이 남은 다른 행을 잘못 닫을 수 있으므로, `row_id`가 전달된 경로는 writer lock 안에서
+`id + ticker + account_key`가 모두 일치하는 행을 정확히 claim한다. CI는 실제 KR/US
+`sell_stock` 메서드를 경량 AST로 실행하여 KR/US × DELETE/WAL × 단일행/피라미딩의
+8개 두-연결 경쟁 조합을 필수 gate로 고정한다.
+
 ## 3. 이관 순서
 
 1. KR batch 3곳

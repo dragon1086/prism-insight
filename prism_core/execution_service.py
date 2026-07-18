@@ -10,11 +10,22 @@ regression tests.
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 from typing import Any
 
 
 class ExecutionService:
     """Wrap an existing trader or async trading context without changing it."""
+
+    _DIRECT_ORDER_METHODS = {
+        "async_buy_stock",
+        "async_sell_stock",
+        "amend_order",
+        "cancel_order",
+        "buy_reserved_order",
+        "sell_reserved_order",
+    }
 
     def __init__(self, context_or_trader: Any):
         self._resource = context_or_trader
@@ -31,11 +42,21 @@ class ExecutionService:
     def us(cls, account_name: str | None = None) -> "ExecutionService":
         try:
             from trading.us_stock_trading import AsyncUSTradingContext
-        except ImportError:
-            try:
-                from us_stock_trading import AsyncUSTradingContext
-            except ImportError:
-                from prism_us.trading.us_stock_trading import AsyncUSTradingContext
+        except ModuleNotFoundError as exc:
+            if exc.name != "trading.us_stock_trading":
+                raise
+            # Some long-lived processes import the root ``trading`` package
+            # before switching to the US runtime. Python then keeps that package
+            # cached and cannot discover ``prism-us/trading`` as a subpackage.
+            # Import the existing standalone module path used by the loop tools
+            # instead of deleting or replacing the process-wide package cache.
+            us_trading_dir = Path(__file__).resolve().parents[1] / "prism-us" / "trading"
+            if not us_trading_dir.is_dir():
+                raise
+            path = str(us_trading_dir)
+            if path not in sys.path:
+                sys.path.insert(0, path)
+            from us_stock_trading import AsyncUSTradingContext
 
         return cls(AsyncUSTradingContext(account_name=account_name))
 
@@ -60,6 +81,10 @@ class ExecutionService:
 
     def __getattr__(self, name: str) -> Any:
         """Preserve read-only/query calls while order calls move explicitly."""
+        if name in self._DIRECT_ORDER_METHODS:
+            raise AttributeError(
+                f"direct order method {name!r} is blocked; use ExecutionService methods"
+            )
         return getattr(self._active_trader, name)
 
     async def execute_buy(self, *args, **kwargs):

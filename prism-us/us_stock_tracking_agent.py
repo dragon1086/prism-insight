@@ -2239,13 +2239,29 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # paths in both markets. (update_holdings also has an earlier Layer 2
             # short-circuit; this is the authoritative gate that also covers loops.)
             self.conn.commit()
-            if get_us_existing_position_for_ticker(
-                self.cursor, ticker, account_key=account_key
-            ).get("row_count", 0) == 0:
+            # Acquire the SQLite writer lock BEFORE the authoritative guard read.
+            # This makes the guard + history INSERT + holding DELETE one atomic
+            # claim across batch and loop processes. A competing seller waits,
+            # then observes the committed deletion and aborts without publishing.
+            self.conn.execute("BEGIN IMMEDIATE")
+            row_id = stock_data.get('id')
+            if row_id is not None:
+                self.cursor.execute(
+                    "SELECT 1 FROM us_stock_holdings "
+                    "WHERE id = ? AND ticker = ? AND account_key = ? LIMIT 1",
+                    (row_id, ticker, account_key),
+                )
+                position_exists = self.cursor.fetchone() is not None
+            else:
+                position_exists = get_us_existing_position_for_ticker(
+                    self.cursor, ticker, account_key=account_key
+                ).get("row_count", 0) > 0
+            if not position_exists:
                 logger.warning(
                     f"[SELL-GUARD][US] {ticker} ({company_name}) already closed by "
                     f"another cycle — sell_stock aborting (no duplicate record/signal)"
                 )
+                self.conn.rollback()
                 return False
             # ─────────────────────────────────────────────────────────────────
 
@@ -2284,7 +2300,6 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # than one row for this account, delete ONLY that row (preserving the
             # remaining independent entries). Single-row tickers keep the legacy
             # ticker-scoped delete + adjustment-log cleanup (zero behavior change).
-            row_id = stock_data.get('id')
             existing = get_us_existing_position_for_ticker(self.cursor, ticker, account_key=account_key)
             is_partial = row_id is not None and existing.get("row_count", 0) > 1
             if is_partial:
@@ -2344,6 +2359,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             return True
 
         except Exception as e:
+            if self.conn.in_transaction:
+                self.conn.rollback()
             logger.error(f"Error during sell: {str(e)}")
             logger.error(traceback.format_exc())
             return False

@@ -1,5 +1,7 @@
 import asyncio
 import ast
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -130,6 +132,34 @@ def test_unknown_amend_or_cancel_action_is_rejected():
             await ExecutionService(FakeTrader()).amend_or_cancel("replace", "AAPL")
 
     asyncio.run(exercise())
+
+
+def test_direct_order_methods_cannot_bypass_service_boundary():
+    from prism_core.execution_service import ExecutionService
+
+    execution = ExecutionService(FakeTrader())
+    for method_name in ExecutionService._DIRECT_ORDER_METHODS:
+        with pytest.raises(AttributeError, match="direct order method"):
+            getattr(execution, method_name)
+
+
+def test_us_factory_recovers_when_root_trading_package_is_cached(monkeypatch):
+    import trading  # noqa: F401 - cache the root package intentionally
+    from prism_core.execution_service import ExecutionService
+
+    class FakeUSContext:
+        def __init__(self, account_name=None):
+            self.account_name = account_name
+
+    fake_module = types.ModuleType("us_stock_trading")
+    fake_module.AsyncUSTradingContext = FakeUSContext
+    monkeypatch.delitem(sys.modules, "trading.us_stock_trading", raising=False)
+    monkeypatch.setitem(sys.modules, "us_stock_trading", fake_module)
+
+    execution = ExecutionService.us(account_name="us-primary")
+
+    assert isinstance(execution._resource, FakeUSContext)
+    assert execution._resource.account_name == "us-primary"
 
 
 def test_transient_empty_portfolio_is_rechecked_before_sell(monkeypatch):

@@ -1363,13 +1363,30 @@ class StockTrackingAgent:
             # 2nd SELL 23:55. sell_stock is the chokepoint that closes this for all
             # paths in both markets.
             self.conn.commit()
-            if get_existing_position_for_ticker(
-                self.cursor, ticker, account_key=account_key
-            ).get("row_count", 0) == 0:
+            # Acquire the SQLite writer lock BEFORE the authoritative guard read.
+            # Without this, two processes can both observe the row, both write a
+            # history record, and both return True (TOCTOU duplicate SELL).
+            # The transaction contains synchronous DB work only and commits before
+            # journal/publish/order continuations, so the lock is held briefly.
+            self.conn.execute("BEGIN IMMEDIATE")
+            row_id = stock_data.get('id')
+            if row_id is not None:
+                self.cursor.execute(
+                    "SELECT 1 FROM stock_holdings "
+                    "WHERE id = ? AND ticker = ? AND account_key = ? LIMIT 1",
+                    (row_id, ticker, account_key),
+                )
+                position_exists = self.cursor.fetchone() is not None
+            else:
+                position_exists = get_existing_position_for_ticker(
+                    self.cursor, ticker, account_key=account_key
+                ).get("row_count", 0) > 0
+            if not position_exists:
                 logger.warning(
                     f"[SELL-GUARD][KR] {ticker}({company_name}) already closed by "
                     f"another cycle — sell_stock aborting (no duplicate record/signal)"
                 )
+                self.conn.rollback()
                 return False
             # ─────────────────────────────────────────────────────────────────
 
@@ -1422,7 +1439,6 @@ class StockTrackingAgent:
             # than one row for this account, delete ONLY that row so the remaining
             # independent entries are preserved. Single-row tickers keep the legacy
             # ticker-scoped delete (zero behavior change).
-            row_id = stock_data.get('id')
             existing = get_existing_position_for_ticker(self.cursor, ticker, account_key=account_key)
             if row_id is not None and existing.get("row_count", 0) > 1:
                 self.cursor.execute(
@@ -1473,6 +1489,8 @@ class StockTrackingAgent:
             return True
 
         except Exception as e:
+            if self.conn.in_transaction:
+                self.conn.rollback()
             logger.error(f"Error during sell: {str(e)}")
             logger.error(traceback.format_exc())
             return False

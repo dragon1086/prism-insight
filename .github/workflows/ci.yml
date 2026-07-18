@@ -33,4 +33,16 @@ jobs:
             pytest-asyncio
 
       - name: Run tests
-        run: python -m pytest cores/llm/tests/ -q
+        run: |
+          python -m pytest cores/llm/tests/ -q
+          # Lightweight real-order boundary gates. Keep KR/US fill-chaser in
+          # separate processes because their runtime packages intentionally
+          # shadow one another.
+          python -m pytest tests/test_execution_service.py -q \
+            -k "not transient_empty_portfolio"
+          python -m pytest \
+            tests/test_issue_288_pyramiding.py \
+            tests/test_layer2_stale_snapshot_guard.py -q
+          python -m pytest tests/test_sell_claim_concurrency.py -q
+          python -m pytest tests/test_fill_chaser.py -q
+          python -m pytest prism-us/tests/test_fill_chaser_us.py -q
