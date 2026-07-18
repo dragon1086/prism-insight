@@ -134,13 +134,17 @@ def test_explicit_broker_rejection_is_recorded_as_failed(tmp_path):
     assert orders[0][0:2] == (0, "FAILED")
 
 
-def test_timeout_result_is_recorded_as_unknown(tmp_path):
+def test_structured_ambiguous_result_is_recorded_as_unknown(tmp_path):
     from prism_core.execution_service import ExecutionService
     from prism_core.order_intents import IntentStore
 
     db_path = tmp_path / "orders.sqlite"
     broker = FakeBroker(
-        result={"success": False, "message": "Buy request timeout (30s)"}
+        result={
+            "success": False,
+            "outcome_unknown": True,
+            "message": "Reserved buy order error: Expecting value",
+        }
     )
     service = ExecutionService(broker, intent_store=IntentStore(db_path))
 

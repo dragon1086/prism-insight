@@ -198,7 +198,18 @@ def process_pending_orders(dry_run: bool = False):
                 fail_count += 1
                 continue
 
-            if result.get('intent_status') == 'UNKNOWN':
+            if result.get('intent_status') == 'QUEUED':
+                logger.warning(
+                    f"  Order #{order_id} was requeued locally: {result.get('message')}"
+                )
+                update_order_status(
+                    conn,
+                    order_id,
+                    'requeued',
+                    result=result,
+                )
+                fail_count += 1
+            elif result.get('intent_status') == 'UNKNOWN':
                 error_msg = result.get('message', 'Broker outcome unknown')
                 logger.critical(f"  Order #{order_id} outcome unknown: {error_msg}")
                 update_order_status(

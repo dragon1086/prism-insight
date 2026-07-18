@@ -146,6 +146,8 @@ class ExecutionService:
     def _classify_result(cls, result: Any) -> tuple[str, bool, str]:
         if not isinstance(result, dict):
             return "UNKNOWN", False, "KIS"
+        if result.get("outcome_unknown") is True:
+            return "UNKNOWN", False, "KIS"
         order_type = str(result.get("order_type") or "").lower()
         order_no = str(result.get("order_no") or "").upper()
         if order_type.startswith("queued_") or order_no.startswith("PENDING-"):

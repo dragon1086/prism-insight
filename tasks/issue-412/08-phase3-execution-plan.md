@@ -40,6 +40,8 @@ CREATED -> SUBMITTING -> SUBMITTED
 - broker가 명시적 실패 dict를 반환하면 `FAILED`와 raw response 저장.
 - broker 호출 중 예외가 나면 접수 여부를 단정하지 않고 `UNKNOWN` 저장 후
   원인을 보존한 `OrderOutcomeUnknown`을 전파한다.
+- KR/US 어댑터가 catch/timeout을 dict로 반환할 때는 `outcome_unknown=True`를 붙이고,
+  ExecutionService는 문자열 추측보다 이 구조화 필드를 우선한다.
 - 원장에는 API key/token 등 요청 secret을 저장하지 않는다. broker 결과와 오류 문자열은
   재귀적 redaction 후 저장한다.
 
