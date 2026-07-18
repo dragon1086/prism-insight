@@ -262,6 +262,23 @@ class StockTrackingAgent:
             self.MAX_SAME_SECTOR, self.SECTOR_CONCENTRATION_RATIO, account_key=account_key
         )
 
+    def _get_db_lock(self) -> asyncio.Lock:
+        """Lazily create the shared-sqlite serialization lock.
+
+        `self.cursor`/`self.conn` are a single shared connection. When multiple
+        `_analyze_report_core` tasks run concurrently (parallel buy-analysis
+        pre-pass), interleaving cursor.execute()/fetch across await points would
+        corrupt result sets ("recursive use of cursor"). This lock serializes the
+        DB-read sections only; it is released around the LLM call so scenario
+        analyses still overlap. Created lazily because the agent may be built in a
+        context without a running event loop.
+        """
+        lock = getattr(self, "_db_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._db_lock = lock
+        return lock
+
     def _get_trend_facts(self, ticker: str) -> str:
         """Compute deterministic individual-stock trend facts for the buy prompt's trend gate.
 
@@ -412,7 +429,8 @@ class StockTrackingAgent:
         ticker: str = None,
         sector: str = None,
         trigger_type: str = "",
-        trigger_mode: str = ""
+        trigger_mode: str = "",
+        db_lock: "asyncio.Lock" = None
     ) -> Dict[str, Any]:
         """
         Extract trading scenario from report
@@ -428,7 +446,15 @@ class StockTrackingAgent:
         Returns:
             Dict: Trading scenario information
         """
+        # Serialize shared-sqlite access. Held only around the DB reads below and
+        # released before the LLM call so concurrent scenario analyses overlap.
+        if db_lock is None:
+            db_lock = self._get_db_lock()
+        _lock_held = False
         try:
+            await db_lock.acquire()
+            _lock_held = True
+
             # Get current holdings info and sector distribution
             current_slots = await self._get_current_slots_count()
 
@@ -505,6 +531,11 @@ class StockTrackingAgent:
                 - Reason: {', '.join(reasons) if reasons else 'N/A'}
                 - ⚠️ This adjustment is a reference based on past experience.
                 """
+
+            # Release the DB lock before the LLM call so concurrent analyses
+            # actually run in parallel (the LLM step touches no shared sqlite state).
+            db_lock.release()
+            _lock_held = False
 
             # LLM call to generate trading scenario
             llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
@@ -589,6 +620,11 @@ class StockTrackingAgent:
             logger.error(f"Error extracting trading scenario: {str(e)}")
             logger.error(traceback.format_exc())
             return self._default_scenario()
+        finally:
+            # Guard against holding the lock past an exception in the DB phase,
+            # which would deadlock the remaining concurrent pre-pass tasks.
+            if _lock_held:
+                db_lock.release()
 
     def _default_scenario(self) -> Dict[str, Any]:
         """Return default trading scenario (delegates to tracking.helpers)"""
@@ -607,16 +643,21 @@ class StockTrackingAgent:
         try:
             logger.info(f"Starting report analysis: {pdf_report_path}")
 
+            db_lock = self._get_db_lock()
+
             ticker, company_name = await self._extract_ticker_info(pdf_report_path)
             if not ticker or not company_name:
                 logger.error(f"Failed to extract ticker info: {pdf_report_path}")
                 return {"success": False, "error": "Failed to extract ticker info"}
 
-            current_price = await self._get_current_stock_price(ticker)
+            # Shared-sqlite read: serialize against concurrent pre-pass tasks.
+            async with db_lock:
+                current_price = await self._get_current_stock_price(ticker)
             if current_price <= 0:
                 logger.error(f"{ticker} current price query failed")
                 return {"success": False, "error": "Current price query failed"}
 
+            # Network-only (no shared cursor) — safe to run outside the lock.
             rank_change_percentage, rank_change_msg = await self._get_trading_value_rank_change(ticker)
 
             from pdf_converter import pdf_to_markdown_text
@@ -632,7 +673,8 @@ class StockTrackingAgent:
                 ticker=ticker,
                 sector=None,
                 trigger_type=trigger_type,
-                trigger_mode=trigger_mode
+                trigger_mode=trigger_mode,
+                db_lock=db_lock
             )
 
             raw_decision = scenario.get("decision", "No entry")
@@ -656,12 +698,21 @@ class StockTrackingAgent:
             logger.error(traceback.format_exc())
             return {"success": False, "error": str(e)}
 
-    async def analyze_report(self, pdf_report_path: str) -> Dict[str, Any]:
+    async def analyze_report(
+        self,
+        pdf_report_path: str,
+        precomputed_core: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
         """
         Analyze stock analysis report and make trading decision
 
         Args:
             pdf_report_path: PDF analysis report file path
+            precomputed_core: Optional result of `_analyze_report_core` computed
+                ahead of time (e.g. by the parallel buy-analysis pre-pass in
+                `process_reports`). When provided it is used instead of paying the
+                heavy scenario LLM call again. All holdings-dependent, order-
+                sensitive gates below still run sequentially and unchanged.
 
         Returns:
             Dict: Trading decision result
@@ -706,7 +757,12 @@ class StockTrackingAgent:
                     "current_price": pre_price,
                 }
 
-        analysis_result = await self._analyze_report_core(pdf_report_path)
+        # Use the precomputed core analysis from the parallel pre-pass when
+        # available; otherwise compute it now (fallback preserves old behavior).
+        if precomputed_core is not None:
+            analysis_result = precomputed_core
+        else:
+            analysis_result = await self._analyze_report_core(pdf_report_path)
         if not analysis_result.get("success", False):
             return analysis_result
 

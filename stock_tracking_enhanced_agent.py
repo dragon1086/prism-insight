@@ -6,6 +6,7 @@ from scipy import stats
 from typing import List, Tuple, Dict, Any
 from datetime import datetime, timedelta
 from stock_tracking_agent import StockTrackingAgent
+import asyncio
 import logging
 import json
 import os
@@ -27,6 +28,24 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+def _resolve_trading_analysis_concurrency() -> int:
+    """Max concurrent buy-scenario analyses in the parallel pre-pass.
+
+    Override via env TRADING_ANALYSIS_CONCURRENCY (default 4). Invalid/<=0
+    values fall back to the default. This caps concurrent LLM scenario calls so
+    the batch fans out without overwhelming the OpenAI API or the event loop.
+    """
+    default = 4
+    try:
+        val = int(os.getenv("TRADING_ANALYSIS_CONCURRENCY", str(default)))
+        return val if val > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+TRADING_ANALYSIS_CONCURRENCY = _resolve_trading_analysis_concurrency()
 
 
 class EnhancedStockTrackingAgent(StockTrackingAgent):
@@ -385,10 +404,48 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 logger.info("No stocks sold")
 
             # 2. Analyze new reports and make buy decisions
+            #
+            # Parallel pre-pass: the expensive, holdings-order-INDEPENDENT scenario
+            # analysis (`_analyze_report_core` → buy-scenario LLM, ~2-7.5 min each)
+            # is computed for all reports concurrently, capped by a Semaphore. The
+            # heavy LLM call dominates, so total latency drops from ~sum to ~max.
+            # DB access inside each task is serialized by the agent's asyncio.Lock
+            # (see StockTrackingAgent._get_db_lock), released around the LLM call.
+            #
+            # The holdings-dependent, ORDER-SENSITIVE gates (pyramid/holding checks,
+            # pilot freeze, sector diversity, buy/order/commit) remain in the
+            # sequential loop below and are UNCHANGED — they read DB state that
+            # mutates as buys happen, so they must stay sequential. A per-path core
+            # failure surfaces as {"success": False, ...} and is handled by the loop.
+            semaphore = asyncio.Semaphore(TRADING_ANALYSIS_CONCURRENCY)
+
+            async def _run_core(path: str) -> Tuple[str, Dict[str, Any]]:
+                async with semaphore:
+                    try:
+                        return path, await self._analyze_report_core(path)
+                    except Exception as e:
+                        logger.error(f"Parallel core analysis failed: {path} - {e}")
+                        logger.error(traceback.format_exc())
+                        return path, {"success": False, "error": str(e)}
+
+            logger.info(
+                f"Parallel buy-analysis pre-pass: {len(pdf_report_paths)} reports, "
+                f"concurrency={TRADING_ANALYSIS_CONCURRENCY}"
+            )
+            core_pairs = await asyncio.gather(
+                *(_run_core(p) for p in pdf_report_paths)
+            )
+            core_results: Dict[str, Dict[str, Any]] = dict(core_pairs)
+
             analysis_failures = []
+            # Preserve original report ordering for deterministic, order-sensitive gates.
             for pdf_report_path in pdf_report_paths:
-                # Analyze report
-                analysis_result = await self.analyze_report(pdf_report_path)
+                # Analyze report (reuse precomputed core from the parallel pre-pass;
+                # falls back to computing it if missing).
+                analysis_result = await self.analyze_report(
+                    pdf_report_path,
+                    precomputed_core=core_results.get(pdf_report_path),
+                )
 
                 if not analysis_result.get("success", False):
                     logger.error(f"Report analysis failed: {pdf_report_path} - {analysis_result.get('error', 'Unknown error')}")
