@@ -693,6 +693,7 @@ class USStockTrading:
             logger.error(f"Error during limit buy: {str(e)}")
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'order_no': None,
                 'ticker': ticker,
                 'quantity': buy_quantity,

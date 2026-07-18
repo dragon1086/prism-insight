@@ -702,3 +702,27 @@ def test_us_reserved_order_exception_marks_outcome_unknown():
     assert result["success"] is False
     assert result["outcome_unknown"] is True
     assert "Expecting value" in result["message"]
+
+
+def test_us_limit_buy_exception_marks_outcome_unknown():
+    trader = ust.USStockTrading.__new__(ust.USStockTrading)
+    trader.auto_trading = True
+    trader.buy_amount = 500.0
+    trader.mode = "demo"
+    trader.trenv = SimpleNamespace(my_acct="test-account", my_prod="01")
+
+    def fail_request(*args, **kwargs):
+        raise ValueError("Expecting value")
+
+    trader._request = fail_request
+
+    result = trader.buy_limit_price(
+        "AAPL",
+        limit_price=190.0,
+        buy_amount=500.0,
+        exchange="NASD",
+    )
+
+    assert result["success"] is False
+    assert result["outcome_unknown"] is True
+    assert "Expecting value" in result["message"]
