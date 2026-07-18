@@ -150,6 +150,7 @@ class _FakeAsyncUSTradingContext:
 @pytest.mark.parametrize("pyramiding", [False, True], ids=["single", "pyramiding"])
 def test_concurrent_sell_guard_allows_one_us_order_and_publish(tmp_path, pyramiding):
     from prism_core.execution_service import ExecutionService
+    from prism_core.positions import PositionStore
 
     db_path = tmp_path / "us-concurrent-sell.sqlite"
     setup = sqlite3.connect(db_path)
@@ -187,6 +188,11 @@ def test_concurrent_sell_guard_allows_one_us_order_and_publish(tmp_path, pyramid
                VALUES ('ACC1', 'us-primary', 'AAPL', 'Apple', 175,
                        '2026-06-15 09:00:00')"""
         )
+    position_store = PositionStore(setup)
+    position_store.ensure_schema()
+    assert position_store.backfill_legacy_positions("US")["inserted"] == (
+        2 if pyramiding else 1
+    )
     setup.commit()
     setup.close()
 
@@ -248,13 +254,76 @@ def test_concurrent_sell_guard_allows_one_us_order_and_publish(tmp_path, pyramid
     remaining_prices = verify.execute(
         "SELECT buy_price FROM us_stock_holdings ORDER BY id"
     ).fetchall()
+    position_states = verify.execute(
+        "SELECT legacy_holding_id, status FROM positions ORDER BY legacy_holding_id"
+    ).fetchall()
     verify.close()
 
     assert sorted(sold for sold, _messages in results) == [False, True]
     assert sum(messages for _sold, messages in results) == 1
     assert history_count == 1
     assert remaining_prices == ([(175.0,)] if pyramiding else [])
+    assert position_states == (
+        [(str(target_row_id), "CLOSED"), (str(target_row_id + 1), "OPEN")]
+        if pyramiding
+        else [(str(target_row_id), "CLOSED")]
+    )
     assert effects == {"broker": 1, "publish": 1}
+
+
+@pytest.mark.asyncio
+async def test_us_buy_dual_writes_open_position():
+    from prism_core.positions import PositionStore
+
+    agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+    agent.conn = sqlite3.connect(":memory:")
+    agent.cursor = agent.conn.cursor()
+    agent.cursor.execute(
+        """CREATE TABLE us_stock_holdings (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               account_key TEXT NOT NULL, account_name TEXT, ticker TEXT NOT NULL,
+               company_name TEXT NOT NULL, buy_price REAL NOT NULL,
+               buy_date TEXT NOT NULL, current_price REAL, last_updated TEXT,
+               scenario TEXT, target_price REAL, stop_loss REAL,
+               trigger_type TEXT, trigger_mode TEXT, sector TEXT
+           )"""
+    )
+    PositionStore(agent.cursor).ensure_schema()
+    agent.conn.commit()
+    agent.position_ledger_shadow_enabled = True
+    agent.max_slots = 10
+    agent.message_queue = []
+    agent._msg_types = []
+    agent._account_scope = lambda: ("ACC1", "us-primary")
+    agent._get_trigger_win_rate = lambda _trigger: ""
+
+    async def no_holding(_ticker):
+        return False
+
+    async def no_slots():
+        return 0
+
+    agent._is_ticker_in_holdings = no_holding
+    agent._get_current_slots_count = no_slots
+
+    assert await agent.buy_stock(
+        "AAPL", "Apple", 190.0, {"sector": "Technology"}
+    )
+    legacy = agent.conn.execute(
+        "SELECT id, account_key, ticker, buy_price, buy_date FROM us_stock_holdings"
+    ).fetchone()
+    mirror = agent.conn.execute(
+        "SELECT legacy_holding_id, account_id, symbol, entry_price, opened_at, status "
+        "FROM positions"
+    ).fetchone()
+    assert mirror == (
+        str(legacy[0]),
+        legacy[1],
+        legacy[2],
+        legacy[3],
+        legacy[4],
+        "OPEN",
+    )
 
 
 def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):
