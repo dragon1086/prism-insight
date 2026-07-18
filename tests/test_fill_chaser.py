@@ -129,7 +129,13 @@ def _fast_defaults(monkeypatch):
 
 
 def _patch_ctx(monkeypatch, trader):
-    monkeypatch.setattr(lc, "_open_context", lambda market, account_name=None: FakeCtx(trader))
+    from prism_core.execution_service import ExecutionService
+
+    monkeypatch.setattr(
+        lc,
+        "_open_context",
+        lambda market, account_name=None: ExecutionService(FakeCtx(trader)),
+    )
 
 
 def _logs(db, action=None):
@@ -338,10 +344,14 @@ def test_inquiry_failure_degrades_to_noop(tmp_db, monkeypatch):
 # ── SHADOW verification helpers (dry-run payload + fill plausibility) ────────────
 def test_dry_run_payload_has_required_kr_fields(tmp_db, monkeypatch):
     """dry_run=True returns the exact KR amend body without any network/order."""
+    from prism_core.execution_service import ExecutionService
+
     trader = FakeTrader([], {})
     order = {"ticker": "005930", "side": "SELL", "order_no": "O1",
              "ord_unpr": 70000, "unfilled_qty": 10, "krx_fwdg_ord_orgno": "GNO1"}
-    payload = lc._build_dry_run_payload(trader, "KR", order, "AMEND", 69500)
+    payload = lc._build_dry_run_payload(
+        ExecutionService(trader), "KR", order, "AMEND", 69500
+    )
     assert payload["tr_id"] and "order-rvsecncl" in payload["api_url"]
     p = payload["params"]
     for k in ("CANO", "ACNT_PRDT_CD", "KRX_FWDG_ORD_ORGNO", "ORGN_ODNO",

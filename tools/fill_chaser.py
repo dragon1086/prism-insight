@@ -296,11 +296,11 @@ def record_seen(conn: sqlite3.Connection, ticker: str, market: str, side: str,
 
 # ── Trader context (KR / US) — read-only price + inquiry in SHADOW ─────────────
 def _open_context(market: str, account_name: Optional[str] = None):
+    from prism_core.execution_service import ExecutionService
+
     if market == "KR":
-        from trading.domestic_stock_trading import AsyncTradingContext
-        return AsyncTradingContext(account_name=account_name)
-    from us_stock_trading import AsyncUSTradingContext
-    return AsyncUSTradingContext(account_name=account_name)
+        return ExecutionService.domestic(account_name=account_name)
+    return ExecutionService.us(account_name=account_name)
 
 
 # ── Order-state normalisation across KR / US inquiry wrappers ──────────────────
@@ -441,21 +441,25 @@ def _build_dry_run_payload(trader, market: str, order: Dict[str, Any],
     try:
         if market == "KR":
             if action == "AMEND":
-                return trader.amend_order(
+                return trader.amend_or_cancel_sync(
+                    "amend",
                     ticker, order_no, int(new_price),
                     order.get("krx_fwdg_ord_orgno", ""), dry_run=True,
                 ) or {}
-            return trader.cancel_order(
+            return trader.amend_or_cancel_sync(
+                "cancel",
                 ticker, order_no, order.get("krx_fwdg_ord_orgno", ""),
                 dry_run=True,
             ) or {}
         else:  # US
             if action == "AMEND":
-                return trader.amend_order(
+                return trader.amend_or_cancel_sync(
+                    "amend",
                     ticker, order_no, float(new_price), unfilled_qty,
                     order.get("exchange"), dry_run=True,
                 ) or {}
-            return trader.cancel_order(
+            return trader.amend_or_cancel_sync(
+                "cancel",
                 ticker, order_no, unfilled_qty, order.get("exchange"),
                 dry_run=True,
             ) or {}
@@ -621,13 +625,13 @@ async def _do_amend(conn, trader, market, order, run_id, summary, mode,
                    market, side, ticker, order_no, old_price, new_price)
     try:
         if market == "KR":
-            result = await asyncio.to_thread(
-                trader.amend_order, ticker, order_no, int(new_price),
+            result = await trader.amend_or_cancel(
+                "amend", ticker, order_no, int(new_price),
                 order.get("krx_fwdg_ord_orgno", ""),
             )
         else:
-            result = await asyncio.to_thread(
-                trader.amend_order, ticker, order_no, float(new_price),
+            result = await trader.amend_or_cancel(
+                "amend", ticker, order_no, float(new_price),
                 unfilled_qty, order.get("exchange"),
             )
         ok = bool(result and result.get("success"))
@@ -667,13 +671,13 @@ async def _do_cancel(conn, trader, market, order, run_id, summary, mode,
                    market, side, ticker, order_no, reason)
     try:
         if market == "KR":
-            result = await asyncio.to_thread(
-                trader.cancel_order, ticker, order_no,
+            result = await trader.amend_or_cancel(
+                "cancel", ticker, order_no,
                 order.get("krx_fwdg_ord_orgno", ""),
             )
         else:
-            result = await asyncio.to_thread(
-                trader.cancel_order, ticker, order_no, unfilled_qty,
+            result = await trader.amend_or_cancel(
+                "cancel", ticker, order_no, unfilled_qty,
                 order.get("exchange"),
             )
         ok = bool(result and result.get("success"))
@@ -833,7 +837,9 @@ def run_selftest(market: str) -> Dict[str, Any]:
     """Exercise compute-chase -> dry-run payload -> fill-plausibility -> SHADOW log
     on synthetic orders, with NO DB owner-lock, NO API calls and NO orders. Always
     SHADOW (never sends). Returns a concise summary dict."""
-    trader = _SelftestTrader(market)
+    from prism_core.execution_service import ExecutionService
+
+    trader = ExecutionService(_SelftestTrader(market))
     summary: Dict[str, Any] = {"market": market, "amend": 0, "cancel": 0,
                                "likely": 0, "unlikely": 0}
     # Chase one full step toward the market for the selftest so the synthetic
@@ -861,6 +867,7 @@ def _run_selftest_body(market: str, trader, summary: Dict[str, Any]) -> Dict[str
         new_price = _round_price(market, _compute_chase_price(side, order_price, market_price))
         verdict = _fill_verdict(side, new_price, market_price)
         payload = _build_dry_run_payload(trader, market, order, "AMEND", new_price)
+        _validate_selftest_payload(payload, market, "AMEND")
         summary["amend"] += 1
         summary["likely" if verdict == "FILL_LIKELY" else "unlikely"] += 1
         logger.info(
@@ -876,6 +883,7 @@ def _run_selftest_body(market: str, trader, summary: Dict[str, Any]) -> Dict[str
         # Also exercise the cancel payload path (e.g. a buy that would be abandoned).
         if side == "BUY":
             cxl = _build_dry_run_payload(trader, market, order, "CANCEL", 0.0)
+            _validate_selftest_payload(cxl, market, "CANCEL")
             summary["cancel"] += 1
             logger.info(
                 "[FILL_CHASER][SHADOW] selftest decision=WOULD_CANCEL market=%s ticker=%s "
@@ -887,6 +895,16 @@ def _run_selftest_body(market: str, trader, summary: Dict[str, Any]) -> Dict[str
             )
     logger.info("[FILL_CHASER][SHADOW] selftest %s summary: %s", market, summary)
     return summary
+
+
+def _validate_selftest_payload(payload: Dict[str, Any], market: str, action: str) -> None:
+    """Fail closed when the deployment smoke test cannot build an order payload."""
+    required = ("tr_id", "api_url", "params")
+    missing = [key for key in required if not payload.get(key)]
+    if missing:
+        raise RuntimeError(
+            f"{market} {action} selftest payload missing required fields: {missing}"
+        )
 
 
 def _run_both_isolated(selftest: bool = False) -> int:

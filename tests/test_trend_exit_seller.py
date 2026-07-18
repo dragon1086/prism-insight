@@ -108,7 +108,13 @@ def _row(id_, ticker, buy_price, stop_loss=0.0, target_price=0.0, highest_price=
 
 def _patch(monkeypatch, trader, agent_holder=None, make_agent_counter=None,
            ma50=0.0, regime="moderate_bull"):
-    monkeypatch.setattr(lb, "_open_context", lambda market, account_name=None: FakeCtx(trader))
+    from prism_core.execution_service import ExecutionService
+
+    monkeypatch.setattr(
+        lb,
+        "_open_context",
+        lambda market, account_name=None: ExecutionService(FakeCtx(trader)),
+    )
     # Network-free: fixed ma_50 + regime.
     monkeypatch.setattr(lb, "_fetch_ma50", lambda market, ticker: ma50)
     monkeypatch.setattr(lb, "_compute_live_regime", lambda market: regime)

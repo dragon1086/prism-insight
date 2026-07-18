@@ -18,6 +18,7 @@ from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmented
 # Import core agents
 from cores.agents.trading_agents import create_sell_decision_agent
 from cores.utils import parse_llm_json
+from prism_core.execution_service import ExecutionService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -637,10 +638,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                     if buy_success:
                         # Call actual account trading function (async)
-                        from trading.domestic_stock_trading import AsyncTradingContext
-                        async with AsyncTradingContext() as trading:
+                        async with ExecutionService.domestic() as trading:
                             # Execute async buy with limit price for reserved orders
-                            trade_result = await trading.async_buy_stock(stock_code=ticker, limit_price=current_price)
+                            trade_result = await trading.execute_buy(stock_code=ticker, limit_price=current_price)
 
                         if trade_result['success']:
                             logger.info(f"Actual purchase successful: {trade_result['message']}")

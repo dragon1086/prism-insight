@@ -31,7 +31,7 @@ On an actual ACT it closes the position the SAME way the batch and Hardstop do, 
 the simulator, the real KIS account and the Telegram channel all stay consistent:
 
     1. agent.sell_stock(stock_data, reason)   # simulator close + journal + queue msg
-    2. trading.async_sell_stock(ticker)       # real KIS market order
+    2. ExecutionService.execute_sell(ticker)  # real KIS market order
     3. agent.send_telegram_message(chat_id)   # flush the queued sell message
 
 SAFETY (read before enabling):
@@ -422,11 +422,11 @@ def _compute_live_regime(market: str) -> Optional[str]:
 
 # ── Trader context + agent factories (KR / US) ────────────────────────────────
 def _open_context(market: str, account_name: Optional[str] = None):
+    from prism_core.execution_service import ExecutionService
+
     if market == "KR":
-        from trading.domestic_stock_trading import AsyncTradingContext
-        return AsyncTradingContext(account_name=account_name)
-    from us_stock_trading import AsyncUSTradingContext
-    return AsyncUSTradingContext(account_name=account_name)
+        return ExecutionService.domestic(account_name=account_name)
+    return ExecutionService.us(account_name=account_name)
 
 
 async def _make_agent(market: str):
@@ -635,7 +635,7 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                 if sold_qty <= 0:
                     logger.info("[%s] %s already flat at KIS (qty=0); sim closed", market, ticker)
                 else:
-                    result = await seller.async_sell_stock(ticker, quantity=sold_qty)
+                    result = await seller.execute_sell(ticker, quantity=sold_qty)
                     ok = bool(result and result.get("success"))
                     order_no = (result or {}).get("order_no")
                     logger.warning("[LIVE][%s] %s KIS sell success=%s order_no=%s msg=%s",

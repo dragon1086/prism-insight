@@ -21,6 +21,7 @@ Run:
     python3 tests/test_layer2_stale_snapshot_guard.py
 """
 
+import ast
 import importlib.util
 import os
 import re
@@ -71,6 +72,18 @@ def _insert_holding(cur, account_key, ticker, buy_price):
             VALUES (?, 'acct', ?, ?, ?, '2026-07-01 09:00:00')""",
         (account_key, ticker, f"{ticker} Inc", buy_price),
     )
+
+
+def _async_method_source(src, class_name, method_name):
+    """Return one async method's source without fixed-width text slicing."""
+    tree = ast.parse(src)
+    lines = src.splitlines(keepends=True)
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for child in node.body:
+                if isinstance(child, ast.AsyncFunctionDef) and child.name == method_name:
+                    return "".join(lines[child.lineno - 1:child.end_lineno])
+    return ""
 
 
 def _guard_would_skip(cur, ticker, account_key):
@@ -186,26 +199,32 @@ def test_guard_present_in_source():
 # ── Test 5: sell_stock chokepoint guard wired into BOTH agents ────────────────
 def test_sell_stock_chokepoint_guard():
     print("\n[Test 5] sell_stock chokepoint guard (KR + US) — covers loops too")
-    for label, path, marker, insert_tbl in (
-        ("KR", _KR_AGENT_PATH, "[SELL-GUARD][KR]", "INSERT INTO trading_history"),
-        ("US", _AGENT_PATH, "[SELL-GUARD][US]", "INSERT INTO us_trading_history"),
+    for label, path, class_name, marker, insert_tbl, holdings_tbl in (
+        ("KR", _KR_AGENT_PATH, "StockTrackingAgent", "[SELL-GUARD][KR]",
+         "INSERT INTO trading_history", "stock_holdings"),
+        ("US", _AGENT_PATH, "USStockTrackingAgent", "[SELL-GUARD][US]",
+         "INSERT INTO us_trading_history", "us_stock_holdings"),
     ):
         with open(path, "r", encoding="utf-8") as fh:
             src = fh.read()
-        sell_idx = src.find("async def sell_stock(")
-        check(sell_idx > 0, f"{label}: sell_stock defined")
-        guard_idx = src.find(marker)
-        insert_idx = src.find(insert_tbl, sell_idx)
-        check(guard_idx > sell_idx, f"{label}: guard marker inside sell_stock")
+        sell_src = _async_method_source(src, class_name, "sell_stock")
+        check(bool(sell_src), f"{label}: sell_stock defined")
+        guard_idx = sell_src.find(marker)
+        insert_idx = sell_src.find(insert_tbl)
+        check(guard_idx > 0, f"{label}: guard marker inside sell_stock")
         # The guard MUST run BEFORE the trading_history INSERT, else a phantom
         # sale row is written for an already-closed position.
         check(0 < guard_idx < insert_idx,
               f"{label}: guard precedes trading_history INSERT (no phantom P&L row)")
-        # And it must abort via `return False` so callers (orchestrator + loops)
-        # skip the real order + signal publish.
-        seg = src[guard_idx - 400:insert_idx]
-        check("return False" in seg, f"{label}: guard aborts via return False")
-        check('row_count", 0) == 0' in seg, f"{label}: guard predicate row_count == 0")
+        claim_idx = sell_src.find('self.conn.execute("BEGIN IMMEDIATE")')
+        claim = sell_src[claim_idx:insert_idx]
+        check(0 <= claim_idx < guard_idx, f"{label}: writer lock precedes guard read")
+        check("if not position_exists:" in claim and "return False" in claim,
+              f"{label}: missing position aborts via return False")
+        check(f"SELECT 1 FROM {holdings_tbl}" in claim and "WHERE id = ?" in claim,
+              f"{label}: row_id path claims the exact pyramid row")
+        check('row_count", 0) > 0' in claim,
+              f"{label}: legacy no-id path remains ticker/account scoped")
 
 
 def _run():
