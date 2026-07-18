@@ -100,7 +100,13 @@ def _row(id_, ticker, buy_price, stop_loss=0.0):
 
 
 def _patch(monkeypatch, trader, agent_holder=None, make_agent_counter=None):
-    monkeypatch.setattr(la, "_open_context", lambda market, account_name=None: FakeCtx(trader))
+    from prism_core.execution_service import ExecutionService
+
+    monkeypatch.setattr(
+        la,
+        "_open_context",
+        lambda market, account_name=None: ExecutionService(FakeCtx(trader)),
+    )
 
     async def _fake_make_agent(market):
         if make_agent_counter is not None:

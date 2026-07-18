@@ -48,6 +48,7 @@ from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmented
 from cores.openai_error_logging import log_openai_error
 from cores.agents.trading_agents import create_trading_scenario_agent
 from cores.utils import parse_llm_json
+from prism_core.execution_service import ExecutionService
 
 # O'Neil 룰베이스 매도 (2026-06-04 US quota 사고 동일 룰 결함 KR에도 적용).
 # 방어적 import: 실패 시 _ONEIL_FALLBACK_AVAILABLE=False 로 기존 레거시 룰 유지.
@@ -1682,8 +1683,7 @@ class StockTrackingAgent:
 
                     if sell_success:
                         # Call actual account trading function (async)
-                        from trading.domestic_stock_trading import AsyncTradingContext
-                        async with AsyncTradingContext(account_name=stock.get("account_name")) as trading:
+                        async with ExecutionService.domestic(account_name=stock.get("account_name")) as trading:
                             # Determine fractional sell quantity for multi-row tickers.
                             # FIX 2: snapshot total qty once per ticker per pass and
                             # distribute from (snapshot - already_ordered), so fills
@@ -1711,7 +1711,7 @@ class StockTrackingAgent:
                                     f"remaining rows={remaining_rows})"
                                 )
                             # Execute async sell with limit price for reserved orders
-                            trade_result = await trading.async_sell_stock(
+                            trade_result = await trading.execute_sell(
                                 stock_code=ticker, limit_price=current_price, quantity=sell_quantity
                             )
 
@@ -2051,10 +2051,8 @@ class StockTrackingAgent:
                         buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
 
                         if buy_success:
-                            from trading.domestic_stock_trading import AsyncTradingContext
-
-                            async with AsyncTradingContext(account_name=account["name"]) as trading:
-                                trade_result = await trading.async_buy_stock(stock_code=ticker, limit_price=current_price)
+                            async with ExecutionService.domestic(account_name=account["name"]) as trading:
+                                trade_result = await trading.execute_buy(stock_code=ticker, limit_price=current_price)
 
                             if trade_result['success']:
                                 logger.info(f"Actual purchase successful: {trade_result['message']}")

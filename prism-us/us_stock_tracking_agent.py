@@ -37,6 +37,8 @@ from typing import List, Dict, Any, Tuple, Optional
 # Add parent directory to path for imports
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+from prism_core.execution_service import ExecutionService  # noqa: E402
+
 _openai_debug_spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
 if _openai_debug_spec and _openai_debug_spec.loader:
     _openai_debug_mod = _ilu.module_from_spec(_openai_debug_spec)
@@ -2454,11 +2456,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     will_queue = False
                     if remaining_rows > 1 and current_price > 0:
                         try:
-                            try:
-                                from trading.us_stock_trading import AsyncUSTradingContext
-                            except ImportError:
-                                from prism_us.trading.us_stock_trading import AsyncUSTradingContext
-                            async with AsyncUSTradingContext(account_name=stock.get("account_name")) as _probe:
+                            async with ExecutionService.us(account_name=stock.get("account_name")) as _probe:
                                 # Order gets queued when market is closed AND the
                                 # reserved-order window is unavailable (pre-10:00 KST).
                                 will_queue = (not _probe.is_market_open()) and (not _probe.is_reserved_order_available())
@@ -2508,11 +2506,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         # Only execute trading if we have a valid price
                         if current_price > 0:
                             try:
-                                try:
-                                    from trading.us_stock_trading import AsyncUSTradingContext
-                                except ImportError:
-                                    from prism_us.trading.us_stock_trading import AsyncUSTradingContext
-                                async with AsyncUSTradingContext(account_name=stock.get("account_name")) as trading:
+                                async with ExecutionService.us(account_name=stock.get("account_name")) as trading:
                                     # Determine sell quantity.
                                     # FIX 1: full_exit -> quantity=None (sell whole position).
                                     # FIX 2: fractional -> distribute from a per-pass snapshot
@@ -2541,7 +2535,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     # the ticker was already added to fully_exited_tickers above.
                                     # Pass limit_price for reserved orders (required for US market)
                                     # If limit_price is 0, trading module will use MOO (Market On Open)
-                                    trade_result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price, quantity=sell_quantity)
+                                    trade_result = await trading.execute_sell(ticker=ticker, limit_price=current_price, quantity=sell_quantity)
 
                                 if trade_result['success']:
                                     logger.info(f"Actual sell successful: {trade_result['message']}")
@@ -2953,12 +2947,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                             if current_price > 0:
                                 try:
-                                    try:
-                                        from trading.us_stock_trading import AsyncUSTradingContext
-                                    except ImportError:
-                                        from prism_us.trading.us_stock_trading import AsyncUSTradingContext
-                                    async with AsyncUSTradingContext(account_name=account["name"]) as trading:
-                                        trade_result = await trading.async_buy_stock(ticker=ticker, limit_price=current_price)
+                                    async with ExecutionService.us(account_name=account["name"]) as trading:
+                                        trade_result = await trading.execute_buy(ticker=ticker, limit_price=current_price)
 
                                     if trade_result['success']:
                                         logger.info(f"Actual purchase successful: {trade_result['message']}")

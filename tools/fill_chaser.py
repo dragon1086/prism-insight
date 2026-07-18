@@ -296,11 +296,11 @@ def record_seen(conn: sqlite3.Connection, ticker: str, market: str, side: str,
 
 # ── Trader context (KR / US) — read-only price + inquiry in SHADOW ─────────────
 def _open_context(market: str, account_name: Optional[str] = None):
+    from prism_core.execution_service import ExecutionService
+
     if market == "KR":
-        from trading.domestic_stock_trading import AsyncTradingContext
-        return AsyncTradingContext(account_name=account_name)
-    from us_stock_trading import AsyncUSTradingContext
-    return AsyncUSTradingContext(account_name=account_name)
+        return ExecutionService.domestic(account_name=account_name)
+    return ExecutionService.us(account_name=account_name)
 
 
 # ── Order-state normalisation across KR / US inquiry wrappers ──────────────────
@@ -441,21 +441,25 @@ def _build_dry_run_payload(trader, market: str, order: Dict[str, Any],
     try:
         if market == "KR":
             if action == "AMEND":
-                return trader.amend_order(
+                return trader.amend_or_cancel_sync(
+                    "amend",
                     ticker, order_no, int(new_price),
                     order.get("krx_fwdg_ord_orgno", ""), dry_run=True,
                 ) or {}
-            return trader.cancel_order(
+            return trader.amend_or_cancel_sync(
+                "cancel",
                 ticker, order_no, order.get("krx_fwdg_ord_orgno", ""),
                 dry_run=True,
             ) or {}
         else:  # US
             if action == "AMEND":
-                return trader.amend_order(
+                return trader.amend_or_cancel_sync(
+                    "amend",
                     ticker, order_no, float(new_price), unfilled_qty,
                     order.get("exchange"), dry_run=True,
                 ) or {}
-            return trader.cancel_order(
+            return trader.amend_or_cancel_sync(
+                "cancel",
                 ticker, order_no, unfilled_qty, order.get("exchange"),
                 dry_run=True,
             ) or {}
@@ -621,13 +625,13 @@ async def _do_amend(conn, trader, market, order, run_id, summary, mode,
                    market, side, ticker, order_no, old_price, new_price)
     try:
         if market == "KR":
-            result = await asyncio.to_thread(
-                trader.amend_order, ticker, order_no, int(new_price),
+            result = await trader.amend_or_cancel(
+                "amend", ticker, order_no, int(new_price),
                 order.get("krx_fwdg_ord_orgno", ""),
             )
         else:
-            result = await asyncio.to_thread(
-                trader.amend_order, ticker, order_no, float(new_price),
+            result = await trader.amend_or_cancel(
+                "amend", ticker, order_no, float(new_price),
                 unfilled_qty, order.get("exchange"),
             )
         ok = bool(result and result.get("success"))
@@ -667,13 +671,13 @@ async def _do_cancel(conn, trader, market, order, run_id, summary, mode,
                    market, side, ticker, order_no, reason)
     try:
         if market == "KR":
-            result = await asyncio.to_thread(
-                trader.cancel_order, ticker, order_no,
+            result = await trader.amend_or_cancel(
+                "cancel", ticker, order_no,
                 order.get("krx_fwdg_ord_orgno", ""),
             )
         else:
-            result = await asyncio.to_thread(
-                trader.cancel_order, ticker, order_no, unfilled_qty,
+            result = await trader.amend_or_cancel(
+                "cancel", ticker, order_no, unfilled_qty,
                 order.get("exchange"),
             )
         ok = bool(result and result.get("success"))
