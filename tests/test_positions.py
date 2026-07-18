@@ -1,5 +1,8 @@
 import json
 import sqlite3
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -439,6 +442,24 @@ def test_compare_cli_is_read_only_and_never_prints_raw_account(
     assert verify.total_changes == 0
     verify.close()
     assert before > 0
+
+    command = [
+        sys.executable,
+        str(Path(__file__).parents[1] / "tools" / "compare_position_ledger.py"),
+        "--db-path",
+        str(db_path),
+    ]
+    direct = subprocess.run(
+        command,
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert direct.returncode == 0, direct.stderr
+    assert '"status": "ok"' in direct.stdout
+    assert "secret-account" not in direct.stdout
+    assert "us-secret-account" not in direct.stdout
 
     conn = sqlite3.connect(db_path)
     conn.execute(
