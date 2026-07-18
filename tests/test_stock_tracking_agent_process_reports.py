@@ -167,8 +167,9 @@ def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):
 
 
 @pytest.mark.asyncio
-async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, caplog):
+async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, caplog, tmp_path):
     agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent.db_path = str(tmp_path / "stock_tracking.sqlite")
     agent.account_configs = [
         {"name": "kr-primary", "account_key": "vps:kr-primary:01"},
         {"name": "kr-secondary", "account_key": "vps:kr-secondary:01"},
@@ -318,8 +319,9 @@ async def test_process_reports_saves_watchlist_once_when_not_traded(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_update_holdings_masks_sold_account_payload(monkeypatch):
+async def test_update_holdings_masks_sold_account_payload(monkeypatch, tmp_path):
     agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent.db_path = str(tmp_path / "stock_tracking.sqlite")
     agent.conn = sqlite3.connect(":memory:")
     agent.conn.row_factory = sqlite3.Row
     agent.cursor = agent.conn.cursor()
