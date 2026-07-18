@@ -295,13 +295,9 @@ class InsightAgent:
         ctx = await self._build_retrieval_context(question)
         context_str = self._format_context(ctx)
 
-        # 3. Agent + LLM (mcp-agent global app reused)
+        # 3. Agent + LLM (archive-only legacy mcp-agent path)
         response_text = ""
         try:
-            # global app 초기화 보장 (firecrawl 패턴과 동일)
-            from report_generator import get_or_create_global_mcp_app, reset_global_mcp_app
-            _ = await get_or_create_global_mcp_app()
-
             today_kst = datetime.now(_KST).strftime("%Y-%m-%d")
             dated_prompt = (
                 f"# 오늘 날짜: {today_kst} (KST)\n"
@@ -334,10 +330,6 @@ class InsightAgent:
                 logger.error(
                     f"InsightAgent LLM call failed: {agent_err}", exc_info=True
                 )
-                try:
-                    await reset_global_mcp_app()
-                except Exception:
-                    pass
                 # Fallback: retrieval 원문 반환
                 fallback = (
                     "[인사이트 엔진 오류] 관련 컨텍스트만 전달합니다.\n\n"

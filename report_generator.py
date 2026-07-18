@@ -2,7 +2,6 @@
 Report generation and conversion module
 """
 import asyncio
-import atexit
 import json
 import logging
 import os
@@ -13,84 +12,55 @@ from pathlib import Path
 from typing import Optional
 
 import markdown
-from mcp_agent.agents.agent import Agent
-from mcp_agent.app import MCPApp
-from mcp_agent.workflows.llm.augmented_llm import RequestParams
-from mcp_agent.workflows.llm.augmented_llm_anthropic import AnthropicAugmentedLLM
+from cores.agents.report_agent import ReportAgent as Agent
+from cores.llm.agent_bridge import ensure_openai_agents_configured
+from cores.llm.backends.openai_agents_backend import OpenAIAgentsBackend
+from cores.llm.config_loader import load_report_mcp_registry
+from cores.llm.ports import AgentSpec, LLMParams
 
 # Logger setup
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# Global MCPApp management (prevent process accumulation)
-# ============================================================================
-_global_mcp_app: Optional[MCPApp] = None
-_app_lock = asyncio.Lock()
-_app_initialized = False
+TELEGRAM_ANALYSIS_MODEL = os.environ.get(
+    "TELEGRAM_ANALYSIS_MODEL", "gpt-5.6-terra"
+)
+TELEGRAM_ANALYSIS_EFFORT = os.environ.get(
+    "TELEGRAM_ANALYSIS_EFFORT", "medium"
+)
+
+_telegram_backend = None
 
 
-async def get_or_create_global_mcp_app() -> MCPApp:
-    """
-    Get or create global MCPApp instance
-
-    Using this approach:
-    - Server process starts only once
-    - No new process creation per request
-    - Prevents resource leaks
-
-    Returns:
-        MCPApp: Global MCPApp instance
-    """
-    global _global_mcp_app, _app_initialized
-
-    async with _app_lock:
-        if _global_mcp_app is None or not _app_initialized:
-            logger.info("Starting global MCPApp initialization")
-            _global_mcp_app = MCPApp(name="telegram_ai_bot_global")
-            await _global_mcp_app.initialize()
-            _app_initialized = True
-            logger.info(f"Global MCPApp initialization complete (Session ID: {_global_mcp_app.session_id})")
-        return _global_mcp_app
+def _get_telegram_backend():
+    """Lazily configure the shared SDK backend for Telegram analysis calls."""
+    global _telegram_backend
+    if _telegram_backend is None:
+        ensure_openai_agents_configured()
+        _telegram_backend = OpenAIAgentsBackend(load_report_mcp_registry())
+    return _telegram_backend
 
 
-async def cleanup_global_mcp_app():
-    """Cleanup global MCPApp"""
-    global _global_mcp_app, _app_initialized
-
-    async with _app_lock:
-        if _global_mcp_app is not None and _app_initialized:
-            logger.info("Starting global MCPApp cleanup")
-            try:
-                await _global_mcp_app.cleanup()
-                logger.info("Global MCPApp cleanup complete")
-            except Exception as e:
-                logger.error(f"Error during global MCPApp cleanup: {e}")
-            finally:
-                _global_mcp_app = None
-                _app_initialized = False
-
-
-async def reset_global_mcp_app():
-    """Restart global MCPApp (on error)"""
-    logger.warning("Attempting to restart global MCPApp")
-    await cleanup_global_mcp_app()
-    return await get_or_create_global_mcp_app()
-
-
-def _cleanup_on_exit():
-    """Cleanup on program exit"""
-    global _global_mcp_app
-    try:
-        if _global_mcp_app is not None:
-            logger.info("Cleaning up global MCPApp on program exit")
-            asyncio.run(cleanup_global_mcp_app())
-    except Exception as e:
-        logger.error(f"Error during exit cleanup: {e}")
-
-
-# Auto cleanup on program exit
-atexit.register(_cleanup_on_exit)
-# ============================================================================
+async def _generate_telegram_text(
+    *,
+    agent: Agent,
+    message: str,
+    max_tokens: int,
+) -> str:
+    """Run one Telegram analysis request without an mcp-agent runtime."""
+    spec = AgentSpec(
+        name=agent.name,
+        instructions=agent.instruction,
+        model=TELEGRAM_ANALYSIS_MODEL,
+        mcp_servers=tuple(agent.server_names),
+        params=LLMParams(
+            max_tokens=max_tokens,
+            reasoning_effort=TELEGRAM_ANALYSIS_EFFORT,
+            parallel_tool_calls=True,
+            max_iterations=10,
+        ),
+    )
+    result = await _get_telegram_backend().run(spec, message)
+    return result.text
 
 # Constant definitions
 REPORTS_DIR = Path("reports")
@@ -672,8 +642,6 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
     """
     추가 질문에 대한 AI 응답 생성 (Agent 방식 사용)
     
-    ⚠️ 전역 MCPApp 사용으로 프로세스 누적 방지
-    
     Args:
         ticker (str): 종목 코드
         ticker_name (str): 종목명
@@ -685,10 +653,6 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
         str: AI 응답
     """
     try:
-        # 전역 MCPApp 사용 (매번 새로 생성하지 않음!)
-        app = await get_or_create_global_mcp_app()
-        app_logger = app.logger
-
         # 현재 날짜 정보 가져오기
         current_date = datetime.now().strftime('%Y%m%d')
 
@@ -730,22 +694,17 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
             server_names=["perplexity", "kospi_kosdaq"]
         )
 
-        # LLM 연결
-        llm = await agent.attach_llm(AnthropicAugmentedLLM)
-
         # 응답 생성
-        response = await llm.generate_str(
+        response = await _generate_telegram_text(
+            agent=agent,
             message="""사용자의 추가 질문에 대해 답변해주세요.
                     
                     이전 대화를 참고하되, 사용자의 새 질문에 집중하여 답변하세요.
                     필요한 경우 최신 데이터를 조회하여 정확한 정보를 제공하세요.
                     """,
-            request_params=RequestParams(
-                model="claude-sonnet-5",
-                maxTokens=4000
-            )
+            max_tokens=4000,
         )
-        app_logger.info(f"추가 질문 응답 생성 결과: {str(response)[:100]}...")
+        logger.info(f"추가 질문 응답 생성 결과: {str(response)[:100]}...")
 
         return clean_model_response(response)
 
@@ -754,21 +713,12 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
         import traceback
         logger.error(traceback.format_exc())
         
-        # 오류 발생 시 전역 app 재시작 시도
-        try:
-            logger.warning("오류 발생으로 인한 전역 MCPApp 재시작 시도")
-            await reset_global_mcp_app()
-        except Exception as reset_error:
-            logger.error(f"MCPApp 재시작 실패: {reset_error}")
-        
         return "죄송합니다. 응답 생성 중 오류가 발생했습니다. 다시 시도해주세요."
 
 
 async def generate_evaluation_response(ticker, ticker_name, avg_price, period, tone, background, report_path=None, memory_context: str = ""):
     """
     종목 평가 AI 응답 생성
-
-    ⚠️ 전역 MCPApp 사용으로 프로세스 누적 방지
 
     Args:
         ticker (str): 종목 코드
@@ -784,10 +734,6 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
         str: AI 응답
     """
     try:
-        # 전역 MCPApp 사용 (매번 새로 생성하지 않음!)
-        app = await get_or_create_global_mcp_app()
-        app_logger = app.logger
-
         # 현재 날짜 정보 가져오기
         current_date = datetime.now().strftime('%Y%m%d')
 
@@ -921,9 +867,6 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
             server_names=["perplexity", "kospi_kosdaq", "time"]
         )
 
-        # LLM 연결
-        llm = await agent.attach_llm(AnthropicAugmentedLLM)
-
         # 보고서 내용 확인
         report_content = ""
         if report_path and os.path.exists(report_path):
@@ -931,18 +874,16 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                 report_content = f.read()
 
         # 응답 생성
-        response = await llm.generate_str(
+        response = await _generate_telegram_text(
+            agent=agent,
             message=f"""보고서를 바탕으로 종목 평가 응답을 생성해 주세요.
 
                     ## 참고 자료
                     {report_content if report_content else "관련 보고서가 없습니다. 시장 데이터 조회와 perplexity 검색을 통해 최신 정보를 수집하여 평가해주세요."}
                     """,
-            request_params=RequestParams(
-                model="claude-sonnet-5",
-                maxTokens=8000
-            )
+            max_tokens=8000,
         )
-        app_logger.info(f"응답 생성 결과: {str(response)}")
+        logger.info(f"응답 생성 결과: {str(response)}")
 
         return clean_model_response(response)
 
@@ -950,13 +891,6 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
         logger.error(f"응답 생성 중 오류: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-        
-        # 오류 발생 시 전역 app 재시작 시도
-        try:
-            logger.warning("오류 발생으로 인한 전역 MCPApp 재시작 시도")
-            await reset_global_mcp_app()
-        except Exception as reset_error:
-            logger.error(f"MCPApp 재시작 실패: {reset_error}")
         
         return "죄송합니다. 평가 중 오류가 발생했습니다. 다시 시도해주세요."
 
@@ -968,8 +902,6 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
 async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period, tone, background, memory_context: str = ""):
     """
     US 주식 평가 AI 응답 생성
-
-    ⚠️ 전역 MCPApp 사용으로 프로세스 누적 방지
 
     Args:
         ticker (str): 티커 심볼 (예: AAPL, MSFT)
@@ -984,10 +916,6 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
         str: AI 응답
     """
     try:
-        # 전역 MCPApp 사용 (매번 새로 생성하지 않음!)
-        app = await get_or_create_global_mcp_app()
-        app_logger = app.logger
-
         # 현재 날짜 정보 가져오기
         current_date = datetime.now().strftime('%Y%m%d')
 
@@ -1124,22 +1052,17 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
             server_names=["perplexity", "yahoo_finance", "time"]
         )
 
-        # LLM 연결
-        llm = await agent.attach_llm(AnthropicAugmentedLLM)
-
         # 응답 생성
-        response = await llm.generate_str(
+        response = await _generate_telegram_text(
+            agent=agent,
             message=f"""미국 주식 {ticker_name}({ticker})에 대한 종목 평가 응답을 생성해 주세요.
 
                     먼저 yahoo_finance 도구를 사용하여 최신 주가 데이터, 기관 투자자 정보, 애널리스트 추천을 조회하고,
                     perplexity로 최신 뉴스와 시장 동향을 검색한 후 종합적인 평가를 제공해주세요.
                     """,
-            request_params=RequestParams(
-                model="claude-sonnet-5",
-                maxTokens=8000
-            )
+            max_tokens=8000,
         )
-        app_logger.info(f"US 응답 생성 결과: {str(response)}")
+        logger.info(f"US 응답 생성 결과: {str(response)}")
 
         return clean_model_response(response)
 
@@ -1148,21 +1071,12 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
         import traceback
         logger.error(traceback.format_exc())
 
-        # 오류 발생 시 전역 app 재시작 시도
-        try:
-            logger.warning("오류 발생으로 인한 전역 MCPApp 재시작 시도")
-            await reset_global_mcp_app()
-        except Exception as reset_error:
-            logger.error(f"MCPApp 재시작 실패: {reset_error}")
-
         return "죄송합니다. 미국 주식 평가 중 오류가 발생했습니다. 다시 시도해주세요."
 
 
 async def generate_us_follow_up_response(ticker, ticker_name, conversation_context, user_question, tone):
     """
     US 주식 추가 질문에 대한 AI 응답 생성 (Agent 방식 사용)
-
-    ⚠️ 전역 MCPApp 사용으로 프로세스 누적 방지
 
     Args:
         ticker (str): 티커 심볼 (예: AAPL)
@@ -1175,10 +1089,6 @@ async def generate_us_follow_up_response(ticker, ticker_name, conversation_conte
         str: AI 응답
     """
     try:
-        # 전역 MCPApp 사용 (매번 새로 생성하지 않음!)
-        app = await get_or_create_global_mcp_app()
-        app_logger = app.logger
-
         # 현재 날짜 정보 가져오기
         current_date = datetime.now().strftime('%Y%m%d')
 
@@ -1221,22 +1131,17 @@ async def generate_us_follow_up_response(ticker, ticker_name, conversation_conte
             server_names=["perplexity", "yahoo_finance"]
         )
 
-        # Connect to LLM
-        llm = await agent.attach_llm(AnthropicAugmentedLLM)
-
         # Generate response
-        response = await llm.generate_str(
+        response = await _generate_telegram_text(
+            agent=agent,
             message="""사용자의 추가 질문에 대해 답변해주세요.
 
                     이전 대화를 참고하되, 사용자의 새 질문에 집중하여 답변하세요.
                     필요한 경우 yahoo_finance를 통해 최신 데이터를 조회하여 정확한 정보를 제공하세요.
                     """,
-            request_params=RequestParams(
-                model="claude-sonnet-5",
-                maxTokens=4000
-            )
+            max_tokens=4000,
         )
-        app_logger.info(f"US follow-up response generated: {str(response)[:100]}...")
+        logger.info(f"US follow-up response generated: {str(response)[:100]}...")
 
         return clean_model_response(response)
 
@@ -1244,13 +1149,6 @@ async def generate_us_follow_up_response(ticker, ticker_name, conversation_conte
         logger.error(f"Error generating US follow-up response: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-
-        # Try restarting global app on error
-        try:
-            logger.warning("Attempting to restart global MCPApp due to error")
-            await reset_global_mcp_app()
-        except Exception as reset_error:
-            logger.error(f"MCPApp 재시작 실패: {reset_error}")
 
         return "죄송합니다. 미국 주식 응답 생성 중 오류가 발생했습니다. 다시 시도해주세요."
 
@@ -1278,10 +1176,6 @@ async def generate_journal_conversation_response(
         str: AI 응답
     """
     try:
-        # Use global MCPApp
-        app = await get_or_create_global_mcp_app()
-        app_logger = app.logger
-
         # Current date
         current_date = datetime.now().strftime('%Y년 %m월 %d일')
 
@@ -1341,20 +1235,15 @@ async def generate_journal_conversation_response(
             server_names=["perplexity", "kospi_kosdaq"]
         )
 
-        # Connect to LLM
-        llm = await agent.attach_llm(AnthropicAugmentedLLM)
-
         # Generate response
-        response = await llm.generate_str(
+        response = await _generate_telegram_text(
+            agent=agent,
             message=f"""사용자 메시지: {user_message}
 
 위 메시지에 자연스럽게 응답해주세요. 사용자의 과거 기록(저널, 평가 등)을 참고하여 개인화된 답변을 제공하세요.""",
-            request_params=RequestParams(
-                model="claude-sonnet-5",
-                maxTokens=4000
-            )
+            max_tokens=4000,
         )
-        app_logger.info(f"Journal conversation response generated: user_id={user_id}, response_len={len(response)}")
+        logger.info(f"Journal conversation response generated: user_id={user_id}, response_len={len(response)}")
 
         return clean_model_response(response)
 
@@ -1363,31 +1252,24 @@ async def generate_journal_conversation_response(
         import traceback
         logger.error(traceback.format_exc())
 
-        # Try restarting global app on error
-        try:
-            await reset_global_mcp_app()
-        except Exception:
-            pass
-
         return "죄송해요, 응답 생성 중 문제가 생겼어요. 다시 말씀해주시겠어요? 💭"
 
 
 # =============================================================================
-# Firecrawl Search + Claude analysis
+# Firecrawl Search + shared LLM analysis
 # =============================================================================
 
 async def generate_firecrawl_search_response(search_query: str, analysis_prompt: str, limit: int = 5) -> Optional[str]:
     """
-    Cost-efficient Firecrawl /search (2 credits) + Claude Sonnet analysis.
-    Uses the same global MCPApp pattern as other generate_* functions.
+    Cost-efficient Firecrawl /search (2 credits) plus shared LLM analysis.
 
     Args:
         search_query: Web search query for Firecrawl
-        analysis_prompt: Prompt for Claude to analyze the search results
+        analysis_prompt: Prompt used to analyze the search results
         limit: Number of search results (default 5)
 
     Returns:
-        str: Claude-generated analysis, or None on error
+        str: Generated analysis, or None on error
     """
     try:
         from firecrawl_client import firecrawl_search
@@ -1401,7 +1283,7 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
         items = result.web if result and result.web else []
 
         if not items:
-            logger.warning(f"No search results for: {search_query[:50]}, falling back to Claude-only analysis")
+            logger.warning(f"No search results for: {search_query[:50]}, falling back to model-only analysis")
             context = "(최신 웹 검색 결과를 찾지 못했습니다. 알려진 시장 지식을 바탕으로 분석합니다.)\n\n"
         else:
             # Step 2: Build context — prefer full markdown, fall back to description snippet
@@ -1417,9 +1299,7 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
 
             logger.info(f"Search context built: {len(items)} results, {len(context)} chars")
 
-        # Step 3: Use global MCPApp + Claude Sonnet for analysis
-        app = await get_or_create_global_mcp_app()
-
+        # Step 3: analyze the gathered content with the shared LLM backend.
         current_date = datetime.now().strftime("%Y년 %m월 %d일")
         agent = Agent(
             name="firecrawl_search_analyst",
@@ -1434,16 +1314,12 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
             server_names=[]
         )
 
-        llm = await agent.attach_llm(AnthropicAugmentedLLM)
-
-        response = await llm.generate_str(
+        response = await _generate_telegram_text(
+            agent=agent,
             message=f"다음은 웹 검색 결과입니다:\n\n{context}\n\n---\n\n{analysis_prompt}",
-            request_params=RequestParams(
-                model="claude-sonnet-5",
-                maxTokens=4000
-            )
+            max_tokens=4000,
         )
-        app.logger.info(f"Firecrawl search+Claude response: {len(response)} chars")
+        logger.info(f"Firecrawl search analysis response: {len(response)} chars")
 
         return clean_model_response(response)
 
@@ -1451,11 +1327,6 @@ async def generate_firecrawl_search_response(search_query: str, analysis_prompt:
         logger.error(f"generate_firecrawl_search_response failed: {e}")
         import traceback
         logger.error(traceback.format_exc())
-
-        try:
-            await reset_global_mcp_app()
-        except Exception:
-            pass
 
         return None
 
@@ -1489,7 +1360,7 @@ async def generate_firecrawl_followup_response(
 ) -> Optional[str]:
     """
     Follow-up conversation for Firecrawl-based commands (signal, us_signal, theme, us_theme, ask).
-    First response comes from Firecrawl; subsequent replies use Anthropic Sonnet 4.6
+    First response comes from Firecrawl; subsequent replies use the shared LLM backend
     with command-specific MCP servers so the conversation stays grounded in live data.
 
     Args:
@@ -1499,10 +1370,9 @@ async def generate_firecrawl_followup_response(
         user_question: The user's new follow-up question
 
     Returns:
-        str: Claude-generated response, or None on error
+        str: Generated response, or None on error
     """
     try:
-        app = await get_or_create_global_mcp_app()
         server_names = _FIRECRAWL_CMD_SERVERS.get(command, ["perplexity"])
         persona = _FIRECRAWL_CMD_PERSONA.get(command, "투자 분석 전문가")
         current_date = datetime.now().strftime("%Y년 %m월 %d일")
@@ -1542,23 +1412,16 @@ async def generate_firecrawl_followup_response(
             server_names=server_names,
         )
 
-        llm = await agent.attach_llm(AnthropicAugmentedLLM)
-        response = await llm.generate_str(
+        response = await _generate_telegram_text(
+            agent=agent,
             message=user_question,
-            request_params=RequestParams(
-                model="claude-sonnet-5",
-                maxTokens=4000,
-            ),
+            max_tokens=4000,
         )
-        app.logger.info(f"firecrawl_followup ({command}): {len(response)} chars")
+        logger.info(f"firecrawl_followup ({command}): {len(response)} chars")
         return clean_model_response(response)
 
     except Exception as e:
         logger.error(f"generate_firecrawl_followup_response failed ({command}): {e}")
         import traceback
         logger.error(traceback.format_exc())
-        try:
-            await reset_global_mcp_app()
-        except Exception:
-            pass
         return None
