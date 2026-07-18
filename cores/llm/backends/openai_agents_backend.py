@@ -93,6 +93,9 @@ def build_model_settings(params: LLMParams) -> "ModelSettings":
     if params.temperature is not None:
         kwargs["temperature"] = params.temperature
 
+    if params.parallel_tool_calls is not None:
+        kwargs["parallel_tool_calls"] = params.parallel_tool_calls
+
     if params.reasoning_effort and params.reasoning_effort != "none":
         kwargs["reasoning"] = Reasoning(effort=params.reasoning_effort)
 
