@@ -45,4 +45,4 @@ jobs:
             tests/test_layer2_stale_snapshot_guard.py -q
           python -m pytest tests/test_sell_claim_concurrency.py -q
           python -m pytest tests/test_fill_chaser.py -q
-          python -m pytest prism-us/tests/test_fill_chaser_us.py -q
+          python -m pytest --noconftest prism-us/tests/test_fill_chaser_us.py -q
