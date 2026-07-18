@@ -175,7 +175,6 @@ class IntentStore:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=self.timeout)
         conn.row_factory = sqlite3.Row
-        conn.execute(f"PRAGMA busy_timeout = {int(self.timeout * 1000)}")
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
