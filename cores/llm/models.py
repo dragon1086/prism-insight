@@ -10,12 +10,12 @@ from cores.llm.ports import LLMParams
 # Production-derived defaults.  model_id strings are plain — no SDK coupling.
 _DEFAULT_MAPPING: dict[str, tuple[str, LLMParams]] = {
     "sell_decision": (
-        "gpt-5.5",
-        LLMParams(max_tokens=30000),
+        "gpt-5.6-sol",
+        LLMParams(reasoning_effort="high", max_tokens=30000),
     ),
     "trading": (
-        "gpt-5.5",
-        LLMParams(max_tokens=30000),
+        "gpt-5.6-sol",
+        LLMParams(reasoning_effort="high", max_tokens=30000),
     ),
     "journal": (
         "gpt-5.4-mini",

@@ -9,7 +9,8 @@ class TestModelRegistryDefaults:
     def test_resolve_sell_decision(self):
         reg = ModelRegistry.defaults()
         model_id, params = reg.resolve("sell_decision")
-        assert model_id == "gpt-5.5"
+        assert model_id == "gpt-5.6-sol"
+        assert params.reasoning_effort == "high"
         assert params.max_tokens == 30000
 
     def test_resolve_journal(self):
@@ -27,7 +28,7 @@ class TestModelRegistryDefaults:
     def test_resolve_trading(self):
         reg = ModelRegistry.defaults()
         model_id, _ = reg.resolve("trading")
-        assert model_id == "gpt-5.5"
+        assert model_id == "gpt-5.6-sol"
 
     def test_missing_role_raises_key_error(self):
         reg = ModelRegistry.defaults()
@@ -70,4 +71,4 @@ class TestModelRegistryFromMapping:
     def test_empty_mapping_uses_defaults(self):
         reg = ModelRegistry.from_mapping({})
         model_id, _ = reg.resolve("trading")
-        assert model_id == "gpt-5.5"
+        assert model_id == "gpt-5.6-sol"
