@@ -162,6 +162,22 @@ def test_exception_is_unknown_and_same_intent_never_reaches_broker_again(tmp_pat
     assert orders[0][0:2] == (0, "UNKNOWN")
 
 
+def test_async_cancellation_is_unknown_and_propagates(tmp_path):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    broker = FakeBroker(error=asyncio.CancelledError())
+    service = ExecutionService(broker, intent_store=IntentStore(db_path))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(service.execute_buy("005930", intent=_intent()))
+
+    intents, orders = _rows(db_path)
+    assert intents[0][0] == "UNKNOWN"
+    assert orders[0][0:2] == (0, "UNKNOWN")
+
+
 def test_concurrent_duplicate_is_reserved_once(tmp_path):
     from prism_core.execution_service import ExecutionService
     from prism_core.order_intents import IntentStore
