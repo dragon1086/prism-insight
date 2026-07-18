@@ -1,6 +1,6 @@
 # Phase 3 — OrderIntent 영속화 실행 계획
 
-> 기준: `main` `55dd2418` (Phase 2 및 보고서 런타임 이관 포함)  
+> 기준: `main` `55dd2418` (Phase 2 및 보고서 런타임 이관 포함)
 > 브랜치: `feature/issue-412-phase3-order-intent`
 
 ## 1. 이번 Phase의 안전 경계
