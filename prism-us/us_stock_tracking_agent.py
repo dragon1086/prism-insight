@@ -657,8 +657,11 @@ class USStockTrackingAgent:
                     operation="initialize",
                     error=error,
                 )
-            except Exception:
-                pass
+            except Exception as audit_error:
+                logger.critical(
+                    "[POSITION-SHADOW][US] initialization audit failed (%s)",
+                    type(audit_error).__name__,
+                )
             self.conn.commit()
             return
         self.conn.execute("RELEASE position_shadow_init")

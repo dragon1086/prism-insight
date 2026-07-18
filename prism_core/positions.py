@@ -309,23 +309,36 @@ class PositionStore:
         )
 
     def _legacy_rows(self, market: str) -> list[dict[str, Any]]:
-        table = _LEGACY_TABLES[market]
-        columns = {
-            row[1] for row in self._execute(f"PRAGMA table_info({table})").fetchall()
-        }
-        if not columns:
+        if market == "KR":
+            table = "stock_holdings"
+            table_info = self._execute("PRAGMA table_info(stock_holdings)").fetchall()
+            cursor = self._execute("SELECT * FROM stock_holdings") if table_info else None
+        else:
+            table = "us_stock_holdings"
+            table_info = self._execute("PRAGMA table_info(us_stock_holdings)").fetchall()
+            cursor = self._execute("SELECT * FROM us_stock_holdings") if table_info else None
+        if cursor is None:
             raise RuntimeError(f"legacy table does not exist: {table}")
-        selected = []
-        for name, alias in (
+
+        column_indexes = {
+            description[0]: index
+            for index, description in enumerate(cursor.description or ())
+        }
+        aliases = (
             ("id", "legacy_holding_id"),
             ("account_key", "account_id"),
             ("account_name", "account_name"),
             ("ticker", "symbol"),
             ("buy_price", "entry_price"),
             ("buy_date", "opened_at"),
-        ):
-            selected.append(f"{name} AS {alias}" if name in columns else f"NULL AS {alias}")
-        return self._fetchall(f"SELECT {', '.join(selected)} FROM {table}")
+        )
+        return [
+            {
+                alias: row[column_indexes[name]] if name in column_indexes else None
+                for name, alias in aliases
+            }
+            for row in cursor.fetchall()
+        ]
 
     @staticmethod
     def _valid_legacy_row(row: dict[str, Any]) -> bool:
@@ -558,13 +571,12 @@ def mirror_write_fail_open(
     """
 
     store = PositionStore(connection_or_cursor)
-    savepoint = "position_shadow_write"
-    connection_or_cursor.execute(f"SAVEPOINT {savepoint}")
+    connection_or_cursor.execute("SAVEPOINT position_shadow_write")
     try:
         write(store)
     except Exception as error:
-        connection_or_cursor.execute(f"ROLLBACK TO {savepoint}")
-        connection_or_cursor.execute(f"RELEASE {savepoint}")
+        connection_or_cursor.execute("ROLLBACK TO position_shadow_write")
+        connection_or_cursor.execute("RELEASE position_shadow_write")
         logger.critical(
             "[POSITION-SHADOW][%s] %s failed for legacy_id=%s (%s)",
             _market(market),
@@ -588,5 +600,5 @@ def mirror_write_fail_open(
                 type(audit_error).__name__,
             )
         return False
-    connection_or_cursor.execute(f"RELEASE {savepoint}")
+    connection_or_cursor.execute("RELEASE position_shadow_write")
     return True
