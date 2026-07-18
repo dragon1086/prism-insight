@@ -221,10 +221,15 @@ def test_sell_stock_chokepoint_guard():
         check(0 <= claim_idx < guard_idx, f"{label}: writer lock precedes guard read")
         check("if not position_exists:" in claim and "return False" in claim,
               f"{label}: missing position aborts via return False")
-        check(f"SELECT 1 FROM {holdings_tbl}" in claim and "WHERE id = ?" in claim,
-              f"{label}: row_id path claims the exact pyramid row")
-        check('row_count", 0) > 0' in claim,
-              f"{label}: legacy no-id path remains ticker/account scoped")
+        check(
+            f"SELECT id FROM {holdings_tbl}" in claim
+            and "WHERE id = ? AND ticker = ? AND account_key = ?" in claim,
+            f"{label}: row_id path claims the exact pyramid row",
+        )
+        check(
+            "WHERE ticker = ? AND account_key = ? ORDER BY id" in claim,
+            f"{label}: legacy no-id path remains ticker/account scoped",
+        )
 
 
 def _run():
