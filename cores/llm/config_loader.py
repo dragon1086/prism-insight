@@ -33,6 +33,7 @@ _PROJECT_ROOT = _HERE.parent.parent
 
 _NATIVE_CONFIG = _HERE / "mcp_servers.yaml"
 _LEGACY_CONFIG = _PROJECT_ROOT / "mcp_agent.config.yaml"
+_LEGACY_SECRETS = _PROJECT_ROOT / "mcp_agent.secrets.yaml"
 
 _ENV_VAR_RE = re.compile(r"\$\{([^}:]+)(?::-([^}]*))?\}")
 
@@ -100,6 +101,48 @@ def resolve_secret(
             f"Add {name}=<value> to your .env file or environment."
         )
     return value or None
+
+
+def resolve_openai_api_key(
+    secret_path: "str | Path | None" = None,
+) -> Optional[str]:
+    """Resolve the OpenAI key from env, with a transitional legacy fallback."""
+    env_key = os.environ.get("OPENAI_API_KEY")
+    if env_key:
+        return env_key
+
+    resolved = Path(secret_path) if secret_path is not None else _LEGACY_SECRETS
+    if not resolved.exists():
+        return None
+
+    raw = yaml.safe_load(resolved.read_text()) or {}
+    key = (raw.get("openai") or {}).get("api_key")
+    if key:
+        logger.warning(
+            "DEPRECATION: loading OPENAI_API_KEY from the legacy secrets YAML. "
+            "Move it to the process environment before removing the compatibility fallback."
+        )
+        return str(key)
+    return None
+
+
+def load_report_mcp_registry(config_path: "str | Path | None" = None):
+    """Load report MCP servers while preserving the current production config."""
+    if config_path is not None:
+        return load_mcp_registry(config_path)
+
+    report_override = os.environ.get("REPORT_MCP_CONFIG")
+    if report_override:
+        return load_mcp_registry(report_override)
+
+    if _LEGACY_CONFIG.exists():
+        logger.warning(
+            "DEPRECATION: report MCP servers still use the legacy config because "
+            "production credentials have not yet moved to environment variables."
+        )
+        return load_mcp_registry(_LEGACY_CONFIG)
+
+    return load_mcp_registry()
 
 
 def load_mcp_registry(config_path: "str | Path | None" = None):
