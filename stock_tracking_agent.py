@@ -49,6 +49,7 @@ from cores.openai_error_logging import log_openai_error
 from cores.agents.trading_agents import create_trading_scenario_agent
 from cores.utils import parse_llm_json
 from prism_core.execution_service import ExecutionService
+from prism_core.order_intents import OrderIntent
 
 # O'Neil 룰베이스 매도 (2026-06-04 US quota 사고 동일 룰 결함 KR에도 적용).
 # 방어적 import: 실패 시 _ONEIL_FALLBACK_AVAILABLE=False 로 기존 레거시 룰 유지.
@@ -1701,7 +1702,10 @@ class StockTrackingAgent:
 
                     if sell_success:
                         # Call actual account trading function (async)
-                        async with ExecutionService.domestic(account_name=stock.get("account_name")) as trading:
+                        async with ExecutionService.domestic(
+                            account_name=stock.get("account_name"),
+                            db_path=self.db_path,
+                        ) as trading:
                             # Determine fractional sell quantity for multi-row tickers.
                             # FIX 2: snapshot total qty once per ticker per pass and
                             # distribute from (snapshot - already_ordered), so fills
@@ -1729,8 +1733,23 @@ class StockTrackingAgent:
                                     f"remaining rows={remaining_rows})"
                                 )
                             # Execute async sell with limit price for reserved orders
+                            order_intent = OrderIntent.create(
+                                market="KR",
+                                account_id=stock.get("account_key") or stock.get("account_name") or "default",
+                                symbol=ticker,
+                                side="sell",
+                                order_style="smart",
+                                source="kr_batch",
+                                source_position_id=stock.get("id"),
+                                quantity=sell_quantity,
+                                limit_price=current_price,
+                                reason=sell_reason,
+                            )
                             trade_result = await trading.execute_sell(
-                                stock_code=ticker, limit_price=current_price, quantity=sell_quantity
+                                stock_code=ticker,
+                                limit_price=current_price,
+                                quantity=sell_quantity,
+                                intent=order_intent,
                             )
 
                         if trade_result['success']:
@@ -1963,6 +1982,7 @@ class StockTrackingAgent:
                 analysis_states.append(
                     {
                         "analysis": analysis_result,
+                        "report_path": pdf_report_path,
                         "traded": False,
                         "should_save_watchlist": False,
                         "skip_reason": None,
@@ -1987,6 +2007,7 @@ class StockTrackingAgent:
 
                 for state in analysis_states:
                     analysis_result = state["analysis"]
+                    source_decision_id = f"report:{os.path.basename(state['report_path'])}"
                     ticker = analysis_result.get("ticker")
                     company_name = analysis_result.get("company_name")
                     current_price = analysis_result.get("current_price", 0)
@@ -2069,8 +2090,27 @@ class StockTrackingAgent:
                         buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
 
                         if buy_success:
-                            async with ExecutionService.domestic(account_name=account["name"]) as trading:
-                                trade_result = await trading.execute_buy(stock_code=ticker, limit_price=current_price)
+                            account_key, _ = self._account_scope()
+                            order_intent = OrderIntent.create(
+                                market="KR",
+                                account_id=account_key,
+                                symbol=ticker,
+                                side="buy",
+                                order_style="smart",
+                                source="kr_batch",
+                                source_decision_id=source_decision_id,
+                                limit_price=current_price,
+                                reason="AI analysis entry",
+                            )
+                            async with ExecutionService.domestic(
+                                account_name=account["name"],
+                                db_path=self.db_path,
+                            ) as trading:
+                                trade_result = await trading.execute_buy(
+                                    stock_code=ticker,
+                                    limit_price=current_price,
+                                    intent=order_intent,
+                                )
 
                             if trade_result['success']:
                                 logger.info(f"Actual purchase successful: {trade_result['message']}")

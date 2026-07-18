@@ -424,6 +424,7 @@ class DomesticStockTrading:
             logger.error(f"Error during buy order: {str(e)}")
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'order_no': None,
                 'stock_code': stock_code,
                 'quantity': buy_quantity,
@@ -828,6 +829,7 @@ class DomesticStockTrading:
             logger.error(f"Error during reserved buy order: {str(e)}")
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'order_no': None,
                 'stock_code': stock_code,
                 'quantity': buy_quantity,
@@ -940,6 +942,7 @@ class DomesticStockTrading:
             logger.error(f"Error during sell order: {str(e)}")
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'order_no': None,
                 'stock_code': stock_code,
                 'quantity': buy_quantity,
@@ -1218,6 +1221,7 @@ class DomesticStockTrading:
             logger.error(f"Error during reserved sell order: {str(e)}")
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'order_no': None,
                 'stock_code': stock_code,
                 'quantity': buy_quantity,
@@ -1261,6 +1265,7 @@ class DomesticStockTrading:
         except asyncio.TimeoutError:
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'stock_code': stock_code,
                 'current_price': 0,
                 'quantity': 0,
@@ -1341,10 +1346,13 @@ class DomesticStockTrading:
                             result['message'] = f"Buy completed: {buy_quantity} shares x {current_price_info['current_price']:,} KRW = {result['total_amount']:,} KRW"
                             logger.info(f"[Async Buy API] {stock_code} buy successful")
                         else:
+                            if buy_result.get('outcome_unknown'):
+                                result['outcome_unknown'] = True
                             result['message'] = f"Buy failed: {buy_result['message']}"
                             logger.error(f"[Async Buy API] {stock_code} buy failed: {buy_result['message']}")
 
                     except Exception as e:
+                        result['outcome_unknown'] = True
                         result['message'] = f'Error during async buy API execution: {str(e)}'
                         logger.error(f"[Async Buy API] {stock_code} error: {str(e)}")
 
@@ -1384,6 +1392,7 @@ class DomesticStockTrading:
         except asyncio.TimeoutError:
             return {
                 'success': False,
+                'outcome_unknown': True,
                 'stock_code': stock_code,
                 'current_price': 0,
                 'quantity': 0,
@@ -1528,10 +1537,13 @@ class DomesticStockTrading:
 
                             logger.info(f"[Async Sell API] {stock_code} sell successful")
                         else:
+                            if all_sell_result.get('outcome_unknown'):
+                                result['outcome_unknown'] = True
                             result['message'] = f"Sell failed: {all_sell_result['message']}"
                             logger.error(f"[Async Sell API] {stock_code} sell failed: {all_sell_result['message']}")
 
                     except Exception as e:
+                        result['outcome_unknown'] = True
                         result['message'] = f'Error during async sell API execution: {str(e)}'
                         logger.error(f"[Async Sell API] {stock_code} error: {str(e)}")
 

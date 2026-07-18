@@ -289,8 +289,9 @@ def _install_us_trading_module(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, caplog):
+async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, caplog, tmp_path):
     agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+    agent.db_path = str(tmp_path / "us_stock_tracking.sqlite")
     agent.account_configs = [
         {"name": "us-primary", "account_key": "vps:us-primary:01", "product": "01"},
         {"name": "us-secondary", "account_key": "vps:us-secondary:01", "product": "01"},
@@ -459,8 +460,9 @@ async def test_process_reports_returns_zero_for_empty_accounts(caplog):
 
 
 @pytest.mark.asyncio
-async def test_update_holdings_masks_sold_account_payload(monkeypatch):
+async def test_update_holdings_masks_sold_account_payload(monkeypatch, tmp_path):
     agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+    agent.db_path = str(tmp_path / "us_stock_tracking.sqlite")
     agent.conn = sqlite3.connect(":memory:")
     agent.conn.row_factory = sqlite3.Row
     agent.cursor = agent.conn.cursor()

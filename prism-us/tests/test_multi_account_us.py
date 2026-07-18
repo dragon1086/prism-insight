@@ -547,7 +547,18 @@ def test_us_schema_allows_same_ticker_across_accounts(initialized_us_temp_databa
     assert us_schema.is_us_ticker_in_holdings(cursor, "AAPL", account_key="vps:us-two:01") is True
 
 
-def test_pending_order_batch_uses_stored_account_context(monkeypatch):
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_status"),
+    [
+        (None, "executed"),
+        ("ledger", "unknown"),
+        ("timeout", "unknown"),
+        ("queued", "requeued"),
+    ],
+)
+def test_pending_order_batch_uses_stored_account_context(
+    monkeypatch, failure_mode, expected_status
+):
     temp_file = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
     temp_path = Path(temp_file.name)
     temp_file.close()
@@ -614,6 +625,36 @@ def test_pending_order_batch_uses_stored_account_context(monkeypatch):
                 return frozen_now if tz else frozen_now.replace(tzinfo=None)
 
         monkeypatch.setattr(pending_batch.datetime, "datetime", FrozenDateTime)
+        if failure_mode == "timeout":
+            monkeypatch.setattr(
+                FakeUSTrader,
+                "buy_reserved_order",
+                lambda self, *args, **kwargs: {
+                    "success": False,
+                    "outcome_unknown": True,
+                    "message": "Reserved buy request timeout (30s)",
+                },
+            )
+        elif failure_mode == "queued":
+            monkeypatch.setattr(
+                FakeUSTrader,
+                "buy_reserved_order",
+                lambda self, *args, **kwargs: {
+                    "success": True,
+                    "order_no": "PENDING-99",
+                    "order_type": "queued_buy",
+                    "message": "Reserved buy order queued",
+                },
+            )
+        if failure_mode == "ledger":
+            def fail_result_persistence(*args, **kwargs):
+                raise sqlite3.OperationalError("simulated ledger write failure")
+
+            monkeypatch.setattr(
+                pending_batch.IntentStore,
+                "record_result",
+                fail_result_persistence,
+            )
 
         pending_batch.process_pending_orders(dry_run=False)
 
@@ -631,8 +672,57 @@ def test_pending_order_batch_uses_stored_account_context(monkeypatch):
         conn = sqlite3.connect(str(temp_path))
         cursor = conn.cursor()
         cursor.execute("SELECT status FROM us_pending_orders WHERE ticker = 'AAPL'")
-        assert cursor.fetchone()[0] == "executed"
+        assert cursor.fetchone()[0] == expected_status
         conn.close()
     finally:
         if temp_path.exists():
             temp_path.unlink()
+
+
+def test_us_reserved_order_exception_marks_outcome_unknown():
+    trader = ust.USStockTrading.__new__(ust.USStockTrading)
+    trader.auto_trading = True
+    trader.buy_amount = 500.0
+    trader.mode = "demo"
+    trader.trenv = SimpleNamespace(my_acct="test-account", my_prod="01")
+    trader.is_reserved_order_available = lambda: True
+
+    def fail_request(*args, **kwargs):
+        raise ValueError("Expecting value")
+
+    trader._request = fail_request
+
+    result = trader.buy_reserved_order(
+        "AAPL",
+        limit_price=190.0,
+        buy_amount=500.0,
+        exchange="NASD",
+    )
+
+    assert result["success"] is False
+    assert result["outcome_unknown"] is True
+    assert "Expecting value" in result["message"]
+
+
+def test_us_limit_buy_exception_marks_outcome_unknown():
+    trader = ust.USStockTrading.__new__(ust.USStockTrading)
+    trader.auto_trading = True
+    trader.buy_amount = 500.0
+    trader.mode = "demo"
+    trader.trenv = SimpleNamespace(my_acct="test-account", my_prod="01")
+
+    def fail_request(*args, **kwargs):
+        raise ValueError("Expecting value")
+
+    trader._request = fail_request
+
+    result = trader.buy_limit_price(
+        "AAPL",
+        limit_price=190.0,
+        buy_amount=500.0,
+        exchange="NASD",
+    )
+
+    assert result["success"] is False
+    assert result["outcome_unknown"] is True
+    assert "Expecting value" in result["message"]

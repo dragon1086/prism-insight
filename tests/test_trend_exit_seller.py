@@ -65,11 +65,11 @@ class FakeAgent:
         self.calls = calls
         self.conn = None
 
-    async def sell_stock(self, stock_data, sell_reason):
+    async def sell_stock(self, stock_data, sell_reason, **kwargs):
         self.calls.append(f"sim:{stock_data.get('ticker')}")
         return True
 
-    async def send_telegram_message(self, chat_id, language="ko"):
+    async def send_telegram_message(self, chat_id, language="ko", **kwargs):
         self.calls.append("tg")
         return True
 
@@ -109,11 +109,14 @@ def _row(id_, ticker, buy_price, stop_loss=0.0, target_price=0.0, highest_price=
 def _patch(monkeypatch, trader, agent_holder=None, make_agent_counter=None,
            ma50=0.0, regime="moderate_bull"):
     from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
 
     monkeypatch.setattr(
         lb,
         "_open_context",
-        lambda market, account_name=None: ExecutionService(FakeCtx(trader)),
+        lambda market, account_name=None: ExecutionService(
+            FakeCtx(trader), intent_store=IntentStore(lb.DB_PATH)
+        ),
     )
     # Network-free: fixed ma_50 + regime.
     monkeypatch.setattr(lb, "_fetch_ma50", lambda market, ticker: ma50)
@@ -329,6 +332,27 @@ def test_live_order_is_sim_then_kis_then_telegram(tmp_db, monkeypatch):
     # portfolio message goes out in prod (see tests/test_portfolio_broadcast.py).
     assert calls == ["sim:005930", "kis:005930:10", "tg", "tg"]   # exact order
     assert _inflight(tmp_db, "FILLED") == 1
+
+
+def test_ledger_failure_after_broker_success_records_unknown(tmp_db, monkeypatch):
+    from prism_core.order_intents import IntentStore
+
+    _enable(monkeypatch, live=True, confirm=1, close_window=True)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader({"005930": 98.0}, holding_qty={"005930": 10}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls), ma50=105.0)
+
+    def fail_result_persistence(*args, **kwargs):
+        raise sqlite3.OperationalError("simulated ledger write failure")
+
+    monkeypatch.setattr(IntentStore, "record_result", fail_result_persistence)
+
+    summary = asyncio.run(lb.run_market("KR", "run1"))
+
+    assert summary["sold"] == 1
+    assert _inflight(tmp_db, "UNKNOWN") == 1
+    assert _inflight(tmp_db, "REJECTED") == 0
 
 
 # ── Guards ─────────────────────────────────────────────────────────────────────
