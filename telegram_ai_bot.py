@@ -33,7 +33,6 @@ from analysis_manager import (
 # Internal module imports
 from report_generator import (
     generate_evaluation_response, get_cached_report, generate_follow_up_response,
-    get_or_create_global_mcp_app, cleanup_global_mcp_app,
     generate_us_evaluation_response, generate_us_follow_up_response,
     get_cached_us_report, generate_journal_conversation_response,
     generate_firecrawl_search_response, generate_firecrawl_followup_response
@@ -2862,7 +2861,7 @@ class TelegramAIBot:
 
     # Firecrawl Spark(/AGENT) jobs can hang server-side in IN_PROGRESS or FAIL
     # without returning, which would otherwise block the executor thread until the
-    # 300s ConversationHandler timeout. Cap the wait and fall back to search+Claude.
+    # 300s ConversationHandler timeout. Cap the wait and fall back to search+LLM.
     _FIRECRAWL_AGENT_TIMEOUT = 120  # seconds
 
     async def _run_firecrawl_command(self, update: Update, prompt: str, disclaimer: str,
@@ -2878,9 +2877,9 @@ class TelegramAIBot:
             model: Spark agent model — "spark-1-mini" (default) or "spark-1-pro".
             max_credits: Per-call credit ceiling passed to the agent.
             fallback_search_query: When set together with fallback_analysis_prompt,
-                a Firecrawl Spark timeout/failure/empty result triggers a search+Claude
+                a Firecrawl Spark timeout/failure/empty result triggers a search+LLM
                 fallback (generate_firecrawl_search_response) instead of erroring out.
-            fallback_analysis_prompt: Analysis instruction passed to the Claude fallback.
+            fallback_analysis_prompt: Analysis instruction passed to the LLM fallback.
             timeout: Seconds to wait for the Spark agent before giving up (defaults to
                 _FIRECRAWL_AGENT_TIMEOUT). Heavy spark-1-pro jobs need a larger budget so
                 legitimate deep-research runs are not cut off prematurely.
@@ -2907,9 +2906,9 @@ class TelegramAIBot:
                 )
                 result = None
 
-            # Fallback: Spark hung/failed/returned empty — retry via search+Claude (Anthropic).
+            # Fallback: Spark hung/failed/returned empty — retry via search+LLM.
             if not result and fallback_search_query and fallback_analysis_prompt:
-                logger.info("Falling back to search+Claude after Firecrawl agent miss")
+                logger.info("Falling back to search+LLM after Firecrawl agent miss")
                 try:
                     await waiting_msg.edit_text("🔍 리서치 중... (보조 엔진 전환)")
                 except Exception:
@@ -2919,7 +2918,7 @@ class TelegramAIBot:
                         fallback_search_query, fallback_analysis_prompt
                     )
                 except Exception as fe:
-                    logger.error(f"Search+Claude fallback failed: {fe}", exc_info=True)
+                    logger.error(f"Search+LLM fallback failed: {fe}", exc_info=True)
                     result = None
 
             # Delete waiting message
@@ -2968,8 +2967,7 @@ class TelegramAIBot:
 
     async def _run_search_and_claude(self, update: Update, search_query: str, analysis_prompt: str, disclaimer: str):
         """
-        Cost-efficient helper using Firecrawl /search (2 credits) + Claude Sonnet 5.
-        Uses the same global MCPApp + AnthropicAugmentedLLM pattern as /evaluate.
+        Cost-efficient helper using Firecrawl /search (2 credits) plus shared LLM analysis.
 
         Returns:
             tuple: (success: bool, response_text: str | None, sent_msg_id: int | None)
@@ -3009,7 +3007,7 @@ class TelegramAIBot:
                 return False, None, None
 
         except Exception as e:
-            logger.error(f"Search+Claude command error: {e}", exc_info=True)
+            logger.error(f"Search+LLM command error: {e}", exc_info=True)
             try:
                 await waiting_msg.delete()
             except Exception:
@@ -3644,9 +3642,8 @@ class TelegramAIBot:
     # ==========================================================================
 
     async def _handle_firecrawl_reply(self, update: Update, fc_ctx: FirecrawlConversationContext):
-        """Handle a reply to a Firecrawl bot message — continue via Anthropic Sonnet 5."""
+        """Handle a reply to a Firecrawl bot message via the shared LLM backend."""
         user_question = update.message.text.strip()
-        chat_id = update.effective_chat.id
 
         waiting_msg = await update.message.reply_text("💭 분석 중입니다... 잠시만 기다려주세요.")
 
@@ -3722,15 +3719,6 @@ class TelegramAIBot:
 
     async def run(self):
         """Run bot"""
-        # Initialize global MCP App
-        try:
-            logger.info("Initializing global MCPApp...")
-            await get_or_create_global_mcp_app()
-            logger.info("Global MCPApp initialization complete")
-        except Exception as e:
-            logger.error(f"Global MCPApp initialization failed: {e}")
-            # Start bot even if initialization fails (can retry later)
-        
         # Run bot
         await self.application.initialize()
         # Sync slash-command menu with BotFather (1x on startup)
@@ -3755,14 +3743,6 @@ class TelegramAIBot:
         finally:
             # Clean up resources on exit
             logger.info("Bot shutdown started - cleaning up resources...")
-            
-            # Clean up global MCP App
-            try:
-                logger.info("Cleaning up global MCPApp...")
-                await cleanup_global_mcp_app()
-                logger.info("Global MCPApp cleanup complete")
-            except Exception as e:
-                logger.error(f"Global MCPApp cleanup failed: {e}")
             
             # Stop bot
             await self.application.stop()
