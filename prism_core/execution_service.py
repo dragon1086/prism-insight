@@ -144,7 +144,7 @@ class ExecutionService:
 
         try:
             result = await method(*args, **kwargs)
-        except BaseException as exc:
+        except (asyncio.CancelledError, Exception) as exc:
             await asyncio.to_thread(
                 self._intent_store.record_result,
                 intent,
@@ -207,7 +207,7 @@ class ExecutionService:
         self._intent_store.mark_submitting(intent.id)
         try:
             result = method(*args, **kwargs)
-        except BaseException as exc:
+        except Exception as exc:
             self._intent_store.record_result(
                 intent,
                 status="UNKNOWN",
