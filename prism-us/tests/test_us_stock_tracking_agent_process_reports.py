@@ -326,6 +326,226 @@ async def test_us_buy_dual_writes_open_position():
     )
 
 
+@pytest.mark.asyncio
+async def test_us_mirror_failures_keep_buy_and_sell_legacy_commits(monkeypatch):
+    """US shadow failures must stay observable and never block legacy writes."""
+    from prism_core.positions import PositionStore
+
+    agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+    agent.conn = sqlite3.connect(":memory:")
+    agent.conn.row_factory = sqlite3.Row
+    agent.cursor = agent.conn.cursor()
+    agent.cursor.execute(
+        """CREATE TABLE us_stock_holdings (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               account_key TEXT NOT NULL, account_name TEXT, ticker TEXT NOT NULL,
+               company_name TEXT NOT NULL, buy_price REAL NOT NULL,
+               buy_date TEXT NOT NULL, current_price REAL, last_updated TEXT,
+               scenario TEXT, target_price REAL, stop_loss REAL,
+               trigger_type TEXT, trigger_mode TEXT, sector TEXT
+           )"""
+    )
+    agent.cursor.execute(
+        """CREATE TABLE us_trading_history (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               account_key TEXT NOT NULL, account_name TEXT, ticker TEXT NOT NULL,
+               company_name TEXT NOT NULL, buy_price REAL NOT NULL,
+               buy_date TEXT NOT NULL, sell_price REAL NOT NULL,
+               sell_date TEXT NOT NULL, profit_rate REAL NOT NULL,
+               holding_days INTEGER NOT NULL, scenario TEXT, trigger_type TEXT,
+               trigger_mode TEXT, sector TEXT, exit_kind TEXT
+           )"""
+    )
+    PositionStore(agent.cursor).ensure_schema()
+    agent.conn.commit()
+    agent.position_ledger_shadow_enabled = True
+    agent.max_slots = 10
+    agent.message_queue = []
+    agent._msg_types = []
+    agent.enable_journal = False
+    agent.journal_manager = None
+    agent._account_scope = lambda: ("ACC1", "us-primary")
+    agent._get_trigger_win_rate = lambda _trigger: ""
+
+    async def no_holding(_ticker):
+        return False
+
+    async def no_slots():
+        return 0
+
+    agent._is_ticker_in_holdings = no_holding
+    agent._get_current_slots_count = no_slots
+
+    original_open = PositionStore.open_legacy_position
+
+    def fail_open(*_args, **_kwargs):
+        raise RuntimeError("open mirror injected failure api_key=top-secret")
+
+    monkeypatch.setattr(PositionStore, "open_legacy_position", fail_open)
+    assert await agent.buy_stock("AAPL", "Apple", 190.0, {"sector": "Technology"})
+    holding = dict(agent.conn.execute("SELECT * FROM us_stock_holdings").fetchone())
+    assert agent.conn.execute("SELECT COUNT(*) FROM us_stock_holdings").fetchone()[0] == 1
+    assert agent.conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+    open_comparison = PositionStore(agent.conn).compare_legacy_positions("US")
+    assert not open_comparison["matches"]
+    assert len(open_comparison["missing_positions"]) == 1
+    assert [row["operation"] for row in open_comparison["unresolved_mirror_errors"]] == [
+        "open"
+    ]
+
+    monkeypatch.setattr(PositionStore, "open_legacy_position", original_open)
+    assert PositionStore(agent.conn).backfill_legacy_positions("US")["inserted"] == 1
+    agent.conn.commit()
+
+    def fail_close(*_args, **_kwargs):
+        raise RuntimeError("close mirror injected failure bearer private-token")
+
+    monkeypatch.setattr(PositionStore, "close_legacy_position", fail_close)
+    holding["current_price"] = 195.0
+    assert await agent.sell_stock(holding, "fail-open regression")
+
+    assert agent.conn.execute("SELECT COUNT(*) FROM us_stock_holdings").fetchone()[0] == 0
+    assert agent.conn.execute("SELECT COUNT(*) FROM us_trading_history").fetchone()[0] == 1
+    assert agent.conn.execute("SELECT status FROM positions").fetchone()[0] == "OPEN"
+    comparison = PositionStore(agent.conn).compare_legacy_positions("US")
+    assert not comparison["matches"]
+    assert len(comparison["extra_open_positions"]) == 1
+    assert [row["operation"] for row in comparison["unresolved_mirror_errors"]] == [
+        "open",
+        "close",
+    ]
+    assert "top-secret" not in str(comparison)
+    assert "private-token" not in str(comparison)
+
+
+@pytest.mark.asyncio
+async def test_us_full_exit_closes_all_siblings_before_one_order_and_publish(
+    monkeypatch, tmp_path
+):
+    """A queued full exit closes every legacy/shadow row but emits one order."""
+    from prism_core.positions import PositionStore
+
+    events = []
+    trading_module = types.ModuleType("trading.us_stock_trading")
+
+    class FullExitTradingContext:
+        def __init__(self, account_name=None, **_kwargs):
+            self.account_name = account_name
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def is_market_open(self):
+            return False
+
+        def is_reserved_order_available(self):
+            return False
+
+        async def async_sell_stock(self, ticker, limit_price=None, quantity=None):
+            events.append("broker")
+            assert ticker == "AAPL"
+            assert quantity is None
+            return {"success": True, "message": "queued full exit"}
+
+    trading_module.AsyncUSTradingContext = FullExitTradingContext
+    monkeypatch.setitem(sys.modules, "trading.us_stock_trading", trading_module)
+
+    redis_module = types.ModuleType("messaging.redis_signal_publisher")
+    gcp_module = types.ModuleType("messaging.gcp_pubsub_signal_publisher")
+
+    async def publish_sell_signal(**_kwargs):
+        events.append("redis")
+
+    async def gcp_publish_sell_signal(**_kwargs):
+        events.append("gcp")
+
+    redis_module.publish_sell_signal = publish_sell_signal
+    gcp_module.publish_sell_signal = gcp_publish_sell_signal
+    monkeypatch.setitem(sys.modules, "messaging.redis_signal_publisher", redis_module)
+    monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_module)
+
+    agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+    agent.db_path = str(tmp_path / "order-intents.sqlite")
+    agent.conn = sqlite3.connect(":memory:")
+    agent.conn.row_factory = sqlite3.Row
+    agent.cursor = agent.conn.cursor()
+    agent.cursor.execute(
+        """CREATE TABLE us_stock_holdings (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               account_key TEXT NOT NULL, account_name TEXT, ticker TEXT NOT NULL,
+               company_name TEXT NOT NULL, buy_price REAL NOT NULL,
+               buy_date TEXT NOT NULL, current_price REAL, last_updated TEXT,
+               scenario TEXT, target_price REAL, stop_loss REAL,
+               trigger_type TEXT, trigger_mode TEXT, sector TEXT
+           )"""
+    )
+    agent.cursor.execute(
+        """CREATE TABLE us_trading_history (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               account_key TEXT NOT NULL, account_name TEXT, ticker TEXT NOT NULL,
+               company_name TEXT NOT NULL, buy_price REAL NOT NULL,
+               buy_date TEXT NOT NULL, sell_price REAL NOT NULL,
+               sell_date TEXT NOT NULL, profit_rate REAL NOT NULL,
+               holding_days INTEGER NOT NULL, scenario TEXT, trigger_type TEXT,
+               trigger_mode TEXT, sector TEXT, exit_kind TEXT
+           )"""
+    )
+    for price, opened_at in (
+        (180.0, "2026-07-01 09:00:00"),
+        (175.0, "2026-07-02 09:00:00"),
+    ):
+        agent.cursor.execute(
+            """INSERT INTO us_stock_holdings
+               (account_key, account_name, ticker, company_name, buy_price, buy_date,
+                current_price, scenario, trigger_type, trigger_mode, sector)
+               VALUES ('ACC1', 'us-primary', 'AAPL', 'Apple', ?, ?, ?, '{}',
+                       'AI Analysis', 'morning', 'Technology')""",
+            (price, opened_at, price),
+        )
+    store = PositionStore(agent.cursor)
+    store.ensure_schema()
+    assert store.backfill_legacy_positions("US")["inserted"] == 2
+    agent.conn.commit()
+
+    agent.position_ledger_shadow_enabled = True
+    agent.message_queue = []
+    agent._msg_types = []
+    agent.enable_journal = False
+    agent.journal_manager = None
+    agent._account_scope = lambda: ("ACC1", "us-primary")
+    agent._get_trigger_win_rate = lambda _trigger: ""
+    agent._get_live_regime_safe = lambda: {}
+
+    async def current_price(_ticker):
+        return 190.0
+
+    async def should_sell(_stock):
+        return True, "queued full-exit regression"
+
+    async def delete_decision(_ticker):
+        return True
+
+    agent._get_current_stock_price = current_price
+    agent._analyze_sell_decision = should_sell
+    agent._delete_holding_decision = delete_decision
+
+    sold = await USStockTrackingAgent.update_holdings(agent)
+
+    assert len(sold) == 2
+    assert events == ["broker", "redis", "gcp"]
+    assert agent.conn.execute("SELECT COUNT(*) FROM us_stock_holdings").fetchone()[0] == 0
+    assert agent.conn.execute("SELECT COUNT(*) FROM us_trading_history").fetchone()[0] == 2
+    statuses = agent.conn.execute(
+        "SELECT status FROM positions ORDER BY legacy_holding_id"
+    ).fetchall()
+    assert [row[0] for row in statuses] == ["CLOSED", "CLOSED"]
+    comparison = PositionStore(agent.conn).compare_legacy_positions("US")
+    assert comparison["matches"]
+
+
 def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):
     redis_module = types.ModuleType("messaging.redis_signal_publisher")
     gcp_module = types.ModuleType("messaging.gcp_pubsub_signal_publisher")
