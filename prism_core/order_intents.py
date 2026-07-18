@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -66,8 +67,52 @@ def _text(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
+_SENSITIVE_KEY_PARTS = (
+    "authorization",
+    "api_key",
+    "apikey",
+    "app_key",
+    "appkey",
+    "app_secret",
+    "appsecret",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+)
+
+
+def _redact_text(value: str) -> str:
+    value = re.sub(r"(?i)bearer\s+[^\s,;]+", "Bearer [REDACTED]", value)
+    return re.sub(
+        r"(?i)(api[_-]?key|app[_-]?key|app[_-]?secret|token|password)"
+        r"(\s*[:=]\s*)[^\s,;]+",
+        r"\1\2[REDACTED]",
+        value,
+    )
+
+
+def _redact(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                "[REDACTED]"
+                if any(part in str(key).lower() for part in _SENSITIVE_KEY_PARTS)
+                else _redact(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return _redact_text(value)
+    return value
+
+
 def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return json.dumps(
+        _redact(value), ensure_ascii=False, sort_keys=True, default=str
+    )
 
 
 @dataclass(frozen=True)
@@ -258,19 +303,25 @@ class IntentStore:
         *,
         status: str,
         accepted: bool,
+        broker: str = "KIS",
         response: Any,
         error: BaseException | None = None,
     ) -> None:
         now = _utc_now()
         payload = response if isinstance(response, dict) else {"result": response}
         if error is not None:
+            safe_error = _redact_text(str(error))
             payload = {
                 "error_type": type(error).__name__,
-                "error_message": str(error),
+                "error_message": safe_error,
             }
+        else:
+            safe_error = None
         broker_order_id = payload.get("order_no") or payload.get("broker_order_id")
         raw_code = payload.get("rt_cd") or payload.get("code")
-        raw_message = payload.get("message") or payload.get("msg1")
+        raw_message = _redact_text(
+            str(payload.get("message") or payload.get("msg1") or "")
+        ) or None
         quantity = payload.get("quantity") or payload.get("submitted_quantity")
         price = payload.get("price") or payload.get("submitted_price")
 
@@ -286,7 +337,7 @@ class IntentStore:
                 (
                     status,
                     type(error).__name__ if error else None,
-                    str(error) if error else None,
+                    safe_error,
                     now,
                     status,
                     now,
@@ -303,11 +354,12 @@ class IntentStore:
                     id, intent_id, broker, broker_order_id, accepted, status,
                     submitted_quantity, submitted_price, raw_code, raw_message,
                     raw_response_json, submitted_at
-                ) VALUES (?, ?, 'KIS', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()),
                     intent.id,
+                    broker,
                     _text(broker_order_id),
                     int(accepted),
                     status,

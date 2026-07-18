@@ -62,7 +62,8 @@ def _rows(db_path):
             "SELECT status, idempotency_key, symbol, side FROM order_intents"
         ).fetchall()
         broker = conn.execute(
-            "SELECT accepted, status, broker_order_id, raw_response_json FROM broker_orders"
+            "SELECT accepted, status, broker_order_id, raw_response_json, broker "
+            "FROM broker_orders"
         ).fetchall()
     return intent, broker
 
@@ -133,8 +134,27 @@ def test_explicit_broker_rejection_is_recorded_as_failed(tmp_path):
     assert orders[0][0:2] == (0, "FAILED")
 
 
-def test_exception_is_unknown_and_same_intent_never_reaches_broker_again(tmp_path):
+def test_timeout_result_is_recorded_as_unknown(tmp_path):
     from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    broker = FakeBroker(
+        result={"success": False, "message": "Buy request timeout (30s)"}
+    )
+    service = ExecutionService(broker, intent_store=IntentStore(db_path))
+
+    result = asyncio.run(service.execute_buy("005930", intent=_intent()))
+
+    assert result["success"] is False
+    assert result["intent_status"] == "UNKNOWN"
+    intents, orders = _rows(db_path)
+    assert intents[0][0] == "UNKNOWN"
+    assert orders[0][0:2] == (0, "UNKNOWN")
+
+
+def test_exception_is_unknown_and_same_intent_never_reaches_broker_again(tmp_path):
+    from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
     from prism_core.order_intents import IntentStore
 
     db_path = tmp_path / "orders.sqlite"
@@ -142,8 +162,9 @@ def test_exception_is_unknown_and_same_intent_never_reaches_broker_again(tmp_pat
     failing = FakeBroker(error=TimeoutError("ambiguous timeout"))
     service = ExecutionService(failing, intent_store=IntentStore(db_path))
 
-    with pytest.raises(TimeoutError, match="ambiguous timeout"):
+    with pytest.raises(OrderOutcomeUnknown) as raised:
         asyncio.run(service.execute_buy("005930", intent=intent))
+    assert isinstance(raised.value.cause, TimeoutError)
 
     retry_broker = FakeBroker()
     retry_service = ExecutionService(
@@ -184,14 +205,17 @@ def test_concurrent_duplicate_is_reserved_once(tmp_path):
 
     db_path = tmp_path / "orders.sqlite"
     broker = FakeBroker(delay=0.05)
-    intent = _intent()
+    first_intent = _intent()
+    second_intent = _intent()
+    assert first_intent.id != second_intent.id
+    assert first_intent.idempotency_key == second_intent.idempotency_key
     first = ExecutionService(broker, intent_store=IntentStore(db_path))
     second = ExecutionService(broker, intent_store=IntentStore(db_path))
 
     async def exercise():
         return await asyncio.gather(
-            first.execute_buy("005930", intent=intent),
-            second.execute_buy("005930", intent=intent),
+            first.execute_buy("005930", intent=first_intent),
+            second.execute_buy("005930", intent=second_intent),
         )
 
     results = asyncio.run(exercise())
@@ -246,6 +270,131 @@ def test_reserved_order_uses_the_same_intent_state_machine(tmp_path):
     intents, orders = _rows(db_path)
     assert intents[0][0] == "SUBMITTED"
     assert orders[0][0:3] == (1, "SUBMITTED", "ORDER-1")
+
+
+def test_local_pending_queue_is_not_recorded_as_kis_submission(tmp_path):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "orders.sqlite"
+    broker = FakeBroker(
+        result={
+            "success": True,
+            "order_no": "PENDING-7",
+            "order_type": "queued_buy",
+            "message": "Reserved buy order queued",
+        }
+    )
+    service = ExecutionService(broker, intent_store=IntentStore(db_path))
+    intent = OrderIntent.create(
+        market="US",
+        account_id="acct-us",
+        symbol="AAPL",
+        side="buy",
+        order_style="reserved",
+        source="us_batch",
+        source_decision_id="report:aapl.pdf",
+        limit_price=200,
+    )
+
+    result = service.execute_reserved_buy("AAPL", intent=intent)
+
+    assert result["success"] is True
+    assert result["intent_status"] == "QUEUED"
+    assert result["intent_broker"] == "LOCAL_QUEUE"
+    intents, orders = _rows(db_path)
+    assert intents[0][0] == "QUEUED"
+    assert orders[0][0:3] == (1, "QUEUED", "PENDING-7")
+    assert orders[0][4] == "LOCAL_QUEUE"
+
+
+def test_broker_success_then_ledger_failure_is_unknown(tmp_path):
+    from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+
+    def fail_result_persistence(*args, **kwargs):
+        raise sqlite3.OperationalError("simulated ledger write failure")
+
+    store.record_result = fail_result_persistence
+    service = ExecutionService(FakeBroker(), intent_store=store)
+    intent = OrderIntent.create(
+        market="US",
+        account_id="acct-us",
+        symbol="AAPL",
+        side="buy",
+        order_style="reserved",
+        source="us_pending_order_batch",
+        source_decision_id="pending:10",
+        limit_price=200,
+    )
+
+    with pytest.raises(OrderOutcomeUnknown) as raised:
+        service.execute_reserved_buy("AAPL", intent=intent)
+
+    assert raised.value.broker_result["success"] is True
+    intents, orders = _rows(db_path)
+    assert intents[0][0] == "SUBMITTING"
+    assert orders == []
+
+
+def test_broker_payload_secrets_are_redacted(tmp_path):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    broker = FakeBroker(
+        result={
+            "success": True,
+            "order_no": "ORDER-SECRET-TEST",
+            "message": "accepted token=plain-token Bearer bearer-token",
+            "authorization": "Bearer header-token",
+            "nested": {"api_key": "nested-api-key", "quantity": 3},
+        }
+    )
+    service = ExecutionService(broker, intent_store=IntentStore(db_path))
+
+    asyncio.run(service.execute_buy("005930", intent=_intent()))
+
+    with sqlite3.connect(db_path) as conn:
+        raw_message, raw_json = conn.execute(
+            "SELECT raw_message, raw_response_json FROM broker_orders"
+        ).fetchone()
+    combined = f"{raw_message}\n{raw_json}"
+    assert "plain-token" not in combined
+    assert "bearer-token" not in combined
+    assert "header-token" not in combined
+    assert "nested-api-key" not in combined
+    assert "[REDACTED]" in combined
+    assert "ORDER-SECRET-TEST" in combined
+
+
+def test_broker_exception_secrets_are_redacted(tmp_path):
+    from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    broker = FakeBroker(
+        error=RuntimeError("request failed token=exception-token Bearer bearer-secret")
+    )
+    service = ExecutionService(broker, intent_store=IntentStore(db_path))
+
+    with pytest.raises(OrderOutcomeUnknown):
+        asyncio.run(service.execute_buy("005930", intent=_intent()))
+
+    with sqlite3.connect(db_path) as conn:
+        error_message = conn.execute(
+            "SELECT error_message FROM order_intents"
+        ).fetchone()[0]
+        raw_json = conn.execute(
+            "SELECT raw_response_json FROM broker_orders"
+        ).fetchone()[0]
+    combined = f"{error_message}\n{raw_json}"
+    assert "exception-token" not in combined
+    assert "bearer-secret" not in combined
+    assert "[REDACTED]" in combined
 
 
 def test_same_position_key_is_shared_across_batch_and_loop_sources():

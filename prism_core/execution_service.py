@@ -20,6 +20,22 @@ from prism_core.order_intents import IntentStore, OrderIntent
 logger = logging.getLogger(__name__)
 
 
+class OrderOutcomeUnknown(RuntimeError):
+    """The broker may have accepted the order, so callers must not mark rejection."""
+
+    def __init__(
+        self,
+        intent_id: str,
+        *,
+        broker_result: Any = None,
+        cause: BaseException | None = None,
+    ):
+        super().__init__(f"order outcome unknown for intent {intent_id}")
+        self.intent_id = intent_id
+        self.broker_result = broker_result
+        self.cause = cause
+
+
 class ExecutionService:
     """Wrap an existing trader or async trading context without changing it."""
 
@@ -31,6 +47,16 @@ class ExecutionService:
         "buy_reserved_order",
         "sell_reserved_order",
     }
+    _AMBIGUOUS_FAILURE_MARKERS = (
+        "timeout",
+        "timed out",
+        "error during",
+        "exception",
+        "connection",
+        "network",
+        "temporarily unavailable",
+        "request failed",
+    )
 
     def __init__(
         self,
@@ -116,6 +142,37 @@ class ExecutionService:
             )
         return getattr(self._active_trader, name)
 
+    @classmethod
+    def _classify_result(cls, result: Any) -> tuple[str, bool, str]:
+        if not isinstance(result, dict):
+            return "UNKNOWN", False, "KIS"
+        order_type = str(result.get("order_type") or "").lower()
+        order_no = str(result.get("order_no") or "").upper()
+        if order_type.startswith("queued_") or order_no.startswith("PENDING-"):
+            return "QUEUED", True, "LOCAL_QUEUE"
+        if result.get("success") or result.get("partial_success"):
+            return "SUBMITTED", True, "KIS"
+        message = str(result.get("message") or "").lower()
+        if any(marker in message for marker in cls._AMBIGUOUS_FAILURE_MARKERS):
+            return "UNKNOWN", False, "KIS"
+        return "FAILED", False, "KIS"
+
+    @staticmethod
+    def _with_intent_metadata(
+        result: Any,
+        *,
+        intent: OrderIntent,
+        status: str,
+        broker: str,
+    ) -> Any:
+        if not isinstance(result, dict):
+            return result
+        enriched = dict(result)
+        enriched["intent_id"] = intent.id
+        enriched["intent_status"] = status
+        enriched["intent_broker"] = broker
+        return enriched
+
     async def _execute_order(
         self,
         method,
@@ -144,7 +201,7 @@ class ExecutionService:
 
         try:
             result = await method(*args, **kwargs)
-        except (asyncio.CancelledError, Exception) as exc:
+        except asyncio.CancelledError as exc:
             await asyncio.to_thread(
                 self._intent_store.record_result,
                 intent,
@@ -159,28 +216,60 @@ class ExecutionService:
                 type(exc).__name__,
             )
             raise
+        except Exception as exc:
+            try:
+                await asyncio.to_thread(
+                    self._intent_store.record_result,
+                    intent,
+                    status="UNKNOWN",
+                    accepted=False,
+                    response=None,
+                    error=exc,
+                )
+            except Exception as persistence_error:
+                logger.critical(
+                    "[ORDER_INTENT] UNKNOWN persistence failed id=%s error=%s",
+                    intent.id,
+                    type(persistence_error).__name__,
+                )
+            raise OrderOutcomeUnknown(intent.id, cause=exc) from exc
 
-        accepted = bool(
-            isinstance(result, dict)
-            and (result.get("success") or result.get("partial_success"))
-        )
-        await asyncio.to_thread(
-            self._intent_store.record_result,
-            intent,
-            status="SUBMITTED" if accepted else "FAILED",
-            accepted=accepted,
-            response=result,
-        )
+        status, accepted, broker = self._classify_result(result)
+        try:
+            await asyncio.to_thread(
+                self._intent_store.record_result,
+                intent,
+                status=status,
+                accepted=accepted,
+                broker=broker,
+                response=result,
+            )
+        except Exception as exc:
+            logger.critical(
+                "[ORDER_INTENT] broker returned but persistence failed id=%s status=%s",
+                intent.id,
+                status,
+            )
+            raise OrderOutcomeUnknown(
+                intent.id,
+                broker_result=result,
+                cause=exc,
+            ) from exc
         logger.log(
             logging.INFO if accepted else logging.ERROR,
             "[ORDER_INTENT] %s id=%s market=%s side=%s symbol=%s",
-            "SUBMITTED" if accepted else "FAILED",
+            status,
             intent.id,
             intent.market,
             intent.side,
             intent.symbol,
         )
-        return result
+        return self._with_intent_metadata(
+            result,
+            intent=intent,
+            status=status,
+            broker=broker,
+        )
 
     def _execute_order_sync(
         self,
@@ -208,39 +297,56 @@ class ExecutionService:
         try:
             result = method(*args, **kwargs)
         except Exception as exc:
+            try:
+                self._intent_store.record_result(
+                    intent,
+                    status="UNKNOWN",
+                    accepted=False,
+                    response=None,
+                    error=exc,
+                )
+            except Exception as persistence_error:
+                logger.critical(
+                    "[ORDER_INTENT] UNKNOWN persistence failed id=%s error=%s",
+                    intent.id,
+                    type(persistence_error).__name__,
+                )
+            raise OrderOutcomeUnknown(intent.id, cause=exc) from exc
+        status, accepted, broker = self._classify_result(result)
+        try:
             self._intent_store.record_result(
                 intent,
-                status="UNKNOWN",
-                accepted=False,
-                response=None,
-                error=exc,
+                status=status,
+                accepted=accepted,
+                broker=broker,
+                response=result,
             )
-            logger.error(
-                "[ORDER_INTENT] UNKNOWN id=%s market=%s side=%s symbol=%s error=%s",
-                intent.id, intent.market, intent.side, intent.symbol,
-                type(exc).__name__,
+        except Exception as exc:
+            logger.critical(
+                "[ORDER_INTENT] broker returned but persistence failed id=%s status=%s",
+                intent.id,
+                status,
             )
-            raise
-        accepted = bool(
-            isinstance(result, dict)
-            and (result.get("success") or result.get("partial_success"))
-        )
-        self._intent_store.record_result(
-            intent,
-            status="SUBMITTED" if accepted else "FAILED",
-            accepted=accepted,
-            response=result,
-        )
+            raise OrderOutcomeUnknown(
+                intent.id,
+                broker_result=result,
+                cause=exc,
+            ) from exc
         logger.log(
             logging.INFO if accepted else logging.ERROR,
             "[ORDER_INTENT] %s id=%s market=%s side=%s symbol=%s",
-            "SUBMITTED" if accepted else "FAILED",
+            status,
             intent.id,
             intent.market,
             intent.side,
             intent.symbol,
         )
-        return result
+        return self._with_intent_metadata(
+            result,
+            intent=intent,
+            status=status,
+            broker=broker,
+        )
 
     async def execute_buy(
         self,
@@ -310,4 +416,4 @@ class ExecutionService:
         )
 
 
-__all__ = ["ExecutionService"]
+__all__ = ["ExecutionService", "OrderOutcomeUnknown"]

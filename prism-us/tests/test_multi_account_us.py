@@ -547,7 +547,17 @@ def test_us_schema_allows_same_ticker_across_accounts(initialized_us_temp_databa
     assert us_schema.is_us_ticker_in_holdings(cursor, "AAPL", account_key="vps:us-two:01") is True
 
 
-def test_pending_order_batch_uses_stored_account_context(monkeypatch):
+@pytest.mark.parametrize(
+    ("ledger_failure", "timeout_result", "expected_status"),
+    [
+        (False, False, "executed"),
+        (True, False, "unknown"),
+        (False, True, "unknown"),
+    ],
+)
+def test_pending_order_batch_uses_stored_account_context(
+    monkeypatch, ledger_failure, timeout_result, expected_status
+):
     temp_file = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
     temp_path = Path(temp_file.name)
     temp_file.close()
@@ -614,6 +624,24 @@ def test_pending_order_batch_uses_stored_account_context(monkeypatch):
                 return frozen_now if tz else frozen_now.replace(tzinfo=None)
 
         monkeypatch.setattr(pending_batch.datetime, "datetime", FrozenDateTime)
+        if timeout_result:
+            monkeypatch.setattr(
+                FakeUSTrader,
+                "buy_reserved_order",
+                lambda self, *args, **kwargs: {
+                    "success": False,
+                    "message": "Reserved buy request timeout (30s)",
+                },
+            )
+        if ledger_failure:
+            def fail_result_persistence(*args, **kwargs):
+                raise sqlite3.OperationalError("simulated ledger write failure")
+
+            monkeypatch.setattr(
+                pending_batch.IntentStore,
+                "record_result",
+                fail_result_persistence,
+            )
 
         pending_batch.process_pending_orders(dry_run=False)
 
@@ -631,7 +659,7 @@ def test_pending_order_batch_uses_stored_account_context(monkeypatch):
         conn = sqlite3.connect(str(temp_path))
         cursor = conn.cursor()
         cursor.execute("SELECT status FROM us_pending_orders WHERE ticker = 'AAPL'")
-        assert cursor.fetchone()[0] == "executed"
+        assert cursor.fetchone()[0] == expected_status
         conn.close()
     finally:
         if temp_path.exists():
