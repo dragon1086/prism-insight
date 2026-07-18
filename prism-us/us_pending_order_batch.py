@@ -30,6 +30,8 @@ _project_root = str(Path(__file__).resolve().parent.parent)
 sys.path.insert(0, _project_root)
 sys.path.insert(0, _prism_us_dir)
 
+from prism_core.execution_service import ExecutionService  # noqa: E402
+
 import pytz
 
 # Logging
@@ -153,15 +155,16 @@ def process_pending_orders(dry_run: bool = False):
 
         try:
             trader = USStockTrading(mode=mode, account_name=account_name, product_code=product_code)
+            execution = ExecutionService(trader)
             if order_type == 'buy':
-                result = trader.buy_reserved_order(
+                result = execution.execute_reserved_buy(
                     ticker=ticker,
                     limit_price=limit_price,
                     buy_amount=buy_amount,
                     exchange=exchange
                 )
             elif order_type == 'sell':
-                result = trader.sell_reserved_order(
+                result = execution.execute_reserved_sell(
                     ticker=ticker,
                     limit_price=limit_price if limit_price > 0 else None,
                     exchange=exchange

@@ -1,8 +1,11 @@
+import asyncio
 import importlib.util
 import logging
 import sqlite3
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -52,6 +55,41 @@ def _load_us_agent_module():
         tracking_db_schema.migrate_us_watchlist_history_columns = lambda *args, **kwargs: None
         tracking_db_schema.is_us_ticker_in_holdings = lambda *args, **kwargs: False
         tracking_db_schema.get_us_holdings_count = lambda *args, **kwargs: 0
+        def get_us_existing_position_for_ticker(cursor, ticker, account_key=None):
+            try:
+                if account_key:
+                    cursor.execute(
+                        "SELECT buy_price FROM us_stock_holdings "
+                        "WHERE ticker = ? AND account_key = ?",
+                        (ticker, account_key),
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT buy_price FROM us_stock_holdings WHERE ticker = ?",
+                        (ticker,),
+                    )
+                prices = [float(row[0]) for row in cursor.fetchall()]
+            except sqlite3.Error:
+                prices = []
+            return {
+                "row_count": len(prices),
+                "avg_buy_price": sum(prices) / len(prices) if prices else 0.0,
+            }
+
+        tracking_db_schema.get_us_existing_position_for_ticker = (
+            get_us_existing_position_for_ticker
+        )
+        tracking_db_schema.evaluate_us_pyramid_add_gate = (
+            lambda *args, **kwargs: (False, "no existing position")
+        )
+        tracking_db_schema.compute_us_fractional_sell_quantity = (
+            lambda total, rows: int(total) if int(rows) <= 1 else int(total) // int(rows)
+        )
+        tracking_db_schema.decide_us_sell_plan = (
+            lambda rows, will_queue: (
+                "single_full" if int(rows) <= 1 else "full_exit" if will_queue else "fractional"
+            )
+        )
         sys.modules["tracking.db_schema"] = tracking_db_schema
 
         tracking_journal = types.ModuleType("tracking.journal")
@@ -102,11 +140,121 @@ class _FakeAsyncUSTradingContext:
             "failed_accounts": ["us-secondary"],
         }
 
-    async def async_sell_stock(self, ticker, limit_price=None):
+    async def async_sell_stock(self, ticker, limit_price=None, quantity=None):
         return {
             "success": True,
             "message": f"sold for {self.account_name}",
         }
+
+
+@pytest.mark.parametrize("pyramiding", [False, True], ids=["single", "pyramiding"])
+def test_concurrent_sell_guard_allows_one_us_order_and_publish(tmp_path, pyramiding):
+    from prism_core.execution_service import ExecutionService
+
+    db_path = tmp_path / "us-concurrent-sell.sqlite"
+    setup = sqlite3.connect(db_path)
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute(
+        """CREATE TABLE us_stock_holdings (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               account_key TEXT NOT NULL, account_name TEXT, ticker TEXT NOT NULL,
+               company_name TEXT NOT NULL, buy_price REAL NOT NULL,
+               buy_date TEXT NOT NULL, current_price REAL, scenario TEXT,
+               trigger_type TEXT, trigger_mode TEXT, sector TEXT
+           )"""
+    )
+    setup.execute(
+        """CREATE TABLE us_trading_history (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               account_key TEXT NOT NULL, account_name TEXT, ticker TEXT NOT NULL,
+               company_name TEXT NOT NULL, buy_price REAL NOT NULL,
+               buy_date TEXT NOT NULL, sell_price REAL NOT NULL,
+               sell_date TEXT NOT NULL, profit_rate REAL NOT NULL,
+               holding_days INTEGER NOT NULL, scenario TEXT, trigger_type TEXT,
+               trigger_mode TEXT, sector TEXT, exit_kind TEXT
+           )"""
+    )
+    target_row_id = setup.execute(
+        """INSERT INTO us_stock_holdings
+           (account_key, account_name, ticker, company_name, buy_price, buy_date)
+           VALUES ('ACC1', 'us-primary', 'AAPL', 'Apple', 180,
+                   '2026-07-01 09:00:00')"""
+    ).lastrowid
+    if pyramiding:
+        setup.execute(
+            """INSERT INTO us_stock_holdings
+               (account_key, account_name, ticker, company_name, buy_price, buy_date)
+               VALUES ('ACC1', 'us-primary', 'AAPL', 'Apple', 175,
+                       '2026-06-15 09:00:00')"""
+        )
+    setup.commit()
+    setup.close()
+
+    barrier = threading.Barrier(2)
+
+    effects = {"broker": 0, "publish": 0}
+    effects_lock = threading.Lock()
+
+    class Broker:
+        async def async_sell_stock(self, *args, **kwargs):
+            with effects_lock:
+                effects["broker"] += 1
+            return {"success": True}
+
+    stock = {
+        "ticker": "AAPL",
+        "company_name": "Apple",
+        "buy_price": 180,
+        "buy_date": "2026-07-01 09:00:00",
+        "current_price": 185,
+        "account_key": "ACC1",
+        "account_name": "us-primary",
+        "sector": "Technology",
+        "id": target_row_id,
+    }
+
+    def run_competitor():
+        conn = sqlite3.connect(db_path, timeout=1, check_same_thread=False)
+        conn.execute("PRAGMA busy_timeout=1000")
+        agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+        agent.conn = conn
+        agent.cursor = conn.cursor()
+        agent.message_queue = []
+        agent._msg_types = []
+        agent.enable_journal = False
+        agent.journal_manager = None
+        agent._account_scope = lambda: ("ACC1", "us-primary")
+        agent._get_trigger_win_rate = lambda _trigger: ""
+
+        async def exercise():
+            barrier.wait(timeout=5)
+            sold = await agent.sell_stock(dict(stock), "concurrency regression")
+            if sold:
+                await ExecutionService(Broker()).execute_sell("AAPL", quantity=1)
+                with effects_lock:
+                    effects["publish"] += 1
+            return sold, len(agent.message_queue)
+
+        try:
+            return asyncio.run(exercise())
+        finally:
+            conn.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: run_competitor(), range(2)))
+
+    verify = sqlite3.connect(db_path)
+    history_count = verify.execute("SELECT COUNT(*) FROM us_trading_history").fetchone()[0]
+    remaining_prices = verify.execute(
+        "SELECT buy_price FROM us_stock_holdings ORDER BY id"
+    ).fetchall()
+    verify.close()
+
+    assert sorted(sold for sold, _messages in results) == [False, True]
+    assert sum(messages for _sold, messages in results) == 1
+    assert history_count == 1
+    assert remaining_prices == ([(175.0,)] if pyramiding else [])
+    assert effects == {"broker": 1, "publish": 1}
 
 
 def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):
@@ -188,11 +336,13 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
         slot_checks.append(agent.active_account["name"])
         return 0
 
-    async def fake_check_sector_diversity(sector):
+    async def fake_check_sector_diversity(sector, is_pyramiding_add=False):
         sector_checks.append((agent.active_account["name"], sector))
         return True
 
-    async def fake_buy_stock(ticker, company_name, current_price, scenario, rank_change_msg):
+    async def fake_buy_stock(
+        ticker, company_name, current_price, scenario, rank_change_msg, is_add=False
+    ):
         buy_calls.append((agent.active_account["name"], ticker))
         return True
 
@@ -266,7 +416,7 @@ async def test_process_reports_saves_watchlist_once_when_not_traded(monkeypatch)
     async def fake_get_current_slots_count():
         return 0
 
-    async def fake_check_sector_diversity(sector):
+    async def fake_check_sector_diversity(sector, is_pyramiding_add=False):
         return True
 
     async def fake_buy_stock(*args, **kwargs):
@@ -317,6 +467,7 @@ async def test_update_holdings_masks_sold_account_payload(monkeypatch):
     agent.cursor.execute(
         """
         CREATE TABLE us_stock_holdings (
+            id INTEGER PRIMARY KEY,
             ticker TEXT,
             company_name TEXT,
             buy_price REAL,
@@ -369,7 +520,7 @@ async def test_update_holdings_masks_sold_account_payload(monkeypatch):
     async def fake_analyze_sell_decision(stock):
         return True, "Take profit"
 
-    async def fake_sell_stock(stock, reason):
+    async def fake_sell_stock(stock, reason, exit_kind=None):
         return True
 
     agent._get_current_stock_price = fake_get_current_stock_price

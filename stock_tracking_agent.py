@@ -48,6 +48,7 @@ from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmented
 from cores.openai_error_logging import log_openai_error
 from cores.agents.trading_agents import create_trading_scenario_agent
 from cores.utils import parse_llm_json
+from prism_core.execution_service import ExecutionService
 
 # O'Neil 룰베이스 매도 (2026-06-04 US quota 사고 동일 룰 결함 KR에도 적용).
 # 방어적 import: 실패 시 _ONEIL_FALLBACK_AVAILABLE=False 로 기존 레거시 룰 유지.
@@ -1362,13 +1363,30 @@ class StockTrackingAgent:
             # 2nd SELL 23:55. sell_stock is the chokepoint that closes this for all
             # paths in both markets.
             self.conn.commit()
-            if get_existing_position_for_ticker(
-                self.cursor, ticker, account_key=account_key
-            ).get("row_count", 0) == 0:
+            # Acquire the SQLite writer lock BEFORE the authoritative guard read.
+            # Without this, two processes can both observe the row, both write a
+            # history record, and both return True (TOCTOU duplicate SELL).
+            # The transaction contains synchronous DB work only and commits before
+            # journal/publish/order continuations, so the lock is held briefly.
+            self.conn.execute("BEGIN IMMEDIATE")
+            row_id = stock_data.get('id')
+            if row_id is not None:
+                self.cursor.execute(
+                    "SELECT 1 FROM stock_holdings "
+                    "WHERE id = ? AND ticker = ? AND account_key = ? LIMIT 1",
+                    (row_id, ticker, account_key),
+                )
+                position_exists = self.cursor.fetchone() is not None
+            else:
+                position_exists = get_existing_position_for_ticker(
+                    self.cursor, ticker, account_key=account_key
+                ).get("row_count", 0) > 0
+            if not position_exists:
                 logger.warning(
                     f"[SELL-GUARD][KR] {ticker}({company_name}) already closed by "
                     f"another cycle — sell_stock aborting (no duplicate record/signal)"
                 )
+                self.conn.rollback()
                 return False
             # ─────────────────────────────────────────────────────────────────
 
@@ -1421,7 +1439,6 @@ class StockTrackingAgent:
             # than one row for this account, delete ONLY that row so the remaining
             # independent entries are preserved. Single-row tickers keep the legacy
             # ticker-scoped delete (zero behavior change).
-            row_id = stock_data.get('id')
             existing = get_existing_position_for_ticker(self.cursor, ticker, account_key=account_key)
             if row_id is not None and existing.get("row_count", 0) > 1:
                 self.cursor.execute(
@@ -1472,6 +1489,8 @@ class StockTrackingAgent:
             return True
 
         except Exception as e:
+            if self.conn.in_transaction:
+                self.conn.rollback()
             logger.error(f"Error during sell: {str(e)}")
             logger.error(traceback.format_exc())
             return False
@@ -1682,8 +1701,7 @@ class StockTrackingAgent:
 
                     if sell_success:
                         # Call actual account trading function (async)
-                        from trading.domestic_stock_trading import AsyncTradingContext
-                        async with AsyncTradingContext(account_name=stock.get("account_name")) as trading:
+                        async with ExecutionService.domestic(account_name=stock.get("account_name")) as trading:
                             # Determine fractional sell quantity for multi-row tickers.
                             # FIX 2: snapshot total qty once per ticker per pass and
                             # distribute from (snapshot - already_ordered), so fills
@@ -1711,7 +1729,7 @@ class StockTrackingAgent:
                                     f"remaining rows={remaining_rows})"
                                 )
                             # Execute async sell with limit price for reserved orders
-                            trade_result = await trading.async_sell_stock(
+                            trade_result = await trading.execute_sell(
                                 stock_code=ticker, limit_price=current_price, quantity=sell_quantity
                             )
 
@@ -2051,10 +2069,8 @@ class StockTrackingAgent:
                         buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
 
                         if buy_success:
-                            from trading.domestic_stock_trading import AsyncTradingContext
-
-                            async with AsyncTradingContext(account_name=account["name"]) as trading:
-                                trade_result = await trading.async_buy_stock(stock_code=ticker, limit_price=current_price)
+                            async with ExecutionService.domestic(account_name=account["name"]) as trading:
+                                trade_result = await trading.execute_buy(stock_code=ticker, limit_price=current_price)
 
                             if trade_result['success']:
                                 logger.info(f"Actual purchase successful: {trade_result['message']}")

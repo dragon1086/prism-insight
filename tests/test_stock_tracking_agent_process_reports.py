@@ -1,7 +1,10 @@
+import asyncio
 import logging
 import sqlite3
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -11,6 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import trading.domestic_stock_trading as domestic_trading
 from stock_tracking_agent import StockTrackingAgent
+from tracking.db_schema import TABLE_STOCK_HOLDINGS, TABLE_TRADING_HISTORY
 
 
 class _FakeAsyncTradingContext:
@@ -34,11 +38,107 @@ class _FakeAsyncTradingContext:
             "failed_accounts": ["kr-secondary"],
         }
 
-    async def async_sell_stock(self, stock_code, limit_price=None):
+    async def async_sell_stock(self, stock_code, limit_price=None, quantity=None):
         return {
             "success": True,
             "message": f"sold for {self.account_name}",
         }
+
+
+@pytest.mark.parametrize("pyramiding", [False, True], ids=["single", "pyramiding"])
+def test_concurrent_sell_guard_allows_one_kr_order_and_publish(tmp_path, pyramiding):
+    from prism_core.execution_service import ExecutionService
+
+    db_path = tmp_path / "kr-concurrent-sell.sqlite"
+    setup = sqlite3.connect(db_path)
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute(TABLE_STOCK_HOLDINGS)
+    setup.execute(TABLE_TRADING_HISTORY)
+    target_row_id = setup.execute(
+        """INSERT INTO stock_holdings
+           (account_key, account_name, ticker, company_name, buy_price, buy_date)
+           VALUES ('ACC1', 'primary', '005930', 'Samsung', 70000,
+                   '2026-07-01 09:00:00')"""
+    ).lastrowid
+    if pyramiding:
+        setup.execute(
+            """INSERT INTO stock_holdings
+               (account_key, account_name, ticker, company_name, buy_price, buy_date)
+               VALUES ('ACC1', 'primary', '005930', 'Samsung', 68000,
+                       '2026-06-15 09:00:00')"""
+        )
+    setup.commit()
+    setup.close()
+
+    barrier = threading.Barrier(2)
+
+    effects = {"broker": 0, "publish": 0, "journal": 0}
+    effects_lock = threading.Lock()
+
+    class Broker:
+        async def async_sell_stock(self, *args, **kwargs):
+            with effects_lock:
+                effects["broker"] += 1
+            return {"success": True}
+
+    stock = {
+        "ticker": "005930",
+        "company_name": "Samsung",
+        "buy_price": 70000,
+        "buy_date": "2026-07-01 09:00:00",
+        "current_price": 71000,
+        "account_key": "ACC1",
+        "account_name": "primary",
+        "id": target_row_id,
+    }
+
+    def run_competitor():
+        conn = sqlite3.connect(db_path, timeout=1, check_same_thread=False)
+        conn.execute("PRAGMA busy_timeout=1000")
+        agent = StockTrackingAgent.__new__(StockTrackingAgent)
+        agent.conn = conn
+        agent.cursor = conn.cursor()
+        agent.message_queue = []
+        agent._msg_types = []
+        agent._account_scope = lambda: ("ACC1", "primary")
+        agent._get_trigger_win_rate = lambda _trigger: ""
+
+        async def create_journal(**_kwargs):
+            with effects_lock:
+                effects["journal"] += 1
+            return True
+
+        agent._create_journal_entry = create_journal
+
+        async def exercise():
+            barrier.wait(timeout=5)
+            sold = await agent.sell_stock(dict(stock), "concurrency regression")
+            if sold:
+                await ExecutionService(Broker()).execute_sell("005930", quantity=1)
+                with effects_lock:
+                    effects["publish"] += 1
+            return sold, len(agent.message_queue)
+
+        try:
+            return asyncio.run(exercise())
+        finally:
+            conn.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: run_competitor(), range(2)))
+
+    verify = sqlite3.connect(db_path)
+    history_count = verify.execute("SELECT COUNT(*) FROM trading_history").fetchone()[0]
+    remaining_prices = verify.execute(
+        "SELECT buy_price FROM stock_holdings ORDER BY id"
+    ).fetchall()
+    verify.close()
+
+    assert sorted(sold for sold, _messages in results) == [False, True]
+    assert sum(messages for _sold, messages in results) == 1
+    assert history_count == 1
+    assert remaining_prices == ([(68000.0,)] if pyramiding else [])
+    assert effects == {"broker": 1, "publish": 1, "journal": 1}
 
 
 def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):
@@ -226,6 +326,7 @@ async def test_update_holdings_masks_sold_account_payload(monkeypatch):
     agent.cursor.execute(
         """
         CREATE TABLE stock_holdings (
+            id INTEGER PRIMARY KEY,
             ticker TEXT,
             company_name TEXT,
             buy_price REAL,
@@ -278,7 +379,7 @@ async def test_update_holdings_masks_sold_account_payload(monkeypatch):
     async def fake_analyze_sell_decision(stock):
         return True, "Take profit"
 
-    async def fake_sell_stock(stock, reason):
+    async def fake_sell_stock(stock, reason, exit_kind=None):
         return True
 
     agent._get_current_stock_price = fake_get_current_stock_price
