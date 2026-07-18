@@ -2207,7 +2207,7 @@ class StockTrackingAgent:
                     translated_queue = []
                     for idx, message in enumerate(self.message_queue, 1):
                         logger.info(f"Translating message {idx}/{len(self.message_queue)}")
-                        translated = await translate_telegram_message(message, model="gpt-5.4-nano")
+                        translated = await translate_telegram_message(message, model="gpt-5.6-luna")
                         translated_queue.append(translated)
                     self.message_queue = translated_queue
                     logger.info("All messages translated successfully")
@@ -2322,7 +2322,7 @@ class StockTrackingAgent:
                             logger.info(f"Translating tracking message to {lang}")
                             translated_message = await translate_telegram_message(
                                 message,
-                                model="gpt-5.4-nano",
+                                model="gpt-5.6-luna",
                                 from_lang="ko",
                                 to_lang=lang
                             )
