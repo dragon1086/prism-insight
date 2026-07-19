@@ -125,6 +125,171 @@ class FakeDomesticTrader:
         return 7
 
 
+_UNSET = object()
+
+
+class _BalanceResponse:
+    def __init__(self, *, ok=True, output1=_UNSET, output2=None, tr_cont=""):
+        self._ok = ok
+        self._body = SimpleNamespace(
+            output1=[] if output1 is _UNSET else output1,
+            output2=[{}] if output2 is None else output2,
+        )
+        self._header = SimpleNamespace(tr_cont=tr_cont)
+
+    def isOK(self):
+        return self._ok
+
+    def getBody(self):
+        return self._body
+
+    def getHeader(self):
+        return self._header
+
+    def getErrorCode(self):
+        return "E-BALANCE"
+
+    def getErrorMessage(self):
+        return "balance inquiry failed"
+
+
+def _trader_with_balance_response(response):
+    trader = dst.DomesticStockTrading.__new__(dst.DomesticStockTrading)
+    trader.mode = "demo"
+    trader.trenv = SimpleNamespace(my_acct="12345678", my_prod="01")
+    trader._request_with_retry = lambda *_args, **_kwargs: response
+    return trader
+
+
+@pytest.mark.parametrize(
+    ("output1", "expected"),
+    [
+        ([{"pdno": "005930", "hldg_qty": "7"}], ("HELD", 7)),
+        ([{"pdno": "000660", "hldg_qty": "3"}], ("FLAT", 0)),
+        ([], ("FLAT", 0)),
+    ],
+)
+def test_checked_holding_lookup_distinguishes_held_and_authoritative_flat(
+    output1, expected
+):
+    trader = _trader_with_balance_response(
+        _BalanceResponse(ok=True, output1=output1)
+    )
+
+    assert trader.get_holding_quantity_checked("005930") == expected
+
+
+def test_checked_holding_lookup_returns_unknown_on_broker_failure():
+    trader = _trader_with_balance_response(_BalanceResponse(ok=False))
+
+    assert trader.get_holding_quantity_checked("005930") == ("UNKNOWN", None)
+
+
+def test_checked_holding_lookup_returns_unknown_on_request_exception():
+    trader = _trader_with_balance_response(_BalanceResponse(ok=True))
+
+    def fail_request(*_args, **_kwargs):
+        raise RuntimeError("transient balance failure")
+
+    trader._request_with_retry = fail_request
+
+    assert trader.get_holding_quantity_checked("005930") == ("UNKNOWN", None)
+
+
+@pytest.mark.parametrize("tr_cont", ["M", "F", " m "])
+def test_checked_holding_lookup_returns_unknown_when_more_pages_exist(tr_cont):
+    first_page = [{"pdno": "000660", "hldg_qty": "3"}]
+    trader = _trader_with_balance_response(
+        _BalanceResponse(ok=True, output1=first_page, tr_cont=tr_cont)
+    )
+
+    assert trader.get_holding_quantity_checked("005930") == ("UNKNOWN", None)
+    assert trader.get_portfolio() == [
+        {
+            "stock_code": "000660",
+            "stock_name": "",
+            "quantity": 3,
+            "avg_price": 0.0,
+            "current_price": 0.0,
+            "eval_amount": 0.0,
+            "profit_amount": 0.0,
+            "profit_rate": 0.0,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "output1",
+    [
+        None,
+        {},
+        [{}],
+        [{"hldg_qty": "3"}],
+        [{"pdno": "005930"}],
+        [{"pdno": "005930", "hldg_qty": "not-a-number"}],
+        [object()],
+    ],
+)
+def test_checked_holding_lookup_returns_unknown_on_malformed_response(output1):
+    trader = _trader_with_balance_response(
+        _BalanceResponse(ok=True, output1=output1)
+    )
+
+    assert trader.get_holding_quantity_checked("005930") == ("UNKNOWN", None)
+
+
+def test_legacy_portfolio_and_quantity_keep_success_behavior():
+    trader = _trader_with_balance_response(
+        _BalanceResponse(
+            ok=True,
+            output1=[
+                {
+                    "pdno": "005930",
+                    "prdt_name": "Samsung",
+                    "hldg_qty": "7",
+                    "pchs_avg_pric": "70000",
+                    "prpr": "71000",
+                    "evlu_amt": "497000",
+                    "evlu_pfls_amt": "7000",
+                    "evlu_pfls_rt": "1.43",
+                }
+            ],
+        )
+    )
+
+    assert trader.get_portfolio() == [
+        {
+            "stock_code": "005930",
+            "stock_name": "Samsung",
+            "quantity": 7,
+            "avg_price": 70000.0,
+            "current_price": 71000.0,
+            "eval_amount": 497000.0,
+            "profit_amount": 7000.0,
+            "profit_rate": 1.43,
+        }
+    ]
+    assert trader.get_holding_quantity("005930") == 7
+    assert trader.get_holding_quantity("000660") == 0
+
+
+def test_legacy_portfolio_and_quantity_keep_failure_as_empty_and_zero():
+    trader = _trader_with_balance_response(_BalanceResponse(ok=False))
+
+    assert trader.get_portfolio() == []
+    assert trader.get_holding_quantity("005930") == 0
+
+
+@pytest.mark.parametrize("output1", [None, {}])
+def test_legacy_portfolio_and_quantity_keep_malformed_empty_behavior(output1):
+    trader = _trader_with_balance_response(
+        _BalanceResponse(ok=True, output1=output1)
+    )
+
+    assert trader.get_portfolio() == []
+    assert trader.get_holding_quantity("005930") == 0
+
+
 @pytest.mark.asyncio
 async def test_async_trading_context_returns_single_account_trader(monkeypatch):
     FakeDomesticTrader.init_calls = []

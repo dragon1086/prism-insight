@@ -1,5 +1,6 @@
 import asyncio
 import ast
+import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -160,6 +161,148 @@ def test_us_factory_recovers_when_root_trading_package_is_cached(monkeypatch):
 
     assert isinstance(execution._resource, FakeUSContext)
     assert execution._resource.account_name == "us-primary"
+
+
+def test_domestic_factory_accepts_originating_intent_store(monkeypatch, tmp_path):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    class FakeDomesticContext:
+        def __init__(self, account_name=None):
+            self.account_name = account_name
+            self.trader = FakeTrader()
+
+        async def __aenter__(self):
+            return self.trader
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    fake_module = types.ModuleType("trading.domestic_stock_trading")
+    fake_module.AsyncTradingContext = FakeDomesticContext
+    monkeypatch.setitem(sys.modules, "trading.domestic_stock_trading", fake_module)
+    db_path = tmp_path / "orders.sqlite"
+    intent_store = IntentStore(db_path)
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="BUY",
+        order_style="market",
+        source="test",
+        source_decision_id="decision-1",
+        source_position_id="legacy:KR:1",
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        created, reservation = intent_store.reserve_in_transaction(connection, intent)
+        assert created is True
+        connection.commit()
+
+    execution = ExecutionService.domestic(
+        account_name="kr-primary",
+        intent_store=intent_store,
+    )
+
+    async def exercise():
+        async with execution:
+            return await execution.execute_pre_reserved_buy(
+                "005930",
+                intent=intent,
+                reservation=reservation,
+            )
+
+    result = asyncio.run(exercise())
+
+    assert isinstance(execution._resource, FakeDomesticContext)
+    assert execution._resource.account_name == "kr-primary"
+    assert execution._intent_store is intent_store
+    assert result["intent_status"] == "SUBMITTED"
+    assert execution._resource.trader.calls == [("buy", ("005930",), {})]
+
+
+def test_domestic_factory_rejects_db_path_with_different_intent_store(
+    monkeypatch, tmp_path
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    class FakeDomesticContext:
+        def __init__(self, account_name=None):
+            self.account_name = account_name
+
+    fake_module = types.ModuleType("trading.domestic_stock_trading")
+    fake_module.AsyncTradingContext = FakeDomesticContext
+    monkeypatch.setitem(sys.modules, "trading.domestic_stock_trading", fake_module)
+    requested_path = tmp_path / "requested.sqlite"
+    different_store = IntentStore(tmp_path / "different.sqlite")
+
+    with pytest.raises(ValueError, match="IntentStore|intent store|db_path"):
+        ExecutionService.domestic(
+            account_name="kr-primary",
+            db_path=requested_path,
+            intent_store=different_store,
+        )
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_status", "expected_accepted"),
+    [
+        (
+            {"success": True, "order_no": "KR-ORDER-1", "message": "accepted"},
+            "SUBMITTED",
+            True,
+        ),
+        (
+            {"success": False, "order_no": "", "message": "rejected"},
+            "FAILED",
+            False,
+        ),
+        (
+            {"success": False, "order_no": "", "message": "request timeout"},
+            "UNKNOWN",
+            False,
+        ),
+    ],
+)
+def test_normal_kr_domestic_results_never_classify_as_queued(
+    result, expected_status, expected_accepted
+):
+    from prism_core.execution_service import ExecutionService
+
+    status, accepted, broker = ExecutionService._classify_result(result)
+
+    assert status == expected_status
+    assert status != "QUEUED"
+    assert accepted is expected_accepted
+    assert broker == "KIS"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {
+            "success": True,
+            "order_no": "LOCAL-7",
+            "order_type": "queued_buy",
+            "message": "queued locally",
+        },
+        {
+            "success": True,
+            "order_no": "PENDING-7",
+            "order_type": "reserved",
+            "message": "queued locally",
+        },
+    ],
+)
+def test_only_explicit_local_queue_markers_classify_as_queued(result):
+    from prism_core.execution_service import ExecutionService
+
+    status, accepted, broker = ExecutionService._classify_result(result)
+
+    assert status == "QUEUED"
+    assert accepted is True
+    assert broker == "LOCAL_QUEUE"
 
 
 def test_transient_empty_portfolio_is_rechecked_before_sell(monkeypatch):

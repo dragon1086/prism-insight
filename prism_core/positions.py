@@ -621,7 +621,7 @@ class PositionStore:
         position_ids: Iterable[str],
         intent_id: Any,
         to_status: str,
-        required_intent_status: str,
+        required_intent_status: str | frozenset[str],
         exit_price: Any = None,
         realized_pnl_pct: Any = None,
         exit_kind: str | None = None,
@@ -640,9 +640,15 @@ class PositionStore:
             side="SELL",
             position_ids=source_ids,
         )
-        if str(intent["status"]).upper() != required_intent_status:
+        required_statuses = (
+            frozenset({required_intent_status})
+            if isinstance(required_intent_status, str)
+            else required_intent_status
+        )
+        if str(intent["status"]).upper() not in required_statuses:
+            expected = ", ".join(sorted(required_statuses))
             raise InvalidPositionTransition(
-                f"exit {to_status} requires {required_intent_status} intent"
+                f"exit {to_status} requires one of {expected} intent statuses"
             )
         rows = self._validate_exit_positions(
             market=market,
@@ -686,12 +692,21 @@ class PositionStore:
             to_status="OPEN", required_intent_status="FAILED", **values
         )
 
-    def mark_exit_unknown_many(self, **values: Any) -> bool:
-        """Atomically quarantine exits whose broker outcome is ambiguous."""
+    def quarantine_pending_exit_many(self, **values: Any) -> bool:
+        """Quarantine claimed exits that cannot be finalized with certainty."""
 
         return self._finish_exit_many(
-            to_status="EXIT_UNKNOWN", required_intent_status="UNKNOWN", **values
+            to_status="EXIT_UNKNOWN",
+            required_intent_status=frozenset(
+                {"SUBMITTING", "SUBMITTED", "UNKNOWN", "QUEUED"}
+            ),
+            **values,
         )
+
+    def mark_exit_unknown_many(self, **values: Any) -> bool:
+        """Compatibility wrapper for exit quarantine."""
+
+        return self.quarantine_pending_exit_many(**values)
 
     def transition(
         self,

@@ -723,6 +723,121 @@ def test_exit_unknown_many_and_comparator_report_status_intent_and_age(tmp_path)
     assert "secret-acct" not in json.dumps(result)
 
 
+@pytest.mark.parametrize(
+    "intent_status",
+    ["SUBMITTING", "SUBMITTED", "UNKNOWN", "QUEUED"],
+)
+def test_pending_exit_can_be_quarantined_for_nonterminal_or_ambiguous_intent(
+    tmp_path, intent_status
+) -> None:
+    """A claimed exit stays fail-closed when broker/local finalization is uncertain."""
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / f"quarantine-{intent_status.lower()}.sqlite"
+    intent_store = IntentStore(db_path)
+    connection = sqlite3.connect(db_path)
+    _legacy_schema(connection)
+    _insert_legacy(connection, "stock_holdings", 1, "acct", "005930")
+    position_store = PositionStore(connection)
+    position_store.ensure_schema()
+    position_store.backfill_legacy_positions("KR")
+    connection.commit()
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="SELL",
+        order_style="market",
+        source="test",
+        source_position_id="legacy:KR:1",
+    )
+
+    connection.execute("BEGIN IMMEDIATE")
+    intent_store.reserve_in_transaction(connection, intent)
+    position_store.prepare_exit_many(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        position_ids=("legacy:KR:1",),
+        intent_id=intent.id,
+    )
+    connection.execute(
+        "UPDATE order_intents SET status=? WHERE id=?",
+        (intent_status, intent.id),
+    )
+
+    assert position_store.mark_exit_unknown_many(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        position_ids=("legacy:KR:1",),
+        intent_id=intent.id,
+    )
+    connection.commit()
+
+    assert connection.execute(
+        "SELECT status, exit_intent_id FROM positions WHERE id='legacy:KR:1'"
+    ).fetchone() == ("EXIT_UNKNOWN", intent.id)
+    assert connection.execute(
+        "SELECT COUNT(*) FROM stock_holdings WHERE id=1"
+    ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("intent_status", ["CREATED", "FAILED"])
+def test_pending_exit_quarantine_rejects_definite_unsubmitted_or_failed_intent(
+    tmp_path, intent_status
+) -> None:
+    """CREATED and FAILED have deterministic handling and must not be quarantined."""
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / f"no-quarantine-{intent_status.lower()}.sqlite"
+    intent_store = IntentStore(db_path)
+    connection = sqlite3.connect(db_path)
+    _legacy_schema(connection)
+    _insert_legacy(connection, "stock_holdings", 1, "acct", "005930")
+    position_store = PositionStore(connection)
+    position_store.ensure_schema()
+    position_store.backfill_legacy_positions("KR")
+    connection.commit()
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="SELL",
+        order_style="market",
+        source="test",
+        source_position_id="legacy:KR:1",
+    )
+
+    connection.execute("BEGIN IMMEDIATE")
+    intent_store.reserve_in_transaction(connection, intent)
+    position_store.prepare_exit_many(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        position_ids=("legacy:KR:1",),
+        intent_id=intent.id,
+    )
+    connection.execute(
+        "UPDATE order_intents SET status=? WHERE id=?",
+        (intent_status, intent.id),
+    )
+
+    with pytest.raises(InvalidPositionTransition):
+        position_store.mark_exit_unknown_many(
+            market="KR",
+            account_id="acct",
+            symbol="005930",
+            position_ids=("legacy:KR:1",),
+            intent_id=intent.id,
+        )
+
+    assert connection.execute(
+        "SELECT status, exit_intent_id FROM positions WHERE id='legacy:KR:1'"
+    ).fetchone() == ("PENDING_EXIT", intent.id)
+    connection.rollback()
+
+
 def test_comparator_distinguishes_fresh_and_stale_pending_positions(tmp_path) -> None:
     from prism_core.order_intents import IntentStore, OrderIntent
 
