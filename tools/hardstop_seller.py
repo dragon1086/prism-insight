@@ -419,7 +419,9 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                     logger.info("[%s] %s already flat at KIS (qty=0); sim closed", market, ticker)
                 else:
                     from prism_core.order_intents import OrderIntent
+                    from prism_core.positions import legacy_position_id
 
+                    closed_legacy_id = stock_data.get("id")
                     order_intent = OrderIntent.create(
                         market=market,
                         account_id=stock_data.get("account_key") or stock_data.get("account_name") or "default",
@@ -427,7 +429,9 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                         side="sell",
                         order_style="market",
                         source="hardstop",
-                        source_position_id=stock_data.get("id"),
+                        source_position_id=legacy_position_id(
+                            market, closed_legacy_id
+                        ),
                         quantity=sold_qty,
                         reason=reason,
                     )
@@ -437,6 +441,13 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
                         intent=order_intent,
                     )
                     intent_status = (result or {}).get("intent_status")
+                    persisted_intent_id = (result or {}).get("intent_id")
+                    if persisted_intent_id:
+                        ag._link_position_exit_intent(
+                            legacy_holding_id=closed_legacy_id,
+                            account_key=stock_data.get("account_key"),
+                            intent_id=persisted_intent_id,
+                        )
                     if intent_status in {"UNKNOWN", "QUEUED"}:
                         outcome_unknown = intent_status == "UNKNOWN"
                     ok = bool(result and result.get("success"))
@@ -446,6 +457,11 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
         except OrderOutcomeUnknown as e:
             outcome_unknown = True
             order_no = (e.broker_result or {}).get("order_no")
+            ag._link_position_exit_intent(
+                legacy_holding_id=stock_data.get("id"),
+                account_key=stock_data.get("account_key"),
+                intent_id=e.intent_id,
+            )
             logger.critical(
                 "[%s] %s KIS sell outcome UNKNOWN after sim close: intent=%s",
                 market, ticker, e.intent_id,

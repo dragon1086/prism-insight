@@ -15,8 +15,9 @@
 이 상태에서 곧바로 `PENDING_ENTRY -> OPEN -> PENDING_EXIT -> CLOSED`를 운영
 source of truth로 바꾸면 batch, loop, pyramiding, US full-exit, publish 시점을 한 번에
 변경하게 된다. Phase 4-a는 먼저 legacy와 신규 원장이 항상 같은 포지션 집합을
-표현하는지 shadow로 증명한다. Phase 4-b에서만 intent 생성 순서를 앞으로 옮기고
-PENDING 상태와 읽기 전환을 다룬다.
+표현하는지 shadow로 증명한다. 동작 순서를 유지하는 Phase 4-b1 intent linkage는
+병행할 수 있지만, intent 생성 순서를 앞으로 옮기는 Phase 4-b2 PENDING 상태와
+읽기 전환은 아래 관찰 gate를 통과한 뒤에만 다룬다.
 
 ## 2. Phase 4-a 범위
 
@@ -77,7 +78,8 @@ PENDING 상태와 읽기 전환을 다룬다.
 - 기존 holdings/history 삭제 또는 schema 변경
 
 위 항목은 최소 5번의 실제 주문 경로 실행일 동안 shadow ledger 무불일치가 확인된 뒤
-Phase 4-b 또는 Phase 5에서 수행한다.
+Phase 4-b2, Phase 4 read switch 또는 Phase 5에서 수행한다. 기존 순서를 바꾸지 않고
+nullable intent id만 연결하는 Phase 4-b1은 이 gate의 적용 대상이 아니다.
 
 ## 4. 테스트 우선 순서
 
@@ -105,7 +107,7 @@ Phase 4-b 또는 Phase 5에서 수행한다.
 5. 매일 batch + hardstop/trend 실행 후 대조 결과 저장. batch-rest로 주문 경로가 실행되지 않은
    날은 관찰 일수에 포함하지 않는다.
 6. mismatch 또는 unresolved mirror error가 한 건이라도 생기면 연속 무불일치 카운터를 0으로 리셋한다.
-7. 최소 5 실행일 무불일치 전에는 Phase 4-b 읽기 전환을 시작하지 않는다.
+7. 최소 5 실행일 무불일치 전에는 Phase 4-b2 PENDING 전이와 Phase 4 read switch를 시작하지 않는다.
 8. 롤백: `POSITION_LEDGER_SHADOW_ENABLED=false`; 신규 테이블은 보존해 사후 분석에 사용한다.
 
 ## 6. 완료 조건
@@ -114,4 +116,4 @@ Phase 4-b 또는 Phase 5에서 수행한다.
 - 기존 holdings/history row와 schema가 변하지 않는다.
 - KR/US 단일·pyramiding·US full-exit·동시 SELL에서 shadow position 집합이 일치한다.
 - 대조기가 불일치를 자동 수정하지 않고 non-zero로 탐지한다.
-- 5 실행일 관찰 계획과 Phase 4-b 진입 gate가 handoff에 기록된다.
+- 5 실행일 관찰 계획과 Phase 4-b2/read switch 진입 gate가 handoff에 기록된다.

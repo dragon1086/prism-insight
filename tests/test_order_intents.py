@@ -1,5 +1,6 @@
 import asyncio
 import ast
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -434,6 +435,78 @@ def test_same_buy_decision_key_is_shared_across_sources():
     second = OrderIntent.create(source="retry_worker", **kwargs)
 
     assert first.idempotency_key == second.idempotency_key
+
+
+def test_buy_prefers_decision_identity_when_position_is_also_present():
+    from prism_core.order_intents import OrderIntent
+
+    kwargs = {
+        "market": "US",
+        "account_id": "acct-us",
+        "symbol": "AAPL",
+        "side": "buy",
+        "order_style": "smart",
+        "source": "us_batch",
+        "source_decision_id": "report:AAPL_20260719.pdf",
+    }
+    first = OrderIntent.create(source_position_id="position:101", **kwargs)
+    second = OrderIntent.create(source_position_id="position:102", **kwargs)
+
+    assert first.idempotency_key == second.idempotency_key
+    assert first.request_payload()["source_decision_id"] == kwargs[
+        "source_decision_id"
+    ]
+    assert first.request_payload()["source_position_id"] == "position:101"
+
+
+def test_sell_prefers_position_identity_when_decision_is_also_present():
+    from prism_core.order_intents import OrderIntent
+
+    kwargs = {
+        "market": "KR",
+        "account_id": "acct-1",
+        "symbol": "005930",
+        "side": "sell",
+        "order_style": "market",
+        "source": "kr_batch",
+        "source_decision_id": "decision:shared",
+    }
+    first = OrderIntent.create(source_position_id="position:101", **kwargs)
+    second = OrderIntent.create(source_position_id="position:102", **kwargs)
+
+    assert first.idempotency_key != second.idempotency_key
+    assert first.request_payload()["source_decision_id"] == "decision:shared"
+    assert first.request_payload()["source_position_id"] == "position:101"
+
+
+@pytest.mark.parametrize(
+    ("side", "identity_kwargs", "identity"),
+    (
+        ("buy", {"source_decision_id": "decision:only"}, "decision:decision:only"),
+        ("buy", {"source_position_id": "position:only"}, "position:position:only"),
+        ("sell", {"source_decision_id": "decision:only"}, "decision:decision:only"),
+        ("sell", {"source_position_id": "position:only"}, "position:position:only"),
+    ),
+)
+def test_single_source_identity_keeps_existing_idempotency(
+    side, identity_kwargs, identity
+):
+    from prism_core.order_intents import OrderIntent
+
+    kwargs = {
+        "market": "KR",
+        "account_id": "acct-1",
+        "symbol": "005930",
+        "side": side,
+        "order_style": "market",
+        **identity_kwargs,
+    }
+    first = OrderIntent.create(source="batch", **kwargs)
+    second = OrderIntent.create(source="retry", **kwargs)
+    key_source = f"v1|KR|acct-1|005930|{side.upper()}|{identity}"
+
+    assert first.idempotency_key == second.idempotency_key
+    assert first.idempotency_key == hashlib.sha256(key_source.encode()).hexdigest()
 
 
 def test_all_production_new_order_calls_supply_an_intent():

@@ -2,14 +2,19 @@ import json
 import sqlite3
 import subprocess
 import sys
+import time
+from dataclasses import FrozenInstanceError
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from prism_core.positions import (
     InvalidPositionTransition,
+    LegacyPositionWriteResult,
     PositionStore,
     account_fingerprint,
+    bounded_link_write_fail_open,
     legacy_position_id,
     mirror_write_fail_open,
 )
@@ -30,6 +35,37 @@ def _legacy_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
+
+
+def _order_intents_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE order_intents (
+            id TEXT PRIMARY KEY,
+            market TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            source_position_id TEXT
+        )
+        """
+    )
+
+
+def _insert_intent(
+    conn: sqlite3.Connection,
+    intent_id: str,
+    *,
+    market: str = "KR",
+    account_id: str = "acct",
+    symbol: str = "005930",
+    side: str = "BUY",
+    source_position_id: str | None = "legacy:KR:1",
+) -> None:
+    conn.execute(
+        "INSERT INTO order_intents VALUES (?, ?, ?, ?, ?, ?)",
+        (intent_id, market, account_id, symbol, side, source_position_id),
+    )
 
 
 def _insert_legacy(
@@ -72,6 +108,15 @@ def test_schema_is_additive_and_caller_controls_transaction() -> None:
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     assert {"positions", "position_mirror_errors"} <= tables
+
+
+def test_legacy_position_write_result_is_immutable_and_explicit() -> None:
+    result = LegacyPositionWriteResult(success=True, legacy_holding_id=17)
+
+    assert result.success is True
+    assert result.legacy_holding_id == 17
+    with pytest.raises(FrozenInstanceError):
+        setattr(result, "success", False)
 
 
 def test_transition_graph_and_database_check_are_enforced() -> None:
@@ -251,6 +296,363 @@ def test_us_full_exit_can_close_multiple_rows_with_one_intent() -> None:
         "SELECT status, exit_intent_id FROM positions ORDER BY legacy_holding_id"
     ).fetchall()
     assert rows == [("CLOSED", "intent-full-exit")] * 3
+
+
+def test_entry_link_requires_persisted_matching_buy_intent() -> None:
+    conn = sqlite3.connect(":memory:")
+    _order_intents_schema(conn)
+    store = PositionStore(conn)
+    store.ensure_schema()
+    assert store.open_legacy_position(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        account_name="primary",
+        symbol="005930",
+    )
+
+    with pytest.raises(LookupError, match="intent not found"):
+        store.link_entry_intent(
+            market="KR",
+            legacy_holding_id=1,
+            account_id="acct",
+            intent_id="missing",
+        )
+
+    mismatches = (
+        ("wrong-market", "US", "acct", "005930", "BUY"),
+        ("wrong-account", "KR", "other", "005930", "BUY"),
+        ("wrong-symbol", "KR", "acct", "000660", "BUY"),
+        ("wrong-side", "KR", "acct", "005930", "SELL"),
+    )
+    for intent_id, market, account_id, symbol, side in mismatches:
+        _insert_intent(
+            conn,
+            intent_id,
+            market=market,
+            account_id=account_id,
+            symbol=symbol,
+            side=side,
+        )
+        with pytest.raises(ValueError, match="does not match position"):
+            store.link_entry_intent(
+                market="KR",
+                legacy_holding_id=1,
+                account_id="acct",
+                intent_id=intent_id,
+            )
+
+    _insert_intent(conn, "missing-source", source_position_id=None)
+    _insert_intent(conn, "wrong-source", source_position_id="legacy:KR:999")
+    for intent_id in ("missing-source", "wrong-source"):
+        with pytest.raises(ValueError, match="source_position_id"):
+            store.link_entry_intent(
+                market="KR",
+                legacy_holding_id=1,
+                account_id="acct",
+                intent_id=intent_id,
+            )
+
+    _insert_intent(conn, "entry-intent")
+    assert store.link_entry_intent(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        intent_id="entry-intent",
+    )
+    assert conn.execute("SELECT entry_intent_id FROM positions").fetchone() == (
+        "entry-intent",
+    )
+
+
+def test_intent_link_is_idempotent_rejects_overwrite_and_does_not_commit() -> None:
+    conn = sqlite3.connect(":memory:")
+    _order_intents_schema(conn)
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.open_legacy_position(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        account_name="primary",
+        symbol="005930",
+    )
+    _insert_intent(conn, "entry-one")
+    _insert_intent(conn, "entry-two")
+    conn.commit()
+
+    conn.execute("BEGIN")
+    assert store.link_entry_intent(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        intent_id="entry-one",
+    )
+    assert store.link_entry_intent(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        intent_id="entry-one",
+    )
+    store.close_legacy_position(
+        market="KR", legacy_holding_id=1, account_id="acct"
+    )
+    assert store.link_entry_intent(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        intent_id="entry-one",
+    )
+    conn.execute(
+        "UPDATE positions SET status='OPEN', closed_at=NULL WHERE id='legacy:KR:1'"
+    )
+    conn.execute(
+        "UPDATE order_intents SET source_position_id='legacy:KR:999' "
+        "WHERE id='entry-one'"
+    )
+    with pytest.raises(ValueError, match="source_position_id"):
+        store.link_entry_intent(
+            market="KR",
+            legacy_holding_id=1,
+            account_id="acct",
+            intent_id="entry-one",
+        )
+    conn.execute(
+        "UPDATE order_intents SET source_position_id='legacy:KR:1' "
+        "WHERE id='entry-one'"
+    )
+    with pytest.raises(ValueError, match="already linked"):
+        store.link_entry_intent(
+            market="KR",
+            legacy_holding_id=1,
+            account_id="acct",
+            intent_id="entry-two",
+        )
+    conn.rollback()
+
+    assert conn.execute("SELECT entry_intent_id FROM positions").fetchone() == (None,)
+
+
+def test_entry_and_exit_intent_links_enforce_position_state() -> None:
+    conn = sqlite3.connect(":memory:")
+    _order_intents_schema(conn)
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.open_legacy_position(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        account_name="primary",
+        symbol="005930",
+    )
+    _insert_intent(conn, "entry-intent")
+    _insert_intent(conn, "exit-intent", side="SELL")
+
+    with pytest.raises(InvalidPositionTransition, match="CLOSED"):
+        store.link_exit_intent(
+            market="KR",
+            legacy_holding_id=1,
+            account_id="acct",
+            intent_id="exit-intent",
+        )
+
+    store.close_legacy_position(
+        market="KR", legacy_holding_id=1, account_id="acct"
+    )
+    with pytest.raises(InvalidPositionTransition, match="OPEN"):
+        store.link_entry_intent(
+            market="KR",
+            legacy_holding_id=1,
+            account_id="acct",
+            intent_id="entry-intent",
+        )
+    assert store.link_exit_intent(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        intent_id="exit-intent",
+    )
+
+
+def test_us_sibling_positions_can_share_one_persisted_exit_intent() -> None:
+    conn = sqlite3.connect(":memory:")
+    _order_intents_schema(conn)
+    store = PositionStore(conn)
+    store.ensure_schema()
+    _insert_intent(
+        conn,
+        "full-exit",
+        market="US",
+        account_id="acct",
+        symbol="AAPL",
+        side="SELL",
+        source_position_id=(
+            "legacy:US:1,legacy:US:2,legacy:US:3"
+        ),
+    )
+    expected_position_ids = {
+        legacy_position_id("US", legacy_holding_id)
+        for legacy_holding_id in (1, 2, 3)
+    }
+    for legacy_holding_id in (1, 2, 3):
+        store.open_legacy_position(
+            market="US",
+            legacy_holding_id=legacy_holding_id,
+            account_id="acct",
+            account_name="primary",
+            symbol="AAPL",
+        )
+    conn.execute("UPDATE positions SET symbol='MSFT' WHERE id='legacy:US:3'")
+    with pytest.raises(ValueError, match="does not match position"):
+        store.link_exit_intent(
+            market="US",
+            legacy_holding_id=1,
+            account_id="acct",
+            intent_id="full-exit",
+            expected_position_ids=expected_position_ids,
+        )
+    conn.execute("UPDATE positions SET symbol='AAPL' WHERE id='legacy:US:3'")
+
+    conn.execute("UPDATE positions SET account_id='other' WHERE id='legacy:US:3'")
+    with pytest.raises(LookupError, match="source positions not found"):
+        store.link_exit_intent(
+            market="US",
+            legacy_holding_id=1,
+            account_id="acct",
+            intent_id="full-exit",
+            expected_position_ids=expected_position_ids,
+        )
+    conn.execute("UPDATE positions SET account_id='acct' WHERE id='legacy:US:3'")
+
+    with pytest.raises(InvalidPositionTransition, match="CLOSED"):
+        store.link_exit_intent(
+            market="US",
+            legacy_holding_id=1,
+            account_id="acct",
+            intent_id="full-exit",
+            expected_position_ids=expected_position_ids,
+        )
+
+    for legacy_holding_id in (1, 2, 3):
+        store.close_legacy_position(
+            market="US",
+            legacy_holding_id=legacy_holding_id,
+            account_id="acct",
+        )
+
+    conn.execute(
+        "UPDATE order_intents SET source_position_id="
+        "'legacy:US:1,legacy:US:2,legacy:US:999' WHERE id='full-exit'"
+    )
+    with pytest.raises(LookupError, match="source positions not found"):
+        store.link_exit_intent(
+            market="US",
+            legacy_holding_id=1,
+            account_id="acct",
+            intent_id="full-exit",
+            expected_position_ids={
+                "legacy:US:1",
+                "legacy:US:2",
+                "legacy:US:999",
+            },
+        )
+    conn.execute(
+        "UPDATE order_intents SET source_position_id="
+        "'legacy:US:1,legacy:US:2,legacy:US:3' WHERE id='full-exit'"
+    )
+
+    assert store.link_exit_intent(
+        market="US",
+        legacy_holding_id=1,
+        account_id="acct",
+        intent_id="full-exit",
+        expected_position_ids=expected_position_ids,
+    )
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM positions WHERE exit_intent_id='full-exit'"
+    ).fetchone() == (3,)
+
+
+def test_bounded_link_lock_wait_is_short_and_comparator_detects_missing_link(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "locked.sqlite"
+    conn = sqlite3.connect(db_path)
+    _legacy_schema(conn)
+    _order_intents_schema(conn)
+    _insert_legacy(conn, "stock_holdings", 1, "acct", "005930")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.backfill_legacy_positions("KR")
+    _insert_intent(conn, "entry-intent")
+    conn.commit()
+
+    blocker = sqlite3.connect(db_path)
+    blocker.execute("BEGIN")
+    blocker.execute("SELECT * FROM positions").fetchall()
+    logger = MagicMock()
+    original_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+    started = time.monotonic()
+    linked = bounded_link_write_fail_open(
+        conn,
+        logger=logger,
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        operation="link_entry_intent",
+        write=lambda position_store: position_store.link_entry_intent(
+            market="KR",
+            legacy_holding_id=1,
+            account_id="acct",
+            intent_id="entry-intent",
+        ),
+    )
+    elapsed = time.monotonic() - started
+
+    assert linked is False
+    assert elapsed < 1.0
+    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == original_timeout
+    assert logger.critical.call_count >= 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM position_mirror_errors"
+    ).fetchone() == (0,)
+
+    blocker.rollback()
+    comparison = PositionStore(conn).compare_legacy_positions("KR")
+    assert comparison["matches"] is False
+    assert comparison["intent_link_mismatches"] == [
+        {
+            "intent_id": "entry-intent",
+            "position_id": "legacy:KR:1",
+            "account_ref": account_fingerprint("acct"),
+            "symbol": "005930",
+            "side": "BUY",
+            "reasons": ["missing_or_wrong_link"],
+        }
+    ]
+
+
+def test_bounded_link_recognizes_python310_lock_error_without_error_code() -> None:
+    conn = sqlite3.connect(":memory:")
+    logger = MagicMock()
+
+    def raise_legacy_lock_error(_store) -> None:
+        error = sqlite3.OperationalError("database is locked")
+        assert getattr(error, "sqlite_errorcode", None) is None
+        raise error
+
+    assert bounded_link_write_fail_open(
+        conn,
+        logger=logger,
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        operation="link_entry_intent",
+        write=raise_legacy_lock_error,
+    ) is False
+    assert logger.critical.call_count >= 2
 
 
 def test_compare_is_read_only_and_reports_structured_mismatches_and_audit_errors() -> None:

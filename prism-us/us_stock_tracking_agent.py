@@ -37,9 +37,18 @@ from typing import List, Dict, Any, Tuple, Optional
 # Add parent directory to path for imports
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from prism_core.execution_service import ExecutionService  # noqa: E402
+from prism_core.execution_service import (  # noqa: E402
+    ExecutionService,
+    OrderOutcomeUnknown,
+)
 from prism_core.order_intents import OrderIntent  # noqa: E402
-from prism_core.positions import PositionStore, mirror_write_fail_open  # noqa: E402
+from prism_core.positions import (  # noqa: E402
+    LegacyPositionWriteResult,
+    PositionStore,
+    bounded_link_write_fail_open,
+    legacy_position_id,
+    mirror_write_fail_open,
+)
 
 _openai_debug_spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
 if _openai_debug_spec and _openai_debug_spec.loader:
@@ -733,6 +742,78 @@ class USStockTrackingAgent:
             ),
         )
 
+    def _link_position_entry_intent(
+        self, *, legacy_holding_id: int, account_key: str, intent_id: str
+    ) -> bool:
+        if not self._position_ledger_enabled():
+            return True
+        try:
+            self.conn.commit()
+            linked = bounded_link_write_fail_open(
+                self.cursor,
+                logger=logger,
+                market="US",
+                legacy_holding_id=legacy_holding_id,
+                account_id=account_key,
+                operation="link_entry_intent",
+                write=lambda store: store.link_entry_intent(
+                    market="US",
+                    legacy_holding_id=legacy_holding_id,
+                    account_id=account_key,
+                    intent_id=intent_id,
+                ),
+            )
+            self.conn.commit()
+            return linked
+        except Exception as error:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            logger.critical(
+                "[POSITION-LINK][US] entry linkage failed for legacy_id=%s (%s)",
+                legacy_holding_id,
+                type(error).__name__,
+            )
+            return False
+
+    def _link_position_exit_intent(
+        self,
+        *,
+        legacy_holding_id: int,
+        account_key: str,
+        intent_id: str,
+        expected_position_ids: list[str] | None = None,
+    ) -> bool:
+        if not self._position_ledger_enabled():
+            return True
+        try:
+            self.conn.commit()
+            linked = bounded_link_write_fail_open(
+                self.cursor,
+                logger=logger,
+                market="US",
+                legacy_holding_id=legacy_holding_id,
+                account_id=account_key,
+                operation="link_exit_intent",
+                write=lambda store: store.link_exit_intent(
+                    market="US",
+                    legacy_holding_id=legacy_holding_id,
+                    account_id=account_key,
+                    intent_id=intent_id,
+                    expected_position_ids=expected_position_ids,
+                ),
+            )
+            self.conn.commit()
+            return linked
+        except Exception as error:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            logger.critical(
+                "[POSITION-LINK][US] exit linkage failed for legacy_id=%s (%s)",
+                legacy_holding_id,
+                type(error).__name__,
+            )
+            return False
+
     def _get_trading_accounts(self) -> List[Dict[str, Any]]:
         default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"
@@ -1265,6 +1346,20 @@ class USStockTrackingAgent:
 
     async def buy_stock(self, ticker: str, company_name: str, current_price: float,
                         scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
+        """Preserve the public bool contract while exposing an internal typed result."""
+
+        result = await self._buy_stock_with_position(
+            ticker,
+            company_name,
+            current_price,
+            scenario,
+            rank_change_msg,
+            is_add=is_add,
+        )
+        return result.success
+
+    async def _buy_stock_with_position(self, ticker: str, company_name: str, current_price: float,
+                        scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> LegacyPositionWriteResult:
         """
         Process stock purchase.
 
@@ -1278,19 +1373,19 @@ class USStockTrackingAgent:
                     insert an independent additional row instead of a first entry.
 
         Returns:
-            bool: Purchase success status
+            Internal success result with the inserted legacy holding id.
         """
         try:
             # Check if already holding (skipped for a pyramiding add)
             if not is_add and await self._is_ticker_in_holdings(ticker):
                 logger.warning(f"{ticker} ({company_name}) already in holdings")
-                return False
+                return LegacyPositionWriteResult(False, None)
 
             # Check available slots
             current_slots = await self._get_current_slots_count()
             if current_slots >= self.max_slots:
                 logger.warning(f"Holdings already at maximum ({self.max_slots})")
-                return False
+                return LegacyPositionWriteResult(False, None)
 
             # Current time
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1472,12 +1567,12 @@ class USStockTrackingAgent:
             self.message_queue.append(message)
             logger.info(f"{ticker} ({company_name}) purchase complete")
 
-            return True
+            return LegacyPositionWriteResult(True, int(legacy_holding_id))
 
         except Exception as e:
             logger.error(f"{ticker} Error during purchase: {str(e)}")
             logger.error(traceback.format_exc())
-            return False
+            return LegacyPositionWriteResult(False, None)
 
     async def _save_watchlist_item(
         self,
@@ -2676,6 +2771,14 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                         # Only execute trading if we have a valid price
                         if current_price > 0:
+                            closed_rows = (
+                                sibling_rows if plan == "full_exit" else [stock]
+                            )
+                            closed_legacy_ids = [row["id"] for row in closed_rows]
+                            expected_position_ids = sorted(
+                                legacy_position_id("US", row_id)
+                                for row_id in closed_legacy_ids
+                            )
                             try:
                                 async with ExecutionService.us(
                                     account_name=stock.get("account_name"),
@@ -2709,10 +2812,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     # the ticker was already added to fully_exited_tickers above.
                                     # Pass limit_price for reserved orders (required for US market)
                                     # If limit_price is 0, trading module will use MOO (Market On Open)
-                                    source_position_id = (
-                                        ",".join(sorted(str(row["id"]) for row in sibling_rows))
-                                        if plan == "full_exit"
-                                        else stock.get("id")
+                                    source_position_id = ",".join(
+                                        expected_position_ids
                                     )
                                     order_intent = OrderIntent.create(
                                         market="US",
@@ -2733,10 +2834,29 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         intent=order_intent,
                                     )
 
+                                persisted_intent_id = trade_result.get("intent_id")
+                                if persisted_intent_id:
+                                    self._link_position_exit_intent(
+                                        legacy_holding_id=closed_legacy_ids[0],
+                                        account_key=stock.get("account_key"),
+                                        intent_id=persisted_intent_id,
+                                        expected_position_ids=expected_position_ids,
+                                    )
+
                                 if trade_result['success']:
                                     logger.info(f"Actual sell successful: {trade_result['message']}")
                                 else:
                                     logger.error(f"Actual sell failed: {trade_result['message']}")
+                            except OrderOutcomeUnknown as trade_err:
+                                self._link_position_exit_intent(
+                                    legacy_holding_id=closed_legacy_ids[0],
+                                    account_key=stock.get("account_key"),
+                                    intent_id=trade_err.intent_id,
+                                    expected_position_ids=expected_position_ids,
+                                )
+                                logger.warning(
+                                    f"Trading outcome unknown: {trade_err}"
+                                )
                             except Exception as trade_err:
                                 logger.warning(f"Trading execution skipped: {trade_err}")
                         else:
@@ -3138,7 +3258,15 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                     if normalized_decision == "entry" and adjusted_score >= min_score and sector_diverse and not _cd_block:
                         # is_add => pyramiding additional independent row (#288)
-                        buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg, is_add=is_add)
+                        buy_result = await self._buy_stock_with_position(
+                            ticker,
+                            company_name,
+                            current_price,
+                            scenario,
+                            rank_change_msg,
+                            is_add=is_add,
+                        )
+                        buy_success = buy_result.success
 
                         if buy_success:
                             trade_result = {'success': False, 'message': 'Trading not executed'}
@@ -3146,6 +3274,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             if current_price > 0:
                                 try:
                                     account_key, _ = self._account_scope()
+                                    opened_position_id = legacy_position_id(
+                                        "US", buy_result.legacy_holding_id
+                                    )
                                     order_intent = OrderIntent.create(
                                         market="US",
                                         account_id=account_key,
@@ -3154,6 +3285,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         order_style="smart",
                                         source="us_batch",
                                         source_decision_id=source_decision_id,
+                                        source_position_id=opened_position_id,
                                         limit_price=current_price,
                                         reason="AI analysis entry",
                                     )
@@ -3167,10 +3299,27 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                             intent=order_intent,
                                         )
 
+                                    persisted_intent_id = trade_result.get("intent_id")
+                                    if persisted_intent_id:
+                                        self._link_position_entry_intent(
+                                            legacy_holding_id=buy_result.legacy_holding_id,
+                                            account_key=account_key,
+                                            intent_id=persisted_intent_id,
+                                        )
+
                                     if trade_result['success']:
                                         logger.info(f"Actual purchase successful: {trade_result['message']}")
                                     else:
                                         logger.error(f"Actual purchase failed: {trade_result['message']}")
+                                except OrderOutcomeUnknown as trade_err:
+                                    self._link_position_entry_intent(
+                                        legacy_holding_id=buy_result.legacy_holding_id,
+                                        account_key=account_key,
+                                        intent_id=trade_err.intent_id,
+                                    )
+                                    logger.warning(
+                                        f"Trading outcome unknown: {trade_err}"
+                                    )
                                 except Exception as trade_err:
                                     logger.warning(f"Trading execution skipped: {trade_err}")
                             else:
