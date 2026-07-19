@@ -141,7 +141,7 @@ async def test_prepass_respects_semaphore_cap(monkeypatch):
 # 2. Order-sensitive gates stay in the sequential phase
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_gates_run_sequentially_after_parallel_phase(monkeypatch):
+async def test_gates_run_sequentially_after_parallel_phase(monkeypatch, tmp_path):
     """
     Cores are computed in the parallel pre-pass; then the REAL analyze_report runs
     the holdings/sector gates sequentially in original order. A second same-sector
@@ -182,6 +182,7 @@ async def test_gates_run_sequentially_after_parallel_phase(monkeypatch):
     monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_mod)
 
     agent = _make_agent()
+    agent.db_path = str(tmp_path / "parallel-order-intents.sqlite")
 
     path_a = "reports/005930_A_20260101_morning.pdf"
     path_b = "reports/000660_B_20260101_morning.pdf"
