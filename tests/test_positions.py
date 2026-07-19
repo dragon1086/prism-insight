@@ -428,6 +428,109 @@ def test_entry_attempt_guard_requires_caller_owned_transaction() -> None:
         )
 
 
+def test_exit_attempt_guard_allows_clean_open_siblings() -> None:
+    conn = sqlite3.connect(":memory:")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    for row_id in (1, 2):
+        store.open_legacy_position(
+            market="KR", legacy_holding_id=row_id, account_id="acct",
+            account_name="primary", symbol="005930"
+        )
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+
+    assert store.assert_exit_attempt_allowed(
+        market="KR", account_id="acct", symbol="005930"
+    )
+
+    conn.rollback()
+
+
+def test_exit_attempt_guard_requires_caller_owned_transaction() -> None:
+    conn = sqlite3.connect(":memory:")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    conn.commit()
+
+    with pytest.raises(RuntimeError, match="active caller-owned transaction"):
+        store.assert_exit_attempt_allowed(
+            market="KR", account_id="acct", symbol="005930"
+        )
+
+
+@pytest.mark.parametrize(
+    "status",
+    ("PENDING_ENTRY", "ENTRY_FAILED", "PENDING_EXIT", "EXIT_UNKNOWN"),
+)
+def test_exit_attempt_guard_blocks_unresolved_same_account_symbol(status) -> None:
+    conn = sqlite3.connect(":memory:")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.open_legacy_position(
+        market="KR", legacy_holding_id=1, account_id="acct",
+        account_name="primary", symbol="005930"
+    )
+    conn.execute("UPDATE positions SET status=?", (status,))
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+
+    with pytest.raises(InvalidPositionTransition, match="exit attempt"):
+        store.assert_exit_attempt_allowed(
+            market="KR", account_id="acct", symbol="005930"
+        )
+
+    conn.rollback()
+
+
+def test_exit_attempt_guard_blocks_open_with_failed_exit_link() -> None:
+    conn = sqlite3.connect(":memory:")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.open_legacy_position(
+        market="KR", legacy_holding_id=1, account_id="acct",
+        account_name="primary", symbol="005930"
+    )
+    conn.execute(
+        "UPDATE positions SET exit_intent_id='failed-sell-intent' "
+        "WHERE id='legacy:KR:1'"
+    )
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+
+    with pytest.raises(InvalidPositionTransition, match="exit attempt"):
+        store.assert_exit_attempt_allowed(
+            market="KR", account_id="acct", symbol="005930"
+        )
+
+    conn.rollback()
+
+
+@pytest.mark.parametrize(
+    ("existing_account", "existing_symbol"),
+    (("other-acct", "005930"), ("acct", "000660")),
+)
+def test_exit_attempt_guard_allows_unresolved_different_identity(
+    existing_account, existing_symbol
+) -> None:
+    conn = sqlite3.connect(":memory:")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.open_legacy_position(
+        market="KR", legacy_holding_id=1, account_id=existing_account,
+        account_name="primary", symbol=existing_symbol
+    )
+    conn.execute("UPDATE positions SET status='EXIT_UNKNOWN'")
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+
+    assert store.assert_exit_attempt_allowed(
+        market="KR", account_id="acct", symbol="005930"
+    )
+
+    conn.rollback()
+
+
 def test_exit_many_lifecycle_is_atomic_idempotent_and_blocks_overwrite(tmp_path) -> None:
     from dataclasses import replace
 
@@ -1645,6 +1748,58 @@ def test_compare_detects_entry_fingerprint_drift_without_exposing_account() -> N
     assert len(result["entry_mismatches"]) == 1
     payload = json.dumps(result, sort_keys=True)
     assert "secret-account" not in payload
+
+
+def test_compare_exposes_failed_exit_linked_open_position(tmp_path) -> None:
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "failed-exit-comparison.sqlite"
+    intent_store = IntentStore(db_path)
+    conn = sqlite3.connect(db_path)
+    _legacy_schema(conn)
+    _insert_legacy(conn, "stock_holdings", 1, "secret-account", "005930")
+    position_store = PositionStore(conn)
+    position_store.ensure_schema()
+    position_store.backfill_legacy_positions("KR")
+    conn.commit()
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="secret-account",
+        symbol="005930",
+        side="SELL",
+        order_style="smart",
+        source="test",
+        source_position_id="legacy:KR:1",
+    )
+    assert intent_store.reserve(intent)[0]
+    intent_store.mark_submitting(intent.id)
+    intent_store.record_result(
+        intent,
+        status="FAILED",
+        accepted=False,
+        response={"success": False, "message": "rejected"},
+    )
+    conn.execute(
+        "UPDATE positions SET exit_intent_id=? WHERE id='legacy:KR:1'",
+        (intent.id,),
+    )
+    conn.commit()
+
+    result = position_store.compare_legacy_positions("KR")
+
+    assert result["matches"] is False
+    assert result["counts"]["failed_exit_linked_open_positions"] == 1
+    assert result["failed_exit_linked_open_positions"] == [
+        {
+            "position_id": "legacy:KR:1",
+            "legacy_holding_id": "1",
+            "account_ref": account_fingerprint("secret-account"),
+            "symbol": "005930",
+            "intent_id": intent.id,
+            "intent_status": "FAILED",
+        }
+    ]
+    assert "secret-account" not in json.dumps(result, sort_keys=True)
 
 
 def test_mirror_error_redacts_credentials() -> None:

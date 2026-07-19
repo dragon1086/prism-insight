@@ -2,7 +2,7 @@
 
 > 이슈: [#412 매수/매도 Agent 분리와 KIS 실제 주문 실행 구조 이식 설계](https://github.com/dragon1086/prism-insight/issues/412)
 > 브랜치: `feature/issue-412-execution-architecture`
-> 상태: Phase 4-b2b-1 KR ENTRY 배포 완료, Phase 4-b2b-2 KR EXIT 구현 준비
+> 상태: Phase 4-b2b-1 KR ENTRY 배포 완료, Phase 4-b2b-2 KR EXIT 구현·로컬 검증 완료(PR 준비, gate OFF)
 > (2026-07-06 시작, 2026-07-13 main #432 기준 전면 재검토,
 > **2026-07-19 Phase 4-b2b-1 PR #465, main `3361550f` 게이트 OFF 배포 완료**)
 
@@ -32,6 +32,7 @@ greenfield 이식이 아니라 **라이브 시스템의 strangler 방식 단계 
 | [11-phase4b2-pending-exit-plan.md](11-phase4b2-pending-exit-plan.md) | Phase 4-b2 분할 계획 — 4-b2a 기반 API, 4-b2b KR 전환, 4-b2c US queue 연속성/전환 |
 | [12-phase4b2b-kr-execution-plan.md](12-phase4b2b-kr-execution-plan.md) | Phase 4-b2b KR 전환 상세 계획 — 4-b2b-0~3 안전 분할, 실패/재시도 정책, 배포 gate |
 | [13-phase4b2b1-kr-entry-plan.md](13-phase4b2b1-kr-entry-plan.md) | Phase 4-b2b-1 KR ENTRY 구현 계획 — no-auto-retry guard, private lifecycle, 결과별 TDD |
+| [14-phase4b2b2-kr-exit-plan.md](14-phase4b2b2-kr-exit-plan.md) | Phase 4-b2b-2 KR EXIT 구현 계획 — write-ahead claim, legacy finalize, loop 상태 행렬 |
 
 ## 진행 체크리스트
 

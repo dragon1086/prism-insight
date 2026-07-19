@@ -310,6 +310,39 @@ class PositionStore:
                 )
         return True
 
+    def assert_exit_attempt_allowed(
+        self,
+        *,
+        market: str,
+        account_id: Any,
+        symbol: Any,
+    ) -> bool:
+        """Reject exits while the same position identity has unresolved state."""
+
+        self._require_active_transaction()
+        market = _market(str(market).strip())
+        account_id = str(account_id or "").strip()
+        symbol = str(symbol or "").strip().upper()
+        if not account_id or not symbol:
+            raise ValueError("account_id and symbol are required")
+        row = self._execute(
+            "SELECT status, exit_intent_id FROM positions "
+            "WHERE market=? AND account_id=? AND symbol=? "
+            "AND (status IN ('PENDING_ENTRY', 'ENTRY_FAILED', "
+            "'PENDING_EXIT', 'EXIT_UNKNOWN') "
+            "OR (status='OPEN' AND exit_intent_id IS NOT NULL)) LIMIT 1",
+            (market, account_id, symbol),
+        ).fetchone()
+        if row is not None:
+            status, exit_intent_id = row
+            detail = status
+            if status == "OPEN" and exit_intent_id:
+                detail = f"OPEN position linked to exit intent {exit_intent_id}"
+            raise InvalidPositionTransition(
+                f"exit attempt blocked by unresolved position state: {detail}"
+            )
+        return True
+
     @staticmethod
     def _source_position_ids(value: Any) -> tuple[str, ...]:
         if value is None:
@@ -1321,16 +1354,56 @@ class PositionStore:
             (market,),
         )
         intent_link_mismatches: list[dict[str, Any]] = []
+        failed_exit_linked_open_positions: list[dict[str, Any]] = []
         has_intent_table = self._execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' "
             "AND name='order_intents'"
         ).fetchone()
         if has_intent_table:
-            intent_rows = self._fetchall(
-                "SELECT id, account_id, symbol, side, source_position_id "
-                "FROM order_intents WHERE market=? AND source_position_id IS NOT NULL",
-                (market,),
-            )
+            intent_columns = {
+                str(row[1])
+                for row in self._execute("PRAGMA table_info(order_intents)").fetchall()
+            }
+            if "status" in intent_columns:
+                intent_rows = self._fetchall(
+                    "SELECT id, account_id, symbol, side, source_position_id, status "
+                    "FROM order_intents "
+                    "WHERE market=? AND source_position_id IS NOT NULL",
+                    (market,),
+                )
+            else:
+                intent_rows = self._fetchall(
+                    "SELECT id, account_id, symbol, side, source_position_id, "
+                    "NULL AS status FROM order_intents "
+                    "WHERE market=? AND source_position_id IS NOT NULL",
+                    (market,),
+                )
+            intents_by_id = {str(row["id"]): row for row in intent_rows}
+            for position in position_rows:
+                exit_intent_id = position["exit_intent_id"]
+                intent = (
+                    intents_by_id.get(str(exit_intent_id))
+                    if exit_intent_id is not None
+                    else None
+                )
+                if (
+                    str(position["status"]) == "OPEN"
+                    and intent is not None
+                    and str(intent["side"]).upper() == "SELL"
+                    and str(intent["status"]).upper() == "FAILED"
+                ):
+                    failed_exit_linked_open_positions.append(
+                        {
+                            "position_id": str(position["id"]),
+                            "legacy_holding_id": str(position["legacy_holding_id"]),
+                            "account_ref": account_fingerprint(
+                                position["account_id"]
+                            ),
+                            "symbol": str(position["symbol"]).upper(),
+                            "intent_id": str(exit_intent_id),
+                            "intent_status": "FAILED",
+                        }
+                    )
             canonical_prefix = f"legacy:{market}:"
             for intent in intent_rows:
                 source_ids = tuple(
@@ -1388,6 +1461,7 @@ class PositionStore:
             pending_positions,
             stale_pending_positions,
             exit_unknown_positions,
+            failed_exit_linked_open_positions,
         )
         return {
             "market": market,
@@ -1401,6 +1475,9 @@ class PositionStore:
                 "pending_positions": len(pending_positions),
                 "stale_pending_positions": len(stale_pending_positions),
                 "exit_unknown_positions": len(exit_unknown_positions),
+                "failed_exit_linked_open_positions": len(
+                    failed_exit_linked_open_positions
+                ),
             },
             "missing_positions": missing_positions,
             "extra_open_positions": extra_open_positions,
@@ -1413,6 +1490,9 @@ class PositionStore:
             "pending_positions": pending_positions,
             "stale_pending_positions": stale_pending_positions,
             "exit_unknown_positions": exit_unknown_positions,
+            "failed_exit_linked_open_positions": (
+                failed_exit_linked_open_positions
+            ),
         }
 
 

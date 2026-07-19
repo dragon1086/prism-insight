@@ -568,6 +568,86 @@ async def test_process_reports_saves_watchlist_once_when_not_traded(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_update_holdings_gate_false_preserves_legacy_broker_publish_order(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "false")
+    events = []
+    db_path = tmp_path / "stock_tracking.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(TABLE_STOCK_HOLDINGS)
+    conn.execute(
+        """INSERT INTO stock_holdings
+           (account_key, account_name, ticker, company_name, buy_price, buy_date,
+            current_price, scenario)
+           VALUES ('ACC1', 'primary', '005930', 'Samsung', 70000,
+                   '2026-07-01 09:00:00', 71000, '{}')"""
+    )
+    conn.commit()
+
+    agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent.db_path = str(db_path)
+    agent.conn = conn
+    agent.cursor = conn.cursor()
+    agent.active_account = {"name": "primary", "account_key": "ACC1"}
+    agent.message_queue = []
+    agent._msg_types = []
+    agent._get_live_regime_safe = lambda: None
+
+    async def current_price(_ticker):
+        return 72000
+
+    async def sell_decision(_stock):
+        return True, "Take profit"
+
+    async def legacy_close_and_message(_stock, _reason, exit_kind=None):
+        events.append("legacy/message")
+        return True
+
+    def link_exit(**_kwargs):
+        events.append("exit-link")
+        return True
+
+    class OrderedTradingContext(_FakeAsyncTradingContext):
+        async def async_sell_stock(self, stock_code, limit_price=None, quantity=None):
+            events.append("broker")
+            return {"success": True, "message": "sold"}
+
+    agent._get_current_stock_price = current_price
+    agent._analyze_sell_decision = sell_decision
+    agent.sell_stock = legacy_close_and_message
+    agent._link_position_exit_intent = link_exit
+    monkeypatch.setattr(domestic_trading, "AsyncTradingContext", OrderedTradingContext)
+
+    redis_module = types.ModuleType("messaging.redis_signal_publisher")
+    gcp_module = types.ModuleType("messaging.gcp_pubsub_signal_publisher")
+
+    async def publish_redis(**_kwargs):
+        events.append("redis")
+
+    async def publish_gcp(**_kwargs):
+        events.append("gcp")
+
+    redis_module.publish_sell_signal = publish_redis
+    gcp_module.publish_sell_signal = publish_gcp
+    monkeypatch.setitem(sys.modules, "messaging.redis_signal_publisher", redis_module)
+    monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_module)
+
+    sold = await StockTrackingAgent.update_holdings(agent)
+
+    assert [stock["ticker"] for stock in sold] == ["005930"]
+    assert events == [
+        "legacy/message",
+        "broker",
+        "exit-link",
+        "redis",
+        "gcp",
+    ]
+    conn.close()
+
+
+@pytest.mark.asyncio
 async def test_update_holdings_masks_sold_account_payload(monkeypatch, tmp_path):
     agent = StockTrackingAgent.__new__(StockTrackingAgent)
     agent.db_path = str(tmp_path / "stock_tracking.sqlite")
