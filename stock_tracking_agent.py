@@ -21,6 +21,7 @@ import os
 import sqlite3
 import sys
 import traceback
+from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -49,7 +50,7 @@ from cores.openai_error_logging import log_openai_error
 from cores.agents.trading_agents import create_trading_scenario_agent
 from cores.utils import parse_llm_json
 from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
-from prism_core.order_intents import OrderIntent
+from prism_core.order_intents import IntentStore, OrderIntent
 from prism_core.positions import (
     LegacyPositionWriteResult,
     PositionStore,
@@ -97,6 +98,19 @@ from trading import kis_auth as ka
 # Create MCPApp instance
 app = MCPApp(name="stock_tracking")
 
+
+@dataclass(frozen=True)
+class _PreparedKrEntry:
+    legacy_holding_id: int
+    account_id: str
+    account_name: str
+    symbol: str
+    intent: OrderIntent
+    intent_store: IntentStore
+    reservation: Any
+    message: str
+
+
 class StockTrackingAgent:
     """Stock Tracking and Trading Agent"""
 
@@ -137,6 +151,7 @@ class StockTrackingAgent:
         self.position_ledger_shadow_enabled = os.environ.get(
             "POSITION_LEDGER_SHADOW_ENABLED", "true"
         ).strip().lower() not in {"0", "false", "no", "off"}
+        self._position_pending_kr_ready = False
 
         # Set trading journal feature flag
         # Priority: parameter > environment variable > default (False)
@@ -224,6 +239,7 @@ class StockTrackingAgent:
 
     def _initialize_position_ledger(self) -> None:
         """Create/backfill the additive KR shadow ledger without blocking startup."""
+        self._position_pending_kr_ready = False
         if not self._position_ledger_enabled():
             logger.warning("[POSITION-SHADOW][KR] disabled by kill switch")
             return
@@ -269,6 +285,7 @@ class StockTrackingAgent:
             return
         self.conn.execute("RELEASE position_shadow_init")
         self.conn.commit()
+        self._position_pending_kr_ready = True
         logger.info(
             "[POSITION-SHADOW][KR] initialized inserted=%s existing=%s skipped=%s",
             result["inserted"],
@@ -1172,6 +1189,330 @@ class StockTrackingAgent:
             logger.error(f"{ticker} Error saving watchlist: {str(e)}")
             logger.error(traceback.format_exc())
             return False
+
+    @staticmethod
+    def _position_pending_kr_enabled() -> bool:
+        return os.environ.get("POSITION_PENDING_KR_ENABLED", "false").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    def _require_pending_entry_ready(self) -> IntentStore:
+        """Validate the opt-in KR pending dependencies before any entry write."""
+
+        if not self._position_ledger_enabled():
+            raise RuntimeError("KR pending entry requires the position ledger")
+        if getattr(self, "_position_pending_kr_ready", None) is not True:
+            raise RuntimeError("KR pending entry ledger initialization is not ready")
+        if not isinstance(self.conn, sqlite3.Connection) or self.conn.in_transaction:
+            raise RuntimeError("KR pending entry requires an idle agent connection")
+
+        try:
+            intent_store = IntentStore(self.db_path)
+            PositionStore(self.conn).ensure_schema()
+            self.conn.commit()
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+        return intent_store
+
+    def _build_pending_kr_entry_message(
+        self,
+        *,
+        ticker: str,
+        company_name: str,
+        current_price: float,
+        scenario: Dict[str, Any],
+        rank_change_msg: str,
+        trigger_type: str,
+    ) -> str:
+        """Build the existing first-entry message without enqueueing it."""
+
+        message = (
+            f"📈 신규 매수: {company_name}({ticker})\n"
+            f"매수가: {current_price:,.0f}원\n"
+            f"목표가: {scenario.get('target_price', 0):,.0f}원\n"
+            f"손절가: {scenario.get('stop_loss', 0):,.0f}원\n"
+            f"투자기간: {scenario.get('investment_period', '단기')}\n"
+            f"산업군: {scenario.get('sector', '알 수 없음')}\n"
+        )
+
+        trigger_win_rate = self._get_trigger_win_rate(trigger_type)
+        if trigger_win_rate:
+            message += f"{trigger_win_rate}\n"
+        if scenario.get("valuation_analysis"):
+            message += f"밸류에이션: {scenario.get('valuation_analysis')}\n"
+        if scenario.get("sector_outlook"):
+            message += f"업종 전망: {scenario.get('sector_outlook')}\n"
+        if rank_change_msg:
+            message += f"거래대금 분석: {rank_change_msg}\n"
+        message += f"투자근거: {scenario.get('rationale', '정보 없음')}\n"
+
+        journal_reflection = scenario.get("journal_reflection") or {}
+        if isinstance(journal_reflection, dict):
+            if journal_reflection.get("recent_exit_caution"):
+                message += (
+                    "⚠️ 최근 매도 주의: "
+                    f"{journal_reflection.get('recent_exit_caution')}\n"
+                )
+            if journal_reflection.get("applied_lessons"):
+                message += (
+                    "📒 매매일지 반영: "
+                    f"{journal_reflection.get('applied_lessons')}\n"
+                )
+        score_adjustment = scenario.get("score_adjustment") or {}
+        if isinstance(score_adjustment, dict) and score_adjustment.get("value"):
+            reasons = ", ".join(score_adjustment.get("reasons", []) or [])
+            message += (
+                f"📊 경험 기반 점수조정: {score_adjustment.get('value'):+d}점 "
+                f"({reasons})\n"
+            )
+
+        trading_scenarios = scenario.get("trading_scenarios", {})
+        if trading_scenarios and isinstance(trading_scenarios, dict):
+            message += "\n" + "=" * 40 + "\n"
+            message += "📋 매매 시나리오\n"
+            message += "=" * 40 + "\n\n"
+
+            key_levels = trading_scenarios.get("key_levels", {})
+            if key_levels:
+                message += "💰 핵심 가격대:\n"
+                primary_resistance = self._parse_price_value(
+                    key_levels.get("primary_resistance", 0)
+                )
+                secondary_resistance = self._parse_price_value(
+                    key_levels.get("secondary_resistance", 0)
+                )
+                if primary_resistance or secondary_resistance:
+                    message += "  📈 저항선:\n"
+                    if secondary_resistance:
+                        message += f"    • 2차: {secondary_resistance:,.0f}원\n"
+                    if primary_resistance:
+                        message += f"    • 1차: {primary_resistance:,.0f}원\n"
+                message += f"  ━━ 현재가: {current_price:,.0f}원 ━━\n"
+
+                primary_support = self._parse_price_value(
+                    key_levels.get("primary_support", 0)
+                )
+                secondary_support = self._parse_price_value(
+                    key_levels.get("secondary_support", 0)
+                )
+                if primary_support or secondary_support:
+                    message += "  📉 지지선:\n"
+                    if primary_support:
+                        message += f"    • 1차: {primary_support:,.0f}원\n"
+                    if secondary_support:
+                        message += f"    • 2차: {secondary_support:,.0f}원\n"
+                volume_baseline = key_levels.get("volume_baseline", "")
+                if volume_baseline:
+                    message += f"  📊 거래량 기준: {volume_baseline}\n"
+                message += "\n"
+
+            sell_triggers = trading_scenarios.get("sell_triggers", [])
+            if sell_triggers:
+                message += "🔔 매도 시그널:\n"
+                for trigger in sell_triggers:
+                    lowered = trigger.lower()
+                    if any(
+                        marker in lowered
+                        for marker in ("profit", "target", "resistance")
+                    ):
+                        emoji = "✅"
+                    elif any(
+                        marker in lowered
+                        for marker in ("loss", "support", "decline")
+                    ):
+                        emoji = "⛔"
+                    elif "time" in lowered or "sideways" in lowered:
+                        emoji = "⏰"
+                    else:
+                        emoji = "•"
+                    message += f"  {emoji} {trigger}\n"
+                message += "\n"
+
+            hold_conditions = trading_scenarios.get("hold_conditions", [])
+            if hold_conditions:
+                message += "✋ 보유 지속 조건:\n"
+                for condition in hold_conditions:
+                    message += f"  • {condition}\n"
+                message += "\n"
+
+            portfolio_context = trading_scenarios.get("portfolio_context", "")
+            if portfolio_context:
+                message += f"💼 포트폴리오 관점:\n  {portfolio_context}\n"
+
+        return message
+
+    def _prepare_pending_kr_entry(
+        self,
+        *,
+        ticker: str,
+        company_name: str,
+        current_price: float,
+        scenario: Dict[str, Any],
+        rank_change_msg: str,
+        source_decision_id: str,
+    ) -> _PreparedKrEntry:
+        """Atomically persist the legacy holding, intent, and PENDING_ENTRY."""
+
+        intent_store = self._require_pending_entry_ready()
+        account_id, account_name = self._account_scope()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        trigger_info = getattr(self, "trigger_info_map", {}).get(ticker, {})
+        trigger_type = trigger_info.get("trigger_type", "AI Analysis")
+        trigger_mode = trigger_info.get(
+            "trigger_mode", getattr(self, "trigger_mode", "unknown")
+        )
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            position_store = PositionStore(self.conn)
+            position_store.assert_entry_attempt_allowed(
+                market="KR", account_id=account_id, symbol=ticker
+            )
+            cursor = self.conn.execute(
+                """
+                INSERT INTO stock_holdings
+                (account_key, account_name, ticker, company_name, buy_price,
+                 buy_date, current_price, last_updated, scenario, target_price,
+                 stop_loss, trigger_type, trigger_mode, sector)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    account_id,
+                    account_name,
+                    ticker,
+                    company_name,
+                    current_price,
+                    now,
+                    current_price,
+                    now,
+                    json.dumps(scenario, ensure_ascii=False),
+                    scenario.get("target_price", 0),
+                    scenario.get("stop_loss", 0),
+                    trigger_type,
+                    trigger_mode,
+                    scenario.get("sector", "알 수 없음"),
+                ),
+            )
+            legacy_holding_id = int(cursor.lastrowid)
+            intent = OrderIntent.create(
+                market="KR",
+                account_id=account_id,
+                symbol=ticker,
+                side="buy",
+                order_style="smart",
+                source="kr_batch",
+                source_decision_id=source_decision_id,
+                source_position_id=legacy_position_id("KR", legacy_holding_id),
+                limit_price=current_price,
+                reason="AI analysis entry",
+            )
+            created, reservation = intent_store.reserve_in_transaction(
+                self.conn, intent
+            )
+            if not created:
+                raise RuntimeError("KR pending entry intent already exists")
+            position_store.prepare_entry(
+                market="KR",
+                legacy_holding_id=legacy_holding_id,
+                account_id=account_id,
+                account_name=account_name,
+                symbol=ticker,
+                intent_id=intent.id,
+                entry_price=current_price,
+                opened_at=now,
+            )
+            message = self._build_pending_kr_entry_message(
+                ticker=ticker,
+                company_name=company_name,
+                current_price=current_price,
+                scenario=scenario,
+                rank_change_msg=rank_change_msg,
+                trigger_type=trigger_type,
+            )
+            self.conn.commit()
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+
+        return _PreparedKrEntry(
+            legacy_holding_id=legacy_holding_id,
+            account_id=account_id,
+            account_name=account_name,
+            symbol=ticker,
+            intent=intent,
+            intent_store=intent_store,
+            reservation=reservation,
+            message=message,
+        )
+
+    async def _execute_pending_kr_entry(
+        self, prepared: _PreparedKrEntry, *, current_price: float
+    ) -> Dict[str, Any]:
+        async with ExecutionService.domestic(
+            account_name=prepared.account_name,
+            intent_store=prepared.intent_store,
+        ) as trading:
+            return await trading.execute_pre_reserved_buy(
+                stock_code=prepared.symbol,
+                limit_price=current_price,
+                intent=prepared.intent,
+                reservation=prepared.reservation,
+            )
+
+    def _complete_pending_kr_entry(self, prepared: _PreparedKrEntry) -> None:
+        """Commit OPEN before making the prebuilt message externally visible."""
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            PositionStore(self.conn).complete_entry(
+                market="KR",
+                legacy_holding_id=prepared.legacy_holding_id,
+                account_id=prepared.account_id,
+                symbol=prepared.symbol,
+                intent_id=prepared.intent.id,
+            )
+            self.conn.commit()
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+        self._msg_types.append("analysis")
+        self.message_queue.append(prepared.message)
+
+    def _fail_pending_kr_entry(self, prepared: _PreparedKrEntry) -> None:
+        """Atomically remove the legacy holding and tombstone a rejected entry."""
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            deleted = self.conn.execute(
+                "DELETE FROM stock_holdings "
+                "WHERE id=? AND account_key=? AND ticker=?",
+                (
+                    prepared.legacy_holding_id,
+                    prepared.account_id,
+                    prepared.symbol,
+                ),
+            ).rowcount
+            if deleted != 1:
+                raise RuntimeError("pending entry holding changed before compensation")
+            PositionStore(self.conn).fail_entry(
+                market="KR",
+                legacy_holding_id=prepared.legacy_holding_id,
+                account_id=prepared.account_id,
+                symbol=prepared.symbol,
+                intent_id=prepared.intent.id,
+            )
+            self.conn.commit()
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
 
     async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
         """Preserve the public bool contract while exposing an internal typed result."""
@@ -2351,6 +2692,123 @@ class StockTrackingAgent:
                             _cd_block = _enforce
 
                     if analysis_result.get("decision") == "Enter" and not _cd_block and not _regime_floor_block:
+                        if self._position_pending_kr_enabled():
+                            prepared = None
+                            try:
+                                prepared = self._prepare_pending_kr_entry(
+                                    ticker=ticker,
+                                    company_name=company_name,
+                                    current_price=current_price,
+                                    scenario=scenario,
+                                    rank_change_msg=rank_change_msg,
+                                    source_decision_id=source_decision_id,
+                                )
+                                trade_result = await self._execute_pending_kr_entry(
+                                    prepared, current_price=current_price
+                                )
+                                intent_status = str(
+                                    trade_result.get("intent_status", "UNKNOWN")
+                                ).upper()
+                                if intent_status != "SUBMITTED":
+                                    if intent_status == "FAILED":
+                                        self._fail_pending_kr_entry(prepared)
+                                    logger.critical(
+                                        "[POSITION-PENDING][KR] entry unresolved "
+                                        "account=%s symbol=%s intent=%s status=%s "
+                                        "action=manual_review",
+                                        label,
+                                        ticker,
+                                        prepared.intent.id,
+                                        intent_status,
+                                    )
+                                    state["should_save_watchlist"] = True
+                                    state["skip_reason"] = (
+                                        state["skip_reason"] or "Purchase failed"
+                                    )
+                                    continue
+                                self._complete_pending_kr_entry(prepared)
+                            except Exception as error:
+                                logger.critical(
+                                    "[POSITION-PENDING][KR] entry unresolved "
+                                    "account=%s symbol=%s intent=%s status=%s "
+                                    "action=manual_review error=%s",
+                                    label,
+                                    ticker,
+                                    prepared.intent.id if prepared else "unreserved",
+                                    "UNKNOWN" if prepared else "PREPARE_FAILED",
+                                    type(error).__name__,
+                                )
+                                state["should_save_watchlist"] = True
+                                state["skip_reason"] = (
+                                    state["skip_reason"] or "Purchase failed"
+                                )
+                                continue
+
+                            if trade_result["success"]:
+                                logger.info(
+                                    "Actual purchase successful: "
+                                    f"{trade_result['message']}"
+                                )
+                            else:
+                                logger.error(
+                                    f"Actual purchase failed: {trade_result['message']}"
+                                )
+
+                            if trade_result.get("partial_success"):
+                                successful = trade_result.get(
+                                    "successful_accounts", []
+                                )
+                                failed = trade_result.get("failed_accounts", [])
+                                logger.warning(
+                                    f"{ticker} partial success: {len(successful)}/"
+                                    f"{len(successful) + len(failed)} accounts"
+                                )
+
+                            if ticker not in signaled_tickers:
+                                try:
+                                    from messaging.redis_signal_publisher import publish_buy_signal
+
+                                    await publish_buy_signal(
+                                        ticker=ticker,
+                                        company_name=company_name,
+                                        price=current_price,
+                                        scenario=scenario,
+                                        source="AI Analysis",
+                                        trade_result=trade_result,
+                                    )
+                                except Exception as signal_err:
+                                    logger.warning(
+                                        "Buy signal publish failed (non-critical): "
+                                        f"{signal_err}"
+                                    )
+
+                                try:
+                                    from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
+
+                                    await gcp_publish_buy_signal(
+                                        ticker=ticker,
+                                        company_name=company_name,
+                                        price=current_price,
+                                        scenario=scenario,
+                                        source="AI Analysis",
+                                        trade_result=trade_result,
+                                    )
+                                except Exception as signal_err:
+                                    logger.warning(
+                                        "GCP buy signal publish failed (non-critical): "
+                                        f"{signal_err}"
+                                    )
+
+                                signaled_tickers.add(ticker)
+
+                            buy_count += 1
+                            state["traded"] = True
+                            logger.info(
+                                f"Purchase complete: {company_name}({ticker}) @ "
+                                f"{current_price:,.0f} KRW"
+                            )
+                            continue
+
                         buy_result = await self._buy_stock_with_position(
                             ticker,
                             company_name,
