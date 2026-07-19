@@ -344,7 +344,7 @@ class StockTrackingAgent:
         try:
             self.conn.commit()
             linked = bounded_link_write_fail_open(
-                self.cursor,
+                self.db_path,
                 logger=logger,
                 market="KR",
                 legacy_holding_id=legacy_holding_id,
@@ -382,7 +382,7 @@ class StockTrackingAgent:
         try:
             self.conn.commit()
             linked = bounded_link_write_fail_open(
-                self.cursor,
+                self.db_path,
                 logger=logger,
                 market="KR",
                 legacy_holding_id=legacy_holding_id,

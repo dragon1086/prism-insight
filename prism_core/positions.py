@@ -13,6 +13,7 @@ import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -362,13 +363,31 @@ class PositionStore:
             raise ValueError("intent_id is required")
 
         if link_kind == "entry":
-            intent_column = "entry_intent_id"
             expected_side = "BUY"
             required_status = "OPEN"
+            position_query = (
+                "SELECT id, legacy_holding_id, account_id, symbol, status, "
+                "entry_intent_id AS current_intent_id FROM positions "
+                "WHERE market=? AND account_id=?"
+            )
+            update_query = (
+                "UPDATE positions SET entry_intent_id=?, updated_at=? "
+                "WHERE market=? AND account_id=? AND id=? AND status=? "
+                "AND entry_intent_id IS NULL"
+            )
         elif link_kind == "exit":
-            intent_column = "exit_intent_id"
             expected_side = "SELL"
             required_status = "CLOSED"
+            position_query = (
+                "SELECT id, legacy_holding_id, account_id, symbol, status, "
+                "exit_intent_id AS current_intent_id FROM positions "
+                "WHERE market=? AND account_id=?"
+            )
+            update_query = (
+                "UPDATE positions SET exit_intent_id=?, updated_at=? "
+                "WHERE market=? AND account_id=? AND id=? AND status=? "
+                "AND exit_intent_id IS NULL"
+            )
         else:
             raise ValueError(f"unsupported intent link kind: {link_kind}")
 
@@ -421,14 +440,12 @@ class PositionStore:
                 f"{link_kind} intent source_position_id does not match position"
             )
 
-        placeholders = ",".join("?" for _ in expected_sources)
         source_ids = tuple(sorted(expected_sources))
-        positions = self._fetchall(
-            f"SELECT id, legacy_holding_id, account_id, symbol, status, "
-            f"{intent_column} AS current_intent_id FROM positions "
-            f"WHERE market=? AND account_id=? AND id IN ({placeholders})",
-            (market, account_id, *source_ids),
-        )
+        positions = [
+            row
+            for row in self._fetchall(position_query, (market, account_id))
+            if str(row["id"]) in expected_sources
+        ]
         if {str(row["id"]) for row in positions} != expected_sources:
             raise LookupError(f"{link_kind} source positions not found")
         if any(
@@ -471,19 +488,21 @@ class PositionStore:
         unlinked_count = sum(
             row["current_intent_id"] is None for row in positions
         )
-        changed = self._execute(
-            f"UPDATE positions SET {intent_column}=?, updated_at=? "
-            f"WHERE market=? AND account_id=? AND id IN ({placeholders}) "
-            f"AND status=? AND {intent_column} IS NULL",
-            (
-                intent_id,
-                _utc_now(),
-                market,
-                account_id,
-                *source_ids,
-                required_status,
-            ),
-        ).rowcount
+        now = _utc_now()
+        changed = sum(
+            self._execute(
+                update_query,
+                (
+                    intent_id,
+                    now,
+                    market,
+                    account_id,
+                    source_id,
+                    required_status,
+                ),
+            ).rowcount
+            for source_id in source_ids
+        )
         if changed != unlinked_count:
             raise RuntimeError("source positions changed concurrently")
         return True
@@ -891,7 +910,7 @@ def mirror_write_fail_open(
 
 
 def bounded_link_write_fail_open(
-    connection_or_cursor: sqlite3.Connection | sqlite3.Cursor,
+    db_path: str | Path,
     *,
     logger: Any,
     market: str,
@@ -905,22 +924,18 @@ def bounded_link_write_fail_open(
     Validation failures still use the durable mirror-error table. SQLITE_BUSY /
     SQLITE_LOCKED cannot write to that same database, so those failures emit a
     CRITICAL runtime log and are detected later by the intent-link comparator.
-    The caller must enter with no unrelated pending writes; an outermost savepoint
-    release may commit this isolated linkage, while the caller retains connection
-    lifecycle and any final no-op commit/rollback handling.
+    A dedicated short-lived connection isolates the 50ms busy timeout from the
+    agent's long-lived legacy connection. The outermost savepoint release commits
+    this linkage/audit transaction before the connection is closed.
     """
 
-    connection = (
-        connection_or_cursor
-        if isinstance(connection_or_cursor, sqlite3.Connection)
-        else connection_or_cursor.connection
+    connection = sqlite3.connect(
+        str(db_path), timeout=_POSITION_LINK_BUSY_TIMEOUT_MS / 1000
     )
-    previous_timeout = int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
-    connection.execute(f"PRAGMA busy_timeout={_POSITION_LINK_BUSY_TIMEOUT_MS}")
     try:
         try:
             return mirror_write_fail_open(
-                connection_or_cursor,
+                connection,
                 logger=logger,
                 market=market,
                 legacy_holding_id=legacy_holding_id,
@@ -942,4 +957,4 @@ def bounded_link_write_fail_open(
             )
             return False
     finally:
-        connection.execute(f"PRAGMA busy_timeout={previous_timeout}")
+        connection.close()

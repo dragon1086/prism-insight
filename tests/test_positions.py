@@ -592,11 +592,9 @@ def test_bounded_link_lock_wait_is_short_and_comparator_detects_missing_link(
     blocker.execute("BEGIN")
     blocker.execute("SELECT * FROM positions").fetchall()
     logger = MagicMock()
-    original_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
-
     started = time.monotonic()
     linked = bounded_link_write_fail_open(
-        conn,
+        db_path,
         logger=logger,
         market="KR",
         legacy_holding_id=1,
@@ -613,7 +611,6 @@ def test_bounded_link_lock_wait_is_short_and_comparator_detects_missing_link(
 
     assert linked is False
     assert elapsed < 1.0
-    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == original_timeout
     assert logger.critical.call_count >= 1
     assert conn.execute(
         "SELECT COUNT(*) FROM position_mirror_errors"
@@ -634,8 +631,10 @@ def test_bounded_link_lock_wait_is_short_and_comparator_detects_missing_link(
     ]
 
 
-def test_bounded_link_recognizes_python310_lock_error_without_error_code() -> None:
-    conn = sqlite3.connect(":memory:")
+def test_bounded_link_recognizes_python310_lock_error_without_error_code(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "legacy-lock.sqlite"
     logger = MagicMock()
 
     def raise_legacy_lock_error(_store) -> None:
@@ -644,7 +643,7 @@ def test_bounded_link_recognizes_python310_lock_error_without_error_code() -> No
         raise error
 
     assert bounded_link_write_fail_open(
-        conn,
+        db_path,
         logger=logger,
         market="KR",
         legacy_holding_id=1,
