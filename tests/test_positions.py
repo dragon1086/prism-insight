@@ -322,7 +322,6 @@ def test_entry_attempt_guard_blocks_unresolved_same_account_symbol(status) -> No
 @pytest.mark.parametrize(
     ("status", "existing_account", "existing_symbol"),
     (
-        ("OPEN", "acct", "005930"),
         ("CLOSED", "acct", "005930"),
         ("PENDING_ENTRY", "other-acct", "005930"),
         ("PENDING_ENTRY", "acct", "000660"),
@@ -348,6 +347,71 @@ def test_entry_attempt_guard_allows_resolved_or_different_identity(
     assert store.assert_entry_attempt_allowed(
         market="KR", account_id="acct", symbol="005930"
     )
+
+    conn.rollback()
+
+
+def test_entry_attempt_guard_blocks_open_unless_add_count_matches() -> None:
+    conn = sqlite3.connect(":memory:")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.open_legacy_position(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        account_name="primary",
+        symbol="005930",
+    )
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+
+    with pytest.raises(InvalidPositionTransition, match="existing OPEN"):
+        store.assert_entry_attempt_allowed(
+            market="KR", account_id="acct", symbol="005930"
+        )
+
+    assert store.assert_entry_attempt_allowed(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        allow_existing_open=True,
+        expected_open_count=1,
+    )
+    with pytest.raises(InvalidPositionTransition, match="changed OPEN.*expected 0"):
+        store.assert_entry_attempt_allowed(
+            market="KR",
+            account_id="acct",
+            symbol="005930",
+            allow_existing_open=True,
+            expected_open_count=0,
+        )
+
+    conn.rollback()
+
+
+def test_entry_attempt_guard_never_allows_unresolved_add() -> None:
+    conn = sqlite3.connect(":memory:")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.open_legacy_position(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        account_name="primary",
+        symbol="005930",
+    )
+    conn.execute("UPDATE positions SET status='PENDING_ENTRY'")
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+
+    with pytest.raises(InvalidPositionTransition, match="PENDING_ENTRY"):
+        store.assert_entry_attempt_allowed(
+            market="KR",
+            account_id="acct",
+            symbol="005930",
+            allow_existing_open=True,
+            expected_open_count=0,
+        )
 
     conn.rollback()
 

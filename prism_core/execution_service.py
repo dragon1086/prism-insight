@@ -229,14 +229,22 @@ class ExecutionService:
         try:
             result = await method(*args, **kwargs)
         except asyncio.CancelledError as exc:
-            await asyncio.to_thread(
-                self._intent_store.record_result,
-                intent,
-                status="UNKNOWN",
-                accepted=False,
-                response=None,
-                error=exc,
-            )
+            try:
+                await asyncio.to_thread(
+                    self._intent_store.record_result,
+                    intent,
+                    status="UNKNOWN",
+                    accepted=False,
+                    response=None,
+                    error=exc,
+                )
+            except Exception as persistence_error:
+                logger.critical(
+                    "[ORDER_INTENT] cancellation UNKNOWN persistence failed "
+                    "id=%s error=%s",
+                    intent.id,
+                    type(persistence_error).__name__,
+                )
             logger.error(
                 "[ORDER_INTENT] UNKNOWN id=%s market=%s side=%s symbol=%s error=%s",
                 intent.id, intent.market, intent.side, intent.symbol,
