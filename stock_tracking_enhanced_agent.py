@@ -635,6 +635,131 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                 # Process buy if entry decision
                 if decision == "Enter" and buy_score >= min_score and sector_diverse and not _cd_block:
+                    if self._position_pending_kr_enabled():
+                        prepared = None
+                        active_account = getattr(self, "active_account", None)
+                        account_label = (
+                            self._safe_account_log_label(active_account)
+                            if active_account
+                            else "unavailable"
+                        )
+                        try:
+                            if scenario.get("target_price", 0) <= 0:
+                                scenario["target_price"] = (
+                                    await self._dynamic_target_price(
+                                        ticker, current_price
+                                    )
+                                )
+                            if scenario.get("stop_loss", 0) <= 0:
+                                scenario["stop_loss"] = await self._dynamic_stop_loss(
+                                    ticker, current_price
+                                )
+                            prepared = self._prepare_pending_kr_entry(
+                                ticker=ticker,
+                                company_name=company_name,
+                                current_price=current_price,
+                                scenario=scenario,
+                                rank_change_msg=rank_change_msg,
+                                source_decision_id=(
+                                    f"report:{os.path.basename(pdf_report_path)}"
+                                ),
+                                source="kr_enhanced_batch",
+                                is_add=bool(is_add),
+                                expected_open_count=(
+                                    analysis_result.get("existing_row_count")
+                                    if is_add
+                                    else None
+                                ),
+                            )
+                            trade_result = await self._execute_pending_kr_entry(
+                                prepared, current_price=current_price
+                            )
+                            intent_status = str(
+                                trade_result.get("intent_status", "UNKNOWN")
+                            ).upper()
+                            if intent_status != "SUBMITTED":
+                                if intent_status == "FAILED":
+                                    self._fail_pending_kr_entry(prepared)
+                                logger.critical(
+                                    "[POSITION-PENDING][KR] enhanced entry unresolved "
+                                    "account=%s symbol=%s intent=%s status=%s "
+                                    "action=manual_review",
+                                    account_label,
+                                    ticker,
+                                    prepared.intent.id,
+                                    intent_status,
+                                )
+                                continue
+                            self._complete_pending_kr_entry(prepared)
+                        except asyncio.CancelledError:
+                            logger.critical(
+                                "[POSITION-PENDING][KR] enhanced entry cancelled "
+                                "account=%s symbol=%s intent=%s status=UNKNOWN "
+                                "action=manual_review",
+                                account_label,
+                                ticker,
+                                prepared.intent.id if prepared else "unreserved",
+                            )
+                            raise
+                        except Exception as error:
+                            logger.critical(
+                                "[POSITION-PENDING][KR] enhanced entry unresolved "
+                                "account=%s symbol=%s intent=%s status=%s "
+                                "action=manual_review error=%s",
+                                account_label,
+                                ticker,
+                                prepared.intent.id if prepared else "unreserved",
+                                "UNKNOWN" if prepared else "PREPARE_FAILED",
+                                type(error).__name__,
+                            )
+                            continue
+
+                        if trade_result["success"]:
+                            logger.info(
+                                f"Actual purchase successful: {trade_result['message']}"
+                            )
+                        else:
+                            logger.error(
+                                f"Actual purchase failed: {trade_result['message']}"
+                            )
+
+                        try:
+                            from messaging.redis_signal_publisher import publish_buy_signal
+                            await publish_buy_signal(
+                                ticker=ticker,
+                                company_name=company_name,
+                                price=current_price,
+                                scenario=scenario,
+                                source="AI Analysis",
+                                trade_result=trade_result,
+                            )
+                        except Exception as signal_err:
+                            logger.warning(
+                                f"Buy signal publish failed (non-critical): {signal_err}"
+                            )
+
+                        try:
+                            from messaging.gcp_pubsub_signal_publisher import publish_buy_signal as gcp_publish_buy_signal
+                            await gcp_publish_buy_signal(
+                                ticker=ticker,
+                                company_name=company_name,
+                                price=current_price,
+                                scenario=scenario,
+                                source="AI Analysis",
+                                trade_result=trade_result,
+                            )
+                        except Exception as signal_err:
+                            logger.warning(
+                                f"GCP buy signal publish failed (non-critical): {signal_err}"
+                            )
+
+                        buy_count += 1
+                        logger.info(
+                            f"Purchase complete: {company_name}({ticker}) @ "
+                            f"{current_price:,.0f} KRW"
+                        )
+                        continue
+
                     # Process buy (is_add => pyramiding additional independent row, #288)
                     buy_result = await self._buy_stock_with_position(
                         ticker,

@@ -259,6 +259,57 @@ class PositionStore:
         ).rowcount
         return changed == 1
 
+    def assert_entry_attempt_allowed(
+        self,
+        *,
+        market: str,
+        account_id: Any,
+        symbol: Any,
+        allow_existing_open: bool = False,
+        expected_open_count: int | None = None,
+    ) -> bool:
+        """Reject duplicate or stale entry attempts for the same identity."""
+
+        self._require_active_transaction()
+        market = _market(str(market).strip())
+        account_id = str(account_id or "").strip()
+        symbol = str(symbol or "").strip().upper()
+        if not account_id or not symbol:
+            raise ValueError("account_id and symbol are required")
+        row = self._execute(
+            "SELECT status FROM positions "
+            "WHERE market=? AND account_id=? AND symbol=? "
+            "AND status IN ('PENDING_ENTRY', 'ENTRY_FAILED', "
+            "'PENDING_EXIT', 'EXIT_UNKNOWN') LIMIT 1",
+            (market, account_id, symbol),
+        ).fetchone()
+        if row is not None:
+            raise InvalidPositionTransition(
+                f"entry attempt blocked by unresolved position status: {row[0]}"
+            )
+        open_count = int(
+            self._execute(
+                "SELECT COUNT(*) FROM positions "
+                "WHERE market=? AND account_id=? AND symbol=? AND status='OPEN'",
+                (market, account_id, symbol),
+            ).fetchone()[0]
+        )
+        if not allow_existing_open and open_count:
+            raise InvalidPositionTransition(
+                "entry attempt blocked by existing OPEN position"
+            )
+        if allow_existing_open:
+            if not isinstance(expected_open_count, int) or expected_open_count < 0:
+                raise ValueError(
+                    "expected_open_count is required for an additional entry"
+                )
+            if open_count != expected_open_count:
+                raise InvalidPositionTransition(
+                    "entry attempt blocked by changed OPEN position count: "
+                    f"expected {expected_open_count}, found {open_count}"
+                )
+        return True
+
     @staticmethod
     def _source_position_ids(value: Any) -> tuple[str, ...]:
         if value is None:

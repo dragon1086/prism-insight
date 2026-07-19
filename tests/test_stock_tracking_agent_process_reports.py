@@ -6,6 +6,7 @@ import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -417,6 +418,79 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     assert len(redis_calls) == 1
     assert len(gcp_calls) == 1
     assert "partial success" in caplog.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_kr_pending_gate_false_preserves_legacy_message_broker_publish_order(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "false")
+    agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent.db_path = str(tmp_path / "legacy-order.sqlite")
+    agent.account_configs = [
+        {"name": "kr-primary", "account_key": "vps:kr-primary:01"},
+    ]
+    agent.active_account = None
+    agent.max_slots = 10
+    agent.message_queue = []
+    agent._msg_types = []
+    events = []
+
+    async def fake_core(_report_path):
+        return {
+            "success": True,
+            "ticker": "005930",
+            "company_name": "Samsung Electronics",
+            "current_price": 70000,
+            "scenario": {"buy_score": 8, "min_score": 7, "sector": "Technology"},
+            "decision": "Enter",
+            "sector": "Technology",
+            "rank_change_msg": "Up",
+            "rank_change_percentage": 12.0,
+        }
+
+    async def fake_buy_stock(*_args, **_kwargs):
+        events.append("legacy")
+        agent.message_queue.append("legacy buy message")
+        agent._msg_types.append("analysis")
+        events.append("message")
+        return LegacyPositionWriteResult(True, 1)
+
+    class OrderedTradingContext(_FakeAsyncTradingContext):
+        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None):
+            events.append("broker")
+            return await super().async_buy_stock(
+                stock_code, limit_price=limit_price, buy_amount=buy_amount
+            )
+
+    class OrderedCalls(list):
+        def __init__(self, event):
+            super().__init__()
+            self.event = event
+
+        def append(self, value):
+            events.append(self.event)
+            super().append(value)
+
+    agent._analyze_report_core = fake_core
+    agent.update_holdings = AsyncMock(return_value=[])
+    agent._is_ticker_in_holdings = AsyncMock(return_value=False)
+    agent._get_current_slots_count = AsyncMock(return_value=0)
+    agent._check_sector_diversity = AsyncMock(return_value=True)
+    agent._buy_stock_with_position = fake_buy_stock
+    agent._link_position_entry_intent = MagicMock(return_value=True)
+    monkeypatch.setattr(domestic_trading, "AsyncTradingContext", OrderedTradingContext)
+    redis_calls = OrderedCalls("redis")
+    gcp_calls = OrderedCalls("gcp")
+    _install_signal_modules(monkeypatch, redis_calls, gcp_calls)
+
+    result = await StockTrackingAgent.process_reports(agent, ["report-a.pdf"])
+
+    assert result == (1, 0)
+    assert events == ["legacy", "message", "broker", "redis", "gcp"]
+    assert len(agent.message_queue) == 1
+    assert len(redis_calls) == 1
+    assert len(gcp_calls) == 1
 
 
 @pytest.mark.asyncio
