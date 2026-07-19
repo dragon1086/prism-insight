@@ -75,10 +75,22 @@ class ExecutionService:
         account_name: str | None = None,
         *,
         db_path: str | Path | None = None,
+        intent_store: IntentStore | None = None,
     ) -> "ExecutionService":
         from trading.domestic_stock_trading import AsyncTradingContext
 
-        store = IntentStore(db_path) if db_path is not None else None
+        if db_path is not None and intent_store is not None:
+            requested_path = Path(db_path).expanduser().resolve()
+            store_path = Path(intent_store.db_path).expanduser().resolve()
+            if requested_path != store_path:
+                raise ValueError(
+                    "db_path must target the originating IntentStore database"
+                )
+        store = (
+            intent_store
+            if intent_store is not None
+            else IntentStore(db_path) if db_path is not None else None
+        )
         return cls(
             AsyncTradingContext(account_name=account_name),
             intent_store=store,

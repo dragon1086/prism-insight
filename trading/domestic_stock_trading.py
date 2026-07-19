@@ -1597,6 +1597,12 @@ class DomesticStockTrading:
                 'profit_rate': return rate (%)
             }, ...]
         """
+        _, portfolio = self._get_portfolio_checked()
+        return portfolio
+
+    def _get_portfolio_checked(self) -> tuple[bool, List[Dict[str, Any]]]:
+        """Return whether the KIS balance response was authoritative and its rows."""
+
         api_url = "/uapi/domestic-stock/v1/trading/inquire-balance"
 
         # Set TR ID (real/demo distinction)
@@ -1626,12 +1632,20 @@ class DomesticStockTrading:
                 current_portfolio = []
                 output1 = res.getBody().output1  # Holdings list
                 output2 = res.getBody().output2[0]  # Account summary
+                authoritative = isinstance(output1, list)
 
                 # Handle case when output1 is not a list
                 if not isinstance(output1, list):
                     output1 = [output1] if output1 else []
 
                 for item in output1:
+                    if not (
+                        isinstance(item, dict)
+                        and isinstance(item.get("pdno"), str)
+                        and item["pdno"].strip()
+                        and "hldg_qty" in item
+                    ):
+                        authoritative = False
                     # Only add stocks with quantity > 0
                     quantity = int(item.get('hldg_qty', 0))
                     if quantity > 0:
@@ -1654,15 +1668,44 @@ class DomesticStockTrading:
                     logger.info(f"Account total evaluation: {total_eval:,.0f} KRW, total profit/loss: {total_profit:+,.0f} KRW")
 
                 logger.info(f"Portfolio: {len(current_portfolio)} holdings")
-                return current_portfolio
+                try:
+                    tr_cont = (
+                        str(getattr(res.getHeader(), "tr_cont", ""))
+                        .strip()
+                        .upper()
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not validate balance pagination: {e}")
+                    authoritative = False
+                else:
+                    if tr_cont in {"M", "F"}:
+                        logger.warning(
+                            "Balance inquiry has additional pages; "
+                            "checked holding lookup will remain UNKNOWN"
+                        )
+                        authoritative = False
+                return authoritative, current_portfolio
 
             else:
                 logger.error(f"Balance inquiry failed: {res.getErrorCode()} - {res.getErrorMessage()}")
-                return []
+                return False, []
 
         except Exception as e:
             logger.error(f"Error during balance inquiry: {str(e)}")
-            return []
+            return False, []
+
+    def get_holding_quantity_checked(
+        self, stock_code: str
+    ) -> tuple[str, int | None]:
+        """Distinguish an authoritative flat holding from a balance-query failure."""
+
+        authoritative, portfolio = self._get_portfolio_checked()
+        if not authoritative:
+            return "UNKNOWN", None
+        for stock in portfolio:
+            if stock.get("stock_code") == stock_code:
+                return "HELD", int(stock["quantity"])
+        return "FLAT", 0
 
     def get_account_summary(self) -> None | dict[Any, Any] | dict[str, float]:
         """
@@ -2047,6 +2090,11 @@ class MultiAccountDomesticStockTrading:
 
     def get_holding_quantity(self, stock_code: str) -> int:
         return self._get_primary_trader().get_holding_quantity(stock_code)
+
+    def get_holding_quantity_checked(
+        self, stock_code: str
+    ) -> tuple[str, int | None]:
+        return self._get_primary_trader().get_holding_quantity_checked(stock_code)
 
     def _aggregate_results(self, stock_code: str, results: List[Dict[str, Any]], action: str) -> Dict[str, Any]:
         success_count = sum(1 for result in results if result.get("success"))
