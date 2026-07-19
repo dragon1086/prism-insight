@@ -144,6 +144,44 @@ def test_direct_order_methods_cannot_bypass_service_boundary():
             getattr(execution, method_name)
 
 
+def test_cancellation_propagates_when_unknown_result_persistence_fails(
+    monkeypatch, tmp_path, caplog
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    class CancellingTrader(FakeTrader):
+        async def async_buy_stock(self, *args, **kwargs):
+            self.calls.append(("buy", args, kwargs))
+            raise asyncio.CancelledError()
+
+    intent_store = IntentStore(tmp_path / "cancel-persistence.sqlite")
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="BUY",
+        order_style="smart",
+        source="test",
+        source_decision_id="cancel-persistence-failure",
+    )
+
+    def fail_record_result(*_args, **_kwargs):
+        raise sqlite3.OperationalError("injected UNKNOWN persistence failure")
+
+    monkeypatch.setattr(intent_store, "record_result", fail_record_result)
+    caplog.set_level("CRITICAL")
+    execution = ExecutionService(CancellingTrader(), intent_store=intent_store)
+
+    async def exercise():
+        with pytest.raises(asyncio.CancelledError):
+            await execution.execute_buy("005930", intent=intent)
+
+    asyncio.run(exercise())
+
+    assert "cancellation UNKNOWN persistence failed" in caplog.text
+
+
 def test_us_factory_recovers_when_root_trading_package_is_cached(monkeypatch):
     import trading  # noqa: F401 - cache the root package intentionally
     from prism_core.execution_service import ExecutionService

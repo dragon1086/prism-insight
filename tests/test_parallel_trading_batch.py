@@ -24,6 +24,7 @@ import sys
 import time
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -52,6 +53,8 @@ def _make_agent() -> EnhancedStockTrackingAgent:
     agent.trigger_info_map = {}
     agent._get_trigger_win_rate = MagicMock(return_value="")
     agent._save_watchlist_item = AsyncMock(return_value=True)
+    agent._dynamic_target_price = AsyncMock(return_value=81000)
+    agent._dynamic_stop_loss = AsyncMock(return_value=65000)
     return agent
 
 
@@ -322,6 +325,241 @@ async def test_enhanced_pending_gate_false_preserves_legacy_message_broker_publi
     assert (buy_count, sell_count) == (1, 0)
     assert events == ["legacy", "message", "broker", "redis", "gcp"]
     assert len(agent.message_queue) == 1
+
+
+@pytest.mark.asyncio
+async def test_enhanced_pending_gate_true_uses_shared_entry_lifecycle_before_publish(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
+    agent = _make_agent()
+    agent.db_path = str(tmp_path / "enhanced-pending-entry.sqlite")
+    events: list[str] = []
+    prepare_calls: list[dict] = []
+    broker_states: list[tuple[int, str, str, int]] = []
+    publish_states: list[tuple[str, str, int]] = []
+    state = {"holding_count": 0, "intent": "NONE", "position": "NONE"}
+
+    async def core_stub(_path):
+        result = _core_ok("005930", "Samsung", decision="Enter")
+        result.update(is_add=True, existing_row_count=2)
+        return result
+
+    async def fake_extract_ticker_info(_path):
+        return "005930", "Samsung"
+
+    def prepare_pending_entry(**kwargs):
+        events.append("prepare")
+        prepare_calls.append(kwargs)
+        state.update(
+            holding_count=1,
+            intent="CREATED",
+            position="PENDING_ENTRY",
+        )
+        return SimpleNamespace(intent=SimpleNamespace(id="intent-enhanced-1"))
+
+    async def execute_pending_entry(_prepared, *, current_price):
+        events.append("execute")
+        state["intent"] = "SUBMITTING"
+        broker_states.append(
+            (
+                state["holding_count"],
+                state["intent"],
+                state["position"],
+                len(agent.message_queue),
+            )
+        )
+        state["intent"] = "SUBMITTED"
+        return {
+            "success": True,
+            "message": "submitted",
+            "intent_id": "intent-enhanced-1",
+            "intent_status": "SUBMITTED",
+        }
+
+    def complete_pending_entry(_prepared):
+        events.append("complete")
+        state["position"] = "OPEN"
+        agent._msg_types.append("analysis")
+        agent.message_queue.append("enhanced pending buy message")
+
+    async def record_publish(**_kwargs):
+        events.append("publish")
+        publish_states.append(
+            (state["intent"], state["position"], len(agent.message_queue))
+        )
+
+    redis_mod = types.ModuleType("messaging.redis_signal_publisher")
+    redis_mod.publish_buy_signal = record_publish
+    gcp_mod = types.ModuleType("messaging.gcp_pubsub_signal_publisher")
+    gcp_mod.publish_buy_signal = record_publish
+    monkeypatch.setitem(sys.modules, "messaging.redis_signal_publisher", redis_mod)
+    monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_mod)
+
+    agent._analyze_report_core = core_stub
+    agent._extract_ticker_info = fake_extract_ticker_info
+    agent._is_ticker_in_holdings = AsyncMock(return_value=False)
+    agent._check_sector_diversity = AsyncMock(return_value=True)
+    agent._prepare_pending_kr_entry = prepare_pending_entry
+    agent._execute_pending_kr_entry = execute_pending_entry
+    agent._complete_pending_kr_entry = complete_pending_entry
+    agent._buy_stock_with_position = AsyncMock(
+        side_effect=AssertionError("pending enhanced BUY used the legacy write path")
+    )
+
+    buy_count, sell_count = await agent.process_reports(
+        ["reports/005930_Samsung_20260101_morning.pdf"]
+    )
+
+    assert (buy_count, sell_count) == (1, 0)
+    assert [event for event in events if event != "publish"] == [
+        "prepare",
+        "execute",
+        "complete",
+    ]
+    assert len(prepare_calls) == 1
+    assert prepare_calls[0]["source"] == "kr_enhanced_batch"
+    assert prepare_calls[0]["is_add"] is True
+    assert prepare_calls[0]["expected_open_count"] == 2
+    assert prepare_calls[0]["scenario"]["target_price"] == 81000
+    assert prepare_calls[0]["scenario"]["stop_loss"] == 65000
+    agent._dynamic_target_price.assert_awaited_once_with("005930", 70000)
+    agent._dynamic_stop_loss.assert_awaited_once_with("005930", 70000)
+    assert broker_states == [(1, "SUBMITTING", "PENDING_ENTRY", 0)]
+    assert publish_states == [
+        ("SUBMITTED", "OPEN", 1),
+        ("SUBMITTED", "OPEN", 1),
+    ]
+    assert agent._buy_stock_with_position.await_count == 0
+    assert len(agent.message_queue) == 1
+    assert events.count("execute") == 1
+    assert events.count("publish") == 2
+
+
+@pytest.mark.asyncio
+async def test_enhanced_pending_gate_true_failed_entry_uses_shared_compensation_only(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
+    agent = _make_agent()
+    agent.db_path = str(tmp_path / "enhanced-pending-entry-failed.sqlite")
+    prepared = SimpleNamespace(intent=SimpleNamespace(id="intent-enhanced-failed"))
+    prepare_calls: list[dict] = []
+    execute_calls: list[tuple[object, float]] = []
+
+    async def core_stub(_path):
+        return _core_ok("005930", "Samsung", decision="Enter")
+
+    async def fake_extract_ticker_info(_path):
+        return "005930", "Samsung"
+
+    def prepare_pending_entry(**kwargs):
+        prepare_calls.append(kwargs)
+        return prepared
+
+    async def execute_pending_entry(actual_prepared, *, current_price):
+        execute_calls.append((actual_prepared, current_price))
+        return {
+            "success": False,
+            "message": "broker rejected order",
+            "intent_id": "intent-enhanced-failed",
+            "intent_status": "FAILED",
+        }
+
+    redis_mod = types.ModuleType("messaging.redis_signal_publisher")
+    redis_mod.publish_buy_signal = AsyncMock(return_value=None)
+    gcp_mod = types.ModuleType("messaging.gcp_pubsub_signal_publisher")
+    gcp_mod.publish_buy_signal = AsyncMock(return_value=None)
+    monkeypatch.setitem(sys.modules, "messaging.redis_signal_publisher", redis_mod)
+    monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_mod)
+
+    agent._analyze_report_core = core_stub
+    agent._extract_ticker_info = fake_extract_ticker_info
+    agent._is_ticker_in_holdings = AsyncMock(return_value=False)
+    agent._check_sector_diversity = AsyncMock(return_value=True)
+    agent._prepare_pending_kr_entry = prepare_pending_entry
+    agent._execute_pending_kr_entry = execute_pending_entry
+    agent._fail_pending_kr_entry = MagicMock()
+    agent._complete_pending_kr_entry = MagicMock()
+    agent._buy_stock_with_position = AsyncMock(
+        side_effect=AssertionError("pending enhanced BUY used the legacy write path")
+    )
+
+    buy_count, sell_count = await agent.process_reports(
+        ["reports/005930_Samsung_20260101_morning.pdf"]
+    )
+
+    assert (buy_count, sell_count) == (0, 0)
+    assert len(prepare_calls) == 1
+    assert prepare_calls[0]["source"] == "kr_enhanced_batch"
+    assert execute_calls == [(prepared, 70000)]
+    agent._fail_pending_kr_entry.assert_called_once_with(prepared)
+    agent._complete_pending_kr_entry.assert_not_called()
+    assert agent._buy_stock_with_position.await_count == 0
+    assert agent.message_queue == []
+    assert agent._msg_types == []
+    assert redis_mod.publish_buy_signal.await_count == 0
+    assert gcp_mod.publish_buy_signal.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_enhanced_pending_gate_true_unknown_entry_preserves_pending_without_effects(
+    monkeypatch, tmp_path, caplog
+):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
+    agent = _make_agent()
+    agent.db_path = str(tmp_path / "enhanced-pending-entry-unknown.sqlite")
+    prepared = SimpleNamespace(intent=SimpleNamespace(id="intent-enhanced-unknown"))
+
+    async def core_stub(_path):
+        return _core_ok("005930", "Samsung", decision="Enter")
+
+    async def fake_extract_ticker_info(_path):
+        return "005930", "Samsung"
+
+    async def execute_pending_entry(actual_prepared, *, current_price):
+        assert actual_prepared is prepared
+        assert current_price == 70000
+        return {
+            "success": False,
+            "message": "broker result unavailable",
+            "intent_id": "intent-enhanced-unknown",
+            "intent_status": "UNKNOWN",
+        }
+
+    redis_mod = types.ModuleType("messaging.redis_signal_publisher")
+    redis_mod.publish_buy_signal = AsyncMock(return_value=None)
+    gcp_mod = types.ModuleType("messaging.gcp_pubsub_signal_publisher")
+    gcp_mod.publish_buy_signal = AsyncMock(return_value=None)
+    monkeypatch.setitem(sys.modules, "messaging.redis_signal_publisher", redis_mod)
+    monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_mod)
+
+    agent._analyze_report_core = core_stub
+    agent._extract_ticker_info = fake_extract_ticker_info
+    agent._is_ticker_in_holdings = AsyncMock(return_value=False)
+    agent._check_sector_diversity = AsyncMock(return_value=True)
+    agent._prepare_pending_kr_entry = MagicMock(return_value=prepared)
+    agent._execute_pending_kr_entry = execute_pending_entry
+    agent._fail_pending_kr_entry = MagicMock()
+    agent._complete_pending_kr_entry = MagicMock()
+    agent._buy_stock_with_position = AsyncMock(
+        side_effect=AssertionError("pending enhanced BUY used the legacy write path")
+    )
+
+    with caplog.at_level("CRITICAL"):
+        buy_count, sell_count = await agent.process_reports(
+            ["reports/005930_Samsung_20260101_morning.pdf"]
+        )
+
+    assert (buy_count, sell_count) == (0, 0)
+    agent._fail_pending_kr_entry.assert_not_called()
+    agent._complete_pending_kr_entry.assert_not_called()
+    assert agent._buy_stock_with_position.await_count == 0
+    assert agent.message_queue == []
+    assert agent._msg_types == []
+    assert redis_mod.publish_buy_signal.await_count == 0
+    assert gcp_mod.publish_buy_signal.await_count == 0
+    assert "status=UNKNOWN action=manual_review" in caplog.text
 
 
 # ---------------------------------------------------------------------------

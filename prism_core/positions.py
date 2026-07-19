@@ -265,8 +265,10 @@ class PositionStore:
         market: str,
         account_id: Any,
         symbol: Any,
+        allow_existing_open: bool = False,
+        expected_open_count: int | None = None,
     ) -> bool:
-        """Reject a new entry while the same identity has unresolved state."""
+        """Reject duplicate or stale entry attempts for the same identity."""
 
         self._require_active_transaction()
         market = _market(str(market).strip())
@@ -285,6 +287,27 @@ class PositionStore:
             raise InvalidPositionTransition(
                 f"entry attempt blocked by unresolved position status: {row[0]}"
             )
+        open_count = int(
+            self._execute(
+                "SELECT COUNT(*) FROM positions "
+                "WHERE market=? AND account_id=? AND symbol=? AND status='OPEN'",
+                (market, account_id, symbol),
+            ).fetchone()[0]
+        )
+        if not allow_existing_open and open_count:
+            raise InvalidPositionTransition(
+                "entry attempt blocked by existing OPEN position"
+            )
+        if allow_existing_open:
+            if not isinstance(expected_open_count, int) or expected_open_count < 0:
+                raise ValueError(
+                    "expected_open_count is required for an additional entry"
+                )
+            if open_count != expected_open_count:
+                raise InvalidPositionTransition(
+                    "entry attempt blocked by changed OPEN position count: "
+                    f"expected {expected_open_count}, found {open_count}"
+                )
         return True
 
     @staticmethod

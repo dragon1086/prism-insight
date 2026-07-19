@@ -1355,6 +1355,9 @@ class StockTrackingAgent:
         scenario: Dict[str, Any],
         rank_change_msg: str,
         source_decision_id: str,
+        source: str = "kr_batch",
+        is_add: bool = False,
+        expected_open_count: int | None = None,
     ) -> _PreparedKrEntry:
         """Atomically persist the legacy holding, intent, and PENDING_ENTRY."""
 
@@ -1371,7 +1374,11 @@ class StockTrackingAgent:
         try:
             position_store = PositionStore(self.conn)
             position_store.assert_entry_attempt_allowed(
-                market="KR", account_id=account_id, symbol=ticker
+                market="KR",
+                account_id=account_id,
+                symbol=ticker,
+                allow_existing_open=is_add,
+                expected_open_count=expected_open_count,
             )
             cursor = self.conn.execute(
                 """
@@ -1405,7 +1412,7 @@ class StockTrackingAgent:
                 symbol=ticker,
                 side="buy",
                 order_style="smart",
-                source="kr_batch",
+                source=source,
                 source_decision_id=source_decision_id,
                 source_position_id=legacy_position_id("KR", legacy_holding_id),
                 limit_price=current_price,
@@ -2702,6 +2709,7 @@ class StockTrackingAgent:
                                     scenario=scenario,
                                     rank_change_msg=rank_change_msg,
                                     source_decision_id=source_decision_id,
+                                    source="kr_batch",
                                 )
                                 trade_result = await self._execute_pending_kr_entry(
                                     prepared, current_price=current_price
@@ -2727,6 +2735,16 @@ class StockTrackingAgent:
                                     )
                                     continue
                                 self._complete_pending_kr_entry(prepared)
+                            except asyncio.CancelledError:
+                                logger.critical(
+                                    "[POSITION-PENDING][KR] entry cancelled "
+                                    "account=%s symbol=%s intent=%s "
+                                    "status=UNKNOWN action=manual_review",
+                                    label,
+                                    ticker,
+                                    prepared.intent.id if prepared else "unreserved",
+                                )
+                                raise
                             except Exception as error:
                                 logger.critical(
                                     "[POSITION-PENDING][KR] entry unresolved "
