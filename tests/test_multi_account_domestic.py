@@ -153,12 +153,149 @@ class _BalanceResponse:
         return "balance inquiry failed"
 
 
+class _RevisableOrdersResponse:
+    def __init__(self, *, ok=True, output=_UNSET, tr_cont=""):
+        self._ok = ok
+        self._body = SimpleNamespace(output=[] if output is _UNSET else output)
+        self._header = SimpleNamespace(tr_cont=tr_cont)
+
+    def isOK(self):
+        return self._ok
+
+    def getBody(self):
+        return self._body
+
+    def getHeader(self):
+        return self._header
+
+    def getErrorCode(self):
+        return "E-OPEN-ORDERS"
+
+    def getErrorMessage(self):
+        return "revisable-order inquiry failed"
+
+
 def _trader_with_balance_response(response):
     trader = dst.DomesticStockTrading.__new__(dst.DomesticStockTrading)
     trader.mode = "demo"
     trader.trenv = SimpleNamespace(my_acct="12345678", my_prod="01")
     trader._request_with_retry = lambda *_args, **_kwargs: response
     return trader
+
+
+def _trader_with_revisable_orders_response(response):
+    trader = dst.DomesticStockTrading.__new__(dst.DomesticStockTrading)
+    trader.mode = "demo"
+    trader.trenv = SimpleNamespace(my_acct="12345678", my_prod="01")
+    trader._request = lambda *_args, **_kwargs: response
+    return trader
+
+
+def test_checked_revisable_orders_preserves_authoritative_empty_and_rows():
+    raw = {
+        "odno": "000123",
+        "orgn_odno": "000123",
+        "pdno": "005930",
+        "ord_qty": "7",
+        "ord_unpr": "70000",
+        "tot_ccld_qty": "2",
+        "psbl_qty": "5",
+        "sll_buy_dvsn_cd": "01",
+        "ord_dvsn_cd": "00",
+        "ord_gno_brno": "GNO1",
+    }
+    trader = _trader_with_revisable_orders_response(
+        _RevisableOrdersResponse(output=[raw])
+    )
+
+    authoritative, rows = trader.get_revisable_orders_checked()
+
+    assert authoritative is True
+    assert rows == [
+        {
+            "order_no": "000123",
+            "orgn_odno": "000123",
+            "stock_code": "005930",
+            "ord_qty": 7,
+            "ord_unpr": 70000,
+            "tot_ccld_qty": 2,
+            "psbl_qty": 5,
+            "sll_buy_dvsn_cd": "01",
+            "ord_dvsn": "00",
+            "krx_fwdg_ord_orgno": "GNO1",
+        }
+    ]
+    assert trader.get_revisable_orders() == rows
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_rows"),
+    [
+        (_RevisableOrdersResponse(ok=False), []),
+        (_RevisableOrdersResponse(output=None), []),
+        (_RevisableOrdersResponse(output={}), []),
+        (_RevisableOrdersResponse(output=[{}]), [
+            {
+                "order_no": "",
+                "orgn_odno": "",
+                "stock_code": "",
+                "ord_qty": 0,
+                "ord_unpr": 0,
+                "tot_ccld_qty": 0,
+                "psbl_qty": 0,
+                "sll_buy_dvsn_cd": "",
+                "ord_dvsn": "",
+                "krx_fwdg_ord_orgno": "",
+            }
+        ]),
+        (_RevisableOrdersResponse(
+            output=[{
+                "odno": "1",
+                "pdno": "005930",
+                "psbl_qty": "bad",
+                "sll_buy_dvsn_cd": "01",
+            }]
+        ), [
+            {
+                "order_no": "1",
+                "orgn_odno": "",
+                "stock_code": "005930",
+                "ord_qty": 0,
+                "ord_unpr": 0,
+                "tot_ccld_qty": 0,
+                "psbl_qty": 0,
+                "sll_buy_dvsn_cd": "01",
+                "ord_dvsn": "",
+                "krx_fwdg_ord_orgno": "",
+            }
+        ]),
+        (_RevisableOrdersResponse(output=[], tr_cont="M"), []),
+    ],
+)
+def test_checked_revisable_orders_marks_untrusted_response_unknown_but_keeps_legacy_rows(
+    response, expected_rows
+):
+    trader = _trader_with_revisable_orders_response(response)
+
+    authoritative, rows = trader.get_revisable_orders_checked()
+
+    assert authoritative is False
+    assert rows == expected_rows
+    assert trader.get_revisable_orders() == expected_rows
+
+
+def test_checked_revisable_orders_marks_request_exception_unknown():
+    trader = _trader_with_revisable_orders_response(
+        _RevisableOrdersResponse()
+    )
+
+    def fail_request(*_args, **_kwargs):
+        raise RuntimeError("KIS unavailable")
+
+    trader._request = fail_request
+
+    assert trader.get_revisable_orders_checked() == (False, [])
+    assert trader.get_revisable_orders() == []
 
 
 @pytest.mark.parametrize(

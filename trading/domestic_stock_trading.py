@@ -1951,6 +1951,19 @@ class DomesticStockTrading:
                     tot_ccld_qty, psbl_qty, sll_buy_dvsn_cd, ord_dvsn,
                     krx_fwdg_ord_orgno}.
         """
+        _, orders = self.get_revisable_orders_checked(stock_code)
+        return orders
+
+    def get_revisable_orders_checked(
+        self, stock_code: str = None
+    ) -> tuple[bool, List[Dict[str, Any]]]:
+        """Return whether the open-order response is authoritative and its rows.
+
+        The legacy public wrapper intentionally discards the boolean and keeps its
+        historical ``[]``-on-failure contract. Readiness/reconciliation callers
+        must use this checked form so a failed or incomplete inquiry is never
+        mistaken for an authoritative empty open-order list.
+        """
         api_url = "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
 
         # TODO(live-validate): paper tr_id VTTC0084R is UNVERIFIED in the KIS
@@ -1975,16 +1988,30 @@ class DomesticStockTrading:
             if not res.isOK():
                 error_msg = f"{res.getErrorCode()} - {res.getErrorMessage()}"
                 logger.warning(f"Revisable-order inquiry failed: {error_msg}")
-                return out
+                return False, out
 
             output1 = res.getBody().output
-            if not isinstance(output1, list):
+            authoritative = isinstance(output1, list)
+            if not authoritative:
                 output1 = [output1] if output1 else []
 
             for row in output1:
+                if not isinstance(row, dict):
+                    authoritative = False
+                    break
                 code = str(row.get('pdno', '') or '').strip()
                 if stock_code and code != stock_code:
                     continue
+                side = str(row.get('sll_buy_dvsn_cd', '') or '').strip()
+                order_no = str(row.get('odno', '') or '').strip()
+                try:
+                    raw_remaining = row['psbl_qty']
+                    remaining_text = str(raw_remaining).strip()
+                    remaining = int(remaining_text)
+                    if not remaining_text or remaining < 0:
+                        raise ValueError
+                except (KeyError, TypeError, ValueError):
+                    authoritative = False
                 out.append({
                     'order_no': row.get('odno', ''),
                     'orgn_odno': row.get('orgn_odno', ''),
@@ -1997,11 +2024,28 @@ class DomesticStockTrading:
                     'ord_dvsn': row.get('ord_dvsn_cd', ''),
                     'krx_fwdg_ord_orgno': row.get('ord_gno_brno', ''),
                 })
-            return out
+                if not order_no or not code or side not in {'01', '02'}:
+                    authoritative = False
+
+            try:
+                tr_cont = (
+                    str(getattr(res.getHeader(), "tr_cont", "")).strip().upper()
+                )
+            except Exception as e:
+                logger.warning(f"Could not validate open-order pagination: {e}")
+                authoritative = False
+            else:
+                if tr_cont in {"M", "F"}:
+                    logger.warning(
+                        "Revisable-order inquiry has additional pages; "
+                        "checked result will remain non-authoritative"
+                    )
+                    authoritative = False
+            return authoritative, out
 
         except Exception as e:
             logger.warning(f"Error during revisable-order inquiry: {str(e)}")
-            return out
+            return False, out
 
 
 class MultiAccountDomesticStockTrading:
