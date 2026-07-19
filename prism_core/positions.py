@@ -10,7 +10,10 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -72,10 +75,20 @@ CREATE TABLE IF NOT EXISTS position_mirror_errors (
 """
 
 _LEGACY_TABLES = {"KR": "stock_holdings", "US": "us_stock_holdings"}
+_POSITION_LINK_BUSY_TIMEOUT_MS = 50
+_SQLITE_LOCK_PRIMARY_CODES = frozenset({5, 6})  # SQLITE_BUSY, SQLITE_LOCKED
 
 
 class InvalidPositionTransition(ValueError):
     """Raised when a position lifecycle transition is not allowed."""
+
+
+@dataclass(frozen=True)
+class LegacyPositionWriteResult:
+    """Internal result boundary preserving the public simulator bool contract."""
+
+    success: bool
+    legacy_holding_id: int | None
 
 
 def _utc_now() -> str:
@@ -119,6 +132,26 @@ def _redact_error_text(value: str) -> str:
         r"(\s*[:=]\s*)[^\s,;]+",
         r"\1\2[REDACTED]",
         value,
+    )
+
+
+def _is_sqlite_lock_error(error: BaseException) -> bool:
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+    error_code = getattr(error, "sqlite_errorcode", None)
+    if (
+        isinstance(error_code, int)
+        and error_code & 0xFF in _SQLITE_LOCK_PRIMARY_CODES
+    ):
+        return True
+    message = str(error).strip().lower()
+    return any(
+        lock_text in message
+        for lock_text in (
+            "database is locked",
+            "database table is locked",
+            "database schema is locked",
+        )
     )
 
 
@@ -308,6 +341,210 @@ class PositionStore:
             closed_at=closed_at,
         )
 
+    def _link_intent(
+        self,
+        *,
+        market: str,
+        legacy_holding_id: Any,
+        account_id: Any,
+        intent_id: Any,
+        link_kind: str,
+        expected_position_ids: Iterable[str] | None = None,
+    ) -> bool:
+        """Validate and persist one intent link without owning the transaction."""
+
+        market = _market(market)
+        legacy_holding_id = str(legacy_holding_id)
+        account_id = str(account_id or "")
+        if not account_id:
+            raise ValueError("account_id is required")
+        intent_id = str(intent_id or "")
+        if not intent_id:
+            raise ValueError("intent_id is required")
+
+        if link_kind == "entry":
+            expected_side = "BUY"
+            required_status = "OPEN"
+            position_query = (
+                "SELECT id, legacy_holding_id, account_id, symbol, status, "
+                "entry_intent_id AS current_intent_id FROM positions "
+                "WHERE market=? AND account_id=?"
+            )
+            update_query = (
+                "UPDATE positions SET entry_intent_id=?, updated_at=? "
+                "WHERE market=? AND account_id=? AND id=? AND status=? "
+                "AND entry_intent_id IS NULL"
+            )
+        elif link_kind == "exit":
+            expected_side = "SELL"
+            required_status = "CLOSED"
+            position_query = (
+                "SELECT id, legacy_holding_id, account_id, symbol, status, "
+                "exit_intent_id AS current_intent_id FROM positions "
+                "WHERE market=? AND account_id=?"
+            )
+            update_query = (
+                "UPDATE positions SET exit_intent_id=?, updated_at=? "
+                "WHERE market=? AND account_id=? AND id=? AND status=? "
+                "AND exit_intent_id IS NULL"
+            )
+        else:
+            raise ValueError(f"unsupported intent link kind: {link_kind}")
+
+        position_id = legacy_position_id(market, legacy_holding_id)
+        if expected_position_ids is None:
+            expected_sources = {position_id}
+        else:
+            source_items = tuple(str(item) for item in expected_position_ids)
+            expected_sources = set(source_items)
+            if len(expected_sources) != len(source_items):
+                raise ValueError("expected_position_ids must not contain duplicates")
+            if any(
+                not item.startswith(f"legacy:{market}:") for item in expected_sources
+            ):
+                raise ValueError(
+                    "expected_position_ids must contain canonical position ids"
+                )
+            if market != "US" and expected_sources != {position_id}:
+                raise ValueError("multiple source positions are only supported for US")
+        if position_id not in expected_sources:
+            raise ValueError("source_position_id does not include target position")
+
+        intent = self._execute(
+            "SELECT market, account_id, symbol, side, source_position_id "
+            "FROM order_intents WHERE id=?",
+            (intent_id,),
+        ).fetchone()
+        if intent is None:
+            raise LookupError(f"intent not found: {intent_id}")
+
+        intent_identity = (
+            str(intent[0]).upper(),
+            str(intent[1]),
+            str(intent[2]).upper(),
+            str(intent[3]).upper(),
+        )
+        source_position_id = intent[4]
+        source_items = (
+            ()
+            if source_position_id is None
+            else tuple(item.strip() for item in str(source_position_id).split(","))
+        )
+        if (
+            not source_items
+            or any(not item for item in source_items)
+            or len(set(source_items)) != len(source_items)
+            or set(source_items) != expected_sources
+        ):
+            raise ValueError(
+                f"{link_kind} intent source_position_id does not match position"
+            )
+
+        source_ids = tuple(sorted(expected_sources))
+        positions = [
+            row
+            for row in self._fetchall(position_query, (market, account_id))
+            if str(row["id"]) in expected_sources
+        ]
+        if {str(row["id"]) for row in positions} != expected_sources:
+            raise LookupError(f"{link_kind} source positions not found")
+        if any(
+            str(row["id"])
+            != legacy_position_id(market, row["legacy_holding_id"])
+            for row in positions
+        ):
+            raise ValueError(f"{link_kind} source position identity is invalid")
+        if any(
+            intent_identity
+            != (
+                market,
+                str(row["account_id"]),
+                str(row["symbol"]).upper(),
+                expected_side,
+            )
+            for row in positions
+        ):
+            raise ValueError(f"{link_kind} intent does not match position")
+
+        current_intent_ids = {row["current_intent_id"] for row in positions}
+        if current_intent_ids == {intent_id}:
+            return True
+        if any(
+            current_intent_id not in {None, intent_id}
+            for current_intent_id in current_intent_ids
+        ):
+            raise ValueError(f"{link_kind} intent already linked")
+        invalid_statuses = {
+            str(row["status"])
+            for row in positions
+            if str(row["status"]) != required_status
+        }
+        if invalid_statuses:
+            raise InvalidPositionTransition(
+                f"{link_kind} intent linkage requires {required_status} position, "
+                f"found {','.join(sorted(invalid_statuses))}"
+            )
+
+        unlinked_count = sum(
+            row["current_intent_id"] is None for row in positions
+        )
+        now = _utc_now()
+        changed = sum(
+            self._execute(
+                update_query,
+                (
+                    intent_id,
+                    now,
+                    market,
+                    account_id,
+                    source_id,
+                    required_status,
+                ),
+            ).rowcount
+            for source_id in source_ids
+        )
+        if changed != unlinked_count:
+            raise RuntimeError("source positions changed concurrently")
+        return True
+
+    def link_entry_intent(
+        self,
+        *,
+        market: str,
+        legacy_holding_id: Any,
+        account_id: Any,
+        intent_id: Any,
+    ) -> bool:
+        """Link one persisted BUY intent to an OPEN legacy position."""
+
+        return self._link_intent(
+            market=market,
+            legacy_holding_id=legacy_holding_id,
+            account_id=account_id,
+            intent_id=intent_id,
+            link_kind="entry",
+        )
+
+    def link_exit_intent(
+        self,
+        *,
+        market: str,
+        legacy_holding_id: Any,
+        account_id: Any,
+        intent_id: Any,
+        expected_position_ids: Iterable[str] | None = None,
+    ) -> bool:
+        """Link one persisted SELL intent to a CLOSED legacy position."""
+
+        return self._link_intent(
+            market=market,
+            legacy_holding_id=legacy_holding_id,
+            account_id=account_id,
+            intent_id=intent_id,
+            link_kind="exit",
+            expected_position_ids=expected_position_ids,
+        )
+
     def _legacy_rows(self, market: str) -> list[dict[str, Any]]:
         if market == "KR":
             table = "stock_holdings"
@@ -464,11 +701,12 @@ class PositionStore:
             )
 
         position_rows = self._fetchall(
-            "SELECT legacy_holding_id, account_id, symbol, status, "
-            "entry_price, opened_at "
+            "SELECT id, legacy_holding_id, account_id, symbol, status, "
+            "entry_intent_id, exit_intent_id, entry_price, opened_at "
             "FROM positions WHERE market=? AND execution_mode='legacy'",
             (market,),
         )
+        positions_by_id = {str(row["id"]): row for row in position_rows}
         positions: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         position_entry_fingerprints: dict[tuple[str, str, str], list[str]] = {}
         for row in position_rows:
@@ -524,6 +762,62 @@ class PositionStore:
             "WHERE market=? AND resolved=0 ORDER BY id",
             (market,),
         )
+        intent_link_mismatches: list[dict[str, Any]] = []
+        has_intent_table = self._execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='order_intents'"
+        ).fetchone()
+        if has_intent_table:
+            intent_rows = self._fetchall(
+                "SELECT id, account_id, symbol, side, source_position_id "
+                "FROM order_intents WHERE market=? AND source_position_id IS NOT NULL",
+                (market,),
+            )
+            canonical_prefix = f"legacy:{market}:"
+            for intent in intent_rows:
+                source_ids = tuple(
+                    item.strip()
+                    for item in str(intent["source_position_id"]).split(",")
+                )
+                if (
+                    not source_ids
+                    or any(not item.startswith(canonical_prefix) for item in source_ids)
+                    or len(set(source_ids)) != len(source_ids)
+                ):
+                    continue
+                side = str(intent["side"]).upper()
+                if side not in {"BUY", "SELL"}:
+                    continue
+                intent_column = (
+                    "entry_intent_id" if side == "BUY" else "exit_intent_id"
+                )
+                for source_id in source_ids:
+                    position = positions_by_id.get(source_id)
+                    reasons = []
+                    if position is None:
+                        reasons.append("missing_position")
+                    else:
+                        if str(position["account_id"]) != str(intent["account_id"]):
+                            reasons.append("account_mismatch")
+                        if str(position["symbol"]).upper() != str(
+                            intent["symbol"]
+                        ).upper():
+                            reasons.append("symbol_mismatch")
+                        if position[intent_column] != intent["id"]:
+                            reasons.append("missing_or_wrong_link")
+                    if reasons:
+                        intent_link_mismatches.append(
+                            {
+                                "intent_id": str(intent["id"]),
+                                "position_id": source_id,
+                                "account_ref": account_fingerprint(
+                                    intent["account_id"]
+                                ),
+                                "symbol": str(intent["symbol"]).upper(),
+                                "side": side,
+                                "reasons": reasons,
+                            }
+                        )
         mismatches = (
             missing_positions,
             extra_open_positions,
@@ -532,6 +826,7 @@ class PositionStore:
             entry_mismatches,
             invalid_legacy_rows,
             unresolved_mirror_errors,
+            intent_link_mismatches,
         )
         return {
             "market": market,
@@ -550,6 +845,7 @@ class PositionStore:
             "entry_mismatches": entry_mismatches,
             "invalid_legacy_rows": invalid_legacy_rows,
             "unresolved_mirror_errors": unresolved_mirror_errors,
+            "intent_link_mismatches": intent_link_mismatches,
         }
 
 
@@ -584,6 +880,15 @@ def mirror_write_fail_open(
             legacy_holding_id,
             type(error).__name__,
         )
+        if _is_sqlite_lock_error(error):
+            logger.critical(
+                "[POSITION-SHADOW][%s] %s audit deferred to comparator "
+                "because sqlite is locked for legacy_id=%s",
+                _market(market),
+                operation,
+                legacy_holding_id,
+            )
+            return False
         try:
             store.record_mirror_error(
                 market=market,
@@ -602,3 +907,54 @@ def mirror_write_fail_open(
         return False
     connection_or_cursor.execute("RELEASE position_shadow_write")
     return True
+
+
+def bounded_link_write_fail_open(
+    db_path: str | Path,
+    *,
+    logger: Any,
+    market: str,
+    legacy_holding_id: Any,
+    account_id: Any,
+    operation: str,
+    write: Callable[[PositionStore], Any],
+) -> bool:
+    """Run post-broker linkage with a bounded SQLite lock wait.
+
+    Validation failures still use the durable mirror-error table. SQLITE_BUSY /
+    SQLITE_LOCKED cannot write to that same database, so those failures emit a
+    CRITICAL runtime log and are detected later by the intent-link comparator.
+    A dedicated short-lived connection isolates the 50ms busy timeout from the
+    agent's long-lived legacy connection. The outermost savepoint release commits
+    this linkage/audit transaction before the connection is closed.
+    """
+
+    connection = sqlite3.connect(
+        str(db_path), timeout=_POSITION_LINK_BUSY_TIMEOUT_MS / 1000
+    )
+    try:
+        try:
+            return mirror_write_fail_open(
+                connection,
+                logger=logger,
+                market=market,
+                legacy_holding_id=legacy_holding_id,
+                account_id=account_id,
+                operation=operation,
+                write=write,
+            )
+        except Exception as error:
+            if connection.in_transaction:
+                connection.rollback()
+            if not _is_sqlite_lock_error(error):
+                raise
+            logger.critical(
+                "[POSITION-LINK][%s] %s commit skipped because sqlite is "
+                "locked for legacy_id=%s; comparator will detect the gap",
+                _market(market),
+                operation,
+                legacy_holding_id,
+            )
+            return False
+    finally:
+        connection.close()

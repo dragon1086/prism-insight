@@ -69,6 +69,10 @@ class FakeAgent:
         self.calls.append(f"sim:{stock_data.get('ticker')}")
         return True
 
+    def _link_position_exit_intent(self, **kwargs):
+        self.calls.append(f"link:{kwargs.get('legacy_holding_id')}")
+        return True
+
     async def send_telegram_message(self, chat_id, language="ko", **kwargs):
         self.calls.append("tg")
         return True
@@ -330,7 +334,13 @@ def test_live_order_is_sim_then_kis_then_telegram(tmp_db, monkeypatch):
     # per-sell flush + run-end flush each invoke send_telegram_message; the run-end
     # portfolio summary is de-duplicated (portfolio_broadcast) so only ONE actual
     # portfolio message goes out in prod (see tests/test_portfolio_broadcast.py).
-    assert calls == ["sim:005930", "kis:005930:10", "tg", "tg"]   # exact order
+    assert calls == [
+        "sim:005930",
+        "kis:005930:10",
+        "link:1",
+        "tg",
+        "tg",
+    ]  # exact order
     assert _inflight(tmp_db, "FILLED") == 1
 
 

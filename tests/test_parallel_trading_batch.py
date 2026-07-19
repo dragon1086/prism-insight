@@ -33,6 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import stock_tracking_enhanced_agent as enh_mod
+from prism_core.positions import LegacyPositionWriteResult
 from stock_tracking_enhanced_agent import EnhancedStockTrackingAgent
 
 
@@ -140,7 +141,7 @@ async def test_prepass_respects_semaphore_cap(monkeypatch):
 # 2. Order-sensitive gates stay in the sequential phase
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_gates_run_sequentially_after_parallel_phase(monkeypatch):
+async def test_gates_run_sequentially_after_parallel_phase(monkeypatch, tmp_path):
     """
     Cores are computed in the parallel pre-pass; then the REAL analyze_report runs
     the holdings/sector gates sequentially in original order. A second same-sector
@@ -181,6 +182,7 @@ async def test_gates_run_sequentially_after_parallel_phase(monkeypatch):
     monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_mod)
 
     agent = _make_agent()
+    agent.db_path = str(tmp_path / "parallel-order-intents.sqlite")
 
     path_a = "reports/005930_A_20260101_morning.pdf"
     path_b = "reports/000660_B_20260101_morning.pdf"
@@ -207,17 +209,26 @@ async def test_gates_run_sequentially_after_parallel_phase(monkeypatch):
         # First Tech candidate is diverse; once one is bought, block the rest.
         return sector not in bought_sectors
 
-    async def fake_buy_stock(ticker, company_name, current_price, scenario,
-                             rank_change_msg="", is_add=False):
+    next_legacy_id = iter((101, 102))
+
+    async def fake_buy_stock_with_position(
+        ticker,
+        company_name,
+        current_price,
+        scenario,
+        rank_change_msg="",
+        is_add=False,
+    ):
         events.append(("buy", ticker))
         bought_sectors.add(scenario.get("sector", "Tech"))
-        return True
+        return LegacyPositionWriteResult(True, next(next_legacy_id))
 
     agent._analyze_report_core = core_stub
     agent._extract_ticker_info = fake_extract_ticker_info
     agent._is_ticker_in_holdings = fake_is_holding
     agent._check_sector_diversity = fake_sector_diversity
-    agent.buy_stock = fake_buy_stock
+    agent._buy_stock_with_position = fake_buy_stock_with_position
+    agent._link_position_entry_intent = MagicMock(return_value=True)
 
     buy_count, _ = await agent.process_reports([path_a, path_b])
 

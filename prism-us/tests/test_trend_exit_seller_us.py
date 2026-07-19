@@ -58,11 +58,15 @@ class FakeAgent:
         self.calls = calls
         self.conn = None
 
-    async def sell_stock(self, stock_data, sell_reason):
+    async def sell_stock(self, stock_data, sell_reason, **kwargs):
         self.calls.append(f"sim:{stock_data.get('ticker')}")
         return True
 
-    async def send_telegram_message(self, chat_id, language="en"):
+    def _link_position_exit_intent(self, **kwargs):
+        self.calls.append(f"link:{kwargs.get('legacy_holding_id')}")
+        return True
+
+    async def send_telegram_message(self, chat_id, language="en", **kwargs):
         self.calls.append("tg")
         return True
 
@@ -101,7 +105,16 @@ def _row(id_, ticker, buy_price, stop_loss=0.0, target_price=0.0, highest_price=
 
 def _patch(monkeypatch, trader, agent_holder=None, make_agent_counter=None,
            ma50=0.0, regime="moderate_bull"):
-    monkeypatch.setattr(lb, "_open_context", lambda market, account_name=None: FakeCtx(trader))
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    monkeypatch.setattr(
+        lb,
+        "_open_context",
+        lambda market, account_name=None: ExecutionService(
+            FakeCtx(trader), intent_store=IntentStore(lb.DB_PATH)
+        ),
+    )
     monkeypatch.setattr(lb, "_fetch_ma50", lambda market, ticker: ma50)
     monkeypatch.setattr(lb, "_compute_live_regime", lambda market: regime)
 
@@ -250,7 +263,7 @@ def test_us_live_sim_kis_telegram_order(tmp_db, monkeypatch):
     # per-sell flush + run-end flush each invoke send_telegram_message; the run-end
     # portfolio summary is de-duplicated (portfolio_broadcast) so only ONE actual
     # portfolio message goes out in prod (see tests/test_portfolio_broadcast.py).
-    assert calls == ["sim:AAPL", "kis:AAPL:5", "tg", "tg"]
+    assert calls == ["sim:AAPL", "kis:AAPL:5", "link:1", "tg", "tg"]
     assert _inflight(tmp_db, "FILLED") == 1
 
 

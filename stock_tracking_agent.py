@@ -48,9 +48,15 @@ from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmented
 from cores.openai_error_logging import log_openai_error
 from cores.agents.trading_agents import create_trading_scenario_agent
 from cores.utils import parse_llm_json
-from prism_core.execution_service import ExecutionService
+from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
 from prism_core.order_intents import OrderIntent
-from prism_core.positions import PositionStore, mirror_write_fail_open
+from prism_core.positions import (
+    LegacyPositionWriteResult,
+    PositionStore,
+    bounded_link_write_fail_open,
+    legacy_position_id,
+    mirror_write_fail_open,
+)
 
 # O'Neil 룰베이스 매도 (2026-06-04 US quota 사고 동일 룰 결함 KR에도 적용).
 # 방어적 import: 실패 시 _ONEIL_FALLBACK_AVAILABLE=False 로 기존 레거시 룰 유지.
@@ -329,6 +335,78 @@ class StockTrackingAgent:
                 closed_at=closed_at,
             ),
         )
+
+    def _link_position_entry_intent(
+        self, *, legacy_holding_id: int, account_key: str, intent_id: str
+    ) -> bool:
+        if not self._position_ledger_enabled():
+            return True
+        try:
+            self.conn.commit()
+            linked = bounded_link_write_fail_open(
+                self.db_path,
+                logger=logger,
+                market="KR",
+                legacy_holding_id=legacy_holding_id,
+                account_id=account_key,
+                operation="link_entry_intent",
+                write=lambda store: store.link_entry_intent(
+                    market="KR",
+                    legacy_holding_id=legacy_holding_id,
+                    account_id=account_key,
+                    intent_id=intent_id,
+                ),
+            )
+            self.conn.commit()
+            return linked
+        except Exception as error:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            logger.critical(
+                "[POSITION-LINK][KR] entry linkage failed for legacy_id=%s (%s)",
+                legacy_holding_id,
+                type(error).__name__,
+            )
+            return False
+
+    def _link_position_exit_intent(
+        self,
+        *,
+        legacy_holding_id: int,
+        account_key: str,
+        intent_id: str,
+        expected_position_ids: list[str] | None = None,
+    ) -> bool:
+        if not self._position_ledger_enabled():
+            return True
+        try:
+            self.conn.commit()
+            linked = bounded_link_write_fail_open(
+                self.db_path,
+                logger=logger,
+                market="KR",
+                legacy_holding_id=legacy_holding_id,
+                account_id=account_key,
+                operation="link_exit_intent",
+                write=lambda store: store.link_exit_intent(
+                    market="KR",
+                    legacy_holding_id=legacy_holding_id,
+                    account_id=account_key,
+                    intent_id=intent_id,
+                    expected_position_ids=expected_position_ids,
+                ),
+            )
+            self.conn.commit()
+            return linked
+        except Exception as error:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            logger.critical(
+                "[POSITION-LINK][KR] exit linkage failed for legacy_id=%s (%s)",
+                legacy_holding_id,
+                type(error).__name__,
+            )
+            return False
 
     def _get_trading_accounts(self) -> List[Dict[str, Any]]:
         default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
@@ -1096,6 +1174,19 @@ class StockTrackingAgent:
             return False
 
     async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
+        """Preserve the public bool contract while exposing an internal typed result."""
+
+        result = await self._buy_stock_with_position(
+            ticker,
+            company_name,
+            current_price,
+            scenario,
+            rank_change_msg,
+            is_add=is_add,
+        )
+        return result.success
+
+    async def _buy_stock_with_position(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> LegacyPositionWriteResult:
         """
         Process stock purchase
 
@@ -1109,19 +1200,19 @@ class StockTrackingAgent:
                     insert an independent additional row instead of a first entry.
 
         Returns:
-            bool: Purchase success status
+            Internal success result with the inserted legacy holding id.
         """
         try:
             # Check if already holding (skipped for a pyramiding add)
             if not is_add and await self._is_ticker_in_holdings(ticker):
                 logger.warning(f"{ticker}({company_name}) already in holdings")
-                return False
+                return LegacyPositionWriteResult(False, None)
 
             # Check available slots
             current_slots = await self._get_current_slots_count()
             if current_slots >= self.max_slots:
                 logger.warning(f"Holdings already at maximum ({self.max_slots})")
-                return False
+                return LegacyPositionWriteResult(False, None)
 
             # Check market-based maximum portfolio size
             max_portfolio_size = scenario.get('max_portfolio_size', self.max_slots)
@@ -1133,7 +1224,7 @@ class StockTrackingAgent:
                     max_portfolio_size = self.max_slots
             if current_slots >= max_portfolio_size:
                 logger.warning(f"Reached market-based max portfolio size ({max_portfolio_size}). Current holdings: {current_slots}")
-                return False
+                return LegacyPositionWriteResult(False, None)
 
             # Current time
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1310,12 +1401,12 @@ class StockTrackingAgent:
             self.message_queue.append(message)
             logger.info(f"{ticker}({company_name}) purchase complete")
 
-            return True
+            return LegacyPositionWriteResult(True, int(legacy_holding_id))
 
         except Exception as e:
             logger.error(f"{ticker} Error during purchase processing: {str(e)}")
             logger.error(traceback.format_exc())
-            return False
+            return LegacyPositionWriteResult(False, None)
 
     def _get_live_regime_safe(self) -> Optional[str]:
         """매도 판단용 '현재' KOSPI 레짐을 1회 계산(OpenAI 무관). 실패 시 None → stale 폴백."""
@@ -1886,6 +1977,10 @@ class StockTrackingAgent:
                                     f"remaining rows={remaining_rows})"
                                 )
                             # Execute async sell with limit price for reserved orders
+                            closed_legacy_id = stock.get("id")
+                            closed_position_id = legacy_position_id(
+                                "KR", closed_legacy_id
+                            )
                             order_intent = OrderIntent.create(
                                 market="KR",
                                 account_id=stock.get("account_key") or stock.get("account_name") or "default",
@@ -1893,17 +1988,33 @@ class StockTrackingAgent:
                                 side="sell",
                                 order_style="smart",
                                 source="kr_batch",
-                                source_position_id=stock.get("id"),
+                                source_position_id=closed_position_id,
                                 quantity=sell_quantity,
                                 limit_price=current_price,
                                 reason=sell_reason,
                             )
-                            trade_result = await trading.execute_sell(
-                                stock_code=ticker,
-                                limit_price=current_price,
-                                quantity=sell_quantity,
-                                intent=order_intent,
-                            )
+                            try:
+                                trade_result = await trading.execute_sell(
+                                    stock_code=ticker,
+                                    limit_price=current_price,
+                                    quantity=sell_quantity,
+                                    intent=order_intent,
+                                )
+                            except OrderOutcomeUnknown as error:
+                                self._link_position_exit_intent(
+                                    legacy_holding_id=closed_legacy_id,
+                                    account_key=stock.get("account_key"),
+                                    intent_id=error.intent_id,
+                                )
+                                raise
+
+                            persisted_intent_id = trade_result.get("intent_id")
+                            if persisted_intent_id:
+                                self._link_position_exit_intent(
+                                    legacy_holding_id=closed_legacy_id,
+                                    account_key=stock.get("account_key"),
+                                    intent_id=persisted_intent_id,
+                                )
 
                         if trade_result['success']:
                             logger.info(f"Actual sell successful: {trade_result['message']}")
@@ -2240,10 +2351,20 @@ class StockTrackingAgent:
                             _cd_block = _enforce
 
                     if analysis_result.get("decision") == "Enter" and not _cd_block and not _regime_floor_block:
-                        buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg)
+                        buy_result = await self._buy_stock_with_position(
+                            ticker,
+                            company_name,
+                            current_price,
+                            scenario,
+                            rank_change_msg,
+                        )
+                        buy_success = buy_result.success
 
                         if buy_success:
                             account_key, _ = self._account_scope()
+                            opened_position_id = legacy_position_id(
+                                "KR", buy_result.legacy_holding_id
+                            )
                             order_intent = OrderIntent.create(
                                 market="KR",
                                 account_id=account_key,
@@ -2252,17 +2373,34 @@ class StockTrackingAgent:
                                 order_style="smart",
                                 source="kr_batch",
                                 source_decision_id=source_decision_id,
+                                source_position_id=opened_position_id,
                                 limit_price=current_price,
                                 reason="AI analysis entry",
                             )
-                            async with ExecutionService.domestic(
-                                account_name=account["name"],
-                                db_path=self.db_path,
-                            ) as trading:
-                                trade_result = await trading.execute_buy(
-                                    stock_code=ticker,
-                                    limit_price=current_price,
-                                    intent=order_intent,
+                            try:
+                                async with ExecutionService.domestic(
+                                    account_name=account["name"],
+                                    db_path=self.db_path,
+                                ) as trading:
+                                    trade_result = await trading.execute_buy(
+                                        stock_code=ticker,
+                                        limit_price=current_price,
+                                        intent=order_intent,
+                                    )
+                            except OrderOutcomeUnknown as error:
+                                self._link_position_entry_intent(
+                                    legacy_holding_id=buy_result.legacy_holding_id,
+                                    account_key=account_key,
+                                    intent_id=error.intent_id,
+                                )
+                                raise
+
+                            persisted_intent_id = trade_result.get("intent_id")
+                            if persisted_intent_id:
+                                self._link_position_entry_intent(
+                                    legacy_holding_id=buy_result.legacy_holding_id,
+                                    account_key=account_key,
+                                    intent_id=persisted_intent_id,
                                 )
 
                             if trade_result['success']:

@@ -14,6 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import trading.domestic_stock_trading as domestic_trading
 from stock_tracking_agent import StockTrackingAgent
+from prism_core.positions import LegacyPositionWriteResult
 from tracking.db_schema import TABLE_STOCK_HOLDINGS, TABLE_TRADING_HISTORY
 
 
@@ -341,6 +342,7 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     slot_checks = []
     sector_checks = []
     buy_calls = []
+    link_calls = []
     redis_calls = []
     gcp_calls = []
 
@@ -375,6 +377,10 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
 
     async def fake_buy_stock(ticker, company_name, current_price, scenario, rank_change_msg):
         buy_calls.append((agent.active_account["name"], ticker))
+        return LegacyPositionWriteResult(True, len(buy_calls))
+
+    def fake_link_position_entry_intent(**kwargs):
+        link_calls.append(kwargs)
         return True
 
     agent._analyze_report_core = fake_core
@@ -382,7 +388,8 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     agent._is_ticker_in_holdings = fake_is_ticker_in_holdings
     agent._get_current_slots_count = fake_get_current_slots_count
     agent._check_sector_diversity = fake_check_sector_diversity
-    agent.buy_stock = fake_buy_stock
+    agent._buy_stock_with_position = fake_buy_stock
+    agent._link_position_entry_intent = fake_link_position_entry_intent
 
     monkeypatch.setattr(domestic_trading, "AsyncTradingContext", _FakeAsyncTradingContext)
     _install_signal_modules(monkeypatch, redis_calls, gcp_calls)
@@ -398,6 +405,15 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     assert slot_checks == ["kr-primary", "kr-secondary"]
     assert sector_checks == [("kr-primary", "Technology"), ("kr-secondary", "Technology")]
     assert buy_calls == [("kr-primary", "005930"), ("kr-secondary", "005930")]
+    assert [call["legacy_holding_id"] for call in link_calls] == [1, 2]
+    assert all(call["intent_id"] for call in link_calls)
+    intent_sources = sqlite3.connect(agent.db_path).execute(
+        "SELECT account_id, source_position_id FROM order_intents ORDER BY account_id"
+    ).fetchall()
+    assert intent_sources == [
+        ("vps:kr-primary:01", "legacy:KR:1"),
+        ("vps:kr-secondary:01", "legacy:KR:2"),
+    ]
     assert len(redis_calls) == 1
     assert len(gcp_calls) == 1
     assert "partial success" in caplog.text.lower()
@@ -466,7 +482,7 @@ async def test_process_reports_saves_watchlist_once_when_not_traded(monkeypatch)
     agent._is_ticker_in_holdings = fake_is_ticker_in_holdings
     agent._get_current_slots_count = fake_get_current_slots_count
     agent._check_sector_diversity = fake_check_sector_diversity
-    agent.buy_stock = fake_buy_stock
+    agent._buy_stock_with_position = fake_buy_stock
     agent._save_watchlist_item = fake_save_watchlist_item
 
     buy_count, sell_count = await StockTrackingAgent.process_reports(agent, ["report-a.pdf"])
