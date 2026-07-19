@@ -54,6 +54,7 @@ from prism_core.execution_service import (
     OrderOutcomeUnknown,
     normalize_checked_holding,
 )
+from prism_core.exit_effects import ExitEffectStore
 from prism_core.order_intents import IntentStore, OrderIntent
 from prism_core.positions import (
     LegacyPositionWriteResult,
@@ -282,8 +283,10 @@ class StockTrackingAgent:
 
         self.conn.commit()
         store = PositionStore(self.cursor)
+        effect_store = ExitEffectStore(self.cursor)
         try:
             store.ensure_schema()
+            effect_store.ensure_schema()
             self.conn.commit()
         except Exception as error:
             self.conn.rollback()
@@ -1248,6 +1251,7 @@ class StockTrackingAgent:
         try:
             intent_store = IntentStore(self.db_path)
             PositionStore(self.conn).ensure_schema()
+            ExitEffectStore(self.conn).ensure_schema()
             self.conn.commit()
         except Exception:
             if self.conn.in_transaction:
@@ -1782,7 +1786,7 @@ class StockTrackingAgent:
             )
 
     def _complete_pending_kr_exit(self, prepared: _PreparedKrExit) -> None:
-        """Atomically close legacy and ledger state, then expose the message."""
+        """Atomically close legacy/ledger state and persist effect candidates."""
 
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1842,6 +1846,31 @@ class StockTrackingAgent:
                 realized_pnl_pct=prepared.profit_rate,
                 exit_kind=prepared.exit_kind,
                 closed_at=prepared.sell_date,
+            )
+            ExitEffectStore(self.conn).enqueue_exit_effects(
+                intent_id=prepared.intent.id,
+                market="KR",
+                account_id=prepared.account_id,
+                symbol=prepared.symbol,
+                source=prepared.intent.source,
+                payload={
+                    "version": 1,
+                    "event_id": prepared.intent.id,
+                    "market": "KR",
+                    "source": prepared.intent.source,
+                    "account_id": prepared.account_id,
+                    "account_name": prepared.account_name,
+                    "symbol": prepared.symbol,
+                    "company_name": prepared.company_name,
+                    "sell_price": prepared.sell_price,
+                    "buy_price": prepared.buy_price,
+                    "profit_rate": prepared.profit_rate,
+                    "holding_days": prepared.holding_days,
+                    "sell_reason": prepared.sell_reason,
+                    "exit_kind": prepared.exit_kind,
+                    "message": prepared.message,
+                    "journal_stock_data": prepared.journal_stock_data,
+                },
             )
             self.conn.commit()
         except BaseException:
