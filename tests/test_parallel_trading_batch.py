@@ -256,6 +256,74 @@ async def test_gates_run_sequentially_after_parallel_phase(monkeypatch, tmp_path
     assert buy_count == 1
 
 
+@pytest.mark.asyncio
+async def test_enhanced_pending_gate_false_preserves_legacy_message_broker_publish_order(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "false")
+    agent = _make_agent()
+    agent.db_path = str(tmp_path / "enhanced-legacy-order.sqlite")
+    events: list[str] = []
+
+    async def core_stub(_path):
+        return _core_ok("005930", "Samsung", decision="Enter")
+
+    async def fake_extract_ticker_info(_path):
+        return "005930", "Samsung"
+
+    async def fake_buy_stock_with_position(*_args, **_kwargs):
+        events.append("legacy")
+        agent.message_queue.append("legacy buy message")
+        agent._msg_types.append("analysis")
+        events.append("message")
+        return LegacyPositionWriteResult(True, 1)
+
+    class OrderedTradingContext:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None):
+            events.append("broker")
+            return {"success": True, "message": "ok"}
+
+    async def redis_publish(**_kwargs):
+        events.append("redis")
+
+    async def gcp_publish(**_kwargs):
+        events.append("gcp")
+
+    redis_mod = types.ModuleType("messaging.redis_signal_publisher")
+    redis_mod.publish_buy_signal = redis_publish
+    gcp_mod = types.ModuleType("messaging.gcp_pubsub_signal_publisher")
+    gcp_mod.publish_buy_signal = gcp_publish
+    monkeypatch.setitem(sys.modules, "messaging.redis_signal_publisher", redis_mod)
+    monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_mod)
+
+    import trading.domestic_stock_trading as domestic_trading
+
+    monkeypatch.setattr(domestic_trading, "AsyncTradingContext", OrderedTradingContext)
+    agent._analyze_report_core = core_stub
+    agent._extract_ticker_info = fake_extract_ticker_info
+    agent._is_ticker_in_holdings = AsyncMock(return_value=False)
+    agent._check_sector_diversity = AsyncMock(return_value=True)
+    agent._buy_stock_with_position = fake_buy_stock_with_position
+    agent._link_position_entry_intent = MagicMock(return_value=True)
+
+    buy_count, sell_count = await agent.process_reports(
+        ["reports/005930_Samsung_20260101_morning.pdf"]
+    )
+
+    assert (buy_count, sell_count) == (1, 0)
+    assert events == ["legacy", "message", "broker", "redis", "gcp"]
+    assert len(agent.message_queue) == 1
+
+
 # ---------------------------------------------------------------------------
 # 3. One core failure does not kill the batch
 # ---------------------------------------------------------------------------

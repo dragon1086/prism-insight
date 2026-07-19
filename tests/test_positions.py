@@ -292,6 +292,78 @@ def test_prepare_complete_and_fail_entry_require_persisted_matching_intent(
     ).fetchone() == ("ENTRY_FAILED",)
 
 
+@pytest.mark.parametrize(
+    "status",
+    ("PENDING_ENTRY", "ENTRY_FAILED", "PENDING_EXIT", "EXIT_UNKNOWN"),
+)
+def test_entry_attempt_guard_blocks_unresolved_same_account_symbol(status) -> None:
+    conn = sqlite3.connect(":memory:")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.open_legacy_position(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        account_name="primary",
+        symbol="005930",
+    )
+    conn.execute("UPDATE positions SET status=? WHERE id='legacy:KR:1'", (status,))
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+
+    with pytest.raises(InvalidPositionTransition, match="entry attempt"):
+        store.assert_entry_attempt_allowed(
+            market="KR", account_id="acct", symbol="005930"
+        )
+
+    conn.rollback()
+
+
+@pytest.mark.parametrize(
+    ("status", "existing_account", "existing_symbol"),
+    (
+        ("OPEN", "acct", "005930"),
+        ("CLOSED", "acct", "005930"),
+        ("PENDING_ENTRY", "other-acct", "005930"),
+        ("PENDING_ENTRY", "acct", "000660"),
+    ),
+)
+def test_entry_attempt_guard_allows_resolved_or_different_identity(
+    status, existing_account, existing_symbol
+) -> None:
+    conn = sqlite3.connect(":memory:")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.open_legacy_position(
+        market="KR",
+        legacy_holding_id=1,
+        account_id=existing_account,
+        account_name="primary",
+        symbol=existing_symbol,
+    )
+    conn.execute("UPDATE positions SET status=? WHERE id='legacy:KR:1'", (status,))
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+
+    assert store.assert_entry_attempt_allowed(
+        market="KR", account_id="acct", symbol="005930"
+    )
+
+    conn.rollback()
+
+
+def test_entry_attempt_guard_requires_caller_owned_transaction() -> None:
+    conn = sqlite3.connect(":memory:")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    conn.commit()
+
+    with pytest.raises(RuntimeError, match="active caller-owned transaction"):
+        store.assert_entry_attempt_allowed(
+            market="KR", account_id="acct", symbol="005930"
+        )
+
+
 def test_exit_many_lifecycle_is_atomic_idempotent_and_blocks_overwrite(tmp_path) -> None:
     from dataclasses import replace
 

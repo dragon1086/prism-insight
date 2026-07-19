@@ -259,6 +259,34 @@ class PositionStore:
         ).rowcount
         return changed == 1
 
+    def assert_entry_attempt_allowed(
+        self,
+        *,
+        market: str,
+        account_id: Any,
+        symbol: Any,
+    ) -> bool:
+        """Reject a new entry while the same identity has unresolved state."""
+
+        self._require_active_transaction()
+        market = _market(str(market).strip())
+        account_id = str(account_id or "").strip()
+        symbol = str(symbol or "").strip().upper()
+        if not account_id or not symbol:
+            raise ValueError("account_id and symbol are required")
+        row = self._execute(
+            "SELECT status FROM positions "
+            "WHERE market=? AND account_id=? AND symbol=? "
+            "AND status IN ('PENDING_ENTRY', 'ENTRY_FAILED', "
+            "'PENDING_EXIT', 'EXIT_UNKNOWN') LIMIT 1",
+            (market, account_id, symbol),
+        ).fetchone()
+        if row is not None:
+            raise InvalidPositionTransition(
+                f"entry attempt blocked by unresolved position status: {row[0]}"
+            )
+        return True
+
     @staticmethod
     def _source_position_ids(value: Any) -> tuple[str, ...]:
         if value is None:
