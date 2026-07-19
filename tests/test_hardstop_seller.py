@@ -63,6 +63,10 @@ class FakeAgent:
         self.calls.append(f"sim:{stock_data.get('ticker')}")
         return True
 
+    def _link_position_exit_intent(self, **kwargs):
+        self.calls.append(f"link:{kwargs.get('legacy_holding_id')}")
+        return True
+
     async def send_telegram_message(self, chat_id, language="ko", **kwargs):
         self.calls.append("tg")
         return True
@@ -163,7 +167,13 @@ def test_live_order_is_sim_then_kis_then_telegram(tmp_db, monkeypatch):
     # per-sell flush + run-end flush each invoke send_telegram_message; the run-end
     # portfolio summary is de-duplicated (portfolio_broadcast) so only ONE actual
     # portfolio message goes out in prod (see tests/test_portfolio_broadcast.py).
-    assert calls == ["sim:005930", "kis:005930:10", "tg", "tg"]   # exact order
+    assert calls == [
+        "sim:005930",
+        "kis:005930:10",
+        "link:1",
+        "tg",
+        "tg",
+    ]  # exact order
     assert _inflight(tmp_db, "FILLED") == 1
 
 
@@ -239,7 +249,7 @@ def test_pyramided_ticker_is_skipped(tmp_db, monkeypatch):
     assert calls == []
 
 
-def test_inflight_guard_blocks_second_trigger(tmp_db, monkeypatch):
+def test_shadow_record_does_not_block_second_trigger(tmp_db, monkeypatch):
     monkeypatch.setattr(la, "HARDSTOP_LIVE", False)
     monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
     _seed(tmp_db, [_row(1, "005930", 100.0)])
@@ -250,8 +260,9 @@ def test_inflight_guard_blocks_second_trigger(tmp_db, monkeypatch):
     asyncio.run(la.run_market("KR", "run1"))
     summary2 = asyncio.run(la.run_market("KR", "run2"))
 
-    assert summary2["skipped"] == 1
-    assert _inflight(tmp_db) == 1
+    assert summary2["skipped"] == 0
+    assert summary2["shadow"] == 1
+    assert _inflight(tmp_db) == 2
 
 
 def test_owner_lock_is_exclusive(tmp_db):

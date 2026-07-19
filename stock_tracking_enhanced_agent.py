@@ -6,6 +6,7 @@ from scipy import stats
 from typing import List, Tuple, Dict, Any
 from datetime import datetime, timedelta
 from stock_tracking_agent import StockTrackingAgent
+from prism_core.positions import LegacyPositionWriteResult, legacy_position_id
 import asyncio
 import logging
 import json
@@ -18,7 +19,7 @@ from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmented
 # Import core agents
 from cores.agents.trading_agents import create_sell_decision_agent
 from cores.utils import parse_llm_json
-from prism_core.execution_service import ExecutionService
+from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
 from prism_core.order_intents import OrderIntent
 
 logging.basicConfig(
@@ -635,10 +636,21 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 # Process buy if entry decision
                 if decision == "Enter" and buy_score >= min_score and sector_diverse and not _cd_block:
                     # Process buy (is_add => pyramiding additional independent row, #288)
-                    buy_success = await self.buy_stock(ticker, company_name, current_price, scenario, rank_change_msg, is_add=is_add)
+                    buy_result = await self._buy_stock_with_position(
+                        ticker,
+                        company_name,
+                        current_price,
+                        scenario,
+                        rank_change_msg,
+                        is_add=is_add,
+                    )
+                    buy_success = buy_result.success
 
                     if buy_success:
                         account_key, account_name = self._account_scope()
+                        opened_position_id = legacy_position_id(
+                            "KR", buy_result.legacy_holding_id
+                        )
                         order_intent = OrderIntent.create(
                             market="KR",
                             account_id=account_key,
@@ -647,19 +659,36 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             order_style="smart",
                             source="kr_enhanced_batch",
                             source_decision_id=f"report:{os.path.basename(pdf_report_path)}",
+                            source_position_id=opened_position_id,
                             limit_price=current_price,
                             reason="AI analysis entry",
                         )
                         # Call actual account trading function (async)
-                        async with ExecutionService.domestic(
-                            account_name=account_name,
-                            db_path=self.db_path,
-                        ) as trading:
-                            # Execute async buy with limit price for reserved orders
-                            trade_result = await trading.execute_buy(
-                                stock_code=ticker,
-                                limit_price=current_price,
-                                intent=order_intent,
+                        try:
+                            async with ExecutionService.domestic(
+                                account_name=account_name,
+                                db_path=self.db_path,
+                            ) as trading:
+                                # Execute async buy with limit price for reserved orders
+                                trade_result = await trading.execute_buy(
+                                    stock_code=ticker,
+                                    limit_price=current_price,
+                                    intent=order_intent,
+                                )
+                        except OrderOutcomeUnknown as error:
+                            self._link_position_entry_intent(
+                                legacy_holding_id=buy_result.legacy_holding_id,
+                                account_key=account_key,
+                                intent_id=error.intent_id,
+                            )
+                            raise
+
+                        persisted_intent_id = trade_result.get("intent_id")
+                        if persisted_intent_id:
+                            self._link_position_entry_intent(
+                                legacy_holding_id=buy_result.legacy_holding_id,
+                                account_key=account_key,
+                                intent_id=persisted_intent_id,
                             )
 
                         if trade_result['success']:
@@ -725,7 +754,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.error(traceback.format_exc())
             return 0, 0
 
-    async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
+    async def _buy_stock_with_position(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> LegacyPositionWriteResult:
         """
         Stock buy processing (override parent class method)
 
@@ -743,13 +772,19 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 scenario['stop_loss'] = stop_loss
                 logger.info(f"{ticker} Dynamic stop-loss calculated: {stop_loss:,.0f} KRW")
 
-            # Call parent class's buy_stock method
-            return await super().buy_stock(ticker, company_name, current_price, scenario, rank_change_msg, is_add=is_add)
+            return await super()._buy_stock_with_position(
+                ticker,
+                company_name,
+                current_price,
+                scenario,
+                rank_change_msg,
+                is_add=is_add,
+            )
 
         except Exception as e:
             logger.error(f"{ticker} Error during purchase processing: {str(e)}")
             logger.error(traceback.format_exc())
-            return False
+            return LegacyPositionWriteResult(False, None)
 
     async def _save_watchlist_item(
         self,

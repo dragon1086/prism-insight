@@ -166,9 +166,12 @@ class OrderIntent:
             raise ValueError(
                 "OrderIntent requires source_decision_id or source_position_id"
             )
-        identity = (
-            f"position:{position_id}" if position_id else f"decision:{decision_id}"
-        )
+        if side == "BUY" and decision_id:
+            identity = f"decision:{decision_id}"
+        elif position_id:
+            identity = f"position:{position_id}"
+        else:
+            identity = f"decision:{decision_id}"
         key_source = "|".join(
             ("v1", market, account_id, symbol, side, identity)
         )

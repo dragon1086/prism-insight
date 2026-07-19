@@ -118,6 +118,8 @@ def _load_us_agent_module():
 us_agent_module = _load_us_agent_module()
 USStockTrackingAgent = us_agent_module.USStockTrackingAgent
 
+from prism_core.positions import LegacyPositionWriteResult
+
 
 class _FakeAsyncUSTradingContext:
     def __init__(self, account_name=None, **kwargs):
@@ -468,8 +470,8 @@ async def test_us_full_exit_closes_all_siblings_before_one_order_and_publish(
     monkeypatch.setitem(sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_module)
 
     agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
-    agent.db_path = str(tmp_path / "order-intents.sqlite")
-    agent.conn = sqlite3.connect(":memory:")
+    agent.db_path = str(tmp_path / "full-exit.sqlite")
+    agent.conn = sqlite3.connect(agent.db_path)
     agent.conn.row_factory = sqlite3.Row
     agent.cursor = agent.conn.cursor()
     agent.cursor.execute(
@@ -538,10 +540,16 @@ async def test_us_full_exit_closes_all_siblings_before_one_order_and_publish(
     assert events == ["broker", "redis", "gcp"]
     assert agent.conn.execute("SELECT COUNT(*) FROM us_stock_holdings").fetchone()[0] == 0
     assert agent.conn.execute("SELECT COUNT(*) FROM us_trading_history").fetchone()[0] == 2
-    statuses = agent.conn.execute(
-        "SELECT status FROM positions ORDER BY legacy_holding_id"
+    positions = agent.conn.execute(
+        "SELECT status, exit_intent_id FROM positions ORDER BY legacy_holding_id"
     ).fetchall()
-    assert [row[0] for row in statuses] == ["CLOSED", "CLOSED"]
+    assert [row[0] for row in positions] == ["CLOSED", "CLOSED"]
+    assert positions[0][1]
+    assert positions[0][1] == positions[1][1]
+    assert agent.conn.execute(
+        "SELECT source_position_id FROM order_intents WHERE id=?",
+        (positions[0][1],),
+    ).fetchone()[0] == "legacy:US:1,legacy:US:2"
     comparison = PositionStore(agent.conn).compare_legacy_positions("US")
     assert comparison["matches"]
 
@@ -596,6 +604,7 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     slot_checks = []
     sector_checks = []
     buy_calls = []
+    link_calls = []
     redis_calls = []
     gcp_calls = []
     watchlist_calls = []
@@ -634,6 +643,10 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
         ticker, company_name, current_price, scenario, rank_change_msg, is_add=False
     ):
         buy_calls.append((agent.active_account["name"], ticker))
+        return LegacyPositionWriteResult(True, len(buy_calls))
+
+    def fake_link_position_entry_intent(**kwargs):
+        link_calls.append(kwargs)
         return True
 
     async def fake_save_watchlist_item(**kwargs):
@@ -645,7 +658,8 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     agent._is_ticker_in_holdings = fake_is_ticker_in_holdings
     agent._get_current_slots_count = fake_get_current_slots_count
     agent._check_sector_diversity = fake_check_sector_diversity
-    agent.buy_stock = fake_buy_stock
+    agent._buy_stock_with_position = fake_buy_stock
+    agent._link_position_entry_intent = fake_link_position_entry_intent
     agent._save_watchlist_item = fake_save_watchlist_item
 
     _install_signal_modules(monkeypatch, redis_calls, gcp_calls)
@@ -662,6 +676,15 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     assert slot_checks == ["us-primary", "us-secondary"]
     assert sector_checks == [("us-primary", "Technology"), ("us-secondary", "Technology")]
     assert buy_calls == [("us-primary", "AAPL"), ("us-secondary", "AAPL")]
+    assert [call["legacy_holding_id"] for call in link_calls] == [1, 2]
+    assert all(call["intent_id"] for call in link_calls)
+    intent_sources = sqlite3.connect(agent.db_path).execute(
+        "SELECT account_id, source_position_id FROM order_intents ORDER BY account_id"
+    ).fetchall()
+    assert intent_sources == [
+        ("vps:us-primary:01", "legacy:US:1"),
+        ("vps:us-secondary:01", "legacy:US:2"),
+    ]
     assert len(redis_calls) == 1
     assert len(gcp_calls) == 1
     assert watchlist_calls == []
@@ -721,7 +744,7 @@ async def test_process_reports_saves_watchlist_once_when_not_traded(monkeypatch)
     agent._is_ticker_in_holdings = fake_is_ticker_in_holdings
     agent._get_current_slots_count = fake_get_current_slots_count
     agent._check_sector_diversity = fake_check_sector_diversity
-    agent.buy_stock = fake_buy_stock
+    agent._buy_stock_with_position = fake_buy_stock
     agent._save_watchlist_item = fake_save_watchlist_item
 
     buy_count, sell_count = await USStockTrackingAgent.process_reports(agent, ["report-a.pdf"])
