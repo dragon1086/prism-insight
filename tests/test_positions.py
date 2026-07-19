@@ -1,8 +1,11 @@
+import asyncio
 import json
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -183,6 +186,652 @@ def test_transition_graph_and_database_check_are_enforced() -> None:
                 "2026-07-18",
             ),
         )
+
+
+def test_prepare_complete_and_fail_entry_require_persisted_matching_intent(
+    tmp_path,
+) -> None:
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "entry.sqlite"
+    IntentStore(db_path)
+    conn = sqlite3.connect(db_path)
+    _legacy_schema(conn)
+    store = PositionStore(conn)
+    store.ensure_schema()
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="BUY",
+        order_style="market",
+        source="test",
+        source_decision_id="decision-1",
+        source_position_id="legacy:KR:1",
+    )
+
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    with pytest.raises(LookupError):
+        store.prepare_entry(
+            market="KR",
+            legacy_holding_id=1,
+            account_id="acct",
+            account_name="primary",
+            symbol="005930",
+            intent_id=intent.id,
+        )
+    conn.rollback()
+
+    conn.execute("BEGIN IMMEDIATE")
+    created, _ = IntentStore(db_path).reserve_in_transaction(conn, intent)
+    assert created is True
+    assert store.prepare_entry(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        account_name="primary",
+        symbol="005930",
+        intent_id=intent.id,
+        entry_price=71000,
+    )
+    assert store.prepare_entry(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        account_name="primary",
+        symbol="005930",
+        intent_id=intent.id,
+        entry_price=71000,
+    )
+    conn.execute("UPDATE order_intents SET status='QUEUED' WHERE id=?", (intent.id,))
+    with pytest.raises(InvalidPositionTransition, match="requires SUBMITTED"):
+        store.complete_entry(
+            market="KR", legacy_holding_id=1, account_id="acct", symbol="005930",
+            intent_id=intent.id
+        )
+    conn.execute("UPDATE order_intents SET status='SUBMITTED' WHERE id=?", (intent.id,))
+    assert store.complete_entry(
+        market="KR", legacy_holding_id=1, account_id="acct", symbol="005930",
+        intent_id=intent.id
+    )
+    conn.commit()
+
+    assert conn.execute(
+        "SELECT status, entry_intent_id FROM positions"
+    ).fetchone() == ("OPEN", intent.id)
+
+    second = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="000660",
+        side="BUY",
+        order_style="market",
+        source="test",
+        source_decision_id="decision-2",
+        source_position_id="legacy:KR:2",
+    )
+    conn.execute("BEGIN IMMEDIATE")
+    IntentStore(db_path).reserve_in_transaction(conn, second)
+    store.prepare_entry(
+        market="KR",
+        legacy_holding_id=2,
+        account_id="acct",
+        account_name="primary",
+        symbol="000660",
+        intent_id=second.id,
+    )
+    conn.execute("UPDATE order_intents SET status='FAILED' WHERE id=?", (second.id,))
+    assert store.fail_entry(
+        market="KR", legacy_holding_id=2, account_id="acct", symbol="000660",
+        intent_id=second.id
+    )
+    conn.commit()
+    assert conn.execute(
+        "SELECT status FROM positions WHERE id='legacy:KR:2'"
+    ).fetchone() == ("ENTRY_FAILED",)
+
+
+def test_exit_many_lifecycle_is_atomic_idempotent_and_blocks_overwrite(tmp_path) -> None:
+    from dataclasses import replace
+
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "exit-many.sqlite"
+    IntentStore(db_path)
+    conn = sqlite3.connect(db_path)
+    _legacy_schema(conn)
+    store = PositionStore(conn)
+    store.ensure_schema()
+    for row_id in (1, 2):
+        _insert_legacy(conn, "us_stock_holdings", row_id, "acct", "AAPL")
+    store.backfill_legacy_positions("US")
+    source_ids = ("legacy:US:1", "legacy:US:2")
+    intent = OrderIntent.create(
+        market="US",
+        account_id="acct",
+        symbol="AAPL",
+        side="SELL",
+        order_style="market",
+        source="test",
+        source_position_id=",".join(source_ids),
+    )
+    conn.commit()
+
+    conn.execute("BEGIN IMMEDIATE")
+    IntentStore(db_path).reserve_in_transaction(conn, intent)
+    assert store.prepare_exit_many(
+        market="US",
+        account_id="acct",
+        symbol="AAPL",
+        position_ids=source_ids,
+        intent_id=intent.id,
+    )
+    assert store.prepare_exit_many(
+        market="US",
+        account_id="acct",
+        symbol="AAPL",
+        position_ids=source_ids,
+        intent_id=intent.id,
+    )
+    assert conn.execute(
+        "SELECT COUNT(*) FROM positions WHERE status='PENDING_EXIT' "
+        "AND exit_intent_id=?", (intent.id,)
+    ).fetchone() == (2,)
+
+    conn.execute("UPDATE order_intents SET status='SUBMITTED' WHERE id=?", (intent.id,))
+    conn.execute(
+        "UPDATE positions SET symbol='MSFT' WHERE id='legacy:US:2'"
+    )
+    before = conn.total_changes
+    with pytest.raises(ValueError, match="position identity mismatch"):
+        store.complete_exit_many(
+            market="US",
+            account_id="acct",
+            symbol="AAPL",
+            position_ids=source_ids,
+            intent_id=intent.id,
+        )
+    assert conn.total_changes == before
+    conn.execute(
+        "UPDATE positions SET symbol='AAPL' WHERE id='legacy:US:2'"
+    )
+    conn.execute("UPDATE order_intents SET status='FAILED' WHERE id=?", (intent.id,))
+    assert store.fail_exit_many(
+        market="US",
+        account_id="acct",
+        symbol="AAPL",
+        position_ids=source_ids,
+        intent_id=intent.id,
+    )
+    assert conn.execute(
+        "SELECT COUNT(*) FROM positions WHERE status='OPEN' AND exit_intent_id=?",
+        (intent.id,),
+    ).fetchone() == (2,)
+    conn.commit()
+
+    replacement = OrderIntent.create(
+        market="US",
+        account_id="acct",
+        symbol="AAPL",
+        side="SELL",
+        order_style="market",
+        source="test",
+        source_decision_id="replacement",
+        source_position_id=",".join(source_ids),
+    )
+    replacement = replace(replacement, idempotency_key="replacement-key")
+    conn.execute("BEGIN IMMEDIATE")
+    IntentStore(db_path).reserve_in_transaction(conn, replacement)
+    with pytest.raises(ValueError):
+        store.prepare_exit_many(
+            market="US",
+            account_id="acct",
+            symbol="AAPL",
+            position_ids=source_ids,
+            intent_id=replacement.id,
+        )
+    conn.rollback()
+
+
+def test_intent_and_pending_entry_rollback_together(tmp_path) -> None:
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "entry-atomic.sqlite"
+    intent_store = IntentStore(db_path)
+    connection = sqlite3.connect(db_path)
+    position_store = PositionStore(connection)
+    position_store.ensure_schema()
+    connection.commit()
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="BUY",
+        order_style="market",
+        source="test",
+        source_decision_id="atomic-entry",
+        source_position_id="legacy:KR:1",
+    )
+
+    connection.execute("BEGIN IMMEDIATE")
+    assert intent_store.reserve_in_transaction(connection, intent)[0] is True
+    assert position_store.prepare_entry(
+        market="KR",
+        legacy_holding_id=1,
+        account_id="acct",
+        account_name="primary",
+        symbol="005930",
+        intent_id=intent.id,
+    )
+    connection.rollback()
+
+    with sqlite3.connect(db_path) as verify:
+        assert verify.execute(
+            "SELECT COUNT(*) FROM order_intents WHERE id=?", (intent.id,)
+        ).fetchone() == (0,)
+        assert verify.execute(
+            "SELECT COUNT(*) FROM positions WHERE id='legacy:KR:1'"
+        ).fetchone() == (0,)
+
+
+def test_exit_many_rolls_back_first_update_when_later_sibling_fails(tmp_path) -> None:
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "exit-savepoint.sqlite"
+    intent_store = IntentStore(db_path)
+    connection = sqlite3.connect(db_path)
+    _legacy_schema(connection)
+    position_store = PositionStore(connection)
+    position_store.ensure_schema()
+    for row_id in (1, 2):
+        _insert_legacy(connection, "us_stock_holdings", row_id, "acct", "AAPL")
+    position_store.backfill_legacy_positions("US")
+    position_ids = ("legacy:US:1", "legacy:US:2")
+    intent = OrderIntent.create(
+        market="US",
+        account_id="acct",
+        symbol="AAPL",
+        side="SELL",
+        order_style="market",
+        source="test",
+        source_position_id=",".join(position_ids),
+    )
+    connection.commit()
+    connection.execute("BEGIN IMMEDIATE")
+    intent_store.reserve_in_transaction(connection, intent)
+    position_store.prepare_exit_many(
+        market="US",
+        account_id="acct",
+        symbol="AAPL",
+        position_ids=position_ids,
+        intent_id=intent.id,
+    )
+    connection.execute(
+        "UPDATE order_intents SET status='SUBMITTED' WHERE id=?", (intent.id,)
+    )
+    connection.execute(
+        """
+        CREATE TEMP TRIGGER fail_second_sibling
+        BEFORE UPDATE OF status ON positions
+        WHEN NEW.id='legacy:US:2' AND NEW.status='CLOSED'
+        BEGIN
+            SELECT RAISE(ABORT, 'forced sibling failure');
+        END
+        """
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced sibling failure"):
+        position_store.complete_exit_many(
+            market="US",
+            account_id="acct",
+            symbol="AAPL",
+            position_ids=position_ids,
+            intent_id=intent.id,
+        )
+
+    assert connection.execute(
+        "SELECT id, status FROM positions ORDER BY id"
+    ).fetchall() == [
+        ("legacy:US:1", "PENDING_EXIT"),
+        ("legacy:US:2", "PENDING_EXIT"),
+    ]
+    connection.rollback()
+
+
+def test_exit_many_requires_caller_transaction_without_mutating_state(tmp_path) -> None:
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "exit-transaction.sqlite"
+    intent_store = IntentStore(db_path)
+    conn = sqlite3.connect(db_path)
+    _legacy_schema(conn)
+    _insert_legacy(conn, "stock_holdings", 1, "acct", "005930")
+    position_store = PositionStore(conn)
+    position_store.ensure_schema()
+    position_store.backfill_legacy_positions("KR")
+    conn.commit()
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="SELL",
+        order_style="market",
+        source="test",
+        source_position_id="legacy:KR:1",
+    )
+    assert intent_store.reserve(intent)[0] is True
+
+    with pytest.raises(RuntimeError, match="caller-owned transaction"):
+        position_store.prepare_exit_many(
+            market="KR",
+            account_id="acct",
+            symbol="005930",
+            position_ids=("legacy:KR:1",),
+            intent_id=intent.id,
+        )
+
+    assert conn.in_transaction is False
+    assert conn.execute(
+        "SELECT status, exit_intent_id FROM positions WHERE id='legacy:KR:1'"
+    ).fetchone() == ("OPEN", None)
+
+
+def test_concurrent_exit_claim_allows_exactly_one_pre_reserved_broker_call(
+    tmp_path,
+) -> None:
+    from dataclasses import replace
+
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "exit-concurrent.sqlite"
+    IntentStore(db_path)
+    setup = sqlite3.connect(db_path)
+    _legacy_schema(setup)
+    _insert_legacy(setup, "stock_holdings", 1, "acct", "005930")
+    setup_store = PositionStore(setup)
+    setup_store.ensure_schema()
+    setup_store.backfill_legacy_positions("KR")
+    setup.commit()
+    setup.close()
+    first = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="SELL",
+        order_style="market",
+        source="first",
+        source_position_id="legacy:KR:1",
+    )
+    second = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="SELL",
+        order_style="market",
+        source="second",
+        source_position_id="legacy:KR:1",
+    )
+    second = replace(second, idempotency_key="independent-competing-attempt")
+    barrier = threading.Barrier(2)
+
+    def claim(intent):
+        intent_store = IntentStore(db_path, timeout=1)
+        connection = sqlite3.connect(db_path, timeout=1, check_same_thread=False)
+        barrier.wait(timeout=2)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            created, reservation = intent_store.reserve_in_transaction(
+                connection, intent
+            )
+            assert created is True
+            PositionStore(connection).prepare_exit_many(
+                market="KR",
+                account_id="acct",
+                symbol="005930",
+                position_ids=("legacy:KR:1",),
+                intent_id=intent.id,
+            )
+            connection.commit()
+            return intent_store, reservation, intent, connection
+        except ValueError:
+            connection.rollback()
+            connection.close()
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(claim, (first, second)))
+    winners = [claim_result for claim_result in claims if claim_result is not None]
+    assert len(winners) == 1
+    intent_store, reservation, winner_intent, winner_connection = winners[0]
+
+    class Broker:
+        def __init__(self):
+            self.calls = 0
+
+        async def async_sell_stock(self, *_args, **_kwargs):
+            self.calls += 1
+            return {"success": True, "order_no": "ONE", "message": "accepted"}
+
+    broker = Broker()
+    result = asyncio.run(
+        ExecutionService(
+            broker, intent_store=intent_store
+        ).execute_pre_reserved_sell(
+            "005930", intent=winner_intent, reservation=reservation
+        )
+    )
+    winner_connection.close()
+
+    assert result["intent_status"] == "SUBMITTED"
+    assert broker.calls == 1
+    with sqlite3.connect(db_path) as verify:
+        assert verify.execute(
+            "SELECT status, exit_intent_id FROM positions WHERE id='legacy:KR:1'"
+        ).fetchone() == ("PENDING_EXIT", winner_intent.id)
+        assert verify.execute(
+            "SELECT COUNT(*) FROM order_intents"
+        ).fetchone() == (1,)
+
+
+def test_entry_lifecycle_rejects_autocommit_without_mutating_state(tmp_path) -> None:
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "entry-transaction.sqlite"
+    intent_store = IntentStore(db_path)
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="BUY",
+        order_style="market",
+        source="test",
+        source_decision_id="autocommit-entry",
+        source_position_id="legacy:KR:1",
+    )
+    assert intent_store.reserve(intent)[0] is True
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    position_store = PositionStore(connection)
+    position_store.ensure_schema()
+
+    with pytest.raises(RuntimeError, match="active caller-owned transaction"):
+        position_store.prepare_entry(
+            market="KR",
+            legacy_holding_id=1,
+            account_id="acct",
+            account_name="primary",
+            symbol="005930",
+            intent_id=intent.id,
+        )
+
+    assert connection.execute(
+        "SELECT COUNT(*) FROM positions WHERE id='legacy:KR:1'"
+    ).fetchone() == (0,)
+
+
+def test_exit_unknown_many_and_comparator_report_status_intent_and_age(tmp_path) -> None:
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "unknown.sqlite"
+    IntentStore(db_path)
+    conn = sqlite3.connect(db_path)
+    _legacy_schema(conn)
+    _insert_legacy(conn, "stock_holdings", 1, "secret-acct", "005930")
+    store = PositionStore(conn)
+    store.ensure_schema()
+    store.backfill_legacy_positions("KR")
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="secret-acct",
+        symbol="005930",
+        side="SELL",
+        order_style="market",
+        source="test",
+        source_position_id="legacy:KR:1",
+    )
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    IntentStore(db_path).reserve_in_transaction(conn, intent)
+    store.prepare_exit_many(
+        market="KR",
+        account_id="secret-acct",
+        symbol="005930",
+        position_ids=("legacy:KR:1",),
+        intent_id=intent.id,
+    )
+    conn.execute(
+        "UPDATE positions SET updated_at='2020-01-01T00:00:00+00:00'"
+    )
+    conn.execute("UPDATE order_intents SET status='UNKNOWN' WHERE id=?", (intent.id,))
+    store.mark_exit_unknown_many(
+        market="KR",
+        account_id="secret-acct",
+        symbol="005930",
+        position_ids=("legacy:KR:1",),
+        intent_id=intent.id,
+    )
+    conn.commit()
+
+    result = store.compare_legacy_positions("KR", pending_stale_after_seconds=60)
+
+    assert result["matches"] is False
+    assert result["pending_positions"] == []
+    assert result["exit_unknown_positions"][0]["position_id"] == "legacy:KR:1"
+    assert result["exit_unknown_positions"][0]["intent_id"] == intent.id
+    assert result["exit_unknown_positions"][0]["status"] == "EXIT_UNKNOWN"
+    assert "secret-acct" not in json.dumps(result)
+
+
+def test_comparator_distinguishes_fresh_and_stale_pending_positions(tmp_path) -> None:
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "pending-age.sqlite"
+    IntentStore(db_path)
+    conn = sqlite3.connect(db_path)
+    _legacy_schema(conn)
+    store = PositionStore(conn)
+    store.ensure_schema()
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    intents = []
+    for row_id, symbol in ((1, "005930"), (2, "000660")):
+        intent = OrderIntent.create(
+            market="KR",
+            account_id="acct",
+            symbol=symbol,
+            side="BUY",
+            order_style="market",
+            source="test",
+            source_decision_id=f"decision-{row_id}",
+            source_position_id=f"legacy:KR:{row_id}",
+        )
+        IntentStore(db_path).reserve_in_transaction(conn, intent)
+        store.prepare_entry(
+            market="KR",
+            legacy_holding_id=row_id,
+            account_id="acct",
+            account_name="primary",
+            symbol=symbol,
+            intent_id=intent.id,
+        )
+        intents.append(intent)
+    conn.execute(
+        "UPDATE positions SET updated_at='2020-01-01T00:00:00+00:00' "
+        "WHERE id='legacy:KR:2'"
+    )
+    conn.commit()
+
+    result = store.compare_legacy_positions("KR", pending_stale_after_seconds=60)
+
+    assert [item["position_id"] for item in result["pending_positions"]] == [
+        "legacy:KR:1"
+    ]
+    assert [item["position_id"] for item in result["stale_pending_positions"]] == [
+        "legacy:KR:2"
+    ]
+    assert result["pending_positions"][0]["intent_id"] == intents[0].id
+    assert result["stale_pending_positions"][0]["intent_id"] == intents[1].id
+    assert result["matches"] is False
+
+    conn.execute(
+        "UPDATE positions SET updated_at=CURRENT_TIMESTAMP "
+        "WHERE id='legacy:KR:2'"
+    )
+    fresh_only = store.compare_legacy_positions("KR", pending_stale_after_seconds=60)
+    assert fresh_only["matches"] is False
+    assert len(fresh_only["pending_positions"]) == 2
+
+
+def test_comparator_ages_pending_exit_using_exit_intent(tmp_path) -> None:
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "pending-exit-age.sqlite"
+    intent_store = IntentStore(db_path)
+    connection = sqlite3.connect(db_path)
+    _legacy_schema(connection)
+    _insert_legacy(connection, "stock_holdings", 1, "acct", "005930")
+    position_store = PositionStore(connection)
+    position_store.ensure_schema()
+    position_store.backfill_legacy_positions("KR")
+    connection.commit()
+    intent = OrderIntent.create(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        side="SELL",
+        order_style="market",
+        source="test",
+        source_position_id="legacy:KR:1",
+    )
+    connection.execute("BEGIN IMMEDIATE")
+    intent_store.reserve_in_transaction(connection, intent)
+    position_store.prepare_exit_many(
+        market="KR",
+        account_id="acct",
+        symbol="005930",
+        position_ids=("legacy:KR:1",),
+        intent_id=intent.id,
+    )
+    connection.commit()
+
+    fresh = position_store.compare_legacy_positions(
+        "KR", pending_stale_after_seconds=60
+    )
+    assert fresh["matches"] is False
+    assert fresh["pending_positions"][0]["status"] == "PENDING_EXIT"
+    assert fresh["pending_positions"][0]["intent_id"] == intent.id
+
+    connection.execute(
+        "UPDATE positions SET updated_at='2020-01-01T00:00:00+00:00'"
+    )
+    connection.commit()
+    stale = position_store.compare_legacy_positions(
+        "KR", pending_stale_after_seconds=60
+    )
+    assert stale["pending_positions"] == []
+    assert stale["stale_pending_positions"][0]["status"] == "PENDING_EXIT"
+    assert stale["stale_pending_positions"][0]["intent_id"] == intent.id
 
 
 def test_kr_and_us_backfill_is_idempotent_and_skips_invalid_rows() -> None:

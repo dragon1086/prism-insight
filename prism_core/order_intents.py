@@ -212,11 +212,33 @@ class OrderIntent:
         }
 
 
+class _ReservationCapability(dict[str, Any]):
+    """Unforgeable-by-API proof that this store inserted one CREATED intent."""
+
+    def __init__(
+        self,
+        value: dict[str, Any],
+        *,
+        owner: object,
+        intent: OrderIntent,
+        connection: sqlite3.Connection,
+    ) -> None:
+        super().__init__(value)
+        self._owner = owner
+        self._intent = intent
+        self._intent_id = intent.id
+        self._idempotency_key = intent.idempotency_key
+        self._connection = connection
+        self._consumed = False
+
+
 class IntentStore:
     """SQLite intent store with cross-process idempotency reservation."""
 
     def __init__(self, db_path: str | Path, *, timeout: float = 30.0):
         self.db_path = str(db_path)
+        self._resolved_db_path = str(Path(db_path).expanduser().resolve())
+        self._capability_owner = object()
         self.timeout = timeout
         self.ensure_schema()
 
@@ -239,56 +261,137 @@ class IntentStore:
                 "ON broker_orders(intent_id, submitted_at)"
             )
 
-    def reserve(self, intent: OrderIntent) -> tuple[bool, dict[str, Any]]:
+    def _validate_connection(self, connection: sqlite3.Connection) -> None:
+        if not isinstance(connection, sqlite3.Connection):
+            raise TypeError("reserve_in_transaction requires sqlite3.Connection")
+        main_path = next(
+            (
+                str(row[2])
+                for row in connection.execute("PRAGMA database_list")
+                if str(row[1]) == "main"
+            ),
+            "",
+        )
+        if not main_path or str(Path(main_path).resolve()) != self._resolved_db_path:
+            raise ValueError("connection does not target this IntentStore database")
+
+    def _reserve_on(
+        self,
+        connection: sqlite3.Connection,
+        intent: OrderIntent,
+        *,
+        issue_capability: bool,
+    ) -> tuple[bool, dict[str, Any]]:
         now = _utc_now()
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO order_intents (
-                        id, idempotency_key, market, account_id, symbol, side,
-                        order_style, quantity, cash_amount, limit_price, reason,
-                        source, source_decision_id, source_position_id,
-                        execution_mode, status, raw_request_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                              'CREATED', ?, ?, ?)
-                    """,
-                    (
-                        intent.id,
-                        intent.idempotency_key,
-                        intent.market,
-                        intent.account_id,
-                        intent.symbol,
-                        intent.side,
-                        intent.order_style,
-                        intent.quantity,
-                        intent.cash_amount,
-                        intent.limit_price,
-                        intent.reason,
-                        intent.source,
-                        intent.source_decision_id,
-                        intent.source_position_id,
-                        intent.execution_mode,
-                        _json(intent.request_payload()),
-                        intent.created_at,
-                        now,
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                row = conn.execute(
-                    "SELECT id, status, idempotency_key FROM order_intents "
-                    "WHERE idempotency_key = ?",
-                    (intent.idempotency_key,),
-                ).fetchone()
-                if row is None:
-                    raise
-                return False, dict(row)
-        return True, {
+        try:
+            connection.execute(
+                """
+                INSERT INTO order_intents (
+                    id, idempotency_key, market, account_id, symbol, side,
+                    order_style, quantity, cash_amount, limit_price, reason,
+                    source, source_decision_id, source_position_id,
+                    execution_mode, status, raw_request_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          'CREATED', ?, ?, ?)
+                """,
+                (
+                    intent.id,
+                    intent.idempotency_key,
+                    intent.market,
+                    intent.account_id,
+                    intent.symbol,
+                    intent.side,
+                    intent.order_style,
+                    intent.quantity,
+                    intent.cash_amount,
+                    intent.limit_price,
+                    intent.reason,
+                    intent.source,
+                    intent.source_decision_id,
+                    intent.source_position_id,
+                    intent.execution_mode,
+                    _json(intent.request_payload()),
+                    intent.created_at,
+                    now,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            row = connection.execute(
+                "SELECT id, status, idempotency_key FROM order_intents "
+                "WHERE idempotency_key = ?",
+                (intent.idempotency_key,),
+            ).fetchone()
+            if row is None:
+                raise
+            columns = ("id", "status", "idempotency_key")
+            return False, dict(zip(columns, row))
+        value = {
             "id": intent.id,
             "status": "CREATED",
             "idempotency_key": intent.idempotency_key,
         }
+        if issue_capability:
+            value = _ReservationCapability(
+                value,
+                owner=self._capability_owner,
+                intent=intent,
+                connection=connection,
+            )
+        return True, value
+
+    def reserve_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        intent: OrderIntent,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Reserve without beginning, committing, or rolling back caller work."""
+
+        self._validate_connection(connection)
+        if not connection.in_transaction:
+            raise RuntimeError(
+                "reserve_in_transaction requires an active caller-owned transaction"
+            )
+        return self._reserve_on(connection, intent, issue_capability=True)
+
+    def reserve(self, intent: OrderIntent) -> tuple[bool, dict[str, Any]]:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            return self._reserve_on(conn, intent, issue_capability=False)
+
+    def claim_reservation(
+        self,
+        reservation: Any,
+        intent: OrderIntent,
+        *,
+        expected_side: str,
+    ) -> None:
+        """Consume an opaque committed reservation before any broker call."""
+
+        if (
+            not isinstance(reservation, _ReservationCapability)
+            or reservation._owner is not self._capability_owner
+            or reservation._intent != intent
+            or reservation._intent_id != intent.id
+            or reservation._idempotency_key != intent.idempotency_key
+            or reservation._consumed
+        ):
+            raise TypeError("valid unused IntentStore reservation is required")
+        if intent.side != expected_side:
+            raise ValueError("reservation side does not match execution method")
+        try:
+            transaction_is_open = reservation._connection.in_transaction
+        except sqlite3.ProgrammingError:
+            # A caller may commit and close its short-lived transaction before
+            # handing the capability to the execution service.  mark_submitting()
+            # below is the authoritative committed-row check; a close-triggered
+            # rollback leaves no CREATED row and therefore still fails closed.
+            transaction_is_open = False
+        if transaction_is_open:
+            raise RuntimeError(
+                "reservation transaction must commit before broker execution"
+            )
+        self.mark_submitting(intent.id)
+        reservation._consumed = True
 
     def mark_submitting(self, intent_id: str) -> None:
         with self._connect() as conn:

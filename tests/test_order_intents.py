@@ -2,6 +2,7 @@ import asyncio
 import ast
 import hashlib
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -115,6 +116,368 @@ def test_schema_is_additive_and_preserves_existing_tables(tmp_path):
     assert after == before
     assert row == (1, "005930")
     assert {"order_intents", "broker_orders"} <= tables
+
+
+def test_transaction_reservation_obeys_caller_commit_and_rollback(tmp_path):
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    rolled_back = _intent(source_position_id="rollback")
+    committed = _intent(source_position_id="commit")
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        created, reservation = store.reserve_in_transaction(conn, rolled_back)
+        assert created is True
+        assert reservation["status"] == "CREATED"
+        conn.rollback()
+
+        conn.execute("BEGIN IMMEDIATE")
+        created, reservation = store.reserve_in_transaction(conn, committed)
+        assert created is True
+        assert reservation["status"] == "CREATED"
+        conn.commit()
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT id, status FROM order_intents ORDER BY id"
+        ).fetchall() == [(committed.id, "CREATED")]
+
+
+def test_transaction_reservation_rejects_autocommit_without_begin(tmp_path):
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    intent = _intent(source_position_id="autocommit")
+
+    with pytest.raises(RuntimeError, match="active caller-owned transaction"):
+        store.reserve_in_transaction(connection, intent)
+
+    assert connection.execute(
+        "SELECT COUNT(*) FROM order_intents WHERE id=?", (intent.id,)
+    ).fetchone() == (0,)
+
+
+def test_transaction_reservation_matches_duplicate_result_of_reserve(tmp_path):
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    first = _intent(source_position_id="same")
+    duplicate = _intent(source_position_id="same")
+    assert store.reserve(first)[0] is True
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        created, existing = store.reserve_in_transaction(conn, duplicate)
+        conn.rollback()
+
+    assert created is False
+    assert existing == {
+        "id": first.id,
+        "status": "CREATED",
+        "idempotency_key": first.idempotency_key,
+    }
+
+
+def test_pre_reserved_execution_requires_store_capability_and_calls_broker_once(
+    tmp_path,
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(source_position_id="pre-reserved")
+    broker = FakeBroker()
+    service = ExecutionService(broker, intent_store=store)
+
+    with pytest.raises(TypeError):
+        asyncio.run(
+            service.execute_pre_reserved_buy(
+                "005930", intent=intent, reservation={"id": intent.id}
+            )
+        )
+    assert broker.calls == 0
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        created, reservation = store.reserve_in_transaction(conn, intent)
+        assert created is True
+        conn.commit()
+
+    result = asyncio.run(
+        service.execute_pre_reserved_buy(
+            "005930", intent=intent, reservation=reservation
+        )
+    )
+
+    assert result["intent_status"] == "SUBMITTED"
+    assert broker.calls == 1
+    with pytest.raises(TypeError, match="unused"):
+        ExecutionService(
+            broker, intent_store=store
+        ).execute_pre_reserved_reserved_buy(
+            "AAPL", intent=intent, reservation=reservation
+        )
+    assert broker.calls == 1
+    intents, orders = _rows(db_path)
+    assert intents[0][0] == "SUBMITTED"
+    assert len(orders) == 1
+
+
+def test_rolled_back_pre_reservation_blocks_broker(tmp_path):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(source_position_id="rolled-back-capability")
+    broker = FakeBroker()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        created, reservation = store.reserve_in_transaction(conn, intent)
+        assert created is True
+        conn.rollback()
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            ExecutionService(
+                broker, intent_store=store
+            ).execute_pre_reserved_buy(
+                "005930", intent=intent, reservation=reservation
+            )
+        )
+    assert broker.calls == 0
+
+
+def test_pre_reserved_execution_rejects_active_transaction_and_foreign_db(
+    tmp_path,
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    foreign_path = tmp_path / "foreign.sqlite"
+    store = IntentStore(db_path, timeout=0.05)
+    intent = _intent(source_position_id="active-transaction")
+    broker = FakeBroker()
+    conn = sqlite3.connect(db_path)
+    conn.execute("BEGIN IMMEDIATE")
+    created, reservation = store.reserve_in_transaction(conn, intent)
+    assert created is True
+
+    with pytest.raises(RuntimeError, match="must commit"):
+        asyncio.run(
+            ExecutionService(
+                broker, intent_store=store
+            ).execute_pre_reserved_buy(
+                "005930", intent=intent, reservation=reservation
+            )
+        )
+    assert broker.calls == 0
+    conn.rollback()
+
+    sqlite3.connect(foreign_path).close()
+    with sqlite3.connect(foreign_path) as foreign:
+        with pytest.raises(ValueError, match="does not target"):
+            store.reserve_in_transaction(foreign, _intent(source_position_id="foreign"))
+
+
+def test_pre_reserved_sync_reserved_order_uses_capability_once(tmp_path):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore, OrderIntent
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = OrderIntent.create(
+        market="US",
+        account_id="acct-us",
+        symbol="AAPL",
+        side="BUY",
+        order_style="reserved",
+        source="test",
+        source_decision_id="reserved-capability",
+    )
+    broker = FakeBroker()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        created, reservation = store.reserve_in_transaction(conn, intent)
+        assert created is True
+        conn.commit()
+
+    result = ExecutionService(
+        broker, intent_store=store
+    ).execute_pre_reserved_reserved_buy(
+        "AAPL", intent=intent, reservation=reservation
+    )
+
+    assert result["intent_status"] == "SUBMITTED"
+    assert broker.calls == 1
+
+
+def test_closed_reservation_connection_uses_committed_row_as_authority(tmp_path):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    committed = _intent(source_position_id="closed-committed")
+    rolled_back = _intent(source_position_id="closed-rolled-back")
+
+    committed_connection = sqlite3.connect(db_path)
+    committed_connection.execute("BEGIN IMMEDIATE")
+    _, committed_reservation = store.reserve_in_transaction(
+        committed_connection, committed
+    )
+    committed_connection.commit()
+    committed_connection.close()
+
+    rolled_back_connection = sqlite3.connect(db_path)
+    rolled_back_connection.execute("BEGIN IMMEDIATE")
+    _, rolled_back_reservation = store.reserve_in_transaction(
+        rolled_back_connection, rolled_back
+    )
+    rolled_back_connection.rollback()
+    rolled_back_connection.close()
+
+    committed_broker = FakeBroker()
+    result = asyncio.run(
+        ExecutionService(
+            committed_broker, intent_store=store
+        ).execute_pre_reserved_buy(
+            "005930", intent=committed, reservation=committed_reservation
+        )
+    )
+    assert result["intent_status"] == "SUBMITTED"
+    assert committed_broker.calls == 1
+
+    rolled_back_broker = FakeBroker()
+    with pytest.raises(RuntimeError, match="not in CREATED"):
+        asyncio.run(
+            ExecutionService(
+                rolled_back_broker, intent_store=store
+            ).execute_pre_reserved_buy(
+                "005930", intent=rolled_back, reservation=rolled_back_reservation
+            )
+        )
+    assert rolled_back_broker.calls == 0
+
+
+def test_cancellation_during_pre_reserved_claim_marks_unknown_without_broker(
+    tmp_path, monkeypatch
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(source_position_id="cancelled-claim")
+    connection = sqlite3.connect(db_path)
+    connection.execute("BEGIN IMMEDIATE")
+    _, reservation = store.reserve_in_transaction(connection, intent)
+    connection.commit()
+    broker = FakeBroker()
+    started = threading.Event()
+    release = threading.Event()
+    real_claim = store.claim_reservation
+
+    def delayed_claim(*args, **kwargs):
+        started.set()
+        assert release.wait(timeout=2)
+        return real_claim(*args, **kwargs)
+
+    monkeypatch.setattr(store, "claim_reservation", delayed_claim)
+
+    async def exercise():
+        task = asyncio.create_task(
+            ExecutionService(
+                broker, intent_store=store
+            ).execute_pre_reserved_buy(
+                "005930", intent=intent, reservation=reservation
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert broker.calls == 0
+    with sqlite3.connect(db_path) as verify:
+        assert verify.execute(
+            "SELECT status FROM order_intents WHERE id=?", (intent.id,)
+        ).fetchone() == ("UNKNOWN",)
+
+
+def test_pre_reserved_claim_write_failure_never_calls_broker(tmp_path, monkeypatch):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(source_position_id="claim-write-failure")
+    connection = sqlite3.connect(db_path)
+    connection.execute("BEGIN IMMEDIATE")
+    _, reservation = store.reserve_in_transaction(connection, intent)
+    connection.commit()
+    broker = FakeBroker()
+
+    def fail_mark_submitting(_intent_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "mark_submitting", fail_mark_submitting)
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        asyncio.run(
+            ExecutionService(
+                broker, intent_store=store
+            ).execute_pre_reserved_buy(
+                "005930", intent=intent, reservation=reservation
+            )
+        )
+    assert broker.calls == 0
+
+
+def test_pre_reserved_sync_sell_binds_capability_side_before_broker(tmp_path):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    sell_intent = _intent(side="sell", source_position_id="sync-sell")
+    connection = sqlite3.connect(db_path)
+    connection.execute("BEGIN IMMEDIATE")
+    _, reservation = store.reserve_in_transaction(connection, sell_intent)
+    connection.commit()
+    broker = FakeBroker()
+
+    result = ExecutionService(
+        broker, intent_store=store
+    ).execute_pre_reserved_reserved_sell(
+        "005930", intent=sell_intent, reservation=reservation
+    )
+
+    assert result["intent_status"] == "SUBMITTED"
+    assert broker.calls == 1
+
+    wrong_side = _intent(source_position_id="wrong-side")
+    connection.execute("BEGIN IMMEDIATE")
+    _, wrong_reservation = store.reserve_in_transaction(connection, wrong_side)
+    connection.commit()
+    with pytest.raises(ValueError, match="side"):
+        ExecutionService(
+            broker, intent_store=store
+        ).execute_pre_reserved_reserved_sell(
+            "005930", intent=wrong_side, reservation=wrong_reservation
+        )
+    assert broker.calls == 1
 
 
 def test_explicit_broker_rejection_is_recorded_as_failed(tmp_path):
