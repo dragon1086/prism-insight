@@ -125,6 +125,16 @@ def _entry_fingerprint(entry_price: Any, opened_at: Any) -> str:
     return "sha256:" + hashlib.sha256(value.encode()).hexdigest()[:16]
 
 
+def _age_seconds(value: Any) -> int | None:
+    try:
+        timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - timestamp).total_seconds()))
+    except (TypeError, ValueError):
+        return None
+
+
 def _redact_error_text(value: str) -> str:
     value = re.sub(r"(?i)bearer\s+[^\s,;]+", "Bearer [REDACTED]", value)
     return re.sub(
@@ -171,6 +181,17 @@ class PositionStore:
 
     def _execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         return self._db.execute(sql, parameters)
+
+    def _require_active_transaction(self) -> None:
+        connection = (
+            self._db
+            if isinstance(self._db, sqlite3.Connection)
+            else self._db.connection
+        )
+        if not connection.in_transaction:
+            raise RuntimeError(
+                "position lifecycle requires an active caller-owned transaction"
+            )
 
     def _fetchall(
         self, sql: str, parameters: tuple[Any, ...] = ()
@@ -237,6 +258,440 @@ class PositionStore:
             ),
         ).rowcount
         return changed == 1
+
+    @staticmethod
+    def _source_position_ids(value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        items = tuple(item.strip() for item in str(value).split(","))
+        if not items or any(not item for item in items) or len(set(items)) != len(items):
+            raise ValueError("intent source_position_id is invalid")
+        return items
+
+    def _validated_intent(
+        self,
+        *,
+        intent_id: Any,
+        market: str,
+        account_id: str,
+        symbol: str,
+        side: str,
+        position_ids: Iterable[str],
+    ) -> dict[str, Any]:
+        intent_id = str(intent_id or "")
+        if not intent_id:
+            raise ValueError("intent_id is required")
+        cursor = self._execute(
+            "SELECT id, market, account_id, symbol, side, source_position_id, status "
+            "FROM order_intents WHERE id=?",
+            (intent_id,),
+        )
+        columns = [item[0] for item in cursor.description or ()]
+        row = cursor.fetchone()
+        if row is None:
+            raise LookupError(f"intent not found: {intent_id}")
+        intent = dict(zip(columns, row))
+        expected_ids = tuple(position_ids)
+        if (
+            str(intent["market"]).upper() != market
+            or str(intent["account_id"]) != account_id
+            or str(intent["symbol"]).upper() != symbol
+            or str(intent["side"]).upper() != side
+            or set(self._source_position_ids(intent["source_position_id"]))
+            != set(expected_ids)
+        ):
+            raise ValueError("intent identity does not match source positions")
+        if str(intent["status"]).upper() not in {
+            "CREATED",
+            "SUBMITTING",
+            "SUBMITTED",
+            "QUEUED",
+            "FAILED",
+            "UNKNOWN",
+        }:
+            raise ValueError("intent status is not valid for position lifecycle")
+        return intent
+
+    def prepare_entry(
+        self,
+        *,
+        market: str,
+        legacy_holding_id: Any,
+        account_id: Any,
+        account_name: str | None,
+        symbol: Any,
+        intent_id: Any,
+        entry_price: Any = None,
+        opened_at: str | None = None,
+    ) -> bool:
+        """Create one PENDING_ENTRY linked to a persisted matching BUY intent."""
+
+        self._require_active_transaction()
+        market = _market(market)
+        position_id = legacy_position_id(market, legacy_holding_id)
+        account_id = str(account_id or "")
+        symbol = str(symbol or "").upper()
+        if not account_id or not symbol:
+            raise ValueError("account_id and symbol are required")
+        intent_id = str(intent_id or "")
+        intent = self._validated_intent(
+            intent_id=intent_id,
+            market=market,
+            account_id=account_id,
+            symbol=symbol,
+            side="BUY",
+            position_ids=(position_id,),
+        )
+        if str(intent["status"]).upper() != "CREATED":
+            raise InvalidPositionTransition("entry prepare requires CREATED intent")
+        row = self._execute(
+            "SELECT market, legacy_holding_id, account_id, symbol, status, "
+            "entry_intent_id FROM positions WHERE id=?",
+            (position_id,),
+        ).fetchone()
+        if row is not None:
+            identity = (market, str(legacy_holding_id), account_id, symbol)
+            if tuple(str(value).upper() if index in {0, 3} else str(value)
+                     for index, value in enumerate(row[:4])) != identity:
+                raise ValueError("entry position identity mismatch")
+            if row[5] != intent_id:
+                raise ValueError("entry intent overwrite is not allowed")
+            if str(row[4]) in {"PENDING_ENTRY", "OPEN", "ENTRY_FAILED"}:
+                return True
+            raise InvalidPositionTransition(
+                f"entry prepare requires PENDING_ENTRY, found {row[4]}"
+            )
+        now = _utc_now()
+        self._execute(
+            """
+            INSERT INTO positions (
+                id, market, legacy_holding_id, account_id, account_name, symbol,
+                status, execution_mode, opened_at, entry_intent_id, entry_price,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING_ENTRY', 'legacy', ?, ?, ?, ?, ?)
+            """,
+            (
+                position_id,
+                market,
+                str(legacy_holding_id),
+                account_id,
+                account_name,
+                symbol,
+                opened_at,
+                intent_id,
+                entry_price,
+                now,
+                now,
+            ),
+        )
+        return True
+
+    def _finish_entry(
+        self,
+        *,
+        market: str,
+        legacy_holding_id: Any,
+        account_id: Any,
+        symbol: Any,
+        intent_id: Any,
+        to_status: str,
+        required_intent_status: str,
+    ) -> bool:
+        self._require_active_transaction()
+        market = _market(market)
+        position_id = legacy_position_id(market, legacy_holding_id)
+        account_id = str(account_id or "")
+        symbol = str(symbol or "").upper()
+        intent_id = str(intent_id or "")
+        if not account_id or not symbol:
+            raise ValueError("account_id and symbol are required")
+        intent = self._validated_intent(
+            intent_id=intent_id,
+            market=market,
+            account_id=account_id,
+            symbol=symbol,
+            side="BUY",
+            position_ids=(position_id,),
+        )
+        if str(intent["status"]).upper() != required_intent_status:
+            raise InvalidPositionTransition(
+                f"entry {to_status} requires {required_intent_status} intent"
+            )
+        row = self._execute(
+            "SELECT status, entry_intent_id, symbol FROM positions "
+            "WHERE id=? AND market=? AND account_id=?",
+            (position_id, market, account_id),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"entry position not found: {position_id}")
+        if row[1] != intent_id:
+            raise ValueError("entry intent does not match position")
+        if str(row[2]).upper() != symbol:
+            raise ValueError("entry symbol does not match position")
+        if str(row[0]) == to_status:
+            return True
+        if str(row[0]) != "PENDING_ENTRY":
+            raise InvalidPositionTransition(
+                f"entry finalize requires PENDING_ENTRY, found {row[0]}"
+            )
+        changed = self._execute(
+            "UPDATE positions SET status=?, updated_at=? "
+            "WHERE id=? AND market=? AND account_id=? AND status='PENDING_ENTRY' "
+            "AND entry_intent_id=?",
+            (to_status, _utc_now(), position_id, market, account_id, intent_id),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError(f"position {position_id} changed concurrently")
+        return True
+
+    def complete_entry(self, **identity: Any) -> bool:
+        """Transition one claimed entry to OPEN without committing."""
+
+        return self._finish_entry(
+            to_status="OPEN", required_intent_status="SUBMITTED", **identity
+        )
+
+    def fail_entry(self, **identity: Any) -> bool:
+        """Transition one claimed entry to ENTRY_FAILED without committing."""
+
+        return self._finish_entry(
+            to_status="ENTRY_FAILED", required_intent_status="FAILED", **identity
+        )
+
+    def _validate_exit_positions(
+        self,
+        *,
+        market: str,
+        account_id: str,
+        symbol: str,
+        position_ids: tuple[str, ...],
+        intent_id: str,
+        allowed_statuses: frozenset[str],
+        allow_unlinked: bool,
+    ) -> list[dict[str, Any]]:
+        if not position_ids or len(set(position_ids)) != len(position_ids):
+            raise ValueError("position_ids must be non-empty and unique")
+        if any(not item.startswith(f"legacy:{market}:") for item in position_ids):
+            raise ValueError("position_ids must be canonical for market")
+        if market != "US" and len(position_ids) != 1:
+            raise ValueError("multiple exit positions are only supported for US")
+        intent = self._validated_intent(
+            intent_id=intent_id,
+            market=market,
+            account_id=account_id,
+            symbol=symbol,
+            side="SELL",
+            position_ids=position_ids,
+        )
+        if allow_unlinked and str(intent["status"]).upper() != "CREATED":
+            raise InvalidPositionTransition("exit prepare requires CREATED intent")
+        rows = [
+            row
+            for row in self._fetchall(
+                "SELECT id, legacy_holding_id, account_id, symbol, status, "
+                "exit_intent_id FROM positions WHERE market=? AND account_id=?",
+                (market, account_id),
+            )
+            if str(row["id"]) in position_ids
+        ]
+        if {str(row["id"]) for row in rows} != set(position_ids):
+            raise LookupError("exit source positions not found")
+        for row in rows:
+            if (
+                str(row["id"])
+                != legacy_position_id(market, row["legacy_holding_id"])
+                or str(row["account_id"]) != account_id
+                or str(row["symbol"]).upper() != symbol
+            ):
+                raise ValueError("exit position identity mismatch")
+            if str(row["status"]) not in allowed_statuses:
+                raise InvalidPositionTransition(
+                    f"exit lifecycle does not allow status {row['status']}"
+                )
+            linked = row["exit_intent_id"]
+            if linked != intent_id and not (allow_unlinked and linked is None):
+                raise ValueError("exit intent overwrite is not allowed")
+        return rows
+
+    def _update_exit_many(
+        self,
+        *,
+        market: str,
+        account_id: str,
+        position_ids: tuple[str, ...],
+        intent_id: str,
+        from_status: str,
+        to_status: str,
+        exit_price: Any = None,
+        realized_pnl_pct: Any = None,
+        exit_kind: str | None = None,
+        closed_at: str | None = None,
+    ) -> None:
+        self._require_active_transaction()
+        now = _utc_now()
+        if to_status == "CLOSED" and closed_at is None:
+            closed_at = now
+        self._execute("SAVEPOINT position_exit_many")
+        try:
+            changed = sum(
+                self._execute(
+                    """
+                    UPDATE positions SET status=?, exit_intent_id=?,
+                        exit_price=COALESCE(?, exit_price),
+                        realized_pnl_pct=COALESCE(?, realized_pnl_pct),
+                        exit_kind=COALESCE(?, exit_kind),
+                        closed_at=CASE WHEN ?='CLOSED' THEN ? ELSE closed_at END,
+                        updated_at=?
+                    WHERE id=? AND market=? AND account_id=? AND status=?
+                      AND (exit_intent_id IS NULL OR exit_intent_id=?)
+                    """,
+                    (
+                        to_status,
+                        intent_id,
+                        exit_price,
+                        realized_pnl_pct,
+                        exit_kind,
+                        to_status,
+                        closed_at,
+                        now,
+                        position_id,
+                        market,
+                        account_id,
+                        from_status,
+                        intent_id,
+                    ),
+                ).rowcount
+                for position_id in sorted(position_ids)
+            )
+            if changed != len(position_ids):
+                raise RuntimeError("exit source positions changed concurrently")
+        except Exception:
+            self._execute("ROLLBACK TO position_exit_many")
+            self._execute("RELEASE position_exit_many")
+            raise
+        self._execute("RELEASE position_exit_many")
+
+    def prepare_exit_many(
+        self,
+        *,
+        market: str,
+        account_id: Any,
+        symbol: Any,
+        position_ids: Iterable[str],
+        intent_id: Any,
+    ) -> bool:
+        """Atomically claim OPEN source positions for one persisted SELL intent."""
+
+        market = _market(market)
+        account_id = str(account_id or "")
+        symbol = str(symbol or "").upper()
+        intent_id = str(intent_id or "")
+        source_ids = tuple(str(item) for item in position_ids)
+        rows = self._validate_exit_positions(
+            market=market,
+            account_id=account_id,
+            symbol=symbol,
+            position_ids=source_ids,
+            intent_id=intent_id,
+            allowed_statuses=frozenset({"OPEN", "PENDING_EXIT"}),
+            allow_unlinked=True,
+        )
+        statuses = {str(row["status"]) for row in rows}
+        links = {row["exit_intent_id"] for row in rows}
+        if statuses == {"PENDING_EXIT"} and links == {intent_id}:
+            return True
+        if statuses != {"OPEN"} or links != {None}:
+            raise InvalidPositionTransition("exit positions are not claimable together")
+        self._update_exit_many(
+            market=market,
+            account_id=account_id,
+            position_ids=source_ids,
+            intent_id=intent_id,
+            from_status="OPEN",
+            to_status="PENDING_EXIT",
+        )
+        return True
+
+    def _finish_exit_many(
+        self,
+        *,
+        market: str,
+        account_id: Any,
+        symbol: Any,
+        position_ids: Iterable[str],
+        intent_id: Any,
+        to_status: str,
+        required_intent_status: str,
+        exit_price: Any = None,
+        realized_pnl_pct: Any = None,
+        exit_kind: str | None = None,
+        closed_at: str | None = None,
+    ) -> bool:
+        market = _market(market)
+        account_id = str(account_id or "")
+        symbol = str(symbol or "").upper()
+        intent_id = str(intent_id or "")
+        source_ids = tuple(str(item) for item in position_ids)
+        intent = self._validated_intent(
+            intent_id=intent_id,
+            market=market,
+            account_id=account_id,
+            symbol=symbol,
+            side="SELL",
+            position_ids=source_ids,
+        )
+        if str(intent["status"]).upper() != required_intent_status:
+            raise InvalidPositionTransition(
+                f"exit {to_status} requires {required_intent_status} intent"
+            )
+        rows = self._validate_exit_positions(
+            market=market,
+            account_id=account_id,
+            symbol=symbol,
+            position_ids=source_ids,
+            intent_id=intent_id,
+            allowed_statuses=frozenset({"PENDING_EXIT", to_status}),
+            allow_unlinked=False,
+        )
+        statuses = {str(row["status"]) for row in rows}
+        if statuses == {to_status}:
+            return True
+        if statuses != {"PENDING_EXIT"}:
+            raise InvalidPositionTransition("exit positions are not finalizable together")
+        self._update_exit_many(
+            market=market,
+            account_id=account_id,
+            position_ids=source_ids,
+            intent_id=intent_id,
+            from_status="PENDING_EXIT",
+            to_status=to_status,
+            exit_price=exit_price,
+            realized_pnl_pct=realized_pnl_pct,
+            exit_kind=exit_kind,
+            closed_at=closed_at,
+        )
+        return True
+
+    def complete_exit_many(self, **values: Any) -> bool:
+        """Atomically finalize claimed exits as CLOSED."""
+
+        return self._finish_exit_many(
+            to_status="CLOSED", required_intent_status="SUBMITTED", **values
+        )
+
+    def fail_exit_many(self, **values: Any) -> bool:
+        """Atomically return explicitly failed exits to OPEN."""
+
+        return self._finish_exit_many(
+            to_status="OPEN", required_intent_status="FAILED", **values
+        )
+
+    def mark_exit_unknown_many(self, **values: Any) -> bool:
+        """Atomically quarantine exits whose broker outcome is ambiguous."""
+
+        return self._finish_exit_many(
+            to_status="EXIT_UNKNOWN", required_intent_status="UNKNOWN", **values
+        )
 
     def transition(
         self,
@@ -670,10 +1125,17 @@ class PositionStore:
             "symbol": str(symbol).upper(),
         }
 
-    def compare_legacy_positions(self, market: str) -> dict[str, Any]:
+    def compare_legacy_positions(
+        self,
+        market: str,
+        *,
+        pending_stale_after_seconds: int = 300,
+    ) -> dict[str, Any]:
         """Read-only comparison of legacy holdings and OPEN legacy positions."""
 
         market = _market(market)
+        if pending_stale_after_seconds < 0:
+            raise ValueError("pending_stale_after_seconds must be non-negative")
         legacy: dict[tuple[str, str, str], dict[str, str]] = {}
         legacy_entry_fingerprints: dict[tuple[str, str, str], str] = {}
         invalid_legacy_rows: list[dict[str, str | None]] = []
@@ -702,7 +1164,7 @@ class PositionStore:
 
         position_rows = self._fetchall(
             "SELECT id, legacy_holding_id, account_id, symbol, status, "
-            "entry_intent_id, exit_intent_id, entry_price, opened_at "
+            "entry_intent_id, exit_intent_id, entry_price, opened_at, updated_at "
             "FROM positions WHERE market=? AND execution_mode='legacy'",
             (market,),
         )
@@ -736,7 +1198,7 @@ class PositionStore:
             for key, rows in positions.items()
             if key in legacy
             for row in rows
-            if row["status"] != "OPEN"
+            if row["status"] not in {"OPEN", "PENDING_ENTRY", "PENDING_EXIT"}
         ]
         duplicate_positions = [
             {"identity": dict(zip(("legacy_holding_id", "account_ref", "symbol"), key)),
@@ -756,6 +1218,36 @@ class PositionStore:
             and legacy_entry_fingerprints[key]
             not in position_entry_fingerprints[key]
         ]
+        pending_positions: list[dict[str, Any]] = []
+        stale_pending_positions: list[dict[str, Any]] = []
+        exit_unknown_positions: list[dict[str, Any]] = []
+        for row in position_rows:
+            status = str(row["status"])
+            if status not in {"PENDING_ENTRY", "PENDING_EXIT", "EXIT_UNKNOWN"}:
+                continue
+            age_seconds = _age_seconds(row["updated_at"])
+            item = {
+                "position_id": str(row["id"]),
+                "legacy_holding_id": str(row["legacy_holding_id"]),
+                "account_ref": account_fingerprint(row["account_id"]),
+                "symbol": str(row["symbol"]).upper(),
+                "status": status,
+                "intent_id": (
+                    row["entry_intent_id"]
+                    if status == "PENDING_ENTRY"
+                    else row["exit_intent_id"]
+                ),
+                "age_seconds": age_seconds,
+            }
+            if status == "EXIT_UNKNOWN":
+                exit_unknown_positions.append(item)
+            elif (
+                age_seconds is None
+                or age_seconds >= pending_stale_after_seconds
+            ):
+                stale_pending_positions.append(item)
+            else:
+                pending_positions.append(item)
         unresolved_mirror_errors = self._fetchall(
             "SELECT id, legacy_holding_id, account_ref, operation, error_type, "
             "error_message, created_at FROM position_mirror_errors "
@@ -827,6 +1319,9 @@ class PositionStore:
             invalid_legacy_rows,
             unresolved_mirror_errors,
             intent_link_mismatches,
+            pending_positions,
+            stale_pending_positions,
+            exit_unknown_positions,
         )
         return {
             "market": market,
@@ -837,6 +1332,9 @@ class PositionStore:
                 "open_positions": sum(
                     row["status"] == "OPEN" for row in position_rows
                 ),
+                "pending_positions": len(pending_positions),
+                "stale_pending_positions": len(stale_pending_positions),
+                "exit_unknown_positions": len(exit_unknown_positions),
             },
             "missing_positions": missing_positions,
             "extra_open_positions": extra_open_positions,
@@ -846,6 +1344,9 @@ class PositionStore:
             "invalid_legacy_rows": invalid_legacy_rows,
             "unresolved_mirror_errors": unresolved_mirror_errors,
             "intent_link_mismatches": intent_link_mismatches,
+            "pending_positions": pending_positions,
+            "stale_pending_positions": stale_pending_positions,
+            "exit_unknown_positions": exit_unknown_positions,
         }
 
 

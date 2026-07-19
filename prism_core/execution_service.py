@@ -201,6 +201,19 @@ class ExecutionService:
             return self._intent_store.blocked_result(existing)
         await asyncio.to_thread(self._intent_store.mark_submitting, intent.id)
 
+        return await self._execute_submitting_order(
+            method, *args, intent=intent, **kwargs
+        )
+
+    async def _execute_submitting_order(
+        self,
+        method,
+        *args,
+        intent: OrderIntent,
+        **kwargs,
+    ):
+        """Call broker and persist the result for an already-SUBMITTING intent."""
+
         try:
             result = await method(*args, **kwargs)
         except asyncio.CancelledError as exc:
@@ -273,6 +286,62 @@ class ExecutionService:
             broker=broker,
         )
 
+    async def _execute_pre_reserved_order(
+        self,
+        method,
+        *args,
+        intent: OrderIntent,
+        reservation: Any,
+        side: str,
+        **kwargs,
+    ):
+        if self._intent_store is None:
+            raise RuntimeError(
+                "pre-reserved execution requires the originating IntentStore"
+            )
+        claim_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._intent_store.claim_reservation,
+                reservation,
+                intent,
+                expected_side=side,
+            )
+        )
+        try:
+            await asyncio.shield(claim_task)
+        except asyncio.CancelledError:
+            claimed = False
+            try:
+                await asyncio.shield(claim_task)
+                claimed = True
+            except Exception as claim_error:
+                logger.critical(
+                    "[ORDER_INTENT] cancelled pre-reserved claim failed id=%s error=%s",
+                    intent.id,
+                    type(claim_error).__name__,
+                )
+            if claimed:
+                try:
+                    await asyncio.to_thread(
+                        self._intent_store.record_result,
+                        intent,
+                        status="UNKNOWN",
+                        accepted=False,
+                        response=None,
+                        error=asyncio.CancelledError(),
+                    )
+                except Exception as persistence_error:
+                    logger.critical(
+                        "[ORDER_INTENT] cancelled pre-reserved UNKNOWN persistence "
+                        "failed id=%s error=%s",
+                        intent.id,
+                        type(persistence_error).__name__,
+                    )
+            raise
+        return await self._execute_submitting_order(
+            method, *args, intent=intent, **kwargs
+        )
+
     def _execute_order_sync(
         self,
         method,
@@ -296,6 +365,18 @@ class ExecutionService:
             )
             return self._intent_store.blocked_result(existing)
         self._intent_store.mark_submitting(intent.id)
+
+        return self._execute_submitting_order_sync(
+            method, *args, intent=intent, **kwargs
+        )
+
+    def _execute_submitting_order_sync(
+        self,
+        method,
+        *args,
+        intent: OrderIntent,
+        **kwargs,
+    ):
         try:
             result = method(*args, **kwargs)
         except Exception as exc:
@@ -350,6 +431,26 @@ class ExecutionService:
             broker=broker,
         )
 
+    def _execute_pre_reserved_order_sync(
+        self,
+        method,
+        *args,
+        intent: OrderIntent,
+        reservation: Any,
+        side: str,
+        **kwargs,
+    ):
+        if self._intent_store is None:
+            raise RuntimeError(
+                "pre-reserved execution requires the originating IntentStore"
+            )
+        self._intent_store.claim_reservation(
+            reservation, intent, expected_side=side
+        )
+        return self._execute_submitting_order_sync(
+            method, *args, intent=intent, **kwargs
+        )
+
     async def execute_buy(
         self,
         *args,
@@ -373,6 +474,38 @@ class ExecutionService:
             self._active_trader.async_sell_stock,
             *args,
             intent=intent,
+            **kwargs,
+        )
+
+    async def execute_pre_reserved_buy(
+        self,
+        *args,
+        intent: OrderIntent,
+        reservation: Any,
+        **kwargs,
+    ):
+        return await self._execute_pre_reserved_order(
+            self._active_trader.async_buy_stock,
+            *args,
+            intent=intent,
+            reservation=reservation,
+            side="BUY",
+            **kwargs,
+        )
+
+    async def execute_pre_reserved_sell(
+        self,
+        *args,
+        intent: OrderIntent,
+        reservation: Any,
+        **kwargs,
+    ):
+        return await self._execute_pre_reserved_order(
+            self._active_trader.async_sell_stock,
+            *args,
+            intent=intent,
+            reservation=reservation,
+            side="SELL",
             **kwargs,
         )
 
@@ -416,6 +549,43 @@ class ExecutionService:
             intent=intent,
             **kwargs,
         )
+
+    def execute_pre_reserved_reserved_buy(
+        self,
+        *args,
+        intent: OrderIntent,
+        reservation: Any,
+        **kwargs,
+    ):
+        return self._execute_pre_reserved_order_sync(
+            self._active_trader.buy_reserved_order,
+            *args,
+            intent=intent,
+            reservation=reservation,
+            side="BUY",
+            **kwargs,
+        )
+
+    def execute_pre_reserved_reserved_sell(
+        self,
+        *args,
+        intent: OrderIntent,
+        reservation: Any,
+        **kwargs,
+    ):
+        return self._execute_pre_reserved_order_sync(
+            self._active_trader.sell_reserved_order,
+            *args,
+            intent=intent,
+            reservation=reservation,
+            side="SELL",
+            **kwargs,
+        )
+
+    # Explicit sync aliases keep call sites readable when the underlying KIS
+    # operation is a synchronous reserved-order endpoint.
+    execute_pre_reserved_buy_sync = execute_pre_reserved_reserved_buy
+    execute_pre_reserved_sell_sync = execute_pre_reserved_reserved_sell
 
 
 __all__ = ["ExecutionService", "OrderOutcomeUnknown"]
