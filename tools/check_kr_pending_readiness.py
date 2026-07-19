@@ -13,7 +13,9 @@ import asyncio
 import json
 import os
 import sqlite3
-import subprocess
+
+# Fixed read-only crontab command; never executes caller-controlled input.
+import subprocess  # nosec B404
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -111,8 +113,9 @@ def _read_dotenv_gate(path: Path) -> tuple[bool, str | None, str | None]:
 
 def _read_crontab() -> tuple[bool, str, str | None]:
     try:
-        result = subprocess.run(
-            ["crontab", "-l"],
+        # Absolute executable and constant argv; shell is never used.
+        result = subprocess.run(  # nosec B603
+            ["/usr/bin/crontab", "-l"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -136,10 +139,9 @@ def _read_only_connection(db_path: str | Path) -> sqlite3.Connection:
 
 def _position_status_counts(connection: sqlite3.Connection) -> dict[str, int]:
     counts = {status: 0 for status in _BLOCKING_POSITION_STATUSES}
-    placeholders = ",".join("?" for _ in _BLOCKING_POSITION_STATUSES)
     rows = connection.execute(
-        f"SELECT status, COUNT(*) FROM positions "
-        f"WHERE market='KR' AND status IN ({placeholders}) GROUP BY status",
+        "SELECT status, COUNT(*) FROM positions "
+        "WHERE market='KR' AND status IN (?, ?, ?, ?) GROUP BY status",
         _BLOCKING_POSITION_STATUSES,
     ).fetchall()
     counts.update({str(status): int(count) for status, count in rows})
