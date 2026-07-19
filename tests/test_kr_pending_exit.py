@@ -11,6 +11,7 @@ import pytest
 
 import trading.domestic_stock_trading as domestic_trading
 from prism_core.execution_service import OrderOutcomeUnknown
+from prism_core.exit_effects import EXIT_EFFECT_TYPES, ExitEffectStore
 from prism_core.order_intents import IntentStore
 from prism_core.positions import InvalidPositionTransition, PositionStore
 from stock_tracking_agent import StockTrackingAgent
@@ -27,6 +28,7 @@ def _pending_exit_agent(db_path: Path):
     connection.execute(TABLE_STOCK_HOLDINGS)
     connection.execute(TABLE_TRADING_HISTORY)
     PositionStore(connection).ensure_schema()
+    ExitEffectStore(connection).ensure_schema()
     connection.commit()
     IntentStore(db_path)
 
@@ -112,6 +114,10 @@ def _state(db_path: Path, intent_id: str) -> tuple[int, int, str, str]:
             "SELECT status FROM positions WHERE exit_intent_id=?", (intent_id,)
         ).fetchone()[0]
     return holdings, history, intent_status, position_status
+
+
+def _effects(connection: sqlite3.Connection, intent_id: str) -> list[dict]:
+    return ExitEffectStore(connection).list_for_intent(intent_id)
 
 
 def test_prepare_persists_created_pending_exit_without_external_effects(
@@ -265,10 +271,38 @@ def test_complete_exit_rolls_back_legacy_writes_when_position_finalize_fails(
         with pytest.raises(sqlite3.OperationalError):
             agent._complete_pending_kr_exit(prepared)
         state = _state(db_path, prepared.intent.id)
+        effects = _effects(connection, prepared.intent.id)
     finally:
         connection.close()
 
     assert state == (1, 0, "SUBMITTED", "PENDING_EXIT")
+    assert effects == []
+    assert agent.message_queue == []
+
+
+def test_complete_exit_rolls_back_closed_state_when_effect_enqueue_fails(
+    monkeypatch, tmp_path
+):
+    db_path = tmp_path / "complete-outbox-rollback.sqlite"
+    agent, connection = _pending_exit_agent(db_path)
+    stock = _insert_open_holding(connection)
+    prepared = _prepare(agent, stock)
+    _set_intent_status(db_path, prepared.intent.id, "SUBMITTED")
+
+    def fail_enqueue(_store, **_kwargs):
+        raise sqlite3.OperationalError("injected effect enqueue failure")
+
+    monkeypatch.setattr(ExitEffectStore, "enqueue_exit_effects", fail_enqueue)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            agent._complete_pending_kr_exit(prepared)
+        state = _state(db_path, prepared.intent.id)
+        effects = _effects(connection, prepared.intent.id)
+    finally:
+        connection.close()
+
+    assert state == (1, 0, "SUBMITTED", "PENDING_EXIT")
+    assert effects == []
     assert agent.message_queue == []
 
 
@@ -294,12 +328,18 @@ def test_complete_exit_deletes_only_target_pyramid_row_and_queues_message(tmp_pa
             "SELECT status FROM positions WHERE id=?",
             (f"legacy:KR:{target['id']}",),
         ).fetchone()[0]
+        effects = _effects(connection, prepared.intent.id)
     finally:
         connection.close()
 
     assert remaining_ids == [sibling["id"]]
     assert tuple(history) == (70000, 72000, "stop")
     assert state == "CLOSED"
+    assert [effect["effect_type"] for effect in effects] == list(EXIT_EFFECT_TYPES)
+    assert {effect["status"] for effect in effects} == {"PENDING"}
+    assert all(
+        effect["payload"]["event_id"] == prepared.intent.id for effect in effects
+    )
     assert len(agent.message_queue) == 1
     assert agent._msg_types == ["analysis"]
 
@@ -649,6 +689,32 @@ async def test_batch_post_closed_cancellation_does_not_quarantine(
         connection.close()
 
     assert events == ["prepare", "execute", "complete", "post-commit"]
+
+
+@pytest.mark.asyncio
+async def test_post_closed_cancellation_keeps_durable_effect_candidates(tmp_path):
+    db_path = tmp_path / "post-closed-effect-candidates.sqlite"
+    agent, connection = _pending_exit_agent(db_path)
+    stock = _insert_open_holding(connection)
+    prepared = _prepare(agent, stock)
+    _set_intent_status(db_path, prepared.intent.id, "SUBMITTED")
+    agent._complete_pending_kr_exit(prepared)
+
+    async def cancel_post_commit(_prepared):
+        raise asyncio.CancelledError
+
+    agent._run_pending_kr_exit_post_commit = cancel_post_commit
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await agent._run_pending_kr_exit_post_commit(prepared)
+        state = _state(db_path, prepared.intent.id)
+        effects = _effects(connection, prepared.intent.id)
+    finally:
+        connection.close()
+
+    assert state == (0, 1, "SUBMITTED", "CLOSED")
+    assert [effect["effect_type"] for effect in effects] == list(EXIT_EFFECT_TYPES)
+    assert {effect["status"] for effect in effects} == {"PENDING"}
 
 
 @pytest.mark.parametrize(
