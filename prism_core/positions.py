@@ -1364,15 +1364,20 @@ class PositionStore:
                 str(row[1])
                 for row in self._execute("PRAGMA table_info(order_intents)").fetchall()
             }
-            status_expression = (
-                "status" if "status" in intent_columns else "NULL AS status"
-            )
-            intent_rows = self._fetchall(
-                "SELECT id, account_id, symbol, side, source_position_id, "
-                f"{status_expression} "
-                "FROM order_intents WHERE market=? AND source_position_id IS NOT NULL",
-                (market,),
-            )
+            if "status" in intent_columns:
+                intent_rows = self._fetchall(
+                    "SELECT id, account_id, symbol, side, source_position_id, status "
+                    "FROM order_intents "
+                    "WHERE market=? AND source_position_id IS NOT NULL",
+                    (market,),
+                )
+            else:
+                intent_rows = self._fetchall(
+                    "SELECT id, account_id, symbol, side, source_position_id, "
+                    "NULL AS status FROM order_intents "
+                    "WHERE market=? AND source_position_id IS NOT NULL",
+                    (market,),
+                )
             intents_by_id = {str(row["id"]): row for row in intent_rows}
             for position in position_rows:
                 exit_intent_id = position["exit_intent_id"]
