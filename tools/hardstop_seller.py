@@ -209,6 +209,7 @@ def claim_lock(conn: sqlite3.Connection, ticker: str, market: str, run_id: str) 
         cur = conn.execute(
             "UPDATE loop_a_position_state SET owner_lock=?, lock_expires_at=?, last_eval_ts=? "
             "WHERE ticker=? AND market=? "
+            "AND state != 'QUARANTINED' "
             "AND (owner_lock IS NULL OR lock_expires_at IS NULL OR lock_expires_at < ?)",
             (run_id, expires, _iso(now), ticker, market, _iso(now)),
         )
@@ -366,10 +367,263 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
     return summary
 
 
+async def _act_on_pending_kr_trigger(
+    conn: sqlite3.Connection,
+    ticker: str,
+    stock_data: Dict[str, Any],
+    reason: str,
+    run_id: str,
+    ag: Any,
+    summary: Dict[str, Any],
+) -> None:
+    """Run one gate-enabled KR exit without exposing legacy effects early."""
+
+    from prism_core.execution_service import (
+        OrderOutcomeUnknown,
+        normalize_checked_holding,
+    )
+
+    prepared = None
+    sold_qty = 0
+    order_no = None
+    completed = False
+
+    def quarantine_if_allowed() -> None:
+        if prepared is None:
+            return
+        try:
+            ag._quarantine_pending_kr_exit(prepared)
+        except Exception as quarantine_error:
+            logger.critical(
+                "[POSITION-PENDING][KR] hardstop quarantine failed "
+                "symbol=%s intent=%s error=%s",
+                ticker,
+                prepared.intent.id,
+                type(quarantine_error).__name__,
+            )
+
+    def finish_uncertain(status: str = "UNKNOWN") -> None:
+        record_inflight(
+            conn,
+            ticker,
+            "KR",
+            run_id,
+            sold_qty,
+            status,
+            reason,
+            str(order_no) if order_no else None,
+        )
+        release_lock(
+            conn, ticker, "KR", run_id, new_state="QUARANTINED"
+        )
+
+    try:
+        async with _open_context(
+            "KR", account_name=stock_data.get("account_name")
+        ) as seller:
+            checked_holding = await asyncio.to_thread(
+                seller.get_holding_quantity_checked, ticker
+            )
+        holding_state, checked_qty = normalize_checked_holding(checked_holding)
+        if holding_state == "UNKNOWN":
+            logger.critical(
+                "[POSITION-PENDING][KR] hardstop balance UNKNOWN "
+                "symbol=%s action=retry",
+                ticker,
+            )
+            release_lock(conn, ticker, "KR", run_id, new_state="HOLDING")
+            return
+        if holding_state == "HELD":
+            sold_qty = int(checked_qty or 0)
+            if sold_qty <= 0:
+                logger.critical(
+                    "[POSITION-PENDING][KR] hardstop invalid HELD quantity "
+                    "symbol=%s quantity=%s action=retry",
+                    ticker,
+                    checked_qty,
+                )
+                release_lock(conn, ticker, "KR", run_id, new_state="HOLDING")
+                return
+            prepared = ag._prepare_pending_kr_exit(
+                stock_data=stock_data,
+                sell_reason=reason,
+                exit_kind="stop",
+                source="hardstop",
+                quantity=sold_qty,
+                order_style="market",
+                limit_price=None,
+            )
+            result = await ag._execute_pending_kr_exit(prepared)
+        elif holding_state == "FLAT":
+            prepared = ag._prepare_pending_kr_exit(
+                stock_data=stock_data,
+                sell_reason=reason,
+                exit_kind="stop",
+                source="hardstop",
+                quantity=None,
+                order_style="market",
+                limit_price=None,
+            )
+            result = await ag._execute_pending_kr_local_flat_exit(prepared)
+        else:
+            logger.critical(
+                "[POSITION-PENDING][KR] hardstop invalid balance state "
+                "symbol=%s state=%s action=retry",
+                ticker,
+                holding_state,
+            )
+            release_lock(conn, ticker, "KR", run_id, new_state="HOLDING")
+            return
+
+        result_intent_id = str((result or {}).get("intent_id") or "")
+        intent_status = str(
+            (result or {}).get("intent_status") or "UNKNOWN"
+        ).upper()
+        order_no = (result or {}).get("order_no")
+        if result_intent_id != prepared.intent.id:
+            logger.critical(
+                "[POSITION-PENDING][KR] hardstop intent mismatch "
+                "symbol=%s expected=%s actual=%s action=quarantine",
+                ticker,
+                prepared.intent.id,
+                result_intent_id or "missing",
+            )
+            quarantine_if_allowed()
+            finish_uncertain()
+            return
+        logger.warning(
+            "[POSITION-PENDING][KR] hardstop result symbol=%s intent=%s status=%s",
+            ticker,
+            prepared.intent.id,
+            intent_status,
+        )
+        if intent_status == "SUBMITTED":
+            ag._complete_pending_kr_exit(prepared)
+            record_inflight(
+                conn,
+                ticker,
+                "KR",
+                run_id,
+                sold_qty,
+                "FILLED",
+                reason,
+                str(order_no) if order_no else None,
+            )
+            release_lock(conn, ticker, "KR", run_id, new_state="SOLD")
+            summary["sold"] += 1
+            completed = True
+            try:
+                await ag._run_pending_kr_exit_post_commit(prepared)
+            except Exception as post_commit_error:
+                logger.warning(
+                    "[KR] %s post-CLOSED effects failed: %s",
+                    ticker,
+                    post_commit_error,
+                )
+            try:
+                await ag.send_telegram_message(CHAT_ID, await_broadcast=True)
+            except Exception as telegram_error:
+                logger.warning(
+                    "[KR] %s telegram flush failed: %s", ticker, telegram_error
+                )
+            try:
+                from sell_broadcast import publish_loop_sell
+
+                await publish_loop_sell(
+                    market="KR",
+                    ticker=ticker,
+                    company_name=stock_data.get("company_name", ticker),
+                    price=float(stock_data.get("current_price", 0) or 0),
+                    buy_price=float(stock_data.get("buy_price", 0) or 0),
+                    sell_reason=reason,
+                    trade_result=result,
+                )
+            except Exception as publish_error:
+                logger.warning(
+                    "[KR] %s sell signal publish failed (non-critical): %s",
+                    ticker,
+                    publish_error,
+                )
+            return
+        if intent_status == "FAILED":
+            ag._fail_pending_kr_exit(prepared)
+            record_inflight(
+                conn,
+                ticker,
+                "KR",
+                run_id,
+                sold_qty,
+                "REJECTED",
+                reason,
+                str(order_no) if order_no else None,
+            )
+            release_lock(conn, ticker, "KR", run_id, new_state="HOLDING")
+            logger.critical(
+                "[POSITION-PENDING][KR] hardstop exit rejected symbol=%s "
+                "intent=%s status=FAILED action=manual_review",
+                ticker,
+                prepared.intent.id,
+            )
+            return
+        if intent_status == "QUEUED":
+            finish_uncertain("QUEUED")
+            return
+
+        quarantine_if_allowed()
+        finish_uncertain()
+    except asyncio.CancelledError:
+        if completed:
+            raise
+        quarantine_if_allowed()
+        finish_uncertain()
+        raise
+    except OrderOutcomeUnknown as error:
+        broker_result = (
+            error.broker_result
+            if isinstance(error.broker_result, dict)
+            else {}
+        )
+        order_no = broker_result.get("order_no")
+        quarantine_if_allowed()
+        logger.critical(
+            "[POSITION-PENDING][KR] hardstop outcome UNKNOWN "
+            "symbol=%s intent=%s",
+            ticker,
+            error.intent_id,
+        )
+        finish_uncertain()
+    except Exception as error:
+        if completed:
+            logger.critical(
+                "[POSITION-PENDING][KR] hardstop post-CLOSED failure "
+                "symbol=%s error=%s",
+                ticker,
+                type(error).__name__,
+            )
+            return
+        if prepared is None:
+            logger.error(
+                "[POSITION-PENDING][KR] hardstop prepare failed "
+                "symbol=%s error=%s",
+                ticker,
+                type(error).__name__,
+            )
+            release_lock(conn, ticker, "KR", run_id, new_state="HOLDING")
+            return
+        quarantine_if_allowed()
+        logger.critical(
+            "[POSITION-PENDING][KR] hardstop unresolved "
+            "symbol=%s intent=%s error=%s",
+            ticker,
+            prepared.intent.id,
+            type(error).__name__,
+        )
+        finish_uncertain()
+
+
 async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, Any],
                           reason: str, run_id: str, agent: Dict[str, Any],
                           summary: Dict[str, Any]) -> None:
-    qty_hint = 0
     # Guard 1: an inflight SELL for this ticker already exists -> leave it alone.
     if has_open_inflight(conn, ticker, market):
         summary["skipped"] += 1
@@ -396,6 +650,17 @@ async def _act_on_trigger(conn, market: str, ticker: str, stock_data: Dict[str, 
             agent["ref"] = await _make_agent(market)
         ag = agent["ref"]
         logger.warning("[LIVE][%s] SELLING %s reason=%s", market, ticker, reason)
+        if market == "KR" and ag._position_pending_kr_enabled():
+            await _act_on_pending_kr_trigger(
+                conn,
+                ticker,
+                stock_data,
+                reason,
+                run_id,
+                ag,
+                summary,
+            )
+            return
         # Hardstop is the catastrophic hard-stop => always a 'stop' exit (recorded in
         # trading_history.exit_kind so the re-entry cooldown treats it as churn-risk
         # even if it tags out at a marginal profit).

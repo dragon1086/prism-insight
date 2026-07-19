@@ -20,6 +20,22 @@ from prism_core.order_intents import IntentStore, OrderIntent
 logger = logging.getLogger(__name__)
 
 
+def normalize_checked_holding(result: Any) -> tuple[str, int | None]:
+    """Return only authoritative HELD/FLAT results; collapse malformed data."""
+
+    if not isinstance(result, tuple) or len(result) != 2:
+        return "UNKNOWN", None
+    state = str(result[0] or "UNKNOWN").upper()
+    quantity = result[1]
+    if state == "HELD" and type(quantity) is int and quantity > 0:
+        return "HELD", quantity
+    if state == "FLAT" and type(quantity) is int and quantity == 0:
+        return "FLAT", 0
+    if state == "UNKNOWN" and quantity is None:
+        return "UNKNOWN", None
+    return "UNKNOWN", None
+
+
 class OrderOutcomeUnknown(RuntimeError):
     """The broker may have accepted the order, so callers must not mark rejection."""
 
@@ -33,6 +49,14 @@ class OrderOutcomeUnknown(RuntimeError):
         super().__init__(f"order outcome unknown for intent {intent_id}")
         self.intent_id = intent_id
         self.broker_result = broker_result
+        self.cause = cause
+
+
+class _LocalFlatPersistenceError(RuntimeError):
+    """Keep capability validation errors distinct from ledger write failures."""
+
+    def __init__(self, cause: BaseException):
+        super().__init__(str(cause))
         self.cause = cause
 
 
@@ -315,6 +339,22 @@ class ExecutionService:
         side: str,
         **kwargs,
     ):
+        await self._claim_pre_reserved(
+            intent=intent,
+            reservation=reservation,
+            side=side,
+        )
+        return await self._execute_submitting_order(
+            method, *args, intent=intent, **kwargs
+        )
+
+    async def _claim_pre_reserved(
+        self,
+        *,
+        intent: OrderIntent,
+        reservation: Any,
+        side: str,
+    ) -> None:
         if self._intent_store is None:
             raise RuntimeError(
                 "pre-reserved execution requires the originating IntentStore"
@@ -358,9 +398,6 @@ class ExecutionService:
                         type(persistence_error).__name__,
                     )
             raise
-        return await self._execute_submitting_order(
-            method, *args, intent=intent, **kwargs
-        )
 
     def _execute_order_sync(
         self,
@@ -527,6 +564,88 @@ class ExecutionService:
             reservation=reservation,
             side="SELL",
             **kwargs,
+        )
+
+    async def execute_pre_reserved_local_flat_sell(
+        self,
+        *,
+        intent: OrderIntent,
+        reservation: Any,
+    ) -> dict[str, Any]:
+        """Audit a committed SELL intent when broker holdings are already flat."""
+
+        if self._intent_store is None:
+            raise RuntimeError(
+                "pre-reserved execution requires the originating IntentStore"
+            )
+        result = {
+            "success": True,
+            "local_flat": True,
+            "quantity": 0,
+        }
+        broker = "LOCAL_RECONCILIATION"
+        intent_store = self._intent_store
+
+        def reconcile_local_flat() -> None:
+            intent_store.claim_reservation(
+                reservation,
+                intent,
+                expected_side="SELL",
+            )
+            try:
+                intent_store.record_result(
+                    intent,
+                    status="SUBMITTED",
+                    accepted=True,
+                    broker=broker,
+                    response=result,
+                )
+            except Exception as exc:
+                raise _LocalFlatPersistenceError(exc) from exc
+
+        reconciliation_task = asyncio.create_task(
+            asyncio.to_thread(reconcile_local_flat)
+        )
+        try:
+            await asyncio.shield(reconciliation_task)
+        except asyncio.CancelledError as cancellation:
+            while not reconciliation_task.done():
+                try:
+                    await asyncio.shield(reconciliation_task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception as reconciliation_error:
+                    logger.critical(
+                        "[ORDER_INTENT] cancelled local-flat reconciliation failed "
+                        "id=%s error=%s",
+                        intent.id,
+                        type(reconciliation_error).__name__,
+                    )
+                    break
+            raise cancellation
+        except _LocalFlatPersistenceError as exc:
+            logger.critical(
+                "[ORDER_INTENT] local-flat persistence failed id=%s",
+                intent.id,
+            )
+            raise OrderOutcomeUnknown(
+                intent.id,
+                broker_result=result,
+                cause=exc.cause,
+            ) from exc
+        logger.info(
+            "[ORDER_INTENT] SUBMITTED id=%s market=%s side=%s symbol=%s broker=%s",
+            intent.id,
+            intent.market,
+            intent.side,
+            intent.symbol,
+            broker,
+        )
+        return self._with_intent_metadata(
+            result,
+            intent=intent,
+            status="SUBMITTED",
+            broker=broker,
         )
 
     async def amend_or_cancel(self, action: str, *args, **kwargs):

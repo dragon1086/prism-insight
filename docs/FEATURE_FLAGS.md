@@ -3,7 +3,7 @@
 > **단일 진실원(intended state).** 릴리즈가 늘어도 "무엇이 실거래에 적용 중인지" 한눈에 보기 위한 문서.
 > 실제 런타임 상태(서버 .env·crontab 기준)는 `tools/feature_status.py`로 대조 — 이 문서와 어긋나면 그 도구가 진실.
 > 관리 주체 = 코딩 에이전트(cokac-bot). 매 릴리즈/승격 시 갱신.
-> 최종 갱신: 2026-07-12.
+> 최종 갱신: 2026-07-19.
 
 ## 상태 정의
 - **LIVE** = 실거래/실발행에 실제 영향. **SHADOW** = 코드 동작하나 로그/관측만(영향 0). **OFF** = 미실행(코드만 존재). **N/A** = 미구현.
@@ -31,6 +31,7 @@
 | Loop A — 고빈도 하드스톱(−7%/시나리오손절) | **LIVE** | `.env HARDSTOP_LIVE=true` (구 `LOOP_A_LIVE`, alias 유효) + cron 10분 | SHADOW 관측 후 승격(06-20) | KR 9–15 / US 9–16. 킬: `HARDSTOP_ENABLED=false` |
 | Loop B — 50MA 종가확인 추세이탈 | **LIVE** | `.env TREND_EXIT_LIVE=true` (구 `LOOP_B_LIVE`) + cron(KR 9–15 / US 9–16) | 백테스트 KR/US 순효과(휩쏘0·추가DD0) + 사용자 승인(06-24) | 코드: `tools/trend_exit_seller.py` (구 `tools/loop_b_trend_exit.py` shim 유효). 킬: `TREND_EXIT_ENABLED=false` |
 | Loop C — 미체결 추격 + KIS TR 래퍼 | **SHADOW** | cron(KR/US */2분, `FILL_CHASER_LIVE` 미설정; 구 `LOOP_C_LIVE` alias) | **신규 KIS 정정/취소 TR 실 KIS 수락 검증**(dry-run/`--selftest`로 페이로드 필드는 검증됨) | 코드: `tools/fill_chaser.py` (구 `tools/loop_c_fill_chaser.py` shim 유효). 매수=체결우선 cross(예산 `FILL_CHASER_BUY_MAX_PREMIUM_PCT`=3%, `FILL_CHASER_BUY_CROSS`=on). 상세로깅 `[LOOP_C][SHADOW]` |
+| KR 주문 선기록(PENDING ENTRY/EXIT) | **OFF** | `.env` 또는 cron inline `POSITION_PENDING_KR_ENABLED=true` (기본 off) | 피라미딩 fill reconciliation + post-CLOSED 외부효과 복구 검증/사용자 승인 | gate OFF 배포만 허용. gate=true에서 피라미딩은 주문 전 차단. 활성화 전 `failed_exit_linked_open_positions`, PENDING/EXIT_UNKNOWN 0 확인 필수 |
 | 재진입 쿨다운 게이트(매수측) | **SHADOW** | `REENTRY_COOLDOWN_LIVE` 미설정 | SHADOW 며칠 관측(`[REENTRY_COOLDOWN][SHADOW] WOULD_BLOCK` ↔ 실매수 대조) → LIVE 승격 | 코드: `reentry_cooldown.py` (KR/US 매수 caller 훅). 손실매도 후 24h 재매수 차단(승리후 0h). prod 이력검증=리벤지 3건 차단·오탐0 |
 | 비전 배관(S1) / 렌더QA(S2) | **ON(log-only)** | `PRISM_FEATURE_VISION=on` | 무손상 인프라 | 렌더QA 비차단 경고만 |
 | 비전 매수 품질검사(S3 + S3.5 오닐 일/주봉·RS) | **SHADOW** | `PRISM_FEATURE_VISION=on` + `PRISM_VISION_SHADOW=true` | **A/B 홀드아웃 측정(승률·손절률·MDD 순효과)** → 미정 | 관측 로그 `[BUY_QUALITY][SHADOW]`. 매매영향 0 |
@@ -55,6 +56,7 @@ SHADOW→LIVE **자동 승격**은 아래를 **모두** 충족할 때만:
 - **비전 매수게이트(S3)**: A/B 측정 설계 확정·데이터 축적 후 — **수익영향이라 사용자 확인 후**.
 
 ## 변경 이력
+- 2026-07-19: **KR PENDING EXIT 배선 추가, gate OFF 유지** — batch/hardstop/trend에 broker-first lifecycle을 연결하고 `feature_status.py`에 `.env`와 모든 active cron inline gate 상태를 노출. 피라미딩 accepted-but-unfilled 재시작 방어 및 post-CLOSED 외부효과 복구 절차를 포함한 운영 reconciliation 완료 전 활성화 금지.
 - 2026-06-23: 레지스트리 신설. 현황 기록(Loop A LIVE / B·C SHADOW미스케줄 / 비전 SHADOW관측).
 - 2026-06-24: S6 발행 게이트 갱신 — 배선 구현 완료 반영. 게이트 `PRISM_FEATURE_INSIGHT_IMAGE=on` + `vision_available()`(이전 "발행 배선 미구현" 기재 정정). `feature_status.py`도 동일 로직으로 LIVE/OFF 보고.
 - 2026-06-24: **승격·활성화 반영** — Loop B → **LIVE**(`LOOP_B_LIVE=true`+cron, 백테스트 KR/US 통과+승인). Loop C → **SHADOW**(cron 설치, `LOOP_C_LIVE` 미설정; 상세로깅+selftest 추가). S6 발행 → **LIVE**(`PRISM_FEATURE_INSIGHT_IMAGE=on`, 사용자 승인; 매매마커·용어설명 포함).

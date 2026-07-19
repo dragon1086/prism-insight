@@ -480,6 +480,381 @@ def test_pre_reserved_sync_sell_binds_capability_side_before_broker(tmp_path):
     assert broker.calls == 1
 
 
+def test_pre_reserved_local_flat_sell_consumes_capability_without_broker(
+    tmp_path, monkeypatch
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(side="sell", source_position_id="local-flat")
+    connection = sqlite3.connect(db_path)
+    connection.execute("BEGIN IMMEDIATE")
+    _, reservation = store.reserve_in_transaction(connection, intent)
+    connection.commit()
+    broker = FakeBroker()
+    observed_statuses = []
+    real_record_result = store.record_result
+
+    def observe_submitting(*args, **kwargs):
+        with sqlite3.connect(db_path) as verify:
+            observed_statuses.append(
+                verify.execute(
+                    "SELECT status FROM order_intents WHERE id=?", (intent.id,)
+                ).fetchone()[0]
+            )
+        return real_record_result(*args, **kwargs)
+
+    monkeypatch.setattr(store, "record_result", observe_submitting)
+
+    result = asyncio.run(
+        ExecutionService(
+            broker, intent_store=store
+        ).execute_pre_reserved_local_flat_sell(
+            intent=intent, reservation=reservation
+        )
+    )
+
+    assert broker.calls == 0
+    assert observed_statuses == ["SUBMITTING"]
+    assert result == {
+        "success": True,
+        "local_flat": True,
+        "quantity": 0,
+        "intent_id": intent.id,
+        "intent_status": "SUBMITTED",
+        "intent_broker": "LOCAL_RECONCILIATION",
+    }
+    with sqlite3.connect(db_path) as verify:
+        assert verify.execute(
+            "SELECT status FROM order_intents WHERE id=?", (intent.id,)
+        ).fetchone() == ("SUBMITTED",)
+        rows = verify.execute(
+            "SELECT broker, accepted, status, raw_response_json "
+            "FROM broker_orders WHERE intent_id=?",
+            (intent.id,),
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][:3] == ("LOCAL_RECONCILIATION", 1, "SUBMITTED")
+    assert '"success": true' in rows[0][3]
+    assert '"local_flat": true' in rows[0][3]
+    assert '"quantity": 0' in rows[0][3]
+
+
+def test_pre_reserved_local_flat_sell_rejects_wrong_side_without_audit(tmp_path):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(side="buy", source_position_id="local-flat-wrong-side")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _, reservation = store.reserve_in_transaction(connection, intent)
+        connection.commit()
+    broker = FakeBroker()
+
+    with pytest.raises(ValueError, match="side"):
+        asyncio.run(
+            ExecutionService(
+                broker, intent_store=store
+            ).execute_pre_reserved_local_flat_sell(
+                intent=intent, reservation=reservation
+            )
+        )
+
+    assert broker.calls == 0
+    intents, orders = _rows(db_path)
+    assert intents[0][0] == "CREATED"
+    assert orders == []
+
+
+def test_pre_reserved_local_flat_sell_rejects_foreign_capability_without_audit(
+    tmp_path,
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    originating_store = IntentStore(tmp_path / "origin.sqlite")
+    foreign_store = IntentStore(tmp_path / "foreign.sqlite")
+    intent = _intent(side="sell", source_position_id="local-flat-foreign")
+    with sqlite3.connect(originating_store.db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _, reservation = originating_store.reserve_in_transaction(connection, intent)
+        connection.commit()
+    broker = FakeBroker()
+
+    with pytest.raises(TypeError, match="valid unused"):
+        asyncio.run(
+            ExecutionService(
+                broker, intent_store=foreign_store
+            ).execute_pre_reserved_local_flat_sell(
+                intent=intent, reservation=reservation
+            )
+        )
+
+    assert broker.calls == 0
+    assert _rows(originating_store.db_path)[1] == []
+    assert _rows(foreign_store.db_path) == ([], [])
+
+
+def test_pre_reserved_local_flat_sell_rejects_used_capability_without_new_audit(
+    tmp_path,
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(side="sell", source_position_id="local-flat-used")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _, reservation = store.reserve_in_transaction(connection, intent)
+        connection.commit()
+    broker = FakeBroker()
+    service = ExecutionService(broker, intent_store=store)
+
+    asyncio.run(
+        service.execute_pre_reserved_local_flat_sell(
+            intent=intent, reservation=reservation
+        )
+    )
+    with pytest.raises(TypeError, match="valid unused"):
+        asyncio.run(
+            service.execute_pre_reserved_local_flat_sell(
+                intent=intent, reservation=reservation
+            )
+        )
+
+    assert broker.calls == 0
+    assert len(_rows(db_path)[1]) == 1
+
+
+def test_pre_reserved_local_flat_sell_rejects_rolled_back_capability_without_audit(
+    tmp_path,
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(side="sell", source_position_id="local-flat-rolled-back")
+    connection = sqlite3.connect(db_path)
+    connection.execute("BEGIN IMMEDIATE")
+    _, reservation = store.reserve_in_transaction(connection, intent)
+    connection.rollback()
+    broker = FakeBroker()
+
+    with pytest.raises(RuntimeError, match="not in CREATED"):
+        asyncio.run(
+            ExecutionService(
+                broker, intent_store=store
+            ).execute_pre_reserved_local_flat_sell(
+                intent=intent, reservation=reservation
+            )
+        )
+
+    assert broker.calls == 0
+    assert _rows(db_path) == ([], [])
+
+
+def test_pre_reserved_local_flat_sell_joins_cancelled_delayed_claim(
+    tmp_path, monkeypatch
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(side="sell", source_position_id="local-flat-cancel-claim")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _, reservation = store.reserve_in_transaction(connection, intent)
+        connection.commit()
+    broker = FakeBroker()
+    started = threading.Event()
+    release = threading.Event()
+    real_claim = store.claim_reservation
+
+    def delayed_claim(*args, **kwargs):
+        started.set()
+        assert release.wait(timeout=2)
+        return real_claim(*args, **kwargs)
+
+    monkeypatch.setattr(store, "claim_reservation", delayed_claim)
+
+    async def exercise():
+        task = asyncio.create_task(
+            ExecutionService(
+                broker, intent_store=store
+            ).execute_pre_reserved_local_flat_sell(
+                intent=intent, reservation=reservation
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert broker.calls == 0
+    intents, orders = _rows(db_path)
+    assert intents[0][0] == "SUBMITTED"
+    assert len(orders) == 1
+    assert orders[0][0:2] == (1, "SUBMITTED")
+    assert orders[0][4] == "LOCAL_RECONCILIATION"
+
+
+def test_pre_reserved_local_flat_sell_joins_cancelled_delayed_record(
+    tmp_path, monkeypatch
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(side="sell", source_position_id="local-flat-cancel-record")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _, reservation = store.reserve_in_transaction(connection, intent)
+        connection.commit()
+    broker = FakeBroker()
+    started = threading.Event()
+    release = threading.Event()
+    real_record = store.record_result
+
+    def delayed_record(*args, **kwargs):
+        started.set()
+        assert release.wait(timeout=2)
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(store, "record_result", delayed_record)
+
+    async def exercise():
+        task = asyncio.create_task(
+            ExecutionService(
+                broker, intent_store=store
+            ).execute_pre_reserved_local_flat_sell(
+                intent=intent, reservation=reservation
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert broker.calls == 0
+    intents, orders = _rows(db_path)
+    assert intents[0][0] == "SUBMITTED"
+    assert len(orders) == 1
+    assert orders[0][0:2] == (1, "SUBMITTED")
+    assert orders[0][4] == "LOCAL_RECONCILIATION"
+
+
+def test_pre_reserved_local_flat_sell_joins_after_repeated_cancellation(
+    tmp_path, monkeypatch
+):
+    from prism_core.execution_service import ExecutionService
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(side="sell", source_position_id="local-flat-repeat-cancel")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _, reservation = store.reserve_in_transaction(connection, intent)
+        connection.commit()
+    broker = FakeBroker()
+    started = threading.Event()
+    release = threading.Event()
+    real_record = store.record_result
+
+    def delayed_record(*args, **kwargs):
+        started.set()
+        assert release.wait(timeout=2)
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(store, "record_result", delayed_record)
+
+    async def exercise():
+        task = asyncio.create_task(
+            ExecutionService(
+                broker, intent_store=store
+            ).execute_pre_reserved_local_flat_sell(
+                intent=intent, reservation=reservation
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    assert broker.calls == 0
+    intents, orders = _rows(db_path)
+    assert intents[0][0] == "SUBMITTED"
+    assert len(orders) == 1
+    assert orders[0][0:2] == (1, "SUBMITTED")
+    assert orders[0][4] == "LOCAL_RECONCILIATION"
+
+
+def test_pre_reserved_local_flat_sell_record_failure_is_unknown_without_audit(
+    tmp_path, monkeypatch
+):
+    from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
+    from prism_core.order_intents import IntentStore
+
+    db_path = tmp_path / "orders.sqlite"
+    store = IntentStore(db_path)
+    intent = _intent(side="sell", source_position_id="local-flat-record-failure")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _, reservation = store.reserve_in_transaction(connection, intent)
+        connection.commit()
+    broker = FakeBroker()
+
+    def fail_record(*_args, **_kwargs):
+        raise sqlite3.OperationalError("simulated local-flat audit failure")
+
+    monkeypatch.setattr(store, "record_result", fail_record)
+
+    with pytest.raises(OrderOutcomeUnknown) as raised:
+        asyncio.run(
+            ExecutionService(
+                broker, intent_store=store
+            ).execute_pre_reserved_local_flat_sell(
+                intent=intent, reservation=reservation
+            )
+        )
+
+    assert isinstance(raised.value.cause, sqlite3.OperationalError)
+    assert raised.value.broker_result == {
+        "success": True,
+        "local_flat": True,
+        "quantity": 0,
+    }
+    assert broker.calls == 0
+    intents, orders = _rows(db_path)
+    assert intents[0][0] == "SUBMITTING"
+    assert orders == []
+
+
 def test_explicit_broker_rejection_is_recorded_as_failed(tmp_path):
     from prism_core.execution_service import ExecutionService
     from prism_core.order_intents import IntentStore

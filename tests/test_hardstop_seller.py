@@ -12,9 +12,11 @@ Telegram stay consistent. Safety-critical guards covered:
 Run in the KR (root) pytest session.
 """
 import asyncio
+import os
 import sys
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,17 +27,31 @@ import tools.hardstop_seller as la  # noqa: E402
 
 # ── Fakes ──────────────────────────────────────────────────────────────────────
 class FakeTrader:
-    def __init__(self, prices, holding_qty=None, sell_result=None, calls=None):
+    def __init__(
+        self,
+        prices,
+        holding_qty=None,
+        sell_result=None,
+        calls=None,
+        holding_check=None,
+    ):
         self._prices = prices
         self._holding_qty = holding_qty or {}
         self._sell_result = sell_result or {"success": True, "order_no": "ORD1", "message": "ok"}
         self.calls = calls if calls is not None else []
+        self._holding_check = holding_check
 
     def get_current_price(self, ticker, exchange=None):
         return {"current_price": self._prices.get(ticker, 0)}
 
     def get_holding_quantity(self, ticker):
         return self._holding_qty.get(ticker, 0)
+
+    def get_holding_quantity_checked(self, ticker):
+        if self._holding_check is not None:
+            return self._holding_check
+        quantity = int(self._holding_qty.get(ticker, 0) or 0)
+        return ("HELD", quantity) if quantity > 0 else ("FLAT", 0)
 
     async def async_sell_stock(self, ticker, exchange=None, timeout=30.0,
                                limit_price=None, use_moo=False, quantity=None):
@@ -67,9 +83,81 @@ class FakeAgent:
         self.calls.append(f"link:{kwargs.get('legacy_holding_id')}")
         return True
 
+    @staticmethod
+    def _position_pending_kr_enabled():
+        return os.getenv("POSITION_PENDING_KR_ENABLED", "false").lower() == "true"
+
     async def send_telegram_message(self, chat_id, language="ko", **kwargs):
         self.calls.append("tg")
         return True
+
+
+class PendingFakeAgent(FakeAgent):
+    def __init__(
+        self,
+        calls,
+        *,
+        status="SUBMITTED",
+        failure=None,
+        result_intent_id="intent-hardstop-1",
+    ):
+        super().__init__(calls)
+        self.status = status
+        self.failure = failure
+        self.result_intent_id = result_intent_id
+        self.prepared = SimpleNamespace(
+            intent=SimpleNamespace(id="intent-hardstop-1")
+        )
+        self.prepare_kwargs = None
+
+    def _prepare_pending_kr_exit(self, **kwargs):
+        self.prepare_kwargs = kwargs
+        self.calls.append(f"prepare:{kwargs.get('quantity')}")
+        if self.failure == "prepare":
+            raise RuntimeError("prepare failed")
+        return self.prepared
+
+    async def _execute_pending_kr_exit(self, prepared):
+        self.calls.append("broker")
+        if self.failure == "cancel":
+            raise asyncio.CancelledError
+        if self.failure == "outcome_unknown":
+            from prism_core.execution_service import OrderOutcomeUnknown
+
+            raise OrderOutcomeUnknown(
+                prepared.intent.id,
+                broker_result={"order_no": "UNCERTAIN-1"},
+            )
+        return {
+            "success": self.status == "SUBMITTED",
+            "intent_id": self.result_intent_id,
+            "intent_status": self.status,
+            "order_no": "ORDER-1",
+        }
+
+    async def _execute_pending_kr_local_flat_exit(self, prepared):
+        self.calls.append("local-flat")
+        return {
+            "success": True,
+            "local_flat": True,
+            "quantity": 0,
+            "intent_id": self.result_intent_id,
+            "intent_status": self.status,
+        }
+
+    def _complete_pending_kr_exit(self, prepared):
+        self.calls.append("complete")
+        if self.failure == "finalize":
+            raise RuntimeError("finalize failed")
+
+    def _fail_pending_kr_exit(self, prepared):
+        self.calls.append("fail")
+
+    def _quarantine_pending_kr_exit(self, prepared):
+        self.calls.append("quarantine")
+
+    async def _run_pending_kr_exit_post_commit(self, prepared):
+        self.calls.append("postcommit")
 
 
 @pytest.fixture
@@ -135,6 +223,20 @@ def _inflight(db, status=None):
         conn.close()
 
 
+def _owner_state(db):
+    with sqlite3.connect(db) as conn:
+        return conn.execute(
+            "SELECT state FROM loop_a_position_state "
+            "WHERE ticker='005930' AND market='KR'"
+        ).fetchone()[0]
+
+
+def _enable_pending_live(monkeypatch):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
+    monkeypatch.setattr(la, "HARDSTOP_LIVE", True)
+    monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
+
+
 def test_shadow_touches_no_agent_and_no_order(tmp_db, monkeypatch):
     monkeypatch.setattr(la, "HARDSTOP_LIVE", False)
     monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
@@ -153,6 +255,7 @@ def test_shadow_touches_no_agent_and_no_order(tmp_db, monkeypatch):
 
 
 def test_live_order_is_sim_then_kis_then_telegram(tmp_db, monkeypatch):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "false")
     monkeypatch.setattr(la, "HARDSTOP_LIVE", True)
     monkeypatch.setattr(la, "HARDSTOP_ENABLED", True)
     monkeypatch.setattr(la, "CHAT_ID", "chat1")
@@ -160,6 +263,11 @@ def test_live_order_is_sim_then_kis_then_telegram(tmp_db, monkeypatch):
     calls = []
     trader = FakeTrader({"005930": 92.0}, holding_qty={"005930": 10}, calls=calls)
     _patch(monkeypatch, trader, agent_holder=FakeAgent(calls))
+
+    async def publish_loop_sell(**_kwargs):
+        calls.append("publish")
+
+    monkeypatch.setattr("sell_broadcast.publish_loop_sell", publish_loop_sell)
 
     summary = asyncio.run(la.run_market("KR", "run1"))
 
@@ -172,9 +280,377 @@ def test_live_order_is_sim_then_kis_then_telegram(tmp_db, monkeypatch):
         "kis:005930:10",
         "link:1",
         "tg",
+        "publish",
         "tg",
     ]  # exact order
     assert _inflight(tmp_db, "FILLED") == 1
+
+
+def test_pending_kr_gate_does_not_change_us_legacy_path(tmp_db, monkeypatch):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
+    monkeypatch.setattr(la, "HARDSTOP_LIVE", True)
+    calls = []
+    trader = FakeTrader({"AAPL": 92.0}, holding_qty={"AAPL": 4}, calls=calls)
+    agent = FakeAgent(calls)
+    _patch(monkeypatch, trader, agent_holder=agent)
+
+    async def publish_loop_sell(**_kwargs):
+        calls.append("publish")
+
+    monkeypatch.setattr("sell_broadcast.publish_loop_sell", publish_loop_sell)
+    stock = {
+        "id": 1,
+        "ticker": "AAPL",
+        "company_name": "Apple",
+        "buy_price": 100.0,
+        "current_price": 92.0,
+        "account_key": "us-acc",
+        "account_name": "primary",
+    }
+    summary = {
+        "market": "US",
+        "checked": 1,
+        "triggered": 1,
+        "sold": 0,
+        "shadow": 0,
+        "skipped": 0,
+        "pyramided_skipped": 0,
+    }
+    with sqlite3.connect(tmp_db) as connection:
+        la._ensure_schema(connection)
+        asyncio.run(
+            la._act_on_trigger(
+                connection,
+                "US",
+                "AAPL",
+                stock,
+                "hard stop",
+                "run-us",
+                {"ref": agent},
+                summary,
+            )
+        )
+
+    assert summary["sold"] == 1
+    assert calls == ["sim:AAPL", "kis:AAPL:4", "link:1", "tg", "publish"]
+    assert not any(call.startswith("prepare:") for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("intent_status", "expected_calls", "inflight", "owner", "sold"),
+    [
+        (
+            "SUBMITTED",
+            [
+                "prepare:7",
+                "broker",
+                "complete",
+                "postcommit",
+                "tg",
+                "publish",
+                "tg",
+            ],
+            "FILLED",
+            "SOLD",
+            1,
+        ),
+        ("FAILED", ["prepare:7", "broker", "fail"], "REJECTED", "HOLDING", 0),
+        (
+            "UNKNOWN",
+            ["prepare:7", "broker", "quarantine"],
+            "UNKNOWN",
+            "QUARANTINED",
+            0,
+        ),
+        (
+            "SUBMITTING",
+            ["prepare:7", "broker", "quarantine"],
+            "UNKNOWN",
+            "QUARANTINED",
+            0,
+        ),
+        ("QUEUED", ["prepare:7", "broker"], "QUEUED", "QUARANTINED", 0),
+    ],
+)
+def test_pending_kr_live_maps_intent_status_without_early_effects(
+    tmp_db,
+    monkeypatch,
+    intent_status,
+    expected_calls,
+    inflight,
+    owner,
+    sold,
+):
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("HELD", 7), calls=calls
+    )
+    pending_agent = PendingFakeAgent(calls, status=intent_status)
+    _patch(monkeypatch, trader, agent_holder=pending_agent)
+
+    async def publish_loop_sell(**_kwargs):
+        calls.append("publish")
+
+    monkeypatch.setattr("sell_broadcast.publish_loop_sell", publish_loop_sell)
+
+    summary = asyncio.run(la.run_market("KR", f"run-{intent_status.lower()}"))
+
+    assert summary["sold"] == sold
+    assert calls == expected_calls
+    assert not any(call.startswith("sim:") for call in calls)
+    assert not any(call.startswith("link:") for call in calls)
+    assert pending_agent.prepare_kwargs["order_style"] == "market"
+    assert pending_agent.prepare_kwargs["limit_price"] is None
+    assert _inflight(tmp_db, inflight) == 1
+    assert _owner_state(tmp_db) == owner
+
+
+def test_pending_kr_live_local_flat_closes_without_broker(tmp_db, monkeypatch):
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("FLAT", 0), calls=calls
+    )
+    pending_agent = PendingFakeAgent(calls, status="SUBMITTED")
+    _patch(
+        monkeypatch,
+        trader,
+        agent_holder=pending_agent,
+    )
+
+    async def publish_loop_sell(**_kwargs):
+        calls.append("publish")
+
+    monkeypatch.setattr("sell_broadcast.publish_loop_sell", publish_loop_sell)
+
+    summary = asyncio.run(la.run_market("KR", "run-flat"))
+
+    assert summary["sold"] == 1
+    assert calls == [
+        "prepare:None",
+        "local-flat",
+        "complete",
+        "postcommit",
+        "tg",
+        "publish",
+        "tg",
+    ]
+    assert "broker" not in calls
+    assert pending_agent.prepare_kwargs["order_style"] == "market"
+    assert pending_agent.prepare_kwargs["limit_price"] is None
+    assert _inflight(tmp_db, "FILLED") == 1
+    assert _owner_state(tmp_db) == "SOLD"
+
+
+def test_pending_kr_unknown_balance_retries_without_prepare_or_effects(
+    tmp_db, monkeypatch
+):
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("UNKNOWN", None), calls=calls
+    )
+    _patch(monkeypatch, trader, agent_holder=PendingFakeAgent(calls))
+
+    summary = asyncio.run(la.run_market("KR", "run-balance-unknown"))
+
+    assert summary["sold"] == 0
+    assert calls == []
+    assert _inflight(tmp_db) == 0
+    assert _owner_state(tmp_db) == "HOLDING"
+
+
+def test_pending_kr_malformed_flat_quantity_never_closes(tmp_db, monkeypatch):
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("FLAT", 7), calls=calls
+    )
+    pending_agent = PendingFakeAgent(calls)
+    _patch(monkeypatch, trader, agent_holder=pending_agent)
+
+    summary = asyncio.run(la.run_market("KR", "run-malformed-flat"))
+
+    assert summary["sold"] == 0
+    assert calls == []
+    assert pending_agent.prepare_kwargs is None
+    assert _inflight(tmp_db) == 0
+    assert _owner_state(tmp_db) == "HOLDING"
+
+
+def test_pending_kr_prepare_failure_has_no_broker_or_effects(tmp_db, monkeypatch):
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("HELD", 7), calls=calls
+    )
+    _patch(
+        monkeypatch,
+        trader,
+        agent_holder=PendingFakeAgent(calls, failure="prepare"),
+    )
+
+    summary = asyncio.run(la.run_market("KR", "run-prepare-failed"))
+
+    assert summary["sold"] == 0
+    assert calls == ["prepare:7"]
+    assert _inflight(tmp_db) == 0
+    assert _owner_state(tmp_db) == "HOLDING"
+
+
+def test_pending_kr_mismatched_intent_id_quarantines_without_effects(
+    tmp_db, monkeypatch
+):
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("HELD", 7), calls=calls
+    )
+    _patch(
+        monkeypatch,
+        trader,
+        agent_holder=PendingFakeAgent(
+            calls, status="SUBMITTED", result_intent_id="foreign-intent"
+        ),
+    )
+
+    summary = asyncio.run(la.run_market("KR", "run-intent-mismatch"))
+
+    assert summary["sold"] == 0
+    assert calls == ["prepare:7", "broker", "quarantine"]
+    assert _inflight(tmp_db, "UNKNOWN") == 1
+    assert _owner_state(tmp_db) == "QUARANTINED"
+
+
+@pytest.mark.parametrize("failure", ["outcome_unknown", "finalize"])
+def test_pending_kr_uncertain_exception_quarantines_without_effects(
+    tmp_db, monkeypatch, failure
+):
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("HELD", 7), calls=calls
+    )
+    _patch(
+        monkeypatch,
+        trader,
+        agent_holder=PendingFakeAgent(calls, failure=failure),
+    )
+
+    summary = asyncio.run(la.run_market("KR", f"run-{failure}"))
+
+    assert summary["sold"] == 0
+    assert calls[-1] == "quarantine"
+    assert "tg" not in calls and "publish" not in calls
+    assert _inflight(tmp_db, "UNKNOWN") == 1
+    assert _owner_state(tmp_db) == "QUARANTINED"
+
+
+def test_pending_kr_non_dict_outcome_unknown_still_quarantines(
+    tmp_db, monkeypatch
+):
+    from prism_core.execution_service import OrderOutcomeUnknown
+
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("HELD", 7), calls=calls
+    )
+    pending_agent = PendingFakeAgent(calls)
+
+    async def raise_non_dict(_prepared):
+        calls.append("broker")
+        raise OrderOutcomeUnknown(
+            "intent-hardstop-1", broker_result="opaque broker response"
+        )
+
+    pending_agent._execute_pending_kr_exit = raise_non_dict
+    _patch(monkeypatch, trader, agent_holder=pending_agent)
+
+    summary = asyncio.run(la.run_market("KR", "run-opaque-unknown"))
+
+    assert summary["sold"] == 0
+    assert calls == ["prepare:7", "broker", "quarantine"]
+    assert _inflight(tmp_db, "UNKNOWN") == 1
+    assert _owner_state(tmp_db) == "QUARANTINED"
+
+
+def test_pending_kr_cancellation_quarantines_and_reraises(tmp_db, monkeypatch):
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("HELD", 7), calls=calls
+    )
+    _patch(
+        monkeypatch,
+        trader,
+        agent_holder=PendingFakeAgent(calls, failure="cancel"),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(la.run_market("KR", "run-cancel"))
+
+    assert calls == ["prepare:7", "broker", "quarantine"]
+    assert _inflight(tmp_db, "UNKNOWN") == 1
+    assert _owner_state(tmp_db) == "QUARANTINED"
+
+
+def test_pending_kr_quarantine_blocks_next_cycle_without_state_downgrade(
+    tmp_db, monkeypatch
+):
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("HELD", 7), calls=calls
+    )
+    pending_agent = PendingFakeAgent(calls, status="UNKNOWN")
+    _patch(monkeypatch, trader, agent_holder=pending_agent)
+
+    first = asyncio.run(la.run_market("KR", "run-unknown-first"))
+    first_calls = list(calls)
+    second = asyncio.run(la.run_market("KR", "run-unknown-second"))
+
+    assert first["sold"] == 0 and second["sold"] == 0
+    assert calls == first_calls
+    assert _owner_state(tmp_db) == "QUARANTINED"
+    assert _inflight(tmp_db, "UNKNOWN") == 1
+
+
+def test_pending_kr_post_closed_cancellation_keeps_sold_state(
+    tmp_db, monkeypatch
+):
+    _enable_pending_live(monkeypatch)
+    _seed(tmp_db, [_row(1, "005930", 100.0)])
+    calls = []
+    trader = FakeTrader(
+        {"005930": 92.0}, holding_check=("HELD", 7), calls=calls
+    )
+    pending_agent = PendingFakeAgent(calls, status="SUBMITTED")
+
+    async def cancel_post_commit(_prepared):
+        calls.append("postcommit")
+        raise asyncio.CancelledError
+
+    pending_agent._run_pending_kr_exit_post_commit = cancel_post_commit
+    _patch(monkeypatch, trader, agent_holder=pending_agent)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(la.run_market("KR", "run-post-closed-cancel"))
+
+    assert "quarantine" not in calls
+    assert _inflight(tmp_db, "FILLED") == 1
+    assert _owner_state(tmp_db) == "SOLD"
 
 
 def test_ledger_failure_after_broker_success_records_unknown(tmp_db, monkeypatch):

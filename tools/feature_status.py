@@ -93,6 +93,20 @@ def _cron_get_inline_env(crontab_text: str, var_name: str) -> str:
     return ""
 
 
+def _cron_get_all_inline_env(crontab_text: str, var_name: str) -> list[str]:
+    """Return every active inline assignment for ``var_name`` in cron order."""
+    prefix = f"{var_name}="
+    values = []
+    for line in crontab_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        for token in stripped.split():
+            if token.startswith(prefix):
+                values.append(token[len(prefix):])
+    return values
+
+
 # ── Feature definitions ───────────────────────────────────────────────────────
 # Each tuple: (feature_id, label_ko, decision_fn)
 # decision_fn(env, crontab) -> (state, evidence)
@@ -225,12 +239,39 @@ def _decide_vision_publish(env: dict, crontab: str):
     return "LIVE", "PRISM_FEATURE_INSIGHT_IMAGE=on + vision 가용"
 
 
+def _decide_position_pending_kr(env: dict, crontab: str):
+    truthy = {"1", "true", "yes", "on"}
+    env_raw = str(env.get("POSITION_PENDING_KR_ENABLED", "")).strip().lower()
+    cron_values = [
+        value.strip().strip('"').strip("'").lower()
+        for value in _cron_get_all_inline_env(
+            crontab, "POSITION_PENDING_KR_ENABLED"
+        )
+    ]
+    live_cron_value = next((value for value in cron_values if value in truthy), "")
+    if live_cron_value:
+        return (
+            "LIVE",
+            f"POSITION_PENDING_KR_ENABLED={live_cron_value} (crontab inline)",
+        )
+    if env_raw in truthy:
+        return "LIVE", f"POSITION_PENDING_KR_ENABLED={env_raw} (env)"
+    if cron_values:
+        return (
+            "OFF",
+            "POSITION_PENDING_KR_ENABLED="
+            f"{','.join(cron_values)} (crontab inline)",
+        )
+    return "OFF", f"POSITION_PENDING_KR_ENABLED={env_raw or '(unset)'}"
+
+
 # Registry: (id, korean label, decision function)
 FEATURES = [
     ("oauth_llm",        "OAuth LLM 백엔드(ChatGPT 구독)",          _decide_oauth_llm),
     ("loop_a",           "Hardstop — 고빈도 손절 (구 Loop A)",                  _decide_loop_a),
     ("loop_b",           "Trend-exit — 50MA 추세이탈 매도 (구 Loop B)",                   _decide_loop_b),
     ("loop_c",           "Fill-chaser — 미체결 추격 (구 Loop C)",                     _decide_loop_c),
+    ("position_pending_kr", "KR 주문 선기록(PENDING ENTRY/EXIT)", _decide_position_pending_kr),
     ("vision_pipeline",  "비전 배관·렌더QA (S1/S2)",                  _decide_vision_pipeline),
     ("vision_buy_qa",    "비전 매수 품질검사 (S3/S3.5)",               _decide_vision_buy_qa),
     ("vision_publish",   "비전 이미지 발행 (S6)",                     _decide_vision_publish),

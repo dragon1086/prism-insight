@@ -1356,8 +1356,11 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 # ===== Core: DB processing based on should_sell branch (main flow continues even if errors occur) =====
                 try:
                     if should_sell:
-                        # When sell decision: delete from holding_decisions table
-                        await self._delete_holding_decision(ticker)
+                        # Broker-first pending exits keep decision context until the
+                        # exact legacy position is durably CLOSED. Gate-off retains
+                        # the legacy decision-time cleanup unchanged.
+                        if not self._position_pending_kr_enabled():
+                            await self._delete_holding_decision(ticker)
 
                         # Add analysis_summary to sell_reason when selling
                         if analysis_summary:
@@ -1723,6 +1726,11 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.error(f"{ticker} Hold decision save failed (main flow continues): {str(e)}")
             logger.error(traceback.format_exc())
             return False
+
+    async def _after_pending_kr_exit_closed(self, prepared) -> None:
+        """Delete enhanced decision context only after durable KR CLOSED."""
+
+        await self._delete_holding_decision(prepared.symbol)
 
     async def _delete_holding_decision(self, ticker: str) -> bool:
         """

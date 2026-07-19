@@ -49,7 +49,11 @@ from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmented
 from cores.openai_error_logging import log_openai_error
 from cores.agents.trading_agents import create_trading_scenario_agent
 from cores.utils import parse_llm_json
-from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
+from prism_core.execution_service import (
+    ExecutionService,
+    OrderOutcomeUnknown,
+    normalize_checked_holding,
+)
 from prism_core.order_intents import IntentStore, OrderIntent
 from prism_core.positions import (
     LegacyPositionWriteResult,
@@ -97,6 +101,7 @@ from trading import kis_auth as ka
 
 # Create MCPApp instance
 app = MCPApp(name="stock_tracking")
+_DEFAULT_KR_EXIT_LIMIT = object()
 
 
 @dataclass(frozen=True)
@@ -109,6 +114,37 @@ class _PreparedKrEntry:
     intent_store: IntentStore
     reservation: Any
     message: str
+
+
+@dataclass(frozen=True)
+class _PreparedKrExit:
+    legacy_holding_id: int
+    position_ids: tuple[str, ...]
+    account_id: str
+    account_name: str
+    symbol: str
+    intent: OrderIntent
+    intent_store: IntentStore
+    reservation: Any
+    order_style: str
+    quantity: int | None
+    limit_price: float | None
+    sell_price: float
+    sell_date: str
+    profit_rate: float
+    holding_days: int
+    exit_kind: str | None
+    sell_reason: str
+    delete_by_id: bool
+    company_name: str
+    buy_price: float
+    buy_date: str
+    scenario_json: str
+    trigger_type: str
+    trigger_mode: str
+    sector: str | None
+    message: str
+    journal_stock_data: Dict[str, Any]
 
 
 class StockTrackingAgent:
@@ -1521,6 +1557,378 @@ class StockTrackingAgent:
                 self.conn.rollback()
             raise
 
+    def _build_pending_kr_exit_message(
+        self,
+        *,
+        ticker: str,
+        company_name: str,
+        buy_price: float,
+        sell_price: float,
+        profit_rate: float,
+        holding_days: int,
+        sell_reason: str,
+        trigger_type: str,
+    ) -> str:
+        """Build the existing KR sell message without making it visible."""
+
+        arrow = "⬆️" if profit_rate > 0 else "⬇️" if profit_rate < 0 else "➖"
+        message = (
+            f"📉 매도: {company_name}({ticker})\n"
+            f"매수가: {buy_price:,.0f}원\n"
+            f"매도가: {sell_price:,.0f}원\n"
+            f"수익률: {arrow} {abs(profit_rate):.2f}%\n"
+            f"보유기간: {holding_days}일\n"
+            f"매도이유: {sell_reason}"
+        )
+        trigger_win_rate = self._get_trigger_win_rate(trigger_type)
+        if trigger_win_rate:
+            message += f"\n{trigger_win_rate}"
+        return message
+
+    def _prepare_pending_kr_exit(
+        self,
+        *,
+        stock_data: Dict[str, Any],
+        sell_reason: str,
+        exit_kind: Optional[str] = None,
+        source: str = "kr_batch",
+        source_decision_id: str | None = None,
+        quantity: int | None = None,
+        order_style: str = "smart",
+        limit_price: Any = _DEFAULT_KR_EXIT_LIMIT,
+    ) -> _PreparedKrExit:
+        """Atomically reserve one live KR holding and mark it PENDING_EXIT."""
+
+        intent_store = self._require_pending_entry_ready()
+        symbol = str(stock_data.get("ticker") or "").strip().upper()
+        if not symbol:
+            raise ValueError("ticker is required for KR pending exit")
+        account_id = str(
+            stock_data.get("account_key") or self._account_scope()[0]
+        ).strip()
+        account_name = str(
+            stock_data.get("account_name") or self._account_scope()[1]
+        )
+        requested_id = stock_data.get("id")
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            position_store = PositionStore(self.conn)
+            position_store.assert_exit_attempt_allowed(
+                market="KR", account_id=account_id, symbol=symbol
+            )
+            if requested_id is None:
+                rows = self.conn.execute(
+                    "SELECT * FROM stock_holdings "
+                    "WHERE ticker=? AND account_key=? ORDER BY id",
+                    (symbol, account_id),
+                ).fetchall()
+                if len(rows) != 1:
+                    raise RuntimeError(
+                        "KR pending exit requires one exact legacy holding id"
+                    )
+                row = rows[0]
+                ticker_row_count = 1
+            else:
+                row = self.conn.execute(
+                    "SELECT * FROM stock_holdings "
+                    "WHERE id=? AND ticker=? AND account_key=? LIMIT 1",
+                    (requested_id, symbol, account_id),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("KR pending exit legacy holding is not live")
+                ticker_row_count = int(
+                    self.conn.execute(
+                        "SELECT COUNT(*) FROM stock_holdings "
+                        "WHERE ticker=? AND account_key=?",
+                        (symbol, account_id),
+                    ).fetchone()[0]
+                )
+
+            live = dict(row)
+            legacy_holding_id = int(live["id"])
+            position_id = legacy_position_id("KR", legacy_holding_id)
+            sell_price = float(stock_data.get("current_price") or 0)
+            buy_price = float(live.get("buy_price") or 0)
+            if buy_price <= 0 or sell_price <= 0:
+                raise ValueError("buy_price and current_price must be positive")
+            buy_date = str(live.get("buy_date") or "")
+            buy_datetime = datetime.strptime(buy_date, "%Y-%m-%d %H:%M:%S")
+            now_datetime = datetime.now()
+            sell_date = now_datetime.strftime("%Y-%m-%d %H:%M:%S")
+            profit_rate = ((sell_price - buy_price) / buy_price) * 100
+            holding_days = (now_datetime - buy_datetime).days
+            normalized_order_style = str(order_style).strip().lower()
+            if normalized_order_style not in {"smart", "market"}:
+                raise ValueError("KR pending exit order_style must be smart or market")
+            resolved_limit_price = (
+                sell_price
+                if limit_price is _DEFAULT_KR_EXIT_LIMIT
+                else None if limit_price is None else float(limit_price)
+            )
+            try:
+                from reentry_cooldown import classify_exit_kind
+
+                classified_exit_kind = classify_exit_kind(sell_reason, exit_kind)
+            except Exception:
+                classified_exit_kind = exit_kind
+
+            intent = OrderIntent.create(
+                market="KR",
+                account_id=account_id,
+                symbol=symbol,
+                side="sell",
+                order_style=normalized_order_style,
+                source=source,
+                source_decision_id=source_decision_id,
+                source_position_id=position_id,
+                quantity=quantity,
+                limit_price=resolved_limit_price,
+                reason=sell_reason,
+            )
+            created, reservation = intent_store.reserve_in_transaction(
+                self.conn, intent
+            )
+            if not created:
+                raise RuntimeError("KR pending exit intent already exists")
+            position_store.prepare_exit_many(
+                market="KR",
+                account_id=account_id,
+                symbol=symbol,
+                position_ids=(position_id,),
+                intent_id=intent.id,
+            )
+            company_name = str(live.get("company_name") or "")
+            trigger_type = str(live.get("trigger_type") or "AI Analysis")
+            message = self._build_pending_kr_exit_message(
+                ticker=symbol,
+                company_name=company_name,
+                buy_price=buy_price,
+                sell_price=sell_price,
+                profit_rate=profit_rate,
+                holding_days=holding_days,
+                sell_reason=sell_reason,
+                trigger_type=trigger_type,
+            )
+            journal_stock_data = dict(live)
+            journal_stock_data["current_price"] = sell_price
+            self.conn.commit()
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+
+        return _PreparedKrExit(
+            legacy_holding_id=legacy_holding_id,
+            position_ids=(position_id,),
+            account_id=account_id,
+            account_name=account_name,
+            symbol=symbol,
+            intent=intent,
+            intent_store=intent_store,
+            reservation=reservation,
+            order_style=normalized_order_style,
+            quantity=quantity,
+            limit_price=resolved_limit_price,
+            sell_price=sell_price,
+            sell_date=sell_date,
+            profit_rate=profit_rate,
+            holding_days=holding_days,
+            exit_kind=classified_exit_kind,
+            sell_reason=sell_reason,
+            delete_by_id=requested_id is not None and ticker_row_count > 1,
+            company_name=company_name,
+            buy_price=buy_price,
+            buy_date=buy_date,
+            scenario_json=str(live.get("scenario") or "{}"),
+            trigger_type=trigger_type,
+            trigger_mode=str(live.get("trigger_mode") or "unknown"),
+            sector=live.get("sector"),
+            message=message,
+            journal_stock_data=journal_stock_data,
+        )
+
+    async def _execute_pending_kr_exit(
+        self, prepared: _PreparedKrExit
+    ) -> Dict[str, Any]:
+        """Execute one committed pre-reserved KR exit through its originating store."""
+
+        async with ExecutionService.domestic(
+            account_name=prepared.account_name,
+            intent_store=prepared.intent_store,
+        ) as trading:
+            order_kwargs = {
+                "stock_code": prepared.symbol,
+                "quantity": prepared.quantity,
+                "intent": prepared.intent,
+                "reservation": prepared.reservation,
+            }
+            if prepared.limit_price is not None:
+                order_kwargs["limit_price"] = prepared.limit_price
+            return await trading.execute_pre_reserved_sell(**order_kwargs)
+
+    async def _execute_pending_kr_local_flat_exit(
+        self, prepared: _PreparedKrExit
+    ) -> Dict[str, Any]:
+        """Consume the reservation as an audited local-flat reconciliation."""
+
+        async with ExecutionService.domestic(
+            account_name=prepared.account_name,
+            intent_store=prepared.intent_store,
+        ) as trading:
+            return await trading.execute_pre_reserved_local_flat_sell(
+                intent=prepared.intent,
+                reservation=prepared.reservation,
+            )
+
+    def _complete_pending_kr_exit(self, prepared: _PreparedKrExit) -> None:
+        """Atomically close legacy and ledger state, then expose the message."""
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO trading_history
+                (account_key, account_name, ticker, company_name, buy_price,
+                 buy_date, sell_price, sell_date, profit_rate, holding_days,
+                 scenario, trigger_type, trigger_mode, sector, exit_kind)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    prepared.account_id,
+                    prepared.account_name,
+                    prepared.symbol,
+                    prepared.company_name,
+                    prepared.buy_price,
+                    prepared.buy_date,
+                    prepared.sell_price,
+                    prepared.sell_date,
+                    prepared.profit_rate,
+                    prepared.holding_days,
+                    prepared.scenario_json,
+                    prepared.trigger_type,
+                    prepared.trigger_mode,
+                    prepared.sector,
+                    prepared.exit_kind,
+                ),
+            )
+            if prepared.delete_by_id:
+                deleted = self.conn.execute(
+                    "DELETE FROM stock_holdings "
+                    "WHERE id=? AND ticker=? AND account_key=?",
+                    (
+                        prepared.legacy_holding_id,
+                        prepared.symbol,
+                        prepared.account_id,
+                    ),
+                ).rowcount
+            else:
+                deleted = self.conn.execute(
+                    "DELETE FROM stock_holdings "
+                    "WHERE ticker=? AND account_key=?",
+                    (prepared.symbol, prepared.account_id),
+                ).rowcount
+            if deleted != 1:
+                raise RuntimeError(
+                    "pending exit legacy holding changed before completion"
+                )
+            PositionStore(self.conn).complete_exit_many(
+                market="KR",
+                account_id=prepared.account_id,
+                symbol=prepared.symbol,
+                position_ids=prepared.position_ids,
+                intent_id=prepared.intent.id,
+                exit_price=prepared.sell_price,
+                realized_pnl_pct=prepared.profit_rate,
+                exit_kind=prepared.exit_kind,
+                closed_at=prepared.sell_date,
+            )
+            self.conn.commit()
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+
+        self._msg_types.append("analysis")
+        self.message_queue.append(prepared.message)
+        logger.info(
+            "%s(%s) pending exit complete (return: %.2f%%)",
+            prepared.symbol,
+            prepared.company_name,
+            prepared.profit_rate,
+        )
+
+    def _fail_pending_kr_exit(self, prepared: _PreparedKrExit) -> None:
+        """Return an explicitly rejected exit to OPEN without legacy effects."""
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            PositionStore(self.conn).fail_exit_many(
+                market="KR",
+                account_id=prepared.account_id,
+                symbol=prepared.symbol,
+                position_ids=prepared.position_ids,
+                intent_id=prepared.intent.id,
+            )
+            self.conn.commit()
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+
+    def _quarantine_pending_kr_exit(self, prepared: _PreparedKrExit) -> None:
+        """Quarantine an uncertain broker outcome without legacy effects."""
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            PositionStore(self.conn).quarantine_pending_exit_many(
+                market="KR",
+                account_id=prepared.account_id,
+                symbol=prepared.symbol,
+                position_ids=prepared.position_ids,
+                intent_id=prepared.intent.id,
+            )
+            self.conn.commit()
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+
+    async def _after_pending_kr_exit_closed(
+        self, prepared: _PreparedKrExit
+    ) -> None:
+        """Post-CLOSED extension point for enhanced-agent deferred cleanup."""
+
+    async def _run_pending_kr_exit_post_commit(
+        self, prepared: _PreparedKrExit
+    ) -> None:
+        """Run journal and subclass cleanup only after durable CLOSED state."""
+
+        row = self.conn.execute(
+            "SELECT status, exit_intent_id FROM positions "
+            "WHERE id=? AND market='KR' AND account_id=?",
+            (prepared.position_ids[0], prepared.account_id),
+        ).fetchone()
+        if (
+            row is None
+            or str(row[0]) != "CLOSED"
+            or str(row[1]) != prepared.intent.id
+        ):
+            raise RuntimeError("KR pending exit post-commit requires durable CLOSED")
+        try:
+            await self._create_journal_entry(
+                stock_data=prepared.journal_stock_data,
+                sell_price=prepared.sell_price,
+                profit_rate=prepared.profit_rate,
+                holding_days=prepared.holding_days,
+                sell_reason=prepared.sell_reason,
+            )
+        except Exception as journal_err:
+            logger.warning(
+                "Journal entry creation failed (non-critical): %s", journal_err
+            )
+        await self._after_pending_kr_exit_closed(prepared)
+
     async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
         """Preserve the public bool contract while exposing an internal typed result."""
 
@@ -2184,6 +2592,254 @@ class StockTrackingAgent:
             scope, scope_context, condition, action, reason, priority, source_journal_id
         )
 
+    async def _process_pending_kr_batch_exit(
+        self,
+        *,
+        stock: Dict[str, Any],
+        sell_reason: str,
+        remaining_rows: int,
+        blocked_tickers: set[str],
+    ) -> bool:
+        """Run the opt-in broker-first KR batch exit for one legacy row."""
+
+        ticker = str(stock.get("ticker") or "")
+        company_name = stock.get("company_name")
+        if remaining_rows > 1:
+            blocked_tickers.add(ticker)
+            logger.critical(
+                "[POSITION-PENDING][KR] pyramided batch exit blocked "
+                "symbol=%s rows=%s action=requires_fill_reconciliation",
+                ticker,
+                remaining_rows,
+            )
+            return False
+        async with ExecutionService.domestic(
+            account_name=stock.get("account_name"),
+            db_path=self.db_path,
+        ) as trading:
+            checked = await asyncio.to_thread(
+                trading.get_holding_quantity_checked, ticker
+            )
+        holding_state, checked_quantity = normalize_checked_holding(checked)
+
+        if holding_state == "UNKNOWN":
+            blocked_tickers.add(ticker)
+            logger.critical(
+                "[POSITION-PENDING][KR] batch holdings UNKNOWN symbol=%s; "
+                "no intent/order/effects",
+                ticker,
+            )
+            return False
+        if holding_state == "HELD" and (
+            not isinstance(checked_quantity, int) or checked_quantity <= 0
+        ):
+            blocked_tickers.add(ticker)
+            logger.critical(
+                "[POSITION-PENDING][KR] invalid HELD quantity symbol=%s; "
+                "no intent/order/effects",
+                ticker,
+            )
+            return False
+
+        try:
+            prepared = self._prepare_pending_kr_exit(
+                stock_data=stock,
+                sell_reason=sell_reason,
+                source="kr_batch",
+                quantity=None,
+            )
+        except Exception as error:
+            blocked_tickers.add(ticker)
+            logger.critical(
+                "[POSITION-PENDING][KR] batch prepare blocked symbol=%s error=%s",
+                ticker,
+                type(error).__name__,
+            )
+            return False
+
+        try:
+            if holding_state == "FLAT":
+                trade_result = await self._execute_pending_kr_local_flat_exit(
+                    prepared
+                )
+            else:
+                trade_result = await self._execute_pending_kr_exit(prepared)
+        except asyncio.CancelledError:
+            try:
+                self._quarantine_pending_kr_exit(prepared)
+            except Exception as quarantine_error:
+                logger.critical(
+                    "[POSITION-PENDING][KR] cancelled batch exit remains unresolved "
+                    "symbol=%s error=%s",
+                    ticker,
+                    type(quarantine_error).__name__,
+                )
+            blocked_tickers.add(ticker)
+            raise
+        except OrderOutcomeUnknown:
+            try:
+                self._quarantine_pending_kr_exit(prepared)
+            except Exception as quarantine_error:
+                logger.critical(
+                    "[POSITION-PENDING][KR] unknown batch exit quarantine failed "
+                    "symbol=%s error=%s",
+                    ticker,
+                    type(quarantine_error).__name__,
+                )
+            blocked_tickers.add(ticker)
+            return False
+        except Exception as error:
+            try:
+                self._quarantine_pending_kr_exit(prepared)
+            except Exception as quarantine_error:
+                logger.critical(
+                    "[POSITION-PENDING][KR] batch execution unresolved symbol=%s "
+                    "error=%s quarantine_error=%s",
+                    ticker,
+                    type(error).__name__,
+                    type(quarantine_error).__name__,
+                )
+            blocked_tickers.add(ticker)
+            return False
+
+        if not isinstance(trade_result, dict):
+            try:
+                self._quarantine_pending_kr_exit(prepared)
+            except Exception as error:
+                logger.critical(
+                    "[POSITION-PENDING][KR] opaque batch result quarantine failed "
+                    "symbol=%s error=%s",
+                    ticker,
+                    type(error).__name__,
+                )
+            blocked_tickers.add(ticker)
+            return False
+        result_intent_id = str(trade_result.get("intent_id") or "")
+        if result_intent_id != prepared.intent.id:
+            try:
+                self._quarantine_pending_kr_exit(prepared)
+            except Exception as error:
+                logger.critical(
+                    "[POSITION-PENDING][KR] batch intent mismatch quarantine failed "
+                    "symbol=%s expected=%s actual=%s error=%s",
+                    ticker,
+                    prepared.intent.id,
+                    result_intent_id or "missing",
+                    type(error).__name__,
+                )
+            blocked_tickers.add(ticker)
+            return False
+        intent_status = str(trade_result.get("intent_status") or "").upper()
+        if intent_status == "SUBMITTED":
+            try:
+                self._complete_pending_kr_exit(prepared)
+            except Exception as error:
+                try:
+                    self._quarantine_pending_kr_exit(prepared)
+                except Exception as quarantine_error:
+                    logger.critical(
+                        "[POSITION-PENDING][KR] batch finalize unresolved symbol=%s "
+                        "error=%s quarantine_error=%s",
+                        ticker,
+                        type(error).__name__,
+                        type(quarantine_error).__name__,
+                    )
+                blocked_tickers.add(ticker)
+                return False
+            await self._run_pending_kr_exit_post_commit(prepared)
+        elif intent_status == "FAILED":
+            try:
+                self._fail_pending_kr_exit(prepared)
+            except Exception as error:
+                logger.critical(
+                    "[POSITION-PENDING][KR] batch FAILED finalize unresolved "
+                    "symbol=%s error=%s",
+                    ticker,
+                    type(error).__name__,
+                )
+            blocked_tickers.add(ticker)
+            logger.critical(
+                "[POSITION-PENDING][KR] batch exit rejected symbol=%s "
+                "intent=%s status=FAILED action=manual_review",
+                ticker,
+                prepared.intent.id,
+            )
+            return False
+        elif intent_status in {"UNKNOWN", "SUBMITTING"}:
+            try:
+                self._quarantine_pending_kr_exit(prepared)
+            except Exception as error:
+                logger.critical(
+                    "[POSITION-PENDING][KR] batch quarantine failed symbol=%s "
+                    "status=%s error=%s",
+                    ticker,
+                    intent_status,
+                    type(error).__name__,
+                )
+            blocked_tickers.add(ticker)
+            return False
+        elif intent_status == "QUEUED":
+            blocked_tickers.add(ticker)
+            logger.critical(
+                "[POSITION-PENDING][KR] queued batch exit remains PENDING_EXIT "
+                "symbol=%s",
+                ticker,
+            )
+            return False
+        else:
+            try:
+                self._quarantine_pending_kr_exit(prepared)
+            except Exception as error:
+                logger.critical(
+                    "[POSITION-PENDING][KR] unexpected batch intent status "
+                    "symbol=%s status=%s error=%s",
+                    ticker,
+                    intent_status or "MISSING",
+                    type(error).__name__,
+                )
+            blocked_tickers.add(ticker)
+            return False
+
+        logger.info(
+            "Actual pending sell successful: %s",
+            trade_result.get("message", "submitted"),
+        )
+        try:
+            from messaging.redis_signal_publisher import publish_sell_signal
+
+            await publish_sell_signal(
+                ticker=ticker,
+                company_name=company_name,
+                price=prepared.sell_price,
+                buy_price=stock.get("buy_price", 0),
+                profit_rate=prepared.profit_rate,
+                sell_reason=sell_reason,
+                trade_result=trade_result,
+            )
+        except Exception as signal_err:
+            logger.warning(
+                "Sell signal publish failed (non-critical): %s", signal_err
+            )
+        try:
+            from messaging.gcp_pubsub_signal_publisher import (
+                publish_sell_signal as gcp_publish_sell_signal,
+            )
+
+            await gcp_publish_sell_signal(
+                ticker=ticker,
+                company_name=company_name,
+                price=prepared.sell_price,
+                buy_price=stock.get("buy_price", 0),
+                profit_rate=prepared.profit_rate,
+                sell_reason=sell_reason,
+                trade_result=trade_result,
+            )
+        except Exception as signal_err:
+            logger.warning(
+                "GCP sell signal publish failed (non-critical): %s", signal_err
+            )
+        return True
+
     async def update_holdings(self) -> List[Dict[str, Any]]:
         """
         Update holdings information and make sell decisions
@@ -2240,10 +2896,19 @@ class StockTrackingAgent:
             # independent of fill timing.
             pass_total_qty: Dict[str, int] = {}   # ticker -> snapshot total qty
             pass_sold_qty: Dict[str, int] = {}    # ticker -> cumulative ordered qty
+            blocked_tickers: set[str] = set()
+            pending_kr_enabled = self._position_pending_kr_enabled()
 
             for stock in holdings:
                 ticker = stock.get('ticker')
                 company_name = stock.get('company_name')
+                if pending_kr_enabled and ticker in blocked_tickers:
+                    logger.warning(
+                        "[POSITION-PENDING][KR] skipping unresolved batch sibling "
+                        "symbol=%s",
+                        ticker,
+                    )
+                    continue
 
                 # Query current stock price
                 current_price = await self._get_current_stock_price(ticker)
@@ -2281,6 +2946,36 @@ class StockTrackingAgent:
                 should_sell, sell_reason = await self._analyze_sell_decision(stock)
 
                 if should_sell:
+                    if pending_kr_enabled:
+                        remaining_rows = get_existing_position_for_ticker(
+                            self.cursor,
+                            ticker,
+                            account_key=stock.get("account_key"),
+                        ).get("row_count", 1)
+                        sell_success = await self._process_pending_kr_batch_exit(
+                            stock=stock,
+                            sell_reason=sell_reason,
+                            remaining_rows=remaining_rows,
+                            blocked_tickers=blocked_tickers,
+                        )
+                        if sell_success:
+                            account_label = self._safe_account_log_label(
+                                {
+                                    "name": stock.get("account_name"),
+                                    "account_key": stock.get("account_key"),
+                                }
+                            )
+                            sold_stocks.append({
+                                "ticker": ticker,
+                                "company_name": company_name,
+                                "buy_price": stock.get('buy_price', 0),
+                                "sell_price": current_price,
+                                "profit_rate": ((current_price - stock.get('buy_price', 0)) / stock.get('buy_price', 0) * 100),
+                                "reason": sell_reason,
+                                "account_name": stock.get("account_name"),
+                                "account_label": account_label,
+                            })
+                        continue
                     # Pyramiding (#288): compute remaining row count N for this
                     # (ticker, account) BEFORE the DB row is deleted by sell_stock.
                     # N>1 => fractional KIS sell (floor(total/N)); N==1 => sell all
