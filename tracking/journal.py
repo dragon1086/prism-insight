@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import traceback
 from datetime import datetime
@@ -49,7 +50,9 @@ class JournalManager:
         sell_price: float,
         profit_rate: float,
         holding_days: int,
-        sell_reason: str
+        sell_reason: str,
+        *,
+        exit_intent_id: str | None = None,
     ) -> bool:
         """
         Create trading journal entry with retrospective analysis.
@@ -67,6 +70,19 @@ class JournalManager:
         if not self.enable_journal:
             logger.debug("Trading journal is disabled")
             return False
+
+        normalized_exit_intent_id = str(exit_intent_id or "").strip() or None
+        if normalized_exit_intent_id:
+            existing = self.cursor.execute(
+                "SELECT id FROM trading_journal WHERE exit_intent_id=?",
+                (normalized_exit_intent_id,),
+            ).fetchone()
+            if existing is not None:
+                logger.info(
+                    "Journal entry already exists for exit intent %s",
+                    normalized_exit_intent_id,
+                )
+                return True
 
         try:
             from cores.agents.trading_journal_agent import create_trading_journal_agent
@@ -128,17 +144,18 @@ class JournalManager:
 
             # Parse and save
             journal_data = self._parse_response(response)
-            journal_id = self._save_to_database(
+            journal_id, created = self._save_to_database(
                 ticker, company_name, buy_price, buy_date, scenario_json,
                 scenario_data, sell_price, sell_reason, profit_rate,
-                holding_days, journal_data
+                holding_days, journal_data,
+                exit_intent_id=normalized_exit_intent_id,
             )
 
             logger.info(f"Journal entry created for {ticker}: {journal_data.get('one_line_summary', '')}")
 
             # Extract principles
             lessons = journal_data.get('lessons', [])
-            if lessons and journal_id > 0:
+            if created and lessons and journal_id > 0:
                 extracted_count = self.extract_principles(lessons, journal_id)
                 logger.info(f"Extracted {extracted_count} principles from journal {journal_id}")
 
@@ -233,36 +250,51 @@ Please review the following completed trade:
     def _save_to_database(
         self, ticker: str, company_name: str, buy_price: float, buy_date: str,
         scenario_json: str, scenario_data: Dict, sell_price: float, sell_reason: str,
-        profit_rate: float, holding_days: int, journal_data: Dict
-    ) -> int:
+        profit_rate: float, holding_days: int, journal_data: Dict,
+        *, exit_intent_id: str | None = None,
+    ) -> tuple[int, bool]:
         """Save journal entry to database."""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.cursor.execute(
-            """
-            INSERT INTO trading_journal
-            (ticker, company_name, trade_date, trade_type,
-             buy_price, buy_date, buy_scenario, buy_market_context,
-             sell_price, sell_reason, profit_rate, holding_days,
-             situation_analysis, judgment_evaluation, lessons, pattern_tags,
-             one_line_summary, confidence_score, compression_layer, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ticker, company_name, now, 'sell',
-                buy_price, buy_date, scenario_json,
-                json.dumps(scenario_data.get('market_condition', ''), ensure_ascii=False),
-                sell_price, sell_reason, profit_rate, holding_days,
-                json.dumps(journal_data.get('situation_analysis', {}), ensure_ascii=False),
-                json.dumps(journal_data.get('judgment_evaluation', {}), ensure_ascii=False),
-                json.dumps(journal_data.get('lessons', []), ensure_ascii=False),
-                json.dumps(journal_data.get('pattern_tags', []), ensure_ascii=False),
-                journal_data.get('one_line_summary', ''),
-                journal_data.get('confidence_score', 0.5),
-                1, now
+        normalized_exit_intent_id = str(exit_intent_id or "").strip() or None
+        try:
+            self.cursor.execute(
+                """
+                INSERT INTO trading_journal
+                (ticker, company_name, trade_date, trade_type,
+                 buy_price, buy_date, buy_scenario, buy_market_context,
+                 sell_price, sell_reason, profit_rate, holding_days,
+                 situation_analysis, judgment_evaluation, lessons, pattern_tags,
+                 one_line_summary, confidence_score, compression_layer,
+                 exit_intent_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticker, company_name, now, 'sell',
+                    buy_price, buy_date, scenario_json,
+                    json.dumps(scenario_data.get('market_condition', ''), ensure_ascii=False),
+                    sell_price, sell_reason, profit_rate, holding_days,
+                    json.dumps(journal_data.get('situation_analysis', {}), ensure_ascii=False),
+                    json.dumps(journal_data.get('judgment_evaluation', {}), ensure_ascii=False),
+                    json.dumps(journal_data.get('lessons', []), ensure_ascii=False),
+                    json.dumps(journal_data.get('pattern_tags', []), ensure_ascii=False),
+                    journal_data.get('one_line_summary', ''),
+                    journal_data.get('confidence_score', 0.5),
+                    1, normalized_exit_intent_id, now,
+                )
             )
-        )
+        except sqlite3.IntegrityError:
+            if not normalized_exit_intent_id:
+                raise
+            self.conn.rollback()
+            existing = self.cursor.execute(
+                "SELECT id FROM trading_journal WHERE exit_intent_id=?",
+                (normalized_exit_intent_id,),
+            ).fetchone()
+            if existing is None:
+                raise
+            return int(existing[0]), False
         self.conn.commit()
-        return self.cursor.lastrowid
+        return int(self.cursor.lastrowid), True
 
     def extract_principles(self, lessons: List[Dict[str, Any]], source_journal_id: int) -> int:
         """Extract universal principles from lessons."""

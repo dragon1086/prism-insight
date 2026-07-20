@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS trading_journal (
     compressed_summary TEXT,
 
     -- Metadata
+    exit_intent_id TEXT,
     created_at TEXT NOT NULL,
     last_compressed_at TEXT
 )
@@ -761,6 +762,21 @@ def migrate_trading_history_columns(cursor, conn):
                 logger.warning(f"Migration warning for {table_name}: {exc}")
 
 
+def migrate_trading_journal_exit_intent(cursor, conn):
+    """Add the nullable exit-intent idempotency key and partial unique index."""
+
+    columns = {
+        str(row[1]) for row in cursor.execute("PRAGMA table_info(trading_journal)")
+    }
+    if "exit_intent_id" not in columns:
+        cursor.execute("ALTER TABLE trading_journal ADD COLUMN exit_intent_id TEXT")
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_trading_journal_exit_intent "
+        "ON trading_journal(exit_intent_id) WHERE exit_intent_id IS NOT NULL"
+    )
+    conn.commit()
+
+
 def create_all_tables(cursor, conn):
     """
     Create all database tables.
@@ -790,6 +806,7 @@ def create_all_tables(cursor, conn):
     migrate_watchlist_history_columns(cursor, conn)
     migrate_analysis_performance_tracker_columns(cursor, conn)
     migrate_trading_history_columns(cursor, conn)
+    migrate_trading_journal_exit_intent(cursor, conn)
     conn.commit()
     logger.info("Database tables created")
 

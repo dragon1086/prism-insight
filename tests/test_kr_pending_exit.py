@@ -478,6 +478,57 @@ async def test_post_commit_effects_reject_pending_position_before_journal(tmp_pa
     assert journal_calls == []
 
 
+@pytest.mark.asyncio
+async def test_publish_effects_complete_independently_from_remote_message_ids(
+    monkeypatch, tmp_path
+):
+    db_path = tmp_path / "publish-effects.sqlite"
+    agent, connection = _pending_exit_agent(db_path)
+    stock = _insert_open_holding(connection)
+    prepared = _prepare(agent, stock)
+    _set_intent_status(db_path, prepared.intent.id, "SUBMITTED")
+    calls = []
+
+    async def redis_publish(**kwargs):
+        calls.append(("REDIS", kwargs))
+        return "redis-message-1"
+
+    async def gcp_publish(**kwargs):
+        calls.append(("GCP", kwargs))
+        return None
+
+    monkeypatch.setattr(
+        "messaging.redis_signal_publisher.publish_sell_signal", redis_publish
+    )
+    monkeypatch.setattr(
+        "messaging.gcp_pubsub_signal_publisher.publish_sell_signal", gcp_publish
+    )
+    try:
+        agent._complete_pending_kr_exit(prepared)
+        outcomes = await agent._deliver_pending_kr_exit_publish_effects(
+            prepared,
+            {"success": True, "message": "submitted"},
+        )
+        rows = {
+            row["effect_type"]: row
+            for row in ExitEffectStore(connection).list_for_intent(
+                prepared.intent.id
+            )
+        }
+    finally:
+        connection.close()
+
+    assert outcomes == {"REDIS": "delivered", "GCP": "rescheduled"}
+    assert rows["REDIS"]["status"] == "DELIVERED"
+    assert rows["REDIS"]["remote_id"] == "redis-message-1"
+    assert rows["GCP"]["status"] == "PENDING"
+    assert rows["GCP"]["last_error"] == "DeliveryNotConfirmed"
+    assert [effect for effect, _kwargs in calls] == ["REDIS", "GCP"]
+    assert all(
+        kwargs["event_id"] == prepared.intent.id for _effect, kwargs in calls
+    )
+
+
 def _batch_agent(db_path: Path, *, rows: int = 1):
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
@@ -636,6 +687,12 @@ def _install_batch_runtime(
 
     redis_module.publish_sell_signal = publish_redis
     gcp_module.publish_sell_signal = publish_gcp
+
+    async def publish_effects(_prepared, _trade_result):
+        await publish_redis()
+        await publish_gcp()
+
+    agent._deliver_pending_kr_exit_publish_effects = publish_effects
     monkeypatch.setitem(sys.modules, "messaging.redis_signal_publisher", redis_module)
     monkeypatch.setitem(
         sys.modules, "messaging.gcp_pubsub_signal_publisher", gcp_module
@@ -667,6 +724,33 @@ async def test_batch_pending_exit_submitted_completes_before_publish(
         "post-commit",
         "redis",
         "gcp",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_publish_effect_failure_does_not_change_closed_trade_result(
+    monkeypatch, tmp_path
+):
+    agent, connection = _batch_agent(tmp_path / "batch-effect-failure.sqlite")
+    events, _, _, _ = _install_batch_runtime(monkeypatch, agent=agent)
+
+    async def fail_effects(_prepared, _trade_result):
+        events.append("effects-failed")
+        raise RuntimeError("transport setup failed")
+
+    agent._deliver_pending_kr_exit_publish_effects = fail_effects
+    try:
+        sold = await agent.update_holdings()
+    finally:
+        connection.close()
+
+    assert [item["ticker"] for item in sold] == [TICKER]
+    assert events == [
+        "prepare",
+        "execute",
+        "complete",
+        "post-commit",
+        "effects-failed",
     ]
 
 

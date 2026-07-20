@@ -4,7 +4,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from prism_core.exit_effect_replay import run_exit_effect_replay
+from prism_core.exit_effect_replay import (
+    deliver_exit_effect_once,
+    run_exit_effect_replay,
+)
 from prism_core.exit_effects import ExitEffectStore
 
 
@@ -251,3 +254,85 @@ async def test_two_runners_do_not_handle_same_effect_concurrently(tmp_path):
     assert calls == ["redis"]
     assert sorted((first["claimed"], second["claimed"])) == [0, 1]
     assert _rows(db_path)[2]["status"] == "DELIVERED"
+
+
+@pytest.mark.asyncio
+async def test_exact_delivery_claims_only_requested_effect(tmp_path):
+    db_path = tmp_path / "exact.sqlite"
+    _seed(db_path)
+    calls = []
+
+    async def redis(payload):
+        calls.append(payload["event_id"])
+        return "redis-message-exact"
+
+    outcome = await deliver_exit_effect_once(
+        db_path,
+        effect_id=f"{INTENT_ID}:redis",
+        effect_type="REDIS",
+        handler=redis,
+        owner="immediate-a",
+        now=lambda: NOW,
+    )
+    rows = {row["effect_type"]: row for row in _rows(db_path)}
+
+    assert outcome.status == "delivered"
+    assert outcome.remote_id == "redis-message-exact"
+    assert calls == [INTENT_ID]
+    assert rows["REDIS"]["status"] == "DELIVERED"
+    assert rows["JOURNAL"]["status"] == "PENDING"
+    assert rows["TELEGRAM"]["status"] == "PENDING"
+    assert rows["GCP"]["status"] == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_exact_delivery_skips_already_delivered_without_handler_call(tmp_path):
+    db_path = tmp_path / "exact-delivered.sqlite"
+    _seed(db_path)
+    calls = 0
+
+    async def redis(_payload):
+        nonlocal calls
+        calls += 1
+        return "redis-message-first"
+
+    first = await deliver_exit_effect_once(
+        db_path,
+        effect_id=f"{INTENT_ID}:redis",
+        effect_type="REDIS",
+        handler=redis,
+        owner="immediate-a",
+        now=lambda: NOW,
+    )
+    second = await deliver_exit_effect_once(
+        db_path,
+        effect_id=f"{INTENT_ID}:redis",
+        effect_type="REDIS",
+        handler=redis,
+        owner="immediate-b",
+        now=lambda: NOW,
+    )
+
+    assert first.status == "delivered"
+    assert second.status == "already_delivered"
+    assert second.remote_id == "redis-message-first"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_exact_delivery_rejects_effect_type_mismatch(tmp_path):
+    db_path = tmp_path / "exact-type.sqlite"
+    _seed(db_path)
+
+    async def telegram(_payload):
+        return "telegram-message"
+
+    with pytest.raises(ValueError, match="effect type does not match"):
+        await deliver_exit_effect_once(
+            db_path,
+            effect_id=f"{INTENT_ID}:redis",
+            effect_type="TELEGRAM",
+            handler=telegram,
+            owner="immediate-a",
+            now=lambda: NOW,
+        )

@@ -159,6 +159,12 @@ class PendingFakeAgent(FakeAgent):
     async def _run_pending_kr_exit_post_commit(self, prepared):
         self.calls.append("postcommit")
 
+    async def _deliver_pending_kr_exit_publish_effects(
+        self, prepared, trade_result
+    ):
+        self.calls.append("effects")
+        return {"REDIS": "delivered", "GCP": "delivered"}
+
 
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
@@ -347,7 +353,7 @@ def test_pending_kr_gate_does_not_change_us_legacy_path(tmp_db, monkeypatch):
                 "complete",
                 "postcommit",
                 "tg",
-                "publish",
+                "effects",
                 "tg",
             ],
             "FILLED",
@@ -435,7 +441,7 @@ def test_pending_kr_live_local_flat_closes_without_broker(tmp_db, monkeypatch):
         "complete",
         "postcommit",
         "tg",
-        "publish",
+        "effects",
         "tg",
     ]
     assert "broker" not in calls

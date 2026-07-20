@@ -250,7 +250,8 @@ class SignalPublisher:
         buy_price: float,
         profit_rate: float,
         sell_reason: str,
-        trade_result: Optional[Dict[str, Any]] = None
+        trade_result: Optional[Dict[str, Any]] = None,
+        event_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Publish sell signal
@@ -276,6 +277,8 @@ class SignalPublisher:
         if trade_result:
             extra_data["trade_success"] = trade_result.get("success", False)
             extra_data["trade_message"] = trade_result.get("message", "")
+        if event_id:
+            extra_data["event_id"] = event_id
 
         return await self.publish_signal(
             signal_type="SELL",
@@ -372,7 +375,8 @@ async def publish_sell_signal(
     profit_rate: float,
     sell_reason: str,
     trade_result: Optional[Dict[str, Any]] = None,
-    market: str = "KR"
+    market: str = "KR",
+    event_id: Optional[str] = None,
 ) -> Optional[str]:
     """Publish sell signal via global publisher (convenience function)
 
@@ -391,6 +395,8 @@ async def publish_sell_signal(
     if trade_result:
         extra_data["trade_success"] = trade_result.get("success", False)
         extra_data["trade_message"] = trade_result.get("message", "")
+    if event_id:
+        extra_data["event_id"] = event_id
 
     return await publisher.publish_signal(
         signal_type="SELL",
