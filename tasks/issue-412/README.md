@@ -2,7 +2,7 @@
 
 > 이슈: [#412 매수/매도 Agent 분리와 KIS 실제 주문 실행 구조 이식 설계](https://github.com/dragon1086/prism-insight/issues/412)
 > 브랜치: `feature/issue-412-execution-architecture`
-> 상태: Phase 4-b2b-2 KR EXIT 게이트 OFF 배포 완료, Phase 4-b2b-3 alert-only preflight 로컬 구현·검증 완료
+> 상태: Phase 4-b2b-2 KR EXIT 게이트 OFF 배포 완료, Phase 4-b2b-3 outbox/replay/production adapter 로컬 구현·검증 완료
 > (2026-07-06 시작, 2026-07-13 main #432 기준 전면 재검토,
 > **2026-07-19 Phase 4-b2b-2 PR #467, main `693c8838` 게이트 OFF 배포 완료**)
 
@@ -34,6 +34,9 @@ greenfield 이식이 아니라 **라이브 시스템의 strangler 방식 단계 
 | [13-phase4b2b1-kr-entry-plan.md](13-phase4b2b1-kr-entry-plan.md) | Phase 4-b2b-1 KR ENTRY 구현 계획 — no-auto-retry guard, private lifecycle, 결과별 TDD |
 | [14-phase4b2b2-kr-exit-plan.md](14-phase4b2b2-kr-exit-plan.md) | Phase 4-b2b-2 KR EXIT 구현 계획 — write-ahead claim, legacy finalize, loop 상태 행렬 |
 | [15-phase4b2b3-readiness-plan.md](15-phase4b2b3-readiness-plan.md) | Phase 4-b2b-3 활성화 전 alert-only KR preflight — gate/원장/KIS open SELL 검증 |
+| [16-phase4b2b3-outbox-plan.md](16-phase4b2b3-outbox-plan.md) | CLOSED와 Journal/Telegram/Redis/GCP 후보를 묶는 atomic outbox 계획 |
+| [17-phase4b2b3-replay-core-plan.md](17-phase4b2b3-replay-core-plan.md) | bounded claim/lease/retry/DEAD와 read-only audit 계획 |
+| [18-phase4b2b3-production-adapters-plan.md](18-phase4b2b3-production-adapters-plan.md) | Journal 멱등성, Telegram linkage, Redis/GCP remote id, multi-process restart, readiness 계획 |
 
 ## 진행 체크리스트
 
@@ -50,8 +53,9 @@ greenfield 이식이 아니라 **라이브 시스템의 strangler 방식 단계 
 - [x] Phase 4-b2b-0: KR 전환 안전 기반 — originating store, exit quarantine, 3상태 holding 조회 (PR #464, main `449e4750`)
 - [x] Phase 4-b2b-1: KR ENTRY 전체 경로 PENDING write-ahead (PR #465, flag OFF 배포)
 - [x] Phase 4-b2b-2: KR EXIT 전체 경로 PENDING write-ahead + 실패 보상 (PR #467, flag OFF 배포)
-- [ ] Phase 4-b2b-3: alert-only preflight 로컬 구현 완료. outbox/replay·다중 프로세스 검증과
-  별도 승인·무거래 창 검증 후에만 KR 시장 gate 일괄 활성화
+- [x] Phase 4-b2b-3 code: alert-only preflight, atomic outbox, bounded replay core, production adapter,
+  실제 다중 프로세스 claim/restart 회귀 로컬 구현·검증 완료
+- [ ] Phase 4-b2b-3 operation: 별도 승인·무거래 창·운영 preflight 후에만 KR 시장 gate 일괄 활성화
 - [ ] Phase 4-b2c: US queued-intent 연속성 + US 전체 경로 전환 (시장 단위 gate)
 - [ ] Phase 4 read switch: 충분한 운영 대조 후 별도 승인
 - [ ] Phase 5: BrokerAdapter 추출 (체결/미체결/정정 포함) + lock 일반화 + reconciliation (alert-only)

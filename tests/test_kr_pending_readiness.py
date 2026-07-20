@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from prism_core.order_intents import IntentStore, OrderIntent
+from prism_core.exit_effects import ExitEffectStore
 from prism_core.positions import PositionStore, account_fingerprint
 from tools import check_kr_pending_readiness as readiness
 from tracking.db_schema import TABLE_STOCK_HOLDINGS
@@ -23,6 +24,7 @@ def _seed_clean_db(path: Path, *, rows: int = 1) -> None:
         connection.execute(TABLE_STOCK_HOLDINGS)
         position_store = PositionStore(connection)
         position_store.ensure_schema()
+        ExitEffectStore(connection).ensure_schema()
         for index in range(rows):
             holding_id = connection.execute(
                 """INSERT INTO stock_holdings (
@@ -94,6 +96,12 @@ def test_clean_readiness_is_ready_and_does_not_mutate_database(tmp_path):
     }
     assert report["comparator"]["matches"] is True
     assert report["pyramided_holdings"] == []
+    assert report["exit_effect_outbox"] == {
+        "status_counts": {},
+        "effect_counts": {},
+        "unresolved_count": 0,
+        "unresolved": [],
+    }
     assert report["kis_inquiries"] == [
         {
             "account_ref": account_fingerprint(ACCOUNT),
@@ -103,6 +111,62 @@ def test_clean_readiness_is_ready_and_does_not_mutate_database(tmp_path):
         }
     ]
     assert before == db_path.read_bytes()
+
+
+def test_missing_exit_effect_outbox_schema_is_unknown(tmp_path):
+    db_path = tmp_path / "missing-outbox.sqlite"
+    _seed_clean_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP TABLE exit_effect_outbox")
+
+    report = readiness.audit_database(db_path, _kis_ok())
+
+    assert report["status"] == "unknown"
+    assert report["exit_effect_outbox"] is None
+    assert "exit_effect_outbox_schema" in report["unknowns"]
+
+
+@pytest.mark.parametrize("status", ["PENDING", "IN_PROGRESS", "DEAD"])
+def test_each_unresolved_exit_effect_status_blocks_with_redacted_account(
+    tmp_path, status
+):
+    db_path = tmp_path / f"outbox-{status.lower()}.sqlite"
+    _seed_clean_db(db_path)
+    intent_id = f"intent-outbox-{status.lower()}"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ExitEffectStore(connection).enqueue_exit_effects(
+            intent_id=intent_id,
+            market="KR",
+            account_id=ACCOUNT,
+            symbol="005930",
+            source="test",
+            payload={
+                "event_id": intent_id,
+                "message": "sensitive sell detail",
+            },
+        )
+        connection.execute(
+            "UPDATE exit_effect_outbox SET status=? WHERE effect_type='REDIS'",
+            (status,),
+        )
+        connection.execute(
+            "UPDATE exit_effect_outbox SET status='DELIVERED' "
+            "WHERE effect_type!='REDIS'"
+        )
+        connection.commit()
+
+    report = readiness.audit_database(db_path, _kis_ok())
+    serialized = json.dumps(report, sort_keys=True)
+
+    assert report["status"] == "blocked"
+    assert "unresolved_exit_effects" in report["blockers"]
+    assert report["exit_effect_outbox"]["unresolved_count"] == 1
+    assert report["exit_effect_outbox"]["unresolved"][0]["account_ref"] == (
+        account_fingerprint(ACCOUNT)
+    )
+    assert ACCOUNT not in serialized
+    assert "sensitive sell detail" not in serialized
 
 
 @pytest.mark.parametrize(

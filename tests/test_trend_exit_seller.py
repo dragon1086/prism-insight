@@ -142,6 +142,12 @@ class FakeAgent:
     async def _run_pending_kr_exit_post_commit(self, _prepared):
         self.calls.append("postcommit")
 
+    async def _deliver_pending_kr_exit_publish_effects(
+        self, prepared, trade_result
+    ):
+        self.calls.append("effects")
+        return {"REDIS": "delivered", "GCP": "delivered"}
+
     async def send_telegram_message(self, chat_id, language="ko", **kwargs):
         self.calls.append("tg")
         return True
@@ -506,7 +512,7 @@ def test_pending_kr_submitted_closes_before_telegram_and_publish(tmp_db, monkeyp
         "complete",
         "postcommit",
         "tg",
-        "publish",
+        "effects",
         "tg",
     ]
     assert agent.prepare_kwargs["source"] == "trend_exit"
@@ -634,7 +640,7 @@ def test_pending_kr_local_flat_is_audited_without_broker_call(tmp_db, monkeypatc
         "complete",
         "postcommit",
         "tg",
-        "publish",
+        "effects",
         "tg",
     ]
     assert not any(call.startswith("kis:") for call in calls)

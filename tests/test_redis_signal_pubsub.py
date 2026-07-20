@@ -259,6 +259,23 @@ class TestPublishSellSignal:
         assert signal_data["profit_rate"] == 9.76
         assert signal_data["sell_reason"] == "Target price reached"
 
+    @pytest.mark.asyncio
+    async def test_publish_sell_signal_includes_optional_exit_event_id(
+        self, publisher_with_mock_redis, mock_redis
+    ):
+        await publisher_with_mock_redis.publish_sell_signal(
+            ticker="005930",
+            company_name="Samsung Electronics",
+            price=90000,
+            buy_price=82000,
+            profit_rate=9.76,
+            sell_reason="Target price reached",
+            event_id="intent-publisher-1",
+        )
+
+        signal_data = json.loads(mock_redis.xadd.call_args[0][2]["data"])
+        assert signal_data["event_id"] == "intent-publisher-1"
+
 
 class TestPublishEventSignal:
     """이벤트 시그널 발행 테스트"""

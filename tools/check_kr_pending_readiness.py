@@ -166,6 +166,70 @@ def _pyramided_holdings(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
 
 
+def _exit_effect_outbox_audit(
+    connection: sqlite3.Connection,
+) -> dict[str, Any] | None:
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='exit_effect_outbox'"
+    ).fetchone()
+    if table is None:
+        return None
+
+    status_counts = {
+        str(status): int(count)
+        for status, count in connection.execute(
+            "SELECT status, COUNT(*) FROM exit_effect_outbox "
+            "WHERE market='KR' GROUP BY status ORDER BY status"
+        )
+    }
+    effect_counts = {
+        str(effect_type): int(count)
+        for effect_type, count in connection.execute(
+            "SELECT effect_type, COUNT(*) FROM exit_effect_outbox "
+            "WHERE market='KR' GROUP BY effect_type ORDER BY effect_type"
+        )
+    }
+    unresolved_rows = connection.execute(
+        """
+        SELECT effect_type, status, account_id, symbol, attempt_count,
+               last_error, created_at
+        FROM exit_effect_outbox
+        WHERE market='KR' AND status IN ('PENDING', 'IN_PROGRESS', 'DEAD')
+        ORDER BY created_at, effect_type, id
+        LIMIT 50
+        """
+    ).fetchall()
+    unresolved = [
+        {
+            "effect_type": str(effect_type),
+            "status": str(status),
+            "account_ref": account_fingerprint(account_id),
+            "symbol": str(symbol).upper(),
+            "attempt_count": int(attempt_count),
+            "last_error": str(last_error) if last_error is not None else None,
+            "created_at": str(created_at),
+        }
+        for (
+            effect_type,
+            status,
+            account_id,
+            symbol,
+            attempt_count,
+            last_error,
+            created_at,
+        ) in unresolved_rows
+    ]
+    unresolved_count = sum(
+        status_counts.get(status, 0) for status in ("PENDING", "IN_PROGRESS", "DEAD")
+    )
+    return {
+        "status_counts": status_counts,
+        "effect_counts": effect_counts,
+        "unresolved_count": unresolved_count,
+        "unresolved": unresolved,
+    }
+
+
 def _accepted_kr_sells(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = connection.execute(
         """SELECT bo.id, bo.broker_order_id, oi.id, oi.account_id, oi.symbol
@@ -287,6 +351,7 @@ def audit_database(
         position_counts = _position_status_counts(connection)
         comparator = PositionStore(connection).compare_legacy_positions("KR")
         pyramids = _pyramided_holdings(connection)
+        exit_effect_outbox = _exit_effect_outbox_audit(connection)
         accepted = _accepted_kr_sells(connection)
         broker_audit = None
         if not unknown_kis:
@@ -304,6 +369,8 @@ def audit_database(
         blockers.append("failed_exit_linked_open_positions")
     if pyramids:
         blockers.append("pyramided_kr_holdings")
+    if exit_effect_outbox is not None and exit_effect_outbox["unresolved_count"] > 0:
+        blockers.append("unresolved_exit_effects")
     if broker_audit is not None:
         if broker_audit["accepted_without_broker_order_id"]:
             blockers.append("accepted_sell_missing_broker_order_id")
@@ -315,6 +382,8 @@ def audit_database(
             blockers.append("current_open_sell_orders")
 
     unknowns = ["kis_open_orders"] if unknown_kis else []
+    if exit_effect_outbox is None:
+        unknowns.append("exit_effect_outbox_schema")
     status = "unknown" if unknowns else "blocked" if blockers else "ready"
     return {
         "status": status,
@@ -323,6 +392,7 @@ def audit_database(
         "position_status_counts": position_counts,
         "comparator": comparator,
         "pyramided_holdings": pyramids,
+        "exit_effect_outbox": exit_effect_outbox,
         "broker_order_audit": broker_audit,
         "blockers": blockers,
         "unknowns": unknowns,

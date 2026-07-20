@@ -527,20 +527,12 @@ async def _act_on_pending_kr_trigger(
                     "[KR] %s telegram flush failed: %s", ticker, telegram_error
                 )
             try:
-                from sell_broadcast import publish_loop_sell
-
-                await publish_loop_sell(
-                    market="KR",
-                    ticker=ticker,
-                    company_name=stock_data.get("company_name", ticker),
-                    price=float(stock_data.get("current_price", 0) or 0),
-                    buy_price=float(stock_data.get("buy_price", 0) or 0),
-                    sell_reason=reason,
-                    trade_result=result,
+                await ag._deliver_pending_kr_exit_publish_effects(
+                    prepared, result
                 )
             except Exception as publish_error:
                 logger.warning(
-                    "[KR] %s sell signal publish failed (non-critical): %s",
+                    "[KR] %s durable sell effects failed (non-critical): %s",
                     ticker,
                     publish_error,
                 )
