@@ -191,6 +191,64 @@ def _trader_with_revisable_orders_response(response):
     return trader
 
 
+class _OrderCashResponse:
+    """Mock KIS order-cash placement response.
+
+    KIS returns the placed order number under the UPPERCASE key ``ODNO``
+    (the revisable-order *inquiry* returns lowercase ``odno``, which is a
+    different endpoint and must stay lowercase).
+    """
+
+    def __init__(self, *, ok=True, output=None):
+        self._ok = ok
+        self._body = SimpleNamespace(output={} if output is None else output)
+
+    def isOK(self):
+        return self._ok
+
+    def getBody(self):
+        return self._body
+
+    def getErrorCode(self):
+        return "E-ORDER"
+
+    def getErrorMessage(self):
+        return "order placement failed"
+
+
+def _trader_for_order_placement(response):
+    trader = dst.DomesticStockTrading.__new__(dst.DomesticStockTrading)
+    trader.mode = "demo"
+    trader.auto_trading = True
+    trader.trenv = SimpleNamespace(my_acct="12345678", my_prod="01")
+    trader._request = lambda *_args, **_kwargs: response
+    return trader
+
+
+# KIS order-cash success output carries the order number as uppercase ``ODNO``.
+_ODNO_ORDER_OUTPUT = {
+    "KRX_FWDG_ORD_ORGNO": "00950",
+    "ODNO": "0000123456",
+    "ORD_TMD": "090012",
+}
+
+
+def test_buy_market_price_captures_uppercase_odno():
+    trader = _trader_for_order_placement(_OrderCashResponse(output=_ODNO_ORDER_OUTPUT))
+    trader.calculate_buy_quantity = lambda *_a, **_k: 3
+    result = trader.buy_market_price("005930")
+    assert result["success"] is True
+    assert result["order_no"] == "0000123456"
+
+
+def test_sell_all_market_price_captures_uppercase_odno():
+    trader = _trader_for_order_placement(_OrderCashResponse(output=_ODNO_ORDER_OUTPUT))
+    trader.get_holding_quantity = lambda *_a, **_k: 10
+    result = trader.sell_all_market_price("005930")
+    assert result["success"] is True
+    assert result["order_no"] == "0000123456"
+
+
 def test_checked_revisable_orders_preserves_authoritative_empty_and_rows():
     raw = {
         "odno": "000123",
