@@ -660,6 +660,21 @@ Extract intuitions from these compressed records.
                 """, (min_confidence,))
                 stats["intuitions_deactivated"] += low_conf
 
+            # Enforce max_intuitions
+            self.cursor.execute("SELECT COUNT(*) FROM trading_intuitions WHERE is_active = 1")
+            active = self.cursor.fetchone()[0]
+            if active > max_intuitions:
+                excess = active - max_intuitions
+                if not dry_run:
+                    self.cursor.execute("""
+                        UPDATE trading_intuitions SET is_active = 0
+                        WHERE id IN (
+                            SELECT id FROM trading_intuitions WHERE is_active = 1
+                            ORDER BY confidence ASC LIMIT ?
+                        )
+                    """, (excess,))
+                    stats["intuitions_deactivated"] += excess
+
             # Archive old Layer 3
             self.cursor.execute("""
                 SELECT COUNT(*) FROM trading_journal
