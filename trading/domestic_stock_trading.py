@@ -397,7 +397,9 @@ class DomesticStockTrading:
 
             if res.isOK():
                 output = res.getBody().output
-                order_no = output.get('odno', '')
+                # KIS order placement responses return the order number as the
+                # UPPERCASE key ``ODNO``; keep a lowercase fallback for safety.
+                order_no = output.get('ODNO') or output.get('odno') or ''
 
                 logger.info(f"[{stock_code}] Market buy order successful: {buy_quantity} shares, order no: {order_no}")
 
@@ -532,7 +534,9 @@ class DomesticStockTrading:
 
             if res.isOK():
                 output = res.getBody().output
-                order_no = output.get('odno', '')
+                # KIS order placement responses return the order number as the
+                # UPPERCASE key ``ODNO``; keep a lowercase fallback for safety.
+                order_no = output.get('ODNO') or output.get('odno') or ''
 
                 logger.info(f"[{stock_code}] Limit buy order successful: {buy_quantity} shares x {limit_price:,} KRW, order no: {order_no}")
 
@@ -682,7 +686,9 @@ class DomesticStockTrading:
 
             if res.isOK():
                 output = res.getBody().output
-                order_no = output.get('odno', '')
+                # KIS order placement responses return the order number as the
+                # UPPERCASE key ``ODNO``; keep a lowercase fallback for safety.
+                order_no = output.get('ODNO') or output.get('odno') or ''
 
                 logger.info(f"[{stock_code}] After-hours closing price buy order successful: {buy_quantity} shares, order no: {order_no}")
 
@@ -915,7 +921,9 @@ class DomesticStockTrading:
 
             if res.isOK():
                 output = res.getBody().output
-                order_no = output.get('odno', '')
+                # KIS order placement responses return the order number as the
+                # UPPERCASE key ``ODNO``; keep a lowercase fallback for safety.
+                order_no = output.get('ODNO') or output.get('odno') or ''
 
                 logger.info(f"[{stock_code}] Market sell all order successful: {buy_quantity} shares, order no: {order_no}")
 
@@ -1070,7 +1078,9 @@ class DomesticStockTrading:
 
             if res.isOK():
                 output = res.getBody().output
-                order_no = output.get('odno', '')
+                # KIS order placement responses return the order number as the
+                # UPPERCASE key ``ODNO``; keep a lowercase fallback for safety.
+                order_no = output.get('ODNO') or output.get('odno') or ''
 
                 logger.info(f"[{stock_code}] After-hours closing price sell order successful: {buy_quantity} shares, order no: {order_no}")
 
@@ -1885,7 +1895,9 @@ class DomesticStockTrading:
 
             if res.isOK():
                 output = res.getBody().output
-                order_no = output.get('odno', '')
+                # KIS order placement responses return the order number as the
+                # UPPERCASE key ``ODNO``; keep a lowercase fallback for safety.
+                order_no = output.get('ODNO') or output.get('odno') or ''
                 logger.info(
                     f"[{stock_code}] {action} order success: orgn={orgn_odno}, "
                     f"new_no={order_no}, price={limit_price}"
