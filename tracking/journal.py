@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 JOURNAL_RECENT_LOSS_HOURS = float(os.getenv("JOURNAL_RECENT_LOSS_HOURS", "48"))
 JOURNAL_RECENT_LOSS_PENALTY = int(os.getenv("JOURNAL_RECENT_LOSS_PENALTY", "2"))
 
+# Intuition injection caps — tunable module-level constants
+INTUITION_TOTAL_LIMIT: int = 10      # max intuitions injected per buy prompt
+INTUITION_PER_CATEGORY_CAP: int = 3  # max entries from any single category
+
 
 class JournalManager:
     """Manages trading journal operations."""
@@ -605,17 +609,38 @@ Please review the following completed trade:
             if context_parts and context_parts[-1].startswith("-"):
                 context_parts.append("")
 
-            # Intuitions
+            # Intuitions — diverse selection: per-category cap, then backfill to total limit
             self.cursor.execute("""
                 SELECT category, condition, insight, confidence
                 FROM trading_intuitions WHERE is_active = 1
-                ORDER BY confidence DESC LIMIT 10
+                ORDER BY confidence DESC
             """)
+            all_intuitions = self.cursor.fetchall()
 
-            intuitions = self.cursor.fetchall()
-            if intuitions:
+            # First pass: fill up to per-category cap while respecting total limit
+            category_counts: dict = {}
+            selected = []
+            remaining = []
+            for row in all_intuitions:
+                cat = row[0]
+                if (
+                    category_counts.get(cat, 0) < INTUITION_PER_CATEGORY_CAP
+                    and len(selected) < INTUITION_TOTAL_LIMIT
+                ):
+                    selected.append(row)
+                    category_counts[cat] = category_counts.get(cat, 0) + 1
+                else:
+                    remaining.append(row)
+
+            # Backfill with highest-confidence remaining items up to total limit
+            for row in remaining:
+                if len(selected) >= INTUITION_TOTAL_LIMIT:
+                    break
+                selected.append(row)
+
+            if selected:
                 context_parts.append("#### Accumulated Trading Intuitions")
-                for i in intuitions:
+                for i in selected:
                     confidence_bar = "●" * int(i[3] * 5) + "○" * (5 - int(i[3] * 5))
                     context_parts.append(
                         f"- [{i[0]}] {i[1]} → {i[2]} (Confidence: {confidence_bar})"
