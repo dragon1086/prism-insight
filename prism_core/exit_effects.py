@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
-from datetime import datetime, timezone
-from typing import Any, Mapping
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable, Mapping
 
 
 EXIT_EFFECT_TYPES = ("JOURNAL", "TELEGRAM", "REDIS", "GCP")
+REMOTE_ID_EFFECT_TYPES = frozenset({"REDIS", "GCP"})
+_ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,119}$")
 
 _EXIT_EFFECT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS exit_effect_outbox (
@@ -39,6 +42,17 @@ CREATE TABLE IF NOT EXISTS exit_effect_outbox (
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _utc_datetime(value: datetime | None = None) -> datetime:
+    resolved = value or datetime.now(timezone.utc)
+    if resolved.tzinfo is None:
+        raise ValueError("effect timestamps must be timezone-aware")
+    return resolved.astimezone(timezone.utc)
+
+
+def _utc_iso(value: datetime | None = None) -> str:
+    return _utc_datetime(value).isoformat(timespec="seconds")
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:
@@ -75,6 +89,34 @@ class ExitEffectStore:
             raise RuntimeError(
                 "exit effect enqueue requires an active caller-owned transaction"
             )
+
+    @staticmethod
+    def _decode_rows(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
+        columns = [column[0] for column in cursor.description or ()]
+        rows = []
+        for value in cursor.fetchall():
+            row = dict(zip(columns, value))
+            row["payload"] = json.loads(row.pop("payload_json"))
+            rows.append(row)
+        return rows
+
+    def _require_claimed(self, effect_id: str, owner: str) -> dict[str, Any]:
+        cursor = self._execute(
+            """
+            SELECT id, effect_type, status, lease_owner, attempt_count
+            FROM exit_effect_outbox
+            WHERE id=?
+            """,
+            (effect_id,),
+        )
+        value = cursor.fetchone()
+        if value is None:
+            raise ValueError("exit effect does not exist")
+        columns = [column[0] for column in cursor.description or ()]
+        row = dict(zip(columns, value))
+        if row["status"] != "IN_PROGRESS" or row["lease_owner"] != owner:
+            raise RuntimeError("exit effect requires the active lease owner")
+        return row
 
     def ensure_schema(self) -> None:
         """Create the additive outbox schema without committing caller work."""
@@ -167,6 +209,172 @@ class ExitEffectStore:
                 )
         return inserted
 
+    def claim_ready_effects(
+        self,
+        *,
+        owner: str,
+        limit: int,
+        effect_types: Iterable[str] | None = None,
+        now: datetime | None = None,
+        lease_seconds: int = 60,
+    ) -> list[dict[str, Any]]:
+        """Claim a bounded ready batch without holding a lease transaction open."""
+
+        self._require_active_transaction()
+        owner = str(owner or "").strip()
+        if not owner:
+            raise ValueError("lease owner is required")
+        if not isinstance(limit, int) or limit < 1:
+            raise ValueError("claim limit must be a positive integer")
+        if not isinstance(lease_seconds, int) or lease_seconds < 1:
+            raise ValueError("lease_seconds must be a positive integer")
+
+        selected_types = tuple(effect_types or EXIT_EFFECT_TYPES)
+        if not selected_types or any(
+            effect_type not in EXIT_EFFECT_TYPES for effect_type in selected_types
+        ):
+            raise ValueError("unsupported exit effect type")
+        selected_types = tuple(dict.fromkeys(selected_types))
+        type_enabled = tuple(
+            int(effect_type in selected_types) for effect_type in EXIT_EFFECT_TYPES
+        )
+        current = _utc_datetime(now)
+        current_iso = _utc_iso(current)
+        lease_expires_at = _utc_iso(current + timedelta(seconds=lease_seconds))
+        candidates = self._execute(
+            """
+            SELECT id
+            FROM exit_effect_outbox
+            WHERE (
+                    (? = 1 AND effect_type='JOURNAL')
+                 OR (? = 1 AND effect_type='TELEGRAM')
+                 OR (? = 1 AND effect_type='REDIS')
+                 OR (? = 1 AND effect_type='GCP')
+              )
+              AND (
+                  (status='PENDING' AND (
+                      next_attempt_at IS NULL OR next_attempt_at <= ?
+                  ))
+                  OR
+                  (status='IN_PROGRESS' AND lease_expires_at IS NOT NULL
+                   AND lease_expires_at <= ?)
+              )
+            ORDER BY created_at,
+                     CASE effect_type
+                         WHEN 'JOURNAL' THEN 1
+                         WHEN 'TELEGRAM' THEN 2
+                         WHEN 'REDIS' THEN 3
+                         WHEN 'GCP' THEN 4
+                     END,
+                     id
+            LIMIT ?
+            """,
+            (*type_enabled, current_iso, current_iso, limit),
+        ).fetchall()
+        effect_ids = [str(row[0]) for row in candidates]
+        claimed = []
+        for effect_id in effect_ids:
+            changed = self._execute(
+                """
+                UPDATE exit_effect_outbox
+                SET status='IN_PROGRESS', attempt_count=attempt_count+1,
+                    lease_owner=?, lease_expires_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (owner, lease_expires_at, current_iso, effect_id),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("exit effect claim changed unexpectedly")
+            cursor = self._execute(
+                "SELECT * FROM exit_effect_outbox WHERE id=?", (effect_id,)
+            )
+            claimed.extend(self._decode_rows(cursor))
+        return claimed
+
+    def mark_delivered(
+        self,
+        *,
+        effect_id: str,
+        owner: str,
+        remote_id: str | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        """Complete one claimed effect; publisher effects require a message id."""
+
+        self._require_active_transaction()
+        owner = str(owner or "").strip()
+        row = self._require_claimed(str(effect_id or "").strip(), owner)
+        normalized_remote_id = str(remote_id).strip() if remote_id is not None else None
+        if row["effect_type"] in REMOTE_ID_EFFECT_TYPES and not normalized_remote_id:
+            raise ValueError("publisher delivery requires a remote message id")
+        completed_at = _utc_iso(now)
+        changed = self._execute(
+            """
+            UPDATE exit_effect_outbox
+            SET status='DELIVERED', remote_id=?, last_error=NULL,
+                next_attempt_at=NULL, lease_owner=NULL, lease_expires_at=NULL,
+                updated_at=?, completed_at=?
+            WHERE id=? AND status='IN_PROGRESS' AND lease_owner=?
+            """,
+            (
+                normalized_remote_id,
+                completed_at,
+                completed_at,
+                row["id"],
+                owner,
+            ),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError("exit effect delivery changed unexpectedly")
+        return True
+
+    def record_failure(
+        self,
+        *,
+        effect_id: str,
+        owner: str,
+        error_type: str,
+        next_attempt_at: datetime,
+        max_attempts: int,
+        now: datetime | None = None,
+    ) -> str:
+        """Release a failed claim to PENDING or isolate it as DEAD."""
+
+        self._require_active_transaction()
+        owner = str(owner or "").strip()
+        error_type = str(error_type or "").strip()
+        if not _ERROR_TYPE.fullmatch(error_type):
+            raise ValueError("error_type must be a redacted exception type")
+        if not isinstance(max_attempts, int) or max_attempts < 1:
+            raise ValueError("max_attempts must be a positive integer")
+        row = self._require_claimed(str(effect_id or "").strip(), owner)
+        current_iso = _utc_iso(now)
+        terminal = int(row["attempt_count"]) >= max_attempts
+        status = "DEAD" if terminal else "PENDING"
+        retry_at = None if terminal else _utc_iso(next_attempt_at)
+        completed_at = current_iso if terminal else None
+        changed = self._execute(
+            """
+            UPDATE exit_effect_outbox
+            SET status=?, last_error=?, next_attempt_at=?,
+                lease_owner=NULL, lease_expires_at=NULL,
+                updated_at=?, completed_at=?
+            WHERE id=? AND status='IN_PROGRESS' AND lease_owner=?
+            """,
+            (
+                status,
+                error_type,
+                retry_at,
+                current_iso,
+                completed_at,
+                row["id"],
+                owner,
+            ),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError("exit effect failure changed unexpectedly")
+        return status
+
     def list_for_intent(self, intent_id: str) -> list[dict[str, Any]]:
         """Return decoded effect rows for audit and tests without mutation."""
 
@@ -174,14 +382,9 @@ class ExitEffectStore:
             "SELECT * FROM exit_effect_outbox WHERE intent_id=?",
             (str(intent_id or ""),),
         )
-        columns = [column[0] for column in cursor.description or ()]
         order = {
             effect_type: index for index, effect_type in enumerate(EXIT_EFFECT_TYPES)
         }
-        rows = []
-        for value in cursor.fetchall():
-            row = dict(zip(columns, value))
-            row["payload"] = json.loads(row.pop("payload_json"))
-            rows.append(row)
+        rows = self._decode_rows(cursor)
         rows.sort(key=lambda row: order[str(row["effect_type"])])
         return rows
