@@ -55,6 +55,7 @@ from prism_core.execution_service import (
     normalize_checked_holding,
 )
 from prism_core.exit_effects import ExitEffectStore
+from prism_core.exit_effect_replay import deliver_exit_effect_once
 from prism_core.order_intents import IntentStore, OrderIntent
 from prism_core.positions import (
     LegacyPositionWriteResult,
@@ -178,6 +179,7 @@ class StockTrackingAgent:
         self.max_slots = self.MAX_SLOTS
         self.message_queue = []  # For storing Telegram messages
         self._msg_types = []  # msg_type for each message in queue
+        self._msg_effect_ids = []  # durable effect id for each queued message
         self._broadcast_task = None  # Track broadcast translation task
         self.trading_agent = None
         self.db_path = db_path
@@ -1512,6 +1514,37 @@ class StockTrackingAgent:
                 reservation=prepared.reservation,
             )
 
+    def _queue_message(
+        self,
+        message: str,
+        msg_type: str | None,
+        *,
+        effect_id: str | None = None,
+    ) -> None:
+        """Append a message while preserving optional durable-effect linkage."""
+
+        self.message_queue.append(message)
+        self._msg_types.append(msg_type)
+        effect_ids = getattr(self, "_msg_effect_ids", None)
+        if not isinstance(effect_ids, list):
+            effect_ids = []
+            self._msg_effect_ids = effect_ids
+        while len(effect_ids) < len(self.message_queue) - 1:
+            effect_ids.append(None)
+        effect_ids.append(effect_id)
+
+    def _message_effect_id(self, index: int) -> str | None:
+        effect_ids = getattr(self, "_msg_effect_ids", None)
+        if isinstance(effect_ids, list) and index < len(effect_ids):
+            value = effect_ids[index]
+            return str(value) if value else None
+        return None
+
+    def _clear_message_queue(self) -> None:
+        self.message_queue = []
+        self._msg_types = []
+        self._msg_effect_ids = []
+
     def _complete_pending_kr_entry(self, prepared: _PreparedKrEntry) -> None:
         """Commit OPEN before making the prebuilt message externally visible."""
 
@@ -1529,8 +1562,7 @@ class StockTrackingAgent:
             if self.conn.in_transaction:
                 self.conn.rollback()
             raise
-        self._msg_types.append("analysis")
-        self.message_queue.append(prepared.message)
+        self._queue_message(prepared.message, "analysis")
 
     def _fail_pending_kr_entry(self, prepared: _PreparedKrEntry) -> None:
         """Atomically remove the legacy holding and tombstone a rejected entry."""
@@ -1878,8 +1910,11 @@ class StockTrackingAgent:
                 self.conn.rollback()
             raise
 
-        self._msg_types.append("analysis")
-        self.message_queue.append(prepared.message)
+        self._queue_message(
+            prepared.message,
+            "analysis",
+            effect_id=f"{prepared.intent.id}:telegram",
+        )
         logger.info(
             "%s(%s) pending exit complete (return: %.2f%%)",
             prepared.symbol,
@@ -1944,19 +1979,97 @@ class StockTrackingAgent:
             or str(row[1]) != prepared.intent.id
         ):
             raise RuntimeError("KR pending exit post-commit requires durable CLOSED")
-        try:
-            await self._create_journal_entry(
+        async def deliver_journal(_payload: dict[str, Any]):
+            if getattr(self, "enable_journal", True) is False:
+                return "disabled-by-config"
+            return await self._create_journal_entry(
                 stock_data=prepared.journal_stock_data,
                 sell_price=prepared.sell_price,
                 profit_rate=prepared.profit_rate,
                 holding_days=prepared.holding_days,
                 sell_reason=prepared.sell_reason,
+                exit_intent_id=prepared.intent.id,
             )
+
+        try:
+            outcome = await deliver_exit_effect_once(
+                self.db_path,
+                effect_id=f"{prepared.intent.id}:journal",
+                effect_type="JOURNAL",
+                handler=deliver_journal,
+                owner=(
+                    f"stock-agent:{os.getpid()}:journal:"
+                    f"{prepared.intent.id[:12]}"
+                ),
+            )
+            if outcome.status not in {"delivered", "already_delivered"}:
+                logger.warning(
+                    "Journal effect remains unresolved: intent=%s status=%s",
+                    prepared.intent.id,
+                    outcome.status,
+                )
+        except asyncio.CancelledError:
+            raise
         except Exception as journal_err:
             logger.warning(
-                "Journal entry creation failed (non-critical): %s", journal_err
+                "Journal effect delivery failed (non-critical): %s",
+                type(journal_err).__name__,
             )
         await self._after_pending_kr_exit_closed(prepared)
+
+    async def _deliver_pending_kr_exit_publish_effects(
+        self,
+        prepared: _PreparedKrExit,
+        trade_result: Dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        """Deliver Redis/GCP independently after the exit is durably CLOSED."""
+
+        publish_kwargs = {
+            "ticker": prepared.symbol,
+            "company_name": prepared.company_name,
+            "price": prepared.sell_price,
+            "buy_price": prepared.buy_price,
+            "profit_rate": prepared.profit_rate,
+            "sell_reason": prepared.sell_reason,
+            "trade_result": trade_result,
+            "market": "KR",
+            "event_id": prepared.intent.id,
+        }
+
+        async def deliver_redis(_payload: dict[str, Any]):
+            from messaging.redis_signal_publisher import publish_sell_signal
+
+            return await publish_sell_signal(**publish_kwargs)
+
+        async def deliver_gcp(_payload: dict[str, Any]):
+            from messaging.gcp_pubsub_signal_publisher import publish_sell_signal
+
+            return await publish_sell_signal(**publish_kwargs)
+
+        outcomes = {}
+        for effect_type, handler in (
+            ("REDIS", deliver_redis),
+            ("GCP", deliver_gcp),
+        ):
+            outcome = await deliver_exit_effect_once(
+                self.db_path,
+                effect_id=f"{prepared.intent.id}:{effect_type.lower()}",
+                effect_type=effect_type,
+                handler=handler,
+                owner=(
+                    f"stock-agent:{os.getpid()}:{effect_type.lower()}:"
+                    f"{prepared.intent.id[:12]}"
+                ),
+            )
+            outcomes[effect_type] = outcome.status
+            if outcome.status not in {"delivered", "already_delivered"}:
+                logger.warning(
+                    "%s effect remains unresolved: intent=%s status=%s",
+                    effect_type,
+                    prepared.intent.id,
+                    outcome.status,
+                )
+        return outcomes
 
     async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
         """Preserve the public bool contract while exposing an internal typed result."""
@@ -2182,8 +2295,7 @@ class StockTrackingAgent:
                 if portfolio_context:
                     message += f"💼 포트폴리오 관점:\n  {portfolio_context}\n"
 
-            self._msg_types.append("analysis")
-            self.message_queue.append(message)
+            self._queue_message(message, "analysis")
             logger.info(f"{ticker}({company_name}) purchase complete")
 
             return LegacyPositionWriteResult(True, int(legacy_holding_id))
@@ -2499,6 +2611,8 @@ class StockTrackingAgent:
             if trigger_win_rate:
                 message += f"\n{trigger_win_rate}"
 
+            # Keep legacy sell_stock dependency-light: concurrency regression
+            # tests and downstream consumers execute this method in isolation.
             self._msg_types.append("analysis")
             self.message_queue.append(message)
             logger.info(f"{ticker}({company_name}) sell complete (return: {profit_rate:.2f}%)")
@@ -2531,11 +2645,18 @@ class StockTrackingAgent:
         sell_price: float,
         profit_rate: float,
         holding_days: int,
-        sell_reason: str
+        sell_reason: str,
+        *,
+        exit_intent_id: str | None = None,
     ) -> bool:
         """Create trading journal entry (delegates to tracking.journal.JournalManager)"""
         return await self.journal_manager.create_entry(
-            stock_data, sell_price, profit_rate, holding_days, sell_reason
+            stock_data,
+            sell_price,
+            profit_rate,
+            holding_days,
+            sell_reason,
+            exit_intent_id=exit_intent_id,
         )
 
     def _extract_principles_from_lessons(
@@ -2834,38 +2955,15 @@ class StockTrackingAgent:
             trade_result.get("message", "submitted"),
         )
         try:
-            from messaging.redis_signal_publisher import publish_sell_signal
-
-            await publish_sell_signal(
-                ticker=ticker,
-                company_name=company_name,
-                price=prepared.sell_price,
-                buy_price=stock.get("buy_price", 0),
-                profit_rate=prepared.profit_rate,
-                sell_reason=sell_reason,
-                trade_result=trade_result,
+            await self._deliver_pending_kr_exit_publish_effects(
+                prepared, trade_result
             )
-        except Exception as signal_err:
+        except asyncio.CancelledError:
+            raise
+        except Exception as signal_error:
             logger.warning(
-                "Sell signal publish failed (non-critical): %s", signal_err
-            )
-        try:
-            from messaging.gcp_pubsub_signal_publisher import (
-                publish_sell_signal as gcp_publish_sell_signal,
-            )
-
-            await gcp_publish_sell_signal(
-                ticker=ticker,
-                company_name=company_name,
-                price=prepared.sell_price,
-                buy_price=stock.get("buy_price", 0),
-                profit_rate=prepared.profit_rate,
-                sell_reason=sell_reason,
-                trade_result=trade_result,
-            )
-        except Exception as signal_err:
-            logger.warning(
-                "GCP sell signal publish failed (non-critical): %s", signal_err
+                "Durable sell effects failed after CLOSED (non-critical): %s",
+                type(signal_error).__name__,
             )
         return True
 
@@ -3758,8 +3856,7 @@ class StockTrackingAgent:
                     logger.info(f"[Message (not sent)] {message[:100]}...")
 
                 # Initialize message queue
-                self.message_queue = []
-                self._msg_types = []
+                self._clear_message_queue()
                 return True  # Consider intentional skip as success
 
             # If Telegram bot not initialized, only output logs
@@ -3771,8 +3868,7 @@ class StockTrackingAgent:
                     logger.info(f"[Telegram message (bot not initialized)] {message[:100]}...")
 
                 # Initialize message queue
-                self.message_queue = []
-                self._msg_types = []
+                self._clear_message_queue()
                 return False
 
             # Generate summary report — de-duplicated so near-simultaneous run-ends
@@ -3786,8 +3882,7 @@ class StockTrackingAgent:
                 _emit_portfolio = True  # fail-open
             if _emit_portfolio:
                 summary = await self.generate_report_summary()
-                self._msg_types.append("portfolio")
-                self.message_queue.append(summary)
+                self._queue_message(summary, "portfolio")
             else:
                 logger.info("[portfolio-dedup] KR portfolio summary skipped (sent within debounce window)")
 
@@ -3811,21 +3906,32 @@ class StockTrackingAgent:
             firebase_tasks = []
             for idx, message in enumerate(self.message_queue):
                 msg_type = self._msg_types[idx] if idx < len(self._msg_types) else None
+                effect_id = self._message_effect_id(idx)
                 logger.info(f"Sending Telegram message: {chat_id}")
-                try:
+
+                async def send_primary_message(payload=None):
                     # Telegram message length limit (4096 characters)
                     MAX_MESSAGE_LENGTH = 4096
+                    outbound_message = message
+                    event_id = str((payload or {}).get("event_id") or "").strip()
+                    if event_id:
+                        outbound_message = (
+                            f"{message}\n\n[exit-event: {event_id}]"
+                        )
 
-                    if len(message) <= MAX_MESSAGE_LENGTH:
+                    if len(outbound_message) <= MAX_MESSAGE_LENGTH:
                         # Send in one message if short
-                        result = await self._send_with_retry(chat_id=chat_id, text=message)
+                        result = await self._send_with_retry(
+                            chat_id=chat_id, text=outbound_message
+                        )
                         firebase_tasks.append(self._schedule_firebase(message, chat_id, result.message_id, msg_type=msg_type))
+                        first_msg_id = result.message_id
                     else:
                         # Split and send if long
                         parts = []
                         current_part = ""
 
-                        for line in message.split('\n'):
+                        for line in outbound_message.split('\n'):
                             if len(current_part) + len(line) + 1 <= MAX_MESSAGE_LENGTH:
                                 current_part += line + '\n'
                             else:
@@ -3847,9 +3953,45 @@ class StockTrackingAgent:
                         # Notify with full original message, link to first part
                         firebase_tasks.append(self._schedule_firebase(message, chat_id, first_msg_id, msg_type=msg_type))
 
-                    logger.info(f"Telegram message sent: {chat_id}")
+                    return str(first_msg_id)
+
+                try:
+                    if effect_id:
+                        outcome = await deliver_exit_effect_once(
+                            self.db_path,
+                            effect_id=effect_id,
+                            effect_type="TELEGRAM",
+                            handler=send_primary_message,
+                            owner=(
+                                f"stock-agent:{os.getpid()}:telegram:"
+                                f"{effect_id[:12]}"
+                            ),
+                        )
+                        if outcome.status not in {
+                            "delivered",
+                            "already_delivered",
+                        }:
+                            logger.warning(
+                                "Telegram effect remains unresolved: effect=%s "
+                                "status=%s",
+                                effect_id,
+                                outcome.status,
+                            )
+                            success = False
+                    else:
+                        await send_primary_message()
+                    if not effect_id or outcome.status in {
+                        "delivered",
+                        "already_delivered",
+                    }:
+                        logger.info(f"Telegram message sent: {chat_id}")
                 except TelegramError as e:
                     logger.error(f"Telegram message send failed: {e}")
+                    success = False
+                except Exception as e:
+                    logger.error(
+                        "Telegram effect handling failed: %s", type(e).__name__
+                    )
                     success = False
 
                 # Delay to prevent API rate limiting
@@ -3874,8 +4016,7 @@ class StockTrackingAgent:
                         self._broadcast_task = None
 
             # Clear message queue
-            self.message_queue = []
-            self._msg_types = []
+            self._clear_message_queue()
 
             return success
 

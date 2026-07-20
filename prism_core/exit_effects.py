@@ -291,6 +291,69 @@ class ExitEffectStore:
             claimed.extend(self._decode_rows(cursor))
         return claimed
 
+    def get_effect(self, effect_id: str) -> dict[str, Any] | None:
+        """Return one decoded effect without changing its lease or status."""
+
+        cursor = self._execute(
+            "SELECT * FROM exit_effect_outbox WHERE id=?",
+            (str(effect_id or "").strip(),),
+        )
+        rows = self._decode_rows(cursor)
+        return rows[0] if rows else None
+
+    def claim_effect(
+        self,
+        *,
+        effect_id: str,
+        owner: str,
+        now: datetime | None = None,
+        lease_seconds: int = 60,
+    ) -> dict[str, Any] | None:
+        """Claim one exact ready effect without selecting unrelated backlog."""
+
+        self._require_active_transaction()
+        effect_id = str(effect_id or "").strip()
+        owner = str(owner or "").strip()
+        if not effect_id:
+            raise ValueError("effect id is required")
+        if not owner:
+            raise ValueError("lease owner is required")
+        if not isinstance(lease_seconds, int) or lease_seconds < 1:
+            raise ValueError("lease_seconds must be a positive integer")
+
+        current = _utc_datetime(now)
+        current_iso = _utc_iso(current)
+        lease_expires_at = _utc_iso(current + timedelta(seconds=lease_seconds))
+        changed = self._execute(
+            """
+            UPDATE exit_effect_outbox
+            SET status='IN_PROGRESS', attempt_count=attempt_count+1,
+                lease_owner=?, lease_expires_at=?, updated_at=?
+            WHERE id=?
+              AND (
+                  (status='PENDING' AND (
+                      next_attempt_at IS NULL OR next_attempt_at <= ?
+                  ))
+                  OR
+                  (status='IN_PROGRESS' AND lease_expires_at IS NOT NULL
+                   AND lease_expires_at <= ?)
+              )
+            """,
+            (
+                owner,
+                lease_expires_at,
+                current_iso,
+                effect_id,
+                current_iso,
+                current_iso,
+            ),
+        ).rowcount
+        if changed == 0:
+            return None
+        if changed != 1:
+            raise RuntimeError("exit effect claim changed unexpectedly")
+        return self.get_effect(effect_id)
+
     def mark_delivered(
         self,
         *,
