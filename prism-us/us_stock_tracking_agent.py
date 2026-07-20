@@ -1008,16 +1008,18 @@ class USStockTrackingAgent:
                 f"- T1_hit(종가<{ma_mid_label}, 오닐 10주선 이탈): {t1_hit} / "
                 f"T2_hit(MA20 하락 and 종가 MA20 대비 -5%↓): {t2_hit}",
             ]
-            # Market Pulse (O'Neil M) 상태를 프롬프트 정보로 주입 (distribution_days 동급).
+            # Market Pulse (O'Neil M) 상태 + 분산일 카운트를 프롬프트 정보로 주입.
             # prism-us/cores 섀도잉을 피해 root cores/ 파일경로로 로드; 프로세스당 1회 캐시; fail-open.
             try:
                 _rp = _import_from_main_cores(
                     "prism_root_regime_policy", "cores/regime_policy.py"
                 )
-                _mp_state = _rp.get_market_pulse_state("us")
-                if _mp_state:
+                _mp_detail = _rp.get_market_pulse_detail("us")
+                if _mp_detail:
+                    _dd = _mp_detail.distribution_days
                     lines.append(
-                        f"- Market Pulse: {_mp_state} "
+                        f"- Market Pulse: {_mp_detail.state} "
+                        f"| 분산일(distribution days, 최근 {_mp_detail.window}세션): {_dd} "
                         "(오닐 M 상태; CORRECTION=신중, 반등대박도 이 구간에서 나옴)"
                     )
             except Exception as _mpe:

@@ -81,6 +81,24 @@ _STATE_CACHE: dict = {}
 # the ~400d index replay runs at most once per market per process. Fail-open False.
 _PILOT_CACHE: dict = {}
 
+# Item 5: Market Pulse detail cache — state + distribution_days + window, per-process.
+_DETAIL_CACHE: dict = {}
+
+
+@dataclass(frozen=True)
+class MarketPulseDetail:
+    """Snapshot of the Market Pulse state machine after the latest replay.
+
+    Attributes:
+        state:             Final state string (UPTREND / UNDER_PRESSURE / CORRECTION).
+        distribution_days: Live distribution-day count from the rolling window.
+        window:            Rolling-window length in sessions (mirrors DISTRIBUTION_WINDOW).
+    """
+
+    state: str
+    distribution_days: int
+    window: int
+
 
 @dataclass(frozen=True)
 class BatchPolicy:
@@ -257,8 +275,18 @@ def _load_root_cores(name: str):
     except Exception:  # noqa: BLE001 - shadowed/missing => fall through to by-path
         pass
 
+    import sys
+
     spec = importlib.util.spec_from_file_location(f"prism_root_cores_{name}", target)
     mod = importlib.util.module_from_spec(spec)
+    # Register before exec_module so a top-level frozen @dataclass in the loaded
+    # module (e.g. market_pulse.DailyBar) can resolve sys.modules[cls.__module__]
+    # .__dict__ during class creation. Without this, the by-path fallback — hit
+    # whenever cores/ is shadowed (e.g. the prism-us runtime) — raises
+    # AttributeError('NoneType' object has no attribute '__dict__') and
+    # get_market_pulse_state/detail silently fail-open to None. Mirrors the same
+    # fix in us_stock_tracking_agent._import_from_main_cores.
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod
 
@@ -387,9 +415,68 @@ def get_market_pulse_state(market: str, use_cache: bool = True) -> Optional[str]
 
 
 def _reset_state_cache() -> None:
-    """Test/utility hook: clear the memoized pulse-state + pilot caches."""
+    """Test/utility hook: clear the memoized pulse-state + pilot + detail caches."""
     _STATE_CACHE.clear()
     _PILOT_CACHE.clear()
+    _DETAIL_CACHE.clear()
+
+
+def get_market_pulse_detail(market: str, use_cache: bool = True) -> Optional[MarketPulseDetail]:
+    """Compute Market Pulse state AND distribution-day count for ``market``.
+
+    Replays :class:`cores.market_pulse.MarketPulse` over ~400 calendar days of
+    index bars and returns a :class:`MarketPulseDetail` with ``state``,
+    ``distribution_days``, and ``window``.  Per-process memoized (:data:`_DETAIL_CACHE`).
+
+    Fail-open: ANY exception (network, auth, missing data, import) is logged as a
+    warning and returns ``None``, so this never raises into the buy path.
+    The existing :func:`get_market_pulse_state` signature/return contract is unchanged.
+    """
+    m = (market or "").strip().lower()
+    if use_cache and m in _DETAIL_CACHE:
+        return _DETAIL_CACHE[m]
+
+    try:
+        mp_mod = _load_root_cores("market_pulse")
+        MarketPulse = mp_mod.MarketPulse
+        DailyBar = mp_mod.DailyBar
+        dd_window = getattr(mp_mod, "DISTRIBUTION_WINDOW", 25)
+
+        if m == "kr":
+            bars = _fetch_kr_bars(DailyBar)
+        elif m == "us":
+            bars = _fetch_us_bars(DailyBar)
+        else:
+            logger.warning("[MARKET_PULSE_DETAIL] unknown market %r -> None", market)
+            _DETAIL_CACHE[m] = None
+            return None
+
+        if not bars or len(bars) < 30:
+            raise RuntimeError(f"insufficient index bars: {len(bars) if bars else 0}")
+
+        mp = MarketPulse()
+        state: Optional[str] = None
+        for bar in bars:
+            state = mp.feed(bar)
+
+        if state is None:
+            _DETAIL_CACHE[m] = None
+            return None
+
+        detail = MarketPulseDetail(
+            state=state,
+            distribution_days=int(mp.distribution_days),
+            window=int(dd_window),
+        )
+        _DETAIL_CACHE[m] = detail
+        return detail
+    except Exception as e:  # noqa: BLE001 - fail-open, never raise
+        logger.warning(
+            "[MARKET_PULSE_DETAIL] detail compute failed for %s, fail-open None: %s",
+            m or "?", e,
+        )
+        _DETAIL_CACHE[m] = None
+        return None
 
 
 # --------------------------------------------------------------------------- #

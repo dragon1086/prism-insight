@@ -670,14 +670,16 @@ class StockTrackingAgent:
                 f"- T1_hit(종가<{ma_mid_label}, 오닐 10주선 이탈): {t1_hit} / "
                 f"T2_hit(MA20 하락 and 종가 MA20 대비 -5%↓): {t2_hit}",
             ]
-            # Market Pulse (O'Neil M) 상태를 프롬프트 정보로 주입 (distribution_days 동급).
+            # Market Pulse (O'Neil M) 상태 + 분산일 카운트를 프롬프트 정보로 주입.
             # 프로세스당 1회 계산(regime_policy 모듈 캐시); fail-open.
             try:
-                from cores.regime_policy import get_market_pulse_state
-                _mp_state = get_market_pulse_state("kr")
-                if _mp_state:
+                from cores.regime_policy import get_market_pulse_detail
+                _mp_detail = get_market_pulse_detail("kr")
+                if _mp_detail:
+                    _dd = _mp_detail.distribution_days
                     lines.append(
-                        f"- Market Pulse: {_mp_state} "
+                        f"- Market Pulse: {_mp_detail.state} "
+                        f"| 분산일(distribution days, 최근 {_mp_detail.window}세션): {_dd} "
                         "(오닐 M 상태; CORRECTION=신중, 반등대박도 이 구간에서 나옴)"
                     )
             except Exception as _mpe:
