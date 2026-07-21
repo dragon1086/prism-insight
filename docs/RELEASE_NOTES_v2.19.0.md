@@ -1,247 +1,223 @@
-# PRISM-INSIGHT v2.19.0 — 매수/매도 Agent 분리·KIS 실주문 단일 chokepoint·상태기계 & durable outbox · RS Rating · 리포트 SDK-중립화
+# PRISM-INSIGHT v2.19.0 — 주문 처리 방식 새단장 · 상대강도 종목 선별 · 리포트 속도 개선
 
-> **Release Date**: 2026-07-21
-> **Range**: `v2.18.0`(8eb4987f) → `main`(dd649e04) · 116 commits / 43 PRs (#431–#477)
-> **Scale**: 157 files, +26,651 / −905
+> **배포일**: 2026-07-21
+> **범위**: `v2.18.0`(8eb4987f) → `main`(dd649e04) · 커밋 116개 / PR 43개 (#431–#477)
+> **규모**: 파일 157개, +26,651 / −905 줄
 
-## 개요
+## 한눈에 보기
 
-이번 릴리즈의 몸통은 **거래 실행 구조의 전면 재설계(#412)** 입니다. 기존에는
-`Agent가 판단 + 로컬 DB 선반영 + KIS 주문 + Journal/Telegram/Redis/GCP까지 직접 결합`된
-높은 결합도 구조였고, 특히 **로컬 원장을 먼저 커밋/삭제한 뒤 KIS 주문 → 실패 시 로그만
-남기는** 순서 탓에 로컬 DB와 증권사 상태가 어긋날 수 있었습니다. 이번에 모든 실주문을
-`OrderIntent → ExecutionService(단일 chokepoint) → Broker/KIS` 한 경로로 모으고,
-`PENDING_ENTRY → OPEN → PENDING_EXIT → CLOSED` **명시적 상태기계**와 청산 후속효과를 위한
-**durable outbox(장애 격리·재시도)** 로 전환했습니다. 전 과정은 default-OFF 게이트
-(`POSITION_PENDING_KR_ENABLED`) 아래 **shadow-first(무손 롤아웃)** 로 들어갔고, 이번
-릴리즈에서 게이트를 켜지 않습니다.
+이번 버전의 가장 큰 변화는 **주식을 사고파는 '주문 처리 방식'을 통째로 새로 짠 것**입니다.
+예전에는 주문을 낼 때 "우리 쪽 장부에 먼저 적어두고 → 그다음 증권사에 주문"을 넣는
+순서였습니다. 이러다 보니 증권사 주문이 실패하면 우리 장부와 실제 계좌가 서로 어긋나는
+일이 생길 수 있었습니다.
 
-그 외에 **오닐 RS Rating(상대강도) 스크리닝·백테스트**, **리포트 파이프라인 SDK-중립화 +
-매수 시나리오 병렬 분석**, **스크리닝·시세 견고성(KRX fallback/스로틀)**, **매매·번역
-gpt-5.6 전환**, **저널·프롬프트 품질**, 그리고 마지막으로 **구독자 부분매도 싱크(#477)** 가
-포함됩니다. 아래는 변경 규모에 비례해 공평하게 정리했습니다.
+이번에 모든 주문을 **하나의 '주문 창구'로 모으고**, 주문이 지금 어느 단계에 있는지
+(주문대기 → 보유중 → 매도대기 → 매도완료)를 **또박또박 기록**하도록 바꿨습니다. 매도 후에
+보내는 알림·기록 전송이 일부 실패하더라도, 이미 체결된 거래는 그대로 안전하게 남고
+**실패한 알림만 다시 시도**합니다. 다만 이 새 방식은 안전을 위해 **'꺼진 상태'로만 넣었고
+이번 버전에서 켜지 않습니다** — 실제 매매 동작은 기존과 똑같습니다.
 
----
-
-## 1. #412 — 매수/매도 Agent 분리 · KIS 실주문 단일 chokepoint · 상태기계 & durable outbox ⭐ (이번 릴리즈 최대 비중, ~19 PR / +21k 라인)
-
-설계·문제정의의 출발점은 GitHub Issue **#412**(2026-07-03)입니다. 외부 대형 PR #433은
-출발 이슈가 아니라 촉매/negative reference로, 통째 병합하지 않고 안전 조각만 단계 반영했습니다.
-
-**(1) 순수 코어 추출** — 파싱·정규화(#447)와 KST 주문시간 판정(#455)을 `prism_core`
-순수 함수로 분리. LLM/증권사 의존 없는 결정 로직을 테스트 가능한 단위로 격리.
-
-**(2) 단일 실행 chokepoint (#456)** — 모든 실주문을 **`ExecutionService`** 한 출입구로
-통합. 주문 실행 경로가 하나로 모여 관측·교체·롤아웃이 가능해졌습니다.
-
-**(3) 의도·결과 영속화 + Position shadow (#459 #460 #461 #462)** — 주문 전
-`OrderIntent`와 broker result를 먼저 영속화하고, legacy holdings를 additive
-**Position ledger에 shadow**로 비교. intent↔position 연결과 comparator를 직접 실행
-가능한 형태로 정리(동적 SQL 제거, fail-open 경로 고정).
-
-**(4) KR 진입/청산 PENDING 상태기계 (#463 #464 #465 #467)** — KR 진입·청산을
-default-OFF 게이트 아래 `PENDING_ENTRY → OPEN → PENDING_EXIT → CLOSED` 상태기계로 연결.
-happy/failure 라이프사이클과 안전경계를 회귀 테스트로 고정(#467은 +4,342로 단일 최대 PR).
-
-**(5) readiness · outbox · replay · adapters (#469 #470 #471 #472)**
-- mutation 없는 **alert-only readiness preflight**(#469)로 게이트 ON 전 상태 점검.
-- CLOSED와 후속효과를 **atomic exit outbox**에 기록(#470).
-- claim/lease 기반 **bounded replay**(#471) — 기본 read-only dry-run, 실제 재생은
-  `--execute` + 명시 `--effect` + `--limit` 필요.
-- 실제 **Journal/Telegram/Redis/GCP effect adapter**(#472) 연결. 각 effect는 독립
-  전달/재시도 — 하나가 실패해도 이미 커밋된 거래는 되돌리지 않고 실패 effect만 재예약/DEAD.
-
-**(6) KR 매도 주문번호 캡처 수정 (#473)** — KIS가 대문자 `ODNO`로 반환하는 주문번호를
-KR wrapper가 소문자 `odno`로 읽어 모든 KR 매도가 빈 order_no를 기록하던 문제 수정.
-
-> 게이트는 default OFF 유지. Phase 5(완전 BrokerAdapter·부분체결/취소 reconciliation)와
-> Phase 6(prism_core + KR/US adapter 완전 분리)는 후속 범위입니다.
-
-## 2. 오닐 RS Rating(상대강도) 스크리닝 & 백테스트 ⭐ (#435 #436 #437)
-
-- `cores/rs_rating.py` 신설 + KR/US 스크리닝에 **RS Rating SHADOW-gate** 도입(#437).
-- RS Rating **백테스트 도구**와 KR/US 검증 보고서(#436, +509).
-- KR #289 다주 상대강도를 US로 이식 — 60일 수익률(return_nd) + extension 블렌드(#435).
-
-## 3. 리포트 파이프라인 SDK-중립화 + 매수 병렬 분석 (#454 #457 #458 #453)
-
-- KR 파이프라인에서 **mcp-agent 런타임 제거**, `report_generation`을 SDK-중립 경로로
-  전환하고 CI 게이트 추가(#457).
-- Telegram/dashboard **report generator 포트 분리**(#458)로 리포트 생성과 전달을 디커플.
-- KR 트레이딩 배치의 **매수 시나리오 분석 병렬화**(#454, +411)로 배치 처리 시간 단축.
-- Responses API + **gpt-5.6-terra**로 리포트 생성 경로 추가(#453).
-
-## 4. 스크리닝 · 시세 견고성 (#434 #440 #441 #445 #450)
-
-- KRX 장애 시 **FinanceDataReader fallback** + 260일 단일 fetch 최적화(#440).
-- KRX **요청 버스트 스로틀**로 연타 방지 → read-timeout 빈도 감소(#441).
-- KRX 순단 시 **KIS 시세 fallback** + 매수후보 분석 실패 알림(#434).
-- bottom-up 트리거의 **실제 변동률** 보고(#450, 스크리닝 0% 표기 버그).
-- BTC 시세 **None 가드** — 시세 부재 시 값 조작 대신 defer(#445).
-
-## 5. 매매 · 번역 모델 gpt-5.6 전환 (#451 #452)
-
-- 매매 판단 모델을 **gpt-5.6-sol**(reasoning_effort=high)로 전환(#451).
-- Telegram/dashboard 번역을 **gpt-5.6-luna**로 전환(#452).
-
-## 6. US 2배치 정책 & 루프 정합 (#431 #438)
-
-- US 분석 배치를 **아침/오후 2배치 정책**으로 정리(#431).
-- 루프 매도 텔레그램 누락 수정 — `send_telegram_message` await_broadcast 시그니처 정합(#438).
-
-## 7. 저널 · 매수 프롬프트 품질 (#474 #475)
-
-- 매수 프롬프트에 주입되는 **직관(intuition) 노이즈** 상한·카테고리별 다양화(#475) —
-  활성 직관 무한 누적(99개) 문제 해소.
-- **분산일(distribution_days)** 카운트를 KR/US 매수 프롬프트에 숫자로 주입(#474, #448).
-
-## 8. 안정성 · 운영 · 보안 픽스 (#432 #439 #442 #443 #444 #476)
-
-- OAuth 토큰 **atomic·private(600) 저장**(#442)과 쿼터 창을 백엔드 텔레메트리에서 도출한
-  3시간 리포트(#432).
-- Redis/Pub-Sub **동기 I/O를 이벤트 루프 밖으로**(#443) — 트레이딩/텔레그램 블로킹 방지.
-- 잘못된 매도수량은 **전량청산 대신 거부**(#444).
-- 백오피스 텔레그램 **수동 발송 툴**(#439, `tools/admin_send_message.py`).
-- **US 리포트 cores-shadow 버그 수정**(#476) — `prism-us/cores/`가 루트 `cores/`를
-  shadow해 발생한 `ModuleNotFoundError`(밤사이 US morning 배치 실패의 원인)를 US 경계만
-  스왑해 해결.
-
-## 9. 구독자 부분매도 싱크 (#477)
-
-본로직은 피라미딩(#288) 다중 lot 티커를 **부분매도**(`floor(총량/remaining_rows)`)하지만,
-발행 SELL 시그널에 수량 힌트가 없어 예제 구독자가 항상 **전량청산**했습니다. SELL payload에
-**`sell_denominator`**(기본 1=전량, 하위호환) 를 추가하고, 구독자가
-`floor(보유/denominator)` 로 **소스와 동일한 1/N 비율**을 매도하도록 정합. hardstop/trend
-루프 매도는 기본 1 → 전량(의도된 동작).
+이 외에도 **종목 선별에 '상대강도' 점수 도입(관찰 모드)**, **분석 리포트 생성 속도 개선**,
+**시세가 잠깐 끊겨도 멈추지 않는 안정성 강화**, **AI 모델 최신 버전 적용**, 그리고
+**구독 계좌가 원본을 더 정확히 따라 하도록 개선**한 내용이 담겼습니다. 아래는 변경 규모가
+큰 순서대로 정리했습니다.
 
 ---
 
-## 변경 규모 요약 (PR별, 공평 비교)
+## 1. 주문 처리 방식 새단장 ⭐ (이번 버전의 핵심, 관련 PR 약 19개)
+
+- **모든 주문을 한 창구로**: 예전에는 여러 곳에서 제각각 증권사에 주문을 넣었는데, 이제
+  모든 실제 주문이 **하나의 통로**를 지나갑니다. 문제가 생겨도 한 곳만 살펴보면 되고,
+  나중에 방식을 바꾸거나 점검하기가 훨씬 쉬워졌습니다.
+- **주문 진행 단계를 명확히**: 주문 하나가 '주문대기 → 보유중 → 매도대기 → 매도완료'
+  단계를 거치도록 상태를 또박또박 기록합니다. 어디서 멈췄는지 바로 알 수 있습니다.
+- **장부와 실제 계좌 어긋남 방지**: '장부 먼저 기록 → 나중에 주문'이던 위험한 순서를
+  없앴습니다. 주문 의도와 증권사 응답을 먼저 안전하게 저장한 뒤 처리합니다.
+- **알림 실패해도 거래는 안전**: 매도 뒤 보내는 기록·알림(매매일지·텔레그램·외부 연동)이
+  일부 실패해도, 체결된 거래 결과는 유지하고 **실패한 알림만 자동으로 다시 보냅니다**.
+- **안전한 도입(중요)**: 이 새 구조는 **기본적으로 꺼둔 채로** 들어갔습니다. 실제 매매에
+  영향을 주지 않고 그림자처럼 검증만 하며, 켜는 것은 충분한 확인을 거친 뒤 별도로 합니다.
+- 함께: 매도 주문번호가 빈칸으로 기록되던 문제도 바로잡았습니다.
+
+## 2. 상대강도(RS) 종목 선별 — 관찰 모드 (PR #435–#437)
+
+'상대강도'는 같은 기간 시장 전체와 비교해 **그 종목이 얼마나 강하게 올랐는지**를 나타내는
+점수입니다(윌리엄 오닐의 방식). 이 점수를 종목 선별에 도입하고, 과거 데이터로 효과를
+검증하는 도구도 만들었습니다. 아직은 **실제 매매에 반영하기 전 '관찰 단계'** 로, 안전하게
+지표만 지켜봅니다.
+
+## 3. 분석 리포트 더 빠르게 (PR #453 #454 #457 #458)
+
+- 리포트를 만드는 내부 구조를 정리해 **더 단순하고 튼튼하게** 바꿨습니다.
+- 여러 종목을 **동시에 분석**하도록 개선해, 리포트가 나오는 시간이 짧아졌습니다.
+
+## 4. 시세가 끊겨도 멈추지 않게 (PR #434 #440 #441 #445 #450)
+
+- 국내 시세 제공처(KRX)가 잠깐 먹통일 때 **대체 경로로 자동 전환**합니다.
+- 요청이 한꺼번에 몰려 응답이 느려지지 않도록 **요청 속도를 조절**합니다.
+- 시세를 못 받았을 때 **엉뚱한 값을 지어내지 않고 잠시 미루도록** 바꿨습니다.
+- 급등락 종목 선별에서 **변동률이 0%로 잘못 표시되던 문제**를 고쳤습니다.
+
+## 5. AI 모델 최신 버전 적용 (PR #451 #452)
+
+- 매매 판단에 쓰는 AI 모델과, 리포트·번역에 쓰는 모델을 **최신 버전(gpt-5.6)** 으로
+  올렸습니다.
+
+## 6. 미국장 운영 · 알림 정리 (PR #431 #438)
+
+- 미국 주식 분석을 **아침·오후 2회 체계**로 정리했습니다.
+- 자동 매도 시 텔레그램 알림이 가끔 빠지던 문제를 바로잡았습니다.
+
+## 7. 매매 판단 품질 다듬기 (PR #474 #475)
+
+- 매수 판단에 참고하는 과거 '직관 메모'가 무한정 쌓여 중복·잡음이 되던 문제를 정리했습니다.
+- 시장의 '분산일(기관 매도 신호)' 개수를 매수 판단 근거에 **숫자로 정확히 전달**하도록
+  했습니다.
+
+## 8. 안정성 · 운영 · 보안 손질 (PR #432 #439 #442 #443 #444 #476)
+
+- 로그인 토큰을 **안전하게(권한 제한) 저장**하고, 사용량 통계 기반 점검 리포트를 추가했습니다.
+- 외부 알림 전송이 **본 작업을 붙잡지 않도록** 처리 방식을 바꿨습니다.
+- 잘못된 매도 수량이 들어오면 **전량 청산 대신 거부**하도록 안전장치를 넣었습니다.
+- 운영용 **텔레그램 수동 발송 도구**를 추가했습니다.
+- 밤사이 미국 리포트가 통째로 실패하던 원인(내부 경로 충돌)을 찾아 고쳤습니다.
+
+## 9. 구독 계좌가 원본을 더 정확히 따라 하도록 (PR #477)
+
+한 종목을 **여러 번 나눠 사둔 상태에서 그중 일부만 파는 경우**, 이를 따라 하는 구독 계좌가
+예전엔 **가진 물량을 전부 팔아버리는** 문제가 있었습니다. 이제 원본이 판 만큼의 **같은 비율**
+로만 팔도록 맞췄습니다. (예: 원본이 절반만 팔면 구독 계좌도 절반만 매도)
+
+---
+
+## 개발자용 상세 — PR별 변경 규모 (참고)
+
+<details>
+<summary>규모순 전체 목록 펼치기</summary>
 
 | PR | 주제 | 규모 |
 |---|---|---|
-| #467 | #412 KR pending exit 라이프사이클 | 18 files, +4,342/−19 |
-| #465 | #412 KR pending entry harden | 11 files, +2,183/−12 |
-| #460 | #412 legacy holdings Position shadow | 11 files, +2,023/−19 |
-| #463 | #412 pending position 상태 foundation | 7 files, +2,000/−52 |
-| #456 | #412 ExecutionService 단일 chokepoint | 26 files, +1,915/−94 |
-| #472 | #412 production effect adapters (outbox 마감) | 24 files, +1,762/−197 |
-| #459 | #412 OrderIntent/broker result 영속화 | 18 files, +1,718/−54 |
-| #462 | #412 intent↔position 연결 | 19 files, +1,449/−91 |
-| #471 | #412 bounded exit replay | 7 files, +1,227/−8 |
-| #469 | #412 KR readiness preflight | 6 files, +1,084/−6 |
-| #464 | #412 KR pending exit lifecycle wire | 8 files, +674/−14 |
-| #474 | 분산일 매수 프롬프트 주입 (#448) | 5 files, +630/−10 |
-| #470 | #412 durable exit outbox | 5 files, +517/−1 |
-| #436 | RS Rating 백테스트 도구 + 보고서 | 2 files, +509 |
-| #437 | 오닐 RS Rating SHADOW-gate (KR/US) | 6 files, +404/−3 |
-| #454 | KR 매수 시나리오 병렬 분석 | 3 files, +411/−7 |
-| #475 | 매수 프롬프트 직관 노이즈 상한·다양화 | 3 files, +387/−6 |
-| #440 | KRX fallback + 260일 단일 fetch 최적화 | 4 files, +345/−24 |
-| #435 | US 다주 상대강도 이식 | 2 files, +338/−10 |
-| #477 | 구독자 부분매도 싱크 (sell_denominator) | 6 files, +333/−12 |
-| #458 | telegram report generator 포트 분리 | 7 files, +289/−253 |
-| #443 | Redis/Pub-Sub 논블로킹 I/O | 5 files, +221/−7 |
-| #447 | #412 파싱·정규화 prism_core 추출 | 6 files, +219/−61 |
-| #445 | BTC 시세 None 가드 | 4 files, +197/−24 |
-| #444 | 매도수량 검증(전량청산 방지) | 3 files, +176/−4 |
-| #432 | OAuth 쿼터 3시간 리포트 | 4 files, +175/−27 |
-| #431 | US 2배치 정책 | 13 files, +169/−110 |
-| #476 | US 리포트 cores-shadow 수정 | 2 files, +188/−2 |
-| #457 | mcp-agent 런타임 제거(리포트 SDK-중립) | 16 files, +399/−75 |
-| #439 | 백오피스 텔레그램 수동 발송 툴 | 1 file, +126 |
-| #455 | #412 KST 주문시간 판정 추출 | 3 files, +117/−12 |
-| #450 | bottom-up 실제 변동률 보고 | 2 files, +93 |
-| #442 | OAuth 토큰 atomic·private 저장 | 3 files, +82/−14 |
-| #434 | KRX 순단 시 KIS 시세 fallback | 3 files, +82 |
-| #473 | KR 매도 ODNO 캡처 수정 | 2 files, +76/−6 |
-| #461 | #412 position CLI import 수정 | 2 files, +26 |
-| #441 | KRX 요청 버스트 스로틀 | 1 file, +28 |
-| #438 | 루프 매도 텔레그램 시그니처 정합 | 1 file, +22/−3 |
-| #452 | 번역 gpt-5.6-luna 전환 | 12 files, +22/−22 |
-| #453 | Responses API gpt-5.6-terra 리포트 | 1 file, +18/−11 |
-| #451 | 매매판단 gpt-5.6-sol 전환 | 5 files, +15/−11 |
-| #466 #468 | #412 phase 문서 마킹 | 각 1 file, +3/−3 |
+| #467 | 주문 방식 새단장: KR 매도 단계 처리 | 18 files, +4,342/−19 |
+| #465 | 주문 방식 새단장: KR 매수 단계 안정화 | 11 files, +2,183/−12 |
+| #460 | 주문 방식 새단장: 보유 종목 그림자 검증 | 11 files, +2,023/−19 |
+| #463 | 주문 방식 새단장: 대기 상태 기반 | 7 files, +2,000/−52 |
+| #456 | 주문 방식 새단장: 단일 주문 창구 | 26 files, +1,915/−94 |
+| #472 | 주문 방식 새단장: 알림 재시도 마무리 | 24 files, +1,762/−197 |
+| #459 | 주문 방식 새단장: 주문 의도·결과 저장 | 18 files, +1,718/−54 |
+| #462 | 주문 방식 새단장: 주문↔보유 연결 | 19 files, +1,449/−91 |
+| #471 | 주문 방식 새단장: 알림 재전송 도구 | 7 files, +1,227/−8 |
+| #469 | 주문 방식 새단장: 켜기 전 점검 | 6 files, +1,084/−6 |
+| #464 | 주문 방식 새단장: KR 매도 연결 | 8 files, +674/−14 |
+| #474 | 분산일 개수를 매수 근거에 주입 | 5 files, +630/−10 |
+| #470 | 주문 방식 새단장: 알림 기록 저장 | 5 files, +517/−1 |
+| #436 | 상대강도 백테스트 도구 + 보고서 | 2 files, +509 |
+| #437 | 상대강도 종목 선별(관찰 모드) | 6 files, +404/−3 |
+| #454 | 매수 분석 동시 처리(속도↑) | 3 files, +411/−7 |
+| #475 | 매수 참고 '직관 메모' 잡음 정리 | 3 files, +387/−6 |
+| #440 | KRX 먹통 시 대체 경로 + 조회 최적화 | 4 files, +345/−24 |
+| #435 | 미국 상대강도 이식 | 2 files, +338/−10 |
+| #477 | 구독 계좌 부분매도 따라하기 | 6 files, +333/−12 |
+| #458 | 리포트 생성/전달 구조 분리 | 7 files, +289/−253 |
+| #443 | 외부 알림 논블로킹 처리 | 5 files, +221/−7 |
+| #447 | 주문 방식 새단장: 공통 계산부 추출 | 6 files, +219/−61 |
+| #445 | 비트코인 시세 없음 보호 | 4 files, +197/−24 |
+| #476 | 미국 리포트 야간 실패 수정 | 2 files, +188/−2 |
+| #444 | 잘못된 매도 수량 거부 | 3 files, +176/−4 |
+| #432 | 로그인 사용량 3시간 리포트 | 4 files, +175/−27 |
+| #431 | 미국장 2회 체계 정리 | 13 files, +169/−110 |
+| #457 | 리포트 생성 구조 정리 | 16 files, +399/−75 |
+| #439 | 운영용 텔레그램 수동 발송 도구 | 1 file, +126 |
+| #455 | 주문 방식 새단장: 주문 시간대 판정 추출 | 3 files, +117/−12 |
+| #450 | 급등락 선별 변동률 정정 | 2 files, +93 |
+| #442 | 로그인 토큰 안전 저장 | 3 files, +82/−14 |
+| #434 | KRX 순단 시 시세 대체 | 3 files, +82 |
+| #473 | 매도 주문번호 기록 수정 | 2 files, +76/−6 |
+| #461 | 주문 방식 새단장: 도구 임포트 수정 | 2 files, +26 |
+| #441 | KRX 요청 속도 조절 | 1 file, +28 |
+| #438 | 자동 매도 알림 누락 수정 | 1 file, +22/−3 |
+| #452 | 번역 모델 gpt-5.6 전환 | 12 files, +22/−22 |
+| #453 | 리포트 생성 gpt-5.6 적용 | 1 file, +18/−11 |
+| #451 | 매매 판단 모델 gpt-5.6 전환 | 5 files, +15/−11 |
+| #466 #468 | 주문 방식 새단장: 단계 문서 | 각 1 file, +3/−3 |
+
+</details>
 
 ## 업데이트 방법
 
 ```bash
 git fetch origin --tags
-git checkout v2.19.0        # 또는: git pull origin main (ff-only)
-# 운영 서버는 dirty 운영파일 보존을 위해 ff-only pull 권장
+git checkout v2.19.0
 ```
 
-`.env` 신규 필수 키 없음. `POSITION_PENDING_KR_ENABLED`는 **default OFF 유지** — 이번
-릴리즈에서 게이트를 켜지 않습니다. 실주문 실행 동작은 게이트 OFF에서 기존과 동일합니다.
+새로 넣어야 하는 필수 설정값은 없습니다. 새 주문 처리 방식은 **기본 꺼짐** 상태이며, 이번
+버전에서 켜지 않으므로 실제 매매 동작은 기존과 동일합니다.
 
-## 알려진 제한사항
+## 참고 사항
 
-- **#412 게이트는 OFF**: PENDING 상태기계·outbox·replay는 코드/테스트로 검증됐으나
-  `POSITION_PENDING_KR_ENABLED=true`는 별도 명시 승인 + 무거래 창 + readiness `ready` 확인
-  후에만 켭니다. Phase 5(부분체결/취소 reconciliation)·Phase 6(코어/어댑터 완전 분리)는 후속.
-- **구독자 부분매도(#477)** 효과는 발행 서버가 `sell_denominator`를 실제 발행하는 다음
-  KR/US 부분매도 이벤트에서 관측됩니다(구버전 시그널은 기본 1=전량으로 안전 폴백).
-- **RS Rating(#437)** 은 SHADOW-gate — 실매매 반영 전 관측 단계입니다.
-- 외부 대형 PR **#433은 계속 OPEN** — 안전 조각만 단계 반영했고 통째 병합하지 않습니다.
+- **주문 방식 새단장은 아직 꺼짐**: 코드와 테스트로 검증은 마쳤지만, 실제로 켜는 것은
+  별도의 확인 절차를 거친 뒤에 진행합니다.
+- **구독 계좌 부분매도 따라하기**는, 원본 계좌에서 실제로 '일부만 파는' 거래가 다음에
+  발생할 때부터 적용됩니다. (이전 방식 신호는 안전하게 '전량 매도'로 처리)
+- **상대강도 선별**은 아직 관찰 단계로, 실제 매수 결정에는 반영하지 않습니다.
 
 ## 텔레그램 공지
 
 ### 한국어
 
 ```
-🚀 PRISM-INSIGHT v2.19.0 — 거래 실행 구조 전면 재설계 · RS Rating · 리포트 SDK-중립화
-(Release Note : https://github.com/dragon1086/prism-insight/releases/tag/v2.19.0)
+🚀 PRISM-INSIGHT v2.19.0 — 주문 처리 방식 새단장 · 상대강도 선별 · 리포트 속도 개선
+(자세히 : https://github.com/dragon1086/prism-insight/releases/tag/v2.19.0)
 
-이번 릴리즈의 몸통은 '거래 실행 구조의 전면 재설계'입니다.
+이번 버전의 핵심은 '주식을 사고파는 방식'을 더 안전하고 튼튼하게 새로 짠 것입니다.
 
-🏗️ 1) 매수/매도 실행을 한 경로로 (최대 비중, #412)
-· 모든 실주문을 OrderIntent → ExecutionService(단일 출입구) → KIS 한 경로로 통합
-· PENDING_ENTRY→OPEN→PENDING_EXIT→CLOSED 명시적 상태기계 + 청산 후속효과 durable outbox
-· 로컬 원장 선커밋/삭제로 증권사와 어긋나던 옛 순서를 제거 (shadow-first, 게이트는 OFF 유지)
+🏗️ 1) 주문 처리 방식 새단장 (가장 큰 변화)
+· 모든 주문이 하나의 '주문 창구'를 지나가도록 통합
+· 주문대기 → 보유중 → 매도대기 → 매도완료, 지금 어느 단계인지 또박또박 기록
+· 알림 전송이 일부 실패해도 체결된 거래는 안전, 실패한 알림만 다시 시도
+· 안전을 위해 '꺼진 상태'로 도입 — 실제 매매 동작은 기존과 동일
 
-📈 2) 오닐 RS Rating(상대강도) 스크리닝 + 백테스트
-· cores/rs_rating.py 신설, KR/US 스크리닝에 SHADOW-gate로 도입 (관측 단계)
+📈 2) 상대강도(RS) 종목 선별 (관찰 모드)
+· 시장 대비 강한 종목을 골라내는 오닐식 점수를 도입, 아직은 지표만 관찰
 
-⚙️ 3) 리포트 파이프라인 SDK-중립화 + 매수 병렬 분석
-· mcp-agent 런타임 제거, 리포트 생성/전달 디커플, KR 배치 매수분석 병렬화로 처리시간↓
+⚙️ 3) 분석 리포트 더 빠르게
+· 여러 종목을 동시에 분석하도록 개선해 리포트가 더 빨리 나옵니다
 
-🛡️ 4) 견고성·안정성
-· KRX 장애 fallback/스로틀, KIS 시세 fallback, Redis/PubSub 논블로킹 I/O
-· 매도수량 검증(전량청산 방지), OAuth 토큰 atomic 저장, US 리포트 shadow 버그 수정
+🛡️ 4) 안정성 강화
+· 시세가 잠깐 끊겨도 대체 경로로 자동 전환, 요청 속도 조절
+· 잘못된 매도 수량 거부, 로그인 토큰 안전 저장, 야간 미국 리포트 오류 수정
 
-🔁 5) 구독자 부분매도 싱크
-· 피라미딩 부분매도를 구독자가 sell_denominator로 미러링 — 전량청산 방지
+🔁 5) 구독 계좌가 원본을 더 정확히 따라하기
+· 원본이 '일부만' 팔면 구독 계좌도 '같은 비율만' 매도 (전량 청산 방지)
 
-📊 #412 상태기계는 default-OFF 게이트로 무손 롤아웃, 이번 릴리즈에서 켜지 않습니다.
+📊 새 주문 방식은 안전하게 꺼둔 채로 도입했고, 이번 버전에서 켜지 않습니다.
 ```
 
 ### English
 
 ```
-🚀 PRISM-INSIGHT v2.19.0 — trading-execution rearchitecture · RS Rating · SDK-neutral reports
-(Release Note : https://github.com/dragon1086/prism-insight/releases/tag/v2.19.0)
+🚀 PRISM-INSIGHT v2.19.0 — Order-handling overhaul · Relative-Strength screening · Faster reports
+(Details: https://github.com/dragon1086/prism-insight/releases/tag/v2.19.0)
 
-The backbone of this release is a full rearchitecture of trade execution.
+The heart of this release: we rebuilt how the system buys and sells — safer and sturdier.
 
-🏗️ 1) One path for buy/sell execution (biggest theme, #412)
-· Every real order routed through OrderIntent → ExecutionService (single chokepoint) → KIS
-· Explicit state machine PENDING_ENTRY→OPEN→PENDING_EXIT→CLOSED + durable exit-effect outbox
-· Removed the old "commit/delete local ledger first" order that could diverge from the broker
-  (shadow-first, gate stays OFF)
+🏗️ 1) Order-handling overhaul (biggest change)
+· Every order now goes through a single "order desk"
+· Each order's stage is tracked clearly: waiting → held → sell-pending → sold
+· If a notification fails, the trade itself stays safe — only the failed notice is retried
+· Shipped switched OFF for safety — actual trading behaves exactly as before
 
-📈 2) O'Neil RS Rating screening + backtest
-· New cores/rs_rating.py, wired into KR/US screening behind a SHADOW gate (observation phase)
+📈 2) Relative-Strength (RS) screening — observation mode
+· Added O'Neil-style scoring to spot market-leading stocks; watching the metric only for now
 
-⚙️ 3) SDK-neutral report pipeline + parallel buy analysis
-· mcp-agent runtime removed, report generation/delivery decoupled, KR batch buy-analysis parallelized
+⚙️ 3) Faster analysis reports
+· Stocks are now analyzed in parallel, so reports come out quicker
 
-🛡️ 4) Robustness & stability
-· KRX fallback/throttle, KIS quote fallback, non-blocking Redis/PubSub I/O
-· Reject malformed sell quantity (no accidental full liquidation), atomic OAuth token save,
-  US report cores-shadow fix
+🛡️ 4) Stronger stability
+· Auto-fallback when price data briefly drops; request pacing to avoid timeouts
+· Rejects bad sell quantities, stores login tokens securely, fixes overnight US-report failures
 
-🔁 5) Subscriber partial-sell sync
-· Pyramiding partial exits mirrored to subscribers via sell_denominator — no more full liquidation
+🔁 5) Follower accounts track the original more precisely
+· When the source sells only part of a position, followers now sell the same proportion (no full dump)
 
-📊 The #412 state machine ships behind a default-OFF gate (zero-loss rollout) and is not enabled here.
+📊 The new order flow ships OFF for safety and is not enabled in this release.
 ```
