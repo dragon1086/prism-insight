@@ -29,8 +29,71 @@ def _import_from_project_root(module_name: str, file_path: Path):
     spec.loader.exec_module(module)
     return module
 
-# Import report_generation from main project's cores
-_report_gen_module = _import_from_project_root(
+
+def _import_root_module_with_root_cores(module_name: str, file_path: Path):
+    """Import a ROOT-project module by file path while temporarily making the
+    ROOT ``cores`` package authoritative for the duration of ``exec_module``.
+
+    Why this is needed:
+    prism-us runs as ``python prism-us/us_stock_analysis_orchestrator.py``, so
+    ``sys.path[0]`` is the ``prism-us/`` dir and ``import cores`` binds to
+    ``prism-us/cores`` — which SHADOWS the root ``cores`` package. Modules like
+    ``cores/report_generation.py`` contain TOP-LEVEL absolute imports
+    (``from cores.agents.report_agent import ReportAgent``, ``from cores.llm...``,
+    ``from cores.openai_error_logging import ...``) that must resolve against the
+    ROOT ``cores`` package. ``prism-us/cores/agents/`` has no ``report_agent``, so
+    a plain file-path exec raises
+    ``ModuleNotFoundError: No module named 'cores.agents.report_agent'``.
+
+    Fix: for the exec only, (a) put the project root at the front of ``sys.path``
+    and (b) evict the prism-us ``cores``/``cores.*`` entries from ``sys.modules``
+    so the exec re-imports ``cores`` and its submodules from ROOT. Everything is
+    restored in ``finally`` so the rest of the prism-us process keeps seeing
+    ``cores`` == ``prism-us/cores``. report_generation performs its ``cores.*``
+    imports only at module top level, so the swap only needs to be active while
+    exec_module runs; the returned module keeps its ROOT-backed bindings.
+    """
+    root_str = str(_project_root)
+
+    # Snapshot & evict the prism-us `cores` (and submodules) so the exec below
+    # re-imports `cores`/`cores.agents`/`cores.llm`/... from ROOT.
+    saved_modules = {
+        name: mod
+        for name, mod in list(sys.modules.items())
+        if name == "cores" or name.startswith("cores.")
+    }
+    for name in saved_modules:
+        del sys.modules[name]
+
+    path_inserted = False
+    if not sys.path or sys.path[0] != root_str:
+        sys.path.insert(0, root_str)
+        path_inserted = True
+    try:
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        if path_inserted:
+            try:
+                sys.path.remove(root_str)
+            except ValueError:
+                pass
+        # Drop any ROOT `cores.*` entries created during the exec, then restore
+        # the original prism-us `cores` view so downstream prism-us imports keep
+        # resolving against prism-us/cores.
+        for name in [
+            n for n in list(sys.modules) if n == "cores" or n.startswith("cores.")
+        ]:
+            del sys.modules[name]
+        sys.modules.update(saved_modules)
+
+
+# Import report_generation from main project's cores.
+# report_generation.py has top-level `from cores.X import ...` statements that
+# must bind to the ROOT cores package, so use the cores-swapping loader.
+_report_gen_module = _import_root_module_with_root_cores(
     "main_report_generation",
     _project_root / "cores" / "report_generation.py"
 )
