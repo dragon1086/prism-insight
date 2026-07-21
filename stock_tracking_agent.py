@@ -3193,6 +3193,13 @@ class StockTrackingAgent:
                         else:
                             logger.error(f"Actual sell failed: {trade_result['message']}")
 
+                        # Portion of this position that was actually sold, so
+                        # mirroring subscribers replicate a partial (pyramiding)
+                        # exit instead of full-liquidating. sell_quantity is only
+                        # set for fractional multi-row sells; a genuine full sell
+                        # leaves it None → denominator 1 (unchanged behavior).
+                        sell_denominator = remaining_rows if sell_quantity is not None else 1
+
                         # [Optional] Publish sell signal via Redis Streams
                         # Auto-skipped if Redis not configured (requires UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN)
                         try:
@@ -3204,7 +3211,8 @@ class StockTrackingAgent:
                                 buy_price=stock.get('buy_price', 0),
                                 profit_rate=((current_price - stock.get('buy_price', 0)) / stock.get('buy_price', 0) * 100),
                                 sell_reason=sell_reason,
-                                trade_result=trade_result
+                                trade_result=trade_result,
+                                sell_denominator=sell_denominator
                             )
                         except Exception as signal_err:
                             logger.warning(f"Sell signal publish failed (non-critical): {signal_err}")
@@ -3220,7 +3228,8 @@ class StockTrackingAgent:
                                 buy_price=stock.get('buy_price', 0),
                                 profit_rate=((current_price - stock.get('buy_price', 0)) / stock.get('buy_price', 0) * 100),
                                 sell_reason=sell_reason,
-                                trade_result=trade_result
+                                trade_result=trade_result,
+                                sell_denominator=sell_denominator
                             )
                         except Exception as signal_err:
                             logger.warning(f"GCP sell signal publish failed (non-critical): {signal_err}")

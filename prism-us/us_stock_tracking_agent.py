@@ -2735,6 +2735,15 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     plan = decide_us_sell_plan(remaining_rows, will_queue)
                     logger.info(f"{ticker} sell plan: {plan} (remaining_rows={remaining_rows}, will_queue={will_queue})")
 
+                    # Portion of this position that this sell represents, so
+                    # mirroring subscribers replicate a partial (pyramiding) exit
+                    # instead of full-liquidating. Only a "fractional" plan sells
+                    # part of the position; full_exit / single_full sell the whole
+                    # (remaining) position → denominator 1 (unchanged behavior).
+                    # Computed from plan/remaining_rows (always in scope here);
+                    # sell_quantity is not defined on the current_price<=0 path.
+                    sell_denominator = remaining_rows if plan == "fractional" else 1
+
                     # Delete from holding_decisions when selling
                     await self._delete_holding_decision(ticker)
 
@@ -2877,7 +2886,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 profit_rate=profit_rate,
                                 sell_reason=sell_reason,
                                 trade_result=trade_result,
-                                market="US"
+                                market="US",
+                                sell_denominator=sell_denominator
                             )
                         except Exception as signal_err:
                             logger.warning(f"Sell signal publish failed (non-critical): {signal_err}")
@@ -2895,7 +2905,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 profit_rate=profit_rate,
                                 sell_reason=sell_reason,
                                 trade_result=trade_result,
-                                market="US"
+                                market="US",
+                                sell_denominator=sell_denominator
                             )
                         except Exception as signal_err:
                             logger.warning(f"GCP sell signal publish failed (non-critical): {signal_err}")

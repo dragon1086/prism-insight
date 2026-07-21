@@ -502,7 +502,7 @@ async def execute_buy_trade(ticker: str, company_name: str, logger: logging.Logg
         return {"success": False, "message": str(e)}
 
 
-async def execute_sell_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[int] = None) -> Dict[str, Any]:
+async def execute_sell_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[int] = None, sell_denominator: int = 1) -> Dict[str, Any]:
     """Execute actual sell order (async)
 
     Args:
@@ -510,6 +510,12 @@ async def execute_sell_trade(ticker: str, company_name: str, logger: logging.Log
         company_name: Company name for logging
         logger: Logger instance
         limit_price: Limit price for reserved orders (required for off-hours trading)
+        sell_denominator: Portion of the position to sell so a partial
+            (pyramiding) exit on the source account is mirrored here. We sell
+            floor(our_holding / sell_denominator); 1 (default) sells the whole
+            position (unchanged behavior). A larger denominator means the source
+            trimmed one lot of several, so we trim the same fraction instead of
+            full-liquidating.
     """
     try:
         from trading.domestic_stock_trading import AsyncTradingContext
@@ -522,7 +528,26 @@ async def execute_sell_trade(ticker: str, company_name: str, logger: logging.Log
                 if price_info:
                     effective_limit_price = int(price_info['current_price'])
 
-            trade_result = await trading.async_sell_stock(stock_code=ticker, limit_price=effective_limit_price)
+            # Mirror a partial (pyramiding) exit: sell only our proportional share.
+            sell_quantity = None  # None => full-position sell (unchanged behavior)
+            if sell_denominator and sell_denominator > 1:
+                holding = await asyncio.to_thread(trading.get_holding_quantity, ticker)
+                sell_quantity = holding // sell_denominator
+                if sell_quantity < 1:
+                    # Our position is too small for this fraction to round to a
+                    # share. Keep it — the source's final full sweep (denominator
+                    # 1) will close the remainder. Not a failure.
+                    logger.info(
+                        f"⏭️ Partial sell skipped: {company_name}({ticker}) "
+                        f"holding {holding} / denom {sell_denominator} < 1 share; keeping for final sweep"
+                    )
+                    return {"success": True, "message": f"partial sell skipped (holding {holding}/{sell_denominator} < 1 share)"}
+                logger.info(
+                    f"➗ Partial (pyramiding) sell: {company_name}({ticker}) "
+                    f"{sell_quantity} of {holding} shares (denom {sell_denominator})"
+                )
+
+            trade_result = await trading.async_sell_stock(stock_code=ticker, limit_price=effective_limit_price, quantity=sell_quantity)
 
         if trade_result['success']:
             logger.info(f"✅ Actual sell successful: {company_name}({ticker}) - {trade_result['message']}")
@@ -577,7 +602,7 @@ async def execute_us_buy_trade(ticker: str, company_name: str, logger: logging.L
         return {"success": False, "message": str(e)}
 
 
-async def execute_us_sell_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[float] = None) -> Dict[str, Any]:
+async def execute_us_sell_trade(ticker: str, company_name: str, logger: logging.Logger, limit_price: Optional[float] = None, sell_denominator: int = 1) -> Dict[str, Any]:
     """Execute actual US stock sell order (async)
 
     Args:
@@ -585,6 +610,10 @@ async def execute_us_sell_trade(ticker: str, company_name: str, logger: logging.
         company_name: Company name for logging
         logger: Logger instance
         limit_price: Limit price in USD for reserved orders (required for off-hours trading)
+        sell_denominator: Portion of the position to sell so a partial
+            (pyramiding) exit on the source account is mirrored here. We sell
+            floor(our_holding / sell_denominator); 1 (default) sells the whole
+            position (unchanged behavior).
     """
     try:
         USStockTrading = load_us_stock_trading_class()
@@ -598,7 +627,25 @@ async def execute_us_sell_trade(ticker: str, company_name: str, logger: logging.
             if price_info:
                 effective_limit_price = price_info['current_price']
 
-        trade_result = await trading.async_sell_stock(ticker=ticker, limit_price=effective_limit_price)
+        # Mirror a partial (pyramiding) exit: sell only our proportional share.
+        sell_quantity = None  # None => full-position sell (unchanged behavior)
+        if sell_denominator and sell_denominator > 1:
+            holding = await asyncio.to_thread(trading.get_holding_quantity, ticker)
+            sell_quantity = holding // sell_denominator
+            if sell_quantity < 1:
+                # Position too small for this fraction to round to a share; keep
+                # it for the source's final full sweep (denominator 1). Not a failure.
+                logger.info(
+                    f"⏭️ 🇺🇸 Partial sell skipped: {company_name}({ticker}) "
+                    f"holding {holding} / denom {sell_denominator} < 1 share; keeping for final sweep"
+                )
+                return {"success": True, "message": f"partial sell skipped (holding {holding}/{sell_denominator} < 1 share)"}
+            logger.info(
+                f"➗ 🇺🇸 Partial (pyramiding) sell: {company_name}({ticker}) "
+                f"{sell_quantity} of {holding} shares (denom {sell_denominator})"
+            )
+
+        trade_result = await trading.async_sell_stock(ticker=ticker, limit_price=effective_limit_price, quantity=sell_quantity)
 
         if trade_result['success']:
             logger.info(f"✅ 🇺🇸 US sell successful: {company_name}({ticker}) - {trade_result['message']}")
@@ -687,19 +734,27 @@ def main():
             company_name = signal.get("company_name", "")
             # Get price from signal for limit orders (signal may contain price info)
             price = signal.get("price", 0)
+            # Preserve the source's partial-exit fraction across the demo-mode
+            # off-hours queue (the whole signal was stored, so it survives here).
+            try:
+                sell_denominator = int(signal.get("sell_denominator", 1) or 1)
+            except (TypeError, ValueError):
+                sell_denominator = 1
+            if sell_denominator < 1:
+                sell_denominator = 1
 
             # Call different trading functions based on market
             # Pass price as limit_price for reserved orders
             if market == "US":
                 limit_price = float(price) if price else None
                 if signal_type == "SELL":
-                    return asyncio.run(execute_us_sell_trade(ticker, company_name, logger, limit_price=limit_price))
+                    return asyncio.run(execute_us_sell_trade(ticker, company_name, logger, limit_price=limit_price, sell_denominator=sell_denominator))
                 else:  # BUY
                     return asyncio.run(execute_us_buy_trade(ticker, company_name, logger, limit_price=limit_price))
             else:  # KR (default)
                 limit_price = int(price) if price else None
                 if signal_type == "SELL":
-                    return asyncio.run(execute_sell_trade(ticker, company_name, logger, limit_price=limit_price))
+                    return asyncio.run(execute_sell_trade(ticker, company_name, logger, limit_price=limit_price, sell_denominator=sell_denominator))
                 else:  # BUY
                     return asyncio.run(execute_buy_trade(ticker, company_name, logger, limit_price=limit_price))
 
@@ -812,6 +867,14 @@ def main():
             profit_rate = signal.get("profit_rate", 0)
             sell_reason = signal.get("sell_reason", "")
             buy_price = signal.get("buy_price", 0)
+            # Portion of the position the source sold (pyramiding partial exit).
+            # Default 1 (full sell) keeps backward compatibility with old signals.
+            try:
+                sell_denominator = int(signal.get("sell_denominator", 1) or 1)
+            except (TypeError, ValueError):
+                sell_denominator = 1
+            if sell_denominator < 1:
+                sell_denominator = 1
 
             details = []
             if buy_price:
@@ -838,9 +901,9 @@ def main():
                     # Live trading or market hours: execute immediately
                     logger.info(f"🚀 Executing sell order: {market_label} {company_name}({ticker})")
                     if market == "US":
-                        asyncio.run(execute_us_sell_trade(ticker, company_name, logger, limit_price=float(price) if price else None))
+                        asyncio.run(execute_us_sell_trade(ticker, company_name, logger, limit_price=float(price) if price else None, sell_denominator=sell_denominator))
                     else:
-                        asyncio.run(execute_sell_trade(ticker, company_name, logger, limit_price=int(price) if price else None))
+                        asyncio.run(execute_sell_trade(ticker, company_name, logger, limit_price=int(price) if price else None, sell_denominator=sell_denominator))
             else:
                 logger.info(f"🔸 [DRY-RUN] Sell skipped: {market_label} {company_name}({ticker})")
 
