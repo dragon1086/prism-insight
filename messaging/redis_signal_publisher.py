@@ -241,6 +241,7 @@ class SignalPublisher:
         sell_reason: str,
         trade_result: Optional[Dict[str, Any]] = None,
         event_id: Optional[str] = None,
+        sell_denominator: int = 1,
     ) -> Optional[str]:
         """
         Publish sell signal
@@ -253,6 +254,10 @@ class SignalPublisher:
             profit_rate: Profit rate
             sell_reason: Sell reason
             trade_result: Actual trade result
+            sell_denominator: Portion of the position this sell represents so
+                mirroring subscribers can match a partial (pyramiding) exit.
+                Subscribers sell floor(their_holding / sell_denominator);
+                1 (default) means a full-position sell (unchanged behavior).
 
         Returns:
             str: Message ID
@@ -261,6 +266,7 @@ class SignalPublisher:
             "buy_price": buy_price,
             "profit_rate": profit_rate,
             "sell_reason": sell_reason,
+            "sell_denominator": sell_denominator,
         }
 
         if trade_result:
@@ -366,11 +372,16 @@ async def publish_sell_signal(
     trade_result: Optional[Dict[str, Any]] = None,
     market: str = "KR",
     event_id: Optional[str] = None,
+    sell_denominator: int = 1,
 ) -> Optional[str]:
     """Publish sell signal via global publisher (convenience function)
 
     Args:
         market: Market identifier ("KR" for Korea, "US" for US stocks)
+        sell_denominator: Portion of the position this sell represents so
+            mirroring subscribers can match a partial (pyramiding) exit.
+            Subscribers sell floor(their_holding / sell_denominator);
+            1 (default) means a full-position sell (unchanged behavior).
     """
     publisher = await get_signal_publisher()
     # Include market in extra_data by passing through the publish_signal method
@@ -380,6 +391,7 @@ async def publish_sell_signal(
         "profit_rate": profit_rate,
         "sell_reason": sell_reason,
         "market": market,
+        "sell_denominator": sell_denominator,
     }
 
     if trade_result:
