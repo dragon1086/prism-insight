@@ -157,14 +157,19 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
 
     result["new_bars"] = processed
 
-    # --- 2b. 스윙 레인 (라운드6 Lane B — mode='swing' 자체 원장, 가상 집행) ---
-    # 메인 결정로직/상태와 완전 독립 (자체 메타 커서). 어떤 예외도 메인
-    # 트레이딩을 멈출 수 없다. 검증: tasks/btc_round6_swing_lane.md.
+    # --- 2b. 스윙 레인 (라운드6 Lane B — mode='swing' 자체 원장) ---
+    # SWING_RUN_MODES 틱에서만 구동 (기본 demo 전용 — shadow/demo 크론 병행 시
+    # 커서 경합 방지). 집행 백엔드는 swing 모듈이 자동 선택: 스윙 전용 키
+    # (BYBIT_SWING_API_KEY/SECRET, 메인과 별도 계정) 있으면 실주문, 없으면
+    # 가상 체결. 메인 결정로직/상태와 완전 독립 (자체 메타 커서). 어떤 예외도
+    # 메인 트레이딩을 멈출 수 없다. 검증: tasks/btc_round6_swing_lane.md.
     try:
-        from live import swing as swing_lane
-        sres = swing_lane.process(root_conn, tf_data, main_mode=mode)
-        if sres.get("events"):
-            result["swing"] = sres
+        from engine.config import SWING_RUN_MODES
+        if mode in SWING_RUN_MODES:
+            from live import swing as swing_lane
+            sres = swing_lane.process(root_conn, tf_data, main_mode=mode)
+            if sres.get("events"):
+                result["swing"] = sres
     except Exception as exc:  # noqa: BLE001 — 스윙 레인 실패는 메인과 무관
         tracking.log_event(root_conn, "error", f"swing lane: {exc}",
                            level="error", mode="swing")
