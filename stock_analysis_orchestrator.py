@@ -428,9 +428,11 @@ class StockAnalysisOrchestrator:
             list: List of selected stock codes
         """
         logger.info(f"Starting trigger batch execution: {mode}")
+        market_data_error_type = None
         try:
             # Direct import instead of subprocess to share KRX session
-            from trigger_batch import run_batch
+            from trigger_batch import MarketSnapshotUnavailableError, run_batch
+            market_data_error_type = MarketSnapshotUnavailableError
 
             # Results file path
             results_file = f"trigger_results_{mode}_{datetime.now().strftime('%Y%m%d')}.json"
@@ -504,6 +506,9 @@ class StockAnalysisOrchestrator:
             logger.error(f"Error during trigger batch execution: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
+            if market_data_error_type and isinstance(e, market_data_error_type):
+                from telegram_config import send_market_data_failure_alert
+                await send_market_data_failure_alert(self.telegram_config, mode=mode)
             return []
 
     async def convert_to_pdf(self, report_paths):
