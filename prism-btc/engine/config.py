@@ -97,6 +97,10 @@ DB_RELATIVE_PATH: str = "state/btc_market.db"
 # 메인 레인(ENTRY_SCORE_MIN/TS_MIN)은 동결 유지 — 두 레인은 역할 분담:
 # 메인 = 성숙 추세를 크게, 스윙 = 초입/전환을 작게.
 SWING_ENABLED: bool = True
+# 스윙 레인을 구동하는 runner mode. 서버는 shadow(:01)/demo(:02) 크론 병행이라
+# 양쪽에서 돌리면 단일 커서(mode='swing')를 선착 shadow 틱이 소비해 텔레그램
+# 알림(demo/live 전용)이 영원히 안 나간다 — demo 틱 전용으로 고정.
+SWING_RUN_MODES: tuple[str, ...] = ("demo",)
 SWING_STOP_ATR_MULT: float = 2.0      # 하드스탑 = 진입가 ∓ 2.0 × ATR14(4h)
 SWING_RISK_PER_TRADE: float = 0.01    # equity 의 1% (메인 RISK_PER_TRADE 2% 의 절반)
 SWING_MAX_LEVERAGE: float = 5.0       # 명목/equity 상한 (Rocky 승인 스펙)

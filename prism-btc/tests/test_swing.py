@@ -263,3 +263,160 @@ class TestSwingProcess:
         monkeypatch.setattr(swing, "SWING_ENABLED", False)
         res = swing.process(conn, _make_tf_data(), main_mode="shadow")
         assert res == {"events": 0}
+
+
+# ---------------------------------------------------------------------------
+# ExchangeBackend — FakeSession 으로 실주문 경로 검증 (네트워크 없음)
+# ---------------------------------------------------------------------------
+
+class FakeSession:
+    """pybit HTTP 흉내: 호출 기록 + 프로그래머블 응답."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self._oid = 0
+        self.position_size = 0.0
+        self.avg_price = 0.0
+        self.total_equity = 10_000.0
+        self.close_exec_price = 0.0
+
+    def _record(self, name, kw):
+        self.calls.append((name, kw))
+
+    def set_leverage(self, **kw):
+        self._record("set_leverage", kw)
+        return {"retCode": 0, "result": {}}
+
+    def place_order(self, **kw):
+        self._record("place_order", kw)
+        self._oid += 1
+        # 시장가 진입이면 포지션이 생긴 것으로 시뮬.
+        if kw.get("orderType") == "Market" and not kw.get("reduceOnly"):
+            self.position_size = float(kw["qty"])
+        if kw.get("reduceOnly") and kw.get("orderType") == "Market" \
+                and "triggerPrice" not in kw:
+            self.position_size = 0.0
+        return {"retCode": 0, "result": {"orderId": f"oid-{self._oid}"}}
+
+    def get_positions(self, **kw):
+        self._record("get_positions", kw)
+        lst = []
+        if self.position_size > 0:
+            lst = [{"size": str(self.position_size), "side": "Buy",
+                    "avgPrice": str(self.avg_price), "leverage": "5"}]
+        return {"retCode": 0, "result": {"list": lst}}
+
+    def get_wallet_balance(self, **kw):
+        self._record("get_wallet_balance", kw)
+        return {"retCode": 0,
+                "result": {"list": [{"totalEquity": str(self.total_equity)}]}}
+
+    def get_executions(self, **kw):
+        self._record("get_executions", kw)
+        lst = []
+        if self.close_exec_price > 0:
+            lst = [{"closedSize": "0.1", "execPrice": str(self.close_exec_price)}]
+        return {"retCode": 0, "result": {"list": lst}}
+
+    def cancel_order(self, **kw):
+        self._record("cancel_order", kw)
+        return {"retCode": 0, "result": {}}
+
+    def _calls_named(self, name):
+        return [kw for n, kw in self.calls if n == name]
+
+
+def _pos_row(**over):
+    from live import tracking
+    base = dict(
+        side="long", entry_price=50_000.0, qty=0.1, leverage=1.0,
+        sl_price=49_000.0, tp1_price=0.0, tp2_price=0.0, tp3_price=0.0,
+        liq_price=0.0, entry_time="t", tranche_index=0, entry_bar_idx=0,
+        initial_risk=100.0, mode="swing")
+    base.update(over)
+    return tracking.PositionRow(**base)
+
+
+class TestExchangeBackend:
+    def test_open_places_market_then_native_sl(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.avg_price = 50_050.0
+        be = swing.ExchangeBackend(conn, sess)
+        fill = be.open("long", 0.1, 49_000.0, 50_000.0)
+        assert fill == pytest.approx(50_050.0)  # 거래소 avgPrice 가 체결가
+        orders = sess._calls_named("place_order")
+        assert len(orders) == 2
+        entry, sl = orders
+        assert entry["side"] == "Buy" and entry["orderType"] == "Market"
+        assert not entry.get("reduceOnly")
+        assert sl["reduceOnly"] is True and sl["triggerPrice"] == "49000.0"
+        assert sl["triggerDirection"] == 2 and sl["side"] == "Sell"
+        assert tracking.get_meta(conn, "swing_sl_order_id", "swing")
+
+    def test_check_stop_detects_position_gone(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.position_size = 0.0  # 스탑 체결로 포지션 소멸 상태
+        sess.close_exec_price = 48_990.0
+        tracking.set_meta(conn, "swing_sl_order_id", "oid-7", "swing")
+        be = swing.ExchangeBackend(conn, sess)
+        price = be.check_stop(_pos_row(), None)
+        assert price == pytest.approx(48_990.0)  # 실체결가 사용
+        assert sess._calls_named("cancel_order")  # 잔여 SL 정리
+        assert tracking.get_meta(conn, "swing_sl_order_id", "swing") == ""
+
+    def test_check_stop_holds_when_query_fails(self, conn, monkeypatch):
+        from live import swing
+
+        class DeadSession:
+            def get_positions(self, **kw):
+                raise ConnectionError("down")
+        monkeypatch.setattr(swing, "_RETRY_SLEEP_SEC", 0.0)
+        be = swing.ExchangeBackend(conn, DeadSession())
+        # 조회 실패 → None (판단 유보, 청산 기록 금지).
+        assert be.check_stop(_pos_row(), None) is None
+
+    def test_close_cancels_sl_and_market_reduces(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.position_size = 0.1
+        sess.close_exec_price = 50_500.0
+        tracking.set_meta(conn, "swing_sl_order_id", "oid-3", "swing")
+        be = swing.ExchangeBackend(conn, sess)
+        fill = be.close(_pos_row(), 50_400.0)
+        assert fill == pytest.approx(50_500.0)
+        assert sess._calls_named("cancel_order")[0]["orderId"] == "oid-3"
+        reduces = [kw for kw in sess._calls_named("place_order")
+                   if kw.get("reduceOnly")]
+        assert reduces and reduces[0]["side"] == "Sell"
+
+    def test_process_e2e_with_exchange_backend(self, conn, monkeypatch):
+        from live import swing, tracking
+        monkeypatch.setattr(swing, "_notify", lambda *a, **k: None)  # 실발송 차단
+        sess = FakeSession()
+        sess.avg_price = 50_020.0
+        be = swing.ExchangeBackend(conn, sess)
+        res = swing.process(conn, _make_tf_data(), main_mode="demo", backend=be)
+        assert res["events"] == 1
+        pos = tracking.load_open_positions(conn, "swing")
+        assert len(pos) == 1
+        assert pos[0].entry_price == pytest.approx(50_020.0)
+        # 지갑 equity 가 원장 시드의 진실.
+        assert tracking.latest_equity(conn, "swing") == pytest.approx(10_000.0)
+
+    def test_same_key_guard_forces_virtual(self, conn, monkeypatch):
+        from live import swing
+        monkeypatch.setenv("BYBIT_SWING_API_KEY", "SAMEKEY")
+        monkeypatch.setenv("BYBIT_SWING_API_SECRET", "s")
+        monkeypatch.setenv("BYBIT_DEMO_API_KEY", "SAMEKEY")
+        sess, err = swing._make_swing_session()
+        assert sess is None
+        assert "동일" in err
+
+    def test_backend_autoselect_virtual_without_keys(self, conn, monkeypatch):
+        from live import swing
+        monkeypatch.setattr(swing, "_make_swing_session",
+                            lambda: (None, "미설정"))
+        be = swing._make_backend(conn, "demo")
+        assert be.name == "virtual"
