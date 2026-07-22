@@ -407,8 +407,8 @@ class TestExchangeBackend:
 
     def test_same_key_guard_forces_virtual(self, conn, monkeypatch):
         from live import swing
-        monkeypatch.setenv("BYBIT_SWING_API_KEY", "SAMEKEY")
-        monkeypatch.setenv("BYBIT_SWING_API_SECRET", "s")
+        monkeypatch.setenv("BYBIT_SWING_DEMO_API_KEY", "SAMEKEY")
+        monkeypatch.setenv("BYBIT_SWING_DEMO_API_SECRET", "s")
         monkeypatch.setenv("BYBIT_DEMO_API_KEY", "SAMEKEY")
         sess, err = swing._make_swing_session()
         assert sess is None
