@@ -157,6 +157,18 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
 
     result["new_bars"] = processed
 
+    # --- 2b. 스윙 레인 (라운드6 Lane B — mode='swing' 자체 원장, 가상 집행) ---
+    # 메인 결정로직/상태와 완전 독립 (자체 메타 커서). 어떤 예외도 메인
+    # 트레이딩을 멈출 수 없다. 검증: tasks/btc_round6_swing_lane.md.
+    try:
+        from live import swing as swing_lane
+        sres = swing_lane.process(root_conn, tf_data, main_mode=mode)
+        if sres.get("events"):
+            result["swing"] = sres
+    except Exception as exc:  # noqa: BLE001 — 스윙 레인 실패는 메인과 무관
+        tracking.log_event(root_conn, "error", f"swing lane: {exc}",
+                           level="error", mode="swing")
+
     # --- 3. 매매일지/부검 (학습 기어 — 트레이딩 처리 완료 후에만, 실패 절대 비전파) ---
     # LLM 은 주문 경로 밖: 종결 트레이드의 facts 추출 + 부검만 수행한다.
     # 어떤 예외도 데몬을 멈출 수 없다 (이벤트 로그로 흡수, 다음 틱 재시도).

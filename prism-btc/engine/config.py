@@ -87,3 +87,17 @@ BACKFILL_START_MS: int = 1577836800000  # 2020-01-01 00:00:00 UTC
 # SQLite path (relative to prism-btc/ package root)
 # 비트코인 시세 원본 DB (거래/일지 장부인 루트 stock_tracking_db.sqlite 와 구분).
 DB_RELATIVE_PATH: str = "state/btc_market.db"
+
+# --- 라운드6: Lane B 스윙 레인 (추세 초입, 자체 원장 가상 집행) ---
+# 검증: analysis/round6_swing_lane.py + tasks/btc_round6_swing_lane.md.
+# 2020-03~2026-07 백테스트 n=186, cum +293%, maxDD -35%, 3분리기간 모두 양수.
+# TF 전수검증(라운드6 §4b/4c): 12h/1w 추가는 추세 초입 상실(+95→+61/+20%),
+# 30m/1h 방향필터는 무개선, 30m/1h 캔들위치(메인식)는 유해(+293→+111%, 5월말
+# 숏 상실) — 4h 크로스 트리거 + 완결 1d 방향 필터로 고정. 파라미터 스윕 없음.
+# 메인 레인(ENTRY_SCORE_MIN/TS_MIN)은 동결 유지 — 두 레인은 역할 분담:
+# 메인 = 성숙 추세를 크게, 스윙 = 초입/전환을 작게.
+SWING_ENABLED: bool = True
+SWING_STOP_ATR_MULT: float = 2.0      # 하드스탑 = 진입가 ∓ 2.0 × ATR14(4h)
+SWING_RISK_PER_TRADE: float = 0.01    # equity 의 1% (메인 RISK_PER_TRADE 2% 의 절반)
+SWING_MAX_LEVERAGE: float = 5.0       # 명목/equity 상한 (Rocky 승인 스펙)
+SWING_INITIAL_EQUITY: float = 10_000.0  # 자체 가상 원장 시드 (shadow 와 동일)
