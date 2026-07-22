@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import logging
 import os
+import time
 from typing import Optional
 from cores.rs_rating import oneil_weighted_return, percentile_ratings
 from krx_data_client import (
@@ -64,13 +65,35 @@ def _get_display_ticker_name(ticker, name_map: dict[str, str]) -> str:
 
 
 # --- Data collection and caching functions ---
+
+# KRX snapshot retry: 2026-07-22 afternoon batch died on a single transient
+# data.krx.co.kr read timeout (no retry → "No stocks selected" → whole KR
+# window skipped). Transient KRX blips recover within seconds-to-minutes,
+# so retry a few times with a flat backoff before giving up.
+_SNAPSHOT_MAX_ATTEMPTS = 3
+_SNAPSHOT_RETRY_WAIT_SEC = 20
+
+
 def get_snapshot(trade_date: str) -> pd.DataFrame:
     """
     Return OHLCV snapshot for all stocks on specified trading date.
     Columns: "Open", "High", "Low", "Close", "Volume", "Amount"
     """
     logger.debug(f"get_snapshot called: {trade_date}")
-    df = stock_api.get_market_ohlcv_by_ticker(trade_date)
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, _SNAPSHOT_MAX_ATTEMPTS + 1):
+        try:
+            df = stock_api.get_market_ohlcv_by_ticker(trade_date)
+            break
+        except Exception as e:
+            last_exc = e
+            logger.warning(
+                f"KRX snapshot fetch failed (attempt {attempt}/{_SNAPSHOT_MAX_ATTEMPTS}): {e}"
+            )
+            if attempt < _SNAPSHOT_MAX_ATTEMPTS:
+                time.sleep(_SNAPSHOT_RETRY_WAIT_SEC)
+    else:
+        raise last_exc
     if df.empty:
         logger.error(f"No OHLCV data for {trade_date}.")
         raise ValueError(f"No OHLCV data for {trade_date}.")
