@@ -3,7 +3,8 @@
 # 결정 로직은 core/swing.py 순수함수 (백테스트 패리티 고정). 이 모듈은 집행만.
 #
 # 집행 백엔드 2종 (v2):
-#   - ExchangeBackend: 스윙 전용 Bybit 데모 키(BYBIT_SWING_API_KEY/SECRET)로
+#   - ExchangeBackend: 스윙 전용 Bybit 데모 키
+#     (BYBIT_SWING_DEMO_API_KEY/SECRET)로
 #     실주문. ★ 메인 레인 키와 반드시 다른 계정(별도 지갑)이어야 한다 —
 #     같은 계좌를 쓰면 원웨이 넷팅으로 DemoAdapter 의 reconcile 3중 오염:
 #     ① _sync_state 가 임의 포지션을 메인 것으로 채택 ② _record_closed_trades
@@ -62,20 +63,20 @@ _RETRY_SLEEP_SEC = 0.5
 # ---------------------------------------------------------------------------
 
 def _make_swing_session():
-    key = os.environ.get("BYBIT_SWING_API_KEY")
-    secret = os.environ.get("BYBIT_SWING_API_SECRET")
+    key = os.environ.get("BYBIT_SWING_DEMO_API_KEY")
+    secret = os.environ.get("BYBIT_SWING_DEMO_API_SECRET")
     if not key or not secret:
         try:
             from pathlib import Path
 
             from dotenv import load_dotenv
             load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
-            key = os.environ.get("BYBIT_SWING_API_KEY")
-            secret = os.environ.get("BYBIT_SWING_API_SECRET")
+            key = os.environ.get("BYBIT_SWING_DEMO_API_KEY")
+            secret = os.environ.get("BYBIT_SWING_DEMO_API_SECRET")
         except Exception:  # noqa: BLE001
             pass
     if not key or not secret:
-        return None, "BYBIT_SWING_API_KEY/SECRET 미설정"
+        return None, "BYBIT_SWING_DEMO_API_KEY/SECRET 미설정"
     # 안전 가드: 메인 키와 동일하면 실집행 금지 (넷팅 오염 방지).
     if key == os.environ.get("BYBIT_DEMO_API_KEY"):
         return None, "SWING 키가 메인 DEMO 키와 동일 — 별도 계정 필요, 가상 폴백"
