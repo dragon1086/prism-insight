@@ -1,6 +1,6 @@
 # 카카오톡 그룹봇 "프리즘 라운지" 설계
 
-> **작성일**: 2026-07-22 | **상태**: 설계 확정(구현 전)
+> **작성일**: 2026-07-22 | **개정**: 2026-07-22 (수신 방식을 Gateway로 확정) | **상태**: 설계 확정(구현 전)
 > **대상**: 사내 카카오톡 봇 공모전 (공모 2026-07-22 ~ 2026-08-09 24:00, 결과발표 2026-08-17)
 > **기반 자산**: 이 리포지토리(PRISM-INSIGHT) — `telegram_ai_bot.py`, `stock_analysis_orchestrator.run_full_pipeline`, `messaging/` 시그널 스트림, `analysis_queue`, `archive_api.py`(FastAPI 패턴)
 
@@ -68,34 +68,75 @@
 ### 사전 조건 (사용자가 준비)
 - 카카오톡 **비즈니스 채널** 생성
 - **봇 생성** 및 봇 인증 토큰 발급
-- 공개 HTTPS 도메인 — **기존 `analysis.stocksimulation.kr` 재사용**(신규 도메인 불필요)
+- 상시 실행 환경(데몬/컨테이너) — Gateway WS 연결 유지용 (§2.5)
+- 공개 HTTPS 도메인 — **PDF webLink 서빙용으로만** 필요. 기존 `analysis.stocksimulation.kr` 재사용(신규 도메인 불필요). Gateway 채택으로 **inbound 웹훅 URL은 불필요**
+
+## 2.5 수신 방식 결정: Gateway (WebSocket) 채택
+
+카카오 봇은 사용자 발화를 받는 방식이 **두 가지**다. 문서: `https://developers.kakao.com/docs/in/bot/gateway` (2026-07-22 확인)
+
+| 축 | 웹훅 (Webhook) | **Gateway (채택)** |
+|---|---|---|
+| 이벤트 수신 | 카카오 → 우리서버 HTTP POST (inbound) | 봇 → 카카오 `wss://bot-gateway.kakao.com/gateway` 상시 WS 아웃바운드 |
+| 공개 inbound 도메인 | 필수 | **불필요** (PDF webLink용 HTTPS만 필요) |
+| 실행 형태 | 무상태 FastAPI | **상시 데몬** (heartbeat·재연결 상태머신 필수) |
+| 방 생명주기 이벤트 | 없음 | **ENTRANCE/CHAT_JOIN/LEAVE 제공** |
+| 동시 사용 | — | 웹훅 URL 등록 시 Gateway 사용 불가 (**배타적**) |
+
+**채택 이유**: (1) 공모전 **VPN inbound IP 등록 마찰 회피** — 봇이 밖으로 다이얼하므로 inbound 허용 불필요, (2) `ENTRANCE` 이벤트로 봇 초대 즉시 룸 자동 등록(§12 미해결 해소, 기준③ 유리), (3) inbound TLS·라우팅 결정 제거.
+
+### Gateway 프로토콜 사실 근거
+
+- **핸드셰이크**: HELLO(op=10) → IDENTIFY(op=2, `d.token`=봇 인증 토큰) → READY(op=3, `d.session_id` 저장)
+- **연결 유지**: HEARTBEAT(op=1)를 `heartbeat_interval`(기본 41250ms)보다 약간 짧게 반복 → HEARTBEAT_ACK(op=11). 90초 무응답 시 서버가 close(4009)
+- **이벤트 수신**: DISPATCH(op=0), `s`(시퀀스, 매번 저장), `t`(이벤트 타입), `d`(페이로드)
+- **이벤트 종류(t)**: `MESSAGE_CREATE`(발화), `ENTRANCE`(봇 입장), `CHAT_JOIN`(사용자 입장), `LEAVE`(봇 퇴장)
+- **MESSAGE_CREATE 페이로드**: `id`, `content`, `timestamp`, `isChannelChatroom`, `botGroupKey`, `botUserKey`, `callbackToken`
+- **답장**: WS로 안 보냄. `callbackToken`(**5분 만료**)을 헤더에 넣어 **메시지 콜백 API** 호출. 토큰 없으면 답장 불가 → 스킵
+- **재연결**: READY의 `session_id` + 마지막 DISPATCH `s` 저장 후 RESUME(op=6). Close code — 1001(서버 재시작→RESUME), 4001(인증 실패→중단), 4003(잘못된 페이로드→중단), 4004(**다른 연결로 대체됨=중복 IDENTIFY**), 4009(세션 만료→새 IDENTIFY). 재시도는 지수 백오프(1→2→4…최대 30초). **이벤트 버퍼는 연결당 최근 100개만 보관** → 장기 중단 후 RESUME 시 그 사이 이벤트 유실 가능
+
+### ⚠️ 봇 1개 = Gateway 연결 1개 (중대 제약)
+
+같은 `BOT_TOKEN`으로 두 번째 IDENTIFY를 보내면 카카오가 기존 연결을 **close(4004)로 끊는다**. 따라서 **Gateway WS 데몬은 전체 시스템에서 단 하나의 프로세스에만 둔다**(§3). 여러 서버에서 동시 연결 금지.
+
+**수신 ≠ 발신**: Gateway 연결은 이벤트 *수신* 전용이다. 메시지 *발신*(send_message 선제전송, 콜백 답장)은 `kapi.kakao.com` 대상 **무상태 outbound REST**라 WS 연결과 무관하게 어느 프로세스에서든 호출 가능하다.
 
 ## 3. 아키텍처
 
+봇 1개당 Gateway 연결은 **하나만** 허용되므로(§2.5, close 4004), Gateway WS 데몬은 **상호작용 서버(A)에만** 둔다. orchestrator 서버(B)는 기존처럼 시그널 publish만 하고 Gateway에 연결하지 않는다.
+
 ```
-[기존 stock_analysis_orchestrator.run_full_pipeline]
-        │  (Kakao를 전혀 모름, 무수정)
-        ▼ publish
-[messaging/redis_signal_publisher.py  ·  gcp_pubsub_signal_publisher.py]
+[Server B · orchestrator 호스트]
+  run_full_pipeline (Kakao를 전혀 모름, 무수정)
+        │  publish
+        ▼
+[messaging/redis_signal_publisher.py · gcp_pubsub_signal_publisher.py]
    signal payload: {type(BUY/SELL/EVENT), ticker, company_name, price,
                     target_price, buy_score, market}
         │ subscribe (신규 구독자 1개 추가)
         ▼
-┌─────────────────────────────────────────────┐
-│  Kakao 스킬서버 (별도 경량 FastAPI, 신규)      │
-│   - webhook 수신·라우팅                        │
-│   - signal_bridge: 스트림 구독 → send_message  │
-│   - analysis_queue enqueue (기존 재사용)        │
-│   - PDF 정적 서빙 (/reports/{file})            │
-│   - 예측게임·리더보드                           │
-└───────────────┬─────────────────────────────┘
-   kapi.kakao.com/v1/bot/{send_message, callback, commands}
+┌───────────────────────────────────────────────────────┐
+│  Server A · telegram_ai_bot 호스트 (Kakao 데몬 공존)     │
+│  ┌─────────────────────────────────────────────────┐  │
+│  │ Kakao Gateway 데몬 (신규, 단일 프로세스)           │  │
+│  │  - wss://bot-gateway.kakao.com/gateway 상시 연결   │  │
+│  │  - DISPATCH 수신·라우팅 (MESSAGE_CREATE/ENTRANCE…) │  │
+│  │  - heartbeat·RESUME·지수백오프 재연결               │  │
+│  │  - signal_bridge: 스트림 구독 → send_message 팬아웃 │  │
+│  │  - analysis_queue enqueue (기존 재사용)             │  │
+│  │  - 예측게임·리더보드                                │  │
+│  └─────────────────────────────────────────────────┘  │
+│  PDF 정적 서빙 (/kakao/reports/{file}) — 공개 HTTPS     │
+└───────────────┬───────────────────────────────────────┘
+   (outbound REST) kapi.kakao.com/v1/bot/{send_message, callback, commands}
                 ▼
         [일반/팀 그룹채팅방]
 ```
 
-**핵심 원칙**: 파이프라인은 손대지 않는다. 카카오봇은 기존 시그널 스트림의 **새 구독자**이자,
-기존 `analysis_queue`의 새 **enqueuer**일 뿐이다. 텔레그램 봇/파이프라인과 완전히 독립적으로 배포·운영.
+**핵심 원칙**:
+1. 파이프라인은 손대지 않는다. 카카오봇은 기존 시그널 스트림의 **새 구독자**이자 `analysis_queue`의 새 **enqueuer**일 뿐이다.
+2. **Gateway 데몬은 Server A 단일 프로세스.** B를 포함해 어디서도 중복 연결 금지(4004).
+3. **수신은 WS(A 단일), 발신은 무상태 REST(어디서든).** B가 방에 직접 쏘고 싶으면 send_message REST 호출도 가능하지만, 기본은 B publish → A signal_bridge → send_message.
 
 ## 4. 컴포넌트 (단일 책임)
 
@@ -103,7 +144,8 @@
 
 | 모듈 | 책임 | 의존 |
 |---|---|---|
-| `kakao/webhook_app.py` | FastAPI 앱. 웹훅 라우팅, 동기 응답, PDF 정적 라우트(`/reports/{file}`) | handlers, kakao_client |
+| `kakao/gateway_daemon.py` | **상시 WS 데몬**. `wss://bot-gateway.kakao.com/gateway` 연결·핸드셰이크(HELLO/IDENTIFY/READY)·heartbeat·RESUME 재연결·close code 분기. DISPATCH 수신 → 이벤트(`t`)별 handler 라우팅. **단일 프로세스 강제** | handlers, kakao_client |
+| `kakao/pdf_app.py` | 경량 FastAPI. PDF 정적 라우트(`/reports/{file}`)만 담당 (공개 HTTPS webLink용) | 없음 |
 | `kakao/kakao_client.py` | Kakao API 클라이언트: `send_message(target_key, skill_response)`, `callback(token, skill_response)`, `update_commands()`, `update_guide()`. BOT_TOKEN 인증, 지수 백오프 재시도(텔레그램 v2.9.0 패턴 이식), 타임아웃 | aiohttp |
 | `kakao/templates.py` | SkillResponse 빌더: `simple_text`, `list_card`, `basic_card`, `item_card`, `quick_replies`, `mention`. **제약 강제**: 1000자, 리스트 5개, 출력 3개, 라벨 14자, mention 15명 | 없음 |
 | `kakao/signal_bridge.py` | 시그널 스트림 구독 → 아침 온램프 카드 생성 → 등록 룸에 `send_message` 팬아웃. `message_id` 기반 멱등 처리 | messaging(재사용), kakao_client, templates, room_registry |
@@ -111,21 +153,22 @@
 | `kakao/prediction.py` | 예측게임 로직: 등록·정산·점수. 익일 종가 기준 상승/하락 판정 | db, 가격조회(기존 pykrx 경로 재사용) |
 | `kakao/handlers/report.py` | `/report` 또는 "리포트" 발화 처리. 즉시 ack → analysis_queue enqueue → 완료 후 send_message | analysis_queue(재사용), kakao_client, templates |
 | `kakao/handlers/ask.py` | `/ask` 자연어 Q&A. 5분 내면 콜백, 무거우면 send_message | 기존 ask 로직 재사용 |
-| `kakao/handlers/prediction.py` | 예측 등록·조회 웹훅 핸들러 | prediction, templates |
+| `kakao/handlers/prediction.py` | 예측 등록·조회 이벤트 핸들러 | prediction, templates |
 | `kakao/handlers/leaderboard.py` | 리더보드 조회·정산 후 mention 발송 | prediction, kakao_client, templates |
 | `kakao/handlers/help.py` | 도움말·시작 안내 | templates |
 
-## 5. 비동기 전략 (5초/5분 제약) — 가장 중요
+## 5. 비동기 전략 (5분 제약) — 가장 중요
 
-카카오 웹훅은 ~5초 내 응답해야 하고 콜백 토큰은 5분 만료된다. 리포트 생성은 수 분 걸린다.
+Gateway는 웹훅과 달리 **동기 HTTP 응답 채널이 없다.** 모든 답장은 DISPATCH의 `callbackToken`(**5분 만료**)으로 콜백 API를 호출하거나, `send_message`(시간 제한 없음)로 보낸다. 판단 기준은 "5초"가 아니라 **작업이 큐(analysis_queue)를 타느냐**다 — 큐 대기시간이 콜백 5분 예산에 포함되기 때문.
 
-| 작업 소요 | 전략 |
-|---|---|
-| **< 5초** | 동기 웹훅 응답 (quickReply 메뉴, 예측 등록, 리더보드 조회, 도움말) |
-| **5초 ~ 5분** | `useCallback` 응답으로 즉시 "준비중" 반환 + 콜백 토큰 획득 → 완료 시 `POST /v1/bot/callback` |
-| **> 5분 (풀 리포트)** | 즉시 simpleText ack("분석 시작했습니다, 완료되면 알려드릴게요") → analysis_queue 완료 시 **`send_message`** 로 결과 푸시 (시간 제한 없음) |
+| 작업 성격 | 큐 경유 | 전략 |
+|---|---|---|
+| 즉답 (quickReply 메뉴, 예측 등록, 리더보드 조회, 도움말) | ❌ | 처리 즉시 **콜백 API**(5분 내 여유) |
+| **큐 타는 모든 것 (`/report`, 무거운 `/ask`)** | ✅ | 즉시 콜백으로 ack("분석 시작했습니다, 완료되면 알려드릴게요") → 완료 시 **`send_message`**로 결과 푸시 |
 
-리포트는 세 번째 경로를 기본으로 한다. 콜백 5분 초과 위험을 회피한다.
+**핵심 규칙**: 큐에 들어가는 순간 콜백에 의존하지 않는다. 큐 대기 + 처리시간은 예측 불가능하게 5분을 넘길 수 있으므로(리포트는 안내 문구상 5–10분 소요), 큐 경유 작업은 무조건 `send_message` 경로로 결과를 푸시한다. 이는 텔레그램 봇의 기존 패턴(`telegram_ai_bot.py`: 즉시 대기 메시지 → `analysis_queue.put` → 완료 시 `send_report_result`)과 1:1로 대응한다.
+
+> **주의**: Gateway엔 메시지 *수정*(텔레그램 `edit_text`) 개념이 없다. ack 후 결과는 방에 **새 말풍선**으로 추가된다. "지금 N번째 대기중" 같은 진행 갱신이 불가하므로, ack 문구에 "순서대로 처리되며 완료 시 알려드림"을 처음부터 명시한다.
 
 ## 6. 기능 상세 (MVP 4종)
 
@@ -139,7 +182,7 @@
 ### 6.2 /report 온디맨드 분석 (기준 ①)
 - 트리거: quickReply `📊 리포트 보기` 또는 "리포트 삼성전자" 발화
 - 동작: 즉시 ack → `AnalysisRequest` enqueue(기존 백그라운드 워커 재사용) → 완료 시
-  요약 ListCard + `PDF 열기`(webLink, 스킬서버 서빙 URL) send_message
+  요약 ListCard + `PDF 열기`(webLink, PDF 서빙 URL) send_message
 - PDF 없으면 텍스트 요약 fallback (`send_report_result` 패턴 이식)
 
 ### 6.3 종목 예측 게임 + 리더보드 (기준 ②④)
@@ -152,7 +195,7 @@
 
 ### 6.4 /ask 자연어 Q&A (기준 ①②)
 - 트리거: 종목·테마 관련 자연어 발화
-- 동작: 5분 내 답변 가능하면 콜백, 무거우면 send_message. 기존 ask 로직 재사용
+- 동작: **큐를 안 타는 즉답이면 콜백(5분 내), 큐를 타면 send_message**(§5 규칙). 기존 ask 로직 재사용
 
 ## 7. 데이터 모델 (SQLite, 프로젝트 관례)
 
@@ -207,43 +250,49 @@ CREATE TABLE kakao_scores (
 | 지수 백오프 재시도(v2.9.0) | `kakao_client`에 동일 패턴 이식 |
 
 ## 9. 에러 처리
+- **Gateway 상시성 (최우선)**: WS 데몬은 supervisor(systemd/pm2 등)로 상시 감시·자동 재기동. 데몬 다운 시 심사 중 봇이 **무응답**(에러도 없음)이 되고, 이벤트 버퍼 100개 초과분은 복구 불가
+- **Gateway 재연결**: HEARTBEAT_ACK 누락 감지 → 재연결. close code 분기(1001·네트워크→RESUME, 4009→새 IDENTIFY, 4001/4003/4004→중단·점검), 지수 백오프(최대 30초). `session_id`·마지막 `s` 보존
 - Kakao API 호출: 지수 백오프 재시도, 타임아웃 명시
-- 콜백 토큰 5분 만료 → `send_message` fallback
+- 콜백 토큰 5분 만료 → `send_message` fallback. `callbackToken` 없는 이벤트는 답장 스킵
 - PDF 누락 → 텍스트 요약 fallback
 - 시그널 재수신 → `message_id` 멱등으로 중복 발송 차단
-- 웹훅 파싱 실패 → 안전한 기본 안내 응답(도움말 유도)
+- DISPATCH 파싱 실패 → 안전한 기본 안내 응답(도움말 유도)
 
 ## 10. 배포
 
-기존 `analysis.stocksimulation.kr` 서버에 **공존**한다. 신규 도메인·인증서 불필요.
-`archive_api.py`(FastAPI + uvicorn, :8765, API-key 인증)와 동일 패턴을 따른다.
+**Server A (telegram_ai_bot 호스트)** 에 Kakao Gateway 데몬을 **공존**시킨다. Gateway는 아웃바운드 WS라 **inbound 웹훅 URL·TLS 라우팅이 불필요**하다. Server B(orchestrator)는 기존처럼 시그널 publish만 하고 Kakao 연결은 없다.
 
-- 스킬서버: 신규 FastAPI + uvicorn, 별도 포트(예: **:8770**). `archive_api.py` 구조 참고
-- 리버스 프록시에서 경로 라우팅(Streamlit 대시보드 무영향):
+- **Gateway 데몬** (신규, Server A 단일 프로세스): `wss://bot-gateway.kakao.com/gateway`로 아웃바운드 연결. supervisor(systemd/pm2)로 상시 기동. **중복 실행 금지**(4004)
+- **PDF 서빙**: 경량 FastAPI + uvicorn, 별도 포트(예: **:8770**), `archive_api.py` 구조 참고. webLink용으로만 공개 노출
+- 리버스 프록시 경로(Streamlit 대시보드 무영향):
   ```
   https://analysis.stocksimulation.kr/
      ├─ /                     → Streamlit 대시보드 (기존)
-     ├─ /kakao/webhook        → 스킬서버 :8770   ← 카카오 웹훅 URL
      └─ /kakao/reports/{file} → pdf_reports 정적 서빙  ← PDF webLink URL
   ```
+  > Gateway 채택으로 `/kakao/webhook` inbound 라우트는 **삭제**. inbound 방화벽 개방 불필요, **아웃바운드로 `wss://bot-gateway.kakao.com`·`kapi.kakao.com` 허용**만 확인
 - PDF: docker-compose가 이미 `./pdf_reports`를 컨테이너에 마운트 → 그대로 정적 노출
 - 기존 Redis에 구독 연결, `kapi.kakao.com` 호출
 - 환경변수: `KAKAO_BOT_TOKEN`, `KAKAO_BOT_PUBLIC_BASE_URL`(기본 `https://analysis.stocksimulation.kr/kakao`), Redis 접속 정보
 
-### 미확정 (배포)
-- TLS 종료·라우팅 위치(호스트 nginx vs 클라우드 LB) 확인 후 `/kakao/*` location 추가
+### 배포 전제조건 (Gateway)
+- WS 데몬 supervisor 상시 감시 (다운 = 봇 무응답, §9)
+- 봇 토큰당 단일 연결 — A/B 동시 연결 금지
+- 아웃바운드 WS/HTTPS 방화벽 허용 (inbound 개방은 PDF 포트만)
 
 ## 11. 테스트 전략
+- **착수 전 스모크(최우선)**: 에코봇으로 Gateway 핸드셰이크(HELLO→IDENTIFY→READY)·DISPATCH 수신 확인. **동시에 `send_message` 한 건 발송해 Gateway 연결 상태에서 선제전송이 실제로 나가는지 실측** — 아침 온램프(기준③)가 여기 의존. 막히면 온램프 재설계 필요
 - 단위: `templates` 제약 강제(글자수·개수), `signal_bridge` 포맷, `prediction` 정산 점수
-- 통합: mock 웹훅 요청 → SkillResponse JSON 검증, `send_message` mock
+- 통합: mock DISPATCH 이벤트 → 라우팅·SkillResponse JSON 검증, `send_message`/콜백 mock
+- Gateway: 재연결(close 1001/4009) 시 RESUME·IDENTIFY 분기, heartbeat 타이머 단위 테스트
 - 기존 `tests/test_gcp_pubsub_signal*.py`를 구독자 테스트 레퍼런스로 활용
 
 ## 12. 미해결/추후 결정
 - 정산 배치 실행 시각(장 마감 후) 및 영업일 캘린더 소스 확정
-- 룸 등록(옵트인) UX: 봇 초대 시 자동 등록 vs 명시적 `/시작` 명령
+- 룸 등록(옵트인) UX: **`ENTRANCE` 이벤트로 봇 초대 시 자동 등록**을 기본으로 하되, opt-in 온/오프 토글 UX 확정
 - 예측 라운드 주기(일간 고정 vs 설정 가능)
-- TLS 종료·라우팅 위치(호스트 nginx vs 클라우드 LB) — `/kakao/*` location 추가 지점
-- 팀 구성 및 (공동체 참여 시) VPN IP 등록 신청 여부
+- 팀 구성 (Gateway는 아웃바운드라 inbound VPN IP 등록 마찰 없음 — 아웃바운드 방화벽만 확인)
+- **[검증 필요] Gateway 연결 상태에서 `send_message` 병용 가능 여부 (§11 스모크로 착수 전 확인)**
 
 ## 13. 제출 산출물 체크리스트 (마감 2026-08-09 24:00)
 
@@ -268,6 +317,7 @@ CREATE TABLE kakao_scores (
 - 핵심 발견(정정 포함): 카카오 신형 Bot REST API는 `send_message`로 **봇이 있는 방에 무료 선제 전송 가능** → 텔레그램 채널 발송의 무료 등가물 존재(구형 오픈빌더/친구톡 모델과 다름). 상세는 §2.
 - 방향 확정: 공모전 심사기준 ②(그룹 상호작용) 때문에 1:1 복제(B안)를 버리고 **그룹 투자클럽 컴패니언(A안)** 채택. 대상은 **일반/팀 채팅방**(mention 지원, Carousel은 채널채팅 전용이라 미사용).
 - 발송 재사용 결론(§8): 파이프라인 무수정 → 기존 `messaging/` 시그널 스트림에 **구독자 1개 추가** + `analysis_queue` 재사용. 원문 채널 덤프는 지양(일방향, 심사 불리), 산출물은 그룹 상호작용 온램프로 재활용.
-- 배포 확정(§10): 기존 `analysis.stocksimulation.kr` 서버에 공존. 리버스 프록시 경로 `/kakao/webhook`, `/kakao/reports/{file}`.
+- 배포 확정(§10): 기존 `analysis.stocksimulation.kr` 서버에 공존. (초기엔 `/kakao/webhook` inbound 라우트 계획 → 아래 Gateway 개정으로 삭제.) PDF 서빙 `/kakao/reports/{file}`만 공개 노출.
 - MVP 4기능: 아침 시그널 온램프 / 종목 예측게임+mention 리더보드 / `/report` 온디맨드 / `/ask` Q&A. 예측 정산 = **익일 종가 단순 상승·하락**.
+- **수신 방식 개정(2026-07-22, §2.5)**: Gateway(WebSocket) 문서 확인 후 웹훅 대신 **Gateway 채택**. 근거 — 공모전 VPN inbound IP 등록 마찰 회피, `ENTRANCE`로 룸 자동 등록, inbound TLS·라우팅 제거. 제약 — 봇당 WS 연결 1개(중복 IDENTIFY 시 close 4004)이므로 **Gateway 데몬은 telegram_ai_bot 호스트(A) 단일 프로세스**에만 두고, orchestrator 호스트(B)는 기존처럼 publisher로만 유지. 수신은 WS(단일)·발신은 무상태 REST(어디서든). 미검증 가정 — Gateway 연결 상태의 `send_message` 병용(온램프 의존, §11 스모크로 착수 전 확인).
 - 다음 단계: 이 스펙 기반으로 `writing-plans`(구현 계획) 작성 예정이었음.
