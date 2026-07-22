@@ -420,3 +420,14 @@ class TestExchangeBackend:
                             lambda: (None, "미설정"))
         be = swing._make_backend(conn, "demo")
         assert be.name == "virtual"
+
+    def test_backend_rearms_fallback_notice_after_exchange_recovers(
+            self, conn, monkeypatch):
+        from live import swing, tracking
+        tracking.set_meta(conn, "swing_exec_fallback_notified", 1, "swing")
+        monkeypatch.setattr(swing, "_make_swing_session",
+                            lambda: (FakeSession(), None))
+        be = swing._make_backend(conn, "demo")
+        assert be.name == "exchange"
+        assert tracking.get_meta(
+            conn, "swing_exec_fallback_notified", "swing") == 0

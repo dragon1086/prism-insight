@@ -254,8 +254,11 @@ def _make_backend(conn, main_mode: str):
     if main_mode in ("demo", "live"):
         sess, err = _make_swing_session()
         if sess is not None:
+            # 연결이 회복되면 다음 장애 때 폴백 경고가 다시 발송되도록 재무장.
+            if tracking.get_meta(conn, "swing_exec_fallback_notified", MODE):
+                tracking.set_meta(conn, "swing_exec_fallback_notified", 0, MODE)
             return ExchangeBackend(conn, sess)
-        if tracking.get_meta(conn, "swing_exec_fallback_notified", MODE) is None:
+        if not tracking.get_meta(conn, "swing_exec_fallback_notified", MODE):
             tracking.log_event(conn, "info",
                                f"swing 실집행 불가({err}) — 가상 체결 폴백",
                                mode=MODE)
