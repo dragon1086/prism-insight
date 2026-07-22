@@ -43,7 +43,7 @@
 ### 사전 조건 (사용자가 준비)
 - 카카오톡 **비즈니스 채널** 생성
 - **봇 생성** 및 봇 인증 토큰 발급
-- 스킬서버용 **공개 HTTPS 도메인**
+- 공개 HTTPS 도메인 — **기존 `analysis.stocksimulation.kr` 재사용**(신규 도메인 불필요)
 
 ## 3. 아키텍처
 
@@ -189,10 +189,24 @@ CREATE TABLE kakao_scores (
 - 웹훅 파싱 실패 → 안전한 기본 안내 응답(도움말 유도)
 
 ## 10. 배포
-- 별도 경량 스킬서버: FastAPI + uvicorn, 공개 HTTPS(리버스 프록시/도메인)
+
+기존 `analysis.stocksimulation.kr` 서버에 **공존**한다. 신규 도메인·인증서 불필요.
+`archive_api.py`(FastAPI + uvicorn, :8765, API-key 인증)와 동일 패턴을 따른다.
+
+- 스킬서버: 신규 FastAPI + uvicorn, 별도 포트(예: **:8770**). `archive_api.py` 구조 참고
+- 리버스 프록시에서 경로 라우팅(Streamlit 대시보드 무영향):
+  ```
+  https://analysis.stocksimulation.kr/
+     ├─ /                     → Streamlit 대시보드 (기존)
+     ├─ /kakao/webhook        → 스킬서버 :8770   ← 카카오 웹훅 URL
+     └─ /kakao/reports/{file} → pdf_reports 정적 서빙  ← PDF webLink URL
+  ```
+- PDF: docker-compose가 이미 `./pdf_reports`를 컨테이너에 마운트 → 그대로 정적 노출
 - 기존 Redis에 구독 연결, `kapi.kakao.com` 호출
-- 환경변수: `KAKAO_BOT_TOKEN`, `KAKAO_BOT_PUBLIC_BASE_URL`(PDF), Redis 접속 정보
-- PDF 정적 서빙 경로는 `PDF_REPORTS_DIR`를 마운트
+- 환경변수: `KAKAO_BOT_TOKEN`, `KAKAO_BOT_PUBLIC_BASE_URL`(기본 `https://analysis.stocksimulation.kr/kakao`), Redis 접속 정보
+
+### 미확정 (배포)
+- TLS 종료·라우팅 위치(호스트 nginx vs 클라우드 LB) 확인 후 `/kakao/*` location 추가
 
 ## 11. 테스트 전략
 - 단위: `templates` 제약 강제(글자수·개수), `signal_bridge` 포맷, `prediction` 정산 점수
