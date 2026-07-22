@@ -249,6 +249,39 @@ async def send_buy_analysis_failure_alert(telegram_config: "TelegramConfig", fai
         logger.error(f"[{market}] Failed to send buy-analysis failure alert: {e}")
 
 
+async def send_market_data_failure_alert(
+    telegram_config: "TelegramConfig",
+    mode: str,
+    market: str = "KR",
+):
+    """Alert operators when both primary and fallback market data fail."""
+    if not telegram_config or not telegram_config.use_telegram:
+        return
+
+    try:
+        from telegram import Bot
+        from telegram.request import HTTPXRequest
+
+        request = HTTPXRequest(connect_timeout=10.0, read_timeout=10.0)
+        bot = Bot(token=telegram_config.bot_token, request=request)
+        batch_label = "오전" if mode == "morning" else "오후"
+        alert_message = (
+            f"🚨 [{market}] {batch_label} 종목 선정 중단\n\n"
+            "KRX 전종목 시세 조회와 네이버 비상 폴백이 모두 실패해 "
+            "이번 배치를 안전하게 중단했습니다.\n\n"
+            "• 조치: 서버 로그의 [MARKET-DATA] 및 "
+            "[NAVER-SNAPSHOT-FALLBACK] 항목 확인"
+        )
+
+        await bot.send_message(
+            chat_id=telegram_config.channel_id,
+            text=alert_message,
+        )
+        logger.info(f"[{market}] Market-data failure alert sent ({mode})")
+    except Exception as e:
+        logger.error(f"[{market}] Failed to send market-data failure alert: {e}")
+
+
 # --- Market Pulse "batch resting" subscriber notice (static, no LLM) -----------
 # When the Market Pulse hook rests a LIVE batch, subscribers would otherwise see
 # silence. These pre-translated notices explain the pause. Deterministic /

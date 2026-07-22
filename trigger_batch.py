@@ -10,6 +10,10 @@ import logging
 import os
 import time
 from typing import Optional
+from cores.naver_market_snapshot import (
+    MarketSnapshotBundle,
+    fetch_naver_snapshot_bundle,
+)
 from cores.rs_rating import oneil_weighted_return, percentile_ratings
 from krx_data_client import (
     _get_client,
@@ -36,6 +40,11 @@ logger.addHandler(ch)
 
 
 _TICKER_NAME_CACHE: Optional[dict[str, str]] = None
+SCREENING_MIN_TRADE_VALUE = 10_000_000_000
+
+
+class MarketSnapshotUnavailableError(RuntimeError):
+    """Raised when neither KRX nor the emergency Naver source is usable."""
 
 
 def _normalize_ticker_code(ticker) -> str:
@@ -235,6 +244,60 @@ def get_market_cap_df(trade_date: str, market: str = "ALL") -> pd.DataFrame:
         logger.error(f"No market cap data for {trade_date}.")
         raise ValueError(f"No market cap data for {trade_date}.")
     return cap_df
+
+
+def load_market_snapshot_bundle(trade_date: str) -> MarketSnapshotBundle:
+    """Load current, previous, and market-cap data from one coherent source.
+
+    KRX is always primary.  If any market-wide KRX input fails, rebuild the
+    complete bundle from Naver rather than mixing sources with different
+    timestamps or universes.
+    """
+    try:
+        snapshot = get_snapshot(trade_date)
+        prev_snapshot, prev_date = get_previous_snapshot(trade_date)
+        cap_df = get_market_cap_df(trade_date)
+        logger.info(
+            "[MARKET-DATA] source=KRX stocks=%d prev_date=%s cap_rows=%d",
+            len(snapshot),
+            prev_date,
+            len(cap_df),
+        )
+        return MarketSnapshotBundle(
+            snapshot=snapshot,
+            prev_snapshot=prev_snapshot,
+            cap_df=cap_df,
+            prev_date=prev_date,
+            source="krx",
+        )
+    except Exception as krx_exc:
+        logger.warning(
+            "[MARKET-DATA] KRX bundle failed; switching to Naver fallback: %s",
+            krx_exc,
+        )
+        try:
+            bundle = fetch_naver_snapshot_bundle(
+                trade_date,
+                detail_min_amount=SCREENING_MIN_TRADE_VALUE,
+            )
+        except Exception as naver_exc:
+            logger.error(
+                "[MARKET-DATA] both KRX and Naver snapshot sources failed: "
+                "krx=%s naver=%s",
+                krx_exc,
+                naver_exc,
+            )
+            raise MarketSnapshotUnavailableError(
+                f"Market snapshot unavailable from KRX and Naver: {naver_exc}"
+            ) from naver_exc
+
+        logger.warning(
+            "[MARKET-DATA] source=NAVER_FALLBACK stocks=%d prev_date=%s cap_rows=%d",
+            len(bundle.snapshot),
+            bundle.prev_date,
+            len(bundle.cap_df),
+        )
+        return bundle
 
 def filter_low_liquidity(df: pd.DataFrame, threshold: float = 0.2) -> pd.DataFrame:
     """
@@ -622,7 +685,7 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame, prev_s
     logger.debug(f"Current day close data sample: {snap['Close'].head()}")
 
     # Apply absolute criteria (raised to 10B KRW trade value)
-    snap = apply_absolute_filters(snap, min_value=10000000000)
+    snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
 
     # Calculate volume ratio
     snap["volume_ratio"] = snap["Volume"] / prev["Volume"].replace(0, np.nan)
@@ -695,7 +758,7 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame, pre
             return pd.DataFrame()
 
     # Apply absolute criteria (raised to 10B KRW trade value)
-    snap = apply_absolute_filters(snap, min_value=10000000000)
+    snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
 
     # Calculate gap rate
     snap["gap_up_rate"] = (snap["Open"] / prev["Close"] - 1) * 100
@@ -796,7 +859,7 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame, 
 
         # Apply absolute criteria (raised to 10B KRW trade value)
         logger.debug("Starting absolute criteria filtering")
-        merged = apply_absolute_filters(merged, min_value=10000000000)
+        merged = apply_absolute_filters(merged, min_value=SCREENING_MIN_TRADE_VALUE)
         if merged.empty:
             logger.warning("No stocks after absolute criteria filtering")
             return pd.DataFrame()
@@ -897,7 +960,7 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame, pr
             return pd.DataFrame()
 
     # Apply absolute criteria (raised to 10B KRW trade value)
-    snap = apply_absolute_filters(snap.copy(), min_value=10000000000)
+    snap = apply_absolute_filters(snap.copy(), min_value=SCREENING_MIN_TRADE_VALUE)
 
     # Calculate two types of change rates
     snap["intraday_change_rate"] = (snap["Close"] / snap["Open"] - 1) * 100  # Current vs opening price
@@ -943,7 +1006,7 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame, 
             return pd.DataFrame()
 
     # Apply absolute criteria (raised to 10B KRW trade value)
-    snap = apply_absolute_filters(snap, min_value=10000000000)
+    snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
 
     # Calculate closing strength (closer to high = closer to 1)
     snap["closing_strength"] = 0.0  # Set default value
@@ -1022,7 +1085,7 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
             return pd.DataFrame()
 
     # Apply absolute criteria (raised to 10B KRW trade value)
-    snap = apply_absolute_filters(snap, min_value=10000000000)
+    snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
 
     # Calculate volume increase rate
     snap["volume_increase_rate"] = (snap["Volume"] / prev["Volume"].replace(0, np.nan) - 1) * 100
@@ -1111,7 +1174,7 @@ def trigger_macro_sector_leader(trade_date: str, snapshot: pd.DataFrame,
     prev = prev_snapshot.loc[common].copy()
 
     # Absolute filters (100억원)
-    snap = apply_absolute_filters(snap, min_value=10000000000)
+    snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
 
     if snap.empty:
         logger.debug("trigger_macro_sector_leader: No stocks pass absolute filters")
@@ -1220,7 +1283,7 @@ def trigger_contrarian_value(trade_date: str, snapshot: pd.DataFrame,
     prev = prev_snapshot.loc[common].copy()
 
     # Absolute filters (100억원)
-    snap = apply_absolute_filters(snap, min_value=10000000000)
+    snap = apply_absolute_filters(snap, min_value=SCREENING_MIN_TRADE_VALUE)
 
     # Filter rising stocks today (Close > Open) — positive recovery signal
     snap["DailyChange"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100
@@ -1632,18 +1695,12 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     trade_date = stock_api.get_nearest_business_day_in_a_week(today_str, prev=True)
     logger.info(f"Batch reference trading date: {trade_date}")
 
-    try:
-        snapshot = get_snapshot(trade_date)
-    except ValueError as e:
-        logger.error(f"Snapshot query failed: {e}")
-        trade_date = stock_api.get_nearest_business_day_in_a_week(trade_date, prev=True)
-        logger.info(f"Retry batch reference trading date: {trade_date}")
-        snapshot = get_snapshot(trade_date)
-
-    prev_snapshot, prev_date = get_previous_snapshot(trade_date)
+    market_data = load_market_snapshot_bundle(trade_date)
+    snapshot = market_data.snapshot
+    prev_snapshot = market_data.prev_snapshot
+    prev_date = market_data.prev_date
+    cap_df = market_data.cap_df
     logger.debug(f"Previous trading date: {prev_date}")
-
-    cap_df = get_market_cap_df(trade_date, market="ALL")
     logger.debug(f"Market cap data stock count: {len(cap_df)}")
 
     if trigger_time == "morning":
