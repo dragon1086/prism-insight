@@ -14,7 +14,6 @@ import logging
 import math
 import re
 import time
-import xml.etree.ElementTree as ET
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -166,13 +165,13 @@ def _fetch_bulk_rows(
 
 def _parse_daily_xml(content: bytes, trade_date: str) -> tuple[dict, dict]:
     # Naver declares EUC-KR, which Python's bundled expat parser rejects as a
-    # multi-byte encoding.  Decode explicitly, then parse the Unicode XML body.
+    # multi-byte encoding. Decode explicitly and extract only the inert data
+    # attribute. Do not invoke an XML parser on this untrusted network input;
+    # the endpoint's external entities and declarations must never be resolved.
     text = content.decode("euc-kr", errors="replace")
-    text = re.sub(r"^\s*<\?xml[^?]*\?>", "", text, count=1)
-    root = ET.fromstring(text)
     rows: dict[str, dict[str, int]] = {}
-    for node in root.iter("item"):
-        raw = node.get("data", "")
+    for match in re.finditer(r'<item\s+data="([^"]*)"\s*/?>', text):
+        raw = match.group(1)
         fields = raw.split("|")
         if len(fields) != 6 or not re.fullmatch(r"\d{8}", fields[0]):
             continue

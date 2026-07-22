@@ -16,6 +16,7 @@ import pytest
 from cores.naver_market_snapshot import (
     MarketSnapshotBundle,
     NaverSnapshotError,
+    _parse_daily_xml,
     fetch_naver_snapshot_bundle,
 )
 
@@ -206,6 +207,18 @@ def test_fetch_rejects_bulk_rows_without_raw_unit_fields():
 
     with pytest.raises(NaverSnapshotError, match="coverage"):
         _fetch(fake_get)
+
+
+def test_daily_parser_never_resolves_external_xml_entities():
+    malicious = b'''<?xml version="1.0"?>
+<!DOCTYPE protocol [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+<protocol><chartdata>
+<item data="20260721|69000|71000|68000|69000|900000" />
+<item data="20260722|&xxe;|73000|69500|70000|1000000" />
+</chartdata></protocol>'''
+
+    with pytest.raises(ValueError, match="invalid literal"):
+        _parse_daily_xml(malicious, TRADE_DATE)
 
 
 def test_trigger_batch_uses_naver_bundle_after_krx_failure(monkeypatch):
