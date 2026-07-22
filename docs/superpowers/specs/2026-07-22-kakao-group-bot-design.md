@@ -101,6 +101,17 @@
 
 **수신 ≠ 발신**: Gateway 연결은 이벤트 *수신* 전용이다. 메시지 *발신*(send_message 선제전송, 콜백 답장)은 `kapi.kakao.com` 대상 **무상태 outbound REST**라 WS 연결과 무관하게 어느 프로세스에서든 호출 가능하다.
 
+### 봇 1개 = REST(아웃바운드) + 수신 방식 택1(WS)
+
+디벨로퍼스의 "카카오톡 봇" 문서 구조상 봇 1개(BOT_TOKEN 1개)는 다음으로 구성된다:
+
+- **REST API** — `send_message`·`callback`·`commands` 등 **아웃바운드/관리** 면. 인증 `봇 인증 토큰`, 권한 "봇 생성". **수신 방식과 무관하게 항상 사용 가능**
+- **이벤트 수신** — 게이트웨이(WS) **XOR** 웹훅(HTTP) 중 **하나만**. 배타 제약은 *여기(인바운드)에만* 적용
+
+즉 "WS/HTTP 택1"은 **인바운드 이벤트 전송 채널** 한정이며, `send_message`(아웃바운드)는 이 제약에 걸리지 않는다. **봇 2개를 만들 필요 없이 1개로 수신(WS)+발신(REST)을 모두 처리**한다 (공모전 출품작도 1개).
+
+**증거 (`/docs/in/bot/tutorial` 에코봇)**: 같은 BOT_TOKEN으로 `wss://bot-gateway.kakao.com/gateway`(수신) + `https://kapi.kakao.com/v1/bot/callback`(답장, REST 아웃바운드)를 동시에 사용한다. `send_message`는 `callback`과 동일 REST 면이라 함께 동작한다. `[높음]`
+
 ## 3. 아키텍처
 
 봇 1개당 Gateway 연결은 **하나만** 허용되므로(§2.5, close 4004), Gateway WS 데몬은 **상호작용 서버(A)에만** 둔다. orchestrator 서버(B)는 기존처럼 시그널 publish만 하고 Gateway에 연결하지 않는다.
@@ -281,7 +292,7 @@ CREATE TABLE kakao_scores (
 - 아웃바운드 WS/HTTPS 방화벽 허용 (inbound 개방은 PDF 포트만)
 
 ## 11. 테스트 전략
-- **착수 전 스모크(최우선)**: 에코봇으로 Gateway 핸드셰이크(HELLO→IDENTIFY→READY)·DISPATCH 수신 확인. **동시에 `send_message` 한 건 발송해 Gateway 연결 상태에서 선제전송이 실제로 나가는지 실측** — 아침 온램프(기준③)가 여기 의존. 막히면 온램프 재설계 필요
+- **착수 전 스모크**: 에코봇으로 Gateway 핸드셰이크(HELLO→IDENTIFY→READY)·DISPATCH 수신 확인. `send_message` 한 건 발송해 Gateway 연결 상태 선제전송 최종 확인 (§2.5 근거상 통과 예상 — 튜토리얼이 Gateway+REST 병용 증명)
 - 단위: `templates` 제약 강제(글자수·개수), `signal_bridge` 포맷, `prediction` 정산 점수
 - 통합: mock DISPATCH 이벤트 → 라우팅·SkillResponse JSON 검증, `send_message`/콜백 mock
 - Gateway: 재연결(close 1001/4009) 시 RESUME·IDENTIFY 분기, heartbeat 타이머 단위 테스트
@@ -292,7 +303,8 @@ CREATE TABLE kakao_scores (
 - 룸 등록(옵트인) UX: **`ENTRANCE` 이벤트로 봇 초대 시 자동 등록**을 기본으로 하되, opt-in 온/오프 토글 UX 확정
 - 예측 라운드 주기(일간 고정 vs 설정 가능)
 - 팀 구성 (Gateway는 아웃바운드라 inbound VPN IP 등록 마찰 없음 — 아웃바운드 방화벽만 확인)
-- **[검증 필요] Gateway 연결 상태에서 `send_message` 병용 가능 여부 (§11 스모크로 착수 전 확인)**
+- ~~[검증 필요] Gateway 연결 상태 `send_message` 병용 가능 여부~~ → **[해소, 높음]** 튜토리얼 에코봇이 Gateway WS + callback REST 병용을 증명(§2.5). send_message는 동일 REST 면이라 §11 스모크는 최종 확인용
+- **봇은 1개로 충분** — 수신(WS)과 발신(REST)이 별개 면이라 봇 2개 불필요, 공모전 출품작도 1개 (§2.5)
 
 ## 13. 제출 산출물 체크리스트 (마감 2026-08-09 24:00)
 
