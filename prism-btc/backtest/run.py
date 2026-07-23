@@ -61,6 +61,20 @@ def _save_results(label: str, metrics: dict, trade_logs: list) -> None:
                 writer.writerow({k: getattr(t, k) for k in fields})
 
 
+def _save_instrumentation(label: str, state) -> None:
+    """라운드7 E1: 관측 전용 사이드카 저장 — 표준 metrics/trades 파일은 불변."""
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "signal_eval_open_bars": state.instr_signal_eval_open_bars,
+        "signal_eval_skipped_bars": state.instr_signal_eval_skipped_bars,
+        "reduce_event_count": len(state.instr_reduce_events),
+        "reduce_events": state.instr_reduce_events,
+        "positions": state.instr_positions,
+    }
+    with open(RESULTS_DIR / f"{label}_instrumentation.json", "w") as f:
+        json.dump(payload, f, indent=2)
+
+
 def _evaluate_pass(metrics: dict) -> dict[str, bool]:
     results = {}
     for key, (op, threshold) in PASS_CRITERIA.items():
@@ -137,6 +151,7 @@ def run_period(
     pass_eval = _evaluate_pass(metrics)
     _print_metrics_table(label, metrics, pass_eval)
     _save_results(label, metrics, state.trade_logs)
+    _save_instrumentation(label, state)
 
     return metrics
 

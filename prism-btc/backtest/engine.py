@@ -49,6 +49,17 @@ ENTRY_ORDER_EXPIRY_BARS: int = 2
 # 4h당 1회 하드캡 바이패스). 기본 False = 동결 전략과 바이트 동일. 라이브 미사용.
 ENTRY_EVAL_EVERY_BAR: bool = False
 
+# 라운드7 H1 연구 훅: True 면 보유 포지션의 신호청산(check_exit_signal) 평가를
+# pending 주문/3트랜치 게이트와 무관하게 매 바 수행한다. E1 계측 결과 포지션
+# 보유 바의 41~72%에서 평가가 게이트에 막혔음(F1 공백). 기본 False = 동결 동일.
+EXIT_EVAL_ALWAYS: bool = False
+
+# 라운드7 H2 연구 훅: True 면 signal_reduce 를 포지션당 1회로 latch 하고, 감축
+# 이후 새 유리 극값(MFE) 갱신 시에만 재무장한다. E1 계측: 감축 포지션은 평균
+# 20~50회 연속 반토막(최대 245회)으로 사실상 강제 전량청산 + 수수료 폭증.
+# 기본 False = 동결 동일.
+SIGNAL_REDUCE_ONCE: bool = False
+
 TRAILING_TF = "12h"
 
 # BE stop + trailing activate only after price reaches this R multiple
@@ -148,6 +159,13 @@ class Position:
     legs_closed: int = 0            # number of partial legs closed so far
     last_leg_exit_price: float = 0.0
     last_leg_reason: str = ""
+    # --- 라운드7 E1 계측: 관측 전용, 로직/회계에 절대 불사용 ---
+    reduce_count: int = 0           # signal_reduce 발생 횟수 (포지션 수명 내)
+    mfe_price: float = 0.0          # 최유리 도달 가격 (진입가로 초기화)
+    mae_price: float = 0.0          # 최불리 도달 가격 (진입가로 초기화)
+    # --- 라운드7 H2 연구 훅 상태 (SIGNAL_REDUCE_ONCE=True 에서만 로직에 사용) ---
+    reduce_latched: bool = False    # True 면 새 유리 극값 갱신 전까지 재감축 금지
+    latch_mfe: float = 0.0          # 감축 시점의 MFE (재무장 기준 극값)
 
 
 @dataclass
@@ -187,6 +205,13 @@ class BacktestState:
     last_close_was_sl: dict[str, bool] = field(
         default_factory=lambda: {"long": False, "short": False}
     )
+    # --- 라운드7 E1 계측: 관측 전용 사이드카 (metrics/trades 산출에 불사용) ---
+    # F1 공백 측정: 포지션 보유 중 신호청산(check_exit_signal) 평가가
+    # `pending_order is None and len(positions) < 3` 게이트에 막힌 바 수.
+    instr_signal_eval_open_bars: int = 0
+    instr_signal_eval_skipped_bars: int = 0
+    instr_reduce_events: list = field(default_factory=list)
+    instr_positions: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +380,29 @@ def _close_position(
     state.trade_logs.append(log_entry)
     state.trade_id_counter += 1
 
+    # 라운드7 E1 계측: 포지션 수명주기 관측 레코드 (사이드카 전용, 회계 불변)
+    if pos.side == "long":
+        fav_exc = max(0.0, pos.mfe_price - pos.entry_price)
+        adv_exc = max(0.0, pos.entry_price - pos.mae_price)
+    else:
+        fav_exc = max(0.0, pos.entry_price - pos.mfe_price)
+        adv_exc = max(0.0, pos.mae_price - pos.entry_price)
+    _risk = pos.initial_risk if pos.initial_risk > 0 else 0.0
+    _qty0 = pos.initial_qty if pos.initial_qty > 0 else 0.0
+    state.instr_positions.append({
+        "trade_id": log_entry.trade_id,
+        "side": pos.side,
+        "entry_time": pos.entry_time,
+        "exit_time": exit_time,
+        "exit_reason": exit_reason,
+        "tranche_index": pos.tranche_index,
+        "reduce_count": pos.reduce_count,
+        "num_legs": pos.legs_closed,
+        "net_r": log_entry.r_multiple,
+        "mfe_r": round(fav_exc * _qty0 / _risk, 3) if _risk > 0 else 0.0,
+        "mae_r": round(adv_exc * _qty0 / _risk, 3) if _risk > 0 else 0.0,
+    })
+
     # 라운드3 C: 강제감축을 겪은 포지션의 최종 결말 분류.
     # SL/liq_forced_reduce 로 끝났으면 "감축 없었어도 SL이었을 것"으로 추정,
     # net 수익으로 끝났으면 "감축이 업사이드를 깎았을 가능성"으로 카운트.
@@ -426,6 +474,52 @@ def run_backtest(
     # 미체결 만료 후에도 신규 진입 재평가를 금지한다. (피라미딩 트랜치 추가는 별개 — 미적용)
     last_new_entry_eval_4h_ns: int | None = None
 
+    def _signal_exit_checks(snapshot, bar_close, bar_time_str, bar_idx) -> None:
+        """check_exit_signal 기반 exit/reduce 집행.
+
+        기존 인라인 블록을 그대로 추출한 것 (행동 보존). H1 연구 훅
+        (EXIT_EVAL_ALWAYS)과 기존 진입-게이트 경로가 이 함수를 공유한다.
+        """
+        for pos in list(state.positions):
+            exit_sig = check_exit_signal(snapshot, pos.side)
+            if exit_sig.exit_action == "exit":
+                _close_position(
+                    pos, bar_close, bar_time_str, "signal_exit", state,
+                    fee_rate=TAKER_FEE, bar_idx=bar_idx,
+                )
+                if pos in state.positions:
+                    state.positions.remove(pos)
+            elif exit_sig.exit_action == "reduce":
+                # 라운드7 H2 연구 훅: latch 상태면 새 유리 극값 갱신 전까지
+                # 재감축 금지 (기본 False = 기존과 동일).
+                if SIGNAL_REDUCE_ONCE and pos.reduce_latched:
+                    continue
+                # Reduce by half (partial leg — booked into the position)
+                close_qty = pos.qty * 0.5
+                if close_qty > 0:
+                    # 라운드7 E1 계측: reduce 이벤트 기록 (관측 전용)
+                    qty_before = pos.qty
+                    pos.reduce_count += 1
+                    state.instr_reduce_events.append({
+                        "time": bar_time_str,
+                        "side": pos.side,
+                        "entry_time": pos.entry_time,
+                        "price": bar_close,
+                        "qty_before": qty_before,
+                        "qty_after": qty_before - close_qty,
+                        "reduce_seq": pos.reduce_count,
+                    })
+                    pos.reduce_latched = True
+                    pos.latch_mfe = pos.mfe_price
+                    _book_leg(pos, close_qty, bar_close, TAKER_FEE, state)
+                    if pos.qty <= 0:
+                        _close_position(
+                            pos, bar_close, bar_time_str, "signal_reduce",
+                            state, fee_rate=TAKER_FEE, bar_idx=bar_idx,
+                        )
+                        if pos in state.positions:
+                            state.positions.remove(pos)
+
     for bar_idx, (bar_time, bar) in enumerate(sim_bars.iterrows()):
         bar_open = bar["open"]
         bar_high = bar["high"]
@@ -467,6 +561,8 @@ def run_backtest(
                     initial_risk=po.initial_risk,
                     entry_fee=entry_fee,
                     initial_qty=sz.qty,
+                    mfe_price=lp,
+                    mae_price=lp,
                 )
                 state.positions.append(pos)
                 state.pending_order = None
@@ -586,6 +682,22 @@ def run_backtest(
             if pos in state.positions:
                 state.positions.remove(pos)
 
+        # --- 라운드7 E1 계측: MFE/MAE 추적 (관측 전용) ---
+        # 이 바를 살아남은 포지션만 갱신 — 청산 바의 잔여 구간은 미포함(보수적).
+        for pos in state.positions:
+            if pos.side == "long":
+                pos.mfe_price = max(pos.mfe_price, bar_high)
+                pos.mae_price = min(pos.mae_price, bar_low)
+            else:
+                pos.mfe_price = min(pos.mfe_price, bar_low)
+                pos.mae_price = max(pos.mae_price, bar_high)
+            # 라운드7 H2: 감축 후 새 유리 극값 갱신 시 reduce latch 재무장 해제
+            if pos.reduce_latched and (
+                (pos.side == "long" and pos.mfe_price > pos.latch_mfe)
+                or (pos.side == "short" and pos.mfe_price < pos.latch_mfe)
+            ):
+                pos.reduce_latched = False
+
         # --- 3a. Detect 4h candle confirmation (라운드2 #3 cadence gate) ---
         # Update every bar regardless of position state so the tracker never lags.
         slice_4h = _get_tf_slice(tf_data, bar_time, "4h")
@@ -600,33 +712,30 @@ def run_backtest(
                 new_4h_confirmed = True
                 last_confirmed_4h_ns = cur_4h_ns
 
+        entry_gate_open = state.pending_order is None and len(state.positions) < 3
+
+        # --- 라운드7 E1 계측: F1 신호청산 평가 공백 측정 (관측 전용) ---
+        # 아래 블록의 게이트(pending 없음 AND 포지션<3)에 막혀 check_exit_signal 이
+        # 평가되지 않는 "포지션 보유 바"를 센다. 로직에는 영향 없음.
+        if state.positions:
+            state.instr_signal_eval_open_bars += 1
+            if not entry_gate_open:
+                state.instr_signal_eval_skipped_bars += 1
+
+        # --- 라운드7 H1 연구 훅: 진입 게이트가 닫혀 있어도 신호청산 평가 수행 ---
+        # (기본 False. True 면 F1 공백 제거 — pending/3트랜치 중에도 방어층 유지.)
+        if EXIT_EVAL_ALWAYS and not entry_gate_open and state.positions:
+            h1_snapshot = _build_snapshot_at(tf_data, bar_time)
+            if h1_snapshot is not None:
+                _signal_exit_checks(h1_snapshot, bar_close, bar_time_str, bar_idx)
+
         # --- 3. Generate new signal ---
         # Only enter new position if no pending order and <= 1 open position (simple mode)
-        if state.pending_order is None and len(state.positions) < 3:
+        if entry_gate_open:
             snapshot = _build_snapshot_at(tf_data, bar_time)
             if snapshot is not None:
                 # Check exit signals for existing positions
-                for pos in list(state.positions):
-                    exit_sig = check_exit_signal(snapshot, pos.side)
-                    if exit_sig.exit_action == "exit":
-                        _close_position(
-                            pos, bar_close, bar_time_str, "signal_exit", state,
-                            fee_rate=TAKER_FEE, bar_idx=bar_idx,
-                        )
-                        if pos in state.positions:
-                            state.positions.remove(pos)
-                    elif exit_sig.exit_action == "reduce":
-                        # Reduce by half (partial leg — booked into the position)
-                        close_qty = pos.qty * 0.5
-                        if close_qty > 0:
-                            _book_leg(pos, close_qty, bar_close, TAKER_FEE, state)
-                            if pos.qty <= 0:
-                                _close_position(
-                                    pos, bar_close, bar_time_str, "signal_reduce",
-                                    state, fee_rate=TAKER_FEE, bar_idx=bar_idx,
-                                )
-                                if pos in state.positions:
-                                    state.positions.remove(pos)
+                _signal_exit_checks(snapshot, bar_close, bar_time_str, bar_idx)
 
                 # New entry signal — evaluated ONLY on a freshly confirmed 4h
                 # candle (라운드2 #3). 30m/1h cadence does not open new entries.
