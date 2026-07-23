@@ -141,6 +141,36 @@ async def test_prepass_respects_semaphore_cap(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Regime floor source parity
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_enhanced_floor_uses_deterministic_live_regime(monkeypatch):
+    """Enhanced path must use the same programmatic regime as the legacy path."""
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
+    agent = _make_agent()
+    agent._analyze_report_core = AsyncMock(
+        return_value=_core_ok("005930", "Samsung", decision="Skip")
+    )
+    result = _core_ok(
+        "005930",
+        "Samsung",
+        decision="Skip",
+        buy_score=2,
+        min_score=6,
+    )
+    result["scenario"]["market_condition"] = "strong_bear"
+    agent.analyze_report = AsyncMock(return_value=result)
+    agent._buy_floor_regime = MagicMock(return_value="moderate_bull")
+
+    await agent.process_reports(
+        ["reports/005930_Samsung_20260101_morning.pdf"]
+    )
+
+    agent._buy_floor_regime.assert_called_once_with()
+    assert agent._save_watchlist_item.await_args.kwargs["min_score"] == 6
+
+
+# ---------------------------------------------------------------------------
 # 2. Order-sensitive gates stay in the sequential phase
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
