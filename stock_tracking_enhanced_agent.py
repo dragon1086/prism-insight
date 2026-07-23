@@ -480,14 +480,15 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 # 레짐 적응 하한선(env-gated REGIME_MIN_SCORE_FLOOR, 기본 off). 플래그 ON 시
                 # 약세장 하한(strong_bear 9 / bear·sideways 8)을 강제해 min_score 를 끌어올린다.
                 # 아래 진입 게이트(buy_score < min_score → Skip)가 그대로 차단을 수행한다.
-                # 레짐은 시나리오의 market_condition 라벨(strong_bear 등) 선두 토큰을 사용.
+                # 레짐은 레거시 경로와 동일한 결정론적 현재 시장 레짐을 사용한다.
+                # 종목별 LLM market_condition은 설명용이며 안전 게이트 입력으로 쓰지 않는다.
                 try:
                     from cores.regime_policy import (
                         effective_min_score,
                         regime_min_score_floor_enabled,
                     )
                     if regime_min_score_floor_enabled():
-                        _fr = scenario.get("market_condition") or ""
+                        _fr = self._buy_floor_regime()
                         _eff = effective_min_score(min_score, _fr)
                         if _eff > min_score:
                             logger.info(
