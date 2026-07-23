@@ -33,6 +33,15 @@ jobs:
             pytest \
             pytest-asyncio
 
+      - name: Compile runtime safety foundation
+        run: python -m compileall -q prism_core tools/audit_broker_boundaries.py
+
+      - name: Audit broker boundaries
+        run: python tools/audit_broker_boundaries.py
+
+      - name: Run runtime safety tests
+        run: python -m pytest tests/runtime tests/safety -q
+
       - name: Run tests
         run: |
           python -m pytest cores/llm/tests/ -q
