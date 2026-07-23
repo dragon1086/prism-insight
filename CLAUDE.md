@@ -1,280 +1,444 @@
-# CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
+# CLAUDE.md — PRISM-INSIGHT Current and Target Architecture
 
-> **Version**: 2.9.0 | **Updated**: 2026-03-31
+> **Status:** Transition guide aligned with `docs/PRODUCT_SCOPE_AND_STRATEGY.md`
+>
+> **Product baseline:** Approved Scope Baseline v0.1
+>
+> **Important:** Current code contains legacy automated-trading paths. They are not automatically approved target behavior.
 
-## Quick Overview
+## 1. Start here
 
-**PRISM-INSIGHT** = AI-powered Korean/US stock analysis & automated trading system
+Read in this order:
+
+1. [`docs/PRODUCT_SCOPE_AND_STRATEGY.md`](docs/PRODUCT_SCOPE_AND_STRATEGY.md)
+2. [`AGENTS.md`](AGENTS.md)
+3. This file
+4. [`docs/CLAUDE_AGENTS.md`](docs/CLAUDE_AGENTS.md)
+5. [Current-to-target implementation plan](.hermes/plans/2026-07-23_204700-prism-current-to-target-transformation.md)
+6. [Market scenario prompts](docs/MARKET_SCENARIO_PROMPTS.md)
+
+The product decision document wins over historical code, old setup guides, release notes, and examples. Do not silently reinterpret the product baseline from legacy behavior.
+
+## 2. Product north star
+
+PRISM-INSIGHT is a personal KR/US investment research and decision system running on one user's Mac.
+
+```text
+OBSERVE  -> market, sector, leaders, news, macro
+RESEARCH -> point-in-time data, backtests, costs, OOS
+DECIDE   -> quantitative features + LLM proposal + deterministic policy
+EXECUTE  -> internal paper first; broker paper only after promotion
+LEARN    -> append-only proposals, outcomes, counter-evidence, lessons
+```
+
+Approved baseline:
 
 ```yaml
-Stack: Python 3.10+, mcp-agent, GPT-5/Claude 4.6, SQLite, Telegram, KIS API
-Scale: ~75,000+ LOC, 13+ AI agents, KR/US dual market support
+User: one personal user
+Host: personal Mac
+Dashboard: localhost only
+Storage: SQLite
+KR data primary: KIS
+US data primary: FMP
+Strategies: [SWING_V1, TREND_V1]
+Telegram: one bot + one allowlisted chat, outbound reports + read-only questions
+Phase 1 execution: internal simulated broker only
+Phase 2 execution: KIS broker paper/demo through OrderIntent
+Live: not approved and not implemented as a product mode
 ```
 
-## Project Structure
+Analysis, code, reports, backtests, SHADOW results, or paper results never authorize a live order.
 
-```
-prism-insight/
-├── cores/                    # AI Analysis Engine
-│   ├── agents/              # 13 specialized AI agents
-│   ├── chatgpt_proxy/       # ChatGPT OAuth Proxy (Codex endpoint)
-│   ├── analysis.py          # Core orchestration
-│   └── report_generation.py # Report templates
-├── trading/                  # KIS API Trading (KR)
-├── prism-us/                # US Stock Module (mirror of KR)
-│   ├── cores/agents/        # US-specific agents
-│   ├── trading/             # KIS Overseas API
-│   └── us_stock_analysis_orchestrator.py
-├── examples/                 # Dashboards, messaging
-└── tests/                    # Test suite
-```
+## 3. Current repository architecture
 
-## Analysis Pipeline
+The current system grew as an analysis/reporting project with integrated trading paths.
 
-```
-[Morning Run]
-trigger_batch.py / us_trigger_batch.py
-    → Surge/momentum detection → stock candidates (JSON)
-    ↓
-stock_analysis_orchestrator.py
-    → data_prefetch (parallel data fetch)
-    → cores/analysis.py — 6 analysis agents (sequential)
-        Technical Analyst → Trading Flow → Financial → Industry → News → Market
-    → Investment Strategist (integrates all 6 reports)
-    → report_generation.py → PDF
-    → telegram_summary_agent → Telegram message (Korean)
-    ↓
-stock_tracking_agent.py  (runs independently, cron)
-    → sell_decision_agent → KIS sell order
-    → buy via trigger signal → KIS buy order
+```text
+trigger_batch.py / prism-us/us_trigger_batch.py
+  -> candidate detection
+  -> stock_analysis_orchestrator.py / prism-us/us_stock_analysis_orchestrator.py
+  -> data prefetch
+  -> six section agents
+  -> investment strategy report
+  -> PDF / Telegram
+
+stock_tracking_agent.py
+  -> trading scenario agent
+  -> holdings/watchlist/journal DB work
+  -> buy/sell decisions
+  -> OrderIntent/ExecutionService and legacy broker paths
 ```
 
-> **Multi-account (v2.9.0)**: `stock_tracking_agent` fans out buy/sell to all accounts in `kis_devlp.yaml`. Telegram report is sent from primary account only.
+Key current components:
 
----
+- `cores/analysis.py`: section-agent orchestration and integrated report creation
+- `cores/agents/trading_agents.py`: large prompt mixing score, regime, entry, stop, target, and portfolio constraints
+- `stock_tracking_agent.py`: large combined tracking, journal, DB, and execution flow
+- `prism_core/order_intents.py`: durable order-intent implementation that can be hardened for Phase 2
+- `prism_core/execution_service.py`: transitional service; any `intent=None` delegation is a migration defect
+- `tracking/db_schema.py`: large mixed legacy schema with ad-hoc migrations
+- `telegram_ai_bot.py`: large subscriber/channel-based conversational bot
+- `examples/generate*_dashboard_json.py`: dashboard generation that may combine simulator and real KIS account data
+- `stock_tracking_db.sqlite`: shared legacy database; user data, never modify for architecture work without a migration plan
 
-## AI Agents
+### Legacy trading warning
 
-13 specialized agents organized in 4 teams. Full details → [`docs/CLAUDE_AGENTS.md`](docs/CLAUDE_AGENTS.md)
+The repository contains direct KR/US broker call sites, real-account dashboard queries, reserved-order scripts, messaging subscribers, and external integration tests. Do not execute or import them from Phase 1 entrypoints. `demo` still reaches an external broker and is not the Phase 1 internal paper environment.
 
-| # | Agent | File | Purpose |
-|---|-------|------|---------|
-| 1 | Technical Analyst | `cores/agents/stock_price_agents.py` | Price/volume, RSI, MACD, Bollinger |
-| 2 | Trading Flow Analyst | `cores/agents/stock_price_agents.py` | Institutional/foreign/individual flows |
-| 3 | Financial Analyst | `cores/agents/company_info_agents.py` | PER, PBR, ROE, valuation |
-| 4 | Industry Analyst | `cores/agents/company_info_agents.py` | Business model, competitive position |
-| 5 | News Analyst | `cores/agents/news_strategy_agents.py` | News, catalysts, disclosures |
-| 6 | Market Analyst | `cores/agents/market_index_agents.py` | KOSPI/KOSDAQ, macro (result cached) |
-| 7 | Investment Strategist | `cores/agents/news_strategy_agents.py` | Synthesizes 1-6 into actionable strategy |
-| 8 | Macro Intelligence | `cores/agents/macro_intelligence_agent.py` | Market regime, leading/lagging sectors |
-| 9 | Summary Optimizer | `cores/agents/telegram_summary_optimizer_agent.py` | Report → 400-char Telegram message |
-| 10 | Quality Evaluator | `cores/agents/telegram_summary_evaluator_agent.py` | Summary QA loop until EXCELLENT |
-| 11 | Translation Specialist | `cores/agents/telegram_translator_agent.py` | KR→EN/JA/ZH/ES broadcast |
-| 12 | Buy Specialist | `cores/agents/trading_agents.py` | Entry decision, score threshold |
-| 13 | Sell Specialist | `cores/agents/trading_agents.py` | Hold/sell decision, stop-loss |
+## 4. Target architecture
 
-> US agents mirror KR under `prism-us/cores/agents/` (no Macro Intelligence, Trading Journal, Translation agents).
-
----
-
-## Key Entry Points
-
-| Command | Purpose |
-|---------|---------|
-| `python stock_analysis_orchestrator.py --mode morning` | KR morning analysis |
-| `python stock_analysis_orchestrator.py --mode morning --no-telegram` | Local test (no Telegram) |
-| `PRISM_OPENAI_AUTH_MODE=chatgpt_oauth python stock_analysis_orchestrator.py --mode morning` | ChatGPT OAuth proxy mode |
-| `python prism-us/us_stock_analysis_orchestrator.py --mode morning` | US morning analysis |
-| `python trigger_batch.py morning INFO` | KR surge detection only |
-| `python prism-us/us_trigger_batch.py morning INFO` | US surge detection only |
-| `python demo.py 005930` | Single stock report (KR) |
-| `python demo.py AAPL --market us` | Single stock report (US) |
-| `python prism-us/us_pending_order_batch.py` | US pending order batch (10:05 KST cron) |
-| `python prism-us/us_pending_order_batch.py --dry-run` | US pending order dry run |
-| `python weekly_insight_report.py --dry-run` | Weekly insight report (print only) |
-| `python weekly_insight_report.py --broadcast-languages en,ja` | Weekly report + broadcast |
-
-## Configuration Files
-
-| File | Purpose |
-|------|---------|
-| `.env` | Telegram tokens, channel IDs, Redis/GCP settings, `PRISM_OPENAI_AUTH_MODE` |
-| `mcp_agent.secrets.yaml` | API keys (OpenAI, Anthropic, Firecrawl, etc.) |
-| `mcp_agent.config.yaml` | MCP server configuration |
-| `trading/config/kis_devlp.yaml` | KIS trading API credentials |
-
-**Setup**: Copy `*.example` files and fill in credentials.
-
-### Key Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | ✅ | Telegram bot token |
-| `TELEGRAM_CHANNEL_ID` | ✅ | KR channel ID |
-| `PRISM_OPENAI_AUTH_MODE` | ✅ | `api_key` (default) or `chatgpt_oauth` |
-| `ADANOS_API_KEY` | ⬜ | US social sentiment (Adanos). Omit to disable |
-| `ENABLE_TRADING_JOURNAL` | ⬜ | `true` to enable trading journal agent |
-| `GCP_CREDENTIALS_PATH` | ⬜ | GCP service account JSON for Pub/Sub |
-
-### Multi-Account Setup (v2.9.0)
-
-```yaml
-# trading/config/kis_devlp.yaml
-accounts:
-  - id: primary       # Telegram reports use this account
-    app_key: ...
-    app_secret: ...
-    account_no: XXXXXXXX-XX
-  - id: secondary
-    app_key: ...
-    app_secret: ...
-    account_no: YYYYYYYY-YY
+```text
+launchd / safe CLI
+  -> prism_app.daily_pipeline
+  -> KIS/FMP provider adapters
+  -> normalized point-in-time MarketSnapshot
+  -> DataQualityGate
+  -> SWING_V1 and TREND_V1 feature engines
+  -> QuantScoreBreakdown + EvidencePacket
+  -> LLM TradePlanProposal
+  -> ProposalValidator
+  -> PositionPolicy + SizingPolicy + PortfolioRisk
+  -> research.sqlite
+  -> reports / local dashboard / read-only Telegram / SHADOW
+  -> internal simulated broker in paper.sqlite
 ```
 
-> DB migration (`account_id` column) runs automatically on first start.
+Phase 2 only:
 
-## Code Conventions
-
-### Async Pattern (Required)
-```python
-# ✅ Correct
-async with AsyncTradingContext(mode="demo") as trader:
-    result = await trader.async_buy_stock(ticker)
-
-# ❌ Wrong - blocks event loop
-result = requests.get(url)  # Use aiohttp instead
+```text
+validated paper proposal
+  -> deterministic sizing
+  -> durable OrderIntent
+  -> hardened ExecutionService
+  -> KIS broker-paper adapter
+  -> fills, reconciliation, restart recovery
 ```
 
-### Safe Type Conversion (v2.2 - KIS API)
-```python
-# KIS API may return '' instead of 0 - always use safe helpers
-from trading.us_stock_trading import _safe_float, _safe_int
-price = _safe_float(data.get('last'))  # Handles '', None, invalid strings
+The migration uses a strangler pattern: build new contracts and application services, verify parity and safety, then make legacy entrypoints thin wrappers. Do not rewrite the repository in place without characterization tests.
+
+## 5. Implementation phases
+
+### Phase 0 — baseline and safety
+
+- synchronize product and agent documentation
+- define runtime modes and external-effect capabilities
+- keep unit/CI Telegram fake-by-default while allowing configured allowlisted smoke sends in every environment
+- statically audit direct broker calls
+- ensure Phase 1 imports no broker modules
+
+### Phase 1A — point-in-time data and storage
+
+- common data contracts
+- KIS KR market-data adapter
+- FMP US adapter
+- security master and corporate actions
+- fail-closed data-quality gate
+- versioned `research.sqlite`, `paper.sqlite`, and `ops.sqlite` migrations
+- copy-only legacy DB migration manifest
+
+### Phase 1B — strategies, LLM, and policy
+
+- separate `SWING_V1` and `TREND_V1`
+- deterministic feature snapshots and quant scores
+- strict `TradePlanProposal`
+- proposal validation and field disposition
+- deterministic sizing and consolidated portfolio risk
+
+### Phase 1C — research and feedback
+
+- point-in-time backtest with costs and OOS
+- append-only proposals and outcomes, including no-entry candidates
+- two-pass retrospective
+- `CANDIDATE -> SHADOW` lesson lifecycle
+
+### Phase 1D — local use surfaces
+
+- thin daily/query/report application services
+- local dashboard
+- one Telegram bot, one allowlisted chat/user
+- outbound report publication and read-only natural-language questions
+- launchd jobs, watchdog, backup records
+
+### Phase 1E — internal paper
+
+- deterministic simulated broker
+- partial fill, rejection, cancellation, UNKNOWN, reconciliation, and restart recovery
+- separate strategy books and consolidated exposure
+
+### Phase 2 — broker paper
+
+- KIS paper credentials and process isolation
+- mandatory `OrderIntent`
+- no `intent=None` execution
+- durable broker/fill IDs
+- broker reconciliation before retry
+- `PAPER_PROMOTED` lessons only after prospective evidence
+
+No phase automatically creates a live phase.
+
+## 6. Data contracts
+
+Target provider output preserves:
+
+```text
+observed_at   source observation time
+available_at  when the information was knowable
+as_of_date    strategy/research evaluation time
+ingested_at   local ingestion time
+provider      source identity
+snapshot_id   immutable data snapshot identity
+quality       FRESH / STALE / PARTIAL / UNAVAILABLE / CONFLICT
 ```
 
-### Korean Report Tone (v2.3.0)
-All Korean (ko) report sections must use formal polite style (합쇼체):
-```python
-# ✅ Correct - 높임말
-"상승세를 보이고 있습니다"
-"주목할 필요가 있습니다"
+Core target models:
 
-# ❌ Wrong - 반말
-"상승세를 보인다"
-"주목할 필요가 있다"
-```
-Rule is enforced in `cores/report_generation.py` (common prompts) and each agent's instruction.
-
-### Sequential Agent Execution
-```python
-# ✅ Correct - respects rate limits
-for section in sections:
-    report = await generate_report(agent, section)
-
-# ❌ Wrong - hits rate limits
-reports = await asyncio.gather(*[generate_report(a, s) for s in sections])
+```text
+SecurityId
+SymbolMapping
+PriceBar
+FundamentalObservation
+CorporateAction
+EvidenceItem
+MarketSnapshot
+FeatureSnapshot
+QuantScoreBreakdown
 ```
 
-## Trading Constraints
+Rules:
 
-```python
-MAX_SLOTS = 10              # Max stocks to hold
-MAX_SAME_SECTOR = 3         # Max per sector
-DEFAULT_MODE = "demo"       # Always default to demo
+- do not mix raw and adjusted price fields;
+- store revisions rather than overwriting historical facts;
+- preserve delisted securities and ticker changes;
+- do not use today's constituents for historical universe evidence;
+- do not generate a new proposal when core price, regime, calendar, or evidence data fails the quality gate.
 
-# Stop Loss (Trigger-based)
-TRIGGER_CRITERIA = {
-    "intraday_surge": {"sl_max": 0.05},  # -5%
-    "volume_surge": {"sl_max": 0.07},    # -7%
-    "default": {"sl_max": 0.07}          # -7%
-}
+### Provider transition
+
+| Market | Approved primary | Supporting/official sources | Legacy status |
+|---|---|---|---|
+| KR | KIS market data | KRX, KIND, DART | current KRX/pykrx/MCP logic may be wrapped behind adapters |
+| US | FMP | SEC EDGAR | yfinance becomes explicit fallback/fixture, not silent primary |
+| Macro | FRED/ALFRED, ECOS | central-bank and official release sources | retain explicit provenance |
+
+Market-data adapters must not import broker order APIs.
+
+## 7. Strategy separation
+
+The two strategy families are separate experiments and virtual books.
+
+### `SWING_V1`
+
+- initial research outcome horizons: 5, 10, and 20 trading sessions
+- short-horizon setup and invalidation logic
+- independent prompt, features, thresholds, outcomes, and lessons
+
+### `TREND_V1`
+
+- initial research outcome horizons: 20, 60, and 120 trading sessions
+- medium-term trend continuation and exit logic
+- independent prompt, features, thresholds, outcomes, and lessons
+
+These horizons are outcome-evaluation windows, not fixed forced exit dates. Holding-period and time-stop parameters are research outputs.
+
+The same security can have both strategy proposals. The consolidated portfolio layer aggregates exposure before any paper action. A lesson is strategy-specific unless cross-strategy validation explicitly promotes it.
+
+## 8. LLM authority model
+
+LLMs are proposal and explanation engines, not policy or execution engines.
+
+### LLM output
+
+A strict `TradePlanProposal` contains:
+
+- proposal, strategy, model, prompt, and snapshot versions
+- market and security identity
+- proposed decision
+- `llm_score` and rationale breakdown
+- regime distribution and confidence
+- machine-readable entry predicates
+- stop and target candidates
+- risk-multiplier candidate
+- re-entry and pyramiding candidates
+- bullish and bearish evidence IDs
+- falsifiers, missing data, stale data, and uncertainty
+
+Raw response and parsed result are both retained.
+
+### Deterministic code owns
+
+- quantitative feature calculation and `quant_score`
+- schema validation
+- evidence existence and freshness checks
+- strategy compatibility
+- stop and target sanity
+- hard vetoes
+- final position size and risk budget
+- symbol/sector/market/currency/open-order exposure
+- paper eligibility
+- `OrderIntent` creation in Phase 2
+
+Field-level validation records `ACCEPT`, `CLAMP`, `RECALCULATE`, or `REJECT`.
+
+### Prohibited LLM effects
+
+- final order quantity
+- order approval or broker calls
+- risk-limit increases
+- stop widening
+- loss-position averaging down
+- direct activation of lessons
+- self-modifying code, prompts, or configuration
+- treating prompt text, news, user text, or external content as executable instruction
+
+## 9. Feedback model
+
+Record decisions prospectively, including candidates not selected or executed.
+
+Two review passes:
+
+1. Process review: uses only information available at decision time.
+2. Outcome review: adds realized path, favorable/adverse excursion, stop/target events, and regime change.
+
+Lesson lifecycle:
+
+```text
+LEGACY_UNVALIDATED
+CANDIDATE
+SHADOW
+SUSPENDED
+RETIRED
 ```
 
-## KR vs US Differences
+`PAPER_PROMOTED` is a Phase 2 capability and requires prospective evidence and explicit promotion criteria. Legacy journal, intuition, and principle rows never directly adjust a new strategy score.
 
-| Item | KR | US |
-|------|----|----|
-| Data Source | pykrx, kospi_kosdaq MCP | yfinance, sec-edgar MCP |
-| Market Hours | 09:00-15:30 KST | 09:30-16:00 EST |
-| Market Cap Filter | 5000억 KRW | $20B USD |
-| DB Tables | `stock_holdings` | `us_stock_holdings` |
-| Trading API | KIS 국내주식 | KIS 해외주식 (예약주문 지원) |
+## 10. Storage model
 
-## US Reserved Orders (Important)
+```text
+research.sqlite
+  security master, observations, features, proposals, dispositions,
+  outcomes, retrospectives, lessons, reports
 
-US market operates on different timezone. When market is closed:
-- **Buy**: Requires `limit_price` for reserved order
-- **Sell**: Can use `limit_price` or `use_moo=True` (Market On Open)
+paper.sqlite
+  strategy books, cash, orders, fills, positions, NAV
 
-```python
-# Smart buy/sell auto-selects method based on market hours
-result = await trading.async_buy_stock(ticker=ticker, limit_price=current_price)
-result = await trading.async_sell_stock(ticker=ticker, limit_price=current_price)
+ops.sqlite
+  jobs, leases, heartbeats, alerts, backups, recovery
 ```
 
-## Database Tables
+Use SQLite WAL, foreign keys, busy timeouts, short explicit transactions, and versioned idempotent migrations. Cross-database relationships use stable application IDs. Audit/evidence tables are append-only; corrections create new records.
 
-| Table | Purpose |
-|-------|---------|
-| `stock_holdings` / `us_stock_holdings` | Current portfolio |
-| `trading_history` / `us_trading_history` | Trade records |
-| `watchlist_history` / `us_watchlist_history` | Analyzed but not entered |
-| `analysis_performance_tracker` / `us_analysis_performance_tracker` | 7/14/30-day tracking |
-| `us_holding_decisions` | US AI holding analysis (v2.2.0) |
-| `us_pending_orders` | US queued reserved orders (v2.7.1) |
+Do not split `stock_tracking_db.sqlite` in place. Inspect it read-only, define a table mapping manifest, copy into new DBs, and verify row counts/checksums/rejects.
 
-## Quick Troubleshooting
+## 11. Telegram and dashboard
 
-| Issue | Solution |
-|-------|----------|
-| `could not convert string to float: ''` | Fixed in v2.2 - use `_safe_float()` |
-| Playwright PDF fails | `python3 -m playwright install chromium` |
-| Korean fonts missing | `sudo dnf install google-nanum-fonts && fc-cache -fv` |
-| KIS auth fails | Check `trading/config/kis_devlp.yaml` |
-| prism-us import error | v2.9.0: `importlib.util` 기반 임포트로 해결됨. 직접 수정 시 `cores/openai_debug.py` 참고 |
-| Telegram message in English | v2.2.0 restored Korean templates - pull latest |
-| Broadcast translation empty | gpt-5-mini fallback added in v2.2.0 |
-| `/report` 오류 후 재사용 불가 | v2.5.0 수정 - 서버 오류 시 자동 환급됨, 재시도 가능 |
-| US 예약주문 시간외 실패 | v2.7.1 - 10시 이전 주문은 자동 큐잉 → 10:05 KST 배치 실행 |
-| ChatGPT OAuth 404 | Codex 엔드포인트 미지원 모델 → `_MODEL_MAP` 자동 매핑 (v2.7.0) |
-| ChatGPT OAuth proxy 무반응 | `python -m cores.chatgpt_proxy.oauth_login`으로 토큰 갱신 |
+### Telegram target
 
-## i18n Strategy (v2.2.0)
+One bot and one bot DM or private supergroup provide:
 
-- **Code comments/logs**: English
-- **Telegram messages**: Korean templates (default channel is KR)
-- **Broadcast channels**: Translation agent converts to target language (`--broadcast-languages en,ja,zh,es`)
+- outbound daily, weekly, paper, risk, error, and recovery reports;
+- natural-language questions over stored reports/evidence;
+- read-only commands such as `/help`, `/status`, `/daily`, `/weekly`, `/symbol`, `/portfolio`, `/paper`, and `/health`.
 
-## Branch & Commit Convention
+In Phase 1, `/portfolio` returns the internal-paper snapshot only. A read-only KIS account snapshot is also a Phase 2 external account capability and requires separate scoped approval.
 
-### Branch Rule
-- **코드 파일 변경** (`.py`, `.ts`, `.tsx`, `.js`, `.jsx` 등): 반드시 feature 브랜치에서 작업 후 PR 생성
-- **문서만 변경** (`.md` 등): main 직접 커밋 허용
-- 브랜치 네이밍: `feat/`, `fix/`, `refactor/`, `test/` + 설명 (예: `fix/us-dashboard-ai-holding`)
+Target configuration:
 
-### Commit Message
-```
-feat: New feature
-fix: Bug fix
-docs: Documentation
-refactor: Code refactoring
-test: Tests
+```text
+TELEGRAM_BOT_TOKEN
+TELEGRAM_ALLOWED_CHAT_ID
+TELEGRAM_ALLOWED_USER_ID
 ```
 
----
+`TELEGRAM_CHANNEL_ID` may be read only as a migration fallback with a warning. Unit/CI paths use fake transport by default, but development, test, and operations may perform allowlisted live smoke sends without per-run approval. Mark them `[TEST]` with environment and request ID. `/buy`, `/sell`, `/cancel`, `/live`, risk changes, credentials, kill-switch changes, and policy/prompt mutation are denied.
 
-## Version History
+### Dashboard target
 
-| Ver | Date | Changes |
-|-----|------|---------|
-| 2.9.0 | 2026-03-31 | **외부 기여 3종 + 매매 안정성 수정** - 다중 계좌 지원 (tkgo11, #228): 주·부계좌 병렬 팬아웃 + DB 마이그레이션, US 소셜 센티먼트 (alexander-schneider, #229): Adanos API 통합, US 모듈 네임스페이스 충돌 수정 (lifrary, #227): `importlib.util` 기반 임포트, KIS API 오류 3종 (APTR0057·APBK1234) + Telegram JSON sanitize + 손절 방어 강화 (#239), US 매도 ORD_DVSN 누락 수정 (#238), Telegram 타임아웃 지수 백오프 재시도 (#237), OpenAI 400 디버그 로깅 (#232) |
-| 2.7.0 | 2026-03-24 | **ChatGPT OAuth Proxy + README 전면 업데이트** - ChatGPT Plus/Pro 구독으로 API 키 없이 분석 실행 가능 (`cores/chatgpt_proxy/`), Codex 엔드포인트 모델 매핑·SSE 파싱·response_format 변환 (#224), README 5개 언어 전면 개편 (모바일 앱·홍보영상·매매실적·Macro Intelligence 반영), 대시보드 스크린샷 교체 |
-| 2.6.0 | 2026-03-12 | **거시경제 인텔리전스 + 하이브리드 종목선정 + 텔레그램 얼럿 강화** - Macro Intelligence 에이전트 도입 (시장 체제 판단, 주도/낙후 섹터 식별), 탑다운+바텀업 하이브리드 종목 선정 (#202), US score-decision override 버그 수정 (#203), US trigger results 파일 경로 통일 (#204), KR/US 텔레그램 시그널 얼럿에 시장국면·선정채널·점수/R·R/손절 정보 추가 + PDF 커버 날짜 regex 수정 (#205) |
-| 2.5.2 | 2026-03-04 | **FCM NOT_FOUND 토큰 삭제 + Telegram Evaluator 다중 JSON 파싱 수정** - `firebase_bridge.py` `_INVALID_TOKEN_CODES`에 `NOT_FOUND` 추가 (만료 토큰 0/8 실패 반복 해결, #196), `telegram_summary_agent.py` GPT-5.x reasoning 모델 다중 JSON 응답 파싱 실패 → `_RobustEvaluatorLLM` 래퍼 + `generate_str()` fallback 추가 (#197) |
-| 2.5.1 | 2026-02-22 | **Claude Sonnet 4.6 업그레이드** - `report_generator.py` 내 모델 `claude-sonnet-4-5-20250929` → `claude-sonnet-4-6` (5곳), knowledge cutoff Jan 2025 → Aug 2025 |
-| 2.5.0 | 2026-02-22 | **Telegram /report 일일 횟수 환급 + 한국어 메시지 복원** - 서버 오류(서브프로세스 타임아웃, 내부 AI 에이전트 오류) 시 `/report`·`/us_report` 일일 사용 횟수 자동 환급 (`refund_daily_limit`, `_is_server_error` 추가, `send_report_result` 내 환급 처리), `AnalysisRequest`에 `user_id` 필드 추가, Telegram 봇 사용자 대면 메시지 한국어 템플릿 복원 |
-| 2.4.9 | 2026-02-21 | **US 분석 버그 5종 수정** - `data_prefetch._df_to_markdown` tabulate 의존성 제거 (직접 마크다운 테이블 생성), `us_telegram_summary_agent` evaluator 프롬프트에 `needs_improvement` JSON 형식 명세 추가 + 평가 등급 0-3으로 정정 (Pydantic validation 오류 해결), `create_us_sell_decision_agent` US holding 매도 판단에 연결 (규칙 기반→AI 기반, fallback 유지), `redis_signal_publisher` 로그 KRW 하드코딩→`market` 필드 기반 USD/KRW 동적 출력, GCP Pub/Sub credentials 경로 로그 추가 + `GCP_CREDENTIALS_PATH` 미설정 경고 (401 진단 개선) |
-| 2.4.8 | 2026-02-19 | **US 매수 가격 수정 + GCP 인증 + Firebase Bridge 타입 감지 버그 3종 수정** - `get_current_price()` KIS `last` 빈 문자열 시 `base`(전일종가) fallback 추가, `async_buy_stock()` KIS 가격 조회 실패 시 `limit_price` fallback (예약주문 보장), GCP Pub/Sub 401 → 명시적 `service_account.Credentials` 인증으로 전환, `detect_type()` 포트폴리오 키워드 구체화 (`포트폴리오 관점` 오탐 방지), `detect_type()` 트리거 키워드(`트리거/급등/급락/surge`) analysis 이전에 체크 (매수신호 포함 트리거 알림 정상 분류), `extract_title()` 파일경로 체크를 markdown 정리 이전으로 이동 (PDF 파일명 언더바 보존) |
-| 2.4.7 | 2026-02-16 | **주간 리포트 확장 + 압축 후행평가** - 주간 매매 요약, 매도 후 평가, AI 장기 학습 인사이트, L1→L2 압축 후행 교훈, 다국어 broadcast 지원 |
+- bind to `127.0.0.1` only;
+- separate research, paper, and ops DTOs;
+- show data freshness, strategy-specific proposals, evidence/falsifiers, OOS, SHADOW, internal paper, and job health;
+- do not query or display real KIS account data in Phase 1.
 
-For full history, see git log.
+## 12. Safe development commands
+
+Prefer focused, hermetic validation:
+
+```bash
+python -m compileall -q prism_core
+pytest path/to/focused_test.py -q
+python weekly_insight_report.py --dry-run
+```
+
+Add `prism_app` to `compileall` after the target application package has been created.
+
+Do not use the old morning orchestrator, pending-order batch, messaging subscriber, or trading integration tests as a routine smoke test. Inspect their call graph first; several paths can message users or contact broker APIs. Never infer safety from `demo` in a command or environment variable.
+
+Allowlisted Telegram smoke sends and public AgentNews live fetches have standing approval in development, test, and operations. Unit and contract tests still use fixtures, fake transports, and temporary DBs for determinism. Credentialed KIS/FMP/account/broker tests and other external LLM tests retain their separate capability and approval boundaries.
+
+## 13. Target repository additions
+
+```text
+prism_core/
+  runtime/       modes and external-effect capabilities
+  data/          contracts, providers, security master, quality
+  storage/       database policy and versioned migrations
+  strategies/    SWING_V1 and TREND_V1
+  features/      deterministic feature snapshots
+  llm/           TradePlanProposal and proposal service
+  policy/        validation, position policy, sizing
+  portfolio/     consolidated exposure and risk
+  research/      backtest, costs, experiment registry
+  feedback/      decisions, outcomes, retrospectives, lessons
+  paper/         internal simulated broker and ledger
+  telegram/      config, auth, commands, publisher
+
+prism_app/
+  daily_pipeline.py
+  query_service.py
+  report_service.py
+  outcome_tracker.py
+  telegram_bot.py
+  dashboard_export.py
+  watchdog.py
+```
+
+## 14. Legacy-to-target mapping
+
+| Current file | Direction |
+|---|---|
+| `stock_analysis_orchestrator.py` | become a thin wrapper after parity |
+| `cores/analysis.py` | retain section/report generation, consume structured evidence |
+| `trigger_batch.py` | reuse candidate/feature ideas behind new contracts |
+| `cores/agents/trading_agents.py` | replace giant policy prompt with strategy-specific proposal prompts |
+| `stock_tracking_agent.py` | split outcome, journal, paper, and execution responsibilities |
+| `tracking/db_schema.py` | legacy reference, not target migration source of truth |
+| `tracking/journal.py` | remove direct score adjustment; import as unvalidated evidence |
+| `prism_core/order_intents.py` | harden and reuse in Phase 2 |
+| `prism_core/execution_service.py` | require intent; remove transitional delegation |
+| `telegram_ai_bot.py` | isolate; replace with small read-only target app |
+| dashboard generators/types | remove real-account Phase 1 path; split DTOs |
+
+## 15. Git and review workflow
+
+- Start from the latest `origin/main` on a feature branch.
+- Preserve untracked user work before switching or updating.
+- Use focused changes and tests.
+- Do not commit, push, merge, rebase, or open a PR when the user requested local-only work.
+- Consequential architecture, database migration, trading boundary, security, and public contract changes require a read-only independent review before completion.
+
+Commit types, when explicitly approved:
+
+```text
+docs: product or architecture documentation
+feat: new product capability
+fix: defect correction
+refactor: behavior-preserving restructuring
+test: test-only change
+```
+
+## 16. Detailed plans
+
+- [Product north star plan](.hermes/plans/2026-07-23_123133-prism-insight-product-north-star.md)
+- [Current-to-target implementation plan](.hermes/plans/2026-07-23_204700-prism-current-to-target-transformation.md)
+- [Market scenario prompt contract](docs/MARKET_SCENARIO_PROMPTS.md)
+
+Plans may evolve as code and provider capabilities are verified. Changes to approved product scope, safety boundaries, live authority, or strategy identity require an explicit product-decision update, not an incidental implementation change.
