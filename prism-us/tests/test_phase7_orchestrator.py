@@ -47,6 +47,24 @@ class TestDirectoryStructure:
         assert telegram_dir.exists() or True
 
 
+class TestMainCoresImport:
+    """Regression coverage for root cores modules loaded from prism-us."""
+
+    def test_registers_module_before_frozen_dataclass_exec(self):
+        from us_stock_analysis_orchestrator import _import_from_main_cores
+
+        module_name = "prism_root_regime_policy_orchestrator_test"
+        sys.modules.pop(module_name, None)
+        try:
+            module = _import_from_main_cores(
+                module_name, "cores/regime_policy.py"
+            )
+            assert sys.modules[module_name] is module
+            assert module.MarketPulseDetail is not None
+        finally:
+            sys.modules.pop(module_name, None)
+
+
 # =============================================================================
 # Test: USStockAnalysisOrchestrator Class
 # =============================================================================
