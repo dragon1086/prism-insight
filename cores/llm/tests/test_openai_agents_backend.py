@@ -22,6 +22,53 @@ from cores.llm.ports import AgentSpec, LLMParams
 
 
 # ---------------------------------------------------------------------------
+# Proxy configuration tests
+# ---------------------------------------------------------------------------
+
+
+def test_configure_proxy_disables_unsupported_tracing(monkeypatch):
+    """The OAuth proxy handles Responses calls, not OpenAI trace export."""
+    import cores.llm.backends.openai_agents_backend as mod
+
+    calls = []
+    fake_client = object()
+
+    monkeypatch.setattr(
+        mod,
+        "AsyncOpenAI",
+        lambda **kwargs: calls.append(("client", kwargs)) or fake_client,
+    )
+    monkeypatch.setattr(
+        mod,
+        "set_default_openai_client",
+        lambda client: calls.append(("default_client", client)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "set_default_openai_api",
+        lambda api: calls.append(("default_api", api)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "set_default_openai_key",
+        lambda key: calls.append(("default_key", key)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "set_tracing_disabled",
+        lambda disabled: calls.append(("tracing_disabled", disabled)),
+        raising=False,
+    )
+
+    mod.configure_openai_agents_for_proxy(
+        "http://localhost:18741/v1",
+        "placeholder",
+    )
+
+    assert ("tracing_disabled", True) in calls
+
+
+# ---------------------------------------------------------------------------
 # Helpers / shared fixtures
 # ---------------------------------------------------------------------------
 

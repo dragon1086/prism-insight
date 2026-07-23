@@ -17,7 +17,12 @@ from cores.llm.ports import AgentSpec, LLMBackend, LLMParams, LLMResult
 # --- SDK import guard ---------------------------------------------------
 try:
     from agents import Agent, ModelSettings, Runner
-    from agents import set_default_openai_api, set_default_openai_client, set_default_openai_key
+    from agents import (
+        set_default_openai_api,
+        set_default_openai_client,
+        set_default_openai_key,
+        set_tracing_disabled,
+    )
     from agents.mcp import MCPServerStdio, MCPServerStdioParams
     from openai import AsyncOpenAI
     from openai.types.shared import Reasoning
@@ -33,6 +38,7 @@ except ImportError:
     set_default_openai_api = None  # type: ignore[assignment]
     set_default_openai_client = None  # type: ignore[assignment]
     set_default_openai_key = None  # type: ignore[assignment]
+    set_tracing_disabled = None  # type: ignore[assignment]
     AsyncOpenAI = None  # type: ignore[assignment]
     _sdk_available = False
 # ------------------------------------------------------------------------
@@ -70,6 +76,9 @@ def configure_openai_agents_for_proxy(
     set_default_openai_client(client)
     set_default_openai_api("responses")
     set_default_openai_key(api_key)
+    # The OAuth proxy supports Responses requests but not OpenAI trace export.
+    # The placeholder proxy key would otherwise produce one non-fatal 401 per span.
+    set_tracing_disabled(True)
 
 
 def build_model_settings(params: LLMParams) -> "ModelSettings":
