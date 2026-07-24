@@ -14,6 +14,7 @@ from prism_core.data.providers.fmp import (
 )
 from prism_core.data.providers.fmp_models import (
     FMPApiKey,
+    FMPPagination,
     FMPRequest,
     FMPResponseEnvelope,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "FMPFetchResult",
     "FMPInstrument",
     "FMPMarketDataProvider",
+    "FMPPagination",
     "FMPProviderEvent",
     "FMPRateLimitError",
     "FMPRequest",

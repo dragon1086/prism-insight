@@ -23,7 +23,12 @@ from prism_core.data.contracts import (
     SecurityId,
     SymbolMapping,
 )
-from prism_core.data.providers.fmp_models import FMPApiKey, FMPRequest, FMPResponseEnvelope
+from prism_core.data.providers.fmp_models import (
+    FMPApiKey,
+    FMPPagination,
+    FMPRequest,
+    FMPResponseEnvelope,
+)
 
 
 class FMPTransport(Protocol):
@@ -85,6 +90,11 @@ class FMPEventKind(str, Enum):
     UNMATCHED = "UNMATCHED"
     INELIGIBLE = "INELIGIBLE"
     RETRY_EXHAUSTED = "RETRY_EXHAUSTED"
+    MISSING_PAGE = "MISSING_PAGE"
+    REPEATED_PAGE = "REPEATED_PAGE"
+    PAGINATION_MALFORMED = "PAGINATION_MALFORMED"
+    PAGE_LIMIT_EXCEEDED = "PAGE_LIMIT_EXCEEDED"
+    REQUEST_BUDGET_EXHAUSTED = "REQUEST_BUDGET_EXHAUSTED"
 
 
 class FMPProviderEvent(ContractModel):
@@ -108,7 +118,24 @@ class CapabilityProbeResult:
 class FMPFetchResult:
     snapshot: MarketSnapshot
     raw_payloads: tuple[FMPResponseEnvelope, ...]
+    request_hashes: tuple[str, ...]
     events: tuple[FMPProviderEvent, ...]
+
+
+@dataclass
+class _RequestBudget:
+    limit: int
+    used: int = 0
+
+    @property
+    def remaining(self) -> int:
+        return self.limit - self.used
+
+    def consume(self) -> int:
+        if self.remaining < 1:
+            raise RuntimeError("request budget is exhausted")
+        self.used += 1
+        return self.used
 
 
 class FMPTimeoutError(TimeoutError):
@@ -133,10 +160,16 @@ class FMPMarketDataProvider:
         instruments: tuple[FMPInstrument, ...],
         clock: Callable[[], datetime],
         max_attempts: int = 3,
+        max_pages: int = 10,
+        max_requests: int | None = None,
         sleeper: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
+        if max_pages < 1:
+            raise ValueError("max_pages must be positive")
+        if max_requests is not None and max_requests < 1:
+            raise ValueError("max_requests must be positive")
         by_id = {instrument.security_id.value: instrument for instrument in instruments}
         if len(by_id) != len(instruments):
             raise ValueError("security_id instruments must be unique")
@@ -148,6 +181,8 @@ class FMPMarketDataProvider:
         self._instruments = by_id
         self._clock = clock
         self._max_attempts = max_attempts
+        self._max_pages = max_pages
+        self._max_requests = max_requests or max_pages * max_attempts
         self._sleeper = sleeper
 
     @staticmethod
@@ -178,6 +213,7 @@ class FMPMarketDataProvider:
         request: FMPRequest,
         *,
         occurred_at: datetime,
+        budget: _RequestBudget | None = None,
     ) -> tuple[
         FMPResponseEnvelope | None,
         tuple[FMPProviderEvent, ...],
@@ -185,7 +221,22 @@ class FMPMarketDataProvider:
     ]:
         events: list[FMPProviderEvent] = []
         terminal_status: CapabilityStatus | None = None
-        for attempt in range(1, self._max_attempts + 1):
+        request_budget = budget or _RequestBudget(self._max_attempts)
+        for local_attempt in range(1, self._max_attempts + 1):
+            if request_budget.remaining < 1:
+                events.append(
+                    FMPProviderEvent(
+                        provider="fmp",
+                        kind=FMPEventKind.REQUEST_BUDGET_EXHAUSTED,
+                        quality=DataQualityStatus.UNAVAILABLE,
+                        attempt=request_budget.used,
+                        operation=request.operation,
+                        detail=f"aggregate request budget exhausted after {request_budget.used} calls",
+                        occurred_at=occurred_at,
+                    )
+                )
+                return None, tuple(events), terminal_status
+            attempt = request_budget.consume()
             try:
                 response = await self._transport.execute(request, api_key=self._api_key)
                 if response.status_code != 429:
@@ -225,7 +276,7 @@ class FMPMarketDataProvider:
                     occurred_at=occurred_at,
                 )
             )
-            if attempt == self._max_attempts:
+            if local_attempt == self._max_attempts or request_budget.remaining < 1:
                 events.append(
                     FMPProviderEvent(
                         provider="fmp",
@@ -233,13 +284,13 @@ class FMPMarketDataProvider:
                         quality=DataQualityStatus.UNAVAILABLE,
                         attempt=attempt,
                         operation=request.operation,
-                        detail=f"retry budget exhausted after {attempt} attempts",
+                        detail=f"retry budget exhausted after {attempt} aggregate calls",
                         occurred_at=occurred_at,
                     )
                 )
                 return None, tuple(events), terminal_status
             if self._sleeper is not None:
-                await self._sleeper(float(2 ** (attempt - 1)))
+                await self._sleeper(float(2 ** (local_attempt - 1)))
         raise AssertionError("unreachable retry state")
 
     async def probe_capability(self, *, as_of_date: datetime) -> CapabilityProbeResult:
@@ -368,33 +419,246 @@ class FMPMarketDataProvider:
             )
             for instrument in inactive
         ]
-        request = FMPRequest(
-            operation="fetch_price_page",
-            path="/stable/historical-price-eod/full",
-            params={"page": 1, "symbols": [item.fmp_symbol for item in active]},
-        )
-        if active:
-            response, retry_events, _ = await self._execute_with_retry(
-                request,
+        events = list(initial_events)
+        collected: list[FMPResponseEnvelope] = []
+        request_hashes: list[str] = []
+        budget = _RequestBudget(self._max_requests)
+        expected_page = 1
+        declared_total: int | None = None
+        seen_source_ids: dict[str, str] = {}
+        seen_hashes: set[str] = set()
+        collection_complete = bool(active)
+        aggregate_rows: list[object] = []
+
+        def page_event(
+            kind: FMPEventKind,
+            quality: DataQualityStatus,
+            operation: str,
+            detail: str,
+        ) -> FMPProviderEvent:
+            return FMPProviderEvent(
+                provider="fmp",
+                kind=kind,
+                quality=quality,
+                attempt=max(1, budget.used),
+                operation=operation,
+                detail=detail,
                 occurred_at=ingested_at,
             )
-        else:
-            response, retry_events = None, ()
-        events = [*initial_events, *retry_events]
-        if response is not None and self._response_exposes_secret(response):
-            events.append(
-                FMPProviderEvent(
-                    provider="fmp",
-                    kind=FMPEventKind.MALFORMED,
-                    quality=DataQualityStatus.UNAVAILABLE,
-                    attempt=1,
-                    operation="fetch_price_page",
-                    detail="response rejected at the credential boundary",
-                    occurred_at=ingested_at,
-                )
+
+        while active and collection_complete:
+            request = FMPRequest(
+                operation="fetch_price_page",
+                path="/stable/historical-price-eod/full",
+                params={
+                    "page": expected_page,
+                    "symbols": [item.fmp_symbol for item in active],
+                },
             )
-            response = None
-        raw_payloads = (response,) if response is not None else ()
+            page_response, retry_events, _ = await self._execute_with_retry(
+                request,
+                occurred_at=ingested_at,
+                budget=budget,
+            )
+            events.extend(retry_events)
+            if page_response is None:
+                collection_complete = False
+                break
+            if self._response_exposes_secret(page_response):
+                events.append(
+                    page_event(
+                        FMPEventKind.MALFORMED,
+                        DataQualityStatus.UNAVAILABLE,
+                        "fetch_price_page",
+                        "response rejected at the credential boundary",
+                    )
+                )
+                collection_complete = False
+                break
+            collected.append(page_response)
+            request_hashes.append(request.request_hash)
+            if not 200 <= page_response.status_code < 300:
+                events.append(
+                    page_event(
+                        FMPEventKind.UNAVAILABLE,
+                        DataQualityStatus.UNAVAILABLE,
+                        "fetch_price_page",
+                        f"page returned non-success status {page_response.status_code}",
+                    )
+                )
+                collection_complete = False
+                break
+            payload = page_response.payload
+            if not isinstance(payload, Mapping):
+                events.append(
+                    page_event(
+                        FMPEventKind.PAGINATION_MALFORMED,
+                        DataQualityStatus.UNAVAILABLE,
+                        "validate_price_pagination",
+                        "price payload must be an object",
+                    )
+                )
+                collection_complete = False
+                break
+            try:
+                pagination = FMPPagination.from_payload(payload.get("pagination"))
+            except ValueError:
+                events.append(
+                    page_event(
+                        FMPEventKind.PAGINATION_MALFORMED,
+                        DataQualityStatus.UNAVAILABLE,
+                        "validate_price_pagination",
+                        f"page {expected_page} has malformed pagination metadata",
+                    )
+                )
+                collection_complete = False
+                break
+            if pagination.total_pages > self._max_pages:
+                events.append(
+                    page_event(
+                        FMPEventKind.PAGE_LIMIT_EXCEEDED,
+                        DataQualityStatus.UNAVAILABLE,
+                        "validate_price_pagination",
+                        f"declared page count exceeds maximum {self._max_pages}",
+                    )
+                )
+                collection_complete = False
+                break
+            if pagination.page != expected_page:
+                mismatch_kind = (
+                    FMPEventKind.MISSING_PAGE
+                    if pagination.page > expected_page
+                    else FMPEventKind.REPEATED_PAGE
+                )
+                events.append(
+                    page_event(
+                        mismatch_kind,
+                        DataQualityStatus.UNAVAILABLE,
+                        "validate_price_pagination",
+                        f"expected page {expected_page} but received page {pagination.page}",
+                    )
+                )
+                collection_complete = False
+                break
+            if not pagination.has_more and pagination.page < pagination.total_pages:
+                events.append(
+                    page_event(
+                        FMPEventKind.MISSING_PAGE,
+                        DataQualityStatus.UNAVAILABLE,
+                        "validate_price_pagination",
+                        "pagination terminated before the declared final page",
+                    )
+                )
+                collection_complete = False
+                break
+            expected_next = pagination.page + 1 if pagination.has_more else None
+            if (
+                (pagination.has_more and pagination.page >= pagination.total_pages)
+                or pagination.next_page != expected_next
+            ):
+                events.append(
+                    page_event(
+                        FMPEventKind.PAGINATION_MALFORMED,
+                        DataQualityStatus.UNAVAILABLE,
+                        "validate_price_pagination",
+                        "pagination continuation metadata is inconsistent",
+                    )
+                )
+                collection_complete = False
+                break
+            if declared_total is None:
+                declared_total = pagination.total_pages
+            elif pagination.total_pages != declared_total:
+                events.append(
+                    page_event(
+                        FMPEventKind.CONFLICT,
+                        DataQualityStatus.CONFLICT,
+                        "validate_price_pagination",
+                        "pagination totalPages changed during collection",
+                    )
+                )
+                collection_complete = False
+                break
+            prior_hash = seen_source_ids.get(page_response.source_record_id)
+            if prior_hash is not None or page_response.source_hash in seen_hashes:
+                conflicting = prior_hash is not None and prior_hash != page_response.source_hash
+                events.append(
+                    page_event(
+                        FMPEventKind.CONFLICT if conflicting else FMPEventKind.REPEATED_PAGE,
+                        (
+                            DataQualityStatus.CONFLICT
+                            if conflicting
+                            else DataQualityStatus.UNAVAILABLE
+                        ),
+                        "validate_price_page_identity",
+                        "provider page identity was repeated or conflicted",
+                    )
+                )
+                collection_complete = False
+                break
+            if (
+                page_response.available_at > as_of_date
+                or page_response.available_at > ingested_at
+            ):
+                events.append(
+                    page_event(
+                        FMPEventKind.MALFORMED,
+                        DataQualityStatus.UNAVAILABLE,
+                        "validate_price_page",
+                        "payload violates the requested point-in-time boundary",
+                    )
+                )
+                collection_complete = False
+                break
+            rows = payload.get("data")
+            if not isinstance(rows, list):
+                events.append(
+                    page_event(
+                        FMPEventKind.MALFORMED,
+                        DataQualityStatus.UNAVAILABLE,
+                        "fetch_price_page",
+                        "response data must be a list",
+                    )
+                )
+                collection_complete = False
+                break
+            page_index = len(collected) - 1
+            for raw_row in rows:
+                if isinstance(raw_row, Mapping):
+                    aggregate_rows.append({**raw_row, "_fmpPageIndex": page_index})
+                else:
+                    aggregate_rows.append(raw_row)
+            seen_source_ids[page_response.source_record_id] = page_response.source_hash
+            seen_hashes.add(page_response.source_hash)
+            if not pagination.has_more:
+                break
+            expected_page += 1
+
+        raw_payloads = tuple(collected)
+        response: FMPResponseEnvelope | None = None
+        if collection_complete and collected:
+            quality_order = {
+                DataQualityStatus.FRESH: 0,
+                DataQualityStatus.PARTIAL: 1,
+                DataQualityStatus.STALE: 2,
+                DataQualityStatus.CONFLICT: 3,
+                DataQualityStatus.UNAVAILABLE: 4,
+            }
+            aggregate_quality = max(
+                (item.quality for item in collected), key=quality_order.__getitem__
+            )
+            response = FMPResponseEnvelope(
+                status_code=200,
+                source_record_id="fmp:prices:pages:"
+                + hashlib.sha256(
+                    "|".join(item.source_record_id for item in collected).encode()
+                ).hexdigest(),
+                revision=max(item.revision for item in collected),
+                observed_at=max(item.observed_at for item in collected),
+                available_at=max(item.available_at for item in collected),
+                payload={"data": aggregate_rows},
+                quality=aggregate_quality,
+            )
         bars: list[PriceBar] = []
         mappings: list[SymbolMapping] = []
         quality = DataQualityStatus.UNAVAILABLE
@@ -440,12 +704,6 @@ class FMPMarketDataProvider:
             rows = payload.get("data") if isinstance(payload, Mapping) else None
             if isinstance(rows, list):
                 by_symbol = {instrument.fmp_symbol: instrument for instrument in active}
-                timing = ObservationTime(
-                    observed_at=response.observed_at,
-                    available_at=response.available_at,
-                    ingested_at=ingested_at,
-                    as_of_date=as_of_date,
-                )
                 for raw_row in rows:
                     if not isinstance(raw_row, Mapping):
                         events.append(
@@ -461,6 +719,27 @@ class FMPMarketDataProvider:
                         )
                         continue
                     row = cast(Mapping[str, object], raw_row)
+                    page_index = row.get("_fmpPageIndex")
+                    if type(page_index) is not int or not 0 <= page_index < len(raw_payloads):
+                        events.append(
+                            FMPProviderEvent(
+                                provider="fmp",
+                                kind=FMPEventKind.MALFORMED,
+                                quality=DataQualityStatus.UNAVAILABLE,
+                                attempt=1,
+                                operation="normalize_price_bar",
+                                detail="price row lost its page provenance",
+                                occurred_at=ingested_at,
+                            )
+                        )
+                        continue
+                    page_source = raw_payloads[page_index]
+                    timing = ObservationTime(
+                        observed_at=page_source.observed_at,
+                        available_at=page_source.available_at,
+                        ingested_at=ingested_at,
+                        as_of_date=as_of_date,
+                    )
                     symbol = str(row.get("symbol", ""))
                     instrument = by_symbol.get(symbol)
                     if instrument is None:
@@ -533,13 +812,13 @@ class FMPMarketDataProvider:
                             provider="fmp",
                             provider_symbol=symbol,
                             source_record_id=(
-                                f"{response.source_record_id}:price:{symbol}:"
+                                f"{page_source.source_record_id}:price:{symbol}:"
                                 f"{trading_date.isoformat()}"
                             ),
-                            source_hash=response.source_hash,
-                            revision=response.revision,
+                            source_hash=page_source.source_hash,
+                            revision=page_source.revision,
                             timing=timing,
-                            quality=response.quality,
+                            quality=page_source.quality,
                             bar_start=datetime.combine(
                                 trading_date,
                                 time.min,
@@ -611,7 +890,7 @@ class FMPMarketDataProvider:
                             valid_from=instrument.valid_from,
                             valid_to=instrument.valid_to,
                             timing=timing,
-                            source_hash=response.source_hash,
+                            source_hash=page_source.source_hash,
                         )
                     )
                 grouped: dict[tuple[SecurityId, datetime], list[PriceBar]] = {}
@@ -726,11 +1005,20 @@ class FMPMarketDataProvider:
                         occurred_at=ingested_at,
                     )
                 )
+        if response is None and any(
+            item.kind is FMPEventKind.CONFLICT for item in events
+        ):
+            quality = DataQualityStatus.CONFLICT
         content = {
             "market": "US",
             "as_of_date": as_of_date.isoformat(),
             "requested_security_ids": [str(item.value) for item in security_ids],
-            "raw_payload_hashes": [item.source_hash for item in raw_payloads],
+            "request_hashes": request_hashes if response is not None else [],
+            "raw_payload_hashes": (
+                [item.source_hash for item in raw_payloads]
+                if response is not None
+                else []
+            ),
             "quality": quality.value,
             "symbol_mappings": [item.model_dump(mode="json") for item in mappings],
             "price_bars": [item.model_dump(mode="json") for item in bars],
@@ -754,5 +1042,6 @@ class FMPMarketDataProvider:
         return FMPFetchResult(
             snapshot=snapshot,
             raw_payloads=raw_payloads,
+            request_hashes=tuple(request_hashes),
             events=tuple(events),
         )

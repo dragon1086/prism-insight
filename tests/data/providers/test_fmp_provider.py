@@ -31,6 +31,25 @@ AS_OF = datetime(2026, 7, 24, 1, 0, tzinfo=UTC)
 INGESTED = datetime(2026, 7, 24, 1, 1, tzinfo=UTC)
 
 
+def price_page_payload(
+    rows: list[object],
+    *,
+    page: int = 1,
+    total_pages: int = 1,
+    has_more: bool = False,
+    next_page: int | None = None,
+) -> dict[str, object]:
+    return {
+        "data": rows,
+        "pagination": {
+            "page": page,
+            "totalPages": total_pages,
+            "hasMore": has_more,
+            "nextPage": next_page,
+        },
+    }
+
+
 def test_secret_is_redacted_and_raw_envelope_is_immutable() -> None:
     api_key = FMPApiKey(SECRET)
     request = FMPRequest(
@@ -231,8 +250,8 @@ class PricePageTransport:
             revision=2,
             observed_at=datetime(2026, 7, 23, 20, 0, tzinfo=UTC),
             available_at=datetime(2026, 7, 23, 20, 1, tzinfo=UTC),
-            payload={
-                "data": [
+            payload=price_page_payload(
+                [
                     {
                         "symbol": "AAPL",
                         "date": "2026-07-23",
@@ -249,7 +268,7 @@ class PricePageTransport:
                         "adjustmentAsOf": "2026-07-23T20:01:00+00:00",
                     }
                 ]
-            },
+            ),
         )
 
 
@@ -302,6 +321,389 @@ async def test_one_fixture_page_normalizes_us_price_snapshot_with_pit_provenance
 
 
 @pytest.mark.asyncio
+async def test_bounded_multi_page_prices_are_collected_and_ordered_deterministically() -> None:
+    calls: list[tuple[int, str]] = []
+
+    class TwoPageTransport:
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            page = int(request.params["page"])
+            calls.append((page, request.request_hash))
+            base = await PricePageTransport().execute(
+                FMPRequest(
+                    operation=request.operation,
+                    path=request.path,
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=api_key,
+            )
+            row = dict(base.payload["data"][0])
+            if page == 1:
+                payload = price_page_payload(
+                    [row], page=1, total_pages=2, has_more=True, next_page=2
+                )
+            else:
+                row["date"] = "2026-07-22"
+                payload = price_page_payload(
+                    [row], page=2, total_pages=2, has_more=False, next_page=None
+                )
+            return FMPResponseEnvelope(
+                status_code=200,
+                source_record_id=f"fmp:prices:AAPL:page-{page}",
+                revision=2,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=payload,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=TwoPageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        max_pages=2,
+        max_requests=3,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert [page for page, _ in calls] == [1, 2]
+    assert len({request_hash for _, request_hash in calls}) == 2
+    assert result.request_hashes == tuple(request_hash for _, request_hash in calls)
+    assert [bar.bar_start.date().isoformat() for bar in result.snapshot.price_bars] == [
+        "2026-07-22",
+        "2026-07-23",
+    ]
+    assert [page.source_record_id for page in result.raw_payloads] == [
+        "fmp:prices:AAPL:page-1",
+        "fmp:prices:AAPL:page-2",
+    ]
+    assert result.snapshot.quality is DataQualityStatus.FRESH
+    assert result.events == ()
+
+
+@pytest.mark.asyncio
+async def test_one_aggregate_request_budget_covers_retries_across_all_pages() -> None:
+    class RetriedTwoPageTransport:
+        def __init__(self, *, fail_second_page: bool = False) -> None:
+            self.calls = 0
+            self.page_one_calls = 0
+            self.fail_second_page = fail_second_page
+
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            self.calls += 1
+            page = int(request.params["page"])
+            if page == 1:
+                self.page_one_calls += 1
+                if self.page_one_calls == 1:
+                    raise FMPTimeoutError("sanitized by provider")
+            elif self.fail_second_page:
+                raise FMPTimeoutError("sanitized by provider")
+            base = await PricePageTransport().execute(
+                FMPRequest(
+                    operation=request.operation,
+                    path=request.path,
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=api_key,
+            )
+            payload = base.payload
+            assert isinstance(payload, dict)
+            rows = payload["data"]
+            assert isinstance(rows, list)
+            row = dict(rows[0])
+            if page == 2:
+                row["date"] = "2026-07-22"
+            return FMPResponseEnvelope(
+                status_code=200,
+                source_record_id=f"fmp:prices:AAPL:budget-page-{page}",
+                revision=2,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=price_page_payload(
+                    [row],
+                    page=page,
+                    total_pages=2,
+                    has_more=page == 1,
+                    next_page=2 if page == 1 else None,
+                ),
+            )
+
+    instrument = FMPInstrument(
+        security_id=SECURITY_ID,
+        fmp_symbol="AAPL",
+        valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+    )
+    retried_transport = RetriedTwoPageTransport()
+    retried = FMPMarketDataProvider(
+        transport=retried_transport,
+        api_key=FMPApiKey(SECRET),
+        instruments=(instrument,),
+        clock=lambda: INGESTED,
+        max_attempts=2,
+        max_pages=2,
+        max_requests=3,
+    )
+    direct_transport = RetriedTwoPageTransport()
+    direct_transport.page_one_calls = 1
+    direct = FMPMarketDataProvider(
+        transport=direct_transport,
+        api_key=FMPApiKey(SECRET),
+        instruments=(instrument,),
+        clock=lambda: INGESTED,
+        max_attempts=2,
+        max_pages=2,
+        max_requests=3,
+    )
+
+    retried_result = await retried.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+    direct_result = await direct.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert retried_transport.calls == 3
+    assert direct_transport.calls == 2
+    assert retried_result.snapshot.snapshot_id == direct_result.snapshot.snapshot_id
+    assert [item.kind for item in retried_result.events] == [FMPEventKind.TIMEOUT]
+
+    exhausted_transport = RetriedTwoPageTransport(fail_second_page=True)
+    exhausted = FMPMarketDataProvider(
+        transport=exhausted_transport,
+        api_key=FMPApiKey(SECRET),
+        instruments=(instrument,),
+        clock=lambda: INGESTED,
+        max_attempts=2,
+        max_pages=2,
+        max_requests=3,
+    )
+    exhausted_result = await exhausted.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert exhausted_transport.calls == 3
+    assert len(exhausted_result.raw_payloads) == 1
+    assert exhausted_result.snapshot.price_bars == ()
+    assert exhausted_result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    assert [item.kind for item in exhausted_result.events] == [
+        FMPEventKind.TIMEOUT,
+        FMPEventKind.TIMEOUT,
+        FMPEventKind.RETRY_EXHAUSTED,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("violation", "expected_kind"),
+    [
+        ("missing_metadata", FMPEventKind.PAGINATION_MALFORMED),
+        ("missing_terminal_page", FMPEventKind.MISSING_PAGE),
+        ("repeated_page", FMPEventKind.REPEATED_PAGE),
+        ("skipped_page", FMPEventKind.MISSING_PAGE),
+        ("changed_total", FMPEventKind.CONFLICT),
+        ("over_limit", FMPEventKind.PAGE_LIMIT_EXCEEDED),
+    ],
+)
+async def test_pagination_integrity_failures_are_distinct_and_fail_closed(
+    violation: str,
+    expected_kind: FMPEventKind,
+) -> None:
+    class InvalidPaginationTransport:
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            page = int(request.params["page"])
+            base = await PricePageTransport().execute(
+                FMPRequest(
+                    operation=request.operation,
+                    path=request.path,
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=api_key,
+            )
+            payload = base.payload
+            assert isinstance(payload, dict)
+            rows = payload["data"]
+            assert isinstance(rows, list)
+            if violation == "missing_metadata":
+                page_payload: object = {"data": rows}
+            elif violation == "missing_terminal_page":
+                page_payload = price_page_payload(
+                    rows, page=1, total_pages=2, has_more=False, next_page=None
+                )
+            elif violation == "repeated_page" and page == 2:
+                page_payload = price_page_payload(
+                    rows, page=1, total_pages=2, has_more=True, next_page=2
+                )
+            elif violation == "skipped_page" and page == 2:
+                page_payload = price_page_payload(
+                    rows, page=3, total_pages=3, has_more=False, next_page=None
+                )
+            elif violation == "changed_total" and page == 2:
+                page_payload = price_page_payload(
+                    rows, page=2, total_pages=3, has_more=True, next_page=3
+                )
+            elif violation == "over_limit":
+                page_payload = price_page_payload(
+                    rows, page=1, total_pages=4, has_more=True, next_page=2
+                )
+            else:
+                page_payload = price_page_payload(
+                    rows,
+                    page=page,
+                    total_pages=2,
+                    has_more=page == 1,
+                    next_page=2 if page == 1 else None,
+                )
+            return FMPResponseEnvelope(
+                status_code=200,
+                source_record_id=f"fmp:pagination:{violation}:page-{page}",
+                revision=0,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=page_payload,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=InvalidPaginationTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        max_pages=3,
+        max_requests=4,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.symbol_mappings == ()
+    assert result.snapshot.quality in {
+        DataQualityStatus.UNAVAILABLE,
+        DataQualityStatus.CONFLICT,
+    }
+    assert any(item.kind is expected_kind for item in result.events)
+    assert SECRET not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_conflicting_duplicate_page_identity_marks_the_whole_snapshot_conflict() -> None:
+    class ConflictingIdentityTransport:
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            page = int(request.params["page"])
+            base = await PricePageTransport().execute(
+                FMPRequest(
+                    operation=request.operation,
+                    path=request.path,
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=api_key,
+            )
+            payload = base.payload
+            assert isinstance(payload, dict)
+            rows = payload["data"]
+            assert isinstance(rows, list)
+            return FMPResponseEnvelope(
+                status_code=200,
+                source_record_id="fmp:prices:AAPL:reused-page-identity",
+                revision=2,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=price_page_payload(
+                    rows,
+                    page=page,
+                    total_pages=2,
+                    has_more=page == 1,
+                    next_page=2 if page == 1 else None,
+                ),
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=ConflictingIdentityTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        max_pages=2,
+        max_requests=2,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert len(result.raw_payloads) == 2
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.quality is DataQualityStatus.CONFLICT
+    assert [item.kind for item in result.events] == [FMPEventKind.CONFLICT]
+
+
+@pytest.mark.asyncio
+async def test_non_success_page_with_valid_looking_data_fails_closed() -> None:
+    class ErrorStatusTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=500,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=ErrorStatusTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert len(result.raw_payloads) == 1
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    assert [item.kind for item in result.events] == [FMPEventKind.UNAVAILABLE]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mutation", "expected_kind"),
     [
@@ -332,7 +734,7 @@ async def test_invalid_core_price_rows_are_withheld_with_explicit_quality_event(
                 revision=base.revision,
                 observed_at=base.observed_at,
                 available_at=base.available_at,
-                payload={"data": [row]},
+                payload=price_page_payload([row]),
             )
 
     provider = FMPMarketDataProvider(
@@ -376,7 +778,7 @@ async def test_non_object_price_row_degrades_snapshot_instead_of_silent_fresh() 
                 revision=base.revision,
                 observed_at=base.observed_at,
                 available_at=base.available_at,
-                payload={"data": [rows[0], "malformed-row"]},
+                payload=price_page_payload([rows[0], "malformed-row"]),
             )
 
     provider = FMPMarketDataProvider(
@@ -603,7 +1005,7 @@ async def test_unknown_and_missing_symbols_are_explicit_without_guessing() -> No
                 revision=base.revision,
                 observed_at=base.observed_at,
                 available_at=base.available_at,
-                payload={"data": [base.payload["data"][0], unknown]},
+                payload=price_page_payload([base.payload["data"][0], unknown]),
             )
 
     provider = FMPMarketDataProvider(
@@ -664,7 +1066,7 @@ async def test_duplicate_rows_dedupe_or_fail_closed_on_conflict(
                 revision=base.revision,
                 observed_at=base.observed_at,
                 available_at=base.available_at,
-                payload={"data": [base.payload["data"][0], duplicate]},
+                payload=price_page_payload([base.payload["data"][0], duplicate]),
             )
 
     provider = FMPMarketDataProvider(
@@ -704,7 +1106,10 @@ async def test_response_that_echoes_secret_is_rejected_before_retention() -> Non
                 revision=base.revision,
                 observed_at=base.observed_at,
                 available_at=base.available_at,
-                payload={"data": base.payload["data"], "requestEcho": {"apikey": SECRET}},
+                payload={
+                    **price_page_payload(base.payload["data"]),
+                    "requestEcho": {"apikey": SECRET},
+                },
             )
 
     provider = FMPMarketDataProvider(
@@ -748,7 +1153,10 @@ async def test_secret_echo_detection_handles_json_escaped_characters() -> None:
                 revision=base.revision,
                 observed_at=base.observed_at,
                 available_at=base.available_at,
-                payload={"data": base.payload["data"], "nested": [escaped_secret]},
+                payload={
+                    **price_page_payload(base.payload["data"]),
+                    "nested": [escaped_secret],
+                },
             )
 
     provider = FMPMarketDataProvider(
@@ -799,7 +1207,7 @@ async def test_row_level_price_vintages_fail_closed(
                 revision=base.revision,
                 observed_at=base.observed_at,
                 available_at=base.available_at,
-                payload={"data": [row]},
+                payload=price_page_payload([row]),
             )
 
     provider = FMPMarketDataProvider(
@@ -878,6 +1286,7 @@ def test_fmp_contracts_are_exported_from_public_data_packages() -> None:
         "FMPFetchResult",
         "FMPInstrument",
         "FMPMarketDataProvider",
+        "FMPPagination",
         "FMPProviderEvent",
         "FMPRateLimitError",
         "FMPRequest",

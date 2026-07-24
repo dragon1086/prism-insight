@@ -100,6 +100,42 @@ class FMPRequest:
         return self._request_hash
 
 
+@dataclass(frozen=True)
+class FMPPagination:
+    """Strict synthetic page contract used by the injected transport boundary."""
+
+    page: int
+    total_pages: int
+    has_more: bool
+    next_page: int | None
+
+    @classmethod
+    def from_payload(cls, value: object) -> FMPPagination:
+        if not isinstance(value, Mapping):
+            raise ValueError("pagination must be an object")
+        required = {"page", "totalPages", "hasMore", "nextPage"}
+        if set(value) != required:
+            raise ValueError("pagination fields must match the strict contract")
+        page = value["page"]
+        total_pages = value["totalPages"]
+        has_more = value["hasMore"]
+        next_page = value["nextPage"]
+        if type(page) is not int or page < 1:
+            raise ValueError("pagination page must be a positive integer")
+        if type(total_pages) is not int or total_pages < 1:
+            raise ValueError("pagination totalPages must be a positive integer")
+        if type(has_more) is not bool:
+            raise ValueError("pagination hasMore must be a boolean")
+        if next_page is not None and (type(next_page) is not int or next_page < 1):
+            raise ValueError("pagination nextPage must be null or a positive integer")
+        return cls(
+            page=page,
+            total_pages=total_pages,
+            has_more=has_more,
+            next_page=next_page,
+        )
+
+
 @dataclass(frozen=True, init=False)
 class FMPResponseEnvelope:
     """Immutable raw FMP response metadata and canonical payload hash."""

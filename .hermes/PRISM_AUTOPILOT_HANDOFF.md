@@ -1,41 +1,40 @@
 # PRISM Guarded-Autopilot Handoff
 
-## Current milestone — Phase 1A Task 9.1
+## Current milestone — Phase 1A Task 9.2
 
-- Branch: `prism-insight/t_5ac98080-prism-phase-1a-task-9.1-fmp-core-transpo`
-- State: implementation, GPT-controlled local verification, and verified read-only Claude review are green. Commit, PR, exact-head CI, merge, and successor creation remain pending at this checkpoint.
-- Runtime state: dormant injected transport contracts and fixture-tested normalization only. No concrete HTTP client, credential lookup, live FMP/yfinance/SEC request, pagination, fallback, caller/application wiring, scheduler, broker/account/order path, or production database is wired.
+- Branch: `prism-insight/t_d0d225de-prism-phase-1a-task-9.2-fmp-pagination-r`
+- State: bounded pagination/retry implementation, GPT-controlled local verification, and verified read-only Claude review are green. Commit, PR, exact-head CI, squash merge, post-merge CI, and successor creation remain pending at this checkpoint.
+- Runtime state: dormant injected transport contracts and fixture-tested normalization only. No concrete HTTP client, credential lookup, live FMP/yfinance/SEC request, fallback, caller/application wiring, scheduler, broker/account/order path, or production database is wired.
 
-## Task 9.1 implemented scope
+## Task 9.2 implemented scope
 
-- Added `FMPApiKey`, canonical non-secret `FMPRequest`, and immutable `FMPResponseEnvelope` models with detached payload copies, stable SHA-256 identity/evidence hashes, strict response metadata, and redacted credential representations.
-- Added an injected `FMPTransport` protocol and an FMP-primary provider for an explicit one-page fixture path. The credential is passed separately from canonical request identity; no concrete network transport exists.
-- Added explicit capability outcomes for supported, forbidden/unsupported, malformed, timeout, and rate-limit responses without fabricating entitlement.
-- Added bounded observable timeout/429 retries with sanitized event metadata and deterministic retry-independent snapshot identity.
-- Normalized valid US rows into existing strict `SecurityId`, `SymbolMapping`, `ObservationTime`, `PriceBar`, and `MarketSnapshot` contracts while preserving provider symbol, source identity/revision/hash, observed/available/ingested/as-of times, raw and adjusted OHLCV, and adjustment vintage.
-- Missing, malformed, PIT-invalid, stale, partial, unavailable, conflicting, unmatched, inactive, and retry-exhausted evidence is explicit and fail-closed. Conflicting duplicate rows are withheld; provider-labelled degraded evidence remains labelled for the deterministic quality gate and is never relabelled fresh.
-- Added recursive decoded-payload and source-identity secret-echo rejection, including JSON-escaped characters. No secret-bearing response is retained.
-- Added an explicit market-local future-trading-date guard so row-level look-ahead rejection does not depend only on the transitive `PriceBar` validator. Future adjustment vintages are also withheld through the strict PIT contract.
-- Exported the dormant FMP contracts from `prism_core.data.providers` and `prism_core.data`. Legacy US callers were intentionally unchanged.
+- Added strict synthetic `FMPPagination` metadata with explicit page, total-page, continuation, and terminal fields. Pagination is mandatory at the injected transport boundary; absent, malformed, inconsistent, skipped, repeated, conflicting, premature-terminal, or over-limit page evidence fails the whole collection closed with machine-branchable events.
+- Added deterministic sequential multi-page collection with configurable `max_pages`, a per-page transient retry cap, and one `_RequestBudget` shared across every page and timeout/429 attempt. The default aggregate bound is `max_pages * max_attempts`; an explicit tighter bound remains fail-closed and observable.
+- Added ordered logical request hashes to `FMPFetchResult` and snapshot identity, plus ordered raw page envelopes/hashes. Retries do not add logical request identities or alter complete-snapshot identity.
+- Safe raw pages received before an incomplete collection remain available as evidence, but incomplete snapshot identity excludes partial request/page hashes and never exposes partial normalized bars.
+- Each normalized row retains its originating page's source record ID, source hash, revision, observed/available times, and quality through the synthetic aggregate normalization boundary.
+- Exact duplicate rows remain idempotent; conflicting security/date rows are withheld. Reused page identities with different payload hashes mark the whole snapshot `CONFLICT`; repeated content/page numbers and forward-skipped pages are separately classified and fail closed.
+- Non-429 non-success HTTP pages are retained as raw evidence but rejected before pagination or normalization, closing the final review's valid-looking-error-body fail-open path.
+- Exported `FMPPagination` from the approved public data packages. Task 9.1 secret redaction, PIT limits, raw/adjusted value separation, no-fabricated-fallback behavior, and dormant injected-only boundary remain intact.
 
-## Task 9.1 verification and review
+## Task 9.2 verification and review
 
-- `python -m pytest tests/data/providers/test_fmp_provider.py -q` — 38 passed.
-- `python -m pytest tests/data tests/storage -q` — 149 passed.
+- Strict RED→GREEN cycles were observed for multi-page collection, shared-budget behavior, page-integrity taxonomy, conflicting page identity quality, ordered request identities, public exports, valid-looking non-2xx rejection, and skipped-page classification.
+- `python -m pytest tests/data/providers/test_fmp_provider.py -q` — 48 passed.
+- `python -m pytest tests/data tests/storage -q` — 159 passed.
 - `python -m pytest tests/runtime tests/safety -q` — 65 passed.
 - Canonical CI-equivalent remaining groups — 292 passed, 1 intentionally deselected.
 - `python -m compileall -q prism_core tools/audit_broker_boundaries.py` — passed.
 - `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy inventory unchanged.
 - `python -m pip check` — no broken requirements; `git diff --check` passed.
-- Independent review during the original worker run found one MEDIUM false-FRESH path: non-object rows in a valid page were silently skipped. The worker reproduced it RED, added a sanitized `MALFORMED`/`PARTIAL` event, and reran local gates.
-- A later verified read-only Claude architecture/security/data-integrity review found no HIGH defect and recommended merge. GPT accepted its MEDIUM robustness concern that future row dates were rejected only transitively, added the explicit market-local date guard and decisive PIT/secret tests, and reran every local gate. A targeted post-fix Claude review found no HIGH/MEDIUM blocker and recommended merge.
-- GPT rejected as a blocker the review concern about retaining provider-labelled `CONFLICT` bars: the existing authoritative contract explicitly separates observed data quality from policy disposition, and the snapshot/bar remain labelled `CONFLICT` for the deterministic fail-closed quality gate. Reconciliation conflicts are still withheld.
-- Non-blocking deferred notes: `FMPRequest` cannot independently know whether an arbitrary non-secret-named value equals a runtime credential, so the provider remains the credential-separation boundary; failed-snapshot identity intentionally lacks operational attempt identity; live transport must preserve numeric strings or equivalent lossless decoding; US calendar-aware half-day/session intervals remain a later slice concern.
+- Pre-implementation Claude review recommended a single aggregate budget, canonical incomplete identity separated from retained raw evidence, separate page-vs-row duplicate semantics, and machine-readable page failure events; these were implemented. Its optional-pagination recommendation was rejected because this bounded slice explicitly requires metadata and the dormant fixture contract can update safely.
+- Final Claude review found one material fail-open status path: valid-looking non-429 non-2xx pages could be laundered through the synthetic aggregate's 200 status. GPT reproduced it RED and fixed rejection before pagination/normalization. GPT also accepted the skipped-vs-repeated taxonomy observation and added a decisive test/fix.
+- Targeted post-fix Claude review verified both remediations statically and found no remaining HIGH/MEDIUM defect.
 
-## Task 9.1 safety and side effects
+## Task 9.2 safety and side effects
 
 - Tests used injected fakes/fixtures only. No live FMP/yfinance/SEC/provider request, credential lookup/output/change, user/private database access, broker/account/order call, Telegram/AgentNews effect, runtime activation, or deployment occurred.
-- This task establishes foundation/tests only; production/runtime behavior is unchanged.
+- This task establishes foundation/tests only; production/runtime behavior and operated readiness are unchanged.
 
 ## Previous milestone — Phase 1A Task 8
 
