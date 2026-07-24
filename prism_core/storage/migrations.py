@@ -38,6 +38,9 @@ _BOUNDARY_TABLES = {
         {
             "securities",
             "symbol_mappings",
+            "security_alias_events",
+            "security_listing_events",
+            "corporate_action_events",
             "market_snapshots",
             "observations",
             "features",

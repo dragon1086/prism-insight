@@ -11,6 +11,9 @@ RESEARCH_TABLES = {
     "schema_migrations",
     "securities",
     "symbol_mappings",
+    "security_alias_events",
+    "security_listing_events",
+    "corporate_action_events",
     "market_snapshots",
     "observations",
     "features",
@@ -43,6 +46,9 @@ OPS_TABLES = {
 APPEND_ONLY_TABLES = {
     DatabaseKind.RESEARCH: {
         "symbol_mappings",
+        "security_alias_events",
+        "security_listing_events",
+        "corporate_action_events",
         "market_snapshots",
         "observations",
         "features",
@@ -82,16 +88,16 @@ def test_empty_research_database_migrates_to_current_version(tmp_path: Path):
     with open_database(tmp_path / "research.sqlite") as connection:
         applied = migrate_database(connection, DatabaseKind.RESEARCH)
 
-        assert applied == (1,)
+        assert applied == (1, 2)
         assert connection.execute(
             "SELECT version, name FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1, "initial")]
+        ).fetchall() == [(1, "initial"), (2, "security_master_actions")]
         assert _user_tables(connection) == RESEARCH_TABLES
 
 
 def test_migration_rerun_is_idempotent(tmp_path: Path):
     with open_database(tmp_path / "research.sqlite") as connection:
-        assert migrate_database(connection, DatabaseKind.RESEARCH) == (1,)
+        assert migrate_database(connection, DatabaseKind.RESEARCH) == (1, 2)
         first_history = connection.execute(
             "SELECT version, name, checksum, applied_at FROM schema_migrations"
         ).fetchall()
@@ -300,3 +306,104 @@ def test_applied_migration_checksum_drift_is_rejected(tmp_path: Path):
                 DatabaseKind.RESEARCH,
                 migrations_root=tmp_path / "migrations",
             )
+
+
+def test_default_research_v1_upgrades_to_v2_without_rewriting_history(tmp_path: Path):
+    migration_dir = tmp_path / "migrations" / "research"
+    migration_dir.mkdir(parents=True)
+    source = (
+        Path(__file__).parents[2]
+        / "prism_core"
+        / "storage"
+        / "migrations"
+        / "research"
+        / "001_initial.sql"
+    )
+    (migration_dir / "001_initial.sql").write_text(
+        source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    with open_database(tmp_path / "research.sqlite") as connection:
+        assert migrate_database(
+            connection,
+            DatabaseKind.RESEARCH,
+            migrations_root=tmp_path / "migrations",
+        ) == (1,)
+        v1_history = connection.execute(
+            "SELECT name, checksum, applied_at FROM schema_migrations WHERE version = 1"
+        ).fetchone()
+
+        assert migrate_database(connection, DatabaseKind.RESEARCH) == (2,)
+        assert connection.execute(
+            "SELECT name, checksum, applied_at FROM schema_migrations WHERE version = 1"
+        ).fetchone() == v1_history
+
+
+def test_v2_freezes_old_symbol_mappings_and_guards_new_evidence(tmp_path: Path):
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+
+        with pytest.raises(sqlite3.IntegrityError, match="frozen after migration 002"):
+            connection.execute(
+                "INSERT INTO symbol_mappings "
+                "(mapping_id, security_id, provider, provider_symbol, valid_from, "
+                "revision, created_at) VALUES "
+                "('m', 's', 'FMP', 'XYZ', '2026-01-01T00:00:00+00:00', 0, "
+                "'2026-01-01T00:00:00+00:00')"
+            )
+
+        triggers = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'trigger'"
+            )
+        }
+        for table in {
+            "security_alias_events",
+            "security_listing_events",
+            "corporate_action_events",
+        }:
+            assert f"{table}_append_only_update" in triggers
+            assert f"{table}_append_only_delete" in triggers
+
+
+def test_v2_refuses_to_orphan_preexisting_v1_symbol_mapping_rows(tmp_path: Path):
+    migration_dir = tmp_path / "migrations" / "research"
+    migration_dir.mkdir(parents=True)
+    source = (
+        Path(__file__).parents[2]
+        / "prism_core"
+        / "storage"
+        / "migrations"
+        / "research"
+        / "001_initial.sql"
+    )
+    (migration_dir / "001_initial.sql").write_text(
+        source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(
+            connection,
+            DatabaseKind.RESEARCH,
+            migrations_root=tmp_path / "migrations",
+        )
+        connection.execute(
+            "INSERT INTO securities VALUES "
+            "('security-1', 'US', '2026-01-01T00:00:00+00:00')"
+        )
+        connection.execute(
+            "INSERT INTO symbol_mappings "
+            "(mapping_id, security_id, provider, provider_symbol, valid_from, "
+            "revision, created_at) VALUES "
+            "('mapping-1', 'security-1', 'FMP', 'XYZ', "
+            "'2026-01-01T00:00:00+00:00', 0, '2026-01-01T00:00:00+00:00')"
+        )
+
+        with pytest.raises(MigrationError, match="002_security_master_actions failed"):
+            migrate_database(connection, DatabaseKind.RESEARCH)
+
+        assert connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1,)]
+        assert "security_alias_events" not in _user_tables(connection)
