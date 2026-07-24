@@ -42,6 +42,9 @@ jobs:
       - name: Run runtime safety tests
         run: python -m pytest tests/runtime tests/safety -q
 
+      - name: Run storage migration tests
+        run: python -m pytest tests/storage -q
+
       - name: Run tests
         run: |
           python -m pytest cores/llm/tests/ -q
