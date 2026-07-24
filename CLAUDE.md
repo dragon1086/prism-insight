@@ -222,6 +222,8 @@ Rules:
 
 Market-data adapters must not import broker order APIs.
 
+Fixture normalization is a contract gate, not an external integration gate. Each approved target adapter must progress through four separately reported states: fixture-tested foundation, actual-endpoint live integration, application/runtime wiring, and operated readiness. KIS/FMP market-data-only live smoke is approved; it excludes account, holdings, balance, order, cancel, replace, broker-paper, and live-trading endpoints. KRX/KIND/DART, SEC EDGAR, FRED/ALFRED, ECOS, AgentNews, Telegram, and external LLM transports likewise need bounded actual-endpoint evidence before an operated-readiness claim, subject to their source-specific capability/approval boundary. Missing credentials or entitlement blocks live verification and must not be replaced with fixture/demo output.
+
 ## 7. Strategy separation
 
 The two strategy families are separate experiments and virtual books.
@@ -372,7 +374,7 @@ Add `prism_app` to `compileall` after the target application package has been cr
 
 Do not use the old morning orchestrator, pending-order batch, messaging subscriber, or trading integration tests as a routine smoke test. Inspect their call graph first; several paths can message users or contact broker APIs. Never infer safety from `demo` in a command or environment variable.
 
-Allowlisted Telegram smoke sends and public AgentNews live fetches have standing approval in development, test, and operations. Unit and contract tests still use fixtures, fake transports, and temporary DBs for determinism. Credentialed KIS/FMP/account/broker tests and other external LLM tests retain their separate capability and approval boundaries.
+Allowlisted Telegram smoke sends, public AgentNews live fetches, and KIS/FMP market-data-only smoke have standing approval in development, test, and operations. Unit and contract tests still use fixtures, fake transports, and temporary DBs for determinism, but fixture success must not be reported as live verification or operated readiness. Account/broker tests and other external sources/LLM tests retain their separate capability and approval boundaries. External smoke output is sanitized and runs outside default hermetic CI.
 
 ## 13. Target repository additions
 

@@ -72,11 +72,20 @@ Do not extend legacy coupling by adding new responsibilities to `stock_tracking_
 - The target interactive bot is allowlisted by both chat ID and user ID and exposes read-only commands only.
 - Natural-language input must not mutate orders, risk, credentials, policies, prompts, or kill-switch state.
 
+### External integration verification
+
+- Fixture/fake/mock tests are mandatory for deterministic unit/contract/CI paths, but they never prove an external adapter is live-verified or operated-ready.
+- KIS, FMP, KRX/KIND/DART, SEC EDGAR, FRED/ALFRED, ECOS, AgentNews, Telegram, and external LLM transports require a separate bounded live integration/smoke against the actual endpoint before an operated-readiness claim. Sources not covered by a standing approval retain their own explicit capability/approval gate.
+- Actual KIS and FMP **market-data-only** live integration/smoke is approved. It must not read account identifiers or call balance, holdings, order, cancel, replace, broker-paper, or live-trading APIs.
+- Keep external smoke tests outside default hermetic CI behind explicit markers/jobs. Record only sanitized endpoint, status, provider/model version, timestamps, schema/capability result, latency/quality, and request correlation; never persist secrets, authorization headers, account data, or private raw payloads.
+- Missing credentials, entitlement, network, or provider capability must produce a visible skip/block/fail-closed result. Never replace missing live evidence with a fixture, demo key, cached claim, or fabricated output.
+- Completion reports must separately state foundation/tests, live integration evidence, runtime wiring, and operated readiness. A passing fixture suite proves only the first state.
+
 ### Credentials and user data
 
 - Never display, copy into chat, change, commit, or upload real credentials.
 - Treat `.env`, `mcp_agent.secrets.yaml`, `trading/config/kis_devlp.yaml`, OAuth stores, account numbers, Telegram IDs, SQLite databases, reports, PDFs, logs, and generated JSON as private user data.
-- Unit tests use fixtures and temporary databases, not the user's databases. Allowlisted Telegram smoke tests may use the locally configured bot token without printing it; AgentNews live tests require no credential. KIS/FMP/account/broker credentials remain outside ordinary tests.
+- Unit tests use fixtures and temporary databases, not the user's databases. Explicit external smoke jobs may use locally configured credentials without printing or changing them. KIS/FMP market-data smoke is allowed; account/broker credentials and effects retain separate Phase 2 approval boundaries.
 - Legacy DB migration is copy-only from a read-only source. Do not alter or split `stock_tracking_db.sqlite` in place.
 
 ## 5. Strategy and LLM boundaries
@@ -137,7 +146,7 @@ Add `prism_app` to `compileall` only after that target package exists.
 
 Legacy analysis commands are not safe defaults. If a task requires them, inspect the call path and force no-message/no-broker behavior before execution. Never assume a command is safe because its name includes `demo`.
 
-Do not run external integration tests with real KIS, FMP, Telegram, Redis, GCP, or LLM credentials unless the user explicitly approved that exact external test.
+Do not run external integration tests with real Telegram, Redis, GCP, other official sources, or LLM credentials unless a standing rule or the user explicitly approved that exact external test. KIS/FMP market-data-only smoke has standing approval; account/order/broker calls do not.
 
 ## 9. Engineering rules
 

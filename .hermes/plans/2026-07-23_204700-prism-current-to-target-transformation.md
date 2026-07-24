@@ -1,6 +1,6 @@
 # PRISM-INSIGHT Current-to-Target Transformation Implementation Plan
 
-> **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task. Every code task must be implemented on a feature branch from the then-current `origin/main`, with spec-compliance review followed by code-quality review. Do not execute broker orders, rotate credentials, commit, or push without the user's separate approval. Allowlisted Telegram test messages and public AgentNews live fetches have standing approval in development, test, and operations; they must still follow the safety contracts below.
+> **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task. Every code task must be implemented on a feature branch from the then-current `origin/main`, with spec-compliance review followed by code-quality review. Do not execute broker orders, rotate credentials, commit, or push without the user's separate approval. Allowlisted Telegram test messages, public AgentNews live fetches, and KIS/FMP market-data-only live integration/smoke have standing approval in development, test, and operations; they must still follow enablement, allowlist/capability, provenance, timeout, redaction, rate-limit, and failure-handling contracts below. KIS/FMP approval excludes account, balance, holdings, order, cancel, replace, broker-paper, and live-trading effects.
 
 **Goal:** 현재의 KR/US 분석·리포트·자동주문 결합 구조를 개인 Mac에서 실행되는 KIS/FMP 기반의 재현 가능한 투자 의사결정 시스템으로 전환하고, 1차에서는 실제 broker 호출 없이 `SWING_V1`/`TREND_V1`, strict LLM proposal, 연구·SHADOW·내부 paper를 제공한다.
 
@@ -320,7 +320,7 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 - legacy journal은 새 score에 영향을 주지 않는다.
 - rollback은 새 DB 삭제/복원으로 처리하고 원본은 변경하지 않는다.
 
-**Gate:** fixture migration에서 source row count, transformed row count, reject count, checksum이 재현된다.
+**Gate:** fixture migration에서 source row count, transformed row count, reject count, checksum이 재현된다. 이를 operated migration readiness로 부르려면 별도 승인된 actual source read-only inventory와 staging dry-run에서 같은 검증을 수행해야 하며, fixture 결과로 실제 사용자 DB 검증을 대체하지 않는다.
 
 ---
 
@@ -388,6 +388,7 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 **Files:**
 - Create: `prism_core/data/providers/__init__.py`
 - Create: `prism_core/data/providers/kis.py`
+- Create: `tests/integration/test_kis_market_data_live.py`
 - Modify as adapter source only: `krx_data_client.py`
 - Test: `tests/data/providers/test_kis_provider.py`
 
@@ -398,6 +399,8 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 - retries are bounded and observable.
 - missing/stale values return quality events, not fabricated fallback.
 - KRX/DART/KIND supplements retain explicit provider labels.
+- 실제 KIS quotation endpoint를 시장데이터 전용 자격증명 경계에서 호출해 인증·권한·응답 schema·timestamp·rate limit·redaction을 검증한다. 계좌·잔고·보유종목·주문 endpoint는 금지한다.
+- fixture unit/CI와 별도의 `integration_external` marker로 bounded live smoke를 실행하며, live evidence가 없으면 foundation-only로 보고한다.
 
 ---
 
@@ -409,6 +412,7 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 - Create: `prism_core/data/providers/fmp.py`
 - Create: `prism_core/data/providers/fmp_models.py`
 - Test: `tests/data/providers/test_fmp_provider.py`
+- Create: `tests/integration/test_fmp_live.py`
 - Modify later as callers migrate: `prism-us/cores/us_data_client.py`
 - Modify later as callers migrate: `prism-us/cores/us_analysis.py`
 
@@ -419,6 +423,7 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 - rate-limit, timeout, partial response를 구분한다.
 - FMP corporate actions와 SEC official evidence를 별도 provenance로 저장한다.
 - yfinance fallback은 research fixture/explicit fallback 모드에서만 사용하며 primary를 조용히 덮지 않는다.
+- 실제 FMP 구독 endpoint에서 entitlement/capability, pagination, rate limit, timestamp, schema, secret redaction을 검증한다. API key가 없거나 구독 기능이 부족하면 명시적으로 block하고 demo/fixture로 성공 처리하지 않는다.
 
 **Tests:**
 
@@ -429,6 +434,7 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 - symbol mapping
 - split/dividend events
 - secret redaction
+- integration: actual FMP endpoint capability/entitlement and normalized response smoke
 
 ---
 
@@ -457,6 +463,28 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 - unit: fixture parsing, content hash, freshness, malformed/partial response, injection isolation
 - integration: 실제 HTTPS fetch, timestamp/schema validation, timeout budget
 - 기본 CI unit path는 network 없이 재현 가능하게 유지하고 live test를 별도 marker로 실행한다.
+
+---
+
+## Task 9B: 공식 evidence source adapter sequence
+
+**Objective:** 보고서·시장국면·기업행위가 fixture나 2차 provider 요약에만 의존하지 않도록 KR/US/거시 공식 원천을 PIT evidence adapter로 제공한다. 구현은 아래 세 slice를 각각 별도 branch/PR로 순차 진행하며 하나의 대형 카드로 합치지 않는다.
+
+**Slices and files:**
+
+- KR official: `prism_core/data/providers/kr_official.py`, `tests/data/providers/test_kr_official_provider.py`, `tests/integration/test_kr_official_live.py` — KRX/KIND/DART
+- US official: `prism_core/data/providers/sec_edgar.py`, `tests/data/providers/test_sec_edgar_provider.py`, `tests/integration/test_sec_edgar_live.py` — SEC EDGAR
+- Macro official: `prism_core/data/providers/macro_official.py`, `tests/data/providers/test_macro_official_provider.py`, `tests/integration/test_macro_official_live.py` — FRED/ALFRED and ECOS
+
+**Rules:**
+
+- 각 source는 provider, endpoint, observed/available/ingested/as-of time, release/revision/vintage, raw hash, terms/license, quality를 별도 provenance로 보존한다.
+- DART/KIND/KRX, SEC, FRED/ALFRED, ECOS evidence는 KIS/FMP 값에 조용히 합치거나 덮어쓰지 않는다. disagreement는 명시적인 quality/evidence event다.
+- unit/contract CI는 fixture로 재현하되 operated-readiness claim 전에 actual endpoint smoke가 필요하다.
+- 이 task 정의는 actual call 권한이 아니다. 각 source live smoke는 비용·약관·자격증명·호출량을 명시한 source-specific capability/approval을 먼저 받아야 한다.
+- missing credential/entitlement, robots/terms restriction, schema drift, rate limit, revised release는 명시적으로 block/quality event 처리하며 fixture·cached summary로 성공 처리하지 않는다.
+
+**Gate:** 세 slice마다 actual endpoint의 timestamp/schema/revision/redaction/rate-limit evidence가 별도 marker로 검증되고, Task 21 report evidence pack과 Market Scenario Analyst가 저장된 immutable snapshot만 소비한다.
 
 ---
 
@@ -578,6 +606,7 @@ class QualityDecision:
 - predicate operators allowlisted
 - missing evidence rejected or report-only
 - raw response retained even when parsing fails
+- integration_external: 승인된 실제 LLM transport에서 model/prompt version, strict structured-output schema, timeout/rate-limit, raw/parsed retention, secret redaction을 bounded smoke로 검증한다. 실행되지 않으면 LLM service는 fixture-tested foundation으로만 보고한다.
 
 ---
 
@@ -941,7 +970,7 @@ CREATED -> ACCEPTED -> PARTIALLY_FILLED -> FILLED
 
 **Acceptance scenarios:**
 
-1. KIS/FMP fixture로 KR/US daily report 생성
+1. KIS/FMP fixture로 결정론적 KR/US daily report 생성
 2. 동일 종목에 SWING/TREND proposal 별도 생성
 3. consolidated exposure가 중복 위험 제한
 4. stale FMP data에서 proposal 차단
@@ -953,6 +982,8 @@ CREATED -> ACCEPTED -> PARTIALLY_FILLED -> FILLED
 10. broker imports/calls 0
 11. internal paper partial fill/restart/reconcile 통과
 12. dashboard export contains no real-account data
+13. KIS/FMP와 구현된 외부 evidence/LLM transport의 actual-endpoint smoke evidence가 fixture 결과와 별도로 존재함
+14. runtime-wired provider 경로가 fixture transport가 아닌 검증된 실제 transport를 선택함
 
 ---
 
@@ -1035,7 +1066,8 @@ safety: no broker effects; Telegram requires enable + allowlist + dedupe/audit
 integration_local: SQLite and app pipeline
 integration_external: AgentNews live fetch and allowlisted Telegram smoke send permitted; other providers remain capability-gated
 broker_paper: Phase 2 only
-live: nonexistent until separately approved
+provider_live: KIS/FMP market data plus separately approved official-source/LLM smoke; no account/order effects
+broker_live: nonexistent until separately approved
 ```
 
 **Required CI commands:**
@@ -1091,6 +1123,7 @@ runtime safety gates
 ## 1차 완료
 
 - KIS KR/FMP US normalized snapshot
+- KIS/FMP 및 구현된 외부 evidence/LLM adapter의 actual-endpoint live smoke evidence; fixture-only 결과와 runtime wiring을 별도 표시
 - SWING_V1/TREND_V1 별도 proposal·성과·lesson
 - strict LLM schema와 policy disposition
 - PIT/cost/OOS research

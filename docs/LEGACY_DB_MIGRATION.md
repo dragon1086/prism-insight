@@ -122,4 +122,4 @@ CLI stdout은 metadata-only JSON입니다. source path, raw row, account/user id
 
 ## 운영 제한
 
-현재 구현과 테스트는 pytest temporary fixture DB만 사용합니다. 실제 `stock_tracking_db.sqlite`의 schema/row metadata를 검사하지 않았고 실제 migration도 수행하지 않았습니다. 실제 source에 non-empty deferred/unknown table이 있으면 의도대로 중단됩니다. 후속 table 지원은 별도 schema/manifest version과 테스트·승인을 통해 추가해야 합니다.
+현재 구현과 테스트는 pytest temporary fixture DB만 사용합니다. 이는 migration contract의 결정론적 foundation만 증명하며 operated migration readiness가 아닙니다. 실제 `stock_tracking_db.sqlite`의 schema/row metadata를 검사하지 않았고 실제 migration도 수행하지 않았습니다. 실제 source에 non-empty deferred/unknown table이 있으면 의도대로 중단됩니다. Operated readiness를 주장하려면 별도 승인 아래 실제 source를 read-only로 inventory하고 immutable snapshot/fingerprint를 만든 뒤 hidden staging destination으로 dry-run copy하여 source/transformed/destination count, reject, checksum, WAL/sidecar 안정성을 검증해야 합니다. 실제 source 검증이 없으면 fixture 결과로 대체하지 않고 `not operated`로 남깁니다. 후속 table 지원은 별도 schema/manifest version과 테스트·승인을 통해 추가해야 합니다.

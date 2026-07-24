@@ -43,7 +43,20 @@ LEARN    판단·결과·반례·복기를 DB에 저장하고 검증된 교훈�
 | 1차 주문 결과 | 수동 주문표 + 내부 SHADOW/paper ledger |
 | 2차 실거래 | 자동 활성화하지 않음. 별도 승인 전에는 준비 상태까지만 |
 
-외부효과는 위험에 따라 분리한다. 허용 chat/user로 보내는 Telegram 테스트 메시지와 공개 AgentNews KR/US 보드의 읽기 전용 fetch는 개발·테스트·운영 환경 모두에서 매회 별도 승인 없이 수행할 수 있다. Telegram transport는 명시적으로 활성화하고 테스트 메시지에는 `[TEST]`, 환경, request ID를 표시하며 rate limit·dedupe·감사 로그를 적용한다. AgentNews 단위 테스트는 재현성을 위해 fixture를 사용하되 live integration/smoke test와 제품 runtime은 실시간 fetch할 수 있다. KIS/FMP의 자격증명 기반 외부 통합, 실제 계좌 조회, broker 호출은 별도 capability와 승인 경계를 유지한다.
+외부효과는 위험에 따라 분리한다. 허용 chat/user로 보내는 Telegram 테스트 메시지와 공개 AgentNews KR/US 보드의 읽기 전용 fetch는 개발·테스트·운영 환경 모두에서 매회 별도 승인 없이 수행할 수 있다. Telegram transport는 명시적으로 활성화하고 테스트 메시지에는 `[TEST]`, 환경, request ID를 표시하며 rate limit·dedupe·감사 로그를 적용한다. AgentNews 단위 테스트는 재현성을 위해 fixture를 사용하되 live integration/smoke test와 제품 runtime은 실시간 fetch해야 한다. KIS/FMP 시장데이터의 실제 read-only integration/smoke도 승인되어 있으며 로컬 자격증명을 출력·변경하지 않고 호출량을 제한해 수행한다. 이 승인은 시세·재무·기업 이벤트·뉴스 등 시장데이터에만 적용되며 실제 계좌 조회, 잔고·보유종목, 주문·취소·정정, broker paper/live 효과에는 적용되지 않는다.
+
+### 검증 계층과 operated readiness
+
+Fixture·fake·mock은 unit/contract/CI의 결정론, 오류 주입, 회귀 재현을 위해 필수지만 외부 통합 완료의 증거를 대신하지 않는다. KIS, FMP, KRX/KIND/DART, SEC EDGAR, FRED/ALFRED, ECOS, AgentNews, Telegram, 외부 LLM처럼 네트워크·자격증명·구독 권한·외부 스키마에 의존하는 adapter/transport는 다음 네 상태를 구분한다.
+
+1. **Foundation/tests:** fixture 기반 계약·정규화·실패 경로가 통과한다.
+2. **Live integration:** 실제 endpoint에서 인증·권한·응답 스키마·timestamp·pagination·rate limit·timeout·redaction을 제한된 smoke로 검증한다.
+3. **Runtime wiring:** 실제 application entrypoint와 scheduler가 검증된 transport를 사용한다.
+4. **Operated readiness:** 예약 실행, 저장, 품질 gate, 발행, 장애·복구까지 실제 운영 경로에서 관측된다.
+
+외부 adapter는 1만 통과한 상태를 `implemented foundation`으로만 보고하며 `live verified`, `runtime wired`, `operated ready`라고 표현하지 않는다. Live integration은 기본 unit CI와 분리된 marker/job으로 실행하고 비밀값·authorization header·계좌정보·원시 private payload를 로그나 artifact에 남기지 않는다. 자격증명이나 권한이 없으면 성공 처리하거나 demo/fixture 결과로 대체하지 않고 명시적으로 skip 또는 block한다. 알고리즘·정책·백테스트의 future-data trap, 오류, 경계 fixture는 외부 가용성 검증이 아니라 결정론적 안전 증명이므로 계속 fixture로 유지한다.
+
+현재 standing approval은 KIS/FMP 시장데이터, 공개 AgentNews 읽기, allowlisted Telegram 테스트 발송에 한정한다. KRX/KIND/DART, SEC EDGAR, FRED/ALFRED, ECOS, 외부 LLM 등 그 밖의 실제 endpoint 호출은 해당 source의 비용·약관·자격증명·호출량·데이터 범위를 명시한 별도 source-specific capability/approval을 받은 뒤 수행한다. Live integration이 완료 기준이라는 사실 자체가 호출 권한을 부여하지 않는다.
 
 ### 한국 데이터 제공자 확정
 
@@ -166,6 +179,7 @@ STALE / UNAVAILABLE / CONFLICT 핵심 데이터 -> 신규 proposal REJECT
 ### 1차 완료 기준
 
 - 로컬 Mac에서 예약 실행 후 KR/US 보고서가 재현 가능하게 생성됨
+- KIS/FMP 시장데이터와 구현된 공식 evidence adapter가 실제 endpoint live integration을 통과하고, fixture-only foundation과 구분된 검증 기록이 있음
 - 모든 값에 기준시점·출처·품질 상태가 있음
 - FMP/KIS 장애 또는 stale 데이터 시 신규 proposal이 fail-closed 됨
 - LLM proposal 원문·버전·입력·검증 결과가 저장됨
@@ -529,7 +543,7 @@ LLM은 어떤 환경에서도 시스템 프롬프트, 정책 코드, 리스크 �
 | 데이터 | 1차 권고 | 보조·2차 후보 | 주의점 |
 |---|---|---|---|
 | 한국 시세·거래량 | KIS | LS증권 | 호출한도·정정·장중/종가 시각 |
-| 한국 계좌 읽기 | KIS | LS증권 | 1차 주문 호출 금지 |
+| 한국 계좌 읽기 | KIS | LS증권 | 1차 계좌 조회·주문 호출 금지, Phase 2 별도 승인 |
 | 한국 기업 공시 | DART | KIND/KRX | 발표·접수 가능 시각 저장 |
 | 한국 상장·기업행위 | KRX/KIND 또는 KIS 제공 범위 | LS증권 | 티커 이력·정지·분할·배당 |
 | 한국 거시경제 | 한국은행 ECOS | 통계청·기재부 | 발표시각·개정 이력 |

@@ -396,6 +396,8 @@ Agent-related changes require focused tests for:
 - read-only Telegram command enforcement;
 - zero broker imports/calls in Phase 1.
 
+Fixture-based agent and transport tests prove deterministic contracts only. If an agent depends on KIS, FMP, an official evidence source, AgentNews, Telegram, or an external LLM transport, the corresponding adapter must also have separately recorded bounded live-integration evidence before the system is described as live-verified or operated-ready. The agent itself still consumes stored immutable snapshots rather than performing uncontrolled live lookups. Live-smoke records retain provider/model identity, observation/availability time, schema/capability result, and sanitized failure classification without secrets, account data, or executable instructions from external content.
+
 ## 12. References
 
 - [Product scope and strategy](PRODUCT_SCOPE_AND_STRATEGY.md)
