@@ -1,6 +1,43 @@
 # PRISM Guarded-Autopilot Handoff
 
-## Current milestone
+## Current milestone — Phase 1A Task 8
+
+- Branch: `prism-insight/t_900c8832-prism-phase-1a-task-8-kis-kr-market-data`
+- State: implementation, independent review, all required local gates, and first exact-feature-head CI are green. PR #8 is open; this handoff checkpoint requires fresh exact-head CI before merge.
+- Runtime state: dormant provider contracts only. No transport implementation, credentials, scheduler, application entrypoint, legacy caller, broker/account/order code, or production database is wired.
+
+## Task 8 implemented scope
+
+- Added an injected market-data-only KIS transport protocol and a KIS-primary Korean provider with optional explicitly labelled KRX/DART/KIND supplements.
+- Added immutable canonical raw-payload capture and SHA-256 hashing, stable provider source IDs/revisions, complete PIT observation times, KST-local daily/effective instants, and deterministic snapshots.
+- Added bounded observable timeout/rate-limit retries, sanitized events, explicit stale/partial/missing/conflict/malformed outcomes, and no fabricated fallback.
+- Preserved same-security supplement bars/evidence separately instead of overwriting KIS. Supplement prices are never promoted for a security without a valid KIS primary bar. A degraded supplement lowers a fresh KIS snapshot to `PARTIAL`; cross-provider OHLCV disagreement is `CONFLICT`.
+- Added Task 7 repository-compatible symbol correction/rename evidence, listing evidence, and corporate-action evidence. Curated corporate-action identity uses security, action type, and KR effective date rather than provider-native event keys, so equivalent official evidence reconciles while source IDs remain provider-specific.
+- Added construction-time uniqueness checks for provider symbols to prevent silent cross-security misattribution.
+- Exported the adapter contracts from `prism_core.data.providers` and `prism_core.data`. `krx_data_client.py` was intentionally unchanged because no safe legacy wiring is required for this foundation.
+
+## Task 8 verification and review state
+
+- Strict TDD RED→GREEN evidence was observed for PIT normalization, retry exhaustion, provider conflict, correction-versus-rename semantics, missing/partial/stale outcomes, malformed and semantically invalid supplement isolation, semantic corporate-action identity, stale-supplement aggregation, duplicate provider-symbol rejection, unmatched supplement observability, and per-security KIS-primary enforcement.
+- `python -m pytest tests/data/providers/test_kis_provider.py -q` — 21 passed.
+- `python -m pytest tests/data tests/storage -q` — 111 passed.
+- `python -m pytest tests/runtime tests/safety -q` — 65 passed.
+- Canonical CI-equivalent groups — 292 passed, 1 intentionally deselected.
+- `python -m compileall -q prism_core tools/audit_broker_boundaries.py` — passed.
+- `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy inventory unchanged.
+- `python -m pip check` — no broken requirements; `git diff --check` passed.
+- A successful read-only Claude architecture/data-integrity review found one high semantic-validation escape; GPT verified it and corrected the adapter by validating untrusted rows through the strict PIT contract models before normalization. The definitive full review found no critical defect and one conditional medium issue: a supplement-only price could survive for a security missing its KIS primary. GPT reproduced that case RED, added per-security suppression, and returned the provider suite to green. A final targeted post-fix Claude review verified the guard preserves same-security conflict evidence and reported no blocker with a merge recommendation.
+- A concurrent frozen-bundle review found one additional medium escape for negative correction revisions. Strict TDD reproduced it; prevalidation now constructs `SecurityAliasEvidence`, the focused/broad suites were rerun, and a targeted post-fix Claude review found no blocker and recommended merge.
+- Non-blocking residual assumptions: daily bars use the EOD 15:30 KST convention; curated corporate-action identity assumes at most one same-type action per security/effective date; batch validation conservatively rejects a whole provider envelope when any row is malformed. No runtime wiring relies on these dormant contracts yet.
+- Feature commit `14a5364a297df7e26d45e23f2e520ff7b4a15a6c` was pushed and PR #8 (`https://github.com/mienne/prism-insight/pull/8`) opened against `mienne/prism-insight:main`. CI run 30072490779 passed Python 3.10/3.11/3.12 against that exact head.
+- This handoff checkpoint changes the feature head. Fresh exact-head CI, squash merge, post-merge `origin/main`/CI verification, and successor creation remain pending.
+
+## Task 8 safety and side effects
+
+- Tests use fixtures and temporary SQLite databases only. No live KIS/KRX/DART/KIND or AgentNews request occurred.
+- No credential lookup/output/change, broker/account/order call, Telegram send, user/legacy database access, runtime activation, or deployment occurred. The scoped feature branch was committed/pushed and PR #8 was opened; no merge has occurred at this checkpoint.
+
+## Previous milestone — Phase 1A Task 7A
 
 - Task: Phase 1A Task 7A — KR/US time-sliced leadership tracking foundation
 - Branch: `prism-insight/t_97ca40ff-prism-phase-1a-task-7a-kr-us-leadership`
