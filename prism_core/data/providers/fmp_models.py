@@ -101,6 +101,106 @@ class FMPRequest:
 
 
 @dataclass(frozen=True)
+class FMPCorporateActionRequest:
+    """Credential-free identity for one injected FMP or SEC evidence request."""
+
+    provider: str
+    operation: str
+    params: Mapping[str, object]
+    _canonical_identity: str = field(init=False, repr=False)
+    _request_hash: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.provider not in {"fmp", "sec"}:
+            raise ValueError("corporate-action provider must be fmp or sec")
+        if not self.operation:
+            raise ValueError("operation must not be empty")
+        if any(
+            _normalize_parameter_name(str(name)) in _SECRET_PARAMETER_NAMES
+            for name in self.params
+        ):
+            raise ValueError("request params must not contain secret parameters")
+        encoded_params = _canonical_json(dict(self.params))
+        object.__setattr__(self, "params", json.loads(encoded_params))
+        identity = _canonical_json(
+            {
+                "operation": self.operation,
+                "params": json.loads(encoded_params),
+                "provider": self.provider,
+            }
+        ).decode("utf-8")
+        object.__setattr__(self, "_canonical_identity", identity)
+        object.__setattr__(
+            self, "_request_hash", hashlib.sha256(identity.encode()).hexdigest()
+        )
+
+    @property
+    def canonical_identity(self) -> str:
+        return self._canonical_identity
+
+    @property
+    def request_hash(self) -> str:
+        return self._request_hash
+
+
+@dataclass(frozen=True, init=False)
+class FMPCorporateActionResponseEnvelope:
+    """Immutable raw FMP/SEC corporate-action evidence with explicit provenance."""
+
+    provider: str
+    source_record_id: str
+    revision: int
+    observed_at: datetime
+    available_at: datetime
+    quality: DataQualityStatus
+    _payload_json: str = field(repr=False)
+    _source_hash: str = field(repr=False)
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        source_record_id: str,
+        revision: int,
+        observed_at: datetime,
+        available_at: datetime,
+        payload: object,
+        quality: DataQualityStatus,
+    ) -> None:
+        if provider not in {"fmp", "sec"}:
+            raise ValueError("corporate-action provider must be fmp or sec")
+        if not source_record_id:
+            raise ValueError("source_record_id must not be empty")
+        if revision < 0:
+            raise ValueError("revision must be non-negative")
+        for field_name, value in (
+            ("observed_at", observed_at),
+            ("available_at", available_at),
+        ):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(f"{field_name} must be timezone-aware")
+        if observed_at > available_at:
+            raise ValueError("observed_at must be at or before available_at")
+        encoded = _canonical_json(payload)
+        object.__setattr__(self, "provider", provider)
+        object.__setattr__(self, "source_record_id", source_record_id)
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "observed_at", observed_at)
+        object.__setattr__(self, "available_at", available_at)
+        object.__setattr__(self, "quality", quality)
+        object.__setattr__(self, "_payload_json", encoded.decode("utf-8"))
+        object.__setattr__(self, "_source_hash", hashlib.sha256(encoded).hexdigest())
+
+    @property
+    def payload(self) -> object:
+        return json.loads(self._payload_json)
+
+    @property
+    def source_hash(self) -> str:
+        return self._source_hash
+
+
+@dataclass(frozen=True)
 class FMPFallbackRequest:
     """Credential-free identity for an explicitly injected research fallback."""
 

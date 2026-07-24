@@ -16,6 +16,8 @@ from pydantic import AwareDatetime
 
 from prism_core.data.contracts import (
     ContractModel,
+    CorporateAction,
+    CorporateActionType,
     DataQualityStatus,
     MarketSnapshot,
     ObservationTime,
@@ -23,8 +25,11 @@ from prism_core.data.contracts import (
     SecurityId,
     SymbolMapping,
 )
+from prism_core.data.corporate_actions import CorporateActionEvidence
 from prism_core.data.providers.fmp_models import (
     FMPApiKey,
+    FMPCorporateActionRequest,
+    FMPCorporateActionResponseEnvelope,
     FMPFallbackRequest,
     FMPFallbackResponseEnvelope,
     FMPPagination,
@@ -50,6 +55,25 @@ class FMPFallbackTransport(Protocol):
     async def execute(
         self, request: FMPFallbackRequest
     ) -> FMPFallbackResponseEnvelope: ...
+
+
+class FMPCorporateActionTransport(Protocol):
+    """Injected FMP action evidence boundary; concrete HTTP is intentionally absent."""
+
+    async def execute(
+        self,
+        request: FMPCorporateActionRequest,
+        *,
+        api_key: FMPApiKey,
+    ) -> FMPCorporateActionResponseEnvelope: ...
+
+
+class SECOfficialEvidenceTransport(Protocol):
+    """Injected credential-free SEC official-evidence boundary."""
+
+    async def execute(
+        self, request: FMPCorporateActionRequest
+    ) -> FMPCorporateActionResponseEnvelope: ...
 
 
 @dataclass(frozen=True)
@@ -119,6 +143,12 @@ class FMPEventKind(str, Enum):
     FALLBACK_TIMEOUT = "FALLBACK_TIMEOUT"
     FALLBACK_RATE_LIMIT = "FALLBACK_RATE_LIMIT"
     FALLBACK_BUDGET_EXHAUSTED = "FALLBACK_BUDGET_EXHAUSTED"
+    UNSUPPORTED_ACTION = "UNSUPPORTED_ACTION"
+    MISSING_FIELD = "MISSING_FIELD"
+    DUPLICATE_ACTION = "DUPLICATE_ACTION"
+    WITHHELD_FUTURE = "WITHHELD_FUTURE"
+    SOURCE_REVISION_DIVERGENCE = "SOURCE_REVISION_DIVERGENCE"
+    PROVIDER_CONFLICT = "PROVIDER_CONFLICT"
 
 
 class FMPFallbackMode(str, Enum):
@@ -170,6 +200,15 @@ class FMPFetchResult:
     fallback_reason: FMPFallbackReason | None
 
 
+@dataclass(frozen=True)
+class FMPCorporateActionFetchResult:
+    corporate_action_evidence: tuple[CorporateActionEvidence, ...]
+    raw_payloads: tuple[FMPCorporateActionResponseEnvelope, ...]
+    request_hashes: tuple[str, ...]
+    events: tuple[FMPProviderEvent, ...]
+    quality: DataQualityStatus
+
+
 @dataclass
 class _RequestBudget:
     limit: int
@@ -215,6 +254,8 @@ class FMPMarketDataProvider:
         fallback_transport: FMPFallbackTransport | None = None,
         fallback_provider: str | None = None,
         fallback_max_attempts: int = 1,
+        fmp_corporate_action_transport: FMPCorporateActionTransport | None = None,
+        sec_official_evidence_transport: SECOfficialEvidenceTransport | None = None,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
@@ -254,6 +295,8 @@ class FMPMarketDataProvider:
         self._fallback_transport = fallback_transport
         self._fallback_provider = fallback_provider
         self._fallback_max_attempts = fallback_max_attempts
+        self._fmp_corporate_action_transport = fmp_corporate_action_transport
+        self._sec_official_evidence_transport = sec_official_evidence_transport
 
     @staticmethod
     def _require_aware(value: datetime, field_name: str) -> datetime:
@@ -262,7 +305,12 @@ class FMPMarketDataProvider:
         return value
 
     def _response_exposes_secret(
-        self, response: FMPResponseEnvelope | FMPFallbackResponseEnvelope
+        self,
+        response: (
+            FMPResponseEnvelope
+            | FMPFallbackResponseEnvelope
+            | FMPCorporateActionResponseEnvelope
+        ),
     ) -> bool:
         secret = self._api_key.get_secret_value()
 
@@ -279,6 +327,397 @@ class FMPMarketDataProvider:
             return False
 
         return contains_secret(response.payload) or secret in response.source_record_id
+
+    async def fetch_corporate_actions(
+        self,
+        *,
+        security_ids: tuple[SecurityId, ...],
+        as_of_date: datetime,
+    ) -> FMPCorporateActionFetchResult:
+        """Normalize injected FMP and SEC evidence without applying adjustments."""
+
+        self._require_aware(as_of_date, "as_of_date")
+        ingested_at = self._require_aware(self._clock(), "clock result")
+        if ingested_at < as_of_date:
+            raise ValueError("clock result must be at or after as_of_date")
+        unknown = [item for item in security_ids if item.value not in self._instruments]
+        if unknown:
+            raise ValueError("every security_id must have a configured FMP instrument")
+        active = tuple(
+            self._instruments[item.value]
+            for item in security_ids
+            if self._instruments[item.value].is_active(as_of_date)
+        )
+        by_symbol = {item.fmp_symbol: item for item in active}
+        events: list[FMPProviderEvent] = []
+        raw_payloads: list[FMPCorporateActionResponseEnvelope] = []
+        request_hashes: list[str] = []
+        evidence: list[CorporateActionEvidence] = []
+
+        def make_event(
+            provider: str,
+            kind: FMPEventKind,
+            quality: DataQualityStatus,
+            detail: str,
+        ) -> FMPProviderEvent:
+            return FMPProviderEvent(
+                provider=provider,
+                kind=kind,
+                quality=quality,
+                attempt=1,
+                operation="fetch_corporate_actions",
+                detail=detail,
+                occurred_at=ingested_at,
+            )
+
+        configured: tuple[
+            tuple[str, FMPCorporateActionTransport | SECOfficialEvidenceTransport | None],
+            ...,
+        ] = (
+            ("fmp", self._fmp_corporate_action_transport),
+            ("sec", self._sec_official_evidence_transport),
+        )
+        for provider_name, transport in configured:
+            if transport is None:
+                continue
+            request = FMPCorporateActionRequest(
+                provider=provider_name,
+                operation="fetch_corporate_actions",
+                params={
+                    "as_of_date": as_of_date.isoformat(),
+                    "symbols": [item.fmp_symbol for item in active],
+                },
+            )
+            request_hashes.append(request.request_hash)
+            try:
+                if provider_name == "fmp":
+                    response = await cast(FMPCorporateActionTransport, transport).execute(
+                        request, api_key=self._api_key
+                    )
+                else:
+                    response = await cast(SECOfficialEvidenceTransport, transport).execute(
+                        request
+                    )
+            except Exception as exc:
+                events.append(
+                    make_event(
+                        provider_name,
+                        FMPEventKind.UNAVAILABLE,
+                        DataQualityStatus.UNAVAILABLE,
+                        f"transport failed with {exc.__class__.__name__}",
+                    )
+                )
+                continue
+            if response.provider != provider_name:
+                events.append(
+                    make_event(
+                        provider_name,
+                        FMPEventKind.MALFORMED,
+                        DataQualityStatus.UNAVAILABLE,
+                        "response provider does not match the requested provenance",
+                    )
+                )
+                continue
+            if self._response_exposes_secret(response):
+                events.append(
+                    make_event(
+                        provider_name,
+                        FMPEventKind.MALFORMED,
+                        DataQualityStatus.UNAVAILABLE,
+                        "response rejected at the credential boundary",
+                    )
+                )
+                continue
+            if response.available_at > as_of_date or response.available_at > ingested_at:
+                events.append(
+                    make_event(
+                        provider_name,
+                        FMPEventKind.WITHHELD_FUTURE,
+                        DataQualityStatus.UNAVAILABLE,
+                        "evidence was unavailable at the requested point-in-time boundary",
+                    )
+                )
+                continue
+            raw_payloads.append(response)
+            if response.quality is DataQualityStatus.UNAVAILABLE:
+                events.append(
+                    make_event(
+                        provider_name,
+                        FMPEventKind.UNAVAILABLE,
+                        response.quality,
+                        "provider marked corporate-action evidence unavailable",
+                    )
+                )
+                continue
+            if response.quality is not DataQualityStatus.FRESH:
+                quality_kinds = {
+                    DataQualityStatus.STALE: FMPEventKind.STALE,
+                    DataQualityStatus.PARTIAL: FMPEventKind.PARTIAL,
+                    DataQualityStatus.CONFLICT: FMPEventKind.CONFLICT,
+                }
+                events.append(
+                    make_event(
+                        provider_name,
+                        quality_kinds[response.quality],
+                        response.quality,
+                        f"provider labelled action evidence {response.quality.value}",
+                    )
+                )
+                if response.quality is DataQualityStatus.CONFLICT:
+                    continue
+            payload = response.payload
+            rows = payload.get("data") if isinstance(payload, Mapping) else None
+            if not isinstance(rows, list):
+                events.append(
+                    make_event(
+                        provider_name,
+                        FMPEventKind.MALFORMED,
+                        DataQualityStatus.UNAVAILABLE,
+                        "corporate-action data must be a list",
+                    )
+                )
+                continue
+            for raw_row in rows:
+                if not isinstance(raw_row, Mapping):
+                    events.append(
+                        make_event(
+                            provider_name,
+                            FMPEventKind.MALFORMED,
+                            DataQualityStatus.PARTIAL,
+                            "corporate-action row must be an object",
+                        )
+                    )
+                    continue
+                row = cast(Mapping[str, object], raw_row)
+                required = {
+                    "providerSymbol",
+                    "correlationKey",
+                    "actionType",
+                    "effectiveDate",
+                }
+                missing = sorted(required - row.keys())
+                if missing:
+                    events.append(
+                        make_event(
+                            provider_name,
+                            FMPEventKind.MISSING_FIELD,
+                            DataQualityStatus.PARTIAL,
+                            "corporate-action row is missing required fields: "
+                            + ",".join(missing),
+                        )
+                    )
+                    continue
+                symbol = str(row["providerSymbol"])
+                instrument = by_symbol.get(symbol)
+                if instrument is None:
+                    events.append(
+                        make_event(
+                            provider_name,
+                            FMPEventKind.UNMATCHED,
+                            DataQualityStatus.PARTIAL,
+                            f"unmatched provider symbol: {symbol or '<empty>'}",
+                        )
+                    )
+                    continue
+                try:
+                    action_type = CorporateActionType(str(row["actionType"]))
+                except ValueError:
+                    events.append(
+                        make_event(
+                            provider_name,
+                            FMPEventKind.UNSUPPORTED_ACTION,
+                            DataQualityStatus.PARTIAL,
+                            "corporate-action type is unsupported",
+                        )
+                    )
+                    continue
+                if action_type not in {
+                    CorporateActionType.SPLIT,
+                    CorporateActionType.CASH_DIVIDEND,
+                }:
+                    events.append(
+                        make_event(
+                            provider_name,
+                            FMPEventKind.UNSUPPORTED_ACTION,
+                            DataQualityStatus.PARTIAL,
+                            "corporate-action type is outside this bounded slice",
+                        )
+                    )
+                    continue
+                term_fields = (
+                    ("numerator", "denominator")
+                    if action_type is CorporateActionType.SPLIT
+                    else ("cashAmount", "currency")
+                )
+                missing_terms = [name for name in term_fields if row.get(name) is None]
+                if missing_terms:
+                    events.append(
+                        make_event(
+                            provider_name,
+                            FMPEventKind.MISSING_FIELD,
+                            DataQualityStatus.PARTIAL,
+                            "corporate-action row is missing term fields: "
+                            + ",".join(missing_terms),
+                        )
+                    )
+                    continue
+                try:
+                    effective_date = date.fromisoformat(str(row["effectiveDate"]))
+                    correlation_key = str(row["correlationKey"])
+                    if not correlation_key:
+                        raise ValueError("correlation key is empty")
+                    ratio: Decimal | None = None
+                    cash_amount: Decimal | None = None
+                    currency: str | None = None
+                    if action_type is CorporateActionType.SPLIT:
+                        numerator = Decimal(str(row["numerator"]))
+                        denominator = Decimal(str(row["denominator"]))
+                        if numerator <= 0 or denominator <= 0:
+                            raise ValueError("split terms must be positive")
+                        ratio = numerator / denominator
+                    else:
+                        cash_amount = Decimal(str(row["cashAmount"]))
+                        currency = str(row["currency"])
+                    timing = ObservationTime(
+                        observed_at=response.observed_at,
+                        available_at=response.available_at,
+                        ingested_at=ingested_at,
+                        as_of_date=as_of_date,
+                    )
+                    action = CorporateAction(
+                        security_id=instrument.security_id,
+                        provider=provider_name,
+                        provider_symbol=symbol,
+                        source_record_id=(
+                            f"{response.source_record_id}:action:{correlation_key}"
+                        ),
+                        source_hash=response.source_hash,
+                        revision=response.revision,
+                        timing=timing,
+                        quality=response.quality,
+                        action_type=action_type,
+                        effective_date=effective_date,
+                        ratio=ratio,
+                        cash_amount=cash_amount,
+                        currency=currency,
+                    )
+                    evidence.append(
+                        CorporateActionEvidence(
+                            action_id=uuid5(
+                                NAMESPACE_URL,
+                                "prism:us:corporate-action:"
+                                f"{instrument.security_id.value}:"
+                                f"{action_type.value}:{correlation_key}",
+                            ),
+                            effective_at=datetime.combine(
+                                effective_date,
+                                time.min,
+                                tzinfo=self._market_timezone,
+                            ),
+                            action=action,
+                        )
+                    )
+                except (ArithmeticError, KeyError, TypeError, ValueError):
+                    events.append(
+                        make_event(
+                            provider_name,
+                            FMPEventKind.MALFORMED,
+                            DataQualityStatus.PARTIAL,
+                            "corporate-action row has invalid or incomplete terms",
+                        )
+                    )
+
+        deduplicated: list[CorporateActionEvidence] = []
+        seen_source_revisions: dict[tuple[str, str, int], CorporateActionEvidence] = {}
+        source_revision_diverged = False
+        for item in evidence:
+            key = (
+                item.action.provider,
+                item.action.source_record_id,
+                item.action.revision,
+            )
+            prior = seen_source_revisions.get(key)
+            if prior is None:
+                seen_source_revisions[key] = item
+                deduplicated.append(item)
+            elif prior == item:
+                events.append(
+                    make_event(
+                        item.action.provider,
+                        FMPEventKind.DUPLICATE_ACTION,
+                        item.action.quality,
+                        "exact corporate-action evidence replay was deduplicated",
+                    )
+                )
+            else:
+                source_revision_diverged = True
+        if source_revision_diverged:
+            events.append(
+                make_event(
+                    "fmp_sec",
+                    FMPEventKind.SOURCE_REVISION_DIVERGENCE,
+                    DataQualityStatus.CONFLICT,
+                    "one provider source revision contained divergent action terms",
+                )
+            )
+            evidence = []
+        else:
+            evidence = deduplicated
+
+        signatures_by_id: dict[object, set[tuple[object, ...]]] = {}
+        for item in evidence:
+            action = item.action
+            signatures_by_id.setdefault(item.action_id, set()).add(
+                (
+                    action.action_type,
+                    action.effective_date,
+                    item.effective_at,
+                    action.ratio,
+                    action.cash_amount,
+                    action.currency,
+                )
+            )
+        for action_id, signatures in signatures_by_id.items():
+            if len(signatures) > 1:
+                events.append(
+                    make_event(
+                        "fmp_sec",
+                        FMPEventKind.PROVIDER_CONFLICT,
+                        DataQualityStatus.CONFLICT,
+                        f"providers disagree for correlated action {action_id}",
+                    )
+                )
+
+        evidence.sort(
+            key=lambda item: (
+                item.effective_at,
+                str(item.action_id),
+                item.action.provider,
+                item.action.source_record_id,
+                item.action.revision,
+            )
+        )
+        precedence = {
+            DataQualityStatus.FRESH: 0,
+            DataQualityStatus.PARTIAL: 1,
+            DataQualityStatus.STALE: 2,
+            DataQualityStatus.UNAVAILABLE: 3,
+            DataQualityStatus.CONFLICT: 4,
+        }
+        qualities = [item.action.quality for item in evidence]
+        qualities.extend(item.quality for item in events)
+        quality = (
+            max(qualities, key=precedence.__getitem__)
+            if qualities
+            else DataQualityStatus.UNAVAILABLE
+        )
+        return FMPCorporateActionFetchResult(
+            corporate_action_evidence=tuple(evidence),
+            raw_payloads=tuple(raw_payloads),
+            request_hashes=tuple(request_hashes),
+            events=tuple(events),
+            quality=quality,
+        )
 
     async def _fetch_fallback(
         self,

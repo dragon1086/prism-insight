@@ -7,9 +7,16 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from prism_core.data import DataQualityStatus, SecurityId
+from prism_core.data import (
+    CorporateActionRepository,
+    DataQualityStatus,
+    SecurityId,
+    SecurityMasterRepository,
+)
 from prism_core.data.providers.fmp import (
     CapabilityStatus,
+    FMPCorporateActionFetchResult,
+    FMPCorporateActionTransport,
     FMPEventKind,
     FMPFallbackMode,
     FMPFallbackReason,
@@ -18,14 +25,18 @@ from prism_core.data.providers.fmp import (
     FMPMarketDataProvider,
     FMPRateLimitError,
     FMPTimeoutError,
+    SECOfficialEvidenceTransport,
 )
 from prism_core.data.providers.fmp_models import (
     FMPApiKey,
+    FMPCorporateActionRequest,
+    FMPCorporateActionResponseEnvelope,
     FMPFallbackRequest,
     FMPFallbackResponseEnvelope,
     FMPRequest,
     FMPResponseEnvelope,
 )
+from prism_core.storage import DatabaseKind, migrate_database, open_database
 
 
 UTC = ZoneInfo("UTC")
@@ -34,6 +45,690 @@ SECURITY_ID = SecurityId(value=UUID("00000000-0000-0000-0000-000000000091"))
 SECOND_SECURITY_ID = SecurityId(value=UUID("00000000-0000-0000-0000-000000000092"))
 AS_OF = datetime(2026, 7, 24, 1, 0, tzinfo=UTC)
 INGESTED = datetime(2026, 7, 24, 1, 1, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_corporate_actions_normalize_decimal_terms_with_distinct_fmp_sec_provenance() -> None:
+    class FMPActions(FMPCorporateActionTransport):
+        async def execute(
+            self,
+            request: FMPCorporateActionRequest,
+            *,
+            api_key: FMPApiKey,
+        ) -> FMPCorporateActionResponseEnvelope:
+            assert request.provider == "fmp"
+            assert request.params == {
+                "as_of_date": AS_OF.isoformat(),
+                "symbols": ["AAPL"],
+            }
+            assert api_key.get_secret_value() == SECRET
+            return FMPCorporateActionResponseEnvelope(
+                provider="fmp",
+                source_record_id="fmp:corporate-actions:AAPL:2026-07-23",
+                revision=2,
+                observed_at=datetime(2026, 7, 23, 20, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 20, 1, tzinfo=UTC),
+                quality=DataQualityStatus.FRESH,
+                payload={
+                    "data": [
+                        {
+                            "providerSymbol": "AAPL",
+                            "correlationKey": "apple-split-2026-08",
+                            "actionType": "SPLIT",
+                            "effectiveDate": "2026-08-03",
+                            "numerator": "4",
+                            "denominator": "2",
+                        },
+                        {
+                            "providerSymbol": "AAPL",
+                            "correlationKey": "apple-dividend-2026-q3",
+                            "actionType": "CASH_DIVIDEND",
+                            "effectiveDate": "2026-08-10",
+                            "cashAmount": "0.2500",
+                            "currency": "USD",
+                        },
+                    ]
+                },
+            )
+
+    class SECActions(SECOfficialEvidenceTransport):
+        async def execute(
+            self, request: FMPCorporateActionRequest
+        ) -> FMPCorporateActionResponseEnvelope:
+            assert request.provider == "sec"
+            return FMPCorporateActionResponseEnvelope(
+                provider="sec",
+                source_record_id="sec:submission:AAPL:split-2026-08",
+                revision=0,
+                observed_at=datetime(2026, 7, 23, 19, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 19, 5, tzinfo=UTC),
+                quality=DataQualityStatus.FRESH,
+                payload={
+                    "data": [
+                        {
+                            "providerSymbol": "AAPL",
+                            "correlationKey": "apple-split-2026-08",
+                            "actionType": "SPLIT",
+                            "effectiveDate": "2026-08-03",
+                            "numerator": "2.00",
+                            "denominator": "1.0",
+                        }
+                    ]
+                },
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fmp_corporate_action_transport=FMPActions(),
+        sec_official_evidence_transport=SECActions(),
+    )
+
+    result = await provider.fetch_corporate_actions(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.quality is DataQualityStatus.FRESH
+    assert result.events == ()
+    assert len(result.raw_payloads) == 2
+    assert {item.provider for item in result.raw_payloads} == {"fmp", "sec"}
+    assert len(result.corporate_action_evidence) == 3
+    splits = [
+        item
+        for item in result.corporate_action_evidence
+        if item.action.action_type.value == "SPLIT"
+    ]
+    fmp_split = next(item for item in splits if item.action.provider == "fmp")
+    sec_split = next(item for item in splits if item.action.provider == "sec")
+    dividend = next(
+        item
+        for item in result.corporate_action_evidence
+        if item.action.action_type.value == "CASH_DIVIDEND"
+    )
+    assert fmp_split.action_id == sec_split.action_id
+    assert fmp_split.action.provider == "fmp"
+    assert sec_split.action.provider == "sec"
+    assert fmp_split.action.source_hash == result.raw_payloads[0].source_hash
+    assert sec_split.action.source_hash == result.raw_payloads[1].source_hash
+    assert fmp_split.action.ratio == Decimal("2")
+    assert dividend.action.cash_amount == Decimal("0.2500")
+    assert dividend.action.currency == "USD"
+    assert fmp_split.effective_at == datetime(
+        2026, 8, 3, 0, 0, tzinfo=ZoneInfo("America/New_York")
+    )
+    assert fmp_split.action.timing.as_of_date == AS_OF
+    assert fmp_split.action.timing.ingested_at == INGESTED
+    assert SECRET not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_correlated_fmp_sec_date_disagreement_reaches_repository_as_conflict(
+    tmp_path,
+) -> None:
+    def response(provider: str, effective_date: str) -> FMPCorporateActionResponseEnvelope:
+        return FMPCorporateActionResponseEnvelope(
+            provider=provider,
+            source_record_id=f"{provider}:apple:split-2026",
+            revision=0,
+            observed_at=datetime(2026, 7, 23, 19, 0, tzinfo=UTC),
+            available_at=datetime(2026, 7, 23, 19, 5, tzinfo=UTC),
+            quality=DataQualityStatus.FRESH,
+            payload={
+                "data": [
+                    {
+                        "providerSymbol": "AAPL",
+                        "correlationKey": "apple-split-2026-08",
+                        "actionType": "SPLIT",
+                        "effectiveDate": effective_date,
+                        "numerator": "2",
+                        "denominator": "1",
+                    }
+                ]
+            },
+        )
+
+    class FMPActions:
+        async def execute(
+            self,
+            request: FMPCorporateActionRequest,
+            *,
+            api_key: FMPApiKey,
+        ) -> FMPCorporateActionResponseEnvelope:
+            return response("fmp", "2026-08-03")
+
+    class SECActions:
+        async def execute(
+            self, request: FMPCorporateActionRequest
+        ) -> FMPCorporateActionResponseEnvelope:
+            return response("sec", "2026-08-04")
+
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fmp_corporate_action_transport=FMPActions(),
+        sec_official_evidence_transport=SECActions(),
+    )
+
+    result = await provider.fetch_corporate_actions(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.quality is DataQualityStatus.CONFLICT
+    assert len(result.corporate_action_evidence) == 2
+    first, second = result.corporate_action_evidence
+    assert first.action_id == second.action_id
+    assert first.action.effective_date != second.action.effective_date
+    assert any(event.kind is FMPEventKind.PROVIDER_CONFLICT for event in result.events)
+
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        SecurityMasterRepository(connection).register_security(
+            SECURITY_ID,
+            market="US",
+            created_at=datetime(1980, 12, 12, tzinfo=UTC),
+        )
+        repository = CorporateActionRepository(connection)
+        for item in result.corporate_action_evidence:
+            repository.merge(item)
+        views = repository.actions_as_of(
+            SECURITY_ID,
+            query_as_of=datetime(
+                2026, 8, 3, 0, 0, tzinfo=ZoneInfo("America/New_York")
+            ),
+        )
+
+    assert len(views) == 1
+    assert views[0].quality is DataQualityStatus.CONFLICT
+    assert views[0].effective_date is None
+    assert views[0].ratio is None
+    assert views[0].evidence_count == 2
+
+
+@pytest.mark.asyncio
+async def test_future_unavailable_correction_is_excluded_from_every_pit_result_surface() -> None:
+    class FutureCorrection:
+        async def execute(
+            self,
+            request: FMPCorporateActionRequest,
+            *,
+            api_key: FMPApiKey,
+        ) -> FMPCorporateActionResponseEnvelope:
+            return FMPCorporateActionResponseEnvelope(
+                provider="fmp",
+                source_record_id="fmp:apple:split-correction",
+                revision=1,
+                observed_at=datetime(2026, 7, 24, 1, 10, tzinfo=UTC),
+                available_at=datetime(2026, 7, 24, 1, 30, tzinfo=UTC),
+                quality=DataQualityStatus.FRESH,
+                payload={
+                    "data": [
+                        {
+                            "providerSymbol": "AAPL",
+                            "correlationKey": "apple-split-2026-08",
+                            "actionType": "SPLIT",
+                            "effectiveDate": "2026-08-03",
+                            "numerator": "3",
+                            "denominator": "1",
+                        }
+                    ]
+                },
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: datetime(2026, 7, 24, 2, 0, tzinfo=UTC),
+        fmp_corporate_action_transport=FutureCorrection(),
+    )
+
+    result = await provider.fetch_corporate_actions(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.corporate_action_evidence == ()
+    assert result.raw_payloads == ()
+    assert result.quality is DataQualityStatus.UNAVAILABLE
+    assert [event.kind for event in result.events] == [FMPEventKind.WITHHELD_FUTURE]
+    assert "split-correction" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_exact_corporate_action_row_replay_is_deduplicated_observably() -> None:
+    row = {
+        "providerSymbol": "AAPL",
+        "correlationKey": "apple-split-2026-08",
+        "actionType": "SPLIT",
+        "effectiveDate": "2026-08-03",
+        "numerator": "2.0",
+        "denominator": "1.0",
+    }
+
+    class DuplicateRows:
+        async def execute(
+            self,
+            request: FMPCorporateActionRequest,
+            *,
+            api_key: FMPApiKey,
+        ) -> FMPCorporateActionResponseEnvelope:
+            return FMPCorporateActionResponseEnvelope(
+                provider="fmp",
+                source_record_id="fmp:apple:split-2026",
+                revision=0,
+                observed_at=datetime(2026, 7, 23, 19, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 19, 5, tzinfo=UTC),
+                quality=DataQualityStatus.FRESH,
+                payload={"data": [row, dict(row)]},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fmp_corporate_action_transport=DuplicateRows(),
+    )
+
+    result = await provider.fetch_corporate_actions(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert len(result.corporate_action_evidence) == 1
+    assert result.quality is DataQualityStatus.FRESH
+    assert [event.kind for event in result.events] == [FMPEventKind.DUPLICATE_ACTION]
+
+
+@pytest.mark.asyncio
+async def test_same_source_revision_divergence_fails_the_whole_action_result_closed() -> None:
+    first = {
+        "providerSymbol": "AAPL",
+        "correlationKey": "apple-split-2026-08",
+        "actionType": "SPLIT",
+        "effectiveDate": "2026-08-03",
+        "numerator": "2",
+        "denominator": "1",
+    }
+    divergent = {**first, "numerator": "3"}
+
+    class DivergentRows:
+        async def execute(
+            self,
+            request: FMPCorporateActionRequest,
+            *,
+            api_key: FMPApiKey,
+        ) -> FMPCorporateActionResponseEnvelope:
+            return FMPCorporateActionResponseEnvelope(
+                provider="fmp",
+                source_record_id="fmp:apple:split-2026",
+                revision=4,
+                observed_at=datetime(2026, 7, 23, 19, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 19, 5, tzinfo=UTC),
+                quality=DataQualityStatus.FRESH,
+                payload={"data": [first, divergent]},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fmp_corporate_action_transport=DivergentRows(),
+    )
+
+    result = await provider.fetch_corporate_actions(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.corporate_action_evidence == ()
+    assert len(result.raw_payloads) == 1
+    assert result.quality is DataQualityStatus.CONFLICT
+    assert [event.kind for event in result.events] == [
+        FMPEventKind.SOURCE_REVISION_DIVERGENCE
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("quality", "expected_kind"),
+    [
+        (DataQualityStatus.STALE, FMPEventKind.STALE),
+        (DataQualityStatus.PARTIAL, FMPEventKind.PARTIAL),
+    ],
+)
+async def test_degraded_action_evidence_retains_quality_with_branchable_event(
+    quality: DataQualityStatus,
+    expected_kind: FMPEventKind,
+) -> None:
+    class DegradedActions:
+        async def execute(
+            self,
+            request: FMPCorporateActionRequest,
+            *,
+            api_key: FMPApiKey,
+        ) -> FMPCorporateActionResponseEnvelope:
+            return FMPCorporateActionResponseEnvelope(
+                provider="fmp",
+                source_record_id="fmp:apple:dividend-2026-q3",
+                revision=0,
+                observed_at=datetime(2026, 7, 23, 19, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 19, 5, tzinfo=UTC),
+                quality=quality,
+                payload={
+                    "data": [
+                        {
+                            "providerSymbol": "AAPL",
+                            "correlationKey": "apple-dividend-2026-q3",
+                            "actionType": "CASH_DIVIDEND",
+                            "effectiveDate": "2026-08-10",
+                            "cashAmount": "0.25",
+                            "currency": "USD",
+                        }
+                    ]
+                },
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fmp_corporate_action_transport=DegradedActions(),
+    )
+
+    result = await provider.fetch_corporate_actions(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.quality is quality
+    assert result.corporate_action_evidence[0].action.quality is quality
+    assert [event.kind for event in result.events] == [expected_kind]
+
+
+@pytest.mark.asyncio
+async def test_provider_declared_conflict_withholds_normalized_action_terms() -> None:
+    class ConflictingActions:
+        async def execute(
+            self,
+            request: FMPCorporateActionRequest,
+            *,
+            api_key: FMPApiKey,
+        ) -> FMPCorporateActionResponseEnvelope:
+            return FMPCorporateActionResponseEnvelope(
+                provider="fmp",
+                source_record_id="fmp:apple:conflicting-split",
+                revision=0,
+                observed_at=datetime(2026, 7, 23, 19, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 19, 5, tzinfo=UTC),
+                quality=DataQualityStatus.CONFLICT,
+                payload={
+                    "data": [
+                        {
+                            "providerSymbol": "AAPL",
+                            "correlationKey": "apple-split-2026-08",
+                            "actionType": "SPLIT",
+                            "effectiveDate": "2026-08-03",
+                            "numerator": "2",
+                            "denominator": "1",
+                        }
+                    ]
+                },
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fmp_corporate_action_transport=ConflictingActions(),
+    )
+
+    result = await provider.fetch_corporate_actions(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.corporate_action_evidence == ()
+    assert len(result.raw_payloads) == 1
+    assert result.quality is DataQualityStatus.CONFLICT
+    assert [event.kind for event in result.events] == [FMPEventKind.CONFLICT]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "expected_kind"),
+    [
+        ({"actionType": "MERGER"}, FMPEventKind.UNSUPPORTED_ACTION),
+        ({"numerator": None}, FMPEventKind.MISSING_FIELD),
+        ({"denominator": "0"}, FMPEventKind.MALFORMED),
+        ({"providerSymbol": "UNKNOWN"}, FMPEventKind.UNMATCHED),
+    ],
+)
+async def test_invalid_action_rows_have_distinct_sanitized_branchable_events(
+    mutation: dict[str, object],
+    expected_kind: FMPEventKind,
+) -> None:
+    row: dict[str, object] = {
+        "providerSymbol": "AAPL",
+        "correlationKey": "apple-split-2026-08",
+        "actionType": "SPLIT",
+        "effectiveDate": "2026-08-03",
+        "numerator": "2",
+        "denominator": "1",
+    }
+    row.update(mutation)
+
+    class InvalidAction:
+        async def execute(
+            self,
+            request: FMPCorporateActionRequest,
+            *,
+            api_key: FMPApiKey,
+        ) -> FMPCorporateActionResponseEnvelope:
+            return FMPCorporateActionResponseEnvelope(
+                provider="fmp",
+                source_record_id="fmp:apple:invalid-action",
+                revision=0,
+                observed_at=datetime(2026, 7, 23, 19, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 19, 5, tzinfo=UTC),
+                quality=DataQualityStatus.FRESH,
+                payload={"data": [row]},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fmp_corporate_action_transport=InvalidAction(),
+    )
+
+    result = await provider.fetch_corporate_actions(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.corporate_action_evidence == ()
+    assert result.quality is DataQualityStatus.PARTIAL
+    assert [event.kind for event in result.events] == [expected_kind]
+    assert SECRET not in result.events[0].detail
+
+
+@pytest.mark.asyncio
+async def test_unavailable_action_payload_is_retained_but_never_normalized() -> None:
+    class UnavailableActions:
+        async def execute(
+            self,
+            request: FMPCorporateActionRequest,
+            *,
+            api_key: FMPApiKey,
+        ) -> FMPCorporateActionResponseEnvelope:
+            return FMPCorporateActionResponseEnvelope(
+                provider="fmp",
+                source_record_id="fmp:apple:unavailable-actions",
+                revision=0,
+                observed_at=datetime(2026, 7, 23, 19, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 19, 5, tzinfo=UTC),
+                quality=DataQualityStatus.UNAVAILABLE,
+                payload={
+                    "data": [
+                        {
+                            "providerSymbol": "AAPL",
+                            "correlationKey": "apple-split-2026-08",
+                            "actionType": "SPLIT",
+                            "effectiveDate": "2026-08-03",
+                            "numerator": "2",
+                            "denominator": "1",
+                        }
+                    ]
+                },
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fmp_corporate_action_transport=UnavailableActions(),
+    )
+
+    result = await provider.fetch_corporate_actions(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert len(result.raw_payloads) == 1
+    assert result.corporate_action_evidence == ()
+    assert result.quality is DataQualityStatus.UNAVAILABLE
+    assert [event.kind for event in result.events] == [FMPEventKind.UNAVAILABLE]
+
+
+@pytest.mark.asyncio
+async def test_action_normalization_order_is_independent_of_provider_row_order() -> None:
+    split: dict[str, object] = {
+        "providerSymbol": "AAPL",
+        "correlationKey": "apple-split-2026-08",
+        "actionType": "SPLIT",
+        "effectiveDate": "2026-08-03",
+        "numerator": "2",
+        "denominator": "1",
+    }
+    dividend: dict[str, object] = {
+        "providerSymbol": "AAPL",
+        "correlationKey": "apple-dividend-2026-q3",
+        "actionType": "CASH_DIVIDEND",
+        "effectiveDate": "2026-08-10",
+        "cashAmount": "0.25",
+        "currency": "USD",
+    }
+
+    class OrderedRows:
+        def __init__(self, rows: list[dict[str, object]]) -> None:
+            self.rows = rows
+
+        async def execute(
+            self,
+            request: FMPCorporateActionRequest,
+            *,
+            api_key: FMPApiKey,
+        ) -> FMPCorporateActionResponseEnvelope:
+            return FMPCorporateActionResponseEnvelope(
+                provider="fmp",
+                source_record_id="fmp:apple:actions",
+                revision=0,
+                observed_at=datetime(2026, 7, 23, 19, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 19, 5, tzinfo=UTC),
+                quality=DataQualityStatus.FRESH,
+                payload={"data": self.rows},
+            )
+
+    async def fetch(rows: list[dict[str, object]]):
+        provider = FMPMarketDataProvider(
+            transport=PricePageTransport(),
+            api_key=FMPApiKey(SECRET),
+            instruments=(
+                FMPInstrument(
+                    security_id=SECURITY_ID,
+                    fmp_symbol="AAPL",
+                    valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+                ),
+            ),
+            clock=lambda: INGESTED,
+            fmp_corporate_action_transport=OrderedRows(rows),
+        )
+        return await provider.fetch_corporate_actions(
+            security_ids=(SECURITY_ID,), as_of_date=AS_OF
+        )
+
+    forward = await fetch([split, dividend])
+    reverse = await fetch([dividend, split])
+
+    def identity(result: FMPCorporateActionFetchResult) -> tuple[tuple[object, ...], ...]:
+        return tuple(
+            (
+                item.action_id,
+                item.action.provider,
+                item.action.source_record_id,
+                item.action.action_type,
+            )
+            for item in result.corporate_action_evidence
+        )
+
+    assert identity(forward) == identity(reverse)
 
 
 def price_page_payload(
@@ -2023,6 +2718,10 @@ def test_fmp_contracts_are_exported_from_public_data_packages() -> None:
         "CapabilityProbeResult",
         "CapabilityStatus",
         "FMPApiKey",
+        "FMPCorporateActionFetchResult",
+        "FMPCorporateActionRequest",
+        "FMPCorporateActionResponseEnvelope",
+        "FMPCorporateActionTransport",
         "FMPEventKind",
         "FMPFallbackMode",
         "FMPFallbackReason",
@@ -2039,6 +2738,7 @@ def test_fmp_contracts_are_exported_from_public_data_packages() -> None:
         "FMPResponseEnvelope",
         "FMPTimeoutError",
         "FMPTransport",
+        "SECOfficialEvidenceTransport",
     }
 
     assert expected <= set(data.__all__)

@@ -1,38 +1,47 @@
 # PRISM Guarded-Autopilot Handoff
 
-## Current milestone — Phase 1A Task 9.3
+## Current milestone — Phase 1A Task 9.4
 
-- Branch: `prism-insight/t_ee8568c4-prism-phase-1a-task-9.3-fmp-stale-partia`
-- State: stale/partial classification and explicit research-fixture fallback policy are implemented and locally verified. Commit, PR, exact-head CI, squash merge, post-merge CI, and successor creation are pending at this checkpoint.
-- Runtime state: dormant injected contracts only. No concrete FMP/yfinance/SEC HTTP transport, credential lookup, application caller, scheduler, strategy, LLM, paper broker, account/order path, messaging path, deployment, or user database is wired or changed.
+- Branch: `prism-insight/t_416cf701-prism-phase-1a-task-9.4-fmp-corporate-ac`
+- State: strict injected FMP split/dividend normalization and distinct SEC official-evidence provenance are implemented, independently reviewed, committed, pushed, and open in PR #15. Initial implementation head `55c6c6e40e05cf5c22e77cb7b1b24e38a522d041` passed CI run 30090382903 on Python 3.10/3.11/3.12; this handoff checkpoint changes the head and therefore requires fresh exact-head CI before review approval, squash merge, post-merge CI, and the approved FMP HTTP/live-smoke successor.
+- Runtime state: dormant injected contracts only. No concrete FMP/SEC HTTP transport, credential lookup, application caller, scheduler, strategy, LLM, paper broker, account/order path, messaging path, deployment, or user database is wired or changed.
 
-## Task 9.3 implemented scope
+## Task 9.4 implemented scope
 
-- Added explicit `DISABLED` and `RESEARCH_FIXTURE` fallback modes, machine-branchable primary/fallback outcomes, invocation reasons, and immutable credential-free fallback request/response envelopes.
-- Primary `STALE`, `PARTIAL`, `MISSING`, `UNAVAILABLE`, timeout, and rate-limit exhaustion are classified explicitly. Core degraded primary evidence emits no normalized FMP bars; conflicting, malformed, pagination-invalid, or ineligible primary evidence cannot invoke fallback.
-- Fallback requires both explicit research mode and an injected transport/provider identity. Selected evidence retains a non-FMP provider, separate source identity/revision, observed/available/ingested/as-of timestamps, request identity, raw hash, raw/adjusted values, and symbol mapping.
-- Primary raw evidence is retained separately and never overwritten. Fallback source IDs cannot reuse a retained primary source ID, secret echoes are discarded, and stale/partial/conflicting/unavailable/malformed/future/incomplete fallback evidence yields no normalized bars.
-- One aggregate request budget covers primary pages, retries, and bounded fallback attempts. Snapshot identity includes fallback mode, primary quality, selected provider, request identities, raw evidence hashes, and normalized selected evidence while excluding retry counters for retry stability.
-- Added strict tests for disabled/missing fallback, explicit selection, degraded outcomes, provenance separation, source-ID collision, secret echo/JSON escaping, bounded aggregate budgets, retry stability, malformed/conflicting non-laundering, and recovered primary timeout reason precedence.
+- Added immutable credential-free corporate-action request identities and immutable FMP/SEC response envelopes with separate provider, source record, revision, observed/available times, canonical raw payload hash, and detached payload access.
+- Added injected FMP corporate-action and credential-free SEC evidence transport protocols. There is no concrete network implementation in this slice.
+- Normalized only `SPLIT` and `CASH_DIVIDEND` into the existing `CorporateActionEvidence` contract with stable `SecurityId`, provider symbol, New York local effective instant, PIT observation times, positive Decimal terms, currency validation, and no adjustment-factor derivation or price mutation.
+- Correlated FMP and SEC evidence through a deterministic curated action ID while preserving separate raw records and provenance. Agreement keeps both evidence rows; disagreement emits `PROVIDER_CONFLICT` and the existing repository withholds resolved terms.
+- Future-effective evidence is retained when already available. Evidence unavailable at the requested as-of boundary is excluded from every result surface. Exact duplicate rows are idempotently deduplicated; same-provider/source/revision divergence fails the whole action result closed.
+- Unsupported, missing, malformed, unmatched, stale, partial, unavailable, duplicate, future-withheld, source-divergence, and provider-conflict outcomes are explicit machine-branchable events. Provider-declared `CONFLICT` evidence is retained raw but never normalized.
+- Added focused fixture tests for provenance separation, Decimal normalization, market-local effective timing, repository conflict reconciliation, future-unavailable corrections, duplicate/divergent revisions, degraded/unavailable evidence, malformed rows, deterministic ordering, and public exports.
 
-## Task 9.3 verification and review
+## Task 9.4 verification and review
 
-- `python -m pytest tests/data/providers/test_fmp_provider.py -q` — 66 passed.
-- `python -m pytest tests/data tests/storage -q` — 196 passed.
+- `python -m pytest tests/data/providers/test_fmp_provider.py tests/data/test_corporate_actions.py -q` — 89 passed.
+- `python -m pytest tests/data tests/storage -q` — 210 passed.
 - `python -m pytest tests/runtime tests/safety -q` — 70 passed.
 - Canonical CI-equivalent remaining groups — 292 passed, 1 intentionally deselected.
 - `python -m compileall -q prism_core tools/audit_broker_boundaries.py` — passed.
 - `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy dangerous inventory remains informational and unchanged.
 - `python -m pip check` — no broken requirements; `git diff --check` passed.
-- The initial verified Claude read-only architecture/data-integrity review found no HIGH issue and one material MEDIUM: a recovered primary timeout could incorrectly outrank a retained stale response as the fallback reason. GPT reproduced it with a decisive RED, changed reason precedence to describe the retained decisive condition, and restored the focused suite to green.
-- GPT retained conservative whole-request `INELIGIBLE` blocking because selecting fallback for only active names would falsely mark a snapshot fresh while an explicitly requested inactive security remained unsatisfied. Cross-provider equality of canonical payload hashes remains valid content addressing; provider plus source record identity preserves provenance, and source-ID collision is rejected.
-- A verified final Claude read-only review confirmed the MEDIUM resolved and found no remaining HIGH/MEDIUM defect. GPT independently verified its material claims against source and the focused/broad test evidence above.
+- The first two Claude read-only exploration attempts were unusable because they exhausted their turn budgets and returned no findings. A successful compact no-tool review then identified one material gap: provider-declared `CONFLICT` terms were still normalized. GPT reproduced it with a decisive RED, withheld those terms while retaining raw evidence, and restored all suites to green.
+- GPT rejected the review's claimed uncaught Pydantic failure after runtime evidence proved this installed `ValidationError` inherits `ValueError`; the existing row-classification catch is effective. Conservative whole-batch source-revision failure, worst-source aggregate quality, and ratio-only normalization follow the approved existing contracts.
+- A verified final Claude read-only review found no remaining HIGH/MEDIUM defect and recommended merge. GPT independently checked its material PIT, provenance, validation, replay, and compatibility claims against source and the test evidence above.
 
-## Task 9.3 safety and side effects
+## Task 9.4 safety and side effects
 
 - No live FMP/yfinance/SEC request, credential lookup/change/output, broker/account/order/KIS call, Telegram or other external message, AgentNews fetch, user-database access, migration, runtime activation, deployment, or risk/kill-switch change occurred.
 - Changed-file inspection found only the scoped provider models/exports/tests plus this handoff; no credential, private database, generated log, cache, or report artifact is included.
-- This proves fixture-tested foundation behavior only. Live FMP transport/integration, runtime wiring, and operated readiness remain explicitly unproven and deferred.
+- This proves fixture-tested contract foundation only. Concrete FMP HTTP transport, actual-endpoint live integration, runtime wiring, and operated readiness remain explicitly unproven. The approved next sequential slice is the bounded FMP HTTP transport plus actual-endpoint live smoke, which must block without a real configured key and must never substitute a demo key or fixture success.
+- Delivery checkpoint: PR #15 targets `mienne/prism-insight:main`. Do not merge until the final pushed handoff head has its own green Python 3.10/3.11/3.12 matrix and the required review gate is approved; then squash-merge, verify post-merge main CI, and create exactly one FMP HTTP/live-smoke successor.
+
+## Previous milestone — Phase 1A Task 9.3
+
+- Task 9.3 added explicit disabled/research-fixture fallback modes, machine-branchable degraded primary/fallback outcomes, provenance separation, one aggregate request budget, and retry-stable snapshot identity.
+- Its focused provider suite passed 66 tests; data/storage passed 196 tests; runtime/safety passed 70 tests; canonical remaining groups passed 292 tests with 1 intentionally deselected. Compileall, broker-boundary audit, pip check, and diff checks passed.
+- Verified Claude reviews drove the retained stale-condition precedence correction and found no remaining HIGH/MEDIUM defect after remediation.
+- Task 9.3 remained fixture-only and dormant: no live FMP/yfinance/SEC request, credential access, user database, broker/account/order call, messaging effect, runtime activation, or deployment occurred.
 
 ## Previous milestone — Phase 1A Task 9.2
 
