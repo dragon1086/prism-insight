@@ -511,6 +511,37 @@ async def test_aiohttp_requester_accumulates_short_chunks_until_eof(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_aiohttp_requester_rejects_non_market_data_path_before_network(
+    monkeypatch,
+) -> None:
+    def fail_if_session_created(**kwargs):
+        raise AssertionError("network adapter must not be reached")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "aiohttp",
+        SimpleNamespace(
+            ClientTimeout=lambda **kwargs: object(),
+            ClientSession=fail_if_session_created,
+        ),
+    )
+
+    with pytest.raises(KISMarketDataTransportError, match="allowlisted"):
+        await AioHttpKISRequester().request(
+            method="POST",
+            url=(
+                "https://openapi.koreainvestment.com:9443"
+                "/uapi/domestic-stock/v1/trading/order-cash"
+            ),
+            headers={},
+            json_body=None,
+            params=None,
+            timeout_seconds=1.0,
+            max_response_bytes=32,
+        )
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_retries_are_bounded_by_provider_and_return_unavailable() -> None:
     requester = SequenceRequester(
         [

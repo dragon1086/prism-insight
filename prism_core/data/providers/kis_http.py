@@ -106,6 +106,9 @@ class AioHttpKISRequester:
             parsed.scheme != "https"
             or parsed.hostname not in _ALLOWED_HOSTS
             or parsed.port != 9443
+            or parsed.path not in {TOKEN_PATH, DAILY_PRICE_PATH}
+            or parsed.query
+            or parsed.fragment
         ):
             raise KISMarketDataTransportError("KIS request URL is not allowlisted")
         try:

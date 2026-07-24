@@ -2,8 +2,8 @@
 
 ## Current milestone — Phase 1A Task 8.1
 
-- Branch: `prism-insight/t_ccfe72a5-prism-phase-1a-task-8.1-kis-live-market`
-- State: implementation, fixture tests, bounded live KIS market-data smoke, GPT-controlled local gates, and verified read-only Claude review are green. The feature commit was rebased onto `origin/main` after resolving the handoff-only conflict; push, PR, exact-head CI, squash merge, and post-merge closeout remain pending at this checkpoint.
+- Branch: `fix/kis-requester-path-confinement` (follow-up to merged PR #12)
+- State: the primary implementation was squash-merged via PR #12 at `bc9ac40` after exact-head CI passed. A final frozen-patch Claude review found one defense-in-depth MEDIUM in the exported requester path boundary; a strict RED→GREEN hardening fix and focused verification are complete locally, with its follow-up PR/CI/merge pending at this checkpoint.
 - Runtime state: a concrete KIS production-host HTTP/OAuth transport now exists behind the existing injected `KISMarketDataProvider` boundary and was exercised explicitly by the opt-in live smoke. No application composition root, scheduler, dashboard, Telegram path, account API, broker/order/cancel/replace path, or user database is wired or changed.
 
 ## Task 8.1 implemented scope
@@ -32,10 +32,11 @@
 - Initial verified Claude read-only review found two MEDIUM issues: shared mutable transport evidence under concurrency and the need to pin intentional propagation of non-retryable failures. GPT replaced shared evidence with immutable per-payload evidence and added decisive provider-level 429/non-retryable tests.
 - GPT also accepted the review's LOW chunk-read robustness finding, reproduced a short-read truncation RED, accumulated bounded chunks until EOF, and proved both short reads and oversize rejection.
 - A targeted post-fix Claude Opus 4.8 review verified all prior findings resolved, found no HIGH/MEDIUM blocker, and recommended merge. GPT independently fixed its remaining LOW live-smoke threshold mismatch; the other LOW notes are intentional/pre-existing: same-day-after-close scope, full-call multi-symbol retries, uniform retry-event timestamps, and snapshot ingestion identity.
+- A post-PR frozen-patch Claude Opus 4.8 review found no HIGH/blocker but identified one MEDIUM defense-in-depth gap: the exported low-level requester pinned scheme/host/port but not the two approved paths. GPT reproduced safe pre-network reachability with a fake requester RED, then pinned path/query/fragment at that second layer; the focused suite passed 40 tests with 1 default live skip.
 
 ## Task 8.1 safety and side effects
 
-- External effects were limited to explicitly authorized read-only KIS market-data requests: three successful OAuth token POSTs and three successful quotation GETs across the initial and two evidence/final live smokes. There were no account, balance, order, cancel/replace, broker, messaging, database, deployment, credential-change, commit, push, PR, or merge effects at this checkpoint.
+- External effects were limited to explicitly authorized read-only KIS market-data requests: three successful OAuth token POSTs and three successful quotation GETs across the initial and two evidence/final live smokes, plus the authorized GitHub PR #12/CI/squash merge. There were no account, balance, order, cancel/replace, broker, messaging, database, deployment, or credential-change effects.
 - Real KIS credential values and bearer tokens were never printed, stored in repository files, returned in test evidence, or included in this handoff. A changed-file scan found no match for the active KIS environment credential values and no private database/log/config artifact.
 - Foundation and explicit operated smoke are green; production application wiring and operational scheduling remain deferred to the later composition/runtime task.
 
