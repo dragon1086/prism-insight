@@ -25,6 +25,8 @@ from prism_core.data.contracts import (
 )
 from prism_core.data.providers.fmp_models import (
     FMPApiKey,
+    FMPFallbackRequest,
+    FMPFallbackResponseEnvelope,
     FMPPagination,
     FMPRequest,
     FMPResponseEnvelope,
@@ -40,6 +42,14 @@ class FMPTransport(Protocol):
         *,
         api_key: FMPApiKey,
     ) -> FMPResponseEnvelope: ...
+
+
+class FMPFallbackTransport(Protocol):
+    """Credential-free injected fallback available only by explicit policy."""
+
+    async def execute(
+        self, request: FMPFallbackRequest
+    ) -> FMPFallbackResponseEnvelope: ...
 
 
 @dataclass(frozen=True)
@@ -95,6 +105,38 @@ class FMPEventKind(str, Enum):
     PAGINATION_MALFORMED = "PAGINATION_MALFORMED"
     PAGE_LIMIT_EXCEEDED = "PAGE_LIMIT_EXCEEDED"
     REQUEST_BUDGET_EXHAUSTED = "REQUEST_BUDGET_EXHAUSTED"
+    FALLBACK_DISABLED = "FALLBACK_DISABLED"
+    FALLBACK_MISSING_TRANSPORT = "FALLBACK_MISSING_TRANSPORT"
+    FALLBACK_INELIGIBLE = "FALLBACK_INELIGIBLE"
+    FALLBACK_SELECTED = "FALLBACK_SELECTED"
+    FALLBACK_RETRY = "FALLBACK_RETRY"
+    FALLBACK_REJECTED = "FALLBACK_REJECTED"
+    FALLBACK_STALE = "FALLBACK_STALE"
+    FALLBACK_PARTIAL = "FALLBACK_PARTIAL"
+    FALLBACK_CONFLICT = "FALLBACK_CONFLICT"
+    FALLBACK_UNAVAILABLE = "FALLBACK_UNAVAILABLE"
+    FALLBACK_MALFORMED = "FALLBACK_MALFORMED"
+    FALLBACK_TIMEOUT = "FALLBACK_TIMEOUT"
+    FALLBACK_RATE_LIMIT = "FALLBACK_RATE_LIMIT"
+    FALLBACK_BUDGET_EXHAUSTED = "FALLBACK_BUDGET_EXHAUSTED"
+
+
+class FMPFallbackMode(str, Enum):
+    """Explicit policy switch; fallback is never inferred from environment state."""
+
+    DISABLED = "DISABLED"
+    RESEARCH_FIXTURE = "RESEARCH_FIXTURE"
+
+
+class FMPFallbackReason(str, Enum):
+    """Machine-branchable primary condition that invoked explicit fallback."""
+
+    STALE = "STALE"
+    PARTIAL = "PARTIAL"
+    MISSING = "MISSING"
+    UNAVAILABLE = "UNAVAILABLE"
+    TIMEOUT = "TIMEOUT"
+    RATE_LIMIT = "RATE_LIMIT"
 
 
 class FMPProviderEvent(ContractModel):
@@ -120,6 +162,12 @@ class FMPFetchResult:
     raw_payloads: tuple[FMPResponseEnvelope, ...]
     request_hashes: tuple[str, ...]
     events: tuple[FMPProviderEvent, ...]
+    primary_quality: DataQualityStatus
+    fallback_mode: FMPFallbackMode
+    selected_provider: str | None
+    fallback_raw_payloads: tuple[FMPFallbackResponseEnvelope, ...]
+    fallback_request_hashes: tuple[str, ...]
+    fallback_reason: FMPFallbackReason | None
 
 
 @dataclass
@@ -163,6 +211,10 @@ class FMPMarketDataProvider:
         max_pages: int = 10,
         max_requests: int | None = None,
         sleeper: Callable[[float], Awaitable[None]] | None = None,
+        fallback_mode: FMPFallbackMode = FMPFallbackMode.DISABLED,
+        fallback_transport: FMPFallbackTransport | None = None,
+        fallback_provider: str | None = None,
+        fallback_max_attempts: int = 1,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
@@ -170,6 +222,12 @@ class FMPMarketDataProvider:
             raise ValueError("max_pages must be positive")
         if max_requests is not None and max_requests < 1:
             raise ValueError("max_requests must be positive")
+        if fallback_max_attempts < 1:
+            raise ValueError("fallback_max_attempts must be positive")
+        if fallback_provider is not None and (
+            not fallback_provider or fallback_provider.lower() == "fmp"
+        ):
+            raise ValueError("fallback_provider must be non-empty and must not be fmp")
         by_id = {instrument.security_id.value: instrument for instrument in instruments}
         if len(by_id) != len(instruments):
             raise ValueError("security_id instruments must be unique")
@@ -182,8 +240,20 @@ class FMPMarketDataProvider:
         self._clock = clock
         self._max_attempts = max_attempts
         self._max_pages = max_pages
-        self._max_requests = max_requests or max_pages * max_attempts
+        fallback_configured = (
+            fallback_mode is FMPFallbackMode.RESEARCH_FIXTURE
+            and fallback_transport is not None
+            and fallback_provider is not None
+        )
+        fallback_allowance = fallback_max_attempts if fallback_configured else 0
+        if max_requests is not None and max_requests <= fallback_allowance:
+            raise ValueError("max_requests must leave at least one primary request")
+        self._max_requests = max_requests or max_pages * max_attempts + fallback_allowance
         self._sleeper = sleeper
+        self._fallback_mode = fallback_mode
+        self._fallback_transport = fallback_transport
+        self._fallback_provider = fallback_provider
+        self._fallback_max_attempts = fallback_max_attempts
 
     @staticmethod
     def _require_aware(value: datetime, field_name: str) -> datetime:
@@ -191,7 +261,9 @@ class FMPMarketDataProvider:
             raise ValueError(f"{field_name} must be timezone-aware")
         return value
 
-    def _response_exposes_secret(self, response: FMPResponseEnvelope) -> bool:
+    def _response_exposes_secret(
+        self, response: FMPResponseEnvelope | FMPFallbackResponseEnvelope
+    ) -> bool:
         secret = self._api_key.get_secret_value()
 
         def contains_secret(value: object) -> bool:
@@ -208,12 +280,334 @@ class FMPMarketDataProvider:
 
         return contains_secret(response.payload) or secret in response.source_record_id
 
+    async def _fetch_fallback(
+        self,
+        *,
+        active: tuple[FMPInstrument, ...],
+        as_of_date: datetime,
+        ingested_at: datetime,
+        budget: _RequestBudget,
+        primary_source_record_ids: frozenset[str],
+    ) -> tuple[
+        tuple[PriceBar, ...],
+        tuple[SymbolMapping, ...],
+        tuple[FMPFallbackResponseEnvelope, ...],
+        tuple[str, ...],
+        tuple[FMPProviderEvent, ...],
+    ]:
+        provider = self._fallback_provider
+        transport = self._fallback_transport
+        if provider is None or transport is None:
+            return (), (), (), (), (
+                FMPProviderEvent(
+                    provider=provider or "fallback",
+                    kind=FMPEventKind.FALLBACK_MISSING_TRANSPORT,
+                    quality=DataQualityStatus.UNAVAILABLE,
+                    attempt=max(1, budget.used),
+                    operation="fetch_fallback_prices",
+                    detail="fallback mode requires an injected transport and provider identity",
+                    occurred_at=ingested_at,
+                ),
+            )
+        request = FMPFallbackRequest(
+            provider=provider,
+            operation="fetch_fallback_prices",
+            params={
+                "as_of_date": as_of_date.isoformat(),
+                "symbols": [item.fmp_symbol for item in active],
+            },
+        )
+        retry_events: list[FMPProviderEvent] = []
+        response: FMPFallbackResponseEnvelope | None = None
+        attempt = max(1, budget.used)
+        for local_attempt in range(1, self._fallback_max_attempts + 1):
+            if budget.remaining < 1:
+                return (), (), (), (request.request_hash,), (
+                    *retry_events,
+                    FMPProviderEvent(
+                        provider=provider,
+                        kind=FMPEventKind.FALLBACK_BUDGET_EXHAUSTED,
+                        quality=DataQualityStatus.UNAVAILABLE,
+                        attempt=max(1, budget.used),
+                        operation=request.operation,
+                        detail="aggregate request budget has no fallback allowance",
+                        occurred_at=ingested_at,
+                    ),
+                )
+            attempt = budget.consume()
+            retry_detail: str | None = None
+            retry_kind = FMPEventKind.FALLBACK_RETRY
+            try:
+                candidate = await transport.execute(request)
+                if candidate.status_code != 429:
+                    response = candidate
+                    break
+                retry_detail = "fallback response status 429"
+                retry_kind = FMPEventKind.FALLBACK_RATE_LIMIT
+            except (FMPTimeoutError, FMPRateLimitError) as exc:
+                retry_detail = exc.__class__.__name__
+                retry_kind = (
+                    FMPEventKind.FALLBACK_TIMEOUT
+                    if isinstance(exc, FMPTimeoutError)
+                    else FMPEventKind.FALLBACK_RATE_LIMIT
+                )
+            except Exception as exc:
+                return (), (), (), (request.request_hash,), (
+                    *retry_events,
+                    FMPProviderEvent(
+                        provider=provider,
+                        kind=FMPEventKind.FALLBACK_REJECTED,
+                        quality=DataQualityStatus.UNAVAILABLE,
+                        attempt=attempt,
+                        operation=request.operation,
+                        detail=f"fallback failed with {exc.__class__.__name__}",
+                        occurred_at=ingested_at,
+                    ),
+                )
+            terminal = (
+                local_attempt == self._fallback_max_attempts or budget.remaining < 1
+            )
+            retry_events.append(
+                FMPProviderEvent(
+                    provider=provider,
+                    kind=retry_kind,
+                    quality=DataQualityStatus.UNAVAILABLE,
+                    attempt=attempt,
+                    operation=request.operation,
+                    detail=f"fallback retryable failure: {retry_detail}",
+                    occurred_at=ingested_at,
+                )
+            )
+            if terminal:
+                return (), (), (), (request.request_hash,), tuple(retry_events)
+            if self._sleeper is not None:
+                await self._sleeper(float(2 ** (local_attempt - 1)))
+        if response is None:
+            raise AssertionError("fallback retry loop ended without a response")
+        if self._response_exposes_secret(response):
+            return (), (), (), (request.request_hash,), (
+                *retry_events,
+                FMPProviderEvent(
+                    provider=provider,
+                    kind=FMPEventKind.FALLBACK_MALFORMED,
+                    quality=DataQualityStatus.UNAVAILABLE,
+                    attempt=attempt,
+                    operation=request.operation,
+                    detail="fallback response was rejected because it exposed secret material",
+                    occurred_at=ingested_at,
+                ),
+            )
+        if response.source_record_id in primary_source_record_ids:
+            return (), (), (), (request.request_hash,), (
+                *retry_events,
+                FMPProviderEvent(
+                    provider=provider,
+                    kind=FMPEventKind.FALLBACK_MALFORMED,
+                    quality=DataQualityStatus.UNAVAILABLE,
+                    attempt=attempt,
+                    operation=request.operation,
+                    detail="fallback source identity collides with retained primary evidence",
+                    occurred_at=ingested_at,
+                ),
+            )
+        retained = (response,)
+        invalid = (
+            response.provider != provider
+            or not 200 <= response.status_code < 300
+            or response.quality is not DataQualityStatus.FRESH
+            or response.available_at > as_of_date
+            or response.available_at > ingested_at
+        )
+        payload = response.payload
+        rows = payload.get("data") if isinstance(payload, Mapping) else None
+        if invalid or not isinstance(rows, list):
+            quality_kinds = {
+                DataQualityStatus.STALE: FMPEventKind.FALLBACK_STALE,
+                DataQualityStatus.PARTIAL: FMPEventKind.FALLBACK_PARTIAL,
+                DataQualityStatus.CONFLICT: FMPEventKind.FALLBACK_CONFLICT,
+                DataQualityStatus.UNAVAILABLE: FMPEventKind.FALLBACK_UNAVAILABLE,
+            }
+            rejected_kind = quality_kinds.get(response.quality)
+            if rejected_kind is None:
+                rejected_kind = (
+                    FMPEventKind.FALLBACK_UNAVAILABLE
+                    if not 200 <= response.status_code < 300
+                    else FMPEventKind.FALLBACK_MALFORMED
+                )
+            return (), (), retained, (request.request_hash,), (
+                *retry_events,
+                FMPProviderEvent(
+                    provider=provider,
+                    kind=rejected_kind,
+                    quality=response.quality,
+                    attempt=attempt,
+                    operation=request.operation,
+                    detail="fallback response failed provider, quality, status, PIT, or schema checks",
+                    occurred_at=ingested_at,
+                ),
+            )
+        by_symbol = {item.fmp_symbol: item for item in active}
+        bars_by_identity: dict[tuple[str, date], PriceBar] = {}
+        present: set[str] = set()
+        try:
+            for raw_row in rows:
+                if not isinstance(raw_row, Mapping):
+                    raise ValueError("fallback row must be an object")
+                row = cast(Mapping[str, object], raw_row)
+                symbol = str(row.get("symbol", ""))
+                instrument = by_symbol.get(symbol)
+                if instrument is None:
+                    raise ValueError("fallback returned an unmatched symbol")
+                required_core = {
+                    "date",
+                    "rawOpen",
+                    "rawHigh",
+                    "rawLow",
+                    "rawClose",
+                    "rawVolume",
+                }
+                if required_core - row.keys():
+                    raise ValueError("fallback row is missing a core field")
+                adjusted_names = (
+                    "adjustedOpen",
+                    "adjustedHigh",
+                    "adjustedLow",
+                    "adjustedClose",
+                    "adjustedVolume",
+                )
+                adjusted_present = tuple(row.get(name) is not None for name in adjusted_names)
+                if any(adjusted_present) != all(adjusted_present) or (
+                    any(adjusted_present) and row.get("adjustmentAsOf") is None
+                ):
+                    raise ValueError("fallback adjusted OHLCV is incomplete")
+                has_adjusted = all(adjusted_present)
+                trading_date = date.fromisoformat(str(row["date"]))
+                if trading_date > as_of_date.astimezone(self._market_timezone).date():
+                    raise ValueError("fallback trading date exceeds requested as-of date")
+                adjustment_as_of = (
+                    datetime.fromisoformat(str(row["adjustmentAsOf"]))
+                    if has_adjusted
+                    else None
+                )
+                if adjustment_as_of is not None and (
+                    adjustment_as_of.tzinfo is None
+                    or adjustment_as_of.utcoffset() is None
+                    or adjustment_as_of > as_of_date
+                ):
+                    raise ValueError("fallback adjustment vintage violates PIT")
+                timing = ObservationTime(
+                    observed_at=response.observed_at,
+                    available_at=response.available_at,
+                    ingested_at=ingested_at,
+                    as_of_date=as_of_date,
+                )
+                bar = PriceBar(
+                    security_id=instrument.security_id,
+                    provider=provider,
+                    provider_symbol=symbol,
+                    source_record_id=(
+                        f"{response.source_record_id}:price:{symbol}:{trading_date.isoformat()}"
+                    ),
+                    source_hash=response.source_hash,
+                    revision=response.revision,
+                    timing=timing,
+                    quality=DataQualityStatus.FRESH,
+                    bar_start=datetime.combine(
+                        trading_date, time.min, tzinfo=self._market_timezone
+                    ),
+                    bar_end=datetime.combine(
+                        trading_date, time(16, 0), tzinfo=self._market_timezone
+                    ),
+                    interval="1d",
+                    currency="USD",
+                    raw_open=Decimal(str(row["rawOpen"])),
+                    raw_high=Decimal(str(row["rawHigh"])),
+                    raw_low=Decimal(str(row["rawLow"])),
+                    raw_close=Decimal(str(row["rawClose"])),
+                    raw_volume=Decimal(str(row["rawVolume"])),
+                    adjusted_open=Decimal(str(row["adjustedOpen"])) if has_adjusted else None,
+                    adjusted_high=Decimal(str(row["adjustedHigh"])) if has_adjusted else None,
+                    adjusted_low=Decimal(str(row["adjustedLow"])) if has_adjusted else None,
+                    adjusted_close=Decimal(str(row["adjustedClose"])) if has_adjusted else None,
+                    adjusted_volume=Decimal(str(row["adjustedVolume"])) if has_adjusted else None,
+                    adjustment_as_of=adjustment_as_of,
+                )
+                identity = (symbol, trading_date)
+                prior = bars_by_identity.get(identity)
+                if prior is not None and prior != bar:
+                    raise ValueError("fallback contains conflicting price rows")
+                bars_by_identity[identity] = bar
+                present.add(symbol)
+        except (ArithmeticError, TypeError, ValueError):
+            return (), (), retained, (request.request_hash,), (
+                *retry_events,
+                FMPProviderEvent(
+                    provider=provider,
+                    kind=FMPEventKind.FALLBACK_MALFORMED,
+                    quality=DataQualityStatus.UNAVAILABLE,
+                    attempt=attempt,
+                    operation=request.operation,
+                    detail="fallback payload is incomplete, malformed, conflicting, or violates PIT",
+                    occurred_at=ingested_at,
+                ),
+            )
+        if present != set(by_symbol):
+            return (), (), retained, (request.request_hash,), (
+                *retry_events,
+                FMPProviderEvent(
+                    provider=provider,
+                    kind=FMPEventKind.FALLBACK_PARTIAL,
+                    quality=DataQualityStatus.PARTIAL,
+                    attempt=attempt,
+                    operation=request.operation,
+                    detail="fallback did not contain every requested active security",
+                    occurred_at=ingested_at,
+                ),
+            )
+        bars = tuple(
+            sorted(
+                bars_by_identity.values(),
+                key=lambda item: (item.bar_start, str(item.security_id.value)),
+            )
+        )
+        mappings = tuple(
+            SymbolMapping(
+                security_id=item.security_id,
+                provider=provider,
+                provider_symbol=item.fmp_symbol,
+                market="US",
+                valid_from=item.valid_from,
+                valid_to=item.valid_to,
+                timing=ObservationTime(
+                    observed_at=response.observed_at,
+                    available_at=response.available_at,
+                    ingested_at=ingested_at,
+                    as_of_date=as_of_date,
+                ),
+                source_hash=response.source_hash,
+            )
+            for item in sorted(active, key=lambda item: str(item.security_id.value))
+        )
+        return bars, mappings, retained, (request.request_hash,), (
+            *retry_events,
+            FMPProviderEvent(
+                provider=provider,
+                kind=FMPEventKind.FALLBACK_SELECTED,
+                quality=DataQualityStatus.FRESH,
+                attempt=attempt,
+                operation=request.operation,
+                detail="complete fresh fallback evidence selected under explicit research policy",
+                occurred_at=ingested_at,
+            ),
+        )
+
     async def _execute_with_retry(
         self,
         request: FMPRequest,
         *,
         occurred_at: datetime,
         budget: _RequestBudget | None = None,
+        reserved_requests: int = 0,
     ) -> tuple[
         FMPResponseEnvelope | None,
         tuple[FMPProviderEvent, ...],
@@ -223,7 +617,7 @@ class FMPMarketDataProvider:
         terminal_status: CapabilityStatus | None = None
         request_budget = budget or _RequestBudget(self._max_attempts)
         for local_attempt in range(1, self._max_attempts + 1):
-            if request_budget.remaining < 1:
+            if request_budget.remaining <= reserved_requests:
                 events.append(
                     FMPProviderEvent(
                         provider="fmp",
@@ -276,7 +670,10 @@ class FMPMarketDataProvider:
                     occurred_at=occurred_at,
                 )
             )
-            if local_attempt == self._max_attempts or request_budget.remaining < 1:
+            if (
+                local_attempt == self._max_attempts
+                or request_budget.remaining <= reserved_requests
+            ):
                 events.append(
                     FMPProviderEvent(
                         provider="fmp",
@@ -455,10 +852,18 @@ class FMPMarketDataProvider:
                     "symbols": [item.fmp_symbol for item in active],
                 },
             )
+            request_hashes.append(request.request_hash)
             page_response, retry_events, _ = await self._execute_with_retry(
                 request,
                 occurred_at=ingested_at,
                 budget=budget,
+                reserved_requests=(
+                    self._fallback_max_attempts
+                    if self._fallback_mode is FMPFallbackMode.RESEARCH_FIXTURE
+                    and self._fallback_transport is not None
+                    and self._fallback_provider is not None
+                    else 0
+                ),
             )
             events.extend(retry_events)
             if page_response is None:
@@ -476,7 +881,6 @@ class FMPMarketDataProvider:
                 collection_complete = False
                 break
             collected.append(page_response)
-            request_hashes.append(request.request_hash)
             if not 200 <= page_response.status_code < 300:
                 events.append(
                     page_event(
@@ -1009,16 +1413,95 @@ class FMPMarketDataProvider:
             item.kind is FMPEventKind.CONFLICT for item in events
         ):
             quality = DataQualityStatus.CONFLICT
+        primary_quality = quality
+        selected_provider: str | None = "fmp" if quality is DataQualityStatus.FRESH else None
+        fallback_raw_payloads: tuple[FMPFallbackResponseEnvelope, ...] = ()
+        fallback_request_hashes: tuple[str, ...] = ()
+        fallback_reason: FMPFallbackReason | None = None
+        if quality is not DataQualityStatus.FRESH:
+            bars = []
+            mappings = []
+            if self._fallback_mode is FMPFallbackMode.DISABLED:
+                events.append(
+                    FMPProviderEvent(
+                        provider="fmp",
+                        kind=FMPEventKind.FALLBACK_DISABLED,
+                        quality=quality,
+                        attempt=max(1, budget.used),
+                        operation="apply_fallback_policy",
+                        detail="fallback policy is disabled",
+                        occurred_at=ingested_at,
+                    )
+                )
+            elif any(
+                event.kind
+                in {
+                    FMPEventKind.CONFLICT,
+                    FMPEventKind.MALFORMED,
+                    FMPEventKind.PAGINATION_MALFORMED,
+                    FMPEventKind.INELIGIBLE,
+                }
+                for event in events
+            ):
+                events.append(
+                    FMPProviderEvent(
+                        provider="fmp",
+                        kind=FMPEventKind.FALLBACK_INELIGIBLE,
+                        quality=quality,
+                        attempt=max(1, budget.used),
+                        operation="apply_fallback_policy",
+                        detail="conflicting, malformed, or ineligible primary evidence blocks fallback selection",
+                        occurred_at=ingested_at,
+                    )
+                )
+            else:
+                event_kinds = {event.kind for event in events}
+                if primary_quality is DataQualityStatus.STALE:
+                    fallback_reason = FMPFallbackReason.STALE
+                elif response is not None and FMPEventKind.MISSING in event_kinds:
+                    fallback_reason = FMPFallbackReason.MISSING
+                elif primary_quality is DataQualityStatus.PARTIAL:
+                    fallback_reason = FMPFallbackReason.PARTIAL
+                elif FMPEventKind.RATE_LIMIT in event_kinds:
+                    fallback_reason = FMPFallbackReason.RATE_LIMIT
+                elif FMPEventKind.TIMEOUT in event_kinds:
+                    fallback_reason = FMPFallbackReason.TIMEOUT
+                else:
+                    fallback_reason = FMPFallbackReason.UNAVAILABLE
+                (
+                    fallback_bars,
+                    fallback_mappings,
+                    fallback_raw_payloads,
+                    fallback_request_hashes,
+                    fallback_events,
+                ) = await self._fetch_fallback(
+                    active=active,
+                    as_of_date=as_of_date,
+                    ingested_at=ingested_at,
+                    budget=budget,
+                    primary_source_record_ids=frozenset(
+                        item.source_record_id for item in raw_payloads
+                    ),
+                )
+                events.extend(fallback_events)
+                if fallback_bars and fallback_mappings:
+                    bars = list(fallback_bars)
+                    mappings = list(fallback_mappings)
+                    quality = DataQualityStatus.FRESH
+                    selected_provider = self._fallback_provider
         content = {
             "market": "US",
             "as_of_date": as_of_date.isoformat(),
+            "fallback_mode": self._fallback_mode.value,
+            "primary_quality": primary_quality.value,
+            "selected_provider": selected_provider,
             "requested_security_ids": [str(item.value) for item in security_ids],
-            "request_hashes": request_hashes if response is not None else [],
-            "raw_payload_hashes": (
-                [item.source_hash for item in raw_payloads]
-                if response is not None
-                else []
-            ),
+            "request_hashes": request_hashes,
+            "raw_payload_hashes": [item.source_hash for item in raw_payloads],
+            "fallback_request_hashes": fallback_request_hashes,
+            "fallback_raw_payload_hashes": [
+                item.source_hash for item in fallback_raw_payloads
+            ],
             "quality": quality.value,
             "symbol_mappings": [item.model_dump(mode="json") for item in mappings],
             "price_bars": [item.model_dump(mode="json") for item in bars],
@@ -1044,4 +1527,10 @@ class FMPMarketDataProvider:
             raw_payloads=raw_payloads,
             request_hashes=tuple(request_hashes),
             events=tuple(events),
+            primary_quality=primary_quality,
+            fallback_mode=self._fallback_mode,
+            selected_provider=selected_provider,
+            fallback_raw_payloads=fallback_raw_payloads,
+            fallback_request_hashes=fallback_request_hashes,
+            fallback_reason=fallback_reason,
         )

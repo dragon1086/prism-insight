@@ -11,6 +11,9 @@ from prism_core.data import DataQualityStatus, SecurityId
 from prism_core.data.providers.fmp import (
     CapabilityStatus,
     FMPEventKind,
+    FMPFallbackMode,
+    FMPFallbackReason,
+    FMPFallbackTransport,
     FMPInstrument,
     FMPMarketDataProvider,
     FMPRateLimitError,
@@ -18,6 +21,8 @@ from prism_core.data.providers.fmp import (
 )
 from prism_core.data.providers.fmp_models import (
     FMPApiKey,
+    FMPFallbackRequest,
+    FMPFallbackResponseEnvelope,
     FMPRequest,
     FMPResponseEnvelope,
 )
@@ -501,6 +506,7 @@ async def test_one_aggregate_request_budget_covers_retries_across_all_pages() ->
         FMPEventKind.TIMEOUT,
         FMPEventKind.TIMEOUT,
         FMPEventKind.RETRY_EXHAUSTED,
+        FMPEventKind.FALLBACK_DISABLED,
     ]
 
 
@@ -661,7 +667,10 @@ async def test_conflicting_duplicate_page_identity_marks_the_whole_snapshot_conf
     assert len(result.raw_payloads) == 2
     assert result.snapshot.price_bars == ()
     assert result.snapshot.quality is DataQualityStatus.CONFLICT
-    assert [item.kind for item in result.events] == [FMPEventKind.CONFLICT]
+    assert [item.kind for item in result.events] == [
+        FMPEventKind.CONFLICT,
+        FMPEventKind.FALLBACK_DISABLED,
+    ]
 
 
 @pytest.mark.asyncio
@@ -700,7 +709,10 @@ async def test_non_success_page_with_valid_looking_data_fails_closed() -> None:
     assert len(result.raw_payloads) == 1
     assert result.snapshot.price_bars == ()
     assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
-    assert [item.kind for item in result.events] == [FMPEventKind.UNAVAILABLE]
+    assert [item.kind for item in result.events] == [
+        FMPEventKind.UNAVAILABLE,
+        FMPEventKind.FALLBACK_DISABLED,
+    ]
 
 
 @pytest.mark.asyncio
@@ -799,7 +811,8 @@ async def test_non_object_price_row_degrades_snapshot_instead_of_silent_fresh() 
         as_of_date=AS_OF,
     )
 
-    assert len(result.snapshot.price_bars) == 1
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.symbol_mappings == ()
     assert result.snapshot.quality is DataQualityStatus.PARTIAL
     assert any(event.kind is FMPEventKind.MALFORMED for event in result.events)
 
@@ -850,9 +863,733 @@ async def test_provider_quality_is_preserved_and_never_relabelled_fresh(
         as_of_date=AS_OF,
     )
 
+    assert result.primary_quality is envelope_quality
+    assert result.fallback_mode is FMPFallbackMode.DISABLED
+    assert result.selected_provider is None
     assert result.snapshot.quality is envelope_quality
-    assert result.snapshot.price_bars[0].quality is envelope_quality
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.symbol_mappings == ()
     assert any(event.kind is expected_kind for event in result.events)
+    assert any(event.kind is FMPEventKind.FALLBACK_DISABLED for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_explicit_research_fallback_keeps_primary_and_fallback_provenance_separate() -> None:
+    class StalePrimary(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.STALE,
+            )
+
+    class FixtureFallback(FMPFallbackTransport):
+        async def execute(
+            self, request: FMPFallbackRequest
+        ) -> FMPFallbackResponseEnvelope:
+            assert request.provider == "yfinance_fixture"
+            assert request.params == {
+                "as_of_date": AS_OF.isoformat(),
+                "symbols": ["AAPL"],
+            }
+            return FMPFallbackResponseEnvelope(
+                provider="yfinance_fixture",
+                status_code=200,
+                source_record_id="yfinance-fixture:AAPL:2026-07-23",
+                revision=4,
+                observed_at=datetime(2026, 7, 23, 20, 2, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 20, 3, tzinfo=UTC),
+                payload=(await PricePageTransport().execute(
+                    FMPRequest(
+                        operation="fetch_price_page",
+                        path="/stable/historical-price-eod/full",
+                        params={"page": 1, "symbols": ["AAPL"]},
+                    ),
+                    api_key=FMPApiKey(SECRET),
+                )).payload,
+                quality=DataQualityStatus.FRESH,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=StalePrimary(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+        fallback_transport=FixtureFallback(),
+        fallback_provider="yfinance_fixture",
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.primary_quality is DataQualityStatus.STALE
+    assert len(result.raw_payloads) == 1
+    assert len(result.fallback_raw_payloads) == 1
+    assert result.raw_payloads[0].source_record_id.startswith("fmp:")
+    assert result.fallback_raw_payloads[0].source_record_id.startswith("yfinance-fixture:")
+    assert result.selected_provider == "yfinance_fixture"
+    assert result.fallback_reason is FMPFallbackReason.STALE
+    assert result.snapshot.quality is DataQualityStatus.FRESH
+    assert {bar.provider for bar in result.snapshot.price_bars} == {"yfinance_fixture"}
+    assert {mapping.provider for mapping in result.snapshot.symbol_mappings} == {
+        "yfinance_fixture"
+    }
+    assert result.snapshot.price_bars[0].source_hash == result.fallback_raw_payloads[0].source_hash
+    assert result.snapshot.price_bars[0].revision == 4
+    assert result.snapshot.price_bars[0].timing.observed_at == datetime(
+        2026, 7, 23, 20, 2, tzinfo=UTC
+    )
+    assert len(result.fallback_request_hashes) == 1
+    assert SECRET not in result.fallback_request_hashes[0]
+    assert any(event.kind is FMPEventKind.FALLBACK_SELECTED for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_fallback_cannot_reuse_primary_source_record_identity() -> None:
+    primary_source_record_id = "fmp:prices:AAPL:2026-07-23:page-1"
+
+    class StalePrimary(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            assert base.source_record_id == primary_source_record_id
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.STALE,
+            )
+
+    class ReusedIdentityFallback:
+        async def execute(
+            self, request: FMPFallbackRequest
+        ) -> FMPFallbackResponseEnvelope:
+            base = await PricePageTransport().execute(
+                FMPRequest(
+                    operation="fetch_price_page",
+                    path="/stable/historical-price-eod/full",
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=FMPApiKey(SECRET),
+            )
+            return FMPFallbackResponseEnvelope(
+                provider="fixture_alt",
+                status_code=200,
+                source_record_id=primary_source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.FRESH,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=StalePrimary(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+        fallback_transport=ReusedIdentityFallback(),
+        fallback_provider="fixture_alt",
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.selected_provider is None
+    assert result.snapshot.price_bars == ()
+    assert result.fallback_raw_payloads == ()
+    assert any(
+        event.kind is FMPEventKind.FALLBACK_MALFORMED for event in result.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_aggregate_budget_reserves_one_bounded_fallback_attempt_after_rate_limit() -> None:
+    primary_calls = 0
+    fallback_calls = 0
+
+    class LimitedPrimary:
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            nonlocal primary_calls
+            primary_calls += 1
+            return FMPResponseEnvelope(
+                status_code=429,
+                source_record_id="fmp:prices:rate-limited",
+                revision=0,
+                observed_at=datetime(2026, 7, 23, 20, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 20, 1, tzinfo=UTC),
+                payload={"error": "limited"},
+            )
+
+    class FreshFallback:
+        async def execute(
+            self, request: FMPFallbackRequest
+        ) -> FMPFallbackResponseEnvelope:
+            nonlocal fallback_calls
+            fallback_calls += 1
+            base = await PricePageTransport().execute(
+                FMPRequest(
+                    operation="fetch_price_page",
+                    path="/stable/historical-price-eod/full",
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=FMPApiKey(SECRET),
+            )
+            return FMPFallbackResponseEnvelope(
+                provider="fixture_alt",
+                status_code=200,
+                source_record_id="fixture-alt:AAPL:2026-07-23",
+                revision=0,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.FRESH,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=LimitedPrimary(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        max_attempts=2,
+        max_requests=2,
+        fallback_max_attempts=1,
+        fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+        fallback_transport=FreshFallback(),
+        fallback_provider="fixture_alt",
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert primary_calls == 1
+    assert fallback_calls == 1
+    assert result.selected_provider == "fixture_alt"
+    assert result.snapshot.quality is DataQualityStatus.FRESH
+    assert [event.kind for event in result.events] == [
+        FMPEventKind.RATE_LIMIT,
+        FMPEventKind.RETRY_EXHAUSTED,
+        FMPEventKind.FALLBACK_SELECTED,
+    ]
+
+
+def test_explicit_aggregate_budget_must_leave_one_primary_attempt() -> None:
+    with pytest.raises(
+        ValueError, match="max_requests must leave at least one primary request"
+    ):
+        FMPMarketDataProvider(
+            transport=PricePageTransport(),
+            api_key=FMPApiKey(SECRET),
+            instruments=(),
+            clock=lambda: INGESTED,
+            max_requests=1,
+            fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+            fallback_transport=object(),  # type: ignore[arg-type]
+            fallback_provider="fixture_alt",
+            fallback_max_attempts=1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_fallback_retry_is_bounded_observable_and_retry_stable() -> None:
+    class StalePrimary(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=200,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.STALE,
+            )
+
+    class RetryFallback:
+        def __init__(self, *, fail_once: bool) -> None:
+            self.calls = 0
+            self.fail_once = fail_once
+
+        async def execute(
+            self, request: FMPFallbackRequest
+        ) -> FMPFallbackResponseEnvelope:
+            self.calls += 1
+            if self.fail_once and self.calls == 1:
+                raise FMPTimeoutError("fallback timeout is sanitized")
+            base = await PricePageTransport().execute(
+                FMPRequest(
+                    operation="fetch_price_page",
+                    path="/stable/historical-price-eod/full",
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=FMPApiKey(SECRET),
+            )
+            return FMPFallbackResponseEnvelope(
+                provider="fixture_alt",
+                status_code=200,
+                source_record_id="fixture-alt:AAPL:stable",
+                revision=1,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.FRESH,
+            )
+
+    instrument = FMPInstrument(
+        security_id=SECURITY_ID,
+        fmp_symbol="AAPL",
+        valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+    )
+    retried_transport = RetryFallback(fail_once=True)
+    direct_transport = RetryFallback(fail_once=False)
+    retried = FMPMarketDataProvider(
+        transport=StalePrimary(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(instrument,),
+        clock=lambda: INGESTED,
+        max_requests=3,
+        fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+        fallback_transport=retried_transport,
+        fallback_provider="fixture_alt",
+        fallback_max_attempts=2,
+    )
+    direct = FMPMarketDataProvider(
+        transport=StalePrimary(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(instrument,),
+        clock=lambda: INGESTED,
+        max_requests=3,
+        fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+        fallback_transport=direct_transport,
+        fallback_provider="fixture_alt",
+        fallback_max_attempts=2,
+    )
+
+    retried_result = await retried.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+    direct_result = await direct.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert retried_transport.calls == 2
+    assert direct_transport.calls == 1
+    assert retried_result.snapshot.snapshot_id == direct_result.snapshot.snapshot_id
+    assert retried_result.fallback_request_hashes == direct_result.fallback_request_hashes
+    assert [event.kind for event in retried_result.events] == [
+        FMPEventKind.STALE,
+        FMPEventKind.FALLBACK_TIMEOUT,
+        FMPEventKind.FALLBACK_SELECTED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recovered_primary_timeout_does_not_replace_stale_fallback_reason() -> None:
+    class RetriedStalePrimary(PricePageTransport):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            self.calls += 1
+            if self.calls == 1:
+                raise FMPTimeoutError("transient primary timeout")
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.STALE,
+            )
+
+    class FreshFallback:
+        async def execute(
+            self, request: FMPFallbackRequest
+        ) -> FMPFallbackResponseEnvelope:
+            base = await PricePageTransport().execute(
+                FMPRequest(
+                    operation="fetch_price_page",
+                    path="/stable/historical-price-eod/full",
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=FMPApiKey(SECRET),
+            )
+            return FMPFallbackResponseEnvelope(
+                provider="fixture_alt",
+                status_code=200,
+                source_record_id="fixture-alt:AAPL:recovered-primary-timeout",
+                revision=0,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.FRESH,
+            )
+
+    primary = RetriedStalePrimary()
+    provider = FMPMarketDataProvider(
+        transport=primary,
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        max_attempts=2,
+        fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+        fallback_transport=FreshFallback(),
+        fallback_provider="fixture_alt",
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert primary.calls == 2
+    assert result.primary_quality is DataQualityStatus.STALE
+    assert result.fallback_reason is FMPFallbackReason.STALE
+    assert result.selected_provider == "fixture_alt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fallback_quality", "status_code", "payload_mode", "expected_kind"),
+    [
+        (DataQualityStatus.STALE, 200, "valid", FMPEventKind.FALLBACK_STALE),
+        (DataQualityStatus.PARTIAL, 200, "valid", FMPEventKind.FALLBACK_PARTIAL),
+        (DataQualityStatus.CONFLICT, 200, "valid", FMPEventKind.FALLBACK_CONFLICT),
+        (
+            DataQualityStatus.UNAVAILABLE,
+            200,
+            "valid",
+            FMPEventKind.FALLBACK_UNAVAILABLE,
+        ),
+        (DataQualityStatus.FRESH, 500, "valid", FMPEventKind.FALLBACK_UNAVAILABLE),
+        (DataQualityStatus.FRESH, 200, "malformed", FMPEventKind.FALLBACK_MALFORMED),
+        (DataQualityStatus.FRESH, 200, "future", FMPEventKind.FALLBACK_MALFORMED),
+    ],
+)
+async def test_degraded_fallback_is_retained_classified_and_never_normalized(
+    fallback_quality: DataQualityStatus,
+    status_code: int,
+    payload_mode: str,
+    expected_kind: FMPEventKind,
+) -> None:
+    class PartialPrimary(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=200,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.PARTIAL,
+            )
+
+    class DegradedFallback:
+        async def execute(
+            self, request: FMPFallbackRequest
+        ) -> FMPFallbackResponseEnvelope:
+            base = await PricePageTransport().execute(
+                FMPRequest(
+                    operation="fetch_price_page",
+                    path="/stable/historical-price-eod/full",
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=FMPApiKey(SECRET),
+            )
+            payload = base.payload if payload_mode != "malformed" else {"data": "bad"}
+            available_at = (
+                datetime(2026, 7, 24, 1, 30, tzinfo=UTC)
+                if payload_mode == "future"
+                else base.available_at
+            )
+            observed_at = (
+                datetime(2026, 7, 24, 1, 29, tzinfo=UTC)
+                if payload_mode == "future"
+                else base.observed_at
+            )
+            return FMPFallbackResponseEnvelope(
+                provider="fixture_alt",
+                status_code=status_code,
+                source_record_id=f"fixture-alt:{payload_mode}:{fallback_quality.value}",
+                revision=2,
+                observed_at=observed_at,
+                available_at=available_at,
+                payload=payload,
+                quality=fallback_quality,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=PartialPrimary(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+        fallback_transport=DegradedFallback(),
+        fallback_provider="fixture_alt",
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.primary_quality is DataQualityStatus.PARTIAL
+    assert result.selected_provider is None
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.symbol_mappings == ()
+    assert len(result.raw_payloads) == 1
+    assert len(result.fallback_raw_payloads) == 1
+    fallback_event = next(event for event in result.events if event.provider == "fixture_alt")
+    assert fallback_event.kind is expected_kind
+    assert SECRET not in fallback_event.detail
+
+
+@pytest.mark.asyncio
+async def test_research_mode_without_injected_fallback_is_explicit_and_fail_closed() -> None:
+    class StalePrimary(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=200,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.STALE,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=StalePrimary(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.fallback_reason is FMPFallbackReason.STALE
+    assert result.selected_provider is None
+    assert result.snapshot.price_bars == ()
+    assert any(
+        event.kind is FMPEventKind.FALLBACK_MISSING_TRANSPORT
+        for event in result.events
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary_mode", ["conflict", "malformed"])
+async def test_conflicting_or_malformed_primary_never_invokes_fallback(
+    primary_mode: str,
+) -> None:
+    fallback_calls = 0
+
+    class InvalidPrimary(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            payload = base.payload
+            if primary_mode == "malformed":
+                payload = {
+                    "data": "bad",
+                    "pagination": {
+                        "page": 1,
+                        "totalPages": 1,
+                        "hasMore": False,
+                        "nextPage": None,
+                    },
+                }
+            return FMPResponseEnvelope(
+                status_code=200,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=payload,
+                quality=(
+                    DataQualityStatus.CONFLICT
+                    if primary_mode == "conflict"
+                    else DataQualityStatus.FRESH
+                ),
+            )
+
+    class MustNotCallFallback:
+        async def execute(
+            self, request: FMPFallbackRequest
+        ) -> FMPFallbackResponseEnvelope:
+            nonlocal fallback_calls
+            fallback_calls += 1
+            raise AssertionError("invalid primary evidence must not be laundered")
+
+    provider = FMPMarketDataProvider(
+        transport=InvalidPrimary(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+        fallback_transport=MustNotCallFallback(),
+        fallback_provider="fixture_alt",
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert fallback_calls == 0
+    assert result.fallback_reason is None
+    assert result.selected_provider is None
+    assert result.snapshot.price_bars == ()
+    assert any(event.kind is FMPEventKind.FALLBACK_INELIGIBLE for event in result.events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("secret_location", ["source_record_id", "payload"])
+async def test_fallback_secret_echo_is_not_retained_or_rendered(
+    secret_location: str,
+) -> None:
+    class StalePrimary(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=200,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.STALE,
+            )
+
+    class SecretEchoFallback:
+        async def execute(
+            self, request: FMPFallbackRequest
+        ) -> FMPFallbackResponseEnvelope:
+            base = await PricePageTransport().execute(
+                FMPRequest(
+                    operation="fetch_price_page",
+                    path="/stable/historical-price-eod/full",
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=FMPApiKey(SECRET),
+            )
+            return FMPFallbackResponseEnvelope(
+                provider="fixture_alt",
+                status_code=200,
+                source_record_id=(
+                    f"fixture-alt:{SECRET}"
+                    if secret_location == "source_record_id"
+                    else "fixture-alt:safe"
+                ),
+                revision=1,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=(
+                    {"data": [], "debug": SECRET}
+                    if secret_location == "payload"
+                    else base.payload
+                ),
+                quality=DataQualityStatus.FRESH,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=StalePrimary(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        fallback_mode=FMPFallbackMode.RESEARCH_FIXTURE,
+        fallback_transport=SecretEchoFallback(),
+        fallback_provider="fixture_alt",
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    assert result.fallback_raw_payloads == ()
+    assert result.snapshot.price_bars == ()
+    assert any(event.kind is FMPEventKind.FALLBACK_MALFORMED for event in result.events)
+    assert SECRET not in repr(result)
 
 
 @pytest.mark.asyncio
@@ -980,7 +1717,10 @@ async def test_inactive_symbol_interval_fails_closed_before_transport() -> None:
     assert result.snapshot.symbol_mappings == ()
     assert result.snapshot.price_bars == ()
     assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
-    assert [event.kind for event in result.events] == [FMPEventKind.INELIGIBLE]
+    assert [event.kind for event in result.events] == [
+        FMPEventKind.INELIGIBLE,
+        FMPEventKind.FALLBACK_DISABLED,
+    ]
 
 
 @pytest.mark.asyncio
@@ -1031,7 +1771,8 @@ async def test_unknown_and_missing_symbols_are_explicit_without_guessing() -> No
         as_of_date=AS_OF,
     )
 
-    assert [bar.security_id for bar in result.snapshot.price_bars] == [SECURITY_ID]
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.symbol_mappings == ()
     assert result.snapshot.quality is DataQualityStatus.PARTIAL
     assert {event.kind for event in result.events} >= {
         FMPEventKind.UNMATCHED,
@@ -1283,6 +2024,11 @@ def test_fmp_contracts_are_exported_from_public_data_packages() -> None:
         "CapabilityStatus",
         "FMPApiKey",
         "FMPEventKind",
+        "FMPFallbackMode",
+        "FMPFallbackReason",
+        "FMPFallbackRequest",
+        "FMPFallbackResponseEnvelope",
+        "FMPFallbackTransport",
         "FMPFetchResult",
         "FMPInstrument",
         "FMPMarketDataProvider",
@@ -1387,11 +2133,13 @@ async def test_exhausted_price_page_retry_returns_unavailable_snapshot() -> None
     )
 
     assert result.raw_payloads == ()
+    assert len(result.request_hashes) == 1
     assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
     assert [event.kind for event in result.events] == [
         FMPEventKind.RATE_LIMIT,
         FMPEventKind.RATE_LIMIT,
         FMPEventKind.RETRY_EXHAUSTED,
+        FMPEventKind.FALLBACK_DISABLED,
     ]
 
 
@@ -1427,4 +2175,7 @@ async def test_unexpected_transport_exception_is_sanitized_and_fails_closed() ->
     rendered = repr(capability) + repr(fetched)
     assert SECRET not in rendered
     assert [event.kind for event in capability.events] == [FMPEventKind.MALFORMED]
-    assert [event.kind for event in fetched.events] == [FMPEventKind.MALFORMED]
+    assert [event.kind for event in fetched.events] == [
+        FMPEventKind.MALFORMED,
+        FMPEventKind.FALLBACK_DISABLED,
+    ]

@@ -1,44 +1,38 @@
 # PRISM Guarded-Autopilot Handoff
 
-## Current milestone — Phase 1A Task 8.1
+## Current milestone — Phase 1A Task 9.3
 
-- Branch: `fix/kis-requester-path-confinement` (follow-up to merged PR #12)
-- State: the primary implementation was squash-merged via PR #12 at `bc9ac40` after exact-head CI passed. A final frozen-patch Claude review found one defense-in-depth MEDIUM in the exported requester path boundary; a strict RED→GREEN hardening fix and focused verification are complete locally, with its follow-up PR/CI/merge pending at this checkpoint.
-- Runtime state: a concrete KIS production-host HTTP/OAuth transport now exists behind the existing injected `KISMarketDataProvider` boundary and was exercised explicitly by the opt-in live smoke. No application composition root, scheduler, dashboard, Telegram path, account API, broker/order/cancel/replace path, or user database is wired or changed.
+- Branch: `prism-insight/t_ee8568c4-prism-phase-1a-task-9.3-fmp-stale-partia`
+- State: stale/partial classification and explicit research-fixture fallback policy are implemented and locally verified. Commit, PR, exact-head CI, squash merge, post-merge CI, and successor creation are pending at this checkpoint.
+- Runtime state: dormant injected contracts only. No concrete FMP/yfinance/SEC HTTP transport, credential lookup, application caller, scheduler, strategy, LLM, paper broker, account/order path, messaging path, deployment, or user database is wired or changed.
 
-## Task 8.1 implemented scope
+## Task 9.3 implemented scope
 
-- Added immutable, redacted `KISMarketDataCredentials`, a bounded `AioHttpKISRequester`, and `KISHTTPTransport` for exactly the production KIS OAuth token endpoint plus the domestic daily quotation endpoint.
-- Pinned transport URLs to HTTPS, the allowlisted production hostname, port 9443, and the two literal paths. Static/runtime tests reject broker imports, account/order methods, non-allowlisted hosts, ports, paths, query strings, and fragments.
-- Added bounded timeout, response-size, and inter-request spacing behavior; concurrent fetches share a token lock and cached token with expiry margin. 429 responses follow the existing bounded provider retry path; non-retryable HTTP/schema failures propagate fail-closed without a fabricated snapshot.
-- Preserved exact quotation wire SHA-256 provenance while storing only per-fetch sanitized endpoint/status/received-at evidence. OAuth response hashes and response bodies are not retained in evidence; credential and response representations are redacted.
-- Normalized the live quotation through the existing `SecurityId`, `ObservationTime`, `PriceBar`, `RawProviderPayload`, and `MarketSnapshot` contracts. Completed same-day daily bars are observed at 15:30 KST, conservatively available at 15:31, and requests before 15:31 fail closed.
-- Corrected the provider ingestion timestamp to be sampled after all transport work rather than before the HTTP response; a two-tick fixture proves `request_started_at <= response <= ingested_at` semantics.
-- Exported the transport contracts from `prism_core.data.providers` and `prism_core.data`. Legacy KIS trading modules and all current application callers remain unchanged.
-- Added an explicitly gated `live_kis` pytest marker. Default unit/CI execution skips the live smoke; live execution requires `PRISM_RUN_KIS_LIVE=1` and never prints credentials, tokens, headers, account data, prices, or raw response bodies.
+- Added explicit `DISABLED` and `RESEARCH_FIXTURE` fallback modes, machine-branchable primary/fallback outcomes, invocation reasons, and immutable credential-free fallback request/response envelopes.
+- Primary `STALE`, `PARTIAL`, `MISSING`, `UNAVAILABLE`, timeout, and rate-limit exhaustion are classified explicitly. Core degraded primary evidence emits no normalized FMP bars; conflicting, malformed, pagination-invalid, or ineligible primary evidence cannot invoke fallback.
+- Fallback requires both explicit research mode and an injected transport/provider identity. Selected evidence retains a non-FMP provider, separate source identity/revision, observed/available/ingested/as-of timestamps, request identity, raw hash, raw/adjusted values, and symbol mapping.
+- Primary raw evidence is retained separately and never overwritten. Fallback source IDs cannot reuse a retained primary source ID, secret echoes are discarded, and stale/partial/conflicting/unavailable/malformed/future/incomplete fallback evidence yields no normalized bars.
+- One aggregate request budget covers primary pages, retries, and bounded fallback attempts. Snapshot identity includes fallback mode, primary quality, selected provider, request identities, raw evidence hashes, and normalized selected evidence while excluding retry counters for retry stability.
+- Added strict tests for disabled/missing fallback, explicit selection, degraded outcomes, provenance separation, source-ID collision, secret echo/JSON escaping, bounded aggregate budgets, retry stability, malformed/conflicting non-laundering, and recovered primary timeout reason precedence.
 
-## Task 8.1 live evidence, verification, and review
+## Task 9.3 verification and review
 
-- Final authorized live smoke on 2026-07-24 used KIS symbol `005930` only. OAuth POST returned 200 at `17:30:04.346088+09:00`; quotation GET returned 200 at `17:30:04.405159+09:00`; provider ingestion completed at `17:30:04.409697+09:00`.
-- The live snapshot was `FRESH`; observed/available/as-of were `15:30:00`, `15:31:00`, and `17:30:04.142858` KST. The expected seven normalized fields were present, and the quotation wire hash matched the stored bar source hash. No account, portfolio, order, cancel/replace, or broker effect occurred.
-- `python -m pytest tests/data/providers/test_kis_http_transport.py tests/data/providers/test_kis_provider.py tests/integration/test_kis_live_market_data.py -q` — 39 passed, 1 default live skip.
-- Post-rebase `PRISM_RUN_KIS_LIVE=1 python -m pytest tests/integration/test_kis_live_market_data.py -q` — 1 passed.
-- Post-rebase `python -m pytest tests/data tests/storage -q` — 177 passed.
-- Post-rebase `python -m pytest tests/runtime tests/safety -q` — 70 passed.
+- `python -m pytest tests/data/providers/test_fmp_provider.py -q` — 66 passed.
+- `python -m pytest tests/data tests/storage -q` — 196 passed.
+- `python -m pytest tests/runtime tests/safety -q` — 70 passed.
 - Canonical CI-equivalent remaining groups — 292 passed, 1 intentionally deselected.
 - `python -m compileall -q prism_core tools/audit_broker_boundaries.py` — passed.
 - `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy dangerous inventory remains informational and unchanged.
 - `python -m pip check` — no broken requirements; `git diff --check` passed.
-- Initial verified Claude read-only review found two MEDIUM issues: shared mutable transport evidence under concurrency and the need to pin intentional propagation of non-retryable failures. GPT replaced shared evidence with immutable per-payload evidence and added decisive provider-level 429/non-retryable tests.
-- GPT also accepted the review's LOW chunk-read robustness finding, reproduced a short-read truncation RED, accumulated bounded chunks until EOF, and proved both short reads and oversize rejection.
-- A targeted post-fix Claude Opus 4.8 review verified all prior findings resolved, found no HIGH/MEDIUM blocker, and recommended merge. GPT independently fixed its remaining LOW live-smoke threshold mismatch; the other LOW notes are intentional/pre-existing: same-day-after-close scope, full-call multi-symbol retries, uniform retry-event timestamps, and snapshot ingestion identity.
-- A post-PR frozen-patch Claude Opus 4.8 review found no HIGH/blocker but identified one MEDIUM defense-in-depth gap: the exported low-level requester pinned scheme/host/port but not the two approved paths. GPT reproduced safe pre-network reachability with a fake requester RED, then pinned path/query/fragment at that second layer; the focused suite passed 40 tests with 1 default live skip.
+- The initial verified Claude read-only architecture/data-integrity review found no HIGH issue and one material MEDIUM: a recovered primary timeout could incorrectly outrank a retained stale response as the fallback reason. GPT reproduced it with a decisive RED, changed reason precedence to describe the retained decisive condition, and restored the focused suite to green.
+- GPT retained conservative whole-request `INELIGIBLE` blocking because selecting fallback for only active names would falsely mark a snapshot fresh while an explicitly requested inactive security remained unsatisfied. Cross-provider equality of canonical payload hashes remains valid content addressing; provider plus source record identity preserves provenance, and source-ID collision is rejected.
+- A verified final Claude read-only review confirmed the MEDIUM resolved and found no remaining HIGH/MEDIUM defect. GPT independently verified its material claims against source and the focused/broad test evidence above.
 
-## Task 8.1 safety and side effects
+## Task 9.3 safety and side effects
 
-- External effects were limited to explicitly authorized read-only KIS market-data requests: three successful OAuth token POSTs and three successful quotation GETs across the initial and two evidence/final live smokes, plus the authorized GitHub PR #12/CI/squash merge. There were no account, balance, order, cancel/replace, broker, messaging, database, deployment, or credential-change effects.
-- Real KIS credential values and bearer tokens were never printed, stored in repository files, returned in test evidence, or included in this handoff. A changed-file scan found no match for the active KIS environment credential values and no private database/log/config artifact.
-- Foundation and explicit operated smoke are green; production application wiring and operational scheduling remain deferred to the later composition/runtime task.
+- No live FMP/yfinance/SEC request, credential lookup/change/output, broker/account/order/KIS call, Telegram or other external message, AgentNews fetch, user-database access, migration, runtime activation, deployment, or risk/kill-switch change occurred.
+- Changed-file inspection found only the scoped provider models/exports/tests plus this handoff; no credential, private database, generated log, cache, or report artifact is included.
+- This proves fixture-tested foundation behavior only. Live FMP transport/integration, runtime wiring, and operated readiness remain explicitly unproven and deferred.
 
 ## Previous milestone — Phase 1A Task 9.2
 
