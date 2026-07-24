@@ -60,6 +60,17 @@ EXIT_EVAL_ALWAYS: bool = False
 # 기본 False = 동결 동일.
 SIGNAL_REDUCE_ONCE: bool = False
 
+# 라운드7 R-v2 연구 훅: True 면 signal_reduce(1h 역전+4h 경고)를 포지션 축소가
+# 아니라 "같은 방향 신규 트랜치 추가 중단" 신호로 격하한다. 청산 방어는 기존
+# 기계층(SL / 12h MA10 트레일 / liq 강제감축)과 장기정렬반전 exit 가 담당.
+# 근거: H1/H2 A/B (tasks/btc_round7_results.md) — 축소 실행 자체가 승자 절단과
+# 수수료 폭증의 원천이었음. 기본 False = 동결 동일.
+REDUCE_AS_PYRAMID_BLOCK: bool = False
+# R-v2 적용 방향 제한: 전방향 A/B 에서 개선 구간(2023/2024-25)은 전량 롱,
+# 악화 구간(2022/2026)은 전량 숏 — 오닐 롱숏 비대칭(핸드오프 7.6)과 정합.
+# ("long",) 이면 롱만 격하하고 숏은 기존 reduce(빠른 위험 축소)를 유지한다.
+REDUCE_BLOCK_SIDES: tuple = ("long", "short")
+
 TRAILING_TF = "12h"
 
 # BE stop + trailing activate only after price reaches this R multiple
@@ -212,6 +223,11 @@ class BacktestState:
     instr_signal_eval_skipped_bars: int = 0
     instr_reduce_events: list = field(default_factory=list)
     instr_positions: list = field(default_factory=list)
+    # --- 라운드7 R-v2 훅 상태 (REDUCE_AS_PYRAMID_BLOCK=True 에서만 로직에 사용) ---
+    # 직전 신호평가 바에서 단기경고(reduce 조건)가 활성인 방향 → 트랜치 추가 차단.
+    warning_now: dict[str, bool] = field(
+        default_factory=lambda: {"long": False, "short": False}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +496,9 @@ def run_backtest(
         기존 인라인 블록을 그대로 추출한 것 (행동 보존). H1 연구 훅
         (EXIT_EVAL_ALWAYS)과 기존 진입-게이트 경로가 이 함수를 공유한다.
         """
+        # R-v2: 단기경고 플래그는 매 평가 바마다 새로 계산 (stale 방지)
+        state.warning_now["long"] = False
+        state.warning_now["short"] = False
         for pos in list(state.positions):
             exit_sig = check_exit_signal(snapshot, pos.side)
             if exit_sig.exit_action == "exit":
@@ -490,6 +509,18 @@ def run_backtest(
                 if pos in state.positions:
                     state.positions.remove(pos)
             elif exit_sig.exit_action == "reduce":
+                # 라운드7 R-v2 연구 훅: 축소를 실행하지 않고 같은 방향
+                # 피라미딩 차단 신호만 세운다 (기본 False = 기존과 동일).
+                if REDUCE_AS_PYRAMID_BLOCK and pos.side in REDUCE_BLOCK_SIDES:
+                    state.warning_now[pos.side] = True
+                    state.instr_reduce_events.append({
+                        "time": bar_time_str,
+                        "side": pos.side,
+                        "entry_time": pos.entry_time,
+                        "price": bar_close,
+                        "action": "pyramid_block",
+                    })
+                    continue
                 # 라운드7 H2 연구 훅: latch 상태면 새 유리 극값 갱신 전까지
                 # 재감축 금지 (기본 False = 기존과 동일).
                 if SIGNAL_REDUCE_ONCE and pos.reduce_latched:
@@ -820,6 +851,9 @@ def run_backtest(
                             )
 
                     elif current_tranche < 3:
+                        # 라운드7 R-v2 연구 훅: 단기경고 활성 방향은 트랜치 추가 금지.
+                        if REDUCE_AS_PYRAMID_BLOCK and state.warning_now.get(sig.side, False):
+                            continue
                         # Pyramid: derive inputs then delegate the gate+sizing decision.
                         avg_entry = sum(p.entry_price for p in same_side) / len(same_side)
                         entry_price = bar_close

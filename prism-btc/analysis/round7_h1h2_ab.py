@@ -36,12 +36,21 @@ PERIODS = [
     ("2026-01-01", "2026-06-09", "2026_ytd"),
 ]
 
-# (이름, EXIT_EVAL_ALWAYS, SIGNAL_REDUCE_ONCE)
+# (이름, EXIT_EVAL_ALWAYS, SIGNAL_REDUCE_ONCE, rv2_sides)
+# rv2_sides: None = R-v2 OFF, 그 외 REDUCE_AS_PYRAMID_BLOCK 적용 방향 튜플.
+# R-v2: reduce 를 축소가 아니라 "피라미딩 중단" 신호로 격하 (H1/H2 기각 후
+# 후속 단일 변형 — Rocky 방향성 위임 하에 사전 등록, 반증 조건은 태스크 #5).
+# Rv2_long_only: 전방향 A/B 에서 개선=전량롱 구간, 악화=전량숏 구간으로 갈려
+# 오닐 비대칭 독트린(핸드오프 7.6)에 따라 롱만 격하하는 후속 단일 변형.
+# 반증: 2023 개선 +2%p 미만, 또는 타 구간 CAGR 1%p 초과 / MDD 2%p 초과 악화.
 VARIANTS = [
-    ("base", False, False),
-    ("H1_exit_always", True, False),
-    ("H2_reduce_latch", False, True),
-    ("H1+H2", True, True),
+    ("base", False, False, None),
+    ("H1_exit_always", True, False, None),
+    ("H2_reduce_latch", False, True, None),
+    ("H1+H2", True, True, None),
+    ("Rv2_pyramid_block", False, False, ("long", "short")),
+    ("Rv2+H1", True, False, ("long", "short")),
+    ("Rv2_long_only", False, False, ("long",)),
 ]
 
 INITIAL = 10_000.0
@@ -55,9 +64,11 @@ KEEP_KEYS = (
 
 def main() -> None:
     out: dict = {}
-    for name, h1, h2 in VARIANTS:
+    for name, h1, h2, rv2_sides in VARIANTS:
         be.EXIT_EVAL_ALWAYS = h1
         be.SIGNAL_REDUCE_ONCE = h2
+        be.REDUCE_AS_PYRAMID_BLOCK = rv2_sides is not None
+        be.REDUCE_BLOCK_SIDES = rv2_sides or ("long", "short")
         out[name] = {}
         for start, end, label in PERIODS:
             conn = get_connection(None)
@@ -82,6 +93,8 @@ def main() -> None:
     # 동결 상태 복원 (다른 코드가 이 모듈을 재사용할 경우 대비)
     be.EXIT_EVAL_ALWAYS = False
     be.SIGNAL_REDUCE_ONCE = False
+    be.REDUCE_AS_PYRAMID_BLOCK = False
+    be.REDUCE_BLOCK_SIDES = ("long", "short")
 
     res = Path(__file__).resolve().parents[1] / "backtest" / "results" / "round7_h1h2_ab.json"
     with open(res, "w") as f:
