@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -36,6 +37,9 @@ from prism_core.data.providers.fmp_models import (
     FMPRequest,
     FMPResponseEnvelope,
 )
+
+
+FMP_RAW_EOD_PATH = "/stable/historical-price-eod/non-split-adjusted"
 
 
 class FMPTransport(Protocol):
@@ -231,6 +235,19 @@ class FMPTimeoutError(TimeoutError):
 
 class FMPRateLimitError(RuntimeError):
     """Retryable provider throttle at the injected read-only transport boundary."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        if retry_after_seconds is not None and (
+            not math.isfinite(retry_after_seconds) or retry_after_seconds < 0
+        ):
+            raise ValueError("retry_after_seconds must be finite and non-negative")
+        self.retry_after_seconds = retry_after_seconds
 
 
 class FMPMarketDataProvider:
@@ -1056,6 +1073,7 @@ class FMPMarketDataProvider:
         terminal_status: CapabilityStatus | None = None
         request_budget = budget or _RequestBudget(self._max_attempts)
         for local_attempt in range(1, self._max_attempts + 1):
+            retry_delay = float(2 ** (local_attempt - 1))
             if request_budget.remaining <= reserved_requests:
                 events.append(
                     FMPProviderEvent(
@@ -1084,6 +1102,8 @@ class FMPMarketDataProvider:
                 else:
                     kind = FMPEventKind.RATE_LIMIT
                     terminal_status = CapabilityStatus.RATE_LIMIT
+                    if exc.retry_after_seconds is not None:
+                        retry_delay = min(exc.retry_after_seconds, 60.0)
                 detail = exc.__class__.__name__
             except Exception as exc:
                 events.append(
@@ -1126,7 +1146,7 @@ class FMPMarketDataProvider:
                 )
                 return None, tuple(events), terminal_status
             if self._sleeper is not None:
-                await self._sleeper(float(2 ** (local_attempt - 1)))
+                await self._sleeper(retry_delay)
         raise AssertionError("unreachable retry state")
 
     async def probe_capability(self, *, as_of_date: datetime) -> CapabilityProbeResult:
@@ -1136,8 +1156,12 @@ class FMPMarketDataProvider:
             raise ValueError("clock result must be at or after as_of_date")
         request = FMPRequest(
             operation="probe_capability",
-            path="/stable/historical-price-eod/full",
-            params={"limit": 1, "symbol": "AAPL"},
+            path=FMP_RAW_EOD_PATH,
+            params={
+                "as_of_date": as_of_date.isoformat(),
+                "limit": 1,
+                "symbol": "AAPL",
+            },
         )
         response, retry_events, terminal_status = await self._execute_with_retry(
             request,
@@ -1285,8 +1309,9 @@ class FMPMarketDataProvider:
         while active and collection_complete:
             request = FMPRequest(
                 operation="fetch_price_page",
-                path="/stable/historical-price-eod/full",
+                path=FMP_RAW_EOD_PATH,
                 params={
+                    "as_of_date": as_of_date.isoformat(),
                     "page": expected_page,
                     "symbols": [item.fmp_symbol for item in active],
                 },

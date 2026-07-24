@@ -28,6 +28,14 @@ from prism_core.data.providers.fmp_models import (
     FMPRequest,
     FMPResponseEnvelope,
 )
+from prism_core.data.providers.fmp_http import (
+    AioHttpFMPRequester,
+    FMPHTTPResponse,
+    FMPHTTPTransport,
+    FMPHTTPTransportError,
+    FMPRequestEvidence,
+    load_fmp_api_key_from_env,
+)
 from prism_core.data.providers.kis import (
     KISFetchResult,
     KISInstrument,
@@ -49,6 +57,7 @@ from prism_core.data.providers.kis_http import (
 )
 
 __all__ = [
+    "AioHttpFMPRequester",
     "CapabilityProbeResult",
     "CapabilityStatus",
     "FMPApiKey",
@@ -63,15 +72,20 @@ __all__ = [
     "FMPFallbackResponseEnvelope",
     "FMPFallbackTransport",
     "FMPFetchResult",
+    "FMPHTTPResponse",
+    "FMPHTTPTransport",
+    "FMPHTTPTransportError",
     "FMPInstrument",
     "FMPMarketDataProvider",
     "FMPPagination",
     "FMPProviderEvent",
     "FMPRateLimitError",
     "FMPRequest",
+    "FMPRequestEvidence",
     "FMPResponseEnvelope",
     "FMPTimeoutError",
     "FMPTransport",
+    "load_fmp_api_key_from_env",
     "SECOfficialEvidenceTransport",
     "KISFetchResult",
     "KISHTTPResponse",

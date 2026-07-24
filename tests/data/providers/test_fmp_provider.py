@@ -941,7 +941,9 @@ class PricePageTransport:
         self, request: FMPRequest, *, api_key: FMPApiKey
     ) -> FMPResponseEnvelope:
         assert request.operation == "fetch_price_page"
-        assert request.params == {"page": 1, "symbols": ["AAPL"]}
+        assert request.params["page"] == 1
+        assert request.params["symbols"] == ["AAPL"]
+        assert set(request.params) <= {"as_of_date", "page", "symbols"}
         assert SECRET not in request.canonical_identity
         assert api_key.get_secret_value() == SECRET
         return FMPResponseEnvelope(
@@ -970,6 +972,41 @@ class PricePageTransport:
                 ]
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_price_request_carries_pit_as_of_and_truthful_raw_endpoint_identity() -> None:
+    requests: list[FMPRequest] = []
+
+    class RecordingTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            requests.append(request)
+            return await super().execute(request, api_key=api_key)
+
+    provider = FMPMarketDataProvider(
+        transport=RecordingTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    await provider.fetch_result(security_ids=(SECURITY_ID,), as_of_date=AS_OF)
+
+    assert len(requests) == 1
+    assert requests[0].path == "/stable/historical-price-eod/non-split-adjusted"
+    assert requests[0].params == {
+        "as_of_date": AS_OF.isoformat(),
+        "page": 1,
+        "symbols": ["AAPL"],
+    }
 
 
 @pytest.mark.asyncio
@@ -2796,6 +2833,59 @@ async def test_price_page_retry_is_bounded_and_does_not_change_snapshot_identity
     assert retried_result.snapshot.content_hash == direct_result.snapshot.content_hash
     assert [event.kind for event in retried_result.events] == [FMPEventKind.TIMEOUT]
     assert SECRET not in repr(retried_result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_hint", "expected_delay"),
+    [(7.0, 7.0), (999.0, 60.0)],
+)
+async def test_rate_limit_retry_honors_only_a_bounded_provider_hint(
+    provider_hint: float,
+    expected_delay: float,
+) -> None:
+    attempts = 0
+    sleeps: list[float] = []
+
+    class RetryAfterTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise FMPRateLimitError(
+                    "FMP market-data request was rate limited",
+                    retry_after_seconds=provider_hint,
+                )
+            return await super().execute(request, api_key=api_key)
+
+    async def sleeper(delay: float) -> None:
+        sleeps.append(delay)
+
+    provider = FMPMarketDataProvider(
+        transport=RetryAfterTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        max_attempts=2,
+        sleeper=sleeper,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert sleeps == [expected_delay]
+    assert result.snapshot.quality is DataQualityStatus.FRESH
+    assert [event.kind for event in result.events] == [FMPEventKind.RATE_LIMIT]
 
 
 @pytest.mark.asyncio

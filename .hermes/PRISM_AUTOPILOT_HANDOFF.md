@@ -1,40 +1,47 @@
 # PRISM Guarded-Autopilot Handoff
 
-## Current milestone — Phase 1A Task 9.4
+## Current milestone — Phase 1A Task 9.5
 
-- Branch: `prism-insight/t_416cf701-prism-phase-1a-task-9.4-fmp-corporate-ac`
-- State: strict injected FMP split/dividend normalization and distinct SEC official-evidence provenance are implemented, independently reviewed, committed, pushed, and open in PR #15. Initial implementation head `55c6c6e40e05cf5c22e77cb7b1b24e38a522d041` passed CI run 30090382903 on Python 3.10/3.11/3.12; this handoff checkpoint changes the head and therefore requires fresh exact-head CI before review approval, squash merge, post-merge CI, and the approved FMP HTTP/live-smoke successor.
-- Runtime state: dormant injected contracts only. No concrete FMP/SEC HTTP transport, credential lookup, application caller, scheduler, strategy, LLM, paper broker, account/order path, messaging path, deployment, or user database is wired or changed.
+- Branch: `prism-insight/t_fcd51682-prism-phase-1a-task-9.5-fmp-http-transpo`
+- State: dedicated bounded FMP market-data HTTP transport, sanitized request evidence, and an explicit opt-in actual-endpoint smoke are implemented and locally verified. Delivery commit, PR, exact-head CI, merge, and post-merge CI remain pending at this checkpoint.
+- Runtime state: the transport is exported but intentionally not wired into any application caller or scheduler. No strategy, LLM, paper broker, account/order path, messaging path, deployment, or user database is wired or changed.
 
-## Task 9.4 implemented scope
+## Task 9.5 implemented scope
 
-- Added immutable credential-free corporate-action request identities and immutable FMP/SEC response envelopes with separate provider, source record, revision, observed/available times, canonical raw payload hash, and detached payload access.
-- Added injected FMP corporate-action and credential-free SEC evidence transport protocols. There is no concrete network implementation in this slice.
-- Normalized only `SPLIT` and `CASH_DIVIDEND` into the existing `CorporateActionEvidence` contract with stable `SecurityId`, provider symbol, New York local effective instant, PIT observation times, positive Decimal terms, currency validation, and no adjustment-factor derivation or price mutation.
-- Correlated FMP and SEC evidence through a deterministic curated action ID while preserving separate raw records and provenance. Agreement keeps both evidence rows; disagreement emits `PROVIDER_CONFLICT` and the existing repository withholds resolved terms.
-- Future-effective evidence is retained when already available. Evidence unavailable at the requested as-of boundary is excluded from every result surface. Exact duplicate rows are idempotently deduplicated; same-provider/source/revision divergence fails the whole action result closed.
-- Unsupported, missing, malformed, unmatched, stale, partial, unavailable, duplicate, future-withheld, source-divergence, and provider-conflict outcomes are explicit machine-branchable events. Provider-declared `CONFLICT` evidence is retained raw but never normalized.
-- Added focused fixture tests for provenance separation, Decimal normalization, market-local effective timing, repository conflict reconciliation, future-unavailable corrections, duplicate/divergent revisions, degraded/unavailable evidence, malformed rows, deterministic ordering, and public exports.
+- Added an exact HTTPS origin/path allowlist for `GET /stable/historical-price-eod/non-split-adjusted`, one-symbol/one-synthetic-page bounds, split connect/read/overall timeouts, a response-size cap, sanitized timeout/wire errors, and finite existing provider retry/request budgets.
+- Added explicit environment loading from only `FMP_API_KEY` or `FINANCIAL_MODELING_PREP_API_KEY`, with Pydantic secret redaction, missing-key failure, and conflicting-key failure. The key is revealed only into aiohttp query parameters at the final request boundary and is never included in a URL, request identity, evidence object, exception, or retained payload.
+- Mapped the endpoint's documented `adjOpen/adjHigh/adjLow/adjClose/volume` wire names into raw-only contract fields because FMP's official endpoint documentation identifies this endpoint as unadjusted. No adjusted values or adjustment timestamp are synthesized.
+- Preserved explicit PIT `as_of_date`, provider symbol, deterministic source IDs, canonical raw-payload hashes, New York close/availability timing, stale/unavailable outcomes, synthetic pagination, capability/entitlement classification, 429/Retry-After handling with a 60-second sleep cap, and existing aggregate request budgets.
+- Added sanitized per-request evidence containing only endpoint family, status, received timestamp, latency, request correlation, raw-payload hash, and provider version. Raw provider payloads and error bodies are not retained in evidence.
+- Added deterministic transport/provider fixture tests and a separately marked `RUN_FMP_LIVE_SMOKE=1` test that can only probe and fetch AAPL market data through the allowlisted endpoint.
 
-## Task 9.4 verification and review
+## Task 9.5 verification and review
 
-- `python -m pytest tests/data/providers/test_fmp_provider.py tests/data/test_corporate_actions.py -q` — 89 passed.
-- `python -m pytest tests/data tests/storage -q` — 210 passed.
+- `python -m pytest tests/data/providers/test_fmp_provider.py tests/data/providers/test_fmp_http_transport.py -q` — 101 passed.
+- `python -m pytest tests/data tests/storage -q` — 231 passed.
 - `python -m pytest tests/runtime tests/safety -q` — 70 passed.
 - Canonical CI-equivalent remaining groups — 292 passed, 1 intentionally deselected.
+- Default-off live smoke — 1 intentionally skipped.
+- Explicit missing-credential live-smoke command exited 1 and visibly reported the unavailable credential before any transport/network call.
 - `python -m compileall -q prism_core tools/audit_broker_boundaries.py` — passed.
 - `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy dangerous inventory remains informational and unchanged.
-- `python -m pip check` — no broken requirements; `git diff --check` passed.
-- The first two Claude read-only exploration attempts were unusable because they exhausted their turn budgets and returned no findings. A successful compact no-tool review then identified one material gap: provider-declared `CONFLICT` terms were still normalized. GPT reproduced it with a decisive RED, withheld those terms while retaining raw evidence, and restored all suites to green.
-- GPT rejected the review's claimed uncaught Pydantic failure after runtime evidence proved this installed `ValidationError` inherits `ValueError`; the existing row-classification catch is effective. Conservative whole-batch source-revision failure, worst-source aggregate quality, and ratio-only normalization follow the approved existing contracts.
-- A verified final Claude read-only review found no remaining HIGH/MEDIUM defect and recommended merge. GPT independently checked its material PIT, provenance, validation, replay, and compatibility claims against source and the test evidence above.
+- `python -m pip check` — no broken requirements; `git diff --check` passed before this handoff edit and must be rerun before commit.
+- Verified read-only Claude final review found no CRITICAL/HIGH defect and considered the foundation mergeable. GPT checked the review's raw/adjusted concern against the official FMP documentation, which explicitly describes the selected endpoint as unadjusted and publishes the `adj*` response field names; actual price-operation evidence remains blocked without a credentialed smoke.
+- GPT accepted the review's low residuals as explicit boundaries: page-level timing conservatively uses the latest returned session for the whole lookback window, generic wire failures fail closed without retry, and the concrete transport rejects multi-symbol requests before a hidden wire fanout. None is runtime-wired in this slice.
 
-## Task 9.4 safety and side effects
+## Task 9.5 safety, evidence ladder, and side effects
 
-- No live FMP/yfinance/SEC request, credential lookup/change/output, broker/account/order/KIS call, Telegram or other external message, AgentNews fetch, user-database access, migration, runtime activation, deployment, or risk/kill-switch change occurred.
-- Changed-file inspection found only the scoped provider models/exports/tests plus this handoff; no credential, private database, generated log, cache, or report artifact is included.
-- This proves fixture-tested contract foundation only. Concrete FMP HTTP transport, actual-endpoint live integration, runtime wiring, and operated readiness remain explicitly unproven. The approved next sequential slice is the bounded FMP HTTP transport plus actual-endpoint live smoke, which must block without a real configured key and must never substitute a demo key or fixture success.
-- Delivery checkpoint: PR #15 targets `mienne/prism-insight:main`. Do not merge until the final pushed handoff head has its own green Python 3.10/3.11/3.12 matrix and the required review gate is approved; then squash-merge, verify post-merge main CI, and create exactly one FMP HTTP/live-smoke successor.
+- Credential presence detection returned zero configured approved keys. Therefore no actual FMP market-data endpoint request occurred and live integration is **not verified**; no demo key, fixture, cache, or fabricated output substitutes for that missing evidence.
+- Contract foundation: complete and fixture-tested. Concrete HTTP transport: implemented and fixture-tested. Actual live integration: blocked by missing credential. Runtime wiring: intentionally absent. Operated readiness: not claimed.
+- One public FMP documentation page was fetched to verify endpoint semantics. No FMP API request, SEC request, KIS request, broker/account/holdings/order/cancel/replace call, Telegram or other external message, credential change/output, user-database access, migration, deployment, or risk/kill-switch change occurred.
+- Changed-file inspection must include only the scoped provider transport/exports/tests, pytest marker, and this handoff; no credential, private database, generated log, cache, or report artifact may be delivered.
+- Delivery remains gated on final local diff/private-artifact checks, a scoped commit/PR, exact-feature-head Python 3.10/3.11/3.12 CI, squash merge, post-merge main CI, and exactly one plan-approved sequential successor if Task 9 still requires one.
+
+## Previous milestone — Phase 1A Task 9.4
+
+- Task 9.4 added immutable FMP split/dividend normalization and distinct SEC official-evidence provenance, with fixture-tested conflict/revision/PIT behavior and no concrete FMP/SEC network transport.
+- Its focused suite passed 89 tests; data/storage passed 210 tests; runtime/safety passed 70 tests; canonical remaining groups passed 292 tests with 1 intentionally deselected. Compileall, broker-boundary audit, pip check, diff checks, and independent review passed.
+- Task 9.4 was squash-merged via PR #15 at `e0628bdffe0fdfd5f7d65487e249ca96711722ab`; exact-head and post-merge CI passed on Python 3.10/3.11/3.12.
 
 ## Previous milestone — Phase 1A Task 9.3
 
