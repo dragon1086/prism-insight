@@ -29,6 +29,14 @@ from prism_core.data.providers.kis import (
     ProviderRateLimitError,
     ProviderTimeoutError,
 )
+from prism_core.data.providers.kis_http import (
+    AioHttpKISRequester,
+    KISHTTPResponse,
+    KISHTTPTransport,
+    KISMarketDataCredentials,
+    KISMarketDataTransportError,
+    KISRequestEvidence,
+)
 
 __all__ = [
     "CapabilityProbeResult",
@@ -46,9 +54,15 @@ __all__ = [
     "FMPTimeoutError",
     "FMPTransport",
     "KISFetchResult",
+    "KISHTTPResponse",
+    "KISHTTPTransport",
     "KISInstrument",
+    "KISMarketDataCredentials",
     "KISMarketDataProvider",
+    "KISMarketDataTransportError",
+    "KISRequestEvidence",
     "KoreanMarketDataTransport",
+    "AioHttpKISRequester",
     "ProviderEventKind",
     "ProviderPayload",
     "ProviderQualityEvent",

@@ -1,40 +1,55 @@
 # PRISM Guarded-Autopilot Handoff
 
-## Current milestone — Phase 1A Task 9.2
+## Current milestone — Phase 1A Task 8.1
 
-- Branch: `prism-insight/t_d0d225de-prism-phase-1a-task-9.2-fmp-pagination-r`
-- State: bounded pagination/retry implementation, GPT-controlled local verification, and verified read-only Claude review are green. Commit, PR, exact-head CI, squash merge, post-merge CI, and successor creation remain pending at this checkpoint.
-- Runtime state: dormant injected transport contracts and fixture-tested normalization only. No concrete HTTP client, credential lookup, live FMP/yfinance/SEC request, fallback, caller/application wiring, scheduler, broker/account/order path, or production database is wired.
+- Branch: `prism-insight/t_ccfe72a5-prism-phase-1a-task-8.1-kis-live-market`
+- State: implementation, fixture tests, bounded live KIS market-data smoke, GPT-controlled local gates, and verified read-only Claude review are green. The feature commit was rebased onto `origin/main` after resolving the handoff-only conflict; push, PR, exact-head CI, squash merge, and post-merge closeout remain pending at this checkpoint.
+- Runtime state: a concrete KIS production-host HTTP/OAuth transport now exists behind the existing injected `KISMarketDataProvider` boundary and was exercised explicitly by the opt-in live smoke. No application composition root, scheduler, dashboard, Telegram path, account API, broker/order/cancel/replace path, or user database is wired or changed.
 
-## Task 9.2 implemented scope
+## Task 8.1 implemented scope
 
-- Added strict synthetic `FMPPagination` metadata with explicit page, total-page, continuation, and terminal fields. Pagination is mandatory at the injected transport boundary; absent, malformed, inconsistent, skipped, repeated, conflicting, premature-terminal, or over-limit page evidence fails the whole collection closed with machine-branchable events.
-- Added deterministic sequential multi-page collection with configurable `max_pages`, a per-page transient retry cap, and one `_RequestBudget` shared across every page and timeout/429 attempt. The default aggregate bound is `max_pages * max_attempts`; an explicit tighter bound remains fail-closed and observable.
-- Added ordered logical request hashes to `FMPFetchResult` and snapshot identity, plus ordered raw page envelopes/hashes. Retries do not add logical request identities or alter complete-snapshot identity.
-- Safe raw pages received before an incomplete collection remain available as evidence, but incomplete snapshot identity excludes partial request/page hashes and never exposes partial normalized bars.
-- Each normalized row retains its originating page's source record ID, source hash, revision, observed/available times, and quality through the synthetic aggregate normalization boundary.
-- Exact duplicate rows remain idempotent; conflicting security/date rows are withheld. Reused page identities with different payload hashes mark the whole snapshot `CONFLICT`; repeated content/page numbers and forward-skipped pages are separately classified and fail closed.
-- Non-429 non-success HTTP pages are retained as raw evidence but rejected before pagination or normalization, closing the final review's valid-looking-error-body fail-open path.
-- Exported `FMPPagination` from the approved public data packages. Task 9.1 secret redaction, PIT limits, raw/adjusted value separation, no-fabricated-fallback behavior, and dormant injected-only boundary remain intact.
+- Added immutable, redacted `KISMarketDataCredentials`, a bounded `AioHttpKISRequester`, and `KISHTTPTransport` for exactly the production KIS OAuth token endpoint plus the domestic daily quotation endpoint.
+- Pinned transport URLs to HTTPS, the allowlisted production hostname, port 9443, and the two literal paths. Static/runtime tests reject broker imports, account/order methods, non-allowlisted hosts, ports, paths, query strings, and fragments.
+- Added bounded timeout, response-size, and inter-request spacing behavior; concurrent fetches share a token lock and cached token with expiry margin. 429 responses follow the existing bounded provider retry path; non-retryable HTTP/schema failures propagate fail-closed without a fabricated snapshot.
+- Preserved exact quotation wire SHA-256 provenance while storing only per-fetch sanitized endpoint/status/received-at evidence. OAuth response hashes and response bodies are not retained in evidence; credential and response representations are redacted.
+- Normalized the live quotation through the existing `SecurityId`, `ObservationTime`, `PriceBar`, `RawProviderPayload`, and `MarketSnapshot` contracts. Completed same-day daily bars are observed at 15:30 KST, conservatively available at 15:31, and requests before 15:31 fail closed.
+- Corrected the provider ingestion timestamp to be sampled after all transport work rather than before the HTTP response; a two-tick fixture proves `request_started_at <= response <= ingested_at` semantics.
+- Exported the transport contracts from `prism_core.data.providers` and `prism_core.data`. Legacy KIS trading modules and all current application callers remain unchanged.
+- Added an explicitly gated `live_kis` pytest marker. Default unit/CI execution skips the live smoke; live execution requires `PRISM_RUN_KIS_LIVE=1` and never prints credentials, tokens, headers, account data, prices, or raw response bodies.
 
-## Task 9.2 verification and review
+## Task 8.1 live evidence, verification, and review
 
-- Strict RED→GREEN cycles were observed for multi-page collection, shared-budget behavior, page-integrity taxonomy, conflicting page identity quality, ordered request identities, public exports, valid-looking non-2xx rejection, and skipped-page classification.
-- `python -m pytest tests/data/providers/test_fmp_provider.py -q` — 48 passed.
-- `python -m pytest tests/data tests/storage -q` — 159 passed.
-- `python -m pytest tests/runtime tests/safety -q` — 65 passed.
+- Final authorized live smoke on 2026-07-24 used KIS symbol `005930` only. OAuth POST returned 200 at `17:30:04.346088+09:00`; quotation GET returned 200 at `17:30:04.405159+09:00`; provider ingestion completed at `17:30:04.409697+09:00`.
+- The live snapshot was `FRESH`; observed/available/as-of were `15:30:00`, `15:31:00`, and `17:30:04.142858` KST. The expected seven normalized fields were present, and the quotation wire hash matched the stored bar source hash. No account, portfolio, order, cancel/replace, or broker effect occurred.
+- `python -m pytest tests/data/providers/test_kis_http_transport.py tests/data/providers/test_kis_provider.py tests/integration/test_kis_live_market_data.py -q` — 39 passed, 1 default live skip.
+- Post-rebase `PRISM_RUN_KIS_LIVE=1 python -m pytest tests/integration/test_kis_live_market_data.py -q` — 1 passed.
+- Post-rebase `python -m pytest tests/data tests/storage -q` — 177 passed.
+- Post-rebase `python -m pytest tests/runtime tests/safety -q` — 70 passed.
 - Canonical CI-equivalent remaining groups — 292 passed, 1 intentionally deselected.
 - `python -m compileall -q prism_core tools/audit_broker_boundaries.py` — passed.
-- `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy inventory unchanged.
+- `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy dangerous inventory remains informational and unchanged.
 - `python -m pip check` — no broken requirements; `git diff --check` passed.
-- Pre-implementation Claude review recommended a single aggregate budget, canonical incomplete identity separated from retained raw evidence, separate page-vs-row duplicate semantics, and machine-readable page failure events; these were implemented. Its optional-pagination recommendation was rejected because this bounded slice explicitly requires metadata and the dormant fixture contract can update safely.
-- Final Claude review found one material fail-open status path: valid-looking non-429 non-2xx pages could be laundered through the synthetic aggregate's 200 status. GPT reproduced it RED and fixed rejection before pagination/normalization. GPT also accepted the skipped-vs-repeated taxonomy observation and added a decisive test/fix.
-- Targeted post-fix Claude review verified both remediations statically and found no remaining HIGH/MEDIUM defect.
+- Initial verified Claude read-only review found two MEDIUM issues: shared mutable transport evidence under concurrency and the need to pin intentional propagation of non-retryable failures. GPT replaced shared evidence with immutable per-payload evidence and added decisive provider-level 429/non-retryable tests.
+- GPT also accepted the review's LOW chunk-read robustness finding, reproduced a short-read truncation RED, accumulated bounded chunks until EOF, and proved both short reads and oversize rejection.
+- A targeted post-fix Claude Opus 4.8 review verified all prior findings resolved, found no HIGH/MEDIUM blocker, and recommended merge. GPT independently fixed its remaining LOW live-smoke threshold mismatch; the other LOW notes are intentional/pre-existing: same-day-after-close scope, full-call multi-symbol retries, uniform retry-event timestamps, and snapshot ingestion identity.
 
-## Task 9.2 safety and side effects
+## Task 8.1 safety and side effects
 
-- Tests used injected fakes/fixtures only. No live FMP/yfinance/SEC/provider request, credential lookup/output/change, user/private database access, broker/account/order call, Telegram/AgentNews effect, runtime activation, or deployment occurred.
-- This task establishes foundation/tests only; production/runtime behavior and operated readiness are unchanged.
+- External effects were limited to explicitly authorized read-only KIS market-data requests: three successful OAuth token POSTs and three successful quotation GETs across the initial and two evidence/final live smokes. There were no account, balance, order, cancel/replace, broker, messaging, database, deployment, credential-change, commit, push, PR, or merge effects at this checkpoint.
+- Real KIS credential values and bearer tokens were never printed, stored in repository files, returned in test evidence, or included in this handoff. A changed-file scan found no match for the active KIS environment credential values and no private database/log/config artifact.
+- Foundation and explicit operated smoke are green; production application wiring and operational scheduling remain deferred to the later composition/runtime task.
+
+## Previous milestone — Phase 1A Task 9.2
+
+- Task 9.2 added strict synthetic FMP pagination metadata, deterministic sequential multi-page collection with one aggregate request budget, ordered request/page identities, retained safe incomplete evidence without partial normalized bars, page-level provenance, conflict/repeat/skip classification, and fail-closed rejection of non-429 non-success pages.
+- Its focused provider suite passed 48 tests; data/storage passed 159 tests; runtime/safety passed 65 tests; canonical CI-equivalent groups passed 292 tests with 1 intentionally deselected. Compileall, broker-boundary audit, pip check, and diff checks passed.
+- Verified read-only Claude reviews drove the aggregate-budget design and found a valid-looking non-2xx laundering path plus skipped-page taxonomy ambiguity; both were reproduced and fixed with decisive tests. A targeted post-fix review found no remaining HIGH/MEDIUM defect.
+- Task 9.2 remained fixture-only and dormant: no live FMP/yfinance/SEC request, credential access, user database, broker/account/order call, messaging effect, runtime activation, or deployment occurred.
+
+## Previous milestone — Phase 1A Task 9.1
+
+- Task 9.1 was squash-merged via PR #9 at `9b3ecdc`; its FMP fixture-only transport foundation remains dormant with no concrete HTTP client or runtime wiring.
+- Its focused and canonical local gates, exact-head CI, independent review, and post-merge verification were green; no provider credential lookup, live FMP request, broker/account/order effect, or user-database effect occurred.
 
 ## Previous milestone — Phase 1A Task 8
 

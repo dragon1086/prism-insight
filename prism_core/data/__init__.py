@@ -14,6 +14,7 @@ from prism_core.data.contracts import (
 )
 from prism_core.data.provider import MarketDataProvider
 from prism_core.data.providers import (
+    AioHttpKISRequester,
     CapabilityProbeResult,
     CapabilityStatus,
     FMPApiKey,
@@ -29,8 +30,13 @@ from prism_core.data.providers import (
     FMPTimeoutError,
     FMPTransport,
     KISFetchResult,
+    KISHTTPResponse,
+    KISHTTPTransport,
     KISInstrument,
+    KISMarketDataCredentials,
     KISMarketDataProvider,
+    KISMarketDataTransportError,
+    KISRequestEvidence,
     KoreanMarketDataTransport,
     ProviderEventKind,
     ProviderPayload,
@@ -53,6 +59,7 @@ from prism_core.data.security_master import (
 )
 
 __all__ = [
+    "AioHttpKISRequester",
     "CapabilityProbeResult",
     "CapabilityStatus",
     "CorporateAction",
@@ -76,8 +83,13 @@ __all__ = [
     "FMPTransport",
     "FundamentalObservation",
     "KISFetchResult",
+    "KISHTTPResponse",
+    "KISHTTPTransport",
     "KISInstrument",
+    "KISMarketDataCredentials",
     "KISMarketDataProvider",
+    "KISMarketDataTransportError",
+    "KISRequestEvidence",
     "KoreanMarketDataTransport",
     "ListingStatus",
     "MarketDataProvider",

@@ -92,6 +92,7 @@ class ProviderPayload:
     available_at: datetime
     payload: Mapping[str, object]
     quality: DataQualityStatus = DataQualityStatus.FRESH
+    raw_payload_hash: str | None = field(default=None, repr=False)
     _source_hash: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -105,9 +106,18 @@ class ProviderPayload:
         _require_aware(self.available_at, "available_at")
         if self.observed_at > self.available_at:
             raise ValueError("observed_at must be at or before available_at")
+        if self.raw_payload_hash is not None and (
+            len(self.raw_payload_hash) != 64
+            or any(character not in "0123456789abcdef" for character in self.raw_payload_hash)
+        ):
+            raise ValueError("raw_payload_hash must be a lowercase SHA-256 digest")
         encoded = _canonical_json(self.payload)
         object.__setattr__(self, "payload", json.loads(encoded))
-        object.__setattr__(self, "_source_hash", hashlib.sha256(encoded).hexdigest())
+        object.__setattr__(
+            self,
+            "_source_hash",
+            self.raw_payload_hash or hashlib.sha256(encoded).hexdigest(),
+        )
 
     @property
     def source_hash(self) -> str:
@@ -444,14 +454,14 @@ class KISMarketDataProvider:
         unknown = [security_id for security_id in security_ids if security_id not in self._instruments]
         if unknown:
             raise ValueError("every security_id must have a configured KIS instrument")
-        ingested_at = _require_aware(self._clock(), "clock result")
-        if ingested_at < as_of_date:
-            raise ValueError("ingested_at must be at or after as_of_date")
+        request_started_at = _require_aware(self._clock(), "clock result")
+        if request_started_at < as_of_date:
+            raise ValueError("request start must be at or after as_of_date")
 
         primary, retry_events = await self._fetch_provider(
             "KIS",
             as_of_date=as_of_date,
-            occurred_at=ingested_at,
+            occurred_at=request_started_at,
         )
         payload_list = [primary] if primary is not None else []
         event_list = list(retry_events)
@@ -459,11 +469,14 @@ class KISMarketDataProvider:
             supplement, supplement_events = await self._fetch_provider(
                 provider,
                 as_of_date=as_of_date,
-                occurred_at=ingested_at,
+                occurred_at=request_started_at,
             )
             event_list.extend(supplement_events)
             if supplement is not None:
                 payload_list.append(supplement)
+        ingested_at = _require_aware(self._clock(), "clock result")
+        if ingested_at < request_started_at:
+            raise ValueError("ingested_at must be at or after request start")
         raw_payloads = tuple(payload_list)
         normalization_payloads: list[ProviderPayload] = []
         for payload in raw_payloads:
