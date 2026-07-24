@@ -228,6 +228,9 @@ class BacktestState:
     warning_now: dict[str, bool] = field(
         default_factory=lambda: {"long": False, "short": False}
     )
+    # --- 라운드7 G-1 계측: 바 단위 mark-to-market equity (관측 전용) ---
+    # (open_time ns, realized equity + 미실현 PnL). intra-trade MDD 실측용.
+    instr_mtm_curve: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -898,6 +901,16 @@ def run_backtest(
         # Record equity curve every 48 bars (~24h)
         if bar_idx % 48 == 0:
             state.equity_curve.append((bar_time_str, round(state.equity, 2)))
+
+        # 라운드7 G-1 계측: 바 단위 mark-to-market equity (관측 전용).
+        # realized equity + 보유 포지션 미실현 PnL(종가 기준) — intra-trade MDD 실측용.
+        _unreal = 0.0
+        for pos in state.positions:
+            if pos.side == "long":
+                _unreal += (bar_close - pos.entry_price) * pos.qty
+            else:
+                _unreal += (pos.entry_price - bar_close) * pos.qty
+        state.instr_mtm_curve.append((int(bar_time.value), state.equity + _unreal))
 
     # Close any remaining positions at last bar close
     if not sim_bars.empty:
