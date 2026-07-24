@@ -14,6 +14,19 @@ from prism_core.data.contracts import (
 )
 from prism_core.data.provider import MarketDataProvider
 from prism_core.data.providers import (
+    CapabilityProbeResult,
+    CapabilityStatus,
+    FMPApiKey,
+    FMPEventKind,
+    FMPFetchResult,
+    FMPInstrument,
+    FMPMarketDataProvider,
+    FMPProviderEvent,
+    FMPRateLimitError,
+    FMPRequest,
+    FMPResponseEnvelope,
+    FMPTimeoutError,
+    FMPTransport,
     KISFetchResult,
     KISInstrument,
     KISMarketDataProvider,
@@ -39,6 +52,8 @@ from prism_core.data.security_master import (
 )
 
 __all__ = [
+    "CapabilityProbeResult",
+    "CapabilityStatus",
     "CorporateAction",
     "CorporateActionEvidence",
     "CorporateActionRepository",
@@ -46,6 +61,17 @@ __all__ = [
     "CorporateActionView",
     "DataQualityStatus",
     "EvidenceItem",
+    "FMPApiKey",
+    "FMPEventKind",
+    "FMPFetchResult",
+    "FMPInstrument",
+    "FMPMarketDataProvider",
+    "FMPProviderEvent",
+    "FMPRateLimitError",
+    "FMPRequest",
+    "FMPResponseEnvelope",
+    "FMPTimeoutError",
+    "FMPTransport",
     "FundamentalObservation",
     "KISFetchResult",
     "KISInstrument",

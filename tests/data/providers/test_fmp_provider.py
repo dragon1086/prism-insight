@@ -1,0 +1,1021 @@
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from prism_core.data import DataQualityStatus, SecurityId
+from prism_core.data.providers.fmp import (
+    CapabilityStatus,
+    FMPEventKind,
+    FMPInstrument,
+    FMPMarketDataProvider,
+    FMPRateLimitError,
+    FMPTimeoutError,
+)
+from prism_core.data.providers.fmp_models import (
+    FMPApiKey,
+    FMPRequest,
+    FMPResponseEnvelope,
+)
+
+
+UTC = ZoneInfo("UTC")
+SECRET = "fmp-secret-never-render"
+SECURITY_ID = SecurityId(value=UUID("00000000-0000-0000-0000-000000000091"))
+SECOND_SECURITY_ID = SecurityId(value=UUID("00000000-0000-0000-0000-000000000092"))
+AS_OF = datetime(2026, 7, 24, 1, 0, tzinfo=UTC)
+INGESTED = datetime(2026, 7, 24, 1, 1, tzinfo=UTC)
+
+
+def test_secret_is_redacted_and_raw_envelope_is_immutable() -> None:
+    api_key = FMPApiKey(SECRET)
+    request = FMPRequest(
+        operation="probe_capability",
+        path="/stable/historical-price-eod/full",
+        params={"symbol": "AAPL", "limit": 1},
+    )
+    raw = {"data": []}
+    envelope = FMPResponseEnvelope(
+        status_code=200,
+        source_record_id="fmp:prices:AAPL:2026-07-23:page-1",
+        revision=2,
+        observed_at=datetime(2026, 7, 23, 20, 0, tzinfo=UTC),
+        available_at=datetime(2026, 7, 23, 20, 1, tzinfo=UTC),
+        payload=raw,
+        quality=DataQualityStatus.FRESH,
+    )
+    source_hash = envelope.source_hash
+
+    raw["data"].append({"close": "fabricated-later"})
+
+    rendered = " ".join((repr(api_key), str(api_key), repr(request), repr(envelope)))
+    assert SECRET not in rendered
+    assert envelope.payload == {"data": []}
+    assert envelope.source_hash == source_hash
+    assert len(source_hash) == 64
+    assert request.canonical_identity == request.canonical_identity
+    assert len(request.request_hash) == 64
+
+
+@pytest.mark.parametrize("name", ["apikey", "api_key", "token", "access-token"])
+def test_request_rejects_secret_bearing_parameters(name: str) -> None:
+    with pytest.raises(ValueError, match="secret parameters"):
+        FMPRequest(operation="probe", path="/stable/test", params={name: SECRET})
+
+
+@pytest.mark.asyncio
+async def test_capability_probe_requires_explicit_supported_marker() -> None:
+    class ProbeTransport:
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            assert request.operation == "probe_capability"
+            assert SECRET not in request.canonical_identity
+            assert api_key.get_secret_value() == SECRET
+            return FMPResponseEnvelope(
+                status_code=200,
+                source_record_id="fmp:capability:historical-price-eod",
+                revision=0,
+                observed_at=datetime(2026, 7, 24, 0, 59, tzinfo=UTC),
+                available_at=datetime(2026, 7, 24, 0, 59, tzinfo=UTC),
+                payload={"entitled": True},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=ProbeTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.probe_capability(as_of_date=AS_OF)
+
+    assert result.status is CapabilityStatus.SUPPORTED
+    assert result.events == ()
+    assert result.response is not None
+    assert SECRET not in repr(provider)
+    assert SECRET not in repr(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "payload", "expected"),
+    [
+        (401, {"error": "invalid credential"}, CapabilityStatus.FORBIDDEN),
+        (403, {"error": "plan restriction"}, CapabilityStatus.FORBIDDEN),
+        (404, {"error": "unsupported endpoint"}, CapabilityStatus.FORBIDDEN),
+        (200, {"entitled": False}, CapabilityStatus.FORBIDDEN),
+        (200, {"unexpected": True}, CapabilityStatus.MALFORMED),
+    ],
+)
+async def test_capability_probe_distinguishes_forbidden_from_malformed(
+    status_code: int,
+    payload: object,
+    expected: CapabilityStatus,
+) -> None:
+    attempts = 0
+
+    class ProbeTransport:
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            nonlocal attempts
+            attempts += 1
+            return FMPResponseEnvelope(
+                status_code=status_code,
+                source_record_id="fmp:capability:fixture",
+                revision=0,
+                observed_at=datetime(2026, 7, 24, 0, 59, tzinfo=UTC),
+                available_at=datetime(2026, 7, 24, 0, 59, tzinfo=UTC),
+                payload=payload,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=ProbeTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.probe_capability(as_of_date=AS_OF)
+
+    assert result.status is expected
+    assert attempts == 1
+    assert len(result.events) == 1
+    assert SECRET not in result.events[0].detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_status", "expected_kind"),
+    [
+        ("timeout", CapabilityStatus.TIMEOUT, FMPEventKind.TIMEOUT),
+        ("raised_rate_limit", CapabilityStatus.RATE_LIMIT, FMPEventKind.RATE_LIMIT),
+        ("returned_429", CapabilityStatus.RATE_LIMIT, FMPEventKind.RATE_LIMIT),
+    ],
+)
+async def test_capability_retry_outcomes_are_bounded_observable_and_sanitized(
+    mode: str,
+    expected_status: CapabilityStatus,
+    expected_kind: FMPEventKind,
+) -> None:
+    attempts = 0
+    sleeps: list[float] = []
+
+    class RetryTransport:
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            nonlocal attempts
+            attempts += 1
+            if mode == "timeout":
+                raise FMPTimeoutError(f"timeout with {SECRET}")
+            if mode == "raised_rate_limit":
+                raise FMPRateLimitError(f"rate limit with {SECRET}")
+            return FMPResponseEnvelope(
+                status_code=429,
+                source_record_id="fmp:capability:rate-limit",
+                revision=0,
+                observed_at=datetime(2026, 7, 24, 0, 59, tzinfo=UTC),
+                available_at=datetime(2026, 7, 24, 0, 59, tzinfo=UTC),
+                payload={"error": f"rate limited {SECRET}"},
+            )
+
+    async def sleeper(delay: float) -> None:
+        sleeps.append(delay)
+
+    provider = FMPMarketDataProvider(
+        transport=RetryTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(),
+        clock=lambda: INGESTED,
+        max_attempts=2,
+        sleeper=sleeper,
+    )
+
+    result = await provider.probe_capability(as_of_date=AS_OF)
+
+    assert result.status is expected_status
+    assert attempts == 2
+    assert sleeps == [1.0]
+    assert [event.kind for event in result.events] == [
+        expected_kind,
+        expected_kind,
+        FMPEventKind.RETRY_EXHAUSTED,
+    ]
+    assert SECRET not in " ".join(event.detail for event in result.events)
+    assert result.response is None
+
+
+class PricePageTransport:
+    async def execute(
+        self, request: FMPRequest, *, api_key: FMPApiKey
+    ) -> FMPResponseEnvelope:
+        assert request.operation == "fetch_price_page"
+        assert request.params == {"page": 1, "symbols": ["AAPL"]}
+        assert SECRET not in request.canonical_identity
+        assert api_key.get_secret_value() == SECRET
+        return FMPResponseEnvelope(
+            status_code=200,
+            source_record_id="fmp:prices:AAPL:2026-07-23:page-1",
+            revision=2,
+            observed_at=datetime(2026, 7, 23, 20, 0, tzinfo=UTC),
+            available_at=datetime(2026, 7, 23, 20, 1, tzinfo=UTC),
+            payload={
+                "data": [
+                    {
+                        "symbol": "AAPL",
+                        "date": "2026-07-23",
+                        "rawOpen": "210.10",
+                        "rawHigh": "214.25",
+                        "rawLow": "209.80",
+                        "rawClose": "213.90",
+                        "rawVolume": "51500000",
+                        "adjustedOpen": "105.05",
+                        "adjustedHigh": "107.125",
+                        "adjustedLow": "104.90",
+                        "adjustedClose": "106.95",
+                        "adjustedVolume": "103000000",
+                        "adjustmentAsOf": "2026-07-23T20:01:00+00:00",
+                    }
+                ]
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_one_fixture_page_normalizes_us_price_snapshot_with_pit_provenance() -> None:
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert result.events == ()
+    assert result.snapshot.market == "US"
+    assert result.snapshot.quality is DataQualityStatus.FRESH
+    assert len(result.raw_payloads) == 1
+    assert len(result.snapshot.symbol_mappings) == 1
+    mapping = result.snapshot.symbol_mappings[0]
+    assert mapping.security_id == SECURITY_ID
+    assert mapping.provider == "fmp"
+    assert mapping.provider_symbol == "AAPL"
+    assert mapping.source_hash == result.raw_payloads[0].source_hash
+    bar = result.snapshot.price_bars[0]
+    assert bar.security_id == SECURITY_ID
+    assert bar.provider == "fmp"
+    assert bar.provider_symbol == "AAPL"
+    assert bar.source_record_id == "fmp:prices:AAPL:2026-07-23:page-1:price:AAPL:2026-07-23"
+    assert bar.source_hash == result.raw_payloads[0].source_hash
+    assert bar.revision == 2
+    assert bar.currency == "USD"
+    assert bar.raw_close == Decimal("213.90")
+    assert bar.adjusted_close == Decimal("106.95")
+    assert bar.adjustment_as_of == datetime(2026, 7, 23, 20, 1, tzinfo=UTC)
+    assert bar.timing.observed_at == datetime(2026, 7, 23, 20, 0, tzinfo=UTC)
+    assert bar.timing.available_at == datetime(2026, 7, 23, 20, 1, tzinfo=UTC)
+    assert bar.timing.ingested_at == INGESTED
+    assert bar.timing.as_of_date == AS_OF
+    assert len(result.snapshot.content_hash) == 64
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "expected_kind"),
+    [
+        ("missing_close", FMPEventKind.PARTIAL),
+        ("invalid_ohlc", FMPEventKind.MALFORMED),
+        ("partial_adjustment", FMPEventKind.MALFORMED),
+    ],
+)
+async def test_invalid_core_price_rows_are_withheld_with_explicit_quality_event(
+    mutation: str,
+    expected_kind: FMPEventKind,
+) -> None:
+    class InvalidRowTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            row = dict(base.payload["data"][0])
+            if mutation == "missing_close":
+                del row["rawClose"]
+            elif mutation == "invalid_ohlc":
+                row["rawHigh"] = "200"
+            else:
+                del row["adjustedVolume"]
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload={"data": [row]},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=InvalidRowTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.symbol_mappings == ()
+    assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    assert any(event.kind is expected_kind for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_non_object_price_row_degrades_snapshot_instead_of_silent_fresh() -> None:
+    class NonObjectRowTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            payload = base.payload
+            assert isinstance(payload, dict)
+            rows = payload.get("data")
+            assert isinstance(rows, list)
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload={"data": [rows[0], "malformed-row"]},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=NonObjectRowTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert len(result.snapshot.price_bars) == 1
+    assert result.snapshot.quality is DataQualityStatus.PARTIAL
+    assert any(event.kind is FMPEventKind.MALFORMED for event in result.events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("envelope_quality", "expected_kind"),
+    [
+        (DataQualityStatus.STALE, FMPEventKind.STALE),
+        (DataQualityStatus.PARTIAL, FMPEventKind.PARTIAL),
+        (DataQualityStatus.CONFLICT, FMPEventKind.CONFLICT),
+    ],
+)
+async def test_provider_quality_is_preserved_and_never_relabelled_fresh(
+    envelope_quality: DataQualityStatus,
+    expected_kind: FMPEventKind,
+) -> None:
+    class QualityTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=envelope_quality,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=QualityTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert result.snapshot.quality is envelope_quality
+    assert result.snapshot.price_bars[0].quality is envelope_quality
+    assert any(event.kind is expected_kind for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_provider_unavailable_payload_is_retained_but_not_normalized() -> None:
+    class UnavailableTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+                quality=DataQualityStatus.UNAVAILABLE,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=UnavailableTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert len(result.raw_payloads) == 1
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.symbol_mappings == ()
+    assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    assert any(event.kind is FMPEventKind.UNAVAILABLE for event in result.events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("violation", ["future_availability", "before_market_close"])
+async def test_point_in_time_violations_are_withheld_without_contract_exception(
+    violation: str,
+) -> None:
+    class PITViolationTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            if violation == "future_availability":
+                observed_at = datetime(2026, 7, 24, 0, 59, tzinfo=UTC)
+                available_at = datetime(2026, 7, 24, 1, 30, tzinfo=UTC)
+            else:
+                observed_at = datetime(2026, 7, 23, 19, 0, tzinfo=UTC)
+                available_at = datetime(2026, 7, 23, 19, 1, tzinfo=UTC)
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=observed_at,
+                available_at=available_at,
+                payload=base.payload,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=PITViolationTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    assert any(event.kind is FMPEventKind.MALFORMED for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_inactive_symbol_interval_fails_closed_before_transport() -> None:
+    calls = 0
+
+    class MustNotCallTransport:
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            nonlocal calls
+            calls += 1
+            raise AssertionError("inactive instruments must not reach transport")
+
+    provider = FMPMarketDataProvider(
+        transport=MustNotCallTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+                valid_to=datetime(2026, 7, 23, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert calls == 0
+    assert result.snapshot.symbol_mappings == ()
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    assert [event.kind for event in result.events] == [FMPEventKind.INELIGIBLE]
+
+
+@pytest.mark.asyncio
+async def test_unknown_and_missing_symbols_are_explicit_without_guessing() -> None:
+    class SymbolMismatchTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(
+                FMPRequest(
+                    operation=request.operation,
+                    path=request.path,
+                    params={"page": 1, "symbols": ["AAPL"]},
+                ),
+                api_key=api_key,
+            )
+            unknown = dict(base.payload["data"][0])
+            unknown["symbol"] = "UNKNOWN"
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload={"data": [base.payload["data"][0], unknown]},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=SymbolMismatchTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+            FMPInstrument(
+                security_id=SECOND_SECURITY_ID,
+                fmp_symbol="MSFT",
+                valid_from=datetime(1986, 3, 13, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID, SECOND_SECURITY_ID),
+        as_of_date=AS_OF,
+    )
+
+    assert [bar.security_id for bar in result.snapshot.price_bars] == [SECURITY_ID]
+    assert result.snapshot.quality is DataQualityStatus.PARTIAL
+    assert {event.kind for event in result.events} >= {
+        FMPEventKind.UNMATCHED,
+        FMPEventKind.MISSING,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("conflicting", "expected_quality", "expected_count"),
+    [
+        (False, DataQualityStatus.FRESH, 1),
+        (True, DataQualityStatus.CONFLICT, 0),
+    ],
+)
+async def test_duplicate_rows_dedupe_or_fail_closed_on_conflict(
+    conflicting: bool,
+    expected_quality: DataQualityStatus,
+    expected_count: int,
+) -> None:
+    class DuplicateTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            duplicate = dict(base.payload["data"][0])
+            if conflicting:
+                duplicate["adjustedClose"] = "106.96"
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload={"data": [base.payload["data"][0], duplicate]},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=DuplicateTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert len(result.snapshot.price_bars) == expected_count
+    assert len(result.snapshot.symbol_mappings) == expected_count
+    assert result.snapshot.quality is expected_quality
+    assert any(event.kind is FMPEventKind.CONFLICT for event in result.events) is conflicting
+
+
+@pytest.mark.asyncio
+async def test_response_that_echoes_secret_is_rejected_before_retention() -> None:
+    class EchoTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload={"data": base.payload["data"], "requestEcho": {"apikey": SECRET}},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=EchoTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert result.raw_payloads == ()
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    rendered = repr(result) + " ".join(event.detail for event in result.events)
+    assert SECRET not in rendered
+    assert any(event.kind is FMPEventKind.MALFORMED for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_secret_echo_detection_handles_json_escaped_characters() -> None:
+    escaped_secret = 'fmp-"quoted"-\\-line\n-π'
+
+    class EscapedEchoTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=FMPApiKey(SECRET))
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload={"data": base.payload["data"], "nested": [escaped_secret]},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=EscapedEchoTransport(),
+        api_key=FMPApiKey(escaped_secret),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert result.raw_payloads == ()
+    assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    assert escaped_secret not in repr(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("violation", ["future_trading_date", "future_adjustment_vintage"])
+async def test_row_level_price_vintages_fail_closed(
+    violation: str,
+) -> None:
+    class FutureRowTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            payload = base.payload
+            assert isinstance(payload, dict)
+            rows = payload["data"]
+            assert isinstance(rows, list)
+            row = dict(rows[0])
+            if violation == "future_trading_date":
+                row["date"] = "2026-07-25"
+            else:
+                row["adjustmentAsOf"] = "2026-07-24T02:00:00+00:00"
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=base.source_record_id,
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload={"data": [row]},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=FutureRowTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.symbol_mappings == ()
+    assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    assert any(event.kind is FMPEventKind.MALFORMED for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_source_identity_that_echoes_secret_is_rejected_before_retention() -> None:
+    class SourceEchoTransport(PricePageTransport):
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            base = await super().execute(request, api_key=api_key)
+            return FMPResponseEnvelope(
+                status_code=base.status_code,
+                source_record_id=f"fmp:prices:{SECRET}:page-1",
+                revision=base.revision,
+                observed_at=base.observed_at,
+                available_at=base.available_at,
+                payload=base.payload,
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=SourceEchoTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert result.raw_payloads == ()
+    assert result.snapshot.price_bars == ()
+    assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    assert SECRET not in repr(result)
+
+
+def test_fmp_contracts_are_exported_from_public_data_packages() -> None:
+    from prism_core import data
+    from prism_core.data import providers
+
+    expected = {
+        "CapabilityProbeResult",
+        "CapabilityStatus",
+        "FMPApiKey",
+        "FMPEventKind",
+        "FMPFetchResult",
+        "FMPInstrument",
+        "FMPMarketDataProvider",
+        "FMPProviderEvent",
+        "FMPRateLimitError",
+        "FMPRequest",
+        "FMPResponseEnvelope",
+        "FMPTimeoutError",
+        "FMPTransport",
+    }
+
+    assert expected <= set(data.__all__)
+    assert expected <= set(providers.__all__)
+    assert data.FMPMarketDataProvider is FMPMarketDataProvider
+
+
+@pytest.mark.asyncio
+async def test_price_page_retry_is_bounded_and_does_not_change_snapshot_identity() -> None:
+    class RetryOnceTransport:
+        def __init__(self) -> None:
+            self.attempts = 0
+            self.success = PricePageTransport()
+
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise FMPTimeoutError(f"timeout while using {SECRET}")
+            return await self.success.execute(request, api_key=api_key)
+
+    retry_transport = RetryOnceTransport()
+    instrument = FMPInstrument(
+        security_id=SECURITY_ID,
+        fmp_symbol="AAPL",
+        valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+    )
+    retried = FMPMarketDataProvider(
+        transport=retry_transport,
+        api_key=FMPApiKey(SECRET),
+        instruments=(instrument,),
+        clock=lambda: INGESTED,
+        max_attempts=2,
+    )
+    direct = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(instrument,),
+        clock=lambda: INGESTED,
+        max_attempts=2,
+    )
+
+    retried_result = await retried.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+    direct_result = await direct.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert retry_transport.attempts == 2
+    assert retried_result.snapshot.snapshot_id == direct_result.snapshot.snapshot_id
+    assert retried_result.snapshot.content_hash == direct_result.snapshot.content_hash
+    assert [event.kind for event in retried_result.events] == [FMPEventKind.TIMEOUT]
+    assert SECRET not in repr(retried_result)
+
+
+@pytest.mark.asyncio
+async def test_exhausted_price_page_retry_returns_unavailable_snapshot() -> None:
+    class AlwaysLimitedTransport:
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            return FMPResponseEnvelope(
+                status_code=429,
+                source_record_id="fmp:prices:limited",
+                revision=1,
+                observed_at=datetime(2026, 7, 23, 20, 0, tzinfo=UTC),
+                available_at=datetime(2026, 7, 23, 20, 1, tzinfo=UTC),
+                payload={"error": "rate limited"},
+            )
+
+    provider = FMPMarketDataProvider(
+        transport=AlwaysLimitedTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+        max_attempts=2,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert result.raw_payloads == ()
+    assert result.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    assert [event.kind for event in result.events] == [
+        FMPEventKind.RATE_LIMIT,
+        FMPEventKind.RATE_LIMIT,
+        FMPEventKind.RETRY_EXHAUSTED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unexpected_transport_exception_is_sanitized_and_fails_closed() -> None:
+    class BrokenTransport:
+        async def execute(
+            self, request: FMPRequest, *, api_key: FMPApiKey
+        ) -> FMPResponseEnvelope:
+            raise RuntimeError(f"bad transport with {SECRET}")
+
+    provider = FMPMarketDataProvider(
+        transport=BrokenTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: INGESTED,
+    )
+
+    capability = await provider.probe_capability(as_of_date=AS_OF)
+    fetched = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert capability.status is CapabilityStatus.MALFORMED
+    assert fetched.snapshot.quality is DataQualityStatus.UNAVAILABLE
+    rendered = repr(capability) + repr(fetched)
+    assert SECRET not in rendered
+    assert [event.kind for event in capability.events] == [FMPEventKind.MALFORMED]
+    assert [event.kind for event in fetched.events] == [FMPEventKind.MALFORMED]
