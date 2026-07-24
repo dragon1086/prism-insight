@@ -344,6 +344,43 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 
 ---
 
+## Task 7A: KR/US 시계열 주도주 보고 evidence 저장 기반
+
+**Objective:** provider adapter를 연결하기 전에 KST 01/07/13/19 보고서에서 관찰한 KR/US 주도주·상대강도·52주 신고가·유동성·수급·모멘텀/피크·전략·판정의 시간별 상태와 변화를 재현 가능한 `REPORT_ONLY` evidence로 저장한다.
+
+**Files:**
+- Create: `prism_core/reporting/__init__.py`
+- Create: `prism_core/reporting/leadership_tracking.py`
+- Create: `tools/ingest_market_tracking_snapshot.py`
+- Test: `tests/reporting/test_leadership_tracking.py`
+
+**Storage and trust contract:**
+
+- 기존 `research.sqlite`의 `market_snapshots`, `observations`, `reports`를 재사용하며 별도 DB·중복 source of truth·추가 migration을 만들지 않는다.
+- 한 run은 immutable market snapshot 하나, `leadership_market_state` observation 하나, 현재 종목별 `leadership_security_state` observation 하나, generic Markdown report 하나를 원자적으로 저장한다.
+- `provider=hermes_agent_report`, payload `policy_disposition=REPORT_ONLY`로 표시하며 deterministic feature나 proposal로 신뢰·승격하지 않는다.
+- `market_tracking_v1`은 market, KST slot/stage, as-of/observed/available/ingested time, source path/hash/URL/evidence, quality/revision, market state/events, nullable RS windows, 52-week-high state/distance, raw liquidity, nullable flow, momentum/peak, strategy labels, decision을 strict하게 보존한다.
+- naive/future/역전 timestamp, invalid slot/market/stage, non-finite value, unknown enum/field, duplicate symbol, inconsistent quality/strategy/decision, executable/order/account/price field를 fail-closed로 거부한다.
+- canonical identity는 processing-only `ingested_at`을 제외하고 revision을 포함하며 datetime은 UTC instant, Decimal은 normalized scale로 정규화한다. 같은 run/revision/content의 재수집은 기존 결과를 반환하고, 같은 run/revision의 다른 content는 conflict로 원자적 거부하며, 정정은 명시적인 상위 revision으로 append한다.
+- 이전 상태는 각 run의 이용 가능한 최고 revision을 먼저 선택한 뒤 같은 market에서 `(available_at, ingested_at, snapshot_id)` 순으로 바로 앞선 다른 run을 선택한다. usable current evidence의 현재 종목은 `NEW`/`MAINTAINED`, 이전에만 있던 종목은 usable·complete evidence에서만 `EXITED`다. core evidence가 unusable하면 현재·부재 종목 모두 `DATA_MISSING`으로 기록한다.
+- renderer는 일반적인 run/data/market/event/change/security heading만 사용하고 source-site/menu 명칭을 노출하지 않는다. core evidence가 usable하지 않으면 경고와 fail-closed 상태를 표시하며 executable price level은 schema와 report 모두에 존재하지 않는다.
+- CLI는 명시적 `--db`와 JSON file/stdin만 사용하며 legacy/user DB를 탐색하지 않는다.
+
+**KST slot contract:**
+
+```text
+01: US intraday provisional / KR prior-close confirmed context
+07: US close confirmed / KR pre-open provisional observations
+13: KR intraday provisional / US post-close confirmed events
+19: KR close confirmed / US premarket provisional observations
+```
+
+**Downstream reuse:** Task 20은 persistence-before-publication 및 idempotent daily use case에서 이 repository를 사용하고, Task 21은 이 strict schema/readback/renderer를 확장한다. 두 task는 leadership identity, prior-run comparison, quality mapping, 저장 table을 다시 구현하지 않는다.
+
+**Gate:** temporary SQLite에서 schema rejection, exact idempotency, correction append, atomic conflict rollback, prior-run comparison, `DATA_MISSING`, append-only trigger, deterministic readback/render, generic headings, explicit-path CLI, zero broker dependency를 증명한다.
+
+---
+
 ## Task 8: KIS KR market-data adapter
 
 **Objective:** 기존 KIS/KRX 로직을 주문 코드와 분리된 한국 market-data provider로 제공한다.
@@ -725,6 +762,7 @@ RETIRED
 - outputs saved before publication
 - publication failure does not erase analysis
 - idempotent job key by market/date/run type
+- Task 7A `LeadershipRepository`를 호출해 보고 evidence를 publication 전에 저장하고 같은 identity/comparison 규칙을 재사용한다.
 
 ---
 
@@ -749,6 +787,7 @@ RETIRED
 - bull/bear evidence and falsifiers
 - SHADOW status
 - no language that implies live approval
+- Task 7A `market_tracking_v1` readback와 generic renderer를 daily leadership 기반으로 재사용하며 별도 leadership table·identity·change classifier를 만들지 않는다.
 
 ---
 
