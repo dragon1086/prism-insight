@@ -66,8 +66,10 @@ from live.tracking import PositionRow, TradeRow
 # 내고 MDD 1%p 를 사는 손해 보는 보험. 추세전략의 큰 승리가 손실 직후에
 # 오는 구조라, DD 트리거가 정확히 회복 트레이드의 사이즈를 반토막낸다.
 # compute_operating_risk 배관은 유지 (가변 리스크 재검토 시 값만 변경).
-SHADOW_BASE_RISK: float = 0.02
-SHADOW_REDUCED_RISK: float = 0.02  # == base → E4 비활성
+# 라운드7 G-1 (2026-07-24, Rocky 1.5x 승인): 2% → 3% (engine/sizing.py 참조).
+# E4 중립화(reduced == base)는 유지 — 위 재시뮬 근거 그대로.
+SHADOW_BASE_RISK: float = 0.03
+SHADOW_REDUCED_RISK: float = 0.03  # == base → E4 비활성
 SHADOW_DD_THRESHOLD: float = 0.05
 
 INITIAL_EQUITY: float = 10_000.0

@@ -102,6 +102,8 @@ SWING_ENABLED: bool = True
 # 알림(demo/live 전용)이 영원히 안 나간다 — demo 틱 전용으로 고정.
 SWING_RUN_MODES: tuple[str, ...] = ("demo",)
 SWING_STOP_ATR_MULT: float = 2.0      # 하드스탑 = 진입가 ∓ 2.0 × ATR14(4h)
-SWING_RISK_PER_TRADE: float = 0.01    # equity 의 1% (메인 RISK_PER_TRADE 2% 의 절반)
+# 라운드7 G-1 (2026-07-24, Rocky 1.5x 승인): 1% → 1.5% (메인 3% 의 절반 유지).
+# 공동 시뮬에서 5x 명목 캡 바인딩 0회 확인 — 실효 리스크 그대로 스케일됨.
+SWING_RISK_PER_TRADE: float = 0.015   # equity 의 1.5% (메인 RISK_PER_TRADE 3% 의 절반)
 SWING_MAX_LEVERAGE: float = 5.0       # 명목/equity 상한 (Rocky 승인 스펙)
 SWING_INITIAL_EQUITY: float = 10_000.0  # 자체 가상 원장 시드 (shadow 와 동일)
