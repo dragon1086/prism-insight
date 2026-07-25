@@ -73,6 +73,19 @@ from prism_core.data.providers.kis_http import (
     KISMarketDataTransportError,
     KISRequestEvidence,
 )
+from prism_core.data.providers.kr_official import (
+    KROfficialCapability,
+    KROfficialError,
+    KROfficialEvidenceEnvelope,
+    KROfficialFetchResult,
+    KROfficialProvider,
+    KROfficialProviderEvent,
+    KROfficialRequest,
+    KROfficialSource,
+    KROfficialSourceApproval,
+    KROfficialTransport,
+    KROfficialTransportMode,
+)
 
 __all__ = [
     "AioHttpAgentNewsRequester",
@@ -127,6 +140,17 @@ __all__ = [
     "KISMarketDataProvider",
     "KISMarketDataTransportError",
     "KISRequestEvidence",
+    "KROfficialCapability",
+    "KROfficialError",
+    "KROfficialEvidenceEnvelope",
+    "KROfficialFetchResult",
+    "KROfficialProvider",
+    "KROfficialProviderEvent",
+    "KROfficialRequest",
+    "KROfficialSource",
+    "KROfficialSourceApproval",
+    "KROfficialTransport",
+    "KROfficialTransportMode",
     "KoreanMarketDataTransport",
     "AioHttpKISRequester",
     "ProviderEventKind",
