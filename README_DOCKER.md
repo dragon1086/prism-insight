@@ -247,7 +247,7 @@ The Docker container includes **built-in cron** for automated stock analysis. Cr
 |------|-----|------|
 | 02:00 | Config backup | Daily |
 | 03:00 | Log cleanup | Daily |
-| 03:00 | Memory compression | Sunday |
+| 03:00 | KR+US memory compression | Sunday |
 | 07:00 | Stock data update | Mon-Fri |
 | 09:30 | **KR Morning batch** | Mon-Fri |
 | 15:40 | **KR Afternoon batch** | Mon-Fri |
@@ -264,7 +264,6 @@ The Docker container includes **built-in cron** for automated stock analysis. Cr
 | 07:30 | 17:30 | US Performance tracker | Tue-Sat |
 | 08:00 | 18:00 | US Dashboard refresh | Tue-Sat |
 | 03:30 | - | US log cleanup (30 days) | Daily |
-| 04:00 | - | US memory compression | Sunday |
 
 > **Note**: US market runs 3 times daily (no price limits). Tue-Sat in KST = Mon-Fri in US time.
 > Yahoo Finance data has 15-20 min delay, so schedules are adjusted accordingly.

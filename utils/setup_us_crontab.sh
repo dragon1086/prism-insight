@@ -96,7 +96,6 @@ fi
 
 # Other schedule times (KST)
 US_LOG_CLEANUP_TIME="30 3"           # 03:30 KST (daily)
-US_MEMORY_COMPRESSION_TIME="0 4"     # 04:00 KST (Sunday only)
 
 # =============================================================================
 # Functions
@@ -242,8 +241,9 @@ $US_DASHBOARD_TIME * * 2-6 cd $PROJECT_DIR && $PYTHON_PATH examples/generate_us_
 # Log cleanup for US logs (daily at 03:30 KST) - keep 30 days
 $US_LOG_CLEANUP_TIME * * * find $LOG_DIR -name "us_*.log" -mtime +30 -delete
 
-# Memory compression for US trading data (Sunday 04:00 KST)
-$US_MEMORY_COMPRESSION_TIME * * 0 cd $PROJECT_DIR && $PYTHON_PATH prism-us/compress_us_trading_memory.py >> $LOG_DIR/us_compression.log 2>&1 || true
+# US memory compression is handled by the root weekly compression job:
+#   compress_trading_memory.py -> run_us_compression()
+# Do not schedule the removed prism-us/compress_us_trading_memory.py path.
 
 # =============================================================================
 # Optional: Uncomment to enable additional features
