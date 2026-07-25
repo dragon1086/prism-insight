@@ -60,6 +60,9 @@ jobs:
       - name: Run deterministic quant feature tests
         run: python -m pytest tests/features -q
 
+      - name: Run strict LLM proposal contract tests
+        run: python -m pytest tests/llm -q
+
       - name: Run tests
         run: |
           python -m pytest cores/llm/tests/ -q
