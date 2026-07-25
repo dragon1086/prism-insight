@@ -2,66 +2,60 @@
 
 ## Current milestone
 
-- Task: Phase 1A Task 10 — fail-closed `DataQualityGate`
-- Branch: `prism-insight/t_e6912a85-prism-phase-1a-task-10-fail-closed-dataq`
-- Base: current `origin/main` at `e13574c7bf73b0a76d80ebc649e2c3b409141fb6`
-- Implementation state: quality foundation, regime-policy seam, focused tests, explicit CI discovery, independent review remediation, final local canonical gates, and the Python 3.10 CI compatibility fix are complete; the final handoff-only checkpoint and delivery remain
-- Runtime state: no proposal/LLM application caller exists yet; the legacy regime policy exposes `allow_new_proposals=False` for unknown regime, but current orchestrators still consume only report-batch fields
+- Task: Phase 1B Task 11 — strategy contracts and registry
+- Branch: `prism-insight/t_23f7af11-prism-phase-1b-task-11-strategy-contract`
+- Base: current `origin/main` at `70b461eb6463ea577be7452fca25821e190d0fb1`
+- Implementation state: contracts, active-definition registry, strategy profiles, focused tests, explicit CI discovery, independent review remediation, and final local gates are complete; delivery remains
+- Runtime state: dormant foundation only; no application caller imports `prism_core.strategies`, and no proposal, feature-computation, policy, portfolio, paper, or broker behavior changed
 
 ## Implemented scope
 
-- Added `prism_core/data/quality.py` with separate observed `DataQualityStatus` and policy `QualityDisposition` contracts.
-- Default proposal core fields are `price`, `regime`, `calendar`, and `evidence`; missing, `PARTIAL`, `STALE`, `UNAVAILABLE`, or `CONFLICT` core data rejects new proposals.
-- Explicitly classified non-core fields permit `REPORT_ONLY` only when missing or `PARTIAL`; stale, unavailable, conflict, and any unclassified non-fresh field reject.
-- Malformed input returns a sanitized `REJECT` decision and warning rather than raising into a normal-entry fallback.
-- Added immutable `QualitySkipRecord` and append-only `QualitySkipRecorder` boundary. Every non-accept result records that `NEW_PROPOSAL` generation was skipped; recorder failure propagates so an unaudited skip cannot be treated as durable.
-- Extended `cores/regime_policy.py` so recognized pulse states have accepted regime quality while unknown/failed states keep compatible report-batch behavior but expose `allow_new_proposals=False`.
-- Kept regime quality imports lazy so importing the legacy policy does not eagerly load the provider graph.
-- Added the whole offline `tests/data` suite and focused regime-policy suite as explicit fail-closed steps in every existing Python 3.10/3.11/3.12 CI matrix job.
+- Added immutable strategy contract value objects for `StrategyId`, `StrategyVersion`, `OutcomeHorizon`, `EntryTemplate`, `FeatureSnapshot`, and `QuantScoreBreakdown` plus their bounded component types.
+- Added `SWING_V1` and `TREND_V1` as separate definitions with independent identity, entry-template feature/threshold namespaces, and 5/10/20 versus 20/60/120 research outcome horizons.
+- Added one-active-definition-per-family `StrategyRegistry` with deterministic market lookup for KR and US.
+- Kept `DataQualityStatus` observation separate from Task 10's `QualityDisposition`; contradictory non-fresh plus `ACCEPT` envelopes fail closed.
+- Allowed one security and market to have separate SWING and TREND feature identities. Consolidated symbol/sector/market/currency/open-order exposure remains deferred to the portfolio-policy slice.
+- Added explicit strategy-suite execution to every existing Python 3.10/3.11/3.12 CI matrix job.
 
 ## Contract decisions
 
-- Quality status is an observation; `ACCEPT`, `REPORT_ONLY`, and `REJECT` are deterministic policy outcomes.
-- `REPORT_ONLY` means the report may continue with a visible warning while new-proposal generation is skipped and audited.
-- Core failure always dominates a report-only warning.
-- Explicit empty core classification and overlapping core/report-only classifications are invalid configuration.
-- The audit sink is injected. Concrete SQLite persistence is deferred to the storage/application slice; this task adds no database or migration.
-- Unknown legacy pulse state is mapped to `UNAVAILABLE`, not to a neutral/bullish regime. Existing report execution compatibility is preserved, but proposal eligibility is fail-closed at the regime-policy seam.
+- `StrategyId` identifies the approved family; `StrategyVersion` is an explicit independent field on definitions, feature snapshots, and scores.
+- The active registry contains one definition per family. Historical and concurrent-version comparisons belong in persisted experiment records rather than this lookup.
+- Every entry template, feature value, and score component uses a family-owned `swing_v1.*` or `trend_v1.*` namespace. Cross-family template substitution is rejected.
+- Outcome horizons are research evaluation windows, not forced holding periods or exit rules.
+- Lesson scope defaults to strategy-specific. Cross-strategy lesson promotion remains unavailable without a later explicit validation contract.
+- Task 10 `DataQualityGate` remains the policy source. This slice carries status and disposition without computing or bypassing the field-level gate; Task 12/runtime translation remains deferred.
 
-## TDD and verification to date
+## TDD and verification
 
-- Baseline before edits: 65 passed (`tests/test_regime_policy.py` plus data contracts).
-- RED was observed for the absent quality module, unusable core states, explicit report-only classification, malformed-input fallback, audit records, default core fields, regime proposal eligibility, eager provider imports, sanitized warning, explicit skipped action, and empty-core configuration.
-- Current focused GREEN: `python -m pytest tests/data/test_quality_gate.py tests/test_regime_policy.py -q` — 62 passed.
-- Final exact local CI groups: 762 passed, 1 intentionally deselected — runtime/safety 72; storage 44; AgentNews 22; all data 290; regime policy 42; LLM 111; remaining exact CI groups 181 with the deselection.
-- `python -m compileall -q prism_core tools/audit_broker_boundaries.py cores/regime_policy.py` — passed.
-- `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy dangerous inventory remains 22 and is unchanged by this slice.
-- `python -m pip check` — no broken requirements; CI YAML parsed successfully; staged `git diff --check` passed.
-- Initial PR #22 CI at feature head `1740affe89ba1dc27912c26d3d53fe79c5ed14b9` exposed a Python 3.10-only test collection incompatibility (`datetime.UTC` was added in Python 3.11). The test now uses the repository's established `timezone.utc` compatibility pattern; focused tests and compile passed locally.
-- Corrected feature head `83041c60ac684b50698c4db49896aa89a5cdf333` passed PR CI run `30151804374` on Python 3.10/3.11/3.12, including the new complete data and regime-policy steps. A final handoff-only checkpoint commit will require a fresh exact-head run before merge.
-- A wider legacy-adjacent exploratory group could not collect because local `pandas` is absent. This did not affect the changed tests or canonical CI groups, which deliberately use the repository's minimal dependency set.
+- The pre-existing Task 10 base was clean at `70b461e`; initial strategy work was recovered as untracked files after an interrupted API turn.
+- RED was observed for the absent strategy package during the original partial run, and in this continuation for untyped `FeatureSnapshot` and `QuantScoreBreakdown` identity/quality fields (`DID NOT RAISE TypeError`).
+- Focused GREEN: `python -m pytest tests/strategies -q` — 26 passed.
+- Final exact local CI groups: 788 passed, 1 intentionally deselected — strategy 26; runtime/safety 72; storage 44; AgentNews 22; all data 290; regime policy 42; LLM 111; remaining exact CI groups 181 with the deselection.
+- `python -m compileall -q prism_core tools/audit_broker_boundaries.py` — passed.
+- `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy dangerous inventory remains 22 and unchanged.
+- `python -m pip check` — no broken requirements.
+- CI YAML parsed successfully; the strategy command is declared exactly once, fail-closed, inside the shared three-version matrix job.
 
 ## Independent review
 
-- Initial verified read-only Claude review returned exit 0 with empty stderr. It found no unsafe status/disposition path and recommended approval with notes. Findings: CI omitted regime tests (HIGH), REPORT_ONLY skip semantics ambiguity (MEDIUM), eager provider imports (MEDIUM), and swallowed-exception observability (MEDIUM).
-- GPT accepted and remediated all four: explicit regime CI step, `skipped_action=NEW_PROPOSAL` plus test, lazy imports plus isolated import test, and sanitized warning plus test.
-- One tool-based follow-up and one frozen-bundle read attempt exhausted Claude turn budgets and were classified as failed reviews.
-- A no-tools frozen-patch follow-up returned exit 0 with empty stderr and found no CRITICAL/HIGH code defect. It conditionally raised two MEDIUM checks: no current runtime consumer of `allow_new_proposals`, and possible external `BatchPolicy(...)` construction compatibility.
-- GPT verified the only `BatchPolicy(...)` constructors are the five updated returns inside `cores/regime_policy.py`. GPT classified absent runtime consumption as an explicit scope state, not a hidden completion claim: Task 10 permits only the regime-policy seam and excludes broader runtime application wiring. Final reporting must say operational proposal suppression is not yet wired.
-- Residual note: legacy pulse computation does not carry timestamped quality metadata, so recognized states are currently mapped to `FRESH`; full regime freshness modeling belongs with the later point-in-time feature/runtime slice.
+- Initial verified read-only Claude review returned exit 0 with empty stderr. It found one HIGH: feature/score envelopes did not strictly validate identity, market, UUID, security, and quality field types. It also noted MEDIUM assumptions around scalar quality projection and one active version per registry family, plus LOW naming/future-boundary observations.
+- GPT accepted the HIGH and added parameterized RED→GREEN regression coverage plus explicit type checks before semantic validation.
+- GPT documented the active-registry version assumption and corrected the same-security test name. It rejected the quality concern as blocking: the envelope preserves separate observation and policy fields, adds only a necessary fail-closed invariant, and leaves Task 10 as the policy authority.
+- Verified follow-up Claude review returned exit 0 with empty stderr, confirmed the HIGH fully resolved, found no new CRITICAL/HIGH, accepted the bounded quality disposition, and recommended no further change before landing.
+- Residuals for later tasks: Task 12 must import rather than redefine these contracts and translate the full field-level `QualityDecision` coherently; later runtime linkage must verify score-to-feature identity/version provenance and consolidated portfolio exposure.
 
 ## Side effects and safety
 
-- No provider or other network request occurred except Git/GitHub fetch operations needed for repository delivery.
-- No external message, credential read/change, account/broker/order call, user database access, migration, deployment, or live-trading effect occurred.
-- Feature commits through `83041c60ac684b50698c4db49896aa89a5cdf333` were pushed and PR #22 was opened. Git/GitHub delivery calls are the only network effects; no merge has occurred at this checkpoint.
+- Git/GitHub fetch is the only network activity through this local delivery checkpoint.
+- No provider request, external message, credential read/change, account/broker/order call, user database access, migration, deployment, or live-trading effect occurred.
+- Local implementation commit `bc0d9cb` exists. Push, PR, hosted CI, and merge remain pending at this checkpoint; authoritative later delivery state belongs in the PR and Kanban completion record.
 
 ## Remaining closeout
 
-1. Commit and push this final handoff-only checkpoint, then verify every exact-head Python matrix job.
-2. Reconfirm the final diff/private-artifact checks against that exact head without further repository edits.
-3. Verify branch protection/ruleset status separately from Actions success.
-4. Squash merge only after all gates are provable; then verify post-merge CI, merge SHA, expected files, and remote branch deletion.
-5. Final reporting must separate foundation, development enforcement, runtime wiring, and operational behavior.
+1. Push the bounded commits; open a PR and verify the exact head on Python 3.10/3.11/3.12, including the explicit strategy step in every job.
+2. Verify branch protection/ruleset status separately from Actions success.
+3. Squash merge only when every gate is provable, then verify post-merge CI, merge SHA, expected files, and remote branch deletion.
+4. Final reporting must separate foundation, development enforcement, runtime wiring, and operational behavior.
 
 Stop conditions remain: block on compatibility change, destructive migration, provider/credential/account/broker/live/risk scope, conflict, unresolved HIGH/CRITICAL review, or an unverifiable required gate.
