@@ -1,0 +1,23 @@
+[Unit]
+Description=PRISM Kakao Durable Outbox Sender
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prism
+Group=prism
+WorkingDirectory=/opt/prism-insight
+EnvironmentFile=/etc/prism/kakao-bot.env
+ExecStart=/opt/prism-insight/.venv/bin/python -m kakao_bot.runtime.sender_main
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/prism-kakao
+
+[Install]
+WantedBy=multi-user.target

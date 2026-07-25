@@ -36,6 +36,13 @@ PRISM_US_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PRISM_US_DIR))
 
+from messaging.batch_campaign_publisher import (  # noqa: E402
+    COMPLETED,
+    SKIPPED,
+    publish_batch_campaign_best_effort,
+    select_reported_candidates,
+)
+
 # Load openai_debug from project root via importlib (prism-us/cores/ shadows root cores/)
 _spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
 if _spec and _spec.loader:
@@ -1062,7 +1069,13 @@ class USStockAnalysisOrchestrator:
         else:
             return "🔎"
 
-    async def run_full_pipeline(self, mode: str, language: str = "ko", override_date: str = None):
+    async def run_full_pipeline(
+        self,
+        mode: str,
+        language: str = "ko",
+        override_date: str = None,
+        campaign_regime: str = None,
+    ):
         """
         Execute full US pipeline
 
@@ -1110,6 +1123,19 @@ class USStockAnalysisOrchestrator:
             if not report_paths:
                 logger.warning("No US reports generated. Terminating process.")
                 return
+
+            # Channel-neutral terminal event. Only candidates with a successfully
+            # generated report are included; local queue failure is fail-open.
+            final_tickers = select_reported_candidates(tickers, report_paths)
+            if final_tickers:
+                await publish_batch_campaign_best_effort(
+                    market="US",
+                    session=mode,
+                    trade_date=effective_date,
+                    regime=campaign_regime,
+                    status=COMPLETED,
+                    candidates=final_tickers,
+                )
 
             # 3. Archive ingest (fire-and-forget, does not block pipeline)
             try:
@@ -1227,6 +1253,7 @@ async def main():
     # prism-us/cores shadows root cores/ on sys.path, so regime_policy is loaded
     # by file path via _import_from_main_cores (same pattern as the translator/
     # utils modules above). Lazy + guarded: never kills a production batch.
+    _mp_state = None
     try:
         _rp_mod = _import_from_main_cores(
             "prism_root_regime_policy", "cores/regime_policy.py"
@@ -1261,6 +1288,14 @@ async def main():
                         logger.warning(
                             f"[MARKET_PULSE] rest notice failed (ignored): {_mp_notice_e}"
                         )
+                    await publish_batch_campaign_best_effort(
+                        market="US",
+                        session=args.mode,
+                        trade_date=args.date or datetime.now().strftime("%Y%m%d"),
+                        regime=_mp_state,
+                        status=SKIPPED,
+                        skip_reason=_mp_pol.reason,
+                    )
                     return
                 else:
                     logger.info("[MARKET_PULSE][SHADOW] WOULD_SKIP this batch "
@@ -1311,10 +1346,20 @@ async def main():
     orchestrator = USStockAnalysisOrchestrator(telegram_config=telegram_config)
 
     if args.mode == "morning" or args.mode == "both":
-        await orchestrator.run_full_pipeline("morning", language=args.language, override_date=args.date)
+        await orchestrator.run_full_pipeline(
+            "morning",
+            language=args.language,
+            override_date=args.date,
+            campaign_regime=_mp_state,
+        )
 
     if args.mode == "afternoon" or args.mode == "both":
-        await orchestrator.run_full_pipeline("afternoon", language=args.language, override_date=args.date)
+        await orchestrator.run_full_pipeline(
+            "afternoon",
+            language=args.language,
+            override_date=args.date,
+            campaign_regime=_mp_state,
+        )
 
     # Stop proxy if started
     if proxy_started and stop_proxy is not None:
