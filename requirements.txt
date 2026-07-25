@@ -10,8 +10,9 @@ aiohttp~=3.11.13
 python-dateutil~=2.9.0.post0
 email-validator
 # openai bumped from <2.0.0: openai-agents requires >=2.9; verified mcp-agent 0.2.6
-# runs on openai 2.x (2026-06-19 coexistence test). See tasks/mcp_agent_removal_prd.md.
-openai>=2.9,<3
+# Keep below 2.45 while openai-agents==0.7.0 constructs InputTokensDetails
+# without the newer required cache_write_tokens field.
+openai>=2.9,<2.45
 openai-agents==0.7.0
 anthropic~=0.64.0
 markdown>=3.3.0
