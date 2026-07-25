@@ -8,7 +8,11 @@ from typing import Literal
 # Constants (all tuneable here without touching logic)
 # ---------------------------------------------------------------------------
 
-RISK_PER_TRADE: float = 0.02          # 2% of equity per trade
+# 라운드7 G-1 (2026-07-24, Rocky 1.5x 승인): 2% → 3%. 통합(메인+스윙) 공동
+# 시뮬 실측 — 결합 CAGR 24.7→37.5%, intra-trade MDD -14.8→-20.7%(각오치 이내),
+# liq_approach 0 유지. 검증: analysis/round7_g1_joint_sim.py,
+# tasks/btc_round7_results.md §G-1 본실험. 레버리지 밴드/청산버퍼는 불변.
+RISK_PER_TRADE: float = 0.03          # 3% of equity per trade
 MMR: float = 0.005                    # Bybit isolated MMR approximation (0.5%)
 
 # Leverage bands (라운드4: 12~18x 폐기, 라운드2 수준 8~12x 복원 — 라운드3 문서
