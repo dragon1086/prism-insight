@@ -175,7 +175,7 @@ def test_todays_constituents_only_are_rejected_as_performance_evidence(
         )
 
 
-def test_terminal_mark_must_be_available_by_the_as_of_time() -> None:
+def test_terminal_mark_uses_latest_close_available_by_the_as_of_time() -> None:
     universe = UniverseSnapshot(
         snapshot_id=SNAPSHOT,
         as_of=dt(2, 16),
@@ -202,12 +202,79 @@ def test_terminal_mark_must_be_available_by_the_as_of_time() -> None:
         side=TradeSide.BUY,
         quantity=1,
     )
+    source_bar = ResearchBar(
+        security_id=SECURITY,
+        data_snapshot_id=SNAPSHOT,
+        bar_start=dt(2, 9),
+        bar_end=dt(2, 16),
+        available_at=dt(2, 16),
+        raw_open=Decimal("98"),
+        raw_close=Decimal("100"),
+    )
 
-    with pytest.raises(ValueError, match="as-of mark"):
+    result = PointInTimeBacktester(_minimal_config()).run(
+        universes=(universe,),
+        bars=(source_bar, delayed_close),
+        signals=(signal,),
+        actions=(),
+        end_at=dt(5, 16),
+    )
+
+    position = result.portfolio.book(StrategyId.SWING_V1).positions[0]
+    assert position.mark_price == Decimal("100")
+    assert position.unrealized_pnl == Decimal("0")
+
+
+def test_signal_source_boundary_must_bind_to_an_actual_bar() -> None:
+    universe = UniverseSnapshot(
+        snapshot_id=SNAPSHOT,
+        as_of=dt(2, 16),
+        available_at=dt(2, 16),
+        members=(SECURITY,),
+        evidence_kind=UniverseEvidenceKind.POINT_IN_TIME,
+    )
+    signal = ResearchSignal(
+        strategy_id=StrategyId.SWING_V1,
+        security_id=SECURITY,
+        generated_at=dt(2, 16),
+        source_bar_end=dt(2, 16),
+        source_available_at=dt(2, 16),
+        data_snapshot_id=SNAPSHOT,
+        side=TradeSide.BUY,
+        quantity=1,
+    )
+
+    with pytest.raises(BacktestInputError, match="source bar"):
         PointInTimeBacktester(_minimal_config()).run(
             universes=(universe,),
-            bars=(delayed_close,),
+            bars=(_next_bar(),),
             signals=(signal,),
+            actions=(),
+            end_at=dt(5, 16),
+        )
+
+
+def test_duplicate_universe_boundaries_fail_closed() -> None:
+    first = UniverseSnapshot(
+        snapshot_id=SNAPSHOT,
+        as_of=dt(2, 16),
+        available_at=dt(2, 16),
+        members=(SECURITY,),
+        evidence_kind=UniverseEvidenceKind.POINT_IN_TIME,
+    )
+    duplicate = UniverseSnapshot(
+        snapshot_id=UUID(int=11),
+        as_of=dt(2, 16),
+        available_at=dt(2, 16),
+        members=(SECURITY,),
+        evidence_kind=UniverseEvidenceKind.POINT_IN_TIME,
+    )
+
+    with pytest.raises(BacktestInputError, match="duplicate universe"):
+        PointInTimeBacktester(_minimal_config()).run(
+            universes=(first, duplicate),
+            bars=(),
+            signals=(),
             actions=(),
             end_at=dt(5, 16),
         )

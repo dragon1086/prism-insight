@@ -100,12 +100,14 @@ class ResearchCorporateAction:
     security_id: SecurityId
     action_type: CorporateActionType
     effective_at: datetime
+    available_at: datetime
     data_snapshot_id: UUID
     ratio: Decimal | None = None
     cash_amount: Decimal | None = None
 
     def __post_init__(self) -> None:
         _require_aware(self.effective_at, "effective_at")
+        _require_aware(self.available_at, "available_at")
         if self.action_type in {
             CorporateActionType.SPLIT,
             CorporateActionType.REVERSE_SPLIT,
@@ -179,8 +181,22 @@ class PointInTimeBacktester:
             raise BacktestInputError(
                 "today's-constituents-only universe cannot support performance evidence"
             )
+        universe_boundaries = tuple(
+            (universe.as_of, universe.available_at) for universe in universes
+        )
+        if len(set(universe_boundaries)) != len(universe_boundaries):
+            raise BacktestInputError(
+                "duplicate universe as-of/availability boundaries are ambiguous"
+            )
         if any(not isinstance(action, ResearchCorporateAction) for action in actions):
             raise TypeError("actions must contain ResearchCorporateAction values")
+        if any(
+            action.effective_at <= end_at and action.available_at > end_at
+            for action in actions
+        ):
+            raise FutureDataError(
+                "corporate action terms became available after the run end"
+            )
         portfolio = ResearchPortfolio(
             initial_cash_by_strategy=self.config.initial_cash_by_strategy
         )
@@ -188,6 +204,16 @@ class PointInTimeBacktester:
         ordered_bars = tuple(sorted(bars, key=lambda bar: (bar.bar_start, str(bar.security_id.value))))
         for signal in sorted(signals, key=lambda item: item.generated_at):
             self._validate_signal(signal)
+            if not any(
+                bar.security_id == signal.security_id
+                and bar.data_snapshot_id == signal.data_snapshot_id
+                and bar.bar_end == signal.source_bar_end
+                and bar.available_at == signal.source_available_at
+                for bar in ordered_bars
+            ):
+                raise BacktestInputError(
+                    "signal source boundary does not bind to an actual source bar"
+                )
             universe = self._universe_for(signal.generated_at, universes)
             if signal.security_id not in universe.members:
                 raise BacktestInputError("signal security is absent from the PIT universe")
