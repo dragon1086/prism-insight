@@ -42,7 +42,7 @@ Ubuntu 24.04 기반 AI 주식 분석 시스템을 Docker로 간편하게 실행�
 
 #### MCP 서버
 - **kospi-kosdaq**: 한국 주식 데이터
-- **perplexity-ask**: AI 검색
+- **perplexity**: AI 검색
 - **firecrawl**: 웹 크롤링
 - **sqlite**: 데이터베이스
 - **time**: 시간 관리
@@ -190,15 +190,15 @@ mcp:
   servers:
     firecrawl:
       command: "npx"
-      args: [ "-y", "firecrawl-mcp" ]
+      args: [ "-y", "firecrawl-mcp@3.17.0" ]
       env:
         FIRECRAWL_API_KEY: "여기에_Firecrawl_API키_입력"
     kospi_kosdaq:
       command: "python3"
       args: ["-m", "kospi_kosdaq_stock_server"]
     perplexity:
-      command: "node"
-      args: ["perplexity-ask/dist/index.js"]
+      command: "npx"
+      args: ["-y", "@perplexity-ai/mcp-server"]
       env:
         PERPLEXITY_API_KEY: "여기에_Perplexity_API키_입력"
     sqlite:
@@ -245,7 +245,7 @@ Docker 컨테이너에는 **내장 cron**이 포함되어 있어 주식 분석�
 |------|------|------|
 | 02:00 | 설정 백업 | 매일 |
 | 03:00 | 로그 정리 | 매일 |
-| 03:00 | 메모리 압축 | 일요일 |
+| 03:00 | KR+US 메모리 압축 | 일요일 |
 | 07:00 | 종목 데이터 업데이트 | 월-금 |
 | 09:30 | **KR 오전 배치** | 월-금 |
 | 15:40 | **KR 오후 배치** | 월-금 |
@@ -263,7 +263,6 @@ Docker 컨테이너에는 **내장 cron**이 포함되어 있어 주식 분석�
 | 07:30 | 17:30 | US 성과 추적 | 화-토 |
 | 08:00 | 18:00 | US 대시보드 갱신 | 화-토 |
 | 03:30 | - | US 로그 정리 (30일) | 매일 |
-| 04:00 | - | US 메모리 압축 | 일요일 |
 
 > **참고**: 미국 시장은 가격제한이 없어 하루 3회 실행합니다. KST 기준 화-토는 미국 시간 기준 월-금에 해당합니다.
 > Yahoo Finance 데이터는 15-20분 지연이 있어 이를 감안하여 스케줄을 설정했습니다.
@@ -611,7 +610,6 @@ sudo chown -R $USER:$USER data reports pdf_reports
 └── prism-insight/            # 프로젝트 루트
     ├── cores/                # AI 분석 엔진
     ├── trading/              # 자동매매
-    ├── perplexity-ask/       # MCP 서버
     ├── sqlite/               # 데이터베이스
     ├── reports/              # 분석 보고서
     └── pdf_reports/          # PDF 보고서

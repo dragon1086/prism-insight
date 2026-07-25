@@ -9,7 +9,9 @@ servers:
     command: npx
     args:
     - -y
-    - firecrawl-mcp
+    # Match the legacy mcp_agent example pin. Unpinned releases previously
+    # produced broken npx cache states where tools disappeared at startup.
+    - firecrawl-mcp@3.17.0
     env:
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
   kospi_kosdaq:
@@ -22,9 +24,10 @@ servers:
       KAKAO_PW: ${KAKAO_PW}
       KRX_LOGIN_METHOD: ${KRX_LOGIN_METHOD}
   perplexity:
-    command: node
+    command: npx
     args:
-    - perplexity-ask/dist/index.js
+    - -y
+    - '@perplexity-ai/mcp-server'
     env:
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY}
   sqlite:

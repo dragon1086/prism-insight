@@ -44,7 +44,7 @@ Run Ubuntu 24.04-based AI stock analysis system easily with Docker.
 
 #### MCP Servers
 - **kospi-kosdaq**: Korean stock data
-- **perplexity-ask**: AI search
+- **perplexity**: AI search
 - **firecrawl**: Web crawling
 - **sqlite**: Database
 - **time**: Time management
@@ -192,15 +192,15 @@ mcp:
   servers:
     firecrawl:
       command: "npx"
-      args: [ "-y", "firecrawl-mcp" ]
+      args: [ "-y", "firecrawl-mcp@3.17.0" ]
       env:
         FIRECRAWL_API_KEY: "your_firecrawl_api_key_here"
     kospi_kosdaq:
       command: "python3"
       args: ["-m", "kospi_kosdaq_stock_server"]
     perplexity:
-      command: "node"
-      args: ["perplexity-ask/dist/index.js"]
+      command: "npx"
+      args: ["-y", "@perplexity-ai/mcp-server"]
       env:
         PERPLEXITY_API_KEY: "your_perplexity_api_key_here"
     sqlite:
@@ -247,7 +247,7 @@ The Docker container includes **built-in cron** for automated stock analysis. Cr
 |------|-----|------|
 | 02:00 | Config backup | Daily |
 | 03:00 | Log cleanup | Daily |
-| 03:00 | Memory compression | Sunday |
+| 03:00 | KR+US memory compression | Sunday |
 | 07:00 | Stock data update | Mon-Fri |
 | 09:30 | **KR Morning batch** | Mon-Fri |
 | 15:40 | **KR Afternoon batch** | Mon-Fri |
@@ -264,7 +264,6 @@ The Docker container includes **built-in cron** for automated stock analysis. Cr
 | 07:30 | 17:30 | US Performance tracker | Tue-Sat |
 | 08:00 | 18:00 | US Dashboard refresh | Tue-Sat |
 | 03:30 | - | US log cleanup (30 days) | Daily |
-| 04:00 | - | US memory compression | Sunday |
 
 > **Note**: US market runs 3 times daily (no price limits). Tue-Sat in KST = Mon-Fri in US time.
 > Yahoo Finance data has 15-20 min delay, so schedules are adjusted accordingly.
@@ -612,7 +611,6 @@ sudo chown -R $USER:$USER data reports pdf_reports
 └── prism-insight/            # Project root
     ├── cores/                # AI analysis engine
     ├── trading/              # Automated trading
-    ├── perplexity-ask/       # MCP server
     ├── sqlite/               # Database
     ├── reports/              # Analysis reports
     └── pdf_reports/          # PDF reports
