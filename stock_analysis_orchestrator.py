@@ -24,6 +24,12 @@ from datetime import datetime
 from pathlib import Path
 
 from cores.openai_error_logging import log_openai_error
+from messaging.batch_campaign_publisher import (  # noqa: E402
+    COMPLETED,
+    SKIPPED,
+    publish_batch_campaign_best_effort,
+    select_reported_candidates,
+)
 
 # Logger configuration
 logging.basicConfig(
@@ -1067,7 +1073,12 @@ class StockAnalysisOrchestrator:
         else:
             return "🔎"
 
-    async def run_full_pipeline(self, mode, language: str = "ko"):
+    async def run_full_pipeline(
+        self,
+        mode,
+        language: str = "ko",
+        campaign_regime: str = None,
+    ):
         """
         Execute full pipeline
 
@@ -1076,6 +1087,7 @@ class StockAnalysisOrchestrator:
             language (str): Analysis language ("ko" or "en")
         """
         logger.info(f"Starting full pipeline - mode: {mode}")
+        campaign_trade_date = datetime.now().strftime("%Y%m%d")
 
         try:
             # 0. Run macro intelligence (market regime, sector data)
@@ -1113,6 +1125,19 @@ class StockAnalysisOrchestrator:
             if not report_paths:
                 logger.warning("No reports generated. Terminating process.")
                 return
+
+            # Channel-neutral terminal event. Only candidates with a successfully
+            # generated report are included; local queue failure is fail-open.
+            final_tickers = select_reported_candidates(tickers, report_paths)
+            if final_tickers:
+                await publish_batch_campaign_best_effort(
+                    market="KR",
+                    session=mode,
+                    trade_date=campaign_trade_date,
+                    regime=campaign_regime,
+                    status=COMPLETED,
+                    candidates=final_tickers,
+                )
 
             # Archive ingest (fire-and-forget, does not block pipeline)
             try:
@@ -1306,6 +1331,7 @@ async def main():
 
     # --- Market Pulse (O'Neil M) batch policy hook (SHADOW-first; §7 Rev.3) ---
     # Lazy + guarded: a broken import/compute can NEVER kill a production batch.
+    _mp_state = None
     try:
         from cores.regime_policy import (
             market_pulse_mode,
@@ -1342,6 +1368,14 @@ async def main():
                         logger.warning(
                             f"[MARKET_PULSE] rest notice failed (ignored): {_mp_notice_e}"
                         )
+                    await publish_batch_campaign_best_effort(
+                        market="KR",
+                        session=args.mode,
+                        trade_date=datetime.now().strftime("%Y%m%d"),
+                        regime=_mp_state,
+                        status=SKIPPED,
+                        skip_reason=_mp_pol.reason,
+                    )
                     return
                 else:
                     logger.info("[MARKET_PULSE][SHADOW] WOULD_SKIP this batch "
@@ -1386,10 +1420,18 @@ async def main():
     orchestrator = StockAnalysisOrchestrator(telegram_config=telegram_config)
 
     if args.mode == "morning" or args.mode == "both":
-        await orchestrator.run_full_pipeline("morning", language=args.language)
+        await orchestrator.run_full_pipeline(
+            "morning",
+            language=args.language,
+            campaign_regime=_mp_state,
+        )
 
     if args.mode == "afternoon" or args.mode == "both":
-        await orchestrator.run_full_pipeline("afternoon", language=args.language)
+        await orchestrator.run_full_pipeline(
+            "afternoon",
+            language=args.language,
+            campaign_regime=_mp_state,
+        )
 
     # Stop proxy if started
     if proxy_started:
