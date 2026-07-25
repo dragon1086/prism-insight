@@ -2,56 +2,66 @@
 
 ## Current milestone
 
-- Task: Phase 1A Task 9B.3 — macro official point-in-time evidence adapter foundation
-- Branch: `prism-insight/t_4851c208-prism-phase-1a-task-9b.3-macro-official`
-- Implementation state: fixture contract and approval-gated live-smoke scaffold implemented; final canonical gates and delivery remain
-- Runtime state: dormant contracts only; no concrete FRED/ALFRED/ECOS HTTP transport, application caller, scheduler, strategy, LLM, account, broker, or order path is wired
+- Task: Phase 1A Task 10 — fail-closed `DataQualityGate`
+- Branch: `prism-insight/t_e6912a85-prism-phase-1a-task-10-fail-closed-dataq`
+- Base: current `origin/main` at `e13574c7bf73b0a76d80ebc649e2c3b409141fb6`
+- Implementation state: quality foundation, regime-policy seam, focused tests, explicit CI discovery, independent review remediation, final local canonical gates, and the Python 3.10 CI compatibility fix are complete; the final handoff-only checkpoint and delivery remain
+- Runtime state: no proposal/LLM application caller exists yet; the legacy regime policy exposes `allow_new_proposals=False` for unknown regime, but current orchestrators still consume only report-batch fields
 
 ## Implemented scope
 
-- Added `prism_core/data/providers/macro_official.py` with source-separated FRED current-series, ALFRED vintage, and ECOS statistic-search request/evidence contracts.
-- Preserved exact source, capability, endpoint identity, series, observation period, observed/available/ingested/as-of times, release, revision, vintage date, raw payload hash, terms/license, quality, and sanitized correlation/fact evidence.
-- Added explicit source approval metadata for exact source/capability/endpoint, credential scope, terms/license, cost, rate, call, and validity bounds; live transports fail before I/O without matching durable approval.
-- Added fail-closed collection semantics: missing evidence becomes a sanitized `UNAVAILABLE` event; `STALE`, `PARTIAL`, `UNAVAILABLE`, or `CONFLICT` core evidence is never usable; conflicting facts retain every source envelope and emit a conflict event rather than merging.
-- Added deterministic fixture tests and a separately marked opt-in live scaffold that cannot make a network request because this task supplies no concrete transport.
-- Exported the macro contracts through `prism_core.data.providers` and `prism_core.data`; registered the `live_macro_official` pytest marker.
+- Added `prism_core/data/quality.py` with separate observed `DataQualityStatus` and policy `QualityDisposition` contracts.
+- Default proposal core fields are `price`, `regime`, `calendar`, and `evidence`; missing, `PARTIAL`, `STALE`, `UNAVAILABLE`, or `CONFLICT` core data rejects new proposals.
+- Explicitly classified non-core fields permit `REPORT_ONLY` only when missing or `PARTIAL`; stale, unavailable, conflict, and any unclassified non-fresh field reject.
+- Malformed input returns a sanitized `REJECT` decision and warning rather than raising into a normal-entry fallback.
+- Added immutable `QualitySkipRecord` and append-only `QualitySkipRecorder` boundary. Every non-accept result records that `NEW_PROPOSAL` generation was skipped; recorder failure propagates so an unaudited skip cannot be treated as durable.
+- Extended `cores/regime_policy.py` so recognized pulse states have accepted regime quality while unknown/failed states keep compatible report-batch behavior but expose `allow_new_proposals=False`.
+- Kept regime quality imports lazy so importing the legacy policy does not eagerly load the provider graph.
+- Added the whole offline `tests/data` suite and focused regime-policy suite as explicit fail-closed steps in every existing Python 3.10/3.11/3.12 CI matrix job.
 
 ## Contract decisions
 
-- `available_at` remains the authoritative knowability instant. Observation period, release date, event date, or vintage never substitutes for it.
-- `vintage_date` is separately retained and cannot exceed the evaluation `as_of_date`; ALFRED requests require an exact vintage and returned evidence must match it.
-- FRED, ALFRED, and ECOS payloads are never normalized into one silent value in this foundation. Optional `fact_key`/`fact_hash` comparison records conflicts while preserving all envelopes.
-- Exact endpoint identities omit query strings and credentials. A future concrete transport owns safe request construction only after durable source approval.
-- Approval attempts are counted before I/O so failed requests cannot create an unbounded retry loop; authorization-bound failures remain hard fail-closed errors.
+- Quality status is an observation; `ACCEPT`, `REPORT_ONLY`, and `REJECT` are deterministic policy outcomes.
+- `REPORT_ONLY` means the report may continue with a visible warning while new-proposal generation is skipped and audited.
+- Core failure always dominates a report-only warning.
+- Explicit empty core classification and overlapping core/report-only classifications are invalid configuration.
+- The audit sink is injected. Concrete SQLite persistence is deferred to the storage/application slice; this task adds no database or migration.
+- Unknown legacy pulse state is mapped to `UNAVAILABLE`, not to a neutral/bullish regime. Existing report execution compatibility is preserved, but proposal eligibility is fail-closed at the regime-policy seam.
 
-## Verification
+## TDD and verification to date
 
-- RED: initial fixture test failed because `macro_official` did not exist; GREEN: 1 passed.
-- RED: provider/public-contract slice failed on missing contracts/exports; GREEN: focused suite passed.
-- RED: future vintage regression failed because no guard existed; GREEN: targeted test passed after adding `vintage_date <= as_of_date.date()`.
-- Focused result: `python -m pytest tests/data/providers/test_macro_official_provider.py tests/integration/test_macro_official_live.py -q` — 16 passed, 1 intentionally skipped.
-- Final canonical local groups — 678 passed, 1 intentionally deselected: runtime/safety 72; storage 44; data 270; LLM 111; remaining exact CI groups 181 with the deselection.
-- `python -m compileall -q prism_core tools/audit_broker_boundaries.py` — passed.
-- `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy inventory unchanged.
-- `python -m pip check` — no broken requirements.
-- `git diff --check` — passed before this final handoff refresh and is rerun against the frozen tree before delivery.
+- Baseline before edits: 65 passed (`tests/test_regime_policy.py` plus data contracts).
+- RED was observed for the absent quality module, unusable core states, explicit report-only classification, malformed-input fallback, audit records, default core fields, regime proposal eligibility, eager provider imports, sanitized warning, explicit skipped action, and empty-core configuration.
+- Current focused GREEN: `python -m pytest tests/data/test_quality_gate.py tests/test_regime_policy.py -q` — 62 passed.
+- Final exact local CI groups: 762 passed, 1 intentionally deselected — runtime/safety 72; storage 44; AgentNews 22; all data 290; regime policy 42; LLM 111; remaining exact CI groups 181 with the deselection.
+- `python -m compileall -q prism_core tools/audit_broker_boundaries.py cores/regime_policy.py` — passed.
+- `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy dangerous inventory remains 22 and is unchanged by this slice.
+- `python -m pip check` — no broken requirements; CI YAML parsed successfully; staged `git diff --check` passed.
+- Initial PR #22 CI at feature head `1740affe89ba1dc27912c26d3d53fe79c5ed14b9` exposed a Python 3.10-only test collection incompatibility (`datetime.UTC` was added in Python 3.11). The test now uses the repository's established `timezone.utc` compatibility pattern; focused tests and compile passed locally.
+- Corrected feature head `83041c60ac684b50698c4db49896aa89a5cdf333` passed PR CI run `30151804374` on Python 3.10/3.11/3.12, including the new complete data and regime-policy steps. A final handoff-only checkpoint commit will require a fresh exact-head run before merge.
+- A wider legacy-adjacent exploratory group could not collect because local `pandas` is absent. This did not affect the changed tests or canonical CI groups, which deliberately use the repository's minimal dependency set.
 
 ## Independent review
 
-- Initial verified read-only Claude review returned exit 0 with empty stderr and found no CRITICAL/HIGH issue. It raised one MEDIUM PIT inconsistency: a future vintage could contradict the as-of boundary, plus LOW coverage/documentation gaps for integrity/live gates and pre-I/O accounting.
-- GPT accepted the vintage finding, observed RED then GREEN, added transport identity/as-of/ALFRED-vintage and live clock/expiry tests, and documented pre-I/O attempt accounting.
-- Follow-up verified read-only Claude review returned exit 0 with empty stderr, marked prior findings resolved, found no remaining CRITICAL/HIGH/MEDIUM defect, and recommended approval. Informational residuals: date-level timezone semantics would need revisiting if ECOS adds request-level vintage semantics; authorization-bound failures intentionally hard-abort while upstream fetch failures become quality events.
+- Initial verified read-only Claude review returned exit 0 with empty stderr. It found no unsafe status/disposition path and recommended approval with notes. Findings: CI omitted regime tests (HIGH), REPORT_ONLY skip semantics ambiguity (MEDIUM), eager provider imports (MEDIUM), and swallowed-exception observability (MEDIUM).
+- GPT accepted and remediated all four: explicit regime CI step, `skipped_action=NEW_PROPOSAL` plus test, lazy imports plus isolated import test, and sanitized warning plus test.
+- One tool-based follow-up and one frozen-bundle read attempt exhausted Claude turn budgets and were classified as failed reviews.
+- A no-tools frozen-patch follow-up returned exit 0 with empty stderr and found no CRITICAL/HIGH code defect. It conditionally raised two MEDIUM checks: no current runtime consumer of `allow_new_proposals`, and possible external `BatchPolicy(...)` construction compatibility.
+- GPT verified the only `BatchPolicy(...)` constructors are the five updated returns inside `cores/regime_policy.py`. GPT classified absent runtime consumption as an explicit scope state, not a hidden completion claim: Task 10 permits only the regime-policy seam and excludes broader runtime application wiring. Final reporting must say operational proposal suppression is not yet wired.
+- Residual note: legacy pulse computation does not carry timestamped quality metadata, so recognized states are currently mapped to `FRESH`; full regime freshness modeling belongs with the later point-in-time feature/runtime slice.
 
 ## Side effects and safety
 
-- No FRED, ALFRED, ECOS, or other provider request occurred.
-- No credential was read, printed, changed, or created.
-- No external message, account/broker/order call, user database access, migration, deployment, runtime activation, live trading effect, commit, push, PR, or merge has occurred at this checkpoint.
+- No provider or other network request occurred except Git/GitHub fetch operations needed for repository delivery.
+- No external message, credential read/change, account/broker/order call, user database access, migration, deployment, or live-trading effect occurred.
+- Feature commits through `83041c60ac684b50698c4db49896aa89a5cdf333` were pushed and PR #22 was opened. Git/GitHub delivery calls are the only network effects; no merge has occurred at this checkpoint.
 
 ## Remaining closeout
 
-1. Run final frozen-tree diff/private-artifact/status inspection.
-2. Commit, push, open a PR, verify exact-head Python 3.10/3.11/3.12 CI, squash merge, and verify post-merge CI and remote branch deletion.
-3. Final reporting must keep these evidence states separate: fixture foundation exists; concrete live transport/live integration/runtime wiring/operated readiness are all absent.
+1. Commit and push this final handoff-only checkpoint, then verify every exact-head Python matrix job.
+2. Reconfirm the final diff/private-artifact checks against that exact head without further repository edits.
+3. Verify branch protection/ruleset status separately from Actions success.
+4. Squash merge only after all gates are provable; then verify post-merge CI, merge SHA, expected files, and remote branch deletion.
+5. Final reporting must separate foundation, development enforcement, runtime wiring, and operational behavior.
 
-Stop conditions remain: block on source-approval/credential/network scope, compatibility change, destructive migration, conflict, unresolved HIGH/CRITICAL review, broker/account/live/risk scope, or an unverifiable required gate.
+Stop conditions remain: block on compatibility change, destructive migration, provider/credential/account/broker/live/risk scope, conflict, unresolved HIGH/CRITICAL review, or an unverifiable required gate.

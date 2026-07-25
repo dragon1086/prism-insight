@@ -7,7 +7,8 @@ production orchestrators. It answers three questions, and nothing else:
      THIS analysis batch run, or rest? Pure, table-driven, no I/O, no env reads.
   2. :func:`get_market_pulse_state` — compute the CURRENT pulse state by replaying
      :class:`cores.market_pulse.MarketPulse` over the last ~400 calendar days of
-     index bars. Fail-open: ANY error returns ``None`` (never raises).
+     index bars. Errors return ``None`` so reports can continue while
+     :class:`BatchPolicy` rejects new proposals.
   3. :func:`market_pulse_mode` — read the ``MARKET_PULSE_MODE`` env flag
      (``shadow`` | ``live`` | ``off``; default ``shadow``).
 
@@ -28,9 +29,9 @@ tasks/market_pulse/00_VALIDATION_PLAN.md §7 Rev.5):
     is no longer needed. UNDER_PRESSURE therefore keeps both US windows:
     otherwise it would have the same one-batch result as CORRECTION.
 
-    Remaining states — UPTREND and None (unknown / fail-open) — run every batch
-    normally, as does KR under UNDER_PRESSURE. Exit/sell loops are NEVER affected
-    by this policy; only the new-analysis agents rest.
+    Remaining states — UPTREND and None (unknown) — run every report batch
+    normally, as does KR under UNDER_PRESSURE. Unknown regime is ineligible for
+    new proposals. Exit/sell loops are NEVER affected by this policy.
 
 Import safety: this module performs NO heavy imports at module load. All data
 fetching and market_pulse/stock_chart imports are lazy (inside functions) and
@@ -43,7 +44,10 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from prism_core.data.quality import QualityDecision
 
 logger = logging.getLogger(__name__)
 
@@ -113,29 +117,43 @@ class BatchPolicy:
     run_batch: bool
     reason: str
     pulse_state: Optional[str]
+    quality_decision: QualityDecision
+
+    @property
+    def allow_new_proposals(self) -> bool:
+        """New proposals require a running batch and accepted regime data."""
+        from prism_core.data.quality import QualityDisposition
+
+        return (
+            self.run_batch
+            and self.quality_decision.disposition is QualityDisposition.ACCEPT
+        )
+
+
+def _regime_quality_decision(pulse_state: Optional[str]) -> QualityDecision:
+    """Lazily bridge legacy pulse state into the target quality policy."""
+    from prism_core.data.contracts import DataQualityStatus
+    from prism_core.data.quality import DataQualityGate
+
+    status = (
+        DataQualityStatus.FRESH
+        if pulse_state in {UPTREND, UNDER_PRESSURE, CORRECTION}
+        else DataQualityStatus.UNAVAILABLE
+    )
+    return DataQualityGate(core_fields={"regime"}).evaluate({"regime": status})
 
 
 def decide_batch_policy(
     market: str, batch_mode: str, pulse_state: Optional[str]
 ) -> BatchPolicy:
-    """Decide whether an analysis batch should run, given the pulse state.
+    """Decide report-batch and new-proposal eligibility from pulse state.
 
-    Pure function — no env reads, no I/O, table-driven (:data:`_CORRECTION_REST_BATCHES`).
-
-    Args:
-        market:      "kr" or "us" (case-insensitive).
-        batch_mode:  KR/US: "morning" or "afternoon".
-                     ("both" or any unknown mode fails open -> run.)
-        pulse_state: UPTREND / UNDER_PRESSURE / CORRECTION / None.
-
-    Rationale: CORRECTION is not a buy stop; it reduces both markets to the
-    afternoon close-confirmation window while keeping one shot at the post-crash
-    rebound. UNDER_PRESSURE keeps the normal morning + afternoon schedule. Exit
-    loops are unaffected. Any state/mode not in a rest table runs (fail-open on
-    None/unknown).
+    The legacy report batch still runs for an unknown regime, but the quality
+    decision rejects new proposals. Exit loops remain outside this policy.
     """
     m = (market or "").strip().lower()
     mode = (batch_mode or "").strip().lower()
+    regime_quality = _regime_quality_decision(pulse_state)
 
     if pulse_state == CORRECTION:
         rest_batches = _CORRECTION_REST_BATCHES.get(m, frozenset())
@@ -147,6 +165,7 @@ def decide_batch_policy(
                     "(reduce to one daily window; exit loops unaffected)"
                 ),
                 pulse_state=pulse_state,
+                quality_decision=regime_quality,
             )
         return BatchPolicy(
             run_batch=True,
@@ -155,6 +174,7 @@ def decide_batch_policy(
                 "(retained daily window)"
             ),
             pulse_state=pulse_state,
+            quality_decision=regime_quality,
         )
 
     if pulse_state == UNDER_PRESSURE:
@@ -167,6 +187,7 @@ def decide_batch_policy(
                     "(exit loops unaffected)"
                 ),
                 pulse_state=pulse_state,
+                quality_decision=regime_quality,
             )
         return BatchPolicy(
             run_batch=True,
@@ -175,13 +196,14 @@ def decide_batch_policy(
                 "(normal two-batch schedule)"
             ),
             pulse_state=pulse_state,
+            quality_decision=regime_quality,
         )
 
-    # UPTREND / None(unknown) -> run everything (fail-open).
     return BatchPolicy(
         run_batch=True,
         reason=f"{pulse_state or 'UNKNOWN'}: run all batches",
         pulse_state=pulse_state,
+        quality_decision=regime_quality,
     )
 
 

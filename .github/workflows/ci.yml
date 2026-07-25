@@ -48,6 +48,12 @@ jobs:
       - name: Run AgentNews fixture contract tests
         run: python -m pytest tests/data/providers/test_agentnews_provider.py -q
 
+      - name: Run point-in-time data contract and quality-gate tests
+        run: python -m pytest tests/data -q
+
+      - name: Run regime quality-policy tests
+        run: python -m pytest tests/test_regime_policy.py -q
+
       - name: Run tests
         run: |
           python -m pytest cores/llm/tests/ -q

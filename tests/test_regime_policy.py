@@ -7,6 +7,9 @@ Run with:
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from cores.regime_policy import (
@@ -17,6 +20,7 @@ from cores.regime_policy import (
     decide_batch_policy,
     market_pulse_mode,
 )
+from prism_core.data import QualityDisposition
 
 
 # --------------------------------------------------------------------------- #
@@ -115,6 +119,42 @@ def test_decide_unknown_market_fails_open():
     """An unknown market has no rest-batches -> runs even in CORRECTION."""
     assert decide_batch_policy("jp", "morning", CORRECTION).run_batch is True
     assert decide_batch_policy("", "afternoon", CORRECTION).run_batch is True
+
+
+@pytest.mark.parametrize("pulse_state", [None, "UNRECOGNIZED"])
+def test_unknown_regime_keeps_report_batch_but_rejects_new_proposals(pulse_state):
+    policy = decide_batch_policy("kr", "afternoon", pulse_state)
+
+    assert policy.run_batch is True
+    assert policy.allow_new_proposals is False
+    assert policy.quality_decision.disposition is QualityDisposition.REJECT
+    assert policy.quality_decision.reasons == ("unavailable_core:regime",)
+
+
+@pytest.mark.parametrize("pulse_state", [UPTREND, UNDER_PRESSURE, CORRECTION])
+def test_known_regime_allows_proposals_only_when_the_batch_runs(pulse_state):
+    policy = decide_batch_policy("kr", "morning", pulse_state)
+
+    assert policy.quality_decision.disposition is QualityDisposition.ACCEPT
+    assert policy.allow_new_proposals is policy.run_batch
+
+
+def test_import_does_not_eagerly_load_the_data_provider_graph():
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import cores.regime_policy; "
+                "raise SystemExit(int('prism_core.data.providers' in sys.modules))"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert probe.returncode == 0, probe.stderr
 
 
 def test_batchpolicy_is_frozen():
