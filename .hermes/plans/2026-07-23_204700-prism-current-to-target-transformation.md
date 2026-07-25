@@ -4,7 +4,7 @@
 
 **Goal:** 현재의 KR/US 분석·리포트·자동주문 결합 구조를 개인 Mac에서 실행되는 KIS/FMP 기반의 재현 가능한 투자 의사결정 시스템으로 전환하고, 1차에서는 실제 broker 호출 없이 `SWING_V1`/`TREND_V1`, strict LLM proposal, 연구·SHADOW·내부 paper를 제공한다.
 
-**Architecture:** 기존 KR/US 코드를 전면 재작성하지 않고, 새 `prism_core` 계약과 `prism_app` application service를 먼저 만든 뒤 레거시 진입점을 thin wrapper로 전환한다. 데이터 snapshot → 전략별 정량 피처 → LLM `TradePlanProposal` → 결정론적 validator/policy/risk → 보고서·SHADOW·내부 paper 순서를 강제한다. Phase 1 runtime은 broker 모듈을 생성하지 않으며, Phase 2 broker paper도 `OrderIntent`/`ExecutionService`만 통과한다.
+**Architecture:** 기존 KR/US 코드를 전면 재작성하지 않고, 새 `prism_core` 계약과 얇은 `prism_app` application service를 만든 뒤 검증된 기능 단위로 현재 PRISM의 후보선정·보고서·PDF·Telegram·scheduler 표면 뒤에 접목한다. 전체 신규 모듈이 완성될 때까지 통합을 미루거나 별도 사용자 제품을 장기 병렬 운영하지 않는다. 데이터 snapshot → 전략별 정량 피처 → LLM `TradePlanProposal` → 결정론적 validator/policy/risk → 보고서·SHADOW·내부 paper 순서를 강제하며, 각 bounded slice는 fixture/contract → 허용된 live smoke → 한정 caller wiring → parity/SHADOW → operated observation 순으로 넓힌다. Phase 1 runtime은 broker 모듈을 생성하지 않으며, Phase 2 broker paper도 `OrderIntent`/`ExecutionService`만 통과한다.
 
 **Tech Stack:** Python 3.10+, Pydantic, SQLite(WAL), KIS market-data API, FMP, DART/KIND/KRX, SEC EDGAR, FRED/ALFRED, ECOS, OpenAI/Claude, python-telegram-bot long polling, Next.js local dashboard, launchd, pytest/GitHub Actions.
 
@@ -74,6 +74,19 @@ validated proposal
   -> KIS broker paper/demo adapter
   -> fills/reconciliation/recovery
 ```
+
+### 점진적 수직 통합 checkpoint
+
+새 모듈은 미완성 상태로 레거시 거대 파일에 덧붙이지 않지만, 모든 Phase 1 모듈이 끝날 때까지 dormant 상태로 남겨두지도 않는다.
+
+1. provider·PIT·quality·leadership slice가 준비되면 현재 KR/US report caller에 source/as-of/quality와 리더십 read model을 연결한다.
+2. `SWING_V1` contract·feature·proposal·validator slice가 준비되면 기존 판단을 제거하지 않고 별도 SHADOW section으로 연결한다.
+3. `TREND_V1`도 독립된 version·feature·prompt·outcome으로 같은 방식으로 연결한다.
+4. 기존 후보선정·renderer·utility는 characterization test와 새 계약 적합성이 확인될 때만 donor로 재사용한다.
+5. 각 연결은 저장이 발행보다 먼저이며, publication 실패가 분석을 지우지 않고, broker import/call이 0임을 증명한다.
+6. parity·SHADOW·failure evidence가 통과한 기능만 기존 로직을 대체하며 obsolete path 삭제는 마지막 단계다.
+
+`prism_app` Task 20은 첫 통합이 시작되는 유일한 시점이 아니라 최종 thin service/convergence 단계다. 앞선 task의 좁은 read-only composition은 해당 task의 계약과 안전 gate 안에서 허용하되, scheduler·Telegram·dashboard·broker 권한을 암묵적으로 확장하지 않는다.
 
 ---
 
@@ -388,7 +401,7 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 **Files:**
 - Create: `prism_core/data/providers/__init__.py`
 - Create: `prism_core/data/providers/kis.py`
-- Create: `tests/integration/test_kis_market_data_live.py`
+- Create: `tests/integration/test_kis_live_market_data.py`
 - Modify as adapter source only: `krx_data_client.py`
 - Test: `tests/data/providers/test_kis_provider.py`
 
@@ -400,7 +413,7 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 - missing/stale values return quality events, not fabricated fallback.
 - KRX/DART/KIND supplements retain explicit provider labels.
 - 실제 KIS quotation endpoint를 시장데이터 전용 자격증명 경계에서 호출해 인증·권한·응답 schema·timestamp·rate limit·redaction을 검증한다. 계좌·잔고·보유종목·주문 endpoint는 금지한다.
-- fixture unit/CI와 별도의 `integration_external` marker로 bounded live smoke를 실행하며, live evidence가 없으면 foundation-only로 보고한다.
+- fixture unit/CI와 별도의 `provider_live` marker로 bounded live smoke를 실행하며, live evidence가 없으면 foundation-only로 보고한다.
 
 ---
 
@@ -412,7 +425,7 @@ Cross-DB references use stable UUID/ULID strings and application-level validatio
 - Create: `prism_core/data/providers/fmp.py`
 - Create: `prism_core/data/providers/fmp_models.py`
 - Test: `tests/data/providers/test_fmp_provider.py`
-- Create: `tests/integration/test_fmp_live.py`
+- Create: `tests/integration/test_fmp_live_market_data.py`
 - Modify later as callers migrate: `prism-us/cores/us_data_client.py`
 - Modify later as callers migrate: `prism-us/cores/us_analysis.py`
 
@@ -606,7 +619,7 @@ class QualityDecision:
 - predicate operators allowlisted
 - missing evidence rejected or report-only
 - raw response retained even when parsing fails
-- integration_external: 승인된 실제 LLM transport에서 model/prompt version, strict structured-output schema, timeout/rate-limit, raw/parsed retention, secret redaction을 bounded smoke로 검증한다. 실행되지 않으면 LLM service는 fixture-tested foundation으로만 보고한다.
+- provider_live: source-specific capability/approval을 받은 실제 LLM transport에서 model/prompt version, strict structured-output schema, timeout/rate-limit, raw/parsed retention, secret redaction을 bounded smoke로 검증한다. 실행되지 않으면 LLM service는 fixture-tested foundation으로만 보고한다.
 
 ---
 

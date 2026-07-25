@@ -53,6 +53,8 @@ point-in-time snapshot
 
 Do not extend legacy coupling by adding new responsibilities to `stock_tracking_agent.py`, `telegram_ai_bot.py`, or the giant trading prompts. Prefer new small modules under `prism_core/` and thin use-case services under `prism_app/`, then convert legacy entrypoints to wrappers after parity tests.
 
+Keep the currently useful PRISM candidate-selection, report/PDF, Telegram, and scheduling surfaces unless a target contract requires replacement. Do not build a second user-facing product merely because new core modules exist. Once a bounded module is contract-tested and, where applicable, actual-endpoint smoke-tested, integrate it into one narrow current caller, compare parity or SHADOW output, and observe persistence/reporting failure behavior before expanding the next slice. Do not wait for every Phase 1 module to exist before any integration, and do not wire an incomplete contract into a legacy god object. Existing code is a donor: reuse only characterized formulas, renderers, fixtures, and hardened primitives behind the new contracts; retire obsolete paths only after the replacement slice passes its gates.
+
 ## 4. Non-negotiable safety rules
 
 ### Broker and account effects

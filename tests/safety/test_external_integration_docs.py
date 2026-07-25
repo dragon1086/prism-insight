@@ -24,6 +24,33 @@ def test_product_scope_separates_fixture_live_runtime_and_operated_readiness() -
     assert "별도 source-specific capability/approval" in product_scope
 
 
+def test_product_scope_documents_one_fmp_key_and_incremental_current_prism_integration() -> None:
+    product_scope = _read("docs/PRODUCT_SCOPE_AND_STRATEGY.md")
+
+    assert "하나의 동일한 API key" in product_scope
+    assert "`FMP_API_KEY` 또는 호환 별칭 `FINANCIAL_MODELING_PREP_API_KEY`" in product_scope
+    assert "서로 다른 두 자격증명을 요구하지 않는다" in product_scope
+    assert "서로 다른 값은 구성 충돌로 fail closed" in product_scope
+    assert "runtime wiring이나 operated readiness를 뜻하지 않는다" in product_scope
+    assert "현재 PRISM 표면과 점진적 통합" in product_scope
+    assert "전체 신규 로드맵이 끝날 때까지 통합을 미루지 않으며" in product_scope
+    assert "별도 표면은 기존 표면으로 목표를 달성할 수 없다는 근거가 있을 때만" in product_scope
+    assert "불필요해진 레거시 경로를 마지막에" in product_scope
+
+
+def test_guides_require_bounded_vertical_integration_before_legacy_retirement() -> None:
+    rules = _read("AGENTS.md")
+    architecture = _read("CLAUDE.md")
+    plan = PLAN.read_text(encoding="utf-8")
+
+    assert "Do not build a second user-facing product" in rules
+    assert "integrate it into one narrow current caller" in rules
+    assert "incremental vertical checkpoints" in architecture
+    assert "current PRISM caller behind an explicit seam" in architecture
+    assert "점진적 수직 통합 checkpoint" in plan
+    assert "obsolete path 삭제는 마지막 단계" in plan
+
+
 def test_repository_rules_require_live_evidence_without_expanding_broker_scope() -> None:
     rules = _read("AGENTS.md")
 
@@ -39,10 +66,10 @@ def test_repository_rules_require_live_evidence_without_expanding_broker_scope()
 def test_plan_requires_actual_kis_fmp_and_external_transport_smoke() -> None:
     plan = PLAN.read_text(encoding="utf-8")
 
-    assert "tests/integration/test_kis_market_data_live.py" in plan
-    assert "tests/integration/test_fmp_live.py" in plan
+    assert "tests/integration/test_kis_live_market_data.py" in plan
+    assert "tests/integration/test_fmp_live_market_data.py" in plan
     assert "actual FMP endpoint capability/entitlement" in plan
-    assert "integration_external: 승인된 실제 LLM transport" in plan
+    assert "provider_live: source-specific capability/approval을 받은 실제 LLM transport" in plan
     for live_test in (
         "tests/integration/test_kr_official_live.py",
         "tests/integration/test_sec_edgar_live.py",

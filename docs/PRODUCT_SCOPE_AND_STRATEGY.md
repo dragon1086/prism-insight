@@ -45,6 +45,22 @@ LEARN    판단·결과·반례·복기를 DB에 저장하고 검증된 교훈�
 
 외부효과는 위험에 따라 분리한다. 허용 chat/user로 보내는 Telegram 테스트 메시지와 공개 AgentNews KR/US 보드의 읽기 전용 fetch는 개발·테스트·운영 환경 모두에서 매회 별도 승인 없이 수행할 수 있다. Telegram transport는 명시적으로 활성화하고 테스트 메시지에는 `[TEST]`, 환경, request ID를 표시하며 rate limit·dedupe·감사 로그를 적용한다. AgentNews 단위 테스트는 재현성을 위해 fixture를 사용하되 live integration/smoke test와 제품 runtime은 실시간 fetch해야 한다. KIS/FMP 시장데이터의 실제 read-only integration/smoke도 승인되어 있으며 로컬 자격증명을 출력·변경하지 않고 호출량을 제한해 수행한다. 이 승인은 시세·재무·기업 이벤트·뉴스 등 시장데이터에만 적용되며 실제 계좌 조회, 잔고·보유종목, 주문·취소·정정, broker paper/live 효과에는 적용되지 않는다.
 
+### 현재 PRISM 표면과 점진적 통합
+
+PRISM-INSIGHT는 별도의 두 제품을 장기간 병렬 운영하거나 기존 제품을 한 번에 전면 재작성하지 않는다. 현재 동작하는 후보선정, 분석 orchestration, 보고서, PDF·이미지, Telegram, 예약 실행 등 사용자 표면은 우선 유지한다. 새 `prism_core` 계약과 작은 `prism_app` 서비스는 안전·시점·데이터·전략·정책의 source of truth가 되며, 완성된 기능 단위로 현재 PRISM 표면 뒤에 접목한다.
+
+```text
+새 계약/모듈 구현
+-> fixture 및 허용된 bounded live smoke
+-> 현재 PRISM의 한정된 caller에 연결
+-> 기존 결과와 parity/SHADOW 비교
+-> 저장·보고·실패 동작 확인
+-> 검증된 부분만 기존 로직 대체
+-> 불필요해진 레거시 경로를 마지막에 격리·퇴역
+```
+
+전체 신규 로드맵이 끝날 때까지 통합을 미루지 않으며, 반대로 미완성 계약을 거대 레거시 파일에 직접 덧붙이지 않는다. 기존 후보선정·정량 계산·renderer·fixture·검증된 primitive는 명시적 입력·출력, point-in-time 의미, 외부효과, 테스트가 새 계약을 만족할 때만 선별 재사용한다. `stock_tracking_agent.py`, giant trading prompt, journal 직접 score adjustment, 혼합 DB, 직접 broker 경로에는 신규 책임을 추가하지 않는다. 기존 dashboard·Telegram·scheduler는 목표 계약을 만족하도록 감쌀 수 있으면 우선 재사용하고, 별도 표면은 기존 표면으로 목표를 달성할 수 없다는 근거가 있을 때만 만든다.
+
 ### 검증 계층과 operated readiness
 
 Fixture·fake·mock은 unit/contract/CI의 결정론, 오류 주입, 회귀 재현을 위해 필수지만 외부 통합 완료의 증거를 대신하지 않는다. KIS, FMP, KRX/KIND/DART, SEC EDGAR, FRED/ALFRED, ECOS, AgentNews, Telegram, 외부 LLM처럼 네트워크·자격증명·구독 권한·외부 스키마에 의존하는 adapter/transport는 다음 네 상태를 구분한다.
@@ -71,9 +87,9 @@ Fixture·fake·mock은 unit/contract/CI의 결정론, 오류 주입, 회귀 재�
 
 ### 미국 FMP 사용 범위
 
-FMP는 미국의 가격·재무·기업 이벤트·뉴스 데이터 adapter 후보로 사용한다. FMP는 브로커 주문 실행자가 아니다. 사용 구독 등급에서 필요한 과거 데이터·호출량·기업행위·상장폐지·지수 구성종목을 제공하는지 구현 전에 capability check를 수행한다.
+FMP는 미국의 가격·재무·기업 이벤트·뉴스 데이터 primary adapter로 사용한다. FMP는 브로커 주문 실행자가 아니다. 사용 구독 등급에서 필요한 과거 데이터·호출량·기업행위·상장폐지·지수 구성종목의 capability를 bounded actual-endpoint smoke로 확인하고, 그 실행 증거는 `.hermes/PRISM_AUTOPILOT_HANDOFF.md`에 기록한다. Live integration 증거는 기존 US batch, scheduler, 저장·보고 경로의 runtime wiring이나 operated readiness를 뜻하지 않는다.
 
-현재 저장소에서 FMP adapter 구현은 찾지 못했으므로 신규 구현 대상으로 본다.
+구현은 FMP가 발급한 **하나의 동일한 API key**를 `FMP_API_KEY` 또는 호환 별칭 `FINANCIAL_MODELING_PREP_API_KEY` 중 하나로 읽는다. 두 이름은 서로 다른 두 자격증명을 요구하지 않는다. 둘 다 설정되면 값이 동일해야 하며 서로 다른 값은 구성 충돌로 fail closed한다. 자격증명은 `hermes config env-path`로 지정한 로컬 secret 파일 등 승인된 환경에서 process environment로 주입하고 저장소 문서·repository `.env`·로그·예외·URL에 실제 값을 기록하지 않는다.
 
 ---
 

@@ -1,10 +1,11 @@
 # PRISM Guarded-Autopilot Handoff
 
-## Current milestone — Phase 1A Task 9.5
+## Current milestone — Phase 1A Task 9.5 live integration verified; runtime unwired
 
-- Branch: `prism-insight/t_fcd51682-prism-phase-1a-task-9.5-fmp-http-transpo`
-- State: dedicated bounded FMP market-data HTTP transport, sanitized request evidence, and an explicit opt-in actual-endpoint smoke are implemented and locally verified. Delivery commit, PR, exact-head CI, merge, and post-merge CI remain pending at this checkpoint.
-- Runtime state: the transport is exported but intentionally not wired into any application caller or scheduler. No strategy, LLM, paper broker, account/order path, messaging path, deployment, or user database is wired or changed.
+- Merged state: the bounded FMP market-data HTTP transport was squash-merged through PR #16 at `1150f809211b7c22d2ebcd63dec66c9ee29945d7`; exact feature-head and post-merge `main` CI passed on Python 3.10/3.11/3.12.
+- Live integration state: on 2026-07-25, the locally injected `FMP_API_KEY` enabled the explicit AAPL-only actual-endpoint smoke. `RUN_FMP_LIVE_SMOKE=1 python -m pytest tests/integration/test_fmp_live_market_data.py -q` passed (`1 passed in 1.80s`) and verified supported capability/entitlement, HTTP 200, a `FRESH` raw-price snapshot, positive raw close/non-negative volume, PIT timing, and sanitized request evidence.
+- Credential contract: `FMP_API_KEY` and `FINANCIAL_MODELING_PREP_API_KEY` are alternative environment names for one identical FMP API key, not two required keys. One configured name is sufficient; differing simultaneous values fail closed. The actual secret value was not printed, copied, committed, or retained in test evidence.
+- Runtime state: the transport remains exported but is not wired into an application caller or scheduler. No strategy, LLM, paper broker, account/order path, messaging path, deployment, or user database was wired or changed by the smoke.
 
 ## Task 9.5 implemented scope
 
@@ -21,21 +22,21 @@
 - `python -m pytest tests/data tests/storage -q` — 231 passed.
 - `python -m pytest tests/runtime tests/safety -q` — 70 passed.
 - Canonical CI-equivalent remaining groups — 292 passed, 1 intentionally deselected.
-- Default-off live smoke — 1 intentionally skipped.
+- Default-off live smoke — 1 intentionally skipped during delivery verification.
 - Explicit missing-credential live-smoke command exited 1 and visibly reported the unavailable credential before any transport/network call.
+- Post-merge credentialed actual-endpoint smoke on 2026-07-25 — 1 passed in 1.80s; capability and AAPL price requests returned HTTP 200 through the allowlisted endpoint.
 - `python -m compileall -q prism_core tools/audit_broker_boundaries.py` — passed.
 - `python tools/audit_broker_boundaries.py` — passed with 0 violations; legacy dangerous inventory remains informational and unchanged.
-- `python -m pip check` — no broken requirements; `git diff --check` passed before this handoff edit and must be rerun before commit.
-- Verified read-only Claude final review found no CRITICAL/HIGH defect and considered the foundation mergeable. GPT checked the review's raw/adjusted concern against the official FMP documentation, which explicitly describes the selected endpoint as unadjusted and publishes the `adj*` response field names; actual price-operation evidence remains blocked without a credentialed smoke.
+- `python -m pip check` — no broken requirements; `git diff --check` passed before delivery.
+- Verified read-only Claude final review found no CRITICAL/HIGH defect and considered the foundation mergeable. GPT checked the review's raw/adjusted concern against the official FMP documentation, which explicitly describes the selected endpoint as unadjusted and publishes the `adj*` response field names; the later credentialed smoke verified the selected live operation and conservative raw-only normalization contract.
 - GPT accepted the review's low residuals as explicit boundaries: page-level timing conservatively uses the latest returned session for the whole lookback window, generic wire failures fail closed without retry, and the concrete transport rejects multi-symbol requests before a hidden wire fanout. None is runtime-wired in this slice.
 
 ## Task 9.5 safety, evidence ladder, and side effects
 
-- Credential presence detection returned zero configured approved keys. Therefore no actual FMP market-data endpoint request occurred and live integration is **not verified**; no demo key, fixture, cache, or fabricated output substitutes for that missing evidence.
-- Contract foundation: complete and fixture-tested. Concrete HTTP transport: implemented and fixture-tested. Actual live integration: blocked by missing credential. Runtime wiring: intentionally absent. Operated readiness: not claimed.
-- One public FMP documentation page was fetched to verify endpoint semantics. No FMP API request, SEC request, KIS request, broker/account/holdings/order/cancel/replace call, Telegram or other external message, credential change/output, user-database access, migration, deployment, or risk/kill-switch change occurred.
-- Changed-file inspection must include only the scoped provider transport/exports/tests, pytest marker, and this handoff; no credential, private database, generated log, cache, or report artifact may be delivered.
-- Delivery remains gated on final local diff/private-artifact checks, a scoped commit/PR, exact-feature-head Python 3.10/3.11/3.12 CI, squash merge, post-merge main CI, and exactly one plan-approved sequential successor if Task 9 still requires one.
+- Contract foundation: complete and fixture-tested. Concrete HTTP transport: implemented and fixture-tested. Actual live integration: verified by the bounded AAPL smoke. Runtime wiring: intentionally absent. Operated readiness: not claimed.
+- The post-merge smoke made only the allowlisted FMP market-data capability and AAPL price GET requests. No SEC/KIS request, account/balance/holdings/order/cancel/replace call, broker effect, Telegram or other external message, credential change/output, user-database access, migration, deployment, or risk/kill-switch change occurred.
+- The configured secret was injected from the local secret file selected by `hermes config env-path` into the process environment. No credential value, private database, generated log, cache, raw provider body, or report artifact is part of repository delivery.
+- Task 9.5 delivery is complete. The next implementation slice must preserve the newly approved incremental-integration rule: complete bounded core contracts, then compose each verified read-only slice into one current PRISM caller before broadening or retiring a legacy path.
 
 ## Previous milestone — Phase 1A Task 9.4
 

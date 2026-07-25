@@ -116,6 +116,23 @@ validated paper proposal
 
 The migration uses a strangler pattern: build new contracts and application services, verify parity and safety, then make legacy entrypoints thin wrappers. Do not rewrite the repository in place without characterization tests.
 
+The current PRISM user surface remains the product during this transition. Preserve useful candidate selection, report/PDF rendering, Telegram publication, and scheduling when they can consume the target contracts safely. `prism_core` is the new source-of-truth engine, not a permanently parallel product, and `prism_app` should stay thin rather than duplicate every existing surface.
+
+Use incremental vertical checkpoints instead of waiting for the whole horizontal roadmap:
+
+```text
+bounded module
+-> fixture/contract verification
+-> approved live smoke when external
+-> one current PRISM caller behind an explicit seam
+-> persistence before publication
+-> parity or SHADOW comparison
+-> failure/recovery observation
+-> broaden or replace the legacy path
+```
+
+For example, connect source/as-of/quality and leadership read models to the current report once their gate is complete; add `SWING_V1` and `TREND_V1` as separate SHADOW sections when each strategy slice is complete. Do not wait for a replacement dashboard, Telegram bot, scheduler, feedback system, and paper broker before exposing a verified read-only slice. Conversely, do not put incomplete provider, strategy, LLM, policy, or storage logic directly into `stock_tracking_agent.py`, giant prompts, mixed legacy DB code, or broker-capable modules.
+
 ## 5. Implementation phases
 
 ### Phase 0 — baseline and safety
