@@ -66,6 +66,9 @@ jobs:
       - name: Run deterministic position and consolidated portfolio policy tests
         run: python -m pytest tests/policy tests/portfolio -q
 
+      - name: Run point-in-time research engine tests
+        run: python -m pytest tests/research -q
+
       - name: Run strategy-specific trade-plan prompt contract tests
         run: python -m pytest tests/agents -q
 
