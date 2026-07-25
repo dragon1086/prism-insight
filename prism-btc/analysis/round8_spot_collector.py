@@ -36,8 +36,11 @@ CREATE TABLE IF NOT EXISTS spot_klines (
 
 def fetch(symbol: str, start_ms: int) -> list:
     url = f"{BASE}?symbol={symbol}&interval={INTERVAL}&startTime={start_ms}&limit=1000"
+    # 스킴을 https 로 고정 검증 (file:/ 등 예기치 않은 스킴 차단 — Bandit B310).
+    if not url.startswith("https://"):
+        raise ValueError(f"refusing non-https url: {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "prism-btc-research"})
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310  (https 검증 완료)
         return json.loads(r.read())
 
 
