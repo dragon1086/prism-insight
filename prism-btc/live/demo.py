@@ -62,6 +62,7 @@ from live.shadow import (
 from backtest.engine import REENTRY_COOLDOWN_BARS, SL_REENTRY_COOLDOWN_BARS
 import engine.sizing as _sizing
 from core.risk import compute_operating_risk
+from core.leadership import leadership_multipliers
 
 # 거래소 상수.
 _CATEGORY = "linear"
@@ -774,6 +775,9 @@ class DemoAdapter:
             dd_threshold=SHADOW_DD_THRESHOLD,
             reduced_risk=SHADOW_REDUCED_RISK,
         )
+        # 라운드8 L 계층: BTC/ETH 상대강도 노출 배수 (fail-open=1.0, 신규 진입만)
+        l_long, l_short, _l_reason = leadership_multipliers()
+        op_risk *= l_long if sig.side == "long" else l_short
         orig = _sizing.RISK_PER_TRADE
         _sizing.RISK_PER_TRADE = op_risk
         try:
