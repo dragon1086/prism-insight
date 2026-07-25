@@ -116,7 +116,7 @@ SWING_INITIAL_EQUITY: float = 10_000.0  # 자체 가상 원장 시드 (shadow �
 # 신규 진입 리스크에만 곱한다 (신호/청산/보유관리 불변, 하드 게이트 아님).
 # 데이터 장애 시 fail-open(1.0) — core/leadership.py. 백테스트 엔진에는
 # 미적용(사이징 전용이라 신호 파리티 유지) — 라이브/데모/섀도우 전용.
-L_LAYER_ENABLED: bool = True
+L_LAYER_ENABLED: bool = False  # 라운드8b 강건성 WEAK(순열 p=0.097, 윈도우 취약)
 L_RS_WINDOW: int = 60          # 상대강도 창 (일)
 L_MAX_STALE_DAYS: int = 3      # spot 데이터 이보다 오래되면 fail-open
 L_MULT_LONG_LEADING: float = 1.25
