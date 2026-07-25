@@ -56,6 +56,7 @@ from core.actions import (
     OpenIntent,
 )
 from core.risk import compute_operating_risk
+from core.leadership import leadership_multipliers
 
 from live import tracking
 from live.tracking import PositionRow, TradeRow
@@ -551,6 +552,9 @@ class ShadowAdapter:
             dd_threshold=SHADOW_DD_THRESHOLD,
             reduced_risk=SHADOW_REDUCED_RISK,
         )
+        # 라운드8 L 계층: BTC/ETH 상대강도 노출 배수 (fail-open=1.0, 신규 진입만)
+        l_long, l_short, _l_reason = leadership_multipliers()
+        op_risk *= l_long if sig.side == "long" else l_short
         orig = _sizing.RISK_PER_TRADE
         _sizing.RISK_PER_TRADE = op_risk
         try:
