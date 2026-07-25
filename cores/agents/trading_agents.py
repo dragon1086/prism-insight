@@ -1,5 +1,8 @@
 from mcp_agent.agents.agent import Agent
 
+from prism_core.llm.trade_plan_prompts import get_trade_plan_prompt_contract
+from prism_core.strategies.contracts import Market, StrategyId
+
 # Fallback sector names when dynamic data is not available
 KRX_STANDARD_SECTORS = [
     "IT 서비스", "건설", "금속", "기계·장비", "기타금융", "기타제조",
@@ -8,6 +11,28 @@ KRX_STANDARD_SECTORS = [
     "음식료·담배", "의료·정밀기기", "일반서비스", "전기·가스",
     "전기·전자", "제약", "종이·목재", "증권", "통신", "화학",
 ]
+
+
+def create_trade_plan_proposal_agent(
+    strategy_id: StrategyId,
+    language: str = "ko",
+):
+    """Create the dormant, tool-free KR proposal-only agent seam.
+
+    This does not replace or activate the legacy trading-scenario caller. A later
+    application task must supply the immutable input envelope and model transport.
+    """
+
+    contract = get_trade_plan_prompt_contract(
+        strategy_id,
+        Market.KR,
+        language=language,
+    )
+    return Agent(
+        name=f"kr_{strategy_id.value.lower()}_trade_plan_proposal_agent",
+        instruction=contract.instruction,
+        server_names=[],
+    )
 
 
 def create_trading_scenario_agent(language: str = "ko", sector_names: list = None):

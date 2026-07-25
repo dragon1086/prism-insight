@@ -9,12 +9,37 @@ Note: These agents will be integrated in Phase 6 (Trading System).
 
 from mcp_agent.agents.agent import Agent
 
+from prism_core.llm.trade_plan_prompts import get_trade_plan_prompt_contract
+from prism_core.strategies.contracts import Market, StrategyId
+
 # Fallback sector names when dynamic data is not available
 GICS_SECTORS = [
     "Technology", "Healthcare", "Financial Services", "Consumer Cyclical",
     "Consumer Defensive", "Energy", "Industrials", "Basic Materials",
     "Real Estate", "Utilities", "Communication Services",
 ]
+
+
+def create_us_trade_plan_proposal_agent(
+    strategy_id: StrategyId,
+    language: str = "ko",
+):
+    """Create the dormant, tool-free US proposal-only agent seam.
+
+    This does not replace or activate the legacy trading-scenario caller. A later
+    application task must supply the immutable input envelope and model transport.
+    """
+
+    contract = get_trade_plan_prompt_contract(
+        strategy_id,
+        Market.US,
+        language=language,
+    )
+    return Agent(
+        name=f"us_{strategy_id.value.lower()}_trade_plan_proposal_agent",
+        instruction=contract.instruction,
+        server_names=[],
+    )
 
 
 def create_us_trading_scenario_agent(language: str = "ko", sector_names: list = None):
