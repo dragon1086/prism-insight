@@ -2,58 +2,56 @@
 
 ## Current milestone
 
-- Task: Phase 1B Task 14 — strategy-specific `TradePlanProposal` prompt contracts
-- Branch: `prism-insight/t_3bb97373-prism-phase-1b-task-14-strategy-specific`
-- Base: current `origin/main` at `d86a252321029ff845d4b7e27efce42cd42aab37`
-- Implementation state: prompt contracts, bounded KR/US seams, tests, explicit CI enforcement, independent read-only review, and preliminary exact local gates are complete; definitive frozen-tree gates and delivery remain
-- Runtime state: dormant prompt/factory foundation only; no application caller, immutable input-envelope assembly, model/provider transport, persistence, validator, policy, risk, sizing, messaging, account, order, broker path, or operational behavior is wired
+- Task: Phase 1B Task 15 — deterministic `ProposalValidator` and field dispositions
+- Branch: `prism-insight/t_2dd7e2ce-prism-phase-1b-task-15-proposal-validato`
+- Base: current `origin/main` at `ae386115b5a4f2f4d7f9ae835dd47244edc9b60d`
+- Implementation state: validator/disposition contracts, focused tests, explicit CI discovery, independent read-only review, and definitive frozen-tree local gates are complete; delivery remains
+- Runtime state: dormant policy foundation only; no application caller, persistence, sizing, portfolio risk, `OrderIntent`, model/provider transport, messaging, account, broker, or operational behavior is wired
 
 ## Implemented scope
 
-- Added separate `SWING_V1` and `TREND_V1` prompt identities, mandates, outcome-evaluation horizons, and schema-fingerprinted prompt versions while reusing the Task 13 `TradePlanProposal.model_json_schema()` contract rather than redefining it.
-- Added a strict PIT input boundary: only supplied snapshot/features/evidence within the declared as-of boundary may be used; user/news/report/evidence text is untrusted data and embedded instructions are ignored.
-- Required explicit uncertainty, known unknowns, falsifiers, bull/bear evidence references, missing/stale/conflict declarations, and supplied feature/evidence references for every numeric claim.
-- Explicitly denied final quantity, portfolio slots, execution/order approval, `OrderIntent`, broker/account actions, policy/risk overrides, stop widening, exposure increases, averaging down, and assumptions of execution. The embedded strict schema also rejects undeclared fields.
-- Added tool-free, dormant KR and US agent factories with `server_names=[]`. The existing giant KR/US scenario factories and their legacy caller behavior remain unchanged behind the existing boundary.
-- Put the canonical contract in `prism_core/llm/trade_plan_prompts.py` and retained the requested `cores/agents/trade_plan_prompts.py` compatibility import. This avoids the repository's root-`cores` versus `prism-us/cores` package-shadowing trap while keeping one implementation.
-- Added explicit Python 3.10/3.11/3.12 CI discovery for `tests/agents` without weakening existing jobs.
+- Added immutable `FieldDisposition` audit records with explicit `ACCEPT`, `CLAMP`, `RECALCULATE`, and `REJECT` actions plus proposed/resolved values and evidence links.
+- Added a versioned deterministic `ProposalValidationPolicy` and `ProposalValidator` that retain exact raw output and parsed proposal identity without mutating the raw proposal.
+- Fail closed on parse/schema rejection, proposal/feature/quant binding mismatch, unregistered or incompatible strategy/market, non-FRESH/non-ACCEPT data, declared critical missing/stale/conflicting data, future/stale snapshots, unknown or duplicate evidence, score/regime divergence, unevaluable/expired predicates, invalid long-only stop/target relationships, and explicit hard vetoes.
+- Evaluate entry predicates from the immutable feature snapshot and record deterministic results as `RECALCULATE`; retain authoritative deterministic quant score separately from `llm_score`.
+- Clamp only the LLM risk-multiplier candidate downward to the configured maximum and preserve both raw proposed and resolved values. No quantity, sizing, position, exposure, paper eligibility, or order object is created.
+- Record truthful stop/target audit reasons when a non-entry proposal supplies candidates without an entry reference; Phase 1 long-only semantics are explicit.
+- Added explicit Python 3.10/3.11/3.12 CI discovery for `tests/policy` without weakening existing jobs.
 
 ## Contract decisions and deferred seams
 
-- Prompt versions use authored strategy revisions plus the first 12 hexadecimal characters of SHA-256 over the exact canonical JSON Schema text embedded in the prompt. A schema change therefore changes the prompt identity automatically; authored prose changes still require an intentional prompt-revision bump.
-- The prompt contains no supplied market/evidence payload and performs no concatenation itself. A later application/runtime task must assemble and delimit the immutable input envelope; actual injection resistance at that composition boundary remains unverified.
-- The agent factories configure no MCP tools, but they are not called by any current entrypoint. Legacy runtime behavior is intentionally unchanged until a later bounded wrapper/SHADOW task.
-- Task 15 remains responsible for deterministic proposal validation and field dispositions, including prompt-version binding, evidence freshness/existence, and price/stop/target sanity. Task 16 remains responsible for deterministic sizing and consolidated exposure.
-- Live LLM structured-output transport, timeout/rate-limit behavior, provider/model identity smoke, secret redaction, persistence, and operated readiness remain absent. Fixture/contract tests do not prove a live model integration.
+- `ProposalValidationResult.proposal` is the immutable raw parsed candidate. Downstream policy consumers must use disposition `resolved_value` for clamped or recalculated fields; the raw proposal is not a sizing or execution contract.
+- Strategy versions must match the active registry. Historical/concurrent strategy experiments remain persistence concerns rather than active validation definitions.
+- Regime consistency uses a versioned policy tolerance between the LLM directional probability expectation mapped to 0–100 and the strategy-owned deterministic `*.regime_compatibility` feature. This is a fail-closed research-policy check, not an exposure calculation.
+- Field dispositions are in-memory contracts only. Append-only persistence is Task 18; Task 16 owns deterministic sizing and consolidated portfolio exposure.
+- Runtime/model transport, prompt-envelope assembly, live integration, application wiring, reports/SHADOW integration, and operated readiness remain absent.
 
 ## TDD and verification checkpoint
 
-- Observed RED→GREEN cycles covered: missing prompt module and strategy separation; PIT/untrusted-data confinement; strict schema/authority rules; language validation; tool-free KR/US factories; explicit CI enforcement; US package-shadow-safe imports; and schema-bound prompt-version identity.
-- `python -m pytest tests/agents tests/llm tests/strategies -q` — 69 passed after review remediation.
-- Preliminary exact local CI groups — 845 passed, 1 intentionally deselected: runtime/safety 72; storage 44; AgentNews 22; all data 290; regime policy 42; strategy 26; features 14; Task 13 LLM 35; Task 14 agents 8; legacy LLM 111; remaining exact groups 181 with the deselection.
-- `python -m compileall -q prism_core tools/audit_broker_boundaries.py cores/agents/trade_plan_prompts.py cores/agents/trading_agents.py prism-us/cores/agents/trading_agents.py` passed.
-- `python tools/audit_broker_boundaries.py` passed with 0 violations and unchanged legacy inventory 22.
-- `python -m pip check` reported no broken requirements.
-- Workflow YAML parsed successfully with one matrix job and an explicit `python -m pytest tests/agents -q` step.
+- Focused policy suite: `python -m pytest tests/policy -q` — 19 passed.
+- Observed additional RED→GREEN in this continuation: schema-rejected raw output initially produced no field dispositions; a focused failing test was added before parse-error REJECT disposition mapping.
+- Prior timed-out worker changes were reconciled; its still-running stale process was reclaimed before the final review/freeze, and the stabilized tree was reread and retested.
+- `git fetch --prune origin` confirmed the branch still equals current `origin/main` before the closeout freeze.
+- Definitive exact local CI commands passed: 864 tests passed and 1 intentionally deselected across the workflow groups, including 19 policy tests. A bare repository-wide `pytest -q` remains a known non-canonical failure because it collects excluded legacy/BTC/US tests requiring unrelated dependencies, package roots, and private broker config; the exact checked-in CI command set is green.
+- `python -m compileall -q prism_core tools/audit_broker_boundaries.py`, broker audit (0 violations; legacy inventory 22 unchanged), `python -m pip check`, workflow YAML/policy-step verification, `git diff --check`, complete tracked/untracked diff inspection, and changed-file private-artifact/secret scan passed.
 
 ## Independent review
 
-- Verified Claude Opus 4.8 read-only review returned exit 0, empty stderr, resolved `modelUsage` `claude-opus-4-8`, a complete MERGEABLE verdict, and no CRITICAL/HIGH/MEDIUM findings.
-- GPT accepted LOW-1 (schema could change without changing a hard-coded prompt version), added a focused failing regression test, then bound both strategy prompt versions to the exact embedded schema fingerprint and returned the focused suite to green.
-- A verified targeted Claude Opus 4.8 follow-up returned exit 0, empty stderr, resolved model identity, MERGEABLE, LOW-1 RESOLVED, and no new CRITICAL/HIGH/MEDIUM finding.
-- Remaining non-blocking observations: future unmapped `StrategyId` values would currently raise `KeyError`; prompt prose revisions rely on the explicit authored `.v1` bump rather than the schema fingerprint; and real evidence-envelope injection resistance is deferred to runtime composition. None grants authority or changes current runtime behavior.
+- Verified Claude Code 2.1.210 read-only review used only `Read,Glob,Grep`, returned exit 0, empty stderr, resolved model identity `claude-opus-4-8[1m]`, and a complete `MERGEABLE` verdict.
+- Initial review identified a MEDIUM audit-integrity issue: stop/target ACCEPT reasons claimed an unchecked entry relationship for non-entry proposals without predicates. The stabilized implementation uses truthful distinct reasons and has a focused regression test.
+- A concurrent earlier review identified duplicate nested evidence IDs could reach `FieldDisposition` and raise. The stabilized implementation deterministically rejects duplicates across score, risk, entry, stop, target, re-entry, and pyramiding groups before disposition construction, with a focused regression test.
+- Verified follow-up review against the stabilized current files found all prior concerns resolved and no remaining CRITICAL/HIGH/MEDIUM defect. Non-blocking observations: parse-error field-path mapping is coarse for category-style binding errors, and predicate-expiry rejection follows stop/target sanity ordering although the final outcome remains fail closed.
 
 ## Side effects and safety
 
-- Git/GitHub fetch and the two read-only Claude reviews are the only network activity through this checkpoint.
-- No live LLM/model-provider request by PRISM, external message, credential read/change, account/broker/order call, user database access, migration, deployment, runtime activation, or live-trading effect occurred.
-- No commit, push, PR, or merge has occurred yet for Task 14.
+- Git fetch and read-only Claude reviews are the only network activity through this checkpoint.
+- No live PRISM model/provider request, external message, credential read/change, account/broker/order call, user database access, migration, deployment, runtime activation, or live-trading effect occurred.
+- No commit, push, PR, or merge has occurred yet for Task 15.
 
 ## Remaining closeout
 
-1. Freeze and inspect the intended file set, rerun definitive exact local CI/compile/broker/pip/diff/private-artifact gates, then commit the bounded diff.
-2. Push/open a PR and verify exact-head Python 3.10/3.11/3.12 CI includes the explicit Task 14 step in every job.
-3. Confirm the PR head exactly matches the verified commit, squash merge only when every gate is provable, then verify post-merge CI, merge SHA, expected files, and remote branch deletion.
-4. Final reporting must separate contract foundation, development CI enforcement, runtime wiring, live model transport, and operational behavior.
+1. Commit, push, open a PR, and verify exact-head Python 3.10/3.11/3.12 CI includes the explicit policy step in every job.
+2. Squash merge only when every required gate is provable; verify post-merge CI, merge SHA, expected files, and remote branch deletion.
+3. Create the bounded Task 16 successor only after merge verification, then complete the Kanban task with the returned successor ID.
 
 Stop conditions remain: block on compatibility change, destructive migration, provider/credential/account/broker/live/risk scope, conflict, unresolved HIGH/CRITICAL review, or an unverifiable required gate.
