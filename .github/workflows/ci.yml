@@ -63,8 +63,8 @@ jobs:
       - name: Run strict LLM proposal contract tests
         run: python -m pytest tests/llm -q
 
-      - name: Run deterministic proposal policy tests
-        run: python -m pytest tests/policy -q
+      - name: Run deterministic position and consolidated portfolio policy tests
+        run: python -m pytest tests/policy tests/portfolio -q
 
       - name: Run strategy-specific trade-plan prompt contract tests
         run: python -m pytest tests/agents -q

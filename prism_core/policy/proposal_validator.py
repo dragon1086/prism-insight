@@ -474,6 +474,17 @@ class ProposalValidator:
                 resolved_value=format(quant_score.total_score, "f"),
             )
         )
+        dispositions.extend(
+            FieldDisposition(
+                field_path=f"pyramiding_candidates[{index}]",
+                action=DispositionAction.ACCEPT,
+                reason="pyramiding_candidate_schema_and_evidence_validated",
+                proposed_value="candidate",
+                resolved_value="validated",
+                evidence_ids=candidate.evidence_ids,
+            )
+            for index, candidate in enumerate(proposal.pyramiding_candidates)
+        )
         return ProposalValidationResult(
             status=ProposalValidationStatus.ACCEPTED,
             validator_version=self._policy.validator_version,

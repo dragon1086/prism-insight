@@ -2,56 +2,55 @@
 
 ## Current milestone
 
-- Task: Phase 1B Task 15 — deterministic `ProposalValidator` and field dispositions
-- Branch: `prism-insight/t_2dd7e2ce-prism-phase-1b-task-15-proposal-validato`
-- Base: current `origin/main` at `ae386115b5a4f2f4d7f9ae835dd47244edc9b60d`
-- Implementation state: validator/disposition contracts, focused tests, explicit CI discovery, independent read-only review, and definitive frozen-tree local gates are complete; delivery remains
-- Runtime state: dormant policy foundation only; no application caller, persistence, sizing, portfolio risk, `OrderIntent`, model/provider transport, messaging, account, broker, or operational behavior is wired
+- Task: Phase 1B Task 16 — position policy, deterministic sizing, and consolidated exposure
+- Branch: `prism-insight/t_d008e763-prism-phase-1b-task-16-position-policy-s`
+- Base: current `origin/main` at `a47b4403850b4ddc115fb9112def8e92197300ce`
+- Implementation state: focused foundation, explicit CI discovery, TDD remediation, independent read-only review, and definitive local gates are complete; delivery remains
+- Runtime state: dormant policy/risk foundation only; no application caller, persistence, paper ledger, `OrderIntent`, model/provider transport, messaging, account, broker, or operational behavior is wired
 
 ## Implemented scope
 
-- Added immutable `FieldDisposition` audit records with explicit `ACCEPT`, `CLAMP`, `RECALCULATE`, and `REJECT` actions plus proposed/resolved values and evidence links.
-- Added a versioned deterministic `ProposalValidationPolicy` and `ProposalValidator` that retain exact raw output and parsed proposal identity without mutating the raw proposal.
-- Fail closed on parse/schema rejection, proposal/feature/quant binding mismatch, unregistered or incompatible strategy/market, non-FRESH/non-ACCEPT data, declared critical missing/stale/conflicting data, future/stale snapshots, unknown or duplicate evidence, score/regime divergence, unevaluable/expired predicates, invalid long-only stop/target relationships, and explicit hard vetoes.
-- Evaluate entry predicates from the immutable feature snapshot and record deterministic results as `RECALCULATE`; retain authoritative deterministic quant score separately from `llm_score`.
-- Clamp only the LLM risk-multiplier candidate downward to the configured maximum and preserve both raw proposed and resolved values. No quantity, sizing, position, exposure, paper eligibility, or order object is created.
-- Record truthful stop/target audit reasons when a non-entry proposal supplies candidates without an entry reference; Phase 1 long-only semantics are explicit.
-- Added explicit Python 3.10/3.11/3.12 CI discovery for `tests/policy` without weakening existing jobs.
+- Added immutable actual/virtual strategy-book position and open-order exposure contracts with explicit native/base currency and injected FX conversion.
+- Added monotonic long-only stop policy, loss-position addition prohibition, and pyramiding approval requiring a profitable position plus an accepted validator disposition bound to the same strategy, security, and market.
+- Extended accepted proposal validation with explicit pyramiding-candidate dispositions; raw proposal values remain non-authoritative.
+- Added stop-distance sizing that consumes only resolved stop/multiplier dispositions, floors quantity and lot size deterministically, reasserts an injected multiplier maximum, converts native risk/notional to base currency, and caps cash, liquidity, symbol, sector, market, currency, gross, and open-order headroom.
+- Added one consolidated policy that preserves book/strategy breakdowns while aggregating symbol, sector, market, currency, gross, and open-order base-currency exposure across SWING_V1/TREND_V1 and actual/virtual books.
+- Fail closed on conflicting security metadata, symbol identity, base currency, or per-currency FX rates.
+- Added explicit Python 3.10/3.11/3.12 CI discovery for `tests/policy tests/portfolio` without weakening existing jobs.
 
 ## Contract decisions and deferred seams
 
-- `ProposalValidationResult.proposal` is the immutable raw parsed candidate. Downstream policy consumers must use disposition `resolved_value` for clamped or recalculated fields; the raw proposal is not a sizing or execution contract.
-- Strategy versions must match the active registry. Historical/concurrent strategy experiments remain persistence concerns rather than active validation definitions.
-- Regime consistency uses a versioned policy tolerance between the LLM directional probability expectation mapped to 0–100 and the strategy-owned deterministic `*.regime_compatibility` feature. This is a fail-closed research-policy check, not an exposure calculation.
-- Field dispositions are in-memory contracts only. Append-only persistence is Task 18; Task 16 owns deterministic sizing and consolidated portfolio exposure.
-- Runtime/model transport, prompt-envelope assembly, live integration, application wiring, reports/SHADOW integration, and operated readiness remain absent.
+- Every numeric policy limit, risk budget, FX rate, cash amount, liquidity cap, and consolidated headroom is caller-injected research/SHADOW configuration; there are no production defaults.
+- Sizing requires one accepted validator result and unique usable `resolved_value` dispositions. The immutable raw proposal is used only to bind a validated pyramiding candidate to position identity, never for quantity or risk values.
+- Consolidated amounts are base-currency values. Native position/order values remain explicit and all items in one snapshot must use one requested base currency and one rate per currency.
+- A position that gaps below its stored stop remains representable; stop updates cannot widen risk, and additions remain prohibited while the position is not profitable.
+- Persistence, runtime composition, proposal-to-position state, as-of/FX provenance storage, internal paper, and application wiring remain deferred to later tasks.
 
 ## TDD and verification checkpoint
 
-- Focused policy suite: `python -m pytest tests/policy -q` — 19 passed.
-- Observed additional RED→GREEN in this continuation: schema-rejected raw output initially produced no field dispositions; a focused failing test was added before parse-error REJECT disposition mapping.
-- Prior timed-out worker changes were reconciled; its still-running stale process was reclaimed before the final review/freeze, and the stabilized tree was reread and retested.
-- `git fetch --prune origin` confirmed the branch still equals current `origin/main` before the closeout freeze.
-- Definitive exact local CI commands passed: 864 tests passed and 1 intentionally deselected across the workflow groups, including 19 policy tests. A bare repository-wide `pytest -q` remains a known non-canonical failure because it collects excluded legacy/BTC/US tests requiring unrelated dependencies, package roots, and private broker config; the exact checked-in CI command set is green.
-- `python -m compileall -q prism_core tools/audit_broker_boundaries.py`, broker audit (0 violations; legacy inventory 22 unchanged), `python -m pip check`, workflow YAML/policy-step verification, `git diff --check`, complete tracked/untracked diff inspection, and changed-file private-artifact/secret scan passed.
+- Observed vertical RED→GREEN for position policy, resolved-field sizing, consolidated exposure, validator pyramiding disposition, package exports/CI discovery, base-currency aggregation, consolidated headroom caps, configured multiplier reassertion, position identity binding, FX consistency, cross-currency sizing, and gapped-position representation.
+- Current focused suite: `python -m pytest tests/policy tests/portfolio -q` — 45 passed.
+- `git fetch --prune origin` confirmed the branch equals current `origin/main` before the closeout freeze.
+- Definitive local gates passed against the handoff-inclusive tree: compileall; broker audit (22 inventoried legacy findings, 0 violations); runtime/safety 72; storage 44; AgentNews 22; data 290; regime 42; strategies 26; features 14; LLM 35; policy/portfolio 45; agents 8; core LLM 111; execution 14 plus 1 deselected; intent/positions 97; reports 10; pyramiding/stale 14; concurrency 8; KR fill-chaser 22; US fill-chaser 16; `pip check`; and staged diff/private-artifact checks.
 
 ## Independent review
 
-- Verified Claude Code 2.1.210 read-only review used only `Read,Glob,Grep`, returned exit 0, empty stderr, resolved model identity `claude-opus-4-8[1m]`, and a complete `MERGEABLE` verdict.
-- Initial review identified a MEDIUM audit-integrity issue: stop/target ACCEPT reasons claimed an unchecked entry relationship for non-entry proposals without predicates. The stabilized implementation uses truthful distinct reasons and has a focused regression test.
-- A concurrent earlier review identified duplicate nested evidence IDs could reach `FieldDisposition` and raise. The stabilized implementation deterministically rejects duplicates across score, risk, entry, stop, target, re-entry, and pyramiding groups before disposition construction, with a focused regression test.
-- Verified follow-up review against the stabilized current files found all prior concerns resolved and no remaining CRITICAL/HIGH/MEDIUM defect. Non-blocking observations: parse-error field-path mapping is coarse for category-style binding errors, and predicate-expiry rejection follows stop/target sanity ordering although the final outcome remains fail closed.
+- The first repository-exploration review timed out with empty streams; the first frozen-bundle fallback ended `error_max_turns` and was rejected as unusable.
+- Verified Claude Code read-only compact review used only `Read`, returned exit 0, empty stderr, resolved model `claude-opus-4-8`, and `MERGEABLE` with no CRITICAL/HIGH defect.
+- Accepted findings added configured multiplier reassertion, every headroom binding regression, stop namespace validation, position/candidate identity binding, and same-currency FX consistency. Selected malformed-input coverage was added; low-level constructor coverage remains a non-blocking residual.
+- Verified targeted follow-up review of the remediated contracts/tests returned exit 0, empty stderr, the same resolved model, `MERGEABLE`, and no new CRITICAL/HIGH/MEDIUM defect. It independently accepted cross-currency sizing and gapped-position representation.
+- Non-blocking residuals: `SizingResult.risk_per_unit` unit is documented only by surrounding contract, currency syntax validation is basic, co-binding limits report one deterministic label, and runtime/as-of/FX provenance wiring remains deferred.
 
 ## Side effects and safety
 
 - Git fetch and read-only Claude reviews are the only network activity through this checkpoint.
-- No live PRISM model/provider request, external message, credential read/change, account/broker/order call, user database access, migration, deployment, runtime activation, or live-trading effect occurred.
-- No commit, push, PR, or merge has occurred yet for Task 15.
+- No live PRISM model/provider request, external message, credential read/change, account/broker/order call, `OrderIntent`, user database access, migration, deployment, runtime activation, or live-trading effect occurred.
+- No commit, push, PR, or merge has occurred yet for Task 16.
 
 ## Remaining closeout
 
-1. Commit, push, open a PR, and verify exact-head Python 3.10/3.11/3.12 CI includes the explicit policy step in every job.
+1. Commit, push, open a PR, and verify exact-head Python 3.10/3.11/3.12 CI includes the explicit policy/portfolio step in every job.
 2. Squash merge only when every required gate is provable; verify post-merge CI, merge SHA, expected files, and remote branch deletion.
-3. Create the bounded Task 16 successor only after merge verification, then complete the Kanban task with the returned successor ID.
+3. Create the bounded Task 17 successor only after merge verification, then complete the Kanban task with the returned successor ID.
 
 Stop conditions remain: block on compatibility change, destructive migration, provider/credential/account/broker/live/risk scope, conflict, unresolved HIGH/CRITICAL review, or an unverifiable required gate.

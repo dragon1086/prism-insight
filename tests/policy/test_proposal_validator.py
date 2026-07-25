@@ -177,6 +177,12 @@ def test_accepts_bound_proposal_and_preserves_raw_identity_and_evidence_links() 
         and item.resolved_value == "true"
         for item in result.dispositions
     )
+    assert any(
+        item.field_path == "pyramiding_candidates[0]"
+        and item.action is DispositionAction.ACCEPT
+        and item.resolved_value == "validated"
+        for item in result.dispositions
+    )
 
 
 def test_schema_rejection_preserves_raw_output_and_emits_reject_dispositions() -> None:
