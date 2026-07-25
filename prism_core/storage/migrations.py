@@ -51,6 +51,14 @@ _BOUNDARY_TABLES = {
             "lessons",
             "lesson_evidence",
             "reports",
+            "feedback_runs",
+            "decision_snapshots",
+            "trade_plan_proposals",
+            "proposal_disposition_events",
+            "proposal_outcomes",
+            "retrospective_events",
+            "lesson_candidates",
+            "lesson_evidence_events",
         }
     ),
     DatabaseKind.PAPER: frozenset(

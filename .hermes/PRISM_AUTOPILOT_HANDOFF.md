@@ -2,56 +2,62 @@
 
 ## Current milestone
 
-- Task: Phase 1C Task 17 — point-in-time research engine
-- Branch: `prism-insight/t_47846a70-prism-phase-1c-task-17-pit-research-engi`
-- Base: `origin/main` at `e145e0d55fff7099c78612437f34454921a6fc4b`
-- Implementation state: focused foundation, explicit CI discovery, TDD remediation, independent read-only review, and definitive local gates are complete; delivery remains
-- Runtime state: dormant research/backtest foundation only; no application caller, persistence, paper ledger, `OrderIntent`, model/provider transport, messaging, account, broker, or operational behavior is wired
+- Task: Phase 1C Task 18 — proposal/outcome append-only storage
+- Branch: `prism-insight/t_96fb18b8-prism-phase-1c-task-18-proposal-outcome`
+- Base: `origin/main` at `15f151589d057d878f29da0d1d58aa70850c8626`
+- Implementation state: focused implementation, TDD remediation, independent read-only review, and definitive local gates are complete; GitHub delivery remains
+- Runtime state: dormant research/feedback storage foundation only; no application caller, provider/model transport, report/dashboard/Telegram publication, paper ledger, `OrderIntent`, account, broker, or live behavior is wired
 
 ## Implemented scope
 
-- Added point-in-time universe snapshots with separate effective and availability boundaries and rejection of current-constituents-only performance evidence.
-- Bound every signal's declared source boundary to an actual security/snapshot/bar-end/availability record and reject duplicate universe effective/availability boundaries.
-- Added next-bar-open research fills, prohibited same-close fills, and fail-closed future-data and unavailable-terminal-mark checks.
-- Added explicit injected commission, sell tax, spread, and slippage assumptions with deterministic `Decimal` arithmetic.
-- Added separate SWING_V1/TREND_V1 cash, position, realized/unrealized PnL, transaction-cost, NAV, and consolidated accounting.
-- Added explicit share-changing actions, cash dividends, positive and zero-recovery delistings, post-delisting fill rejection, and corporate-action availability gating.
-- Added walk-forward/sealed-OOS contracts and monotonic strategy/calendar-window exposure across refreshed data vintages.
-- Added deterministic config hashing plus data-snapshot and code-SHA experiment provenance.
-- Added explicit Python 3.10/3.11/3.12 CI discovery for `tests/research` without weakening existing jobs.
+- Added migration `003_feedback_storage.sql` with provenance-complete append-only tables for feedback runs, decision snapshots, trade-plan proposals, field disposition events, proposal outcomes, retrospective events, lesson candidates, and lesson evidence events.
+- Preserved existing 001 rows without destructive rewrite. Superseded legacy proposal/disposition/outcome/retrospective/lesson-evidence writers are frozen after migration 003; legacy lessons remain available only for the existing `LEGACY_UNVALIDATED` compatibility boundary.
+- Added atomic proposal-bundle persistence for raw and normalized proposal content, model/prompt/sampling provenance, strategy/version, snapshot/feature/quant/evidence provenance, validator/policy versions, quality/disposition, and field-level ACCEPT/CLAMP/RECALCULATE/REJECT records.
+- Added all non-broker outcome states: NO_ENTRY, REJECTED, ELIGIBLE_NOT_EXECUTED, INTERNALLY_SIMULATED, EXPIRED, CANCELLED, UNAVAILABLE, and UNKNOWN.
+- Added deterministic canonical serialization, exact-reingest dedupe, fail-closed divergent identities, contiguous append-only correction revisions, strategy/version-scoped natural identities, and latest-available PIT reads.
+- Added minimum Task 18 retrospective, CANDIDATE-only lesson, and support/contra evidence storage. No lesson activation, promotion, retrieval, or scoring behavior exists.
+- Added explicit Python 3.10/3.11/3.12 CI discovery for `tests/feedback`.
 
-## Contract decisions and deferred seams
+## Contract decisions and compatibility
 
-- Every cost and starting-cash assumption is injected research configuration; there are no production or market-specific defaults.
-- Raw prices remain explicit. Corporate-action effects are ledger events rather than silently adjusted-price transformations.
-- A zero-recovery delisting bypasses the ordinary positive-price cost model through an explicit zero-value forced exit, preserving total-loss representation.
-- OOS exposure is strategy-scoped and calendar-window-scoped, not snapshot-vintage-scoped; once observed it cannot be relabelled fresh within the registry store.
-- Durable registry persistence, runtime composition, provider/model transport, internal paper, and application wiring remain deferred to later tasks.
+- Migration 003 is an additive normalization/event extension rather than a destructive rewrite or duplicate active source of truth. Existing legacy rows remain readable, while frozen insert triggers prevent dual active writers.
+- Proposal and lesson revision identities include strategy ID and strategy version. PIT proposal reads preserve the latest available revision independently per strategy version.
+- Semantic content hashes intentionally exclude `ingested_at`, allowing exact later re-ingestion to dedupe while corrections require a new contiguous revision and content identity.
+- SQLite triggers reject UPDATE/DELETE for every new evidence table. Foreign keys bind run→snapshot→proposal→disposition/outcome/retrospective and strategy identity; one transaction prevents partial proposal bundles.
+- SWING_V1 outcomes allow 5/10/20-session horizons; TREND_V1 allows 20/60/120. Horizons evaluate outcomes and do not imply exit dates or broker execution.
+- Canonical payloads reject non-finite values, floats, executable quantity/order/intent/broker/fill keys, malformed enums, naive/inconsistent timestamps, missing references, and strategy/provenance mismatch.
 
 ## TDD and verification checkpoint
 
-- Observed vertical RED→GREEN for next-bar execution, future-data/current-universe traps, cost modeling, strategy/consolidated accounting, corporate actions/delistings, experiment provenance/OOS exposure, public exports/CI discovery, refreshed-vintage OOS contamination, zero-recovery delisting, terminal-mark availability, source-record binding, corporate-action availability, and duplicate-universe rejection.
-- Current focused suite: `python -m pytest tests/research -q` — 18 passed.
-- Definitive local gates passed against the handoff-inclusive tree: compileall; broker audit (22 inventoried legacy findings, 0 violations); all checked-in exact CI groups totaling 908 passed with 1 intentional deselection; `pip check`; diff check; and private/secret/dangerous-pattern checks.
+- Observed RED→GREEN for proposal bundles, append-only revisions, exact re-ingestion, malformed/rejected proposals, atomic rollback, strategy/PIT isolation, deterministic serialization, evidence/model provenance, minimum retrospective/lesson evidence storage, all outcome states, outcome correction/PIT/orphan rejection, legacy migration preservation/freezing, composite strategy FKs, lesson-evidence natural identity/timing, strategy-specific horizons, rejected disposition evidence, rejected parse/validation consistency, bool revisions, cross-strategy natural identities, and per-strategy-version PIT reads.
+- Focused final suite: `python -m pytest tests/storage/test_migrations.py tests/feedback -q` — 51 passed.
+- Definitive checked-in CI-equivalent groups including the explicit feedback suite: 913 passed with 1 intentional deselection.
+- `python -m compileall -q prism_core tools/audit_broker_boundaries.py` passed.
+- Broker-boundary audit passed with 0 violations; 22 existing legacy dangerous findings remain inventory-only.
+- `python -m pip check` reported no broken requirements.
+- Workflow parsing verified the feedback step runs in the Python 3.10/3.11/3.12 matrix.
 
 ## Independent review
 
-- Verified Claude Code read-only review used only `Read`, returned exit 0 and empty stderr, and initially found blocking zero-recovery-delisting and terminal-mark-availability defects.
-- Accepted findings were reproduced with focused red tests and fixed without weakening the positive-price signal cost model.
-- Verified targeted follow-up review returned exit 0, empty stderr, `MERGEABLE`, and no new CRITICAL/HIGH/MEDIUM defect; it also confirmed the refreshed-vintage OOS remediation.
-- A second recovery review identified source-record binding, corporate-action availability, duplicate-universe ambiguity, and execution/terminal horizon gaps. Focused regressions resolved each finding; a verified read-only follow-up returned `MERGEABLE` with no new CRITICAL/HIGH/MEDIUM defect.
-- Non-blocking residuals: registry exposure is in-memory until the later durable research store, `TradeCosts` lacks constructor-level invariant validation, reverse-split ratio semantics are caller-convention-based, and implementation shortfall is embedded in execution PnL rather than separately surfaced in book transaction-cost reporting.
+- The pre-implementation read-only Claude architecture review informed the additive compatibility strategy.
+- Verified final Claude Code review used only `Read,Glob,Grep`, returned exit 0, empty stderr, resolved model `claude-opus-4-8`, and MERGEABLE with no CRITICAL/HIGH defect. It identified strategy-scoping and negative-path test gaps.
+- Accepted findings were reproduced with focused RED tests and remediated through strategy/version-scoped identities, composite strategy constraints, negative timing/strategy tests, rejected-proposal provenance validation, parse/validation consistency, bool revision rejection, and schema-enforced outcome horizons.
+- Verified targeted follow-up review returned exit 0, empty stderr, the same resolved model, MERGEABLE, and no new CRITICAL/HIGH/MEDIUM defect.
+- Its final LOW strategy-version PIT observation was independently reproduced RED and fixed; the focused suite returned green.
+- Residual LOW risk: lesson evidence is timing-checked against its candidate parent; Task 19 should add richer lifecycle-level chronology tests when it introduces retrospective/lesson services. Structural trigger tests supplement representative behavioral UPDATE/DELETE tests.
 
 ## Side effects and safety
 
-- Git/GitHub delivery and read-only Claude reviews are the only network activity through this checkpoint.
-- No live PRISM model/provider request, external message, credential read/change, account/broker/order call, `OrderIntent`, user database access, migration, deployment, runtime activation, or live-trading effect occurred.
-- Task 17 foundation PR #29 was squash-merged as `7d6ea999d148fce9b0e2436a32d86397b9fdf099`; the final review-remediation commit/PR remains to be delivered.
+- Network activity through this checkpoint: Git fetch and read-only Claude Code reviews only.
+- No live PRISM provider/model request, external message, credential read/change, user/legacy database access, account/broker/order call, `OrderIntent`, KIS demo, deployment, runtime activation, or live-trading effect occurred.
+- Only temporary test SQLite files were created.
+- No commit, push, PR, or merge has occurred yet for Task 18.
 
 ## Remaining closeout
 
-1. Commit, push, open the review-remediation PR, and verify exact-head Python 3.10/3.11/3.12 CI includes the explicit research step in every job.
-2. Squash merge the remediation only when every required gate is provable; verify post-merge CI, merge SHA, expected files, and remote branch deletion.
-3. Complete the Kanban task with delivery evidence; successor work remains separately bounded.
+1. Freeze and inspect the complete tracked/untracked manifest, private-artifact scan, and final diff; stage intended files.
+2. Commit, push, open the Task 18 PR, and verify exact-head Python 3.10/3.11/3.12 CI including the feedback step.
+3. Squash merge only with all gates green; verify post-merge `origin/main`, post-merge CI, expected files, and remote branch deletion.
+4. Create the bounded Task 19 successor only after merge verification, then complete the Kanban card with the returned successor ID.
 
-Stop conditions remain: block on compatibility change, destructive migration, provider/credential/account/broker/live/risk scope, conflict, unresolved HIGH/CRITICAL review, or an unverifiable required gate.
+Stop conditions remain: block on compatibility change, destructive/user-data migration, provider/credential/account/broker/live/risk scope, conflict, unresolved HIGH/CRITICAL review, or an unverifiable required gate.

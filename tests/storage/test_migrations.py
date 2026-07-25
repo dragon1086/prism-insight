@@ -24,6 +24,14 @@ RESEARCH_TABLES = {
     "lessons",
     "lesson_evidence",
     "reports",
+    "feedback_runs",
+    "decision_snapshots",
+    "trade_plan_proposals",
+    "proposal_disposition_events",
+    "proposal_outcomes",
+    "retrospective_events",
+    "lesson_candidates",
+    "lesson_evidence_events",
 }
 PAPER_TABLES = {
     "schema_migrations",
@@ -59,6 +67,14 @@ APPEND_ONLY_TABLES = {
         "lessons",
         "lesson_evidence",
         "reports",
+        "feedback_runs",
+        "decision_snapshots",
+        "trade_plan_proposals",
+        "proposal_disposition_events",
+        "proposal_outcomes",
+        "retrospective_events",
+        "lesson_candidates",
+        "lesson_evidence_events",
     },
     DatabaseKind.PAPER: {
         "cash_ledger",
@@ -88,16 +104,20 @@ def test_empty_research_database_migrates_to_current_version(tmp_path: Path):
     with open_database(tmp_path / "research.sqlite") as connection:
         applied = migrate_database(connection, DatabaseKind.RESEARCH)
 
-        assert applied == (1, 2)
+        assert applied == (1, 2, 3)
         assert connection.execute(
             "SELECT version, name FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1, "initial"), (2, "security_master_actions")]
+        ).fetchall() == [
+            (1, "initial"),
+            (2, "security_master_actions"),
+            (3, "feedback_storage"),
+        ]
         assert _user_tables(connection) == RESEARCH_TABLES
 
 
 def test_migration_rerun_is_idempotent(tmp_path: Path):
     with open_database(tmp_path / "research.sqlite") as connection:
-        assert migrate_database(connection, DatabaseKind.RESEARCH) == (1, 2)
+        assert migrate_database(connection, DatabaseKind.RESEARCH) == (1, 2, 3)
         first_history = connection.execute(
             "SELECT version, name, checksum, applied_at FROM schema_migrations"
         ).fetchall()
@@ -333,7 +353,7 @@ def test_default_research_v1_upgrades_to_v2_without_rewriting_history(tmp_path: 
             "SELECT name, checksum, applied_at FROM schema_migrations WHERE version = 1"
         ).fetchone()
 
-        assert migrate_database(connection, DatabaseKind.RESEARCH) == (2,)
+        assert migrate_database(connection, DatabaseKind.RESEARCH) == (2, 3)
         assert connection.execute(
             "SELECT name, checksum, applied_at FROM schema_migrations WHERE version = 1"
         ).fetchone() == v1_history
@@ -407,3 +427,138 @@ def test_v2_refuses_to_orphan_preexisting_v1_symbol_mapping_rows(tmp_path: Path)
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall() == [(1,)]
         assert "security_alias_events" not in _user_tables(connection)
+
+
+def test_v3_preserves_v1_feedback_rows_and_freezes_legacy_writers(tmp_path: Path):
+    migration_dir = tmp_path / "migrations" / "research"
+    migration_dir.mkdir(parents=True)
+    source = (
+        Path(__file__).parents[2]
+        / "prism_core"
+        / "storage"
+        / "migrations"
+        / "research"
+        / "001_initial.sql"
+    )
+    (migration_dir / "001_initial.sql").write_text(
+        source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(
+            connection,
+            DatabaseKind.RESEARCH,
+            migrations_root=tmp_path / "migrations",
+        )
+        connection.execute(
+            "INSERT INTO securities VALUES ('s', 'US', '2026-01-01T00:00:00+00:00')"
+        )
+        connection.execute(
+            "INSERT INTO market_snapshots VALUES "
+            "('snap', 'US', '2026-01-01', 'hash', 'FRESH', "
+            "'2026-01-01T00:00:00+00:00')"
+        )
+        connection.execute(
+            "INSERT INTO proposals VALUES "
+            "('legacy-p', 'snap', 's', 'SWING_V1', 'v1', 'raw', '{}', "
+            "'2026-01-01T00:00:00+00:00')"
+        )
+
+        assert migrate_database(connection, DatabaseKind.RESEARCH) == (2, 3)
+        assert connection.execute(
+            "SELECT raw_output FROM proposals WHERE proposal_id = 'legacy-p'"
+        ).fetchone() == ("raw",)
+        for table in (
+            "proposals",
+            "proposal_dispositions",
+            "outcomes",
+            "retrospectives",
+            "lesson_evidence",
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match="frozen after migration 003"):
+                connection.execute(f"INSERT INTO {table} DEFAULT VALUES")
+        connection.execute(
+            "INSERT INTO lessons "
+            "(lesson_id, strategy_id, status, payload_json, created_at) "
+            "VALUES ('legacy-new', 'SWING_V1', 'LEGACY_UNVALIDATED', '{}', 't1')"
+        )
+        assert connection.execute(
+            "SELECT status FROM lessons WHERE lesson_id = 'legacy-new'"
+        ).fetchone() == ("LEGACY_UNVALIDATED",)
+
+
+def test_lesson_evidence_proposal_fk_carries_strategy_identity(tmp_path: Path):
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        rows = connection.execute(
+            "PRAGMA foreign_key_list(lesson_evidence_events)"
+        ).fetchall()
+        proposal_fk = {
+            (row[3], row[4])
+            for row in rows
+            if row[2] == "trade_plan_proposals"
+        }
+        assert proposal_fk == {
+            ("proposal_record_id", "proposal_record_id"),
+            ("strategy_id", "strategy_id"),
+            ("strategy_version", "strategy_version"),
+        }
+
+
+def test_lesson_evidence_schema_enforces_complete_timing_order(tmp_path: Path):
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        table_sql = connection.execute(
+            "SELECT sql FROM sqlite_schema "
+            "WHERE type = 'table' AND name = 'lesson_evidence_events'"
+        ).fetchone()[0]
+
+        assert "observed_at <= available_at" in table_sql
+        assert "available_at <= ingested_at" in table_sql
+        assert "available_at <= as_of_at" in table_sql
+
+
+def test_feedback_schema_scopes_natural_revisions_and_horizons_by_strategy(
+    tmp_path: Path,
+):
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        proposal_indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(trade_plan_proposals)")
+            if row[2]
+        }
+        lesson_indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(lesson_candidates)")
+            if row[2]
+        }
+        outcome_sql = connection.execute(
+            "SELECT sql FROM sqlite_schema "
+            "WHERE type = 'table' AND name = 'proposal_outcomes'"
+        ).fetchone()[0]
+
+        assert "trade_plan_proposals_strategy_revision" in proposal_indexes
+        assert "lesson_candidates_strategy_revision" in lesson_indexes
+        assert "strategy_id = 'SWING_V1' AND horizon_sessions IN (5, 10, 20)" in outcome_sql
+        assert "strategy_id = 'TREND_V1' AND horizon_sessions IN (20, 60, 120)" in outcome_sql
+
+
+def test_v3_feedback_schema_has_no_broker_or_order_columns(tmp_path: Path):
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        for table in {
+            "feedback_runs",
+            "decision_snapshots",
+            "trade_plan_proposals",
+            "proposal_disposition_events",
+            "proposal_outcomes",
+            "retrospective_events",
+            "lesson_candidates",
+            "lesson_evidence_events",
+        }:
+            columns = {row[1].lower() for row in connection.execute(f"PRAGMA table_info({table})")}
+            assert not any(
+                token in column
+                for column in columns
+                for token in ("broker", "order", "intent", "quantity", "qty", "fill")
+            )
