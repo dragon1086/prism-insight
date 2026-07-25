@@ -107,3 +107,19 @@ SWING_STOP_ATR_MULT: float = 2.0      # 하드스탑 = 진입가 ∓ 2.0 × ATR1
 SWING_RISK_PER_TRADE: float = 0.015   # equity 의 1.5% (메인 RISK_PER_TRADE 3% 의 절반)
 SWING_MAX_LEVERAGE: float = 5.0       # 명목/equity 상한 (Rocky 승인 스펙)
 SWING_INITIAL_EQUITY: float = 10_000.0  # 자체 가상 원장 시드 (shadow 와 동일)
+
+# --- 라운드8 Phase B: L 계층 (BTC/ETH 60일 상대강도 노출 배수) ---
+# 검증: analysis/round8_leadership.py — 롱 평균 R btc_leading +0.90(n=106) vs
+# lagging +0.28(n=76), 스프레드 +0.62R, 2022-23/2024-26 부호 일관.
+# A/B: analysis/round8_l_exposure_ab.py — 두 독립 구간 Calmar 3.36→3.57 /
+# 3.12→3.67 개선 (full 창은 2.84→2.83 tie — 결과 JSON·설계서 §9 기록).
+# 신규 진입 리스크에만 곱한다 (신호/청산/보유관리 불변, 하드 게이트 아님).
+# 데이터 장애 시 fail-open(1.0) — core/leadership.py. 백테스트 엔진에는
+# 미적용(사이징 전용이라 신호 파리티 유지) — 라이브/데모/섀도우 전용.
+L_LAYER_ENABLED: bool = True
+L_RS_WINDOW: int = 60          # 상대강도 창 (일)
+L_MAX_STALE_DAYS: int = 3      # spot 데이터 이보다 오래되면 fail-open
+L_MULT_LONG_LEADING: float = 1.25
+L_MULT_SHORT_LEADING: float = 0.75
+L_MULT_LONG_LAGGING: float = 0.75
+L_MULT_SHORT_LAGGING: float = 1.25
