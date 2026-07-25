@@ -14,7 +14,21 @@ from prism_core.data.contracts import (
 )
 from prism_core.data.provider import MarketDataProvider
 from prism_core.data.providers import (
+    AioHttpAgentNewsRequester,
     AioHttpKISRequester,
+    AgentNewsBoard,
+    AgentNewsContentRole,
+    AgentNewsError,
+    AgentNewsFetchEvidence,
+    AgentNewsFetchFailed,
+    AgentNewsFetchResult,
+    AgentNewsHTTPResponse,
+    AgentNewsModelError,
+    AgentNewsProvider,
+    AgentNewsSnapshot,
+    AgentNewsTimeoutError,
+    AgentNewsTransientError,
+    AgentNewsTrust,
     CapabilityProbeResult,
     CapabilityStatus,
     FMPApiKey,
@@ -69,7 +83,21 @@ from prism_core.data.security_master import (
 )
 
 __all__ = [
+    "AioHttpAgentNewsRequester",
     "AioHttpKISRequester",
+    "AgentNewsBoard",
+    "AgentNewsContentRole",
+    "AgentNewsError",
+    "AgentNewsFetchEvidence",
+    "AgentNewsFetchFailed",
+    "AgentNewsFetchResult",
+    "AgentNewsHTTPResponse",
+    "AgentNewsModelError",
+    "AgentNewsProvider",
+    "AgentNewsSnapshot",
+    "AgentNewsTimeoutError",
+    "AgentNewsTransientError",
+    "AgentNewsTrust",
     "CapabilityProbeResult",
     "CapabilityStatus",
     "CorporateAction",

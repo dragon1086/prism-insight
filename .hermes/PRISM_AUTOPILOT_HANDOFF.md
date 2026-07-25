@@ -1,6 +1,19 @@
 # PRISM Guarded-Autopilot Handoff
 
-## Current milestone — Phase 1A Task 9.5 live integration verified; runtime unwired
+## Current milestone — Phase 1A Task 9A AgentNews adapter locally verified; delivery pending
+
+- Implemented exact-URL, HTTPS-only, GET-only AgentNews KR/US public Markdown transport with redirects disabled, finite split/total timeout bounds, a 128 KiB response cap, at most two attempts by default, sanitized failures, and immutable per-attempt evidence.
+- Added immutable snapshots preserving board URL, fetch/freshness evaluation times, source `updated` time when present, raw-body SHA-256 identity, explicit `FRESH`/`STALE`/`PARTIAL` quality, and unchanged last-known-good content returned only as explicit `STALE` with `LIVE_FETCH_FAILED`.
+- External content remains raw untrusted `RESEARCH_PRIORITY_CONTEXT`, `executable=False`, and marked as requiring original-source verification for material claims. It is exported as a dormant foundation only; no current caller, persistence path, strategy, LLM, scheduler, report, or legacy god object consumes it.
+- Fixture/CI path: `python -m pytest tests/data/providers/test_agentnews_provider.py -q` — 22 passed. CI runs that file explicitly without enabling network. Data/storage passed 253 tests; runtime/safety passed 72 tests; canonical remaining groups passed 292 tests with 1 intentionally deselected.
+- Live integration: `RUN_AGENTNEWS_LIVE_SMOKE=1 python -m pytest tests/integration/test_agentnews_live.py -q` — 1 passed and fetched both approved public endpoints successfully. No credentials were needed or accessed.
+- Compileall, broker-boundary audit (0 violations; legacy inventory unchanged), `pip check`, `git diff --check`, changed-path inspection, and private-artifact filename inspection passed.
+- Verified Claude read-only review found no CRITICAL/HIGH defect and recommended merge. GPT independently checked the exact URL/redirect/body-size/sanitization/fallback/no-execution findings. AgentNews freshness remains source-asserted and advisory because the snapshot is untrusted; a future persisted research/backtest caller must add complete PIT availability/as-of/ingestion lineage and decide a maximum accepted last-known-good age before consumption.
+- Evidence ladder: fixture contract foundation implemented and tested; live transport implemented; bounded KR/US actual-endpoint integration verified; runtime wiring intentionally absent; operated readiness not claimed.
+- Side effects: exactly the two standing-approved public AgentNews GETs were made during the live smoke. No credential, user database, migration, external message, KIS/FMP/official-source, account, broker, order, deployment, runtime activation, risk, or kill-switch effect occurred.
+- Delivery state: implementation is locally complete and reviewed. Feature push, PR, exact-head CI, squash merge, post-merge main CI, remote-branch cleanup, and the single Task 9B KR-official successor remain pending at this checkpoint.
+
+## Previous milestone — Phase 1A Task 9.5 live integration verified; runtime unwired
 
 - Merged state: the bounded FMP market-data HTTP transport was squash-merged through PR #16 at `1150f809211b7c22d2ebcd63dec66c9ee29945d7`; exact feature-head and post-merge `main` CI passed on Python 3.10/3.11/3.12.
 - Live integration state: on 2026-07-25, the locally injected `FMP_API_KEY` enabled the explicit AAPL-only actual-endpoint smoke. `RUN_FMP_LIVE_SMOKE=1 python -m pytest tests/integration/test_fmp_live_market_data.py -q` passed (`1 passed in 1.80s`) and verified supported capability/entitlement, HTTP 200, a `FRESH` raw-price snapshot, positive raw close/non-negative volume, PIT timing, and sanitized request evidence.

@@ -1,5 +1,23 @@
-"""Approved point-in-time market-data provider adapters."""
+"""Approved point-in-time market-data and research-context adapters."""
 
+from prism_core.data.providers.agentnews import (
+    AioHttpAgentNewsRequester,
+    AgentNewsError,
+    AgentNewsFetchEvidence,
+    AgentNewsFetchFailed,
+    AgentNewsFetchResult,
+    AgentNewsHTTPResponse,
+    AgentNewsProvider,
+    AgentNewsTimeoutError,
+    AgentNewsTransientError,
+)
+from prism_core.data.providers.agentnews_models import (
+    AgentNewsBoard,
+    AgentNewsContentRole,
+    AgentNewsModelError,
+    AgentNewsSnapshot,
+    AgentNewsTrust,
+)
 from prism_core.data.providers.fmp import (
     CapabilityProbeResult,
     CapabilityStatus,
@@ -57,7 +75,21 @@ from prism_core.data.providers.kis_http import (
 )
 
 __all__ = [
+    "AioHttpAgentNewsRequester",
     "AioHttpFMPRequester",
+    "AgentNewsBoard",
+    "AgentNewsContentRole",
+    "AgentNewsError",
+    "AgentNewsFetchEvidence",
+    "AgentNewsFetchFailed",
+    "AgentNewsFetchResult",
+    "AgentNewsHTTPResponse",
+    "AgentNewsModelError",
+    "AgentNewsProvider",
+    "AgentNewsSnapshot",
+    "AgentNewsTimeoutError",
+    "AgentNewsTransientError",
+    "AgentNewsTrust",
     "CapabilityProbeResult",
     "CapabilityStatus",
     "FMPApiKey",

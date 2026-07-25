@@ -45,6 +45,9 @@ jobs:
       - name: Run storage migration tests
         run: python -m pytest tests/storage -q
 
+      - name: Run AgentNews fixture contract tests
+        run: python -m pytest tests/data/providers/test_agentnews_provider.py -q
+
       - name: Run tests
         run: |
           python -m pytest cores/llm/tests/ -q
