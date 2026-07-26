@@ -51,6 +51,9 @@ jobs:
       - name: Run storage migration tests
         run: python -m pytest tests/storage -q
 
+      - name: Run internal paper broker tests
+        run: python -m pytest tests/paper -q
+
       - name: Run append-only proposal and outcome storage tests
         run: python -m pytest tests/feedback -q
 

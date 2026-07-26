@@ -141,7 +141,8 @@ def test_each_database_migrates_only_its_own_table_boundary(
     expected_tables: set[str],
 ):
     with open_database(tmp_path / f"{kind.value}.sqlite") as connection:
-        assert migrate_database(connection, kind) == (1,)
+        expected_versions = (1, 2) if kind is DatabaseKind.PAPER else (1,)
+        assert migrate_database(connection, kind) == expected_versions
         assert _user_tables(connection) == expected_tables
 
 
@@ -357,6 +358,94 @@ def test_default_research_v1_upgrades_to_v2_without_rewriting_history(tmp_path: 
         assert connection.execute(
             "SELECT name, checksum, applied_at FROM schema_migrations WHERE version = 1"
         ).fetchone() == v1_history
+
+
+def test_default_paper_v1_upgrade_preserves_positions_and_rearms_guards(
+    tmp_path: Path,
+):
+    migration_dir = tmp_path / "migrations" / "paper"
+    migration_dir.mkdir(parents=True)
+    source_dir = (
+        Path(__file__).parents[2]
+        / "prism_core"
+        / "storage"
+        / "migrations"
+        / "paper"
+    )
+    (migration_dir / "001_initial.sql").write_text(
+        (source_dir / "001_initial.sql").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    with open_database(tmp_path / "paper.sqlite") as connection:
+        assert migrate_database(
+            connection,
+            DatabaseKind.PAPER,
+            migrations_root=tmp_path / "migrations",
+        ) == (1,)
+        connection.execute(
+            "INSERT INTO strategy_books "
+            "(book_id, strategy_id, market, currency, created_at) VALUES "
+            "('book-1', 'SWING_V1', 'US', 'USD', '2026-07-26T00:00:00+00:00')"
+        )
+        rows = [
+            (
+                "position-1",
+                "book-1",
+                "security-1",
+                "1",
+                "100",
+                "2026-07-26T01:00:00+00:00",
+                "2026-07-26T01:00:00+00:00",
+            ),
+            (
+                "position-2",
+                "book-1",
+                "security-1",
+                "2",
+                "101",
+                "2026-07-26T02:00:00+00:00",
+                "2026-07-26T02:00:00+00:00",
+            ),
+        ]
+        connection.executemany(
+            "INSERT INTO positions "
+            "(position_snapshot_id, book_id, security_id, quantity, average_cost, "
+            "as_of_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        (migration_dir / "002_simulated_broker_positions.sql").write_text(
+            (source_dir / "002_simulated_broker_positions.sql").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+
+        assert migrate_database(
+            connection,
+            DatabaseKind.PAPER,
+            migrations_root=tmp_path / "migrations",
+        ) == (2,)
+        assert connection.execute(
+            "SELECT position_snapshot_id, book_id, security_id, quantity, "
+            "average_cost, as_of_at, created_at FROM positions ORDER BY rowid"
+        ).fetchall() == rows
+        connection.execute(
+            "INSERT INTO positions "
+            "(position_snapshot_id, book_id, security_id, quantity, average_cost, "
+            "as_of_at, created_at) VALUES "
+            "('position-3', 'book-1', 'security-1', '3', '102', "
+            "'2026-07-26T02:00:00+00:00', '2026-07-26T02:00:00+00:00')"
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "UPDATE positions SET quantity = '999' "
+                "WHERE position_snapshot_id = 'position-1'"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "DELETE FROM positions WHERE position_snapshot_id = 'position-1'"
+            )
 
 
 def test_v2_freezes_old_symbol_mappings_and_guards_new_evidence(tmp_path: Path):
