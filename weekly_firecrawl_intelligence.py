@@ -128,6 +128,24 @@ async def _generate_us_report(start, end) -> str:
     return result
 
 
+REPORT_SNAPSHOT = Path(__file__).parent / "logs" / "weekly_firecrawl_last_report.txt"
+
+
+def _save_report_snapshot(message: str, start, end) -> None:
+    """
+    Persist the delivered report so the quality checker can grade it.
+
+    Never let a monitoring concern break delivery — any failure here is logged
+    and swallowed.
+    """
+    try:
+        REPORT_SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
+        header = f"# period: {start} ~ {end}\n# generated: {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+        REPORT_SNAPSHOT.write_text(header + message, encoding="utf-8")
+    except Exception as e:  # noqa: BLE001 - monitoring must not break the report
+        logger.warning(f"Failed to save report snapshot: {e}")
+
+
 async def generate_weekly_intelligence() -> str:
     """Generate combined weekly intelligence report."""
     from weekly_market_facts import resolve_week_range
@@ -156,7 +174,9 @@ async def generate_weekly_intelligence() -> str:
 
     sections.append(_DISCLAIMER)
 
-    return "\n".join(sections)
+    message = "\n".join(sections)
+    _save_report_snapshot(message, start, end)
+    return message
 
 
 async def send_to_telegram(message: str):
