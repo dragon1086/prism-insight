@@ -50,11 +50,6 @@ def _ymd(d: date) -> str:
     return d.strftime("%Y%m%d")
 
 
-def _eok(won: float) -> str:
-    """원 단위를 억원으로 포맷."""
-    return f"{won / 1e8:,.0f}억원"
-
-
 # ---------------------------------------------------------------------------
 # 한국 시장
 # ---------------------------------------------------------------------------
@@ -139,25 +134,108 @@ def _kr_index_block(start: date, end: date) -> list[str]:
     return lines
 
 
-def _kr_investor_block(start: date, end: date) -> list[str]:
-    get_market_trading_value_by_investor = _krx_fn("get_market_trading_value_by_investor")
-    if get_market_trading_value_by_investor is None:
-        return []
+_NAVER_INVESTOR_URL = (
+    "https://finance.naver.com/sise/investorDealTrendDay.naver?bizdate={bizdate}&sosok={sosok}"
+)
+_INVESTOR_LABELS = ("개인", "외국인", "기관계", "금융투자", "연기금등")
 
-    lines: list[str] = []
-    for market in ("KOSPI", "KOSDAQ"):
+
+def _flatten_columns(df) -> list[str]:
+    """read_html gives a 2-level header here; take the most specific label."""
+    out: list[str] = []
+    for col in df.columns:
+        if isinstance(col, tuple):
+            parts = [str(c) for c in col if str(c) and not str(c).startswith("Unnamed")]
+            out.append(parts[-1] if parts else "")
+        else:
+            out.append(str(col))
+    return out
+
+
+def _naver_investor_daily(sosok: str, bizdate: date) -> dict[date, dict[str, float]]:
+    """
+    네이버 금융 '투자자별 매매동향' 일별 순매수 (단위: 억원).
+
+    시장 전체 수급은 krx_data_client(개별종목 전용)로도, pykrx(KRX 응답 포맷
+    변경으로 파싱 실패)로도 받을 수 없어 네이버를 1차 소스로 쓴다.
+    페이지는 bizdate 기준 최근 약 15거래일을 담고 있다.
+    """
+    import io
+
+    import pandas as pd
+    import requests
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://finance.naver.com/",
+    })
+    url = _NAVER_INVESTOR_URL.format(bizdate=_ymd(bizdate), sosok=sosok)
+    resp = session.get(url, timeout=15)
+    resp.raise_for_status()
+
+    tables = pd.read_html(io.StringIO(resp.text))
+    table = next(
+        (t for t in tables if t.shape[0] > 2 and t.shape[1] >= 5),
+        None,
+    )
+    if table is None:
+        raise ValueError("investor table not found")
+
+    names = _flatten_columns(table)
+    idx = {label: names.index(label) for label in _INVESTOR_LABELS if label in names}
+    if "날짜" not in names or not idx:
+        raise ValueError(f"unexpected investor columns: {names}")
+    date_pos = names.index("날짜")
+
+    result: dict[date, dict[str, float]] = {}
+    for _, row in table.iterrows():
+        raw_date = str(row.iloc[date_pos]).strip()
+        # "26.07.24" 형식
+        parts = raw_date.split(".")
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
+            continue
         try:
-            df = get_market_trading_value_by_investor(_ymd(start), _ymd(end), market)
-            if df is None or df.empty or "순매수" not in df.columns:
+            day = date(2000 + int(parts[0]), int(parts[1]), int(parts[2]))
+        except ValueError:
+            continue
+
+        values: dict[str, float] = {}
+        for label, pos in idx.items():
+            val = row.iloc[pos]
+            if pd.notna(val):
+                values[label] = float(val)
+        if values:
+            result[day] = values
+    return result
+
+
+def _kr_investor_block(start: date, end: date) -> list[str]:
+    lines: list[str] = []
+    for market, sosok in (("KOSPI", "01"), ("KOSDAQ", "02")):
+        try:
+            daily = _naver_investor_daily(sosok, end)
+            in_week = {d: v for d, v in daily.items() if start <= d <= end}
+            if not in_week:
+                logger.warning(f"[facts] {market} investor: no rows in {start}~{end}")
                 continue
-            wanted = ("기관합계", "외국인합계", "개인", "금융투자", "연기금등")
+
+            totals: dict[str, float] = {}
+            for row in in_week.values():
+                for label, value in row.items():
+                    totals[label] = totals.get(label, 0.0) + value
+
+            order = ("외국인", "기관계", "개인", "금융투자", "연기금등")
             parts = [
-                f"{label} {_eok(float(df.loc[label, '순매수']))}"
-                for label in wanted
-                if label in df.index
+                f"{label} {totals[label]:+,.0f}억원"
+                for label in order
+                if label in totals
             ]
             if parts:
-                lines.append(f"- {market} 투자자별 주간 누적 순매수: " + ", ".join(parts))
+                lines.append(
+                    f"- {market} 투자자별 주간 누적 순매수({len(in_week)}거래일): "
+                    + ", ".join(parts)
+                )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[facts] {market} investor fetch failed: {e}")
     return lines
