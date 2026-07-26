@@ -49,7 +49,17 @@ def get_firecrawl_app():
     return _firecrawl_app
 
 
-def firecrawl_search(query: str, limit: int = 10, with_content: bool = False):
+def firecrawl_search(
+    query: str,
+    limit: int = 10,
+    with_content: bool = False,
+    *,
+    tbs: Optional[str] = None,
+    sources: Optional[list] = None,
+    location: Optional[str] = None,
+    include_domains: Optional[list] = None,
+    exclude_domains: Optional[list] = None,
+):
     """
     Search the web via Firecrawl.
 
@@ -59,28 +69,136 @@ def firecrawl_search(query: str, limit: int = 10, with_content: bool = False):
         with_content: When True, scrape full markdown content for each result.
                       Each result item will have a .markdown attribute with the
                       article body (more credits used, but much richer data).
+        tbs: Recency filter passed to the search backend. "qdr:w" = past week,
+             "qdr:d" = past day, "qdr:m" = past month. Without this the engine
+             happily returns years-old articles, which is the single biggest
+             cause of stale market reports.
+        sources: Result channels, e.g. ["news"], ["web", "news"]. News results
+                 carry a published date, which lets us drop off-window articles.
+        location: Country bias for the search backend, e.g. "KR" / "US".
+        include_domains: Allowlist of domains. Use to pin results to primary
+                         outlets instead of blog/community aggregators.
+        exclude_domains: Blocklist of domains.
 
     Returns:
-        SearchData object with .web list of results, or None on error
+        SearchData object with .web / .news lists of results, or None on error
     """
+    extra = {
+        "tbs": tbs,
+        "sources": sources,
+        "location": location,
+        "include_domains": include_domains,
+        "exclude_domains": exclude_domains,
+    }
+    extra = {k: v for k, v in extra.items() if v}
+
     try:
         app = get_firecrawl_app()
         if with_content:
             try:
                 from firecrawl import ScrapeOptions  # available in firecrawl-py >= 1.0
-                scrape_opts = ScrapeOptions(formats=["markdown"])
-                result = app.search(query, limit=limit, scrape_options=scrape_opts)
+                # only_main_content strips nav/menu/footer boilerplate — without it
+                # the first 2000 chars of an article are usually junk.
+                scrape_opts = ScrapeOptions(formats=["markdown"], only_main_content=True)
+                result = app.search(query, limit=limit, scrape_options=scrape_opts, **extra)
             except (ImportError, TypeError) as ie:
                 # Fallback: SDK version doesn't support ScrapeOptions — use plain search
                 logger.warning(f"ScrapeOptions not available ({ie}), falling back to plain search")
-                result = app.search(query, limit=limit)
+                result = app.search(query, limit=limit, **extra)
         else:
-            result = app.search(query, limit=limit)
-        logger.info(f"Firecrawl search: query='{query[:50]}', results={len(result.web) if result and result.web else 0}, with_content={with_content}")
+            result = app.search(query, limit=limit, **extra)
+
+        n_web = len(result.web) if result and getattr(result, "web", None) else 0
+        n_news = len(result.news) if result and getattr(result, "news", None) else 0
+        logger.info(
+            f"Firecrawl search: query='{query[:60]}', web={n_web}, news={n_news}, "
+            f"with_content={with_content}, opts={extra}"
+        )
         return result
+    except TypeError as e:
+        # SDK too old for one of the extra kwargs — retry without them rather than
+        # silently returning nothing.
+        if extra:
+            logger.warning(f"Firecrawl search rejected extra opts ({e}); retrying without {list(extra)}")
+            return firecrawl_search(query, limit=limit, with_content=with_content)
+        logger.error(f"Firecrawl search failed: {e}")
+        return None
     except Exception as e:
         logger.error(f"Firecrawl search failed: {e}")
         return None
+
+
+# Sources whose numbers must never be trusted for factual claims.
+_LOW_TRUST_HOSTS = (
+    "blog.naver.com", "m.blog.naver.com", "cafe.naver.com", "post.naver.com",
+    "tistory.com", "brunch.co.kr", "velog.io", "medium.com",
+    "namu.wiki", "dcinside.com", "fmkorea.com", "clien.net",
+)
+
+
+def normalize_search_items(result) -> list[dict]:
+    """
+    Flatten a Firecrawl SearchData into plain dicts.
+
+    Handles both bare search results (title/url/description|snippet/date) and
+    scraped Documents (markdown + metadata), which the SDK returns
+    interchangeably depending on whether scrape_options was set.
+    """
+    items: list[dict] = []
+    if not result:
+        return items
+
+    for channel in ("news", "web"):
+        for raw in (getattr(result, channel, None) or []):
+            meta = getattr(raw, "metadata", None) or {}
+
+            def pick(*names):
+                for n in names:
+                    val = getattr(raw, n, None)
+                    if val:
+                        return val
+                for n in names:
+                    val = meta.get(n) if isinstance(meta, dict) else None
+                    if val:
+                        return val
+                return ""
+
+            url = pick("url", "sourceURL", "source_url")
+            if not url:
+                continue
+
+            items.append({
+                "title": pick("title", "og_title", "ogTitle"),
+                "url": url,
+                "date": pick("date", "publishedTime", "published_time", "modifiedTime"),
+                "body": (getattr(raw, "markdown", "") or ""),
+                "snippet": pick("snippet", "description"),
+                "channel": channel,
+                "low_trust": any(h in url for h in _LOW_TRUST_HOSTS),
+            })
+    return items
+
+
+def firecrawl_search_multi(queries: list[str], **kwargs) -> list[dict]:
+    """
+    Fan out several queries and merge results, de-duplicated by URL.
+
+    A single query can only surface one slice of a week. Market recaps need
+    index moves, flows, themes and the forward calendar — those are different
+    searches, not different paragraphs of one search.
+    """
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for q in queries:
+        for item in normalize_search_items(firecrawl_search(q, **kwargs)):
+            url = item["url"].split("?")[0].rstrip("/")
+            if url in seen:
+                continue
+            seen.add(url)
+            item["query"] = q
+            merged.append(item)
+    logger.info(f"firecrawl_search_multi: {len(queries)} queries -> {len(merged)} unique results")
+    return merged
 
 
 def _extract_agent_text(result) -> Optional[str]:
