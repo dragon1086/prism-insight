@@ -27,52 +27,101 @@ logger = logging.getLogger(__name__)
 _DISCLAIMER = "\n\n⚠️ 본 내용은 투자 참고용이며, 투자 판단의 책임은 본인에게 있습니다."
 
 
-async def _generate_kr_report() -> str:
+# 1차 매체만 허용. 블로그·커뮤니티가 검색 상위를 먹으면 리포트 수치가 오염된다.
+_KR_DOMAINS = [
+    "yna.co.kr", "einfomax.co.kr", "hankyung.com", "mk.co.kr", "edaily.co.kr",
+    "sedaily.com", "fnnews.com", "mt.co.kr", "asiae.co.kr", "newsis.com",
+    "biz.chosun.com", "wowtv.co.kr", "infostock.co.kr", "thebell.co.kr",
+]
+_US_DOMAINS = [
+    "reuters.com", "cnbc.com", "bloomberg.com", "marketwatch.com", "wsj.com",
+    "barrons.com", "ft.com", "investors.com", "apnews.com", "finance.yahoo.com",
+    "fool.com", "seekingalpha.com",
+]
+
+
+async def _generate_kr_report(start, end) -> str:
     """Generate KR market intelligence report via Firecrawl search + Claude."""
     from report_generator import generate_firecrawl_search_response
+    from weekly_market_facts import build_kr_facts
 
-    today_str = datetime.now().strftime("%Y년 %m월 %d일")
+    period = f"{start:%Y-%m-%d} ~ {end:%Y-%m-%d}"
+    md = f"{start:%m월 %d일}~{end:%m월 %d일}"
 
-    search_query = f"코스피 코스닥 주간 시황 {today_str} 외국인 기관 수급"
+    # 쿼리에 오늘 날짜 문자열을 박으면 검색엔진이 그 문자열을 포함한 블로그를 물어온다.
+    # 날짜는 tbs 최신성 필터로 제어하고, 쿼리는 주제별로 쪼갠다.
+    queries = [
+        "코스피 코스닥 주간 증시 마감 시황 정리",
+        "외국인 기관 순매수 순매도 수급 동향 코스피",
+        "이번주 증시 주도 테마 급등 업종 특징주",
+        "다음주 증시 전망 주요 경제지표 실적발표 일정",
+    ]
+
     analysis_prompt = (
-        f"오늘 날짜는 {today_str}입니다.\n"
-        "위 검색 결과를 바탕으로 이번 주 한국 주식시장 주간 인텔리전스 리포트를 작성해줘.\n\n"
+        f"위 자료를 바탕으로 {md}({period}) 한 주간의 한국 주식시장 인텔리전스 리포트를 작성해줘.\n\n"
         "포함 내용:\n"
-        "1. 이번 주 KOSPI/KOSDAQ 주요 흐름 요약\n"
-        "2. 가장 주목받은 테마 3개와 대표 종목\n"
-        "3. 외국인/기관 수급 동향\n"
+        f"1. {md} KOSPI/KOSDAQ 주요 흐름 요약 (지수 수치는 검증 데이터 사용)\n"
+        "2. 가장 주목받은 테마 3개와 대표 종목 (종목명을 반드시 명시)\n"
+        "3. 외국인/기관 수급 동향 (금액은 검증 데이터의 주간 누적 순매수 사용)\n"
         "4. 다음 주 주요 일정 및 이벤트\n"
         "5. 개인투자자를 위한 전략 제안\n\n"
         "텔레그램 메시지 형태로 이모지 포함하여 작성. 4000자 이내."
     )
 
-    result = await generate_firecrawl_search_response(search_query, analysis_prompt, limit=10)
+    result = await generate_firecrawl_search_response(
+        queries,
+        analysis_prompt,
+        limit=8,
+        tbs="qdr:w",                 # 최근 1주일 내 문서만
+        sources=["news", "web"],     # 뉴스 채널은 발행일이 붙어 필터링이 가능하다
+        location="KR",
+        include_domains=_KR_DOMAINS,
+        grounded_facts=build_kr_facts(start, end),
+        period_label=period,
+    )
     if not result:
         logger.error("Failed to generate KR intelligence report")
         return ""
     return result
 
 
-async def _generate_us_report() -> str:
+async def _generate_us_report(start, end) -> str:
     """Generate US market intelligence report via Firecrawl search + Claude."""
     from report_generator import generate_firecrawl_search_response
+    from weekly_market_facts import build_us_facts
 
-    today_str = datetime.now().strftime("%Y년 %m월 %d일")
+    period = f"{start:%Y-%m-%d} ~ {end:%Y-%m-%d}"
+    md = f"{start:%m월 %d일}~{end:%m월 %d일}"
 
-    search_query = f"US stock market weekly recap S&P 500 NASDAQ {today_str}"
+    queries = [
+        "stock market weekly recap S&P 500 Nasdaq close",
+        "sector performance this week best worst performing stocks",
+        "Federal Reserve rate outlook Treasury yields this week",
+        "week ahead economic calendar earnings preview",
+    ]
+
     analysis_prompt = (
-        f"오늘 날짜는 {today_str}입니다.\n"
-        "위 검색 결과를 바탕으로 이번 주 미국 주식시장 주간 인텔리전스 리포트를 작성해줘.\n\n"
+        f"위 자료를 바탕으로 {md}({period}) 한 주간의 미국 주식시장 인텔리전스 리포트를 작성해줘.\n\n"
         "포함 내용:\n"
-        "1. 이번 주 S&P500/NASDAQ 주요 흐름 요약\n"
-        "2. 가장 주목받은 섹터 3개와 대표 종목\n"
+        f"1. {md} S&P500/NASDAQ 주요 흐름 요약 (지수 수치는 검증 데이터 사용)\n"
+        "2. 가장 주목받은 섹터 3개와 대표 종목 (티커 명시)\n"
         "3. 연준(Fed) 관련 동향 및 금리 전망\n"
         "4. 다음 주 주요 일정 (FOMC, 실적 발표 등)\n"
         "5. 개인투자자를 위한 전략 제안\n\n"
         "한국어로, 텔레그램 메시지 형태로 이모지 포함하여 작성. 4000자 이내."
     )
 
-    result = await generate_firecrawl_search_response(search_query, analysis_prompt, limit=10)
+    result = await generate_firecrawl_search_response(
+        queries,
+        analysis_prompt,
+        limit=8,
+        tbs="qdr:w",
+        sources=["news", "web"],
+        location="US",
+        include_domains=_US_DOMAINS,
+        grounded_facts=build_us_facts(start, end),
+        period_label=period,
+    )
     if not result:
         logger.error("Failed to generate US intelligence report")
         return ""
@@ -81,13 +130,20 @@ async def _generate_us_report() -> str:
 
 async def generate_weekly_intelligence() -> str:
     """Generate combined weekly intelligence report."""
+    from weekly_market_facts import resolve_week_range
+
     today = datetime.now()
     date_display = today.strftime("%-m/%-d")
+    start, end = resolve_week_range(today.date())
+    logger.info(f"Weekly intelligence period: {start} ~ {end}")
 
-    kr_report = await _generate_kr_report()
-    us_report = await _generate_us_report()
+    kr_report = await _generate_kr_report(start, end)
+    us_report = await _generate_us_report(start, end)
 
-    sections = [f"🔥 PRISM 주간 Firecrawl 인텔리전스 ({date_display})"]
+    sections = [
+        f"🔥 PRISM 주간 Firecrawl 인텔리전스 ({date_display})",
+        f"📅 대상 기간: {start:%Y.%m.%d} ~ {end:%m.%d}",
+    ]
 
     if kr_report:
         sections.append(f"\n🇰🇷 한국시장 인텔리전스\n━━━━━━━━━━━━━━━━━━━━\n{kr_report}")
