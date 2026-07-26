@@ -46,13 +46,22 @@ jobs:
         run: python tools/audit_broker_boundaries.py
 
       - name: Run runtime safety tests
-        run: python -m pytest tests/runtime tests/safety -q
+        run: |
+          python -m pytest tests/runtime tests/safety -q
+          # This always-run guard detects accidental removal of the dedicated
+          # E2E matrix step below.
+          python -m pytest \
+            tests/e2e/test_phase1_no_external_effects.py::test_phase1_end_to_end_acceptance_is_fail_closed_in_every_ci_matrix_job \
+            -q
 
       - name: Run storage migration tests
         run: python -m pytest tests/storage -q
 
       - name: Run internal paper broker tests
         run: python -m pytest tests/paper -q
+
+      - name: Run Phase 1 end-to-end acceptance tests
+        run: python -m pytest tests/e2e -q
 
       - name: Run append-only proposal and outcome storage tests
         run: python -m pytest tests/feedback -q
