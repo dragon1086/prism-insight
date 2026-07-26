@@ -66,6 +66,9 @@ jobs:
       - name: Run local job operations and watchdog tests
         run: python -m pytest tests/ops -q
 
+      - name: Run separated localhost dashboard contract tests
+        run: python -m pytest tests/dashboard -q
+
       - name: Run AgentNews fixture contract tests
         run: python -m pytest tests/data/providers/test_agentnews_provider.py -q
 
