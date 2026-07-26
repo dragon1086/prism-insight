@@ -519,7 +519,7 @@ def test_minimal_retrospective_lesson_and_evidence_storage_is_append_only_and_sc
         )
         with pytest.raises(ValueError, match="unavailable lesson status"):
             repo.append_lesson_candidate(replace(lesson, status="PAPER_PROMOTED"))
-        with pytest.raises(ValueError, match="unavailable lesson status"):
+        with pytest.raises(ValueError, match="start at CANDIDATE"):
             repo.append_lesson_candidate(replace(lesson, status="SHADOW"))
         with pytest.raises(ValueError, match="exactly one source"):
             repo.append_lesson_evidence(replace(evidence, observation_id="also-set"))

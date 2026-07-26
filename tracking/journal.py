@@ -12,6 +12,7 @@ import re
 import sqlite3
 import sys
 import traceback
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,6 +29,20 @@ JOURNAL_RECENT_LOSS_PENALTY = int(os.getenv("JOURNAL_RECENT_LOSS_PENALTY", "2"))
 # Intuition injection caps — tunable module-level constants
 INTUITION_TOTAL_LIMIT: int = 10      # max intuitions injected per buy prompt
 INTUITION_PER_CATEGORY_CAP: int = 3  # max entries from any single category
+
+
+@dataclass(frozen=True)
+class LegacyUnvalidatedLesson:
+    """Inert compatibility view; never an active target-system lesson."""
+
+    source_table: str
+    source_id: int
+    condition: str
+    tentative_action: str
+    rationale: str
+    status: str = "LEGACY_UNVALIDATED"
+    activation_allowed: bool = False
+    score_adjustment: int = 0
 
 
 class JournalManager:
@@ -654,6 +669,39 @@ Please review the following completed trade:
         except Exception as e:
             logger.warning(f"Failed to get journal context: {e}")
             return ""
+
+    def export_legacy_unvalidated_lessons(self) -> Tuple[LegacyUnvalidatedLesson, ...]:
+        """Return a SELECT-only inert view of legacy principles and intuitions."""
+        exported = []
+        self.cursor.execute(
+            "SELECT id, condition, action, reason FROM trading_principles "
+            "WHERE is_active = 1 ORDER BY id"
+        )
+        exported.extend(
+            LegacyUnvalidatedLesson(
+                source_table="trading_principles",
+                source_id=row[0],
+                condition=row[1] or "",
+                tentative_action=row[2] or "",
+                rationale=row[3] or "",
+            )
+            for row in self.cursor.fetchall()
+        )
+        self.cursor.execute(
+            "SELECT id, condition, insight, category FROM trading_intuitions "
+            "WHERE is_active = 1 ORDER BY id"
+        )
+        exported.extend(
+            LegacyUnvalidatedLesson(
+                source_table="trading_intuitions",
+                source_id=row[0],
+                condition=row[1] or "",
+                tentative_action=row[2] or "",
+                rationale=row[3] or "",
+            )
+            for row in self.cursor.fetchall()
+        )
+        return tuple(exported)
 
     def get_universal_principles(self, limit: int = 5) -> List[str]:
         """Retrieve universal trading principles.

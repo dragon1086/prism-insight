@@ -358,6 +358,8 @@ class FeedbackRepository:
         parent = self._proposal_parent(record.proposal_record_id)
         self._require_parent_strategy(parent, record.strategy_id, record.strategy_version)
         self._require_not_before_parent(record.timing, parent[2], "retrospective")
+        if record.review_kind == "OUTCOME":
+            self._validate_outcome_retrospective(record)
         payload_json = canonical_json(record.payload)
         semantic = {
             "proposal_record_id": record.proposal_record_id,
@@ -378,6 +380,7 @@ class FeedbackRepository:
             natural_values=(record.proposal_record_id, record.review_kind),
             revision=record.revision,
             content_hash=content_hash,
+            timing=record.timing,
             insert=(
                 "INSERT INTO retrospective_events VALUES "
                 "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -389,11 +392,62 @@ class FeedbackRepository:
             ),
         )
 
+    def _validate_outcome_retrospective(self, record: RetrospectiveRecord) -> None:
+        if not isinstance(record.payload, Mapping):
+            raise TypeError("retrospective payload must be a mapping")
+        event_ids = record.payload.get("outcome_event_ids")
+        if (
+            not isinstance(event_ids, (tuple, list))
+            or not event_ids
+            or any(not isinstance(item, str) or not item.strip() for item in event_ids)
+            or len(set(event_ids)) != len(event_ids)
+        ):
+            raise ValueError("OUTCOME retrospective requires unique outcome_event_ids")
+        review_available = _utc_text(record.timing.available_at)
+        review_as_of = _utc_text(record.timing.as_of_date)
+        horizons: list[int] = []
+        for event_id in event_ids:
+            outcome = self._connection.execute(
+                "SELECT proposal_record_id, strategy_id, strategy_version, "
+                "horizon_sessions, revision, available_at, as_of_at "
+                "FROM proposal_outcomes WHERE outcome_event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if outcome is None:
+                raise ValueError("OUTCOME retrospective references an unknown outcome")
+            if outcome[0] != record.proposal_record_id:
+                raise ValueError("OUTCOME retrospective references another proposal")
+            self._require_parent_strategy(
+                outcome[1:], record.strategy_id, record.strategy_version
+            )
+            if outcome[5] > review_available or outcome[6] > review_as_of:
+                raise ValueError("OUTCOME retrospective references future outcome evidence")
+            latest = self._connection.execute(
+                "SELECT outcome_event_id FROM proposal_outcomes "
+                "WHERE proposal_record_id = ? AND horizon_sessions = ? "
+                "AND available_at <= ? AND as_of_at <= ? "
+                "ORDER BY revision DESC LIMIT 1",
+                (record.proposal_record_id, outcome[3], review_as_of, review_as_of),
+            ).fetchone()
+            if latest is None or latest[0] != event_id:
+                raise ValueError("OUTCOME retrospective requires latest PIT outcome revisions")
+            horizons.append(outcome[3])
+        if horizons != sorted(set(horizons)):
+            raise ValueError("OUTCOME retrospective horizons must be unique and ascending")
+        declared_horizons = record.payload.get("outcome_horizons")
+        if declared_horizons is not None and list(declared_horizons) != horizons:
+            raise ValueError("OUTCOME retrospective horizon provenance mismatch")
+
     def append_lesson_candidate(self, record: LessonCandidateRecord) -> AppendDisposition:
         if not isinstance(record, LessonCandidateRecord):
             raise TypeError("record must be LessonCandidateRecord")
-        if record.status != "CANDIDATE":
+        allowed_statuses = {"CANDIDATE", "SHADOW", "SUSPENDED", "RETIRED"}
+        if record.status not in allowed_statuses:
             raise ValueError("unknown or unavailable lesson status")
+        if type(record.revision) is not int or record.revision < 0:
+            raise ValueError("revision must be non-negative")
+        if record.revision == 0 and record.status != "CANDIDATE":
+            raise ValueError("lesson creation must start at CANDIDATE")
         payload_json = canonical_json(record.payload)
         semantic = {
             "lesson_id": record.lesson_id,
@@ -408,17 +462,53 @@ class FeedbackRepository:
         }
         content_hash = _hash(semantic)
         times = _timing_values(record.timing)
-        return self._append_revision_event(
-            table="lesson_candidates",
-            natural_where="lesson_id = ? AND strategy_id = ? AND strategy_version = ?",
-            natural_values=(
-                record.lesson_id,
-                record.strategy_id.value,
-                record.strategy_version.value,
-            ),
-            revision=record.revision,
-            content_hash=content_hash,
-            insert=(
+        natural_values = (
+            record.lesson_id,
+            record.strategy_id.value,
+            record.strategy_version.value,
+        )
+        with transaction(self._connection):
+            existing = self._connection.execute(
+                "SELECT content_hash FROM lesson_candidates WHERE "
+                "lesson_candidate_event_id = ? OR "
+                "(lesson_id = ? AND strategy_id = ? AND strategy_version = ? "
+                "AND revision = ?)",
+                (record.lesson_candidate_event_id, *natural_values, record.revision),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != content_hash:
+                    raise ValueError("lesson identity has divergent content")
+                return AppendDisposition.DUPLICATE
+            previous = self._connection.execute(
+                "SELECT revision, status, available_at, as_of_at "
+                "FROM lesson_candidates WHERE "
+                "lesson_id = ? AND strategy_id = ? AND strategy_version = ? "
+                "ORDER BY revision DESC LIMIT 1",
+                natural_values,
+            ).fetchone()
+            if record.revision == 0:
+                if previous is not None:
+                    raise ValueError("lesson revision zero already has a successor")
+            else:
+                if previous is None or record.revision != previous[0] + 1:
+                    raise ValueError("corrections must append the next revision")
+                self._require_chronological_revision(
+                    record.timing, previous[2], previous[3]
+                )
+                legal_pairs = {
+                    ("CANDIDATE", "CANDIDATE"),
+                    ("CANDIDATE", "SHADOW"),
+                    ("CANDIDATE", "RETIRED"),
+                    ("SHADOW", "SHADOW"),
+                    ("SHADOW", "SUSPENDED"),
+                    ("SHADOW", "RETIRED"),
+                    ("SUSPENDED", "SUSPENDED"),
+                    ("SUSPENDED", "SHADOW"),
+                    ("SUSPENDED", "RETIRED"),
+                }
+                if (previous[1], record.status) not in legal_pairs:
+                    raise ValueError("illegal lesson status transition")
+            self._connection.execute(
                 "INSERT INTO lesson_candidates VALUES "
                 "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -426,8 +516,8 @@ class FeedbackRepository:
                     record.strategy_id.value, record.strategy_version.value,
                     record.revision, record.status, payload_json, *times, content_hash,
                 ),
-            ),
-        )
+            )
+        return AppendDisposition.INSERTED
 
     def append_lesson_evidence(self, record: LessonEvidenceRecord) -> AppendDisposition:
         if not isinstance(record, LessonEvidenceRecord):
@@ -547,8 +637,18 @@ class FeedbackRepository:
         if _utc_text(timing.available_at) < parent_as_of or _utc_text(timing.as_of_date) < parent_as_of:
             raise ValueError(f"{label} cannot precede its parent boundary")
 
+    @staticmethod
+    def _require_chronological_revision(
+        timing: ObservationTime, previous_available_at: str, previous_as_of_at: str
+    ) -> None:
+        if (
+            _utc_text(timing.available_at) < previous_available_at
+            or _utc_text(timing.as_of_date) < previous_as_of_at
+        ):
+            raise ValueError("revisions must be chronological")
+
     def _append_revision_event(
-        self, *, table, natural_where, natural_values, revision, content_hash, insert
+        self, *, table, natural_where, natural_values, revision, content_hash, timing, insert
     ) -> AppendDisposition:
         if type(revision) is not int or revision < 0:
             raise ValueError("revision must be non-negative")
@@ -563,10 +663,13 @@ class FeedbackRepository:
                 return AppendDisposition.DUPLICATE
             if revision:
                 previous = self._connection.execute(
-                    f"SELECT max(revision) FROM {table} WHERE {natural_where}", natural_values
-                ).fetchone()[0]
-                if previous is None or revision != previous + 1:
+                    f"SELECT revision, available_at, as_of_at FROM {table} "
+                    f"WHERE {natural_where} ORDER BY revision DESC LIMIT 1",
+                    natural_values,
+                ).fetchone()
+                if previous is None or revision != previous[0] + 1:
                     raise ValueError("corrections must append the next revision")
+                self._require_chronological_revision(timing, previous[1], previous[2])
             self._connection.execute(insert[0], insert[1])
         return AppendDisposition.INSERTED
 
