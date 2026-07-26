@@ -2,66 +2,67 @@
 
 ## Current milestone
 
-- Task: Phase 1D Task 21 — daily and weekly report read models
-- Branch: `prism-insight/t_31f4168e-prism-phase-1d-task-21-daily-weekly-repo`
-- Base: `origin/main` at `4f344af1a963b8d9a1b48f81ea4c0287c389681f`
-- Implementation state: bounded report contracts/builders/renderers, TDD, CI discovery, independent read-only reviews, and definitive local gates are complete; GitHub delivery remains
-- Runtime state: pure read-model construction only; no provider/model transport, publication retry/lease, Telegram, scheduler, dashboard export, database migration, account, broker, order, paper, live, or production composition root is activated
+- Task: Phase 1D bounded query/report application wiring (`t_2ad37f69`), inserted between plan Tasks 21 and 22
+- Branch: `prism-insight/t_2ad37f69-prism-phase-1d-task-22-query-report-appl`
+- Base: `origin/main` at `4dde5807d35764e860b88665df067a2a13f192b3`
+- Implementation state: focused implementation, TDD, independent read-only review/remediation, and definitive local gates are complete; GitHub delivery remains
+- Runtime state: the existing `QueryService` application seam can compose one persisted daily read model; no publication, provider/model transport, weekly scenario source, Telegram, scheduler, dashboard, account, broker, order, paper, live, or production startup path is activated
 
 ## Implemented scope
 
-- Added strict frozen daily/weekly Pydantic read models with explicit per-market as-of timestamps, source provenance, leadership quality, analysis-policy quality, market regime, leading sectors/stocks, strategy sections, scenario evidence, uncertainty, falsifiers, and inert SHADOW status.
-- Added a pure daily adapter over Task 20 persisted analysis and `QueryService` evaluation shapes through read-only structural protocols. It validates leadership snapshot/report identity, market, exact strategy/version sets, current data-snapshot proposal identity, SHADOW point-in-time boundaries, and zero SHADOW influence.
-- Reuses the existing Task 7A `market_tracking_v1` `StoredLeadershipRun`, leader/change classifications, and persisted generic Markdown. It does not create a parallel leadership table, identity, or change classifier.
-- Keeps `SWING_V1` and `TREND_V1` as separate exact strategy/version sections. ACCEPT reports require both; non-ACCEPT analysis exposes neither.
-- Parses stored strict `TradePlanProposal` JSON deterministically for current-snapshot bull/bear evidence, counter-evidence, uncertainty, missing/stale declarations, and falsifiers; historical snapshots are not relabeled as current.
-- Suppresses leading stocks when core leadership evidence is unusable and renders the suppression visibly. Sector leadership is an explicitly injected read-only input because Task 20 does not yet persist a sector read model.
-- Added a weekly composer that accepts one KR and one US daily read model plus separately supplied pre-validated market scenario evidence. It preserves independent KR/US clocks and context-board updated/fetched/freshness provenance and performs no fetch, parsing, persistence, or model call.
-- Exported strategy `Market` as the report-model market and the legacy leadership enum explicitly as `LeadershipMarket`, removing the public enum ambiguity identified by review.
-- Added an explicit fail-closed matrix CI step for `python -m pytest tests/reporting -q`.
+- Extended the existing read-only `prism_app.query_service.QueryService` constructor compatibly with an optional injected `AppRunRepository`; all existing `QueryService(connection)` callers remain valid.
+- Added `daily_report(job_key=..., leading_sectors=...)`, which reads the persisted Task 20 daily analysis from the injected ops-side repository, reads Task 7A leadership plus exact Task 12/13 proposal and SHADOW evaluation data from `research.sqlite`, and delegates deterministic construction to Task 21 `build_daily_report`.
+- Preserves the persisted analysis `evaluated_at` as the PIT boundary for proposals and lessons and preserves exact `SWING_V1`/`TREND_V1` strategy-version identity.
+- Keeps leading sectors as an explicit typed read-only input. No persisted sector source exists yet, so this slice does not invent one or conflate missing sectors with a newly persisted contract.
+- Added `ReportUnavailableError` for absent persisted daily analysis or leadership. A missing application repository remains a distinct wiring `RuntimeError`; report identity/quality violations remain fail-closed builder errors.
+- Added `WeeklyReportReadiness`, which explicitly reports weekly composition unavailable because KR/US weekly scenario, calendar, and context-board application read sides are not persisted. It does not fabricate weekly inputs.
+- Did not modify `weekly_insight_report.py`: it imports KIS/account surfaces and is not a safe Phase 1 caller. The narrow existing `QueryService` seam is the integration boundary for future read-only dashboard/Telegram callers.
 
-## Contract decisions and compatibility
+## Authority and sequencing decision
 
-- Daily provenance keeps `evaluated_at`, `leadership_as_of`, `data_snapshot_id`, `leadership_snapshot_id`, provider/source URLs, and evidence references separate; no stronger cross-snapshot identity is invented.
-- Leadership data quality and application quality disposition remain separate. `REPORT_ONLY` is a policy outcome, not an observed quality status.
-- The daily seam structurally consumes immutable Task 20 dataclasses without importing `prism_app` into `prism_core`; read-only Protocol properties preserve covariance and avoid an architecture cycle.
-- Stored proposal JSON is revalidated through the authoritative strict `TradePlanProposal` schema before any report field is emitted.
-- Weekly scenarios preserve the `MARKET_SCENARIO_PROMPTS.md` distinction between board freshness, verified facts, interpretation, counter-evidence, uncertainty, and missing data. Weekly composition does not collapse KR and US clocks.
-- Rendered reports use the fixed statement `Research report only; no execution authority.` and contain no execution approval capability.
-- SHADOW is represented as evaluation-only with literal false score, policy, and proposal effects; lesson rows are rejected if any influence is non-zero or crosses exact strategy/version identity.
+- The implementation plan names plan Task 22 as Telegram config/auth/publisher. This Kanban card explicitly authorized a bounded query/report wiring slice before that plan task. The slice did not implement Telegram or renumber the plan; the next successor remains plan Task 22 Telegram config/auth/publisher.
 
-## TDD and verification checkpoint
+## TDD and verification
 
-- Observed RED→GREEN for missing daily module/API, daily structured output, renderer delegation, cross-snapshot/strategy mismatch, package exports, required dual-strategy ACCEPT contract, missing weekly module/API, KR/US weekly composition, cross-market refusal, visible unusable-leadership suppression, and explicit CI discovery.
-- New daily/weekly tests cover real temporary `research.sqlite` leadership ingestion/readback, injected Task 20/query values, strict executable-field rejection, exact strategy versions, proposal evidence/falsifiers/uncertainty, SHADOW inertness, non-ACCEPT skip, public JSON roundtrip, independent weekly clocks, context-board provenance, scenario bull/bear/counter evidence, and safe rendering.
-- `python -m pytest tests/reporting -q` — 75 passed, including all Task 7A leadership and Task 21 daily/weekly tests.
-- Focused pre-remediation reporting/app/storage/feedback/data/policy/LLM/research suite — 556 passed.
-- `python -m compileall -q prism_core prism_app` passed after implementation and after remediation.
+- Baseline: `python -m pytest tests/app/test_query_service.py tests/reporting -q` — 78 passed before edits.
+- Observed RED→GREEN for the new persisted daily report query API, the explicit missing-analysis exception, weekly unavailable readiness, missing-leadership exception normalization, and a real PIT-visible SWING-only SHADOW lesson flowing through the integrated report while TREND remains separate.
+- `python -m pytest tests/app/test_report_query_service.py -q` — 6 passed.
+- Focused app/query/report suite — 84 passed.
+- Definitive checked-in CI-equivalent sequence passed: 1,048 passed and 1 deselected across every pytest invocation in `.github/workflows/ci.yml`.
+- CI compile command passed for `prism_core`, `prism_app`, both thin legacy wrappers, and `tools/audit_broker_boundaries.py`.
 - Broker-boundary audit passed with 0 violations; 22 unchanged legacy dangerous findings remain inventory-only.
-- `git diff --check` passed before closeout freeze.
-- The definitive local CI-equivalent sequence passed every checked-in Python 3 matrix command: 1,042 passed and 1 deselected across the exact pytest invocations, including 75 reporting tests. Compileall, broker-boundary audit, `pip check`, and workflow YAML parsing also passed. GitHub still needs to verify the same workflow on Python 3.10, 3.11, and 3.12 against the exact pushed head.
+- `pip check` passed; workflow YAML parsed successfully.
+- `git diff --check` passed for tracked changes; the new test file passed Python syntax/lint checks and will be included in the frozen staged diff before delivery.
+- Changed-diff privacy scan found no credential/private-account patterns.
 
 ## Independent review and adjudication
 
-- A verified pre-semantics Claude read-only architecture review identified the typed proposal parsing seam, dual quality dimensions, exact enum/version bridge, distinct snapshot identities, weekly daily-plus-scenario composition, generic-renderer reuse, and explicit SHADOW inertness. Hermes accepted and implemented these constraints without adding app-to-core imports.
-- The first final read-only review exited 0 with empty stderr and verdict `APPROVE WITH RESIDUALS`; it found no CRITICAL/HIGH defect and confirmed all acceptance/safety boundaries. It raised three MEDIUM quality findings: ambiguous exported `Market`, `Any`-typed soft coupling, and missing fail-closed branch tests.
-- Hermes accepted all three: exported strategy `Market` plus explicit `LeadershipMarket`, replaced `Any` with structural read-only Protocols, and added REPORT_ONLY skip, unusable-leadership visible suppression, and JSON roundtrip tests.
-- The first open-repository follow-up exhausted its turn budget and was rejected as unusable.
-- A verified frozen-snapshot fallback reviewed 1,779 lines / 65,547 bytes (SHA-256 `da8545842410dfff77be8d4191410387825957f5e9ef536f92a4a7a6c504451d`) using only `Read`; exit 0, empty stderr, and full stdout were inspected. It found M1–M3 resolved with no new CRITICAL/HIGH/MEDIUM defect and confirmed Protocol compatibility, no import cycle, strict Pydantic roundtrip, and preserved fail-closed semantics.
-- Non-blocking residuals: weekly JSON roundtrip is not separately tested, although it shares the same strict nested model foundation; leading sectors remain injected until a later application source persists them; no runtime publication wiring exists in this slice.
+- Initial verified Claude Opus read-only review: exit 0, empty stderr, resolved model `claude-opus-4-8`, verdict `APPROVE WITH RESIDUALS`; no CRITICAL/HIGH findings.
+- It raised three MEDIUM test/robustness findings: vacuous SHADOW wiring proof, raw leadership `KeyError`, and uncovered missing-repository/non-ACCEPT/missing-leadership branches.
+- Hermes accepted all three. The integrated temporary SQLite test now persists an exact SWING SHADOW lesson and asserts strategy separation; leadership absence is normalized to `ReportUnavailableError`; all named branches have focused coverage.
+- Verified follow-up Claude Opus read-only review: exit 0, empty stderr, resolved model `claude-opus-4-8`; M1/M2/M3 resolved, no new CRITICAL/HIGH/MEDIUM finding, verdict `APPROVE WITH RESIDUALS`.
+- Non-blocking LOW residuals: `query_service.py` imports the read protocol from the write-pipeline module; the leadership wrapper catches the repository's current `KeyError` contract broadly enough that unsupported malformed stored payloads could be described as unavailable; weekly readiness is intentionally static until a real persisted contract exists. No residual violates this card's contract.
+
+## Foundation, enforcement, wiring, readiness
+
+1. Foundation: Task 21 strict report models/builders remain merged and unchanged.
+2. Development enforcement: checked-in Python 3.10/3.11/3.12 CI discovers `tests/app`, including the new query/report tests; broker audit remains enforced.
+3. Runtime/application wiring: the existing `QueryService` read-only application boundary now performs deterministic daily composition over injected ops/research read sides.
+4. Operational behavior: exercised only with temporary migrated SQLite fixtures. No current scheduler, dashboard, Telegram, or legacy report entrypoint invokes this seam.
+5. Operated readiness: not claimed. Real database configuration/population, weekly scenario persistence, publication transport, scheduler, monitoring, and user-facing command wiring remain future bounded work.
 
 ## Side effects and safety
 
-- Network activity through this checkpoint: Git fetch and read-only Claude Code review only.
-- No live PRISM provider/model request, AgentNews fetch, external message, credential read/change, user/legacy database access, account/broker/order call, `OrderIntent`, KIS demo, deployment, runtime activation, paper/live trading, commit, push, PR, or merge occurred.
-- Only pytest temporary SQLite files and `/tmp` read-only review bundles were created.
+- Network activity: Git fetch and read-only Claude Code review only through this checkpoint.
+- Filesystem/SQLite activity: repository source/test/handoff edits, pytest temporary migrated SQLite databases, and `/tmp` review artifacts only.
+- No PRISM provider/model request, AgentNews fetch, external message, credential read/change, user/legacy database access or mutation, account/broker/order call, `OrderIntent`, KIS demo, internal-paper mutation, live trading, deployment, commit, push, PR, or merge has occurred through this checkpoint.
 
-## Remaining closeout
+## Remaining delivery closeout
 
-1. Run final diff/private-artifact checks and inspect the complete frozen staged manifest.
-2. Commit, push, and open the Task 21 PR.
-3. Verify exact feature-head Python 3.10/3.11/3.12 CI and the explicit reporting step in every matrix job; inspect branch protection/ruleset status.
-4. Squash merge only when green; verify post-merge `origin/main`, post-merge CI, expected files, and remote branch deletion.
-5. Create only the bounded Task 22 successor after verified merge, then complete this Kanban card with the returned task ID.
+1. Freeze and inspect the complete staged manifest, including the new test and this handoff; rerun staged diff/privacy checks.
+2. Commit, push, and open the bounded PR.
+3. Verify exact feature-head Python 3.10/3.11/3.12 CI and new test discovery.
+4. Squash merge only when green; fetch/prune and verify merge SHA, expected files, remote branch deletion, and post-merge CI.
+5. Create only the plan Task 22 Telegram config/auth/publisher successor after merge verification, then complete Kanban card `t_2ad37f69` with the returned task ID.
 
 Stop conditions remain: block on compatibility break, destructive/user-data migration, provider/credential/account/broker/live/risk scope, merge conflict, unresolved HIGH/CRITICAL review, three reasoned gate failures, or an unverifiable required gate.
