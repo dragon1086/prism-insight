@@ -145,7 +145,7 @@ TRIGGER_TYPE_KO = {
 class USStockAnalysisOrchestrator:
     """US Stock Analysis and Telegram Transmission Orchestrator"""
 
-    def __init__(self, telegram_config=None):
+    def __init__(self, telegram_config=None, application_pipeline=None):
         """
         Initialize orchestrator
 
@@ -157,6 +157,15 @@ class USStockAnalysisOrchestrator:
         self.selected_tickers = {}
         self.telegram_config = telegram_config or TelegramConfig(use_telegram=True)
         self._broadcast_tasks = []  # Collect fire-and-forget broadcast tasks
+        self.application_pipeline = application_pipeline
+
+    async def run_application_pipeline(self, request):
+        """Run the opt-in thin US service without changing the legacy default path."""
+        if self.application_pipeline is None:
+            raise RuntimeError("application pipeline is not configured")
+        if request.market.value != "US":
+            raise ValueError("US orchestrator requires a US application request")
+        return await self.application_pipeline.run(request)
 
     @staticmethod
     def _extract_base64_images(markdown_text: str) -> tuple:

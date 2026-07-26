@@ -33,8 +33,14 @@ jobs:
             pytest \
             pytest-asyncio
 
-      - name: Compile runtime safety foundation
-        run: python -m compileall -q prism_core tools/audit_broker_boundaries.py
+      - name: Compile runtime safety foundation and thin application services
+        run: >-
+          python -m compileall -q
+          prism_core
+          prism_app
+          stock_analysis_orchestrator.py
+          prism-us/us_stock_analysis_orchestrator.py
+          tools/audit_broker_boundaries.py
 
       - name: Audit broker boundaries
         run: python tools/audit_broker_boundaries.py
@@ -47,6 +53,9 @@ jobs:
 
       - name: Run append-only proposal and outcome storage tests
         run: python -m pytest tests/feedback -q
+
+      - name: Run thin application service tests
+        run: python -m pytest tests/app -q
 
       - name: Run AgentNews fixture contract tests
         run: python -m pytest tests/data/providers/test_agentnews_provider.py -q

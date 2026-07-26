@@ -51,7 +51,7 @@ PDF_REPORTS_DIR.mkdir(exist_ok=True)
 class StockAnalysisOrchestrator:
     """Stock Analysis and Telegram Transmission Orchestrator"""
 
-    def __init__(self, telegram_config=None):
+    def __init__(self, telegram_config=None, application_pipeline=None):
         """
         Initialize orchestrator
 
@@ -63,6 +63,15 @@ class StockAnalysisOrchestrator:
         self.selected_tickers = {}  # Store selected stock information
         self.telegram_config = telegram_config or TelegramConfig(use_telegram=True)
         self._broadcast_tasks = []  # Collect fire-and-forget broadcast tasks
+        self.application_pipeline = application_pipeline
+
+    async def run_application_pipeline(self, request):
+        """Run the opt-in thin KR service without changing the legacy default path."""
+        if self.application_pipeline is None:
+            raise RuntimeError("application pipeline is not configured")
+        if request.market.value != "KR":
+            raise ValueError("KR orchestrator requires a KR application request")
+        return await self.application_pipeline.run(request)
 
     @staticmethod
     def _parse_report_filename(filename_stem: str) -> dict:
