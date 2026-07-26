@@ -60,18 +60,15 @@ def _build_scrape_options():
     locations so full article bodies still get scraped on older installs.
     Returns None when the SDK offers no equivalent.
     """
-    for module, name in (
-        ("firecrawl", "ScrapeOptions"),
-        ("firecrawl.v2.types", "ScrapeOptions"),
-        ("firecrawl.types", "ScrapeOptions"),
-    ):
+    import importlib
+
+    for module in ("firecrawl", "firecrawl.v2.types", "firecrawl.types"):
         try:
-            mod = __import__(module, fromlist=[name])
-            cls = getattr(mod, name)
+            cls = getattr(importlib.import_module(module), "ScrapeOptions")
             # only_main_content strips nav/menu/footer boilerplate — without it
             # the first chars of an article are usually junk.
             return cls(formats=["markdown"], only_main_content=True)
-        except Exception:  # noqa: BLE001 - probing optional SDK surface
+        except (ImportError, AttributeError, TypeError):
             continue
     logger.warning("ScrapeOptions unavailable in this firecrawl-py; bodies will not be scraped")
     return None
