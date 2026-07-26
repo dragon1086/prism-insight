@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,12 +15,14 @@ from prism_core.feedback.retrieval import (
     retrieve_evaluation_lessons,
 )
 from prism_core.reporting.leadership_tracking import (
+    MARKET_OBSERVATION_KIND,
+    PROVIDER as LEADERSHIP_PROVIDER,
     LeadershipRepository,
     StoredLeadershipRun,
 )
 from prism_core.reporting.daily import build_daily_report
 from prism_core.reporting.models import DailyReport, LeadingSector
-from prism_core.strategies.contracts import StrategyId, StrategyVersion
+from prism_core.strategies.contracts import Market, StrategyId, StrategyVersion
 
 
 class ReportUnavailableError(LookupError):
@@ -43,6 +46,17 @@ class WeeklyReportReadiness:
     reason: str
 
 
+@dataclass(frozen=True)
+class StoredReportSearchHit:
+    """A persisted report match with its point-in-time identity."""
+
+    report_id: str
+    snapshot_id: str
+    report_kind: str
+    as_of: datetime
+    content: str
+
+
 class QueryService:
     def __init__(
         self,
@@ -60,6 +74,68 @@ class QueryService:
 
     def leadership(self, snapshot_id: str) -> StoredLeadershipRun:
         return self._leadership.read(snapshot_id)
+
+    def latest_leadership(self, market: Market) -> StoredLeadershipRun:
+        """Read the latest available persisted leadership run for one market."""
+
+        if not isinstance(market, Market):
+            raise TypeError("market must be a strategy Market")
+        row = self._connection.execute(
+            "SELECT o.snapshot_id FROM observations AS o "
+            "JOIN market_snapshots AS s USING (snapshot_id) "
+            "WHERE s.market = ? AND o.observation_kind = ? AND o.provider = ? "
+            "ORDER BY o.available_at DESC, o.ingested_at DESC, o.snapshot_id DESC "
+            "LIMIT 1",
+            (market.value, MARKET_OBSERVATION_KIND, LEADERSHIP_PROVIDER),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"stored leadership is unavailable for {market.value}")
+        return self.leadership(row[0])
+
+    def search_reports(
+        self,
+        query: str,
+        *,
+        limit: int = 3,
+    ) -> tuple[StoredReportSearchHit, ...]:
+        """Search persisted report text with bounded parameterized read-only SQL."""
+
+        if not isinstance(query, str) or not query.strip() or len(query) > 500:
+            raise ValueError("report query must contain 1 to 500 characters")
+        if type(limit) is not int or not 1 <= limit <= 10:
+            raise ValueError("report search limit must be between 1 and 10")
+        if any(character in query for character in ("%", "'", ";")) or "--" in query:
+            return ()
+        tokens = tuple(
+            dict.fromkeys(
+                token.casefold()
+                for token in re.findall(r"[A-Za-z0-9가-힣.-]{3,}", query)
+                if token.casefold()
+                not in {"and", "did", "how", "the", "what", "why", "with"}
+            )
+        )[:8]
+        if not tokens:
+            return ()
+        predicates = " AND ".join("LOWER(r.content) LIKE ?" for _ in tokens)
+        rows = self._connection.execute(
+            "SELECT r.report_id, r.snapshot_id, r.report_kind, "
+            "s.as_of_date, r.content FROM reports AS r "
+            "JOIN market_snapshots AS s USING (snapshot_id) "
+            f"WHERE {predicates} "
+            "ORDER BY s.as_of_date DESC, r.created_at DESC, r.report_id DESC "
+            "LIMIT ?",
+            (*tuple(f"%{token}%" for token in tokens), limit),
+        ).fetchall()
+        return tuple(
+            StoredReportSearchHit(
+                report_id=row[0],
+                snapshot_id=row[1],
+                report_kind=row[2],
+                as_of=datetime.fromisoformat(row[3]),
+                content=row[4],
+            )
+            for row in rows
+        )
 
     def daily_report(
         self,
