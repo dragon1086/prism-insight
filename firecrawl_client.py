@@ -51,6 +51,58 @@ def get_firecrawl_app():
     return _firecrawl_app
 
 
+_UNSUPPORTED_KWARG = re.compile(r"unexpected keyword argument '([^']+)'")
+
+
+def _build_scrape_options():
+    """
+    ScrapeOptions moved around between firecrawl-py releases. Try the known
+    locations so full article bodies still get scraped on older installs.
+    Returns None when the SDK offers no equivalent.
+    """
+    import importlib
+
+    for module in ("firecrawl", "firecrawl.v2.types", "firecrawl.types"):
+        try:
+            cls = getattr(importlib.import_module(module), "ScrapeOptions")
+            # only_main_content strips nav/menu/footer boilerplate — without it
+            # the first chars of an article are usually junk.
+            return cls(formats=["markdown"], only_main_content=True)
+        except (ImportError, AttributeError, TypeError):
+            continue
+    logger.warning("ScrapeOptions unavailable in this firecrawl-py; bodies will not be scraped")
+    return None
+
+
+def _search_dropping_unsupported(app, query: str, limit: int, extra: dict):
+    """
+    Call app.search, dropping only the kwargs this SDK version rejects.
+
+    Older firecrawl-py builds reject individual options (e.g. include_domains).
+    Dropping the whole option set on the first TypeError would also throw away
+    recency and source filters, which silently degrades result quality — so
+    remove one offending kwarg at a time.
+    """
+    opts = dict(extra)
+    while True:
+        try:
+            return app.search(query, limit=limit, **opts)
+        except TypeError as e:
+            match = _UNSUPPORTED_KWARG.search(str(e))
+            if not match or match.group(1) not in opts:
+                if not opts:
+                    raise
+                logger.warning(f"Firecrawl search TypeError ({e}); retrying with no extra options")
+                opts = {}
+                continue
+            dropped = match.group(1)
+            opts.pop(dropped)
+            logger.warning(
+                f"firecrawl-py does not support '{dropped}'; retrying without it "
+                f"(remaining: {sorted(opts)})"
+            )
+
+
 def firecrawl_search(
     query: str,
     limit: int = 10,
@@ -94,37 +146,24 @@ def firecrawl_search(
     }
     extra = {k: v for k, v in extra.items() if v}
 
+    if with_content:
+        scrape_opts = _build_scrape_options()
+        if scrape_opts is not None:
+            extra["scrape_options"] = scrape_opts
+
     try:
         app = get_firecrawl_app()
-        if with_content:
-            try:
-                from firecrawl import ScrapeOptions  # available in firecrawl-py >= 1.0
-                # only_main_content strips nav/menu/footer boilerplate — without it
-                # the first 2000 chars of an article are usually junk.
-                scrape_opts = ScrapeOptions(formats=["markdown"], only_main_content=True)
-                result = app.search(query, limit=limit, scrape_options=scrape_opts, **extra)
-            except (ImportError, TypeError) as ie:
-                # Fallback: SDK version doesn't support ScrapeOptions — use plain search
-                logger.warning(f"ScrapeOptions not available ({ie}), falling back to plain search")
-                result = app.search(query, limit=limit, **extra)
-        else:
-            result = app.search(query, limit=limit, **extra)
+        result = _search_dropping_unsupported(app, query, limit, extra)
+        if result is None:
+            return None
 
-        n_web = len(result.web) if result and getattr(result, "web", None) else 0
-        n_news = len(result.news) if result and getattr(result, "news", None) else 0
+        n_web = len(result.web) if getattr(result, "web", None) else 0
+        n_news = len(result.news) if getattr(result, "news", None) else 0
         logger.info(
             f"Firecrawl search: query='{query[:60]}', web={n_web}, news={n_news}, "
-            f"with_content={with_content}, opts={extra}"
+            f"with_content={with_content}, opts={sorted(extra)}"
         )
         return result
-    except TypeError as e:
-        # SDK too old for one of the extra kwargs — retry without them rather than
-        # silently returning nothing.
-        if extra:
-            logger.warning(f"Firecrawl search rejected extra opts ({e}); retrying without {list(extra)}")
-            return firecrawl_search(query, limit=limit, with_content=with_content)
-        logger.error(f"Firecrawl search failed: {e}")
-        return None
     except Exception as e:
         logger.error(f"Firecrawl search failed: {e}")
         return None
