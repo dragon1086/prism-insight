@@ -57,6 +57,9 @@ jobs:
       - name: Run thin application service tests
         run: python -m pytest tests/app -q
 
+      - name: Run daily and weekly report read-model tests
+        run: python -m pytest tests/reporting -q
+
       - name: Run AgentNews fixture contract tests
         run: python -m pytest tests/data/providers/test_agentnews_provider.py -q
 
