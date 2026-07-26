@@ -199,16 +199,23 @@ def _absolute_date(raw: str) -> str:
 
 
 def _pick(raw, meta, *names) -> str:
-    """First non-empty value among `names`, checked on the object then its metadata."""
+    """
+    First non-empty value among `names`, checked on the object then its metadata.
+
+    Scraped results come back as Document with a `DocumentMetadata` pydantic
+    model — not a dict — so metadata must be probed by attribute as well.
+    Treating it as dict-only silently dropped every scraped result.
+    """
     for name in names:
         val = getattr(raw, name, None)
         if val:
             return val
-    if isinstance(meta, dict):
-        for name in names:
-            val = meta.get(name)
-            if val:
-                return val
+    if meta is None:
+        return ""
+    for name in names:
+        val = meta.get(name) if isinstance(meta, dict) else getattr(meta, name, None)
+        if val:
+            return val
     return ""
 
 
@@ -286,10 +293,14 @@ def firecrawl_search_multi(
     passes = _search_passes(sources, include_domains, limit)
     seen: set[str] = set()
     merged: list[dict] = []
+    raw_count = 0
 
     for q in queries:
         for opts in passes:
             result = firecrawl_search(q, **opts, **kwargs)
+            raw_count += (
+                len(getattr(result, "web", None) or []) + len(getattr(result, "news", None) or [])
+            ) if result else 0
             for item in normalize_search_items(result):
                 url = item["url"].split("?")[0].rstrip("/")
                 if url in seen:
@@ -303,6 +314,14 @@ def firecrawl_search_multi(
         f"firecrawl_search_multi: {len(queries)} queries x {len(passes)} passes "
         f"-> {len(merged)} unique results ({n_dated} dated)"
     )
+    # A near-empty merge after successful searches means results were fetched but
+    # dropped during normalization (e.g. an SDK shape change). That silently
+    # produces an ungrounded report, so make it loud.
+    if raw_count and len(merged) < raw_count / 3:
+        logger.warning(
+            f"firecrawl_search_multi: {raw_count} raw results collapsed to {len(merged)} "
+            "after normalization — check result shape handling"
+        )
     return merged
 
 
