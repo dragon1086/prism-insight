@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- INERT TEMPLATE: substitute every placeholder and obtain separate approval before installing or loading this job. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.prism.watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PRISM_WATCHDOG_EXECUTABLE__</string>
+    <string>--ops-db</string>
+    <string>__PRISM_OPS_DB__</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__PRISM_REPOSITORY__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>__PRISM_LOG_DIR__/watchdog.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__PRISM_LOG_DIR__/watchdog.stderr.log</string>
+</dict>
+</plist>

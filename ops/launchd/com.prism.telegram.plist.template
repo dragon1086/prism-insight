@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- INERT TEMPLATE: substitute every placeholder and obtain separate approval before installing or loading this job. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.prism.telegram</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PRISM_TELEGRAM_EXECUTABLE__</string>
+    <string>--ops-db</string>
+    <string>__PRISM_OPS_DB__</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__PRISM_REPOSITORY__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>__PRISM_LOG_DIR__/telegram.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__PRISM_LOG_DIR__/telegram.stderr.log</string>
+</dict>
+</plist>

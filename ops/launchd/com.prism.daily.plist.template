@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- INERT TEMPLATE: substitute every placeholder and obtain separate approval before installing or loading this job. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.prism.daily</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PRISM_DAILY_EXECUTABLE__</string>
+    <string>--ops-db</string>
+    <string>__PRISM_OPS_DB__</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__PRISM_REPOSITORY__</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>7</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>__PRISM_LOG_DIR__/daily.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__PRISM_LOG_DIR__/daily.stderr.log</string>
+</dict>
+</plist>
