@@ -41,7 +41,14 @@ class TelegramConfig:
 
         # Auto-load from environment variables (if not explicitly provided)
         if not self._channel_id:
-            self._channel_id = os.getenv("TELEGRAM_CHANNEL_ID")
+            self._channel_id = os.getenv("TELEGRAM_ALLOWED_CHAT_ID")
+            if not self._channel_id:
+                self._channel_id = os.getenv("TELEGRAM_CHANNEL_ID")
+                if self._channel_id:
+                    logger.warning(
+                        "TELEGRAM_CHANNEL_ID is a deprecated compatibility fallback; "
+                        "configure TELEGRAM_ALLOWED_CHAT_ID"
+                    )
         if not self._bot_token:
             self._bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -135,7 +142,7 @@ class TelegramConfig:
         if not self._channel_id:
             raise ValueError(
                 "Telegram channel ID is not configured. "
-                "Set environment variable TELEGRAM_CHANNEL_ID or use --no-telegram option."
+                "Set environment variable TELEGRAM_ALLOWED_CHAT_ID or use --no-telegram option."
             )
 
         if not self._bot_token:

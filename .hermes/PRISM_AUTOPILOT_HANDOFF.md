@@ -2,67 +2,63 @@
 
 ## Current milestone
 
-- Task: Phase 1D bounded query/report application wiring (`t_2ad37f69`), inserted between plan Tasks 21 and 22
-- Branch: `prism-insight/t_2ad37f69-prism-phase-1d-task-22-query-report-appl`
-- Base: `origin/main` at `4dde5807d35764e860b88665df067a2a13f192b3`
-- Implementation state: focused implementation, TDD, independent read-only review/remediation, and definitive local gates are complete; GitHub delivery remains
-- Runtime state: the existing `QueryService` application seam can compose one persisted daily read model; no publication, provider/model transport, weekly scenario source, Telegram, scheduler, dashboard, account, broker, order, paper, live, or production startup path is activated
+- Task: Phase 1D Task 22 — Telegram config/auth/publisher
+- Branch: `prism-insight/t_55f5e8e6-prism-phase-1d-task-22-telegram-config-a`
+- Base: `origin/main` at `e6478b92bf0db8a0baa173389378e8eae8da21ca` (Task 21 query/report wiring merge)
+- Implementation state: locally complete, committed on the task branch, fully verified, and independently reviewed; push, PR, exact-head hosted CI, squash merge, and post-merge verification remain
+- Runtime state: target Telegram contracts and opt-in Bot API transport exist, but no application entrypoint, scheduler, durable ops store, long-polling command app, or user runtime configuration is wired
 
 ## Implemented scope
 
-- Extended the existing read-only `prism_app.query_service.QueryService` constructor compatibly with an optional injected `AppRunRepository`; all existing `QueryService(connection)` callers remain valid.
-- Added `daily_report(job_key=..., leading_sectors=...)`, which reads the persisted Task 20 daily analysis from the injected ops-side repository, reads Task 7A leadership plus exact Task 12/13 proposal and SHADOW evaluation data from `research.sqlite`, and delegates deterministic construction to Task 21 `build_daily_report`.
-- Preserves the persisted analysis `evaluated_at` as the PIT boundary for proposals and lessons and preserves exact `SWING_V1`/`TREND_V1` strategy-version identity.
-- Keeps leading sectors as an explicit typed read-only input. No persisted sector source exists yet, so this slice does not invent one or conflate missing sectors with a newly persisted contract.
-- Added `ReportUnavailableError` for absent persisted daily analysis or leadership. A missing application repository remains a distinct wiring `RuntimeError`; report identity/quality violations remain fail-closed builder errors.
-- Added `WeeklyReportReadiness`, which explicitly reports weekly composition unavailable because KR/US weekly scenario, calendar, and context-board application read sides are not persisted. It does not fabricate weekly inputs.
-- Did not modify `weekly_insight_report.py`: it imports KIS/account surfaces and is not a safe Phase 1 caller. The narrow existing `QueryService` seam is the integration boundary for future read-only dashboard/Telegram callers.
+- Added `prism_core.telegram.TelegramConfig` with transport disabled by default, explicit `PRISM_TELEGRAM_ENABLED`, one bot token, one allowlisted chat, and one allowlisted user; secret and allowlist values are excluded from representations.
+- Added an exact two-dimensional `TelegramAuthorizer`; both chat ID and user ID must match before an inbound surface can be accepted.
+- Added a fake-by-default async `TelegramPublisher` with deterministic JSON dry-runs, strict envelope validation, per-report dedupe keys, concurrent in-flight duplicate suppression, separate report/smoke rate-limit buckets, and append-only audit sink contracts.
+- Added opt-in `TelegramBotApiTransport` using async-safe stdlib request execution. Bot API errors are sanitized: definitive `ok:false` responses are audited as retryable rejections, while network, malformed, and ambiguous outcomes are audited as UNKNOWN and block blind retry.
+- Added capability-bound smoke publication that consumes the existing `TelegramTestSendCapability`; payloads retain `[TEST]`, environment, request ID, and dedupe key and must match the publisher's chat/user allowlist.
+- Preserved `TELEGRAM_CHANNEL_ID` only as a warned fallback behind `TELEGRAM_ALLOWED_CHAT_ID` in both the target config and the narrow legacy `telegram_config.py` seam. `telegram_ai_bot.py` was not changed.
+- Added checked-in Python 3.10/3.11/3.12 CI execution for `tests/telegram`.
 
-## Authority and sequencing decision
+## Contract decisions
 
-- The implementation plan names plan Task 22 as Telegram config/auth/publisher. This Kanban card explicitly authorized a bounded query/report wiring slice before that plan task. The slice did not implement Telegram or renumber the plan; the next successor remains plan Task 22 Telegram config/auth/publisher.
+- Fake transport, process-local dedupe, process-local rate limiting, and process-local audit are deterministic defaults for unit/CI. Durable cross-process dedupe/audit and scheduler ownership are intentionally deferred to plan Task 24 and must be injected before scheduled operational publication.
+- Dry-run validates and serializes an exact publication envelope but does not claim a dedupe key, consume rate capacity, or call a transport.
+- Dedupe claim is synchronous and atomic at the protocol boundary. A send attempt records `ATTEMPTED` before transport invocation; a concurrent or completed duplicate records `DUPLICATE` and does not call the transport.
+- A definitive Bot API negative response releases the claim for an intentional retry. An ambiguous transport outcome moves the key to UNKNOWN and raises `PublicationOutcomeUnknown`; automatic retry is refused to avoid double-send.
+- The real transport is never selected by environment name. It must be explicitly constructed and injected from a complete enabled target config. No credential value appears in config/transport/audit representations or sanitized errors.
+- Report and smoke rate limits use separate buckets for the same allowlisted chat. Numeric policy and durable operational configuration remain Task 24 wiring concerns.
 
-## TDD and verification
+## Verification
 
-- Baseline: `python -m pytest tests/app/test_query_service.py tests/reporting -q` — 78 passed before edits.
-- Observed RED→GREEN for the new persisted daily report query API, the explicit missing-analysis exception, weekly unavailable readiness, missing-leadership exception normalization, and a real PIT-visible SWING-only SHADOW lesson flowing through the integrated report while TREND remains separate.
-- `python -m pytest tests/app/test_report_query_service.py -q` — 6 passed.
-- Focused app/query/report suite — 84 passed.
-- Definitive checked-in CI-equivalent sequence passed: 1,048 passed and 1 deselected across every pytest invocation in `.github/workflows/ci.yml`.
-- CI compile command passed for `prism_core`, `prism_app`, both thin legacy wrappers, and `tools/audit_broker_boundaries.py`.
-- Broker-boundary audit passed with 0 violations; 22 unchanged legacy dangerous findings remain inventory-only.
-- `pip check` passed; workflow YAML parsed successfully.
-- `git diff --check` passed for tracked changes; the new test file passed Python syntax/lint checks and will be included in the frozen staged diff before delivery.
-- Changed-diff privacy scan found no credential/private-account patterns.
+- Strict RED→GREEN evidence was observed for default config, env loading/redaction, warned fallback, chat+user auth, dry-run no transport, duplicate suppression, bounded smoke, rate limiting, real transport request contract, sanitized errors, known rejection versus unknown outcome, malformed response handling, concurrent duplicate suppression, and HTTPError JSON parsing.
+- `python -m pytest tests/telegram -q` — 32 passed.
+- Exact checked-in local CI pytest groups — 1,080 passed, 1 intentionally deselected.
+- `python -m compileall -q prism_core prism_app stock_analysis_orchestrator.py prism-us/us_stock_analysis_orchestrator.py tools/audit_broker_boundaries.py telegram_config.py` — passed.
+- `python tools/audit_broker_boundaries.py` — passed, 0 violations; legacy inventory unchanged.
+- `python -m pip check` — no broken requirements.
+- `git diff --check` — passed.
 
-## Independent review and adjudication
+## Independent review
 
-- Initial verified Claude Opus read-only review: exit 0, empty stderr, resolved model `claude-opus-4-8`, verdict `APPROVE WITH RESIDUALS`; no CRITICAL/HIGH findings.
-- It raised three MEDIUM test/robustness findings: vacuous SHADOW wiring proof, raw leadership `KeyError`, and uncovered missing-repository/non-ACCEPT/missing-leadership branches.
-- Hermes accepted all three. The integrated temporary SQLite test now persists an exact SWING SHADOW lesson and asserts strategy separation; leadership absence is normalized to `ReportUnavailableError`; all named branches have focused coverage.
-- Verified follow-up Claude Opus read-only review: exit 0, empty stderr, resolved model `claude-opus-4-8`; M1/M2/M3 resolved, no new CRITICAL/HIGH/MEDIUM finding, verdict `APPROVE WITH RESIDUALS`.
-- Non-blocking LOW residuals: `query_service.py` imports the read protocol from the write-pipeline module; the leadership wrapper catches the repository's current `KeyError` contract broadly enough that unsupported malformed stored payloads could be described as unavailable; weekly readiness is intentionally static until a real persisted contract exists. No residual violates this card's contract.
+- Read-only Claude review found no CRITICAL/HIGH defects and initially identified three material completeness concerns: definitive Bot API rejection was conflated with UNKNOWN, report/smoke shared one rate bucket, and stdlib HTTP errors did not parse Telegram's `ok:false` body.
+- GPT accepted and remediated all three with focused RED→GREEN tests: definitive rejection is retryable while ambiguous outcomes remain blocked; report/smoke buckets are separate; and HTTPError JSON bodies preserve definitive Bot API negatives while malformed/network errors remain UNKNOWN.
+- GPT also accepted low-risk hardening: both allowlist comparisons are always evaluated and the dedupe protocol now states its atomic-claim requirement.
+- Two targeted follow-up Claude reviews found no unresolved CRITICAL/HIGH/MEDIUM defect and recommended shipping Task 22. Durable cross-process stores and terminal audit recovery remain explicitly deferred to Task 24.
 
-## Foundation, enforcement, wiring, readiness
+## State separation
 
-1. Foundation: Task 21 strict report models/builders remain merged and unchanged.
-2. Development enforcement: checked-in Python 3.10/3.11/3.12 CI discovers `tests/app`, including the new query/report tests; broker audit remains enforced.
-3. Runtime/application wiring: the existing `QueryService` read-only application boundary now performs deterministic daily composition over injected ops/research read sides.
-4. Operational behavior: exercised only with temporary migrated SQLite fixtures. No current scheduler, dashboard, Telegram, or legacy report entrypoint invokes this seam.
-5. Operated readiness: not claimed. Real database configuration/population, weekly scenario persistence, publication transport, scheduler, monitoring, and user-facing command wiring remain future bounded work.
+- Foundation: complete — target config/auth/publisher protocols, fake transport, opt-in Bot API transport, tests, and CI gate exist.
+- CI enforcement: complete — `tests/telegram` is part of the checked-in Python 3.10/3.11/3.12 matrix.
+- Runtime wiring: not added — no `prism_app.telegram_bot`, report job composition root, scheduler, or legacy bot replacement consumes these contracts yet.
+- Operational behavior: exercised only with fake/injected transports and temporary in-memory stores; no Bot API network call or external message occurred.
+- Operated readiness: not claimed — local token/allowlists, durable ops-backed dedupe/audit, scheduler ownership, monitoring, and bounded live smoke remain unverified.
 
 ## Side effects and safety
 
-- Network activity: Git fetch and read-only Claude Code review only through this checkpoint.
-- Filesystem/SQLite activity: repository source/test/handoff edits, pytest temporary migrated SQLite databases, and `/tmp` review artifacts only.
-- No PRISM provider/model request, AgentNews fetch, external message, credential read/change, user/legacy database access or mutation, account/broker/order call, `OrderIntent`, KIS demo, internal-paper mutation, live trading, deployment, commit, push, PR, or merge has occurred through this checkpoint.
+- No Telegram live message, provider/model/AgentNews fetch, broker/account/order/OrderIntent/KIS demo/internal-paper/live call, credential access/change, user/legacy database mutation, deployment, or runtime activation occurred.
+- Read-only network effects were limited to Git fetch and Claude Code review. Local commits exist; no push, PR, or merge has occurred at this checkpoint.
 
-## Remaining delivery closeout
+## Merge state and next task
 
-1. Freeze and inspect the complete staged manifest, including the new test and this handoff; rerun staged diff/privacy checks.
-2. Commit, push, and open the bounded PR.
-3. Verify exact feature-head Python 3.10/3.11/3.12 CI and new test discovery.
-4. Squash merge only when green; fetch/prune and verify merge SHA, expected files, remote branch deletion, and post-merge CI.
-5. Create only the plan Task 22 Telegram config/auth/publisher successor after merge verification, then complete Kanban card `t_2ad37f69` with the returned task ID.
-
-Stop conditions remain: block on compatibility break, destructive/user-data migration, provider/credential/account/broker/live/risk scope, merge conflict, unresolved HIGH/CRITICAL review, three reasoned gate failures, or an unverifiable required gate.
+- Merge state: local Task 22 implementation and review gates are green and the intended diff is committed. Push the task branch, open the PR, verify exact-feature-head Python 3.10/3.11/3.12 CI, guarded squash-merge, then verify post-merge CI and `origin/main` ancestry.
+- Next approved task after verified merge only: Phase 1D Task 23 — read-only Telegram conversational app (`prism_app/telegram_bot.py` and `prism_core/telegram/commands.py`) over stored `QueryService` data. Do not expand `telegram_ai_bot.py` or add mutating/broker/account commands.
+- Stop conditions remain: block on merge conflict, unresolved high/medium auth/external-effect review, compatibility break, credential exposure, live message outside bounded allowlisted smoke controls, destructive/user-data mutation, broker/live/risk scope, repeated gate failure, or unverifiable exact-head CI/merge state.

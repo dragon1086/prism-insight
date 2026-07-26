@@ -60,6 +60,9 @@ jobs:
       - name: Run daily and weekly report read-model tests
         run: python -m pytest tests/reporting -q
 
+      - name: Run fake-by-default Telegram contract tests
+        run: python -m pytest tests/telegram -q
+
       - name: Run AgentNews fixture contract tests
         run: python -m pytest tests/data/providers/test_agentnews_provider.py -q
 
