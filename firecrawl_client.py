@@ -136,6 +136,20 @@ _LOW_TRUST_HOSTS = (
 )
 
 
+def _pick(raw, meta, *names) -> str:
+    """First non-empty value among `names`, checked on the object then its metadata."""
+    for name in names:
+        val = getattr(raw, name, None)
+        if val:
+            return val
+    if isinstance(meta, dict):
+        for name in names:
+            val = meta.get(name)
+            if val:
+                return val
+    return ""
+
+
 def normalize_search_items(result) -> list[dict]:
     """
     Flatten a Firecrawl SearchData into plain dicts.
@@ -152,27 +166,16 @@ def normalize_search_items(result) -> list[dict]:
         for raw in (getattr(result, channel, None) or []):
             meta = getattr(raw, "metadata", None) or {}
 
-            def pick(*names):
-                for n in names:
-                    val = getattr(raw, n, None)
-                    if val:
-                        return val
-                for n in names:
-                    val = meta.get(n) if isinstance(meta, dict) else None
-                    if val:
-                        return val
-                return ""
-
-            url = pick("url", "sourceURL", "source_url")
+            url = _pick(raw, meta, "url", "sourceURL", "source_url")
             if not url:
                 continue
 
             items.append({
-                "title": pick("title", "og_title", "ogTitle"),
+                "title": _pick(raw, meta, "title", "og_title", "ogTitle"),
                 "url": url,
-                "date": pick("date", "publishedTime", "published_time", "modifiedTime"),
+                "date": _pick(raw, meta, "date", "publishedTime", "published_time", "modifiedTime"),
                 "body": (getattr(raw, "markdown", "") or ""),
-                "snippet": pick("snippet", "description"),
+                "snippet": _pick(raw, meta, "snippet", "description"),
                 "channel": channel,
                 "low_trust": any(h in url for h in _LOW_TRUST_HOSTS),
             })
