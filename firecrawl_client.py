@@ -7,6 +7,8 @@ API key is loaded from FIRECRAWL_API_KEY env var or mcp_agent.config.yaml fallba
 """
 import logging
 import os
+import re
+from datetime import datetime, timedelta
 from typing import Literal, Optional
 
 from dotenv import load_dotenv
@@ -136,6 +138,27 @@ _LOW_TRUST_HOSTS = (
 )
 
 
+_RELATIVE_DATE = re.compile(r"^\s*(\d+)\s+(minute|hour|day|week|month)s?\s+ago\s*$", re.I)
+_UNIT_DAYS = {"minute": 0, "hour": 0, "day": 1, "week": 7, "month": 30}
+
+
+def _absolute_date(raw: str) -> str:
+    """
+    Firecrawl news results report dates like "2 days ago". The report needs to
+    decide whether an article falls inside the target week, which relative
+    phrasing makes impossible — so resolve it to a real date.
+    Non-relative values pass through untouched.
+    """
+    if not raw:
+        return ""
+    match = _RELATIVE_DATE.match(raw)
+    if not match:
+        return raw
+    amount, unit = int(match.group(1)), match.group(2).lower()
+    delta = timedelta(days=amount * _UNIT_DAYS[unit])
+    return f"{(datetime.now() - delta):%Y-%m-%d} ({raw.strip()})"
+
+
 def _pick(raw, meta, *names) -> str:
     """First non-empty value among `names`, checked on the object then its metadata."""
     for name in names:
@@ -173,7 +196,9 @@ def normalize_search_items(result) -> list[dict]:
             items.append({
                 "title": _pick(raw, meta, "title", "og_title", "ogTitle"),
                 "url": url,
-                "date": _pick(raw, meta, "date", "publishedTime", "published_time", "modifiedTime"),
+                "date": _absolute_date(
+                    _pick(raw, meta, "date", "publishedTime", "published_time", "modifiedTime")
+                ),
                 "body": (getattr(raw, "markdown", "") or ""),
                 "snippet": _pick(raw, meta, "snippet", "description"),
                 "channel": channel,
@@ -182,7 +207,36 @@ def normalize_search_items(result) -> list[dict]:
     return items
 
 
-def firecrawl_search_multi(queries: list[str], **kwargs) -> list[dict]:
+def _search_passes(sources, include_domains, limit) -> list[dict]:
+    """
+    Split one logical search into the API calls it actually needs.
+
+    Verified against the live API: passing `include_domains` suppresses the
+    news channel entirely (news=0, results silently fall back to web). Since
+    news is the only channel carrying publish dates, it has to be fetched in
+    its own unfiltered pass whenever a domain allowlist is in play.
+    """
+    srcs = list(sources) if sources else ["web"]
+
+    if not (include_domains and "news" in srcs):
+        return [{"sources": srcs, "include_domains": include_domains, "limit": limit}]
+
+    news_limit = max(1, limit // 2)
+    web_srcs = [s for s in srcs if s != "news"] or ["web"]
+    return [
+        {"sources": ["news"], "include_domains": None, "limit": news_limit},
+        {"sources": web_srcs, "include_domains": include_domains, "limit": limit - news_limit},
+    ]
+
+
+def firecrawl_search_multi(
+    queries: list[str],
+    *,
+    sources=None,
+    include_domains=None,
+    limit: int = 10,
+    **kwargs,
+) -> list[dict]:
     """
     Fan out several queries and merge results, de-duplicated by URL.
 
@@ -190,17 +244,26 @@ def firecrawl_search_multi(queries: list[str], **kwargs) -> list[dict]:
     index moves, flows, themes and the forward calendar — those are different
     searches, not different paragraphs of one search.
     """
+    passes = _search_passes(sources, include_domains, limit)
     seen: set[str] = set()
     merged: list[dict] = []
+
     for q in queries:
-        for item in normalize_search_items(firecrawl_search(q, **kwargs)):
-            url = item["url"].split("?")[0].rstrip("/")
-            if url in seen:
-                continue
-            seen.add(url)
-            item["query"] = q
-            merged.append(item)
-    logger.info(f"firecrawl_search_multi: {len(queries)} queries -> {len(merged)} unique results")
+        for opts in passes:
+            result = firecrawl_search(q, **opts, **kwargs)
+            for item in normalize_search_items(result):
+                url = item["url"].split("?")[0].rstrip("/")
+                if url in seen:
+                    continue
+                seen.add(url)
+                item["query"] = q
+                merged.append(item)
+
+    n_dated = sum(1 for i in merged if i.get("date"))
+    logger.info(
+        f"firecrawl_search_multi: {len(queries)} queries x {len(passes)} passes "
+        f"-> {len(merged)} unique results ({n_dated} dated)"
+    )
     return merged
 
 
