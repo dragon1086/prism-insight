@@ -260,8 +260,10 @@ class GatewayClient:
                 if self._stop_requested.is_set():
                     return
                 logger.warning(
-                    "Kakao Gateway connection interrupted: %s",
+                    "Kakao Gateway connection interrupted: %s: %s",
                     type(exc).__name__,
+                    exc,
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
                 )
 
             if was_ready:
