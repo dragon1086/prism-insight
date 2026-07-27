@@ -46,6 +46,7 @@ def _map_message(dispatch: GatewayDispatch) -> InboundMessage:
         data.get("user_id"),
         sender.get("userKey"),
         sender.get("id"),
+        data.get("botUserKey"),
     )
     if user_id is None:
         raise GatewayEventMappingError("MESSAGE_CREATE requires a user key")
@@ -74,12 +75,21 @@ def _map_lifecycle(
     dispatch: GatewayDispatch,
     event_type: RoomLifecycleType,
 ) -> RoomLifecycleEvent:
+    data = dispatch.data
+    room_id = _room_id(data)
+    occurred_at = _occurred_at(data)
+    event_id = _first_nonempty_str(data.get("id"), data.get("eventId"))
+    if event_id is None:
+        # Kakao omits `id` on room lifecycle events (observed on ENTRANCE,
+        # 2026-07-27). Synthesize a deterministic identifier so redelivery
+        # after RESUME still deduplicates against the recorded event.
+        event_id = f"{event_type.value}:{room_id}:{occurred_at.isoformat()}"
     return RoomLifecycleEvent(
-        event_id=_event_id(dispatch.data),
+        event_id=event_id,
         sequence=dispatch.sequence,
-        room_id=_room_id(dispatch.data),
+        room_id=room_id,
         event_type=event_type,
-        occurred_at=_occurred_at(dispatch.data),
+        occurred_at=occurred_at,
     )
 
 
@@ -130,7 +140,16 @@ def _mapping(value: object) -> Mapping[str, object]:
 
 
 def _first_nonempty_str(*values: object) -> str | None:
+    """Return the first usable identifier as a string.
+
+    Kakao sends ``MESSAGE_CREATE.id`` as a JSON number, so integral values are
+    accepted and normalized. ``bool`` is rejected because it is an ``int``
+    subclass that never represents an identifier.
+    """
+
     for value in values:
         if isinstance(value, str) and value.strip():
             return value.strip()
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
     return None
