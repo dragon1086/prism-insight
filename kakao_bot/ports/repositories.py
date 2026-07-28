@@ -6,8 +6,10 @@ from datetime import datetime
 from typing import Protocol
 
 from kakao_bot.domain.models import (
+    AnalysisJob,
     ApprovalStatus,
     BatchCampaign,
+    ClaimedAnalysisJob,
     ClaimedOutboundDelivery,
     Market,
     MessageSendResult,
@@ -107,6 +109,46 @@ class KakaoRepository(Protocol):
         error: str,
     ) -> bool:
         """Permanently stop retrying the caller's leased delivery."""
+
+    def enqueue_analysis_job(self, job: AnalysisJob, *, now: datetime) -> bool:
+        """Return True only when a new job_id is recorded."""
+
+    def claim_analysis_jobs(
+        self,
+        *,
+        now: datetime,
+        lease_seconds: int,
+        limit: int,
+    ) -> tuple[ClaimedAnalysisJob, ...]:
+        """Atomically lease due analysis jobs to one worker."""
+
+    def complete_analysis_job(
+        self,
+        job_id: str,
+        *,
+        summary: str,
+        artifact_token: str | None,
+        now: datetime,
+    ) -> None:
+        """Record a completed analysis job's result."""
+
+    def fail_analysis_job(self, job_id: str, *, error_code: str, now: datetime) -> None:
+        """Record a permanently failed analysis job."""
+
+    def release_analysis_job(self, job_id: str, *, now: datetime) -> None:
+        """Release a claimed job's lease so it can be retried."""
+
+    def count_analysis_jobs_since(
+        self,
+        *,
+        room_id: str | None,
+        user_id: str | None,
+        since: datetime,
+    ) -> int:
+        """Count analysis jobs requested since a cutoff, for daily limits."""
+
+    def list_analysis_jobs(self) -> tuple[dict, ...]:
+        """Return decoded analysis job rows for diagnostics and tests."""
 
 
 class KakaoMessageSender(Protocol):

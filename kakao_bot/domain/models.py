@@ -159,6 +159,43 @@ class ClaimedOutboundDelivery:
     expires_at: datetime | None = None
 
 
+class AnalysisJobStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+@dataclass(frozen=True)
+class AnalysisJob:
+    """A new on-demand `/report` analysis job awaiting a worker."""
+
+    job_id: str
+    room_id: str
+    user_id: str
+    ticker: str
+    company_name: str
+    market: str
+
+    def __post_init__(self) -> None:
+        if self.market not in ("kr", "us"):
+            raise ValueError("market must be 'kr' or 'us'")
+
+
+@dataclass(frozen=True)
+class ClaimedAnalysisJob:
+    """An analysis job exclusively leased to one worker."""
+
+    job_id: str
+    room_id: str
+    user_id: str
+    ticker: str
+    company_name: str
+    market: str
+    attempt_count: int
+    requested_at: datetime
+
+
 @dataclass(frozen=True)
 class MessageSendResult:
     """Transport-neutral result used by the outbox delivery use case."""
