@@ -89,6 +89,9 @@ jobs:
       - name: Run point-in-time data contract and quality-gate tests
         run: python -m pytest tests/data -q
 
+      - name: Run uncapped candidate contract and reconciliation tests
+        run: python -m pytest tests/candidates -q
+
       - name: Run regime quality-policy tests
         run: python -m pytest tests/test_regime_policy.py -q
 

@@ -30,6 +30,7 @@ from prism_core.data.providers.kis_http import (
     KISMarketDataCredentials,
     KISMarketDataTransportError,
     SecureFileKISTokenCache,
+    VOLUME_RANK_PATH,
 )
 
 
@@ -183,6 +184,126 @@ async def test_transport_calls_only_daily_quotation_and_normalizes_wire_response
     assert evidence[0]["raw_payload_hash"] is None
     assert evidence[-1]["raw_payload_hash"] == payload.source_hash
     assert transport.evidence == tuple(evidence)
+
+
+@pytest.mark.asyncio
+async def test_transport_calls_only_kis_volume_rank_and_preserves_source_evidence() -> None:
+    rank_body = json.dumps(
+        {
+            "rt_cd": "0",
+            "output": [
+                {
+                    "mksc_shrn_iscd": "005930",
+                    "hts_kor_isnm": "삼성전자",
+                    "data_rank": "1",
+                    "acml_vol": "12345678",
+                    "acml_tr_pbmn": "987654321000",
+                }
+            ],
+        },
+        separators=(",", ":"),
+    ).encode()
+    requester = SequenceRequester(
+        [
+            _token_response(received_at=datetime(2026, 7, 29, 15, 30, tzinfo=KST)),
+            KISHTTPResponse(
+                status_code=200,
+                body=rank_body,
+                received_at=datetime(2026, 7, 29, 15, 31, tzinfo=KST),
+            ),
+        ]
+    )
+    transport = KISHTTPTransport(
+        credentials=KISMarketDataCredentials("fixture-app-key", "fixture-app-secret"),
+        symbols=(),
+        requester=requester,
+        clock=lambda: datetime(2026, 7, 29, 15, 32, tzinfo=KST),
+    )
+
+    payload = await transport.fetch_volume_rank()
+
+    assert [request["method"] for request in requester.requests] == ["POST", "GET"]
+    rank_request = requester.requests[1]
+    assert rank_request["url"] == (
+        "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/"
+        "quotations/volume-rank"
+    )
+    assert rank_request["headers"]["tr_id"] == "FHPST01710000"
+    assert rank_request["params"] == {
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_COND_SCR_DIV_CODE": "20171",
+        "FID_INPUT_ISCD": "0000",
+        "FID_DIV_CLS_CODE": "0",
+        "FID_BLNG_CLS_CODE": "0",
+        "FID_TRGT_CLS_CODE": "111111111",
+        "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+        "FID_INPUT_PRICE_1": "0",
+        "FID_INPUT_PRICE_2": "0",
+        "FID_VOL_CNT": "0",
+        "FID_INPUT_DATE_1": "0",
+    }
+    assert payload.payload["volume_rank"] == [
+        {
+            "mksc_shrn_iscd": "005930",
+            "hts_kor_isnm": "삼성전자",
+            "data_rank": "1",
+            "acml_vol": "12345678",
+            "acml_tr_pbmn": "987654321000",
+        }
+    ]
+    assert payload.raw_payload_hash == hashlib.sha256(rank_body).hexdigest()
+    assert payload.observed_at == datetime(2026, 7, 29, 15, 31, tzinfo=KST)
+    assert payload.available_at == payload.observed_at
+    assert [item["endpoint"] for item in payload.payload["transport_evidence"]] == [
+        TOKEN_PATH,
+        "/uapi/domestic-stock/v1/quotations/volume-rank",
+    ]
+    serialized_requests = repr(requester.requests).lower()
+    assert "account" not in serialized_requests
+    assert "cano" not in serialized_requests
+    assert "order" not in serialized_requests
+
+
+@pytest.mark.asyncio
+async def test_preopen_volume_rank_is_partial_and_anchors_latest_completed_session() -> None:
+    rank_body = json.dumps(
+        {
+            "rt_cd": "0",
+            "output": [
+                {
+                    "mksc_shrn_iscd": "005930",
+                    "hts_kor_isnm": "삼성전자",
+                    "data_rank": "1",
+                    "acml_vol": "12345678",
+                    "acml_tr_pbmn": "987654321000",
+                }
+            ],
+        }
+    ).encode()
+    requester = SequenceRequester(
+        [
+            _token_response(received_at=datetime(2026, 7, 29, 8, 9, tzinfo=KST)),
+            KISHTTPResponse(
+                status_code=200,
+                body=rank_body,
+                received_at=datetime(2026, 7, 29, 8, 10, tzinfo=KST),
+            ),
+        ]
+    )
+    transport = KISHTTPTransport(
+        credentials=KISMarketDataCredentials("fixture-app-key", "fixture-app-secret"),
+        symbols=(),
+        requester=requester,
+        clock=lambda: datetime(2026, 7, 29, 8, 11, tzinfo=KST),
+    )
+
+    payload = await transport.fetch_volume_rank()
+
+    assert payload.quality is DataQualityStatus.PARTIAL
+    assert payload.payload["ranking_session"] == {
+        "latest_completed_session": "2026-07-28",
+        "state": "UNVERIFIED_MUTABLE_SNAPSHOT",
+    }
 
 
 @pytest.mark.asyncio
@@ -957,5 +1078,5 @@ def test_transport_has_only_allowlisted_http_paths_and_no_broker_import_or_metho
     assert not any(
         module == "trading" or module.startswith("trading.") for module in imported_modules
     )
-    assert literal_paths == {TOKEN_PATH, DAILY_PRICE_PATH}
-    assert public_methods == {"fetch"}
+    assert literal_paths == {TOKEN_PATH, DAILY_PRICE_PATH, VOLUME_RANK_PATH}
+    assert public_methods == {"fetch", "fetch_volume_rank"}

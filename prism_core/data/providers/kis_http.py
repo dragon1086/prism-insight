@@ -16,7 +16,7 @@ import time as monotonic_time
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Awaitable, Callable, Mapping, Protocol
+from typing import Awaitable, Callable, Mapping, Protocol, cast
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -51,6 +51,8 @@ DAILY_PRICE_PATH = (
     "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
 )
 DAILY_PRICE_TR_ID = "FHKST03010100"
+VOLUME_RANK_PATH = "/uapi/domestic-stock/v1/quotations/volume-rank"
+VOLUME_RANK_TR_ID = "FHPST01710000"
 _ALLOWED_HOSTS = frozenset({"openapi.koreainvestment.com"})
 _SYMBOL_PATTERN = re.compile(r"^[0-9]{6}$")
 
@@ -135,7 +137,7 @@ class AioHttpKISRequester:
             parsed.scheme != "https"
             or parsed.hostname not in _ALLOWED_HOSTS
             or parsed.port != 9443
-            or parsed.path not in {TOKEN_PATH, DAILY_PRICE_PATH}
+            or parsed.path not in {TOKEN_PATH, DAILY_PRICE_PATH, VOLUME_RANK_PATH}
             or parsed.query
             or parsed.fragment
         ):
@@ -335,8 +337,8 @@ class KISHTTPTransport:
             or parsed.fragment
         ):
             raise ValueError("base_url must be the allowlisted KIS HTTPS origin")
-        if not symbols or len(symbols) > 20:
-            raise ValueError("symbols must contain between 1 and 20 KIS symbols")
+        if len(symbols) > 20:
+            raise ValueError("symbols must contain at most 20 KIS symbols")
         if len(set(symbols)) != len(symbols) or any(
             _SYMBOL_PATTERN.fullmatch(symbol) is None for symbol in symbols
         ):
@@ -379,7 +381,7 @@ class KISHTTPTransport:
         json_body: Mapping[str, str] | None = None,
         params: Mapping[str, str] | None = None,
     ) -> KISHTTPResponse:
-        if path not in {TOKEN_PATH, DAILY_PRICE_PATH}:
+        if path not in {TOKEN_PATH, DAILY_PRICE_PATH, VOLUME_RANK_PATH}:
             raise KISMarketDataTransportError("KIS endpoint is not allowlisted")
         async with self._request_lock:
             now = self._monotonic()
@@ -482,9 +484,97 @@ class KISHTTPTransport:
                 raw_payload_hash=None,
             )
 
+    async def fetch_volume_rank(self) -> ProviderPayload:
+        """Fetch one bounded KRX-wide KIS volume-ranking candidate snapshot."""
+
+        token, token_evidence = await self._access_token()
+        response = await self._request(
+            method="GET",
+            path=VOLUME_RANK_PATH,
+            headers={
+                "content-type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {token}",
+                "appkey": self._credentials.app_key,
+                "appsecret": self._credentials.app_secret,
+                "tr_id": VOLUME_RANK_TR_ID,
+                "custtype": "P",
+            },
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": "0",
+                "FID_TRGT_CLS_CODE": "111111111",
+                "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+                "FID_INPUT_PRICE_1": "0",
+                "FID_INPUT_PRICE_2": "0",
+                "FID_VOL_CNT": "0",
+                "FID_INPUT_DATE_1": "0",
+            },
+        )
+        decoded = self._decode_object(response, operation="volume rank request")
+        if decoded.get("rt_cd") != "0" or not isinstance(decoded.get("output"), list):
+            raise KISMarketDataTransportError(
+                "KIS volume rank response omitted successful output"
+            )
+        rows = cast(list[dict[str, object]], decoded["output"])
+        if not all(isinstance(row, dict) for row in rows):
+            raise KISMarketDataTransportError(
+                "KIS volume rank response contained malformed rows"
+            )
+        raw_hash = hashlib.sha256(response.body).hexdigest()
+        received_market_time = response.received_at.astimezone(KST)
+        completed_session = latest_completed_session(
+            ExchangeMarket.KRX, received_market_time
+        )
+        session_is_current_and_complete = (
+            completed_session == received_market_time.date()
+        )
+        ranking_quality = (
+            DataQualityStatus.FRESH
+            if session_is_current_and_complete
+            else DataQualityStatus.PARTIAL
+        )
+        ranking_session = {
+            "latest_completed_session": completed_session.isoformat(),
+            "state": (
+                "COMPLETE_CURRENT_SESSION"
+                if session_is_current_and_complete
+                else "UNVERIFIED_MUTABLE_SNAPSHOT"
+            ),
+        }
+        request_evidence = [token_evidence] if token_evidence is not None else []
+        request_evidence.append(
+            KISRequestEvidence(
+                endpoint=VOLUME_RANK_PATH,
+                status_code=response.status_code,
+                received_at=response.received_at,
+                raw_payload_hash=raw_hash,
+            )
+        )
+        evidence_payload = [item.as_payload() for item in request_evidence]
+        self._evidence = tuple(evidence_payload)
+        return ProviderPayload(
+            provider="KIS",
+            source_record_id=f"KIS:volume-rank:{raw_hash}",
+            revision=0,
+            observed_at=response.received_at,
+            available_at=response.received_at,
+            payload={
+                "volume_rank": rows,
+                "ranking_session": ranking_session,
+                "transport_evidence": evidence_payload,
+            },
+            quality=ranking_quality,
+            raw_payload_hash=raw_hash,
+        )
+
     async def fetch(self, provider: str, *, as_of_date: datetime) -> ProviderPayload:
         if provider != "KIS":
             raise ValueError("KISHTTPTransport supports only the KIS provider")
+        if not self._symbols:
+            raise ValueError("daily quotation fetch requires at least one KIS symbol")
         if as_of_date.tzinfo is None or as_of_date.utcoffset() is None:
             raise ValueError("as_of_date must be timezone-aware")
         market_as_of = as_of_date.astimezone(KST)
