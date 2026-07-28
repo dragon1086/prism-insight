@@ -2,13 +2,15 @@
 
 The callback token expires five minutes after the message arrives, so this
 path only validates and enqueues; the report is delivered later by the outbox.
-Command handling touches SQLite, so it runs off the event loop to keep the
-Gateway's heartbeat responsive.
+
+Handling runs on the event loop rather than in a thread. It is a handful of
+indexed SQLite reads plus one insert — orders of magnitude shorter than the
+~41s heartbeat interval — and keeping it here means the repository is only
+ever touched from one thread in the Gateway process.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from kakao_bot.adapters.kakao.command_renderer import render_command_outcome
@@ -30,7 +32,7 @@ class MessageCommandHandler:
 
     async def __call__(self, message: InboundMessage) -> None:
         try:
-            outcome = await asyncio.to_thread(self._service.handle, message)
+            outcome = self._service.handle(message)
         except Exception:  # noqa: BLE001 - never break the Gateway session
             logger.exception("Command handling failed for room %s", message.room_id)
             return
