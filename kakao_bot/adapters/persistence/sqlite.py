@@ -11,8 +11,10 @@ from pathlib import Path
 
 from kakao_bot.domain.errors import RoomNotApprovedError, RoomNotFoundError
 from kakao_bot.domain.models import (
+    AnalysisJob,
     ApprovalStatus,
     BatchCampaign,
+    ClaimedAnalysisJob,
     ClaimedOutboundDelivery,
     Market,
     OutboundDelivery,
@@ -919,6 +921,253 @@ class SQLiteKakaoRepository:
                 (error, delivery_key, lease_owner),
             )
         return cursor.rowcount == 1
+
+    def enqueue_analysis_job(self, job: AnalysisJob, *, now: datetime) -> bool:
+        if not job.job_id.strip():
+            raise ValueError("job_id must not be empty")
+
+        timestamp = _utc_iso(now)
+        with self._connection:
+            cursor = self._connection.execute(
+                """
+                INSERT OR IGNORE INTO kakao_analysis_jobs(
+                    job_id,
+                    room_id,
+                    user_id,
+                    ticker,
+                    company_name,
+                    market,
+                    status,
+                    attempt_count,
+                    requested_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?)
+                """,
+                (
+                    job.job_id,
+                    job.room_id,
+                    job.user_id,
+                    job.ticker,
+                    job.company_name,
+                    job.market,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def claim_analysis_jobs(
+        self,
+        *,
+        now: datetime,
+        lease_seconds: int,
+        limit: int,
+    ) -> tuple[ClaimedAnalysisJob, ...]:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+
+        now_iso = _utc_iso(now)
+        lease_expires_iso = _utc_iso(now + timedelta(seconds=lease_seconds))
+
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._connection.execute(
+                """
+                SELECT job_id
+                FROM kakao_analysis_jobs
+                WHERE status = 'PENDING'
+                   OR (
+                        status = 'RUNNING'
+                        AND lease_expires_at IS NOT NULL
+                        AND lease_expires_at <= ?
+                   )
+                ORDER BY requested_at ASC
+                LIMIT ?
+                """,
+                (now_iso, limit),
+            ).fetchall()
+            job_ids = tuple(row["job_id"] for row in rows)
+            if job_ids:
+                placeholders = ",".join("?" for _ in job_ids)
+                self._connection.execute(
+                    f"""
+                    UPDATE kakao_analysis_jobs
+                    SET
+                        status = 'RUNNING',
+                        attempt_count = attempt_count + 1,
+                        lease_expires_at = ?,
+                        updated_at = ?
+                    WHERE job_id IN ({placeholders})
+                    """,
+                    (lease_expires_iso, now_iso, *job_ids),
+                )
+                claimed_rows = self._connection.execute(
+                    f"""
+                    SELECT
+                        job_id,
+                        room_id,
+                        user_id,
+                        ticker,
+                        company_name,
+                        market,
+                        attempt_count,
+                        requested_at
+                    FROM kakao_analysis_jobs
+                    WHERE job_id IN ({placeholders})
+                    ORDER BY requested_at ASC
+                    """,
+                    job_ids,
+                ).fetchall()
+            else:
+                claimed_rows = ()
+            self._connection.commit()
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+        return tuple(
+            ClaimedAnalysisJob(
+                job_id=row["job_id"],
+                room_id=row["room_id"],
+                user_id=row["user_id"],
+                ticker=row["ticker"],
+                company_name=row["company_name"],
+                market=row["market"],
+                attempt_count=row["attempt_count"],
+                requested_at=_parse_utc(row["requested_at"]),
+            )
+            for row in claimed_rows
+        )
+
+    def complete_analysis_job(
+        self,
+        job_id: str,
+        *,
+        summary: str,
+        artifact_token: str | None,
+        now: datetime,
+    ) -> None:
+        timestamp = _utc_iso(now)
+        with self._connection:
+            self._connection.execute(
+                """
+                UPDATE kakao_analysis_jobs
+                SET
+                    status = 'COMPLETED',
+                    summary = ?,
+                    artifact_token = ?,
+                    lease_expires_at = NULL,
+                    updated_at = ?,
+                    completed_at = ?
+                WHERE job_id = ?
+                """,
+                (summary, artifact_token, timestamp, timestamp, job_id),
+            )
+
+    def fail_analysis_job(self, job_id: str, *, error_code: str, now: datetime) -> None:
+        timestamp = _utc_iso(now)
+        with self._connection:
+            self._connection.execute(
+                """
+                UPDATE kakao_analysis_jobs
+                SET
+                    status = 'FAILED',
+                    error_code = ?,
+                    lease_expires_at = NULL,
+                    updated_at = ?,
+                    completed_at = ?
+                WHERE job_id = ?
+                """,
+                (error_code, timestamp, timestamp, job_id),
+            )
+
+    def release_analysis_job(self, job_id: str, *, now: datetime) -> None:
+        timestamp = _utc_iso(now)
+        with self._connection:
+            self._connection.execute(
+                """
+                UPDATE kakao_analysis_jobs
+                SET
+                    status = 'PENDING',
+                    lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE job_id = ?
+                  AND status = 'RUNNING'
+                """,
+                (timestamp, job_id),
+            )
+
+    def count_analysis_jobs_since(
+        self,
+        *,
+        room_id: str | None,
+        user_id: str | None,
+        since: datetime,
+    ) -> int:
+        conditions = ["requested_at >= ?"]
+        params: list[object] = [_utc_iso(since)]
+        if room_id is not None:
+            conditions.append("room_id = ?")
+            params.append(room_id)
+        if user_id is not None:
+            conditions.append("user_id = ?")
+            params.append(user_id)
+
+        where_clause = " AND ".join(conditions)
+        row = self._connection.execute(
+            f"SELECT COUNT(*) AS count FROM kakao_analysis_jobs WHERE {where_clause}",
+            params,
+        ).fetchone()
+        return row["count"]
+
+    def list_analysis_jobs(self) -> tuple[dict[str, object], ...]:
+        """Return decoded analysis job rows for diagnostics and focused tests."""
+
+        rows = self._connection.execute(
+            """
+            SELECT
+                job_id,
+                room_id,
+                user_id,
+                ticker,
+                company_name,
+                market,
+                status,
+                summary,
+                artifact_token,
+                error_code,
+                attempt_count,
+                lease_expires_at,
+                requested_at,
+                updated_at,
+                completed_at
+            FROM kakao_analysis_jobs
+            ORDER BY requested_at, job_id
+            """
+        ).fetchall()
+        return tuple(
+            {
+                "job_id": row["job_id"],
+                "room_id": row["room_id"],
+                "user_id": row["user_id"],
+                "ticker": row["ticker"],
+                "company_name": row["company_name"],
+                "market": row["market"],
+                "status": row["status"],
+                "summary": row["summary"],
+                "artifact_token": row["artifact_token"],
+                "error_code": row["error_code"],
+                "attempt_count": row["attempt_count"],
+                "lease_expires_at": row["lease_expires_at"],
+                "requested_at": row["requested_at"],
+                "updated_at": row["updated_at"],
+                "completed_at": row["completed_at"],
+            }
+            for row in rows
+        )
 
     def list_outbox(self) -> tuple[dict[str, object], ...]:
         """Return decoded outbox rows for sender adapters and focused tests."""
