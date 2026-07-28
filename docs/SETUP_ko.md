@@ -1,476 +1,365 @@
 # PRISM-INSIGHT 설치 가이드
 
-> PRISM-INSIGHT의 완전한 설치 및 설정 가이드
+> 한국·미국 주식 분석, PDF 생성, 선택적 텔레그램 전송과 자동매매까지 구성하는 현행 설치 안내서입니다.
 
 **언어**: [English](SETUP.md) | [한국어](SETUP_ko.md)
+**최종 검증 기준**: 2026-07-29, PR #493 적용 후보와 현재 `main` 대조
 
 ---
 
-## 목차
+## 1. 먼저 선택할 실행 방식
 
-1. [사전 요구사항](#사전-요구사항)
-2. [Docker로 빠른 시작](#docker로-빠른-시작)
-3. [수동 설치](#수동-설치)
-4. [설정 파일](#설정-파일)
-5. [플랫폼별 설치](#플랫폼별-설치)
-6. [선택 구성요소](#선택-구성요소)
-7. [설치 확인](#설치-확인)
-8. [문제 해결](#문제-해결)
+| 목적 | 권장 경로 | 필요한 인증 |
+|---|---|---|
+| 미국 종목 1개를 가장 빨리 체험 | [`quickstart.sh`](#2-60초-미국-주식-체험) | OpenAI API 키 |
+| API 요금 없이 로컬 분석 | [ChatGPT OAuth](#3-chatgpt-pluspro-oauth) | ChatGPT Plus/Pro |
+| 개발·디버깅 | [Python 수동 설치](#4-python-수동-설치) | API 키 또는 OAuth |
+| cron 포함 상시 운영 | [Docker](#5-docker-운영) | API 키 또는 OAuth |
 
----
+한국 시장의 전체 후보 선별에는 KRX 로그인이 필요합니다. 미국 단일 종목 데모는 KRX나 텔레그램 설정 없이 실행할 수 있습니다.
 
-## 사전 요구사항
+## 2. 60초 미국 주식 체험
 
-### 필수
+### 요구사항
 
-| 구성요소 | 버전 | 용도 |
-|----------|------|------|
-| Python | 3.10+ | 코어 런타임 |
-| Node.js | 18+ | MCP 서버 (Perplexity, Firecrawl) |
-| pip | 최신 | 패키지 관리 |
-
-### API 키 (전체 기능에 필요)
-
-| 서비스 | 용도 | 키 발급 |
-|--------|------|---------|
-| OpenAI | 분석 및 트레이딩용 GPT-5 | [platform.openai.com](https://platform.openai.com/api-keys) |
-| Anthropic | 텔레그램 봇용 Claude | [console.anthropic.com](https://console.anthropic.com/) |
-| Firecrawl | 웹 크롤링 MCP | [firecrawl.dev](https://www.firecrawl.dev/) |
-| Perplexity | 웹 검색 MCP | [perplexity.ai](https://www.perplexity.ai/) |
-
-### API 키 (선택)
-
-| 서비스 | 용도 | 키 발급 |
-|--------|------|---------|
-| 텔레그램 봇 | 채널 메시징 | [BotFather](https://t.me/botfather) |
-| 한국투자증권 | 자동매매 | [KIS Developers](https://apiportal.koreainvestment.com/) |
-
----
-
-## Docker로 빠른 시작
-
-Docker는 프로덕션 환경에서 PRISM-INSIGHT를 실행하는 권장 방법입니다.
-
-### 1단계: 저장소 클론
+- Python 3.10 이상
+- `pip` 또는 `uv`
+- OpenAI API 키
 
 ```bash
 git clone https://github.com/dragon1086/prism-insight.git
 cd prism-insight
+./quickstart.sh YOUR_OPENAI_API_KEY
 ```
 
-### 2단계: 설정 파일 준비
+스크립트는 의존성 및 Playwright Chromium을 설치하고 예제 설정을 만든 뒤 `AAPL` 보고서를 생성합니다.
 
 ```bash
-# 핵심 설정 (필수)
-cp mcp_agent.config.yaml.example mcp_agent.config.yaml
-cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
-
-# 설정 파일에 API 키 입력
-# - mcp_agent.secrets.yaml: OpenAI API 키
-# - mcp_agent.config.yaml: KRX 인증 정보 (카카오 계정)
+python3 demo.py MSFT
+python3 demo.py NVDA
+python3 demo.py TSLA --language ko
 ```
 
-### 3단계: 빌드 및 실행
+미국 PDF는 `prism-us/pdf_reports/`에 저장됩니다. 전체 배치를 시험하려면 다음 명령을 사용합니다.
 
 ```bash
-# 컨테이너 빌드 및 시작
-docker-compose up -d
-
-# 컨테이너 상태 확인
-docker ps
-
-# 로그 확인
-docker-compose logs -f
+python3 prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
 ```
 
-### 4단계: 분석 실행
+## 3. ChatGPT Plus/Pro OAuth
+
+OpenAI API 키 대신 ChatGPT 구독 인증을 사용할 수 있습니다.
 
 ```bash
-# 수동으로 오전 분석 실행
-docker exec prism-insight-container python3 stock_analysis_orchestrator.py --mode morning --no-telegram
+python3 -m cores.chatgpt_proxy.oauth_login
 
-# 텔레그램과 함께 실행 (설정된 경우)
-docker exec prism-insight-container python3 stock_analysis_orchestrator.py --mode morning
+# 계정 변경 또는 강제 재인증
+python3 -m cores.chatgpt_proxy.oauth_login --force
+
+PRISM_OPENAI_AUTH_MODE=chatgpt_oauth \
+  python3 stock_analysis_orchestrator.py --mode morning --no-telegram
 ```
 
-### Docker 명령어 참조
+토큰은 로컬에서 관리되고 자동 갱신됩니다. 서버나 Docker처럼 브라우저 접근이 제한된 환경에서는 먼저 호스트에서 로그인한 뒤 인증 저장소를 해당 실행 환경에 제공해야 합니다.
 
-```bash
-# 컨테이너 중지
-docker-compose down
+## 4. Python 수동 설치
 
-# 코드 변경 후 재빌드
-docker-compose up -d --build
+### 4.1 요구사항
 
-# 실시간 로그 보기
-docker-compose logs -f prism-insight
+| 구성요소 | 최소 버전 | 용도 |
+|---|---:|---|
+| Python | 3.10 | 코어 런타임 |
+| Node.js | 18 | Firecrawl·Perplexity MCP |
+| `pip` 또는 `uv` | 최신 안정판 | Python 패키지 및 일부 MCP 실행 |
+| Chromium | Playwright 설치판 | PDF 생성 |
 
-# 컨테이너 셸 접속
-docker exec -it prism-insight-container /bin/bash
-```
-
-> **참고**: Docker 컨테이너에는 자동 일일 분석을 위한 예약된 cron 작업이 포함되어 있습니다. 스케줄 설정은 `docker/entrypoint.sh`를 참조하세요.
-
----
-
-## 수동 설치
-
-개발 또는 커스텀 환경을 위해 다음 단계를 따라 수동 설치합니다.
-
-### 1단계: 저장소 클론
+### 4.2 저장소와 Python 패키지
 
 ```bash
 git clone https://github.com/dragon1086/prism-insight.git
 cd prism-insight
+python3 -m pip install -r requirements.txt
+python3 -m playwright install chromium
 ```
 
-### 2단계: Python 의존성 설치
+`requirements.txt`는 `openai-agents==0.7.0`과 검증된 조합을 유지하기 위해 `openai>=2.9,<2.45`를 사용합니다. `openai>=2.45`에서는 usage 모델의 `cache_write_tokens` 검증 오류가 발생할 수 있습니다. 이 제한은 [PR #493](https://github.com/dragon1086/prism-insight/pull/493)의 런타임 재현 결과와 연결되어 있습니다.
+
+### 4.3 설정 파일 생성
 
 ```bash
-pip install -r requirements.txt
-```
-
-### 3단계: 설정 파일 준비
-
-예시 파일을 복사하여 설정 파일을 생성합니다:
-
-```bash
-# 핵심 설정 (필수)
 cp mcp_agent.config.yaml.example mcp_agent.config.yaml
 cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
 
-# 환경 변수 (선택 - 텔레그램용)
+# 선택 기능
 cp .env.example .env
-
-# Streamlit 대시보드 (선택)
-cp ./examples/streamlit/config.py.example ./examples/streamlit/config.py
-
-# 트레이딩 설정 (선택 - 자동매매용)
-cp ./trading/config/kis_devlp.yaml.example ./trading/config/kis_devlp.yaml
+cp trading/config/kis_devlp.yaml.example trading/config/kis_devlp.yaml
 ```
 
-### 4단계: API 키 설정
-
-`mcp_agent.secrets.yaml`에 API 키를 입력합니다:
+`mcp_agent.secrets.yaml`에는 비밀값만 둡니다.
 
 ```yaml
-# 필수
-OPENAI_API_KEY: "sk-..."
+openai:
+  api_key: "sk-..."
 
-# 선택 (전체 기능용)
-ANTHROPIC_API_KEY: "sk-ant-..."
-FIRECRAWL_API_KEY: "fc-..."
-PERPLEXITY_API_KEY: "pplx-..."
+anthropic:
+  api_key: "sk-ant-..."
 ```
 
-### 5단계: MCP 서버 설정
+ChatGPT OAuth만 사용할 때는 OpenAI API 키가 없어도 됩니다. 실제 시크릿 파일, `.env`, KIS 설정은 커밋하지 마십시오.
 
-`mcp_agent.config.yaml`을 편집합니다:
+### 4.4 MCP 설정
+
+`mcp_agent.config.yaml.example`을 복사한 뒤 필요한 서버만 활성화합니다.
 
 ```yaml
-execution_engine: asyncio
-
 mcp:
   servers:
+    firecrawl:
+      command: "npx"
+      args: ["-y", "firecrawl-mcp@3.17.0"]
+      env:
+        FIRECRAWL_API_KEY: "fc-..."
+
+    perplexity:
+      command: "npx"
+      args: ["-y", "@perplexity-ai/mcp-server"]
+      env:
+        PERPLEXITY_API_KEY: "pplx-..."
+
     kospi_kosdaq:
       command: "python3"
       args: ["-m", "kospi_kosdaq_stock_server"]
       env:
-        KAKAO_ID: "your_kakao_email@example.com"
-        KAKAO_PW: "your_kakao_password"
+        KRX_ID: "your_krx_id"
+        KRX_PW: "your_krx_password"
+        KRX_LOGIN_METHOD: "krx"
 
-    firecrawl: firecrawl-mcp
-    perplexity: npx -y @perplexity-ai/mcp-server
-    sqlite: uv run mcp-server-sqlite --directory sqlite stock_tracking_db.sqlite
-    time: uvx mcp-server-time
+    sqlite:
+      command: "uv"
+      args: ["--directory", "sqlite", "run", "mcp-server-sqlite", "--db-path", "stock_tracking_db"]
 
-openai:
-  default_model: gpt-5
-  reasoning_effort: medium
+    time:
+      command: "uvx"
+      args: ["mcp-server-time"]
 ```
 
-> **참고**: 한국 시장 데이터(KRX 데이터 마켓플레이스 인증)를 위해 카카오 계정 정보가 필요합니다.
->
-> **2단계 인증 사용자**: 카카오 2단계 인증이 설정되어 있으면 매 분석시마다 앱에서 확인이 필요합니다. 비활성화하려면: 카카오앱 > 전체 설정 > 카카오계정 > 계정 보안 > 2단계 인증 '사용 안함'.
+중요한 운영 기준:
 
-### 6단계: Playwright 설치 (PDF 생성용)
+- Firecrawl은 도구가 사라지는 손상된 `npx` 캐시 회귀를 피하기 위해 `3.17.0`으로 고정합니다.
+- Perplexity는 저장소에 없는 `perplexity-ask/dist/index.js`를 직접 실행하지 않고 `npx -y @perplexity-ai/mcp-server`를 사용합니다.
+- 한국 시장 인증은 KRX 직접 로그인을 권장합니다. 카카오 로그인을 쓸 때만 `KAKAO_ID`, `KAKAO_PW`, `KRX_LOGIN_METHOD: "kakao"`로 바꿉니다.
+- 미국 시장의 `yahoo_finance`, `sec_edgar` 설정은 예제 파일에 포함되어 있습니다.
+
+### 4.5 선택 API 및 환경 변수
+
+| 서비스 | 필요한 기능 | 설정 위치 |
+|---|---|---|
+| Firecrawl | 웹 문서 수집 | `mcp_agent.config.yaml` |
+| Perplexity | 최신 뉴스·시장 검색 | `mcp_agent.config.yaml` |
+| Anthropic | 호환·선택 경로 | `mcp_agent.secrets.yaml` |
+| Telegram | 알림·상담 | `.env` |
+| 한국투자증권 KIS | 주문 실행 | `trading/config/kis_devlp.yaml` |
+| Redis 또는 GCP Pub/Sub | 이벤트 기반 신호 | `.env` |
+
+텔레그램 없이 검증할 때는 항상 `--no-telegram`을 붙입니다.
+
+## 5. Docker 운영
+
+### 5.1 준비
 
 ```bash
-# 패키지 설치 (requirements.txt에 포함됨)
-pip install playwright
+git clone https://github.com/dragon1086/prism-insight.git
+cd prism-insight
+cp mcp_agent.config.yaml.example mcp_agent.config.yaml
+cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
+cp .env.example .env
+touch stock_tracking_db.sqlite
+mkdir -p reports pdf_reports html_reports charts telegram_messages logs
+```
 
-# Chromium 브라우저 다운로드
+설정을 입력한 뒤 Compose v2로 시작합니다.
+
+```bash
+docker compose up --build -d
+docker compose ps
+docker compose logs -f prism-insight
+```
+
+수동 안전 실행:
+
+```bash
+docker exec prism-insight-container \
+  python3 stock_analysis_orchestrator.py --mode morning --no-telegram
+```
+
+운영 명령:
+
+```bash
+docker compose down
+docker compose up --build -d
+docker exec -it prism-insight-container /bin/bash
+```
+
+### 5.2 Docker cron
+
+`docker/entrypoint.sh`가 컨테이너 시작 시 호스트의 `docker/crontab`을 설치합니다. `ENABLE_CRON=false`로 비활성화할 수 있습니다.
+
+메모리 압축은 일요일 03:00 KST에 루트 `compress_trading_memory.py`를 한 번 실행합니다. 이 스크립트가 `run_us_compression()`까지 호출하므로, 삭제된 `prism-us/compress_us_trading_memory.py`를 04:00에 다시 예약하면 안 됩니다.
+
+```bash
+docker exec prism-insight-container crontab -l
+docker exec prism-insight-container service cron status
+```
+
+세부 Docker 일정과 볼륨은 [README_DOCKER_ko.md](../README_DOCKER_ko.md)를 참조하십시오.
+
+## 6. 플랫폼별 추가 단계
+
+### macOS
+
+```bash
 python3 -m playwright install chromium
 ```
 
-자세한 내용은 [플랫폼별 설치](#플랫폼별-설치)를 참조하세요.
+기본 한글 폰트를 사용할 수 있습니다.
 
-### 7단계: Perplexity MCP 서버 설치
-
-```bash
-# 방법 A: 글로벌 설치 (권장)
-npm install -g @perplexity-ai/mcp-server
-
-# 방법 B: npx 사용 (설치 불필요, 필요시 자동 실행)
-# mcp_agent.config.yaml.example에서 이미 npx 방식을 사용합니다
-```
-
-### 8단계: 한글 폰트 설치 (Linux만 해당)
-
-차트의 한글 표시를 위해 필요합니다. [플랫폼별 설치](#플랫폼별-설치)를 참조하세요.
-
----
-
-## 설정 파일
-
-### 핵심 설정 (필수)
-
-| 파일 | 용도 |
-|------|------|
-| `mcp_agent.config.yaml` | MCP 서버 설정 |
-| `mcp_agent.secrets.yaml` | API 키 및 시크릿 |
-
-### 텔레그램 설정 (선택)
-
-| 파일 | 용도 |
-|------|------|
-| `.env` | 텔레그램 채널 ID, 봇 토큰 |
+### Ubuntu / Debian
 
 ```bash
-# .env 파일
-TELEGRAM_CHANNEL_ID="-1001234567890"
-TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
-
-# 다국어 브로드캐스팅 (선택)
-TELEGRAM_CHANNEL_ID_EN="-1001234567891"
-TELEGRAM_CHANNEL_ID_JA="-1001234567892"
-TELEGRAM_CHANNEL_ID_ZH="-1001234567893"
+python3 -m playwright install --with-deps chromium
+./cores/ubuntu_font_installer.py
+sudo fc-cache -fv
 ```
 
-> **팁**: `--no-telegram` 옵션을 사용하면 텔레그램 설정 없이 실행 가능합니다!
+### Rocky Linux / RHEL 계열
 
-### 트레이딩 설정 (선택)
+```bash
+python3 -m playwright install chromium
+cd utils
+chmod +x setup_playwright.sh
+./setup_playwright.sh
+sudo dnf install google-nanum-fonts
+sudo fc-cache -fv
+```
 
-| 파일 | 용도 |
-|------|------|
-| `trading/config/kis_devlp.yaml` | 한국투자증권 API |
+자세한 패키지 목록은 [PLAYWRIGHT_SETUP_ko.md](../utils/PLAYWRIGHT_SETUP_ko.md)를 참조하십시오.
+
+### Windows
+
+```powershell
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+cron 스크립트는 Unix 계열을 대상으로 합니다. Windows에서는 작업 스케줄러나 Docker를 사용하십시오.
+
+## 7. 선택 기능
+
+### 로컬 crontab
+
+```bash
+chmod +x utils/setup_crontab.sh
+utils/setup_crontab.sh
+
+# US 배치 일정 추가
+chmod +x utils/setup_us_crontab.sh
+utils/setup_us_crontab.sh
+```
+
+US 스크립트는 분석 일정만 추가합니다. 메모리 압축은 루트 주간 작업이 KR과 US를 함께 처리합니다.
+
+### 자동매매
+
+`trading/config/kis_devlp.yaml`에서 기본값을 먼저 모의투자로 유지합니다.
 
 ```yaml
-# kis_devlp.yaml
-default_unit_amount: 10000     # 종목당 매수 금액 (KRW)
 auto_trading: true
-default_mode: demo             # "demo" 또는 "real"
-
+default_mode: demo
 kis_app_key: "YOUR_APP_KEY"
 kis_app_secret: "YOUR_APP_SECRET"
 kis_account_number: "12345678-01"
 kis_account_code: "01"
 ```
 
-### 웹 인터페이스 설정 (선택)
+실계좌 전환 전에는 별도의 모의계좌 검증이 필요합니다.
 
-| 파일 | 용도 |
-|------|------|
-| `examples/streamlit/config.py` | Streamlit 대시보드 API 키 |
+### 이벤트 기반 신호
 
----
+```dotenv
+UPSTASH_REDIS_REST_URL=https://example.upstash.io
+UPSTASH_REDIS_REST_TOKEN=...
 
-## 플랫폼별 설치
-
-### macOS
-
-```bash
-# Playwright
-pip3 install playwright
-python3 -m playwright install chromium
-
-# 한글 폰트: 기본 지원, 별도 설치 불필요
+# 또는 GCP Pub/Sub
+GCP_PROJECT_ID=...
+GCP_PUBSUB_SUBSCRIPTION_ID=...
+GCP_CREDENTIALS_PATH=/path/to/service-account.json
 ```
 
-### Ubuntu / Debian
+## 8. 설치 검증
+
+### 8.1 정적 확인
 
 ```bash
-# Playwright 및 의존성
-pip install playwright
-python3 -m playwright install --with-deps chromium
-
-# 한글 폰트
-./cores/ubuntu_font_installer.py
-
-# 폰트 캐시 갱신
-sudo fc-cache -fv
-python3 -c "import matplotlib.font_manager as fm; fm.fontManager.rebuild()"
+python3 -m pip check
+bash -n utils/setup_us_crontab.sh
+python3 -c "from cores.llm.config_loader import load_mcp_registry; print(sorted(load_mcp_registry('cores/llm/mcp_servers.yaml').names()))"
 ```
 
-### Rocky Linux 8 / CentOS / RHEL
+### 8.2 OpenAI Agents 왕복
+
+API 키 경로:
 
 ```bash
-# Playwright
-pip3 install playwright
-playwright install chromium
-
-# --with-deps가 동작하지 않으면 수동으로 의존성 설치:
-dnf install -y epel-release
-dnf install -y nss nspr atk at-spi2-atk cups-libs libdrm \
-    libxkbcommon libXcomposite libXdamage libXfixes \
-    libXrandr mesa-libgbm alsa-lib pango cairo
-
-# 또는 설치 스크립트 사용
-cd utils
-chmod +x setup_playwright.sh
-./setup_playwright.sh
-
-# 한글 폰트
-sudo dnf install google-nanum-fonts
-
-# 폰트 캐시 갱신
-sudo fc-cache -fv
-python3 -c "import matplotlib.font_manager as fm; fm.fontManager.rebuild()"
+python3 tools/verify_openai_agents_live.py \
+  --auth api --model gpt-5.4-mini --reasoning none
 ```
 
-### Windows
+OAuth 프록시 경로:
 
 ```bash
-# Playwright
-pip install playwright
-python -m playwright install chromium
-
-# 한글 폰트: 기본 지원, 별도 설치 불필요
+python3 tools/verify_openai_agents_live.py \
+  --auth proxy --model gpt-5.6-terra --reasoning medium
 ```
 
-Playwright 설치에 대한 자세한 내용은 [utils/PLAYWRIGHT_SETUP_ko.md](../utils/PLAYWRIGHT_SETUP_ko.md)를 참조하세요.
+이 검증은 실제 네트워크 호출과 사용량을 발생시킬 수 있습니다.
 
----
-
-## 선택 구성요소
-
-### 자동 스케줄링 (Crontab)
-
-자동 실행을 설정합니다:
+### 8.3 안전한 기능 확인
 
 ```bash
-# 간편 설정 (권장)
-chmod +x utils/setup_crontab_simple.sh
-utils/setup_crontab_simple.sh
+# 단일 미국 종목
+python3 demo.py AAPL --language ko
 
-# 또는 고급 설정
-chmod +x utils/setup_crontab.sh
-utils/setup_crontab.sh
+# 한국 오전 배치, 텔레그램 비활성
+python3 stock_analysis_orchestrator.py --mode morning --no-telegram
+
+# 메모리 압축 변경 예정 내용만 확인
+python3 compress_trading_memory.py --dry-run
 ```
 
-자세한 내용은 [utils/CRONTAB_SETUP.md](../utils/CRONTAB_SETUP.md)를 참조하세요.
+예상 산출물:
 
-### 미국 주식 모듈
+- `reports/`, `prism-us/reports/`: Markdown 보고서
+- `pdf_reports/`, `prism-us/pdf_reports/`: PDF 보고서
+- `charts/`: 차트
+- `stock_tracking_db.sqlite`: 포트폴리오·저널 데이터
 
-미국 시장 분석 (NYSE, NASDAQ):
+## 9. 문제 해결
 
-```bash
-# 미국 주식 분석 실행
-python prism-us/us_stock_analysis_orchestrator.py --mode morning --no-telegram
-```
+| 증상 | 확인 순서 |
+|---|---|
+| `InputTokensDetails.cache_write_tokens` 오류 | `openai<2.45`, `openai-agents==0.7.0`인지 확인 |
+| Firecrawl 도구가 보이지 않음 | `firecrawl-mcp@3.17.0` 확인 후 손상된 `npx` 캐시 정리 |
+| Perplexity가 로컬 JS 파일을 찾지 못함 | `npx -y @perplexity-ai/mcp-server`로 변경 |
+| Playwright가 Chromium을 찾지 못함 | `python3 -m playwright install chromium` |
+| PDF 한글이 깨짐 | 한글 폰트 설치 후 `fc-cache -fv` |
+| KRX 로그인 실패 | `KRX_LOGIN_METHOD`와 직접/카카오 자격 증명 조합 확인 |
+| Docker cron이 실행되지 않음 | `ENABLE_CRON`, `service cron status`, `crontab -l` 확인 |
+| US 압축 스크립트를 찾지 못함 | 오래된 04:00 US 전용 cron 제거; 루트 압축만 사용 |
 
-### 이벤트 기반 트레이딩 시그널
+로그는 `logs/`, Docker 로그는 `docker compose logs`에서 확인합니다. 해결되지 않으면 [GitHub Issues](https://github.com/dragon1086/prism-insight/issues)에 실행 환경, 명령, 민감정보를 제거한 로그를 첨부하십시오.
 
-Redis/Upstash 또는 GCP Pub/Sub 통합:
+## 10. 다음 문서
 
-```bash
-# .env 파일
-UPSTASH_REDIS_REST_URL="https://xxx.upstash.io"
-UPSTASH_REDIS_REST_TOKEN="your-token"
-
-# 또는 GCP용
-GCP_PROJECT_ID="your-gcp-project"
-GCP_PUBSUB_SUBSCRIPTION_ID="your-subscription"
-GCP_CREDENTIALS_PATH="/path/to/service-account.json"
-```
-
----
-
-## 설치 확인
-
-### 빠른 테스트 (텔레그램 없이)
-
-```bash
-# 텔레그램 없이 오전 분석 실행
-python stock_analysis_orchestrator.py --mode morning --no-telegram
-```
-
-### 개별 구성요소 테스트
-
-```bash
-# 1. 급등주 포착 테스트
-python trigger_batch.py morning INFO --output trigger_results.json
-
-# 2. PDF 변환 테스트
-python pdf_converter.py sample.md sample.pdf
-
-# 3. MCP 서버 연결 테스트
-python cores/main.py
-```
-
-### 예상 출력
-
-성공적인 실행 시 생성되는 파일:
-- `trigger_results_*.json` - 포착된 급등주
-- `reports/*.md` - Markdown 분석 리포트
-- `pdf_reports/*.pdf` - PDF 버전 리포트
-- `stock_tracking_db.sqlite` - 매매 시뮬레이션 데이터베이스
-
----
-
-## 문제 해결
-
-### 일반적인 문제
-
-| 문제 | 해결 방법 |
-|------|----------|
-| Playwright PDF 실패 | `python3 -m playwright install chromium` 실행 |
-| 한글 폰트 누락 | 폰트 설치 후 `fc-cache -fv` 실행 |
-| MCP 서버 실패 | `mcp_agent.secrets.yaml`의 API 키 확인 |
-| 카카오 인증 실패 | 2단계 인증 비활성화 또는 앱에서 확인 |
-| JSON 파싱 오류 | 라이브러리가 자동 복구; 로그에서 상세 내용 확인 |
-
-### 디버그 모드
-
-상세 로깅 활성화:
-
-```bash
-# 코드 또는 환경 변수에서 로그 레벨 설정
-export LOG_LEVEL=DEBUG
-python stock_analysis_orchestrator.py --mode morning --no-telegram
-```
-
-### 로그 파일
-
-오류 확인:
-
-```bash
-# 최근 로그 파일 목록
-ls -la *.log
-
-# 특정 로그 보기
-tail -f stock_analysis_*.log
-```
-
-### 도움 받기
-
-- **문서**: [docs/](../docs/)
-- **GitHub Issues**: [버그 신고](https://github.com/dragon1086/prism-insight/issues)
-- **텔레그램**: [@stock_ai_agent](https://t.me/stock_ai_agent)
-- **디스커션**: [GitHub Discussions](https://github.com/dragon1086/prism-insight/discussions)
-
----
-
-## 다음 단계
-
-설치 완료 후:
-
-1. **빠른 시작 테스트**: `python stock_analysis_orchestrator.py --mode morning --no-telegram` 실행
-2. **대시보드 탐색**: [analysis.stocksimulation.kr](https://analysis.stocksimulation.kr/) 방문
-3. **커뮤니티 참여**: [텔레그램 채널](https://t.me/stock_ai_agent) 구독
-4. **커스터마이징**: `cores/agents/` 디렉토리의 에이전트 수정
-
----
-
-**문서 버전**: 1.0
-**최종 업데이트**: 2026-01-28
+- [AI 에이전트 시스템](CLAUDE_AGENTS_ko.md)
+- [후보 선별·배치 알고리즘](TRIGGER_BATCH_ALGORITHMS.md)
+- [매매 저널·메모리](TRADING_JOURNAL.md)

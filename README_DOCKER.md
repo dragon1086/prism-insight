@@ -35,8 +35,8 @@ Run Ubuntu 24.04-based AI stock analysis system easily with Docker.
 - **Cron**: Built-in scheduled task automation (KR/US stock analysis)
 
 #### Python Packages
-- OpenAI API (GPT-4.1, GPT-5.1)
-- Anthropic API (Claude Sonnet 4.5)
+- OpenAI API and OpenAI Agents (role-specific models)
+- Anthropic API (optional compatibility workflows)
 - MCP Agent and related servers
 - pykrx (Korean stock data)
 - matplotlib, seaborn (data visualization)
@@ -260,13 +260,15 @@ The Docker container includes **built-in cron** for automated stock analysis. Cr
 | Time (KST) | US Time (EST) | Job | Days |
 |------------|---------------|-----|------|
 | 00:15 | 10:15 | **US Morning batch** | Tue-Sat |
+| 03:30 | - | US log cleanup (30 days) | Daily |
 | 06:30 | 16:30 | **US Afternoon batch** | Tue-Sat |
 | 07:30 | 17:30 | US Performance tracker | Tue-Sat |
 | 08:00 | 18:00 | US Dashboard refresh | Tue-Sat |
-| 03:30 | - | US log cleanup (30 days) | Daily |
+| 10:05 | - | US pending-order reconciliation | Tue-Sat |
 
-> **Note**: US market runs 3 times daily (no price limits). Tue-Sat in KST = Mon-Fri in US time.
+> **Note**: The default Docker cron runs US analysis twice daily. Tue-Sat in KST = Mon-Fri in US time.
 > Yahoo Finance data has 15-20 min delay, so schedules are adjusted accordingly.
+> The cron is EST-based and does not adjust daylight saving time automatically. Review the schedule during EDT (Mar-Nov).
 
 ### Cron Management Commands
 
