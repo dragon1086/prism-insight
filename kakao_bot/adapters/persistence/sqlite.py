@@ -122,6 +122,55 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        4,
+        """
+        CREATE TABLE kakao_analysis_jobs (
+            job_id TEXT PRIMARY KEY,
+            room_id TEXT NOT NULL
+                REFERENCES kakao_rooms(room_id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            company_name TEXT NOT NULL,
+            market TEXT NOT NULL CHECK (market IN ('kr', 'us')),
+            status TEXT NOT NULL DEFAULT 'PENDING'
+                CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED')),
+            summary TEXT,
+            artifact_token TEXT,
+            error_code TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0
+                CHECK (attempt_count >= 0),
+            lease_expires_at TEXT,
+            requested_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+
+        -- Worker claim scan: oldest pending first, skipping live leases.
+        CREATE INDEX idx_kakao_analysis_jobs_claimable
+            ON kakao_analysis_jobs(status, lease_expires_at, requested_at);
+
+        -- Daily quota counting is done against these, so keep the lookup cheap.
+        CREATE INDEX idx_kakao_analysis_jobs_room_requested
+            ON kakao_analysis_jobs(room_id, requested_at);
+        CREATE INDEX idx_kakao_analysis_jobs_user_requested
+            ON kakao_analysis_jobs(user_id, requested_at);
+
+        -- Opaque, expiring handles for PDF artifacts. The token is the only
+        -- thing that ever appears in a URL; the real path stays here.
+        CREATE TABLE kakao_report_links (
+            token TEXT PRIMARY KEY,
+            artifact_path TEXT NOT NULL,
+            room_id TEXT NOT NULL
+                REFERENCES kakao_rooms(room_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_kakao_report_links_expiry
+            ON kakao_report_links(expires_at);
+        """,
+    ),
 )
 
 
