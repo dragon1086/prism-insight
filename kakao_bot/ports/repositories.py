@@ -150,6 +150,23 @@ class KakaoRepository(Protocol):
     def list_analysis_jobs(self) -> tuple[dict, ...]:
         """Return decoded analysis job rows for diagnostics and tests."""
 
+    def create_report_link(
+        self,
+        token: str,
+        *,
+        artifact_path: str,
+        room_id: str,
+        now: datetime,
+        expires_at: datetime,
+    ) -> None:
+        """Map an opaque token to a report artifact until it expires."""
+
+    def resolve_report_link(self, token: str, *, now: datetime) -> str | None:
+        """Return the artifact path for a live token, or None if it is gone."""
+
+    def purge_expired_report_links(self, *, now: datetime) -> int:
+        """Drop links past their expiry. Returns how many were removed."""
+
 
 class KakaoMessageSender(Protocol):
     async def send_message(

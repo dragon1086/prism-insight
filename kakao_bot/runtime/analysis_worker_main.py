@@ -132,6 +132,10 @@ def _analysis_service(
         repository,
         resolved_analysis,
         max_attempts=config.max_attempts,
+        # Unset means no public endpoint exists yet, in which case no link is
+        # minted and the card ships summary-only rather than a dead button.
+        public_base_url=os.getenv("KAKAO_PUBLIC_BASE_URL"),
+        link_ttl_hours=int(os.getenv("KAKAO_REPORT_LINK_TTL_HOURS", "72")),
     )
 
 

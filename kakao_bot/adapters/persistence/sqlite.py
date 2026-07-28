@@ -1177,6 +1177,67 @@ class SQLiteKakaoRepository:
             for row in rows
         )
 
+    def create_report_link(
+        self,
+        token: str,
+        *,
+        artifact_path: str,
+        room_id: str,
+        now: datetime,
+        expires_at: datetime,
+    ) -> None:
+        if not token.strip():
+            raise ValueError("token must not be empty")
+        if not artifact_path.strip():
+            raise ValueError("artifact_path must not be empty")
+        if expires_at <= now:
+            raise ValueError("expires_at must be in the future")
+
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO kakao_report_links(
+                    token, artifact_path, room_id, created_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    token,
+                    artifact_path,
+                    room_id,
+                    _utc_iso(now),
+                    _utc_iso(expires_at),
+                ),
+            )
+
+    def resolve_report_link(self, token: str, *, now: datetime) -> str | None:
+        """Return the artifact path only while the link is still live.
+
+        An expired row is left in place for the purge to remove, so that
+        expiry and deletion stay independent and a clock skew cannot silently
+        drop a link that is about to be served.
+        """
+
+        if not token.strip():
+            return None
+        row = self._connection.execute(
+            """
+            SELECT artifact_path
+            FROM kakao_report_links
+            WHERE token = ? AND expires_at > ?
+            """,
+            (token, _utc_iso(now)),
+        ).fetchone()
+        return row["artifact_path"] if row else None
+
+    def purge_expired_report_links(self, *, now: datetime) -> int:
+        with self._connection:
+            cursor = self._connection.execute(
+                "DELETE FROM kakao_report_links WHERE expires_at <= ?",
+                (_utc_iso(now),),
+            )
+        return cursor.rowcount or 0
+
     def list_outbox(self) -> tuple[dict[str, object], ...]:
         """Return decoded outbox rows for sender adapters and focused tests."""
 

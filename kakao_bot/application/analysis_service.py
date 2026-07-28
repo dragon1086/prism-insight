@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import logging
+import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from kakao_bot.domain.models import OutboundDelivery
 from kakao_bot.ports.analysis import AnalysisPort
 from kakao_bot.ports.repositories import KakaoRepository
+
+logger = logging.getLogger(__name__)
+
+# Enough of the report to contain its executive summary; the renderer never
+# shows more, and full reports run to hundreds of kilobytes.
+_SUMMARY_PAYLOAD_LIMIT = 8_000
+
+DEFAULT_LINK_TTL_HOURS = 72
+_TOKEN_BYTES = 32
 
 
 @dataclass(frozen=True)
@@ -31,12 +42,42 @@ class AnalysisService:
         analysis: AnalysisPort,
         *,
         max_attempts: int = 3,
+        public_base_url: str | None = None,
+        link_ttl_hours: int = DEFAULT_LINK_TTL_HOURS,
     ) -> None:
         if max_attempts <= 0:
             raise ValueError("max_attempts must be positive")
+        if link_ttl_hours <= 0:
+            raise ValueError("link_ttl_hours must be positive")
         self._repository = repository
         self._analysis = analysis
         self._max_attempts = max_attempts
+        # Without a public base URL there is nowhere to serve a PDF from, so
+        # links are simply not minted and the card ships summary-only.
+        self._public_base_url = (public_base_url or "").rstrip("/")
+        self._link_ttl = timedelta(hours=link_ttl_hours)
+
+    def _mint_report_link(self, job, pdf_path: str | None, now: datetime) -> str | None:
+        if not pdf_path or not self._public_base_url:
+            return None
+        token = secrets.token_urlsafe(_TOKEN_BYTES)
+        try:
+            self._repository.create_report_link(
+                token,
+                artifact_path=pdf_path,
+                room_id=job.room_id,
+                now=now,
+                expires_at=now + self._link_ttl,
+            )
+        except Exception:  # noqa: BLE001 - a missing link must not lose the report
+            logger.exception("Could not mint a report link for %s", job.job_id)
+            return None
+        return token
+
+    def _link_url(self, token: str | None) -> str | None:
+        if not token or not self._public_base_url:
+            return None
+        return f"{self._public_base_url}/kakao/reports/{token}"
 
     def run_once(
         self,
@@ -79,10 +120,11 @@ class AnalysisService:
 
             if outcome.succeeded:
                 summary = outcome.summary or ""
+                token = self._mint_report_link(job, outcome.pdf_path, run_at)
                 self._repository.complete_analysis_job(
                     job.job_id,
                     summary=summary,
-                    artifact_token=None,
+                    artifact_token=token,
                     now=run_at,
                 )
                 completed += 1
@@ -95,8 +137,12 @@ class AnalysisService:
                             "job_id": job.job_id,
                             "ticker": job.ticker,
                             "company_name": job.company_name,
-                            "summary": summary,
+                            # The renderer only needs enough to lift the
+                            # executive summary; full reports run to hundreds
+                            # of kilobytes and would bloat the outbox row.
+                            "summary": summary[:_SUMMARY_PAYLOAD_LIMIT],
                             "market": job.market,
+                            "pdf_url": self._link_url(token),
                         },
                         created_at=run_at,
                     )

@@ -64,10 +64,15 @@ def _result(payload: Mapping[str, object]) -> dict[str, object]:
     header = f"📊 {company_name} ({ticker}) 분석 완료"
     text = f"{header}\n\n{body}" if body else header
 
+    pdf_url = payload.get("pdf_url")
     return skill_response(
         [
             simple_text_output(text[:MAX_SIMPLE_TEXT_LENGTH]),
-            _next_actions(ticker, company_name),
+            _next_actions(
+                ticker,
+                company_name,
+                pdf_url=pdf_url if isinstance(pdf_url, str) else None,
+            ),
         ]
     )
 
@@ -86,11 +91,31 @@ def _failed(payload: Mapping[str, object]) -> dict[str, object]:
     )
 
 
-def _next_actions(ticker: str, company_name: str) -> dict[str, object]:
-    """Item titles double as commands, because a tap sends the title."""
+def _next_actions(
+    ticker: str,
+    company_name: str,
+    *,
+    pdf_url: str | None = None,
+) -> dict[str, object]:
+    """Item titles double as commands, because a tap sends the title.
+
+    The full report goes out as a `webLink` button rather than a file, because
+    Kakao has no attachment field at all.
+    """
+
+    buttons: list[dict[str, object]] = []
+    if pdf_url:
+        buttons.append(
+            {
+                "action": "webLink",
+                "label": "📄 전체 리포트",
+                "webLinkUrl": pdf_url,
+            }
+        )
 
     return list_card_output(
         header_title="이어서 해보기",
+        buttons=buttons,
         items=[
             {
                 "title": f"{company_name} 평가",
