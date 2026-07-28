@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.10–3.12, Pydantic, Decimal, SQLite, KIS/FMP/AgentNews adapters, existing ChatGPT OAuth proxy, existing Next.js dashboard, pytest.
 
+**Candidate volume policy:** See [KR 후보 발굴 개수·분석 용량 정책](./2026-07-29_072716-kr-candidate-volume-and-capacity-policy.md) for the current 30/40/50 raw-row static bounds, the legacy final-three distinction, required count funnel, real-data measurement plan, and no-silent-truncation rule.
+
 ---
 
 ## 1. Final product boundary
@@ -180,8 +182,9 @@ class CandidateSnapshot(BaseModel):
 **Required behavior:**
 - One immutable market context and evaluation boundary per daily batch.
 - Per-candidate KIS/FMP/official-evidence snapshots, identities, and transactions.
-- Separate SWING/TREND calls for every eligible candidate.
-- Per-candidate status: completed scenario, report-only, analysis-incomplete, or provider-unavailable.
+- Separate SWING/TREND calls for every analysis candidate admitted as `ELIGIBLE` or `REPORT_ONLY`; `REPORT_ONLY` suppresses actionable levels rather than skipping analysis.
+- Record candidate admission (`ELIGIBLE`, `REPORT_ONLY`, `DATA_UNAVAILABLE`) separately from per-strategy execution (`COMPLETED`, `FAILED`, `PENDING`).
+- Derive candidate batch summaries such as completed scenario, analysis-incomplete, and provider-unavailable without conflating them with admission or strategy outcomes.
 - No candidate-count, analysis-count, or LLM-call-count cap. Control cost and load with observable queues, idempotency, bounded concurrency, provider backoff, and resumable batches rather than silently dropping candidates.
 - Exact replay does not call the model again.
 - A failed candidate cannot roll back successful sibling candidates.
