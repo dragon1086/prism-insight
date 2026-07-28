@@ -22,6 +22,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from urllib.parse import quote
+
 from aiohttp import web
 
 from kakao_bot.ports.repositories import KakaoRepository
@@ -76,7 +78,7 @@ class ReportLinkServer:
             path,
             headers={
                 "Content-Type": "application/pdf",
-                "Content-Disposition": f'inline; filename="{path.name}"',
+                "Content-Disposition": _disposition(path.name),
                 "X-Content-Type-Options": "nosniff",
                 "Cache-Control": "private, no-store",
             },
@@ -97,3 +99,17 @@ class ReportLinkServer:
         if not candidate.is_file():
             return None
         return candidate
+
+
+def _disposition(filename: str) -> str:
+    """Build a Content-Disposition that survives a Korean filename.
+
+    HTTP headers are latin-1, so "삼성전자" in a bare `filename=` arrives as
+    mojibake. RFC 5987's `filename*` carries the real name; the plain
+    `filename` stays as an ASCII fallback for anything that ignores it.
+    """
+
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii")
+    ascii_fallback = ascii_fallback.strip(" _-") or "report.pdf"
+    encoded = quote(filename, safe="")
+    return f"inline; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"

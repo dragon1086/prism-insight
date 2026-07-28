@@ -108,6 +108,31 @@ async def test_valid_token_serves_the_pdf(aiohttp_client, repository, artifacts)
 
 
 @pytest.mark.asyncio
+async def test_a_korean_filename_survives_the_header(
+    aiohttp_client, repository, artifacts
+):
+    """Bare `filename=` is latin-1, so 삼성전자 arrived as mojibake."""
+
+    root, pdf = artifacts
+    link(repository, pdf)
+    server = ReportLinkServer(repository, artifact_root=root, clock=lambda: NOW)
+    client = await aiohttp_client(server.build_app())
+
+    response = await client.get(f"/kakao/reports/{TOKEN}")
+
+    disposition = response.headers["Content-Disposition"]
+    assert "filename*=UTF-8''" in disposition
+    # The percent-encoded form round-trips back to the real name.
+    from urllib.parse import unquote
+
+    encoded = disposition.split("filename*=UTF-8''", 1)[1]
+    assert unquote(encoded) == pdf.name
+    # And the ASCII fallback carries no raw non-ASCII bytes.
+    fallback = disposition.split('filename="', 1)[1].split('"', 1)[0]
+    assert fallback.isascii() and fallback
+
+
+@pytest.mark.asyncio
 async def test_expired_token_is_not_served(aiohttp_client, repository, artifacts):
     root, pdf = artifacts
     link(repository, pdf, expires_at=NOW + timedelta(minutes=1))
