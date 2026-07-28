@@ -7,7 +7,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from kakao_bot.adapters.kakao.skill_response import simple_text
-from kakao_bot.adapters.persistence.sqlite import SQLiteKakaoRepository
+from kakao_bot.adapters.persistence.sqlite import (
+    _MIGRATIONS,
+    SQLiteKakaoRepository,
+)
 from kakao_bot.application.delivery_service import OutboxDeliveryService
 from kakao_bot.domain.models import (
     ApprovalStatus,
@@ -16,6 +19,10 @@ from kakao_bot.domain.models import (
 )
 
 NOW = datetime(2026, 7, 23, 5, 0, tzinfo=timezone.utc)
+
+# Derived rather than hardcoded so adding a migration does not fail these
+# tests; what they assert is that every migration ran, not how many exist.
+ALL_MIGRATION_VERSIONS = {version for version, _sql in _MIGRATIONS}
 
 
 class FakeSender:
@@ -144,7 +151,7 @@ def test_v1_database_is_migrated_with_delivery_state_columns(tmp_path):
         "last_error",
         "sent_at",
     } <= columns
-    assert versions == {1, 2, 3}
+    assert versions == ALL_MIGRATION_VERSIONS
 
 
 def test_concurrent_initialization_serializes_migrations(tmp_path):
@@ -163,7 +170,7 @@ def test_concurrent_initialization_serializes_migrations(tmp_path):
         row[0] for row in connection.execute("SELECT version FROM schema_migrations")
     }
     connection.close()
-    assert versions == {1, 2, 3}
+    assert versions == ALL_MIGRATION_VERSIONS
 
 
 def test_expired_pending_delivery_is_marked_dead_without_claim(tmp_path):

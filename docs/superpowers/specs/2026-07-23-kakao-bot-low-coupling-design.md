@@ -1,9 +1,22 @@
 # Kakao 그룹봇 저결합 아키텍처 설계
 
 > 상태: Phase 1 + Phase 3 operational foundation implemented
-> 라이브 게이트: Kakao REST/Gateway 실계정 contract smoke 미수행
+> 라이브 게이트: **완료 (2026-07-27)**
 > 작성일: 2026-07-23
 > 선행 문서: `2026-07-22-kakao-group-bot-design.md`
+> 후속 문서: `2026-07-27-kakao-live-contract-findings.md`
+
+> ⚠️ **이 문서의 일부는 실계정 검증으로 무효화됐다.** 구현 전에
+> `2026-07-27-kakao-live-contract-findings.md`를 먼저 읽을 것.
+>
+> - **quickReply는 사용 불가** — 팀채팅방에서 렌더링되지 않는다(`send_message`,
+>   `callback` 양쪽). 본 문서의 quickReply 언급은 모두 무효이며, 상호작용은
+>   **ListCard 항목 탭과 카드 버튼**으로 한다.
+> - 탭 발화는 `messageText`가 아니라 **항목 `title` / 버튼 `label`**이 전송된다.
+>   보이는 문구가 곧 명령어다.
+> - 탭은 카카오가 **멘션을 자동으로 붙여** 전송하므로 사용자가 멘션을 칠 필요가 없다.
+> - **`/ask` 제외** — 구현이 Firecrawl 기반이라 비목표와 모순된다.
+> - **이미지 수신·답장 수신 불가** — 플랫폼이 봇에 전달하지 않는다.
 
 ## 1. 목표
 
