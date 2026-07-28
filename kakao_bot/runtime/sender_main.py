@@ -12,9 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from kakao_bot.adapters.kakao.campaign_renderer import (
-    render_campaign_delivery,
-)
+from kakao_bot.adapters.kakao.delivery_renderer import render_delivery
 from kakao_bot.adapters.kakao.rest_client import DEFAULT_BASE_URL, KakaoRestClient
 from kakao_bot.adapters.persistence.sqlite import SQLiteKakaoRepository
 from kakao_bot.application.delivery_service import (
@@ -139,7 +137,7 @@ def _delivery_service(
     return OutboxDeliveryService(
         repository,
         resolved_sender,
-        render_campaign_delivery,
+        render_delivery,
         lease_owner=config.lease_owner,
         lease_seconds=config.lease_seconds,
         batch_size=config.batch_size,
