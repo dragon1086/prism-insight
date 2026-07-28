@@ -68,6 +68,49 @@ def load_config(
 EventHandler = Callable[[GatewayDispatch], Awaitable[None]]
 
 
+def _is_enabled(name: str, *, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _build_message_handler(
+    config: GatewayRuntimeConfig,
+    repository: SQLiteKakaoRepository,
+):
+    """Wire command handling, or return None to run receive-only.
+
+    Imports are local so that a Gateway running with commands disabled does
+    not pull in the Prism report stack at all.
+    """
+
+    if not _is_enabled("KAKAO_REPORT_ENABLED"):
+        logger.info("Kakao command handling disabled (KAKAO_REPORT_ENABLED)")
+        return None
+
+    from kakao_bot.adapters.kakao.message_command_handler import (
+        MessageCommandHandler,
+    )
+    from kakao_bot.adapters.kakao.rest_client import KakaoRestClient
+    from kakao_bot.adapters.prism.ticker_adapter import PrismTickerResolver
+    from kakao_bot.application.command_service import CommandService
+
+    resolver = PrismTickerResolver(
+        os.getenv("KAKAO_STOCK_MAP_PATH", "stock_map.json")
+    )
+    if not resolver.is_loaded:
+        logger.error(
+            "Stock map is empty; ticker lookups will fail. "
+            "Set KAKAO_STOCK_MAP_PATH to a readable stock_map.json."
+        )
+
+    return MessageCommandHandler(
+        CommandService(repository, resolver),
+        KakaoRestClient(config.token),
+    )
+
+
 async def run_gateway(
     config: GatewayRuntimeConfig,
     *,
@@ -89,7 +132,8 @@ async def run_gateway(
             repository = SQLiteKakaoRepository(config.database_path)
         resolved_state_store = state_store or SQLiteGatewayStateStore(repository)
         resolved_handler = event_handler or GatewayDispatchHandler(
-            GatewayInboundService(repository)
+            GatewayInboundService(repository),
+            message_handler=_build_message_handler(config, repository),
         )
         async with aiohttp.ClientSession() as session:
             loop = asyncio.get_running_loop()

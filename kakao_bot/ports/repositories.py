@@ -158,3 +158,19 @@ class KakaoMessageSender(Protocol):
         skill_response: dict[str, object],
     ) -> MessageSendResult:
         """Send one proactive room message."""
+
+
+class KakaoCallbackSender(Protocol):
+    """Reply to a specific message, as opposed to speaking into a room.
+
+    Kept separate from :class:`KakaoMessageSender` because a callback is only
+    valid for five minutes after the message it answers, so the two have
+    different failure and retry semantics.
+    """
+
+    async def callback(
+        self,
+        callback_token: str,
+        skill_response: dict[str, object],
+    ) -> MessageSendResult:
+        """Answer one received message within its callback token's lifetime."""
