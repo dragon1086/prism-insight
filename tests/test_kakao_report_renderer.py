@@ -67,6 +67,45 @@ def test_markdown_noise_is_stripped_from_the_summary():
     assert "**" not in text
 
 
+def test_executive_summary_is_lifted_instead_of_truncating_from_the_top():
+    """Reports lead with 핵심 요약; taking it beats cutting mid-sentence."""
+
+    summary = (
+        "# 삼성전자 (005930) 분석 보고서\n\n"
+        "## 핵심 요약\n\n"
+        "요약 본문입니다.\n\n"
+        "## 1. 기술적 분석\n\n"
+        "여기는 카드에 나오면 안 되는 본문입니다.\n"
+    )
+    response = render_report_delivery(
+        delivery("analysis_result", result_payload(summary=summary))
+    )
+
+    text = outputs(response)[0]["simpleText"]["text"]
+    assert "요약 본문입니다." in text
+    assert "나오면 안 되는" not in text
+
+
+def test_reports_without_a_summary_section_fall_back_to_the_whole_text():
+    summary = "## 1. 기술적 분석\n\n본문만 있는 리포트입니다."
+    response = render_report_delivery(
+        delivery("analysis_result", result_payload(summary=summary))
+    )
+
+    assert "본문만 있는 리포트입니다." in outputs(response)[0]["simpleText"]["text"]
+
+
+def test_list_structure_survives_as_a_bullet_character():
+    summary = "## 핵심 요약\n\n- 첫째 항목\n- 둘째 항목\n"
+    response = render_report_delivery(
+        delivery("analysis_result", result_payload(summary=summary))
+    )
+
+    text = outputs(response)[0]["simpleText"]["text"]
+    assert "· 첫째 항목" in text
+    assert "· 둘째 항목" in text
+
+
 def test_summary_is_truncated_within_the_simple_text_limit():
     long_summary = "가" * 5_000
     response = render_report_delivery(

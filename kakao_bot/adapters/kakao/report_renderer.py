@@ -30,6 +30,19 @@ ANALYSIS_FAILED = "analysis_failed"
 _SUMMARY_BUDGET = MAX_SIMPLE_TEXT_LENGTH - 120  # leave room for the header
 _MARKDOWN_NOISE = re.compile(r"^[#>\s*\-=_]+|[*_`]+", re.MULTILINE)
 _BLANK_RUN = re.compile(r"\n{3,}")
+# Kakao renders plain text, so list structure has to survive as a character.
+_BULLET = re.compile(r"^[ \t]*[-*+][ \t]+", re.MULTILINE)
+_TRAILING_SPACES = re.compile(r"[ \t]+$", re.MULTILINE)
+
+# Reports open with an executive summary. Lifting it beats truncating from the
+# top, which cuts off mid-sentence inside the first technical section and reads
+# like the message was damaged in transit.
+_EXECUTIVE_SUMMARY = re.compile(
+    r"^\#{1,3}[ \t]*(?:핵심[ \t]*요약|요약|Executive[ \t]+Summary)[ \t]*$"
+    r"(.*?)"
+    r"(?=^\#{1,3}[ \t])",
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
 
 
 def render_report_delivery(
@@ -100,11 +113,23 @@ def _condense(summary: str) -> str:
 
     if not summary.strip():
         return ""
-    text = _MARKDOWN_NOISE.sub("", summary)
+    text = _BULLET.sub("· ", _executive_summary(summary))
+    text = _MARKDOWN_NOISE.sub("", text)
+    text = _TRAILING_SPACES.sub("", text)
     text = _BLANK_RUN.sub("\n\n", text).strip()
     if len(text) <= _SUMMARY_BUDGET:
         return text
     return text[: _SUMMARY_BUDGET - 1].rstrip() + "…"
+
+
+def _executive_summary(summary: str) -> str:
+    """Return the report's own summary section, or the whole text if absent."""
+
+    match = _EXECUTIVE_SUMMARY.search(summary)
+    if not match:
+        return summary
+    section = match.group(1).strip()
+    return section or summary
 
 
 def _required_text(payload: Mapping[str, object], key: str) -> str:
