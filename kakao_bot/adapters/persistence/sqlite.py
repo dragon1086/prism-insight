@@ -206,7 +206,15 @@ class SQLiteKakaoRepository:
             raise ValueError("busy_timeout_ms must be non-negative")
 
         self.database_path = str(database_path)
-        self._connection = sqlite3.connect(self.database_path)
+        # Runtimes hand blocking work to `asyncio.to_thread`, which may run
+        # consecutive calls on different pool threads, so the connection must
+        # not be pinned to its creating thread. Callers serialize access — the
+        # Gateway handles messages on the event loop and workers await one
+        # batch at a time — so no cross-thread concurrency reaches here.
+        self._connection = sqlite3.connect(
+            self.database_path,
+            check_same_thread=False,
+        )
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
