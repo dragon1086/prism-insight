@@ -176,6 +176,48 @@ def test_append_persists_no_entry_proposal_and_field_dispositions_atomically(tmp
         assert stored[0].normalized_proposal_json == proposal_model().model_dump_json()
 
 
+def test_natural_identity_reader_returns_exact_pit_proposal_provenance(tmp_path: Path):
+    with repository(tmp_path) as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        repo = FeedbackRepository(connection)
+        proposal = proposal_record()
+        repo.append_proposal(
+            run_record(), snapshot_record(), proposal, dispositions()
+        )
+
+        stored = repo.stored_proposal_for(
+            proposal.proposal_key,
+            strategy_id=proposal.strategy_id,
+            strategy_version=proposal.strategy_version,
+            as_of=AS_OF,
+        )
+
+        assert stored is not None
+        assert stored.validation_status is ProposalValidationStatus.ACCEPTED
+        assert stored.prompt_version == proposal.prompt_version
+        assert stored.validator_version == proposal.validator_version
+        assert stored.model_provider == proposal.model_provider
+        assert stored.model_id == proposal.model_id
+        assert stored.model_version == proposal.model_version
+        assert stored.sampling_version == proposal.sampling_version
+        assert canonical_json(stored.sampling) == canonical_json(proposal.sampling)
+        assert stored.policy_version == proposal.policy_version
+        assert stored.data_snapshot_id == snapshot_record().data_snapshot_id
+        assert stored.feature_snapshot_id == snapshot_record().feature_snapshot_id
+        assert repo.stored_proposal_for(
+            "missing-proposal-key",
+            strategy_id=proposal.strategy_id,
+            strategy_version=proposal.strategy_version,
+            as_of=AS_OF,
+        ) is None
+        assert repo.stored_proposal_for(
+            proposal.proposal_key,
+            strategy_id=proposal.strategy_id,
+            strategy_version=proposal.strategy_version,
+            as_of=AS_OF - timedelta(microseconds=1),
+        ) is None
+
+
 def test_exact_reingest_is_idempotent_but_divergent_natural_revision_is_rejected(tmp_path: Path):
     with repository(tmp_path) as connection:
         migrate_database(connection, DatabaseKind.RESEARCH)

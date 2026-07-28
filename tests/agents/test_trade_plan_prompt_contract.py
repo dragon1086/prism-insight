@@ -72,7 +72,7 @@ def test_prompt_version_is_bound_to_the_embedded_schema():
     )
 
     assert contract.prompt_version == (
-        f"trade-plan.swing-v1.v1.schema-{schema_fingerprint}"
+        f"trade-plan.swing-v1.v2.schema-{schema_fingerprint}"
     )
     assert f"Prompt version: {contract.prompt_version}" in contract.instruction
 
@@ -109,8 +109,23 @@ def test_prompt_requires_auditable_strict_proposal_without_execution_authority()
         "specific uncertainty",
         "falsifiers",
         "bull and bear evidence references",
+        "independent bull_case, base_case, and bear_case",
+        "branch-specific conditions, confirmations, falsifiers, next_event, valid_until",
         "missing, stale, or conflicting data",
         "Every numeric claim",
+        "exact allowed_evidence_ids",
+        "allowed_predicate_features",
+        "scenario_input_pack is the authoritative deterministic",
+        "select NO_ENTRY whenever missing_or_stale_data is non-empty",
+        "copy contract.model, contract.prompt_version, and contract.sampling exactly",
+        "missing_or_stale_data must mirror scenario_input_pack.issues exactly",
+        "llm_score must stay within 25 points of quant_score.total_score",
+        "entry predicate valid_until must be strictly later than contract.as_of",
+        "regime directional score must stay within 25 points",
+        "Choose the decision consistently with deterministic predicate evaluation",
+        "WATCH requires at least one predicate to evaluate false",
+        "ENTRY_CANDIDATE requires every predicate to evaluate true",
+        "NO_ENTRY requires every predicate to evaluate false",
     ):
         assert required in instruction
 
@@ -174,8 +189,8 @@ def test_kr_and_us_agent_factories_expose_tool_free_proposal_seams(monkeypatch):
     assert us_agent.server_names == []
     assert "SWING_V1 TradePlanProposal analyst for KR" in kr_agent.instruction
     assert "TREND_V1 TradePlanProposal analyst for US" in us_agent.instruction
-    assert "trade-plan.swing-v1.v1" in kr_agent.instruction
-    assert "trade-plan.trend-v1.v1" in us_agent.instruction
+    assert "trade-plan.swing-v1.v2" in kr_agent.instruction
+    assert "trade-plan.trend-v1.v2" in us_agent.instruction
     for removed_legacy_authority in (
         "Decision is NOW only",
         "No partial fills",

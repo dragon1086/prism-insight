@@ -20,6 +20,7 @@ from prism_core.reporting.leadership_tracking import (
     LeadershipSecurity,
     MarketRegime,
 )
+from prism_core.reporting.scenario_completeness import ProductScenarioState
 from prism_core.strategies.contracts import Market, StrategyId
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
@@ -67,10 +68,61 @@ class ProposalReadModel(ReportModel):
     missing_or_stale_data: tuple[MissingOrStaleData, ...]
 
 
+class ScenarioRegimeReadModel(ReportModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=False)
+
+    probabilities: dict[NonEmptyStr, NonEmptyStr]
+    confidence: NonEmptyStr
+    drivers: tuple[NonEmptyStr, ...] = Field(min_length=1)
+
+
+class ScenarioTriggerReadModel(ReportModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=False)
+
+    feature_name: NonEmptyStr
+    operator: NonEmptyStr
+    comparison_value: NonEmptyStr
+    upper_value: str | None
+    observed_value: NonEmptyStr
+    observed_result: Literal["true", "false"]
+    valid_until: AwareDatetime
+    evidence_ids: tuple[NonEmptyStr, ...] = Field(min_length=1)
+
+
+class ScenarioUncertaintyReadModel(ReportModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=False)
+
+    level: NonEmptyStr
+    known_unknowns: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    assumptions: tuple[NonEmptyStr, ...] = Field(min_length=1)
+
+
+class ProductScenarioReadModel(ReportModel):
+    # This model is reconstructed from the persisted JSON-safe application
+    # payload, so tuples, enums, decimals, and datetimes require parsing while
+    # the exact field allowlist and nested constraints remain fail-closed.
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=False)
+
+    regime: ScenarioRegimeReadModel
+    bull_path: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    base_path: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    bear_path: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    current_action: ProposedDecision
+    triggers: tuple[ScenarioTriggerReadModel, ...] = Field(min_length=1)
+    failure_transition: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    falsifiers: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    uncertainty: ScenarioUncertaintyReadModel
+    next_review_at: AwareDatetime
+
+
 class StrategyReportSection(ReportModel):
     strategy_id: StrategyId
     strategy_version: StrategyVersionValue
     proposed_decision: ProposedDecision | None
+    scenario_state: ProductScenarioState
+    scenario_complete: bool
+    scenario_reasons: tuple[NonEmptyStr, ...]
+    scenario: ProductScenarioReadModel | None
     summary: str | None
     analysis_evidence_refs: tuple[NonEmptyStr, ...]
     proposals: tuple[ProposalReadModel, ...]

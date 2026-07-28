@@ -30,10 +30,41 @@ from prism_core.strategies.contracts import Market, StrategyId, StrategyVersion
 
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
-Probability = Annotated[Decimal, Field(ge=0, le=1, allow_inf_nan=False)]
-PositivePrice = Annotated[Decimal, Field(gt=0, allow_inf_nan=False)]
-Score = Annotated[Decimal, Field(ge=0, le=100, allow_inf_nan=False)]
-RiskMultiplier = Annotated[Decimal, Field(gt=0, le=1, allow_inf_nan=False)]
+FiniteDecimal = Annotated[
+    Decimal,
+    Field(allow_inf_nan=False),
+    WithJsonSchema({"type": "number"}),
+]
+Probability = Annotated[
+    Decimal,
+    Field(ge=0, le=1, allow_inf_nan=False),
+    WithJsonSchema({"type": "number", "minimum": 0, "maximum": 1}),
+]
+PositivePrice = Annotated[
+    Decimal,
+    Field(gt=0, allow_inf_nan=False),
+    WithJsonSchema({"type": "number", "exclusiveMinimum": 0}),
+]
+Score = Annotated[
+    Decimal,
+    Field(ge=0, le=100, allow_inf_nan=False),
+    WithJsonSchema({"type": "number", "minimum": 0, "maximum": 100}),
+]
+RiskMultiplier = Annotated[
+    Decimal,
+    Field(gt=0, le=1, allow_inf_nan=False),
+    WithJsonSchema({"type": "number", "exclusiveMinimum": 0, "maximum": 1}),
+]
+SamplingTemperature = Annotated[
+    Decimal,
+    Field(ge=0, le=2, allow_inf_nan=False),
+    WithJsonSchema({"type": "number", "minimum": 0, "maximum": 2}),
+]
+TopP = Annotated[
+    Decimal,
+    Field(gt=0, le=1, allow_inf_nan=False),
+    WithJsonSchema({"type": "number", "exclusiveMinimum": 0, "maximum": 1}),
+]
 
 
 def _strategy_version(value: object) -> StrategyVersion:
@@ -153,11 +184,23 @@ class RegimeProposal(ProposalContract):
     falsifiers: tuple[NonEmptyStr, ...] = Field(min_length=1)
 
 
+class ScenarioBranch(ProposalContract):
+    """One independent, evidence-bound conditional market path."""
+
+    summary: NonEmptyStr
+    conditions: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    confirmations: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    falsifiers: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    next_event: NonEmptyStr
+    valid_until: AwareDatetime
+    evidence_ids: tuple[NonEmptyStr, ...] = Field(min_length=1)
+
+
 class EntryPredicate(ProposalContract):
     feature_name: NonEmptyStr
     operator: PredicateOperator
-    comparison_value: Decimal = Field(allow_inf_nan=False)
-    upper_value: Decimal | None = Field(allow_inf_nan=False)
+    comparison_value: FiniteDecimal
+    upper_value: FiniteDecimal | None
     reference_price: PositivePrice
     reference_price_basis: PriceBasis
     market_session: MarketSession
@@ -223,8 +266,8 @@ class ModelIdentity(ProposalContract):
 
 class SamplingSettings(ProposalContract):
     version: NonEmptyStr
-    temperature: Annotated[Decimal, Field(ge=0, le=2, allow_inf_nan=False)]
-    top_p: Annotated[Decimal, Field(gt=0, le=1, allow_inf_nan=False)]
+    temperature: SamplingTemperature | None
+    top_p: TopP | None
     seed: NonNegativeInt | None
 
 
@@ -242,6 +285,9 @@ class TradePlanProposal(ProposalContract):
     llm_score: Score
     score_breakdown: tuple[ScoreComponent, ...] = Field(min_length=1)
     regime: RegimeProposal
+    bull_case: ScenarioBranch
+    base_case: ScenarioBranch
+    bear_case: ScenarioBranch
     entry_predicates: tuple[EntryPredicate, ...]
     stop_candidates: tuple[PriceCandidate, ...]
     target_candidates: tuple[PriceCandidate, ...]
@@ -267,6 +313,11 @@ class TradePlanProposal(ProposalContract):
             raise ValueError("score component names must be unique")
         if any(item.valid_until <= self.feature_provenance.as_of for item in self.entry_predicates):
             raise ValueError("entry predicates must remain valid after feature as_of")
+        if any(
+            item.valid_until <= self.feature_provenance.as_of
+            for item in (self.bull_case, self.base_case, self.bear_case)
+        ):
+            raise ValueError("scenario branches must remain valid after feature as_of")
         price_bases = {
             *(item.reference_price_basis for item in self.entry_predicates),
             *(item.price_basis for item in self.stop_candidates),

@@ -136,6 +136,8 @@ class ProposalService:
         referenced_evidence = set(proposal.bull_evidence_ids) | set(
             proposal.bear_evidence_ids
         )
+        for branch in (proposal.bull_case, proposal.base_case, proposal.bear_case):
+            referenced_evidence.update(branch.evidence_ids)
         for component in proposal.score_breakdown:
             referenced_evidence.update(component.evidence_ids)
         referenced_evidence.update(proposal.risk_multiplier_candidate.evidence_ids)

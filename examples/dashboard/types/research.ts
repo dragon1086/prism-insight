@@ -1,6 +1,7 @@
 export type Market = "KR" | "US"
 export type StrategyId = "SWING_V1" | "TREND_V1"
 export type DataQuality = "FRESH" | "STALE" | "PARTIAL" | "UNAVAILABLE" | "CONFLICT"
+export type ProductScenarioState = "DATA_UNAVAILABLE" | "ANALYSIS_INCOMPLETE" | "INVALID_PROPOSAL" | "POLICY_REJECTED" | "REPORT_ONLY" | "WATCH" | "NO_ENTRY" | "ENTRY_CANDIDATE"
 
 export interface DataFreshness {
   market: Market
@@ -33,11 +34,65 @@ export interface DailyLeader {
   evidence_refs: string[]
 }
 
+export interface ScenarioBranch {
+  summary: string
+  conditions: string[]
+  confirmations: string[]
+  falsifiers: string[]
+  next_event: string
+  valid_until: string
+  evidence_ids: string[]
+}
+
 export interface ProposalScenario {
-  probabilities?: Record<string, string>
-  confidence?: string
-  drivers?: string[]
+  regime?: {
+    probabilities: Record<string, string>
+    confidence: string
+    drivers: string[]
+  }
+  bull_path?: ScenarioBranch
+  base_path?: ScenarioBranch
+  bear_path?: ScenarioBranch
+  current_action?: "ENTRY_CANDIDATE" | "WATCH" | "NO_ENTRY" | "REPORT_ONLY"
+  triggers?: Array<{
+    feature_name: string
+    operator: string
+    comparison_value: string
+    upper_value: string | null
+    observed_value: string
+    observed_result: "true" | "false"
+    valid_until: string
+    evidence_ids: string[]
+  }>
+  failure_transition?: string[]
   falsifiers?: string[]
+  uncertainty?: {
+    level: string
+    known_unknowns: string[]
+    assumptions: string[]
+  }
+  next_review_at?: string
+  market_judgment?: Record<string, unknown>
+  sector_judgment?: Record<string, unknown>
+  security_judgment?: Record<string, unknown>
+  entry_triggers?: Array<Record<string, unknown>>
+  avoid_triggers?: Array<Record<string, unknown>>
+  stop_candidates?: Array<Record<string, unknown>>
+  target_candidates?: Array<Record<string, unknown>>
+  risk_multiplier_candidate?: Record<string, unknown>
+  reentry_candidates?: Array<Record<string, unknown>>
+  pyramiding_candidates?: Array<Record<string, unknown>>
+  bull_evidence_ids?: string[]
+  bear_evidence_ids?: string[]
+  counter_evidence?: string[]
+  field_dispositions?: Array<{
+    field_path: string
+    action: "ACCEPT" | "CLAMP" | "RECALCULATE" | "REJECT"
+    reason: string
+    proposed_value: string | null
+    resolved_value: string | null
+    evidence_ids: string[]
+  }>
 }
 
 export interface StrategyProposal {
@@ -52,6 +107,10 @@ export interface StrategyProposal {
   evidence_refs: string[]
   data_quality: DataQuality
   quality_disposition: "ACCEPT" | "REPORT_ONLY" | "REJECT"
+  status: "ACCEPTED" | "REJECTED" | string
+  scenario_state: ProductScenarioState
+  scenario_complete: boolean
+  scenario_reasons: string[]
   proposed_decision: "ENTRY_CANDIDATE" | "WATCH" | "NO_ENTRY" | "REPORT_ONLY" | null
   scenario: ProposalScenario
   bull_evidence_ids: string[]

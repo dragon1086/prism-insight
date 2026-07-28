@@ -26,8 +26,10 @@ jobs:
           pip install \
             pydantic \
             pyyaml \
+            aiohttp \
             "openai>=2.9,<3" \
             "openai-agents==0.7.0" \
+            "exchange-calendars>=4.13,<5" \
             mcp \
             tenacity \
             pytest \

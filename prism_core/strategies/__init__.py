@@ -14,6 +14,17 @@ from prism_core.strategies.contracts import (
     StrategyVersion,
 )
 from prism_core.strategies.registry import DEFAULT_STRATEGY_REGISTRY, StrategyRegistry
+from prism_core.strategies.scenario_inputs import (
+    FormulaValue,
+    ScenarioInputIssue,
+    ScenarioInputPack,
+    ScenarioInputStatus,
+    ScenarioIssueClass,
+    ScenarioPeakState,
+    ScenarioPriceBasis,
+    StrategyScenarioInputs,
+    build_scenario_input_pack,
+)
 from prism_core.strategies.swing import SWING_V1
 from prism_core.strategies.trend import TREND_V1
 
@@ -27,10 +38,19 @@ __all__ = [
     "OutcomeHorizon",
     "QuantScoreBreakdown",
     "QuantScoreComponent",
+    "FormulaValue",
+    "ScenarioInputIssue",
+    "ScenarioInputPack",
+    "ScenarioInputStatus",
+    "ScenarioIssueClass",
+    "ScenarioPeakState",
+    "ScenarioPriceBasis",
     "SWING_V1",
     "StrategyDefinition",
     "StrategyId",
     "StrategyRegistry",
     "StrategyVersion",
+    "StrategyScenarioInputs",
     "TREND_V1",
+    "build_scenario_input_pack",
 ]

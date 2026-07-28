@@ -1502,6 +1502,14 @@ class FMPMarketDataProvider:
                 break
             expected_page += 1
 
+        # Ingestion is receipt-side provenance: sample it only after the bounded
+        # primary transport sequence has completed, never before the HTTP call.
+        post_response_ingested_at = self._require_aware(
+            self._clock(), "clock result"
+        )
+        if post_response_ingested_at < ingested_at:
+            raise ValueError("post-response clock result must not move backwards")
+        ingested_at = post_response_ingested_at
         raw_payloads = tuple(collected)
         response: FMPResponseEnvelope | None = None
         if collection_complete and collected:

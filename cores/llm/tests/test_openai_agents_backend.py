@@ -10,6 +10,7 @@ calls are made.  Each async test is decorated with @pytest.mark.asyncio.
 from typing import Any
 
 import pytest
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from cores.llm.backends.openai_agents_backend import (
     OpenAIAgentsBackend,
@@ -18,7 +19,7 @@ from cores.llm.backends.openai_agents_backend import (
     build_mcp_server,
 )
 from cores.llm.mcp_registry import McpServerRegistry
-from cores.llm.ports import AgentSpec, LLMParams
+from cores.llm.ports import AgentSpec, DeferredValidationSchema, LLMParams
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +212,27 @@ def test_build_agent_output_type_set():
     spec = make_spec(output_schema=MySchema)
     agent = build_agent(spec, [])
     assert agent.output_type is MySchema
+
+
+def test_build_agent_deferred_schema_enforces_json_shape_but_defers_model_semantics():
+    class SemanticModel(BaseModel):
+        model_config = ConfigDict(strict=True, extra="forbid")
+
+        value: int = Field(ge=0)
+
+        @model_validator(mode="after")
+        def reject_semantically(self):
+            raise ValueError("deferred semantic rejection")
+
+    spec = make_spec(output_schema=DeferredValidationSchema(SemanticModel))
+    agent = build_agent(spec, [])
+
+    assert agent.output_type.json_schema()["properties"]["value"]["type"] == "integer"
+    assert agent.output_type.validate_json('{"value":1}') == {"value": 1}
+    assert agent.output_type.validate_json('{"value":-1}') == {"value": -1}
+    assert agent.output_type.validate_json('{"value":13}') == {"value": 13}
+    with pytest.raises(Exception, match="required JSON shape"):
+        agent.output_type.validate_json('{"value":"not-an-integer"}')
 
 
 def test_build_agent_mcp_servers_count():

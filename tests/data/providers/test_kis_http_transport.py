@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 import ast
 import asyncio
 import sys
@@ -28,6 +29,7 @@ from prism_core.data.providers.kis_http import (
     KISHTTPTransport,
     KISMarketDataCredentials,
     KISMarketDataTransportError,
+    SecureFileKISTokenCache,
 )
 
 
@@ -150,7 +152,7 @@ async def test_transport_calls_only_daily_quotation_and_normalizes_wire_response
         "FID_INPUT_DATE_1": "20260724",
         "FID_INPUT_DATE_2": "20260724",
         "FID_PERIOD_DIV_CODE": "D",
-        "FID_ORG_ADJ_PRC": "0",
+        "FID_ORG_ADJ_PRC": "1",
     }
     serialized_requests = repr(requests).lower()
     assert "account" not in serialized_requests
@@ -180,10 +182,195 @@ async def test_transport_calls_only_daily_quotation_and_normalizes_wire_response
     assert evidence[-1]["received_at"] == "2026-07-24T17:01:00+09:00"
     assert evidence[0]["raw_payload_hash"] is None
     assert evidence[-1]["raw_payload_hash"] == payload.source_hash
+    assert transport.evidence == tuple(evidence)
 
 
 @pytest.mark.asyncio
-async def test_incomplete_current_daily_bar_fails_closed() -> None:
+async def test_transport_uses_explicit_bounded_historical_lookback() -> None:
+    requester = SequenceRequester(
+        [
+            _token_response(received_at=datetime(2026, 7, 24, 17, 0, tzinfo=KST)),
+            _quote_response(received_at=datetime(2026, 7, 24, 17, 1, tzinfo=KST)),
+        ]
+    )
+    transport = KISHTTPTransport(
+        credentials=KISMarketDataCredentials("fixture-app-key", "fixture-app-secret"),
+        symbols=("005930",),
+        requester=requester,
+        clock=lambda: datetime(2026, 7, 24, 17, 2, tzinfo=KST),
+        lookback_calendar_days=60,
+    )
+
+    await transport.fetch(
+        "KIS", as_of_date=datetime(2026, 7, 24, 17, 2, tzinfo=KST)
+    )
+
+    quote_request = requester.requests[1]
+    assert quote_request["params"]["FID_INPUT_DATE_1"] == "20260525"
+    assert quote_request["params"]["FID_INPUT_DATE_2"] == "20260724"
+
+
+@pytest.mark.asyncio
+async def test_token_cache_reuses_valid_bearer_across_transport_instances() -> None:
+    class MemoryTokenCache:
+        stored = None
+
+        def load(self, *, app_key, now):
+            del app_key
+            if self.stored is None or self.stored[1] <= now:
+                return None
+            return self.stored
+
+        def save(self, *, app_key, token, expires_at):
+            del app_key
+            self.stored = (token, expires_at)
+
+    cache = MemoryTokenCache()
+    first_requester = SequenceRequester(
+        [
+            _token_response(received_at=datetime(2026, 7, 24, 17, 0, tzinfo=KST)),
+            _quote_response(received_at=datetime(2026, 7, 24, 17, 1, tzinfo=KST)),
+        ]
+    )
+    credentials = KISMarketDataCredentials("fixture-app-key", "fixture-app-secret")
+    first = KISHTTPTransport(
+        credentials=credentials,
+        symbols=("005930",),
+        requester=first_requester,
+        token_cache=cache,
+        clock=lambda: datetime(2026, 7, 24, 17, 2, tzinfo=KST),
+    )
+    await first.fetch("KIS", as_of_date=datetime(2026, 7, 24, 17, 2, tzinfo=KST))
+
+    second_requester = SequenceRequester(
+        [_quote_response(received_at=datetime(2026, 7, 24, 17, 3, tzinfo=KST))]
+    )
+    second = KISHTTPTransport(
+        credentials=credentials,
+        symbols=("005930",),
+        requester=second_requester,
+        token_cache=cache,
+        clock=lambda: datetime(2026, 7, 24, 17, 3, tzinfo=KST),
+    )
+
+    payload = await second.fetch(
+        "KIS", as_of_date=datetime(2026, 7, 24, 17, 3, tzinfo=KST)
+    )
+
+    assert len(first_requester.requests) == 2
+    assert len(second_requester.requests) == 1
+    assert second_requester.requests[0]["method"] == "GET"
+    assert [item["endpoint"] for item in payload.payload["transport_evidence"]] == [
+        DAILY_PRICE_PATH
+    ]
+
+
+def test_secure_file_token_cache_is_mode_0600_and_bound_to_app_key(tmp_path) -> None:
+    path = tmp_path / "private" / "kis-token.json"
+    cache = SecureFileKISTokenCache(path)
+    now = datetime(2026, 7, 24, 17, 0, tzinfo=KST)
+    expires_at = datetime(2026, 7, 25, 17, 0, tzinfo=KST)
+
+    cache.save(app_key="app-a", token="secret-bearer", expires_at=expires_at)
+
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    assert cache.load(app_key="app-a", now=now) == ("secret-bearer", expires_at)
+    assert cache.load(app_key="app-b", now=now) is None
+    assert "secret-bearer" not in repr(cache)
+
+
+@pytest.mark.asyncio
+async def test_extended_lookback_is_paged_into_non_overlapping_bounded_windows() -> None:
+    class PagingRequester:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, object]] = []
+
+        async def request(self, **kwargs) -> KISHTTPResponse:
+            self.requests.append(kwargs)
+            if kwargs["url"].endswith("/oauth2/tokenP"):
+                return _token_response(
+                    received_at=datetime(2026, 7, 26, 21, 0, tzinfo=KST)
+                )
+            params = kwargs["params"]
+            compact_date = params["FID_INPUT_DATE_2"]
+            if compact_date == "20260726":
+                compact_date = "20260724"
+            body = json.dumps(
+                {
+                    "rt_cd": "0",
+                    "output2": [
+                        {
+                            "stck_bsop_date": compact_date,
+                            "stck_oprc": "70000",
+                            "stck_hgpr": "70500",
+                            "stck_lwpr": "69500",
+                            "stck_clpr": "70200",
+                            "acml_vol": "1234",
+                        }
+                    ],
+                }
+            ).encode()
+            return KISHTTPResponse(
+                status_code=200,
+                body=body,
+                received_at=datetime(2026, 7, 26, 21, 1, tzinfo=KST),
+            )
+
+    requester = PagingRequester()
+    transport = KISHTTPTransport(
+        credentials=KISMarketDataCredentials("fixture-app-key", "fixture-app-secret"),
+        symbols=("005930",),
+        requester=requester,
+        clock=lambda: datetime(2026, 7, 26, 21, 2, tzinfo=KST),
+        lookback_calendar_days=400,
+    )
+
+    payload = await transport.fetch(
+        "KIS", as_of_date=datetime(2026, 7, 26, 21, 2, tzinfo=KST)
+    )
+
+    quote_params = [request["params"] for request in requester.requests[1:]]
+    assert quote_params == [
+        {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": "005930",
+            "FID_INPUT_DATE_1": "20260327",
+            "FID_INPUT_DATE_2": "20260724",
+            "FID_PERIOD_DIV_CODE": "D",
+            "FID_ORG_ADJ_PRC": "1",
+        },
+        {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": "005930",
+            "FID_INPUT_DATE_1": "20251127",
+            "FID_INPUT_DATE_2": "20260326",
+            "FID_PERIOD_DIV_CODE": "D",
+            "FID_ORG_ADJ_PRC": "1",
+        },
+        {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": "005930",
+            "FID_INPUT_DATE_1": "20250730",
+            "FID_INPUT_DATE_2": "20251126",
+            "FID_PERIOD_DIV_CODE": "D",
+            "FID_ORG_ADJ_PRC": "1",
+        },
+        {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": "005930",
+            "FID_INPUT_DATE_1": "20250619",
+            "FID_INPUT_DATE_2": "20250729",
+            "FID_PERIOD_DIV_CODE": "D",
+            "FID_ORG_ADJ_PRC": "1",
+        },
+    ]
+    assert len(payload.payload["prices"]) == 4
+    assert len(payload.payload["transport_evidence"]) == 5
+    assert payload.quality is DataQualityStatus.FRESH
+
+
+@pytest.mark.asyncio
+async def test_intraday_daily_read_uses_latest_completed_exchange_session() -> None:
     class IntradayRequester:
         async def request(self, **kwargs) -> KISHTTPResponse:
             if kwargs["url"].endswith("/oauth2/tokenP"):
@@ -194,7 +381,7 @@ async def test_incomplete_current_daily_bar_fails_closed() -> None:
                         "rt_cd": "0",
                         "output2": [
                             {
-                                "stck_bsop_date": "20260724",
+                                "stck_bsop_date": "20260723",
                                 "stck_oprc": "70000",
                                 "stck_hgpr": "70500",
                                 "stck_lwpr": "69500",
@@ -217,11 +404,74 @@ async def test_incomplete_current_daily_bar_fails_closed() -> None:
         clock=lambda: datetime(2026, 7, 24, 10, 0, tzinfo=KST),
     )
 
-    with pytest.raises(KISMarketDataTransportError, match="completed daily bar"):
-        await transport.fetch(
-            "KIS",
-            as_of_date=datetime(2026, 7, 24, 10, 0, tzinfo=KST),
-        )
+    payload = await transport.fetch(
+        "KIS",
+        as_of_date=datetime(2026, 7, 24, 10, 0, tzinfo=KST),
+    )
+
+    assert payload.payload["prices"][0]["trade_date"] == "2026-07-23"
+    assert payload.quality is DataQualityStatus.FRESH
+
+
+@pytest.mark.asyncio
+async def test_transport_rejects_daily_bar_not_yet_available_at_as_of(
+    monkeypatch,
+) -> None:
+    as_of = datetime(2026, 7, 24, 15, 30, 30, tzinfo=KST)
+    monkeypatch.setattr(
+        kis_http,
+        "latest_completed_session",
+        lambda market, boundary: boundary.date(),
+    )
+    requester = SequenceRequester(
+        [
+            _token_response(received_at=as_of),
+            _quote_response(received_at=as_of),
+        ]
+    )
+    transport = KISHTTPTransport(
+        credentials=KISMarketDataCredentials("fixture-app-key", "fixture-app-secret"),
+        symbols=("005930",),
+        requester=requester,
+        clock=lambda: as_of,
+    )
+
+    with pytest.raises(KISMarketDataTransportError, match="not available"):
+        await transport.fetch("KIS", as_of_date=as_of)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("as_of", "expected_end_date"),
+    [
+        (datetime(2026, 7, 25, 10, 0, tzinfo=KST), "20260724"),
+        (datetime(2026, 7, 26, 10, 0, tzinfo=KST), "20260724"),
+    ],
+)
+async def test_weekend_daily_read_accepts_latest_completed_friday_session(
+    as_of: datetime,
+    expected_end_date: str,
+) -> None:
+    """A closed market does not make Friday's completed daily bar stale."""
+
+    requester = SequenceRequester(
+        [
+            _token_response(received_at=as_of),
+            _quote_response(received_at=as_of),
+        ]
+    )
+    transport = KISHTTPTransport(
+        credentials=KISMarketDataCredentials("fixture-app-key", "fixture-app-secret"),
+        symbols=("005930",),
+        requester=requester,
+        clock=lambda: as_of,
+    )
+
+    payload = await transport.fetch("KIS", as_of_date=as_of)
+
+    assert requester.requests[1]["params"]["FID_INPUT_DATE_2"] == expected_end_date
+    assert payload.observed_at == datetime(2026, 7, 24, 15, 30, tzinfo=KST)
+    assert payload.quality is DataQualityStatus.FRESH
 
 
 @pytest.mark.asyncio
@@ -370,6 +620,36 @@ async def test_error_status_never_exposes_provider_body_headers_or_credentials()
     rendered = repr(caught.value)
     for secret in ("fixture-app-key", "fixture-app-secret", "fixture-token", "account", "order"):
         assert secret not in rendered
+
+
+@pytest.mark.asyncio
+async def test_error_status_preserves_only_sanitized_operation_and_status_metadata() -> None:
+    requester = SequenceRequester(
+        [
+            KISHTTPResponse(
+                status_code=403,
+                body=b'{"access_token":"must-not-escape","msg":"private provider detail"}',
+                received_at=datetime(2026, 7, 24, 17, 0, tzinfo=KST),
+            )
+        ]
+    )
+    transport = KISHTTPTransport(
+        credentials=KISMarketDataCredentials("fixture-app-key", "fixture-app-secret"),
+        symbols=("005930",),
+        requester=requester,
+        clock=lambda: datetime(2026, 7, 24, 17, 2, tzinfo=KST),
+    )
+
+    with pytest.raises(KISMarketDataTransportError) as caught:
+        await transport.fetch(
+            "KIS", as_of_date=datetime(2026, 7, 24, 17, 2, tzinfo=KST)
+        )
+
+    assert caught.value.operation == "token_request"
+    assert caught.value.status_code == 403
+    rendered = repr(caught.value)
+    assert "must-not-escape" not in rendered
+    assert "private provider detail" not in rendered
 
 
 @pytest.mark.asyncio

@@ -86,6 +86,10 @@ class ProposalValidator:
         self._policy = policy
         self._registry = registry
 
+    @property
+    def validator_version(self) -> str:
+        return self._policy.validator_version
+
     def validate(
         self,
         *,
@@ -414,6 +418,16 @@ class ProposalValidator:
             )
             dispositions.append(
                 FieldDisposition(
+                    field_path=f"entry_predicates[{index}].observed_value",
+                    action=DispositionAction.RECALCULATE,
+                    reason="feature_value_read_from_bound_snapshot",
+                    proposed_value=None,
+                    resolved_value=format(feature_value, "f"),
+                    evidence_ids=predicate.evidence_ids,
+                )
+            )
+            dispositions.append(
+                FieldDisposition(
                     field_path=f"entry_predicates[{index}].evaluation",
                     action=DispositionAction.RECALCULATE,
                     reason="predicate_evaluated_from_feature_snapshot",
@@ -533,6 +547,8 @@ class ProposalValidator:
 
 def _referenced_evidence(proposal: TradePlanProposal) -> set[str]:
     evidence = set(proposal.bull_evidence_ids) | set(proposal.bear_evidence_ids)
+    for branch in (proposal.bull_case, proposal.base_case, proposal.bear_case):
+        evidence.update(branch.evidence_ids)
     for component in proposal.score_breakdown:
         evidence.update(component.evidence_ids)
     evidence.update(proposal.risk_multiplier_candidate.evidence_ids)

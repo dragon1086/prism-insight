@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from prism_core.data.contracts import DataQualityStatus
+from prism_core.data.exchange_calendar import ExchangeMarket, latest_completed_session
 from prism_core.data.providers.fmp import (
     FMP_RAW_EOD_PATH,
     FMPRateLimitError,
@@ -365,13 +366,19 @@ class FMPHTTPTransport:
             if symbol != requested_symbol:
                 raise FMPHTTPTransportError("FMP returned an unexpected provider symbol")
             normalized.append({"symbol": symbol, "date": date_value, **values})
+        expected_session = latest_completed_session(ExchangeMarket.NYSE, as_of)
+        normalized = [
+            row
+            for row in normalized
+            if datetime.fromisoformat(row["date"]).date() <= expected_session
+        ]
         if normalized:
             latest_date = max(datetime.fromisoformat(row["date"]).date() for row in normalized)
             observed_at = datetime.combine(latest_date, time(16, 0), tzinfo=_MARKET_TIMEZONE)
             available_at = observed_at + timedelta(minutes=self._availability_delay_minutes)
             quality = (
                 DataQualityStatus.FRESH
-                if latest_date == market_date and available_at <= as_of
+                if latest_date == expected_session and available_at <= as_of
                 else DataQualityStatus.STALE
             )
         else:

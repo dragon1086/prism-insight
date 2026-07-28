@@ -400,6 +400,7 @@ async def test_failed_catch_up_releases_lease_for_a_later_retry(tmp_path: Path) 
                 )
             ),
             macos_notifier=InMemoryMacOSNotifier(),
+            clock=lambda: now,
         )
         job = CatchUpJob(
             job_key="daily",

@@ -87,6 +87,7 @@ examples/dashboard/node_modules/
 reports/
 pdf_reports/
 telegram_messages/
+.hermes/uat/
 *.sqlite
 *.pdf
 *_report*.md

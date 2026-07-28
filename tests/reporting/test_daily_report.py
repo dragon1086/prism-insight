@@ -20,6 +20,7 @@ from prism_core.data.quality import (
 from prism_core.feedback.repository import StoredProposal
 from prism_core.feedback.retrieval import EvaluationLessonSet
 from prism_core.llm.trade_plan import ProposedDecision, TradePlanProposal
+from prism_core.policy.proposal_validator import ProposalValidationStatus
 from prism_core.reporting.daily import build_daily_report, render_daily_report
 from prism_core.reporting.models import LeadingSector
 from prism_core.reporting.leadership_tracking import (
@@ -63,6 +64,17 @@ def _evaluation(
         proposed_decision=proposal.decision,
         raw_output="fixture raw output",
         normalized_proposal_json=proposal.model_dump_json(),
+        validation_status=ProposalValidationStatus.ACCEPTED,
+        model_provider="fixture-provider",
+        model_id="fixture-model",
+        model_version="fixture-model-v1",
+        prompt_version="fixture-prompt-v1",
+        sampling_version="fixture-sampling-v1",
+        sampling={"temperature": "0"},
+        validator_version="fixture-validator-v1",
+        policy_version="fixture-policy-v1",
+        data_snapshot_id=str(DATA_SNAPSHOT_ID),
+        feature_snapshot_id=str(proposal.feature_provenance.feature_snapshot_id),
         available_at=AS_OF,
         dispositions=(),
     )
@@ -70,6 +82,37 @@ def _evaluation(
         proposals=(stored,),
         shadow_evaluation=EvaluationLessonSet(strategy_id, version, AS_OF, ()),
     )
+
+
+def _complete_scenario(decision: str) -> dict[str, object]:
+    return {
+        "regime": {
+            "probabilities": {
+                "strong_bull": "0.10", "moderate_bull": "0.45", "sideways": "0.30",
+                "moderate_bear": "0.10", "strong_bear": "0.05",
+            },
+            "confidence": "0.70",
+            "drivers": ["quant regime evidence"],
+        },
+        "bull_path": ["bull-evidence"],
+        "base_path": ["quant regime evidence"],
+        "bear_path": ["bear-evidence"],
+        "current_action": decision,
+        "triggers": [{
+            "feature_name": "swing_v1.regime_compatibility", "operator": "GTE",
+            "comparison_value": "0.60", "upper_value": None,
+            "observed_value": "0.55",
+            "observed_result": "false", "valid_until": "2020-07-27T01:00:00Z",
+            "evidence_ids": ["trigger-evidence"],
+        }],
+        "failure_transition": ["breadth deteriorates"],
+        "falsifiers": ["breadth deteriorates"],
+        "uncertainty": {
+            "level": "0.30", "known_unknowns": ["next session breadth"],
+            "assumptions": ["provider data remains fresh"],
+        },
+        "next_review_at": "2020-07-27T01:00:00Z",
+    }
 
 
 def _analysis() -> PersistedDailyAnalysis:
@@ -92,13 +135,21 @@ def _analysis() -> PersistedDailyAnalysis:
             StrategyAnalysis(
                 StrategyId.SWING_V1,
                 swing,
-                {"decision": "NO_ENTRY", "summary": "Short-horizon setup is selective."},
+                {
+                    "decision": "NO_ENTRY", "summary": "Short-horizon setup is selective.",
+                    "scenario_state": "NO_ENTRY", "scenario_complete": True,
+                    "scenario_reasons": (), "scenario": _complete_scenario("NO_ENTRY"),
+                },
                 ("swing-analysis-evidence",),
             ),
             StrategyAnalysis(
                 StrategyId.TREND_V1,
                 trend,
-                {"decision": "WATCH", "summary": "Medium-term durability is under review."},
+                {
+                    "decision": "WATCH", "summary": "Medium-term durability is under review.",
+                    "scenario_state": "WATCH", "scenario_complete": True,
+                    "scenario_reasons": (), "scenario": _complete_scenario("WATCH"),
+                },
                 ("trend-analysis-evidence",),
             ),
         ),
@@ -159,6 +210,11 @@ def test_daily_report_reads_persisted_leadership_and_keeps_strategy_versions_sep
     assert report.strategies[0].proposals[0].counter_evidence_ids
     assert report.strategies[0].proposals[0].falsifiers
     assert report.strategies[0].proposals[0].uncertainty.known_unknowns
+    assert report.strategies[0].scenario_state.value == "NO_ENTRY"
+    assert report.strategies[0].scenario_complete is True
+    assert report.strategies[0].scenario is not None
+    assert report.strategies[0].scenario.triggers[0].observed_value == "0.55"
+    assert report.strategies[0].scenario.next_review_at.isoformat().startswith("2020-07-27")
     assert report.shadow_status.evaluation_only is True
     assert report.shadow_status.score_effect is False
     assert report.shadow_status.policy_effect is False
@@ -195,6 +251,9 @@ def test_daily_renderer_delegates_leadership_markdown_and_labels_shadow_inert(
     assert leadership.rendered_markdown.strip() in rendered
     assert "SWING_V1 (swing-v1.0.0)" in rendered
     assert "TREND_V1 (trend-v1.0.0)" in rendered
+    assert "Scenario state: NO_ENTRY" in rendered
+    assert "Scenario complete: True" in rendered
+    assert "Next review: 2020-07-27T01:00:00+00:00" in rendered
     assert "SHADOW Evaluation — Inert" in rendered
     assert "evaluation-only" in rendered
     assert "Research report only; no execution authority." in rendered

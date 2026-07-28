@@ -14,7 +14,15 @@ from prism_app.dashboard_export import (
     export_dashboard,
     open_read_only_database,
 )
+from prism_core.feedback.repository import canonical_json
+from prism_core.llm.trade_plan import (
+    MissingDataStatus,
+    MissingOrStaleData,
+    ProposedDecision,
+    TradePlanProposal,
+)
 from prism_core.storage.migrations import DatabaseKind, migrate_database
+from tests.llm.test_trade_plan_schema import valid_proposal_payload
 
 
 AS_OF = datetime(2026, 7, 26, 12, 0, tzinfo=timezone.utc)
@@ -53,6 +61,14 @@ def _research_connection() -> sqlite3.Connection:
             sampling_json TEXT, validator_version TEXT, policy_version TEXT,
             observed_at TEXT, available_at TEXT, ingested_at TEXT, as_of_at TEXT,
             content_hash TEXT
+        );
+        CREATE TABLE proposal_disposition_events (
+            disposition_event_id TEXT PRIMARY KEY, proposal_record_id TEXT,
+            strategy_id TEXT, strategy_version TEXT, sequence_no INTEGER,
+            field_path TEXT, action TEXT, reason TEXT, proposed_value_json TEXT,
+            resolved_value_json TEXT, evidence_refs_json TEXT,
+            validator_version TEXT, policy_version TEXT, observed_at TEXT,
+            available_at TEXT, ingested_at TEXT, as_of_at TEXT, content_hash TEXT
         );
         CREATE TABLE proposal_outcomes (
             outcome_event_id TEXT PRIMARY KEY, proposal_record_id TEXT,
@@ -145,6 +161,15 @@ def _research_connection() -> sqlite3.Connection:
                 f"proposal-hash-{suffix}",
             ),
         )
+        connection.execute(
+            "INSERT INTO proposal_disposition_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                f"disposition-{suffix}", f"record-{suffix}", strategy, "1.0.0", 0,
+                "regime.probabilities", "ACCEPT", "regime validated", None,
+                "1", json.dumps([f"e-{suffix}"]), "validator-v1", "policy-v1",
+                timing, timing, timing, timing, f"disposition-hash-{suffix}",
+            ),
+        )
     connection.execute(
         "INSERT INTO lesson_candidates VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
@@ -225,7 +250,8 @@ def test_export_separates_authoritative_phase1_sections_and_pit_boundary() -> No
     assert [item["symbol"] for item in payload["research"]["daily_leaders"]] == ["005930"]
     assert payload["research"]["swing_v1_proposals"][0]["strategy_id"] == "SWING_V1"
     assert payload["research"]["trend_v1_proposals"][0]["strategy_id"] == "TREND_V1"
-    assert payload["research"]["scenario_evidence_falsifiers"][0]["falsifiers"]
+    assert payload["research"]["swing_v1_proposals"][0]["scenario_state"] == "INVALID_PROPOSAL"
+    assert payload["research"]["scenario_evidence_falsifiers"] == []
     assert payload["research"]["research_oos"]["status"] == "UNAVAILABLE"
     assert [item["lesson_id"] for item in payload["research"]["shadow_feedback"]] == ["lesson-1"]
     assert payload["paper"]["environment"] == "INTERNAL_PAPER"
@@ -233,6 +259,235 @@ def test_export_separates_authoritative_phase1_sections_and_pit_boundary() -> No
     assert payload["ops"]["jobs"][0]["job_key"] == "daily_pipeline"
     assert _walk_keys(payload).isdisjoint(
         {"account", "account_summary", "real_portfolio", "real_trading", "broker", "order_intent"}
+    )
+
+
+def test_rejected_proposal_is_exported_as_invalid_without_inventing_no_entry() -> None:
+    research = _research_connection()
+    research.execute(
+        "UPDATE trade_plan_proposals SET parse_status = 'REJECTED', "
+        "validation_status = 'REJECTED', proposed_decision = 'ENTRY_CANDIDATE', "
+        "normalized_proposal_json = NULL WHERE strategy_id = 'SWING_V1'"
+    )
+    exporter = DashboardExporter(research, _paper_connection(), _ops_connection())
+
+    proposal = exporter.build(as_of=AS_OF, generated_at=AS_OF)["research"][
+        "swing_v1_proposals"
+    ][0]
+
+    assert proposal["status"] == "REJECTED"
+    assert proposal["scenario_state"] == "INVALID_PROPOSAL"
+    assert proposal["scenario_complete"] is False
+    assert proposal["proposed_decision"] is None
+    assert proposal["scenario_reasons"]
+    assert _walk_keys(proposal).isdisjoint(
+        {"entry_price", "stop_price", "target_price", "quantity", "account"}
+    )
+
+
+def test_accepted_proposal_preserves_bound_identity_and_observed_trigger() -> None:
+    research = _research_connection()
+    normalized = TradePlanProposal.model_validate(valid_proposal_payload()).model_copy(
+        update={
+            "decision": ProposedDecision.NO_ENTRY,
+            "bull_case": TradePlanProposal.model_validate(
+                valid_proposal_payload()
+            ).bull_case.model_copy(update={"evidence_ids": ("ev-risk-1",)}),
+            "missing_or_stale_data": (
+                MissingOrStaleData(
+                    field="supplemental_news",
+                    status=MissingDataStatus.STALE,
+                    critical=False,
+                    detail="supplemental context is old",
+                ),
+            ),
+        }
+    )
+    timing = "2026-07-26T10:00:00+00:00"
+    research.execute(
+        "UPDATE decision_snapshots SET strategy_version = ?, market = ?, security_id = ?, "
+        "data_snapshot_id = ?, feature_snapshot_id = ?, evidence_refs_json = ? "
+        "WHERE strategy_id = 'SWING_V1'",
+        (
+            normalized.strategy_version.value,
+            normalized.market.value,
+            str(normalized.security_id.value),
+            str(normalized.feature_provenance.data_snapshot_id),
+            str(normalized.feature_provenance.feature_snapshot_id),
+            json.dumps(["ev-price-1", "ev-risk-1"]),
+        ),
+    )
+    research.execute(
+        "UPDATE trade_plan_proposals SET strategy_version = ?, proposal_id = ?, "
+        "proposed_decision = ?, normalized_proposal_json = ? "
+        "WHERE proposal_record_id = 'record-swing'",
+        (
+            normalized.strategy_version.value,
+            str(normalized.proposal_id),
+            normalized.decision.value,
+            canonical_json(normalized),
+        ),
+    )
+    research.execute(
+        "DELETE FROM proposal_disposition_events WHERE proposal_record_id = 'record-swing'"
+    )
+    disposition_rows = (
+        ("evidence.ev-price-1", "ACCEPT", "evidence exists", "ev-price-1", ["ev-price-1"]),
+        ("evidence.ev-risk-1", "ACCEPT", "evidence exists", "ev-risk-1", ["ev-risk-1"]),
+        (
+            "entry_predicates[0].observed_value",
+            "RECALCULATE",
+            "feature value read from bound snapshot",
+            "0.10",
+            ["ev-price-1"],
+        ),
+        (
+            "entry_predicates[0].evaluation",
+            "RECALCULATE",
+            "predicate evaluated from feature snapshot",
+            "false",
+            ["ev-price-1"],
+        ),
+    )
+    for sequence_no, (field_path, action, reason, resolved, evidence_ids) in enumerate(
+        disposition_rows
+    ):
+        research.execute(
+            "INSERT INTO proposal_disposition_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                f"accepted-disposition-{sequence_no}",
+                "record-swing",
+                "SWING_V1",
+                normalized.strategy_version.value,
+                sequence_no,
+                field_path,
+                action,
+                reason,
+                None,
+                json.dumps(resolved),
+                json.dumps(evidence_ids),
+                "validator-v1",
+                "policy-v1",
+                timing,
+                timing,
+                timing,
+                timing,
+                f"accepted-disposition-hash-{sequence_no}",
+            ),
+        )
+
+    proposal = DashboardExporter(
+        research, _paper_connection(), _ops_connection()
+    ).build(as_of=AS_OF, generated_at=AS_OF)["research"]["swing_v1_proposals"][0]
+
+    assert proposal["scenario_state"] == "NO_ENTRY"
+    assert proposal["scenario_complete"] is True
+    assert proposal["proposed_decision"] == "NO_ENTRY"
+    assert proposal["scenario"]["triggers"][0]["observed_value"] == "0.10"
+    assert proposal["scenario"]["bull_path"]["summary"].startswith("Leadership broadens")
+    assert proposal["scenario"]["bull_path"]["evidence_ids"] == ["ev-risk-1"]
+    assert proposal["scenario"]["base_path"]["confirmations"]
+    assert proposal["scenario"]["bear_path"]["evidence_ids"] == ["ev-risk-1"]
+    assert proposal["bull_evidence_ids"] == ["ev-price-1"]
+    assert proposal["bear_evidence_ids"] == ["ev-risk-1"]
+    assert proposal["missing_or_stale_data"] == [
+        {
+            "field": "supplemental_news",
+            "status": "STALE",
+            "critical": False,
+            "detail": "supplemental context is old",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("market", "strategy", "record_id"),
+    (
+        ("KR", "SWING_V1", "record-swing"),
+        ("KR", "TREND_V1", "record-trend"),
+        ("US", "SWING_V1", "record-swing"),
+        ("US", "TREND_V1", "record-trend"),
+    ),
+)
+def test_four_malformed_watch_with_critical_missing_outputs_are_not_no_entry(
+    market: str,
+    strategy: str,
+    record_id: str,
+) -> None:
+    research = _research_connection()
+    research.execute(
+        "UPDATE decision_snapshots SET market = ?, security_id = ? "
+        "WHERE strategy_id = ?",
+        (market, f"security-{market.lower()}", strategy),
+    )
+    research.execute(
+        "UPDATE trade_plan_proposals SET parse_status = 'REJECTED', "
+        "validation_status = 'REJECTED', proposed_decision = NULL, "
+        "raw_output = ?, normalized_proposal_json = NULL WHERE proposal_record_id = ?",
+        (
+            '{"decision":"WATCH","missing_or_stale_data":[{"critical":true}]}',
+            record_id,
+        ),
+    )
+    research.execute(
+        "UPDATE proposal_disposition_events SET action = 'REJECT', "
+        "field_path = 'missing_or_stale_data', "
+        "reason = 'critical data requires fail closed' WHERE proposal_record_id = ?",
+        (record_id,),
+    )
+
+    proposals = DashboardExporter(
+        research, _paper_connection(), _ops_connection()
+    ).build(as_of=AS_OF, generated_at=AS_OF)["research"][
+        "swing_v1_proposals" if strategy == "SWING_V1" else "trend_v1_proposals"
+    ]
+    proposal = next(item for item in proposals if item["proposal_record_id"] == record_id)
+
+    assert proposal["scenario_state"] == "INVALID_PROPOSAL"
+    assert proposal["scenario_complete"] is False
+    assert proposal["proposed_decision"] is None
+    assert proposal["scenario"] == {}
+    assert proposal["scenario_reasons"] == ["critical data requires fail closed"]
+    assert "raw_output" not in proposal
+    assert '"critical":true' not in json.dumps(proposal, sort_keys=True)
+
+
+def test_export_allowlists_nested_persisted_json_fields() -> None:
+    research = _research_connection()
+    malicious = {
+        "regime": {
+            "probabilities": {"sideways": "1", "order_intent": "forbidden"},
+            "confidence": "0.7",
+            "drivers": ["driver"],
+            "falsifiers": ["falsifier"],
+            "account": {"token": "forbidden"},
+        },
+        "bull_evidence_ids": ["bull"],
+        "bear_evidence_ids": ["bear"],
+        "missing_or_stale_data": [],
+        "uncertainty": {
+            "level": "0.3",
+            "known_unknowns": ["unknown"],
+            "quantity": 999,
+        },
+        "entry_price": "70000",
+    }
+    research.execute(
+        "UPDATE trade_plan_proposals SET normalized_proposal_json = ? "
+        "WHERE strategy_id = 'SWING_V1'",
+        (json.dumps(malicious),),
+    )
+    research.execute(
+        "UPDATE lesson_candidates SET candidate_json = ?",
+        (json.dumps({"condition": "observe", "tentative_action": "wait", "account": "x"}),),
+    )
+
+    payload = DashboardExporter(
+        research, _paper_connection(), _ops_connection()
+    ).build(as_of=AS_OF, generated_at=AS_OF)
+
+    assert _walk_keys(payload["research"]).isdisjoint(
+        {"account", "token", "order_intent", "quantity", "entry_price"}
     )
 
 
@@ -341,6 +596,59 @@ def test_typescript_contract_has_no_real_account_surface() -> None:
     combined = "\n".join(path.read_text(encoding="utf-8") for path in root.glob("*.ts"))
     for forbidden in ("RealTradingSummary", "AccountSummary", "real_portfolio", "real_trading"):
         assert forbidden not in combined
+
+
+def test_existing_dashboard_page_consumes_phase1_contract_only() -> None:
+    root = Path(__file__).resolve().parents[2] / "examples/dashboard"
+    page = (root / "app/page.tsx").read_text(encoding="utf-8")
+
+    for required in (
+        "data.research.data_freshness",
+        "data.research.daily_leaders",
+        "data.research.swing_v1_proposals",
+        "data.research.trend_v1_proposals",
+        "data.research.scenario_evidence_falsifiers",
+        "data.research.shadow_feedback",
+        "data.ops.jobs",
+    ):
+        assert required in page
+    for forbidden in (
+        "data.real_portfolio",
+        "data.holdings",
+        "data.trading_history",
+        "MetricsCards",
+        "HoldingsTable",
+        "TradingHistoryPage",
+        "StockEasy",
+        'proposal.status === "REJECTED" ? "NO_ENTRY"',
+        'proposal.proposed_decision || "NO_ENTRY"',
+        "검증을 통과한 시나리오가 없습니다. NO_ENTRY 상태를 유지합니다.",
+    ):
+        assert forbidden not in page
+    assert "proposal.scenario_state" in page
+    assert "ANALYSIS_INCOMPLETE" in page
+    for required_surface in (
+        "현재 판정",
+        "시장 판단",
+        "섹터 판단",
+        "종목 판단",
+        "상승 경로",
+        "기본 경로",
+        "하락 경로",
+        "진입 조건",
+        "회피 조건",
+        "무효화·실패 전환",
+        "손절 후보",
+        "목표 후보",
+        "리스크 배수 후보",
+        "재진입 후보",
+        "피라미딩 후보",
+        "반대 근거",
+        "불확실성",
+        "다음 검토",
+        "필드 판정",
+    ):
+        assert required_surface in page
 
 
 def test_dashboard_contract_tests_are_explicitly_discovered_by_ci() -> None:

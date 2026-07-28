@@ -83,6 +83,8 @@ pydub>=0.25.1  # Audio file manipulation (for splitting large files)
 # US Stock Market (prism-us module)
 yfinance>=0.2.0  # Yahoo Finance data
 pandas-market-calendars>=4.0.0  # US market holidays
+exchange-calendars>=4.13,<5  # KRX/NYSE completed-session resolution
+jsonschema>=4.23,<5  # shape-only validation for deferred structured LLM semantics
 pytz>=2024.1  # Timezone support
 lxml>=4.9.0  # HTML/XML parsing for pandas read_html
 

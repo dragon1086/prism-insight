@@ -72,7 +72,13 @@ Fixture·fake·mock은 unit/contract/CI의 결정론, 오류 주입, 회귀 재�
 
 외부 adapter는 1만 통과한 상태를 `implemented foundation`으로만 보고하며 `live verified`, `runtime wired`, `operated ready`라고 표현하지 않는다. Live integration은 기본 unit CI와 분리된 marker/job으로 실행하고 비밀값·authorization header·계좌정보·원시 private payload를 로그나 artifact에 남기지 않는다. 자격증명이나 권한이 없으면 성공 처리하거나 demo/fixture 결과로 대체하지 않고 명시적으로 skip 또는 block한다. 알고리즘·정책·백테스트의 future-data trap, 오류, 경계 fixture는 외부 가용성 검증이 아니라 결정론적 안전 증명이므로 계속 fixture로 유지한다.
 
-현재 standing approval은 KIS/FMP 시장데이터, 공개 AgentNews 읽기, allowlisted Telegram 테스트 발송에 한정한다. KRX/KIND/DART, SEC EDGAR, FRED/ALFRED, ECOS, 외부 LLM 등 그 밖의 실제 endpoint 호출은 해당 source의 비용·약관·자격증명·호출량·데이터 범위를 명시한 별도 source-specific capability/approval을 받은 뒤 수행한다. Live integration이 완료 기준이라는 사실 자체가 호출 권한을 부여하지 않는다.
+읽기 전용 검증은 주말·휴장 여부와 무관하게 상시 허용한다. 로컬에 이미 구성된 자격증명 또는 공개 endpoint를 사용하는 KIS/FMP 시장데이터, KRX/KIND/DART, SEC EDGAR, FRED/ALFRED, ECOS, AgentNews, 외부 LLM의 bounded fetch/smoke, 저장·재조회, 리포트·대시보드 UAT는 별도 회차 승인을 요구하지 않는다. 단, 호출은 공식·허용 endpoint와 약관 범위 안에서 rate limit·timeout·redaction을 적용하며 자격증명을 생성·변경하거나 유료 범위를 확대하지 않는다. 계좌·잔고·보유종목, 주문·정정·취소, broker paper/live 효과, 권한·자격증명 변경만 별도 승인 경계로 유지한다.
+
+위에 열거되지 않은 그 밖의 실제 endpoint 호출은 별도 source-specific capability/approval과 bounded smoke 계약을 먼저 기록한다.
+
+휴장 중 daily 제품의 `fresh`는 벽시계 경과시간이 아니라 **최신 완료 거래 세션을 성공적으로 조회했는지**로 판단한다. 토요일·일요일에 금요일 완료 봉을 읽은 것은 stale이 아니다. 보고서에는 실제 수집 시각, 최신 완료 거래일, 각 원천의 source/as-of를 함께 표시한다. 뉴스·이벤트처럼 원천 자체가 갱신되지 않아 오래된 컨텍스트는 분석·LLM·저장·리포트 경로를 중단하지 않고 `REPORT_ONLY`/`NO_ENTRY` hard veto로 신규 진입 권한만 제거한다.
+
+제품 완료는 fixture/unit 통과만을 뜻하지 않는다. 최소 한 사용자 진입점에서 실제 read-only 데이터 → PIT 관측값 → 정량 점수 → 기존 ChatGPT OAuth Sol → 결정론적 검증 → SQLite 저장·재조회 → 기존 보고서 표면까지 실행되어야 하며, `broker_called=false`, `schedule_activated=false`, source/as-of 및 재조회 동등성이 증거로 남아야 한다.
 
 ### 한국 데이터 제공자 확정
 

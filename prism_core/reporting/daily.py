@@ -25,9 +25,14 @@ from prism_core.reporting.models import (
     LeadingSector,
     LeadershipQuality,
     ProposalReadModel,
+    ProductScenarioReadModel,
     ReportSource,
     ShadowStatus,
     StrategyReportSection,
+)
+from prism_core.reporting.scenario_completeness import (
+    ProductScenarioState,
+    sanitize_scenario_reasons,
 )
 from prism_core.strategies.contracts import Market, StrategyId, StrategyVersion
 
@@ -204,11 +209,54 @@ def build_daily_report(
             decision = None
         summary_value = output.get("summary") if hasattr(output, "get") else None
         summary = summary_value if isinstance(summary_value, str) and summary_value.strip() else None
+        state_value = output.get("scenario_state") if hasattr(output, "get") else None
+        try:
+            scenario_state = ProductScenarioState(state_value)
+        except (TypeError, ValueError):
+            scenario_state = ProductScenarioState.ANALYSIS_INCOMPLETE
+        scenario_complete = output.get("scenario_complete") is True
+        reason_values = output.get("scenario_reasons", ()) if hasattr(output, "get") else ()
+        scenario_reasons = sanitize_scenario_reasons(
+            reason_values if isinstance(reason_values, (tuple, list)) else ()
+        )
+        scenario_value = output.get("scenario") if hasattr(output, "get") else None
+        try:
+            scenario = (
+                ProductScenarioReadModel.model_validate(scenario_value)
+                if scenario_complete
+                else None
+            )
+        except (TypeError, ValueError):
+            scenario = None
+            scenario_complete = False
+            scenario_state = ProductScenarioState.ANALYSIS_INCOMPLETE
+            scenario_reasons = sanitize_scenario_reasons(
+                (*scenario_reasons, "persisted scenario failed report-contract validation")
+            )
+        if scenario_complete and (
+            scenario is None
+            or decision is None
+            or scenario.current_action is not decision
+            or scenario_state.value != decision.value
+        ):
+            scenario = None
+            decision = None
+            scenario_complete = False
+            scenario_state = ProductScenarioState.ANALYSIS_INCOMPLETE
+            scenario_reasons = sanitize_scenario_reasons(
+                (*scenario_reasons, "scenario state and decision identity mismatch")
+            )
+        if not scenario_complete:
+            decision = None
         strategy_sections.append(
             StrategyReportSection(
                 strategy_id=item.strategy_id,
                 strategy_version=item.strategy_version,
                 proposed_decision=decision,
+                scenario_state=scenario_state,
+                scenario_complete=scenario_complete,
+                scenario_reasons=scenario_reasons,
+                scenario=scenario,
                 summary=summary,
                 analysis_evidence_refs=item.evidence_refs,
                 proposals=_parse_current_proposals(
@@ -315,6 +363,15 @@ def render_daily_report(report: DailyReport) -> str:
             lines.append(
                 f"- Proposal status: {section.proposed_decision.value if section.proposed_decision else 'NOT_AVAILABLE'}"
             )
+            lines.append(f"- Scenario state: {section.scenario_state.value}")
+            lines.append(f"- Scenario complete: {section.scenario_complete}")
+            if section.scenario_reasons:
+                lines.append(f"- Scenario reasons: {'; '.join(section.scenario_reasons)}")
+            if section.scenario is not None:
+                lines.append(f"- Next review: {section.scenario.next_review_at.isoformat()}")
+                lines.append(
+                    f"- Current action: {section.scenario.current_action.value}"
+                )
             if section.summary:
                 lines.append(f"- Summary: {section.summary}")
             for proposal in section.proposals:

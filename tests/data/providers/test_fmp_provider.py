@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -1055,6 +1055,33 @@ async def test_one_fixture_page_normalizes_us_price_snapshot_with_pit_provenance
     assert bar.timing.ingested_at == INGESTED
     assert bar.timing.as_of_date == AS_OF
     assert len(result.snapshot.content_hash) == 64
+
+
+@pytest.mark.asyncio
+async def test_price_ingested_at_is_sampled_after_transport_completion() -> None:
+    request_started = INGESTED
+    response_finished = INGESTED + timedelta(seconds=3)
+    clock_values = iter((request_started, response_finished))
+    provider = FMPMarketDataProvider(
+        transport=PricePageTransport(),
+        api_key=FMPApiKey(SECRET),
+        instruments=(
+            FMPInstrument(
+                security_id=SECURITY_ID,
+                fmp_symbol="AAPL",
+                valid_from=datetime(1980, 12, 12, tzinfo=UTC),
+            ),
+        ),
+        clock=lambda: next(clock_values),
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,),
+        as_of_date=AS_OF,
+    )
+
+    assert result.snapshot.created_at == response_finished
+    assert result.snapshot.price_bars[0].timing.ingested_at == response_finished
 
 
 @pytest.mark.asyncio

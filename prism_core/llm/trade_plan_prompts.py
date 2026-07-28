@@ -25,10 +25,10 @@ _TRADE_PLAN_SCHEMA_FINGERPRINT = hashlib.sha256(
 ).hexdigest()[:12]
 
 SWING_V1_PROMPT_VERSION = (
-    f"trade-plan.swing-v1.v1.schema-{_TRADE_PLAN_SCHEMA_FINGERPRINT}"
+    f"trade-plan.swing-v1.v2.schema-{_TRADE_PLAN_SCHEMA_FINGERPRINT}"
 )
 TREND_V1_PROMPT_VERSION = (
-    f"trade-plan.trend-v1.v1.schema-{_TRADE_PLAN_SCHEMA_FINGERPRINT}"
+    f"trade-plan.trend-v1.v2.schema-{_TRADE_PLAN_SCHEMA_FINGERPRINT}"
 )
 
 
@@ -95,8 +95,35 @@ def get_trade_plan_prompt_contract(
         "\nRequired analysis:\n"
         "Declare specific uncertainty and known unknowns, concrete falsifiers, bull and "
         "bear evidence references, and every item of missing, stale, or conflicting data. "
+        "Return independent bull_case, base_case, and bear_case objects with branch-specific "
+        "conditions, confirmations, falsifiers, next_event, valid_until, and evidence IDs. "
         "Every numeric claim must cite supplied feature names or evidence IDs; otherwise "
         "do not assert it and declare the gap.\n"
+        "Use evidence_ids only from the exact allowed_evidence_ids array in the input; "
+        "never use a feature name, formula name, URL, or invented label as an evidence ID. "
+        "Use entry predicate feature_name values only from allowed_predicate_features. "
+        "The scenario_input_pack is the authoritative deterministic price-basis, latest-bar, "
+        "structure, ATR, trend, relative-strength, liquidity, fundamental, event, and "
+        "next-review context; do not declare one of those fields missing when its value is "
+        "present in that pack. To satisfy the schema fail-closed invariant, select NO_ENTRY "
+        "whenever missing_or_stale_data is non-empty; WATCH and ENTRY_CANDIDATE require an "
+        "empty missing_or_stale_data array.\n"
+        "The output missing_or_stale_data must mirror scenario_input_pack.issues exactly; "
+        "do not add optional, desired, or newly invented fields that the deterministic "
+        "pack did not classify as an issue.\n"
+        "The llm_score must stay within 25 points of quant_score.total_score; express "
+        "your bounded judgment inside that validator range. Every entry predicate "
+        "valid_until must be strictly later than contract.as_of. Choose the decision "
+        "consistently with deterministic predicate evaluation against the supplied "
+        "feature values: WATCH requires at least one predicate to evaluate false; "
+        "ENTRY_CANDIDATE requires every predicate to evaluate true; NO_ENTRY requires "
+        "every predicate to evaluate false.\n"
+        "The regime directional score must stay within 25 points of the supplied "
+        "<strategy_id_lower>.regime_compatibility feature. Calculate that score as "
+        "50 * (1 + strong_bull + 0.5*moderate_bull - 0.5*moderate_bear - strong_bear).\n"
+        "For audit provenance, copy contract.model, contract.prompt_version, and "
+        "contract.sampling exactly into the matching output fields; do not infer or "
+        "rename provider, model, prompt, or sampling values.\n"
         "\nAuthority boundary:\n"
         "This is a non-executable research proposal. Do not output final quantity, "
         "portfolio slots, execution or order approval, an OrderIntent, any broker or "

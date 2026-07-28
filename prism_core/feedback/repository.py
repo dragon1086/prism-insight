@@ -132,6 +132,17 @@ class StoredProposal:
     proposed_decision: ProposedDecision | None
     raw_output: str
     normalized_proposal_json: str | None
+    validation_status: ProposalValidationStatus
+    model_provider: str
+    model_id: str
+    model_version: str
+    prompt_version: str
+    sampling_version: str
+    sampling: Mapping[str, Any]
+    validator_version: str
+    policy_version: str
+    data_snapshot_id: str
+    feature_snapshot_id: str
     available_at: datetime
     dispositions: tuple[FieldDisposition, ...]
 
@@ -295,8 +306,14 @@ class FeedbackRepository:
             """
             SELECT p.proposal_record_id, p.proposal_key, p.revision, p.strategy_id,
                    p.strategy_version, p.proposed_decision, p.raw_output,
-                   p.normalized_proposal_json, p.available_at
+                   p.normalized_proposal_json, p.validation_status,
+                   p.model_provider, p.model_id, p.model_version, p.prompt_version,
+                   p.sampling_version, p.sampling_json, p.validator_version,
+                   p.policy_version, d.data_snapshot_id, d.feature_snapshot_id,
+                   p.available_at
             FROM trade_plan_proposals AS p
+            JOIN decision_snapshots AS d
+              ON d.decision_snapshot_id = p.decision_snapshot_id
             JOIN (
                 SELECT proposal_key, strategy_version, max(revision) AS revision
                 FROM trade_plan_proposals
@@ -311,9 +328,52 @@ class FeedbackRepository:
             """,
             (strategy_id.value, boundary, boundary, strategy_id.value),
         ).fetchall()
-        stored: list[StoredProposal] = []
-        for row in rows:
-            disposition_rows = self._connection.execute(
+        return tuple(self._stored_proposal(row, boundary) for row in rows)
+
+    def stored_proposal_for(
+        self,
+        proposal_key: str,
+        *,
+        strategy_id: StrategyId,
+        strategy_version: StrategyVersion,
+        as_of: datetime,
+    ) -> StoredProposal | None:
+        _require_text("proposal_key", proposal_key)
+        if not isinstance(strategy_id, StrategyId):
+            raise TypeError("strategy_id must be StrategyId")
+        if not isinstance(strategy_version, StrategyVersion):
+            raise TypeError("strategy_version must be StrategyVersion")
+        boundary = _utc_text(as_of)
+        row = self._connection.execute(
+            """
+            SELECT p.proposal_record_id, p.proposal_key, p.revision, p.strategy_id,
+                   p.strategy_version, p.proposed_decision, p.raw_output,
+                   p.normalized_proposal_json, p.validation_status,
+                   p.model_provider, p.model_id, p.model_version, p.prompt_version,
+                   p.sampling_version, p.sampling_json, p.validator_version,
+                   p.policy_version, d.data_snapshot_id, d.feature_snapshot_id,
+                   p.available_at
+            FROM trade_plan_proposals AS p
+            JOIN decision_snapshots AS d
+              ON d.decision_snapshot_id = p.decision_snapshot_id
+            WHERE p.proposal_key = ? AND p.strategy_id = ?
+              AND p.strategy_version = ?
+              AND p.available_at <= ? AND p.as_of_at <= ?
+            ORDER BY p.revision DESC
+            LIMIT 1
+            """,
+            (
+                proposal_key,
+                strategy_id.value,
+                strategy_version.value,
+                boundary,
+                boundary,
+            ),
+        ).fetchone()
+        return None if row is None else self._stored_proposal(row, boundary)
+
+    def _stored_proposal(self, row, boundary: str) -> StoredProposal:
+        disposition_rows = self._connection.execute(
                 """
                 SELECT field_path, action, reason, proposed_value_json,
                        resolved_value_json, evidence_refs_json
@@ -323,32 +383,40 @@ class FeedbackRepository:
                 """,
                 (row[0], boundary, boundary),
             ).fetchall()
-            disposition_values = tuple(
-                FieldDisposition(
-                    field_path=item[0],
-                    action=DispositionAction(item[1]),
-                    reason=item[2],
-                    proposed_value=None if item[3] is None else json.loads(item[3]),
-                    resolved_value=None if item[4] is None else json.loads(item[4]),
-                    evidence_ids=tuple(json.loads(item[5])),
-                )
-                for item in disposition_rows
+        disposition_values = tuple(
+            FieldDisposition(
+                field_path=item[0],
+                action=DispositionAction(item[1]),
+                reason=item[2],
+                proposed_value=None if item[3] is None else json.loads(item[3]),
+                resolved_value=None if item[4] is None else json.loads(item[4]),
+                evidence_ids=tuple(json.loads(item[5])),
             )
-            stored.append(
-                StoredProposal(
-                    proposal_record_id=row[0],
-                    proposal_key=row[1],
-                    revision=row[2],
-                    strategy_id=StrategyId(row[3]),
-                    strategy_version=StrategyVersion(row[4]),
-                    proposed_decision=None if row[5] is None else ProposedDecision(row[5]),
-                    raw_output=row[6],
-                    normalized_proposal_json=row[7],
-                    available_at=datetime.fromisoformat(row[8]),
-                    dispositions=disposition_values,
-                )
+            for item in disposition_rows
+        )
+        return StoredProposal(
+            proposal_record_id=row[0],
+            proposal_key=row[1],
+            revision=row[2],
+            strategy_id=StrategyId(row[3]),
+            strategy_version=StrategyVersion(row[4]),
+            proposed_decision=None if row[5] is None else ProposedDecision(row[5]),
+            raw_output=row[6],
+            normalized_proposal_json=row[7],
+            validation_status=ProposalValidationStatus(row[8]),
+            model_provider=row[9],
+            model_id=row[10],
+            model_version=row[11],
+            prompt_version=row[12],
+            sampling_version=row[13],
+            sampling=json.loads(row[14]),
+            validator_version=row[15],
+            policy_version=row[16],
+            data_snapshot_id=row[17],
+            feature_snapshot_id=row[18],
+            available_at=datetime.fromisoformat(row[19]),
+            dispositions=disposition_values,
             )
-        return tuple(stored)
 
     def append_retrospective(self, record: RetrospectiveRecord) -> AppendDisposition:
         if not isinstance(record, RetrospectiveRecord):
@@ -937,6 +1005,8 @@ class FeedbackRepository:
 
 def _referenced_evidence(proposal: TradePlanProposal) -> set[str]:
     evidence = set(proposal.bull_evidence_ids) | set(proposal.bear_evidence_ids)
+    for branch in (proposal.bull_case, proposal.base_case, proposal.bear_case):
+        evidence.update(branch.evidence_ids)
     for item in proposal.score_breakdown:
         evidence.update(item.evidence_ids)
     evidence.update(proposal.risk_multiplier_candidate.evidence_ids)

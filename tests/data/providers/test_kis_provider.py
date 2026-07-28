@@ -128,6 +128,49 @@ async def test_kis_primary_normalizes_raw_daily_bar_with_pit_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_historical_bars_do_not_backdate_retrieval_availability() -> None:
+    class HistoricalFixtureTransport(FixtureTransport):
+        async def fetch(self, provider: str, *, as_of_date: datetime) -> ProviderPayload:
+            current = await super().fetch(provider, as_of_date=as_of_date)
+            prices = [
+                {
+                    "provider_symbol": "005930",
+                    "trade_date": "2026-07-23",
+                    "open": "69000",
+                    "high": "70500",
+                    "low": "68500",
+                    "close": "70000",
+                    "volume": "10000000",
+                },
+                *current.payload["prices"],
+            ]
+            return ProviderPayload(
+                provider=current.provider,
+                source_record_id=current.source_record_id,
+                revision=current.revision,
+                observed_at=current.observed_at,
+                available_at=current.available_at,
+                payload={"prices": prices},
+            )
+
+    provider = KISMarketDataProvider(
+        transport=HistoricalFixtureTransport(),
+        instruments=(KISInstrument(security_id=SECURITY_ID, kis_symbol="005930"),),
+        clock=lambda: INGESTED,
+    )
+
+    result = await provider.fetch_result(
+        security_ids=(SECURITY_ID,), as_of_date=AS_OF
+    )
+
+    earlier, latest = result.snapshot.price_bars
+    assert earlier.timing.observed_at == datetime(2026, 7, 24, 15, 30, tzinfo=KST)
+    assert earlier.timing.available_at == datetime(2026, 7, 24, 15, 31, tzinfo=KST)
+    assert latest.timing.observed_at == datetime(2026, 7, 24, 15, 30, tzinfo=KST)
+    assert latest.timing.available_at == datetime(2026, 7, 24, 15, 31, tzinfo=KST)
+
+
+@pytest.mark.asyncio
 async def test_timeout_retries_are_bounded_and_observable() -> None:
     attempts = 0
     sleeps: list[float] = []

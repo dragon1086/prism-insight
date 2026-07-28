@@ -178,6 +178,12 @@ def test_accepts_bound_proposal_and_preserves_raw_identity_and_evidence_links() 
         for item in result.dispositions
     )
     assert any(
+        item.field_path == "entry_predicates[0].observed_value"
+        and item.action is DispositionAction.RECALCULATE
+        and item.resolved_value == "0.05"
+        for item in result.dispositions
+    )
+    assert any(
         item.field_path == "pyramiding_candidates[0]"
         and item.action is DispositionAction.ACCEPT
         and item.resolved_value == "validated"

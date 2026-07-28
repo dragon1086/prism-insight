@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Mapping, Protocol
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from prism_app.report_service import PublicationResult, ReportService
-from prism_core.data.contracts import DataQualityStatus
+from prism_core.data.contracts import DataQualityStatus, ObservationTime
 from prism_core.data.quality import (
     DataQualityGate,
     QualityDecision,
@@ -26,12 +26,15 @@ from prism_core.reporting.leadership_tracking import (
 from prism_core.runtime.settings import PHASE1_MODES, RuntimeSettings
 from prism_core.storage.database import transaction
 from prism_core.strategies.contracts import (
+    FeatureSnapshot,
     Market,
+    QuantScoreBreakdown,
     StrategyDefinition,
     StrategyId,
     StrategyVersion,
 )
 from prism_core.strategies.registry import DEFAULT_STRATEGY_REGISTRY, StrategyRegistry
+from prism_core.strategies.scenario_inputs import ScenarioInputPack, ScenarioInputStatus
 
 
 _RUN_TYPE = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$")
@@ -57,6 +60,7 @@ class DailyRunRequest:
     as_of_date: date
     run_type: str
     evaluated_at: datetime
+    invocation_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.market, Market):
@@ -71,10 +75,21 @@ class DailyRunRequest:
             or self.evaluated_at.utcoffset() is None
         ):
             raise ValueError("evaluated_at must be timezone-aware")
+        if self.invocation_id is not None and (
+            not isinstance(self.invocation_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.invocation_id) is None
+        ):
+            raise ValueError("invocation_id must be a lowercase SHA-256 digest")
+
+    @property
+    def base_job_key(self) -> str:
+        return f"daily:{self.market.value}:{self.as_of_date.isoformat()}:{self.run_type}"
 
     @property
     def job_key(self) -> str:
-        return f"daily:{self.market.value}:{self.as_of_date.isoformat()}:{self.run_type}"
+        if self.invocation_id is None:
+            return self.base_job_key
+        return f"{self.base_job_key}:{self.invocation_id}"
 
 
 @dataclass(frozen=True)
@@ -85,6 +100,7 @@ class PipelineSnapshot:
     field_quality: Mapping[str, DataQualityStatus]
     leadership_snapshot: MarketTrackingSnapshot
     source_payload: Mapping[str, Any]
+    strategy_inputs: Mapping[StrategyId, StrategyEvaluationInput] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.data_snapshot_id, UUID):
@@ -95,14 +111,102 @@ class PipelineSnapshot:
             raise TypeError("leadership_snapshot must be MarketTrackingSnapshot")
         if not isinstance(self.source_payload, Mapping):
             raise TypeError("source_payload must be a mapping")
+        if not isinstance(self.strategy_inputs, Mapping) or any(
+            not isinstance(key, StrategyId)
+            or not isinstance(value, StrategyEvaluationInput)
+            or value.feature_snapshot.strategy_id is not key
+            or value.feature_snapshot.data_snapshot_id != self.data_snapshot_id
+            for key, value in self.strategy_inputs.items()
+        ):
+            raise TypeError("strategy_inputs must contain exact strategy input identities")
+
+
+@dataclass(frozen=True)
+class StrategyEvaluationInput:
+    """Typed, point-in-time input for one structured strategy proposal."""
+
+    feature_snapshot: FeatureSnapshot
+    quant_score: QuantScoreBreakdown
+    available_evidence_ids: frozenset[str]
+    evidence_payload: Mapping[str, Any]
+    timing: ObservationTime
+    hard_vetoes: tuple[str, ...] = ()
+    scenario_input_pack: ScenarioInputPack | None = None
+
+    def __post_init__(self) -> None:
+        feature = self.feature_snapshot
+        score = self.quant_score
+        if not isinstance(feature, FeatureSnapshot):
+            raise TypeError("feature_snapshot must be a FeatureSnapshot")
+        if not isinstance(score, QuantScoreBreakdown):
+            raise TypeError("quant_score must be a QuantScoreBreakdown")
+        if (
+            score.feature_snapshot_id != feature.feature_snapshot_id
+            or score.strategy_id is not feature.strategy_id
+            or score.strategy_version != feature.strategy_version
+            or score.market is not feature.market
+            or score.security_id != feature.security_id
+        ):
+            raise ValueError("quant score must match the exact feature snapshot identity")
+        if not isinstance(self.available_evidence_ids, frozenset) or any(
+            not isinstance(item, str) or not item.strip()
+            for item in self.available_evidence_ids
+        ):
+            raise TypeError("available_evidence_ids must be a frozenset of non-empty strings")
+        if not isinstance(self.evidence_payload, Mapping):
+            raise TypeError("evidence_payload must be a mapping")
+        if set(self.evidence_payload) != set(self.available_evidence_ids):
+            raise ValueError("evidence payload keys must match available evidence identities")
+        if not isinstance(self.timing, ObservationTime):
+            raise TypeError("timing must be ObservationTime")
+        if self.timing.as_of_date != feature.as_of:
+            raise ValueError("strategy input timing must match feature as_of")
+        if any(not isinstance(item, str) or not item.strip() for item in self.hard_vetoes):
+            raise TypeError("hard_vetoes must contain non-empty strings")
+        pack = self.scenario_input_pack
+        if pack is not None:
+            if not isinstance(pack, ScenarioInputPack):
+                raise TypeError("scenario_input_pack must be a ScenarioInputPack")
+            if (
+                pack.provenance.data_snapshot_id != feature.data_snapshot_id
+                or pack.identity.market is not feature.market
+                or pack.identity.security_id != feature.security_id
+            ):
+                raise ValueError("scenario input pack must match the feature snapshot")
+            if pack.status is ScenarioInputStatus.COMPLETE:
+                matching = tuple(
+                    item
+                    for item in pack.strategies
+                    if item.strategy_id is feature.strategy_id
+                )
+                if (
+                    len(matching) != 1
+                    or matching[0].feature_snapshot_id != feature.feature_snapshot_id
+                ):
+                    raise ValueError(
+                        "scenario input pack must bind the exact strategy feature"
+                    )
 
 
 @dataclass(frozen=True)
 class StrategyEvaluationRequest:
     strategy: StrategyDefinition
+    market: Market
     data_snapshot_id: UUID
     source_payload: Mapping[str, Any]
     evaluated_at: datetime
+    strategy_input: StrategyEvaluationInput | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.market, Market):
+            raise TypeError("market must be Market")
+        if self.market not in self.strategy.supported_markets:
+            raise ValueError("strategy does not support evaluation market")
+        if (
+            self.strategy_input is not None
+            and self.strategy_input.feature_snapshot.market is not self.market
+        ):
+            raise ValueError("strategy input market must match evaluation market")
 
 
 @dataclass(frozen=True)
@@ -276,9 +380,11 @@ class DailyPipeline:
                 output = await self._strategy_evaluator.evaluate(
                     StrategyEvaluationRequest(
                         strategy=definition,
+                        market=request.market,
                         data_snapshot_id=snapshot.data_snapshot_id,
                         source_payload=snapshot.source_payload,
                         evaluated_at=request.evaluated_at,
+                        strategy_input=snapshot.strategy_inputs.get(definition.strategy_id),
                     )
                 )
                 if (

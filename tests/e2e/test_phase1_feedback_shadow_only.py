@@ -176,10 +176,14 @@ def test_legacy_unvalidated_lesson_has_no_phase1_evaluation_or_score_input(
     assert retrieved.lessons == ()
     assert evaluation_fields == {
         "strategy",
+        "market",
         "data_snapshot_id",
         "source_payload",
         "evaluated_at",
+        "strategy_input",
     }
+    assert "lessons" not in evaluation_fields
+    assert "score_adjustment" not in evaluation_fields
     assert score_after_retrieval == baseline_score
 
 

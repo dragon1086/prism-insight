@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 from urllib.parse import quote
 
+from prism_core.policy.dispositions import DispositionAction, FieldDisposition
+from prism_core.reporting.scenario_completeness import assess_scenario
+
 SCHEMA_VERSION = "prism_dashboard_v1"
 LOCAL_BIND_HOST = "127.0.0.1"
 _STRATEGIES = ("SWING_V1", "TREND_V1")
@@ -52,6 +55,92 @@ def _json_object(value: str | None) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("persisted dashboard JSON must be an object")
     return parsed
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+
+def _project_missing_or_stale_data(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        field = item.get("field")
+        status = item.get("status")
+        critical = item.get("critical")
+        detail = item.get("detail")
+        if (
+            not isinstance(field, str)
+            or not field
+            or status not in {"MISSING", "STALE", "CONFLICT"}
+            or not isinstance(critical, bool)
+            or not isinstance(detail, str)
+            or not detail
+        ):
+            continue
+        result.append(
+            {
+                "field": field,
+                "status": status,
+                "critical": critical,
+                "detail": detail,
+            }
+        )
+    return result
+
+
+def _project_regime(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    probabilities = value.get("probabilities")
+    allowed_regimes = {
+        "strong_bull",
+        "moderate_bull",
+        "sideways",
+        "moderate_bear",
+        "strong_bear",
+    }
+    projected_probabilities = (
+        {
+            key: item
+            for key, item in probabilities.items()
+            if key in allowed_regimes and isinstance(item, (str, int, float))
+        }
+        if isinstance(probabilities, Mapping)
+        else {}
+    )
+    confidence = value.get("confidence")
+    return {
+        "probabilities": projected_probabilities,
+        "confidence": confidence if isinstance(confidence, (str, int, float)) else None,
+        "drivers": _string_list(value.get("drivers")),
+        "falsifiers": _string_list(value.get("falsifiers")),
+    }
+
+
+def _project_uncertainty(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    level = value.get("level")
+    return {
+        "level": level if isinstance(level, (str, int, float)) else None,
+        "known_unknowns": _string_list(value.get("known_unknowns")),
+    }
+
+
+def _project_lesson_candidate(value: str | None) -> dict[str, Any]:
+    candidate = _json_object(value)
+    return {
+        key: candidate[key]
+        for key in ("condition", "tentative_action")
+        if isinstance(candidate.get(key), str)
+    }
 
 
 def _tables(connection: sqlite3.Connection) -> frozenset[str]:
@@ -146,6 +235,7 @@ class DashboardExporter:
                 }
                 for strategy in _STRATEGIES
                 for item in proposals[strategy]
+                if item["scenario_complete"]
             ],
             "research_oos": {
                 "status": "UNAVAILABLE",
@@ -254,8 +344,10 @@ class DashboardExporter:
             """
             SELECT p.proposal_record_id, p.proposal_id, p.revision,
                    p.strategy_id, p.strategy_version, d.market, d.security_id,
-                   d.data_snapshot_id, d.evidence_refs_json, d.data_quality,
+                   d.data_snapshot_id, d.feature_snapshot_id,
+                   d.evidence_refs_json, d.data_quality,
                    d.quality_disposition, p.proposed_decision,
+                   p.parse_status, p.validation_status,
                    p.normalized_proposal_json, p.model_provider, p.model_id,
                    p.model_version, p.prompt_version, p.available_at
             FROM trade_plan_proposals AS p
@@ -276,11 +368,49 @@ class DashboardExporter:
         ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
-            normalized = _json_object(row[12])
-            regime = normalized.get("regime", {})
-            if not isinstance(regime, Mapping):
-                regime = {}
-            falsifiers = regime.get("falsifiers", [])
+            normalized = _json_object(row[15])
+            disposition_rows = self._research.execute(
+                """
+                SELECT field_path, action, reason, proposed_value_json,
+                       resolved_value_json, evidence_refs_json
+                FROM proposal_disposition_events
+                WHERE proposal_record_id = ? AND available_at <= ? AND as_of_at <= ?
+                ORDER BY sequence_no
+                """,
+                (row[0], boundary, boundary),
+            ).fetchall()
+            dispositions = tuple(
+                FieldDisposition(
+                    field_path=item[0],
+                    action=DispositionAction(item[1]),
+                    reason=item[2],
+                    proposed_value=None if item[3] is None else json.loads(item[3]),
+                    resolved_value=None if item[4] is None else json.loads(item[4]),
+                    evidence_ids=tuple(json.loads(item[5])),
+                )
+                for item in disposition_rows
+            )
+            assessment = assess_scenario(
+                parse_status=row[13],
+                validation_status=row[14],
+                normalized_proposal_json=row[15],
+                dispositions=dispositions,
+                expected_identity={
+                    "strategy_id": row[3],
+                    "strategy_version": row[4],
+                    "market": row[5],
+                    "security_id": row[6],
+                    "data_snapshot_id": row[7],
+                    "feature_snapshot_id": row[8],
+                },
+            )
+            scenario = dict(assessment.scenario)
+            falsifiers = scenario.get("falsifiers", [])
+            status = (
+                "REJECTED"
+                if row[13] == "REJECTED" or row[14] == "REJECTED"
+                else row[14]
+            )
             result.append(
                 {
                     "proposal_record_id": row[0],
@@ -291,23 +421,45 @@ class DashboardExporter:
                     "market": row[5],
                     "security_id": row[6],
                     "snapshot_id": row[7],
-                    "evidence_refs": json.loads(row[8]),
-                    "data_quality": row[9],
-                    "quality_disposition": row[10],
-                    "proposed_decision": row[11],
-                    "scenario": dict(regime),
-                    "bull_evidence_ids": normalized.get("bull_evidence_ids", []),
-                    "bear_evidence_ids": normalized.get("bear_evidence_ids", []),
+                    "evidence_refs": json.loads(row[9]),
+                    "data_quality": row[10],
+                    "quality_disposition": row[11],
+                    "status": status,
+                    "scenario_state": assessment.state.value,
+                    "scenario_complete": assessment.complete,
+                    "scenario_reasons": list(assessment.reasons),
+                    "proposed_decision": (
+                        None
+                        if assessment.proposed_decision is None
+                        else assessment.proposed_decision.value
+                    ),
+                    "scenario": scenario,
+                    "bull_evidence_ids": _string_list(
+                        scenario.get("bull_evidence_ids")
+                    ),
+                    "bear_evidence_ids": _string_list(
+                        scenario.get("bear_evidence_ids")
+                    ),
                     "falsifiers": falsifiers if isinstance(falsifiers, list) else [],
-                    "missing_or_stale_data": normalized.get("missing_or_stale_data", []),
-                    "uncertainty": normalized.get("uncertainty", {}),
+                    "missing_or_stale_data": (
+                        _project_missing_or_stale_data(
+                            normalized.get("missing_or_stale_data")
+                        )
+                        if assessment.complete
+                        else []
+                    ),
+                    "uncertainty": (
+                        _project_uncertainty(normalized.get("uncertainty"))
+                        if assessment.complete
+                        else {}
+                    ),
                     "model": {
-                        "provider": row[13],
-                        "model_id": row[14],
-                        "model_version": row[15],
-                        "prompt_version": row[16],
+                        "provider": row[16],
+                        "model_id": row[17],
+                        "model_version": row[18],
+                        "prompt_version": row[19],
                     },
-                    "available_at": row[17],
+                    "available_at": row[20],
                 }
             )
         return result
@@ -339,7 +491,7 @@ class DashboardExporter:
                 "strategy_version": row[2],
                 "revision": row[3],
                 "status": row[4],
-                "candidate": _json_object(row[5]),
+                "candidate": _project_lesson_candidate(row[5]),
                 "observed_at": row[6],
                 "available_at": row[7],
                 "ingested_at": row[8],

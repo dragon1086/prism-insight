@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Mapping, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -35,7 +35,9 @@ pytestmark = [
 async def test_live_kis_daily_quote_normalizes_without_account_or_broker_effect() -> None:
     credentials = KISMarketDataCredentials.from_env()
     as_of = datetime.now(tz=KST)
-    if as_of.hour < 15 or (as_of.hour == 15 and as_of.minute < 31):
+    if as_of.weekday() < 5 and (
+        as_of.hour < 15 or (as_of.hour == 15 and as_of.minute < 31)
+    ):
         pytest.skip("KIS daily smoke requires the current KRX daily bar to be complete")
 
     transport = KISHTTPTransport(
@@ -84,7 +86,10 @@ async def test_live_kis_daily_quote_normalizes_without_account_or_broker_effect(
     }
     assert bar.provider == "KIS"
     assert bar.provider_symbol == "005930"
-    assert bar.bar_start.astimezone(KST).date() == as_of.astimezone(KST).date()
+    expected_session = as_of.astimezone(KST).date()
+    while expected_session.weekday() >= 5:
+        expected_session -= timedelta(days=1)
+    assert bar.bar_start.astimezone(KST).date() == expected_session
     assert bar.timing.observed_at < bar.timing.available_at
     assert bar.timing.available_at <= bar.timing.as_of_date <= bar.timing.ingested_at
     assert bar.source_hash == transport_evidence[-1]["raw_payload_hash"]

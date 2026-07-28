@@ -12,6 +12,23 @@ from typing import Any, Optional
 
 
 @dataclass(frozen=True)
+class DeferredValidationSchema:
+    """SDK-independent request for shape-only structured-output validation.
+
+    Concrete backends may use ``model_type`` to advertise a supported JSON
+    schema, but must return the decoded JSON value without running the model's
+    semantic or cross-field validators. Those rules belong to the application
+    parsing and deterministic policy boundary.
+    """
+
+    model_type: type
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model_type, type):
+            raise TypeError("model_type must be a type")
+
+
+@dataclass(frozen=True)
 class LLMParams:
     """Immutable LLM tuning parameters, SDK-independent.
 
@@ -41,7 +58,7 @@ class AgentSpec:
     instructions: str
     model: str
     mcp_servers: tuple = ()
-    output_schema: Optional[type] = None
+    output_schema: Any = None
     params: LLMParams = field(default_factory=LLMParams)
 
 

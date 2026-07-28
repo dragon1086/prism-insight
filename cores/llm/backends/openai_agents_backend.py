@@ -9,30 +9,52 @@ A clear RuntimeError is raised at *call time* rather than at import time.
 """
 
 import contextlib
+import json
+from decimal import Decimal
 from typing import Any, Optional
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+
 from cores.llm.mcp_registry import McpServerRegistry
-from cores.llm.ports import AgentSpec, LLMBackend, LLMParams, LLMResult
+from cores.llm.ports import (
+    AgentSpec,
+    DeferredValidationSchema,
+    LLMBackend,
+    LLMParams,
+    LLMResult,
+)
 
 # --- SDK import guard ---------------------------------------------------
 try:
-    from agents import Agent, ModelSettings, Runner
-    from agents import set_default_openai_api, set_default_openai_client, set_default_openai_key
+    from agents import Agent, AgentOutputSchemaBase, ModelSettings, Runner
+    from agents.exceptions import ModelBehaviorError
+    from agents import (
+        set_default_openai_api,
+        set_default_openai_client,
+        set_default_openai_key,
+        set_tracing_disabled,
+    )
     from agents.mcp import MCPServerStdio, MCPServerStdioParams
+    from agents.strict_schema import ensure_strict_json_schema
     from openai import AsyncOpenAI
     from openai.types.shared import Reasoning
 
     _sdk_available = True
 except ImportError:
     Agent = None  # type: ignore[assignment,misc]
+    AgentOutputSchemaBase = object  # type: ignore[assignment,misc]
     ModelSettings = None  # type: ignore[assignment]
     Runner = None  # type: ignore[assignment]
     MCPServerStdio = None  # type: ignore[assignment]
     MCPServerStdioParams = None  # type: ignore[assignment]
     Reasoning = None  # type: ignore[assignment]
+    ModelBehaviorError = None  # type: ignore[assignment,misc]
+    ensure_strict_json_schema = None  # type: ignore[assignment]
     set_default_openai_api = None  # type: ignore[assignment]
     set_default_openai_client = None  # type: ignore[assignment]
     set_default_openai_key = None  # type: ignore[assignment]
+    set_tracing_disabled = None  # type: ignore[assignment]
     AsyncOpenAI = None  # type: ignore[assignment]
     _sdk_available = False
 # ------------------------------------------------------------------------
@@ -66,6 +88,11 @@ def configure_openai_agents_for_proxy(
             "which is not installed in this environment."
         )
 
+    # The SDK trace exporter uses the default API key and OpenAI's public
+    # endpoint rather than this custom client.  With the OAuth proxy's
+    # placeholder key that creates an unrelated 401 and leaks trace metadata
+    # outside the explicitly bounded proxy call.
+    set_tracing_disabled(True)
     client = AsyncOpenAI(base_url=base_url, api_key=api_key)
     set_default_openai_client(client)
     set_default_openai_api("responses")
@@ -144,14 +171,101 @@ def build_agent(spec: AgentSpec, mcp_servers: list) -> "Agent":
             "installed in this environment."
         )
 
+    output_type = spec.output_schema
+    if isinstance(output_type, DeferredValidationSchema):
+        output_type = _DeferredOpenAIAgentsOutputSchema(output_type.model_type)
+
     return Agent(
         name=spec.name,
         instructions=spec.instructions,
         model=spec.model,
         model_settings=build_model_settings(spec.params),
         mcp_servers=mcp_servers,
-        output_type=spec.output_schema,
+        output_type=output_type,
     )
+
+
+class _DeferredOpenAIAgentsOutputSchema(AgentOutputSchemaBase):  # type: ignore[misc]
+    """OpenAI Agents schema that validates JSON shape without model semantics."""
+
+    def __init__(self, model_type: type) -> None:
+        try:
+            schema = model_type.model_json_schema()
+        except AttributeError as exc:
+            raise TypeError("deferred validation requires a Pydantic model type") from exc
+        strict_schema = ensure_strict_json_schema
+        if strict_schema is None:
+            raise RuntimeError("OpenAI Agents strict schema support is unavailable")
+        self._model_type = model_type
+        self._schema = strict_schema(_shape_only_json_schema(schema))
+        self._validator = Draft202012Validator(self._schema)
+
+    def is_plain_text(self) -> bool:
+        return False
+
+    def name(self) -> str:
+        return self._model_type.__name__
+
+    def json_schema(self) -> dict[str, Any]:
+        return self._schema
+
+    def is_strict_json_schema(self) -> bool:
+        return True
+
+    def validate_json(self, json_str: str) -> Any:
+        try:
+            decoded = json.loads(json_str, parse_float=Decimal)
+            self._validator.validate(decoded)
+        except (json.JSONDecodeError, ValidationError):
+            raise ModelBehaviorError(  # type: ignore[misc]
+                "Model output did not match the required JSON shape"
+            ) from None
+        return decoded
+
+
+_NON_STRUCTURAL_JSON_SCHEMA_KEYS = frozenset(
+    {
+        "const",
+        "enum",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "format",
+        "maxItems",
+        "maxLength",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minimum",
+        "multipleOf",
+        "pattern",
+        "uniqueItems",
+    }
+)
+_NAMED_SCHEMA_MAP_KEYS = frozenset(
+    {"$defs", "dependentSchemas", "patternProperties", "properties"}
+)
+
+
+def _shape_only_json_schema(value: Any) -> Any:
+    """Remove value-level constraints while preserving JSON container shape."""
+
+    if isinstance(value, list):
+        return [_shape_only_json_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in _NON_STRUCTURAL_JSON_SCHEMA_KEYS:
+            continue
+        if key in _NAMED_SCHEMA_MAP_KEYS and isinstance(item, dict):
+            result[key] = {
+                name: _shape_only_json_schema(schema)
+                for name, schema in item.items()
+            }
+        else:
+            result[key] = _shape_only_json_schema(item)
+    return result
 
 
 class OpenAIAgentsBackend(LLMBackend):

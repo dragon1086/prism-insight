@@ -142,6 +142,83 @@ async def test_single_wire_call_maps_documented_unadjusted_rows_to_raw_only_page
 
 
 @pytest.mark.asyncio
+async def test_weekend_daily_read_treats_latest_completed_friday_as_fresh() -> None:
+    sunday = datetime(2026, 7, 26, 16, 0, tzinfo=UTC)
+    request = FMPRequest(
+        operation="fetch_price_page",
+        path=FMP_RAW_EOD_PATH,
+        params={
+            "as_of_date": sunday.isoformat(),
+            "page": 1,
+            "symbols": ["AAPL"],
+        },
+    )
+    requester = SequenceRequester(
+        [
+            _response(
+                [
+                    {
+                        "symbol": "AAPL",
+                        "date": "2026-07-24",
+                        "adjOpen": 210.1,
+                        "adjHigh": 214.25,
+                        "adjLow": 209.8,
+                        "adjClose": 213.9,
+                        "volume": 51_500_000,
+                    }
+                ]
+            )
+        ]
+    )
+
+    envelope = await FMPHTTPTransport(requester=requester).execute(
+        request,
+        api_key=FMPApiKey(SECRET),
+    )
+
+    assert envelope.quality is DataQualityStatus.FRESH
+    assert requester.requests[0]["params"]["to"] == "2026-07-26"
+
+
+@pytest.mark.asyncio
+async def test_nyse_weekday_holiday_treats_prior_completed_session_as_fresh() -> None:
+    presidents_day = datetime(2026, 2, 16, 23, 0, tzinfo=UTC)
+    request = FMPRequest(
+        operation="fetch_price_page",
+        path=FMP_RAW_EOD_PATH,
+        params={
+            "as_of_date": presidents_day.isoformat(),
+            "page": 1,
+            "symbols": ["AAPL"],
+        },
+    )
+    requester = SequenceRequester(
+        [
+            _response(
+                [
+                    {
+                        "symbol": "AAPL",
+                        "date": "2026-02-13",
+                        "adjOpen": 210.1,
+                        "adjHigh": 214.25,
+                        "adjLow": 209.8,
+                        "adjClose": 213.9,
+                        "volume": 51_500_000,
+                    }
+                ]
+            )
+        ]
+    )
+
+    envelope = await FMPHTTPTransport(requester=requester).execute(
+        request,
+        api_key=FMPApiKey(SECRET),
+    )
+
+    assert envelope.quality is DataQualityStatus.FRESH
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status_code", "wire_payload", "expected"),
     [
@@ -440,6 +517,44 @@ async def test_http_transport_normalizes_through_existing_pit_provider_contract(
     assert bar.adjustment_as_of is None
     assert bar.provider_symbol == "AAPL"
     assert bar.timing.observed_at < bar.timing.available_at <= AS_OF
+
+
+@pytest.mark.asyncio
+async def test_http_transport_excludes_incomplete_current_session_rows() -> None:
+    transport = FMPHTTPTransport(
+        requester=SequenceRequester(
+            [
+                _response(
+                    [
+                        {
+                            "symbol": "AAPL",
+                            "date": "2026-07-24",
+                            "adjOpen": 214,
+                            "adjHigh": 216,
+                            "adjLow": 213,
+                            "adjClose": 215,
+                            "volume": 10,
+                        },
+                        {
+                            "symbol": "AAPL",
+                            "date": "2026-07-23",
+                            "adjOpen": 210,
+                            "adjHigh": 214,
+                            "adjLow": 209,
+                            "adjClose": 213,
+                            "volume": 20,
+                        },
+                    ]
+                )
+            ]
+        )
+    )
+
+    envelope = await transport.execute(_fetch_request(), api_key=FMPApiKey(SECRET))
+
+    assert [row["date"] for row in envelope.payload["data"]] == ["2026-07-23"]
+    assert envelope.available_at <= AS_OF
+    assert envelope.quality is DataQualityStatus.FRESH
 
 
 @pytest.mark.asyncio

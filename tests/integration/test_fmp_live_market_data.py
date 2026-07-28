@@ -31,9 +31,7 @@ NEW_YORK = ZoneInfo("America/New_York")
 def _live_as_of() -> datetime:
     now = datetime.now(tz=UTC)
     market_now = now.astimezone(NEW_YORK)
-    if market_now.weekday() >= 5:
-        pytest.skip("FMP live smoke requires a completed US weekday session")
-    if market_now.time() < time(16, 30):
+    if market_now.weekday() < 5 and market_now.time() < time(16, 30):
         pytest.skip("FMP live smoke requires the US close plus availability delay")
     return now
 

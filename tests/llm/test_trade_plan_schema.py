@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal
+import json
 from typing import Any
 from uuid import UUID
 
@@ -61,6 +62,33 @@ def valid_proposal_payload() -> dict[str, Any]:
             "confidence": Decimal("0.70"),
             "drivers": ["Breadth and trend are constructive."],
             "falsifiers": ["Breadth breaks below the supplied threshold."],
+        },
+        "bull_case": {
+            "summary": "Leadership broadens and momentum confirms continuation.",
+            "conditions": ["Relative strength remains above the supplied threshold."],
+            "confirmations": ["Volume and breadth confirm the move."],
+            "falsifiers": ["Leadership breadth reverses."],
+            "next_event": "Next completed regular session review.",
+            "valid_until": datetime(2026, 7, 27, 20, 0, tzinfo=timezone.utc),
+            "evidence_ids": ["ev-price-1"],
+        },
+        "base_case": {
+            "summary": "The setup remains constructive but awaits confirmation.",
+            "conditions": ["Current structure remains intact."],
+            "confirmations": ["The pending entry predicate becomes true."],
+            "falsifiers": ["Structure breaks below the supplied threshold."],
+            "next_event": "Next completed regular session review.",
+            "valid_until": datetime(2026, 7, 27, 20, 0, tzinfo=timezone.utc),
+            "evidence_ids": ["ev-price-1"],
+        },
+        "bear_case": {
+            "summary": "Risk evidence dominates and invalidates the setup.",
+            "conditions": ["The supplied risk threshold is breached."],
+            "confirmations": ["Breadth and momentum weaken together."],
+            "falsifiers": ["Risk evidence reverses and structure recovers."],
+            "next_event": "Next completed regular session review.",
+            "valid_until": datetime(2026, 7, 27, 20, 0, tzinfo=timezone.utc),
+            "evidence_ids": ["ev-risk-1"],
         },
         "entry_predicates": [
             {
@@ -185,6 +213,19 @@ def test_regime_distribution_has_fixed_structured_output_fields() -> None:
         "strong_bear",
     }
     assert probability_schema["additionalProperties"] is False
+
+
+def test_proposal_requires_independent_evidence_bound_bull_base_bear_cases() -> None:
+    proposal = TradePlanProposal.model_validate(valid_proposal_payload())
+
+    assert proposal.bull_case.summary.startswith("Leadership broadens")
+    assert proposal.base_case.confirmations
+    assert proposal.bear_case.evidence_ids == ("ev-risk-1",)
+
+    payload = valid_proposal_payload()
+    del payload["base_case"]
+    with pytest.raises(ValidationError, match="base_case"):
+        TradePlanProposal.model_validate(payload)
 
 
 def test_every_structured_output_object_forbids_unknown_fields() -> None:
@@ -365,3 +406,21 @@ def test_strict_json_round_trip_preserves_structured_contract() -> None:
     reparsed = TradePlanProposal.model_validate_json(proposal.model_dump_json())
 
     assert reparsed == proposal
+
+
+def test_openai_structured_output_schema_uses_json_number_decimals_without_lookaround() -> None:
+    schema = TradePlanProposal.model_json_schema()
+    rendered = json.dumps(schema, sort_keys=True)
+
+    assert "(?" not in rendered
+    comparison = schema["$defs"]["EntryPredicate"]["properties"]["comparison_value"]
+    assert comparison["type"] == "number"
+
+
+def test_sampling_temperature_may_be_explicitly_unapplied() -> None:
+    payload = valid_proposal_payload()
+    payload["sampling"]["temperature"] = None
+
+    proposal = TradePlanProposal.model_validate(payload)
+
+    assert proposal.sampling.temperature is None
