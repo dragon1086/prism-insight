@@ -10,6 +10,8 @@ screening triggers.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import logging
 import math
 import re
@@ -17,6 +19,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
 
 import pandas as pd
@@ -49,6 +52,24 @@ class MarketSnapshotBundle:
     cap_df: pd.DataFrame
     prev_date: str
     source: str
+    source_snapshot_id: str
+    observed_at: datetime
+    available_at: datetime
+    ingested_at: datetime
+    evidence_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for value in (self.observed_at, self.available_at, self.ingested_at):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("market snapshot clocks must be timezone-aware")
+        if self.observed_at > self.available_at or self.available_at > self.ingested_at:
+            raise ValueError("market snapshot clocks are not PIT-valid")
+        if not self.source_snapshot_id or not self.evidence_ids:
+            raise ValueError("market snapshot provenance is required")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _as_int(value) -> int:
@@ -247,6 +268,7 @@ def fetch_naver_snapshot_bundle(
     timeout: float = 10.0,
     max_attempts: int = 3,
     retry_wait_sec: float = 0.5,
+    clock: Callable[[], datetime] = _utc_now,
 ) -> MarketSnapshotBundle:
     """Build a KRX-compatible current/previous/cap bundle from Naver.
 
@@ -412,10 +434,34 @@ def fetch_naver_snapshot_bundle(
         prev_date,
         len(detail_failures),
     )
+    observed_at = max(datetime.fromisoformat(str(row["localTradedAt"])) for row in bulk_rows)
+    ingested_at = clock()
+    if ingested_at.tzinfo is None or ingested_at.utcoffset() is None:
+        raise NaverSnapshotError("Naver snapshot clock must be timezone-aware")
+    if observed_at > ingested_at:
+        raise NaverSnapshotError("Naver observation cannot follow ingestion")
+    identity_payload = json.dumps(
+        [
+            trade_date,
+            observed_at.isoformat(),
+            [
+                [row.get("itemCode"), row.get("closePriceRaw")]
+                for row in sorted(bulk_rows, key=lambda item: str(item.get("itemCode", "")))
+            ],
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    source_snapshot_id = f"naver:{trade_date}:{hashlib.sha256(identity_payload).hexdigest()}"
     return MarketSnapshotBundle(
         snapshot=snapshot,
         prev_snapshot=prev_snapshot,
         cap_df=cap_df,
         prev_date=prev_date,
         source="naver",
+        source_snapshot_id=source_snapshot_id,
+        observed_at=observed_at,
+        available_at=ingested_at,
+        ingested_at=ingested_at,
+        evidence_ids=(source_snapshot_id,),
     )

@@ -4,24 +4,42 @@ from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file (required before krx_data_client import)
 
 import datetime
+import hashlib
 import pandas as pd
 import numpy as np
 import logging
 import os
 import time
+from dataclasses import dataclass
 from typing import Optional
+from zoneinfo import ZoneInfo
 from cores.naver_market_snapshot import (
     MarketSnapshotBundle,
     fetch_naver_snapshot_bundle,
 )
 from cores.rs_rating import oneil_weighted_return, percentile_ratings
-from krx_data_client import (
-    _get_client,
-    get_market_ohlcv_by_ticker,
-    get_nearest_business_day_in_a_week,
-    get_market_cap_by_ticker,
-    get_market_ticker_name,
+from prism_core.data.exchange_calendar import (
+    ExchangeMarket,
+    latest_completed_session as resolve_latest_completed_session,
 )
+try:
+    from krx_data_client import (
+        _get_client,
+        get_market_ohlcv_by_ticker,
+        get_nearest_business_day_in_a_week,
+        get_market_cap_by_ticker,
+        get_market_ticker_name,
+    )
+except ModuleNotFoundError:  # requirements.txt retains pykrx as the legacy fallback.
+    from pykrx import stock as _pykrx_stock
+
+    get_market_ohlcv_by_ticker = _pykrx_stock.get_market_ohlcv_by_ticker
+    get_nearest_business_day_in_a_week = _pykrx_stock.get_nearest_business_day_in_a_week
+    get_market_cap_by_ticker = _pykrx_stock.get_market_cap_by_ticker
+    get_market_ticker_name = _pykrx_stock.get_market_ticker_name
+
+    def _get_client():
+        raise RuntimeError("batch ticker-name endpoint unavailable in pykrx fallback")
 
 # pykrx compatibility wrapper (for existing code compatibility)
 class stock_api:
@@ -45,6 +63,39 @@ SCREENING_MIN_TRADE_VALUE = 10_000_000_000
 
 class MarketSnapshotUnavailableError(RuntimeError):
     """Raised when neither KRX nor the emergency Naver source is usable."""
+
+
+class UnknownMarketRegimeError(ValueError):
+    """Raised before legacy action scoring can reinterpret UNKNOWN as sideways."""
+
+
+@dataclass(frozen=True)
+class ReadOnlyCandidateBatch:
+    trade_date: str
+    source: str
+    source_snapshot_id: str
+    observed_at: datetime.datetime
+    available_at: datetime.datetime
+    ingested_at: datetime.datetime
+    evidence_ids: tuple[str, ...]
+    triggers: dict[str, pd.DataFrame]
+
+
+def _aware_now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _krx_observed_at(
+    trade_date: str, ingested_at: datetime.datetime
+) -> datetime.datetime:
+    """Conservatively anchor a KRX daily snapshot to session close or receipt."""
+    session_date = datetime.datetime.strptime(trade_date, "%Y%m%d").date()
+    session_close = datetime.datetime.combine(
+        session_date,
+        datetime.time(hour=15, minute=30),
+        tzinfo=ZoneInfo("Asia/Seoul"),
+    )
+    return min(session_close, ingested_at)
 
 
 def _normalize_ticker_code(ticker) -> str:
@@ -183,7 +234,12 @@ def get_multi_day_ohlcv(ticker: str, end_date: str, days: int = 10) -> pd.DataFr
         DataFrame with columns: Open, High, Low, Close, Volume, Amount
         Index: Date
     """
-    from krx_data_client import get_market_ohlcv_by_date
+    try:
+        from krx_data_client import get_market_ohlcv_by_date
+    except ModuleNotFoundError:
+        from pykrx import stock as _history_stock
+
+        get_market_ohlcv_by_date = _history_stock.get_market_ohlcv_by_date
 
     # Calculate sufficient past date from end date (with margin for business days)
     end_dt = datetime.datetime.strptime(end_date, '%Y%m%d')
@@ -246,7 +302,7 @@ def get_market_cap_df(trade_date: str, market: str = "ALL") -> pd.DataFrame:
     return cap_df
 
 
-def load_market_snapshot_bundle(trade_date: str) -> MarketSnapshotBundle:
+def load_market_snapshot_bundle(trade_date: str, *, clock=_aware_now) -> MarketSnapshotBundle:
     """Load current, previous, and market-cap data from one coherent source.
 
     KRX is always primary.  If any market-wide KRX input fails, rebuild the
@@ -263,12 +319,26 @@ def load_market_snapshot_bundle(trade_date: str) -> MarketSnapshotBundle:
             prev_date,
             len(cap_df),
         )
+        ingested_at = clock()
+        if ingested_at.tzinfo is None or ingested_at.utcoffset() is None:
+            raise ValueError("market snapshot clock must be timezone-aware")
+        frame_hash = hashlib.sha256(
+            pd.util.hash_pandas_object(snapshot, index=True).values.tobytes()
+            + pd.util.hash_pandas_object(prev_snapshot, index=True).values.tobytes()
+            + pd.util.hash_pandas_object(cap_df, index=True).values.tobytes()
+        ).hexdigest()
+        source_snapshot_id = f"krx:{trade_date}:{frame_hash}"
         return MarketSnapshotBundle(
             snapshot=snapshot,
             prev_snapshot=prev_snapshot,
             cap_df=cap_df,
             prev_date=prev_date,
             source="krx",
+            source_snapshot_id=source_snapshot_id,
+            observed_at=_krx_observed_at(trade_date, ingested_at),
+            available_at=ingested_at,
+            ingested_at=ingested_at,
+            evidence_ids=(source_snapshot_id,),
         )
     except Exception as krx_exc:
         logger.warning(
@@ -279,6 +349,7 @@ def load_market_snapshot_bundle(trade_date: str) -> MarketSnapshotBundle:
             bundle = fetch_naver_snapshot_bundle(
                 trade_date,
                 detail_min_amount=SCREENING_MIN_TRADE_VALUE,
+                clock=clock,
             )
         except Exception as naver_exc:
             logger.error(
@@ -1274,7 +1345,16 @@ def trigger_contrarian_value(trade_date: str, snapshot: pd.DataFrame,
     - Scores on drawdown magnitude, liquidity, low P/B ratio, and daily recovery
     - Uses krx_data_client for 52-week high and fundamental data
     """
-    from krx_data_client import get_market_ohlcv_by_date, get_market_fundamental_by_date
+    try:
+        from krx_data_client import (
+            get_market_fundamental_by_date,
+            get_market_ohlcv_by_date,
+        )
+    except ModuleNotFoundError:
+        from pykrx import stock as _history_stock
+
+        get_market_ohlcv_by_date = _history_stock.get_market_ohlcv_by_date
+        get_market_fundamental_by_date = _history_stock.get_market_fundamental_by_date
 
     logger.debug("trigger_contrarian_value started")
 
@@ -1394,6 +1474,10 @@ def _get_regime_slots(market_regime: str) -> tuple:
         "moderate_bear": (1, 2),
         "strong_bear": (0, 3),
     }
+    if market_regime == "unknown":
+        raise UnknownMarketRegimeError(
+            "UNKNOWN market regime cannot use legacy sideways slot defaults"
+        )
     td, bu = REGIME_SLOTS.get(market_regime, (1, 2))  # default: sideways ratios
     # Post-FTD 정찰(파일럿) 재진입: PULSE_PILOT_REEXPOSURE ON + 해당 시장 파일럿 윈도우면
     # 배치당 신규 진입 슬롯을 총 1개로 캡한다. post-FTD 정찰 진입은 주도주(top-down) 우선,
@@ -1516,6 +1600,10 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
 
         # #289: regime-aware blend weights (composite, agent R/R, RS, extension)
         _regime = macro_context.get("market_regime", "sideways") if macro_context else "sideways"
+        if _regime == "unknown":
+            raise UnknownMarketRegimeError(
+                "UNKNOWN market regime cannot use legacy sideways score weights"
+            )
         w_comp, w_agent, w_rs, w_ext = REGIME_SCORE_WEIGHTS.get(_regime, _DEFAULT_SCORE_WEIGHTS)
         logger.info(f"[#289] Blend weights for regime '{_regime}': "
                     f"composite={w_comp}, agent={w_agent}, RS={w_rs}, extension={w_ext}")
@@ -1680,6 +1768,72 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
     return final_result
 
 # --- Batch execution function ---
+def discover_read_only_candidates(
+    trigger_time: str, macro_context: dict
+) -> ReadOnlyCandidateBatch:
+    """Run only characterized market-data and trigger discovery call graphs."""
+    if macro_context is None:
+        raise ValueError("shared KR market context is required")
+    today_str = datetime.datetime.today().strftime("%Y%m%d")
+    explicit_date = (
+        macro_context.get("market_observed_date")
+        if macro_context.get("session_state") == "INTRADAY"
+        else macro_context.get("context_session_date")
+    )
+    if isinstance(explicit_date, str) and len(explicit_date) == 8 and explicit_date.isdigit():
+        trade_date = explicit_date
+    else:
+        try:
+            trade_date = stock_api.get_nearest_business_day_in_a_week(today_str, prev=True)
+        except Exception:
+            trade_date = resolve_latest_completed_session(
+                ExchangeMarket.KRX, _aware_now()
+            ).strftime("%Y%m%d")
+    logger.info(f"Batch reference trading date: {trade_date}")
+    market_data = load_market_snapshot_bundle(trade_date)
+    snapshot = market_data.snapshot
+    prev_snapshot = market_data.prev_snapshot
+    cap_df = market_data.cap_df
+
+    if trigger_time == "morning":
+        triggers = {
+            "거래량 급증 상위주": trigger_morning_volume_surge(trade_date, snapshot, prev_snapshot, cap_df),
+            "갭 상승 모멘텀 상위주": trigger_morning_gap_up_momentum(trade_date, snapshot, prev_snapshot, cap_df),
+            "시총 대비 집중 자금 유입 상위주": trigger_morning_value_to_cap_ratio(trade_date, snapshot, prev_snapshot, cap_df),
+        }
+    elif trigger_time == "afternoon":
+        triggers = {
+            "일중 상승률 상위주": trigger_afternoon_daily_rise_top(trade_date, snapshot, prev_snapshot, cap_df),
+            "마감 강도 상위주": trigger_afternoon_closing_strength(trade_date, snapshot, prev_snapshot, cap_df),
+            "거래량 증가 상위 횡보주": trigger_afternoon_volume_surge_flat(trade_date, snapshot, prev_snapshot, cap_df),
+        }
+    else:
+        raise ValueError("trigger_time must be 'morning' or 'afternoon'")
+
+    market_regime = macro_context.get("market_regime")
+    res_macro = trigger_macro_sector_leader(
+        trade_date, snapshot, prev_snapshot, cap_df, macro_context
+    )
+    if not res_macro.empty:
+        triggers["매크로 섹터 리더"] = res_macro
+    if market_regime in ("sideways", "moderate_bear", "strong_bear"):
+        res_value = trigger_contrarian_value(
+            trade_date, snapshot, prev_snapshot, cap_df
+        )
+        if not res_value.empty:
+            triggers["역발상 가치주"] = res_value
+    return ReadOnlyCandidateBatch(
+        trade_date=trade_date,
+        source=market_data.source,
+        source_snapshot_id=market_data.source_snapshot_id,
+        observed_at=market_data.observed_at,
+        available_at=market_data.available_at,
+        ingested_at=market_data.ingested_at,
+        evidence_ids=market_data.evidence_ids,
+        triggers=triggers,
+    )
+
+
 def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None):
     """
     trigger_time: "morning" or "afternoon"

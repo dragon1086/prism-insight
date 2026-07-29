@@ -7,11 +7,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+import types
 from collections import Counter
+from datetime import datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
+
+krx_stub = types.ModuleType("krx_data_client")
+krx_stub.get_market_ohlcv_by_ticker = lambda *args, **kwargs: pd.DataFrame()
+krx_stub.get_nearest_business_day_in_a_week = lambda *args, **kwargs: TRADE_DATE if "TRADE_DATE" in globals() else "20260722"
+krx_stub.get_market_cap_by_ticker = lambda *args, **kwargs: pd.DataFrame()
+krx_stub.get_market_ticker_name = lambda ticker: str(ticker)
+krx_stub.get_market_ohlcv_by_date = lambda *args, **kwargs: pd.DataFrame()
+krx_stub.get_market_fundamental_by_date = lambda *args, **kwargs: pd.DataFrame()
+krx_stub._get_client = lambda: None
+sys.modules.setdefault("krx_data_client", krx_stub)
 
 from cores.naver_market_snapshot import (
     MarketSnapshotBundle,
@@ -22,6 +37,7 @@ from cores.naver_market_snapshot import (
 
 
 TRADE_DATE = "20260722"
+KST = ZoneInfo("Asia/Seoul")
 
 
 class _Response:
@@ -190,6 +206,18 @@ def test_fetch_builds_current_previous_and_cap_contract():
     assert fake_get.calls["detail:000660"] == 0
 
 
+def test_fetch_exports_point_in_time_source_clocks_and_stable_snapshot_identity():
+    ingested_at = datetime(2026, 7, 22, 15, 1, tzinfo=KST)
+
+    bundle = _fetch(_FixtureGet(), clock=lambda: ingested_at)
+
+    assert bundle.observed_at == datetime(2026, 7, 22, 14, 46, 10, tzinfo=KST)
+    assert bundle.available_at == ingested_at
+    assert bundle.ingested_at == ingested_at
+    assert bundle.source_snapshot_id.startswith("naver:20260722:")
+    assert bundle.evidence_ids == (bundle.source_snapshot_id,)
+
+
 def test_fetch_rejects_stale_bulk_trade_date():
     with pytest.raises(NaverSnapshotError, match="stale"):
         _fetch(_FixtureGet(stale=True))
@@ -272,12 +300,116 @@ def test_trigger_batch_keeps_krx_as_primary(monkeypatch):
         lambda _date, **_kwargs: (_ for _ in ()).throw(AssertionError("fallback called")),
     )
 
-    result = trigger_batch.load_market_snapshot_bundle(TRADE_DATE)
+    ingested_at = datetime(2026, 7, 22, 16, 0, tzinfo=KST)
+    result = trigger_batch.load_market_snapshot_bundle(
+        TRADE_DATE, clock=lambda: ingested_at
+    )
 
     assert result.source == "krx"
     assert result.snapshot is snapshot
     assert result.prev_snapshot is previous
     assert result.cap_df is cap
+    assert result.observed_at == datetime(2026, 7, 22, 15, 30, tzinfo=KST)
+    assert result.available_at == ingested_at
+    assert result.ingested_at == ingested_at
+
+
+def test_read_only_candidate_discovery_propagates_explicit_unknown_context(monkeypatch):
+    import trigger_batch
+
+    bundle = _fetch(
+        _FixtureGet(),
+        clock=lambda: datetime(2026, 7, 22, 15, 1, tzinfo=KST),
+    )
+    candidate = pd.DataFrame(
+        {"Close": [70000], "composite_score": [Decimal("0.75")]},
+        index=["005930"],
+    )
+    macro_context = {
+        "market_regime": "unknown",
+        "leading_sectors": [],
+        "sector_map": {},
+        "context_id": "shared-context-id",
+    }
+    monkeypatch.setattr(
+        trigger_batch.stock_api,
+        "get_nearest_business_day_in_a_week",
+        lambda *_args, **_kwargs: TRADE_DATE,
+    )
+    monkeypatch.setattr(trigger_batch, "load_market_snapshot_bundle", lambda _date: bundle)
+    monkeypatch.setattr(trigger_batch, "trigger_afternoon_daily_rise_top", lambda *_args: candidate)
+    monkeypatch.setattr(trigger_batch, "trigger_afternoon_closing_strength", lambda *_args: pd.DataFrame())
+    monkeypatch.setattr(trigger_batch, "trigger_afternoon_volume_surge_flat", lambda *_args: pd.DataFrame())
+    macro_calls = []
+    monkeypatch.setattr(
+        trigger_batch,
+        "trigger_macro_sector_leader",
+        lambda *_args: macro_calls.append(_args[-1]) or pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        trigger_batch,
+        "trigger_contrarian_value",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("UNKNOWN is not sideways")),
+    )
+
+    result = trigger_batch.discover_read_only_candidates("afternoon", macro_context)
+
+    assert result.trade_date == TRADE_DATE
+    assert result.source == "naver"
+    assert result.triggers["일중 상승률 상위주"] is candidate
+    assert macro_calls == [macro_context]
+
+
+def test_read_only_discovery_uses_official_calendar_when_legacy_date_lookup_fails(monkeypatch):
+    import trigger_batch
+
+    observed_dates = []
+    monkeypatch.setattr(
+        trigger_batch.stock_api,
+        "get_nearest_business_day_in_a_week",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(IndexError("empty KRX response")),
+    )
+    monkeypatch.setattr(
+        trigger_batch,
+        "resolve_latest_completed_session",
+        lambda *_args, **_kwargs: datetime(2026, 7, 21, tzinfo=KST).date(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        trigger_batch,
+        "load_market_snapshot_bundle",
+        lambda trade_date: observed_dates.append(trade_date)
+        or _fetch(
+            _FixtureGet(),
+            clock=lambda: datetime(2026, 7, 22, 15, 1, tzinfo=KST),
+        ),
+    )
+    monkeypatch.setattr(trigger_batch, "trigger_afternoon_daily_rise_top", lambda *_args: pd.DataFrame())
+    monkeypatch.setattr(trigger_batch, "trigger_afternoon_closing_strength", lambda *_args: pd.DataFrame())
+    monkeypatch.setattr(trigger_batch, "trigger_afternoon_volume_surge_flat", lambda *_args: pd.DataFrame())
+    monkeypatch.setattr(trigger_batch, "trigger_macro_sector_leader", lambda *_args: pd.DataFrame())
+
+    trigger_batch.discover_read_only_candidates(
+        "afternoon",
+        {"market_regime": "unknown", "leading_sectors": [], "sector_map": {}},
+    )
+
+    assert observed_dates == ["20260721"]
+
+
+def test_legacy_final_selector_rejects_unknown_instead_of_using_sideways_slots():
+    import trigger_batch
+
+    frame = pd.DataFrame(
+        {"composite_score": [Decimal("0.75")]}, index=["005930"]
+    )
+
+    with pytest.raises(trigger_batch.UnknownMarketRegimeError, match="UNKNOWN"):
+        trigger_batch.select_final_tickers(
+            {"일중 상승률 상위주": frame},
+            use_hybrid=False,
+            macro_context={"market_regime": "unknown"},
+        )
 
 
 def test_trigger_batch_raises_typed_error_when_both_sources_fail(monkeypatch):

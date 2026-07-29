@@ -70,3 +70,46 @@ def test_legacy_orchestrators_add_an_opt_in_thin_pipeline_without_replacing_defa
     assert "application_pipeline" not in {
         node.attr for node in ast.walk(legacy_method) if isinstance(node, ast.Attribute)
     }
+
+
+def test_kr_candidate_wrapper_call_graph_has_no_external_effect_capabilities():
+    trigger_tree = ast.parse((ROOT / "trigger_batch.py").read_text(encoding="utf-8"))
+    read_only_functions = [
+        node
+        for node in trigger_tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"discover_read_only_candidates", "select_final_tickers"}
+    ]
+    assert {node.name for node in read_only_functions} == {
+        "discover_read_only_candidates",
+        "select_final_tickers",
+    }
+    adapter_tree = ast.parse(
+        (ROOT / "prism_app" / "kr_candidate_source.py").read_text(encoding="utf-8")
+    )
+    forbidden_calls = {
+        "async_buy_stock",
+        "async_sell_stock",
+        "buy_stock",
+        "cancel_order",
+        "get_account_balance",
+        "get_holdings",
+        "replace_order",
+        "sell_stock",
+        "send_message",
+        "send_telegram_messages",
+        "track_stocks",
+    }
+
+    for function in read_only_functions:
+        assert not forbidden_calls.intersection(_attribute_calls(function))
+        assert not forbidden_calls.intersection(
+            node.func.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        )
+    assert not forbidden_calls.intersection(
+        node.func.attr
+        for node in ast.walk(adapter_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    )
