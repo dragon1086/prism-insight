@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -16,6 +18,7 @@ from prism_app import (
     user_surface_uat,
 )
 from prism_app.shadow_report import append_shadow_section, read_persisted_shadow
+from prism_app.stockeasy_snapshot_import import unavailable_stockeasy_capability
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -29,6 +32,7 @@ def _parser() -> argparse.ArgumentParser:
             "shadow-readback",
             "shadow-run",
             "shadow-run-us",
+            "stockeasy-capability",
             "user-surface",
         ),
         help="run a read-only Phase 1 application command",
@@ -50,6 +54,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return us_product_uat.main(arguments[1:])
     if arguments and arguments[0] == "shadow-readback":
         return _shadow_readback(arguments[1:])
+    if arguments and arguments[0] == "stockeasy-capability":
+        return _stockeasy_capability(arguments[1:])
     if arguments and arguments[0] == "user-surface":
         return user_surface_uat.main(arguments[1:])
     parsed, remainder = _parser().parse_known_args(arguments)
@@ -65,9 +71,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         return us_product_uat.main(remainder)
     if parsed.command == "shadow-readback":
         return _shadow_readback(remainder)
+    if parsed.command == "stockeasy-capability":
+        return _stockeasy_capability(remainder)
     if parsed.command == "user-surface":
         return user_surface_uat.main(remainder)
     raise AssertionError("unreachable command")
+
+
+def _stockeasy_capability(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        description="Report the fail-soft approved StockEasy UI/export capability boundary."
+    )
+    parser.parse_args(argv)
+    payload = unavailable_stockeasy_capability(
+        checked_at=datetime.now(tz=timezone.utc),
+        snapshot_argument_supplied=False,
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
 
 
 def _shadow_readback(argv: Sequence[str]) -> int:

@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
+from prism_app import stockeasy_snapshot_import
 from prism_app.stockeasy_snapshot_import import (
     StockEasyImportOutcome,
     StockEasyPermissionRecord,
@@ -193,6 +194,60 @@ def test_unverified_permission_exposes_explicit_unavailable_port_only() -> None:
     assert result.outcome is StockEasyImportOutcome.UNAVAILABLE
     assert result.snapshot is None
     assert result.error_code == "APPROVED_UI_EXPORT_NOT_CONFIRMED"
+
+
+def test_unavailable_capability_names_every_required_section_and_non_secret_prerequisite() -> None:
+    capability = stockeasy_snapshot_import.unavailable_stockeasy_capability(
+        checked_at=AS_OF,
+        snapshot_argument_supplied=False,
+    )
+
+    assert capability["status"] == "STOCKEASY_UNAVAILABLE"
+    assert capability["source"] == "STOCKEASY_APPROVED_UI_EXPORT"
+    assert capability["capability_checked_at"] == AS_OF.isoformat()
+    assert capability["collection_attempted"] is False
+    assert capability["collection_attempted_at"] is None
+    assert capability["capture_method"] is None
+    assert capability["observed_at"] is None
+    assert capability["available_at"] is None
+    assert capability["ingested_at"] is None
+    assert capability["content_hash"] is None
+    assert capability["image_hash"] is None
+    assert capability["snapshot_argument_supplied"] is False
+    assert {
+        item["requirement"]: (
+            item["status"],
+            item["evidence_gap"],
+            tuple(item["contract_sections"]),
+        )
+        for item in capability["requirements"]
+    } == {
+        "SECURITIES": (
+            "UNAVAILABLE",
+            "APPROVED_SECTION_NOT_OBSERVED",
+            ("SECURITY_LEADERSHIP",),
+        ),
+        "MARKET_OVERVIEW": (
+            "UNAVAILABLE",
+            "APPROVED_SECTION_NOT_OBSERVED",
+            ("MARKET_BREADTH", "INVESTOR_FLOWS"),
+        ),
+        "LEADING_SECURITIES": (
+            "UNAVAILABLE",
+            "APPROVED_SECTION_NOT_OBSERVED",
+            ("SECURITY_LEADERSHIP",),
+        ),
+        "LEADING_SECTORS": (
+            "UNAVAILABLE",
+            "APPROVED_SECTION_NOT_OBSERVED",
+            ("LEADING_GROUPS",),
+        ),
+    }
+    assert capability["prerequisite_code"] == "APPROVED_VISIBLE_UI_OR_OFFICIAL_EXPORT_REQUIRED"
+    assert "password" not in capability["prerequisite"].casefold()
+    assert "cookie" not in capability["prerequisite"].casefold()
+    assert capability["price_authority"] == "KIS_KRX"
+    assert capability["entry_signal_authority"] is False
 
 
 def test_permission_record_rejects_claimed_scope_without_terms_and_permission_proof() -> None:

@@ -62,12 +62,66 @@ _PROHIBITED_VALUE_MARKERS = (
     "/api/",
 )
 _JWT_PATTERN = re.compile(r"\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b")
+_REQUIRED_PRODUCT_SECTIONS = {
+    "SECURITIES": (LeadershipSection.SECURITY_LEADERSHIP,),
+    "MARKET_OVERVIEW": (
+        LeadershipSection.MARKET_BREADTH,
+        LeadershipSection.INVESTOR_FLOWS,
+    ),
+    "LEADING_SECURITIES": (LeadershipSection.SECURITY_LEADERSHIP,),
+    "LEADING_SECTORS": (LeadershipSection.LEADING_GROUPS,),
+}
+_UNAVAILABLE_PREREQUISITE = (
+    "Confirm current terms and user authorization for one visible read-only UI capture "
+    "or official export, record the exact approved sections and method, then provide a "
+    "bounded sanitized stockeasy_sanitized_snapshot_v1 JSON file."
+)
 
 
 class StockEasyImportOutcome(str, Enum):
     IMPORTED = "IMPORTED"
     UNAVAILABLE = "UNAVAILABLE"
     REJECTED = "REJECTED"
+
+
+def unavailable_stockeasy_capability(
+    *,
+    checked_at: datetime,
+    snapshot_argument_supplied: bool,
+) -> dict[str, object]:
+    """Project an honest fail-soft result without touching a UI or supplied file."""
+
+    if checked_at.tzinfo is None or checked_at.utcoffset() is None:
+        raise ValueError("checked_at must be timezone-aware")
+    return {
+        "status": "STOCKEASY_UNAVAILABLE",
+        "reason": "APPROVED_UI_EXPORT_NOT_CONFIRMED",
+        "source": "STOCKEASY_APPROVED_UI_EXPORT",
+        "capability_checked_at": checked_at.isoformat(),
+        "collection_attempted": False,
+        "collection_attempted_at": None,
+        "capture_method": None,
+        "observed_at": None,
+        "available_at": None,
+        "ingested_at": None,
+        "content_hash": None,
+        "image_hash": None,
+        "snapshot_argument_supplied": snapshot_argument_supplied,
+        "requirements": [
+            {
+                "requirement": requirement,
+                "status": "UNAVAILABLE",
+                "evidence_gap": "APPROVED_SECTION_NOT_OBSERVED",
+                "contract_sections": [item.value for item in contract_sections],
+            }
+            for requirement, contract_sections in _REQUIRED_PRODUCT_SECTIONS.items()
+        ],
+        "prerequisite_code": "APPROVED_VISIBLE_UI_OR_OFFICIAL_EXPORT_REQUIRED",
+        "prerequisite": _UNAVAILABLE_PREREQUISITE,
+        "price_authority": "KIS_KRX",
+        "entry_signal_authority": False,
+        "fail_soft": True,
+    }
 
 
 class StockEasyPermissionRecord(ContractModel):

@@ -98,3 +98,27 @@ def test_fixture_only_legacy_migration_is_not_operated_readiness() -> None:
     assert "operated migration readiness가 아닙니다" in migration
     assert "실제 source를 read-only로 inventory" in migration
     assert "fixture 결과로 대체하지 않고 `not operated`" in migration
+
+
+def test_stockeasy_integration_runbook_and_uat_preserve_fail_soft_boundary() -> None:
+    integration = _read("docs/STOCKEASY_INTEGRATION.md")
+    runbook = _read("docs/STOCKEASY_RUNBOOK.md")
+    uat = _read("docs/STOCKEASY_UAT.md")
+
+    for requirement in ("SECURITIES", "MARKET_OVERVIEW", "LEADING_SECURITIES", "LEADING_SECTORS"):
+        assert requirement in integration
+        assert requirement in uat
+    for boundary in (
+        "STOCKEASY_UNAVAILABLE",
+        "APPROVED_VISIBLE_UI_OR_OFFICIAL_EXPORT_REQUIRED",
+        "KIS/KRX",
+        "supplemental",
+    ):
+        assert boundary in integration
+        assert boundary in runbook
+    assert "python -m prism_app stockeasy-capability" in runbook
+    assert "does not read the supplied snapshot" in runbook
+    assert "credentials, cookies, tokens" in integration
+    assert "account, balance, holdings, order" in integration
+    assert "temporary capture" in uat
+    assert "user UAT approval: not granted" in uat

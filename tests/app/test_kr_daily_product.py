@@ -214,10 +214,22 @@ async def test_daily_product_isolates_candidate_failure_and_preserves_unavailabl
             error_code="APPROVED_UI_EXPORT_NOT_CONFIRMED",
             temporary_image_deleted=False,
         ),
+        supplement_snapshot_argument_supplied=True,
     )
 
     assert result.supplement_outcome is StockEasyImportOutcome.UNAVAILABLE
     assert result.supplement_error_code == "APPROVED_UI_EXPORT_NOT_CONFIRMED"
+    assert result.supplement_capability is not None
+    assert result.supplement_capability["status"] == "STOCKEASY_UNAVAILABLE"
+    assert result.supplement_capability["snapshot_argument_supplied"] is True
+    assert {
+        item["requirement"] for item in result.supplement_capability["requirements"]
+    } == {
+        "SECURITIES",
+        "MARKET_OVERVIEW",
+        "LEADING_SECURITIES",
+        "LEADING_SECTORS",
+    }
     assert result.counts.raw_assertions == 3
     assert result.counts.invalid_records == 1
     assert result.counts.raw_assertions_by_source == {
@@ -240,6 +252,9 @@ async def test_daily_product_isolates_candidate_failure_and_preserves_unavailabl
     assert rendered.startswith("# 기존 PRISM 리포트")
     assert "CORE_PRISM" in rendered
     assert "APPROVED_UI_EXPORT_NOT_CONFIRMED" in rendered
+    assert "APPROVED_VISIBLE_UI_OR_OFFICIAL_EXPORT_REQUIRED" in rendered
+    assert "SECURITIES" in rendered
+    assert "LEADING_SECTORS" in rendered
     assert "ANALYSIS_INCOMPLETE" in rendered
     assert "raw provider detail" not in rendered
     assert "NO_ENTRY" not in rendered

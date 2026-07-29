@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from prism_app.stockeasy_snapshot_import import (
     StockEasyImportOutcome,
     StockEasyImportResult,
+    unavailable_stockeasy_capability,
 )
 from prism_core.candidates import (
     CandidateChannel,
@@ -106,6 +107,7 @@ class KRDailyProductResult:
     analyses: tuple[CandidateAnalysisResult, ...]
     failures: tuple[CandidateAnalysisFailure, ...]
     counts: KRDailyCounts
+    supplement_capability: Mapping[str, object] | None = None
 
 
 class AnalysisCollection(Protocol):
@@ -156,6 +158,7 @@ class KRDailyProduct:
         *,
         trigger_time: str,
         supplement_import: StockEasyImportResult,
+        supplement_snapshot_argument_supplied: bool = False,
         authoritative_values: Mapping[str, object] | None = None,
     ) -> KRDailyProductResult:
         context = await self._context_composer.compose()
@@ -241,6 +244,14 @@ class KRDailyProduct:
                 analysis_failures=len(failures),
                 truncated=reconciliation.truncated_candidate_count,
             ),
+            supplement_capability=(
+                unavailable_stockeasy_capability(
+                    checked_at=context.timing.as_of,
+                    snapshot_argument_supplied=supplement_snapshot_argument_supplied,
+                )
+                if supplement_import.outcome is StockEasyImportOutcome.UNAVAILABLE
+                else None
+            ),
         )
 
 
@@ -263,6 +274,7 @@ def render_daily_composition(
     """Append the uncapped candidate funnel to the existing KR report surface."""
 
     counts = result.counts
+    supplement_capability = getattr(result, "supplement_capability", None)
     lines = [
         "",
         _KR_START,
@@ -284,6 +296,20 @@ def render_daily_composition(
             else ""
         ),
         "",
+        *(
+            (
+                f"- 보조 근거 기능 상태: `{supplement_capability['status']}`",
+                "- 필수 섹션 상태: `"
+                + _render_stockeasy_requirements(supplement_capability)
+                + "`",
+                "- 비밀정보 없는 사용자 선행조건: `"
+                + str(supplement_capability["prerequisite_code"])
+                + "`",
+                "",
+            )
+            if supplement_capability is not None
+            else ()
+        ),
         "### 원천/트리거별 주장",
         "",
     ]
@@ -415,12 +441,30 @@ def daily_dashboard_projection(result: KRDailyProductResult | Any) -> dict[str, 
     return {
         "status": daily_product_status(result),
         "counts": _counts_payload(result.counts),
-        "stockeasy": {
-            "status": result.supplement_outcome.value,
-            "reason": result.supplement_error_code,
-        },
+        "stockeasy": _stockeasy_projection(result),
         "candidates": candidates,
     }
+
+
+def _stockeasy_projection(result: Any) -> dict[str, object]:
+    capability = getattr(result, "supplement_capability", None)
+    if capability is not None:
+        return dict(capability)
+    return {
+        "status": result.supplement_outcome.value,
+        "reason": result.supplement_error_code,
+    }
+
+
+def _render_stockeasy_requirements(capability: Mapping[str, object]) -> str:
+    requirements = capability.get("requirements")
+    if not isinstance(requirements, list):
+        return "EVIDENCE_STATE_UNAVAILABLE"
+    rows = []
+    for item in requirements:
+        if isinstance(item, Mapping):
+            rows.append(f"{item.get('requirement')}={item.get('status')}")
+    return ", ".join(rows) or "EVIDENCE_STATE_UNAVAILABLE"
 
 
 def write_dashboard_projection(
@@ -667,6 +711,7 @@ async def _run_command(args: argparse.Namespace) -> dict[str, object]:
     ).run(
         trigger_time="afternoon",
         supplement_import=supplement_import,
+        supplement_snapshot_argument_supplied=args.stockeasy_snapshot is not None,
     )
 
     base = ""
@@ -717,11 +762,7 @@ async def _run_command(args: argparse.Namespace) -> dict[str, object]:
             agentnews_result=agentnews_provider.last_result,
         ),
         "counts": _counts_payload(result.counts),
-        "stockeasy": {
-            "status": result.supplement_outcome.value,
-            "reason": result.supplement_error_code,
-            "snapshot_argument_supplied": args.stockeasy_snapshot is not None,
-        },
+        "stockeasy": _stockeasy_projection(result),
         "jobs": [item.job_key for item in result.analyses],
         "call_evidence": [
             {

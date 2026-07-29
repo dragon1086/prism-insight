@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from prism_app import cli
@@ -61,6 +63,23 @@ def test_kr_daily_routes_to_the_daily_product_entrypoint(monkeypatch) -> None:
 
     assert main(["kr-daily", "--research-db", "research.sqlite"]) == 7
     assert observed == [["--research-db", "research.sqlite"]]
+
+
+def test_stockeasy_capability_command_reports_verified_fail_soft_prerequisite(capsys) -> None:
+    assert main(["stockeasy-capability"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "STOCKEASY_UNAVAILABLE"
+    assert payload["reason"] == "APPROVED_UI_EXPORT_NOT_CONFIRMED"
+    assert payload["snapshot_argument_supplied"] is False
+    assert payload["price_authority"] == "KIS_KRX"
+    assert payload["entry_signal_authority"] is False
+    assert {item["requirement"] for item in payload["requirements"]} == {
+        "SECURITIES",
+        "MARKET_OVERVIEW",
+        "LEADING_SECURITIES",
+        "LEADING_SECTORS",
+    }
 
 
 def test_us_shadow_run_is_exposed_without_account_or_scheduler_flags(capsys) -> None:
