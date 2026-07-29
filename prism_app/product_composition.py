@@ -221,7 +221,7 @@ async def run_kr_shadow_product(
                 shadow_evaluation_enabled=True,
             ),
             snapshot_provider=_StaticSnapshotProvider(snapshot),
-            quality_gate=DataQualityGate(),
+            quality_gate=phase1_quality_gate(market=market),
             strategy_evaluator=evaluator,
             leadership_repository=LeadershipRepository(research_connection),
             run_repository=SQLiteAppRunRepository(ops_connection),
@@ -278,4 +278,15 @@ async def run_us_shadow_product(
         output_path=output_path,
         base_report_path=base_report_path,
         market=Market.US,
+    )
+
+
+def phase1_quality_gate(*, market: Market = Market.KR) -> DataQualityGate:
+    """Keep KR supplements report-only without relaxing US core fundamentals."""
+
+    if market is Market.US:
+        return DataQualityGate()
+    return DataQualityGate(
+        core_fields={"calendar", "evidence", "price", "regime"},
+        report_only_fields={"fundamental"},
     )

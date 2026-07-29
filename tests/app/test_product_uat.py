@@ -9,9 +9,12 @@ from types import SimpleNamespace
 import pytest
 
 from prism_app import product_uat
+from prism_app.product_composition import phase1_quality_gate
 from prism_app.product_uat import load_pit_evidence
+from prism_core.data import DataQualityStatus
 from prism_core.data.quality import QualityDisposition
 from prism_core.data.providers.kis_http import KISMarketDataTransportError
+from prism_core.strategies.contracts import Market
 
 
 NOW = datetime(2026, 7, 26, 10, 0, tzinfo=timezone.utc)
@@ -164,6 +167,55 @@ def test_product_uat_defaults_to_gpt_5_6_sol() -> None:
     assert args.model == "gpt-5.6-sol"
     assert args.model_version == "gpt-5.6-sol"
     assert args.evidence_json is None
+
+
+def test_kr_symbol_derives_optional_fmp_normalization_symbol_and_missing_key_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = product_uat._parser().parse_args(
+        [
+            "--symbol",
+            "214450",
+            "--research-db",
+            "research.sqlite",
+            "--ops-db",
+            "ops.sqlite",
+            "--output",
+            "report.md",
+        ]
+    )
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    monkeypatch.delenv("FINANCIAL_MODELING_PREP_API_KEY", raising=False)
+
+    assert product_uat._resolved_fmp_symbol(args) == "214450.KS"
+    assert product_uat._optional_fmp_client() is None
+    assert product_uat._product_status(QualityDisposition.REPORT_ONLY) == (
+        "REPORT_ONLY_READBACK_VERIFIED"
+    )
+    assert product_uat._product_status(QualityDisposition.REJECT) == (
+        "ANALYSIS_INCOMPLETE_READBACK_VERIFIED"
+    )
+    decision = phase1_quality_gate().evaluate(
+        {
+            "calendar": DataQualityStatus.FRESH,
+            "evidence": DataQualityStatus.FRESH,
+            "price": DataQualityStatus.FRESH,
+            "regime": DataQualityStatus.FRESH,
+            "fundamental": DataQualityStatus.PARTIAL,
+        }
+    )
+    assert decision.disposition is QualityDisposition.REPORT_ONLY
+
+    us_decision = phase1_quality_gate(market=Market.US).evaluate(
+        {
+            "calendar": DataQualityStatus.FRESH,
+            "evidence": DataQualityStatus.FRESH,
+            "price": DataQualityStatus.FRESH,
+            "regime": DataQualityStatus.FRESH,
+            "fundamental": DataQualityStatus.PARTIAL,
+        }
+    )
+    assert us_decision.disposition is QualityDisposition.REJECT
 
 
 def test_product_failure_payload_reports_sanitized_kis_stage_and_status_only() -> None:

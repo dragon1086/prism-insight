@@ -111,6 +111,10 @@ class FMPIncomeEvidence:
     previous_unit: str
     ingested_at: datetime
     response_hash: str
+    provider: str = "FMP"
+    provider_symbol: str = "income-statement"
+    source_record_prefix: str = "fmp:income"
+    source_url: str = f"{_FMP_ORIGIN}{_FMP_INCOME_PATH}"
 
 
 class FMPIncomeStatementClient:
@@ -224,7 +228,7 @@ def _provider_timestamp(value: str) -> datetime:
 
 def _normalized_scenario_records(
     *,
-    income: FMPIncomeEvidence,
+    income: FMPIncomeEvidence | None,
     board: AgentNewsSnapshot,
     stock_id: SecurityId,
     benchmark_id: SecurityId,
@@ -236,6 +240,7 @@ def _normalized_scenario_records(
     def fundamental(
         *, period: str, accepted_at: datetime, value: Decimal, unit: str
     ) -> FundamentalObservation:
+        assert income is not None
         period_end = date.fromisoformat(period)
         observed_at = min(
             datetime.combine(period_end, time.min, tzinfo=timezone.utc),
@@ -243,9 +248,9 @@ def _normalized_scenario_records(
         )
         return FundamentalObservation(
             security_id=stock_id,
-            provider="FMP",
-            provider_symbol="income-statement",
-            source_record_id=f"fmp:income:{period}:{accepted_at.isoformat()}",
+            provider=income.provider,
+            provider_symbol=income.provider_symbol,
+            source_record_id=f"{income.source_record_prefix}:{period}:{accepted_at.isoformat()}",
             source_hash=income.response_hash,
             revision=0,
             timing=ObservationTime(
@@ -262,9 +267,10 @@ def _normalized_scenario_records(
             unit=unit,
         )
 
-    fundamentals = tuple(
-        sorted(
-            (
+    fundamentals = (
+        tuple(
+            sorted(
+                (
                 fundamental(
                     period=income.current_period,
                     accepted_at=income.current_accepted_at,
@@ -277,9 +283,12 @@ def _normalized_scenario_records(
                     value=income.previous,
                     unit=income.previous_unit,
                 ),
-            ),
-            key=lambda item: item.period_end,
+                ),
+                key=lambda item: item.period_end,
+            )
         )
+        if income is not None
+        else ()
     )
 
     def evidence(
@@ -321,42 +330,46 @@ def _normalized_scenario_records(
             }
         )
 
-    current_period_end = datetime.combine(
-        date.fromisoformat(income.current_period), time.min, tzinfo=timezone.utc
-    )
-    current_observed_at = min(current_period_end, income.current_accepted_at)
     board_observed_at = board.source_updated_at or board.fetched_at
     review_title = f"PRISM next review at {as_of.isoformat()}"
     review_hash = hashlib.sha256(review_title.encode("utf-8")).hexdigest()
-    items = (
-        evidence(
-            kind="company_filing",
-            title=f"FMP annual income statement {income.current_period}",
-            provider="FMP",
-            provider_symbol="income-statement",
-            source_record_id=f"fmp:income:{income.current_period}",
-            source_url=f"{_FMP_ORIGIN}{_FMP_INCOME_PATH}",
-            source_hash=income.response_hash,
-            observed_at=current_observed_at,
-            available_at=income.current_accepted_at,
-            ingested_at=income.ingested_at,
-            security_id=stock_id,
-            quality=fundamental_quality,
-        ),
-        evidence(
-            kind="earnings_event",
-            title=f"Latest PIT-available annual earnings {income.current_period}",
-            provider="FMP",
-            provider_symbol="income-statement",
-            source_record_id=f"fmp:earnings-event:{income.current_period}",
-            source_url=f"{_FMP_ORIGIN}{_FMP_INCOME_PATH}",
-            source_hash=income.response_hash,
-            observed_at=current_observed_at,
-            available_at=income.current_accepted_at,
-            ingested_at=income.ingested_at,
-            security_id=stock_id,
-            quality=fundamental_quality,
-        ),
+    items_list: list[EvidenceItem] = []
+    if income is not None:
+        current_period_end = datetime.combine(
+            date.fromisoformat(income.current_period), time.min, tzinfo=timezone.utc
+        )
+        current_observed_at = min(current_period_end, income.current_accepted_at)
+        items_list.extend((
+            evidence(
+                kind="company_filing",
+                title=f"{income.provider} annual income statement {income.current_period}",
+                provider=income.provider,
+                provider_symbol=income.provider_symbol,
+                source_record_id=f"{income.source_record_prefix}:{income.current_period}",
+                source_url=income.source_url,
+                source_hash=income.response_hash,
+                observed_at=current_observed_at,
+                available_at=income.current_accepted_at,
+                ingested_at=income.ingested_at,
+                security_id=stock_id,
+                quality=fundamental_quality,
+            ),
+            evidence(
+                kind="earnings_event",
+                title=f"Latest PIT-available annual earnings {income.current_period}",
+                provider=income.provider,
+                provider_symbol=income.provider_symbol,
+                source_record_id=f"{income.source_record_prefix}:earnings-event:{income.current_period}",
+                source_url=income.source_url,
+                source_hash=income.response_hash,
+                observed_at=current_observed_at,
+                available_at=income.current_accepted_at,
+                ingested_at=income.ingested_at,
+                security_id=stock_id,
+                quality=fundamental_quality,
+            ),
+        ))
+    items_list.extend((
         evidence(
             kind="market_context",
             title="AgentNews Korean market context",
@@ -385,8 +398,8 @@ def _normalized_scenario_records(
             security_id=stock_id,
             quality=DataQualityStatus.FRESH,
         ),
-    )
-    return fundamentals, items
+    ))
+    return fundamentals, tuple(items_list)
 
 
 def _clamp_score(value: Decimal) -> Decimal:
@@ -451,7 +464,14 @@ class LiveKREvidenceProvider:
         board = await board_result if inspect.isawaitable(board_result) else board_result
         if not isinstance(board, AgentNewsSnapshot):
             raise LiveKREvidenceError("AgentNews fetcher returned an invalid snapshot")
-        income = await self._fundamentals.fetch(symbol=self._fmp_symbol, as_of=as_of)
+        income: FMPIncomeEvidence | None
+        try:
+            income = await self._fundamentals.fetch(symbol=self._fmp_symbol, as_of=as_of)
+        except Exception:
+            if self._market_label != "kr":
+                raise
+            income = None
+        cascade = getattr(self._fundamentals, "last_result", None)
 
         by_security: dict[SecurityId, list[object]] = {stock_id: [], benchmark_id: []}
         for bar in snapshot.price_bars:
@@ -485,23 +505,18 @@ class LiveKREvidenceProvider:
             (bar.timing for bar in (*stock_bars, *benchmark_bars)),  # type: ignore[attr-defined]
             key=lambda timing: timing.ingested_at,
         )
-        observed_at = max(
-            latest_price_timing.observed_at,
-            board_time,
-            income.current_accepted_at,
-            income.previous_accepted_at,
+        official_times = (
+            ()
+            if income is None
+            else (income.current_accepted_at, income.previous_accepted_at)
         )
-        available_at = max(
-            latest_price_timing.available_at,
-            board_time,
-            income.current_accepted_at,
-            income.previous_accepted_at,
-        )
+        observed_at = max(latest_price_timing.observed_at, board_time, *official_times)
+        available_at = max(latest_price_timing.available_at, board_time, *official_times)
         ingested_at = max(
             latest_price_timing.ingested_at,
             board.fetched_at,
-            income.ingested_at,
             available_at,
+            *( () if income is None else (income.ingested_at,) ),
         )
         stock_symbol = next(
             bar.provider_symbol for bar in reversed(stock_bars)  # type: ignore[attr-defined]
@@ -524,8 +539,20 @@ class LiveKREvidenceProvider:
                 "content_hash": board.content_hash,
                 "content": board.raw_body.decode("utf-8"),
             },
-            f"fmp:income:{self._fmp_symbol}:{income.current_period}": {
-                "source": "FMP stable/income-statement",
+            f"{self._price_evidence_prefix}:{stock_symbol}:{benchmark_symbol}:{latest_session.isoformat()}": {
+                "source": f"{self._price_provider} daily market data",
+                "stock_symbol": stock_symbol,
+                "benchmark_symbol": benchmark_symbol,
+                "latest_completed_session": latest_session.isoformat(),
+                "stock_return_20": str(stock_20),
+                "benchmark_return_20": str(benchmark_20),
+            },
+        }
+        if income is not None:
+            evidence_payload[
+                f"{income.source_record_prefix}:{self._fmp_symbol}:{income.current_period}"
+            ] = {
+                "source": f"{income.provider} income statement",
                 "symbol": self._fmp_symbol,
                 "current_period": income.current_period,
                 "current_net_income": str(income.current),
@@ -536,31 +563,34 @@ class LiveKREvidenceProvider:
                 "previous_unit": income.previous_unit,
                 "previous_accepted_at": income.previous_accepted_at.isoformat(),
                 "response_hash": income.response_hash,
-                "provider_timestamp_assumption": "UTC_WHEN_OFFSET_ABSENT",
-            },
-            f"{self._price_evidence_prefix}:{stock_symbol}:{benchmark_symbol}:{latest_session.isoformat()}": {
-                "source": f"{self._price_provider} daily market data",
-                "stock_symbol": stock_symbol,
-                "benchmark_symbol": benchmark_symbol,
-                "latest_completed_session": latest_session.isoformat(),
-                "stock_return_20": str(stock_20),
-                "benchmark_return_20": str(benchmark_20),
-            },
-        }
+            }
         hard_vetoes = list(agentnews_hard_vetoes(board))
-        try:
-            fundamental_age_days = (
-                as_of.date() - date.fromisoformat(income.current_period)
-            ).days
-        except ValueError:
-            fundamental_age_days = 10_000
-        if fundamental_age_days > 550:
-            hard_vetoes.append("STALE_FMP_FUNDAMENTALS")
-        fundamental_quality = (
-            DataQualityStatus.STALE
-            if fundamental_age_days > 550
-            else DataQualityStatus.FRESH
-        )
+        if cascade is not None:
+            hard_vetoes.extend(cascade.hard_vetoes)
+        if income is None:
+            # Technical/market evidence remains usable; the missing supplemental
+            # leg is PARTIAL at the composed-product boundary and therefore
+            # deterministically REPORT_ONLY rather than a core-data rejection.
+            fundamental_quality = DataQualityStatus.PARTIAL
+            hard_vetoes.append("MISSING_SUPPLEMENTAL_FUNDAMENTALS")
+        else:
+            try:
+                fundamental_age_days = (
+                    as_of.date() - date.fromisoformat(income.current_period)
+                ).days
+            except ValueError:
+                fundamental_age_days = 10_000
+            if fundamental_age_days > 550:
+                hard_vetoes.append(f"STALE_{income.provider}_FUNDAMENTALS")
+            fundamental_quality = (
+                (
+                    DataQualityStatus.PARTIAL
+                    if self._market_label == "kr"
+                    else DataQualityStatus.STALE
+                )
+                if fundamental_age_days > 550
+                else DataQualityStatus.FRESH
+            )
         fundamentals, evidence_items = _normalized_scenario_records(
             income=income,
             board=board,
@@ -569,6 +599,16 @@ class LiveKREvidenceProvider:
             as_of=as_of,
             fundamental_quality=fundamental_quality,
         )
+        if cascade is not None and cascade.selected_provider == "DART":
+            fundamentals = tuple(cascade.fundamentals)
+            evidence_items = (
+                *(
+                    item
+                    for item in evidence_items
+                    if not (item.provider == "DART" and item.kind == "company_filing")
+                ),
+                *cascade.evidence_items,
+            )
         for item in evidence_items:
             evidence_payload[str(item.evidence_id)] = {
                 "source": str(item.source_url),
@@ -586,10 +626,16 @@ class LiveKREvidenceProvider:
             observations={
                 "catalyst_recency_sessions": catalyst_recency,
                 "regime_swing_compatibility": swing_regime,
-                "earnings_current": income.current,
-                "earnings_previous": income.previous,
                 "industry_leadership": relative_score,
                 "regime_trend_compatibility": trend_regime,
+                **(
+                    {}
+                    if income is None
+                    else {
+                        "earnings_current": income.current,
+                        "earnings_previous": income.previous,
+                    }
+                ),
             },
             evidence_payload=evidence_payload,
             field_quality={

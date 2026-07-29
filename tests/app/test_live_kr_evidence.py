@@ -16,10 +16,13 @@ from prism_app.live_kr_evidence import (
     LiveUSEvidenceProvider,
     agentnews_hard_vetoes,
 )
+from prism_app.kr_evidence_composer import KREvidenceComposer
 from prism_app.market_snapshot_composer import KRProductSnapshotComposer
 from prism_core.data import DataQualityStatus, SecurityId
 from prism_core.data.providers.agentnews_models import AgentNewsBoard, AgentNewsSnapshot
 from prism_core.data.providers.kis import KISInstrument, KISMarketDataProvider, ProviderPayload
+from prism_core.data.providers.dart import UnavailableDARTAdapter
+from prism_core.data.providers.kind import UnavailableKINDAdapter
 from prism_core.strategies import ScenarioInputStatus, StrategyId
 
 
@@ -101,6 +104,31 @@ class FMPRequester:
                         "date": "2024-12-31",
                         "acceptedDate": "2025-01-31 09:00:00",
                         "netIncome": 26_000_000_000_000,
+                    },
+                ]
+            ).encode(),
+            received_at=AS_OF.astimezone(UTC),
+        )
+
+
+class StaleFMPRequester(FMPRequester):
+    async def request(self, **kwargs: object) -> FMPHTTPJSONResponse:
+        self.requests.append(kwargs)
+        return FMPHTTPJSONResponse(
+            status_code=200,
+            body=json.dumps(
+                [
+                    {
+                        "symbol": "005930.KS",
+                        "date": "2023-12-31",
+                        "acceptedDate": "2024-03-20 09:00:00",
+                        "netIncome": 20_000_000_000_000,
+                    },
+                    {
+                        "symbol": "005930.KS",
+                        "date": "2022-12-31",
+                        "acceptedDate": "2023-03-20 09:00:00",
+                        "netIncome": 18_000_000_000_000,
                     },
                 ]
             ).encode(),
@@ -244,6 +272,130 @@ async def test_live_composer_builds_complete_scenario_pack_for_both_strategies()
     assert all(pack.status is ScenarioInputStatus.COMPLETE for pack in packs if pack)
     assert all(not pack.issues for pack in packs if pack)
     assert len({pack.model_dump_json() for pack in packs if pack}) == 1
+
+
+@pytest.mark.asyncio
+async def test_kr_missing_fmp_continues_with_technical_market_evidence_and_report_only_veto() -> None:
+    provider_clock = iter((AS_OF, AS_OF + timedelta(seconds=1)))
+    market = await KISMarketDataProvider(
+        transport=PriceTransport(),
+        instruments=(
+            KISInstrument(security_id=STOCK_ID, kis_symbol="005930"),
+            KISInstrument(security_id=BENCHMARK_ID, kis_symbol="069500"),
+        ),
+        clock=lambda: next(provider_clock),
+    ).fetch_snapshot(security_ids=(STOCK_ID, BENCHMARK_ID), as_of_date=AS_OF)
+    board = AgentNewsSnapshot.from_markdown(
+        board=AgentNewsBoard.KR,
+        url=AgentNewsBoard.KR.url,
+        raw_body=b'---\nupdated: "2026-07-26T10:00:00+00:00"\n---\n# KR context\n',
+        fetched_at=AS_OF.astimezone(UTC),
+        freshness_window=timedelta(hours=24),
+    )
+    cascade = KREvidenceComposer(
+        stock_code="005930",
+        security_id=STOCK_ID,
+        dart=UnavailableDARTAdapter(),
+        kind=UnavailableKINDAdapter(),
+        fmp=None,
+    )
+
+    evidence = await LiveKREvidenceProvider(
+        agentnews_fetcher=lambda: board,
+        fundamentals_client=cascade,
+        fmp_symbol="005930.KS",
+    ).build(
+        snapshot=market,
+        stock_id=STOCK_ID,
+        benchmark_id=BENCHMARK_ID,
+        as_of=AS_OF,
+    )
+
+    assert set(evidence.observations) == {
+        "catalyst_recency_sessions",
+        "regime_swing_compatibility",
+        "industry_leadership",
+        "regime_trend_compatibility",
+    }
+    assert evidence.fundamentals == ()
+    assert evidence.field_quality["fundamental"] is DataQualityStatus.PARTIAL
+    assert "MISSING_SUPPLEMENTAL_FUNDAMENTALS" in evidence.hard_vetoes
+    assert any(key.startswith("kis:relative-strength:") for key in evidence.evidence_payload)
+
+    second_clock = iter((AS_OF, AS_OF + timedelta(seconds=1)))
+    product_snapshot = await KRProductSnapshotComposer(
+        provider=KISMarketDataProvider(
+            transport=PriceTransport(),
+            instruments=(
+                KISInstrument(security_id=STOCK_ID, kis_symbol="005930"),
+                KISInstrument(security_id=BENCHMARK_ID, kis_symbol="069500"),
+            ),
+            clock=lambda: next(second_clock),
+        ),
+        stock_id=STOCK_ID,
+        benchmark_id=BENCHMARK_ID,
+        stock_symbol="005930",
+        benchmark_symbol="069500",
+        evidence_provider=LiveKREvidenceProvider(
+            agentnews_fetcher=lambda: board,
+            fundamentals_client=KREvidenceComposer(
+                stock_code="005930",
+                security_id=STOCK_ID,
+                dart=UnavailableDARTAdapter(),
+                kind=UnavailableKINDAdapter(),
+                fmp=None,
+            ),
+            fmp_symbol="005930.KS",
+        ),
+    ).acquire(as_of=AS_OF)
+
+    assert product_snapshot.field_quality["fundamental"] is DataQualityStatus.PARTIAL
+    assert product_snapshot.strategy_inputs == {}
+    assert product_snapshot.source_payload["quality_disposition"] == "REPORT_ONLY"
+    assert "FMP" not in product_snapshot.source_payload["evidence_level"]
+    swing = product_snapshot.source_payload["report_only_features"]["SWING_V1"]
+    assert swing["quality_disposition"] == "REPORT_ONLY"
+    assert "swing_v1.price_momentum_5d" in {
+        item["name"] for item in swing["values"]
+    }
+    assert "MISSING_SUPPLEMENTAL_FUNDAMENTALS" in product_snapshot.source_payload[
+        "entry_vetoes"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stale_supplemental_fundamentals_are_report_only_not_core_reject() -> None:
+    provider_clock = iter((AS_OF, AS_OF + timedelta(seconds=1)))
+    market = await KISMarketDataProvider(
+        transport=PriceTransport(),
+        instruments=(
+            KISInstrument(security_id=STOCK_ID, kis_symbol="005930"),
+            KISInstrument(security_id=BENCHMARK_ID, kis_symbol="069500"),
+        ),
+        clock=lambda: next(provider_clock),
+    ).fetch_snapshot(security_ids=(STOCK_ID, BENCHMARK_ID), as_of_date=AS_OF)
+    board = AgentNewsSnapshot.from_markdown(
+        board=AgentNewsBoard.KR,
+        url=AgentNewsBoard.KR.url,
+        raw_body=b'---\nupdated: "2026-07-26T10:00:00+00:00"\n---\n# KR\n',
+        fetched_at=AS_OF.astimezone(UTC),
+        freshness_window=timedelta(hours=24),
+    )
+    evidence = await LiveKREvidenceProvider(
+        agentnews_fetcher=lambda: board,
+        fundamentals_client=FMPIncomeStatementClient(
+            requester=StaleFMPRequester(), api_key="fixture-key"
+        ),
+        fmp_symbol="005930.KS",
+    ).build(
+        snapshot=market,
+        stock_id=STOCK_ID,
+        benchmark_id=BENCHMARK_ID,
+        as_of=AS_OF,
+    )
+
+    assert evidence.field_quality["fundamental"] is DataQualityStatus.PARTIAL
+    assert "STALE_FMP_FUNDAMENTALS" in evidence.hard_vetoes
 
 
 def test_stale_weekend_agentnews_remains_analyzable_but_vetoes_new_entry() -> None:

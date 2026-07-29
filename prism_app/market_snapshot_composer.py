@@ -22,7 +22,12 @@ from prism_core.data.contracts import (
 from prism_core.data.quality import DataQualityGate, QualityDisposition
 from prism_core.feedback.repository import canonical_json
 from prism_core.features.market_inputs import build_feature_computation_input
-from prism_core.features.service import NumericObservation, PriceBasis, QuantFeatureService
+from prism_core.features.service import (
+    FeatureComputationRejected,
+    NumericObservation,
+    PriceBasis,
+    QuantFeatureService,
+)
 from prism_core.reporting.leadership_tracking import (
     ConfirmationState,
     Market as LeadershipMarket,
@@ -43,16 +48,16 @@ from prism_core.strategies.scenario_inputs import (
 )
 
 
-_REQUIRED_OBSERVATIONS = frozenset(
+_CORE_OBSERVATIONS = frozenset(
     {
         "catalyst_recency_sessions",
         "regime_swing_compatibility",
-        "earnings_current",
-        "earnings_previous",
         "industry_leadership",
         "regime_trend_compatibility",
     }
 )
+_FUNDAMENTAL_OBSERVATIONS = frozenset({"earnings_current", "earnings_previous"})
+_SUPPORTED_OBSERVATIONS = _CORE_OBSERVATIONS | _FUNDAMENTAL_OBSERVATIONS
 
 
 class KISFetchProvider(Protocol):
@@ -102,10 +107,13 @@ class KRPITEvidence:
                 raise ValueError(f"{label} must be timezone-aware")
         if not self.observed_at <= self.available_at <= self.ingested_at:
             raise ValueError("evidence timing must be observed <= available <= ingested")
-        missing = sorted(_REQUIRED_OBSERVATIONS - set(self.observations))
+        missing = sorted(_CORE_OBSERVATIONS - set(self.observations))
         if missing:
             raise ValueError("missing required observations: " + ", ".join(missing))
-        if set(self.observations) != _REQUIRED_OBSERVATIONS:
+        fundamental_present = _FUNDAMENTAL_OBSERVATIONS & set(self.observations)
+        if fundamental_present and fundamental_present != _FUNDAMENTAL_OBSERVATIONS:
+            raise ValueError("earnings observations must be supplied as a complete pair")
+        if not set(self.observations) <= _SUPPORTED_OBSERVATIONS:
             raise ValueError("unsupported observations are not accepted")
         if any(
             not isinstance(value, Decimal) or not value.is_finite()
@@ -271,9 +279,16 @@ class KRProductSnapshotComposer:
             if self._market is Market.US and not corporate_action_coverage_verified
             else ()
         )
-        quality_decision = DataQualityGate().evaluate(field_quality)
+        quality_decision = DataQualityGate(
+            core_fields={"calendar", "evidence", "price", "regime"},
+            report_only_fields={"fundamental"},
+        ).evaluate(field_quality)
         scenario_input_pack = None
-        if quality_decision.disposition is QualityDisposition.ACCEPT:
+        report_only_features: dict[str, Any] = {}
+        if quality_decision.disposition in {
+            QualityDisposition.ACCEPT,
+            QualityDisposition.REPORT_ONLY,
+        }:
             feature_inputs = build_feature_computation_input(
                 snapshot=snapshot,
                 market=self._market,
@@ -289,36 +304,53 @@ class KRProductSnapshotComposer:
             scores = {}
             for strategy_id in (StrategyId.SWING_V1, StrategyId.TREND_V1):
                 strategy = DEFAULT_STRATEGY_REGISTRY.get(strategy_id)
-                feature = feature_service.compute(strategy, feature_inputs)
-                score = score_service.score(strategy, feature, _score_policy(strategy_id))
+                try:
+                    feature = feature_service.compute(strategy, feature_inputs)
+                except (FeatureComputationRejected, ValueError):
+                    continue
                 features[strategy_id] = feature
-                scores[strategy_id] = score
-            scenario_input_pack = build_scenario_input_pack(
-                snapshot=snapshot,
-                market=self._market,
-                security_id=self._stock_id,
-                benchmark_security_id=self._benchmark_id,
-                price_basis=ScenarioPriceBasis.RAW,
-                feature_snapshots=features,
-            )
-            for strategy_id in (StrategyId.SWING_V1, StrategyId.TREND_V1):
-                strategy_inputs[strategy_id] = StrategyEvaluationInput(
-                    feature_snapshot=features[strategy_id],
-                    quant_score=scores[strategy_id],
-                    available_evidence_ids=evidence_ids,
-                    evidence_payload=dict(evidence.evidence_payload),
-                    timing=timing,
-                    hard_vetoes=tuple(
-                        sorted(
-                            {
-                                *evidence.hard_vetoes,
-                                *scenario_input_pack.entry_vetoes,
-                                *coverage_vetoes,
-                            }
-                        )
-                    ),
-                    scenario_input_pack=scenario_input_pack,
+                if quality_decision.disposition is QualityDisposition.REPORT_ONLY:
+                    report_only_features[strategy_id.value] = {
+                        "feature_snapshot_id": str(feature.feature_snapshot_id),
+                        "feature_version": feature.feature_version,
+                        "quality_disposition": feature.quality_disposition.value,
+                        "data_quality_status": feature.data_quality_status.value,
+                        "values": [
+                            {"name": item.name, "value": str(item.value)}
+                            for item in feature.values
+                        ],
+                    }
+                else:
+                    scores[strategy_id] = score_service.score(
+                        strategy, feature, _score_policy(strategy_id)
+                    )
+            if quality_decision.disposition is QualityDisposition.ACCEPT:
+                scenario_input_pack = build_scenario_input_pack(
+                    snapshot=snapshot,
+                    market=self._market,
+                    security_id=self._stock_id,
+                    benchmark_security_id=self._benchmark_id,
+                    price_basis=ScenarioPriceBasis.RAW,
+                    feature_snapshots=features,
                 )
+                for strategy_id in (StrategyId.SWING_V1, StrategyId.TREND_V1):
+                    strategy_inputs[strategy_id] = StrategyEvaluationInput(
+                        feature_snapshot=features[strategy_id],
+                        quant_score=scores[strategy_id],
+                        available_evidence_ids=evidence_ids,
+                        evidence_payload=dict(evidence.evidence_payload),
+                        timing=timing,
+                        hard_vetoes=tuple(
+                            sorted(
+                                {
+                                    *evidence.hard_vetoes,
+                                    *scenario_input_pack.entry_vetoes,
+                                    *coverage_vetoes,
+                                }
+                            )
+                        ),
+                        scenario_input_pack=scenario_input_pack,
+                    )
 
         evidence_hash = hashlib.sha256(
             canonical_json(
@@ -336,7 +368,7 @@ class KRProductSnapshotComposer:
             "provider_snapshot_id": str(provider_snapshot.snapshot_id),
             "evidence_hash": evidence_hash,
             "evidence_level": (
-                self._live_evidence_level
+                _resolved_live_evidence_level(self._live_evidence_level, evidence)
                 if self._evidence_provider is not None
                 else "STATIC_PIT_OVERRIDE"
             ),
@@ -381,6 +413,9 @@ class KRProductSnapshotComposer:
                 market=self._market,
                 price_provider=self._provider_name,
             ),
+            "quality_disposition": quality_decision.disposition.value,
+            "report_only_features": report_only_features,
+            "entry_vetoes": sorted({*evidence.hard_vetoes, *coverage_vetoes}),
             "broker_called": False,
         }
         return PipelineSnapshot(
@@ -404,6 +439,18 @@ class KRProductSnapshotComposer:
             source_payload=source_payload,
             strategy_inputs=strategy_inputs,
         )
+
+
+def _resolved_live_evidence_level(base: str, evidence: KRPITEvidence) -> str:
+    """Name only fundamental providers actually present in the live snapshot."""
+
+    tokens = base.split("_")
+    if "FMP" not in tokens:
+        return base
+    providers = sorted({item.provider.upper() for item in evidence.fundamentals})
+    index = tokens.index("FMP")
+    tokens[index : index + 1] = providers
+    return "_".join(tokens)
 
 
 def _enrich_market_snapshot(

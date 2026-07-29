@@ -14,7 +14,12 @@ from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
 from prism_app.market_snapshot_composer import KRPITEvidence, KRProductSnapshotComposer
-from prism_app.live_kr_evidence import FMPIncomeStatementClient, LiveKREvidenceProvider
+from prism_app.live_kr_evidence import (
+    FMPIncomeStatementClient,
+    LiveKREvidenceError,
+    LiveKREvidenceProvider,
+)
+from prism_app.kr_evidence_composer import KREvidenceComposer
 from prism_app.oauth_llm import ChatGPTOAuthRuntime
 from prism_app.product_composition import ProductRunConfig, run_kr_shadow_product
 from prism_app.daily_pipeline import PersistedDailyAnalysis
@@ -29,6 +34,8 @@ from prism_core.data.providers.kis_http import (
 )
 from prism_core.data.providers.agentnews import AgentNewsProvider
 from prism_core.data.providers.agentnews_models import AgentNewsBoard
+from prism_core.data.providers.dart import UnavailableDARTAdapter
+from prism_core.data.providers.kind import UnavailableKINDAdapter
 from prism_core.runtime.settings import ProductMode, RuntimeSettings
 
 
@@ -144,7 +151,7 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="legacy diagnostic override; normal product runs collect evidence automatically",
     )
-    parser.add_argument("--fmp-symbol", default="005930.KS")
+    parser.add_argument("--fmp-symbol")
     parser.add_argument("--research-db", required=True, type=Path)
     parser.add_argument("--ops-db", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
@@ -160,6 +167,25 @@ def _parser() -> argparse.ArgumentParser:
         help="mode-0600 local read-only market-data token cache",
     )
     return parser
+
+
+def _resolved_fmp_symbol(args: argparse.Namespace) -> str:
+    return args.fmp_symbol or f"{args.symbol}.KS"
+
+
+def _optional_fmp_client() -> FMPIncomeStatementClient | None:
+    try:
+        return FMPIncomeStatementClient.from_env()
+    except LiveKREvidenceError:
+        return None
+
+
+def _product_status(disposition: QualityDisposition) -> str:
+    return {
+        QualityDisposition.ACCEPT: "PERSISTED_READBACK_VERIFIED",
+        QualityDisposition.REPORT_ONLY: "REPORT_ONLY_READBACK_VERIFIED",
+        QualityDisposition.REJECT: "ANALYSIS_INCOMPLETE_READBACK_VERIFIED",
+    }[disposition]
 
 
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
@@ -203,6 +229,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         composer_kwargs["evidence"] = evidence
         agentnews_results: list[Any] = []
         fundamentals = None
+        cascade = None
     else:
         agentnews = AgentNewsProvider()
         agentnews_results = []
@@ -212,11 +239,18 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             agentnews_results.append(fetch_result)
             return fetch_result.snapshot
 
-        fundamentals = FMPIncomeStatementClient.from_env()
+        fundamentals = _optional_fmp_client()
+        cascade = KREvidenceComposer(
+            stock_code=args.symbol,
+            security_id=stock_id,
+            dart=UnavailableDARTAdapter(),
+            kind=UnavailableKINDAdapter(),
+            fmp=fundamentals,
+        )
         composer_kwargs["evidence_provider"] = LiveKREvidenceProvider(
             agentnews_fetcher=fetch_agentnews_kr,
-            fundamentals_client=fundamentals,
-            fmp_symbol=args.fmp_symbol,
+            fundamentals_client=cascade,
+            fmp_symbol=_resolved_fmp_symbol(args),
         )
     composer = KRProductSnapshotComposer(**composer_kwargs)
     settings = RuntimeSettings(
@@ -248,10 +282,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         if prior_auth_mode is None:
             os.environ.pop("PRISM_OPENAI_AUTH_MODE", None)
-    require_product_runtime_proof(
-        result.analysis,
-        idempotent_replay=result.idempotent_replay,
-    )
+    if result.analysis.quality_decision.disposition is QualityDisposition.ACCEPT:
+        require_product_runtime_proof(
+            result.analysis,
+            idempotent_replay=result.idempotent_replay,
+        )
     board_evidence = [
         {
             "provider": "AgentNews",
@@ -267,11 +302,14 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     ]
     return {
         "stage": "PHASE1_SHADOW_PRODUCT",
-        "status": "PERSISTED_READBACK_VERIFIED",
+        "status": _product_status(result.analysis.quality_decision.disposition),
         "job_key": result.analysis.job_key,
         "invocation_id": result.invocation_id,
         "data_snapshot_id": str(result.analysis.data_snapshot_id),
         "quality_disposition": result.analysis.quality_decision.disposition.value,
+        "quality_reasons": result.analysis.quality_decision.reasons,
+        "missing_fields": result.analysis.quality_decision.missing_fields,
+        "stale_fields": result.analysis.quality_decision.stale_fields,
         "strategy_count": len(result.analysis.strategies),
         "llm_backend_verified": True,
         "fresh_invocation_verified": True,
@@ -285,6 +323,16 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 for item in transport.evidence
             ],
             "fmp_fundamentals": () if fundamentals is None else fundamentals.evidence,
+            "kr_official_cascade": (
+                ()
+                if cascade is None or cascade.last_result is None
+                else {
+                    "selected_provider": cascade.last_result.selected_provider,
+                    "quality": cascade.last_result.quality.value,
+                    "issues": cascade.last_result.issues,
+                    "calls": cascade.last_result.call_evidence,
+                }
+            ),
             "agentnews_kr": board_evidence,
             "oauth": {
                 "auth_mode": "chatgpt_oauth",
