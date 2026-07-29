@@ -28,6 +28,19 @@ reopen this hole. Two independent triggers, either of which blocks publishing:
     not yet set, and gives operators a manual kill switch.
 
 Production sets neither, so live behaviour is unchanged.
+
+KNOWN GAP
+---------
+Several CI steps run ``pytest --noconftest``, which skips conftest.py and so
+leaves ``PRISM_DISABLE_SIGNAL_PUBLISH`` unset; those runs are protected by
+``PYTEST_CURRENT_TEST`` alone. That covers test execution but NOT collection or
+module-level code in a test file. CI injects no credentials, so nothing can
+leak there — but a developer running ``--noconftest`` locally against a real
+``.env`` would have that narrow window open.
+
+Deliberately NOT closed by treating "pytest in sys.modules" as a third trigger:
+a false positive there would silently stop publishing in *production*, which is
+a worse failure than the narrow window it closes.
 """
 
 from __future__ import annotations
