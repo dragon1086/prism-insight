@@ -22,6 +22,8 @@ from kakao_bot.adapters.kakao.skill_response import (
     simple_text_output,
     skill_response,
 )
+from kakao_bot.application.command_parser import CommandKind
+from kakao_bot.application.command_service import IMPLEMENTED_COMMANDS
 from kakao_bot.domain.models import ClaimedOutboundDelivery
 
 ANALYSIS_RESULT = "analysis_result"
@@ -97,11 +99,45 @@ def _next_actions(
     *,
     pdf_url: str | None = None,
 ) -> dict[str, object]:
-    """Item titles double as commands, because a tap sends the title.
+    """Offer only follow-ups that actually work.
 
-    The full report goes out as a `webLink` button rather than a file, because
-    Kakao has no attachment field at all.
+    Item titles double as commands, because a tap sends the title. This card
+    previously offered 평가 and 순위 — both of which answered "아직 준비 중인
+    기능입니다", so a card headed "이어서 해보기" led nowhere twice.
+
+    The full report is a `webLink` button rather than a file because Kakao has
+    no attachment field, and "다른 종목" is a `mention` button, which fills the
+    bot mention into the input box so the user only types a stock name.
     """
+
+    items: list[dict[str, object]] = []
+    if CommandKind.EVALUATE in IMPLEMENTED_COMMANDS:
+        items.append(
+            {
+                "title": f"{company_name} 평가",
+                "description": "평단가와 보유 개월을 붙여 보내주세요",
+                "action": "message",
+                "messageText": f"평가 {company_name}",
+            }
+        )
+    if CommandKind.LEADERBOARD in IMPLEMENTED_COMMANDS:
+        items.append(
+            {
+                "title": "순위",
+                "description": "예측 리더보드 보기",
+                "action": "message",
+                "messageText": "순위",
+            }
+        )
+    if not items:
+        items.append(
+            {
+                "title": "도움말",
+                "description": "PRISM으로 할 수 있는 것들",
+                "action": "message",
+                "messageText": "도움말",
+            }
+        )
 
     buttons: list[dict[str, object]] = []
     if pdf_url:
@@ -112,24 +148,12 @@ def _next_actions(
                 "webLinkUrl": pdf_url,
             }
         )
+    buttons.append({"action": "mention", "label": "🔍 다른 종목"})
 
     return list_card_output(
         header_title="이어서 해보기",
         buttons=buttons,
-        items=[
-            {
-                "title": f"{company_name} 평가",
-                "description": "평단가와 보유 개월을 붙여 보내주세요",
-                "action": "message",
-                "messageText": f"평가 {company_name}",
-            },
-            {
-                "title": "순위",
-                "description": "예측 리더보드 보기",
-                "action": "message",
-                "messageText": "순위",
-            },
-        ],
+        items=items,
     )
 
 

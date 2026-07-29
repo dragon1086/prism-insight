@@ -70,8 +70,46 @@ def test_signal_campaign_renderer_builds_one_list_card_with_five_item_cap():
     card = output["listCard"]
     assert card["header"]["title"] == "🇰🇷 한국 오후 시그널"
     assert len(card["items"]) == 5
-    assert card["items"][0]["title"] == "기업 0 (000000)"
+    # The title is what a tap sends, so it reads as a command; the ticker moves
+    # into the description. Without this the daily card was a dead end.
+    assert card["items"][0]["title"] == "기업 0 리포트"
+    assert card["items"][0]["action"] == "message"
     assert "점수 90" in card["items"][0]["description"]
+    assert "000000" in card["items"][0]["description"]
+
+
+def test_signal_card_items_are_commands_the_bot_accepts():
+    """A tap on the daily card must start a report, not fall through."""
+
+    from kakao_bot.application.command_parser import parse_command
+    from kakao_bot.application.command_service import IMPLEMENTED_COMMANDS
+
+    response = render_campaign_delivery(
+        claimed(
+            message_type="signal_campaign",
+            payload={
+                "campaign_id": "kr-afternoon-2026-07-23",
+                "market": "KR",
+                "session": "AFTERNOON",
+                "trade_date": "2026-07-23",
+                "regime": "UPTREND",
+                "candidates": [
+                    {
+                        "ticker": "005930",
+                        "company_name": "삼성전자",
+                        "score": 91,
+                        "rationale": "AI 메모리 수요",
+                    }
+                ],
+            },
+        )
+    )
+
+    [item] = response["template"]["outputs"][0]["listCard"]["items"]
+    command = parse_command(item["title"])
+
+    assert command.kind in IMPLEMENTED_COMMANDS
+    assert command.query == "삼성전자"
 
 
 def test_rest_notice_renderer_does_not_create_candidate_card():
