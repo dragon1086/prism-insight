@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
-
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -406,7 +404,6 @@ def _draw_card(
     draw.text((x1 + 78, y1 + 17), title_text, font=title_font, fill="#FFFFFF")
 
     body_font = _font(30)
-    body_bold = _font(30, bold=True)
     cursor_y = y1 + 94
     max_width = x2 - x1 - 52
     for raw in spec.lines:
