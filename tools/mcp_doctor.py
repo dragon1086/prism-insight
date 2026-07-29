@@ -33,6 +33,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from cores.llm import config_loader  # noqa: E402
@@ -69,12 +71,21 @@ class ServerReport:
         return not self.problems
 
 
-def _check_env(spec_env: dict) -> list[dict]:
-    """Report env var names and whether a value resolves — never the value."""
+def _check_env(spec_env: dict, raw_env: dict | None = None) -> list[dict]:
+    """Report env var names and whether a value resolves — never the value.
+
+    ``spec_env`` has already been interpolated by the loader, so ``${VAR}``
+    references are indistinguishable from literals by the time the registry
+    exists. ``raw_env`` is the same block read straight from the YAML, which is
+    what tells the two apart — and telling them apart is the whole point of
+    migrating credentials out of the config file.
+    """
 
     checked: list[dict] = []
-    for key, raw in sorted((spec_env or {}).items()):
-        reference = _ENV_REF.match(str(raw)) if raw is not None else None
+    raw_env = raw_env or {}
+    for key, resolved in sorted((spec_env or {}).items()):
+        declared = str(raw_env.get(key, resolved) or "")
+        reference = _ENV_REF.match(declared)
         if reference:
             var = reference.group(1)
             checked.append(
@@ -85,16 +96,49 @@ def _check_env(spec_env: dict) -> list[dict]:
                 }
             )
         else:
-            # A literal in the config file. Present, but machine-local and a
-            # credential-in-git risk, so it is worth flagging as inline.
+            # A credential written into the config file: machine-local, drifts
+            # between hosts, and one `git add -A` away from being committed.
             checked.append(
                 {
                     "key": key,
                     "source": "inline",
-                    "set": bool(str(raw or "").strip()),
+                    "set": bool(str(resolved or "").strip()),
                 }
             )
     return checked
+
+
+def _resolve_config_path(label: str) -> Path | None:
+    """Mirror the loader's search order so the raw YAML can be read too."""
+
+    if label == "report":
+        override = os.environ.get("REPORT_MCP_CONFIG")
+        if override:
+            return Path(override)
+        if config_loader._LEGACY_CONFIG.exists():
+            return config_loader._LEGACY_CONFIG
+    override = os.environ.get("PRISM_MCP_CONFIG")
+    if override:
+        return Path(override)
+    if config_loader._NATIVE_CONFIG.exists():
+        return config_loader._NATIVE_CONFIG
+    if config_loader._LEGACY_CONFIG.exists():
+        return config_loader._LEGACY_CONFIG
+    return None
+
+
+def _raw_servers(path: Path | None) -> dict:
+    """Return the uninterpolated ``servers`` block, in either YAML shape."""
+
+    if path is None or not path.exists():
+        return {}
+    try:
+        raw = yaml.safe_load(path.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    if "servers" in raw:
+        return raw.get("servers") or {}
+    return ((raw.get("mcp") or {}).get("servers")) or {}
 
 
 def _looks_like_path(text: str) -> bool:
@@ -145,17 +189,19 @@ def _check_args(args, project_root: Path) -> list[dict]:
     return resolved
 
 
-def inspect(registry, project_root: Path) -> list[ServerReport]:
+def inspect(registry, project_root: Path, raw_servers: dict | None = None) -> list[ServerReport]:
+    raw_servers = raw_servers or {}
     reports: list[ServerReport] = []
     for name in sorted(registry.names()):
         spec = registry.get(name)
         command_found = shutil.which(spec.command) is not None
+        raw_env = ((raw_servers.get(name) or {}).get("env")) or {}
         report = ServerReport(
             name=name,
             command=spec.command,
             command_found=command_found,
             paths=_check_args(spec.args, project_root),
-            env=_check_env(dict(spec.env or {})),
+            env=_check_env(dict(spec.env or {}), raw_env),
         )
         if not command_found:
             report.problems.append(MISSING_COMMAND)
@@ -208,9 +254,11 @@ def main(argv: list[str] | None = None) -> int:
             payload["registries"][label] = {"error": str(exc)}
             unhealthy += 1
             continue
-        reports = inspect(registry, project_root)
+        config_path = _resolve_config_path(label)
+        reports = inspect(registry, project_root, _raw_servers(config_path))
         unhealthy += sum(1 for r in reports if not r.healthy)
         payload["registries"][label] = {
+            "source": str(config_path) if config_path else None,
             "servers": [
                 {
                     "name": r.name,
@@ -238,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     if cfg["legacy_exists"]:
         print("  ! report path prefers the legacy config (machine-local)")
     for label, data in payload["registries"].items():
-        print(f"\n[{label}]")
+        print(f"\n[{label}] source={data.get('source')}")
         if "error" in data:
             print(f"  ERROR: {data['error']}")
             continue

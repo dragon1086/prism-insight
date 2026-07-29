@@ -88,3 +88,31 @@ class TestEnvReporting:
         [entry] = _check_env({"EMPTY": "   "})
 
         assert entry["set"] is False
+
+    def test_raw_yaml_reveals_a_reference_the_loader_already_substituted(
+        self, monkeypatch
+    ):
+        """The loader interpolates before the registry exists.
+
+        Without the raw block, a `${VAR}` reference and a hardcoded credential
+        are indistinguishable — and telling them apart is the entire point of
+        migrating secrets out of the config file.
+        """
+
+        monkeypatch.setenv("PERPLEXITY_API_KEY", "resolved-secret")
+        interpolated = {"PERPLEXITY_API_KEY": "resolved-secret"}
+        raw = {"PERPLEXITY_API_KEY": "${PERPLEXITY_API_KEY}"}
+
+        [entry] = _check_env(interpolated, raw)
+
+        assert entry["source"] == "${PERPLEXITY_API_KEY}"
+        assert entry["set"] is True
+        assert "resolved-secret" not in repr(entry)
+
+    def test_a_hardcoded_credential_is_still_reported_as_inline(self):
+        interpolated = {"PERPLEXITY_API_KEY": "pplx-hardcoded"}
+        raw = {"PERPLEXITY_API_KEY": "pplx-hardcoded"}
+
+        [entry] = _check_env(interpolated, raw)
+
+        assert entry["source"] == "inline"
