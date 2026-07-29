@@ -1,0 +1,62 @@
+{
+  "audit_date": "2026-07-30",
+  "copy_spec_sha256": "3e4ee8b82b2c73b3df572a01294e1d4bd53f080036a62b00f974ff82ea88601e",
+  "assets": {
+    "can-slim-company-supply-checks.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "ff31fa6bfe885c46c4cf697154bd68ecb09277a5fa20dcf9327db54efd4787ef"
+    },
+    "can-slim-leadership-market-checks.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "3b3b531a34ff4fc179a52d4e474df3305502dc93a9a6b18bcdb781450d752925"
+    },
+    "candidate-screening-reranking-overview.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "f2bef462509594161b78be89b923ed336597644e7c8413531111d2a34aff83f4"
+    },
+    "distribution-day-state-transitions.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "1d4d12b6e159241d4ed3cb7dd7fac9ef2605cfecef8083a04449e5446040e6e5"
+    },
+    "entry-gates-overview.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "fcc70aba062fbb7826f99595b8ef7a389eb37fa2ae220370f48871dec65601cc"
+    },
+    "feedback-reentry-overview.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "22b1fd041bb48c3dddfda8b3ba43efdfec746d466048bac9b97e1113b883200b"
+    },
+    "full-pipeline-overview.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "4526b34d0690267b8a1ebfdbab74c71f1eff25938a69679cc572acea8b3f5ac5"
+    },
+    "market-pulse-batch-control-overview.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "f2107d448a33d10719dffec4a8626fb4a85a87bb7157fe33dad8d7a44199608f"
+    },
+    "position-protection-loops.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "c7df46340932ed2d682c9de1a775b30729226c202c9607bb693c9bd66568e732"
+    },
+    "pyramiding-portfolio-overview.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "dad3a660434e7ef12e4e582009a42cd7669478835054f00a0bc5a71ace8a4b04"
+    },
+    "screening-analysis-deep-dive.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "684af52714afe699d17f29a50ee2ec33d142ec0ddc96bb7178debd63bcc6a0ba"
+    },
+    "screening-six-triggers-overview.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "1af2fb77b5a67048cb65b2afbe617bb073d5849e08707b3c48ad090990c2caff"
+    },
+    "trading-exit-overview.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "b3518c45461f4d44eb6a8ea843cd48eeb2614b3c21391e2f47e54cf631acc5e8"
+    },
+    "trading-regime-entry-overview.png": {
+      "dimensions": [1920, 1080],
+      "sha256": "d56313c8f011f3a9558f01f16cbc17b9e7af5fb0b5def9509bed2f3c0eab726f"
+    }
+  }
+}
