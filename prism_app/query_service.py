@@ -14,6 +14,15 @@ from prism_core.feedback.retrieval import (
     EvaluationLessonSet,
     retrieve_evaluation_lessons,
 )
+from prism_core.persistence.leadership_history import (
+    LeadershipHistoryRecord,
+    LeadershipHistoryRepository,
+)
+from prism_core.persistence.feedback_cycle import (
+    ProcessQualityRecord,
+    ProcessQualityRepository,
+    candidate_market_outcomes_as_of,
+)
 from prism_core.reporting.leadership_tracking import (
     MARKET_OBSERVATION_KIND,
     PROVIDER as LEADERSHIP_PROVIDER,
@@ -35,6 +44,14 @@ class StrategyEvaluationView:
 
     proposals: tuple[StoredProposal, ...]
     shadow_evaluation: EvaluationLessonSet
+
+
+@dataclass(frozen=True)
+class CandidateFeedbackCycle:
+    """PIT-bounded process and market outcomes for one exact candidate strategy."""
+
+    process_outcomes: tuple[ProcessQualityRecord, ...]
+    market_outcomes: tuple[StoredOutcome, ...]
 
 
 @dataclass(frozen=True)
@@ -70,10 +87,80 @@ class QueryService:
         self._feedback = FeedbackRepository(connection)
         self._outcomes = OutcomeRepository(connection)
         self._leadership = LeadershipRepository(connection)
+        self._leadership_history = LeadershipHistoryRepository(connection)
+        self._process_quality = ProcessQualityRepository(connection)
         self._run_repository = run_repository
 
     def leadership(self, snapshot_id: str) -> StoredLeadershipRun:
         return self._leadership.read(snapshot_id)
+
+    def candidate_leadership_history(
+        self,
+        *,
+        market: Market,
+        security_id: str,
+        strategy_id: StrategyId,
+        strategy_version: StrategyVersion,
+        as_of: datetime,
+    ) -> tuple[LeadershipHistoryRecord, ...]:
+        return self._leadership_history.history_as_of(
+            market=market,
+            security_id=security_id,
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+            as_of=as_of,
+        )
+
+    def candidate_feedback_cycle(
+        self,
+        *,
+        market: Market,
+        security_id: str,
+        strategy_id: StrategyId,
+        strategy_version: StrategyVersion,
+        as_of: datetime,
+    ) -> CandidateFeedbackCycle:
+        return CandidateFeedbackCycle(
+            process_outcomes=self._process_quality.records_as_of(
+                market=market,
+                security_id=security_id,
+                strategy_id=strategy_id,
+                strategy_version=strategy_version,
+                as_of=as_of,
+            ),
+            market_outcomes=candidate_market_outcomes_as_of(
+                self._connection,
+                market=market,
+                security_id=security_id,
+                strategy_id=strategy_id,
+                strategy_version=strategy_version,
+                as_of=as_of,
+            ),
+        )
+
+    def candidate_shadow_feedback(
+        self,
+        *,
+        market: Market,
+        security_id: str,
+        strategy_id: StrategyId,
+        strategy_version: StrategyVersion,
+        quant_score_version: str,
+        regime: str,
+        as_of: datetime,
+    ) -> EvaluationLessonSet:
+        """Retrieve exact-key prior SHADOW material without decision influence."""
+
+        return retrieve_evaluation_lessons(
+            self._connection,
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+            as_of=as_of,
+            market=market,
+            security_id=security_id,
+            regime=regime,
+            quant_score_version=quant_score_version,
+        )
 
     def latest_leadership(self, market: Market) -> StoredLeadershipRun:
         """Read the latest available persisted leadership run for one market."""

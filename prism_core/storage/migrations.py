@@ -59,6 +59,8 @@ _BOUNDARY_TABLES = {
             "retrospective_events",
             "lesson_candidates",
             "lesson_evidence_events",
+            "leadership_history_events",
+            "process_quality_outcomes",
         }
     ),
     DatabaseKind.PAPER: frozenset(

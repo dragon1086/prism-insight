@@ -32,6 +32,8 @@ RESEARCH_TABLES = {
     "retrospective_events",
     "lesson_candidates",
     "lesson_evidence_events",
+    "leadership_history_events",
+    "process_quality_outcomes",
 }
 PAPER_TABLES = {
     "schema_migrations",
@@ -75,6 +77,8 @@ APPEND_ONLY_TABLES = {
         "retrospective_events",
         "lesson_candidates",
         "lesson_evidence_events",
+        "leadership_history_events",
+        "process_quality_outcomes",
     },
     DatabaseKind.PAPER: {
         "cash_ledger",
@@ -104,20 +108,21 @@ def test_empty_research_database_migrates_to_current_version(tmp_path: Path):
     with open_database(tmp_path / "research.sqlite") as connection:
         applied = migrate_database(connection, DatabaseKind.RESEARCH)
 
-        assert applied == (1, 2, 3)
+        assert applied == (1, 2, 3, 4)
         assert connection.execute(
             "SELECT version, name FROM schema_migrations ORDER BY version"
         ).fetchall() == [
             (1, "initial"),
             (2, "security_master_actions"),
             (3, "feedback_storage"),
+            (4, "kr_leadership_feedback_cycle"),
         ]
         assert _user_tables(connection) == RESEARCH_TABLES
 
 
 def test_migration_rerun_is_idempotent(tmp_path: Path):
     with open_database(tmp_path / "research.sqlite") as connection:
-        assert migrate_database(connection, DatabaseKind.RESEARCH) == (1, 2, 3)
+        assert migrate_database(connection, DatabaseKind.RESEARCH) == (1, 2, 3, 4)
         first_history = connection.execute(
             "SELECT version, name, checksum, applied_at FROM schema_migrations"
         ).fetchall()
@@ -354,7 +359,7 @@ def test_default_research_v1_upgrades_to_v2_without_rewriting_history(tmp_path: 
             "SELECT name, checksum, applied_at FROM schema_migrations WHERE version = 1"
         ).fetchone()
 
-        assert migrate_database(connection, DatabaseKind.RESEARCH) == (2, 3)
+        assert migrate_database(connection, DatabaseKind.RESEARCH) == (2, 3, 4)
         assert connection.execute(
             "SELECT name, checksum, applied_at FROM schema_migrations WHERE version = 1"
         ).fetchone() == v1_history
@@ -552,7 +557,7 @@ def test_v3_preserves_v1_feedback_rows_and_freezes_legacy_writers(tmp_path: Path
             "'2026-01-01T00:00:00+00:00')"
         )
 
-        assert migrate_database(connection, DatabaseKind.RESEARCH) == (2, 3)
+        assert migrate_database(connection, DatabaseKind.RESEARCH) == (2, 3, 4)
         assert connection.execute(
             "SELECT raw_output FROM proposals WHERE proposal_id = 'legacy-p'"
         ).fetchone() == ("raw",)

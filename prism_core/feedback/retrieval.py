@@ -7,10 +7,11 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
 from prism_core.feedback.lessons import LessonStatus
 from prism_core.feedback.repository import _utc_text
-from prism_core.strategies.contracts import StrategyId, StrategyVersion
+from prism_core.strategies.contracts import Market, StrategyId, StrategyVersion
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class EvaluationLessonSet:
     strategy_version: StrategyVersion
     as_of: datetime
     lessons: tuple[EvaluationLesson, ...]
+    quant_score_version: str | None = None
 
 
 def retrieve_evaluation_lessons(
@@ -53,6 +55,10 @@ def retrieve_evaluation_lessons(
     strategy_id: StrategyId,
     strategy_version: StrategyVersion,
     as_of: datetime,
+    market: Market | None = None,
+    security_id: str | None = None,
+    regime: str | None = None,
+    quant_score_version: str | None = None,
 ) -> EvaluationLessonSet:
     """Return only the latest PIT-visible SHADOW revision for an exact strategy version."""
 
@@ -62,6 +68,32 @@ def retrieve_evaluation_lessons(
         raise TypeError("strategy_id must be StrategyId")
     if not isinstance(strategy_version, StrategyVersion):
         raise TypeError("strategy_version must be StrategyVersion")
+    exact_key_values = (market, security_id, regime)
+    if any(value is not None for value in exact_key_values) and any(
+        value is None for value in exact_key_values
+    ):
+        raise ValueError("market, security_id, and regime form one exact retrieval key")
+    if market is not None and not isinstance(market, Market):
+        raise TypeError("market must be Market")
+    if security_id is not None and (
+        not isinstance(security_id, str) or not security_id.strip()
+    ):
+        raise ValueError("security_id must be a non-empty string")
+    if security_id is not None:
+        try:
+            UUID(security_id)
+        except ValueError as exc:
+            raise ValueError("security_id must be a UUID stable identity") from exc
+    if regime is not None and (not isinstance(regime, str) or not regime.strip()):
+        raise ValueError("regime must be a non-empty string")
+    if quant_score_version is not None and (
+        not isinstance(quant_score_version, str) or not quant_score_version.strip()
+    ):
+        raise ValueError("quant_score_version must be a non-empty string")
+    if quant_score_version is not None and market is None:
+        raise ValueError(
+            "quant_score_version requires the exact market/security/regime key"
+        )
     boundary = _utc_text(as_of)
     rows = connection.execute(
         """
@@ -101,6 +133,23 @@ def retrieve_evaluation_lessons(
             strategy_version=strategy_version,
             boundary=boundary,
         )
+        if market is not None:
+            assert security_id is not None and regime is not None
+            if market.value not in candidate_payload["market_scope"]:
+                continue
+            if regime not in candidate_payload["regime_scope"]:
+                continue
+            if not _has_exact_security_evidence(
+                connection,
+                candidate_event_id=candidate_event_id,
+                market=market,
+                security_id=security_id,
+                strategy_id=strategy_id,
+                strategy_version=strategy_version,
+                quant_score_version=quant_score_version,
+                boundary=boundary,
+            ):
+                continue
         lessons.append(
             EvaluationLesson(
                 lesson_id=lesson_id,
@@ -118,7 +167,54 @@ def retrieve_evaluation_lessons(
                 influence=LessonInfluence(),
             )
         )
-    return EvaluationLessonSet(strategy_id, strategy_version, as_of, tuple(lessons))
+    return EvaluationLessonSet(
+        strategy_id,
+        strategy_version,
+        as_of,
+        tuple(lessons),
+        quant_score_version,
+    )
+
+
+def _has_exact_security_evidence(
+    connection: sqlite3.Connection,
+    *,
+    candidate_event_id: str,
+    market: Market,
+    security_id: str,
+    strategy_id: StrategyId,
+    strategy_version: StrategyVersion,
+    quant_score_version: str | None,
+    boundary: str,
+) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM lesson_evidence_events AS e
+        JOIN trade_plan_proposals AS p
+          ON p.proposal_record_id = e.proposal_record_id
+        JOIN decision_snapshots AS d
+          ON d.decision_snapshot_id = p.decision_snapshot_id
+        WHERE e.lesson_candidate_event_id = ?
+          AND e.strategy_id = ? AND e.strategy_version = ?
+          AND e.available_at <= ? AND e.as_of_at <= ?
+          AND d.market = ? AND d.security_id = ?
+          AND (? IS NULL OR d.quant_score_version = ?)
+        LIMIT 1
+        """,
+        (
+            candidate_event_id,
+            strategy_id.value,
+            strategy_version.value,
+            boundary,
+            boundary,
+            market.value,
+            security_id,
+            quant_score_version,
+            quant_score_version,
+        ),
+    ).fetchone()
+    return row is not None
 
 
 def _resolve_candidate_payload(

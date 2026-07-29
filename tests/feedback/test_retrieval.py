@@ -20,7 +20,7 @@ from prism_core.feedback.repository import FeedbackRepository
 from prism_core.feedback.retrieval import retrieve_evaluation_lessons
 from prism_core.storage.database import open_database
 from prism_core.storage.migrations import DatabaseKind, migrate_database
-from prism_core.strategies.contracts import StrategyId, StrategyVersion
+from prism_core.strategies.contracts import Market, StrategyId, StrategyVersion
 from tests.feedback.test_lesson_lifecycle import candidate, provenance
 from tests.feedback.test_repository import (
     AS_OF,
@@ -86,6 +86,33 @@ def test_retrieval_is_pit_version_scoped_shadow_only_and_inert(tmp_path: Path) -
             strategy_version=StrategyVersion("swing-v9.9.9"),
             as_of=AS_OF + timedelta(days=3, hours=1),
         )
+        exact_candidate = retrieve_evaluation_lessons(
+            connection,
+            strategy_id=StrategyId.SWING_V1,
+            strategy_version=version,
+            as_of=AS_OF + timedelta(days=3, hours=1),
+            market=Market.US,
+            security_id="00000000-0000-0000-0000-000000000102",
+            regime="sideways",
+        )
+        with pytest.raises(ValueError, match="UUID"):
+            retrieve_evaluation_lessons(
+                connection,
+                strategy_id=StrategyId.SWING_V1,
+                strategy_version=version,
+                as_of=AS_OF + timedelta(days=3, hours=1),
+                market=Market.US,
+                security_id="symbol-is-not-stable-identity",
+                regime="sideways",
+            )
+        with pytest.raises(ValueError, match="requires the exact"):
+            retrieve_evaluation_lessons(
+                connection,
+                strategy_id=StrategyId.SWING_V1,
+                strategy_version=version,
+                as_of=AS_OF + timedelta(days=3, hours=1),
+                quant_score_version="SHADOW_SCORE_V1.SWING_V1",
+            )
 
         assert len(before_suspension.lessons) == 1
         lesson = before_suspension.lessons[0]
@@ -96,6 +123,7 @@ def test_retrieval_is_pit_version_scoped_shadow_only_and_inert(tmp_path: Path) -
         assert lesson.influence.proposal_effect is False
         assert after_suspension.lessons == ()
         assert wrong_version.lessons == ()
+        assert tuple(item.lesson_id for item in exact_candidate.lessons) == ("lesson-1",)
 
 
 def test_retrieval_fails_closed_when_shadow_basis_is_not_pit_visible(tmp_path: Path) -> None:
