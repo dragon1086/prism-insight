@@ -143,6 +143,222 @@ def _project_lesson_candidate(value: str | None) -> dict[str, Any]:
     }
 
 
+def _without_actionable_price_levels(value: object) -> object:
+    """Remove exact price values while preserving why a field is absent."""
+
+    if isinstance(value, Mapping):
+        projected: dict[str, object] = {}
+        for key, item in value.items():
+            normalized = str(key).lower()
+            if "price" in normalized or normalized in {
+                "entry_level", "stop_level", "target_level", "comparison_value",
+                "observed_value", "lower_value", "upper_value",
+            }:
+                continue
+            if key in {"stop_candidates", "target_candidates"}:
+                projected[str(key)] = [
+                    {"status": "SUPPRESSED_DUE_TO_DATA_QUALITY"}
+                ]
+            elif key == "field_dispositions" and isinstance(item, list):
+                projected[str(key)] = [
+                    {
+                        child_key: _without_actionable_price_levels(child_value)
+                        for child_key, child_value in disposition.items()
+                        if child_key not in {"proposed_value", "resolved_value"}
+                    }
+                    for disposition in item
+                    if isinstance(disposition, Mapping)
+                ]
+            else:
+                projected[str(key)] = _without_actionable_price_levels(item)
+        return projected
+    if isinstance(value, list):
+        return [_without_actionable_price_levels(item) for item in value]
+    return value
+
+
+def _strategy_summary(proposal: Mapping[str, Any] | None) -> dict[str, Any]:
+    if proposal is None:
+        return {"state": "ANALYSIS_INCOMPLETE", "complete": False}
+    return {
+        "state": proposal["scenario_state"],
+        "complete": proposal["scenario_complete"],
+        "decision": proposal["proposed_decision"],
+        "quality": proposal["data_quality"],
+        "quality_disposition": proposal["quality_disposition"],
+        "actionable_levels_suppressed": proposal["actionable_levels_suppressed"],
+    }
+
+
+def _first_string(value: object) -> str | None:
+    if isinstance(value, list):
+        return next((item for item in value if isinstance(item, str) and item), None)
+    return None
+
+
+def _kr_daily_projection(
+    *,
+    freshness: list[dict[str, Any]],
+    proposals: Mapping[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Build the concise KR-first layer from the same persisted proposal rows."""
+
+    kr_proposals = [
+        item
+        for strategy in _STRATEGIES
+        for item in proposals[strategy]
+        if item["market"] == "KR"
+    ]
+    available_dates = sorted(
+        {
+            item["available_at"][:10]
+            for item in kr_proposals
+            if isinstance(item.get("available_at"), str)
+        }
+    )
+    current_date = available_dates[-1] if available_dates else None
+    previous_date = available_dates[-2] if len(available_dates) > 1 else None
+    current = [
+        item
+        for item in kr_proposals
+        if current_date is None or item["available_at"].startswith(current_date)
+    ]
+    previous_ids = {
+        item["security_id"]
+        for item in kr_proposals
+        if previous_date is not None and item["available_at"].startswith(previous_date)
+    }
+    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in current:
+        grouped.setdefault(item["security_id"], {})[item["strategy_id"]] = item
+
+    rows: list[dict[str, Any]] = []
+    cards: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    next_reviews: set[str] = set()
+    for security_id, strategies in sorted(grouped.items()):
+        swing = strategies.get("SWING_V1")
+        trend = strategies.get("TREND_V1")
+        values = [item for item in (swing, trend) if item is not None]
+        degraded = any(item["actionable_levels_suppressed"] for item in values)
+        change = (
+            "DATA_MISSING"
+            if degraded or len(values) != len(_STRATEGIES)
+            else "MAINTAINED" if security_id in previous_ids else "NEW"
+        )
+        support = next(
+            (
+                evidence
+                for item in values
+                if (evidence := _first_string(item["bull_evidence_ids"]))
+            ),
+            None,
+        )
+        counter = next(
+            (
+                evidence
+                for item in values
+                if (evidence := _first_string(item["bear_evidence_ids"]))
+            ),
+            None,
+        )
+        rows.append(
+            {
+                "security_id": security_id,
+                "channel": "UNAVAILABLE",
+                "trigger": "UNAVAILABLE",
+                "swing": _strategy_summary(swing),
+                "trend": _strategy_summary(trend),
+                "current_state": (
+                    values[0]["scenario_state"]
+                    if values and len({item["scenario_state"] for item in values}) == 1
+                    else "STRATEGY_SPECIFIC"
+                ),
+                "top_support": support,
+                "top_counter_evidence": counter,
+                "change": change,
+            }
+        )
+        cards.append(
+            {
+                "security_id": security_id,
+                "strategies": {
+                    key: value
+                    for key, value in (("SWING_V1", swing), ("TREND_V1", trend))
+                    if value is not None
+                },
+            }
+        )
+        for item in values:
+            gaps.extend(item["missing_or_stale_data"])
+            review_at = item["scenario"].get("next_review_at")
+            if isinstance(review_at, str) and review_at:
+                next_reviews.add(review_at)
+
+    changes = [
+        {"security_id": row["security_id"], "state": row["change"]}
+        for row in rows
+    ]
+    changes.extend(
+        {"security_id": security_id, "state": "EXITED"}
+        for security_id in sorted(previous_ids - set(grouped))
+    )
+    regimes = [
+        scenario
+        for item in current
+        for key in ("regime", "market_judgment")
+        if (scenario := item["scenario"].get(key)) is not None
+    ]
+    return {
+        "market": "KR",
+        "as_of": current_date,
+        "section_order": [
+            "source_quality", "market_context", "candidate_table", "strategy_cards",
+            "conditional_scenarios", "data_gaps", "changes", "next_review", "audit",
+        ],
+        "source_quality": [item for item in freshness if item["market"] == "KR"],
+        "call_evidence": {
+            "status": "UNAVAILABLE",
+            "reason": "call evidence is not stored in the dashboard databases",
+        },
+        "market_context": {
+            "regime": regimes,
+            "breadth": [],
+            "investor_flows": [],
+            "leading_groups": [],
+            "weak_groups": [],
+            "unavailable_reason": "aggregate breadth/flow/group context is not persisted by this database contract",
+        },
+        "candidate_table": rows,
+        "strategy_cards": cards,
+        "conditional_scenarios": [
+            {
+                "security_id": item["security_id"],
+                "strategy_id": item["strategy_id"],
+                "entry": item["scenario"].get(
+                    "entry_triggers", item["scenario"].get("triggers", [])
+                ),
+                "avoid": item["scenario"].get("avoid_triggers", []),
+                "invalidation": item["scenario"].get(
+                    "failure_transition", item["scenario"].get("falsifiers", [])
+                ),
+                "stop_candidates": item["scenario"].get("stop_candidates", []),
+                "target_candidates": item["scenario"].get("target_candidates", []),
+                "reentry_candidates": item["scenario"].get("reentry_candidates", []),
+                "pyramiding_candidates": item["scenario"].get("pyramiding_candidates", []),
+                "exit": item["scenario"].get(
+                    "failure_transition", item["scenario"].get("exit_conditions", [])
+                ),
+            }
+            for item in current
+        ],
+        "data_gaps": gaps,
+        "changes": changes,
+        "next_review": sorted(next_reviews),
+        "audit": [item["audit"] for item in current],
+    }
+
+
 def _tables(connection: sqlite3.Connection) -> frozenset[str]:
     return frozenset(
         row[0]
@@ -216,8 +432,9 @@ class DashboardExporter:
         proposals = {
             strategy: self._proposals(strategy, boundary) for strategy in _STRATEGIES
         }
+        freshness = self._freshness(boundary)
         return {
-            "data_freshness": self._freshness(boundary),
+            "data_freshness": freshness,
             "daily_leaders": self._leaders(boundary),
             "swing_v1_proposals": proposals["SWING_V1"],
             "trend_v1_proposals": proposals["TREND_V1"],
@@ -246,6 +463,10 @@ class DashboardExporter:
                 "experiments": [],
             },
             "shadow_feedback": self._shadow_feedback(boundary),
+            "kr_daily": _kr_daily_projection(
+                freshness=freshness,
+                proposals=proposals,
+            ),
         }
 
     def _freshness(self, boundary: str) -> list[dict[str, Any]]:
@@ -349,7 +570,8 @@ class DashboardExporter:
                    d.quality_disposition, p.proposed_decision,
                    p.parse_status, p.validation_status,
                    p.normalized_proposal_json, p.model_provider, p.model_id,
-                   p.model_version, p.prompt_version, p.available_at
+                   p.model_version, p.prompt_version, p.available_at,
+                   p.content_hash, p.validator_version, p.policy_version
             FROM trade_plan_proposals AS p
             JOIN decision_snapshots AS d USING (decision_snapshot_id)
             WHERE p.strategy_id = ?
@@ -405,6 +627,15 @@ class DashboardExporter:
                 },
             )
             scenario = dict(assessment.scenario)
+            suppress_levels = (
+                row[10] in {"STALE", "PARTIAL", "CONFLICT", "UNAVAILABLE"}
+                or row[11] != "ACCEPT"
+            )
+            if suppress_levels:
+                suppressed_scenario = _without_actionable_price_levels(scenario)
+                if not isinstance(suppressed_scenario, Mapping):
+                    raise TypeError("suppressed scenario projection must remain an object")
+                scenario = dict(suppressed_scenario)
             falsifiers = scenario.get("falsifiers", [])
             status = (
                 "REJECTED"
@@ -441,17 +672,17 @@ class DashboardExporter:
                         scenario.get("bear_evidence_ids")
                     ),
                     "falsifiers": falsifiers if isinstance(falsifiers, list) else [],
-                    "missing_or_stale_data": (
-                        _project_missing_or_stale_data(
-                            normalized.get("missing_or_stale_data")
-                        )
-                        if assessment.complete
-                        else []
+                    "missing_or_stale_data": _project_missing_or_stale_data(
+                        normalized.get("missing_or_stale_data")
                     ),
                     "uncertainty": (
                         _project_uncertainty(normalized.get("uncertainty"))
                         if assessment.complete
                         else {}
+                    ),
+                    "actionable_levels_suppressed": suppress_levels,
+                    "level_suppression_reason": (
+                        f"{row[10]} / {row[11]}" if suppress_levels else None
                     ),
                     "model": {
                         "provider": row[16],
@@ -460,6 +691,31 @@ class DashboardExporter:
                         "prompt_version": row[19],
                     },
                     "available_at": row[20],
+                    "audit": {
+                        "proposal_record_id": row[0],
+                        "proposal_id": row[1],
+                        "snapshot_id": row[7],
+                        "content_hash": row[21],
+                        "validator_version": row[22],
+                        "policy_version": row[23],
+                        "dispositions": [
+                            {
+                                "field_path": item.field_path,
+                                "action": item.action.value,
+                                "reason": item.reason,
+                                "evidence_ids": list(item.evidence_ids),
+                                **(
+                                    {}
+                                    if suppress_levels
+                                    else {
+                                        "proposed_value": item.proposed_value,
+                                        "resolved_value": item.resolved_value,
+                                    }
+                                ),
+                            }
+                            for item in dispositions
+                        ],
+                    },
                 }
             )
         return result

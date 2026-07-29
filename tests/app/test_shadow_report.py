@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from uuid import UUID
@@ -46,6 +47,7 @@ def _analysis(job_key: str) -> PersistedDailyAnalysis:
         quality_skip=None,
         source_payload={
             "provider": "KIS",
+            "stock_symbol": "005930",
             "provider_snapshot_id": str(SNAPSHOT_ID),
             "evidence_level": "LIVE_READ_ONLY",
             "collected_at": "2026-07-26T10:00:05+00:00",
@@ -68,7 +70,7 @@ def _analysis(job_key: str) -> PersistedDailyAnalysis:
                 "AgentNews": {
                     "source": "https://agentnews.md/finance-ko.md",
                     "as_of": "2026-07-24T18:40:00+00:00",
-                    "quality": "STALE",
+                    "quality": "FRESH",
                 },
             },
         },
@@ -123,8 +125,8 @@ def _analysis(job_key: str) -> PersistedDailyAnalysis:
                             {
                                 "feature_name": "momentum_5d",
                                 "operator": "GREATER_THAN_OR_EQUAL",
-                                "comparison_value": "0",
-                                "observed_value": "-0.02",
+                                "comparison_value": "68123",
+                                "observed_value": "67999",
                                 "observed_result": "false",
                             }
                         ],
@@ -219,7 +221,7 @@ def test_shadow_report_appends_to_existing_markdown_once() -> None:
     assert "미완료 세션 필터: `SCENARIO_PACK`" in once
     assert "KIS daily market data" in once
     assert "AgentNews" in once
-    assert "STALE" in once
+    assert "FRESH" in once
     assert "시장 판정" in once and "breadth weak" in once
     assert "섹터 판정" in once and "sector lag" in once
     assert "종목 판정" in once and "weak momentum" in once
@@ -233,6 +235,49 @@ def test_shadow_report_appends_to_existing_markdown_once() -> None:
     assert "반대 근거/무효화" in once and "ev-risk-1" in once
     assert "필드 판정" in once and "RECALCULATE" in once
     assert "불확실성/다음 검토" in once and "2026-07-27T10:00:00+00:00" in once
+
+    ordered_sections = (
+        "### 1. 원천·기준시점·호출 증거와 데이터 품질",
+        "### 2. KR 시장 국면·수급·주도/약세 그룹",
+        "### 3. 후보 요약",
+        "### 4. 종목별 SWING/TREND 카드",
+        "### 5. 조건부 진입·회피와 무효화·축소/청산",
+        "### 6. 데이터 공백·충돌과 가격 수준 공개 여부",
+        "### 7. 이전 실행 대비 변화",
+        "### 8. 다음 이벤트와 검토 시각",
+        "### 9. 감사 상세",
+    )
+    positions = [once.index(section) for section in ordered_sections]
+    assert positions == sorted(positions)
+    assert "<details>" in once and "<summary>감사 상세 펼치기</summary>" in once
+    assert "top support" not in once.lower()
+    assert "상위 지지 근거" in once and "상위 반대 근거" in once
+    assert "종목 | 채널 | 트리거" in once
+    assert "005930" in once and "DATA_MISSING" in once
+
+
+def test_shadow_report_suppresses_exact_levels_when_quality_is_degraded() -> None:
+    analysis = _analysis("daily:KR:2026-07-26:degraded")
+    degraded = replace(
+        analysis,
+        quality_decision=QualityDecision(
+            disposition=QualityDisposition.REPORT_ONLY,
+            reasons=("price: STALE",),
+            missing_fields=(),
+            stale_fields=("price",),
+        ),
+        source_payload={**analysis.source_payload, "quality_disposition": "REPORT_ONLY"},
+    )
+
+    rendered = render_shadow_report(degraded)
+
+    assert "정확한 가격 수준을 공개하지 않습니다" in rendered
+    assert "65000" not in rendered
+    assert "74000" not in rendered
+    assert "68123" not in rendered
+    assert "67999" not in rendered
+    assert "NO_ENTRY" in rendered
+    assert "시나리오 상태: `NO_ENTRY`" in rendered
 
 
 def test_shadow_report_renders_invalid_proposal_without_inventing_no_entry() -> None:

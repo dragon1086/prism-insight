@@ -9,9 +9,10 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
+from prism_app.daily_pipeline import PersistedDailyAnalysis
 from prism_app.dashboard_export import export_dashboard
 from prism_app.shadow_report import append_shadow_section, read_persisted_shadow
 
@@ -24,6 +25,48 @@ class UserSurfaceExportResult:
     dashboard_output: Path
     broker_called: bool = False
     schedule_activated: bool = False
+
+
+def _assert_strategy_projection_consistency(
+    analysis: PersistedDailyAnalysis,
+    dashboard_payload: Mapping[str, Any],
+) -> None:
+    """Fail closed if report and dashboard stores project different decisions."""
+
+    research = dashboard_payload.get("research", {})
+    if not isinstance(research, Mapping):
+        raise LookupError("dashboard research contract is unavailable")
+    for strategy in analysis.strategies:
+        strategy_id = strategy.strategy_id.value
+        proposals = research.get(f"{strategy_id.lower()}_proposals", [])
+        if not isinstance(proposals, list):
+            raise LookupError(f"dashboard proposals are unavailable for {strategy_id}")
+        matches = [
+            item
+            for item in proposals
+            if isinstance(item, Mapping)
+            and str(item.get("snapshot_id")) == str(analysis.data_snapshot_id)
+            and item.get("strategy_id") == strategy_id
+        ]
+        if len(matches) != 1:
+            raise LookupError(f"same persisted scenario is unavailable for {strategy_id}")
+        dashboard = matches[0]
+        report = strategy.output_payload
+        expected = (
+            report.get("scenario_state"),
+            bool(report.get("scenario_complete", False)),
+            report.get("decision"),
+        )
+        observed = (
+            dashboard.get("scenario_state"),
+            bool(dashboard.get("scenario_complete", False)),
+            dashboard.get("proposed_decision"),
+        )
+        if expected != observed:
+            raise LookupError(
+                f"report/dashboard decision drift for {strategy_id}: "
+                f"report={expected!r}, dashboard={observed!r}"
+            )
 
 
 def _read_existing_report(
@@ -86,17 +129,29 @@ def export_existing_user_surfaces(
         report_id=analysis.leadership_report_id,
         snapshot_id=analysis.leadership_snapshot_id,
     )
-    report_path = _write_atomic(
-        report_output,
-        append_shadow_section(base_report, readback.markdown),
-    )
-    export_dashboard(
+    dashboard_payload = export_dashboard(
         research_db=research_db,
         paper_db=paper_db,
         ops_db=ops_db,
         output_path=dashboard_output,
         as_of=generated,
         generated_at=generated,
+    )
+    source_quality = dashboard_payload["research"]["kr_daily"]["source_quality"]
+    dashboard_snapshot_ids = {
+        item.get("snapshot_id")
+        for item in source_quality
+        if isinstance(item, dict)
+    }
+    if analysis.leadership_snapshot_id not in dashboard_snapshot_ids:
+        Path(dashboard_output).expanduser().unlink(missing_ok=True)
+        raise LookupError(
+            "existing PRISM dashboard is unavailable for the same persisted snapshot"
+        )
+    _assert_strategy_projection_consistency(analysis, dashboard_payload)
+    report_path = _write_atomic(
+        report_output,
+        append_shadow_section(base_report, readback.markdown),
     )
     return UserSurfaceExportResult(
         report_id=analysis.leadership_report_id,

@@ -6,6 +6,39 @@ import type { DashboardData, Market, StrategyProposal } from "@/types/dashboard"
 
 const DATA_PATH = "/dashboard_data.json"
 
+type KrDailyCandidate = {
+  security_id: string
+  channel: string
+  trigger: string
+  swing: { state: string; actionable_levels_suppressed?: boolean }
+  trend: { state: string; actionable_levels_suppressed?: boolean }
+  current_state: string
+  top_support: string | null
+  top_counter_evidence: string | null
+  change: "NEW" | "MAINTAINED" | "EXITED" | "DATA_MISSING"
+}
+
+type KrDailyLayer = {
+  as_of: string | null
+  source_quality: Array<Record<string, unknown>>
+  call_evidence: Record<string, unknown>
+  market_context: Record<string, unknown>
+  candidate_table: KrDailyCandidate[]
+  conditional_scenarios: Array<Record<string, unknown>>
+  data_gaps: Array<Record<string, unknown>>
+  changes: Array<{ security_id: string; state: string }>
+  next_review: string[]
+  audit: Array<Record<string, unknown>>
+}
+
+type KrDailyComposition = {
+  candidates?: Array<{
+    security_id: string
+    channels?: string[]
+    triggers?: string[]
+  }>
+}
+
 function statusClass(value: string): string {
   if (value === "FRESH" || value === "ACCEPT" || value === "SUCCESS") {
     return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
@@ -85,6 +118,46 @@ function ProposalCard({ proposal }: { proposal: StrategyProposal }) {
   )
 }
 
+function KrDailyOverview({ daily, composition }: { daily: KrDailyLayer; composition?: KrDailyComposition }) {
+  const candidateContext = new Map(
+    (composition?.candidates || []).map((item) => [item.security_id, item]),
+  )
+  return <div className="space-y-6">
+    <Card title="1. 원천·기준시점·호출 증거와 데이터 품질">
+      <p className="text-sm">기준일 {daily.as_of || "UNAVAILABLE"}</p>
+      <pre className="mt-3 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{displayValue({ source_quality: daily.source_quality, call_evidence: daily.call_evidence })}</pre>
+    </Card>
+    <Card title="2. KR 시장 국면·수급·주도/약세 그룹">
+      <pre className="overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{displayValue(daily.market_context)}</pre>
+    </Card>
+    <Card title="3. 후보 요약">
+      {daily.candidate_table.length === 0 ? <p className="text-sm text-muted-foreground">저장된 KR 후보가 없습니다.</p> : <div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead><tr className="border-b"><th className="p-2">종목</th><th className="p-2">채널</th><th className="p-2">트리거</th><th className="p-2">SWING</th><th className="p-2">TREND</th><th className="p-2">현재</th><th className="p-2">지지/반대</th><th className="p-2">변화</th></tr></thead><tbody>{daily.candidate_table.map((candidate) => {
+        const context = candidateContext.get(candidate.security_id)
+        return <tr key={candidate.security_id} className="border-b border-border/40"><td className="p-2 font-medium">{candidate.security_id}</td><td className="p-2">{context?.channels?.join(", ") || candidate.channel}</td><td className="p-2">{context?.triggers?.join(", ") || candidate.trigger}</td><td className="p-2"><Pill value={candidate.swing.state} /></td><td className="p-2"><Pill value={candidate.trend.state} /></td><td className="p-2">{candidate.current_state}</td><td className="p-2">{candidate.top_support || "없음"} / {candidate.top_counter_evidence || "없음"}</td><td className="p-2"><Pill value={candidate.change} /></td></tr>
+      })}</tbody></table></div>}
+    </Card>
+    <Card title="4. 종목별 SWING/TREND 카드">
+      <p className="text-sm text-muted-foreground">아래 전략별 카드에서 같은 종목의 SWING과 TREND 판단을 각각 확인합니다.</p>
+    </Card>
+    <Card title="5. 조건부 진입·회피와 무효화·축소/청산">
+      <pre className="overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{displayValue(daily.conditional_scenarios)}</pre>
+    </Card>
+    <Card title="6. 데이터 공백·충돌과 가격 수준 공개 여부">
+      <p className="text-sm text-muted-foreground">{daily.candidate_table.some((item) => item.swing.actionable_levels_suppressed || item.trend.actionable_levels_suppressed) ? "데이터 품질 제한으로 정확한 가격 수준이 숨겨졌습니다." : "ACCEPT 품질의 저장 시나리오 후보만 가격 수준을 표시합니다."}</p>
+      <pre className="mt-3 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{displayValue(daily.data_gaps)}</pre>
+    </Card>
+    <Card title="7. 이전 실행 대비 변화">
+      <div className="flex flex-wrap gap-2">{daily.changes.length ? daily.changes.map((item) => <span key={`${item.security_id}:${item.state}`} className="rounded-lg border px-3 py-2 text-sm">{item.security_id} <Pill value={item.state} /></span>) : <span className="text-sm text-muted-foreground">DATA_MISSING</span>}</div>
+    </Card>
+    <Card title="8. 다음 이벤트와 검토 시각">
+      <p className="text-sm">{daily.next_review.length ? daily.next_review.join(" · ") : "UNAVAILABLE"}</p>
+    </Card>
+    <Card title="9. 감사 상세">
+      <details className="rounded-xl border border-border/50 p-4"><summary className="cursor-pointer font-medium">IDs, dispositions, hashes, validator internals</summary><pre className="mt-4 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{displayValue(daily.audit)}</pre></details>
+    </Card>
+  </div>
+}
+
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [market, setMarket] = useState<Market>("KR")
@@ -104,6 +177,12 @@ export default function DashboardPage() {
 
   const view = useMemo(() => {
     if (!data) return null
+    const daily = (
+      data.research as typeof data.research & { kr_daily?: KrDailyLayer }
+    ).kr_daily
+    const composition = (
+      data as DashboardData & { kr_daily_composition?: KrDailyComposition }
+    ).kr_daily_composition
     return {
       freshness: data.research.data_freshness.filter((item) => item.market === market),
       leaders: data.research.daily_leaders.filter((item) => item.market === market),
@@ -112,6 +191,8 @@ export default function DashboardPage() {
       evidence: data.research.scenario_evidence_falsifiers.filter((item) => item.market === market),
       feedback: data.research.shadow_feedback,
       jobs: data.ops.jobs,
+      daily,
+      composition,
     }
   }, [data, market])
 
@@ -134,6 +215,7 @@ export default function DashboardPage() {
       <main className="container mx-auto max-w-[1500px] space-y-6 px-4 py-6">
         {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-rose-700">{error}</div>}
         {!data || !view ? <p className="py-20 text-center text-muted-foreground">데이터를 불러오는 중입니다.</p> : <>
+          {market === "KR" && view.daily && <KrDailyOverview daily={view.daily} composition={view.composition} />}
           <div className="grid gap-4 md:grid-cols-3">
             <Card title="데이터 기준 시점"><div className="flex items-start gap-3"><Database className="mt-1 h-5 w-5 text-primary" /><div><p className="text-sm">{data.as_of}</p><p className="mt-1 text-xs text-muted-foreground">생성 {data.generated_at}</p></div></div></Card>
             <Card title="품질 판정"><div className="flex items-center gap-3"><ShieldCheck className="h-5 w-5 text-primary" />{view.freshness.length ? view.freshness.map((item) => <Pill key={item.snapshot_id} value={item.quality} />) : <Pill value="UNAVAILABLE" />}</div></Card>

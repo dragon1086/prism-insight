@@ -253,6 +253,20 @@ def test_export_separates_authoritative_phase1_sections_and_pit_boundary() -> No
     assert payload["research"]["swing_v1_proposals"][0]["scenario_state"] == "INVALID_PROPOSAL"
     assert payload["research"]["scenario_evidence_falsifiers"] == []
     assert payload["research"]["research_oos"]["status"] == "UNAVAILABLE"
+    user_daily = payload["research"]["kr_daily"]
+    assert user_daily["market"] == "KR"
+    assert user_daily["section_order"] == [
+        "source_quality", "market_context", "candidate_table", "strategy_cards",
+        "conditional_scenarios", "data_gaps", "changes", "next_review", "audit",
+    ]
+    assert user_daily["candidate_table"][0]["security_id"] == "security-kr"
+    assert user_daily["candidate_table"][0]["swing"]["state"] == "INVALID_PROPOSAL"
+    assert user_daily["candidate_table"][0]["trend"]["state"] == "INVALID_PROPOSAL"
+    assert user_daily["candidate_table"][0]["change"] == "NEW"
+    assert user_daily["market_context"]["breadth"] == []
+    assert user_daily["market_context"]["investor_flows"] == []
+    assert user_daily["market_context"]["leading_groups"] == []
+    assert user_daily["market_context"]["weak_groups"] == []
     assert [item["lesson_id"] for item in payload["research"]["shadow_feedback"]] == ["lesson-1"]
     assert payload["paper"]["environment"] == "INTERNAL_PAPER"
     assert payload["paper"]["books"][0]["strategy_id"] == "SWING_V1"
@@ -283,6 +297,37 @@ def test_rejected_proposal_is_exported_as_invalid_without_inventing_no_entry() -
     assert _walk_keys(proposal).isdisjoint(
         {"entry_price", "stop_price", "target_price", "quantity", "account"}
     )
+
+
+def test_degraded_quality_suppresses_actionable_price_level_collections() -> None:
+    research = _research_connection()
+    normalized = valid_proposal_payload()
+    normalized["stop_candidates"] = [{"price": "65000", "basis": "STRUCTURE"}]
+    normalized["target_candidates"] = [{"price": "74000", "basis": "ATR"}]
+    normalized["entry_predicates"][0]["comparison_value"] = "68123"
+    normalized["entry_predicates"][0]["observed_value"] = "67999"
+    research.execute(
+        "UPDATE decision_snapshots SET data_quality = 'STALE', "
+        "quality_disposition = 'REPORT_ONLY' WHERE strategy_id = 'SWING_V1'"
+    )
+    research.execute(
+        "UPDATE trade_plan_proposals SET normalized_proposal_json = ? "
+        "WHERE strategy_id = 'SWING_V1'",
+        (canonical_json(normalized),),
+    )
+
+    payload = DashboardExporter(
+        research, _paper_connection(), _ops_connection()
+    ).build(as_of=AS_OF, generated_at=AS_OF)
+    proposal = payload["research"]["swing_v1_proposals"][0]
+    serialized = json.dumps(proposal, ensure_ascii=False)
+
+    assert "65000" not in serialized
+    assert "74000" not in serialized
+    assert "68123" not in serialized
+    assert "67999" not in serialized
+    assert proposal["actionable_levels_suppressed"] is True
+    assert proposal["level_suppression_reason"] == "STALE / REPORT_ONLY"
 
 
 def test_accepted_proposal_preserves_bound_identity_and_observed_trigger() -> None:
@@ -628,6 +673,15 @@ def test_existing_dashboard_page_consumes_phase1_contract_only() -> None:
     assert "proposal.scenario_state" in page
     assert "ANALYSIS_INCOMPLETE" in page
     for required_surface in (
+        "원천·기준시점·호출 증거와 데이터 품질",
+        "KR 시장 국면·수급·주도/약세 그룹",
+        "후보 요약",
+        "종목별 SWING/TREND 카드",
+        "조건부 진입·회피와 무효화·축소/청산",
+        "데이터 공백·충돌과 가격 수준 공개 여부",
+        "이전 실행 대비 변화",
+        "다음 이벤트와 검토 시각",
+        "감사 상세",
         "현재 판정",
         "시장 판단",
         "섹터 판단",
@@ -649,6 +703,22 @@ def test_existing_dashboard_page_consumes_phase1_contract_only() -> None:
         "필드 판정",
     ):
         assert required_surface in page
+    assert "kr_daily?: KrDailyLayer" in page
+    assert "kr_daily_composition" in page
+    assert "<details" in page
+    assert "actionable_levels_suppressed" in page
+    positions = [page.index(label) for label in (
+        "원천·기준시점·호출 증거와 데이터 품질",
+        "KR 시장 국면·수급·주도/약세 그룹",
+        "후보 요약",
+        "종목별 SWING/TREND 카드",
+        "조건부 진입·회피와 무효화·축소/청산",
+        "데이터 공백·충돌과 가격 수준 공개 여부",
+        "이전 실행 대비 변화",
+        "다음 이벤트와 검토 시각",
+        "감사 상세",
+    )]
+    assert positions == sorted(positions)
 
 
 def test_dashboard_contract_tests_are_explicitly_discovered_by_ci() -> None:
