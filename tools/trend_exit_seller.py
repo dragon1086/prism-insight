@@ -25,7 +25,17 @@ THE CORE OF LOOP B — close-confirmation / consecutive-breach gate (anti-whipsa
         breach_streak >= TREND_EXIT_CONFIRM_CHECKS            (N consecutive days)
       OR
         TREND_EXIT_CLOSE_WINDOW=true AND a signal exists now  (session-close confirm)
+        AND the signal is NOT a TIER3 target take-profit      (see below)
   i.e. "N consecutive checkpoint breaches OR a session-close confirmation."
+
+  EXCEPTION — TIER3_TARGET is excluded from the session-close fast-path.
+  That fast-path is damage control: a TIER1.5/TIER2 breach still standing at the
+  closing bell is confirmed by the close, and carrying a broken position overnight
+  is the larger risk. A target take-profit is the opposite situation — the position
+  is at a profit high — so it earns no urgency discount and must clear the full
+  N-day confirmation. (The close-window cron runs every session, so before this
+  exception CONFIRM_CHECKS was effectively dead for take-profits and winners were
+  liquidated on the first touch: 2026-07-29 INCY sold at streak=0, +11% on the day.)
 
 On an actual ACT it closes the position the SAME way the batch and Hardstop do, so
 the simulator, the real KIS account and the Telegram channel all stay consistent:
@@ -531,11 +541,23 @@ async def run_market(market: str, run_id: str) -> Dict[str, Any]:
                     summary["signaled"] += 1
 
                     # Close-confirmation / consecutive-breach gate.
-                    gate_open = (streak >= TREND_EXIT_CONFIRM_CHECKS) or TREND_EXIT_CLOSE_WINDOW
+                    # The close-window fast-path is DAMAGE CONTROL: "a breach still
+                    # standing at the closing bell is confirmed by the close — don't
+                    # carry a broken position overnight." A TIER3 target take-profit
+                    # is not damage control (the position is at a profit high), so it
+                    # is excluded from the fast-path and must earn the full N-day
+                    # confirmation. Without this, the close-window line (which runs
+                    # EVERY session) made CONFIRM_CHECKS dead for target take-profits
+                    # and liquidated winners same-day (2026-07-29 INCY, streak=0).
+                    is_target_take = reason.startswith("TIER3_TARGET")
+                    gate_open = (streak >= TREND_EXIT_CONFIRM_CHECKS) or (
+                        TREND_EXIT_CLOSE_WINDOW and not is_target_take)
                     if not gate_open:
                         summary["gated"] += 1
-                        logger.info("[%s] %s signal (%s) streak=%d < %d, not close-window -> gated",
-                                    market, ticker, reason, streak, TREND_EXIT_CONFIRM_CHECKS)
+                        logger.info("[%s] %s signal (%s) streak=%d < %d, close_window=%s, "
+                                    "target_take=%s -> gated",
+                                    market, ticker, reason, streak, TREND_EXIT_CONFIRM_CHECKS,
+                                    TREND_EXIT_CLOSE_WINDOW, is_target_take)
                         continue
                     summary["acted"] += 1
                     h = dict(h)
