@@ -33,6 +33,11 @@ try:
 except ImportError:
     pass
 
+# NOTE: the load_dotenv() above is exactly why publish_guard exists — merely
+# importing this module pulls the production GCP project/topic into the process,
+# including inside a test run.
+from .publish_guard import signal_publishing_disabled, block_reason
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +81,17 @@ class SignalPublisher:
 
     async def connect(self):
         """Connect to GCP Pub/Sub"""
+        # Fail closed under test: importing a trading agent loads the production
+        # .env, so without this a pytest run publishes fixture sells to the LIVE
+        # public topic that real mirroring subscribers trade on. See
+        # messaging/publish_guard.py.
+        if signal_publishing_disabled():
+            logger.warning(
+                "GCP Pub/Sub connect REFUSED — signal publishing is disabled (%s). "
+                "No trading signal will be published from this process.",
+                block_reason(),
+            )
+            return
         if not self.project_id:
             logger.warning("GCP not configured, signals will not be published")
             return
