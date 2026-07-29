@@ -11,12 +11,17 @@ intermediate or output is produced.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 
 CANVAS = (1920, 1080)
+PRODUCTION_ASSET_DIR = (
+    Path(__file__).resolve().parents[1] / "docs" / "images" / "architecture"
+)
 BACKGROUND = "#F7F5EF"
 INK = "#172033"
 MUTED = "#526071"
@@ -290,6 +295,17 @@ def build_diagrams() -> list[DiagramSpec]:
     ]
 
 
+def copy_spec_sha256() -> str:
+    """Return a stable digest for every audited string in the diagram specs."""
+    payload = json.dumps(
+        [asdict(diagram) for diagram in build_diagrams()],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _font_path() -> str:
     for candidate in FONT_CANDIDATES:
         if Path(candidate).exists():
@@ -475,6 +491,15 @@ def render_diagram(spec: DiagramSpec, output_path: Path) -> Path:
 
 def render_all(output_dir: Path) -> list[Path]:
     """Render deterministic audit drafts into an explicitly chosen directory."""
+    resolved_output = output_dir.resolve()
+    try:
+        resolved_output.relative_to(PRODUCTION_ASSET_DIR.resolve())
+    except ValueError:
+        pass
+    else:
+        raise ValueError(
+            "검증용 초안은 docs/images/architecture에 출력할 수 없습니다."
+        )
     return [render_diagram(spec, output_dir / spec.filename) for spec in build_diagrams()]
 
 

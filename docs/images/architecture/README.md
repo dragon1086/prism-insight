@@ -25,9 +25,15 @@ Full HD(1920×1080) 래스터 이미지이며, 단순 슬라이드 도형이 아
 3. 이미지 모델로 기존 그림의 구도와 시각 품질을 유지하며 필요한 부분만
    수정합니다.
 4. 최종 PNG를 1920×1080으로 저장하고 작은 글자까지 확대 검수합니다.
-5. `pytest -q tests/test_pipeline_architecture_pngs.py`를 실행합니다.
+5. `manifest.json`의 이미지 SHA-256과 문구 명세 해시를 갱신합니다.
+6. `pytest -q tests/test_pipeline_architecture_pngs.py`를 실행합니다.
 
 `tools/generate_pipeline_architecture_pngs.py`는 사실 관계를 빠르게 검토하기
 위한 저충실도 초안 생성기입니다. 반드시 `--output-dir`로 별도 임시
 디렉터리를 지정해야 하며, 이 디렉터리의 최종 이미지를 생성하거나
 덮어쓰는 용도로 사용하지 않습니다.
+
+`manifest.json`은 확대 검수를 마친 이미지의 픽셀과 당시의 문구 명세를
+한 쌍으로 고정합니다. 그림이나 검증용 문구가 바뀌면 테스트가 실패하므로,
+코드 근거를 다시 확인하고 사람의 시각 검수를 거친 뒤에만 해시를
+갱신해야 합니다.
