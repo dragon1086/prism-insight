@@ -307,6 +307,21 @@ PRISM-INSIGHT is a **completely open-source, free** AI-powered stock analysis sy
 
 ---
 
+## How the Trading System Learned
+
+The Korean-market history shows two opposite failure modes: avoiding too many
+entries, then taking risk without enough state control. The releases from
+v1.16.7 through v2.18 progressively moved the system from prompt-level bias
+correction to deterministic regime, exit-state, and re-entry safeguards.
+
+![PRISM-INSIGHT trading evolution from observation bias to state-based risk control](docs/images/trading-evolution-en.png)
+
+> The figures are diagnostic. Cumulative return is the sum of trade-level return
+> rates, while outcomes for unentered candidates are post-hoc observations—not a
+> time-weighted portfolio return or a realizable backtest.
+
+---
+
 ## US Stock Market Module
 
 Same AI-powered workflow for US markets:
