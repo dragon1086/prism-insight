@@ -64,3 +64,19 @@ def latest_completed_session(market: ExchangeMarket, as_of: datetime) -> date:
             f"no completed exchange session was found for {market.name}"
         )
     return completed[-1].date()
+
+
+def is_exchange_session(market: ExchangeMarket, session_date: date) -> bool:
+    """Return whether ``session_date`` is an official exchange session."""
+
+    if not isinstance(market, ExchangeMarket):
+        raise TypeError("market must be ExchangeMarket")
+    if not isinstance(session_date, date):
+        raise TypeError("session_date must be date")
+    calendar = _calendar(market)
+    try:
+        return bool(calendar.is_session(session_date))
+    except Exception:
+        raise ExchangeCalendarUnavailableError(
+            f"exchange calendar lookup failed for {market.name}"
+        ) from None
