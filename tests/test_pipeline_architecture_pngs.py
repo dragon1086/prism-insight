@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -51,19 +53,39 @@ def test_render_all_creates_full_hd_png_files(tmp_path: Path, width: int, height
             assert image.mode in {"RGB", "RGBA"}
 
 
+def test_render_all_refuses_to_overwrite_production_infographics():
+    from tools.generate_pipeline_architecture_pngs import (
+        PRODUCTION_ASSET_DIR,
+        render_all,
+    )
+
+    with pytest.raises(ValueError, match="출력할 수 없습니다"):
+        render_all(PRODUCTION_ASSET_DIR)
+    with pytest.raises(ValueError, match="출력할 수 없습니다"):
+        render_all(PRODUCTION_ASSET_DIR / "drafts")
+
+
 def test_committed_infographics_are_rich_full_hd_png_assets():
     from PIL import Image
+    from tools.generate_pipeline_architecture_pngs import copy_spec_sha256
 
     asset_dir = (
         Path(__file__).resolve().parents[1] / "docs" / "images" / "architecture"
     )
+    manifest = json.loads((asset_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["copy_spec_sha256"] == copy_spec_sha256()
+    assert set(manifest["assets"]) == EXPECTED_FILENAMES
+
     for filename in EXPECTED_FILENAMES:
         path = asset_dir / filename
         assert path.stat().st_size > 1_000_000
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert digest == manifest["assets"][filename]["sha256"]
         with Image.open(path) as image:
             assert image.format == "PNG"
             assert image.size == (1920, 1080)
             assert image.mode in {"RGB", "RGBA"}
+            assert manifest["assets"][filename]["dimensions"] == [1920, 1080]
 
 
 def _diagram_text(diagram) -> str:
