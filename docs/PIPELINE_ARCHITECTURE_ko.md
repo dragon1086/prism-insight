@@ -307,8 +307,9 @@ outbox 계약은 없습니다. 공유 DB의 시장 구분과 일부 교훈 집�
 | 매매 | `stock_tracking_agent.py`, `prism-us/us_stock_tracking_agent.py`, `cores/oneil_fallback.py`, `tools/*seller.py` | [후보 선별·배치 알고리즘의 진입·매도 부분](TRIGGER_BATCH_ALGORITHMS.md#10-신규-진입-게이트) |
 | 피드백 | `tracking/journal.py`, `tracking/compression.py`, `reentry_cooldown.py` | [매매일지·메모리](TRADING_JOURNAL.md) |
 
-그림의 문구를 수정할 때는
-`tools/generate_pipeline_architecture_pngs.py`의 텍스트 명세를 먼저
-바꾸고 `tests/test_pipeline_architecture_pngs.py`를 통과시킨 뒤 PNG를 다시
-생성하십시오. 이렇게 해야 그림과 코드 설명이 서로 어긋나는 일을 줄일 수
-있습니다.
+그림의 사실 관계를 수정할 때는 먼저
+`tools/generate_pipeline_architecture_pngs.py`의 텍스트 명세를 고치고
+`tests/test_pipeline_architecture_pngs.py`를 통과시켜야 합니다. 이 도구가
+만드는 그림은 문구 검증용 초안이며, `docs/images/architecture`의 최종
+인포그래픽을 덮어쓰면 안 됩니다. 최종 그림의 제작·검수 원칙은
+[아키텍처 이미지 관리 안내](images/architecture/README.md)에 정리했습니다.

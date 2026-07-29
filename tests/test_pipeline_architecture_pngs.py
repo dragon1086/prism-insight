@@ -51,6 +51,21 @@ def test_render_all_creates_full_hd_png_files(tmp_path: Path, width: int, height
             assert image.mode in {"RGB", "RGBA"}
 
 
+def test_committed_infographics_are_rich_full_hd_png_assets():
+    from PIL import Image
+
+    asset_dir = (
+        Path(__file__).resolve().parents[1] / "docs" / "images" / "architecture"
+    )
+    for filename in EXPECTED_FILENAMES:
+        path = asset_dir / filename
+        assert path.stat().st_size > 1_000_000
+        with Image.open(path) as image:
+            assert image.format == "PNG"
+            assert image.size == (1920, 1080)
+            assert image.mode in {"RGB", "RGBA"}
+
+
 def _diagram_text(diagram) -> str:
     card_text = [
         piece
