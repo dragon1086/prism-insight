@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Render the Korean pipeline architecture diagrams as deterministic PNG files.
+"""Render low-fidelity audit drafts for the Korean pipeline architecture.
 
 The diagrams deliberately keep all copy in Python data structures.  Tests can
 therefore audit terminology and unsupported claims before the text is rasterised.
-No SVG intermediate or output is produced.
+The production infographics under ``docs/images/architecture`` are separately
+art-directed raster assets; this tool must not overwrite them.  No SVG
+intermediate or output is produced.
 """
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
@@ -471,15 +474,25 @@ def render_diagram(spec: DiagramSpec, output_path: Path) -> Path:
 
 
 def render_all(output_dir: Path) -> list[Path]:
+    """Render deterministic audit drafts into an explicitly chosen directory."""
     return [render_diagram(spec, output_dir / spec.filename) for spec in build_diagrams()]
 
 
-def _default_output_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "docs" / "images" / "architecture"
-
-
 def main() -> None:
-    paths = render_all(_default_output_dir())
+    parser = argparse.ArgumentParser(
+        description=(
+            "코드와 대조할 저해상도 설계 초안을 생성합니다. "
+            "docs/images/architecture의 최종 인포그래픽을 출력 경로로 지정하지 마십시오."
+        )
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="초안 PNG를 저장할 별도 디렉터리",
+    )
+    args = parser.parse_args()
+    paths = render_all(args.output_dir)
     for path in paths:
         print(path)
 
