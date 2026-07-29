@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import prism_core.market.composer as composer_module
 from prism_core.data.contracts import DataQualityStatus
 from prism_core.data.providers.agentnews import AgentNewsFetchEvidence, AgentNewsFetchResult
 from prism_core.data.providers.agentnews_models import AgentNewsBoard, AgentNewsSnapshot
@@ -110,6 +111,36 @@ async def test_composer_rejects_agentnews_decision_clocks_after_as_of(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("primary_defect", ["wrong_provider", "future_available_at"])
+async def test_composer_rejects_invalid_primary_provider_or_future_evidence(
+    primary_defect: str,
+) -> None:
+    class InvalidPrimaryTransport(FixtureKISMarketContextTransport):
+        async def fetch_volume_rank(self) -> ProviderPayload:
+            payload = await super().fetch_volume_rank()
+            update = (
+                {"provider": "KRX"}
+                if primary_defect == "wrong_provider"
+                else {"available_at": datetime(2026, 7, 29, 15, 34, tzinfo=KST)}
+            )
+            return replace(payload, **update)
+
+    composer = KRMarketContextComposer(
+        kis_transport=InvalidPrimaryTransport(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    )
+
+    expected = (
+        "requires the KIS primary provider"
+        if primary_defect == "wrong_provider"
+        else "provider evidence cannot be available after context as_of"
+    )
+    with pytest.raises(ValueError, match=expected):
+        await composer.compose()
+
+
+@pytest.mark.asyncio
 async def test_composer_uses_real_provider_contracts_and_keeps_news_non_executable() -> None:
     composer = KRMarketContextComposer(
         kis_transport=FixtureKISMarketContextTransport(),
@@ -141,6 +172,32 @@ async def test_composer_uses_real_provider_contracts_and_keeps_news_non_executab
 
 
 @pytest.mark.asyncio
+async def test_last_known_good_news_stays_stale_supplemental_and_non_executable() -> None:
+    class LastKnownGoodAgentNewsProvider(FixtureAgentNewsProvider):
+        async def fetch_result(self, board: AgentNewsBoard) -> AgentNewsFetchResult:
+            result = await super().fetch_result(board)
+            evaluated_at = datetime(2026, 7, 29, 15, 32, tzinfo=KST)
+            return replace(
+                result,
+                snapshot=result.snapshot.as_stale_fallback(
+                    reason="LIVE_FETCH_FAILED", evaluated_at=evaluated_at
+                ),
+                used_last_known_good=True,
+            )
+
+    context = await KRMarketContextComposer(
+        kis_transport=FixtureKISMarketContextTransport(),
+        agentnews_provider=LastKnownGoodAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert context.supplemental_evidence[0].quality is DataQualityStatus.STALE
+    assert context.supplemental_evidence[0].executable is False
+    assert context.quality is DataQualityStatus.UNAVAILABLE
+    assert context.disposition is ContextDisposition.ANALYSIS_INCOMPLETE
+
+
+@pytest.mark.asyncio
 async def test_composer_output_is_one_immutable_shared_context_instance() -> None:
     composer = KRMarketContextComposer(
         kis_transport=FixtureKISMarketContextTransport(),
@@ -165,6 +222,57 @@ def test_mutable_kis_snapshot_distinguishes_preopen_from_intraday() -> None:
         observed_at=datetime(2026, 7, 29, 10, 0, tzinfo=KST),
         latest_completed_session=date(2026, 7, 28),
     ).value == "INTRADAY"
+
+
+def test_complete_session_label_requires_official_close_to_have_passed() -> None:
+    assert resolve_session_state(
+        provider_state="COMPLETE_CURRENT_SESSION",
+        observed_at=datetime(2026, 7, 29, 10, 0, tzinfo=KST),
+        latest_completed_session=date(2026, 7, 29),
+    ) is composer_module.SessionState.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("provider_state", "latest_completed_session"),
+    [
+        ("COMPLETE_CURRENT_SESSION", date(2026, 7, 28)),
+        ("UNRECOGNIZED_PROVIDER_STATE", date(2026, 7, 28)),
+    ],
+)
+def test_unverifiable_provider_session_state_is_unknown(
+    provider_state: str, latest_completed_session: date
+) -> None:
+    assert resolve_session_state(
+        provider_state=provider_state,
+        observed_at=datetime(2026, 7, 29, 15, 31, tzinfo=KST),
+        latest_completed_session=latest_completed_session,
+    ) is composer_module.SessionState.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("provider_state", "calendar_symbol"),
+    [
+        ("UNVERIFIED_MUTABLE_SNAPSHOT", "is_exchange_session"),
+        ("COMPLETE_CURRENT_SESSION", "resolve_latest_completed_session"),
+    ],
+)
+def test_calendar_failure_makes_session_state_unknown(
+    monkeypatch: pytest.MonkeyPatch, provider_state: str, calendar_symbol: str
+) -> None:
+    def unavailable(*_args: object) -> bool:
+        raise composer_module.ExchangeCalendarUnavailableError("unavailable")
+
+    monkeypatch.setattr(composer_module, calendar_symbol, unavailable)
+
+    assert resolve_session_state(
+        provider_state=provider_state,
+        observed_at=datetime(2026, 7, 29, 10, 0, tzinfo=KST),
+        latest_completed_session=(
+            date(2026, 7, 29)
+            if provider_state == "COMPLETE_CURRENT_SESSION"
+            else date(2026, 7, 28)
+        ),
+    ) is composer_module.SessionState.UNKNOWN
 
 
 @pytest.mark.parametrize(
@@ -210,4 +318,33 @@ async def test_kis_conflict_is_represented_with_an_explicit_reason() -> None:
 
     assert context.quality is DataQualityStatus.CONFLICT
     assert context.conflicts == ("KIS_PRIMARY_QUALITY_CONFLICT",)
+    assert context.action_eligible is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rows", "expected_missing"),
+    [
+        ([], "breadth.volume_rank"),
+        ([{"prdy_ctrt": "NaN"}, {"prdy_ctrt": "not-a-number"}], "breadth.advance_decline"),
+    ],
+)
+async def test_empty_or_malformed_breadth_rows_are_explicitly_missing(
+    rows: list[object], expected_missing: str
+) -> None:
+    class BreadthDefectTransport(FixtureKISMarketContextTransport):
+        async def fetch_volume_rank(self) -> ProviderPayload:
+            payload = await super().fetch_volume_rank()
+            body = dict(payload.payload)
+            body["volume_rank"] = rows
+            return replace(payload, payload=body)
+
+    context = await KRMarketContextComposer(
+        kis_transport=BreadthDefectTransport(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert expected_missing in context.missing_fields
+    assert context.quality is DataQualityStatus.UNAVAILABLE
     assert context.action_eligible is False

@@ -13,6 +13,7 @@ from prism_core.data.exchange_calendar import (
     ExchangeCalendarUnavailableError,
     ExchangeMarket,
     is_exchange_session,
+    latest_completed_session as resolve_latest_completed_session,
 )
 from prism_core.data.providers.agentnews import AgentNewsFetchResult
 from prism_core.data.providers.agentnews_models import AgentNewsBoard
@@ -209,15 +210,24 @@ def resolve_session_state(
     market_date = market_observed_at.date()
     if latest_completed_session > market_date:
         raise ValueError("latest completed session cannot follow KIS observation")
-    try:
-        observed_on_session = is_exchange_session(ExchangeMarket.KRX, market_date)
-    except ExchangeCalendarUnavailableError:
-        return SessionState.UNKNOWN
     if provider_state == "COMPLETE_CURRENT_SESSION":
-        if observed_on_session and latest_completed_session == market_date:
+        try:
+            official_completed_session = resolve_latest_completed_session(
+                ExchangeMarket.KRX, observed_at
+            )
+        except ExchangeCalendarUnavailableError:
+            return SessionState.UNKNOWN
+        if (
+            official_completed_session == market_date
+            and latest_completed_session == official_completed_session
+        ):
             return SessionState.COMPLETE
         return SessionState.UNKNOWN
     if provider_state != "UNVERIFIED_MUTABLE_SNAPSHOT":
+        return SessionState.UNKNOWN
+    try:
+        observed_on_session = is_exchange_session(ExchangeMarket.KRX, market_date)
+    except ExchangeCalendarUnavailableError:
         return SessionState.UNKNOWN
     if not observed_on_session:
         return SessionState.PRIOR_CLOSE

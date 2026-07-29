@@ -146,6 +146,19 @@ def test_conflicts_and_missing_core_fields_propagate_fail_closed_quality() -> No
     ) is DataQualityStatus.UNAVAILABLE
 
 
+def test_stale_quality_precedes_partial_quality_deterministically() -> None:
+    stale = _clock().model_copy(update={"quality": DataQualityStatus.STALE})
+    partial = _clock().model_copy(
+        update={"source": "KIS_SECONDARY", "quality": DataQualityStatus.PARTIAL}
+    )
+
+    assert derive_context_quality(
+        source_clocks=(stale, partial),
+        conflicts=(),
+        missing_fields=(),
+    ) is DataQualityStatus.STALE
+
+
 def test_canonical_serialization_round_trips_without_order_drift() -> None:
     context = KRMarketContext(
         timing=MarketContextTiming(

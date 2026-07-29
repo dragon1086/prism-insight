@@ -249,7 +249,7 @@ def derive_context_quality(
     conflicts: tuple[str, ...],
     missing_fields: tuple[str, ...],
 ) -> DataQualityStatus:
-    """Aggregate source quality monotonically; defects can never upgrade quality."""
+    """Aggregate quality monotonically using CONFLICT > UNAVAILABLE > STALE > PARTIAL."""
     if not source_clocks:
         return DataQualityStatus.UNAVAILABLE
     if conflicts or any(
