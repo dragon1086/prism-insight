@@ -16,6 +16,7 @@ from prism_core.data.quality import (
 from prism_core.features import (
     BenchmarkPoint,
     FeatureComputationInput,
+    FeatureComputationRejected,
     NumericObservation,
     PriceBasis,
     PricePoint,
@@ -37,7 +38,7 @@ DATA_SNAPSHOT_ID = UUID("10000000-0000-0000-0000-000000000001")
 SECURITY_ID = SecurityId(value=UUID("20000000-0000-0000-0000-000000000002"))
 
 
-def _prices(count: int = 201) -> tuple[PricePoint, ...]:
+def _prices(count: int = 260) -> tuple[PricePoint, ...]:
     start = AS_OF - timedelta(days=count)
     return tuple(
         PricePoint(
@@ -118,23 +119,109 @@ def test_same_swing_input_and_version_produce_byte_stable_existing_contract() ->
             (
                 "swing_v1.atr_percent_14d",
                 "swing_v1.average_dollar_volume_20d",
+                "swing_v1.average_volume_20d_shares",
+                "swing_v1.benchmark_excess_return_20d_percentage_points",
+                "swing_v1.breakout_distance_20d_percent",
                 "swing_v1.catalyst_recency_sessions",
                 "swing_v1.price_momentum_5d",
+                "swing_v1.price_return_5d_percent",
                 "swing_v1.regime_compatibility",
                 "swing_v1.relative_strength_20d",
                 "swing_v1.volume_expansion_20d",
+                "swing_v1.volume_expansion_20d_percent",
             )
         )
     )
+    values = {item.name: item.value for item in first.values}
+    assert values["swing_v1.price_return_5d_percent"] == values[
+        "swing_v1.price_momentum_5d"
+    ]
+    assert values[
+        "swing_v1.benchmark_excess_return_20d_percentage_points"
+    ] == values["swing_v1.relative_strength_20d"]
+    assert values["swing_v1.volume_expansion_20d_percent"] == values[
+        "swing_v1.volume_expansion_20d"
+    ]
+    assert values["swing_v1.average_volume_20d_shares"] == Decimal(
+        "3495000.000000"
+    )
+    assert values["swing_v1.breakout_distance_20d_percent"] == Decimal(
+        "0.000000"
+    )
+
+
+def test_shadow_score_inputs_pin_real_formula_units_and_signs() -> None:
+    service = QuantFeatureService(feature_version="SHADOW_FEATURES_V1")
+    swing_values = {
+        item.name: item.value for item in service.compute(SWING_V1, _input()).values
+    }
+    trend_values = {
+        item.name: item.value
+        for item in service.compute(
+            TREND_V1,
+            replace(
+                _input(),
+                observations=(
+                    NumericObservation("earnings_current", Decimal("12"), AS_OF),
+                    NumericObservation("earnings_previous", Decimal("10"), AS_OF),
+                    NumericObservation("industry_leadership", Decimal("81"), AS_OF),
+                    NumericObservation(
+                        "regime_trend_compatibility", Decimal("66"), AS_OF
+                    ),
+                ),
+            ),
+        ).values
+    }
+
+    assert swing_values["swing_v1.price_return_5d_percent"] == Decimal(
+        "1.412429378531"
+    )
+    assert swing_values[
+        "swing_v1.benchmark_excess_return_20d_percentage_points"
+    ] == Decimal("-0.369887461740")
+    assert swing_values["swing_v1.volume_expansion_20d_percent"] == Decimal(
+        "103.012912482066"
+    )
+    assert swing_values["swing_v1.atr_percent_14d"] == Decimal(
+        "0.557103064067"
+    )
+    assert trend_values["trend_v1.price_above_200d"] == Decimal(
+        "38.342967244701"
+    )
+    assert trend_values["trend_v1.moving_average_alignment"] == Decimal(
+        "28.901734104046"
+    )
+    assert trend_values[
+        "trend_v1.benchmark_excess_return_60d_percentage_points"
+    ] == Decimal("-1.438486711979")
+    assert trend_values["trend_v1.earnings_trend"] == Decimal("20.000000000000")
+
+
+def test_swing_rejects_before_any_short_window_can_be_used() -> None:
+    inputs = _input()
+
+    with pytest.raises(
+        FeatureComputationRejected,
+        match="SWING_V1 requires 21 completed sessions",
+    ):
+        QuantFeatureService(feature_version="SHADOW_FEATURES_V1").compute(
+            SWING_V1,
+            replace(
+                inputs,
+                prices=inputs.prices[-20:],
+                benchmark_points=inputs.benchmark_points[-20:],
+            ),
+        )
 
 
 def test_normalized_output_is_independent_of_ambient_decimal_context() -> None:
     service = QuantFeatureService(feature_version="quant.features.v1")
+    inputs = _input()
 
     with localcontext(Context(prec=9, rounding=ROUND_DOWN)):
-        rounded_down = normalized_feature_snapshot(service.compute(SWING_V1, _input()))
+        rounded_down = normalized_feature_snapshot(service.compute(SWING_V1, inputs))
     with localcontext(Context(prec=60, rounding=ROUND_UP)):
-        rounded_up = normalized_feature_snapshot(service.compute(SWING_V1, _input()))
+        rounded_up = normalized_feature_snapshot(service.compute(SWING_V1, inputs))
 
     assert rounded_down == rounded_up
 
@@ -160,6 +247,9 @@ def test_trend_and_swing_compute_separate_owned_feature_families() -> None:
     assert all(item.name.startswith("trend_v1.") for item in trend.values)
     assert not ({item.name for item in swing.values} & {item.name for item in trend.values})
     assert {
+        "trend_v1.benchmark_excess_return_60d_percentage_points",
+        "trend_v1.average_volume_20d_shares",
+        "trend_v1.distance_below_52_week_high_percent",
         "trend_v1.earnings_trend",
         "trend_v1.industry_leadership",
         "trend_v1.moving_average_alignment",
@@ -167,6 +257,45 @@ def test_trend_and_swing_compute_separate_owned_feature_families() -> None:
         "trend_v1.regime_compatibility",
         "trend_v1.relative_strength_60d",
     }.issubset(item.name for item in trend.values)
+    trend_values = {item.name: item.value for item in trend.values}
+    assert trend_values["trend_v1.distance_below_52_week_high_percent"] == Decimal(
+        "0.277777777778"
+    )
+
+
+def test_unscored_catalyst_and_industry_context_are_not_core_feature_requirements() -> None:
+    inputs = _input()
+    swing = QuantFeatureService(feature_version="SHADOW_FEATURES_V1").compute(
+        SWING_V1,
+        replace(
+            inputs,
+            observations=(
+                NumericObservation(
+                    "regime_swing_compatibility", Decimal("70"), AS_OF
+                ),
+            ),
+        ),
+    )
+    trend = QuantFeatureService(feature_version="SHADOW_FEATURES_V1").compute(
+        TREND_V1,
+        replace(
+            inputs,
+            observations=(
+                NumericObservation("earnings_current", Decimal("12"), AS_OF),
+                NumericObservation("earnings_previous", Decimal("10"), AS_OF),
+                NumericObservation(
+                    "regime_trend_compatibility", Decimal("65"), AS_OF
+                ),
+            ),
+        ),
+    )
+
+    assert "swing_v1.catalyst_recency_sessions" not in {
+        item.name for item in swing.values
+    }
+    assert "trend_v1.industry_leadership" not in {
+        item.name for item in trend.values
+    }
 
 
 def test_service_rejects_strategy_contract_with_uncomputed_required_feature() -> None:

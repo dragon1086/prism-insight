@@ -9,7 +9,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Context, Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 from typing import Awaitable, Callable, Mapping, Protocol
 from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, uuid5
@@ -403,13 +403,30 @@ def _normalized_scenario_records(
 
 
 def _clamp_score(value: Decimal) -> Decimal:
-    return max(Decimal("0"), min(Decimal("100"), value.quantize(Decimal("0.01"))))
+    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
+        return max(
+            Decimal("0"),
+            min(Decimal("100"), value.quantize(Decimal("0.01"))),
+        )
+
+
+def _relative_state_score(
+    primary_return: Decimal, benchmark_return: Decimal = Decimal("0")
+) -> Decimal:
+    """Map a return spread to 0..100 without inheriting ambient Decimal settings."""
+
+    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
+        return _clamp_score(
+            Decimal("50")
+            + (primary_return - benchmark_return) * Decimal("500")
+        )
 
 
 def _return(closes: list[Decimal], sessions: int) -> Decimal:
     if len(closes) <= sessions or closes[-sessions - 1] == 0:
         raise LiveKREvidenceError("KIS price history is insufficient for evidence")
-    return closes[-1] / closes[-sessions - 1] - Decimal("1")
+    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
+        return closes[-1] / closes[-sessions - 1] - Decimal("1")
 
 
 def _business_days_between(start: datetime, end: datetime) -> int:
@@ -491,11 +508,9 @@ class LiveKREvidenceProvider:
             raise LiveKREvidenceError("KIS stock and benchmark sessions are not aligned")
 
         board_time = board.source_updated_at or board.fetched_at
-        relative_score = _clamp_score(
-            Decimal("50") + (stock_20 - benchmark_20) * Decimal("500")
-        )
-        swing_regime = _clamp_score(Decimal("50") + benchmark_5 * Decimal("500"))
-        trend_regime = _clamp_score(Decimal("50") + benchmark_20 * Decimal("500"))
+        relative_score = _relative_state_score(stock_20, benchmark_20)
+        swing_regime = _relative_state_score(benchmark_5)
+        trend_regime = _relative_state_score(benchmark_20)
         catalyst_recency = (
             Decimal(_business_days_between(board.source_updated_at, as_of))
             if board.source_updated_at is not None

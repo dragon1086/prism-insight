@@ -46,7 +46,7 @@ class USPriceTransport:
         self, request: FMPRequest, *, api_key: FMPApiKey
     ) -> FMPResponseEnvelope:
         rows = []
-        for index, session in enumerate(_sessions(220)):
+        for index, session in enumerate(_sessions(260)):
             for symbol, base, step in (("AAPL", 150, 1), ("SPY", 500, 1)):
                 close = Decimal(base) + Decimal(index * step) / Decimal("10")
                 rows.append(

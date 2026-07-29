@@ -571,7 +571,8 @@ class DashboardExporter:
                    p.parse_status, p.validation_status,
                    p.normalized_proposal_json, p.model_provider, p.model_id,
                    p.model_version, p.prompt_version, p.available_at,
-                   p.content_hash, p.validator_version, p.policy_version
+                   p.content_hash, p.validator_version, p.policy_version,
+                   d.quant_score_version, d.snapshot_json
             FROM trade_plan_proposals AS p
             JOIN decision_snapshots AS d USING (decision_snapshot_id)
             WHERE p.strategy_id = ?
@@ -591,6 +592,10 @@ class DashboardExporter:
         result: list[dict[str, Any]] = []
         for row in rows:
             normalized = _json_object(row[15])
+            snapshot_payload = _json_object(row[25])
+            stored_quant_score = snapshot_payload.get("quant_score")
+            if not isinstance(stored_quant_score, Mapping):
+                stored_quant_score = {}
             disposition_rows = self._research.execute(
                 """
                 SELECT field_path, action, reason, proposed_value_json,
@@ -655,6 +660,11 @@ class DashboardExporter:
                     "evidence_refs": json.loads(row[9]),
                     "data_quality": row[10],
                     "quality_disposition": row[11],
+                    "quant_score": {
+                        "score_version": row[24],
+                        "total_score": stored_quant_score.get("total_score"),
+                        "components": stored_quant_score.get("components", {}),
+                    },
                     "status": status,
                     "scenario_state": assessment.state.value,
                     "scenario_complete": assessment.complete,

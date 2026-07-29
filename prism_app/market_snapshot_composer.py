@@ -37,9 +37,9 @@ from prism_core.reporting.leadership_tracking import (
 )
 from prism_core.strategies.contracts import Market, StrategyId
 from prism_core.strategies.quant_score import (
-    QuantScorePolicy,
-    QuantScoreRule,
     QuantScoreService,
+    evaluate_shadow_entry_thresholds,
+    shadow_score_v1_policy,
 )
 from prism_core.strategies.registry import DEFAULT_STRATEGY_REGISTRY
 from prism_core.strategies.scenario_inputs import (
@@ -50,14 +50,17 @@ from prism_core.strategies.scenario_inputs import (
 
 _CORE_OBSERVATIONS = frozenset(
     {
-        "catalyst_recency_sessions",
         "regime_swing_compatibility",
-        "industry_leadership",
         "regime_trend_compatibility",
     }
 )
 _FUNDAMENTAL_OBSERVATIONS = frozenset({"earnings_current", "earnings_previous"})
-_SUPPORTED_OBSERVATIONS = _CORE_OBSERVATIONS | _FUNDAMENTAL_OBSERVATIONS
+_CONTEXT_OBSERVATIONS = frozenset(
+    {"catalyst_recency_sessions", "industry_leadership"}
+)
+_SUPPORTED_OBSERVATIONS = (
+    _CORE_OBSERVATIONS | _FUNDAMENTAL_OBSERVATIONS | _CONTEXT_OBSERVATIONS
+)
 
 
 class KISFetchProvider(Protocol):
@@ -298,15 +301,16 @@ class KRProductSnapshotComposer:
                 observations=observations,
                 field_quality=field_quality,
             )
-            feature_service = QuantFeatureService(feature_version="phase1.features.v1")
+            feature_service = QuantFeatureService(feature_version="SHADOW_FEATURES_V1")
             score_service = QuantScoreService()
             features = {}
             scores = {}
+            threshold_vetoes = {}
             for strategy_id in (StrategyId.SWING_V1, StrategyId.TREND_V1):
                 strategy = DEFAULT_STRATEGY_REGISTRY.get(strategy_id)
                 try:
                     feature = feature_service.compute(strategy, feature_inputs)
-                except (FeatureComputationRejected, ValueError):
+                except FeatureComputationRejected:
                     continue
                 features[strategy_id] = feature
                 if quality_decision.disposition is QualityDisposition.REPORT_ONLY:
@@ -321,8 +325,16 @@ class KRProductSnapshotComposer:
                         ],
                     }
                 else:
+                    policy = shadow_score_v1_policy(strategy_id, self._market)
                     scores[strategy_id] = score_service.score(
-                        strategy, feature, _score_policy(strategy_id)
+                        strategy,
+                        feature,
+                        policy,
+                    )
+                    threshold_vetoes[strategy_id] = evaluate_shadow_entry_thresholds(
+                        policy,
+                        scores[strategy_id],
+                        {item.name: item.value for item in feature.values},
                     )
             if quality_decision.disposition is QualityDisposition.ACCEPT:
                 scenario_input_pack = build_scenario_input_pack(
@@ -333,7 +345,7 @@ class KRProductSnapshotComposer:
                     price_basis=ScenarioPriceBasis.RAW,
                     feature_snapshots=features,
                 )
-                for strategy_id in (StrategyId.SWING_V1, StrategyId.TREND_V1):
+                for strategy_id in features:
                     strategy_inputs[strategy_id] = StrategyEvaluationInput(
                         feature_snapshot=features[strategy_id],
                         quant_score=scores[strategy_id],
@@ -346,6 +358,7 @@ class KRProductSnapshotComposer:
                                     *evidence.hard_vetoes,
                                     *scenario_input_pack.entry_vetoes,
                                     *coverage_vetoes,
+                                    *threshold_vetoes[strategy_id],
                                 }
                             )
                         ),
@@ -567,36 +580,6 @@ def _source_as_of_disclosures(
             "quality": quality,
         }
     return disclosures
-
-
-def _score_policy(strategy_id: StrategyId) -> QuantScorePolicy:
-    if strategy_id is StrategyId.SWING_V1:
-        rules = (
-            QuantScoreRule(
-                "swing_v1.price_momentum_5d",
-                Decimal("-0.10"),
-                Decimal("0.10"),
-                Decimal("0.6"),
-            ),
-            QuantScoreRule(
-                "swing_v1.regime_compatibility",
-                Decimal("0"),
-                Decimal("100"),
-                Decimal("0.4"),
-            ),
-        )
-        version = "swing-score.shadow.v1"
-    else:
-        rules = (
-            QuantScoreRule(
-                "trend_v1.regime_compatibility",
-                Decimal("0"),
-                Decimal("100"),
-                Decimal("1"),
-            ),
-        )
-        version = "trend-score.shadow.v1"
-    return QuantScorePolicy(strategy_id=strategy_id, score_version=version, rules=rules)
 
 
 def _leadership_snapshot(

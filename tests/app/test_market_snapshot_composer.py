@@ -46,9 +46,12 @@ def _sessions(count: int):
 
 
 class HistoricalTransport:
+    def __init__(self, count: int = 260) -> None:
+        self._count = count
+
     async def fetch(self, provider: str, *, as_of_date: datetime) -> ProviderPayload:
         rows = []
-        for index, session in enumerate(_sessions(220)):
+        for index, session in enumerate(_sessions(self._count)):
             for symbol, base, step in (
                 ("005930", 50000, 100),
                 ("069500", 30000, 40),
@@ -126,10 +129,36 @@ async def test_kr_composer_builds_two_exact_strategy_inputs_from_kis_and_pit_evi
         value.feature_snapshot.data_quality_status is DataQualityStatus.FRESH
         for value in snapshot.strategy_inputs.values()
     )
+    assert {
+        strategy_id: value.quant_score.score_version
+        for strategy_id, value in snapshot.strategy_inputs.items()
+    } == {
+        StrategyId.SWING_V1: "SHADOW_SCORE_V1.SWING_V1",
+        StrategyId.TREND_V1: "SHADOW_SCORE_V1.TREND_V1",
+    }
+    assert all(
+        value.feature_snapshot.feature_version == "SHADOW_FEATURES_V1"
+        for value in snapshot.strategy_inputs.values()
+    )
+    assert tuple(
+        component.name
+        for component in snapshot.strategy_inputs[
+            StrategyId.SWING_V1
+        ].quant_score.components
+    ) == (
+        "swing_v1.momentum_state_score",
+        "swing_v1.relative_strength_state_score",
+        "swing_v1.volume_state_score",
+        "swing_v1.volatility_state_score",
+        "swing_v1.regime_state_score",
+    )
     for value in snapshot.strategy_inputs.values():
         assert value.scenario_input_pack is not None
         assert value.scenario_input_pack.entry_vetoes
         assert set(value.scenario_input_pack.entry_vetoes) <= set(value.hard_vetoes)
+        assert any(
+            veto.startswith("shadow_score_v1:") for veto in value.hard_vetoes
+        )
     assert snapshot.source_payload["provider"] == "KIS"
     assert snapshot.source_payload["evidence_level"] == "STATIC_PIT_OVERRIDE"
     assert snapshot.source_payload["price_basis"] == "RAW"
@@ -144,6 +173,33 @@ async def test_kr_composer_builds_two_exact_strategy_inputs_from_kis_and_pit_evi
     assert snapshot.leadership_snapshot.market.value == "KR"
     assert snapshot.leadership_snapshot.observed_at == _evidence().observed_at
     assert snapshot.leadership_snapshot.available_at == _evidence().available_at
+
+
+@pytest.mark.asyncio
+async def test_kr_composer_preserves_swing_when_trend_history_is_insufficient() -> None:
+    provider = KISMarketDataProvider(
+        transport=HistoricalTransport(count=100),
+        instruments=(
+            KISInstrument(security_id=STOCK_ID, kis_symbol="005930"),
+            KISInstrument(security_id=BENCHMARK_ID, kis_symbol="069500"),
+        ),
+        clock=lambda: INGESTED,
+    )
+    composer = KRProductSnapshotComposer(
+        provider=provider,
+        stock_id=STOCK_ID,
+        benchmark_id=BENCHMARK_ID,
+        stock_symbol="005930",
+        benchmark_symbol="069500",
+        evidence=_evidence(),
+    )
+
+    snapshot = await composer.acquire(as_of=AS_OF)
+
+    assert set(snapshot.strategy_inputs) == {StrategyId.SWING_V1}
+    assert snapshot.strategy_inputs[
+        StrategyId.SWING_V1
+    ].quant_score.score_version == "SHADOW_SCORE_V1.SWING_V1"
 
 
 @pytest.mark.asyncio

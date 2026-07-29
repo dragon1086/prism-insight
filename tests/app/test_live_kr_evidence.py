@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Context, Decimal, ROUND_HALF_EVEN, ROUND_UP, localcontext
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -14,6 +14,8 @@ from prism_app.live_kr_evidence import (
     FMPIncomeStatementClient,
     LiveKREvidenceProvider,
     LiveUSEvidenceProvider,
+    _relative_state_score,
+    _return,
     agentnews_hard_vetoes,
 )
 from prism_app.kr_evidence_composer import KREvidenceComposer
@@ -136,6 +138,20 @@ class StaleFMPRequester(FMPRequester):
         )
 
 
+def test_live_regime_formula_is_independent_of_ambient_decimal_context() -> None:
+    closes = [Decimal("1"), Decimal("1.234567890123456789")]
+    benchmark_return = Decimal(
+        "0.0028465698832906347850839738115570737261599772274"
+    )
+    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
+        expected_return = _return(closes, 1)
+        expected_score = _relative_state_score(benchmark_return)
+
+    with localcontext(Context(prec=6, rounding=ROUND_UP)):
+        assert _return(closes, 1) == expected_return
+        assert _relative_state_score(benchmark_return) == expected_score
+
+
 @pytest.mark.asyncio
 async def test_live_evidence_is_derived_from_kis_fmp_and_agentnews_without_manual_json() -> None:
     provider_clock = iter((AS_OF, AS_OF + timedelta(seconds=1)))
@@ -182,7 +198,10 @@ async def test_live_evidence_is_derived_from_kis_fmp_and_agentnews_without_manua
     }
     assert evidence.observations["earnings_current"] == Decimal("31000000000000")
     assert evidence.observations["earnings_previous"] == Decimal("27000000000000")
-    assert Decimal("0") <= evidence.observations["industry_leadership"] <= Decimal("100")
+    assert evidence.observations["catalyst_recency_sessions"] == Decimal("0")
+    assert evidence.observations["regime_swing_compatibility"] == Decimal("51.42")
+    assert evidence.observations["regime_trend_compatibility"] == Decimal("55.74")
+    assert evidence.observations["industry_leadership"] == Decimal("54.90")
     assert {
         "agentnews:kr:" + board.content_hash,
         "fmp:income:005930.KS:2025-12-31",

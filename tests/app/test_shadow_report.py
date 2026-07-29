@@ -84,6 +84,14 @@ def _analysis(job_key: str) -> PersistedDailyAnalysis:
                     "scenario_state": "NO_ENTRY",
                     "scenario_complete": True,
                     "scenario_reasons": (),
+                    "quant_score": {
+                        "score_version": "SHADOW_SCORE_V1.SWING_V1",
+                        "total_score": "67.500000",
+                        "components": {
+                            "swing_v1.momentum_state_score": "75.000000",
+                            "swing_v1.regime_state_score": "60.000000",
+                        },
+                    },
                     "scenario": {
                         "market_judgment": {"drivers": ["breadth weak"]},
                         "sector_judgment": {
@@ -212,6 +220,9 @@ def test_shadow_report_appends_to_existing_markdown_once() -> None:
     assert "주문 또는 계좌 작업을 수행하지 않습니다" in once
     assert str(SNAPSHOT_ID) in once
     assert "SWING_V1" in once
+    assert "SHADOW_SCORE_V1.SWING_V1" in once
+    assert "swing_v1.momentum_state_score" in once
+    assert "67.500000" in once
     assert "NO_ENTRY" in once
     assert "실제 수집 시각: `2026-07-26T10:00:05+00:00`" in once
     assert "최신 완료 거래일: `2026-07-24`" in once
