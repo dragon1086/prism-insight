@@ -14,7 +14,7 @@ from prism_app.product_uat import load_pit_evidence
 from prism_core.data import DataQualityStatus
 from prism_core.data.quality import QualityDisposition
 from prism_core.data.providers.kis_http import KISMarketDataTransportError
-from prism_core.strategies.contracts import Market
+from prism_core.strategies.contracts import Market, StrategyId
 
 
 NOW = datetime(2026, 7, 26, 10, 0, tzinfo=timezone.utc)
@@ -98,6 +98,11 @@ def test_product_runtime_proof_rejects_backend_failure_or_skipped_quality() -> N
     product_uat.require_product_runtime_proof(accepted)
     with pytest.raises(RuntimeError, match="fresh non-replay"):
         product_uat.require_product_runtime_proof(accepted, idempotent_replay=True)
+    product_uat.require_product_runtime_proof(
+        accepted,
+        idempotent_replay=True,
+        require_fresh_invocation=False,
+    )
 
     backend_failed = SimpleNamespace(
         quality_decision=accepted.quality_decision,
@@ -150,6 +155,39 @@ def test_product_runtime_proof_rejects_backend_failure_or_skipped_quality() -> N
     )
     with pytest.raises(RuntimeError, match="quality gate"):
         product_uat.require_product_runtime_proof(skipped)
+
+
+def test_runtime_invocation_evidence_distinguishes_fresh_oauth_calls_from_replay() -> None:
+    assert product_uat.runtime_invocation_evidence(
+        idempotent_replay=False, strategy_count=2
+    ) == {
+        "fresh_invocation_verified": True,
+        "idempotent_replay": False,
+        "structured_response_count": 2,
+        "replayed_response_count": 0,
+    }
+    assert product_uat.runtime_invocation_evidence(
+        idempotent_replay=True, strategy_count=2
+    ) == {
+        "fresh_invocation_verified": False,
+        "idempotent_replay": True,
+        "structured_response_count": 0,
+        "replayed_response_count": 2,
+    }
+
+
+def test_runtime_strategy_evidence_preserves_exact_persisted_strategy_identities() -> None:
+    analysis = SimpleNamespace(
+        strategies=(
+            SimpleNamespace(strategy_id=StrategyId.TREND_V1),
+            SimpleNamespace(strategy_id=StrategyId.SWING_V1),
+        )
+    )
+
+    assert product_uat.runtime_strategy_evidence(analysis) == (
+        "TREND_V1",
+        "SWING_V1",
+    )
 
 
 def test_product_uat_defaults_to_gpt_5_6_sol() -> None:

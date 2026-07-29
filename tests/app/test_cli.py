@@ -31,6 +31,38 @@ def test_shadow_run_extends_the_existing_cli_without_secret_or_scheduler_flags(
     assert "no account or broker capability" in output
 
 
+def test_kr_daily_exposes_one_copyable_read_only_candidate_command(capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["kr-daily", "--help"])
+
+    assert exc.value.code == 0
+    output = capsys.readouterr().out.lower()
+    for option in (
+        "--as-of",
+        "--research-db",
+        "--paper-db",
+        "--ops-db",
+        "--report-output",
+        "--dashboard-output",
+        "--stockeasy-snapshot",
+    ):
+        assert option in output
+    assert "candidate" in output
+    assert "no account or broker capability" in output
+    assert "--symbol" not in output
+    assert "--api-key" not in output
+    assert "--token" not in output
+    assert "--schedule" not in output
+
+
+def test_kr_daily_routes_to_the_daily_product_entrypoint(monkeypatch) -> None:
+    observed = []
+    monkeypatch.setattr(cli.kr_daily_product, "main", lambda argv: observed.append(argv) or 7)
+
+    assert main(["kr-daily", "--research-db", "research.sqlite"]) == 7
+    assert observed == [["--research-db", "research.sqlite"]]
+
+
 def test_us_shadow_run_is_exposed_without_account_or_scheduler_flags(capsys) -> None:
     with pytest.raises(SystemExit) as exc:
         main(["shadow-run-us", "--help"])

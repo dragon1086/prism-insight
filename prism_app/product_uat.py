@@ -88,10 +88,11 @@ def require_product_runtime_proof(
     analysis: PersistedDailyAnalysis,
     *,
     idempotent_replay: bool = False,
+    require_fresh_invocation: bool = True,
 ) -> None:
     """Reject a persisted cycle that did not traverse every proof-critical leg."""
 
-    if idempotent_replay:
+    if idempotent_replay and require_fresh_invocation:
         raise RuntimeError("product runtime proof requires a fresh non-replay invocation")
     if analysis.quality_decision.disposition is not QualityDisposition.ACCEPT:
         raise RuntimeError("product runtime proof stopped at the quality gate")
@@ -114,6 +115,25 @@ def require_product_runtime_proof(
         for item in analysis.strategies
     ):
         raise RuntimeError("product runtime proof requires complete normalized scenarios")
+
+
+def runtime_invocation_evidence(
+    *, idempotent_replay: bool, strategy_count: int
+) -> dict[str, bool | int]:
+    """Separate calls made now from structured responses read from persistence."""
+
+    return {
+        "fresh_invocation_verified": not idempotent_replay,
+        "idempotent_replay": idempotent_replay,
+        "structured_response_count": 0 if idempotent_replay else strategy_count,
+        "replayed_response_count": strategy_count if idempotent_replay else 0,
+    }
+
+
+def runtime_strategy_evidence(analysis: PersistedDailyAnalysis) -> tuple[str, ...]:
+    """Return the exact persisted strategy identities in evaluation order."""
+
+    return tuple(item.strategy_id.value for item in analysis.strategies)
 
 
 def sanitized_failure_payload(exc: Exception) -> dict[str, Any]:
@@ -286,6 +306,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         require_product_runtime_proof(
             result.analysis,
             idempotent_replay=result.idempotent_replay,
+            require_fresh_invocation=getattr(
+                args, "require_fresh_runtime_proof", True
+            ),
         )
     board_evidence = [
         {
@@ -300,6 +323,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         for fetch_result in agentnews_results
         for attempt in fetch_result.attempts
     ]
+    invocation_evidence = runtime_invocation_evidence(
+        idempotent_replay=result.idempotent_replay,
+        strategy_count=len(result.analysis.strategies),
+    )
+    strategy_ids = runtime_strategy_evidence(result.analysis)
     return {
         "stage": "PHASE1_SHADOW_PRODUCT",
         "status": _product_status(result.analysis.quality_decision.disposition),
@@ -311,8 +339,10 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "missing_fields": result.analysis.quality_decision.missing_fields,
         "stale_fields": result.analysis.quality_decision.stale_fields,
         "strategy_count": len(result.analysis.strategies),
+        "strategy_ids": strategy_ids,
         "llm_backend_verified": True,
-        "fresh_invocation_verified": True,
+        "fresh_invocation_verified": invocation_evidence["fresh_invocation_verified"],
+        "idempotent_replay": invocation_evidence["idempotent_replay"],
         "network_evidence": {
             "kis_market_data": [
                 {
@@ -337,7 +367,12 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             "oauth": {
                 "auth_mode": "chatgpt_oauth",
                 "requested_and_forwarded_model": args.model,
-                "structured_response_count": len(result.analysis.strategies),
+                "structured_response_count": invocation_evidence[
+                    "structured_response_count"
+                ],
+                "replayed_response_count": invocation_evidence[
+                    "replayed_response_count"
+                ],
                 "tool_count": 0,
             },
         },

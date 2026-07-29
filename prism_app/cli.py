@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from prism_app import (
+    kr_daily_product,
     live_data_uat,
     llm_oauth_smoke,
     product_uat,
@@ -22,6 +23,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         choices=(
+            "kr-daily",
             "live-data",
             "oauth-smoke",
             "shadow-readback",
@@ -36,6 +38,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(argv) if argv is not None else sys.argv[1:]
+    if arguments and arguments[0] == "kr-daily":
+        return kr_daily_product.main(arguments[1:])
     if arguments and arguments[0] == "live-data":
         return live_data_uat.main(arguments[1:])
     if arguments and arguments[0] == "oauth-smoke":
@@ -49,6 +53,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments and arguments[0] == "user-surface":
         return user_surface_uat.main(arguments[1:])
     parsed, remainder = _parser().parse_known_args(arguments)
+    if parsed.command == "kr-daily":
+        return kr_daily_product.main(remainder)
     if parsed.command == "live-data":
         return live_data_uat.main(remainder)
     if parsed.command == "oauth-smoke":
