@@ -25,6 +25,16 @@ sys.path.insert(0, str(PRISM_US_DIR))
 # Ensure we can import from prism-us
 os.chdir(str(PRISM_US_DIR))
 
+# Block real trading-signal publishing for the whole US test session.
+# The US suite runs from prism-us/, so the repo-root conftest.py is not
+# guaranteed to be loaded — set the kill switch explicitly rather than rely on
+# pytest's rootdir resolution. See messaging/publish_guard.py: importing a
+# trading agent loads the production .env, and a test run previously broadcast
+# fixture sells onto the live public signal topic.
+from messaging.publish_guard import DISABLE_ENV_VAR  # noqa: E402
+
+os.environ[DISABLE_ENV_VAR] = "1"
+
 
 # =============================================================================
 # Fixtures - Database
