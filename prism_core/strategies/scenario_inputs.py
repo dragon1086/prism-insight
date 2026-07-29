@@ -24,6 +24,13 @@ from prism_core.data.contracts import (
     SecurityId,
     SymbolMapping,
 )
+from prism_core.data.contracts.leadership_supplement import (
+    LeadershipCaptureMethod,
+    LeadershipObservation,
+    LeadershipScope,
+    LeadershipSection,
+    LeadershipSupplementSnapshot,
+)
 from prism_core.data.exchange_calendar import (
     ExchangeMarket,
     latest_completed_session,
@@ -193,6 +200,24 @@ class StrategyScenarioInputs(_Model):
     peak_state_formula_version: str
 
 
+class ScenarioLeadershipSupplement(_Model):
+    snapshot_id: str
+    provider: str
+    section: LeadershipSection
+    source_scope_id: str
+    source_snapshot_id: str
+    capture_method: LeadershipCaptureMethod
+    permission_record_id: str
+    observed_at: AwareDatetime
+    available_at: AwareDatetime
+    ingested_at: AwareDatetime
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    image_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    quality: DataQualityStatus
+    observations: tuple[LeadershipObservation, ...]
+    issues: tuple[str, ...]
+
+
 class ScenarioInputPack(_Model):
     contract_version: str
     status: ScenarioInputStatus
@@ -208,6 +233,7 @@ class ScenarioInputPack(_Model):
     market_context_evidence: tuple[ScenarioEvidence, ...]
     earnings_events: tuple[ScenarioEvent, ...]
     next_review_events: tuple[ScenarioEvent, ...]
+    leadership_supplement: ScenarioLeadershipSupplement | None = None
     strategies: tuple[StrategyScenarioInputs, ...]
     issues: tuple[ScenarioInputIssue, ...]
     entry_vetoes: tuple[str, ...]
@@ -232,6 +258,7 @@ def build_scenario_input_pack(
     benchmark_security_id: SecurityId,
     price_basis: ScenarioPriceBasis,
     feature_snapshots: Mapping[StrategyId, FeatureSnapshot],
+    leadership_supplement: LeadershipSupplementSnapshot | None = None,
 ) -> ScenarioInputPack:
     """Build a deterministic scenario pack and classify every absent input.
 
@@ -262,8 +289,18 @@ def build_scenario_input_pack(
         raise TypeError(
             "feature_snapshots must map StrategyId keys to FeatureSnapshot values"
         )
+    if leadership_supplement is not None and not isinstance(
+        leadership_supplement, LeadershipSupplementSnapshot
+    ):
+        raise TypeError("leadership_supplement must be a LeadershipSupplementSnapshot")
 
     issues: list[ScenarioInputIssue] = []
+    scenario_leadership = _leadership_supplement(
+        leadership_supplement,
+        security_id=security_id,
+        as_of=snapshot.as_of_date,
+        issues=issues,
+    )
     if snapshot.market != market.value:
         _issue(issues, "identity.market", ScenarioIssueClass.CORE, DataQualityStatus.CONFLICT, "snapshot market does not match requested market")
     if snapshot.quality is not DataQualityStatus.FRESH:
@@ -510,9 +547,61 @@ def build_scenario_input_pack(
         market_context_evidence=market_evidence,
         earnings_events=earnings_events,
         next_review_events=next_review_events,
+        leadership_supplement=scenario_leadership,
         strategies=tuple(strategies),
         issues=tuple(issues),
         entry_vetoes=entry_vetoes,
+    )
+
+
+def _leadership_supplement(
+    supplement: LeadershipSupplementSnapshot | None,
+    *,
+    security_id: SecurityId,
+    as_of: datetime,
+    issues: list[ScenarioInputIssue],
+) -> ScenarioLeadershipSupplement | None:
+    if supplement is None:
+        return None
+    timing = supplement.timing
+    if timing.as_of_date != as_of or timing.available_at > as_of:
+        _issue(
+            issues,
+            "leadership_supplement.timing",
+            ScenarioIssueClass.SUPPLEMENTAL,
+            DataQualityStatus.CONFLICT,
+            "supplemental leadership timing does not match the scenario boundary",
+        )
+    if supplement.quality is not DataQualityStatus.FRESH:
+        _issue(
+            issues,
+            "leadership_supplement.quality",
+            ScenarioIssueClass.SUPPLEMENTAL,
+            supplement.quality,
+            "supplemental leadership evidence is not fresh and non-conflicting",
+        )
+    relevant = tuple(
+        item
+        for item in supplement.observations
+        if item.scope is not LeadershipScope.SECURITY
+        or item.security_id == security_id
+    )
+    return ScenarioLeadershipSupplement(
+        snapshot_id=supplement.snapshot_id,
+        provider=supplement.provider,
+        section=supplement.section,
+        source_scope_id=supplement.source_scope_id,
+        source_snapshot_id=supplement.source_snapshot_id,
+        capture_method=supplement.capture_method,
+        permission_record_id=supplement.permission_record_id,
+        observed_at=timing.observed_at,
+        available_at=timing.available_at,
+        ingested_at=timing.ingested_at,
+        content_hash=supplement.content_hash,
+        image_hash=supplement.image_hash,
+        quality=supplement.quality,
+        observations=relevant,
+        issues=supplement.issues,
     )
 
 

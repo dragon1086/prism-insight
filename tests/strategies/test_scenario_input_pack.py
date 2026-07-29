@@ -18,6 +18,14 @@ from prism_core.data.contracts import (
     SecurityId,
     SymbolMapping,
 )
+from prism_core.data.contracts.leadership_supplement import (
+    LeadershipCaptureMethod,
+    LeadershipObservation,
+    LeadershipObservationKind,
+    LeadershipScope,
+    LeadershipSection,
+    LeadershipSupplementSnapshot,
+)
 from prism_core.data.quality import QualityDisposition
 from prism_core.strategies import (
     FeatureSnapshot,
@@ -404,6 +412,64 @@ def test_same_contract_builds_kr_kis_swing_and_trend_pack() -> None:
         StrategyId.SWING_V1,
         StrategyId.TREND_V1,
     }
+
+
+def test_conflicting_leadership_supplement_is_visible_report_only_without_erasing_core_analysis() -> None:
+    supplement = LeadershipSupplementSnapshot(
+        snapshot_id="leadership:" + "a" * 64,
+        provider="STOCKEASY_SANITIZED_UI_EXPORT",
+        section=LeadershipSection.SECURITY_LEADERSHIP,
+        source_scope_id="generic-security-leadership",
+        source_snapshot_id="approved-export:2026-07-29",
+        capture_method=LeadershipCaptureMethod.APPROVED_EXPORT,
+        permission_record_id="permission:verified",
+        timing=ObservationTime(
+            observed_at=AS_OF - timedelta(minutes=5),
+            available_at=AS_OF - timedelta(minutes=4),
+            ingested_at=AS_OF,
+            as_of_date=AS_OF,
+        ),
+        content_hash="a" * 64,
+        quality=DataQualityStatus.CONFLICT,
+        observations=(
+            LeadershipObservation(
+                observation_id="obs:rs:aapl",
+                kind=LeadershipObservationKind.RELATIVE_STRENGTH_RANK,
+                scope=LeadershipScope.SECURITY,
+                security_id=STOCK_ID,
+                provider_symbol="005930",
+                value=Decimal("7"),
+                unit="rank",
+                evidence_id="evidence:rs:aapl",
+            ),
+        ),
+        candidate_nominations=(),
+        issues=("SUPPLEMENTAL_AUTHORITY_CONFLICT",),
+    )
+
+    pack = build_scenario_input_pack(
+        snapshot=_kr_snapshot(),
+        market=Market.KR,
+        security_id=STOCK_ID,
+        benchmark_security_id=BENCHMARK_ID,
+        price_basis=ScenarioPriceBasis.RAW,
+        feature_snapshots=_kr_features(),
+        leadership_supplement=supplement,
+    )
+
+    assert pack.status is ScenarioInputStatus.COMPLETE
+    assert pack.policy_disposition is QualityDisposition.REPORT_ONLY
+    assert pack.latest_bar is not None
+    assert pack.leadership_supplement is not None
+    assert pack.leadership_supplement.snapshot_id == supplement.snapshot_id
+    assert pack.leadership_supplement.observations == supplement.observations
+    assert pack.identity.provider == "KIS"
+    assert pack.latest_bar.provider == "KIS"
+    assert any(
+        item.field == "leadership_supplement.quality"
+        and item.quality is DataQualityStatus.CONFLICT
+        for item in pack.issues
+    )
 
 
 def test_future_available_fundamental_is_fail_closed_even_at_pack_boundary() -> None:
