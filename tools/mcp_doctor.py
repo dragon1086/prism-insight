@@ -109,14 +109,18 @@ def _check_env(spec_env: dict, raw_env: dict | None = None) -> list[dict]:
 
 
 def _resolve_config_path(label: str) -> Path | None:
-    """Mirror the loader's search order so the raw YAML can be read too."""
+    """Mirror the loader's search order so the raw YAML can be read too.
+
+    Must track :func:`load_report_mcp_registry` / :func:`load_mcp_registry`.
+    When the report path stopped preferring the legacy config, this lagged
+    behind and mislabelled the source while the registry itself was already
+    correct — so if the loader's precedence changes, change it here too.
+    """
 
     if label == "report":
         override = os.environ.get("REPORT_MCP_CONFIG")
         if override:
             return Path(override)
-        if config_loader._LEGACY_CONFIG.exists():
-            return config_loader._LEGACY_CONFIG
     override = os.environ.get("PRISM_MCP_CONFIG")
     if override:
         return Path(override)
@@ -284,7 +288,10 @@ def main(argv: list[str] | None = None) -> int:
         f"legacy={'y' if cfg['legacy_exists'] else 'n'}"
     )
     if cfg["legacy_exists"]:
-        print("  ! report path prefers the legacy config (machine-local)")
+        print(
+            "  note: a legacy mcp_agent.config.yaml is still present but no "
+            "longer used; delete it to stop it drifting"
+        )
     for label, data in payload["registries"].items():
         print(f"\n[{label}] source={data.get('source')}")
         if "error" in data:
