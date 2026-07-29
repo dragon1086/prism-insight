@@ -305,6 +305,22 @@ Mas de 13 agentes especializados colaboran en equipos:
 
 ---
 
+## Cómo aprendió el sistema de trading
+
+El historial del mercado coreano muestra dos fallos opuestos: evitar demasiadas
+entradas y, después, asumir riesgo sin suficiente control del estado. Las
+versiones v1.16.7 a v2.18 llevaron el sistema desde la corrección del sesgo del
+prompt hasta controles deterministas de régimen, salida y reentrada.
+
+![Evolución de PRISM-INSIGHT desde el sesgo de observación hasta el control de riesgo basado en estado](docs/images/trading-evolution-en.png)
+
+> Estas cifras son diagnósticas. El retorno acumulado suma los retornos de cada
+> operación; los resultados de candidatos no comprados son observaciones
+> retrospectivas, no un retorno de cartera ponderado por tiempo ni un backtest
+> realizable.
+
+---
+
 ## Modulo de Mercado Bursatil de EE.UU.
 
 El mismo flujo de trabajo impulsado por IA para los mercados estadounidenses:
