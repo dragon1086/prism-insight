@@ -27,6 +27,11 @@ from prism_core.data.providers.kis import (
     ProviderRateLimitError,
     ProviderTimeoutError,
 )
+from prism_core.data.providers.kis_fundamentals import (
+    KIS_FUNDAMENTAL_ENDPOINTS,
+    KISFundamentalCategory,
+    KISFundamentalPayload,
+)
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -55,6 +60,12 @@ VOLUME_RANK_PATH = "/uapi/domestic-stock/v1/quotations/volume-rank"
 VOLUME_RANK_TR_ID = "FHPST01710000"
 _ALLOWED_HOSTS = frozenset({"openapi.koreainvestment.com"})
 _SYMBOL_PATTERN = re.compile(r"^[0-9]{6}$")
+_FUNDAMENTAL_PATHS = frozenset(
+    endpoint.path for endpoint in KIS_FUNDAMENTAL_ENDPOINTS.values()
+)
+_ALLOWED_PATHS = frozenset(
+    {TOKEN_PATH, DAILY_PRICE_PATH, VOLUME_RANK_PATH, *_FUNDAMENTAL_PATHS}
+)
 
 
 class KISMarketDataTransportError(RuntimeError):
@@ -70,6 +81,10 @@ class KISMarketDataTransportError(RuntimeError):
         super().__init__(message)
         self.operation = operation
         self.status_code = status_code
+
+
+class KISFundamentalSchemaError(KISMarketDataTransportError):
+    """Sanitized signal that a successful finance response broke its schema."""
 
 
 @dataclass(frozen=True)
@@ -137,7 +152,7 @@ class AioHttpKISRequester:
             parsed.scheme != "https"
             or parsed.hostname not in _ALLOWED_HOSTS
             or parsed.port != 9443
-            or parsed.path not in {TOKEN_PATH, DAILY_PRICE_PATH, VOLUME_RANK_PATH}
+            or parsed.path not in _ALLOWED_PATHS
             or parsed.query
             or parsed.fragment
         ):
@@ -367,10 +382,15 @@ class KISHTTPTransport:
         self._token: _CachedToken | None = None
         self._token_cache = token_cache
         self._evidence: tuple[dict[str, object], ...] = ()
+        self._fundamental_issues: tuple[str, ...] = ()
 
     @property
     def evidence(self) -> tuple[dict[str, object], ...]:
         return tuple(dict(item) for item in self._evidence)
+
+    @property
+    def fundamental_issues(self) -> tuple[str, ...]:
+        return self._fundamental_issues
 
     async def _request(
         self,
@@ -381,7 +401,7 @@ class KISHTTPTransport:
         json_body: Mapping[str, str] | None = None,
         params: Mapping[str, str] | None = None,
     ) -> KISHTTPResponse:
-        if path not in {TOKEN_PATH, DAILY_PRICE_PATH, VOLUME_RANK_PATH}:
+        if path not in _ALLOWED_PATHS:
             raise KISMarketDataTransportError("KIS endpoint is not allowlisted")
         async with self._request_lock:
             now = self._monotonic()
@@ -568,6 +588,117 @@ class KISHTTPTransport:
             },
             quality=ranking_quality,
             raw_payload_hash=raw_hash,
+        )
+
+    async def fetch_fundamental_payloads(
+        self, *, symbol: str
+    ) -> tuple[KISFundamentalPayload, ...]:
+        """Fetch the six official, account-free KIS domestic finance datasets."""
+
+        if _SYMBOL_PATTERN.fullmatch(symbol) is None:
+            raise ValueError("KIS fundamental symbol must be a six-digit string")
+        token, token_evidence = await self._access_token()
+        request_evidence = [token_evidence] if token_evidence is not None else []
+        payloads: list[KISFundamentalPayload] = []
+        issues: list[str] = []
+        for category in KISFundamentalCategory:
+            try:
+                payload, evidence = await self._fetch_fundamental_payload(
+                    category=category,
+                    symbol=symbol,
+                    token=token,
+                )
+            except ProviderRateLimitError:
+                issues.append(
+                    f"KIS_ENDPOINT_TRANSIENT:rate_limit:{category.value}"
+                )
+                continue
+            except ProviderTimeoutError:
+                issues.append(f"KIS_ENDPOINT_TRANSIENT:timeout:{category.value}")
+                continue
+            except KISFundamentalSchemaError:
+                issues.append(f"KIS_SCHEMA_INVALID:{category.value}")
+                continue
+            except KISMarketDataTransportError:
+                issues.append(f"KIS_CAPABILITY_UNAVAILABLE:{category.value}")
+                continue
+            payloads.append(payload)
+            request_evidence.append(evidence)
+        self._fundamental_issues = tuple(issues)
+        self._evidence = tuple(item.as_payload() for item in request_evidence)
+        return tuple(payloads)
+
+    async def _fetch_fundamental_payload(
+        self,
+        *,
+        category: KISFundamentalCategory,
+        symbol: str,
+        token: str,
+    ) -> tuple[KISFundamentalPayload, KISRequestEvidence]:
+        endpoint = KIS_FUNDAMENTAL_ENDPOINTS[category]
+        response = await self._request(
+            method="GET",
+            path=endpoint.path,
+            headers={
+                "content-type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {token}",
+                "appkey": self._credentials.app_key,
+                "appsecret": self._credentials.app_secret,
+                "tr_id": endpoint.tr_id,
+                "custtype": "P",
+            },
+            params={
+                "FID_DIV_CLS_CODE": "0",
+                "fid_cond_mrkt_div_code": "J",
+                "fid_input_iscd": symbol,
+            },
+        )
+        decoded = self._decode_object(response, operation=f"{category.value} request")
+        output = decoded.get("output")
+        if str(decoded.get("rt_cd", "")) != "0":
+            raise KISMarketDataTransportError(
+                f"KIS {category.value} response omitted successful output"
+            )
+        if not isinstance(output, (list, dict)):
+            raise KISFundamentalSchemaError(
+                f"KIS {category.value} response contained an invalid output schema"
+            )
+        raw_rows = output if isinstance(output, list) else [output]
+        rows: list[dict[str, str]] = []
+        for item in raw_rows:
+            if not isinstance(item, dict) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in item.items()
+            ):
+                raise KISFundamentalSchemaError(
+                    f"KIS {category.value} response contained a malformed row"
+                )
+            rows.append(cast(dict[str, str], item))
+        if not rows:
+            raise KISFundamentalSchemaError(
+                f"KIS {category.value} response contained no rows"
+            )
+        raw_hash = hashlib.sha256(response.body).hexdigest()
+        try:
+            payload = KISFundamentalPayload.from_wire(
+                category=category,
+                provider_symbol=symbol,
+                rows=rows,
+                received_at=response.received_at,
+                source_hash=raw_hash,
+            )
+        except (TypeError, ValueError):
+            raise KISFundamentalSchemaError(
+                f"KIS {category.value} response contained malformed finance fields"
+            ) from None
+        return (
+            payload,
+            KISRequestEvidence(
+                endpoint=endpoint.path,
+                status_code=response.status_code,
+                received_at=response.received_at,
+                raw_payload_hash=raw_hash,
+            ),
         )
 
     async def fetch(self, provider: str, *, as_of_date: datetime) -> ProviderPayload:

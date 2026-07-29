@@ -14,6 +14,7 @@ from prism_core.data.contracts import (
     SecurityId,
 )
 from prism_core.data.providers.dart import DARTFetchResult
+from prism_core.data.providers.kis_fundamentals import KISFundamentalFetchResult
 from prism_core.data.providers.kind import KINDFetchResult
 
 
@@ -37,6 +38,12 @@ class FMPPort(Protocol):
     async def fetch(self, *, symbol: str, as_of: datetime) -> FMPIncomeEvidence: ...
 
 
+class KISFundamentalPort(Protocol):
+    async def fetch(
+        self, *, stock_code: str, security_id: SecurityId, as_of: datetime
+    ) -> KISFundamentalFetchResult: ...
+
+
 @dataclass(frozen=True)
 class KREvidenceCascadeResult:
     fundamentals: tuple[FundamentalObservation, ...]
@@ -57,11 +64,7 @@ _RISK_VETO = {
 
 
 class KREvidenceComposer:
-    """Apply DART → KIND/KRX → KIS context → FMP precedence for KR evidence.
-
-    KIS prices are already present before this injected income-fetcher is called;
-    FMP is attempted last and can never erase official DART evidence.
-    """
+    """Apply KIS fundamentals first, with optional DART/KIND verification and FMP fallback."""
 
     def __init__(
         self,
@@ -71,6 +74,7 @@ class KREvidenceComposer:
         dart: DARTPort,
         kind: KINDPort,
         fmp: FMPPort | None,
+        kis: KISFundamentalPort | None = None,
     ) -> None:
         if len(stock_code) != 6 or not stock_code.isdigit():
             raise ValueError("stock_code must be a six-digit KR provider symbol")
@@ -81,6 +85,7 @@ class KREvidenceComposer:
         self._dart = dart
         self._kind = kind
         self._fmp = fmp
+        self._kis = kis
         self.last_result: KREvidenceCascadeResult | None = None
 
     async def fetch(self, *, symbol: str, as_of: datetime) -> FMPIncomeEvidence:
@@ -89,6 +94,77 @@ class KREvidenceComposer:
         issues: list[str] = []
         calls: list[Mapping[str, str]] = []
         vetoes: list[str] = []
+        kis_result: KISFundamentalFetchResult | None = None
+        kis_income: FMPIncomeEvidence | None = None
+        if self._kis is not None:
+            try:
+                kis_result = await self._kis.fetch(
+                    stock_code=self._stock_code,
+                    security_id=self._security_id,
+                    as_of=as_of,
+                )
+            except Exception:
+                issues.append("KIS_FUNDAMENTALS_FETCH_FAILED")
+            else:
+                issues.extend(kis_result.issues)
+                calls.extend(
+                    {
+                        "provider": "KIS",
+                        "status": capability.status.value,
+                        "schema": capability.category.value,
+                    }
+                    for capability in kis_result.capabilities
+                )
+                if (
+                    kis_result.quality
+                    in {DataQualityStatus.FRESH, DataQualityStatus.PARTIAL}
+                    and kis_result.earnings_current is not None
+                    and kis_result.earnings_previous is not None
+                    and kis_result.earnings_current_period is not None
+                    and kis_result.earnings_previous_period is not None
+                    and kis_result.available_at is not None
+                    and kis_result.ingested_at is not None
+                ):
+                    current_record = next(
+                        (
+                            item
+                            for item in reversed(kis_result.fundamentals)
+                            if item.metric == "net_income"
+                            and item.period_end == kis_result.earnings_current_period
+                        ),
+                        None,
+                    )
+                    previous_record = next(
+                        (
+                            item
+                            for item in kis_result.fundamentals
+                            if item.metric == "net_income"
+                            and item.period_end == kis_result.earnings_previous_period
+                        ),
+                        None,
+                    )
+                    if current_record is None or previous_record is None:
+                        issues.append("KIS_FUNDAMENTAL_RESULT_INCONSISTENT")
+                    else:
+                        kis_income = FMPIncomeEvidence(
+                            current=kis_result.earnings_current,
+                            previous=kis_result.earnings_previous,
+                            current_period=kis_result.earnings_current_period.isoformat(),
+                            current_accepted_at=kis_result.available_at,
+                            current_unit=current_record.unit,
+                            previous_period=kis_result.earnings_previous_period.isoformat(),
+                            previous_accepted_at=kis_result.available_at,
+                            previous_unit=previous_record.unit,
+                            ingested_at=kis_result.ingested_at,
+                            response_hash=current_record.source_hash,
+                            provider="KIS",
+                            provider_symbol=self._stock_code,
+                            source_record_prefix="kis:finance:income",
+                            source_url=(
+                                "https://github.com/koreainvestment/open-trading-api/tree/main/"
+                                "examples_llm/domestic_stock/finance_income_statement"
+                            ),
+                        )
         try:
             dart = await self._dart.fetch(
                 stock_code=self._stock_code,
@@ -121,19 +197,31 @@ class KREvidenceComposer:
 
         official_income, conflict = _select_official_income(dart.fundamentals)
         if conflict:
-            issues.append("SEVERE_OFFICIAL_FILING_CONFLICT")
-            vetoes.append("SEVERE_OFFICIAL_FILING_CONFLICT")
+            if kis_income is None:
+                issues.append("SEVERE_OFFICIAL_FILING_CONFLICT")
+                vetoes.append("SEVERE_OFFICIAL_FILING_CONFLICT")
+            else:
+                issues.append("DART_SUPPLEMENT_CONFLICT")
             official_income = None
 
         fmp_income = None
-        if self._fmp is not None:
+        if self._kis is None and self._fmp is not None:
             try:
                 fmp_income = await self._fmp.fetch(symbol=symbol, as_of=as_of)
             except Exception:
                 issues.append("FMP_SUPPLEMENT_UNAVAILABLE")
 
-        evidence_items = (*dart.evidence_items, *kind.evidence_items)
-        if official_income is not None:
+        evidence_items = (
+            *(kis_result.evidence_items if kis_result is not None else ()),
+            *dart.evidence_items,
+            *kind.evidence_items,
+        )
+        if kis_income is not None:
+            assert kis_result is not None  # constructed only from this normalized result
+            selected = kis_income
+            quality = kis_result.quality
+            provider = "KIS"
+        elif official_income is not None:
             current, previous = official_income
             selected = FMPIncomeEvidence(
                 current=current.value,
@@ -165,7 +253,10 @@ class KREvidenceComposer:
             vetoes.append("MISSING_SUPPLEMENTAL_FUNDAMENTALS")
             quality = DataQualityStatus.CONFLICT if conflict else DataQualityStatus.UNAVAILABLE
             self.last_result = KREvidenceCascadeResult(
-                fundamentals=dart.fundamentals,
+                fundamentals=(
+                    *(kis_result.fundamentals if kis_result is not None else ()),
+                    *dart.fundamentals,
+                ),
                 evidence_items=evidence_items,
                 quality=quality,
                 hard_vetoes=tuple(sorted(set(vetoes))),
@@ -178,7 +269,10 @@ class KREvidenceComposer:
             )
 
         self.last_result = KREvidenceCascadeResult(
-            fundamentals=dart.fundamentals,
+            fundamentals=(
+                *(kis_result.fundamentals if kis_result is not None else ()),
+                *dart.fundamentals,
+            ),
             evidence_items=evidence_items,
             quality=quality,
             hard_vetoes=tuple(sorted(set(vetoes))),

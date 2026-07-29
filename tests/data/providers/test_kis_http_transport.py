@@ -21,6 +21,7 @@ from prism_core.data.providers.kis import (
     ProviderEventKind,
 )
 from prism_core.data.providers import kis_http
+from prism_core.data.providers.kis_fundamentals import KIS_FUNDAMENTAL_ENDPOINTS
 from prism_core.data.providers.kis_http import (
     AioHttpKISRequester,
     DAILY_PRICE_PATH,
@@ -1079,4 +1080,14 @@ def test_transport_has_only_allowlisted_http_paths_and_no_broker_import_or_metho
         module == "trading" or module.startswith("trading.") for module in imported_modules
     )
     assert literal_paths == {TOKEN_PATH, DAILY_PRICE_PATH, VOLUME_RANK_PATH}
-    assert public_methods == {"fetch", "fetch_volume_rank"}
+    assert kis_http._ALLOWED_PATHS == {
+        TOKEN_PATH,
+        DAILY_PRICE_PATH,
+        VOLUME_RANK_PATH,
+        *(endpoint.path for endpoint in KIS_FUNDAMENTAL_ENDPOINTS.values()),
+    }
+    assert public_methods == {
+        "fetch",
+        "fetch_volume_rank",
+        "fetch_fundamental_payloads",
+    }

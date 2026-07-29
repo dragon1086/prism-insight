@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from uuid import UUID
@@ -18,6 +19,7 @@ from prism_core.data import (
     SecurityId,
 )
 from prism_core.data.providers.dart import DARTFetchResult
+from prism_core.data.providers.kis_fundamentals import KISFundamentalFetchResult
 from prism_core.data.providers.kind import KINDFetchResult, UnavailableKINDAdapter
 
 
@@ -82,6 +84,16 @@ class FMP:
         return self.result
 
 
+class KIS:
+    def __init__(self, events: list[str], result: KISFundamentalFetchResult) -> None:
+        self.events = events
+        self.result = result
+
+    async def fetch(self, **_: object) -> KISFundamentalFetchResult:
+        self.events.append("KIS")
+        return self.result
+
+
 def dart_result(*values: FundamentalObservation) -> DARTFetchResult:
     return DARTFetchResult(
         fundamentals=tuple(values),
@@ -91,6 +103,220 @@ def dart_result(*values: FundamentalObservation) -> DARTFetchResult:
         issues=(() if values else ("NO_PIT_AVAILABLE_DART_FUNDAMENTALS",)),
         call_evidence=(),
     )
+
+
+def kis_result(
+    current: FundamentalObservation, previous: FundamentalObservation
+) -> KISFundamentalFetchResult:
+    return KISFundamentalFetchResult(
+        fundamentals=(previous, current),
+        evidence_items=(),
+        quality=DataQualityStatus.FRESH,
+        issues=(),
+        earnings_current=current.value,
+        earnings_previous=previous.value,
+        earnings_current_period=current.period_end,
+        earnings_previous_period=previous.period_end,
+        available_at=current.timing.available_at,
+        ingested_at=current.timing.ingested_at,
+        capabilities=(),
+        limitations=("KIS_FILING_ACCEPTED_AT_UNAVAILABLE",),
+    )
+
+
+@pytest.mark.asyncio
+async def test_kis_is_primary_and_dart_kind_are_optional_verification_not_fmp_replacement() -> None:
+    events: list[str] = []
+    current = fundamental(date(2025, 12, 31), "12", 2).model_copy(
+        update={"provider": "KIS", "provider_symbol": "214450"}
+    )
+    previous = fundamental(date(2024, 12, 31), "10", 1).model_copy(
+        update={"provider": "KIS", "provider_symbol": "214450"}
+    )
+    composer = KREvidenceComposer(
+        stock_code="214450",
+        security_id=STOCK_ID,
+        kis=KIS(events, kis_result(current, previous)),
+        dart=DART(events, dart_result()),
+        kind=UnavailableKINDAdapter(),
+        fmp=FMP(events, LiveKREvidenceError("must not be called")),
+    )
+
+    income = await composer.fetch(symbol="214450.KS", as_of=AS_OF)
+
+    assert events == ["KIS", "DART"]
+    assert income.provider == "KIS"
+    assert income.current == Decimal("12")
+    assert income.previous == Decimal("10")
+    assert composer.last_result is not None
+    assert composer.last_result.selected_provider == "KIS"
+    assert composer.last_result.fundamentals == (previous, current)
+
+
+@pytest.mark.asyncio
+async def test_valid_kis_earnings_remain_primary_when_unrelated_capability_is_partial() -> None:
+    events: list[str] = []
+    current = fundamental(date(2025, 12, 31), "12", 2).model_copy(
+        update={"provider": "KIS", "provider_symbol": "214450"}
+    )
+    previous = fundamental(date(2024, 12, 31), "10", 1).model_copy(
+        update={"provider": "KIS", "provider_symbol": "214450"}
+    )
+    partial = replace(
+        kis_result(current, previous),
+        quality=DataQualityStatus.PARTIAL,
+        issues=("KIS_CAPABILITY_UNAVAILABLE:growth_ratio",),
+    )
+    composer = KREvidenceComposer(
+        stock_code="214450",
+        security_id=STOCK_ID,
+        kis=KIS(events, partial),
+        dart=DART(events, dart_result()),
+        kind=UnavailableKINDAdapter(),
+        fmp=None,
+    )
+
+    income = await composer.fetch(symbol="214450.KS", as_of=AS_OF)
+
+    assert income.provider == "KIS"
+    assert composer.last_result is not None
+    assert composer.last_result.selected_provider == "KIS"
+    assert composer.last_result.quality is DataQualityStatus.PARTIAL
+    assert "KIS_CAPABILITY_UNAVAILABLE:growth_ratio" in composer.last_result.issues
+
+
+@pytest.mark.asyncio
+async def test_conflicting_optional_dart_supplement_does_not_veto_fresh_kis_core() -> None:
+    events: list[str] = []
+    kis_current = fundamental(date(2025, 12, 31), "12", 2).model_copy(
+        update={"provider": "KIS", "provider_symbol": "214450"}
+    )
+    kis_previous = fundamental(date(2024, 12, 31), "10", 1).model_copy(
+        update={"provider": "KIS", "provider_symbol": "214450"}
+    )
+    dart_first = fundamental(date(2025, 12, 31), "11", 2)
+    dart_conflict = fundamental(date(2025, 12, 31), "13", 3)
+    composer = KREvidenceComposer(
+        stock_code="214450",
+        security_id=STOCK_ID,
+        kis=KIS(events, kis_result(kis_current, kis_previous)),
+        dart=DART(events, dart_result(dart_first, dart_conflict)),
+        kind=UnavailableKINDAdapter(),
+        fmp=None,
+    )
+
+    income = await composer.fetch(symbol="214450.KS", as_of=AS_OF)
+
+    assert income.provider == "KIS"
+    assert composer.last_result is not None
+    assert "SEVERE_OFFICIAL_FILING_CONFLICT" not in composer.last_result.hard_vetoes
+    assert "DART_SUPPLEMENT_CONFLICT" in composer.last_result.issues
+
+
+@pytest.mark.asyncio
+async def test_partial_kis_bundle_keeps_valid_earnings_but_reports_capability_gap() -> None:
+    events: list[str] = []
+    current = fundamental(date(2025, 12, 31), "12", 2).model_copy(
+        update={"provider": "KIS", "provider_symbol": "214450"}
+    )
+    previous = fundamental(date(2024, 12, 31), "10", 1).model_copy(
+        update={"provider": "KIS", "provider_symbol": "214450"}
+    )
+    partial = replace(
+        kis_result(current, previous),
+        quality=DataQualityStatus.PARTIAL,
+        issues=("KIS_CAPABILITY_UNAVAILABLE:growth_ratio",),
+    )
+    composer = KREvidenceComposer(
+        stock_code="214450",
+        security_id=STOCK_ID,
+        kis=KIS(events, partial),
+        dart=DART(events, dart_result()),
+        kind=UnavailableKINDAdapter(),
+        fmp=FMP(events, LiveKREvidenceError("must not be called")),
+    )
+
+    income = await composer.fetch(symbol="214450.KS", as_of=AS_OF)
+
+    assert events == ["KIS", "DART"]
+    assert income.provider == "KIS"
+    assert composer.last_result is not None
+    assert composer.last_result.quality is DataQualityStatus.PARTIAL
+    assert "KIS_CAPABILITY_UNAVAILABLE:growth_ratio" in composer.last_result.issues
+
+
+@pytest.mark.asyncio
+async def test_missing_kis_core_uses_explicit_gap_and_does_not_silently_substitute_fmp() -> None:
+    events: list[str] = []
+    unavailable = KISFundamentalFetchResult(
+        fundamentals=(),
+        evidence_items=(),
+        quality=DataQualityStatus.PARTIAL,
+        issues=("KIS_COMPARABLE_ANNUAL_EARNINGS_UNAVAILABLE",),
+        earnings_current=None,
+        earnings_previous=None,
+        earnings_current_period=None,
+        earnings_previous_period=None,
+        available_at=AS_OF,
+        ingested_at=AS_OF,
+        capabilities=(),
+        limitations=("KIS_FILING_ACCEPTED_AT_UNAVAILABLE",),
+    )
+    composer = KREvidenceComposer(
+        stock_code="214450",
+        security_id=STOCK_ID,
+        kis=KIS(events, unavailable),
+        dart=DART(events, dart_result()),
+        kind=UnavailableKINDAdapter(),
+        fmp=FMP(events, FMPIncomeEvidence(
+            current=Decimal("99"),
+            previous=Decimal("1"),
+            current_period="2025-12-31",
+            current_accepted_at=AS_OF,
+            current_unit="KRW",
+            previous_period="2024-12-31",
+            previous_accepted_at=AS_OF,
+            previous_unit="KRW",
+            ingested_at=AS_OF,
+            response_hash="f" * 64,
+        )),
+    )
+
+    with pytest.raises(SupplementalFundamentalsUnavailable):
+        await composer.fetch(symbol="214450.KS", as_of=AS_OF)
+
+    assert events == ["KIS", "DART"]
+    assert composer.last_result is not None
+    assert "KIS_COMPARABLE_ANNUAL_EARNINGS_UNAVAILABLE" in composer.last_result.issues
+    assert "MISSING_SUPPLEMENTAL_FUNDAMENTALS" in composer.last_result.hard_vetoes
+
+
+@pytest.mark.asyncio
+async def test_inconsistent_kis_earnings_result_fails_closed_with_named_gap() -> None:
+    events: list[str] = []
+    current = fundamental(date(2025, 12, 31), "12", 2).model_copy(
+        update={"provider": "KIS", "provider_symbol": "214450"}
+    )
+    previous = fundamental(date(2024, 12, 31), "10", 1).model_copy(
+        update={"provider": "KIS", "provider_symbol": "214450"}
+    )
+    inconsistent = replace(kis_result(current, previous), fundamentals=())
+    composer = KREvidenceComposer(
+        stock_code="214450",
+        security_id=STOCK_ID,
+        kis=KIS(events, inconsistent),
+        dart=DART(events, dart_result()),
+        kind=UnavailableKINDAdapter(),
+        fmp=FMP(events, LiveKREvidenceError("must not be called")),
+    )
+
+    with pytest.raises(SupplementalFundamentalsUnavailable):
+        await composer.fetch(symbol="214450.KS", as_of=AS_OF)
+
+    assert events == ["KIS", "DART"]
+    assert composer.last_result is not None
+    assert "KIS_FUNDAMENTAL_RESULT_INCONSISTENT" in composer.last_result.issues
+    assert "MISSING_SUPPLEMENTAL_FUNDAMENTALS" in composer.last_result.hard_vetoes
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -13,6 +14,9 @@ from prism_app.product_composition import phase1_quality_gate
 from prism_app.product_uat import load_pit_evidence
 from prism_core.data import DataQualityStatus
 from prism_core.data.quality import QualityDisposition
+from prism_core.data.providers.dart import UnavailableDARTAdapter
+from prism_core.data.providers.kind import UnavailableKINDAdapter
+from prism_core.data.providers.kis_fundamentals import KISFundamentalProvider
 from prism_core.data.providers.kis_http import KISMarketDataTransportError
 from prism_core.strategies.contracts import Market, StrategyId
 
@@ -254,6 +258,41 @@ def test_kr_symbol_derives_optional_fmp_normalization_symbol_and_missing_key_is_
         }
     )
     assert us_decision.disposition is QualityDisposition.REJECT
+
+
+def test_product_uat_composes_kis_primary_fundamentals_without_fmp() -> None:
+    transport = cast(Any, SimpleNamespace())
+    provider = KISFundamentalProvider(transport=transport)
+
+    cascade = product_uat._kis_primary_evidence_composer(
+        stock_code="214450",
+        security_id=product_uat._security_id("214450"),
+        provider=provider,
+        dart=UnavailableDARTAdapter(),
+        kind=UnavailableKINDAdapter(),
+    )
+
+    assert cascade._kis is provider
+    assert cascade._fmp is None
+
+
+@pytest.mark.asyncio
+async def test_live_product_fixes_decision_as_of_after_kis_fundamental_prefetch() -> None:
+    events: list[str] = []
+
+    class Provider:
+        async def prefetch(self, *, stock_code: str) -> None:
+            events.append(f"prefetch:{stock_code}")
+
+    decision_as_of = await product_uat._prefetch_before_live_decision(
+        provider=cast(Any, Provider()),
+        stock_code="214450",
+        requested_as_of=None,
+        clock=lambda: events.append("clock") or NOW,
+    )
+
+    assert events == ["prefetch:214450", "clock"]
+    assert decision_as_of == NOW
 
 
 def test_product_failure_payload_reports_sanitized_kis_stage_and_status_only() -> None:

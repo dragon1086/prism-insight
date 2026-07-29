@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Context, Decimal, ROUND_HALF_EVEN, ROUND_UP, localcontext
+from types import SimpleNamespace
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -11,6 +12,7 @@ import pytest
 
 from prism_app.live_kr_evidence import (
     FMPHTTPJSONResponse,
+    FMPIncomeEvidence,
     FMPIncomeStatementClient,
     LiveKREvidenceProvider,
     LiveUSEvidenceProvider,
@@ -20,7 +22,12 @@ from prism_app.live_kr_evidence import (
 )
 from prism_app.kr_evidence_composer import KREvidenceComposer
 from prism_app.market_snapshot_composer import KRProductSnapshotComposer
-from prism_core.data import DataQualityStatus, SecurityId
+from prism_core.data import (
+    DataQualityStatus,
+    FundamentalObservation,
+    ObservationTime,
+    SecurityId,
+)
 from prism_core.data.providers.agentnews_models import AgentNewsBoard, AgentNewsSnapshot
 from prism_core.data.providers.kis import KISInstrument, KISMarketDataProvider, ProviderPayload
 from prism_core.data.providers.dart import UnavailableDARTAdapter
@@ -380,6 +387,85 @@ async def test_kr_missing_fmp_continues_with_technical_market_evidence_and_repor
     assert "MISSING_SUPPLEMENTAL_FUNDAMENTALS" in product_snapshot.source_payload[
         "entry_vetoes"
     ]
+
+
+@pytest.mark.asyncio
+async def test_live_kr_evidence_preserves_all_kis_primary_fundamentals() -> None:
+    provider_clock = iter((AS_OF, AS_OF + timedelta(seconds=1)))
+    market = await KISMarketDataProvider(
+        transport=PriceTransport(),
+        instruments=(
+            KISInstrument(security_id=STOCK_ID, kis_symbol="005930"),
+            KISInstrument(security_id=BENCHMARK_ID, kis_symbol="069500"),
+        ),
+        clock=lambda: next(provider_clock),
+    ).fetch_snapshot(security_ids=(STOCK_ID, BENCHMARK_ID), as_of_date=AS_OF)
+    board = AgentNewsSnapshot.from_markdown(
+        board=AgentNewsBoard.KR,
+        url=AgentNewsBoard.KR.url,
+        raw_body=b'---\nupdated: "2026-07-26T10:00:00+00:00"\n---\n# KR context\n',
+        fetched_at=AS_OF.astimezone(UTC),
+        freshness_window=timedelta(hours=24),
+    )
+    profitability = FundamentalObservation(
+        security_id=STOCK_ID,
+        provider="KIS",
+        provider_symbol="005930",
+        source_record_id="KIS:finance:profit_ratio:005930:2025-12-31:roe",
+        source_hash="a" * 64,
+        revision=0,
+        timing=ObservationTime(
+            observed_at=datetime(2025, 12, 31, tzinfo=KST),
+            available_at=AS_OF - timedelta(minutes=1),
+            ingested_at=AS_OF - timedelta(minutes=1),
+            as_of_date=AS_OF,
+        ),
+        quality=DataQualityStatus.FRESH,
+        metric="profitability.return_on_equity_percent",
+        period_start=date(2025, 12, 31),
+        period_end=date(2025, 12, 31),
+        value=Decimal("12.5"),
+        unit="PERCENT",
+    )
+
+    class KISIncome:
+        last_result = SimpleNamespace(
+            selected_provider="KIS",
+            fundamentals=(profitability,),
+            evidence_items=(),
+            hard_vetoes=(),
+            quality=DataQualityStatus.PARTIAL,
+        )
+
+        async def fetch(self, **_: object) -> FMPIncomeEvidence:
+            return FMPIncomeEvidence(
+                current=Decimal("12"),
+                previous=Decimal("10"),
+                current_period="2025-12-31",
+                current_accepted_at=AS_OF - timedelta(minutes=1),
+                current_unit="KIS_REPORTED_AMOUNT",
+                previous_period="2024-12-31",
+                previous_accepted_at=AS_OF - timedelta(minutes=1),
+                previous_unit="KIS_REPORTED_AMOUNT",
+                ingested_at=AS_OF - timedelta(minutes=1),
+                response_hash="b" * 64,
+                provider="KIS",
+                provider_symbol="005930",
+            )
+
+    evidence = await LiveKREvidenceProvider(
+        agentnews_fetcher=lambda: board,
+        fundamentals_client=KISIncome(),
+        fmp_symbol="005930.KS",
+    ).build(
+        snapshot=market,
+        stock_id=STOCK_ID,
+        benchmark_id=BENCHMARK_ID,
+        as_of=AS_OF,
+    )
+
+    assert evidence.fundamentals == (profitability,)
+    assert evidence.field_quality["fundamental"] is DataQualityStatus.PARTIAL
 
 
 @pytest.mark.asyncio

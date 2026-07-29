@@ -606,6 +606,12 @@ class LiveKREvidenceProvider:
                 if fundamental_age_days > 550
                 else DataQualityStatus.FRESH
             )
+            if (
+                cascade is not None
+                and cascade.quality is DataQualityStatus.PARTIAL
+                and fundamental_quality is DataQualityStatus.FRESH
+            ):
+                fundamental_quality = DataQualityStatus.PARTIAL
         fundamentals, evidence_items = _normalized_scenario_records(
             income=income,
             board=board,
@@ -614,7 +620,7 @@ class LiveKREvidenceProvider:
             as_of=as_of,
             fundamental_quality=fundamental_quality,
         )
-        if cascade is not None and cascade.selected_provider == "DART":
+        if cascade is not None and cascade.selected_provider in {"DART", "KIS"}:
             fundamentals = tuple(cascade.fundamentals)
             evidence_items = (
                 *(

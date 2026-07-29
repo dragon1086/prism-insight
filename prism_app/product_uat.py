@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
@@ -19,13 +19,14 @@ from prism_app.live_kr_evidence import (
     LiveKREvidenceError,
     LiveKREvidenceProvider,
 )
-from prism_app.kr_evidence_composer import KREvidenceComposer
+from prism_app.kr_evidence_composer import DARTPort, KINDPort, KREvidenceComposer
 from prism_app.oauth_llm import ChatGPTOAuthRuntime
 from prism_app.product_composition import ProductRunConfig, run_kr_shadow_product
 from prism_app.daily_pipeline import PersistedDailyAnalysis
 from prism_core.data.contracts import SecurityId
 from prism_core.data.quality import QualityDisposition
 from prism_core.data.providers.kis import KISInstrument, KISMarketDataProvider
+from prism_core.data.providers.kis_fundamentals import KISFundamentalProvider
 from prism_core.data.providers.kis_http import (
     KISHTTPTransport,
     KISMarketDataCredentials,
@@ -200,6 +201,44 @@ def _optional_fmp_client() -> FMPIncomeStatementClient | None:
         return None
 
 
+def _kis_primary_evidence_composer(
+    *,
+    stock_code: str,
+    security_id: SecurityId,
+    provider: KISFundamentalProvider,
+    dart: DARTPort,
+    kind: KINDPort,
+) -> KREvidenceComposer:
+    """Compose the normal KR path without loading an FMP fallback."""
+
+    return KREvidenceComposer(
+        stock_code=stock_code,
+        security_id=security_id,
+        kis=provider,
+        dart=dart,
+        kind=kind,
+        fmp=None,
+    )
+
+
+async def _prefetch_before_live_decision(
+    *,
+    provider: KISFundamentalProvider,
+    stock_code: str,
+    requested_as_of: datetime | None,
+    clock: Callable[[], datetime],
+) -> datetime:
+    """Freeze live receipts, then establish the PIT decision instant."""
+
+    if requested_as_of is not None:
+        return requested_as_of
+    await provider.prefetch(stock_code=stock_code)
+    decision_as_of = clock()
+    if decision_as_of.tzinfo is None or decision_as_of.utcoffset() is None:
+        raise ValueError("live decision clock must be timezone-aware")
+    return decision_as_of
+
+
 def _product_status(disposition: QualityDisposition) -> str:
     return {
         QualityDisposition.ACCEPT: "PERSISTED_READBACK_VERIFIED",
@@ -249,6 +288,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         composer_kwargs["evidence"] = evidence
         agentnews_results: list[Any] = []
         fundamentals = None
+        fundamental_transport = None
         cascade = None
     else:
         agentnews = AgentNewsProvider()
@@ -259,13 +299,30 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             agentnews_results.append(fetch_result)
             return fetch_result.snapshot
 
-        fundamentals = _optional_fmp_client()
-        cascade = KREvidenceComposer(
+        fundamentals = None
+        fundamental_transport = KISHTTPTransport(
+            credentials=credentials,
+            symbols=(),
+            timeout_seconds=15.0,
+            max_response_bytes=1_000_000,
+            min_request_interval_seconds=0.1,
+            token_cache=SecureFileKISTokenCache(args.kis_token_cache),
+        )
+        fundamental_provider = KISFundamentalProvider(
+            transport=fundamental_transport
+        )
+        as_of = await _prefetch_before_live_decision(
+            provider=fundamental_provider,
+            stock_code=args.symbol,
+            requested_as_of=args.as_of,
+            clock=lambda: datetime.now(tz=KST),
+        )
+        cascade = _kis_primary_evidence_composer(
             stock_code=args.symbol,
             security_id=stock_id,
+            provider=fundamental_provider,
             dart=UnavailableDARTAdapter(),
             kind=UnavailableKINDAdapter(),
-            fmp=fundamentals,
         )
         composer_kwargs["evidence_provider"] = LiveKREvidenceProvider(
             agentnews_fetcher=fetch_agentnews_kr,
@@ -353,6 +410,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 for item in transport.evidence
             ],
             "fmp_fundamentals": () if fundamentals is None else fundamentals.evidence,
+            "kis_fundamentals": (
+                () if fundamental_transport is None else fundamental_transport.evidence
+            ),
             "kr_official_cascade": (
                 ()
                 if cascade is None or cascade.last_result is None

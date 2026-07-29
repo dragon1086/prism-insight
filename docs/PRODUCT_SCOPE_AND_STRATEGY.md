@@ -565,6 +565,7 @@ LLM은 어떤 환경에서도 시스템 프롬프트, 정책 코드, 리스크 �
 | 데이터 | 1차 권고 | 보조·2차 후보 | 주의점 |
 |---|---|---|---|
 | 한국 시세·거래량 | KIS | LS증권 | 호출한도·정정·장중/종가 시각 |
+| 한국 재무·비율·이익추세 | KIS read-only finance endpoints | DART 접수시각 기반 검증/명시적 fallback | KIS 응답 수신시각 이전으로 available_at을 소급하지 않으며 단위·revision 한계를 표시; [KIS 계약·runbook](KIS_KR_FUNDAMENTALS.md) |
 | 한국 계좌 읽기 | KIS | LS증권 | 1차 계좌 조회·주문 호출 금지, Phase 2 별도 승인 |
 | 한국 기업 공시 | DART | KIND/KRX | 발표·접수 가능 시각 저장 |
 | 한국 상장·기업행위 | KRX/KIND 또는 KIS 제공 범위 | LS증권 | 티커 이력·정지·분할·배당 |
@@ -586,6 +587,7 @@ LLM은 어떤 환경에서도 시스템 프롬프트, 정책 코드, 리스크 �
 - provider 장애와 source disagreement 기록
 - fallback 데이터는 source와 quality를 명확히 표시
 - fallback이 primary를 조용히 덮어쓰지 않음
+- KIS fundamental port가 활성화된 KR 경로는 KIS 필수 metric 부재를 FMP로 조용히 대체하지 않음
 - 데이터 저장·캐시·재배포 라이선스 확인
 
 ---

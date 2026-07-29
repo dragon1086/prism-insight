@@ -73,6 +73,16 @@ from prism_core.data.providers.kis import (
     ProviderRateLimitError,
     ProviderTimeoutError,
 )
+from prism_core.data.providers.kis_fundamentals import (
+    KIS_FUNDAMENTAL_ENDPOINTS,
+    KISFundamentalCapabilityEvidence,
+    KISFundamentalCapabilityStatus,
+    KISFundamentalCategory,
+    KISFundamentalFetchResult,
+    KISFundamentalPayload,
+    KISFundamentalProvider,
+    normalize_kis_fundamentals,
+)
 from prism_core.data.providers.kis_http import (
     AioHttpKISRequester,
     KISHTTPResponse,
@@ -177,6 +187,13 @@ __all__ = [
     "load_fmp_api_key_from_env",
     "SECOfficialEvidenceTransport",
     "KISFetchResult",
+    "KIS_FUNDAMENTAL_ENDPOINTS",
+    "KISFundamentalCapabilityEvidence",
+    "KISFundamentalCapabilityStatus",
+    "KISFundamentalCategory",
+    "KISFundamentalFetchResult",
+    "KISFundamentalPayload",
+    "KISFundamentalProvider",
     "KISHTTPResponse",
     "KISHTTPTransport",
     "KISInstrument",
@@ -184,6 +201,7 @@ __all__ = [
     "KISMarketDataProvider",
     "KISMarketDataTransportError",
     "KISRequestEvidence",
+    "normalize_kis_fundamentals",
     "KINDFetchResult",
     "KINDPort",
     "KROfficialCapability",
