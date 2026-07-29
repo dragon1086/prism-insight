@@ -42,7 +42,8 @@
 
 ## 이미지 목록
 
-기존 9장을 모두 교체하고 4장을 추가해 총 13장으로 구성한다.
+기존 9장을 모두 교체하고 5장을 추가해 총 14장으로 구성한다. CAN SLIM은
+큰 글자와 충분한 여백을 지키기 위해 두 장으로 나눈다.
 
 ### 0. `full-pipeline-overview.png`
 
@@ -188,16 +189,23 @@ US는 2번이 기관 보유 분석으로 바뀐다고 표시한다. KRX/yfinance
 
 스크리닝의 여섯 트리거, 후보 재점수, 시장 체제는 이 그림에서 반복하지 않는다.
 
-### 7. `can-slim-seven-questions.png`
+### 7. `can-slim-company-supply-checks.png`
 
-제목: `CAN SLIM: 좋은 성장주를 찾는 7가지 질문`
+제목: `CAN SLIM ① 기업 성장과 수급을 묻는 네 가지 질문`
 
-각 글자를 일반 투자자의 질문으로 바꾼다.
+첫 장은 C·A·N·S를 일반 투자자의 질문으로 바꾼다.
 
 - C: 최근 분기 실적이 좋아지고 있는가
 - A: 여러 해에 걸쳐 이익이 성장했는가
 - N: 신제품, 새 사업, 새로운 상승 계기가 있는가
 - S: 거래량과 주식 수급이 상승을 뒷받침하는가
+
+### 8. `can-slim-leadership-market-checks.png`
+
+제목: `CAN SLIM ② 주도력·기관·시장 방향을 묻는 세 가지 질문`
+
+둘째 장은 L·I·M을 큰 카드 세 개로 설명한다.
+
 - L: 같은 업종에서 앞서가는 주도주인가
 - I: 기관투자자의 관심과 보유가 뒷받침되는가
 - M: 전체 시장이 주식을 사기에 유리한가
@@ -217,7 +225,7 @@ US는 2번이 기관 보유 분석으로 바뀐다고 표시한다. KRX/yfinance
 “CAN SLIM 전체를 완전히 자동화했다”는 표현은 쓰지 않는다. “일곱 요소를
 모두 조사하지만 코드 강제 수준은 서로 다르다”고 설명한다.
 
-### 8. `entry-gates-overview.png`
+### 9. `entry-gates-overview.png`
 
 제목: `신규 매수: 최종 결정 전에 확인하는 조건`
 
@@ -241,7 +249,7 @@ US는 2번이 기관 보유 분석으로 바뀐다고 표시한다. KRX/yfinance
 현재 매수 프롬프트에는 “다음 기회를 기다리는 관심종목” 기능이 없으므로
 관심·보류를 별도 결과로 그리지 않는다.
 
-### 9. `pyramiding-portfolio-overview.png`
+### 10. `pyramiding-portfolio-overview.png`
 
 제목: `수익 중인 종목을 추가 매수할 때`
 
@@ -260,7 +268,7 @@ US는 2번이 기관 보유 분석으로 바뀐다고 표시한다. KRX/yfinance
 데이터베이스에 보유 건이 여러 행으로 저장될 수 있다는 구현 세부는 문서
 설명으로 돌린다.
 
-### 10. `trading-exit-overview.png`
+### 11. `trading-exit-overview.png`
 
 제목: `언제 팔 것인가: 손실은 짧게, 수익은 오래`
 
@@ -275,7 +283,7 @@ US는 2번이 기관 보유 분석으로 바뀐다고 표시한다. KRX/yfinance
 전환은 그리지 않는다. 피라미딩된 보유 건의 개별 처리 가능성은 문서에서
 설명한다.
 
-### 11. `position-protection-loops.png`
+### 12. `position-protection-loops.png`
 
 제목: `정규 분석 배치와 별도로 움직이는 보호 장치`
 
@@ -294,7 +302,7 @@ US는 2번이 기관 보유 분석으로 바뀐다고 표시한다. KRX/yfinance
 - 미체결 주문 관리는 운영 문서에서도 SHADOW
 - 저장소 `docker/crontab`에는 세 루프가 등록되어 있지 않음
 
-### 12. `feedback-reentry-overview.png`
+### 13. `feedback-reentry-overview.png`
 
 제목: `매매가 끝난 뒤 기록은 다음 판단에 어떻게 쓰이나`
 
@@ -352,15 +360,15 @@ CAN SLIM “구성됨”은 다음 세 수준으로 나눠 판단한다.
 - PNG에는 검색 가능한 텍스트가 없으므로 그림과 동일한 문구를
   `PIPELINE_ARCHITECTURE_ko.md`에도 요약한다.
 - 기존 PNG 아홉 장은 같은 파일명으로 교체한다.
-- 새 PNG 네 장은 위 목록의 새 파일명으로 추가한다.
+- 새 PNG 다섯 장은 위 목록의 새 파일명으로 추가한다.
 
 ## 문서 배치
 
-`PIPELINE_ARCHITECTURE_ko.md`는 13장을 다음 순서로 연결한다.
+`PIPELINE_ARCHITECTURE_ko.md`는 14장을 다음 순서로 연결한다.
 
 1. 전체 개요
 2. 종목 스크리닝 5장
-3. 종목 분석 2장
+3. 종목 분석 3장
 4. 매매 4장
 5. 피드백 1장
 

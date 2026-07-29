@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the existing architecture artwork with 13 large-type, code-audited Korean PNG diagrams and reconnect `PIPELINE_ARCHITECTURE_ko.md` around the four-stage investment story.
+**Goal:** Replace the existing architecture artwork with 14 large-type, code-audited Korean PNG diagrams and reconnect `PIPELINE_ARCHITECTURE_ko.md` around the four-stage investment story.
 
 **Architecture:** A deterministic Pillow renderer owns the shared visual language and all diagram copy. Each diagram is declared as structured cards rather than hand-painted pixels, allowing layout checks and text audits to run without OCR. The Markdown document remains the accessible text counterpart and carries source links and caveats that would make the images too dense.
 
@@ -34,7 +34,7 @@
 
 - [ ] **Step 1: Write renderer contract tests**
 
-Test that `build_diagrams()` returns 13 unique filenames, includes the nine existing filenames and four approved new filenames, and that every diagram has a non-empty title, stage, source list, and 3–6 primary cards.
+Test that `build_diagrams()` returns 14 unique filenames, includes the nine existing filenames and five approved new filenames, and that every diagram has a non-empty title, stage, source list, and 3–6 primary cards.
 
 - [ ] **Step 2: Run the contract test and verify it fails**
 
@@ -65,7 +65,7 @@ Expected: contract tests pass without creating images.
 
 Commit the renderer and its contract tests with Lore trailers.
 
-### Task 2: Encode the 13 audited diagrams
+### Task 2: Encode the 14 audited diagrams
 
 **Files:**
 - Modify: `tools/generate_pipeline_architecture_pngs.py`
@@ -73,7 +73,7 @@ Commit the renderer and its contract tests with Lore trailers.
 
 **Interfaces:**
 - Consumes: the shared renderer from Task 1
-- Produces: structured specifications for all 13 approved images
+- Produces: structured specifications for all 14 approved images
 
 - [ ] **Step 1: Add failing content tests**
 
@@ -98,7 +98,7 @@ Assert prohibited unsupported terms are absent from the relevant diagrams:
 
 - [ ] **Step 3: Add all diagram specifications**
 
-Encode the 13 images and their non-overlapping responsibilities exactly as approved in the design spec:
+Encode the 14 images and their non-overlapping responsibilities exactly as approved in the design spec:
 
 1. four-stage overview
 2. O'Neil M and batch control
@@ -107,12 +107,13 @@ Encode the 13 images and their non-overlapping responsibilities exactly as appro
 5. candidate reranking and context triggers
 6. Market Pulse versus five-state regime
 7. six analysis reports
-8. CAN SLIM seven questions and implementation strength
-9. entry decision layers
-10. pyramiding and portfolio limits
-11. exit priority
-12. independent protection loops
-13. journal, memory, and re-entry
+8. CAN SLIM company-growth and supply checks
+9. CAN SLIM leadership, institutions, and market checks
+10. entry decision layers
+11. pyramiding and portfolio limits
+12. exit priority
+13. independent protection loops
+14. journal, memory, and re-entry
 
 - [ ] **Step 4: Run content tests**
 
@@ -130,7 +131,8 @@ Commit the audited diagram specifications separately from rendered binaries.
 - Replace: `docs/images/architecture/candidate-screening-reranking-overview.png`
 - Replace: `docs/images/architecture/trading-regime-entry-overview.png`
 - Replace: `docs/images/architecture/screening-analysis-deep-dive.png`
-- Create: `docs/images/architecture/can-slim-seven-questions.png`
+- Create: `docs/images/architecture/can-slim-company-supply-checks.png`
+- Create: `docs/images/architecture/can-slim-leadership-market-checks.png`
 - Replace: `docs/images/architecture/entry-gates-overview.png`
 - Replace: `docs/images/architecture/pyramiding-portfolio-overview.png`
 - Replace: `docs/images/architecture/trading-exit-overview.png`
@@ -140,7 +142,7 @@ Commit the audited diagram specifications separately from rendered binaries.
 
 **Interfaces:**
 - Consumes: `render_all()`
-- Produces: 13 RGB PNG files at 1920×1080
+- Produces: 14 RGB PNG files at 1920×1080
 
 - [ ] **Step 1: Add image-output tests**
 
@@ -162,7 +164,7 @@ Create a contact sheet under `/tmp` for visual inspection without adding it to G
 
 - [ ] **Step 5: Inspect every diagram**
 
-Check text clipping, hierarchy, contrast, flow, repeated content, and code claims. Correct the generator and rerender until all 13 pass.
+Check text clipping, hierarchy, contrast, flow, repeated content, and code claims. Correct the generator and rerender until all 14 pass.
 
 - [ ] **Step 6: Commit**
 
@@ -175,7 +177,7 @@ Commit the final PNG assets.
 - Modify: `tests/test_pipeline_architecture_pngs.py`
 
 **Interfaces:**
-- Consumes: 13 final PNG filenames
+- Consumes: 14 final PNG filenames
 - Produces: one ordered Markdown narrative with an accessible text counterpart for every image
 
 - [ ] **Step 1: Add document-link tests**
