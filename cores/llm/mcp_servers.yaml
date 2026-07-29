@@ -22,9 +22,14 @@ servers:
       KAKAO_PW: ${KAKAO_PW}
       KRX_LOGIN_METHOD: ${KRX_LOGIN_METHOD}
   perplexity:
-    command: node
+    # Published from github.com/modelcontextprotocol/servers by Perplexity
+    # (maintainer james.liounis@perplexity.ai). Fetching it removes the need to
+    # build and ship perplexity-ask/dist on every host, which is how the Mac
+    # mini ended up pointing at a path from someone else's machine.
+    command: npx
     args:
-    - perplexity-ask/dist/index.js
+    - -y
+    - server-perplexity-ask
     env:
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY}
   sqlite:
