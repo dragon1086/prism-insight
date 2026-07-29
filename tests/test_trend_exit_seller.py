@@ -378,6 +378,7 @@ def test_gate_fires_when_streak_reaches_n(tmp_db, monkeypatch):
 
 def test_gate_fires_in_close_window_even_at_streak_1(tmp_db, monkeypatch):
     # confirm=2 normally gates streak=1, but TREND_EXIT_CLOSE_WINDOW=true confirms now.
+    # NOTE: cur=98 is a LOSS -> TIER1.5 (damage control), which KEEPS the fast-path.
     _enable(monkeypatch, live=False, confirm=2, close_window=True)
     _seed(tmp_db, [_row(1, "005930", 100.0)])
     calls = []
@@ -387,6 +388,72 @@ def test_gate_fires_in_close_window_even_at_streak_1(tmp_db, monkeypatch):
     summary = asyncio.run(lb.run_market("KR", "run1"))
 
     assert summary["acted"] == 1 and summary["shadow"] == 1
+
+
+# ── TIER3 target take-profit is EXCLUDED from the close-window fast-path ───────
+# Regression: 2026-07-29 INCY. The close-window cron runs every session, so
+# `or CLOSE_WINDOW` made CONFIRM_CHECKS dead for take-profits and sold a winner
+# at streak=0 while it was +11% on the day.
+def _seed_target_hit(db, ma50_strong=False):
+    """Position sitting above its target, below the TIER2 trail line.
+
+    buy 100 / cur 130 / target 120 / peak 132 -> +30%, no TIER1 (profit), no
+    TIER1.5 (profit), no TIER2 (trail = 132*0.95*0.995 = 124.8 < 130).
+    Only TIER3 can fire.
+    """
+    _seed(db, [_row(1, "005930", 100.0, stop_loss=0.0,
+                    target_price=120.0, highest_price=132.0)])
+
+
+def test_tier3_target_is_gated_in_close_window_at_streak_0(tmp_db, monkeypatch):
+    """THE FIX: a take-profit gets no urgency discount from the closing bell."""
+    _enable(monkeypatch, live=False, confirm=2, close_window=True)
+    _seed_target_hit(tmp_db)
+    calls = []
+    trader = FakeTrader({"005930": 130.0}, calls=calls)
+    # ma50=0 -> cannot prove strength -> TIER3 fires (rather than holding).
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls),
+           ma50=0.0, regime="sideways")
+
+    summary = asyncio.run(lb.run_market("KR", "run1"))
+
+    assert summary["signaled"] == 1, "TIER3 must still be recognised as a signal"
+    assert summary["gated"] == 1
+    assert summary["acted"] == 0, "take-profit must not ride the close-window fast-path"
+    assert calls == []
+    assert _inflight(tmp_db) == 0
+
+
+def test_tier3_target_still_sells_once_properly_confirmed(tmp_db, monkeypatch):
+    """The exclusion must DELAY the take-profit, never disable it."""
+    _enable(monkeypatch, live=False, confirm=1, close_window=True)
+    _seed_target_hit(tmp_db)
+    calls = []
+    trader = FakeTrader({"005930": 130.0}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls),
+           ma50=0.0, regime="sideways")
+
+    summary = asyncio.run(lb.run_market("KR", "run1"))
+
+    assert summary["acted"] == 1 and summary["shadow"] == 1
+
+
+def test_strong_stock_at_target_never_signals_in_weak_regime(tmp_db, monkeypatch):
+    """End-to-end INCY: real numbers, wired through the loop's ma50/regime fetch.
+    buy 113.11 / cur 132.07 / target 124.69 / peak 132.43 / 50MA 116, sideways."""
+    _enable(monkeypatch, live=False, confirm=1, close_window=True)
+    _seed(tmp_db, [_row(1, "005930", 113.11, stop_loss=0.0,
+                        target_price=124.69, highest_price=132.43)])
+    calls = []
+    trader = FakeTrader({"005930": 132.07}, calls=calls)
+    _patch(monkeypatch, trader, agent_holder=FakeAgent(calls),
+           ma50=116.0, regime="sideways")
+
+    summary = asyncio.run(lb.run_market("KR", "run1"))
+
+    assert summary["signaled"] == 0, "strong stock at target must not signal at all"
+    assert summary["acted"] == 0
+    assert calls == []
 
 
 # ── SHADOW vs LIVE ─────────────────────────────────────────────────────────────
