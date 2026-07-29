@@ -126,16 +126,31 @@ def test_missing_summary_still_renders_a_header():
     assert "삼성전자" in text
 
 
-def test_follow_up_item_titles_parse_back_into_commands():
-    """A tap sends the title, so every title must be a command we accept."""
+def test_follow_up_item_titles_are_commands_that_actually_work():
+    """A tap sends the title, so every title must be a *live* command.
+
+    This card used to offer 평가 and 순위, neither of which was implemented, so
+    a card headed "이어서 해보기" answered "아직 준비 중인 기능입니다" twice.
+    """
+
+    from kakao_bot.application.command_service import IMPLEMENTED_COMMANDS
 
     response = render_report_delivery(delivery("analysis_result", result_payload()))
     items = outputs(response)[1]["listCard"]["items"]
 
-    kinds = {parse_command(item["title"]).kind for item in items}
-    assert CommandKind.UNKNOWN not in kinds
-    assert CommandKind.EVALUATE in kinds
-    assert CommandKind.LEADERBOARD in kinds
+    assert items, "the card must offer at least one next step"
+    for item in items:
+        kind = parse_command(item["title"]).kind
+        assert kind in IMPLEMENTED_COMMANDS, f"{item['title']!r} goes nowhere"
+
+
+def test_a_mention_button_lets_the_user_ask_about_another_stock():
+    """Fills the bot mention into the input box; typing a name is all that's left."""
+
+    response = render_report_delivery(delivery("analysis_result", result_payload()))
+    buttons = outputs(response)[1]["listCard"]["buttons"]
+
+    assert any(button["action"] == "mention" for button in buttons)
 
 
 def test_failed_analysis_explains_and_still_offers_follow_ups():

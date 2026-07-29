@@ -34,13 +34,32 @@ _USER_LIMIT = "오늘 요청 한도를 모두 사용했습니다. 내일 다시 
 _ROOM_LIMIT = "이 채팅방의 오늘 요청 한도를 모두 사용했습니다."
 _NEED_TICKER = "종목을 함께 알려주세요. 예: 리포트 삼성전자"
 _NOT_READY = "아직 준비 중인 기능입니다."
-_HELP = (
-    "📊 PRISM 사용법\n"
-    " · 리포트 삼성전자 — 종목 분석 리포트\n"
-    " · 리포트 AAPL — 미국 종목 리포트\n"
-    " · 평가 삼성전자 70000 6 — 평단가·보유개월 기준 평가\n"
-    " · 순위 — 예측 리더보드"
-)
+
+# Single source of truth for what actually works. Help text and every card that
+# offers a follow-up read this, because they drifted apart once: the card said
+# "이어서 해보기" and both of its items answered "아직 준비 중인 기능입니다".
+# Add a kind here only when it is wired end to end.
+IMPLEMENTED_COMMANDS = frozenset({CommandKind.REPORT, CommandKind.HELP})
+
+_HELP_LINES = {
+    CommandKind.REPORT: (
+        " · 리포트 삼성전자 — 종목 분석 리포트\n"
+        " · 리포트 AAPL — 미국 종목은 티커로"
+    ),
+    CommandKind.EVALUATE: " · 평가 삼성전자 70000 6 — 평단가·보유개월 기준 평가",
+    CommandKind.LEADERBOARD: " · 순위 — 예측 리더보드",
+}
+
+
+def help_text() -> str:
+    """Describe only the commands that are actually wired up."""
+
+    lines = [
+        text
+        for kind, text in _HELP_LINES.items()
+        if kind in IMPLEMENTED_COMMANDS
+    ]
+    return "📊 PRISM 사용법\n" + "\n".join(lines)
 
 
 class CommandOutcomeKind(Enum):
@@ -97,9 +116,9 @@ class CommandService:
             return CommandOutcome(kind=CommandOutcomeKind.IGNORED)
 
         if command.kind is CommandKind.HELP:
-            return CommandOutcome(kind=CommandOutcomeKind.HELP, message=_HELP)
+            return CommandOutcome(kind=CommandOutcomeKind.HELP, message=help_text())
 
-        if command.kind is not CommandKind.REPORT:
+        if command.kind not in IMPLEMENTED_COMMANDS:
             return CommandOutcome(
                 kind=CommandOutcomeKind.REJECTED,
                 message=_NOT_READY,

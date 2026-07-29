@@ -16,7 +16,12 @@ from kakao_bot.adapters.kakao.skill_response import (
     simple_text_output,
     skill_response,
 )
-from kakao_bot.application.command_service import CommandOutcome, CommandOutcomeKind
+from kakao_bot.application.command_parser import CommandKind
+from kakao_bot.application.command_service import (
+    IMPLEMENTED_COMMANDS,
+    CommandOutcome,
+    CommandOutcomeKind,
+)
 
 _EXAMPLE_TICKER = "삼성전자"
 
@@ -39,28 +44,40 @@ def render_command_outcome(outcome: CommandOutcome) -> dict[str, object]:
 
 
 def _help_card() -> dict[str, object]:
-    """Item titles are commands, because tapping one sends its title."""
+    """Item titles are commands, because tapping one sends its title.
 
-    return list_card_output(
-        header_title="바로 해보기",
-        items=[
-            {
-                "title": f"리포트 {_EXAMPLE_TICKER}",
-                "description": "종목 분석 리포트를 생성합니다",
-                "action": "message",
-                "messageText": f"리포트 {_EXAMPLE_TICKER}",
-            },
-            {
-                "title": "리포트 AAPL",
-                "description": "미국 종목은 티커로 입력합니다",
-                "action": "message",
-                "messageText": "리포트 AAPL",
-            },
+    Only advertises what is wired up: a first impression of "아직 준비 중인
+    기능입니다" is worse than a shorter list.
+    """
+
+    items: list[dict[str, object]] = [
+        {
+            "title": f"리포트 {_EXAMPLE_TICKER}",
+            "description": "종목 분석 리포트를 생성합니다",
+            "action": "message",
+            "messageText": f"리포트 {_EXAMPLE_TICKER}",
+        },
+        {
+            "title": "리포트 AAPL",
+            "description": "미국 종목은 티커로 입력합니다",
+            "action": "message",
+            "messageText": "리포트 AAPL",
+        },
+    ]
+    if CommandKind.LEADERBOARD in IMPLEMENTED_COMMANDS:
+        items.append(
             {
                 "title": "순위",
                 "description": "예측 리더보드를 봅니다",
                 "action": "message",
                 "messageText": "순위",
-            },
-        ],
+            }
+        )
+
+    return list_card_output(
+        header_title="바로 해보기",
+        items=items,
+        # Fills the bot mention into the input box, so asking about a stock we
+        # did not list costs a tap plus a name instead of remembering syntax.
+        buttons=[{"action": "mention", "label": "🔍 종목 검색"}],
     )

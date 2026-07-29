@@ -53,10 +53,15 @@ def _signal_campaign(payload: Mapping[str, object]) -> dict[str, object]:
         rationale = raw_candidate.get("rationale")
         if isinstance(rationale, str) and rationale.strip():
             descriptions.append(rationale.strip())
+        descriptions.append(ticker)
+        # The title is what a tap sends, so it has to read as a command. This
+        # card is the daily touchpoint; without an action it was a dead end.
         items.append(
             {
-                "title": f"{company_name} ({ticker})",
-                "description": " · ".join(descriptions) or "분석 리포트 생성 완료",
+                "title": f"{company_name} 리포트",
+                "description": " · ".join(descriptions),
+                "action": "message",
+                "messageText": f"리포트 {company_name}",
             }
         )
 
