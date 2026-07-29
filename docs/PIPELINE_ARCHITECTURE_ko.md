@@ -1,215 +1,314 @@
-# PRISM-INSIGHT 4단계 파이프라인 아키텍처
+# PRISM-INSIGHT 4단계 투자 파이프라인
 
-> 종목 스크리닝 → 분석 → 매매 → 피드백의 흐름을 코드와 함께 읽는 설계 문서입니다.
+> 종목 스크리닝 → 종목 분석 → 매매 → 피드백의 흐름을 일반 투자자의 눈높이에서 설명합니다.
 
-**검증 기준**: 2026-07-29
-**범위**: KR/US 공통 개념과 현재 구현 차이
+- 검증 기준: 2026-07-30
+- 범위: 한국·미국 시장의 공통 흐름과 현재 코드·프롬프트
+- 이미지 형식: 밝은 배경의 1920×1080 PNG
 
-## 문서 읽는 법
+## 먼저 알아둘 점
 
-이 문서의 그림은 시스템을 이해하기 위한 개념도입니다. 그림에 적힌 “게이트 수”, “시장 체제 이름”, “항상 순차” 같은 표현이 반드시 하나의 함수나 enum과 일대일 대응하는 것은 아닙니다. 각 그림 아래의 **코드 대조 결과**가 실제 구현 계약입니다.
+이 문서의 그림은 단순한 아이디어 그림이 아닙니다. 각 그림의 문구를 코드,
+프롬프트, 테스트와 대조했습니다. 다만 실제 주문 여부는 서버의 환경 변수와
+스케줄 등록에 따라 달라질 수 있습니다. 그림 아래의 설명은 이 운영상 차이까지
+포함한 현재 구현 기준입니다.
 
-정확한 수치와 기능 플래그는 다음 문서를 우선합니다.
+정확한 수치나 세부 규칙을 더 확인하려면 다음 문서를 함께 보십시오.
 
 - [후보 선별·배치 알고리즘](TRIGGER_BATCH_ALGORITHMS.md)
 - [AI 에이전트 시스템](CLAUDE_AGENTS_ko.md)
 - [매매일지·메모리](TRADING_JOURNAL.md)
+- [기능 플래그와 운영 상태](FEATURE_FLAGS.md)
 
-## 전체 개요
+## 전체 흐름
 
-![PRISM-INSIGHT 전체 파이프라인](images/architecture/full-pipeline-overview.png)
+![PRISM-INSIGHT 투자 과정 한눈에 보기](images/architecture/full-pipeline-overview.png)
 
-개념적으로는 시장 상태를 관측한 뒤 후보를 고르고, 종목 보고서를 만들고, 보유 종목 매도와 신규 매수를 처리하고, 결과를 DB·일지·메모리에 남깁니다.
+시스템은 먼저 시장이 매수에 유리한지 살피고 종목 후보를 찾습니다. 후보마다
+가격·수급·실적·사업·뉴스·시장 환경을 조사한 뒤 매수나 매도를 판단합니다.
+거래가 끝나면 결과와 이유를 기록해 다음 판단의 참고자료로 돌려보냅니다.
 
-코드 대조 결과:
-
-- 최상위 KR/US 오케스트레이터는 거시 조사 → 선별 → 종목별 보고서 → PDF/텔레그램 → 추적·매매 순으로 진행합니다.
-- 한 종목의 주요 보고서 섹션은 KR에서 기본 순차 실행입니다. 다만 `PRISM_PARALLEL_REPORT=true` 경로가 존재하고, US는 뉴스 조사를 데이터 기반 섹션과 겹쳐 실행합니다.
-- hard stop, trend exit, 미체결 조정은 메인 분석 배치와 독립적으로 실행될 수 있는 보호 루프입니다.
-- Telegram, Redis/GCP, KIS 주문은 모두 설정에 따라 선택적입니다.
+한국과 미국의 세부 데이터는 다르지만 이 네 단계의 큰 흐름은 같습니다.
+텔레그램 전송, 실계좌 주문, 보호 도구는 설정에 따라 켜거나 끌 수 있습니다.
 
 ---
 
 ## 1단계. 종목 스크리닝
 
-### 1.1 Market Pulse가 배치 실행 여부를 결정
+### 1.1 윌리엄 오닐의 M: 지금 시장이 매수에 유리한가
 
-![Market Pulse와 배치 제어](images/architecture/market-pulse-batch-control-overview.png)
+![윌리엄 오닐의 M과 오전·오후 배치 제어](images/architecture/market-pulse-batch-control-overview.png)
 
-Market Pulse는 `UPTREND`, `UNDER_PRESSURE`, `CORRECTION`의 3상태를 사용합니다. 선별용 5상태 체제와 별개입니다.
+여기서 Market Pulse는 막연한 “시장 변동성”이 아닙니다. CAN SLIM의
+M(Market Direction), 즉 **전체 시장이 주식을 사기에 유리한 방향인지**를
+대표지수의 종가와 거래량으로 판단한 값입니다.
 
-코드 대조 결과:
+현재 코드는 시장을 세 상태로 나눕니다.
 
-- 구현: `cores/market_pulse.py`, `cores/regime_policy.py`
-- 기본은 `MARKET_PULSE_MODE=shadow`이므로 상태를 기록해도 배치를 막지 않습니다.
-- `live`에서 `CORRECTION`이면 KR/US 오전 배치를 쉬고 오후 배치는 유지합니다.
-- `UNDER_PRESSURE`는 현재 “선택 실행”이 아니라 오전·오후 모두 실행합니다.
-- 그림의 “비용이 큰 배치 휴지”는 개념 설명이며, 실제 정책은 시장·세션 표로 정의됩니다.
-- 보유 포지션 보호 루프는 배치 휴지와 독립적입니다.
+| 코드 상태 | 쉬운 표현 | 현재 배치 정책 |
+|---|---|---|
+| `UPTREND` | 상승 흐름 | 오전·오후 모두 실행 |
+| `UNDER_PRESSURE` | 매도 압력 증가 | 오전·오후 모두 실행 |
+| `CORRECTION` | 시장 조정 | 오전은 쉬고 오후는 실행 |
 
-### 1.2 시장·업종 컨텍스트와 후보 재점수
+`MARKET_PULSE_MODE`의 코드 기본값은 `shadow`입니다. 이때는 상태를 계산하고
+기록하지만 배치를 막지 않습니다. 운영 문서에는 `live`로 기록되어 있으므로
+실제 서버에서는 배포 환경의 설정값을 확인해야 합니다. 계산에 실패하면
+`UNKNOWN`으로 남기고 배치를 계속하는 `fail-open` 방식입니다.
 
-![후보 선별과 재점수](images/architecture/candidate-screening-reranking-overview.png)
+코드 근거: `cores/market_pulse.py`, `cores/regime_policy.py`
 
-선별은 다섯 층으로 이해할 수 있습니다.
+### 1.2 분산일은 무엇이고, 어떻게 시장 상태를 바꾸나
 
-1. 시장 체제와 주도 업종을 계산·조사합니다.
-2. 오전/오후 및 추가 트리거가 신호를 냅니다.
-3. 유동성·가격구조·재무·기술 필터로 후보군을 만듭니다.
-4. agent fit, 상대강도, 과열·확장도를 체제별 가중치로 재점수합니다.
-5. 탑다운 업종 후보와 바텀업 종목 후보를 통합합니다.
+![분산일의 계산과 시장 상태 전환](images/architecture/distribution-day-state-transitions.png)
 
-코드 대조 결과:
+분산일은 대표지수가 전일보다 0.2% 이상 내리고 거래량은 늘어난 날입니다.
+기관이 실제로 팔았다고 확정하는 자료는 아니며, **큰 매도 압력이 있었을
+가능성을 세는 시장 신호**입니다.
 
-- 구현: `trigger_batch.py`, `prism-us/us_trigger_batch.py`
-- 결정론적 선별 체제는 `strong_bull`, `moderate_bull`, `sideways`, `moderate_bear`, `strong_bear`입니다.
-- 그림 오른쪽의 약세장 조정은 하나의 함수가 아니라 체제별 가중치, 추가 트리거 활성, 탑다운 슬롯, 선택적 최소점수 플래그의 합성 결과입니다.
-- 기본 최종 후보는 최대 3개입니다. 후보 부족, `REGIME_WEAK_NO_TOPDOWN`, post-FTD pilot 때문에 2개 또는 1개가 될 수 있습니다.
-- 실제 재점수 가중치는 [후보 선별·배치 알고리즘](TRIGGER_BATCH_ALGORITHMS.md#73-체제별-혼합-가중치)을 따릅니다.
+현재 구현은 최근 25거래일만 봅니다. 분산일 0~3개는 상승 흐름, 4~5개는
+매도 압력 증가, 6개 이상은 시장 조정입니다. 특정 분산일의 종가보다 이후
+지수가 5% 오르면 그 분산일은 집계에서 빠집니다.
 
-### 1.3 선별 체제가 매수까지 전달되는 방식
+두 가지 예외도 중요합니다.
 
-![시장 체제와 진입 제어](images/architecture/trading-regime-entry-overview.png)
+- 분산일이 적어도 기준 고점에서 10%를 **초과해** 하락하면 시장 조정입니다.
+- 조정에서 벗어나려면 반등 4일 차 이후 1.25% 이상 오르며 거래량도 늘어나는
+  상승 확인일이 나오거나, 조정 전 고점을 종가로 회복해야 합니다.
 
-그림은 시장 체제 → 후보 게이트 → AI 진입 판단 → 포트폴리오 제한 → 최종 결정을 한 장에 연결합니다.
+거래량 자료가 없을 때 상승 확인일은 가격 조건만으로 판단하는 폴백이 있습니다.
 
-코드 대조 결과:
+코드 근거: `cores/market_pulse.py`, `tests/test_market_pulse.py`
 
-- 그림의 `PARABOLIC/STRONG BULL/MODERATE BULL/SIDEWAYS/BEAR`는 개념적 분류입니다.
-- 실제 선별 체제는 5상태 소문자 키이며, Market Pulse는 또 다른 3상태 체계입니다.
-- 피라미딩 경로에서는 `parabolic` 표현도 사용되므로 모든 파일이 하나의 enum을 공유한다고 가정하면 안 됩니다.
-- 시장 체제는 재점수 가중치, 탑다운/바텀업 슬롯, 선택적 최소 매수점수, 피라미딩 허용에 영향을 줍니다.
-- “게이트 3개”는 이해를 위한 묶음이며 실제 코드는 후보·점수·재진입·섹터·슬롯·주문 상태 등을 여러 위치에서 확인합니다.
+### 1.3 오전 3개, 오후 3개의 서로 다른 발견 조건
+
+![오전·오후 여섯 가지 종목 발견 조건](images/architecture/screening-six-triggers-overview.png)
+
+여섯 조건은 같은 점수표에 이름만 바꾼 것이 아닙니다. 거래량 급증, 갭 상승,
+시가총액 대비 자금 집중, 하루 상승률, 장 마감 무렵의 강세, 거래량이 늘어난
+횡보처럼 서로 다른 움직임을 찾습니다.
+
+한국 종목의 공통 바닥 조건은 거래대금 100억 원 이상입니다. 오전 거래량
+급증은 전일 대비 30% 이상, 오후 거래량 횡보는 50% 이상 증가를 요구합니다.
+하루 상승률 상위 조건은 3~15% 범위만 받기 때문에 이미 지나치게 폭등한
+종목은 제외합니다.
+
+미국도 같은 여섯 갈래를 사용하지만 달러 거래대금 등 시장별 기준값은
+`prism-us/us_trigger_batch.py`에 따로 있습니다.
+
+코드 근거: `trigger_batch.py`, `prism-us/us_trigger_batch.py`
+
+### 1.4 후보를 다시 줄 세워 최대 3종목으로 압축
+
+![후보 수집과 체제별 재정렬](images/architecture/candidate-screening-reranking-overview.png)
+
+기본 여섯 조건 외에 주도 업종 대표주와 역발상 가치주가 상황에 따라 후보에
+추가됩니다. 이후 다음 네 점수를 시장 체제에 맞는 비중으로 합칩니다.
+
+1. 처음 종목을 발견한 조건의 점수
+2. 예상 수익과 감수할 손실의 비율
+3. 후보군 안에서의 상대강도
+4. 20일 이동평균선에서 얼마나 멀리 과열됐는지
+
+고전적인 다개월 오닐식 RS 등급은 `RS_RATING_ENABLED`가 꺼져 있으면 관찰
+결과만 남깁니다. 이 경우 기본 상대강도 점수는 후보군의 최근 수익률을 서로
+비교한 값입니다.
+
+최종 상한은 보통 3종목입니다. 주도 업종 안의 강자와 업종과 무관한 개별
+강자에게 시장 체제별로 자리를 나눕니다. post-FTD 파일럿이 켜진 직후에는
+배치당 1종목으로 더 줄어들 수 있습니다.
+
+코드 근거: `trigger_batch.py`, `prism-us/us_trigger_batch.py`,
+`cores/rs_rating.py`
+
+### 1.5 이름이 비슷한 두 시장 판단을 구분하기
+
+![오닐식 시장 매수 환경과 스크리닝용 시장 체제의 차이](images/architecture/trading-regime-entry-overview.png)
+
+PRISM에는 서로 목적이 다른 시장 분류가 두 개 있습니다.
+
+- **오닐식 시장 매수 환경 3상태**는 오전·오후 분석을 실행할지 정합니다.
+- **스크리닝용 시장 체제 5상태**는 후보 점수 비중과 주도 업종 자리를 정합니다.
+
+5상태는 `strong_bull`, `moderate_bull`, `sideways`, `moderate_bear`,
+`strong_bear`입니다. `parabolic`은 이 공통 분류의 여섯 번째 상태가 아니라,
+강한 상승장에 추가 조건을 붙여 매수 프롬프트와 피라미딩 경로에서 사용하는
+표현입니다.
+
+코드 근거: `cores/regime_policy.py`, `trigger_batch.py`,
+`cores/agents/trading_agents.py`
 
 ---
 
 ## 2단계. 종목 분석
 
-![선별과 6개 분석 심화](images/architecture/screening-analysis-deep-dive.png)
+### 2.1 한 종목을 여섯 방향에서 조사
 
-최종 후보는 종목별 보고서 파이프라인으로 넘어갑니다.
+![선별된 종목의 여섯 가지 분석 방향](images/architecture/screening-analysis-deep-dive.png)
 
-KR 기본 섹션:
+최종 후보마다 주가·거래량, 투자 주체, 실적·재무, 사업·경쟁력, 뉴스·주도주,
+시장·업종 보고서를 만듭니다. 그다음 투자전략과 핵심 요약을 조립합니다.
 
-1. 주가·거래량
-2. 투자자 수급
-3. 기업 현황
-4. 기업 개요
-5. 최근 뉴스·동종 주도주
-6. 시장 지수
+한국은 기관·외국인·개인 매매를 보고, 미국은 기관 보유 현황을 중심으로
+봅니다. 뉴스 분석은 대상 종목만 검색하지 않고 같은 업종의 주도주 2~3개와
+업종 흐름도 조사합니다. 이 조사는 분석의 질적 근거이며, 발견 단계의 점수에
+숫자로 바로 더해지는 항목은 아닙니다.
 
-US는 투자자 수급 대신 기관 보유 분석을 사용합니다. 기본 섹션이 끝나면 공유 `investment_strategy_agent`와 `summary_agent`를 인라인으로 생성해 투자전략과 핵심 요약을 조립합니다.
+KRX와 yfinance로 미리 모은 데이터를 우선 사용하고 부족한 부분을 웹 조사로
+보완합니다. 기본적으로 보고서 순서를 보존하지만, 한국의 선택적 병렬 경로와
+미국의 일부 겹침 실행도 있으므로 “항상 전부 순차 실행”이라고 보면 안 됩니다.
 
-코드 대조 결과:
+코드 근거: `cores/analysis.py`, `cores/report_generation.py`,
+`cores/agents/`, `prism-us/cores/us_analysis.py`
 
-- KR 구현: `cores/analysis.py`, `cores/report_generation.py`, `cores/agents/`
-- US 구현: `prism-us/cores/us_analysis.py`, `prism-us/cores/agents/`
-- KRX/yfinance 사전 수집 데이터를 우선하고 필요할 때 MCP를 폴백으로 사용합니다.
-- 뉴스 에이전트는 대상 종목의 최근 뉴스뿐 아니라 같은 업종 주도주 2~3개와 업종 추세를 조사합니다.
-- 이 주도주 조사는 매수 판단의 질적 근거이며 트리거 재점수에 곧바로 합산되는 숫자는 아닙니다.
-- 그림의 “최대 3종목”은 기본 상한입니다. 체제 pilot과 후보 부족 예외가 있습니다.
-- 그림의 “실패 시 폴백”은 섹션별 오류 처리·플레이스홀더·캐시/MCP 폴백을 묶어 표현한 것입니다.
+### 2.2 CAN SLIM을 모두 구현했나
 
-분석 실행 타입과 모델은 [AI 에이전트 시스템](CLAUDE_AGENTS_ko.md)을 참조하십시오.
+![CAN SLIM의 C A N S 구현 범위](images/architecture/can-slim-company-supply-checks.png)
+
+![CAN SLIM의 L I M 구현 범위](images/architecture/can-slim-leadership-market-checks.png)
+
+결론부터 말하면 **C·A·N·S·L·I·M 일곱 요소는 한국과 미국의 분석·매수
+프롬프트에 모두 들어 있습니다.** 그러나 일곱 요소가 모두 똑같이 강한 코드
+규칙으로 구현된 것은 아닙니다.
+
+| 요소 | 현재 구현 | 강제 정도와 주의점 |
+|---|---|---|
+| C 최근 분기 | 분기 매출·이익과 실적 개선 조사 | AI 보고서 중심. 고전적 EPS 증가율은 하드 게이트가 아님 |
+| A 여러 해의 성장 | 연간 이익·매출 성장과 ROE 조사 | AI 판단 중심. 고전적 연간 EPS 기준을 코드로 강제하지 않음 |
+| N 새로운 계기 | 뉴스, 새 사업·제품, 신고가와 상승 동력 조사 | 여러 보고서를 조합한 AI 판단 |
+| S 주식 수급 | 여섯 발견 조건, 거래량, 투자 주체 보고서 | 계산 로직과 보고서가 함께 있어 비교적 강함 |
+| L 주도주 | 주도 업종, 후보군 상대강도, 선택적 다개월 RS | 상대강도 계산은 강함. 고전적 RS 등급은 기능 플래그 대상 |
+| I 기관 관심 | 한국 수급·미국 기관 보유 자료 | 시장별 자료 차이가 크고 없을 수 있어 AI 판단 비중이 큼 |
+| M 시장 방향 | 5상태 시장 체제와 오닐식 Market Pulse | 계산 결과가 매수 프롬프트와 배치 정책에 직접 연결됨 |
+
+따라서 “CAN SLIM의 질문을 모두 다룬다”는 말은 맞지만, “오닐의 모든 수치
+기준을 결정론적 코드로 완전히 자동화했다”는 말은 맞지 않습니다.
+
+프롬프트 근거: `cores/agents/trading_agents.py`,
+`prism-us/cores/agents/trading_agents.py`
 
 ---
 
 ## 3단계. 매매
 
-### 3.1 신규 진입 판단
+### 3.1 신규 매수 전에 차례로 확인하는 것
 
-![신규 진입 게이트](images/architecture/entry-gates-overview.png)
+![신규 매수 판단과 코드 안전장치](images/architecture/entry-gates-overview.png)
 
-분석 보고서와 시장·포트폴리오·과거 거래 데이터를 함께 사용해 `진입`, `관심/보류`, `미진입`을 결정합니다.
+AI는 여섯 분석 보고서, 종목 추세, 시장 체제·분산일, 과거 매매 경험을 받아
+CAN SLIM 관점의 매수 시나리오를 만듭니다. 이후 코드는 최소점수, 하락 추세,
+재진입 제한, 동일 종목 추가 매수, 업종 집중, 포트폴리오 자리, 진행 중 주문
+등을 다시 확인합니다.
 
-코드 대조 결과:
+중요한 점은 최종 결과가 `Enter` 또는 `No Entry`라는 것입니다. 현재 매수
+프롬프트는 별도의 “관심종목으로 대기” 결과를 요구하지 않습니다.
 
-- 그림의 7개 항목은 설명용 분류입니다. 실제 구현은 하나의 7단계 함수가 아닙니다.
-- LLM 시나리오가 펀더멘털, 추세, 시장 맥락, 위험, 과거 교훈을 평가합니다.
-- 결정론적 코드는 `Enter` 여부, 최소점수, 섹터 다양성, 재진입 쿨다운, 피라미딩, 미체결 상태, 포트폴리오 슬롯을 별도로 검사합니다.
-- KR은 `buy_score`, US는 저널 조정이 반영된 `adjusted_score`를 최종 점수 게이트에 사용합니다.
-- 재진입 쿨다운은 기본 SHADOW이며 live 플래그를 켜야 차단됩니다.
-- 실제 모든 게이트가 “적합/보류/부적합” 3값을 동일하게 반환하는 것은 아닙니다. 최종 UI 의미를 도식화한 것입니다.
+재진입 쿨다운은 기본적으로 관찰 모드입니다. `REENTRY_COOLDOWN_LIVE=true`일
+때만 실제 차단 규칙이 됩니다.
 
-### 3.2 피라미딩과 포트폴리오
+코드 근거: `cores/agents/trading_agents.py`, `stock_tracking_agent.py`,
+`reentry_cooldown.py`
 
-![피라미딩과 포트폴리오 제어](images/architecture/pyramiding-portfolio-overview.png)
+### 3.2 추가 매수는 수익 중인 강한 종목에만
 
-코드 대조 결과:
+![피라미딩과 포트폴리오 자리 제한](images/architecture/pyramiding-portfolio-overview.png)
 
-- 기본 최대 보유 행/슬롯은 10개입니다.
-- 동일 섹터 최대 3개, 보유 4개 이상이면 섹터 비중 30% 제한을 사용합니다.
-- 동일 종목 추가 진입은 별도 행으로 저장됩니다.
-- 추가 진입은 `strong_bull` 또는 `parabolic`, 기존 평균 수익률 5% 이상, 기존 행 3개 미만을 요구합니다.
-- post-FTD pilot에서는 피라미딩을 동결합니다.
-- 그림의 “수익 중·강세 시장·업종 제한”보다 실제 게이트가 더 구체적입니다.
-- KR/US의 섹터 제한과 추가 진입 처리에는 세부 차이가 있으므로 [후보 선별·배치 알고리즘](TRIGGER_BATCH_ALGORITHMS.md#11-피라미딩)을 우선합니다.
+피라미딩은 손실 종목의 평균 매수가를 낮추는 물타기가 아닙니다. 다음 조건을
+모두 통과한 보유 종목에만 추가 진입을 허용합니다.
 
-### 3.3 매도 제어
+- 시장 표현이 `strong_bull` 또는 `parabolic`
+- 기존 보유 행의 단순 평균 매수가 대비 현재가 수익률 5% 이상
+- 동일 종목 보유 행이 3개 미만, 즉 최초 1회와 추가 최대 2회
+- 일반 매수 경로의 점수·업종·포트폴리오 조건도 별도로 통과
 
-![O'Neil 매도 제어](images/architecture/trading-exit-overview.png)
+기본 포트폴리오 상한은 10행입니다. 동일 업종은 최대 3행이고, 전체 보유가
+4행 이상이면 업종 비중 30% 제한도 적용합니다. post-FTD 파일럿의 첫
+5거래일에는 신규 진입을 배치당 1종목으로 줄이고 피라미딩은 동결합니다.
 
-매도는 결정론적 위험 규칙과 AI 보조 판단을 결합합니다.
+코드 근거: `tracking/helpers.py`, `stock_tracking_agent.py`,
+`cores/regime_policy.py`
 
-코드 대조 결과:
+### 3.3 매도는 급한 위험부터 처리
 
-- 공용 폴백: `cores/oneil_fallback.py`
-- 독립 hard stop: `tools/hardstop_seller.py`
-- 독립 trend exit: `tools/trend_exit_seller.py`
-- 핵심 결정론 규칙에는 시나리오 손절, 절대 -7%, 손실 중 MA50 이탈, +5% 이후 트레일링, 약세 체제 목표가 청산이 포함됩니다.
-- hard stop과 trend exit의 live 강제는 기본 비활성/SHADOW이며, 피라미딩 행은 독립 루프에서 제외됩니다.
-- 그림의 “기업 이벤트 → 기계 손절 → 목표가 → 트레일링 → 추세” 순서는 우선순위 개념입니다. 실제로는 여러 규칙이 함께 평가되고 배치/독립 루프마다 소유 범위가 다릅니다.
-- 감사 기록은 규칙 신호, AI 입력·판단, 최종 결정과 상태 변화를 재현할 수 있도록 남깁니다.
+![손절·추세 이탈·AI 판단을 합친 매도 흐름](images/architecture/trading-exit-overview.png)
+
+기업의 중대 사건과 즉시 손절 사유를 먼저 확인하고, 그 밖의 경우에는
+추세·실적·뉴스·시장 변화를 함께 봅니다. 주요 결정론적 보호 규칙은 다음과
+같습니다.
+
+- 시나리오 손절가 또는 매수가 대비 절대 -7% 도달
+- 손실 중 50일 이동평균선 이탈
+- 수익이 난 뒤 고점 대비 추적 손절
+- 약한 시장에서 목표가 도달
+
+모든 규칙이 하나의 함수에서 위 순서대로만 실행되는 것은 아닙니다. 메인
+추적 배치와 독립 보호 도구가 규칙을 나누어 소유하며, 연속 일봉 확인이나
+종가 확인 같은 조건도 도구마다 다릅니다.
+
+코드 근거: `cores/oneil_fallback.py`, `stock_tracking_agent.py`,
+`tools/trend_exit_seller.py`
+
+### 3.4 독립 보호 도구는 “코드가 있다”와 “운영 중이다”가 다르다
+
+![정규 분석 배치와 별도 보호 도구](images/architecture/position-protection-loops.png)
+
+긴급 손절, 추세 이탈 매도, 미체결 주문 관리는 정규 종목 분석과 별도
+프로세스로 실행할 수 있습니다. 따라서 시장 조정으로 오전 분석이 쉬더라도
+독립적으로 작동하도록 설계됐습니다.
+
+그러나 저장소의 `docker/crontab`에는 이 세 도구의 스케줄이 등록되어 있지
+않습니다. 코드 기본값은 긴급 손절과 추세 이탈 매도가 `SHADOW`, 미체결
+관리가 `SHADOW`입니다. 운영 문서는 앞의 두 기능을 `LIVE`로 기록하고 있어
+실제 배포 서버의 cron과 환경 변수를 확인하지 않고 “항상 작동한다”고
+단정해서는 안 됩니다.
+
+코드 근거: `tools/hardstop_seller.py`, `tools/trend_exit_seller.py`,
+`tools/fill_chaser.py`
 
 ---
 
 ## 4단계. 피드백
 
-![매매일지, 피드백, 재진입 제한](images/architecture/feedback-reentry-overview.png)
+### 4.1 거래 기록이 다음 판단으로 돌아오는 과정
 
-완료된 거래는 다음 판단에 사용할 수 있는 근거로 바뀝니다.
+![매매일지·교훈·재진입 제한의 피드백 흐름](images/architecture/feedback-reentry-overview.png)
 
-```text
-청산 기록
-  -> 일지·회고
-  -> 교훈/원칙
-  -> 직관/패턴 압축
-  -> 다음 후보 프롬프트
-  -> 점수 조정 + 재진입 쿨다운
-```
+거래가 끝나면 매수·매도 가격, 수익률, 진입 근거, 청산 이유와 당시 상황을
+저장합니다. 매매일지 에이전트는 계획과 실제 결과를 비교하고 잘한 점,
+개선할 점, 반복되는 교훈을 정리합니다. 새 후보를 판단할 때 관련된 과거
+경험을 찾아 매수·매도 프롬프트에 참고자료로 제공합니다.
 
-코드 대조 결과:
+이 과정은 자율 강화학습이 아닙니다. 시스템이 스스로 프롬프트나 주문 규칙을
+수정해 배포하지 않습니다. 현재 데이터에 과거 경험을 덧붙여 다시 판단하며,
+규칙 변경은 사람의 검토와 배포가 필요합니다.
 
-- 구현: `tracking/journal.py`, `tracking/compression.py`, `reentry_cooldown.py` 및 US mirror
-- KR pending-exit은 `CLOSED` 후 outbox와 `exit_intent_id` 멱등성을 사용합니다.
-- US 일지는 매도 트랜잭션 커밋 후 생성하지만 동일한 outbox 계약은 없습니다.
-- 원칙은 새 일지에서 즉시 추출될 수 있고, 직관은 압축 단계에서 생성·갱신됩니다.
-- 최근 동일 종목 청산은 프롬프트 경고, 48시간 점수 패널티, 선택적 live 쿨다운에 반영됩니다.
-- 재진입 쿨다운은 기본적으로 기록·관찰(SHADOW)되며 `REENTRY_COOLDOWN_LIVE=true`일 때 강제됩니다.
-- 그림이 명시하듯 자율 강화학습이 아닙니다. 사전 정의 규칙과 LLM 문맥 제공을 개선하는 피드백 루프입니다.
-- 공유 DB의 KR/US market 격리와 `supporting_trades`/`supporting_count`에는 현재 알려진 구현 위험이 있습니다. 자세한 내용은 [매매일지 문서](TRADING_JOURNAL.md#8-알려진-구현-제약)를 참조하십시오.
+최근 손실 매도 종목은 경과 시간과 반복 손절 이력을 확인해 성급한 재매수를
+막을 수 있습니다. 다만 재진입 쿨다운은 기능 설정에 따라 관찰만 하거나
+실제로 차단합니다.
+
+한국은 pending exit, `CLOSED`, outbox와 `exit_intent_id`를 이용한 멱등성
+보호가 있습니다. 미국 일지는 매도 트랜잭션이 확정된 뒤 생성되지만 동일한
+outbox 계약은 없습니다. 공유 DB의 시장 구분과 일부 교훈 집계에는 알려진
+제약이 있으므로 자세한 내용은
+[매매일지 문서의 구현 제약](TRADING_JOURNAL.md#8-알려진-구현-제약)을
+참조하십시오.
+
+코드 근거: `tracking/journal.py`, `tracking/compression.py`,
+`cores/agents/trading_journal_agent.py`, `reentry_cooldown.py`
 
 ---
 
 ## 단계별 진실 원천
 
-| 단계 | 우선 읽을 코드 | 상세 문서 |
+| 단계 | 우선 확인할 코드 | 상세 문서 |
 |---|---|---|
-| 스크리닝 | `trigger_batch.py`, `prism-us/us_trigger_batch.py`, `cores/market_pulse.py`, `cores/regime_policy.py` | [TRIGGER_BATCH_ALGORITHMS.md](TRIGGER_BATCH_ALGORITHMS.md) |
-| 분석 | `cores/analysis.py`, `cores/report_generation.py`, `prism-us/cores/us_analysis.py` | [CLAUDE_AGENTS_ko.md](CLAUDE_AGENTS_ko.md) |
-| 매매 | `stock_tracking_enhanced_agent.py`, `prism-us/us_stock_tracking_agent.py`, `cores/oneil_fallback.py` | [TRIGGER_BATCH_ALGORITHMS.md](TRIGGER_BATCH_ALGORITHMS.md#10-신규-진입-게이트) |
-| 피드백 | `tracking/journal.py`, `tracking/compression.py`, `reentry_cooldown.py` | [TRADING_JOURNAL.md](TRADING_JOURNAL.md) |
+| 종목 스크리닝 | `trigger_batch.py`, `prism-us/us_trigger_batch.py`, `cores/market_pulse.py`, `cores/regime_policy.py` | [후보 선별·배치 알고리즘](TRIGGER_BATCH_ALGORITHMS.md) |
+| 종목 분석 | `cores/analysis.py`, `cores/agents/`, `prism-us/cores/us_analysis.py` | [AI 에이전트 시스템](CLAUDE_AGENTS_ko.md) |
+| 매매 | `stock_tracking_agent.py`, `prism-us/us_stock_tracking_agent.py`, `cores/oneil_fallback.py`, `tools/*seller.py` | [후보 선별·배치 알고리즘의 진입·매도 부분](TRIGGER_BATCH_ALGORITHMS.md#10-신규-진입-게이트) |
+| 피드백 | `tracking/journal.py`, `tracking/compression.py`, `reentry_cooldown.py` | [매매일지·메모리](TRADING_JOURNAL.md) |
 
-## 이미지 검증 요약
-
-| 이미지 | 판정 | 반드시 함께 읽을 보정 |
-|---|---|---|
-| 전체 파이프라인 | 단계 수준 정확 | KR 선택적 병렬·US hybrid, 독립 보호 루프 |
-| Market Pulse | 개념 정확 | 실제 `CORRECTION`은 오전만 휴지, 기본 SHADOW |
-| 후보 재점수 | 개념 정확 | 체제별 실제 가중치·RS 플래그·최대 3 예외 |
-| 선별·분석 심화 | 대체로 정확 | US 섹션 차이, 주도주 조사는 질적 근거 |
-| 체제→매수 | 개념 정확 | 5상태와 Pulse 3상태를 혼동하지 않기 |
-| 신규 진입 | 범주 설명용 | 실제 단일 7게이트 구현은 없음 |
-| 피라미딩 | 핵심 정확 | 5%·3행 미만·허용 체제·pilot 동결 추가 |
-| 매도 | 우선순위 설명용 | 배치와 독립 루프의 소유 규칙 차이 |
-| 피드백 | 개념 정확 | 기본 SHADOW, KR/US 멱등성·압축 차이 |
+그림의 문구를 수정할 때는
+`tools/generate_pipeline_architecture_pngs.py`의 텍스트 명세를 먼저
+바꾸고 `tests/test_pipeline_architecture_pngs.py`를 통과시킨 뒤 PNG를 다시
+생성하십시오. 이렇게 해야 그림과 코드 설명이 서로 어긋나는 일을 줄일 수
+있습니다.
