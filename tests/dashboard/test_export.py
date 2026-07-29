@@ -132,7 +132,16 @@ def _research_connection() -> sqlite3.Connection:
             (
                 snapshot_id, f"run-{suffix}", strategy, "1.0.0", "KR",
                 "security-kr", "snap-kr", f"feature-{suffix}", "v1",
-                f"score-{suffix}", "v1", json.dumps([f"e-{suffix}"]), "{}",
+                f"score-{suffix}", f"SHADOW_SCORE_V1.{strategy}",
+                json.dumps([f"e-{suffix}"]),
+                json.dumps(
+                    {
+                        "quant_score": {
+                            "total_score": "67.500000",
+                            "components": {f"{suffix}_component": "67.500000"},
+                        }
+                    }
+                ),
                 "FRESH", "ACCEPT", timing, timing, timing, timing, f"h-{suffix}",
             ),
         )
@@ -249,6 +258,11 @@ def test_export_separates_authoritative_phase1_sections_and_pit_boundary() -> No
     }
     assert [item["symbol"] for item in payload["research"]["daily_leaders"]] == ["005930"]
     assert payload["research"]["swing_v1_proposals"][0]["strategy_id"] == "SWING_V1"
+    assert payload["research"]["swing_v1_proposals"][0]["quant_score"] == {
+        "score_version": "SHADOW_SCORE_V1.SWING_V1",
+        "total_score": "67.500000",
+        "components": {"swing_component": "67.500000"},
+    }
     assert payload["research"]["trend_v1_proposals"][0]["strategy_id"] == "TREND_V1"
     assert payload["research"]["swing_v1_proposals"][0]["scenario_state"] == "INVALID_PROPOSAL"
     assert payload["research"]["scenario_evidence_falsifiers"] == []
@@ -274,6 +288,43 @@ def test_export_separates_authoritative_phase1_sections_and_pit_boundary() -> No
     assert _walk_keys(payload).isdisjoint(
         {"account", "account_summary", "real_portfolio", "real_trading", "broker", "order_intent"}
     )
+
+
+def test_export_reads_legacy_score_version_and_values_without_reinterpretation() -> None:
+    research = _research_connection()
+    research.execute(
+        "UPDATE decision_snapshots SET quant_score_version = ?, snapshot_json = ? "
+        "WHERE strategy_id = 'SWING_V1'",
+        (
+            "swing-score.shadow.v1",
+            json.dumps(
+                {
+                    "quant_score": {
+                        "total_score": "42.125000",
+                        "components": {
+                            "swing_v1.price_momentum_5d": "35.000000",
+                            "swing_v1.regime_compatibility": "52.812500",
+                        },
+                    }
+                }
+            ),
+        ),
+    )
+
+    score = DashboardExporter(
+        research, _paper_connection(), _ops_connection()
+    ).build(as_of=AS_OF, generated_at=AS_OF)["research"]["swing_v1_proposals"][0][
+        "quant_score"
+    ]
+
+    assert score == {
+        "score_version": "swing-score.shadow.v1",
+        "total_score": "42.125000",
+        "components": {
+            "swing_v1.price_momentum_5d": "35.000000",
+            "swing_v1.regime_compatibility": "52.812500",
+        },
+    }
 
 
 def test_rejected_proposal_is_exported_as_invalid_without_inventing_no_entry() -> None:

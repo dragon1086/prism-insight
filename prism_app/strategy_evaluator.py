@@ -311,6 +311,16 @@ class StructuredLLMStrategyEvaluator:
                 "scenario_complete": scenario.complete,
                 "scenario_reasons": list(scenario.reasons),
                 "scenario": dict(scenario.scenario),
+                "quant_score": {
+                    "score_version": strategy_input.quant_score.score_version,
+                    "total_score": format(
+                        strategy_input.quant_score.total_score, "f"
+                    ),
+                    "components": {
+                        item.name: format(item.score, "f")
+                        for item in strategy_input.quant_score.components
+                    },
+                },
                 "summary": (
                     "Validated SHADOW proposal"
                     if status is ProposalValidationStatus.ACCEPTED

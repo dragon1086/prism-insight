@@ -18,10 +18,11 @@ TREND_V1 = StrategyDefinition(
         template_id="trend_v1.entry.v1",
         required_feature_names=(
             "trend_v1.price_above_200d",
+            "trend_v1.average_volume_20d_shares",
+            "trend_v1.distance_below_52_week_high_percent",
             "trend_v1.moving_average_alignment",
             "trend_v1.relative_strength_60d",
             "trend_v1.earnings_trend",
-            "trend_v1.industry_leadership",
             "trend_v1.regime_compatibility",
         ),
         threshold_names=(

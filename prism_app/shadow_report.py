@@ -143,6 +143,8 @@ def render_shadow_report(analysis: PersistedDailyAnalysis) -> str:
         public_reasons = tuple(
             item for item in reasons if isinstance(item, str) and item.strip()
         ) if isinstance(reasons, (tuple, list)) else ()
+        quant_score = payload.get("quant_score")
+        quant_score = quant_score if isinstance(quant_score, Mapping) else {}
         lines.extend(
             (
                 f"#### {strategy.strategy_id.value} ({strategy.strategy_version.value})",
@@ -152,6 +154,10 @@ def render_shadow_report(analysis: PersistedDailyAnalysis) -> str:
                 f"- 시나리오 완결: `{scenario_complete is True}`",
                 f"- 프롬프트 버전: `{payload.get('prompt_version', 'UNAVAILABLE')}`",
                 f"- 검증기 버전: `{payload.get('validator_version', 'UNAVAILABLE')}`",
+                f"- 결정론 점수 버전: `{quant_score.get('score_version', 'UNAVAILABLE')}`",
+                f"- 결정론 점수: `{quant_score.get('total_score', 'UNAVAILABLE')}`",
+                "- 점수 구성: "
+                + _display_json(quant_score.get("components", {})),
                 f"- 근거 참조 수: `{len(strategy.evidence_refs)}`",
             )
         )

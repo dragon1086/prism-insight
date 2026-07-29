@@ -21,7 +21,8 @@ SWING_V1 = StrategyDefinition(
             "swing_v1.relative_strength_20d",
             "swing_v1.volume_expansion_20d",
             "swing_v1.atr_percent_14d",
-            "swing_v1.catalyst_recency_sessions",
+            "swing_v1.average_volume_20d_shares",
+            "swing_v1.breakout_distance_20d_percent",
             "swing_v1.regime_compatibility",
         ),
         threshold_names=(

@@ -230,44 +230,77 @@ class QuantFeatureService:
 
         with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
             if strategy.strategy_id is StrategyId.SWING_V1:
+                if len(closes) < 21:
+                    raise FeatureComputationRejected(
+                        "SWING_V1 requires 21 completed sessions for 20-session features"
+                    )
+                price_return_5d = percent_change(closes, 5)
+                benchmark_excess_return_20d = relative_strength(
+                    closes, benchmark_closes, 20
+                )
+                volume_expansion_20d = volume_expansion(volumes)
+                average_volume_20d = sum(volumes[-20:], Decimal("0")) / Decimal("20")
+                prior_resistance_20d = max(highs[-21:-1])
+                breakout_distance_20d = (
+                    closes[-1] / prior_resistance_20d - Decimal("1")
+                ) * Decimal("100")
                 values = {
                     "swing_v1.atr_percent_14d": atr_percent(highs, lows, closes),
                     "swing_v1.average_dollar_volume_20d": average_dollar_volume(
                         closes, volumes
                     ),
-                    "swing_v1.catalyst_recency_sessions": catalyst_recency(
-                        _required(observations, "catalyst_recency_sessions")
-                    ),
-                    "swing_v1.price_momentum_5d": percent_change(closes, 5),
+                    "swing_v1.average_volume_20d_shares": average_volume_20d,
+                    "swing_v1.benchmark_excess_return_20d_percentage_points": benchmark_excess_return_20d,
+                    "swing_v1.breakout_distance_20d_percent": breakout_distance_20d,
+                    "swing_v1.price_momentum_5d": price_return_5d,
+                    "swing_v1.price_return_5d_percent": price_return_5d,
                     "swing_v1.regime_compatibility": regime_compatibility(
                         _required(observations, "regime_swing_compatibility")
                     ),
-                    "swing_v1.relative_strength_20d": relative_strength(
-                        closes, benchmark_closes, 20
-                    ),
-                    "swing_v1.volume_expansion_20d": volume_expansion(volumes),
+                    "swing_v1.relative_strength_20d": benchmark_excess_return_20d,
+                    "swing_v1.volume_expansion_20d": volume_expansion_20d,
+                    "swing_v1.volume_expansion_20d_percent": volume_expansion_20d,
                 }
+                if "catalyst_recency_sessions" in observations:
+                    values["swing_v1.catalyst_recency_sessions"] = catalyst_recency(
+                        observations["catalyst_recency_sessions"]
+                    )
             elif strategy.strategy_id is StrategyId.TREND_V1:
+                if len(highs) < 252:
+                    raise FeatureComputationRejected(
+                        "TREND_V1 requires 252 completed sessions for 52-week-high distance"
+                    )
+                benchmark_excess_return_60d = relative_strength(
+                    closes, benchmark_closes, 60
+                )
+                average_volume_20d = sum(volumes[-20:], Decimal("0")) / Decimal("20")
+                high_52_week = max(highs[-252:])
+                distance_below_52_week_high = max(
+                    Decimal("0"),
+                    (Decimal("1") - closes[-1] / high_52_week) * Decimal("100"),
+                )
                 values = {
                     "trend_v1.average_dollar_volume_20d": average_dollar_volume(
                         closes, volumes
                     ),
+                    "trend_v1.average_volume_20d_shares": average_volume_20d,
+                    "trend_v1.benchmark_excess_return_60d_percentage_points": benchmark_excess_return_60d,
+                    "trend_v1.distance_below_52_week_high_percent": distance_below_52_week_high,
                     "trend_v1.earnings_trend": earnings_trend(
                         _required(observations, "earnings_current"),
                         _required(observations, "earnings_previous"),
-                    ),
-                    "trend_v1.industry_leadership": industry_leadership(
-                        _required(observations, "industry_leadership")
                     ),
                     "trend_v1.moving_average_alignment": moving_average_alignment(closes),
                     "trend_v1.price_above_200d": price_above_average(closes, 200),
                     "trend_v1.regime_compatibility": regime_compatibility(
                         _required(observations, "regime_trend_compatibility")
                     ),
-                    "trend_v1.relative_strength_60d": relative_strength(
-                        closes, benchmark_closes, 60
-                    ),
+                    "trend_v1.relative_strength_60d": benchmark_excess_return_60d,
                 }
+                if "industry_leadership" in observations:
+                    values["trend_v1.industry_leadership"] = industry_leadership(
+                        observations["industry_leadership"]
+                    )
             else:  # pragma: no cover - enum and registered contract bound this branch
                 raise FeatureComputationRejected("unsupported strategy family")
 

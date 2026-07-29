@@ -223,6 +223,11 @@ async def test_accepted_proposal_persists_real_call_provenance_and_replays(
 
         assert first.output_payload["status"] == "ACCEPTED"
         assert first.output_payload["decision"] == "ENTRY_CANDIDATE"
+        assert first.output_payload["quant_score"] == {
+            "score_version": "score.v1",
+            "total_score": "70",
+            "components": {"swing_v1.quant_total": "70"},
+        }
         assert replay == first
         assert len(backend.calls) == 1
         stored = repository.proposals_as_of(
