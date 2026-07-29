@@ -18,6 +18,9 @@ from cores.llm.backends.openai_agents_backend import (
 from cores.llm.mcp_registry import McpServerRegistry
 
 
+CHATGPT_OAUTH_DEFAULT_MODEL = "gpt-5.4-mini"
+
+
 class OAuthLLMUnavailable(RuntimeError):
     """Sanitized capability failure; token and provider details never escape."""
 

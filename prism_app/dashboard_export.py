@@ -63,6 +63,78 @@ def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+def _project_hard_vetoes(
+    stored: object, dispositions: tuple[FieldDisposition, ...]
+) -> list[str]:
+    """Recover veto identities from their authoritative persisted dispositions."""
+
+    vetoes = set(_string_list(stored))
+    vetoes.update(
+        item.proposed_value
+        for item in dispositions
+        if item.field_path == "policy.hard_veto"
+        and item.action is DispositionAction.REJECT
+        and isinstance(item.proposed_value, str)
+        and item.proposed_value
+    )
+    return sorted(vetoes)
+
+
+def _project_quant_score(
+    stored: Mapping[str, Any], *, score_version: str
+) -> dict[str, Any]:
+    """Project only the persisted deterministic score-audit contract."""
+
+    components = stored.get("components")
+    projected: dict[str, Any] = {
+        "score_version": score_version,
+        "total_score": stored.get("total_score"),
+        "components": (
+            {
+                str(name): value
+                for name, value in components.items()
+                if isinstance(name, str) and isinstance(value, (str, int, float))
+            }
+            if isinstance(components, Mapping)
+            else {}
+        ),
+    }
+    for key in ("score_id", "feature_snapshot_id", "recomposed_total", "threshold_version"):
+        value = stored.get(key)
+        if isinstance(value, str):
+            projected[key] = value
+    if isinstance(stored.get("recomposition_matches"), bool):
+        projected["recomposition_matches"] = stored["recomposition_matches"]
+
+    detail_keys = {
+        "name", "feature_name", "raw_value", "normalized_score", "lower_bound",
+        "upper_bound", "higher_is_better", "weight", "weighted_score",
+    }
+    details = stored.get("component_details")
+    if isinstance(details, list):
+        projected["component_details"] = [
+            {key: item[key] for key in detail_keys if key in item}
+            for item in details
+            if isinstance(item, Mapping)
+        ]
+
+    threshold_keys = {
+        "name", "feature_name", "observed_value", "operator", "threshold",
+        "unit", "passed", "veto",
+    }
+    thresholds = stored.get("thresholds")
+    if isinstance(thresholds, list):
+        projected["thresholds"] = [
+            {key: item[key] for key in threshold_keys if key in item}
+            for item in thresholds
+            if isinstance(item, Mapping)
+        ]
+    vetoes = stored.get("threshold_vetoes")
+    if isinstance(vetoes, list):
+        projected["threshold_vetoes"] = [item for item in vetoes if isinstance(item, str)]
+    return projected
+
+
 
 def _project_missing_or_stale_data(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
@@ -660,11 +732,12 @@ class DashboardExporter:
                     "evidence_refs": json.loads(row[9]),
                     "data_quality": row[10],
                     "quality_disposition": row[11],
-                    "quant_score": {
-                        "score_version": row[24],
-                        "total_score": stored_quant_score.get("total_score"),
-                        "components": stored_quant_score.get("components", {}),
-                    },
+                    "quant_score": _project_quant_score(
+                        stored_quant_score, score_version=row[24]
+                    ),
+                    "hard_vetoes": _project_hard_vetoes(
+                        snapshot_payload.get("hard_vetoes"), dispositions
+                    ),
                     "status": status,
                     "scenario_state": assessment.state.value,
                     "scenario_complete": assessment.complete,

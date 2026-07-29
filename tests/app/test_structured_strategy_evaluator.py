@@ -33,6 +33,7 @@ from prism_core.strategies.contracts import (
     StrategyId,
 )
 from prism_core.strategies.registry import DEFAULT_STRATEGY_REGISTRY
+from prism_core.strategies.quant_score import QuantScoreService, shadow_score_v1_policy
 from tests.llm.test_trade_plan_schema import valid_proposal_payload
 
 
@@ -88,6 +89,51 @@ def _strategy_input() -> StrategyEvaluationInput:
             ingested_at=NOW + timedelta(seconds=1),
             as_of_date=NOW,
         ),
+    )
+
+
+def _shadow_strategy_input() -> StrategyEvaluationInput:
+    strategy = DEFAULT_STRATEGY_REGISTRY.get(StrategyId.SWING_V1)
+    feature_snapshot = FeatureSnapshot(
+        feature_snapshot_id=FEATURE_SNAPSHOT_ID,
+        strategy_id=strategy.strategy_id,
+        strategy_version=strategy.version,
+        market=Market.KR,
+        security_id=SECURITY_ID,
+        data_snapshot_id=DATA_SNAPSHOT_ID,
+        as_of=NOW,
+        feature_version="SHADOW_FEATURES_V1",
+        values=(
+            FeatureValue("swing_v1.price_return_5d_percent", Decimal("10")),
+            FeatureValue(
+                "swing_v1.benchmark_excess_return_20d_percentage_points",
+                Decimal("20"),
+            ),
+            FeatureValue("swing_v1.volume_expansion_20d_percent", Decimal("200")),
+            FeatureValue("swing_v1.atr_percent_14d", Decimal("2")),
+            FeatureValue("swing_v1.regime_compatibility", Decimal("100")),
+            FeatureValue("swing_v1.average_volume_20d_shares", Decimal("100000")),
+            FeatureValue("swing_v1.breakout_distance_20d_percent", Decimal("0.5")),
+        ),
+        data_quality_status=DataQualityStatus.FRESH,
+        quality_disposition=QualityDisposition.ACCEPT,
+    )
+    policy = shadow_score_v1_policy(StrategyId.SWING_V1, Market.KR)
+    return StrategyEvaluationInput(
+        feature_snapshot=feature_snapshot,
+        quant_score=QuantScoreService().score(strategy, feature_snapshot, policy),
+        available_evidence_ids=frozenset({"ev-price-1", "ev-risk-1"}),
+        evidence_payload={
+            "ev-price-1": {"kind": "price", "summary": "fixture price evidence"},
+            "ev-risk-1": {"kind": "risk", "summary": "fixture risk evidence"},
+        },
+        timing=ObservationTime(
+            observed_at=NOW,
+            available_at=NOW,
+            ingested_at=NOW + timedelta(seconds=1),
+            as_of_date=NOW,
+        ),
+        hard_vetoes=("risk:fixture-veto",),
     )
 
 
@@ -322,6 +368,60 @@ async def test_malformed_model_output_is_persisted_rejected_without_actionable_d
     }
     assert "reference data only" in user_input.lower()
     assert "not instructions" in user_input.lower()
+
+
+@pytest.mark.asyncio
+async def test_shadow_score_audit_is_persisted_with_the_same_snapshot_used_by_output(
+    tmp_path: Path,
+) -> None:
+    backend = FakeLLMBackend([LLMResult(text="not-json")])
+    strategy_input = _shadow_strategy_input()
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        evaluator = StructuredLLMStrategyEvaluator(
+            backend=backend,
+            proposal_service=ProposalService(),
+            validator=_validator(),
+            repository=FeedbackRepository(connection),
+            config=_config(),
+        )
+        strategy = DEFAULT_STRATEGY_REGISTRY.get(StrategyId.SWING_V1)
+        result = await evaluator.evaluate(
+            StrategyEvaluationRequest(
+                strategy=strategy,
+                market=Market.KR,
+                data_snapshot_id=DATA_SNAPSHOT_ID,
+                source_payload={"provider": "KIS_FIXTURE"},
+                evaluated_at=NOW + timedelta(minutes=1),
+                strategy_input=strategy_input,
+            )
+        )
+        row = connection.execute(
+            "SELECT data_snapshot_id, feature_snapshot_id, quant_score_version, snapshot_json "
+            "FROM decision_snapshots"
+        ).fetchone()
+
+    assert result.output_payload["quant_score"]["recomposition_matches"] is True
+    assert result.output_payload["quant_score"]["threshold_version"] == (
+        "SHADOW_ENTRY_THRESHOLDS_V1.SWING_V1"
+    )
+    assert result.output_payload["quant_score"]["thresholds"]
+    assert result.output_payload["hard_vetoes"] == ["risk:fixture-veto"]
+    assert row[:3] == (
+        str(DATA_SNAPSHOT_ID),
+        str(FEATURE_SNAPSHOT_ID),
+        "SHADOW_SCORE_V1.SWING_V1",
+    )
+    persisted_score = json.loads(row[3])["quant_score"]
+    assert persisted_score == result.output_payload["quant_score"]
+    assert persisted_score["feature_snapshot_id"] == str(FEATURE_SNAPSHOT_ID)
+    prompt_score = json.loads(backend.calls[0][1])["quant_score"]
+    assert prompt_score == {
+        "score_id": str(strategy_input.quant_score.quant_score_id),
+        "score_version": "SHADOW_SCORE_V1.SWING_V1",
+        "total_score": persisted_score["total_score"],
+        "components": persisted_score["components"],
+    }
 
 
 @pytest.mark.asyncio

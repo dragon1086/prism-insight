@@ -104,6 +104,10 @@ These shared thresholds are an initial baseline, not a claim that KR and US liqu
 
 Score ID identity includes the feature snapshot ID, score version, rules, component names, bounds, directions, weights, and total. Each SHADOW_SCORE_V1 policy also requires `SHADOW_FEATURES_V1`; legacy feature versions cannot be silently scored under the new policy. Decision snapshots persist feature and score versions plus raw feature/component values. Migrations remain append-only; no destructive or retroactive update is authorized.
 
+For current SHADOW_SCORE_V1 rows, the persisted `quant_score` audit object is the sole user-surface source. It contains `score_id`, `feature_snapshot_id`, `score_version`, total, raw and normalized component details, exact bounds/direction/weights, rounded weighted contributions, `recomposed_total`, `recomposition_matches`, `threshold_version`, every observed threshold comparison, and its named veto. The weighted contributions are independently recomposed from persisted normalized component values and configured weights, then deterministically rounded with any residual assigned to the final configured component. They sum exactly to `recomposed_total`; a valid current row also requires that value to equal the separately persisted six-decimal total. Reports and dashboards project this stored object; they do not look up current policy and reinterpret an older row.
+
+The product runtime proof rejects a current SHADOW_SCORE_V1 result unless its feature snapshot identity, component audit, exact total recomposition, threshold version, and threshold comparisons are present. The KR daily candidate projection binds each SWING/TREND result to the same data snapshot ID and exposes `scenario_state`, `decision`, reasons, hard vetoes, and the score audit. `NO_ENTRY`, `WATCH`, `ENTRY_CANDIDATE`, `REPORT_ONLY`, and invalid/incomplete analysis remain distinct; a model parse failure is never rendered as `NO_ENTRY`.
+
 Acceptance labels must remain separate:
 
 1. policy/spec + fixture-tested implementation;

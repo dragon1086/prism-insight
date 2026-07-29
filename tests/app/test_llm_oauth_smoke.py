@@ -7,6 +7,7 @@ import pytest
 from cores.llm.ports import LLMBackend, LLMResult
 from prism_app import llm_oauth_smoke
 from prism_app.llm_oauth_smoke import OAuthSmokeResponse, run_oauth_smoke
+from prism_app.oauth_llm import CHATGPT_OAUTH_DEFAULT_MODEL
 
 
 class Backend(LLMBackend):
@@ -77,5 +78,6 @@ def test_oauth_smoke_cli_persists_only_sanitized_failure(
     assert "OAUTH_LLM_UNAVAILABLE" in capsys.readouterr().out
 
 
-def test_oauth_smoke_defaults_to_gpt_5_6_sol() -> None:
-    assert llm_oauth_smoke._parser().parse_args([]).model == "gpt-5.6-sol"
+def test_oauth_smoke_uses_the_shared_oauth_default_model() -> None:
+    assert CHATGPT_OAUTH_DEFAULT_MODEL == "gpt-5.4-mini"
+    assert llm_oauth_smoke._parser().parse_args([]).model == CHATGPT_OAUTH_DEFAULT_MODEL

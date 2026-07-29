@@ -327,6 +327,76 @@ def test_export_reads_legacy_score_version_and_values_without_reinterpretation()
     }
 
 
+def test_export_preserves_persisted_shadow_score_recomposition_and_threshold_audit() -> None:
+    research = _research_connection()
+    score_audit = {
+        "score_id": "score-swing",
+        "feature_snapshot_id": "feature-swing",
+        "score_version": "SHADOW_SCORE_V1.SWING_V1",
+        "total_score": "67.500000",
+        "components": {"swing_v1.momentum_state_score": "75.000000"},
+        "component_details": [
+            {
+                "name": "swing_v1.momentum_state_score",
+                "feature_name": "swing_v1.price_return_5d_percent",
+                "raw_value": "5",
+                "normalized_score": "75.000000",
+                "lower_bound": "-10",
+                "upper_bound": "10",
+                "higher_is_better": True,
+                "weight": "0.30",
+                "weighted_score": "22.500000",
+            }
+        ],
+        "recomposed_total": "67.500000",
+        "recomposition_matches": True,
+        "threshold_version": "SHADOW_ENTRY_THRESHOLDS_V1.SWING_V1",
+        "thresholds": [
+            {
+                "name": "swing_v1.min_quant_score",
+                "feature_name": "quant_score.total_score",
+                "observed_value": "67.500000",
+                "operator": ">=",
+                "threshold": "65",
+                "unit": "score_0_100",
+                "passed": True,
+                "veto": None,
+            }
+        ],
+        "threshold_vetoes": [],
+    }
+    stored_score_audit = {
+        **score_audit,
+        "component_details": [
+            {**score_audit["component_details"][0], "future_field": "ignored"}
+        ],
+        "thresholds": [
+            {**score_audit["thresholds"][0], "future_field": "ignored"}
+        ],
+    }
+    research.execute(
+        "UPDATE decision_snapshots SET snapshot_json = ? "
+        "WHERE strategy_id = 'SWING_V1'",
+        (
+            json.dumps(
+                {
+                    "quant_score": stored_score_audit,
+                    "hard_vetoes": ["shadow_score_v1:swing_v1.min_quant_score"],
+                }
+            ),
+        ),
+    )
+
+    proposal = DashboardExporter(
+        research, _paper_connection(), _ops_connection()
+    ).build(as_of=AS_OF, generated_at=AS_OF)["research"]["swing_v1_proposals"][0]
+
+    assert proposal["quant_score"] == score_audit
+    assert proposal["hard_vetoes"] == [
+        "shadow_score_v1:swing_v1.min_quant_score"
+    ]
+
+
 def test_rejected_proposal_is_exported_as_invalid_without_inventing_no_entry() -> None:
     research = _research_connection()
     research.execute(
@@ -546,6 +616,40 @@ def test_four_malformed_watch_with_critical_missing_outputs_are_not_no_entry(
     assert proposal["scenario_reasons"] == ["critical data requires fail closed"]
     assert "raw_output" not in proposal
     assert '"critical":true' not in json.dumps(proposal, sort_keys=True)
+
+
+def test_export_recovers_persisted_policy_hard_vetoes_from_dispositions() -> None:
+    research = _research_connection()
+    snapshot = json.loads(
+        research.execute(
+            "SELECT snapshot_json FROM decision_snapshots WHERE strategy_id = 'TREND_V1'"
+        ).fetchone()[0]
+    )
+    snapshot["quant_score"]["threshold_vetoes"] = [
+        "shadow_score_v1:trend_v1.min_quant_score"
+    ]
+    research.execute(
+        "UPDATE decision_snapshots SET snapshot_json = ? WHERE strategy_id = 'TREND_V1'",
+        (json.dumps(snapshot),),
+    )
+    research.execute(
+        "UPDATE proposal_disposition_events SET action = 'REJECT', "
+        "field_path = 'policy.hard_veto', reason = ?, proposed_value_json = ? "
+        "WHERE proposal_record_id = 'record-trend'",
+        (
+            "policy_hard_veto:shadow_score_v1:trend_v1.min_quant_score",
+            json.dumps("shadow_score_v1:trend_v1.min_quant_score"),
+        ),
+    )
+
+    proposals = DashboardExporter(
+        research, _paper_connection(), _ops_connection()
+    ).build(as_of=AS_OF, generated_at=AS_OF)["research"]["trend_v1_proposals"]
+    proposal = next(item for item in proposals if item["proposal_record_id"] == "record-trend")
+
+    assert proposal["hard_vetoes"] == [
+        "shadow_score_v1:trend_v1.min_quant_score"
+    ]
 
 
 def test_export_allowlists_nested_persisted_json_fields() -> None:

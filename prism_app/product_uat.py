@@ -20,7 +20,7 @@ from prism_app.live_kr_evidence import (
     LiveKREvidenceProvider,
 )
 from prism_app.kr_evidence_composer import DARTPort, KINDPort, KREvidenceComposer
-from prism_app.oauth_llm import ChatGPTOAuthRuntime
+from prism_app.oauth_llm import CHATGPT_OAUTH_DEFAULT_MODEL, ChatGPTOAuthRuntime
 from prism_app.product_composition import ProductRunConfig, run_kr_shadow_product
 from prism_app.daily_pipeline import PersistedDailyAnalysis
 from prism_core.data.contracts import SecurityId
@@ -116,6 +116,61 @@ def require_product_runtime_proof(
         for item in analysis.strategies
     ):
         raise RuntimeError("product runtime proof requires complete normalized scenarios")
+    score_versions: set[str] = set()
+    for item in analysis.strategies:
+        quant_score = item.output_payload.get("quant_score")
+        if not isinstance(quant_score, dict):
+            raise RuntimeError(
+                "product runtime proof requires the current SHADOW score audit"
+            )
+        score_version = quant_score.get("score_version")
+        if not isinstance(score_version, str) or not score_version.startswith(
+            "SHADOW_SCORE_V1."
+        ):
+            raise RuntimeError(
+                "product runtime proof requires the current SHADOW score audit"
+            )
+        score_versions.add(score_version)
+        if (
+            not isinstance(quant_score.get("feature_snapshot_id"), str)
+            or quant_score.get("recomposition_matches") is not True
+            or quant_score.get("recomposed_total") != quant_score.get("total_score")
+            or not isinstance(quant_score.get("component_details"), list)
+            or not quant_score["component_details"]
+            or not isinstance(quant_score.get("threshold_version"), str)
+            or not quant_score["threshold_version"].startswith(
+                "SHADOW_ENTRY_THRESHOLDS_V1."
+            )
+            or not isinstance(quant_score.get("thresholds"), list)
+            or not quant_score["thresholds"]
+        ):
+            raise RuntimeError(
+                "product runtime proof requires score recomposition and threshold audit"
+            )
+    if score_versions != {
+        "SHADOW_SCORE_V1.SWING_V1",
+        "SHADOW_SCORE_V1.TREND_V1",
+    }:
+        raise RuntimeError(
+            "product runtime proof requires separate current SWING/TREND score audits"
+        )
+
+
+def enforce_product_runtime_proof(
+    analysis: PersistedDailyAnalysis,
+    *,
+    enabled: bool,
+    idempotent_replay: bool,
+    require_fresh_invocation: bool,
+) -> None:
+    """Keep strict UAT gating optional for callers that must render invalid readbacks."""
+
+    if enabled:
+        require_product_runtime_proof(
+            analysis,
+            idempotent_replay=idempotent_replay,
+            require_fresh_invocation=require_fresh_invocation,
+        )
 
 
 def runtime_invocation_evidence(
@@ -135,6 +190,26 @@ def runtime_strategy_evidence(analysis: PersistedDailyAnalysis) -> tuple[str, ..
     """Return the exact persisted strategy identities in evaluation order."""
 
     return tuple(item.strategy_id.value for item in analysis.strategies)
+
+
+def runtime_strategy_results(
+    analysis: PersistedDailyAnalysis,
+) -> dict[str, dict[str, object]]:
+    """Project exact persisted decisions and score audits for product composition."""
+
+    results: dict[str, dict[str, object]] = {}
+    for item in analysis.strategies:
+        payload = item.output_payload
+        results[item.strategy_id.value] = {
+            "data_snapshot_id": str(analysis.data_snapshot_id),
+            "scenario_state": payload.get("scenario_state"),
+            "scenario_complete": payload.get("scenario_complete"),
+            "decision": payload.get("decision"),
+            "scenario_reasons": list(payload.get("scenario_reasons", ())),
+            "hard_vetoes": list(payload.get("hard_vetoes", ())),
+            "quant_score": dict(payload.get("quant_score", {})),
+        }
+    return results
 
 
 def sanitized_failure_payload(exc: Exception) -> dict[str, Any]:
@@ -177,8 +252,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--ops-db", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--base-report", type=Path)
-    parser.add_argument("--model", default="gpt-5.6-sol")
-    parser.add_argument("--model-version", default="gpt-5.6-sol")
+    parser.add_argument("--model", default=CHATGPT_OAUTH_DEFAULT_MODEL)
+    parser.add_argument("--model-version", default=CHATGPT_OAUTH_DEFAULT_MODEL)
     parser.add_argument("--code-version", default="uncommitted-phase1-product")
     parser.add_argument("--lookback-days", type=int, default=400)
     parser.add_argument(
@@ -227,10 +302,11 @@ async def _prefetch_before_live_decision(
     stock_code: str,
     requested_as_of: datetime | None,
     clock: Callable[[], datetime],
+    force_live_prefetch: bool = False,
 ) -> datetime:
     """Freeze live receipts, then establish the PIT decision instant."""
 
-    if requested_as_of is not None:
+    if requested_as_of is not None and not force_live_prefetch:
         return requested_as_of
     await provider.prefetch(stock_code=stock_code)
     decision_as_of = clock()
@@ -316,6 +392,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             stock_code=args.symbol,
             requested_as_of=args.as_of,
             clock=lambda: datetime.now(tz=KST),
+            force_live_prefetch=getattr(args, "force_live_prefetch", False),
         )
         cascade = _kis_primary_evidence_composer(
             stock_code=args.symbol,
@@ -360,8 +437,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         if prior_auth_mode is None:
             os.environ.pop("PRISM_OPENAI_AUTH_MODE", None)
     if result.analysis.quality_decision.disposition is QualityDisposition.ACCEPT:
-        require_product_runtime_proof(
+        enforce_product_runtime_proof(
             result.analysis,
+            enabled=getattr(args, "require_complete_runtime_proof", True),
             idempotent_replay=result.idempotent_replay,
             require_fresh_invocation=getattr(
                 args, "require_fresh_runtime_proof", True
@@ -397,6 +475,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "stale_fields": result.analysis.quality_decision.stale_fields,
         "strategy_count": len(result.analysis.strategies),
         "strategy_ids": strategy_ids,
+        "strategy_results": runtime_strategy_results(result.analysis),
         "llm_backend_verified": True,
         "fresh_invocation_verified": invocation_evidence["fresh_invocation_verified"],
         "idempotent_replay": invocation_evidence["idempotent_replay"],

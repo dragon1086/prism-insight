@@ -24,6 +24,20 @@ from prism_core.strategies.contracts import Market, StrategyId
 NOW = datetime(2026, 7, 26, 10, 0, tzinfo=timezone.utc)
 
 
+def _current_score_audit(strategy_id: StrategyId) -> dict[str, object]:
+    prefix = strategy_id.value
+    return {
+        "score_version": f"SHADOW_SCORE_V1.{prefix}",
+        "total_score": "67.500000",
+        "feature_snapshot_id": f"feature-{prefix.lower()}",
+        "recomposed_total": "67.500000",
+        "recomposition_matches": True,
+        "component_details": [{"name": f"{prefix.lower()}.component"}],
+        "threshold_version": f"SHADOW_ENTRY_THRESHOLDS_V1.{prefix}",
+        "thresholds": [{"name": f"{prefix.lower()}.min_quant_score", "passed": True}],
+    }
+
+
 def _payload() -> dict[str, object]:
     return {
         "observed_at": "2026-07-26T09:58:00+00:00",
@@ -86,6 +100,7 @@ def test_product_runtime_proof_rejects_backend_failure_or_skipped_quality() -> N
                     "scenario_complete": True,
                     "scenario_state": "WATCH",
                     "decision": "WATCH",
+                    "quant_score": _current_score_audit(StrategyId.SWING_V1),
                 }
             ),
             SimpleNamespace(
@@ -95,6 +110,7 @@ def test_product_runtime_proof_rejects_backend_failure_or_skipped_quality() -> N
                     "scenario_complete": True,
                     "scenario_state": "NO_ENTRY",
                     "decision": "NO_ENTRY",
+                    "quant_score": _current_score_audit(StrategyId.TREND_V1),
                 }
             ),
         ),
@@ -152,6 +168,19 @@ def test_product_runtime_proof_rejects_backend_failure_or_skipped_quality() -> N
     )
     with pytest.raises(RuntimeError, match="complete normalized scenarios"):
         product_uat.require_product_runtime_proof(incomplete_scenario)
+    product_uat.enforce_product_runtime_proof(
+        incomplete_scenario,
+        enabled=False,
+        idempotent_replay=False,
+        require_fresh_invocation=False,
+    )
+    with pytest.raises(RuntimeError, match="complete normalized scenarios"):
+        product_uat.enforce_product_runtime_proof(
+            incomplete_scenario,
+            enabled=True,
+            idempotent_replay=False,
+            require_fresh_invocation=False,
+        )
 
     skipped = SimpleNamespace(
         quality_decision=SimpleNamespace(disposition=QualityDisposition.REJECT),
@@ -159,6 +188,74 @@ def test_product_runtime_proof_rejects_backend_failure_or_skipped_quality() -> N
     )
     with pytest.raises(RuntimeError, match="quality gate"):
         product_uat.require_product_runtime_proof(skipped)
+
+
+def test_product_runtime_proof_requires_complete_current_shadow_score_audit() -> None:
+    payload = {
+        "backend_error_type": None,
+        "model_output_error_type": None,
+        "scenario_complete": True,
+        "scenario_state": "NO_ENTRY",
+        "decision": "NO_ENTRY",
+        "quant_score": {
+            "score_version": "SHADOW_SCORE_V1.SWING_V1",
+            "total_score": "67.500000",
+        },
+    }
+    analysis = SimpleNamespace(
+        quality_decision=SimpleNamespace(disposition=QualityDisposition.ACCEPT),
+        strategies=(
+            SimpleNamespace(output_payload=payload),
+            SimpleNamespace(
+                output_payload={
+                    **payload,
+                    "quant_score": _current_score_audit(StrategyId.TREND_V1),
+                }
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="score recomposition and threshold audit"):
+        product_uat.require_product_runtime_proof(cast(Any, analysis))
+
+    payload["quant_score"] = {
+        **payload["quant_score"],
+        "feature_snapshot_id": "feature-swing",
+        "recomposed_total": "67.500000",
+        "recomposition_matches": True,
+        "component_details": [{"name": "swing_v1.momentum_state_score"}],
+        "threshold_version": "SHADOW_ENTRY_THRESHOLDS_V1.SWING_V1",
+        "thresholds": [{"name": "swing_v1.min_quant_score", "passed": True}],
+    }
+    product_uat.require_product_runtime_proof(cast(Any, analysis))
+
+
+def test_product_runtime_proof_rejects_missing_or_legacy_score_audit() -> None:
+    scenario = {
+        "backend_error_type": None,
+        "model_output_error_type": None,
+        "scenario_complete": True,
+        "scenario_state": "WATCH",
+        "decision": "WATCH",
+    }
+    analysis = SimpleNamespace(
+        quality_decision=SimpleNamespace(disposition=QualityDisposition.ACCEPT),
+        strategies=(
+            SimpleNamespace(output_payload=dict(scenario)),
+            SimpleNamespace(
+                output_payload={
+                    **scenario,
+                    "quant_score": {
+                        "score_version": "score.v1",
+                        "total_score": "70",
+                    },
+                }
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="current SHADOW score audit"):
+        product_uat.require_product_runtime_proof(cast(Any, analysis))
 
 
 def test_runtime_invocation_evidence_distinguishes_fresh_oauth_calls_from_replay() -> None:
@@ -194,7 +291,7 @@ def test_runtime_strategy_evidence_preserves_exact_persisted_strategy_identities
     )
 
 
-def test_product_uat_defaults_to_gpt_5_6_sol() -> None:
+def test_product_uat_defaults_to_live_verified_chatgpt_oauth_model() -> None:
     args = product_uat._parser().parse_args(
         [
             "--research-db",
@@ -206,8 +303,8 @@ def test_product_uat_defaults_to_gpt_5_6_sol() -> None:
         ]
     )
 
-    assert args.model == "gpt-5.6-sol"
-    assert args.model_version == "gpt-5.6-sol"
+    assert args.model == "gpt-5.4-mini"
+    assert args.model_version == "gpt-5.4-mini"
     assert args.evidence_json is None
 
 
@@ -289,6 +386,18 @@ async def test_live_product_fixes_decision_as_of_after_kis_fundamental_prefetch(
         stock_code="214450",
         requested_as_of=None,
         clock=lambda: events.append("clock") or NOW,
+    )
+
+    assert events == ["prefetch:214450", "clock"]
+    assert decision_as_of == NOW
+
+    events.clear()
+    decision_as_of = await product_uat._prefetch_before_live_decision(
+        provider=cast(Any, Provider()),
+        stock_code="214450",
+        requested_as_of=NOW,
+        clock=lambda: events.append("clock") or NOW,
+        force_live_prefetch=True,
     )
 
     assert events == ["prefetch:214450", "clock"]

@@ -143,6 +143,10 @@ def render_shadow_report(analysis: PersistedDailyAnalysis) -> str:
         public_reasons = tuple(
             item for item in reasons if isinstance(item, str) and item.strip()
         ) if isinstance(reasons, (tuple, list)) else ()
+        hard_vetoes = payload.get("hard_vetoes", ())
+        public_hard_vetoes = tuple(
+            item for item in hard_vetoes if isinstance(item, str) and item.strip()
+        ) if isinstance(hard_vetoes, (tuple, list)) else ()
         quant_score = payload.get("quant_score")
         quant_score = quant_score if isinstance(quant_score, Mapping) else {}
         lines.extend(
@@ -154,10 +158,22 @@ def render_shadow_report(analysis: PersistedDailyAnalysis) -> str:
                 f"- 시나리오 완결: `{scenario_complete is True}`",
                 f"- 프롬프트 버전: `{payload.get('prompt_version', 'UNAVAILABLE')}`",
                 f"- 검증기 버전: `{payload.get('validator_version', 'UNAVAILABLE')}`",
+                f"- 결정론 점수 ID: `{quant_score.get('score_id', 'UNAVAILABLE')}`",
+                f"- 피처 스냅샷 ID: `{quant_score.get('feature_snapshot_id', 'UNAVAILABLE')}`",
                 f"- 결정론 점수 버전: `{quant_score.get('score_version', 'UNAVAILABLE')}`",
                 f"- 결정론 점수: `{quant_score.get('total_score', 'UNAVAILABLE')}`",
+                f"- 점수 재합산: `{quant_score.get('recomposed_total', 'UNAVAILABLE')}` "
+                f"(일치 `{quant_score.get('recomposition_matches', 'UNAVAILABLE')}`)",
                 "- 점수 구성: "
                 + _display_json(quant_score.get("components", {})),
+                "- 점수 구성 상세: "
+                + _display_json(quant_score.get("component_details", [])),
+                f"- 진입 임계값 버전: `{quant_score.get('threshold_version', 'UNAVAILABLE')}`",
+                "- 진입 임계값 판정: "
+                + _display_json(quant_score.get("thresholds", [])),
+                "- 진입 임계값 실패: "
+                + _display_json(quant_score.get("threshold_vetoes", [])),
+                "- 결정론적 진입 거부: " + _display_json(public_hard_vetoes),
                 f"- 근거 참조 수: `{len(strategy.evidence_refs)}`",
             )
         )

@@ -5,6 +5,7 @@ from uuid import UUID
 
 import pytest
 
+import prism_core.strategies.quant_score as quant_score_module
 from prism_core.data import DataQualityStatus, SecurityId
 from prism_core.data.quality import QualityDisposition
 from prism_core.strategies import Market, StrategyId
@@ -196,7 +197,114 @@ def test_entry_thresholds_are_code_evaluated_and_fail_closed() -> None:
         "shadow_score_v1:missing:swing_v1.atr_percent_14d",
         "shadow_score_v1:missing:swing_v1.average_volume_20d_shares",
         "shadow_score_v1:missing:swing_v1.breakout_distance_20d_percent",
+        "shadow_score_v1:swing_v1.min_quant_score",
     )
+
+
+def test_shadow_score_audit_recomposes_total_and_records_every_threshold_result() -> None:
+    snapshot = _swing_snapshot("0")
+    policy = shadow_score_v1_policy(StrategyId.SWING_V1, Market.KR)
+    score = QuantScoreService().score(
+        DEFAULT_STRATEGY_REGISTRY.get(StrategyId.SWING_V1), snapshot, policy
+    )
+    observations = {
+        **{item.name: item.value for item in snapshot.values},
+        "swing_v1.average_volume_20d_shares": Decimal("99999"),
+        "swing_v1.breakout_distance_20d_percent": Decimal("0.5"),
+    }
+
+    audit = quant_score_module.build_shadow_score_audit(
+        policy=policy,
+        score=score,
+        observations=observations,
+    )
+
+    assert audit["score_version"] == "SHADOW_SCORE_V1.SWING_V1"
+    assert audit["threshold_version"] == "SHADOW_ENTRY_THRESHOLDS_V1.SWING_V1"
+    assert audit["total_score"] == "50.000000"
+    assert audit["recomposed_total"] == "50.000000"
+    assert audit["recomposition_matches"] is True
+    assert sum(Decimal(item["weight"]) for item in audit["component_details"]) == Decimal("1")
+    assert sum(
+        Decimal(item["weighted_score"]) for item in audit["component_details"]
+    ) == Decimal(audit["recomposed_total"])
+    assert audit["component_details"][0] == {
+        "name": "swing_v1.momentum_state_score",
+        "feature_name": "swing_v1.price_return_5d_percent",
+        "raw_value": "0",
+        "normalized_score": "50.000000",
+        "lower_bound": "-10",
+        "upper_bound": "10",
+        "higher_is_better": True,
+        "weight": "0.30",
+        "weighted_score": "15.000000",
+    }
+    thresholds = {item["name"]: item for item in audit["thresholds"]}
+    assert thresholds["swing_v1.min_liquidity"] == {
+        "name": "swing_v1.min_liquidity",
+        "feature_name": "swing_v1.average_volume_20d_shares",
+        "observed_value": "99999",
+        "operator": ">=",
+        "threshold": "100000",
+        "unit": "shares_per_session",
+        "passed": False,
+        "veto": "shadow_score_v1:swing_v1.min_liquidity",
+    }
+    assert thresholds["swing_v1.entry_breakout_buffer"]["passed"] is True
+    assert thresholds["swing_v1.min_quant_score"]["observed_value"] == "50.000000"
+
+
+def test_shadow_score_audit_detects_a_total_that_disagrees_with_components() -> None:
+    snapshot = _swing_snapshot("0")
+    policy = shadow_score_v1_policy(StrategyId.SWING_V1, Market.KR)
+    score = QuantScoreService().score(
+        DEFAULT_STRATEGY_REGISTRY.get(StrategyId.SWING_V1), snapshot, policy
+    )
+
+    audit = quant_score_module.build_shadow_score_audit(
+        policy=policy,
+        score=replace(score, total_score=Decimal("51.000000")),
+        observations={item.name: item.value for item in snapshot.values},
+    )
+
+    assert audit["recomposed_total"] == "50.000000"
+    assert audit["recomposition_matches"] is False
+    component_details = audit["component_details"]
+    assert isinstance(component_details, list)
+    assert sum(
+        Decimal(item["weighted_score"]) for item in component_details
+    ) == Decimal("50.000000")
+
+
+def test_shadow_score_audit_rejects_threshold_policy_not_covered_by_enforcement() -> None:
+    snapshot = _swing_snapshot("0")
+    policy = shadow_score_v1_policy(StrategyId.SWING_V1, Market.KR)
+    assert policy.thresholds is not None
+    policy = replace(
+        policy,
+        thresholds=replace(
+            policy.thresholds,
+            values=(
+                *policy.thresholds.values,
+                ("swing_v1.unmapped_threshold", Decimal("1"), "score_0_100"),
+            ),
+        ),
+    )
+    score = replace(
+        QuantScoreService().score(
+            DEFAULT_STRATEGY_REGISTRY.get(StrategyId.SWING_V1),
+            snapshot,
+            shadow_score_v1_policy(StrategyId.SWING_V1, Market.KR),
+        ),
+        score_version=policy.score_version,
+    )
+
+    with pytest.raises(ValueError, match="threshold definitions must match policy"):
+        quant_score_module.build_shadow_score_audit(
+            policy=policy,
+            score=score,
+            observations={item.name: item.value for item in snapshot.values},
+        )
 
 
 def test_entry_thresholds_reject_a_legacy_score_version_without_reinterpretation() -> None:

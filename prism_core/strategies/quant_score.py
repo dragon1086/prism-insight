@@ -254,48 +254,151 @@ def evaluate_shadow_entry_thresholds(
         raise ValueError("score and threshold policy identities must match")
     if score.score_version != policy.score_version:
         raise ValueError("score version must match threshold policy")
-    thresholds = {name: value for name, value, _ in policy.thresholds.values}
-    if policy.strategy_id is StrategyId.SWING_V1:
-        required = (
-            "swing_v1.average_volume_20d_shares",
-            "swing_v1.atr_percent_14d",
-            "swing_v1.breakout_distance_20d_percent",
+    return tuple(
+        sorted(
+            str(item["veto"])
+            for item in _shadow_threshold_specs(policy, score, observations)
+            if item["veto"] is not None
         )
-        checks = (
-            ("swing_v1.min_liquidity", observations.get(required[0]), "min"),
-            ("swing_v1.max_atr_percent", observations.get(required[1]), "max"),
-            ("swing_v1.entry_breakout_buffer", observations.get(required[2]), "min"),
-        )
-        min_score_name = "swing_v1.min_quant_score"
-    else:
-        required = (
-            "trend_v1.average_volume_20d_shares",
-            "trend_v1.moving_average_alignment",
-            "trend_v1.distance_below_52_week_high_percent",
-        )
-        checks = (
-            ("trend_v1.min_liquidity", observations.get(required[0]), "min"),
-            ("trend_v1.min_trend_strength", observations.get(required[1]), "min"),
-            ("trend_v1.max_pullback_from_high", observations.get(required[2]), "max"),
-        )
-        min_score_name = "trend_v1.min_quant_score"
-
-    missing = tuple(
-        f"shadow_score_v1:missing:{name}" for name in required if name not in observations
     )
-    if missing:
-        return tuple(sorted(missing))
-    vetoes = []
-    for name, value, direction in checks:
-        if value is None or (
-            direction == "min" and value < thresholds[name]
-        ) or (
-            direction == "max" and value > thresholds[name]
-        ):
-            vetoes.append(f"shadow_score_v1:{name}")
-    if score.total_score < thresholds[min_score_name]:
-        vetoes.append(f"shadow_score_v1:{min_score_name}")
-    return tuple(sorted(vetoes))
+
+
+def build_shadow_score_audit(
+    *,
+    policy: QuantScorePolicy,
+    score: QuantScoreBreakdown,
+    observations: Mapping[str, Decimal],
+) -> dict[str, object]:
+    """Serialize one current score policy without recomputing historical rows later."""
+
+    if not isinstance(policy, QuantScorePolicy):
+        raise TypeError("policy must be a QuantScorePolicy")
+    if not isinstance(score, QuantScoreBreakdown):
+        raise TypeError("score must be a QuantScoreBreakdown")
+    if score.strategy_id is not policy.strategy_id or score.score_version != policy.score_version:
+        raise ValueError("score and audit policy identities must match")
+    if policy.thresholds is None:
+        raise ValueError("score audit requires versioned entry thresholds")
+    if not isinstance(observations, Mapping):
+        raise TypeError("observations must be a mapping")
+
+    components = {item.name: item.score for item in score.components}
+    details: list[dict[str, object]] = []
+    weighted_values: list[Decimal] = []
+    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
+        unrounded_weighted_values: list[Decimal] = []
+        for rule in policy.rules:
+            component_name = rule.component_name or rule.feature_name
+            if rule.feature_name not in observations:
+                raise ValueError(f"missing scored feature: {rule.feature_name}")
+            if component_name not in components:
+                raise ValueError(f"missing score component: {component_name}")
+            unrounded = components[component_name] * rule.weight
+            unrounded_weighted_values.append(unrounded)
+            weighted_values.append(unrounded.quantize(_QUANTUM))
+        recomposed_total = sum(
+            unrounded_weighted_values, Decimal("0")
+        ).quantize(_QUANTUM)
+        rounding_residual = recomposed_total - sum(weighted_values, Decimal("0"))
+        weighted_values[-1] += rounding_residual
+
+    for rule, weighted_score in zip(policy.rules, weighted_values, strict=True):
+        component_name = rule.component_name or rule.feature_name
+        details.append(
+            {
+                "name": component_name,
+                "feature_name": rule.feature_name,
+                "raw_value": format(observations[rule.feature_name], "f"),
+                "normalized_score": format(components[component_name], "f"),
+                "lower_bound": format(rule.lower_bound, "f"),
+                "upper_bound": format(rule.upper_bound, "f"),
+                "higher_is_better": rule.higher_is_better,
+                "weight": format(rule.weight, "f"),
+                "weighted_score": format(weighted_score, "f"),
+            }
+        )
+
+    threshold_specs = _shadow_threshold_specs(policy, score, observations)
+    audited_vetoes = tuple(
+        sorted(
+            str(item["veto"])
+            for item in threshold_specs
+            if item["veto"] is not None
+        )
+    )
+    enforced_vetoes = evaluate_shadow_entry_thresholds(policy, score, observations)
+    if audited_vetoes != enforced_vetoes:
+        raise RuntimeError("score audit thresholds disagree with enforcement")
+    return {
+        "score_id": str(score.quant_score_id),
+        "feature_snapshot_id": str(score.feature_snapshot_id),
+        "score_version": score.score_version,
+        "total_score": format(score.total_score, "f"),
+        "components": {name: format(value, "f") for name, value in components.items()},
+        "component_details": details,
+        "recomposed_total": format(recomposed_total, "f"),
+        "recomposition_matches": recomposed_total == score.total_score,
+        "threshold_version": policy.thresholds.version,
+        "thresholds": threshold_specs,
+        "threshold_vetoes": list(audited_vetoes),
+    }
+
+
+def _shadow_threshold_specs(
+    policy: QuantScorePolicy,
+    score: QuantScoreBreakdown,
+    observations: Mapping[str, Decimal],
+) -> list[dict[str, object]]:
+    if policy.thresholds is None:
+        raise ValueError("entry thresholds are required")
+    units = {name: unit for name, _value, unit in policy.thresholds.values}
+    values = {name: value for name, value, _unit in policy.thresholds.values}
+    if policy.strategy_id is StrategyId.SWING_V1:
+        checks = (
+            ("swing_v1.min_liquidity", "swing_v1.average_volume_20d_shares", ">="),
+            ("swing_v1.min_quant_score", "quant_score.total_score", ">="),
+            ("swing_v1.max_atr_percent", "swing_v1.atr_percent_14d", "<="),
+            ("swing_v1.entry_breakout_buffer", "swing_v1.breakout_distance_20d_percent", ">="),
+        )
+    else:
+        checks = (
+            ("trend_v1.min_liquidity", "trend_v1.average_volume_20d_shares", ">="),
+            ("trend_v1.min_quant_score", "quant_score.total_score", ">="),
+            ("trend_v1.min_trend_strength", "trend_v1.moving_average_alignment", ">="),
+            ("trend_v1.max_pullback_from_high", "trend_v1.distance_below_52_week_high_percent", "<="),
+        )
+    if set(values) != {name for name, _feature_name, _operator in checks}:
+        raise ValueError("threshold definitions must match policy")
+
+    result: list[dict[str, object]] = []
+    for name, feature_name, operator in checks:
+        observed = (
+            score.total_score
+            if feature_name == "quant_score.total_score"
+            else observations.get(feature_name)
+        )
+        threshold = values[name]
+        passed = observed is not None and (
+            observed >= threshold if operator == ">=" else observed <= threshold
+        )
+        veto = None
+        if observed is None:
+            veto = f"shadow_score_v1:missing:{feature_name}"
+        elif not passed:
+            veto = f"shadow_score_v1:{name}"
+        result.append(
+            {
+                "name": name,
+                "feature_name": feature_name,
+                "observed_value": None if observed is None else format(observed, "f"),
+                "operator": operator,
+                "threshold": format(threshold, "f"),
+                "unit": units[name],
+                "passed": passed,
+                "veto": veto,
+            }
+        )
+    return result
 
 
 class QuantScoreService:

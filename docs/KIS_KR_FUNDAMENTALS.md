@@ -61,7 +61,7 @@ As of 2026-07-30 KST:
 1. Module/contract implementation: implemented in `prism_core/data/providers/kis_fundamentals.py`, the bounded KIS HTTP transport, and the `prism_app.kr_evidence_composer` KIS-primary seam.
 2. Fixture/unit verification: implemented for endpoint allowlisting, normalization, missing capabilities, future-period rejection, KIS precedence, optional DART conflict, and no silent FMP substitution.
 3. Actual endpoint verification: all six endpoints returned HTTP 200 and successful schema-bearing output for provider symbol `005930`; only endpoint/status/TR ID/timestamps/hashes/period labels were retained in smoke output.
-4. Runtime product composition: selected by the default KR `product_uat` composition and therefore by the daily-close candidate analyzer; KIS prices and KIS fundamentals use separate bounded transports with the same secure token cache so their sanitized evidence remains distinct.
+4. Runtime product composition: selected by the default KR `product_uat` composition and therefore by the daily-close candidate analyzer; KIS prices and KIS fundamentals use separate bounded transports with the same secure token cache so their sanitized evidence remains distinct. The returned daily candidate record binds the persisted SWING/TREND decisions and SHADOW score/threshold audits to the same data snapshot identity. Reports and dashboards show the resulting decision states and explicit reasons; they do not convert a missing comparable earnings pair or incomplete analysis into `NO_ENTRY`.
 5. User-visible operation/recovery and UAT: not established.
 
 The honest status is **foundation, bounded live integration, and default runtime composition implemented; user-visible operation/recovery and UAT incomplete**.

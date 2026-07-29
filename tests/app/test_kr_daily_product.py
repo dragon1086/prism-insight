@@ -9,9 +9,11 @@ from uuid import UUID
 
 import pytest
 
+from prism_app import kr_daily_product as daily_product_module
 from prism_app.kr_daily_product import (
     CandidateAnalysisResult,
     KRDailyProduct,
+    candidate_readback_status,
     context_call_evidence,
     daily_dashboard_projection,
     daily_product_status,
@@ -82,6 +84,110 @@ def test_replayed_readback_is_not_counted_as_a_fresh_completed_scenario() -> Non
     )
 
     assert genuine_completed_count(result) == 0
+
+
+def test_candidate_analysis_rejects_strategy_result_from_another_snapshot() -> None:
+    candidate = _candidate(9)
+
+    with pytest.raises(ValueError, match="same data snapshot"):
+        CandidateAnalysisResult(
+            security_id=candidate.security_id,
+            provider_symbol=candidate.provider_symbol,
+            job_key="daily:KR:mismatch",
+            status="PERSISTED_READBACK_VERIFIED",
+            strategy_ids=(StrategyId.SWING_V1,),
+            report_markdown="persisted",
+            data_snapshot_id="snapshot-current",
+            strategy_results={
+                "SWING_V1": {
+                    "data_snapshot_id": "snapshot-other",
+                    "scenario_state": "NO_ENTRY",
+                }
+            },
+        )
+
+
+def test_candidate_readback_status_preserves_invalid_and_policy_rejected_states() -> None:
+    complete = {
+        "SWING_V1": {"scenario_state": "WATCH", "scenario_complete": True},
+        "TREND_V1": {"scenario_state": "NO_ENTRY", "scenario_complete": True},
+    }
+    invalid = {
+        **complete,
+        "TREND_V1": {
+            "scenario_state": "INVALID_PROPOSAL",
+            "scenario_complete": False,
+        },
+    }
+    rejected = {
+        **complete,
+        "SWING_V1": {
+            "scenario_state": "POLICY_REJECTED",
+            "scenario_complete": False,
+        },
+    }
+
+    assert candidate_readback_status("PERSISTED_READBACK_VERIFIED", complete) == (
+        "PERSISTED_READBACK_VERIFIED"
+    )
+    assert candidate_readback_status("PERSISTED_READBACK_VERIFIED", invalid) == (
+        "ANALYSIS_INCOMPLETE_READBACK_VERIFIED"
+    )
+    assert candidate_readback_status("PERSISTED_READBACK_VERIFIED", rejected) == (
+        "POLICY_REJECTED_READBACK_VERIFIED"
+    )
+
+
+def test_daily_product_treats_persisted_policy_rejection_as_terminal_success() -> None:
+    candidate = _candidate(9)
+    result = SimpleNamespace(
+        analyses=(
+            CandidateAnalysisResult(
+                security_id=candidate.security_id,
+                provider_symbol=candidate.provider_symbol,
+                job_key="daily:KR:policy-rejected",
+                status="POLICY_REJECTED_READBACK_VERIFIED",
+                strategy_ids=(StrategyId.SWING_V1, StrategyId.TREND_V1),
+                report_markdown="persisted",
+                data_snapshot_id="snapshot-current",
+                strategy_results={
+                    "SWING_V1": {
+                        "data_snapshot_id": "snapshot-current",
+                        "scenario_state": "WATCH",
+                        "scenario_complete": True,
+                    },
+                    "TREND_V1": {
+                        "data_snapshot_id": "snapshot-current",
+                        "scenario_state": "POLICY_REJECTED",
+                        "scenario_complete": False,
+                    },
+                },
+            ),
+        ),
+        failures=(),
+    )
+
+    assert daily_product_status(result) == "COMPLETED_WITH_POLICY_REJECTIONS"
+    assert daily_product_module.candidate_analysis_state(result.analyses[0]) == (
+        "POLICY_REJECTED / WATCH"
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        ("COMPLETED", 0),
+        ("COMPLETED_WITH_POLICY_REJECTIONS", 0),
+        ("REPORT_ONLY", 0),
+        ("IDEMPOTENT_REPLAY", 0),
+        ("ANALYSIS_INCOMPLETE", 2),
+        ("PRODUCT_CAPABILITY_UNAVAILABLE", 2),
+    ),
+)
+def test_daily_product_exit_code_distinguishes_terminal_outputs_from_failures(
+    status: str, expected: int
+) -> None:
+    assert daily_product_module.daily_product_exit_code(status) == expected
 
 
 @pytest.mark.asyncio
@@ -330,6 +436,39 @@ def test_replayed_readback_has_an_explicit_non_success_status() -> None:
     assert daily_product_status(result) == "IDEMPOTENT_REPLAY"
 
 
+def test_replayed_policy_rejection_remains_labeled_as_replay() -> None:
+    candidate = _candidate(9)
+    result = SimpleNamespace(
+        analyses=(
+            CandidateAnalysisResult(
+                security_id=candidate.security_id,
+                provider_symbol=candidate.provider_symbol,
+                job_key="daily:KR:replayed-policy-rejection",
+                status="POLICY_REJECTED_READBACK_VERIFIED",
+                strategy_ids=(StrategyId.SWING_V1, StrategyId.TREND_V1),
+                report_markdown="replayed",
+                data_snapshot_id="snapshot-replayed",
+                fresh_invocation=False,
+                strategy_results={
+                    "SWING_V1": {
+                        "data_snapshot_id": "snapshot-replayed",
+                        "scenario_state": "WATCH",
+                        "scenario_complete": True,
+                    },
+                    "TREND_V1": {
+                        "data_snapshot_id": "snapshot-replayed",
+                        "scenario_state": "POLICY_REJECTED",
+                        "scenario_complete": False,
+                    },
+                },
+            ),
+        ),
+        failures=(),
+    )
+
+    assert daily_product_status(result) == "IDEMPOTENT_REPLAY"
+
+
 def test_dashboard_projection_preserves_funnel_channels_and_same_candidate_identities(
     tmp_path,
 ) -> None:
@@ -349,6 +488,32 @@ def test_dashboard_projection_preserves_funnel_channels_and_same_candidate_ident
             status="PERSISTED_READBACK_VERIFIED",
             strategy_ids=(StrategyId.SWING_V1, StrategyId.TREND_V1),
             report_markdown="persisted",
+            data_snapshot_id=f"snapshot:{item.provider_symbols[0]}",
+            strategy_results={
+                "SWING_V1": {
+                    "data_snapshot_id": f"snapshot:{item.provider_symbols[0]}",
+                    "scenario_state": "NO_ENTRY",
+                    "decision": "NO_ENTRY",
+                    "scenario_reasons": ["entry threshold veto"],
+                    "hard_vetoes": ["shadow_score_v1:swing_v1.min_quant_score"],
+                    "quant_score": {
+                        "score_version": "SHADOW_SCORE_V1.SWING_V1",
+                        "total_score": "61.000000",
+                        "threshold_version": "SHADOW_ENTRY_THRESHOLDS_V1.SWING_V1",
+                    },
+                },
+                "TREND_V1": {
+                    "data_snapshot_id": f"snapshot:{item.provider_symbols[0]}",
+                    "scenario_state": "WATCH",
+                    "decision": "WATCH",
+                    "scenario_reasons": ["trigger not confirmed"],
+                    "quant_score": {
+                        "score_version": "SHADOW_SCORE_V1.TREND_V1",
+                        "total_score": "71.000000",
+                        "threshold_version": "SHADOW_ENTRY_THRESHOLDS_V1.TREND_V1",
+                    },
+                },
+            },
         )
         for item in reconciliation.included
     )
@@ -408,6 +573,17 @@ def test_dashboard_projection_preserves_funnel_channels_and_same_candidate_ident
         for item in persisted["candidates"]
         for source in item["sources"]
     )
+    assert all(item["data_snapshot_id"] for item in persisted["candidates"])
+    assert all(
+        set(item["strategy_results"]) == {"SWING_V1", "TREND_V1"}
+        for item in persisted["candidates"]
+    )
+    assert persisted["candidates"][0]["strategy_results"]["SWING_V1"][
+        "quant_score"
+    ]["threshold_version"] == "SHADOW_ENTRY_THRESHOLDS_V1.SWING_V1"
+    rendered = render_daily_composition("", result)
+    assert "결정론적 진입 거부" in rendered
+    assert "shadow_score_v1:swing_v1.min_quant_score" in rendered
 
 
 def test_context_call_evidence_is_timestamped_and_sanitized() -> None:
@@ -470,3 +646,38 @@ def test_runtime_as_of_uses_post_fetch_clock_and_rejects_future_requested_bounda
     assert resolve_runtime_as_of(requested=requested, now=post_fetch) == post_fetch
     with pytest.raises(ValueError, match="future"):
         resolve_runtime_as_of(requested=post_fetch, now=requested)
+
+
+def test_live_candidate_analysis_defers_decision_clock_until_after_fundamental_prefetch() -> None:
+    requested = datetime(2026, 7, 29, 15, 40, tzinfo=timezone.utc)
+    post_context_fetch = datetime(2026, 7, 29, 15, 41, tzinfo=timezone.utc)
+
+    assert (
+        daily_product_module.live_candidate_analysis_as_of(
+            requested=requested,
+            now=post_context_fetch,
+        )
+        is None
+    )
+
+
+def test_kr_daily_defaults_to_live_verified_chatgpt_oauth_model() -> None:
+    args = daily_product_module._parser().parse_args(
+        [
+            "--as-of",
+            AS_OF.isoformat(),
+            "--research-db",
+            "research.sqlite",
+            "--paper-db",
+            "paper.sqlite",
+            "--ops-db",
+            "ops.sqlite",
+            "--report-output",
+            "report.md",
+            "--dashboard-output",
+            "dashboard.json",
+        ]
+    )
+
+    assert args.model == "gpt-5.4-mini"
+    assert args.model_version == "gpt-5.4-mini"

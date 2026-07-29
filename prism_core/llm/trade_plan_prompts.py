@@ -25,10 +25,10 @@ _TRADE_PLAN_SCHEMA_FINGERPRINT = hashlib.sha256(
 ).hexdigest()[:12]
 
 SWING_V1_PROMPT_VERSION = (
-    f"trade-plan.swing-v1.v2.schema-{_TRADE_PLAN_SCHEMA_FINGERPRINT}"
+    f"trade-plan.swing-v1.v3.schema-{_TRADE_PLAN_SCHEMA_FINGERPRINT}"
 )
 TREND_V1_PROMPT_VERSION = (
-    f"trade-plan.trend-v1.v2.schema-{_TRADE_PLAN_SCHEMA_FINGERPRINT}"
+    f"trade-plan.trend-v1.v3.schema-{_TRADE_PLAN_SCHEMA_FINGERPRINT}"
 )
 
 
@@ -123,7 +123,9 @@ def get_trade_plan_prompt_contract(
         "50 * (1 + strong_bull + 0.5*moderate_bull - 0.5*moderate_bear - strong_bear).\n"
         "For audit provenance, copy contract.model, contract.prompt_version, and "
         "contract.sampling exactly into the matching output fields; do not infer or "
-        "rename provider, model, prompt, or sampling values.\n"
+        "rename provider, model, prompt, or sampling values. Copy contract.as_of "
+        "exactly without changing its timezone or clock value, and copy every other "
+        "contract identity into feature_provenance verbatim.\n"
         "\nAuthority boundary:\n"
         "This is a non-executable research proposal. Do not output final quantity, "
         "portfolio slots, execution or order approval, an OrderIntent, any broker or "

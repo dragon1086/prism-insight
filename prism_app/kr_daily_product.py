@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
+from prism_app.oauth_llm import CHATGPT_OAUTH_DEFAULT_MODEL
 from prism_app.stockeasy_snapshot_import import (
     StockEasyImportOutcome,
     StockEasyImportResult,
@@ -31,6 +32,34 @@ from prism_core.strategies.contracts import StrategyId
 
 _KR_START = "<!-- PRISM_KR_DAILY_COMPOSITION_START -->"
 _KR_END = "<!-- PRISM_KR_DAILY_COMPOSITION_END -->"
+
+
+def _render_strategy_result(
+    strategy_id: str, payload: Mapping[str, object]
+) -> str:
+    quant_value = payload.get("quant_score")
+    quant_score = quant_value if isinstance(quant_value, Mapping) else {}
+    reasons = payload.get("scenario_reasons", [])
+    hard_vetoes = payload.get("hard_vetoes", [])
+    return (
+        "- 전략 결과 "
+        f"`{strategy_id}`: 상태 `{payload.get('scenario_state')}`, "
+        f"결정 `{payload.get('decision')}`, "
+        f"점수 `{quant_score.get('total_score')}`, "
+        "점수/임계값 버전 "
+        f"`{quant_score.get('score_version')}` / "
+        f"`{quant_score.get('threshold_version')}`, "
+        "결정론적 진입 거부 "
+        + json.dumps(
+            hard_vetoes,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + ", "
+        "사유 "
+        + json.dumps(reasons, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
 
 
 class MarketContextComposer(Protocol):
@@ -62,6 +91,8 @@ class CandidateAnalysisResult:
     status: str
     strategy_ids: tuple[StrategyId, ...]
     report_markdown: str
+    data_snapshot_id: str | None = None
+    strategy_results: Mapping[str, Mapping[str, object]] | None = None
     issues: tuple[str, ...] = ()
     call_evidence: Mapping[str, object] | None = None
     fresh_invocation: bool = True
@@ -73,6 +104,17 @@ class CandidateAnalysisResult:
             raise ValueError("candidate analysis identity and status are required")
         if len(set(self.strategy_ids)) != len(self.strategy_ids):
             raise ValueError("strategy identities must be unique")
+        if self.strategy_results is not None:
+            expected = {item.value for item in self.strategy_ids}
+            if set(self.strategy_results) != expected:
+                raise ValueError("strategy result identities must match strategy_ids")
+            if not self.data_snapshot_id:
+                raise ValueError("strategy results require one data snapshot identity")
+            if any(
+                payload.get("data_snapshot_id") != self.data_snapshot_id
+                for payload in self.strategy_results.values()
+            ):
+                raise ValueError("strategy results must use the same data snapshot")
 
 
 @dataclass(frozen=True)
@@ -115,21 +157,62 @@ class AnalysisCollection(Protocol):
     def analyses(self) -> tuple[CandidateAnalysisResult, ...]: ...
 
 
+def candidate_readback_status(
+    persisted_status: str,
+    strategy_results: Mapping[str, Mapping[str, object]],
+) -> str:
+    """Preserve persisted invalid/policy states instead of hiding them as exceptions."""
+
+    states = {str(item.get("scenario_state")) for item in strategy_results.values()}
+    complete = all(
+        item.get("scenario_complete") is True for item in strategy_results.values()
+    )
+    if complete and states <= {"WATCH", "NO_ENTRY", "ENTRY_CANDIDATE"}:
+        return persisted_status
+    if "INVALID_PROPOSAL" in states or "ANALYSIS_INCOMPLETE" in states:
+        return "ANALYSIS_INCOMPLETE_READBACK_VERIFIED"
+    if "POLICY_REJECTED" in states:
+        return "POLICY_REJECTED_READBACK_VERIFIED"
+    return "ANALYSIS_INCOMPLETE_READBACK_VERIFIED"
+
+
 def daily_product_status(result: Any) -> str:
     """Keep genuine completion, report-only, replay, and failure states distinct."""
 
-    if genuine_completed_count(result):
-        return "COMPLETED"
     if getattr(result, "failures", ()):
         return "ANALYSIS_INCOMPLETE"
     analyses = tuple(result.analyses)
+    if analyses and all(not item.fresh_invocation for item in analyses):
+        return "IDEMPOTENT_REPLAY"
+    if genuine_completed_count(result):
+        return "COMPLETED"
     if analyses and all(
         item.status == "REPORT_ONLY_READBACK_VERIFIED" for item in analyses
     ):
         return "REPORT_ONLY"
-    if analyses and all(not item.fresh_invocation for item in analyses):
-        return "IDEMPOTENT_REPLAY"
+    if analyses and all(
+        item.status in {
+            "PERSISTED_READBACK_VERIFIED",
+            "POLICY_REJECTED_READBACK_VERIFIED",
+            "REPORT_ONLY_READBACK_VERIFIED",
+        }
+        for item in analyses
+    ) and any(
+        item.status == "POLICY_REJECTED_READBACK_VERIFIED" for item in analyses
+    ):
+        return "COMPLETED_WITH_POLICY_REJECTIONS"
     return "ANALYSIS_INCOMPLETE"
+
+
+def daily_product_exit_code(status: str) -> int:
+    """Return success for definitive read-only outputs, not only actionable days."""
+
+    return 0 if status in {
+        "COMPLETED",
+        "COMPLETED_WITH_POLICY_REJECTIONS",
+        "REPORT_ONLY",
+        "IDEMPOTENT_REPLAY",
+    } else 2
 
 
 class KRDailyProduct:
@@ -267,6 +350,26 @@ def genuine_completed_count(result: AnalysisCollection) -> int:
     )
 
 
+def candidate_analysis_state(analysis: CandidateAnalysisResult) -> str:
+    """Summarize persisted per-strategy states without inferring from row presence."""
+
+    if not analysis.strategy_results:
+        return "COMPLETE" if analysis.strategy_ids else "ANALYSIS_INCOMPLETE"
+    if all(
+        payload.get("scenario_complete") is True
+        for payload in analysis.strategy_results.values()
+    ):
+        return "COMPLETE"
+    states = sorted(
+        {
+            str(payload.get("scenario_state"))
+            for payload in analysis.strategy_results.values()
+            if payload.get("scenario_state")
+        }
+    )
+    return " / ".join(states) if states else "ANALYSIS_INCOMPLETE"
+
+
 def render_daily_composition(
     existing_markdown: str,
     result: KRDailyProductResult,
@@ -335,7 +438,7 @@ def render_daily_composition(
             for item in _candidate_sources(candidate)
         )
         strategies = ", ".join(item.value for item in analysis.strategy_ids)
-        scenario_state = "COMPLETE" if strategies else "ANALYSIS_INCOMPLETE"
+        scenario_state = candidate_analysis_state(analysis)
         lines.extend(
             (
                 f"#### {analysis.provider_symbol} — {channels}",
@@ -344,7 +447,14 @@ def render_daily_composition(
                 f"- 후보 원천: `{sources}`",
                 f"- 분석 상태: `{scenario_state}`",
                 f"- 전략: `{strategies or 'ANALYSIS_INCOMPLETE'}`",
+                f"- 데이터 스냅샷: `{analysis.data_snapshot_id or 'UNAVAILABLE'}`",
                 f"- 작업 키: `{analysis.job_key}`",
+                *tuple(
+                    _render_strategy_result(strategy_id, payload)
+                    for strategy_id, payload in sorted(
+                        (analysis.strategy_results or {}).items()
+                    )
+                ),
                 *(
                     (f"- 이슈: `{', '.join(analysis.issues)}`",)
                     if analysis.issues
@@ -434,6 +544,17 @@ def daily_dashboard_projection(result: KRDailyProductResult | Any) -> dict[str, 
                     [item.value for item in analysis.strategy_ids]
                     if analysis is not None
                     else []
+                ),
+                "data_snapshot_id": (
+                    analysis.data_snapshot_id if analysis is not None else None
+                ),
+                "strategy_results": (
+                    {
+                        strategy_id: dict(payload)
+                        for strategy_id, payload in analysis.strategy_results.items()
+                    }
+                    if analysis is not None and analysis.strategy_results is not None
+                    else {}
                 ),
                 "failure_type": None if failure is None else failure.failure_type,
             }
@@ -567,6 +688,15 @@ def resolve_runtime_as_of(*, requested: datetime, now: datetime) -> datetime:
     return now
 
 
+def live_candidate_analysis_as_of(
+    *, requested: datetime, now: datetime
+) -> None:
+    """Validate the operator boundary, then let live fundamentals fix the PIT clock."""
+
+    resolve_runtime_as_of(requested=requested, now=now)
+    return None
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -592,8 +722,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--base-report", type=Path)
     parser.add_argument("--benchmark", default="069500")
-    parser.add_argument("--model", default="gpt-5.6-sol")
-    parser.add_argument("--model-version", default="gpt-5.6-sol")
+    parser.add_argument("--model", default=CHATGPT_OAUTH_DEFAULT_MODEL)
+    parser.add_argument("--model-version", default=CHATGPT_OAUTH_DEFAULT_MODEL)
     parser.add_argument("--code-version", default="uncommitted-kr-daily")
     parser.add_argument("--lookback-days", type=int, default=400)
     parser.add_argument(
@@ -651,7 +781,7 @@ async def _run_command(args: argparse.Namespace) -> dict[str, object]:
 
     async def analyze(candidate: ReconciledCandidate) -> CandidateAnalysisResult:
         symbol = candidate.provider_symbols[0]
-        candidate_as_of = resolve_runtime_as_of(
+        candidate_as_of = live_candidate_analysis_as_of(
             requested=args.as_of,
             now=datetime.now(tz=KST),
         )
@@ -675,6 +805,8 @@ async def _run_command(args: argparse.Namespace) -> dict[str, object]:
                     lookback_days=args.lookback_days,
                     kis_token_cache=args.kis_token_cache,
                     require_fresh_runtime_proof=False,
+                    require_complete_runtime_proof=False,
+                    force_live_prefetch=True,
                 )
             )
             markdown = candidate_report.read_text(encoding="utf-8")
@@ -682,6 +814,14 @@ async def _run_command(args: argparse.Namespace) -> dict[str, object]:
         if not isinstance(raw_strategy_ids, (list, tuple)):
             raise ValueError("product readback omitted exact strategy identities")
         strategy_ids = tuple(StrategyId(item) for item in raw_strategy_ids)
+        raw_strategy_results = payload.get("strategy_results")
+        if not isinstance(raw_strategy_results, Mapping):
+            raise ValueError("product readback omitted persisted strategy results")
+        strategy_results = {
+            str(strategy_id): dict(result)
+            for strategy_id, result in raw_strategy_results.items()
+            if isinstance(strategy_id, str) and isinstance(result, Mapping)
+        }
         issues = tuple(
             str(item)
             for field in ("quality_reasons", "missing_fields", "stale_fields")
@@ -691,9 +831,11 @@ async def _run_command(args: argparse.Namespace) -> dict[str, object]:
             security_id=candidate.security_id,
             provider_symbol=symbol,
             job_key=str(payload["job_key"]),
-            status=str(payload["status"]),
+            status=candidate_readback_status(str(payload["status"]), strategy_results),
             strategy_ids=strategy_ids,
             report_markdown=markdown,
+            data_snapshot_id=str(payload["data_snapshot_id"]),
+            strategy_results=strategy_results,
             issues=tuple(dict.fromkeys(issues)),
             call_evidence=(
                 payload.get("network_evidence")
@@ -798,7 +940,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         payload = asyncio.run(_run_command(args))
-        exit_code = 0 if payload["status"] == "COMPLETED" else 2
+        exit_code = daily_product_exit_code(str(payload["status"]))
     except Exception as exc:  # noqa: BLE001 - sanitize every provider/runtime failure
         payload = {
             "stage": "KR_DAILY_CLOSE_PRODUCT",

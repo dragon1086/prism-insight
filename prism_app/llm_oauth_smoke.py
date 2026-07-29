@@ -11,7 +11,7 @@ from typing import Literal, Protocol, Sequence
 from pydantic import BaseModel, ConfigDict
 
 from cores.llm.ports import AgentSpec, LLMBackend, LLMParams
-from prism_app.oauth_llm import ChatGPTOAuthRuntime
+from prism_app.oauth_llm import CHATGPT_OAUTH_DEFAULT_MODEL, ChatGPTOAuthRuntime
 
 
 class OAuthSmokeResponse(BaseModel):
@@ -75,7 +75,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run one bounded, tool-free ChatGPT OAuth LLM smoke."
     )
-    parser.add_argument("--model", default="gpt-5.6-sol")
+    parser.add_argument("--model", default=CHATGPT_OAUTH_DEFAULT_MODEL)
     parser.add_argument("--output", type=Path)
     return parser
 

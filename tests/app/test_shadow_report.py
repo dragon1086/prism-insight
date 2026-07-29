@@ -84,13 +84,45 @@ def _analysis(job_key: str) -> PersistedDailyAnalysis:
                     "scenario_state": "NO_ENTRY",
                     "scenario_complete": True,
                     "scenario_reasons": (),
+                    "hard_vetoes": ("shadow_score_v1:swing_v1.min_quant_score",),
                     "quant_score": {
+                        "score_id": "score-swing",
+                        "feature_snapshot_id": "feature-swing",
                         "score_version": "SHADOW_SCORE_V1.SWING_V1",
                         "total_score": "67.500000",
                         "components": {
                             "swing_v1.momentum_state_score": "75.000000",
                             "swing_v1.regime_state_score": "60.000000",
                         },
+                        "component_details": [
+                            {
+                                "name": "swing_v1.momentum_state_score",
+                                "feature_name": "swing_v1.price_return_5d_percent",
+                                "raw_value": "5",
+                                "normalized_score": "75.000000",
+                                "lower_bound": "-10",
+                                "upper_bound": "10",
+                                "higher_is_better": True,
+                                "weight": "0.30",
+                                "weighted_score": "22.500000",
+                            }
+                        ],
+                        "recomposed_total": "67.500000",
+                        "recomposition_matches": True,
+                        "threshold_version": "SHADOW_ENTRY_THRESHOLDS_V1.SWING_V1",
+                        "thresholds": [
+                            {
+                                "name": "swing_v1.min_quant_score",
+                                "feature_name": "quant_score.total_score",
+                                "observed_value": "67.500000",
+                                "operator": ">=",
+                                "threshold": "65",
+                                "unit": "score_0_100",
+                                "passed": True,
+                                "veto": None,
+                            }
+                        ],
+                        "threshold_vetoes": [],
                     },
                     "scenario": {
                         "market_judgment": {"drivers": ["breadth weak"]},
@@ -223,6 +255,10 @@ def test_shadow_report_appends_to_existing_markdown_once() -> None:
     assert "SHADOW_SCORE_V1.SWING_V1" in once
     assert "swing_v1.momentum_state_score" in once
     assert "67.500000" in once
+    assert "점수 재합산: `67.500000` (일치 `True`)" in once
+    assert "진입 임계값 버전: `SHADOW_ENTRY_THRESHOLDS_V1.SWING_V1`" in once
+    assert '"observed_value":"67.500000"' in once
+    assert '"threshold":"65"' in once
     assert "NO_ENTRY" in once
     assert "실제 수집 시각: `2026-07-26T10:00:05+00:00`" in once
     assert "최신 완료 거래일: `2026-07-24`" in once
@@ -289,6 +325,13 @@ def test_shadow_report_suppresses_exact_levels_when_quality_is_degraded() -> Non
     assert "67999" not in rendered
     assert "NO_ENTRY" in rendered
     assert "시나리오 상태: `NO_ENTRY`" in rendered
+
+
+def test_shadow_report_renders_persisted_deterministic_hard_vetoes() -> None:
+    rendered = render_shadow_report(_analysis("daily:KR:2026-07-26:hard-veto"))
+
+    assert "결정론적 진입 거부" in rendered
+    assert "shadow_score_v1:swing_v1.min_quant_score" in rendered
 
 
 def test_shadow_report_renders_invalid_proposal_without_inventing_no_entry() -> None:
