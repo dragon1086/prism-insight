@@ -18,6 +18,7 @@ from prism_core.persistence.feedback_cycle import (
     ProcessQualityRecord,
 )
 from prism_core.strategies.contracts import Market, StrategyId
+from prism_core.strategies.pre_gate import PreGateStatus
 
 
 def record_initial_shadow_feedback(
@@ -46,6 +47,15 @@ def record_initial_shadow_feedback(
             )
         strategy_input = snapshot.strategy_inputs[item.strategy_id]
         feature = strategy_input.feature_snapshot
+        pre_gate = strategy_input.pre_gate_outcome
+        if pre_gate is not None and pre_gate.status is PreGateStatus.PRE_GATE_REJECTED:
+            if (
+                item.output_payload.get("status") != pre_gate.status.value
+                or item.output_payload.get("decision") != pre_gate.decision.value
+                or item.output_payload.get("proposal_record_id") is not None
+            ):
+                raise RuntimeError("pre-gate analysis diverged from its deterministic outcome")
+            continue
         proposal_record_id = item.output_payload.get("proposal_record_id")
         if not isinstance(proposal_record_id, str) or not proposal_record_id.strip():
             raise RuntimeError("strategy analysis is missing its exact proposal identity")

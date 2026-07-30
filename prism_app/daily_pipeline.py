@@ -34,6 +34,7 @@ from prism_core.strategies.contracts import (
     StrategyVersion,
 )
 from prism_core.strategies.registry import DEFAULT_STRATEGY_REGISTRY, StrategyRegistry
+from prism_core.strategies.pre_gate import PreGateOutcome
 from prism_core.strategies.scenario_inputs import ScenarioInputPack, ScenarioInputStatus
 
 
@@ -132,6 +133,7 @@ class StrategyEvaluationInput:
     timing: ObservationTime
     hard_vetoes: tuple[str, ...] = ()
     scenario_input_pack: ScenarioInputPack | None = None
+    pre_gate_outcome: PreGateOutcome | None = None
 
     def __post_init__(self) -> None:
         feature = self.feature_snapshot
@@ -163,6 +165,24 @@ class StrategyEvaluationInput:
             raise ValueError("strategy input timing must match feature as_of")
         if any(not isinstance(item, str) or not item.strip() for item in self.hard_vetoes):
             raise TypeError("hard_vetoes must contain non-empty strings")
+        pre_gate = self.pre_gate_outcome
+        if pre_gate is not None:
+            if not isinstance(pre_gate, PreGateOutcome):
+                raise TypeError("pre_gate_outcome must be a PreGateOutcome")
+            if (
+                pre_gate.strategy_id is not feature.strategy_id
+                or pre_gate.strategy_version != feature.strategy_version
+                or pre_gate.market is not feature.market
+                or pre_gate.security_id != feature.security_id
+                or pre_gate.data_snapshot_id != feature.data_snapshot_id
+                or pre_gate.feature_snapshot_id != feature.feature_snapshot_id
+                or pre_gate.quant_score_id != score.quant_score_id
+                or pre_gate.score_version != score.score_version
+                or pre_gate.score != score.total_score
+                or pre_gate.hard_vetoes != self.hard_vetoes
+                or pre_gate.evaluated_at != feature.as_of
+            ):
+                raise ValueError("pre-gate outcome must match the exact strategy input")
         pack = self.scenario_input_pack
         if pack is not None:
             if not isinstance(pack, ScenarioInputPack):

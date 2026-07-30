@@ -35,6 +35,10 @@ from prism_core.ops.job_runs import JobRunStore
 from prism_core.policy import ProposalValidationPolicy
 from prism_core.runtime.settings import ProductMode, RuntimeSettings
 from prism_core.strategies.contracts import StrategyId
+from prism_core.strategies.pre_gate import (
+    PreGateDecision,
+    PreGateStatus,
+)
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -57,8 +61,10 @@ def _sessions(count: int):
 class HistoricalTransport:
     def __init__(self, count: int = 260) -> None:
         self._count = count
+        self.calls = 0
 
     async def fetch(self, provider: str, *, as_of_date: datetime) -> ProviderPayload:
+        self.calls += 1
         rows = []
         for index, session in enumerate(_sessions(self._count)):
             for symbol, base, step in (
@@ -87,6 +93,34 @@ class HistoricalTransport:
         )
 
 
+class PassPreGateComposer(KRProductSnapshotComposer):
+    """Test-only projection for exercising the backend-eligible product path."""
+
+    def __init__(self, delegate: KRProductSnapshotComposer) -> None:
+        self._delegate = delegate
+
+    async def acquire(self, *, as_of: datetime):
+        snapshot = await self._delegate.acquire(as_of=as_of)
+        strategy_inputs = {}
+        for strategy_id, item in snapshot.strategy_inputs.items():
+            outcome = item.pre_gate_outcome
+            assert outcome is not None
+            passing = outcome.model_copy(
+                update={
+                    "status": PreGateStatus.PASS,
+                    "decision": PreGateDecision.PROCEED_TO_LLM,
+                    "threshold": outcome.score,
+                    "hard_vetoes": (),
+                }
+            )
+            strategy_inputs[strategy_id] = replace(
+                item,
+                hard_vetoes=(),
+                pre_gate_outcome=passing,
+            )
+        return replace(snapshot, strategy_inputs=strategy_inputs)
+
+
 def _evidence() -> KRPITEvidence:
     return KRPITEvidence(
         observed_at=AS_OF - timedelta(minutes=2),
@@ -111,8 +145,9 @@ def _evidence() -> KRPITEvidence:
 
 @pytest.mark.asyncio
 async def test_kr_composer_builds_two_exact_strategy_inputs_from_kis_and_pit_evidence() -> None:
+    transport = HistoricalTransport()
     provider = KISMarketDataProvider(
-        transport=HistoricalTransport(),
+        transport=transport,
         instruments=(
             KISInstrument(security_id=STOCK_ID, kis_symbol="005930"),
             KISInstrument(security_id=BENCHMARK_ID, kis_symbol="069500"),
@@ -134,6 +169,7 @@ async def test_kr_composer_builds_two_exact_strategy_inputs_from_kis_and_pit_evi
         iter(snapshot.strategy_inputs.values())
     ).feature_snapshot.data_snapshot_id
     assert set(snapshot.strategy_inputs) == {StrategyId.SWING_V1, StrategyId.TREND_V1}
+    assert transport.calls == 1
     assert all(
         value.feature_snapshot.data_quality_status is DataQualityStatus.FRESH
         for value in snapshot.strategy_inputs.values()
@@ -162,6 +198,14 @@ async def test_kr_composer_builds_two_exact_strategy_inputs_from_kis_and_pit_evi
         "swing_v1.regime_state_score",
     )
     for value in snapshot.strategy_inputs.values():
+        assert value.pre_gate_outcome is not None
+        assert value.pre_gate_outcome.status is PreGateStatus.PRE_GATE_REJECTED
+        assert value.pre_gate_outcome.decision is PreGateDecision.NO_ENTRY
+        assert value.pre_gate_outcome.data_snapshot_id == snapshot.data_snapshot_id
+        assert value.pre_gate_outcome.feature_snapshot_id == value.feature_snapshot.feature_snapshot_id
+        assert value.pre_gate_outcome.quant_score_id == value.quant_score.quant_score_id
+        assert value.pre_gate_outcome.hard_vetoes == value.hard_vetoes
+        assert value.pre_gate_outcome.llm_called is False
         assert value.scenario_input_pack is not None
         assert value.scenario_input_pack.entry_vetoes
         assert set(value.scenario_input_pack.entry_vetoes) <= set(value.hard_vetoes)
@@ -345,9 +389,7 @@ async def test_product_composition_persists_and_reads_back_shadow_report(
         benchmark_symbol="069500",
         evidence=_evidence(),
     )
-    backend = FakeLLMBackend(
-        [LLMResult(text="not-json"), LLMResult(text="not-json")]
-    )
+    backend = FakeLLMBackend([])
     output = tmp_path / "phase1-shadow.md"
     base = tmp_path / "existing.md"
     base.write_text("# 기존 PRISM 리포트\n\n기존 내용\n", encoding="utf-8")
@@ -381,9 +423,7 @@ async def test_product_composition_persists_and_reads_back_shadow_report(
         output_path=output,
         base_report_path=base,
     )
-    second_backend = FakeLLMBackend(
-        [LLMResult(text="not-json"), LLMResult(text="not-json")]
-    )
+    second_backend = FakeLLMBackend([])
     second = await run_kr_shadow_product(
         composer=composer,
         backend=second_backend,
@@ -393,11 +433,10 @@ async def test_product_composition_persists_and_reads_back_shadow_report(
         base_report_path=base,
     )
 
-    assert len(backend.calls) == 2
+    assert backend.calls == []
     assert replay.idempotent_replay is True
     assert second.invocation_id != result.invocation_id
-    assert len(second_backend.calls) == 2
-    assert all(spec.params.temperature is None for spec, _user_input in backend.calls)
+    assert second_backend.calls == []
     assert result.analysis.job_key.endswith(result.invocation_id)
     assert result.readback.analysis == result.analysis
     assert result.readback.markdown in output.read_text(encoding="utf-8")
@@ -407,32 +446,16 @@ async def test_product_composition_persists_and_reads_back_shadow_report(
     with sqlite3.connect(settings.research_db_path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM trade_plan_proposals"
-        ).fetchone()[0] == 4
+        ).fetchone()[0] == 0
         assert connection.execute(
             "SELECT count(*) FROM process_quality_outcomes"
-        ).fetchone()[0] == 4
+        ).fetchone()[0] == 0
         pending = connection.execute(
             "SELECT strategy_id, horizon_sessions, outcome_state, outcome_json "
             "FROM proposal_outcomes "
             "ORDER BY strategy_id, horizon_sessions"
         ).fetchall()
-        assert len(pending) == 12
-        assert {
-            (strategy_id, horizon)
-            for strategy_id, horizon, _state, _payload in pending
-        } == {
-            ("SWING_V1", 5),
-            ("SWING_V1", 10),
-            ("SWING_V1", 20),
-            ("TREND_V1", 20),
-            ("TREND_V1", 60),
-            ("TREND_V1", 120),
-        }
-        assert all(state == "UNKNOWN" for _strategy, _horizon, state, _payload in pending)
-        assert all(
-            '"measurement_status":"PENDING"' in payload
-            for _strategy, _horizon, _state, payload in pending
-        )
+        assert pending == []
         assert connection.execute(
             "SELECT count(*) FROM retrospective_events"
         ).fetchone()[0] == 0
@@ -488,13 +511,15 @@ async def test_product_total_deadline_records_error_and_releases_lease(tmp_path)
 
     with pytest.raises(TimeoutError):
         await run_kr_shadow_product(
-            composer=KRProductSnapshotComposer(
-                provider=provider,
-                stock_id=STOCK_ID,
-                benchmark_id=BENCHMARK_ID,
-                stock_symbol="005930",
-                benchmark_symbol="069500",
-                evidence=_evidence(),
+            composer=PassPreGateComposer(
+                KRProductSnapshotComposer(
+                    provider=provider,
+                    stock_id=STOCK_ID,
+                    benchmark_id=BENCHMARK_ID,
+                    stock_symbol="005930",
+                    benchmark_symbol="069500",
+                    evidence=_evidence(),
+                )
             ),
             backend=HangingBackend(),
             settings=settings,
@@ -532,13 +557,15 @@ async def test_partial_feedback_failure_is_error_and_same_invocation_replay_reco
         ),
         clock=lambda: INGESTED,
     )
-    composer = KRProductSnapshotComposer(
-        provider=provider,
-        stock_id=STOCK_ID,
-        benchmark_id=BENCHMARK_ID,
-        stock_symbol="005930",
-        benchmark_symbol="069500",
-        evidence=_evidence(),
+    composer = PassPreGateComposer(
+        KRProductSnapshotComposer(
+            provider=provider,
+            stock_id=STOCK_ID,
+            benchmark_id=BENCHMARK_ID,
+            stock_symbol="005930",
+            benchmark_symbol="069500",
+            evidence=_evidence(),
+        )
     )
     settings = RuntimeSettings(
         product_mode=ProductMode.SHADOW,
@@ -687,6 +714,7 @@ async def test_product_invocation_identity_changes_with_policy_or_evaluator_prov
                         swing_input.feature_snapshot,
                         feature_version="phase1.features.v2",
                     ),
+                    pre_gate_outcome=None,
                 ),
             },
         ),
@@ -705,6 +733,7 @@ async def test_product_invocation_identity_changes_with_policy_or_evaluator_prov
                         swing_input.quant_score,
                         score_version="swing-score.shadow.v2",
                     ),
+                    pre_gate_outcome=None,
                 ),
             },
         ),

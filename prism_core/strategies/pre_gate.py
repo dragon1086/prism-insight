@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Literal
@@ -10,7 +11,14 @@ from uuid import UUID
 from pydantic import AwareDatetime, Field, model_validator
 
 from prism_core.data.contracts import ContractModel, SecurityId
-from prism_core.strategies.contracts import Market, StrategyId, StrategyVersion
+from prism_core.strategies.contracts import (
+    FeatureSnapshot,
+    Market,
+    QuantScoreBreakdown,
+    StrategyId,
+    StrategyVersion,
+)
+from prism_core.strategies.quant_score import QuantScorePolicy
 
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
@@ -105,3 +113,61 @@ class PreGateError(ContractModel):
     data_snapshot_id: UUID
     evaluated_at: AwareDatetime
     llm_called: Literal[False] = False
+
+
+def evaluate_pre_gate(
+    *,
+    feature_snapshot: FeatureSnapshot,
+    quant_score: QuantScoreBreakdown,
+    policy: QuantScorePolicy,
+    hard_vetoes: tuple[str, ...],
+    evaluated_at: datetime,
+) -> PreGateOutcome:
+    """Bind one deterministic score and veto set to its exact PIT identities."""
+
+    if not isinstance(feature_snapshot, FeatureSnapshot):
+        raise TypeError("feature_snapshot must be a FeatureSnapshot")
+    if not isinstance(quant_score, QuantScoreBreakdown):
+        raise TypeError("quant_score must be a QuantScoreBreakdown")
+    if not isinstance(policy, QuantScorePolicy):
+        raise TypeError("policy must be a QuantScorePolicy")
+    if (
+        quant_score.feature_snapshot_id != feature_snapshot.feature_snapshot_id
+        or quant_score.strategy_id is not feature_snapshot.strategy_id
+        or quant_score.strategy_version != feature_snapshot.strategy_version
+        or quant_score.market is not feature_snapshot.market
+        or quant_score.security_id != feature_snapshot.security_id
+        or quant_score.score_version != policy.score_version
+        or policy.strategy_id is not feature_snapshot.strategy_id
+    ):
+        raise ValueError("pre-gate inputs must share exact strategy and snapshot identities")
+    if policy.thresholds is None:
+        raise ValueError("pre-gate policy requires versioned entry thresholds")
+    threshold_name = f"{feature_snapshot.strategy_id.value.lower()}.min_quant_score"
+    threshold_matches = tuple(
+        value for name, value, _unit in policy.thresholds.values if name == threshold_name
+    )
+    if len(threshold_matches) != 1:
+        raise ValueError("pre-gate policy requires exactly one minimum quant score")
+    if any(not isinstance(item, str) or not item.strip() for item in hard_vetoes):
+        raise TypeError("hard_vetoes must contain non-empty strings")
+    threshold = threshold_matches[0]
+    vetoes = tuple(sorted(set(hard_vetoes)))
+    rejected = bool(vetoes)
+    return PreGateOutcome(
+        status=(PreGateStatus.PRE_GATE_REJECTED if rejected else PreGateStatus.PASS),
+        decision=(PreGateDecision.NO_ENTRY if rejected else PreGateDecision.PROCEED_TO_LLM),
+        strategy_id=feature_snapshot.strategy_id,
+        strategy_version=feature_snapshot.strategy_version,
+        market=feature_snapshot.market,
+        security_id=feature_snapshot.security_id,
+        data_snapshot_id=feature_snapshot.data_snapshot_id,
+        feature_snapshot_id=feature_snapshot.feature_snapshot_id,
+        quant_score_id=quant_score.quant_score_id,
+        score_version=quant_score.score_version,
+        threshold_version=policy.thresholds.version,
+        score=quant_score.total_score,
+        threshold=threshold,
+        hard_vetoes=vetoes,
+        evaluated_at=evaluated_at,
+    )

@@ -36,10 +36,12 @@ from prism_core.policy.proposal_validator import (
     ProposalValidator,
 )
 from prism_core.reporting.scenario_completeness import assess_scenario
+from prism_core.strategies.contracts import Market
 from prism_core.strategies.quant_score import (
     build_shadow_score_audit,
     shadow_score_v1_policy,
 )
+from prism_core.strategies.pre_gate import PreGateStatus
 
 
 def _normalize_model_numbers(value: object) -> object:
@@ -187,6 +189,17 @@ class StructuredLLMStrategyEvaluator:
         if strategy_input is None:
             raise ValueError("structured evaluator requires a typed strategy_input")
         self._validate_request(request, strategy_input)
+        if (
+            strategy_input.feature_snapshot.market is Market.KR
+            and strategy_input.hard_vetoes
+            and strategy_input.pre_gate_outcome is None
+        ):
+            raise ValueError("KR hard-vetoed strategy input requires a pre-gate outcome")
+        if (
+            strategy_input.pre_gate_outcome is not None
+            and strategy_input.pre_gate_outcome.status is PreGateStatus.PRE_GATE_REJECTED
+        ):
+            return self._pre_gate_rejection(request, strategy_input)
 
         contract = get_trade_plan_prompt_contract(
             request.strategy.strategy_id,
@@ -324,6 +337,35 @@ class StructuredLLMStrategyEvaluator:
             proposal=validated.proposal,
             dispositions=validated.dispositions,
             reasons=validated.reasons,
+        )
+
+    @staticmethod
+    def _pre_gate_rejection(
+        request: StrategyEvaluationRequest,
+        strategy_input: StrategyEvaluationInput,
+    ) -> StrategyAnalysis:
+        outcome = strategy_input.pre_gate_outcome
+        if outcome is None or outcome.status is not PreGateStatus.PRE_GATE_REJECTED:
+            raise ValueError("pre-gate rejection analysis requires a rejected outcome")
+        return StrategyAnalysis(
+            strategy_id=request.strategy.strategy_id,
+            strategy_version=request.strategy.version,
+            output_payload={
+                "status": outcome.status.value,
+                "decision": outcome.decision.value,
+                "scenario_state": "NO_ENTRY",
+                "scenario_complete": True,
+                "scenario_reasons": list(outcome.hard_vetoes),
+                "scenario": {},
+                "quant_score": _quant_score_payload(strategy_input),
+                "hard_vetoes": list(outcome.hard_vetoes),
+                "pre_gate": outcome.model_dump(mode="json"),
+                "summary": "Deterministic pre-gate rejected LLM invocation",
+                "shadow_only": True,
+                "backend_error_type": None,
+                "model_output_error_type": None,
+            },
+            evidence_refs=tuple(sorted(strategy_input.available_evidence_ids)),
         )
 
     @staticmethod

@@ -41,6 +41,7 @@ from prism_core.strategies.quant_score import (
     evaluate_shadow_entry_thresholds,
     shadow_score_v1_policy,
 )
+from prism_core.strategies.pre_gate import evaluate_pre_gate
 from prism_core.strategies.registry import DEFAULT_STRATEGY_REGISTRY
 from prism_core.strategies.scenario_inputs import (
     ScenarioPriceBasis,
@@ -346,23 +347,35 @@ class KRProductSnapshotComposer:
                     feature_snapshots=features,
                 )
                 for strategy_id in features:
+                    hard_vetoes = tuple(
+                        sorted(
+                            {
+                                *evidence.hard_vetoes,
+                                *scenario_input_pack.entry_vetoes,
+                                *coverage_vetoes,
+                                *threshold_vetoes[strategy_id],
+                            }
+                        )
+                    )
                     strategy_inputs[strategy_id] = StrategyEvaluationInput(
                         feature_snapshot=features[strategy_id],
                         quant_score=scores[strategy_id],
                         available_evidence_ids=evidence_ids,
                         evidence_payload=dict(evidence.evidence_payload),
                         timing=timing,
-                        hard_vetoes=tuple(
-                            sorted(
-                                {
-                                    *evidence.hard_vetoes,
-                                    *scenario_input_pack.entry_vetoes,
-                                    *coverage_vetoes,
-                                    *threshold_vetoes[strategy_id],
-                                }
-                            )
-                        ),
+                        hard_vetoes=hard_vetoes,
                         scenario_input_pack=scenario_input_pack,
+                        pre_gate_outcome=(
+                            evaluate_pre_gate(
+                                feature_snapshot=features[strategy_id],
+                                quant_score=scores[strategy_id],
+                                policy=shadow_score_v1_policy(strategy_id, self._market),
+                                hard_vetoes=hard_vetoes,
+                                evaluated_at=as_of,
+                            )
+                            if self._market is Market.KR
+                            else None
+                        ),
                     )
 
         evidence_hash = hashlib.sha256(

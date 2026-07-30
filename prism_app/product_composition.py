@@ -162,6 +162,11 @@ def product_invocation_id(
             "feature_version": item.feature_snapshot.feature_version,
             "quant_score_id": item.quant_score.quant_score_id,
             "score_version": item.quant_score.score_version,
+            "pre_gate": (
+                None
+                if item.pre_gate_outcome is None
+                else item.pre_gate_outcome.model_dump(mode="json")
+            ),
         }
         for strategy_id, item in sorted(
             snapshot.strategy_inputs.items(), key=lambda pair: pair[0].value

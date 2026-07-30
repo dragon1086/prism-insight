@@ -19,6 +19,7 @@ from prism_core.strategies.pre_gate import (
     PreGateErrorClass,
     PreGateOutcome,
     PreGateStatus,
+    evaluate_pre_gate,
 )
 from prism_core.strategies.registry import DEFAULT_STRATEGY_REGISTRY, StrategyRegistry
 from prism_core.strategies.scenario_inputs import (
@@ -48,6 +49,7 @@ __all__ = [
     "PreGateErrorClass",
     "PreGateOutcome",
     "PreGateStatus",
+    "evaluate_pre_gate",
     "QuantScoreBreakdown",
     "QuantScoreComponent",
     "FormulaValue",

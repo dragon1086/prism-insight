@@ -36,6 +36,11 @@ from prism_core.strategies.contracts import (
 )
 from prism_core.strategies.registry import DEFAULT_STRATEGY_REGISTRY
 from prism_core.strategies.quant_score import QuantScoreService, shadow_score_v1_policy
+from prism_core.strategies.pre_gate import (
+    PreGateDecision,
+    PreGateOutcome,
+    PreGateStatus,
+)
 from tests.llm.test_trade_plan_schema import valid_proposal_payload
 
 
@@ -135,8 +140,107 @@ def _shadow_strategy_input() -> StrategyEvaluationInput:
             ingested_at=NOW + timedelta(seconds=1),
             as_of_date=NOW,
         ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_pre_gate_rejection_never_reaches_fake_backend(tmp_path: Path) -> None:
+    original = replace(
+        _shadow_strategy_input(),
         hard_vetoes=("risk:fixture-veto",),
     )
+    policy = shadow_score_v1_policy(StrategyId.SWING_V1, Market.KR)
+    assert policy.thresholds is not None
+    strategy_input = replace(
+        original,
+        pre_gate_outcome=PreGateOutcome(
+            status=PreGateStatus.PRE_GATE_REJECTED,
+            decision=PreGateDecision.NO_ENTRY,
+            strategy_id=original.feature_snapshot.strategy_id,
+            strategy_version=original.feature_snapshot.strategy_version,
+            market=original.feature_snapshot.market,
+            security_id=original.feature_snapshot.security_id,
+            data_snapshot_id=original.feature_snapshot.data_snapshot_id,
+            feature_snapshot_id=original.feature_snapshot.feature_snapshot_id,
+            quant_score_id=original.quant_score.quant_score_id,
+            score_version=original.quant_score.score_version,
+            threshold_version=policy.thresholds.version,
+            score=original.quant_score.total_score,
+            threshold=Decimal("65"),
+            hard_vetoes=original.hard_vetoes,
+            evaluated_at=NOW,
+        ),
+    )
+    backend = FakeLLMBackend([])
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        repository = FeedbackRepository(connection)
+        evaluator = StructuredLLMStrategyEvaluator(
+            backend=backend,
+            proposal_service=ProposalService(),
+            validator=_validator(),
+            repository=repository,
+            config=_config(),
+        )
+        strategy = DEFAULT_STRATEGY_REGISTRY.get(StrategyId.SWING_V1)
+
+        result = await evaluator.evaluate(
+            StrategyEvaluationRequest(
+                strategy=strategy,
+                market=Market.KR,
+                data_snapshot_id=DATA_SNAPSHOT_ID,
+                source_payload={"provider": "KIS_FIXTURE"},
+                evaluated_at=NOW + timedelta(minutes=1),
+                strategy_input=strategy_input,
+            )
+        )
+
+        assert repository.proposals_as_of(
+            NOW + timedelta(minutes=1), strategy_id=StrategyId.SWING_V1
+        ) == ()
+
+    assert backend.calls == []
+    assert result.output_payload["status"] == "PRE_GATE_REJECTED"
+    assert result.output_payload["decision"] == "NO_ENTRY"
+    assert result.output_payload["scenario_state"] == "NO_ENTRY"
+    assert result.output_payload["scenario_complete"] is True
+    assert result.output_payload["pre_gate"]["llm_called"] is False
+    assert result.output_payload["pre_gate"]["data_snapshot_id"] == str(DATA_SNAPSHOT_ID)
+
+
+@pytest.mark.asyncio
+async def test_kr_hard_veto_without_pre_gate_fails_closed_before_backend(
+    tmp_path: Path,
+) -> None:
+    strategy_input = replace(
+        _shadow_strategy_input(),
+        hard_vetoes=("risk:fixture-veto",),
+    )
+    backend = FakeLLMBackend([])
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        evaluator = StructuredLLMStrategyEvaluator(
+            backend=backend,
+            proposal_service=ProposalService(),
+            validator=_validator(),
+            repository=FeedbackRepository(connection),
+            config=_config(),
+        )
+        strategy = DEFAULT_STRATEGY_REGISTRY.get(StrategyId.SWING_V1)
+
+        with pytest.raises(ValueError, match="requires a pre-gate outcome"):
+            await evaluator.evaluate(
+                StrategyEvaluationRequest(
+                    strategy=strategy,
+                    market=Market.KR,
+                    data_snapshot_id=DATA_SNAPSHOT_ID,
+                    source_payload={"provider": "KIS_FIXTURE"},
+                    evaluated_at=NOW + timedelta(minutes=1),
+                    strategy_input=strategy_input,
+                )
+            )
+
+    assert backend.calls == []
 
 
 def _config() -> StrategyEvaluatorConfig:
@@ -475,7 +579,7 @@ async def test_shadow_score_audit_is_persisted_with_the_same_snapshot_used_by_ou
         "SHADOW_ENTRY_THRESHOLDS_V1.SWING_V1"
     )
     assert result.output_payload["quant_score"]["thresholds"]
-    assert result.output_payload["hard_vetoes"] == ["risk:fixture-veto"]
+    assert result.output_payload["hard_vetoes"] == []
     assert row[:3] == (
         str(DATA_SNAPSHOT_ID),
         str(FEATURE_SNAPSHOT_ID),
