@@ -33,7 +33,7 @@ from prism_core.candidates import (
     CandidateStatus,
     reconcile_candidates,
 )
-from prism_core.data.contracts import SecurityId
+from prism_core.data.contracts import DataQualityStatus, SecurityId
 from prism_core.strategies.contracts import Market, StrategyId
 
 
@@ -192,7 +192,7 @@ def test_daily_product_exit_code_distinguishes_terminal_outputs_from_failures(
 
 
 @pytest.mark.asyncio
-async def test_daily_product_unions_stable_identities_without_truncation_and_analyzes_both_strategies() -> None:
+async def test_daily_product_retains_uncapped_union_while_analyzing_only_overlap() -> None:
     core = tuple(_candidate(index) for index in range(120))
     duplicate = _candidate(
         7,
@@ -287,13 +287,151 @@ async def test_daily_product_unions_stable_identities_without_truncation_and_ana
     assert result.counts.raw_assertions == 122
     assert result.counts.raw_assertions_by_source == {"CORE": 120, "SUPPLEMENT": 2}
     assert result.counts.unique_identities == 121
-    assert result.counts.analyzed_swing == 121
-    assert result.counts.analyzed_trend == 121
+    assert result.observation_universe.identity_count == 121
+    assert len(result.analysis_cohort.observation_only_members) == 120
+    assert result.counts.analyzed_swing == 1
+    assert result.counts.analyzed_trend == 1
     assert result.counts.truncated == 0
-    assert len(analyzed) == 121
+    assert len(analyzed) == 1
     channels = Counter(channel for item in analyzed for channel in item.channels)
-    assert channels[CandidateChannel.CORE_PRISM] == 120
-    assert channels[CandidateChannel.SUPPLEMENTAL_LEADERSHIP] == 2
+    assert channels[CandidateChannel.CORE_PRISM] == 1
+    assert channels[CandidateChannel.SUPPLEMENTAL_LEADERSHIP] == 1
+
+
+@pytest.mark.asyncio
+async def test_fresh_supplement_fans_out_only_six_cross_confirmed_candidates() -> None:
+    core = tuple(_candidate(index) for index in range(22))
+    supplemental = tuple(
+        _candidate(
+            index,
+            channel=CandidateChannel.SUPPLEMENTAL_LEADERSHIP,
+            source="SUPPLEMENT",
+            trigger="momentum",
+        )
+        for index in range(6)
+    )
+    context = SimpleNamespace(timing=SimpleNamespace(as_of=AS_OF))
+    selection = SimpleNamespace(
+        snapshots=core,
+        reconciliation=reconcile_candidates(core),
+    )
+    approved_snapshot = SimpleNamespace(
+        quality=SimpleNamespace(value="FRESH"),
+        observations=(),
+        candidate_nominations=(),
+        timing=SimpleNamespace(
+            observed_at=AS_OF,
+            available_at=AS_OF,
+            ingested_at=AS_OF,
+        ),
+        image_hash=None,
+        provider="STOCKEASY_SANITIZED_UI_EXPORT",
+        capture_method=SimpleNamespace(value="APPROVED_UI"),
+        content_hash="b" * 64,
+        permission_record_id="permission:test",
+        source_scope_id="scope:test",
+        source_snapshot_id="snapshot:test",
+        issues=(),
+    )
+
+    class ContextComposer:
+        async def compose(self):
+            return context
+
+    class CandidateSource:
+        def discover(self, *, trigger_time, market_context):
+            return selection
+
+    class SupplementComposer:
+        def compose(self, *, core_candidates, supplement, authoritative_values):
+            return SimpleNamespace(
+                supplemental_candidates=supplemental,
+                reconciliation=reconcile_candidates((*core, *supplemental)),
+            )
+
+    analyzed = []
+
+    async def analyze(candidate):
+        analyzed.append(candidate.security_id)
+        return CandidateAnalysisResult(
+            security_id=candidate.security_id,
+            provider_symbol=candidate.provider_symbols[0],
+            job_key=f"daily:KR:{candidate.provider_symbols[0]}",
+            status="PERSISTED_READBACK_VERIFIED",
+            strategy_ids=(StrategyId.SWING_V1, StrategyId.TREND_V1),
+            report_markdown=f"## {candidate.provider_symbols[0]}",
+        )
+
+    result = await KRDailyProduct(
+        context_composer=ContextComposer(),
+        candidate_source=CandidateSource(),
+        supplement_composer=SupplementComposer(),
+        candidate_analyzer=analyze,
+    ).run(
+        trigger_time="daily-close",
+        supplement_import=StockEasyImportResult.model_construct(
+            outcome=StockEasyImportOutcome.IMPORTED,
+            snapshot=approved_snapshot,
+            temporary_image_deleted=False,
+        ),
+    )
+
+    assert len(analyzed) == 6
+    assert result.observation_universe.identity_count == 22
+    assert len(result.analysis_cohort.analysis_members) == 6
+    assert len(result.analysis_cohort.observation_only_members) == 16
+    projection = daily_dashboard_projection(result)
+    skipped = [
+        item for item in projection["candidates"] if item["analysis_status"] == "NOT_ANALYZED"
+    ]
+    assert len(skipped) == 16
+    assert all(item["selection_reasons"] for item in skipped)
+    rendered = render_daily_composition("# Existing\n", result)
+    assert rendered.count("- 상태: `NOT_ANALYZED`") == 16
+    assert "CORE_ONLY_SUPPLEMENT_REQUIRED" in rendered
+
+
+@pytest.mark.asyncio
+async def test_stale_core_context_fails_closed_before_candidate_analysis() -> None:
+    core = (_candidate(1),)
+    selection = SimpleNamespace(
+        snapshots=core,
+        reconciliation=reconcile_candidates(core),
+    )
+
+    class ContextComposer:
+        async def compose(self):
+            return SimpleNamespace(
+                timing=SimpleNamespace(as_of=AS_OF),
+                quality=DataQualityStatus.STALE,
+            )
+
+    class CandidateSource:
+        def discover(self, *, trigger_time, market_context):
+            return selection
+
+    async def analyze(candidate):
+        raise AssertionError("stale core context must not fan out to analysis")
+
+    result = await KRDailyProduct(
+        context_composer=ContextComposer(),
+        candidate_source=CandidateSource(),
+        supplement_composer=SimpleNamespace(),
+        candidate_analyzer=analyze,
+    ).run(
+        trigger_time="daily-close",
+        supplement_import=StockEasyImportResult(
+            outcome=StockEasyImportOutcome.UNAVAILABLE,
+            error_code="APPROVED_UI_EXPORT_NOT_CONFIRMED",
+            temporary_image_deleted=False,
+        ),
+    )
+
+    assert result.analyses == ()
+    assert result.failures == ()
+    assert result.analysis_cohort.observation_only_members[0].selection_reasons[0].value == (
+        "CORE_INELIGIBLE"
+    )
 
 
 @pytest.mark.asyncio

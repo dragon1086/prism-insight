@@ -23,9 +23,13 @@ from prism_app.stockeasy_snapshot_import import (
     stockeasy_capability_projection,
 )
 from prism_core.candidates import (
-    CandidateChannel,
+    AnalysisCohort,
     CandidateReconciliation,
+    CandidateSourceState,
+    CohortDisposition,
+    ObservationUniverse,
     ReconciledCandidate,
+    select_analysis_cohort,
 )
 from prism_core.data.contracts import SecurityId
 from prism_core.strategies.contracts import StrategyId
@@ -145,6 +149,8 @@ class KRDailyCounts:
 class KRDailyProductResult:
     market_context: Any
     reconciliation: CandidateReconciliation
+    observation_universe: ObservationUniverse
+    analysis_cohort: AnalysisCohort
     supplement_outcome: StockEasyImportOutcome
     supplement_error_code: str | None
     analyses: tuple[CandidateAnalysisResult, ...]
@@ -217,7 +223,7 @@ def daily_product_exit_code(status: str) -> int:
 
 
 class KRDailyProduct:
-    """Share one market context, reconcile once, then analyze every identity.
+    """Share one market context, retain every identity, then analyze the cohort.
 
     Candidate work is deliberately sequential.  This is an observable bounded
     queue of size one, preserves the existing OAuth rate boundary, and cannot
@@ -270,9 +276,20 @@ class KRDailyProduct:
                 reconciliation = composition.reconciliation
                 snapshots = (*snapshots, *tuple(composition.supplemental_candidates))
 
+        observation_universe = ObservationUniverse.from_reconciliation(reconciliation)
+        analysis_cohort = select_analysis_cohort(
+            observation_universe,
+            core_state=_core_source_state(context),
+            supplement_state=_supplement_source_state(
+                effective_supplement_import,
+                snapshot_argument_supplied=supplement_snapshot_argument_supplied,
+            ),
+        )
+
         analyses: list[CandidateAnalysisResult] = []
         failures: list[CandidateAnalysisFailure] = []
-        for candidate in reconciliation.included:
+        for cohort_member in analysis_cohort.analysis_members:
+            candidate = cohort_member.candidate
             symbol = candidate.provider_symbols[0]
             try:
                 analysis = await self._candidate_analyzer(candidate)
@@ -311,6 +328,8 @@ class KRDailyProduct:
         return KRDailyProductResult(
             market_context=context,
             reconciliation=reconciliation,
+            observation_universe=observation_universe,
+            analysis_cohort=analysis_cohort,
             supplement_outcome=effective_supplement_import.outcome,
             supplement_error_code=effective_supplement_import.error_code,
             analyses=tuple(analyses),
@@ -343,6 +362,38 @@ class KRDailyProduct:
                 snapshot_argument_supplied=supplement_snapshot_argument_supplied,
             ),
         )
+
+
+def _supplement_source_state(
+    result: StockEasyImportResult,
+    *,
+    snapshot_argument_supplied: bool,
+) -> CandidateSourceState:
+    if result.outcome is StockEasyImportOutcome.IMPORTED:
+        quality = getattr(getattr(result, "snapshot", None), "quality", None)
+        try:
+            return CandidateSourceState(quality.value)
+        except (AttributeError, ValueError):
+            return CandidateSourceState.CONFLICT
+    if result.outcome is StockEasyImportOutcome.UNAVAILABLE:
+        return (
+            CandidateSourceState.UNAVAILABLE
+            if snapshot_argument_supplied
+            else CandidateSourceState.NOT_INGESTED
+        )
+    if result.error_code == "SUPPLEMENT_COMPOSITION_FAILED":
+        return CandidateSourceState.UNAVAILABLE
+    return CandidateSourceState.CONFLICT
+
+
+def _core_source_state(context: Any) -> CandidateSourceState:
+    quality = getattr(context, "quality", None)
+    if quality is None:
+        return CandidateSourceState.FRESH
+    try:
+        return CandidateSourceState(quality.value)
+    except (AttributeError, ValueError):
+        return CandidateSourceState.CONFLICT
 
 
 def genuine_completed_count(result: AnalysisCollection) -> int:
@@ -475,6 +526,22 @@ def render_daily_composition(
                 "",
             )
         )
+    analysis_cohort = getattr(result, "analysis_cohort", None)
+    for member in (
+        () if analysis_cohort is None else analysis_cohort.observation_only_members
+    ):
+        candidate = member.candidate
+        channels = ", ".join(channel.value for channel in candidate.channels)
+        reasons = ", ".join(reason.value for reason in member.selection_reasons)
+        lines.extend(
+            (
+                f"#### {candidate.provider_symbols[0]} — {channels}",
+                "",
+                "- 상태: `NOT_ANALYZED`",
+                f"- 분석 제외 사유: `{reasons}`",
+                "",
+            )
+        )
     lines.append(_KR_END)
     prefix = _without_existing_daily_composition(existing_markdown).rstrip()
     return (prefix + "\n" if prefix else "") + "\n".join(lines).lstrip() + "\n"
@@ -523,10 +590,22 @@ def daily_dashboard_projection(result: KRDailyProductResult | Any) -> dict[str, 
 
     analyses = {item.security_id: item for item in result.analyses}
     failures = {item.security_id: item for item in result.failures}
+    cohort = getattr(result, "analysis_cohort", None)
+    cohort_members = {
+        item.candidate.security_id: item
+        for item in (() if cohort is None else cohort.members)
+    }
+    observation_universe = getattr(result, "observation_universe", None)
+    observed_candidates = (
+        result.reconciliation.included
+        if observation_universe is None
+        else observation_universe.members
+    )
     candidates = []
-    for candidate in result.reconciliation.included:
+    for candidate in observed_candidates:
         analysis = analyses.get(candidate.security_id)
         failure = failures.get(candidate.security_id)
+        cohort_member = cohort_members.get(candidate.security_id)
         candidates.append(
             {
                 "security_id": str(candidate.security_id.value),
@@ -536,7 +615,22 @@ def daily_dashboard_projection(result: KRDailyProductResult | Any) -> dict[str, 
                 "triggers": list(candidate.trigger_ids),
                 "candidate_status": candidate.status.value,
                 "analysis_status": (
-                    analysis.status if analysis is not None else "ANALYSIS_INCOMPLETE"
+                    analysis.status
+                    if analysis is not None
+                    else (
+                        "NOT_ANALYZED"
+                        if cohort_member is not None
+                        and cohort_member.disposition is CohortDisposition.OBSERVE_ONLY
+                        else "ANALYSIS_INCOMPLETE"
+                    )
+                ),
+                "cohort_disposition": (
+                    None if cohort_member is None else cohort_member.disposition.value
+                ),
+                "selection_reasons": (
+                    []
+                    if cohort_member is None
+                    else [item.value for item in cohort_member.selection_reasons]
                 ),
                 "strategy_ids": (
                     [item.value for item in analysis.strategy_ids]
