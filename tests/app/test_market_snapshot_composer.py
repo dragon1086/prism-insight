@@ -11,10 +11,15 @@ import pytest
 
 from cores.llm.fakes import FakeLLMBackend
 from cores.llm.ports import LLMBackend, LLMResult
+from cores.llm.backends.openai_agents_backend import (
+    CHATGPT_OAUTH_TRANSPORT_TIMEOUT_SECONDS,
+)
 from prism_app.daily_pipeline import SQLiteAppRunRepository
 from prism_app.market_snapshot_composer import KRPITEvidence, KRProductSnapshotComposer
 from prism_app.outcome_tracker import OutcomeTracker
 from prism_app.product_composition import (
+    DEFAULT_PRODUCT_TIMEOUT_SECONDS,
+    PRODUCT_TIMEOUT_OVERHEAD_SECONDS,
     ProductRunConfig,
     product_invocation_id,
     run_kr_shadow_product,
@@ -452,7 +457,10 @@ def test_product_default_deadline_covers_two_transport_bounded_strategy_calls() 
         owner_id="fixture-runner",
     )
 
-    assert config.total_timeout_seconds == 620.0
+    assert config.total_timeout_seconds == DEFAULT_PRODUCT_TIMEOUT_SECONDS
+    assert config.total_timeout_seconds == (
+        2 * CHATGPT_OAUTH_TRANSPORT_TIMEOUT_SECONDS + PRODUCT_TIMEOUT_OVERHEAD_SECONDS
+    )
 
 
 @pytest.mark.asyncio

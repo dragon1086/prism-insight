@@ -12,6 +12,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
 
+from cores.llm.backends.openai_agents_backend import (
+    CHATGPT_OAUTH_TRANSPORT_TIMEOUT_SECONDS,
+)
 from cores.llm.ports import LLMBackend
 from prism_app.daily_pipeline import (
     ApplicationCapabilities,
@@ -48,6 +51,11 @@ from prism_core.storage.database import open_database
 from prism_core.storage.migrations import DatabaseKind, migrate_database
 from prism_core.strategies.contracts import Market, StrategyId
 
+PRODUCT_TIMEOUT_OVERHEAD_SECONDS = 20.0
+DEFAULT_PRODUCT_TIMEOUT_SECONDS = (
+    2 * CHATGPT_OAUTH_TRANSPORT_TIMEOUT_SECONDS + PRODUCT_TIMEOUT_OVERHEAD_SECONDS
+)
+
 
 @dataclass(frozen=True)
 class ProductRunConfig:
@@ -57,7 +65,7 @@ class ProductRunConfig:
     model_version: str
     code_version: str
     owner_id: str
-    total_timeout_seconds: float = 620.0
+    total_timeout_seconds: float = DEFAULT_PRODUCT_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
         if not isinstance(self.evaluated_at, datetime) or self.evaluated_at.tzinfo is None:

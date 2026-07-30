@@ -37,7 +37,7 @@ try:
     )
     from agents.mcp import MCPServerStdio, MCPServerStdioParams
     from agents.strict_schema import ensure_strict_json_schema
-    from openai import AsyncOpenAI
+    from openai import APITimeoutError, AsyncOpenAI, Timeout
     from openai.types.shared import Reasoning
 
     _sdk_available = True
@@ -56,8 +56,15 @@ except ImportError:
     set_default_openai_key = None  # type: ignore[assignment]
     set_tracing_disabled = None  # type: ignore[assignment]
     AsyncOpenAI = None  # type: ignore[assignment]
+    APITimeoutError = TimeoutError  # type: ignore[assignment,misc]
+    Timeout = None  # type: ignore[assignment,misc]
     _sdk_available = False
 # ------------------------------------------------------------------------
+
+
+CHATGPT_OAUTH_CONNECT_TIMEOUT_SECONDS = 5.0
+CHATGPT_OAUTH_TRANSPORT_TIMEOUT_SECONDS = 300.0
+CHATGPT_OAUTH_MAX_RETRIES = 0
 
 
 def configure_openai_agents_for_proxy(
@@ -87,13 +94,22 @@ def configure_openai_agents_for_proxy(
             "configure_openai_agents_for_proxy requires the 'openai-agents' package, "
             "which is not installed in this environment."
         )
+    assert AsyncOpenAI is not None and Timeout is not None
 
     # The SDK trace exporter uses the default API key and OpenAI's public
     # endpoint rather than this custom client.  With the OAuth proxy's
     # placeholder key that creates an unrelated 401 and leaks trace metadata
     # outside the explicitly bounded proxy call.
     set_tracing_disabled(True)
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    client = AsyncOpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=Timeout(
+            CHATGPT_OAUTH_TRANSPORT_TIMEOUT_SECONDS,
+            connect=CHATGPT_OAUTH_CONNECT_TIMEOUT_SECONDS,
+        ),
+        max_retries=CHATGPT_OAUTH_MAX_RETRIES,
+    )
     set_default_openai_client(client)
     set_default_openai_api("responses")
     set_default_openai_key(api_key)
@@ -315,11 +331,14 @@ class OpenAIAgentsBackend(LLMBackend):
 
             agent = build_agent(spec, servers)
 
-            result = await self._runner.run(
-                agent,
-                user_input,
-                max_turns=spec.params.max_iterations,
-            )
+            try:
+                result = await self._runner.run(
+                    agent,
+                    user_input,
+                    max_turns=spec.params.max_iterations,
+                )
+            except APITimeoutError as exc:
+                raise TimeoutError("LLM backend transport timed out") from exc
 
         text = result.final_output if isinstance(result.final_output, str) else ""
         structured = result.final_output if spec.output_schema is not None else None

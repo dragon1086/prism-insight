@@ -7,8 +7,17 @@ def test_proxy_configuration_disables_sdk_tracing(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
     class FakeClient:
-        def __init__(self, *, base_url: str, api_key: str) -> None:
-            calls.append(("client", (base_url, api_key)))
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            api_key: str,
+            timeout: object,
+            max_retries: int,
+        ) -> None:
+            calls.append(
+                ("client", (base_url, api_key, timeout, max_retries))
+            )
 
     monkeypatch.setattr(backend_module, "_sdk_available", True)
     monkeypatch.setattr(backend_module, "AsyncOpenAI", FakeClient)

@@ -17,6 +17,7 @@ from cores.llm.backends.openai_agents_backend import (
     build_agent,
     build_model_settings,
     build_mcp_server,
+    configure_openai_agents_for_proxy,
 )
 from cores.llm.mcp_registry import McpServerRegistry
 from cores.llm.ports import AgentSpec, DeferredValidationSchema, LLMParams
@@ -63,6 +64,38 @@ def make_spec(
         output_schema=output_schema,
         params=params,
     )
+
+
+# ---------------------------------------------------------------------------
+# OAuth proxy transport policy tests
+# ---------------------------------------------------------------------------
+
+
+def test_configure_proxy_uses_explicit_five_minute_timeout_without_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import cores.llm.backends.openai_agents_backend as mod
+
+    captured: dict[str, Any] = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(mod, "AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr(mod, "set_tracing_disabled", lambda value: None)
+    monkeypatch.setattr(mod, "set_default_openai_client", lambda client: None)
+    monkeypatch.setattr(mod, "set_default_openai_api", lambda value: None)
+    monkeypatch.setattr(mod, "set_default_openai_key", lambda value: None)
+
+    configure_openai_agents_for_proxy("http://localhost:18741/v1")
+
+    timeout = captured["timeout"]
+    assert timeout.connect == 5.0
+    assert timeout.read == 300.0
+    assert timeout.write == 300.0
+    assert timeout.pool == 300.0
+    assert captured["max_retries"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +317,16 @@ class FakeRunnerRaises:
         raise RuntimeError("runner exploded")
 
 
+class FakeRunnerAPITimeout:
+    """Injectable Runner that reproduces the OpenAI SDK timeout type."""
+
+    async def run(self, agent: Any, user_input: Any, **kwargs: Any) -> None:
+        import httpx
+        from openai import APITimeoutError
+
+        raise APITimeoutError(request=httpx.Request("POST", "http://localhost/responses"))
+
+
 class FakeServer:
     """Async context manager that records connect/cleanup lifecycle calls."""
 
@@ -400,6 +443,14 @@ async def test_run_cleanup_called_even_on_runner_failure(monkeypatch):
 
     assert fake_server.connected, "server was never entered"
     assert fake_server.cleaned_up, "server was NOT cleaned up after runner failure"
+
+
+@pytest.mark.asyncio
+async def test_run_normalizes_openai_transport_timeout() -> None:
+    backend = OpenAIAgentsBackend(make_registry(), runner=FakeRunnerAPITimeout())
+
+    with pytest.raises(TimeoutError, match="LLM backend transport timed out"):
+        await backend.run(make_spec(), "input")
 
 
 @pytest.mark.asyncio
