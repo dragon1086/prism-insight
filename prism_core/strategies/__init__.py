@@ -13,6 +13,13 @@ from prism_core.strategies.contracts import (
     StrategyId,
     StrategyVersion,
 )
+from prism_core.strategies.pre_gate import (
+    PreGateDecision,
+    PreGateError,
+    PreGateErrorClass,
+    PreGateOutcome,
+    PreGateStatus,
+)
 from prism_core.strategies.registry import DEFAULT_STRATEGY_REGISTRY, StrategyRegistry
 from prism_core.strategies.scenario_inputs import (
     FormulaValue,
@@ -36,6 +43,11 @@ __all__ = [
     "LessonScope",
     "Market",
     "OutcomeHorizon",
+    "PreGateDecision",
+    "PreGateError",
+    "PreGateErrorClass",
+    "PreGateOutcome",
+    "PreGateStatus",
     "QuantScoreBreakdown",
     "QuantScoreComponent",
     "FormulaValue",
