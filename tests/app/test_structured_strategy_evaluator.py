@@ -595,6 +595,41 @@ async def test_backend_failure_is_redacted_persisted_and_fail_closed(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_default_evaluator_delegates_timeout_to_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def forbidden_wait_for(*args, **kwargs):
+        raise AssertionError("default evaluator must not impose an application timeout")
+
+    monkeypatch.setattr("prism_app.strategy_evaluator.asyncio.wait_for", forbidden_wait_for)
+    backend = FakeLLMBackend([LLMResult(structured=_accepted_proposal())])
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        evaluator = StructuredLLMStrategyEvaluator(
+            backend=backend,
+            proposal_service=ProposalService(),
+            validator=_validator(),
+            repository=FeedbackRepository(connection),
+            config=_config(),
+        )
+        strategy = DEFAULT_STRATEGY_REGISTRY.get(StrategyId.SWING_V1)
+        result = await evaluator.evaluate(
+            StrategyEvaluationRequest(
+                strategy=strategy,
+                market=Market.US,
+                data_snapshot_id=DATA_SNAPSHOT_ID,
+                source_payload={"provider": "FMP_FIXTURE"},
+                evaluated_at=NOW + timedelta(minutes=1),
+                strategy_input=_strategy_input(),
+            )
+        )
+
+    assert _config().timeout_seconds is None
+    assert result.output_payload["status"] == "ACCEPTED"
+    assert len(backend.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_backend_timeout_is_bounded_persisted_and_distinct_from_generic_failure(
     tmp_path: Path,
 ) -> None:

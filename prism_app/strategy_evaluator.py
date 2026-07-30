@@ -93,7 +93,7 @@ class StrategyEvaluatorConfig:
     max_tokens: int = 8000
     reasoning_effort: str | None = None
     max_iterations: int = 1
-    timeout_seconds: float = 90.0
+    timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -114,13 +114,14 @@ class StrategyEvaluatorConfig:
             raise ValueError("max_tokens must be positive")
         if type(self.max_iterations) is not int or self.max_iterations != 1:
             raise ValueError("structured proposal evaluation permits exactly one tool-free turn")
-        if (
-            isinstance(self.timeout_seconds, bool)
-            or not isinstance(self.timeout_seconds, (int, float))
-            or not math.isfinite(float(self.timeout_seconds))
-            or self.timeout_seconds <= 0
-        ):
-            raise ValueError("timeout_seconds must be finite and positive")
+        if self.timeout_seconds is not None:
+            if (
+                isinstance(self.timeout_seconds, bool)
+                or not isinstance(self.timeout_seconds, (int, float))
+                or not math.isfinite(float(self.timeout_seconds))
+                or self.timeout_seconds <= 0
+            ):
+                raise ValueError("timeout_seconds must be finite and positive when set")
         if not isinstance(self.sampling, Mapping):
             raise TypeError("sampling must be a mapping")
         unsupported_sampling = sorted(set(self.sampling) - {"temperature"})
@@ -249,10 +250,14 @@ class StructuredLLMStrategyEvaluator:
         backend_timed_out = False
         model_output_invalid = False
         try:
-            model_result = await asyncio.wait_for(
-                self._backend.run(spec, user_input),
-                timeout=float(self._config.timeout_seconds),
-            )
+            backend_call = self._backend.run(spec, user_input)
+            if self._config.timeout_seconds is None:
+                model_result = await backend_call
+            else:
+                model_result = await asyncio.wait_for(
+                    backend_call,
+                    timeout=float(self._config.timeout_seconds),
+                )
         except (asyncio.TimeoutError, TimeoutError):
             backend_timed_out = True
             raw_response = "[LLM_BACKEND_TIMEOUT]"
@@ -534,7 +539,11 @@ class StructuredLLMStrategyEvaluator:
             "code_version": self._config.code_version,
             "schema_version": self._config.schema_version,
             "evaluation_boundary": request.evaluated_at,
-            "timeout_seconds": Decimal(str(self._config.timeout_seconds)),
+            "timeout_seconds": (
+                None
+                if self._config.timeout_seconds is None
+                else Decimal(str(self._config.timeout_seconds))
+            ),
             "source_payload_hash": source_payload_hash,
         }
         identity_hash = hashlib.sha256(

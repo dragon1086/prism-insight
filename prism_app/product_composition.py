@@ -57,7 +57,7 @@ class ProductRunConfig:
     model_version: str
     code_version: str
     owner_id: str
-    total_timeout_seconds: float = 210.0
+    total_timeout_seconds: float = 620.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.evaluated_at, datetime) or self.evaluated_at.tzinfo is None:
@@ -180,7 +180,11 @@ def product_invocation_id(
             "max_tokens": evaluator_config.max_tokens,
             "reasoning_effort": evaluator_config.reasoning_effort,
             "max_iterations": evaluator_config.max_iterations,
-            "timeout_seconds": Decimal(str(evaluator_config.timeout_seconds)),
+            "timeout_seconds": (
+                None
+                if evaluator_config.timeout_seconds is None
+                else Decimal(str(evaluator_config.timeout_seconds))
+            ),
             "prompt_versions": prompt_versions,
         },
         "validation_policy": {

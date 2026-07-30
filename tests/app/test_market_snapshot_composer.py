@@ -442,6 +442,19 @@ async def test_product_composition_persists_and_reads_back_shadow_report(
     assert app_connection_ids[0] != job_connection_ids[0]
 
 
+def test_product_default_deadline_covers_two_transport_bounded_strategy_calls() -> None:
+    config = ProductRunConfig(
+        evaluated_at=AS_OF,
+        run_type="daily-close",
+        model_id="fixture-model",
+        model_version="fixture-v1",
+        code_version="test-tree",
+        owner_id="fixture-runner",
+    )
+
+    assert config.total_timeout_seconds == 620.0
+
+
 @pytest.mark.asyncio
 async def test_product_total_deadline_records_error_and_releases_lease(tmp_path) -> None:
     class HangingBackend(LLMBackend):
