@@ -22,6 +22,8 @@ python -m prism_app kr-daily \
 
 Use isolated output files. Never point this UAT at the user's existing databases. A fixed-symbol `product-uat` run or a fixture test is supporting evidence only; it is not proof that the discovered daily candidate traversed this command.
 
+For live mode, `--as-of` is an operator upper-bound check, not a request to reconstruct a historical snapshot. Current-only KIS fundamentals are fetched first and their receipt clock freezes the PIT decision instant. Re-running the command performs a new approved read-only observation and therefore is not expected to report `IDEMPOTENT_REPLAY`. Recovery evidence must replay the same frozen invocation/snapshot identity without another provider fetch; a genuinely new live receipt must retain a new append-only identity.
+
 ## Completion matrix
 
 | Gate | Required evidence | Current state |
@@ -34,7 +36,7 @@ Use isolated output files. Never point this UAT at the user's existing databases
 | Scenario state | Each strategy is explicitly `WATCH`, `NO_ENTRY`, or `ENTRY_CANDIDATE`, or is separately invalid/incomplete/report-only with reasons | Live fixed-symbol verified as SWING `WATCH` and TREND `POLICY_REJECTED` with three named deterministic vetoes. No action state was invented for the rejected strategy. |
 | Persistence | Decision snapshot and proposal rows read back before publication | Live fixed-symbol verified: two decision snapshots, two proposals, and 27 field-disposition events read from the isolated research DB. |
 | Report/dashboard | Existing report and dashboard contain the same candidate, snapshot, strategy results, and score audit | Live fixed-symbol verified on snapshot `a9c39489-69da-53f7-a170-8a7b847e1256`; dashboard hard-veto recovery was regression-tested after the live readback exposed the missing projection. |
-| Recovery | Idempotent replay is labeled replay and is not counted as a fresh completion | Fixture verified; live discovered-candidate recovery repeated the same 14/10 funnel but candidate analysis remained incomplete, so successful live replay is not established. |
+| Recovery | The same frozen invocation/snapshot is labeled replay and is not counted as a fresh completion; a new live fetch is a new observation | Fixture verified; same-snapshot runtime replay remains pending. The repeated 14/10 live funnel performed new provider fetches and therefore was not an idempotent replay proof. |
 | External effects | Sanitized network evidence only; broker/account/message/schedule effects all false | Verified for recorded live attempts: KIS/AgentNews/OAuth reads and local isolated persistence only; broker/account/order/message/schedule effects false. |
 | User acceptance | User personally observes artifacts and approves UAT | Not approved |
 
