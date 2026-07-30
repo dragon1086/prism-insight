@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from prism_core.candidates.contracts import CandidateStatus
+from prism_core.candidates.contracts import CandidateChannel, CandidateStatus
 from prism_core.candidates.reconcile import (
     CandidateReconciliation,
     ReconciledCandidate,
@@ -159,6 +159,85 @@ class AnalysisCohort(ContractModel):
             for item in self.members
             if item.disposition is CohortDisposition.OBSERVE_ONLY
         )
+
+
+def select_analysis_cohort(
+    observation_universe: ObservationUniverse,
+    *,
+    core_state: CandidateSourceState,
+    supplement_state: CandidateSourceState,
+) -> AnalysisCohort:
+    """Apply the deterministic source cross-confirmation policy."""
+
+    members = []
+    for candidate in observation_universe.members:
+        has_core = CandidateChannel.CORE_PRISM in candidate.channels
+        has_supplement = (
+            CandidateChannel.SUPPLEMENTAL_LEADERSHIP in candidate.channels
+        )
+        core_eligible = core_state is CandidateSourceState.FRESH and any(
+            snapshot.channel is CandidateChannel.CORE_PRISM
+            and snapshot.status is CandidateStatus.ELIGIBLE
+            for snapshot in candidate.snapshots
+        )
+        if "CONFLICTING_SOURCE_ASSERTION" in candidate.issues:
+            disposition, reason = (
+                CohortDisposition.OBSERVE_ONLY,
+                CohortSelectionReason.SOURCE_CONFLICT,
+            )
+        elif not has_core:
+            disposition, reason = (
+                CohortDisposition.OBSERVE_ONLY,
+                CohortSelectionReason.SUPPLEMENT_ONLY_CORE_REQUIRED,
+            )
+        elif not core_eligible:
+            disposition, reason = (
+                CohortDisposition.OBSERVE_ONLY,
+                CohortSelectionReason.CORE_INELIGIBLE,
+            )
+        elif supplement_state is CandidateSourceState.NOT_INGESTED:
+            disposition, reason = (
+                CohortDisposition.ANALYZE,
+                CohortSelectionReason.CORE_FALLBACK_SUPPLEMENT_NOT_INGESTED,
+            )
+        elif supplement_state is CandidateSourceState.UNAVAILABLE:
+            disposition, reason = (
+                CohortDisposition.ANALYZE,
+                CohortSelectionReason.CORE_FALLBACK_SUPPLEMENT_UNAVAILABLE,
+            )
+        elif supplement_state is CandidateSourceState.CONFLICT:
+            disposition, reason = (
+                CohortDisposition.OBSERVE_ONLY,
+                CohortSelectionReason.SOURCE_CONFLICT,
+            )
+        elif supplement_state is not CandidateSourceState.FRESH:
+            disposition, reason = (
+                CohortDisposition.OBSERVE_ONLY,
+                CohortSelectionReason.SUPPLEMENT_NOT_FRESH,
+            )
+        elif has_supplement:
+            disposition, reason = (
+                CohortDisposition.ANALYZE,
+                CohortSelectionReason.CROSS_CONFIRMED,
+            )
+        else:
+            disposition, reason = (
+                CohortDisposition.OBSERVE_ONLY,
+                CohortSelectionReason.CORE_ONLY_SUPPLEMENT_REQUIRED,
+            )
+        members.append(
+            AnalysisCohortMember(
+                candidate=candidate,
+                disposition=disposition,
+                selection_reasons=(reason,),
+                core_state=core_state,
+                supplement_state=supplement_state,
+            )
+        )
+    return AnalysisCohort(
+        observation_universe=observation_universe,
+        members=tuple(members),
+    )
 
 
 def _identity_key(candidate: ReconciledCandidate) -> tuple[str, str]:

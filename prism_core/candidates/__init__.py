@@ -12,6 +12,7 @@ from prism_core.candidates.cohort import (
     CohortDisposition,
     CohortSelectionReason,
     ObservationUniverse,
+    select_analysis_cohort,
 )
 from prism_core.candidates.kis_volume import (
     KISVolumeCandidateSource,
@@ -35,6 +36,7 @@ __all__ = [
     "AnalysisCohort",
     "AnalysisCohortMember",
     "ObservationUniverse",
+    "select_analysis_cohort",
     "KISVolumeCandidateSource",
     "KISVolumeRankingTransport",
     "CandidateExclusionCode",
