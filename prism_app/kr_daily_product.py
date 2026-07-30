@@ -50,6 +50,7 @@ def _render_strategy_result(
         "- 전략 결과 "
         f"`{strategy_id}`: 상태 `{payload.get('scenario_state')}`, "
         f"결정 `{payload.get('decision')}`, "
+        f"LLM 호출 `{payload.get('llm_called')}`, "
         f"점수 `{quant_score.get('total_score')}`, "
         "점수/임계값 버전 "
         f"`{quant_score.get('score_version')}` / "
@@ -141,6 +142,10 @@ class KRDailyCounts:
     data_unavailable: int
     analyzed_swing: int
     analyzed_trend: int
+    llm_called_swing: int
+    llm_called_trend: int
+    pre_gate_skipped_swing: int
+    pre_gate_skipped_trend: int
     analysis_failures: int
     truncated: int = 0
 
@@ -353,6 +358,18 @@ class KRDailyProduct:
                 analyzed_trend=sum(
                     StrategyId.TREND_V1 in item.strategy_ids for item in analyses
                 ),
+                llm_called_swing=_strategy_result_count(
+                    analyses, StrategyId.SWING_V1, llm_called=True
+                ),
+                llm_called_trend=_strategy_result_count(
+                    analyses, StrategyId.TREND_V1, llm_called=True
+                ),
+                pre_gate_skipped_swing=_strategy_result_count(
+                    analyses, StrategyId.SWING_V1, llm_called=False
+                ),
+                pre_gate_skipped_trend=_strategy_result_count(
+                    analyses, StrategyId.TREND_V1, llm_called=False
+                ),
                 analysis_failures=len(failures),
                 truncated=reconciliation.truncated_candidate_count,
             ),
@@ -408,6 +425,20 @@ def genuine_completed_count(result: AnalysisCollection) -> int:
     )
 
 
+def _strategy_result_count(
+    analyses: Sequence[CandidateAnalysisResult],
+    strategy_id: StrategyId,
+    *,
+    llm_called: bool,
+) -> int:
+    return sum(
+        item.strategy_results is not None
+        and item.strategy_results.get(strategy_id.value, {}).get("llm_called")
+        is llm_called
+        for item in analyses
+    )
+
+
 def candidate_analysis_state(analysis: CandidateAnalysisResult) -> str:
     """Summarize persisted per-strategy states without inferring from row presence."""
 
@@ -449,6 +480,12 @@ def render_daily_composition(
         f"- 고유 종목: `{counts.unique_identities}`",
         f"- 제외/무효/데이터 불가: `{counts.excluded_identities}` / `{counts.invalid_records}` / `{counts.data_unavailable}`",
         f"- 분석 완료 SWING/TREND: `{counts.analyzed_swing}` / `{counts.analyzed_trend}`",
+        "- LLM 호출 SWING/TREND: "
+        f"`{getattr(counts, 'llm_called_swing', 0)}` / "
+        f"`{getattr(counts, 'llm_called_trend', 0)}`",
+        "- 사전 게이트 제외 SWING/TREND: "
+        f"`{getattr(counts, 'pre_gate_skipped_swing', 0)}` / "
+        f"`{getattr(counts, 'pre_gate_skipped_trend', 0)}`",
         f"- 후보 절단: `{counts.truncated}`",
         f"- 보조 리더십: `{result.supplement_outcome.value}`"
         + (
@@ -559,6 +596,10 @@ def _counts_payload(counts: KRDailyCounts | Any) -> dict[str, object]:
         "data_unavailable": counts.data_unavailable,
         "analyzed_swing": counts.analyzed_swing,
         "analyzed_trend": counts.analyzed_trend,
+        "llm_called_swing": getattr(counts, "llm_called_swing", 0),
+        "llm_called_trend": getattr(counts, "llm_called_trend", 0),
+        "pre_gate_skipped_swing": getattr(counts, "pre_gate_skipped_swing", 0),
+        "pre_gate_skipped_trend": getattr(counts, "pre_gate_skipped_trend", 0),
         "analysis_failures": counts.analysis_failures,
         "truncated": counts.truncated,
     }
@@ -1027,7 +1068,7 @@ async def _run_command(args: argparse.Namespace) -> dict[str, object]:
                 if isinstance(payload.get("network_evidence"), Mapping)
                 else None
             ),
-            fresh_invocation=payload.get("fresh_invocation_verified") is True,
+            fresh_invocation=payload.get("idempotent_replay") is False,
         )
 
     result = await KRDailyProduct(

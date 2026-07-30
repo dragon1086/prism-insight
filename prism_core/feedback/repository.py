@@ -296,6 +296,132 @@ class FeedbackRepository:
                 self._connection.execute(statement, values)
         return AppendDisposition.INSERTED
 
+    def append_decision_snapshot(
+        self,
+        run: FeedbackRunRecord,
+        snapshot: DecisionSnapshotRecord,
+    ) -> AppendDisposition:
+        """Append a deterministic decision that intentionally has no LLM proposal."""
+
+        if not isinstance(run, FeedbackRunRecord):
+            raise TypeError("run must be FeedbackRunRecord")
+        if not isinstance(snapshot, DecisionSnapshotRecord):
+            raise TypeError("snapshot must be DecisionSnapshotRecord")
+        if (
+            run.strategy_id is not snapshot.strategy_id
+            or run.strategy_version != snapshot.strategy_version
+        ):
+            raise ValueError("strategy mismatch in decision snapshot")
+        if run.market is not snapshot.market:
+            raise ValueError("market mismatch in decision snapshot")
+        if run.feedback_run_id != snapshot.feedback_run_id:
+            raise ValueError("feedback run mismatch")
+        if len(set(snapshot.evidence_refs)) != len(snapshot.evidence_refs):
+            raise ValueError("snapshot evidence references must be unique")
+        if any(
+            not isinstance(item, str) or not item.strip()
+            for item in snapshot.evidence_refs
+        ):
+            raise ValueError("snapshot evidence references must be non-empty strings")
+        for label, value in (
+            ("feedback_run_id", run.feedback_run_id),
+            ("decision_snapshot_id", snapshot.decision_snapshot_id),
+        ):
+            _require_text(label, value)
+
+        run_semantic = {
+            "feedback_run_id": run.feedback_run_id,
+            "strategy_id": run.strategy_id,
+            "strategy_version": run.strategy_version.value,
+            "market": run.market,
+            "run_kind": run.run_kind,
+            "config_version": run.config_version,
+            "code_version": run.code_version,
+            "schema_version": run.schema_version,
+            "observed_at": run.timing.observed_at,
+            "available_at": run.timing.available_at,
+            "as_of_at": run.timing.as_of_date,
+        }
+        run_hash = _hash(run_semantic)
+        run_insert = (
+            "INSERT INTO feedback_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run.feedback_run_id,
+                run.strategy_id.value,
+                run.strategy_version.value,
+                run.market.value,
+                run.run_kind,
+                run.config_version,
+                run.code_version,
+                run.schema_version,
+                *_timing_values(run.timing),
+                run_hash,
+            ),
+        )
+        snapshot_semantic = {
+            "decision_snapshot_id": snapshot.decision_snapshot_id,
+            "feedback_run_id": snapshot.feedback_run_id,
+            "strategy_id": snapshot.strategy_id,
+            "strategy_version": snapshot.strategy_version.value,
+            "market": snapshot.market,
+            "security_id": snapshot.security_id,
+            "data_snapshot_id": snapshot.data_snapshot_id,
+            "feature_snapshot_id": snapshot.feature_snapshot_id,
+            "feature_version": snapshot.feature_version,
+            "quant_score_id": snapshot.quant_score_id,
+            "quant_score_version": snapshot.quant_score_version,
+            "evidence_refs": snapshot.evidence_refs,
+            "snapshot_payload": snapshot.snapshot_payload,
+            "data_quality": snapshot.data_quality,
+            "quality_disposition": snapshot.quality_disposition,
+            "observed_at": snapshot.timing.observed_at,
+            "available_at": snapshot.timing.available_at,
+            "as_of_at": snapshot.timing.as_of_date,
+        }
+        snapshot_hash = _hash(snapshot_semantic)
+        snapshot_insert = (
+            "INSERT INTO decision_snapshots VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                snapshot.decision_snapshot_id,
+                snapshot.feedback_run_id,
+                snapshot.strategy_id.value,
+                snapshot.strategy_version.value,
+                snapshot.market.value,
+                snapshot.security_id,
+                snapshot.data_snapshot_id,
+                snapshot.feature_snapshot_id,
+                snapshot.feature_version,
+                snapshot.quant_score_id,
+                snapshot.quant_score_version,
+                canonical_json(snapshot.evidence_refs),
+                canonical_json(snapshot.snapshot_payload),
+                snapshot.data_quality.value,
+                snapshot.quality_disposition.value,
+                *_timing_values(snapshot.timing),
+                snapshot_hash,
+            ),
+        )
+        with transaction(self._connection):
+            self._insert_identity(
+                "feedback_runs",
+                "feedback_run_id",
+                run.feedback_run_id,
+                run_hash,
+                run_insert,
+            )
+            existing = self._connection.execute(
+                "SELECT content_hash FROM decision_snapshots "
+                "WHERE decision_snapshot_id = ?",
+                (snapshot.decision_snapshot_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != snapshot_hash:
+                    raise ValueError("decision_snapshots identity has divergent content")
+                return AppendDisposition.DUPLICATE
+            self._connection.execute(snapshot_insert[0], snapshot_insert[1])
+        return AppendDisposition.INSERTED
+
     def proposals_as_of(
         self, as_of: datetime, *, strategy_id: StrategyId
     ) -> tuple[StoredProposal, ...]:

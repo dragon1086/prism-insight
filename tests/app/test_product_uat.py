@@ -123,6 +123,30 @@ def test_product_runtime_proof_rejects_backend_failure_or_skipped_quality() -> N
         idempotent_replay=True,
         require_fresh_invocation=False,
     )
+    all_pre_gate_skipped = SimpleNamespace(
+        quality_decision=accepted.quality_decision,
+        strategies=tuple(
+            SimpleNamespace(
+                output_payload={
+                    **item.output_payload,
+                    "llm_called": False,
+                    "status": "PRE_GATE_REJECTED",
+                }
+            )
+            for item in accepted.strategies
+        ),
+    )
+    product_uat.require_product_runtime_proof(cast(Any, all_pre_gate_skipped))
+    all_skipped_evidence = product_uat.runtime_invocation_evidence(
+        idempotent_replay=False,
+        strategy_payloads=tuple(
+            item.output_payload for item in all_pre_gate_skipped.strategies
+        ),
+    )
+    assert all_skipped_evidence["fresh_invocation_verified"] is False
+    assert all_skipped_evidence["llm_called_count"] == 0
+    assert all_skipped_evidence["pre_gate_skipped_count"] == 2
+    assert all_skipped_evidence["structured_response_count"] == 0
 
     backend_failed = SimpleNamespace(
         quality_decision=accepted.quality_decision,
@@ -268,6 +292,8 @@ def test_runtime_invocation_evidence_distinguishes_fresh_oauth_calls_from_replay
     ) == {
         "fresh_invocation_verified": True,
         "idempotent_replay": False,
+        "llm_called_count": 2,
+        "pre_gate_skipped_count": 0,
         "structured_response_count": 2,
         "replayed_response_count": 0,
         "backend_failure_count": 0,
@@ -279,6 +305,8 @@ def test_runtime_invocation_evidence_distinguishes_fresh_oauth_calls_from_replay
     ) == {
         "fresh_invocation_verified": False,
         "idempotent_replay": True,
+        "llm_called_count": 2,
+        "pre_gate_skipped_count": 0,
         "structured_response_count": 0,
         "replayed_response_count": 2,
         "backend_failure_count": 0,
@@ -303,6 +331,8 @@ def test_runtime_invocation_evidence_does_not_count_failures_as_structured_respo
     ) == {
         "fresh_invocation_verified": True,
         "idempotent_replay": False,
+        "llm_called_count": 2,
+        "pre_gate_skipped_count": 0,
         "structured_response_count": 0,
         "replayed_response_count": 0,
         "backend_failure_count": 1,
@@ -334,6 +364,44 @@ def test_runtime_invocation_evidence_does_not_count_invalid_proposal_as_structur
 
     assert evidence["structured_response_count"] == 1
     assert evidence["invalid_proposal_count"] == 1
+
+
+def test_runtime_invocation_evidence_separates_called_from_pre_gate_skipped() -> None:
+    evidence = product_uat.runtime_invocation_evidence(
+        idempotent_replay=False,
+        strategy_payloads=(
+            {
+                "llm_called": False,
+                "status": "PRE_GATE_REJECTED",
+                "backend_error_type": None,
+                "model_output_error_type": None,
+                "scenario_state": "NO_ENTRY",
+            },
+            {
+                "llm_called": True,
+                "status": "ACCEPTED",
+                "backend_error_type": None,
+                "model_output_error_type": None,
+                "scenario_state": "WATCH",
+            },
+        ),
+    )
+
+    assert evidence["llm_called_count"] == 1
+    assert evidence["pre_gate_skipped_count"] == 1
+    assert evidence["structured_response_count"] == 1
+    replay = product_uat.runtime_invocation_evidence(
+        idempotent_replay=True,
+        strategy_payloads=(
+            {
+                "llm_called": False,
+                "status": "PRE_GATE_REJECTED",
+            },
+            {"llm_called": True, "status": "ACCEPTED"},
+        ),
+    )
+    assert replay["pre_gate_skipped_count"] == 1
+    assert replay["replayed_response_count"] == 1
 
 
 def test_runtime_proof_failure_is_not_reported_as_provider_capability_outage() -> None:
@@ -384,6 +452,41 @@ def test_runtime_strategy_results_exposes_sanitized_model_failure_classes() -> N
 
     assert result["backend_error_type"] == "LLM_BACKEND_FAILURE"
     assert result["model_output_error_type"] is None
+
+
+def test_runtime_strategy_results_preserves_pre_gate_skip_identity_without_proposal() -> None:
+    pre_gate = {
+        "status": "PRE_GATE_REJECTED",
+        "decision": "NO_ENTRY",
+        "strategy_id": "SWING_V1",
+        "strategy_version": "1.0.0",
+        "llm_called": False,
+    }
+    analysis = SimpleNamespace(
+        data_snapshot_id="snapshot-1",
+        strategies=(
+            SimpleNamespace(
+                strategy_id=StrategyId.SWING_V1,
+                output_payload={
+                    "status": "PRE_GATE_REJECTED",
+                    "decision": "NO_ENTRY",
+                    "scenario_state": "NO_ENTRY",
+                    "scenario_complete": True,
+                    "llm_called": False,
+                    "decision_snapshot_id": "decision-swing",
+                    "proposal_record_id": None,
+                    "pre_gate": pre_gate,
+                },
+            ),
+        ),
+    )
+
+    result = product_uat.runtime_strategy_results(cast(Any, analysis))["SWING_V1"]
+
+    assert result["llm_called"] is False
+    assert result["decision_snapshot_id"] == "decision-swing"
+    assert result["proposal_record_id"] is None
+    assert result["pre_gate"] == pre_gate
 
 
 def test_product_uat_defaults_to_live_verified_chatgpt_oauth_model() -> None:

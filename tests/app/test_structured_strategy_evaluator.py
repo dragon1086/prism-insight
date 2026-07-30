@@ -144,9 +144,13 @@ def _shadow_strategy_input() -> StrategyEvaluationInput:
 
 
 @pytest.mark.asyncio
-async def test_pre_gate_rejection_never_reaches_fake_backend(tmp_path: Path) -> None:
+async def test_pre_gate_rejection_persists_decision_without_manufacturing_proposal(
+    tmp_path: Path,
+) -> None:
     original = replace(
         _shadow_strategy_input(),
+        available_evidence_ids=frozenset(),
+        evidence_payload={},
         hard_vetoes=("risk:fixture-veto",),
     )
     policy = shadow_score_v1_policy(StrategyId.SWING_V1, Market.KR)
@@ -198,10 +202,27 @@ async def test_pre_gate_rejection_never_reaches_fake_backend(tmp_path: Path) -> 
         assert repository.proposals_as_of(
             NOW + timedelta(minutes=1), strategy_id=StrategyId.SWING_V1
         ) == ()
+        stored = connection.execute(
+            "SELECT d.strategy_id, d.strategy_version, d.snapshot_json "
+            "FROM decision_snapshots AS d "
+            "JOIN feedback_runs AS r ON r.feedback_run_id = d.feedback_run_id"
+        ).fetchone()
+        proposal_count = connection.execute(
+            "SELECT count(*) FROM trade_plan_proposals"
+        ).fetchone()[0]
 
     assert backend.calls == []
+    assert stored is not None
+    assert stored[:2] == ("SWING_V1", strategy_input.feature_snapshot.strategy_version.value)
+    assert json.loads(stored[2])["pre_gate"] == strategy_input.pre_gate_outcome.model_dump(
+        mode="json"
+    )
+    assert proposal_count == 0
     assert result.output_payload["status"] == "PRE_GATE_REJECTED"
     assert result.output_payload["decision"] == "NO_ENTRY"
+    assert result.output_payload["proposal_record_id"] is None
+    assert result.output_payload["decision_snapshot_id"]
+    assert result.output_payload["llm_called"] is False
     assert result.output_payload["scenario_state"] == "NO_ENTRY"
     assert result.output_payload["scenario_complete"] is True
     assert result.output_payload["pre_gate"]["llm_called"] is False

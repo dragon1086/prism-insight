@@ -182,31 +182,41 @@ def runtime_invocation_evidence(
 ) -> dict[str, bool | int]:
     """Separate calls made now from structured responses read from persistence."""
 
-    strategy_count = len(strategy_payloads)
+    called_payloads = tuple(
+        payload for payload in strategy_payloads if payload.get("llm_called", True) is True
+    )
+    llm_called_count = len(called_payloads)
+    pre_gate_skipped_count = sum(
+        payload.get("llm_called") is False
+        and payload.get("status") == "PRE_GATE_REJECTED"
+        for payload in strategy_payloads
+    )
     backend_failure_count = sum(
         payload.get("backend_error_type") is not None
-        for payload in strategy_payloads
+        for payload in called_payloads
     )
     invalid_model_output_count = sum(
         payload.get("backend_error_type") is None
         and payload.get("model_output_error_type") is not None
-        for payload in strategy_payloads
+        for payload in called_payloads
     )
     invalid_proposal_count = sum(
         payload.get("backend_error_type") is None
         and payload.get("model_output_error_type") is None
         and payload.get("scenario_state") == "INVALID_PROPOSAL"
-        for payload in strategy_payloads
+        for payload in called_payloads
     )
     structured_count = (
-        strategy_count
+        llm_called_count
         - backend_failure_count
         - invalid_model_output_count
         - invalid_proposal_count
     )
     return {
-        "fresh_invocation_verified": not idempotent_replay and strategy_count > 0,
+        "fresh_invocation_verified": not idempotent_replay and llm_called_count > 0,
         "idempotent_replay": idempotent_replay,
+        "llm_called_count": llm_called_count,
+        "pre_gate_skipped_count": pre_gate_skipped_count,
         "structured_response_count": 0 if idempotent_replay else structured_count,
         "replayed_response_count": structured_count if idempotent_replay else 0,
         "backend_failure_count": backend_failure_count,
@@ -231,9 +241,14 @@ def runtime_strategy_results(
         payload = item.output_payload
         results[item.strategy_id.value] = {
             "data_snapshot_id": str(analysis.data_snapshot_id),
+            "status": payload.get("status"),
             "scenario_state": payload.get("scenario_state"),
             "scenario_complete": payload.get("scenario_complete"),
             "decision": payload.get("decision"),
+            "llm_called": payload.get("llm_called"),
+            "decision_snapshot_id": payload.get("decision_snapshot_id"),
+            "proposal_record_id": payload.get("proposal_record_id"),
+            "pre_gate": payload.get("pre_gate"),
             "backend_error_type": payload.get("backend_error_type"),
             "model_output_error_type": payload.get("model_output_error_type"),
             "scenario_reasons": list(payload.get("scenario_reasons", ())),
@@ -518,9 +533,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "llm_backend_verified": (
             invocation_evidence["structured_response_count"]
             + invocation_evidence["replayed_response_count"]
-            == len(result.analysis.strategies)
-            and bool(result.analysis.strategies)
+            == invocation_evidence["llm_called_count"]
+            and invocation_evidence["llm_called_count"] > 0
         ),
+        "llm_called_count": invocation_evidence["llm_called_count"],
+        "pre_gate_skipped_count": invocation_evidence["pre_gate_skipped_count"],
         "fresh_invocation_verified": invocation_evidence["fresh_invocation_verified"],
         "idempotent_replay": invocation_evidence["idempotent_replay"],
         "network_evidence": {
@@ -555,6 +572,10 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 ],
                 "replayed_response_count": invocation_evidence[
                     "replayed_response_count"
+                ],
+                "llm_called_count": invocation_evidence["llm_called_count"],
+                "pre_gate_skipped_count": invocation_evidence[
+                    "pre_gate_skipped_count"
                 ],
                 "backend_failure_count": invocation_evidence[
                     "backend_failure_count"

@@ -195,12 +195,6 @@ class StructuredLLMStrategyEvaluator:
             and strategy_input.pre_gate_outcome is None
         ):
             raise ValueError("KR hard-vetoed strategy input requires a pre-gate outcome")
-        if (
-            strategy_input.pre_gate_outcome is not None
-            and strategy_input.pre_gate_outcome.status is PreGateStatus.PRE_GATE_REJECTED
-        ):
-            return self._pre_gate_rejection(request, strategy_input)
-
         contract = get_trade_plan_prompt_contract(
             request.strategy.strategy_id,
             strategy_input.feature_snapshot.market,
@@ -211,6 +205,19 @@ class StructuredLLMStrategyEvaluator:
             strategy_input=strategy_input,
             prompt_version=contract.prompt_version,
         )
+        if (
+            strategy_input.pre_gate_outcome is not None
+            and strategy_input.pre_gate_outcome.status is PreGateStatus.PRE_GATE_REJECTED
+        ):
+            self._persist_pre_gate_decision(
+                strategy_input=strategy_input,
+                identity=identity,
+            )
+            return self._pre_gate_rejection(
+                request,
+                strategy_input,
+                decision_snapshot_id=identity.decision_snapshot_id,
+            )
         stored = self._repository.stored_proposal_for(
             identity.proposal_key,
             strategy_id=request.strategy.strategy_id,
@@ -343,6 +350,8 @@ class StructuredLLMStrategyEvaluator:
     def _pre_gate_rejection(
         request: StrategyEvaluationRequest,
         strategy_input: StrategyEvaluationInput,
+        *,
+        decision_snapshot_id: str,
     ) -> StrategyAnalysis:
         outcome = strategy_input.pre_gate_outcome
         if outcome is None or outcome.status is not PreGateStatus.PRE_GATE_REJECTED:
@@ -351,6 +360,9 @@ class StructuredLLMStrategyEvaluator:
             strategy_id=request.strategy.strategy_id,
             strategy_version=request.strategy.version,
             output_payload={
+                "proposal_record_id": None,
+                "decision_snapshot_id": decision_snapshot_id,
+                "llm_called": False,
                 "status": outcome.status.value,
                 "decision": outcome.decision.value,
                 "scenario_state": "NO_ENTRY",
@@ -367,6 +379,54 @@ class StructuredLLMStrategyEvaluator:
             },
             evidence_refs=tuple(sorted(strategy_input.available_evidence_ids)),
         )
+
+    def _persist_pre_gate_decision(
+        self,
+        *,
+        strategy_input: StrategyEvaluationInput,
+        identity: _InvocationIdentity,
+    ) -> None:
+        feature = strategy_input.feature_snapshot
+        score = strategy_input.quant_score
+        outcome = strategy_input.pre_gate_outcome
+        if outcome is None or outcome.status is not PreGateStatus.PRE_GATE_REJECTED:
+            raise ValueError("pre-gate persistence requires a rejected outcome")
+        run = FeedbackRunRecord(
+            feedback_run_id=identity.feedback_run_id,
+            strategy_id=feature.strategy_id,
+            strategy_version=feature.strategy_version,
+            market=feature.market,
+            run_kind="DAILY_RESEARCH_SHADOW",
+            config_version=self._config.config_version,
+            code_version=self._config.code_version,
+            schema_version=self._config.schema_version,
+            timing=strategy_input.timing,
+        )
+        snapshot = DecisionSnapshotRecord(
+            decision_snapshot_id=identity.decision_snapshot_id,
+            feedback_run_id=identity.feedback_run_id,
+            strategy_id=feature.strategy_id,
+            strategy_version=feature.strategy_version,
+            market=feature.market,
+            security_id=str(feature.security_id.value),
+            data_snapshot_id=str(feature.data_snapshot_id),
+            feature_snapshot_id=str(feature.feature_snapshot_id),
+            feature_version=feature.feature_version,
+            quant_score_id=str(score.quant_score_id),
+            quant_score_version=score.score_version,
+            evidence_refs=tuple(sorted(strategy_input.available_evidence_ids)),
+            snapshot_payload={
+                "features": {item.name: item.value for item in feature.values},
+                "quant_score": _quant_score_payload(strategy_input),
+                "evidence": dict(strategy_input.evidence_payload),
+                "source_payload_hash": identity.source_payload_hash,
+                "pre_gate": outcome.model_dump(mode="json"),
+            },
+            data_quality=feature.data_quality_status,
+            quality_disposition=feature.quality_disposition,
+            timing=strategy_input.timing,
+        )
+        self._repository.append_decision_snapshot(run, snapshot)
 
     @staticmethod
     def _analysis(
@@ -417,6 +477,7 @@ class StructuredLLMStrategyEvaluator:
             strategy_version=request.strategy.version,
             output_payload={
                 "proposal_record_id": proposal_record_id,
+                "llm_called": True,
                 "status": status.value,
                 "decision": (
                     None
@@ -588,6 +649,11 @@ class StructuredLLMStrategyEvaluator:
             ),
             "source_payload_hash": source_payload_hash,
         }
+        if strategy_input.pre_gate_outcome is not None:
+            identity_payload["hard_vetoes"] = tuple(sorted(strategy_input.hard_vetoes))
+            identity_payload["pre_gate"] = strategy_input.pre_gate_outcome.model_dump(
+                mode="json"
+            )
         identity_hash = hashlib.sha256(
             canonical_json(identity_payload).encode("utf-8")
         ).hexdigest()

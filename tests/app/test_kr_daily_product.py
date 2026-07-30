@@ -259,6 +259,7 @@ async def test_daily_product_retains_uncapped_union_while_analyzing_only_overlap
 
     async def analyze(candidate):
         analyzed.append(candidate)
+        snapshot_id = f"snapshot:{candidate.provider_symbols[0]}"
         return CandidateAnalysisResult(
             security_id=candidate.security_id,
             provider_symbol=candidate.provider_symbols[0],
@@ -266,6 +267,29 @@ async def test_daily_product_retains_uncapped_union_while_analyzing_only_overlap
             status="PERSISTED_READBACK_VERIFIED",
             strategy_ids=(StrategyId.SWING_V1, StrategyId.TREND_V1),
             report_markdown=f"## {candidate.provider_symbols[0]}",
+            data_snapshot_id=snapshot_id,
+            strategy_results={
+                "SWING_V1": {
+                    "data_snapshot_id": snapshot_id,
+                    "status": "PRE_GATE_REJECTED",
+                    "decision": "NO_ENTRY",
+                    "scenario_state": "NO_ENTRY",
+                    "scenario_complete": True,
+                    "llm_called": False,
+                    "hard_vetoes": ["shadow_score_v1:swing_v1.min_quant_score"],
+                    "quant_score": {"total_score": "61.000000"},
+                },
+                "TREND_V1": {
+                    "data_snapshot_id": snapshot_id,
+                    "status": "ACCEPTED",
+                    "decision": "WATCH",
+                    "scenario_state": "WATCH",
+                    "scenario_complete": True,
+                    "llm_called": True,
+                    "proposal_record_id": "proposal:trend",
+                    "quant_score": {"total_score": "71.000000"},
+                },
+            },
         )
 
     product = KRDailyProduct(
@@ -291,11 +315,22 @@ async def test_daily_product_retains_uncapped_union_while_analyzing_only_overlap
     assert len(result.analysis_cohort.observation_only_members) == 120
     assert result.counts.analyzed_swing == 1
     assert result.counts.analyzed_trend == 1
+    assert result.counts.llm_called_swing == 0
+    assert result.counts.llm_called_trend == 1
+    assert result.counts.pre_gate_skipped_swing == 1
+    assert result.counts.pre_gate_skipped_trend == 0
     assert result.counts.truncated == 0
     assert len(analyzed) == 1
     channels = Counter(channel for item in analyzed for channel in item.channels)
     assert channels[CandidateChannel.CORE_PRISM] == 1
     assert channels[CandidateChannel.SUPPLEMENTAL_LEADERSHIP] == 1
+    projection = daily_dashboard_projection(result)
+    assert projection["counts"]["llm_called_swing"] == 0
+    assert projection["counts"]["pre_gate_skipped_swing"] == 1
+    rendered = render_daily_composition("", result)
+    assert "LLM 호출 SWING/TREND: `0` / `1`" in rendered
+    assert "사전 게이트 제외 SWING/TREND: `1` / `0`" in rendered
+    assert "`SWING_V1`: 상태 `NO_ENTRY`, 결정 `NO_ENTRY`, LLM 호출 `False`" in rendered
 
 
 @pytest.mark.asyncio

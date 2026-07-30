@@ -591,3 +591,37 @@ def test_minimal_retrospective_lesson_and_evidence_storage_is_append_only_and_sc
         assert repo.append_lesson_candidate(trend_lesson) is AppendDisposition.INSERTED
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             connection.execute("DELETE FROM lesson_candidates")
+
+
+def test_append_decision_snapshot_without_proposal_is_idempotent_and_append_only(
+    tmp_path: Path,
+) -> None:
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        repository = FeedbackRepository(connection)
+        run = run_record()
+        snapshot = replace(snapshot_record(), evidence_refs=())
+
+        assert (
+            repository.append_decision_snapshot(run, snapshot)
+            is AppendDisposition.INSERTED
+        )
+        assert (
+            repository.append_decision_snapshot(run, snapshot)
+            is AppendDisposition.DUPLICATE
+        )
+        with pytest.raises(ValueError, match="divergent content"):
+            repository.append_decision_snapshot(
+                run,
+                replace(snapshot, snapshot_payload={"quant_score": Decimal("59.0")}),
+            )
+
+        assert connection.execute(
+            "SELECT count(*) FROM feedback_runs"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT count(*) FROM decision_snapshots"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT count(*) FROM trade_plan_proposals"
+        ).fetchone() == (0,)
