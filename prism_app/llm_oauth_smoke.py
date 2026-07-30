@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Literal, Protocol, Sequence
 
@@ -82,20 +83,27 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    prior_auth_mode = os.environ.get("PRISM_OPENAI_AUTH_MODE")
+    if prior_auth_mode is None:
+        os.environ["PRISM_OPENAI_AUTH_MODE"] = "chatgpt_oauth"
     try:
-        payload = asyncio.run(run_oauth_smoke(model_id=args.model))
-        exit_code = 0
-    except Exception:  # noqa: BLE001 - external details and tokens are always redacted
-        payload = {
-            "stage": "PHASE1_OAUTH_LLM_SMOKE",
-            "auth_mode": "chatgpt_oauth",
-            "model_id": args.model,
-            "status": "OAUTH_LLM_UNAVAILABLE",
-            "tool_count": 0,
-            "broker_called": False,
-            "operational_readiness": False,
-        }
-        exit_code = 2
+        try:
+            payload = asyncio.run(run_oauth_smoke(model_id=args.model))
+            exit_code = 0
+        except Exception:  # noqa: BLE001 - external details and tokens are always redacted
+            payload = {
+                "stage": "PHASE1_OAUTH_LLM_SMOKE",
+                "auth_mode": "chatgpt_oauth",
+                "model_id": args.model,
+                "status": "OAUTH_LLM_UNAVAILABLE",
+                "tool_count": 0,
+                "broker_called": False,
+                "operational_readiness": False,
+            }
+            exit_code = 2
+    finally:
+        if prior_auth_mode is None:
+            os.environ.pop("PRISM_OPENAI_AUTH_MODE", None)
     rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)

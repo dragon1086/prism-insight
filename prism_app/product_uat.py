@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
@@ -48,6 +48,10 @@ _EVIDENCE_FIELDS = {
     "observations",
     "evidence_payload",
 }
+
+
+class ProductRuntimeProofIncomplete(RuntimeError):
+    """The diagnostic ran, but did not prove a complete actionable runtime path."""
 
 
 def load_pit_evidence(path: str | Path, *, as_of: datetime) -> KRPITEvidence:
@@ -94,40 +98,40 @@ def require_product_runtime_proof(
     """Reject a persisted cycle that did not traverse every proof-critical leg."""
 
     if idempotent_replay and require_fresh_invocation:
-        raise RuntimeError("product runtime proof requires a fresh non-replay invocation")
+        raise ProductRuntimeProofIncomplete("product runtime proof requires a fresh non-replay invocation")
     if analysis.quality_decision.disposition is not QualityDisposition.ACCEPT:
-        raise RuntimeError("product runtime proof stopped at the quality gate")
+        raise ProductRuntimeProofIncomplete("product runtime proof stopped at the quality gate")
     if len(analysis.strategies) != 2:
-        raise RuntimeError("product runtime proof requires both strategy families")
+        raise ProductRuntimeProofIncomplete("product runtime proof requires both strategy families")
     if any(
         item.output_payload.get("backend_error_type") == "LLM_BACKEND_FAILURE"
         for item in analysis.strategies
     ):
-        raise RuntimeError("product runtime proof requires the OAuth LLM backend")
+        raise ProductRuntimeProofIncomplete("product runtime proof requires the OAuth LLM backend")
     if any(
         item.output_payload.get("model_output_error_type") == "LLM_OUTPUT_INVALID"
         for item in analysis.strategies
     ):
-        raise RuntimeError("product runtime proof requires valid structured model output")
+        raise ProductRuntimeProofIncomplete("product runtime proof requires valid structured model output")
     if any(
         item.output_payload.get("scenario_complete") is not True
         or item.output_payload.get("decision")
         not in {"WATCH", "NO_ENTRY", "ENTRY_CANDIDATE"}
         for item in analysis.strategies
     ):
-        raise RuntimeError("product runtime proof requires complete normalized scenarios")
+        raise ProductRuntimeProofIncomplete("product runtime proof requires complete normalized scenarios")
     score_versions: set[str] = set()
     for item in analysis.strategies:
         quant_score = item.output_payload.get("quant_score")
         if not isinstance(quant_score, dict):
-            raise RuntimeError(
+            raise ProductRuntimeProofIncomplete(
                 "product runtime proof requires the current SHADOW score audit"
             )
         score_version = quant_score.get("score_version")
         if not isinstance(score_version, str) or not score_version.startswith(
             "SHADOW_SCORE_V1."
         ):
-            raise RuntimeError(
+            raise ProductRuntimeProofIncomplete(
                 "product runtime proof requires the current SHADOW score audit"
             )
         score_versions.add(score_version)
@@ -144,14 +148,14 @@ def require_product_runtime_proof(
             or not isinstance(quant_score.get("thresholds"), list)
             or not quant_score["thresholds"]
         ):
-            raise RuntimeError(
+            raise ProductRuntimeProofIncomplete(
                 "product runtime proof requires score recomposition and threshold audit"
             )
     if score_versions != {
         "SHADOW_SCORE_V1.SWING_V1",
         "SHADOW_SCORE_V1.TREND_V1",
     }:
-        raise RuntimeError(
+        raise ProductRuntimeProofIncomplete(
             "product runtime proof requires separate current SWING/TREND score audits"
         )
 
@@ -174,15 +178,40 @@ def enforce_product_runtime_proof(
 
 
 def runtime_invocation_evidence(
-    *, idempotent_replay: bool, strategy_count: int
+    *, idempotent_replay: bool, strategy_payloads: Sequence[Mapping[str, object]]
 ) -> dict[str, bool | int]:
     """Separate calls made now from structured responses read from persistence."""
 
+    strategy_count = len(strategy_payloads)
+    backend_failure_count = sum(
+        payload.get("backend_error_type") is not None
+        for payload in strategy_payloads
+    )
+    invalid_model_output_count = sum(
+        payload.get("backend_error_type") is None
+        and payload.get("model_output_error_type") is not None
+        for payload in strategy_payloads
+    )
+    invalid_proposal_count = sum(
+        payload.get("backend_error_type") is None
+        and payload.get("model_output_error_type") is None
+        and payload.get("scenario_state") == "INVALID_PROPOSAL"
+        for payload in strategy_payloads
+    )
+    structured_count = (
+        strategy_count
+        - backend_failure_count
+        - invalid_model_output_count
+        - invalid_proposal_count
+    )
     return {
-        "fresh_invocation_verified": not idempotent_replay,
+        "fresh_invocation_verified": not idempotent_replay and strategy_count > 0,
         "idempotent_replay": idempotent_replay,
-        "structured_response_count": 0 if idempotent_replay else strategy_count,
-        "replayed_response_count": strategy_count if idempotent_replay else 0,
+        "structured_response_count": 0 if idempotent_replay else structured_count,
+        "replayed_response_count": structured_count if idempotent_replay else 0,
+        "backend_failure_count": backend_failure_count,
+        "invalid_model_output_count": invalid_model_output_count,
+        "invalid_proposal_count": invalid_proposal_count,
     }
 
 
@@ -205,6 +234,8 @@ def runtime_strategy_results(
             "scenario_state": payload.get("scenario_state"),
             "scenario_complete": payload.get("scenario_complete"),
             "decision": payload.get("decision"),
+            "backend_error_type": payload.get("backend_error_type"),
+            "model_output_error_type": payload.get("model_output_error_type"),
             "scenario_reasons": list(payload.get("scenario_reasons", ())),
             "hard_vetoes": list(payload.get("hard_vetoes", ())),
             "quant_score": dict(payload.get("quant_score", {})),
@@ -217,13 +248,19 @@ def sanitized_failure_payload(exc: Exception) -> dict[str, Any]:
 
     payload: dict[str, Any] = {
         "stage": "PHASE1_SHADOW_PRODUCT",
-        "status": "PRODUCT_CAPABILITY_UNAVAILABLE",
+        "status": (
+            "PRODUCT_RUNTIME_PROOF_INCOMPLETE"
+            if isinstance(exc, ProductRuntimeProofIncomplete)
+            else "PRODUCT_CAPABILITY_UNAVAILABLE"
+        ),
         "failure_type": type(exc).__name__,
         "broker_called": False,
         "schedule_activated": False,
         "uat_accepted": False,
         "operational_readiness": False,
     }
+    if isinstance(exc, ProductRuntimeProofIncomplete):
+        payload["failure_stage"] = "runtime_proof"
     if isinstance(exc, KISMarketDataTransportError):
         if exc.operation is not None:
             payload["failure_stage"] = exc.operation
@@ -460,7 +497,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     ]
     invocation_evidence = runtime_invocation_evidence(
         idempotent_replay=result.idempotent_replay,
-        strategy_count=len(result.analysis.strategies),
+        strategy_payloads=tuple(
+            item.output_payload for item in result.analysis.strategies
+        ),
     )
     strategy_ids = runtime_strategy_evidence(result.analysis)
     return {
@@ -476,7 +515,12 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "strategy_count": len(result.analysis.strategies),
         "strategy_ids": strategy_ids,
         "strategy_results": runtime_strategy_results(result.analysis),
-        "llm_backend_verified": True,
+        "llm_backend_verified": (
+            invocation_evidence["structured_response_count"]
+            + invocation_evidence["replayed_response_count"]
+            == len(result.analysis.strategies)
+            and bool(result.analysis.strategies)
+        ),
         "fresh_invocation_verified": invocation_evidence["fresh_invocation_verified"],
         "idempotent_replay": invocation_evidence["idempotent_replay"],
         "network_evidence": {
@@ -511,6 +555,15 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 ],
                 "replayed_response_count": invocation_evidence[
                     "replayed_response_count"
+                ],
+                "backend_failure_count": invocation_evidence[
+                    "backend_failure_count"
+                ],
+                "invalid_model_output_count": invocation_evidence[
+                    "invalid_model_output_count"
+                ],
+                "invalid_proposal_count": invocation_evidence[
+                    "invalid_proposal_count"
                 ],
                 "tool_count": 0,
             },

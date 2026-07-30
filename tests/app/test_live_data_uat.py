@@ -42,7 +42,8 @@ async def test_live_data_uat_exposes_real_gate_and_never_claims_llm_or_broker_ex
     assert result["provider_quality"] == "FRESH"
     assert result["aligned_sessions"] == 25
     assert result["quality_disposition"] == "REJECT"
-    assert result["decision"] == "NO_ENTRY"
+    assert result["decision"] is None
+    assert result["scenario_state"] == "ANALYSIS_INCOMPLETE"
     assert result["llm_called"] is False
     assert result["broker_called"] is False
     assert result["missing_inputs"] == ["catalyst_evidence", "regime_observation"]
@@ -51,7 +52,7 @@ async def test_live_data_uat_exposes_real_gate_and_never_claims_llm_or_broker_ex
 
 
 @pytest.mark.asyncio
-async def test_live_data_uat_redacts_provider_failure_and_returns_no_entry() -> None:
+async def test_live_data_uat_redacts_provider_failure_without_inventing_no_entry() -> None:
     class FailingProvider:
         async def fetch_result(self, **kwargs):
             raise RuntimeError("secret provider response detail")
@@ -67,7 +68,8 @@ async def test_live_data_uat_redacts_provider_failure_and_returns_no_entry() -> 
 
     assert result["provider_quality"] == "UNAVAILABLE"
     assert result["quality_disposition"] == "REJECT"
-    assert result["decision"] == "NO_ENTRY"
+    assert result["decision"] is None
+    assert result["scenario_state"] == "DATA_UNAVAILABLE"
     assert result["provider_error_type"] == "RuntimeError"
     assert "secret provider response detail" not in str(result)
     assert result["llm_called"] is False
@@ -104,7 +106,8 @@ async def test_live_data_uat_redacts_normalization_failure(
 
     assert result["provider_quality"] == "UNAVAILABLE"
     assert result["provider_error_type"] == "ValueError"
-    assert result["decision"] == "NO_ENTRY"
+    assert result["decision"] is None
+    assert result["scenario_state"] == "DATA_UNAVAILABLE"
     assert "sensitive malformed row detail" not in str(result)
 
 

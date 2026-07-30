@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Mapping
@@ -28,6 +30,7 @@ from prism_core.feedback.repository import (
 from prism_core.llm.proposal_service import ProposalParseStatus, ProposalService
 from prism_core.llm.trade_plan import TradePlanProposal
 from prism_core.llm.trade_plan_prompts import get_trade_plan_prompt_contract
+from prism_core.policy.dispositions import DispositionAction, FieldDisposition
 from prism_core.policy.proposal_validator import (
     ProposalValidationStatus,
     ProposalValidator,
@@ -90,6 +93,7 @@ class StrategyEvaluatorConfig:
     max_tokens: int = 8000
     reasoning_effort: str | None = None
     max_iterations: int = 1
+    timeout_seconds: float = 90.0
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -110,6 +114,13 @@ class StrategyEvaluatorConfig:
             raise ValueError("max_tokens must be positive")
         if type(self.max_iterations) is not int or self.max_iterations != 1:
             raise ValueError("structured proposal evaluation permits exactly one tool-free turn")
+        if (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, (int, float))
+            or not math.isfinite(float(self.timeout_seconds))
+            or self.timeout_seconds <= 0
+        ):
+            raise ValueError("timeout_seconds must be finite and positive")
         if not isinstance(self.sampling, Mapping):
             raise TypeError("sampling must be a mapping")
         unsupported_sampling = sorted(set(self.sampling) - {"temperature"})
@@ -201,10 +212,12 @@ class StructuredLLMStrategyEvaluator:
             return self._analysis(
                 request=request,
                 strategy_input=strategy_input,
+                proposal_record_id=stored.proposal_record_id,
                 status=stored.validation_status,
                 prompt_version=stored.prompt_version,
                 validator_version=stored.validator_version,
                 backend_failed=stored.raw_output == "[LLM_BACKEND_FAILURE]",
+                backend_timed_out=stored.raw_output == "[LLM_BACKEND_TIMEOUT]",
                 model_output_invalid=stored.raw_output
                 in {"[NO_MODEL_OUTPUT]", "[INVALID_MODEL_OUTPUT]"},
                 parse_status=(
@@ -233,9 +246,16 @@ class StructuredLLMStrategyEvaluator:
         )
         user_input = self._user_input(strategy_input, contract.prompt_version)
         backend_failed = False
+        backend_timed_out = False
         model_output_invalid = False
         try:
-            model_result = await self._backend.run(spec, user_input)
+            model_result = await asyncio.wait_for(
+                self._backend.run(spec, user_input),
+                timeout=float(self._config.timeout_seconds),
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            backend_timed_out = True
+            raw_response = "[LLM_BACKEND_TIMEOUT]"
         except Exception:  # noqa: BLE001 - fail closed and redact provider detail
             backend_failed = True
             raw_response = "[LLM_BACKEND_FAILURE]"
@@ -252,8 +272,13 @@ class StructuredLLMStrategyEvaluator:
                     and (model_result.text is None or not model_result.text.strip())
                     else "[INVALID_MODEL_OUTPUT]"
                 )
-        parsed = self._proposal_service.parse(
+        parse_response, identity_dispositions = self._recalculate_model_identity(
             raw_response=raw_response,
+            strategy_input=strategy_input,
+            prompt_version=contract.prompt_version,
+        )
+        parsed = self._proposal_service.parse(
+            raw_response=parse_response,
             feature_snapshot=strategy_input.feature_snapshot,
             available_evidence_ids=strategy_input.available_evidence_ids,
         )
@@ -265,7 +290,12 @@ class StructuredLLMStrategyEvaluator:
             evaluated_at=request.evaluated_at,
             hard_vetoes=strategy_input.hard_vetoes,
         )
-        self._persist(
+        if identity_dispositions:
+            validated = replace(
+                validated,
+                dispositions=identity_dispositions + validated.dispositions,
+            )
+        proposal_record_id = self._persist(
             request=request,
             strategy_input=strategy_input,
             prompt_version=contract.prompt_version,
@@ -278,10 +308,12 @@ class StructuredLLMStrategyEvaluator:
         return self._analysis(
             request=request,
             strategy_input=strategy_input,
+            proposal_record_id=proposal_record_id,
             status=validated.status,
             prompt_version=contract.prompt_version,
             validator_version=validated.validator_version,
             backend_failed=backend_failed,
+            backend_timed_out=backend_timed_out,
             model_output_invalid=model_output_invalid,
             parse_status=parsed.status.value,
             proposal=validated.proposal,
@@ -294,10 +326,12 @@ class StructuredLLMStrategyEvaluator:
         *,
         request: StrategyEvaluationRequest,
         strategy_input: StrategyEvaluationInput,
+        proposal_record_id: str,
         status: ProposalValidationStatus,
         prompt_version: str,
         validator_version: str,
         backend_failed: bool,
+        backend_timed_out: bool,
         model_output_invalid: bool,
         parse_status: str,
         normalized_proposal_json: str | None = None,
@@ -323,33 +357,48 @@ class StructuredLLMStrategyEvaluator:
                 ),
             },
         )
+        backend_incomplete = backend_failed or backend_timed_out
+        backend_reason = (
+            "LLM_BACKEND_TIMEOUT"
+            if backend_timed_out
+            else "LLM_BACKEND_FAILURE"
+            if backend_failed
+            else None
+        )
         return StrategyAnalysis(
             strategy_id=request.strategy.strategy_id,
             strategy_version=request.strategy.version,
             output_payload={
+                "proposal_record_id": proposal_record_id,
                 "status": status.value,
                 "decision": (
                     None
                     if scenario.proposed_decision is None
                     else scenario.proposed_decision.value
                 ),
-                "scenario_state": scenario.state.value,
-                "scenario_complete": scenario.complete,
-                "scenario_reasons": list(scenario.reasons),
+                "scenario_state": (
+                    "ANALYSIS_INCOMPLETE" if backend_incomplete else scenario.state.value
+                ),
+                "scenario_complete": False if backend_incomplete else scenario.complete,
+                "scenario_reasons": (
+                    [f"backend:{backend_reason}", *scenario.reasons]
+                    if backend_reason is not None
+                    else list(scenario.reasons)
+                ),
                 "scenario": dict(scenario.scenario),
                 "quant_score": _quant_score_payload(strategy_input),
                 "hard_vetoes": sorted(strategy_input.hard_vetoes),
                 "summary": (
                     "Validated SHADOW proposal"
                     if status is ProposalValidationStatus.ACCEPTED
+                    else "Analysis incomplete due to backend failure"
+                    if backend_incomplete
                     else "Proposal rejected by deterministic validation"
                 ),
                 "shadow_only": True,
                 "prompt_version": prompt_version,
                 "validator_version": validator_version,
-                "backend_error_type": (
-                    "LLM_BACKEND_FAILURE" if backend_failed else None
-                ),
+                "backend_error_type": backend_reason,
                 "model_output_error_type": (
                     "LLM_OUTPUT_INVALID" if model_output_invalid else None
                 ),
@@ -390,6 +439,67 @@ class StructuredLLMStrategyEvaluator:
             "seed": None,
         }
 
+    def _recalculate_model_identity(
+        self,
+        *,
+        raw_response: str,
+        strategy_input: StrategyEvaluationInput,
+        prompt_version: str,
+    ) -> tuple[str, tuple[FieldDisposition, ...]]:
+        """Make deterministic invocation identity code-owned while retaining raw output."""
+
+        try:
+            payload = json.loads(raw_response)
+        except (TypeError, ValueError):
+            return raw_response, ()
+        if not isinstance(payload, dict):
+            return raw_response, ()
+        feature = strategy_input.feature_snapshot
+        expected = {
+            "strategy_id": feature.strategy_id.value,
+            "strategy_version": feature.strategy_version.value,
+            "market": feature.market.value,
+            "security_id": {"value": str(feature.security_id.value)},
+            "feature_provenance.feature_snapshot_id": str(feature.feature_snapshot_id),
+            "feature_provenance.data_snapshot_id": str(feature.data_snapshot_id),
+            "feature_provenance.as_of": feature.as_of.isoformat().replace("+00:00", "Z"),
+            "feature_provenance.feature_version": feature.feature_version,
+            "feature_provenance.data_quality_status": feature.data_quality_status.value,
+            "feature_provenance.quality_disposition": feature.quality_disposition.value,
+            "prompt_version": prompt_version,
+            "model.provider": self._config.model_provider,
+            "model.model_id": self._config.model_id,
+            "model.model_version": self._config.model_version,
+            "sampling.version": self._config.sampling_version,
+            "sampling.temperature": self._proposal_sampling()["temperature"],
+            "sampling.top_p": None,
+            "sampling.seed": None,
+        }
+        dispositions: list[FieldDisposition] = []
+        for field_path, resolved in expected.items():
+            parts = field_path.split(".")
+            container = payload
+            for part in parts[:-1]:
+                nested = container.get(part)
+                if not isinstance(nested, dict):
+                    nested = {}
+                    container[part] = nested
+                container = nested
+            leaf = parts[-1]
+            proposed = container.get(leaf)
+            if canonical_json(proposed) != canonical_json(resolved):
+                dispositions.append(
+                    FieldDisposition(
+                        field_path=field_path,
+                        action=DispositionAction.RECALCULATE,
+                        reason="deterministic_identity_owned_by_code",
+                        proposed_value=canonical_json(proposed),
+                        resolved_value=canonical_json(resolved),
+                    )
+                )
+            container[leaf] = resolved
+        return canonical_json(payload), tuple(dispositions)
+
     def _invocation_identity(
         self,
         *,
@@ -424,6 +534,7 @@ class StructuredLLMStrategyEvaluator:
             "code_version": self._config.code_version,
             "schema_version": self._config.schema_version,
             "evaluation_boundary": request.evaluated_at,
+            "timeout_seconds": Decimal(str(self._config.timeout_seconds)),
             "source_payload_hash": source_payload_hash,
         }
         identity_hash = hashlib.sha256(
@@ -555,7 +666,7 @@ class StructuredLLMStrategyEvaluator:
         parse_status: str,
         validated,
         identity: _InvocationIdentity,
-    ) -> None:
+    ) -> str:
         feature = strategy_input.feature_snapshot
         score = strategy_input.quant_score
         raw_hash = hashlib.sha256(raw_response.encode("utf-8")).hexdigest()
@@ -634,3 +745,4 @@ class StructuredLLMStrategyEvaluator:
             proposal=proposal,
             dispositions=validated.dispositions,
         )
+        return proposal_record_id

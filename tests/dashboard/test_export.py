@@ -618,6 +618,26 @@ def test_four_malformed_watch_with_critical_missing_outputs_are_not_no_entry(
     assert '"critical":true' not in json.dumps(proposal, sort_keys=True)
 
 
+def test_backend_timeout_projects_analysis_incomplete_without_exposing_raw_output() -> None:
+    research = _research_connection()
+    research.execute(
+        "UPDATE trade_plan_proposals SET parse_status = 'REJECTED', "
+        "validation_status = 'REJECTED', proposed_decision = NULL, "
+        "raw_output = '[LLM_BACKEND_TIMEOUT]', normalized_proposal_json = NULL "
+        "WHERE proposal_record_id = 'record-swing'"
+    )
+
+    proposal = DashboardExporter(
+        research, _paper_connection(), _ops_connection()
+    ).build(as_of=AS_OF, generated_at=AS_OF)["research"]["swing_v1_proposals"][0]
+
+    assert proposal["scenario_state"] == "ANALYSIS_INCOMPLETE"
+    assert proposal["scenario_complete"] is False
+    assert proposal["proposed_decision"] is None
+    assert "backend:LLM_BACKEND_TIMEOUT" in proposal["scenario_reasons"]
+    assert "raw_output" not in proposal
+
+
 def test_export_recovers_persisted_policy_hard_vetoes_from_dispositions() -> None:
     research = _research_connection()
     snapshot = json.loads(

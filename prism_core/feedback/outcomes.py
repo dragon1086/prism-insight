@@ -37,6 +37,14 @@ _OUTCOME_HORIZONS = {
 }
 
 
+def outcome_horizons_for(strategy_id: StrategyId) -> frozenset[int]:
+    """Return the authoritative future measurement horizons for one strategy."""
+
+    if not isinstance(strategy_id, StrategyId):
+        raise TypeError("strategy_id must be a StrategyId")
+    return _OUTCOME_HORIZONS[strategy_id]
+
+
 @dataclass(frozen=True)
 class OutcomeRecord:
     outcome_event_id: str
@@ -216,7 +224,7 @@ class OutcomeRepository:
             raise TypeError("quality must be DataQualityStatus")
         if (
             type(record.horizon_sessions) is not int
-            or record.horizon_sessions not in _OUTCOME_HORIZONS[record.strategy_id]
+            or record.horizon_sessions not in outcome_horizons_for(record.strategy_id)
         ):
             raise ValueError("horizon_sessions is not valid for the strategy")
         if type(record.revision) is not int or record.revision < 0:

@@ -27,6 +27,40 @@ class UserSurfaceExportResult:
     schedule_activated: bool = False
 
 
+def _assert_dashboard_snapshot_binding(
+    analysis: PersistedDailyAnalysis,
+    dashboard_payload: Mapping[str, Any],
+) -> None:
+    """Bind market-data and proposal snapshots to their distinct persisted IDs."""
+
+    research = dashboard_payload.get("research", {})
+    kr_daily = research.get("kr_daily", {}) if isinstance(research, Mapping) else {}
+    if not isinstance(kr_daily, Mapping):
+        raise LookupError("dashboard KR daily contract is unavailable")
+    source_quality = kr_daily.get("source_quality", [])
+    audit = kr_daily.get("audit", [])
+    source_ids = {
+        str(item.get("snapshot_id"))
+        for item in source_quality
+        if isinstance(item, Mapping) and item.get("snapshot_id") is not None
+    }
+    proposal_ids = {
+        str(item.get("snapshot_id"))
+        for item in audit
+        if isinstance(item, Mapping) and item.get("snapshot_id") is not None
+    }
+    if str(analysis.leadership_snapshot_id) not in source_ids:
+        raise LookupError(
+            "existing PRISM dashboard is unavailable for the same persisted snapshot "
+            "(source snapshot mismatch)"
+        )
+    if str(analysis.data_snapshot_id) not in source_ids | proposal_ids:
+        raise LookupError(
+            "existing PRISM dashboard is unavailable for the same persisted snapshot "
+            "(proposal snapshot mismatch)"
+        )
+
+
 def _assert_strategy_projection_consistency(
     analysis: PersistedDailyAnalysis,
     dashboard_payload: Mapping[str, Any],
@@ -137,17 +171,11 @@ def export_existing_user_surfaces(
         as_of=generated,
         generated_at=generated,
     )
-    source_quality = dashboard_payload["research"]["kr_daily"]["source_quality"]
-    dashboard_snapshot_ids = {
-        item.get("snapshot_id")
-        for item in source_quality
-        if isinstance(item, dict)
-    }
-    if analysis.leadership_snapshot_id not in dashboard_snapshot_ids:
+    try:
+        _assert_dashboard_snapshot_binding(analysis, dashboard_payload)
+    except LookupError:
         Path(dashboard_output).expanduser().unlink(missing_ok=True)
-        raise LookupError(
-            "existing PRISM dashboard is unavailable for the same persisted snapshot"
-        )
+        raise
     _assert_strategy_projection_consistency(analysis, dashboard_payload)
     report_path = _write_atomic(
         report_output,

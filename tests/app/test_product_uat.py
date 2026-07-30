@@ -259,22 +259,93 @@ def test_product_runtime_proof_rejects_missing_or_legacy_score_audit() -> None:
 
 
 def test_runtime_invocation_evidence_distinguishes_fresh_oauth_calls_from_replay() -> None:
+    payloads = (
+        {"backend_error_type": None, "model_output_error_type": None},
+        {"backend_error_type": None, "model_output_error_type": None},
+    )
     assert product_uat.runtime_invocation_evidence(
-        idempotent_replay=False, strategy_count=2
+        idempotent_replay=False, strategy_payloads=payloads
     ) == {
         "fresh_invocation_verified": True,
         "idempotent_replay": False,
         "structured_response_count": 2,
         "replayed_response_count": 0,
+        "backend_failure_count": 0,
+        "invalid_model_output_count": 0,
+        "invalid_proposal_count": 0,
     }
     assert product_uat.runtime_invocation_evidence(
-        idempotent_replay=True, strategy_count=2
+        idempotent_replay=True, strategy_payloads=payloads
     ) == {
         "fresh_invocation_verified": False,
         "idempotent_replay": True,
         "structured_response_count": 0,
         "replayed_response_count": 2,
+        "backend_failure_count": 0,
+        "invalid_model_output_count": 0,
+        "invalid_proposal_count": 0,
     }
+
+
+def test_runtime_invocation_evidence_does_not_count_failures_as_structured_responses() -> None:
+    assert product_uat.runtime_invocation_evidence(
+        idempotent_replay=False,
+        strategy_payloads=(
+            {
+                "backend_error_type": "LLM_BACKEND_FAILURE",
+                "model_output_error_type": None,
+            },
+            {
+                "backend_error_type": None,
+                "model_output_error_type": "LLM_OUTPUT_INVALID",
+            },
+        ),
+    ) == {
+        "fresh_invocation_verified": True,
+        "idempotent_replay": False,
+        "structured_response_count": 0,
+        "replayed_response_count": 0,
+        "backend_failure_count": 1,
+        "invalid_model_output_count": 1,
+        "invalid_proposal_count": 0,
+    }
+    assert product_uat.runtime_invocation_evidence(
+        idempotent_replay=False,
+        strategy_payloads=(),
+    )["fresh_invocation_verified"] is False
+
+
+def test_runtime_invocation_evidence_does_not_count_invalid_proposal_as_structured() -> None:
+    evidence = product_uat.runtime_invocation_evidence(
+        idempotent_replay=False,
+        strategy_payloads=(
+            {
+                "backend_error_type": None,
+                "model_output_error_type": None,
+                "scenario_state": "INVALID_PROPOSAL",
+            },
+            {
+                "backend_error_type": None,
+                "model_output_error_type": None,
+                "scenario_state": "POLICY_REJECTED",
+            },
+        ),
+    )
+
+    assert evidence["structured_response_count"] == 1
+    assert evidence["invalid_proposal_count"] == 1
+
+
+def test_runtime_proof_failure_is_not_reported_as_provider_capability_outage() -> None:
+    payload = product_uat.sanitized_failure_payload(
+        product_uat.ProductRuntimeProofIncomplete(
+            "product runtime proof requires complete normalized scenarios"
+        )
+    )
+
+    assert payload["status"] == "PRODUCT_RUNTIME_PROOF_INCOMPLETE"
+    assert payload["failure_type"] == "ProductRuntimeProofIncomplete"
+    assert payload["failure_stage"] == "runtime_proof"
 
 
 def test_runtime_strategy_evidence_preserves_exact_persisted_strategy_identities() -> None:
@@ -289,6 +360,30 @@ def test_runtime_strategy_evidence_preserves_exact_persisted_strategy_identities
         "TREND_V1",
         "SWING_V1",
     )
+
+
+def test_runtime_strategy_results_exposes_sanitized_model_failure_classes() -> None:
+    analysis = SimpleNamespace(
+        data_snapshot_id="snapshot-1",
+        strategies=(
+            SimpleNamespace(
+                strategy_id=StrategyId.SWING_V1,
+                output_payload={
+                    "scenario_state": "ANALYSIS_INCOMPLETE",
+                    "scenario_complete": False,
+                    "decision": None,
+                    "backend_error_type": "LLM_BACKEND_FAILURE",
+                    "model_output_error_type": None,
+                    "scenario_reasons": ["oauth_llm_backend_failure"],
+                },
+            ),
+        ),
+    )
+
+    result = product_uat.runtime_strategy_results(cast(Any, analysis))["SWING_V1"]
+
+    assert result["backend_error_type"] == "LLM_BACKEND_FAILURE"
+    assert result["model_output_error_type"] is None
 
 
 def test_product_uat_defaults_to_live_verified_chatgpt_oauth_model() -> None:

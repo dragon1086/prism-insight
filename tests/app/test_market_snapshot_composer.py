@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime, time, timedelta
 from decimal import Decimal
@@ -9,8 +10,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from cores.llm.fakes import FakeLLMBackend
-from cores.llm.ports import LLMResult
+from cores.llm.ports import LLMBackend, LLMResult
+from prism_app.daily_pipeline import SQLiteAppRunRepository
 from prism_app.market_snapshot_composer import KRPITEvidence, KRProductSnapshotComposer
+from prism_app.outcome_tracker import OutcomeTracker
 from prism_app.product_composition import (
     ProductRunConfig,
     product_invocation_id,
@@ -23,9 +26,10 @@ from prism_core.data.providers.kis import (
     KISMarketDataProvider,
     ProviderPayload,
 )
-from prism_core.strategies.contracts import StrategyId
-from prism_core.runtime.settings import ProductMode, RuntimeSettings
+from prism_core.ops.job_runs import JobRunStore
 from prism_core.policy import ProposalValidationPolicy
+from prism_core.runtime.settings import ProductMode, RuntimeSettings
+from prism_core.strategies.contracts import StrategyId
 
 
 KST = ZoneInfo("Asia/Seoul")
@@ -303,7 +307,23 @@ def test_kr_evidence_rejects_missing_or_post_as_of_inputs() -> None:
 @pytest.mark.asyncio
 async def test_product_composition_persists_and_reads_back_shadow_report(
     tmp_path,
+    monkeypatch,
 ) -> None:
+    app_connection_ids: list[int] = []
+    job_connection_ids: list[int] = []
+    original_app_init = SQLiteAppRunRepository.__init__
+    original_job_init = JobRunStore.__init__
+
+    def record_app_connection(self, connection):
+        app_connection_ids.append(id(connection))
+        original_app_init(self, connection)
+
+    def record_job_connection(self, connection):
+        job_connection_ids.append(id(connection))
+        original_job_init(self, connection)
+
+    monkeypatch.setattr(SQLiteAppRunRepository, "__init__", record_app_connection)
+    monkeypatch.setattr(JobRunStore, "__init__", record_job_connection)
     provider = KISMarketDataProvider(
         transport=HistoricalTransport(),
         instruments=(
@@ -332,23 +352,46 @@ async def test_product_composition_persists_and_reads_back_shadow_report(
         ops_db_path=tmp_path / "ops.sqlite",
     )
 
+    run_config = ProductRunConfig(
+        evaluated_at=AS_OF,
+        run_type="daily-close",
+        model_id="fixture-model",
+        model_version="fixture-v1",
+        code_version="test-tree",
+        owner_id="fixture-runner",
+    )
     result = await run_kr_shadow_product(
         composer=composer,
         backend=backend,
         settings=settings,
-        config=ProductRunConfig(
-            evaluated_at=AS_OF,
-            run_type="daily-close",
-            model_id="fixture-model",
-            model_version="fixture-v1",
-            code_version="test-tree",
-            owner_id="fixture-runner",
-        ),
+        config=run_config,
         output_path=output,
+        base_report_path=base,
+    )
+    replay = await run_kr_shadow_product(
+        composer=composer,
+        backend=backend,
+        settings=settings,
+        config=run_config,
+        output_path=output,
+        base_report_path=base,
+    )
+    second_backend = FakeLLMBackend(
+        [LLMResult(text="not-json"), LLMResult(text="not-json")]
+    )
+    second = await run_kr_shadow_product(
+        composer=composer,
+        backend=second_backend,
+        settings=settings,
+        config=replace(run_config, model_version="fixture-v2"),
+        output_path=tmp_path / "phase1-shadow-v2.md",
         base_report_path=base,
     )
 
     assert len(backend.calls) == 2
+    assert replay.idempotent_replay is True
+    assert second.invocation_id != result.invocation_id
+    assert len(second_backend.calls) == 2
     assert all(spec.params.temperature is None for spec, _user_input in backend.calls)
     assert result.analysis.job_key.endswith(result.invocation_id)
     assert result.readback.analysis == result.analysis
@@ -359,12 +402,198 @@ async def test_product_composition_persists_and_reads_back_shadow_report(
     with sqlite3.connect(settings.research_db_path) as connection:
         assert connection.execute(
             "SELECT count(*) FROM trade_plan_proposals"
-        ).fetchone()[0] == 2
+        ).fetchone()[0] == 4
+        assert connection.execute(
+            "SELECT count(*) FROM process_quality_outcomes"
+        ).fetchone()[0] == 4
+        pending = connection.execute(
+            "SELECT strategy_id, horizon_sessions, outcome_state, outcome_json "
+            "FROM proposal_outcomes "
+            "ORDER BY strategy_id, horizon_sessions"
+        ).fetchall()
+        assert len(pending) == 12
+        assert {
+            (strategy_id, horizon)
+            for strategy_id, horizon, _state, _payload in pending
+        } == {
+            ("SWING_V1", 5),
+            ("SWING_V1", 10),
+            ("SWING_V1", 20),
+            ("TREND_V1", 20),
+            ("TREND_V1", 60),
+            ("TREND_V1", 120),
+        }
+        assert all(state == "UNKNOWN" for _strategy, _horizon, state, _payload in pending)
+        assert all(
+            '"measurement_status":"PENDING"' in payload
+            for _strategy, _horizon, _state, payload in pending
+        )
+        assert connection.execute(
+            "SELECT count(*) FROM retrospective_events"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT count(*) FROM lesson_candidates"
+        ).fetchone()[0] == 0
     with sqlite3.connect(settings.ops_db_path) as connection:
         statuses = {
             row[0] for row in connection.execute("SELECT status FROM job_runs")
         }
     assert {"ANALYSIS_PERSISTED", "SUCCESS"} <= statuses
+    assert app_connection_ids[0] != job_connection_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_product_total_deadline_records_error_and_releases_lease(tmp_path) -> None:
+    class HangingBackend(LLMBackend):
+        name = "hanging"
+
+        async def run(self, spec, user_input):
+            await asyncio.sleep(60)
+            raise AssertionError("product deadline must cancel the backend")
+
+    provider = KISMarketDataProvider(
+        transport=HistoricalTransport(),
+        instruments=(
+            KISInstrument(security_id=STOCK_ID, kis_symbol="005930"),
+            KISInstrument(security_id=BENCHMARK_ID, kis_symbol="069500"),
+        ),
+        clock=lambda: INGESTED,
+    )
+    settings = RuntimeSettings(
+        product_mode=ProductMode.SHADOW,
+        research_db_path=tmp_path / "research.sqlite",
+        ops_db_path=tmp_path / "ops.sqlite",
+    )
+
+    with pytest.raises(TimeoutError):
+        await run_kr_shadow_product(
+            composer=KRProductSnapshotComposer(
+                provider=provider,
+                stock_id=STOCK_ID,
+                benchmark_id=BENCHMARK_ID,
+                stock_symbol="005930",
+                benchmark_symbol="069500",
+                evidence=_evidence(),
+            ),
+            backend=HangingBackend(),
+            settings=settings,
+            config=ProductRunConfig(
+                evaluated_at=AS_OF,
+                run_type="daily-close",
+                model_id="fixture-model",
+                model_version="fixture-v1",
+                code_version="test-tree",
+                owner_id="fixture-runner",
+                total_timeout_seconds=0.01,
+            ),
+            output_path=tmp_path / "must-not-exist.md",
+        )
+
+    import sqlite3
+
+    with sqlite3.connect(settings.ops_db_path) as connection:
+        assert connection.execute("SELECT count(*) FROM leases").fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT status FROM job_runs ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()[0] == "ERROR"
+    assert not (tmp_path / "must-not-exist.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_partial_feedback_failure_is_error_and_same_invocation_replay_reconciles(
+    tmp_path, monkeypatch
+) -> None:
+    provider = KISMarketDataProvider(
+        transport=HistoricalTransport(),
+        instruments=(
+            KISInstrument(security_id=STOCK_ID, kis_symbol="005930"),
+            KISInstrument(security_id=BENCHMARK_ID, kis_symbol="069500"),
+        ),
+        clock=lambda: INGESTED,
+    )
+    composer = KRProductSnapshotComposer(
+        provider=provider,
+        stock_id=STOCK_ID,
+        benchmark_id=BENCHMARK_ID,
+        stock_symbol="005930",
+        benchmark_symbol="069500",
+        evidence=_evidence(),
+    )
+    settings = RuntimeSettings(
+        product_mode=ProductMode.SHADOW,
+        research_db_path=tmp_path / "research.sqlite",
+        ops_db_path=tmp_path / "ops.sqlite",
+    )
+    config = ProductRunConfig(
+        evaluated_at=AS_OF,
+        run_type="daily-close",
+        model_id="fixture-model",
+        model_version="fixture-v1",
+        code_version="test-tree",
+        owner_id="fixture-runner",
+    )
+    original_pending = OutcomeTracker.record_pending_market_outcome
+    failed = False
+
+    def fail_first_pending(self, item):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("injected pending persistence failure")
+        return original_pending(self, item)
+
+    monkeypatch.setattr(
+        OutcomeTracker,
+        "record_pending_market_outcome",
+        fail_first_pending,
+    )
+    with pytest.raises(RuntimeError, match="injected pending persistence failure"):
+        await run_kr_shadow_product(
+            composer=composer,
+            backend=FakeLLMBackend(
+                [LLMResult(text="not-json"), LLMResult(text="not-json")]
+            ),
+            settings=settings,
+            config=config,
+            output_path=tmp_path / "first-must-not-exist.md",
+        )
+
+    monkeypatch.setattr(
+        OutcomeTracker,
+        "record_pending_market_outcome",
+        original_pending,
+    )
+    replay_backend = FakeLLMBackend([])
+    replay = await run_kr_shadow_product(
+        composer=composer,
+        backend=replay_backend,
+        settings=settings,
+        config=config,
+        output_path=tmp_path / "reconciled.md",
+    )
+
+    import sqlite3
+
+    with sqlite3.connect(settings.research_db_path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM process_quality_outcomes"
+        ).fetchone()[0] == 2
+        assert connection.execute(
+            "SELECT count(*) FROM proposal_outcomes"
+        ).fetchone()[0] == 6
+    with sqlite3.connect(settings.ops_db_path) as connection:
+        statuses = [
+            row[0]
+            for row in connection.execute(
+                "SELECT status FROM job_runs WHERE job_key LIKE 'pipeline:%' "
+                "ORDER BY created_at"
+            )
+        ]
+        assert statuses == ["ERROR", "SUCCESS"]
+        assert connection.execute("SELECT count(*) FROM leases").fetchone()[0] == 0
+    assert replay.idempotent_replay is True
+    assert replay_backend.calls == []
+    assert (tmp_path / "reconciled.md").exists()
 
 
 @pytest.mark.asyncio

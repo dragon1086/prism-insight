@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,45 @@ def test_oauth_smoke_cli_persists_only_sanitized_failure(
     assert "OAUTH_LLM_UNAVAILABLE" in rendered
     assert "secret provider detail" not in rendered
     assert "OAUTH_LLM_UNAVAILABLE" in capsys.readouterr().out
+
+
+def test_oauth_smoke_cli_activates_and_restores_default_auth_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "oauth-smoke.json"
+    observed_modes: list[str | None] = []
+
+    async def succeed(**kwargs):
+        observed_modes.append(os.environ.get("PRISM_OPENAI_AUTH_MODE"))
+        return {
+            "stage": "PHASE1_OAUTH_LLM_SMOKE",
+            "status": "OK",
+        }
+
+    monkeypatch.delenv("PRISM_OPENAI_AUTH_MODE", raising=False)
+    monkeypatch.setattr(llm_oauth_smoke, "run_oauth_smoke", succeed)
+
+    assert llm_oauth_smoke.main(["--output", str(output)]) == 0
+    assert observed_modes == ["chatgpt_oauth"]
+    assert "PRISM_OPENAI_AUTH_MODE" not in os.environ
+
+
+def test_oauth_smoke_cli_preserves_explicit_auth_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "oauth-smoke.json"
+    observed_modes: list[str | None] = []
+
+    async def succeed(**kwargs):
+        observed_modes.append(os.environ.get("PRISM_OPENAI_AUTH_MODE"))
+        return {"stage": "PHASE1_OAUTH_LLM_SMOKE", "status": "OK"}
+
+    monkeypatch.setenv("PRISM_OPENAI_AUTH_MODE", "operator-selected-mode")
+    monkeypatch.setattr(llm_oauth_smoke, "run_oauth_smoke", succeed)
+
+    assert llm_oauth_smoke.main(["--output", str(output)]) == 0
+    assert observed_modes == ["operator-selected-mode"]
+    assert os.environ["PRISM_OPENAI_AUTH_MODE"] == "operator-selected-mode"
 
 
 def test_oauth_smoke_uses_the_shared_oauth_default_model() -> None:

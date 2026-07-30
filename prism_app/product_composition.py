@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -14,6 +16,7 @@ from cores.llm.ports import LLMBackend
 from prism_app.daily_pipeline import (
     ApplicationCapabilities,
     DailyPipeline,
+    DailyRunResult,
     DailyRunRequest,
     PersistedDailyAnalysis,
     PipelineSnapshot,
@@ -28,6 +31,7 @@ from prism_app.shadow_report import (
     render_shadow_report,
 )
 from prism_app.single_runner import LeasedDailyPipeline
+from prism_app.shadow_feedback import record_initial_shadow_feedback
 from prism_app.strategy_evaluator import (
     StrategyEvaluatorConfig,
     StructuredLLMStrategyEvaluator,
@@ -53,6 +57,7 @@ class ProductRunConfig:
     model_version: str
     code_version: str
     owner_id: str
+    total_timeout_seconds: float = 210.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.evaluated_at, datetime) or self.evaluated_at.tzinfo is None:
@@ -61,6 +66,13 @@ class ProductRunConfig:
             value = getattr(self, label)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} must be non-empty")
+        if (
+            isinstance(self.total_timeout_seconds, bool)
+            or not isinstance(self.total_timeout_seconds, (int, float))
+            or not math.isfinite(float(self.total_timeout_seconds))
+            or self.total_timeout_seconds <= 0
+        ):
+            raise ValueError("total_timeout_seconds must be finite and positive")
 
 
 @dataclass(frozen=True)
@@ -78,6 +90,37 @@ class _StaticSnapshotProvider:
 
     async def acquire(self, request: DailyRunRequest) -> PipelineSnapshot:
         return self._snapshot
+
+
+class _InitialFeedbackPipeline:
+    def __init__(
+        self,
+        *,
+        pipeline: DailyPipeline,
+        research_connection,
+        snapshot: PipelineSnapshot,
+        config_version: str,
+        code_version: str,
+        schema_version: str,
+    ) -> None:
+        self._pipeline = pipeline
+        self._research_connection = research_connection
+        self._snapshot = snapshot
+        self._config_version = config_version
+        self._code_version = code_version
+        self._schema_version = schema_version
+
+    async def run(self, request: DailyRunRequest) -> DailyRunResult:
+        result = await self._pipeline.run(request)
+        record_initial_shadow_feedback(
+            self._research_connection,
+            snapshot=self._snapshot,
+            analysis=result.analysis,
+            config_version=self._config_version,
+            code_version=self._code_version,
+            schema_version=self._schema_version,
+        )
+        return result
 
 
 def product_invocation_id(
@@ -121,6 +164,7 @@ def product_invocation_id(
         "source_payload": dict(snapshot.source_payload),
         "evaluated_at": config.evaluated_at,
         "run_type": config.run_type,
+        "total_timeout_seconds": Decimal(str(config.total_timeout_seconds)),
         "strategy_inputs": strategy_input_provenance,
         "evaluator": {
             "model_provider": evaluator_config.model_provider,
@@ -136,6 +180,7 @@ def product_invocation_id(
             "max_tokens": evaluator_config.max_tokens,
             "reasoning_effort": evaluator_config.reasoning_effort,
             "max_iterations": evaluator_config.max_iterations,
+            "timeout_seconds": Decimal(str(evaluator_config.timeout_seconds)),
             "prompt_versions": prompt_versions,
         },
         "validation_policy": {
@@ -204,6 +249,7 @@ async def run_kr_shadow_product(
     with (
         open_database(settings.research_db_path) as research_connection,
         open_database(settings.ops_db_path) as ops_connection,
+        open_database(settings.ops_db_path) as lease_connection,
     ):
         migrate_database(research_connection, DatabaseKind.RESEARCH)
         migrate_database(ops_connection, DatabaseKind.OPS)
@@ -228,11 +274,26 @@ async def run_kr_shadow_product(
             report_service=ReportService(),
         )
         leased = LeasedDailyPipeline(
-            pipeline=pipeline,
-            store=JobRunStore(ops_connection),
+            pipeline=_InitialFeedbackPipeline(
+                pipeline=pipeline,
+                research_connection=research_connection,
+                snapshot=snapshot,
+                config_version=evaluator_config.config_version,
+                code_version=evaluator_config.code_version,
+                schema_version=evaluator_config.schema_version,
+            ),
+            store=JobRunStore(lease_connection),
             owner_id=config.owner_id,
         )
-        daily_result = await leased.run(request)
+        try:
+            daily_result = await asyncio.wait_for(
+                leased.run(request),
+                timeout=float(config.total_timeout_seconds),
+            )
+        except asyncio.TimeoutError as exc:
+            # Python 3.10 raises asyncio.TimeoutError while 3.11+ aliases it to
+            # the built-in. Normalize the public application boundary.
+            raise TimeoutError("product execution deadline exceeded") from exc
         analysis = daily_result.analysis
 
     readback = read_persisted_shadow(settings.ops_db_path, job_key=request.job_key)

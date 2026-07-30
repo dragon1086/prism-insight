@@ -98,6 +98,10 @@ class LeasedDailyPipeline:
                 raise RuntimeError("Phase 1 invocation lease renewal failed") from renewal_error
             result = runner_task.result()
         except BaseException:
+            if not runner_task.done():
+                runner_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await runner_task
             if not renewal_task.done():
                 renewal_task.cancel()
                 with suppress(asyncio.CancelledError):

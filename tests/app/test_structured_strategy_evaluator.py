@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from prism_core.llm.proposal_service import ProposalService
 from prism_core.llm.trade_plan import TradePlanProposal
 from prism_core.llm.trade_plan_prompts import get_trade_plan_prompt_contract
 from prism_core.policy import ProposalValidationPolicy, ProposalValidator
+from prism_core.policy.dispositions import DispositionAction
 from prism_core.storage.database import open_database
 from prism_core.storage.migrations import DatabaseKind, migrate_database
 from prism_core.strategies.contracts import (
@@ -280,12 +282,79 @@ async def test_accepted_proposal_persists_real_call_provenance_and_replays(
             request.evaluated_at, strategy_id=StrategyId.SWING_V1
         )
         assert len(stored) == 1
+        assert first.output_payload["proposal_record_id"] == stored[0].proposal_record_id
         assert stored[0].model_provider == _config().model_provider
         assert stored[0].model_id == _config().model_id
         assert stored[0].model_version == _config().model_version
         assert canonical_json(stored[0].sampling) == canonical_json(
             {"temperature": Decimal("0"), "top_p": None, "seed": None}
         )
+
+
+@pytest.mark.asyncio
+async def test_deterministic_code_recalculates_model_echoed_identity_and_preserves_raw_output(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(_accepted_proposal().model_dump_json())
+    payload["strategy_id"] = "TREND_V1"
+    payload["market"] = "KR"
+    payload["security_id"] = "00000000-0000-0000-0000-000000000999"
+    payload["feature_provenance"]["as_of"] = "2026-07-26T08:00:00+09:00"
+    payload["model"]["provider"] = "model-echoed-provider"
+    payload["prompt_version"] = "model-echoed-prompt"
+    payload["sampling"]["version"] = "model-echoed-sampling"
+    backend = FakeLLMBackend([LLMResult(structured=payload)])
+
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        repository = FeedbackRepository(connection)
+        evaluator = StructuredLLMStrategyEvaluator(
+            backend=backend,
+            proposal_service=ProposalService(),
+            validator=_validator(),
+            repository=repository,
+            config=_config(),
+        )
+        strategy = DEFAULT_STRATEGY_REGISTRY.get(StrategyId.SWING_V1)
+        request = StrategyEvaluationRequest(
+            strategy=strategy,
+            market=Market.US,
+            data_snapshot_id=DATA_SNAPSHOT_ID,
+            source_payload={"provider": "FMP_FIXTURE"},
+            evaluated_at=NOW + timedelta(minutes=1),
+            strategy_input=_strategy_input(),
+        )
+
+        result = await evaluator.evaluate(request)
+        stored = repository.proposals_as_of(
+            request.evaluated_at, strategy_id=StrategyId.SWING_V1
+        )[0]
+
+    assert result.output_payload["status"] == "ACCEPTED", result.output_payload["scenario_reasons"]
+    assert '"model-echoed-provider"' in stored.raw_output
+    assert stored.normalized_proposal_json is not None
+    normalized = json.loads(stored.normalized_proposal_json)
+    assert normalized["strategy_id"] == "SWING_V1"
+    assert normalized["market"] == "US"
+    assert normalized["security_id"] == {"value": str(SECURITY_ID.value)}
+    assert normalized["feature_provenance"]["as_of"] == NOW.isoformat().replace("+00:00", "Z")
+    assert normalized["model"]["provider"] == _config().model_provider
+    assert normalized["prompt_version"] != "model-echoed-prompt"
+    assert normalized["sampling"]["version"] == _config().sampling_version
+    recalculated = {
+        item.field_path
+        for item in stored.dispositions
+        if item.action is DispositionAction.RECALCULATE
+    }
+    assert {
+        "strategy_id",
+        "market",
+        "security_id",
+        "feature_provenance.as_of",
+        "model.provider",
+        "prompt_version",
+        "sampling.version",
+    } <= recalculated
 
 
 def test_sampling_provenance_rejects_parameters_the_backend_port_cannot_apply() -> None:
@@ -523,6 +592,55 @@ async def test_backend_failure_is_redacted_persisted_and_fail_closed(tmp_path: P
         assert len(stored) == 1
         assert stored[0].raw_output == "[LLM_BACKEND_FAILURE]"
         assert "provider detail" not in stored[0].raw_output
+
+
+@pytest.mark.asyncio
+async def test_backend_timeout_is_bounded_persisted_and_distinct_from_generic_failure(
+    tmp_path: Path,
+) -> None:
+    class HangingBackend(FakeLLMBackend):
+        def __init__(self) -> None:
+            super().__init__([])
+
+        async def run(self, spec, user_input):
+            self.calls.append((spec, user_input))
+            await asyncio.sleep(60)
+            raise AssertionError("deadline must cancel the hanging backend")
+
+    backend = HangingBackend()
+    with open_database(tmp_path / "research.sqlite") as connection:
+        migrate_database(connection, DatabaseKind.RESEARCH)
+        repository = FeedbackRepository(connection)
+        evaluator = StructuredLLMStrategyEvaluator(
+            backend=backend,
+            proposal_service=ProposalService(),
+            validator=_validator(),
+            repository=repository,
+            config=replace(_config(), timeout_seconds=0.01),
+        )
+        strategy = DEFAULT_STRATEGY_REGISTRY.get(StrategyId.SWING_V1)
+        request = StrategyEvaluationRequest(
+            strategy=strategy,
+            market=Market.US,
+            data_snapshot_id=DATA_SNAPSHOT_ID,
+            source_payload={"provider": "FMP_FIXTURE"},
+            evaluated_at=NOW + timedelta(minutes=1),
+            strategy_input=_strategy_input(),
+        )
+
+        result = await evaluator.evaluate(request)
+        replay = await evaluator.evaluate(request)
+        stored = repository.proposals_as_of(
+            request.evaluated_at, strategy_id=StrategyId.SWING_V1
+        )
+
+    assert replay == result
+    assert len(backend.calls) == 1
+    assert result.output_payload["status"] == "REJECTED"
+    assert result.output_payload["decision"] is None
+    assert result.output_payload["scenario_state"] == "ANALYSIS_INCOMPLETE"
+    assert result.output_payload["backend_error_type"] == "LLM_BACKEND_TIMEOUT"
+    assert stored[0].raw_output == "[LLM_BACKEND_TIMEOUT]"
 
 
 def test_evaluation_request_rejects_cross_market_feature_provenance() -> None:

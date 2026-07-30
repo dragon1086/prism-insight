@@ -8,6 +8,7 @@ from uuid import UUID
 
 from prism_app.daily_pipeline import PersistedDailyAnalysis, SQLiteAppRunRepository
 from prism_app.user_surface_uat import (
+    _assert_dashboard_snapshot_binding,
     _assert_strategy_projection_consistency,
     export_existing_user_surfaces,
 )
@@ -169,6 +170,7 @@ def test_rejects_dashboard_readback_from_a_different_latest_snapshot(tmp_path: P
 def test_rejects_report_dashboard_decision_drift_for_same_snapshot() -> None:
     analysis = SimpleNamespace(
         data_snapshot_id=SNAPSHOT_ID,
+        leadership_snapshot_id=str(SNAPSHOT_ID),
         strategies=(
             SimpleNamespace(
                 strategy_id=SimpleNamespace(value="SWING_V1"),
@@ -201,3 +203,21 @@ def test_rejects_report_dashboard_decision_drift_for_same_snapshot() -> None:
         assert "decision drift" in str(exc)
     else:
         raise AssertionError("cross-surface decision drift must fail closed")
+
+
+def test_dashboard_snapshot_binding_accepts_distinct_data_and_proposal_snapshots() -> None:
+    analysis = SimpleNamespace(
+        data_snapshot_id="proposal-snapshot",
+        leadership_snapshot_id=str(SNAPSHOT_ID),
+    )
+    dashboard = {
+        "research": {
+            "kr_daily": {
+                "source_quality": [{"snapshot_id": str(SNAPSHOT_ID)}],
+                "audit": [{"snapshot_id": "proposal-snapshot"}],
+            },
+            "daily_leaders": [],
+        }
+    }
+
+    _assert_dashboard_snapshot_binding(analysis, dashboard)  # type: ignore[arg-type]

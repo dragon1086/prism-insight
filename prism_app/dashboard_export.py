@@ -644,7 +644,7 @@ class DashboardExporter:
                    p.normalized_proposal_json, p.model_provider, p.model_id,
                    p.model_version, p.prompt_version, p.available_at,
                    p.content_hash, p.validator_version, p.policy_version,
-                   d.quant_score_version, d.snapshot_json
+                   d.quant_score_version, d.snapshot_json, p.raw_output
             FROM trade_plan_proposals AS p
             JOIN decision_snapshots AS d USING (decision_snapshot_id)
             WHERE p.strategy_id = ?
@@ -703,6 +703,18 @@ class DashboardExporter:
                     "feature_snapshot_id": row[8],
                 },
             )
+            backend_error_type = {
+                "[LLM_BACKEND_TIMEOUT]": "LLM_BACKEND_TIMEOUT",
+                "[LLM_BACKEND_FAILURE]": "LLM_BACKEND_FAILURE",
+            }.get(row[26])
+            scenario_state = (
+                "ANALYSIS_INCOMPLETE"
+                if backend_error_type is not None
+                else assessment.state.value
+            )
+            scenario_reasons = list(assessment.reasons)
+            if backend_error_type is not None:
+                scenario_reasons.insert(0, f"backend:{backend_error_type}")
             scenario = dict(assessment.scenario)
             suppress_levels = (
                 row[10] in {"STALE", "PARTIAL", "CONFLICT", "UNAVAILABLE"}
@@ -739,9 +751,9 @@ class DashboardExporter:
                         snapshot_payload.get("hard_vetoes"), dispositions
                     ),
                     "status": status,
-                    "scenario_state": assessment.state.value,
+                    "scenario_state": scenario_state,
                     "scenario_complete": assessment.complete,
-                    "scenario_reasons": list(assessment.reasons),
+                    "scenario_reasons": scenario_reasons,
                     "proposed_decision": (
                         None
                         if assessment.proposed_decision is None
