@@ -4,6 +4,7 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -214,6 +215,24 @@ async def test_daily_product_unions_stable_identities_without_truncation_and_ana
         snapshots=core,
         reconciliation=reconcile_candidates(core),
     )
+    approved_snapshot = SimpleNamespace(
+        observations=(),
+        candidate_nominations=(),
+        timing=SimpleNamespace(
+            observed_at=AS_OF,
+            available_at=AS_OF,
+            ingested_at=AS_OF,
+        ),
+        image_hash=None,
+        provider="STOCKEASY_SANITIZED_UI_EXPORT",
+        capture_method=SimpleNamespace(value="APPROVED_UI"),
+        content_hash="a" * 64,
+        permission_record_id="permission:test",
+        source_scope_id="scope:test",
+        source_snapshot_id="snapshot:test",
+        quality=SimpleNamespace(value="FRESH"),
+        issues=(),
+    )
 
     class ContextComposer:
         async def compose(self):
@@ -228,7 +247,7 @@ async def test_daily_product_unions_stable_identities_without_truncation_and_ana
     class SupplementComposer:
         def compose(self, *, core_candidates, supplement, authoritative_values):
             assert tuple(core_candidates) == core
-            assert supplement == "approved-snapshot"
+            assert supplement is approved_snapshot
             assert authoritative_values == {}
             return SimpleNamespace(
                 supplemental_candidates=supplemental,
@@ -259,7 +278,7 @@ async def test_daily_product_unions_stable_identities_without_truncation_and_ana
         trigger_time="daily-close",
         supplement_import=StockEasyImportResult.model_construct(
             outcome=StockEasyImportOutcome.IMPORTED,
-            snapshot="approved-snapshot",
+            snapshot=approved_snapshot,
             temporary_image_deleted=False,
         ),
     )
@@ -275,6 +294,63 @@ async def test_daily_product_unions_stable_identities_without_truncation_and_ana
     channels = Counter(channel for item in analyzed for channel in item.channels)
     assert channels[CandidateChannel.CORE_PRISM] == 120
     assert channels[CandidateChannel.SUPPLEMENTAL_LEADERSHIP] == 2
+
+
+@pytest.mark.asyncio
+async def test_daily_product_drops_imported_supplement_when_composition_fails() -> None:
+    core = (_candidate(1),)
+    selection = SimpleNamespace(
+        snapshots=core,
+        reconciliation=reconcile_candidates(core),
+    )
+    snapshot = SimpleNamespace()
+
+    class ContextComposer:
+        async def compose(self):
+            return SimpleNamespace(timing=SimpleNamespace(as_of=AS_OF))
+
+    class CandidateSource:
+        def discover(self, *, trigger_time, market_context):
+            return selection
+
+    class SupplementComposer:
+        def compose(self, **_kwargs):
+            raise RuntimeError("private composition detail must not escape")
+
+    async def analyze(candidate):
+        return CandidateAnalysisResult(
+            security_id=candidate.security_id,
+            provider_symbol=candidate.provider_symbols[0],
+            job_key="daily:KR:000001",
+            status="REPORT_ONLY_READBACK_VERIFIED",
+            strategy_ids=(StrategyId.SWING_V1, StrategyId.TREND_V1),
+            report_markdown="## 000001",
+        )
+
+    result = await KRDailyProduct(
+        context_composer=ContextComposer(),
+        candidate_source=CandidateSource(),
+        supplement_composer=SupplementComposer(),
+        candidate_analyzer=analyze,
+    ).run(
+        trigger_time="daily-close",
+        supplement_import=StockEasyImportResult.model_construct(
+            outcome=StockEasyImportOutcome.IMPORTED,
+            snapshot=snapshot,
+            temporary_image_deleted=False,
+        ),
+        supplement_snapshot_argument_supplied=True,
+    )
+
+    assert result.supplement_outcome is StockEasyImportOutcome.REJECTED
+    assert result.supplement_error_code == "SUPPLEMENT_COMPOSITION_FAILED"
+    assert result.supplement_capability is not None
+    assert result.supplement_capability["status"] == "STOCKEASY_REJECTED"
+    assert result.reconciliation is selection.reconciliation
+    assert result.counts.raw_assertions == 1
+    assert result.counts.analyzed_swing == 1
+    assert result.counts.analyzed_trend == 1
+    assert "private composition detail" not in repr(result)
 
 
 @pytest.mark.asyncio
@@ -414,6 +490,65 @@ def test_report_only_and_incomplete_scenarios_are_never_rendered_as_empty_or_no_
     assert "NO_ENTRY" not in rendered
     assert "- 전략: ``" not in rendered
     assert "- 후보 원천: `CORE" in rendered
+
+
+def test_report_renders_connected_stockeasy_evidence_without_unavailable_prerequisite() -> None:
+    result = SimpleNamespace(
+        reconciliation=reconcile_candidates(()),
+        supplement_outcome=StockEasyImportOutcome.IMPORTED,
+        supplement_error_code=None,
+        supplement_capability={
+            "status": "CONNECTED",
+            "site_status": "SITE_AVAILABLE",
+            "site_status_as_of": AS_OF.isoformat(),
+            "site_status_basis": "OPERATOR_ATTESTED_VISIBLE_UI_SNAPSHOT",
+            "site_currently_verified": False,
+            "ingestion_status": "IMPORTED",
+            "authority_crosscheck_status": "NOT_PERFORMED",
+            "supplemental_numeric_values_used_for_strategy": False,
+            "requirements": [
+                {"requirement": "MARKET_OVERVIEW", "status": "IMPORTED"},
+                {"requirement": "LEADING_SECTORS", "status": "IMPORTED"},
+            ],
+            "observations": [
+                {
+                    "kind": "LEADING_GROUP",
+                    "scope": "GROUP",
+                    "group_id": "SHIPBUILDING",
+                    "provider_symbol": None,
+                    "value": "+6.4",
+                    "unit": "PERCENT_VISIBLE",
+                }
+            ],
+        },
+        analyses=(),
+        failures=(),
+        counts=SimpleNamespace(
+            raw_assertions=0,
+            raw_assertions_by_source={},
+            raw_assertions_by_channel={},
+            raw_assertions_by_trigger={},
+            unique_identities=0,
+            excluded_identities=0,
+            invalid_records=0,
+            data_unavailable=0,
+            analyzed_swing=0,
+            analyzed_trend=0,
+            analysis_failures=0,
+            truncated=0,
+        ),
+    )
+
+    rendered = render_daily_composition("# Existing\n", result)
+
+    assert "보조 근거 기능 상태: `CONNECTED`" in rendered
+    assert "사이트/수집 상태: `SITE_AVAILABLE` / `IMPORTED`" in rendered
+    assert f"사이트 상태 기준 시각: `{AS_OF.isoformat()}`" in rendered
+    assert "현재 시점 재검증: `False`" in rendered
+    assert "KIS/KRX 값 대조: `NOT_PERFORMED`" in rendered
+    assert "전략 수치 입력 사용: `False`" in rendered
+    assert "LEADING_GROUP GROUP SHIPBUILDING=+6.4 PERCENT_VISIBLE" in rendered
+    assert "APPROVED_VISIBLE_UI_OR_OFFICIAL_EXPORT_REQUIRED" not in rendered
 
 
 def test_replayed_readback_has_an_explicit_non_success_status() -> None:
@@ -681,3 +816,40 @@ def test_kr_daily_defaults_to_live_verified_chatgpt_oauth_model() -> None:
 
     assert args.model == "gpt-5.4-mini"
     assert args.model_version == "gpt-5.4-mini"
+
+
+def test_kr_daily_accepts_snapshot_only_with_explicit_permission_record_path() -> None:
+    args = daily_product_module._parser().parse_args(
+        [
+            "--as-of",
+            AS_OF.isoformat(),
+            "--research-db",
+            "research.sqlite",
+            "--paper-db",
+            "paper.sqlite",
+            "--ops-db",
+            "ops.sqlite",
+            "--report-output",
+            "report.md",
+            "--dashboard-output",
+            "dashboard.json",
+            "--stockeasy-snapshot",
+            "stockeasy_sanitized_snapshot_v1.json",
+            "--stockeasy-permission-record",
+            "stockeasy_permission_record_v1.json",
+        ]
+    )
+
+    assert args.stockeasy_snapshot.name == "stockeasy_sanitized_snapshot_v1.json"
+    assert args.stockeasy_permission_record.name == "stockeasy_permission_record_v1.json"
+
+
+def test_runtime_rejects_one_sided_stockeasy_contract_fail_soft() -> None:
+    result = daily_product_module.resolve_stockeasy_import(
+        snapshot_path=Path("stockeasy_sanitized_snapshot_v1.json"),
+        permission_path=None,
+        imported_at=AS_OF,
+    )
+
+    assert result.outcome is StockEasyImportOutcome.REJECTED
+    assert result.error_code == "SNAPSHOT_AND_PERMISSION_RECORD_REQUIRED"

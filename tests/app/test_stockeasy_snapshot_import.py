@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ from prism_app.stockeasy_snapshot_import import (
     StockEasyPermissionRecord,
     StockEasySnapshotImporter,
     canonical_stockeasy_content_hash,
+    load_stockeasy_import,
+    stockeasy_capability_projection,
 )
 from prism_core.data.contracts import DataQualityStatus
 from prism_core.data.contracts.leadership_supplement import (
@@ -98,6 +101,165 @@ def test_approved_sanitized_export_imports_and_deletes_temporary_image(tmp_path:
     )
     assert not temporary_image.exists()
     assert result.temporary_image_deleted is True
+
+
+def test_runtime_loader_imports_supplied_snapshot_with_separate_scoped_permission(
+    tmp_path: Path,
+) -> None:
+    payload = _payload()
+    payload["image_sha256"] = None
+    payload["content_sha256"] = canonical_stockeasy_content_hash(payload)
+    snapshot_path = tmp_path / "stockeasy_sanitized_snapshot_v1.json"
+    permission_path = tmp_path / "stockeasy_permission_record_v1.json"
+    snapshot_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    permission_path.write_text(_permission().model_dump_json(), encoding="utf-8")
+
+    result = load_stockeasy_import(
+        snapshot_path=snapshot_path,
+        permission_path=permission_path,
+        imported_at=AS_OF,
+        max_age=timedelta(hours=24),
+    )
+
+    assert result.outcome is StockEasyImportOutcome.IMPORTED
+    assert result.snapshot is not None
+    assert result.snapshot.permission_record_id == "permission:2026-07-29"
+    assert result.snapshot.content_hash == payload["content_sha256"]
+
+
+def test_runtime_loader_rejects_prohibited_values_in_permission_record(
+    tmp_path: Path,
+) -> None:
+    payload = _payload()
+    payload["image_sha256"] = None
+    payload["content_sha256"] = canonical_stockeasy_content_hash(payload)
+    permission = _permission().model_dump(mode="json")
+    permission["permission_basis_id"] = "token=must-not-enter-sanitized-contract"
+    snapshot_path = tmp_path / "stockeasy_sanitized_snapshot_v1.json"
+    permission_path = tmp_path / "stockeasy_permission_record_v1.json"
+    snapshot_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    permission_path.write_text(json.dumps(permission), encoding="utf-8")
+
+    result = load_stockeasy_import(
+        snapshot_path=snapshot_path,
+        permission_path=permission_path,
+        imported_at=AS_OF,
+        max_age=timedelta(hours=24),
+    )
+
+    assert result.outcome is StockEasyImportOutcome.REJECTED
+    assert result.error_code == "PROHIBITED_FIELD"
+
+
+def test_imported_capability_projects_connected_actual_section_evidence() -> None:
+    permission = StockEasyPermissionRecord(
+        record_id="permission:all-visible-sections:2026-07-30",
+        terms_verified=True,
+        permission_verified=True,
+        verified_at=AS_OF - timedelta(days=1),
+        terms_record_id="terms:visible:2026-07-30",
+        permission_basis_id="user-visible-ui-scope:2026-07-30",
+        approved_source_scope_ids=("kr-home-visible-market-leadership",),
+        approved_sections=tuple(LeadershipSection),
+        approved_methods=(LeadershipCaptureMethod.APPROVED_UI,),
+    )
+    payload = _payload()
+    payload.update(
+        {
+            "source_scope_id": "kr-home-visible-market-leadership",
+            "capture_method": "APPROVED_UI",
+            "image_sha256": None,
+            "observations": [
+                {
+                    "kind": "MARKET_BREADTH",
+                    "scope": "MARKET",
+                    "provider_symbol": None,
+                    "group_id": None,
+                    "value": "KOSPI_ADVANCE_652_DECLINE_237",
+                    "unit": "visible_state",
+                },
+                {
+                    "kind": "INVESTOR_FLOW",
+                    "scope": "MARKET",
+                    "provider_symbol": None,
+                    "group_id": None,
+                    "value": "FOREIGN_PLUS_6852",
+                    "unit": "KRW_100M_VISIBLE",
+                },
+                {
+                    "kind": "LEADING_GROUP",
+                    "scope": "GROUP",
+                    "provider_symbol": None,
+                    "group_id": "SHIPBUILDING",
+                    "value": "PLUS_6.4",
+                    "unit": "PERCENT_VISIBLE",
+                },
+                {
+                    "kind": "TURNOVER_VALUE",
+                    "scope": "SECURITY",
+                    "provider_symbol": "005930",
+                    "group_id": None,
+                    "value": "1348",
+                    "unit": "KRW_100M_VISIBLE",
+                },
+                {
+                    "kind": "SESSION_RETURN",
+                    "scope": "SECURITY",
+                    "provider_symbol": "005930",
+                    "group_id": None,
+                    "value": "-3.8",
+                    "unit": "PERCENT_VISIBLE",
+                },
+                {
+                    "kind": "HIGH_52_WEEK_STATE",
+                    "scope": "MARKET",
+                    "provider_symbol": None,
+                    "group_id": None,
+                    "value": "NO_NEW_HIGH_VISIBLE",
+                    "unit": "state",
+                },
+            ],
+            "candidates": [
+                {
+                    "provider_symbol": "005930",
+                    "display_name": "삼성전자",
+                    "trigger_id": "supplemental_turnover_visible",
+                    "observation_indexes": [3, 4],
+                }
+            ],
+        }
+    )
+    payload["content_sha256"] = canonical_stockeasy_content_hash(payload)
+    imported = StockEasySnapshotImporter(
+        permission=permission,
+        max_age=timedelta(hours=24),
+    ).import_snapshot(payload, imported_at=AS_OF)
+
+    capability = stockeasy_capability_projection(
+        imported,
+        checked_at=AS_OF,
+        snapshot_argument_supplied=True,
+    )
+
+    assert capability["status"] == "CONNECTED"
+    assert capability["site_status"] == "SITE_AVAILABLE"
+    assert capability["site_status_as_of"] == payload["captured_at"]
+    assert capability["site_status_basis"] == "OPERATOR_ATTESTED_VISIBLE_UI_SNAPSHOT"
+    assert capability["site_currently_verified"] is False
+    assert capability["ingestion_status"] == "IMPORTED"
+    assert {item["status"] for item in capability["requirements"]} == {"IMPORTED"}
+    assert {item["kind"] for item in capability["observations"]} == {
+        "MARKET_BREADTH",
+        "INVESTOR_FLOW",
+        "LEADING_GROUP",
+        "TURNOVER_VALUE",
+        "SESSION_RETURN",
+        "HIGH_52_WEEK_STATE",
+    }
+    assert capability["price_authority"] == "KIS_KRX"
+    assert capability["entry_signal_authority"] is False
+    assert capability["authority_crosscheck_status"] == "NOT_PERFORMED"
+    assert capability["supplemental_numeric_values_used_for_strategy"] is False
 
 
 def test_prohibited_nested_fields_are_rejected_without_retaining_temporary_image(
@@ -278,6 +440,131 @@ def test_unapproved_exact_source_scope_is_rejected() -> None:
     assert result.error_code == "SCOPE_NOT_APPROVED"
 
 
+def test_observation_section_must_be_inside_the_exact_approved_scope() -> None:
+    payload = _payload()
+    payload["image_sha256"] = None
+    payload["observations"].append(
+        {
+            "kind": "MARKET_BREADTH",
+            "scope": "MARKET",
+            "provider_symbol": None,
+            "group_id": None,
+            "value": "VISIBLE_BREADTH",
+            "unit": "state",
+        }
+    )
+    payload["content_sha256"] = canonical_stockeasy_content_hash(payload)
+
+    result = StockEasySnapshotImporter(
+        permission=_permission(),
+        max_age=timedelta(hours=24),
+    ).import_snapshot(payload, imported_at=AS_OF)
+
+    assert result.outcome is StockEasyImportOutcome.REJECTED
+    assert result.error_code == "SCOPE_NOT_APPROVED"
+
+
+def test_market_wide_high_state_requires_market_breadth_permission() -> None:
+    payload = _payload()
+    payload["image_sha256"] = None
+    payload["observations"].append(
+        {
+            "kind": "HIGH_52_WEEK_STATE",
+            "scope": "MARKET",
+            "provider_symbol": None,
+            "group_id": None,
+            "value": "NO_NEW_HIGH_VISIBLE",
+            "unit": "STATE",
+        }
+    )
+    payload["content_sha256"] = canonical_stockeasy_content_hash(payload)
+
+    result = StockEasySnapshotImporter(
+        permission=_permission(),
+        max_age=timedelta(hours=24),
+    ).import_snapshot(payload, imported_at=AS_OF)
+
+    assert result.outcome is StockEasyImportOutcome.REJECTED
+    assert result.error_code == "SCOPE_NOT_APPROVED"
+
+
+def test_market_kind_cannot_masquerade_as_a_security_observation() -> None:
+    payload = _payload()
+    payload["image_sha256"] = None
+    payload["observations"][0]["kind"] = "MARKET_BREADTH"
+    payload["content_sha256"] = canonical_stockeasy_content_hash(payload)
+    permission = StockEasyPermissionRecord(
+        record_id="permission:mixed",
+        terms_verified=True,
+        permission_verified=True,
+        verified_at=AS_OF,
+        terms_record_id="terms:mixed",
+        permission_basis_id="user:mixed",
+        approved_source_scope_ids=("generic-security-leadership",),
+        approved_sections=(
+            LeadershipSection.MARKET_BREADTH,
+            LeadershipSection.SECURITY_LEADERSHIP,
+        ),
+        approved_methods=(LeadershipCaptureMethod.APPROVED_EXPORT,),
+    )
+
+    result = StockEasySnapshotImporter(
+        permission=permission,
+        max_age=timedelta(hours=24),
+    ).import_snapshot(payload, imported_at=AS_OF)
+
+    assert result.outcome is StockEasyImportOutcome.REJECTED
+    assert result.error_code == "INVALID_SANITIZED_SNAPSHOT"
+
+
+def test_rejected_local_artifact_does_not_claim_site_availability() -> None:
+    rejected = stockeasy_snapshot_import.StockEasyImportResult(
+        outcome=StockEasyImportOutcome.REJECTED,
+        error_code="INVALID_IMPORT_INPUT",
+        temporary_image_deleted=False,
+    )
+
+    capability = stockeasy_capability_projection(
+        rejected,
+        checked_at=AS_OF,
+        snapshot_argument_supplied=True,
+    )
+
+    assert capability["status"] == "STOCKEASY_REJECTED"
+    assert capability["site_status"] == "SITE_STATUS_UNKNOWN"
+    assert capability["ingestion_status"] == "REJECTED"
+
+
+def test_runtime_loader_rejects_missing_or_symlinked_contracts_fail_soft(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing.json"
+    permission = tmp_path / "permission.json"
+    permission.write_text(_permission().model_dump_json(), encoding="utf-8")
+
+    missing_result = load_stockeasy_import(
+        snapshot_path=missing,
+        permission_path=permission,
+        imported_at=AS_OF,
+        max_age=timedelta(hours=24),
+    )
+    target = tmp_path / "snapshot.json"
+    target.write_text(json.dumps(_payload()), encoding="utf-8")
+    link = tmp_path / "snapshot-link.json"
+    link.symlink_to(target)
+    symlink_result = load_stockeasy_import(
+        snapshot_path=link,
+        permission_path=permission,
+        imported_at=AS_OF,
+        max_age=timedelta(hours=24),
+    )
+
+    assert missing_result.error_code == "INVALID_IMPORT_INPUT"
+    assert symlink_result.error_code == "INVALID_IMPORT_INPUT"
+    assert missing_result.outcome is StockEasyImportOutcome.REJECTED
+    assert symlink_result.outcome is StockEasyImportOutcome.REJECTED
+
+
 def test_old_export_is_preserved_as_stale_supplemental_evidence() -> None:
     payload = _payload()
     imported_at = AS_OF + timedelta(hours=25)
@@ -298,6 +585,14 @@ def test_old_export_is_preserved_as_stale_supplemental_evidence() -> None:
     assert result.snapshot is not None
     assert result.snapshot.quality is DataQualityStatus.STALE
     assert result.snapshot.issues == ("SUPPLEMENTAL_SNAPSHOT_STALE",)
+    capability = stockeasy_capability_projection(
+        result,
+        checked_at=imported_at,
+        snapshot_argument_supplied=True,
+    )
+    assert capability["status"] == "CONNECTED_STALE"
+    assert capability["snapshot_stale"] is True
+    assert capability["site_currently_verified"] is False
 
 
 def test_image_hash_mismatch_rejects_and_deletes_temporary_image(tmp_path: Path) -> None:

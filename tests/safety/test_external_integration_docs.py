@@ -24,6 +24,18 @@ def test_product_scope_separates_fixture_live_runtime_and_operated_readiness() -
     assert "별도 source-specific capability/approval" in product_scope
 
 
+def test_product_scope_distinguishes_bounded_stockeasy_uat_from_merged_and_operated_state() -> None:
+    product_scope = _read("docs/PRODUCT_SCOPE_AND_STRATEGY.md")
+
+    assert "Task-branch bounded StockEasy UAT" in product_scope
+    assert "`CONNECTED / SITE_AVAILABLE / IMPORTED`" in product_scope
+    assert "일회성 snapshot import" in product_scope
+    assert "StockEasy 네 섹션" not in product_scope.split(
+        "**Current but fail-soft unavailable:**", maxsplit=1
+    )[1].split("\n", maxsplit=1)[0]
+    assert "사용자 UAT 승인 전" in product_scope
+
+
 def test_product_scope_documents_one_fmp_key_and_incremental_current_prism_integration() -> None:
     product_scope = _read("docs/PRODUCT_SCOPE_AND_STRATEGY.md")
 
@@ -117,7 +129,12 @@ def test_stockeasy_integration_runbook_and_uat_preserve_fail_soft_boundary() -> 
         assert boundary in integration
         assert boundary in runbook
     assert "python -m prism_app stockeasy-capability" in runbook
-    assert "does not read the supplied snapshot" in runbook
+    assert "--stockeasy-snapshot" in runbook
+    assert "--stockeasy-permission-record" in runbook
+    assert "SNAPSHOT_AND_PERMISSION_RECORD_REQUIRED" in runbook
+    assert "SITE_STATUS_UNKNOWN" in runbook
+    assert "SITE_AVAILABLE" in runbook
+    assert "CONNECTED" in uat
     assert "credentials, cookies, tokens" in integration
     assert "account, balance, holdings, order" in integration
     assert "temporary capture" in uat

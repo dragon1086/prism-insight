@@ -80,6 +80,20 @@ Fixture·fake·mock은 unit/contract/CI의 결정론, 오류 주입, 회귀 재�
 
 제품 완료는 fixture/unit 통과만을 뜻하지 않는다. 최소 한 사용자 진입점에서 실제 read-only 데이터 → PIT 관측값 → 정량 점수 → 기존 ChatGPT OAuth Sol → 결정론적 검증 → SQLite 저장·재조회 → 기존 보고서 표면까지 실행되어야 하며, `broker_called=false`, `schedule_activated=false`, source/as-of 및 재조회 동등성이 증거로 남아야 한다.
 
+### 2026-07-30 KR delivery 상태
+
+현재 merged KR daily 경로는 실제 uncapped 후보 한 종목을 KIS 시장·재무, AgentNews, 기존 ChatGPT OAuth, SWING/TREND 정책, 격리 SQLite, 기존 report/dashboard까지 통과시켰다. 별도의 **Task-branch bounded StockEasy UAT**에서는 승인된 일회성 snapshot import가 production `kr-daily` 경로를 통과해 `CONNECTED / SITE_AVAILABLE / IMPORTED`와 report/dashboard readback을 만들었다. 이 상태는 상시 브라우저/API 연결이나 merged 기능, 유효 시나리오 완성, operated readiness를 뜻하지 않으며 사용자 UAT 승인 전이다. 증거와 제한은 [`KR_DAILY_USER_UAT_PACKAGE.md`](KR_DAILY_USER_UAT_PACKAGE.md), 운영 절차는 [`KR_DAILY_RUNBOOK.md`](KR_DAILY_RUNBOOK.md)에 있다.
+
+상태를 다음처럼 분리한다.
+
+1. **Merged/current:** 실제 후보 inventory/dedupe, provider provenance, stable identity, KIS-primary 재무, 두 전략 SHADOW_SCORE_V1, deterministic veto, SQLite readback, report/dashboard 생성, broker/account/message/schedule 효과 0.
+2. **Task branch / bounded UAT evidence:** 승인된 StockEasy 네 섹션 snapshot은 보조 후보·관측으로 실제 import/readback되었지만 KIS/KRX 가격·수익률·적격성 권한을 대체하지 않고 전략 수치 입력에도 사용되지 않았다. 한 KIS 종목 fetch와 외부모델 proposal validation이 실패해 제품 상태는 `ANALYSIS_INCOMPLETE`이며, branch merge 및 사용자 UAT 승인 전이다.
+3. **Current but fail-soft unavailable:** DART/KIND 보강과 완전한 권위 원천 기반 시장 국면. 이 결손은 핵심 분석을 중단하지 않지만 신규 진입과 가격 수준을 `REPORT_ONLY`로 닫는다.
+4. **Deferred/open:** same-snapshot recovery, 실제 process outcome과 PENDING maturity 등록, matured outcome/retrospective, SUPPORT+CONTRA lesson, later-run SHADOW retrieval/comparison, 예약 운영·복구, 사용자 UAT 승인.
+5. **Not authorized:** broker paper/live, 계좌 조회, 주문, 리스크 변경. KR UAT 승인은 이 권한을 자동으로 열지 않는다.
+
+실제 DB에 decision snapshot/proposal만 있고 outcome·retrospective·lesson·retrieval row가 비어 있으면 **decision audit spine implemented; self-feedback incomplete**로 보고한다. fixture에서 PENDING/retrieval 메커니즘이 통과해도 prospective 또는 matured real loop로 승격하지 않는다.
+
 ### 한국 데이터 제공자 확정
 
 현재 저장소는 한국투자증권(KIS) 주문·계좌·시세 관련 코드와 테스트가 이미 상당 부분 존재한다. LS증권은 저장소에서 실질적인 어댑터 구현을 찾지 못했다. 사용자는 KIS를 한국 primary로 확정했다. 1차에서 두 API를 동시에 도입하지 않고 다음처럼 진행한다.

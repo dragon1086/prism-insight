@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -43,6 +45,8 @@ _PROHIBITED_KEY_PARTS = frozenset(
     }
 )
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
+_MAX_SNAPSHOT_BYTES = 1 * 1024 * 1024
+_MAX_PERMISSION_BYTES = 64 * 1024
 _MAX_RAW_DEPTH = 16
 _MAX_RAW_NODES = 20_000
 _MAX_COLLECTION_ITEMS = 5_000
@@ -95,6 +99,11 @@ def unavailable_stockeasy_capability(
         raise ValueError("checked_at must be timezone-aware")
     return {
         "status": "STOCKEASY_UNAVAILABLE",
+        "site_status": "SITE_STATUS_UNKNOWN",
+        "site_status_as_of": None,
+        "site_status_basis": None,
+        "site_currently_verified": False,
+        "ingestion_status": "NOT_INGESTED",
         "reason": "APPROVED_UI_EXPORT_NOT_CONFIRMED",
         "source": "STOCKEASY_APPROVED_UI_EXPORT",
         "capability_checked_at": checked_at.isoformat(),
@@ -121,6 +130,145 @@ def unavailable_stockeasy_capability(
         "price_authority": "KIS_KRX",
         "entry_signal_authority": False,
         "fail_soft": True,
+    }
+
+
+def stockeasy_capability_projection(
+    result: "StockEasyImportResult",
+    *,
+    checked_at: datetime,
+    snapshot_argument_supplied: bool,
+) -> dict[str, object]:
+    """Project actual bounded evidence separately from site and ingestion state."""
+
+    if result.outcome is StockEasyImportOutcome.UNAVAILABLE:
+        return unavailable_stockeasy_capability(
+            checked_at=checked_at,
+            snapshot_argument_supplied=snapshot_argument_supplied,
+        )
+    if result.outcome is StockEasyImportOutcome.REJECTED:
+        return {
+            "status": "STOCKEASY_REJECTED",
+            "site_status": "SITE_STATUS_UNKNOWN",
+            "site_status_as_of": None,
+            "site_status_basis": None,
+            "site_currently_verified": False,
+            "ingestion_status": "REJECTED",
+            "reason": result.error_code,
+            "source": "STOCKEASY_APPROVED_UI_EXPORT",
+            "capability_checked_at": checked_at.isoformat(),
+            "snapshot_argument_supplied": snapshot_argument_supplied,
+            "requirements": [],
+            "observations": [],
+            "price_authority": "KIS_KRX",
+            "entry_signal_authority": False,
+            "authority_crosscheck_status": "NOT_PERFORMED",
+            "supplemental_numeric_values_used_for_strategy": False,
+            "fail_soft": True,
+        }
+
+    snapshot = result.snapshot
+    if snapshot is None:  # Defensive: the result contract already forbids this state.
+        raise ValueError("imported StockEasy result omitted its snapshot")
+    kinds = {item.kind for item in snapshot.observations}
+    requirements = [
+        _imported_requirement(
+            "SECURITIES",
+            (LeadershipSection.SECURITY_LEADERSHIP,),
+            sum(item.scope is LeadershipScope.SECURITY for item in snapshot.observations),
+        ),
+        _imported_requirement(
+            "MARKET_OVERVIEW",
+            (LeadershipSection.MARKET_BREADTH, LeadershipSection.INVESTOR_FLOWS),
+            int(
+                LeadershipObservationKind.MARKET_BREADTH in kinds
+                and LeadershipObservationKind.INVESTOR_FLOW in kinds
+            ),
+        ),
+        _imported_requirement(
+            "LEADING_SECURITIES",
+            (LeadershipSection.SECURITY_LEADERSHIP,),
+            len(snapshot.candidate_nominations),
+        ),
+        _imported_requirement(
+            "LEADING_SECTORS",
+            (LeadershipSection.LEADING_GROUPS,),
+            sum(
+                item.kind is LeadershipObservationKind.LEADING_GROUP
+                for item in snapshot.observations
+            ),
+        ),
+    ]
+    complete = all(item["status"] == "IMPORTED" for item in requirements)
+    temporary_capture_used = snapshot.image_hash is not None
+    stale = snapshot.quality is DataQualityStatus.STALE
+    return {
+        "status": (
+            "CONNECTED_STALE"
+            if stale
+            else "CONNECTED"
+            if complete
+            else "CONNECTED_PARTIAL"
+        ),
+        "site_status": "SITE_AVAILABLE",
+        "site_status_as_of": snapshot.timing.observed_at.isoformat(),
+        "site_status_basis": "OPERATOR_ATTESTED_VISIBLE_UI_SNAPSHOT",
+        "site_currently_verified": False,
+        "ingestion_status": "IMPORTED",
+        "reason": None,
+        "source": snapshot.provider,
+        "capability_checked_at": checked_at.isoformat(),
+        "collection_attempted": True,
+        "collection_attempted_at": snapshot.timing.observed_at.isoformat(),
+        "capture_method": snapshot.capture_method.value,
+        "observed_at": snapshot.timing.observed_at.isoformat(),
+        "available_at": snapshot.timing.available_at.isoformat(),
+        "ingested_at": snapshot.timing.ingested_at.isoformat(),
+        "content_hash": snapshot.content_hash,
+        "image_hash": snapshot.image_hash,
+        "snapshot_argument_supplied": snapshot_argument_supplied,
+        "permission_record_id": snapshot.permission_record_id,
+        "source_scope_id": snapshot.source_scope_id,
+        "source_snapshot_id": snapshot.source_snapshot_id,
+        "quality": snapshot.quality.value,
+        "snapshot_stale": stale,
+        "issues": list(snapshot.issues),
+        "requirements": requirements,
+        "observations": [
+            {
+                "kind": item.kind.value,
+                "scope": item.scope.value,
+                "provider_symbol": item.provider_symbol,
+                "group_id": item.group_id,
+                "value": str(item.value),
+                "unit": item.unit,
+                "evidence_id": item.evidence_id,
+            }
+            for item in snapshot.observations
+        ],
+        "temporary_capture_used": temporary_capture_used,
+        "temporary_capture_deleted": result.temporary_image_deleted,
+        "temporary_capture_deletion_verified": (
+            not temporary_capture_used or result.temporary_image_deleted
+        ),
+        "price_authority": "KIS_KRX",
+        "entry_signal_authority": False,
+        "authority_crosscheck_status": "NOT_PERFORMED",
+        "supplemental_numeric_values_used_for_strategy": False,
+        "fail_soft": True,
+    }
+
+
+def _imported_requirement(
+    requirement: str,
+    contract_sections: tuple[LeadershipSection, ...],
+    evidence_count: int,
+) -> dict[str, object]:
+    return {
+        "requirement": requirement,
+        "status": "IMPORTED" if evidence_count else "NOT_INGESTED",
+        "evidence_count": evidence_count,
+        "contract_sections": [item.value for item in contract_sections],
     }
 
 
@@ -206,6 +354,36 @@ class _WireObservation(BaseModel):
     group_id: str | None = Field(default=None, min_length=1)
     value: str | int | float
     unit: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_kind_scope(self) -> "_WireObservation":
+        market_only = {
+            LeadershipObservationKind.MARKET_BREADTH,
+            LeadershipObservationKind.INVESTOR_FLOW,
+        }
+        security_only = {
+            LeadershipObservationKind.RELATIVE_STRENGTH_RANK,
+            LeadershipObservationKind.TURNOVER_RANK,
+            LeadershipObservationKind.TURNOVER_VALUE,
+            LeadershipObservationKind.SESSION_RETURN,
+            LeadershipObservationKind.MOMENTUM_RANK,
+            LeadershipObservationKind.PEAK_STATE,
+        }
+        if self.kind in market_only and self.scope is not LeadershipScope.MARKET:
+            raise ValueError("market observation kind requires market scope")
+        if (
+            self.kind is LeadershipObservationKind.LEADING_GROUP
+            and self.scope is not LeadershipScope.GROUP
+        ):
+            raise ValueError("leading-group observation requires group scope")
+        if self.kind in security_only and self.scope is not LeadershipScope.SECURITY:
+            raise ValueError("security observation kind requires security scope")
+        if (
+            self.kind is LeadershipObservationKind.HIGH_52_WEEK_STATE
+            and self.scope is LeadershipScope.GROUP
+        ):
+            raise ValueError("52-week-high state cannot use group scope")
+        return self
 
 
 class _WireCandidate(BaseModel):
@@ -300,6 +478,16 @@ class StockEasySnapshotImporter:
                 wire.generic_section not in self._permission.approved_sections
                 or wire.capture_method not in self._permission.approved_methods
                 or wire.source_scope_id not in self._permission.approved_source_scope_ids
+                or any(
+                    _section_for_observation(item)
+                    not in self._permission.approved_sections
+                    for item in wire.observations
+                )
+                or (
+                    bool(wire.candidates)
+                    and LeadershipSection.SECURITY_LEADERSHIP
+                    not in self._permission.approved_sections
+                )
             ):
                 deleted = _delete_temporary_image(temporary_image_path)
                 return StockEasyImportResult(
@@ -388,6 +576,49 @@ class StockEasySnapshotImporter:
             )
 
 
+def load_stockeasy_import(
+    *,
+    snapshot_path: Path,
+    permission_path: Path,
+    imported_at: datetime,
+    max_age: timedelta,
+) -> StockEasyImportResult:
+    """Load two bounded local contracts and run the permission-gated importer."""
+
+    try:
+        permission_bytes = _read_bounded_regular_file(
+            permission_path,
+            max_bytes=_MAX_PERMISSION_BYTES,
+        )
+        snapshot_bytes = _read_bounded_regular_file(
+            snapshot_path,
+            max_bytes=_MAX_SNAPSHOT_BYTES,
+        )
+        permission_payload = json.loads(permission_bytes)
+        if not isinstance(permission_payload, Mapping):
+            raise ValueError("permission record must be a JSON object")
+        if _contains_prohibited_key(permission_payload):
+            return StockEasyImportResult(
+                outcome=StockEasyImportOutcome.REJECTED,
+                error_code="PROHIBITED_FIELD",
+                temporary_image_deleted=False,
+            )
+        permission = StockEasyPermissionRecord.model_validate_json(permission_bytes)
+        payload = json.loads(snapshot_bytes)
+        if not isinstance(payload, Mapping):
+            raise ValueError("sanitized snapshot must be a JSON object")
+        return StockEasySnapshotImporter(
+            permission=permission,
+            max_age=max_age,
+        ).import_snapshot(payload, imported_at=imported_at)
+    except (OSError, TypeError, ValidationError, ValueError):
+        return StockEasyImportResult(
+            outcome=StockEasyImportOutcome.REJECTED,
+            error_code="INVALID_IMPORT_INPUT",
+            temporary_image_deleted=False,
+        )
+
+
 def canonical_stockeasy_content_hash(payload: Mapping[str, object]) -> str:
     """Hash the complete sanitized wire payload except its self-referential hash."""
 
@@ -402,6 +633,39 @@ def canonical_stockeasy_content_hash(payload: Mapping[str, object]) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _read_bounded_regular_file(path: Path, *, max_bytes: int) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("import input must be a regular file")
+        if metadata.st_size <= 0 or metadata.st_size > max_bytes:
+            raise ValueError("import input exceeds the size boundary")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            payload = stream.read(max_bytes + 1)
+        if len(payload) != metadata.st_size or len(payload) > max_bytes:
+            raise ValueError("import input changed or exceeded the size boundary")
+        return payload
+    finally:
+        os.close(descriptor)
+
+
+def _section_for_observation(item: _WireObservation) -> LeadershipSection:
+    if item.kind is LeadershipObservationKind.MARKET_BREADTH:
+        return LeadershipSection.MARKET_BREADTH
+    if item.kind is LeadershipObservationKind.INVESTOR_FLOW:
+        return LeadershipSection.INVESTOR_FLOWS
+    if item.kind is LeadershipObservationKind.LEADING_GROUP:
+        return LeadershipSection.LEADING_GROUPS
+    if (
+        item.kind is LeadershipObservationKind.HIGH_52_WEEK_STATE
+        and item.scope is LeadershipScope.MARKET
+    ):
+        return LeadershipSection.MARKET_BREADTH
+    return LeadershipSection.SECURITY_LEADERSHIP
 
 
 def _contains_prohibited_key(value: object) -> bool:
@@ -439,9 +703,9 @@ def _contains_prohibited_key(value: object) -> bool:
 
 
 def _hash_bounded_file(path: Path) -> str:
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_IMAGE_BYTES:
-        raise ValueError("temporary image is unavailable or exceeds the size bound")
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(
+        _read_bounded_regular_file(path, max_bytes=_MAX_IMAGE_BYTES)
+    ).hexdigest()
 
 
 def _delete_temporary_image(path: Path | None) -> bool:

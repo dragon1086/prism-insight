@@ -1133,6 +1133,21 @@ runtime safety gates
 
 # 완료 정의
 
+## 2026-07-30 delivery checkpoint
+
+이 checkpoint는 계획 항목의 존재가 아니라 merged/current/deferred 제품 상태를 기록한다.
+
+| 상태 | 범위 | 증거/다음 gate |
+|---|---|---|
+| Merged + real runtime observed | KR uncapped candidate funnel, stable dedupe identity, KIS-primary market/fundamentals, AgentNews, ChatGPT OAuth, separate SWING/TREND scores, deterministic policy, isolated SQLite readback, report/dashboard | 실제 discovered candidate `005930`가 2026-07-30 production `kr-daily`를 통과. 결과는 `COMPLETED_WITH_POLICY_REJECTIONS`/`REPORT_ONLY`; 자세한 sanitized evidence는 `docs/KR_DAILY_USER_UAT_PACKAGE.md`. |
+| Merged + fixture/CI verified | PENDING maturity contract, official-session maturity gate, process/outcome persistence, lesson SUPPORT+CONTRA, exact-key zero-influence SHADOW retrieval | 메커니즘 검증일 뿐 실제 daily runtime 등록/소비 증거가 아님. |
+| Current unavailable/fail-soft | DART/KIND 보강, StockEasy 네 섹션, market regime/breadth/flow/leading groups | `STOCKEASY_UNAVAILABLE`와 결손을 user surface에 표시하고 KIS 핵심 분석은 계속. actionable state와 가격 수준은 차단. |
+| Deferred/open | real process-quality record, proposal별 PENDING horizons, matured outcomes, two-pass retrospectives, lesson/evidence, next-run retrieval/comparison, same-snapshot recovery, operated schedule/recovery | row-by-row real DB readback과 later-run evidence 필요. 현재 verdict: **decision audit spine implemented; self-feedback incomplete**. |
+| Human gate | 사용자가 실제 private report/dashboard/DB readback을 관찰하고 승인 | `uat_accepted=false`; 자동 승인 금지. |
+| Not authorized | broker/account/order, message send, schedule activation, risk mutation, live | 이 delivery와 UAT는 권한을 부여하지 않음. |
+
+KR 운영자는 `docs/KR_DAILY_RUNBOOK.md`를 사용한다. 이 checkpoint는 Phase 1 전체 완료 또는 operated readiness를 선언하지 않으며, 특히 US end-to-end, Telegram publication, scheduled recovery와 internal-paper product UAT를 대신하지 않는다.
+
 ## 1차 완료
 
 - KIS KR/FMP US normalized snapshot

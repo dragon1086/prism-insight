@@ -1,6 +1,10 @@
 # KR daily-close SHADOW product UAT
 
-Status: one real discovered-candidate runtime observed; same-snapshot recovery and user approval pending
+Status: one real discovered-candidate runtime observed; feedback registration, same-snapshot recovery, and user approval pending
+
+Operator procedure: [`KR_DAILY_RUNBOOK.md`](KR_DAILY_RUNBOOK.md)
+
+2026-07-30 user package: [`KR_DAILY_USER_UAT_PACKAGE.md`](KR_DAILY_USER_UAT_PACKAGE.md)
 
 ## Safety boundary
 
@@ -29,13 +33,16 @@ For live mode, `--as-of` is an operator upper-bound check, not a request to reco
 | Gate | Required evidence | Current state |
 |---|---|---|
 | Candidate discovery | Real KIS/KRX candidate funnel; raw assertions, stable unique identities, no hidden cap | Live runtime verified at 2026-07-30 09:01 KST: KIS volume-rank context returned HTTP 200; KRX failed visibly; the coherent Naver fallback supplied 2,682 current-session rows and the uncapped funnel retained one raw assertion as one stable identity with `truncated=0`. The earlier completed-session run retained 14/10 with the same no-cap contract. |
-| Candidate identity | Same `security_id` and provider symbol in candidate projection, decision rows, report, and dashboard | Live discovered candidate `005930` / `f3b2bf06-4a7f-594c-b1ac-6d4712511072` traversed candidate projection, two decision snapshots, report, and dashboard on data snapshot `60c27ac6-6671-53c8-80f2-ed7fce08b38b`. |
+| Candidate identity | Stable identity is losslessly bound across persisted/read-side surfaces; each renderer exposes the identity fields in its contract | Live discovered candidate `005930` / `f3b2bf06-4a7f-594c-b1ac-6d4712511072` traversed candidate projection, two decision snapshots, report, and dashboard on data snapshot `60c27ac6-6671-53c8-80f2-ed7fce08b38b`. SQLite/dashboard expose security ID + symbol + snapshot; Markdown exposes symbol + snapshot and does not directly render security ID. |
 | Fundamentals | KIS-primary finance call evidence and visible comparable-pair status/gaps; no silent FMP substitution | Live discovered candidate `005930` verified: all six KIS finance endpoints returned HTTP 200 at 2026-07-30 09:01 KST, selected provider was KIS with `FRESH` quality, DART/KIND remained visibly unavailable, and FMP was unused. |
 | SWING/TREND propagation | Both exact strategy IDs tied to one `data_snapshot_id` per analyzed candidate | Live discovered candidate verified: `SWING_V1` and `TREND_V1` share snapshot `60c27ac6-6671-53c8-80f2-ed7fce08b38b` and retain distinct feature snapshot IDs. |
 | Score audit | Score/feature IDs, versions, raw/normalized components, weights, exact recomposition, threshold version/comparisons/vetoes | Live discovered candidate verified: SWING `25.177165`, TREND `49.364599`; both independently recomposed exactly, with separate score/threshold versions and comparisons persisted and rendered. |
 | Scenario state | Each strategy is explicitly `WATCH`, `NO_ENTRY`, or `ENTRY_CANDIDATE`, or is separately invalid/incomplete/report-only with reasons | The live candidate was `REPORT_ONLY` because shared intraday market context was incomplete; both strategies were separately `POLICY_REJECTED` with named deterministic vetoes. No action state or price level was invented. |
-| Persistence | Decision snapshot and proposal rows read back before publication | Live discovered candidate verified in isolated stores: two decision snapshots, two trade-plan proposals, five policy disposition events, one persisted analysis, one successful ops run, and zero remaining leases. |
-| Report/dashboard | Existing report and dashboard contain the same candidate, snapshot, strategy results, and score audit | Live discovered candidate verified by executable readback assertions: report/dashboard/SQLite share symbol, stable security ID, data snapshot, scores, strategy states, and hard-veto sets. |
+| Persistence | Decision snapshot and proposal rows read back before publication | Live discovered candidate verified in isolated stores: one candidate-analysis job envelope, two decision snapshots, two trade-plan proposals, five policy disposition events, two `market_leadership_v1` report rows, one successful ops run, and zero remaining leases. |
+| Report/dashboard | Existing report and dashboard contain the same candidate, snapshot, strategy results, and score audit | Live discovered candidate verified by executable readback assertions: report/dashboard/SQLite share symbol, data snapshot, scores, strategy states, and hard-veto sets; SQLite/dashboard additionally share the stable security ID. |
+| Prospective outcome registration | Every real proposal, including policy-rejected/report-only cases, has process-quality state and explicit PENDING horizon records before maturity | **Open blocker.** The isolated real DB has zero `process_quality_outcomes` and zero `proposal_outcomes`; no PENDING maturity row was registered. Fixture tests prove the storage rules only. |
+| Retrospective and lessons | Matured outcomes produce time-separated process/outcome review and lesson candidates with SUPPORT+CONTRA evidence | **Pending real time and runtime wiring.** The isolated real DB has zero retrospectives, lesson candidates, and lesson evidence. No matured result is fabricated. |
+| Next-run SHADOW retrieval | A later real run records exact-key retrieved lesson IDs and an uninjected-vs-shadow comparison with zero decision influence | **Open blocker.** Exact-key, zero-influence retrieval is fixture-verified, but this real DB has no eligible lesson and no retrieval record. |
 | Recovery | The same frozen invocation/snapshot is labeled replay and is not counted as a fresh completion; a new live fetch is a new observation | Fixture verified; same-snapshot runtime replay remains pending. The repeated 14/10 live funnel performed new provider fetches and therefore was not an idempotent replay proof. |
 | External effects | Sanitized network evidence only; broker/account/message/schedule effects all false | Verified for recorded live attempts: KIS/AgentNews/OAuth reads and local isolated persistence only; broker/account/order/message/schedule effects false. |
 | User acceptance | User personally observes artifacts and approves UAT | Not approved |
@@ -49,6 +56,8 @@ For live mode, `--as-of` is an operator upper-bound check, not a request to reco
 5. Model parse/schema failure is `INVALID_PROPOSAL` or `ANALYSIS_INCOMPLETE`, never investment `NO_ENTRY`.
 6. A live provider/model call, green tests, and generated artifacts do not establish user acceptance. The final gate stays open until the user reviews and approves the run.
 7. `COMPLETED_WITH_POLICY_REJECTIONS`, `REPORT_ONLY`, and `IDEMPOTENT_REPLAY` are definitive read-only outputs and exit successfully; they remain distinct from `COMPLETED` and never count as a fresh dual-strategy scenario proof. Candidate failures, invalid/incomplete readbacks, and capability failures remain nonzero.
+8. Empty process/outcome/retrospective/lesson tables are reported as **decision audit spine implemented; self-feedback incomplete**. Schema and fixture coverage do not prove a prospective or matured real feedback loop.
+9. A model-side stop/target candidate retained in the normalized proposal is not an approved price. When the persisted scenario is policy-rejected/report-only, the user action surface must keep entry/stop/target/invalidation levels suppressed.
 
 ## Evidence record
 
@@ -63,4 +72,5 @@ Record only sanitized values: timestamp, git SHA, exact command shape, candidate
 - Fixed-symbol product at 08:14 KST: real candidate symbol `214450` traversed KIS market data, all six KIS fundamentals calls, AgentNews, ChatGPT OAuth `gpt-5.4-mini`, isolated SQLite persistence/readback, report, and dashboard export. The strict happy-path command exited nonzero because TREND was correctly policy-rejected, but the persisted user surfaces were exported and inspected.
 - Fixed-symbol snapshot: `a9c39489-69da-53f7-a170-8a7b847e1256`; SWING score `SHADOW_SCORE_V1.SWING_V1=71.519912` (`WATCH`); TREND score `SHADOW_SCORE_V1.TREND_V1=43.121888` (`POLICY_REJECTED`). Both recomposed exactly. TREND vetoes were minimum score, minimum trend strength, and maximum pullback from high.
 - Local verification after review: 30 checked-in CI-equivalent pytest commands produced 1,533 pass events with one intentional deselection; compileall, broker-boundary audit (`violations: 0`), and `git diff --check` passed.
+- The isolated real DB has two feedback runs and the decision/proposal audit spine, but zero process-quality outcomes, proposal outcomes (including PENDING maturity rows), retrospectives, lesson candidates/evidence, or next-run retrieval records. Prospective feedback registration and later real SHADOW retrieval remain open.
 - User UAT, same-snapshot recovery, and operated readiness remain open. This evidence proves one uncapped discovered-candidate runtime/readback and user-surface generation; it does not constitute user approval or broader operated readiness.

@@ -10,7 +10,7 @@ import tempfile
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
@@ -19,7 +19,8 @@ from prism_app.oauth_llm import CHATGPT_OAUTH_DEFAULT_MODEL
 from prism_app.stockeasy_snapshot_import import (
     StockEasyImportOutcome,
     StockEasyImportResult,
-    unavailable_stockeasy_capability,
+    load_stockeasy_import,
+    stockeasy_capability_projection,
 )
 from prism_core.candidates import (
     CandidateChannel,
@@ -251,14 +252,23 @@ class KRDailyProduct:
         )
         reconciliation = selection.reconciliation
         snapshots = tuple(selection.snapshots)
+        effective_supplement_import = supplement_import
         if supplement_import.outcome is StockEasyImportOutcome.IMPORTED:
-            composition = self._supplement_composer.compose(
-                core_candidates=snapshots,
-                supplement=supplement_import.snapshot,
-                authoritative_values=authoritative_values or {},
-            )
-            reconciliation = composition.reconciliation
-            snapshots = (*snapshots, *tuple(composition.supplemental_candidates))
+            try:
+                composition = self._supplement_composer.compose(
+                    core_candidates=snapshots,
+                    supplement=supplement_import.snapshot,
+                    authoritative_values=authoritative_values or {},
+                )
+            except Exception:  # noqa: BLE001 - optional supplement must remain fail-soft
+                effective_supplement_import = StockEasyImportResult(
+                    outcome=StockEasyImportOutcome.REJECTED,
+                    error_code="SUPPLEMENT_COMPOSITION_FAILED",
+                    temporary_image_deleted=supplement_import.temporary_image_deleted,
+                )
+            else:
+                reconciliation = composition.reconciliation
+                snapshots = (*snapshots, *tuple(composition.supplemental_candidates))
 
         analyses: list[CandidateAnalysisResult] = []
         failures: list[CandidateAnalysisFailure] = []
@@ -291,7 +301,7 @@ class KRDailyProduct:
         base_invalid = selection.reconciliation.invalid_record_count
         supplement_invalid = (
             reconciliation.invalid_record_count
-            if supplement_import.outcome is StockEasyImportOutcome.IMPORTED
+            if effective_supplement_import.outcome is StockEasyImportOutcome.IMPORTED
             else 0
         )
         total_invalid = base_invalid + supplement_invalid
@@ -301,14 +311,14 @@ class KRDailyProduct:
         return KRDailyProductResult(
             market_context=context,
             reconciliation=reconciliation,
-            supplement_outcome=supplement_import.outcome,
-            supplement_error_code=supplement_import.error_code,
+            supplement_outcome=effective_supplement_import.outcome,
+            supplement_error_code=effective_supplement_import.error_code,
             analyses=tuple(analyses),
             failures=tuple(failures),
             counts=KRDailyCounts(
                 raw_assertions=(
                     reconciliation.input_count + base_invalid
-                    if supplement_import.outcome is StockEasyImportOutcome.IMPORTED
+                    if effective_supplement_import.outcome is StockEasyImportOutcome.IMPORTED
                     else selection.reconciliation.input_count
                 ),
                 raw_assertions_by_source=dict(sorted(source_counts.items())),
@@ -327,13 +337,10 @@ class KRDailyProduct:
                 analysis_failures=len(failures),
                 truncated=reconciliation.truncated_candidate_count,
             ),
-            supplement_capability=(
-                unavailable_stockeasy_capability(
-                    checked_at=context.timing.as_of,
-                    snapshot_argument_supplied=supplement_snapshot_argument_supplied,
-                )
-                if supplement_import.outcome is StockEasyImportOutcome.UNAVAILABLE
-                else None
+            supplement_capability=stockeasy_capability_projection(
+                effective_supplement_import,
+                checked_at=context.timing.as_of,
+                snapshot_argument_supplied=supplement_snapshot_argument_supplied,
             ),
         )
 
@@ -400,16 +407,7 @@ def render_daily_composition(
         ),
         "",
         *(
-            (
-                f"- 보조 근거 기능 상태: `{supplement_capability['status']}`",
-                "- 필수 섹션 상태: `"
-                + _render_stockeasy_requirements(supplement_capability)
-                + "`",
-                "- 비밀정보 없는 사용자 선행조건: `"
-                + str(supplement_capability["prerequisite_code"])
-                + "`",
-                "",
-            )
+            _render_stockeasy_capability_lines(supplement_capability)
             if supplement_capability is not None
             else ()
         ),
@@ -588,6 +586,63 @@ def _render_stockeasy_requirements(capability: Mapping[str, object]) -> str:
     return ", ".join(rows) or "EVIDENCE_STATE_UNAVAILABLE"
 
 
+def _render_stockeasy_capability_lines(
+    capability: Mapping[str, object],
+) -> tuple[str, ...]:
+    lines = [
+        f"- 보조 근거 기능 상태: `{capability['status']}`",
+        "- 사이트/수집 상태: `"
+        + str(capability.get("site_status", "SITE_STATUS_UNKNOWN"))
+        + "` / `"
+        + str(capability.get("ingestion_status", "NOT_INGESTED"))
+        + "`",
+        "- 필수 섹션 상태: `"
+        + _render_stockeasy_requirements(capability)
+        + "`",
+    ]
+    if capability.get("site_status_as_of") is not None:
+        lines.extend(
+            (
+                f"- 사이트 상태 기준 시각: `{capability['site_status_as_of']}`",
+                f"- 사이트 상태 근거: `{capability.get('site_status_basis')}`",
+                f"- 현재 시점 재검증: `{capability.get('site_currently_verified')}`",
+            )
+        )
+    if capability.get("authority_crosscheck_status") is not None:
+        lines.extend(
+            (
+                "- KIS/KRX 값 대조: `"
+                + str(capability["authority_crosscheck_status"])
+                + "`",
+                "- StockEasy 전략 수치 입력 사용: `"
+                + str(capability.get("supplemental_numeric_values_used_for_strategy"))
+                + "`",
+            )
+        )
+    prerequisite = capability.get("prerequisite_code")
+    if prerequisite is not None:
+        lines.append(f"- 비밀정보 없는 사용자 선행조건: `{prerequisite}`")
+    observations = capability.get("observations")
+    if isinstance(observations, list) and observations:
+        lines.append("- 보조 근거 관측:")
+        lines.extend(
+            f"  - `{_render_stockeasy_observation(item)}`"
+            for item in observations
+            if isinstance(item, Mapping)
+        )
+    lines.append("")
+    return tuple(lines)
+
+
+def _render_stockeasy_observation(item: Mapping[str, object]) -> str:
+    scope = str(item.get("scope", "UNKNOWN"))
+    identity = item.get("provider_symbol") or item.get("group_id") or scope
+    return (
+        f"{item.get('kind', 'UNKNOWN')} {scope} {identity}="
+        f"{item.get('value', 'UNAVAILABLE')} {item.get('unit', 'UNAVAILABLE')}"
+    )
+
+
 def write_dashboard_projection(
     path: Path, projection: Mapping[str, object]
 ) -> None:
@@ -677,6 +732,34 @@ def _without_existing_daily_composition(value: str) -> str:
 KST = ZoneInfo("Asia/Seoul")
 
 
+def resolve_stockeasy_import(
+    *,
+    snapshot_path: Path | None,
+    permission_path: Path | None,
+    imported_at: datetime,
+) -> StockEasyImportResult:
+    """Resolve the paired local contracts without making StockEasy a hard dependency."""
+
+    if snapshot_path is None and permission_path is None:
+        return StockEasyImportResult(
+            outcome=StockEasyImportOutcome.UNAVAILABLE,
+            error_code="APPROVED_UI_EXPORT_NOT_CONFIRMED",
+            temporary_image_deleted=False,
+        )
+    if snapshot_path is None or permission_path is None:
+        return StockEasyImportResult(
+            outcome=StockEasyImportOutcome.REJECTED,
+            error_code="SNAPSHOT_AND_PERMISSION_RECORD_REQUIRED",
+            temporary_image_deleted=False,
+        )
+    return load_stockeasy_import(
+        snapshot_path=snapshot_path,
+        permission_path=permission_path,
+        imported_at=imported_at,
+        max_age=timedelta(hours=24),
+    )
+
+
 def resolve_runtime_as_of(*, requested: datetime, now: datetime) -> datetime:
     """Use a post-fetch evaluation clock while rejecting future user boundaries."""
 
@@ -716,8 +799,16 @@ def _parser() -> argparse.ArgumentParser:
         "--stockeasy-snapshot",
         type=Path,
         help=(
-            "optional approved sanitized snapshot; remains UNAVAILABLE until a "
-            "separate terms/permission record enables the importer"
+            "optional bounded stockeasy_sanitized_snapshot_v1 JSON; requires the "
+            "separate --stockeasy-permission-record contract"
+        ),
+    )
+    parser.add_argument(
+        "--stockeasy-permission-record",
+        type=Path,
+        help=(
+            "separate scoped StockEasyPermissionRecord JSON; supplying either local "
+            "contract without the other is rejected fail-soft"
         ),
     )
     parser.add_argument("--base-report", type=Path)
@@ -773,10 +864,10 @@ async def _run_command(args: argparse.Namespace) -> dict[str, object]:
             now=datetime.now(tz=KST),
         ),
     )
-    supplement_import = StockEasyImportResult(
-        outcome=StockEasyImportOutcome.UNAVAILABLE,
-        error_code="APPROVED_UI_EXPORT_NOT_CONFIRMED",
-        temporary_image_deleted=False,
+    supplement_import = resolve_stockeasy_import(
+        snapshot_path=args.stockeasy_snapshot,
+        permission_path=args.stockeasy_permission_record,
+        imported_at=datetime.now(tz=KST),
     )
 
     async def analyze(candidate: ReconciledCandidate) -> CandidateAnalysisResult:
