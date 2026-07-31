@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
+from dotenv import load_dotenv
+
 from prism_app.oauth_llm import CHATGPT_OAUTH_DEFAULT_MODEL
 from prism_app.stockeasy_snapshot_import import (
     StockEasyImportOutcome,
@@ -37,6 +39,7 @@ from prism_core.strategies.contracts import StrategyId
 
 _KR_START = "<!-- PRISM_KR_DAILY_COMPOSITION_START -->"
 _KR_END = "<!-- PRISM_KR_DAILY_COMPOSITION_END -->"
+_PROJECT_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 
 
 def _render_strategy_result(
@@ -1164,7 +1167,16 @@ def _atomic_write(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def load_project_environment(env_path: Path | None = None) -> bool:
+    """Load the explicit project secret file without overriding process settings."""
+
+    return load_dotenv(dotenv_path=env_path or _PROJECT_ENV_PATH, override=False)
+
+
+def main(
+    argv: Sequence[str] | None = None, *, env_path: Path | None = None
+) -> int:
+    load_project_environment(env_path)
     args = _parser().parse_args(argv)
     try:
         payload = asyncio.run(_run_command(args))

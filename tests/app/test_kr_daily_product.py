@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import textwrap
 from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -989,6 +993,64 @@ def test_kr_daily_defaults_to_live_verified_chatgpt_oauth_model() -> None:
 
     assert args.model == "gpt-5.4-mini"
     assert args.model_version == "gpt-5.4-mini"
+
+
+def test_main_loads_explicit_project_env_in_fresh_process_without_logging_values(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    synthetic_id = "synthetic-krx-id"
+    synthetic_password = "synthetic-krx-password"
+    env_file.write_text(
+        "KRX_LOGIN_METHOD=krx\n"
+        f"KRX_ID={synthetic_id}\n"
+        f"KRX_PW={synthetic_password}\n",
+        encoding="utf-8",
+    )
+    script = textwrap.dedent(
+        """
+        import os
+        import sys
+        from pathlib import Path
+        from prism_app import kr_daily_product
+
+        class ProbeParser:
+            def parse_args(self, argv):
+                assert os.environ["KRX_LOGIN_METHOD"] == "krx"
+                assert os.environ["KRX_ID"] == "inherited-krx-id"
+                assert os.environ["KRX_PW"] == "synthetic-krx-password"
+                raise SystemExit(0)
+
+        kr_daily_product._parser = lambda: ProbeParser()
+        try:
+            kr_daily_product.main([], env_path=Path(sys.argv[1]))
+        except SystemExit as exc:
+            assert exc.code == 0
+        print("environment-loaded")
+        """
+    )
+    clean_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"KRX_LOGIN_METHOD", "KRX_ID", "KRX_PW"}
+    }
+    clean_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+    clean_env["KRX_ID"] = "inherited-krx-id"
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(env_file)],
+        cwd=tmp_path,
+        env=clean_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "environment-loaded"
+    assert synthetic_id not in completed.stdout + completed.stderr
+    assert synthetic_password not in completed.stdout + completed.stderr
+    assert "inherited-krx-id" not in completed.stdout + completed.stderr
 
 
 def test_kr_daily_accepts_snapshot_only_with_explicit_permission_record_path() -> None:

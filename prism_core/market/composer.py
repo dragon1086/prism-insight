@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, time
-from decimal import Context, Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
-from typing import Callable, Mapping, Protocol
+from decimal import Decimal
+from typing import Callable, Mapping, Protocol, cast
 from zoneinfo import ZoneInfo
 
+import prism_core.market.kr_metrics as kr_metrics
 from prism_core.data.contracts import DataQualityStatus
 from prism_core.data.exchange_calendar import (
     ExchangeCalendarUnavailableError,
@@ -23,12 +24,10 @@ from prism_core.market.context import (
     KRMarketContext,
     MarketContextTiming,
     RegimeAssessment,
-    RegimeFeature,
     SessionState,
     SourceClock,
     SourceRole,
     SupplementalEvidence,
-    classify_kr_regime,
     derive_context_quality,
 )
 
@@ -206,16 +205,27 @@ class KRMarketContextComposer:
                 )
             )
             evidence_ids.append(krx_evidence_id)
-            index_state, regime = _index_metrics(
-                krx_payload, evidence_id=krx_evidence_id, session_date=session_date
+            computed = _compute_krx_metrics(
+                krx_payload,
+                evidence_id=krx_evidence_id,
+                session_date=session_date,
             )
-            breadth = _authoritative_breadth_metrics(
-                krx_payload, evidence_id=krx_evidence_id
-            )
-            investor_flows = _investor_flow_metrics(
-                krx_payload, evidence_id=krx_evidence_id
-            )
+            index_state = computed.index_state
+            breadth = computed.breadth
+            investor_flows = computed.investor_flows
+            regime = computed.regime
             core_missing.clear()
+            if "breadth" in computed.missing_fields:
+                core_missing.add("breadth")
+            if any(
+                name in computed.missing_fields
+                for name in (
+                    "kospi_close",
+                    "kospi_ma20",
+                    "kospi_return_10d_pct",
+                )
+            ):
+                core_missing.update(("index_state", "regime_features"))
             missing_flow_markets = krx_payload.payload.get(
                 "investor_flow_missing_markets", ()
             )
@@ -323,38 +333,13 @@ def resolve_session_state(
     return SessionState.PRIOR_CLOSE
 
 
-def _metric_tuple(
-    values: Mapping[str, Decimal], *, unit: str, source: str, evidence_id: str
-) -> tuple[DeterministicMetric, ...]:
-    return tuple(
-        DeterministicMetric(
-            name=name,
-            value=value,
-            unit=unit,
-            source=source,
-            evidence_ids=(evidence_id,),
-        )
-        for name, value in sorted(values.items())
-    )
-
-
-def _finite_decimal(value: object, *, field: str) -> Decimal:
-    try:
-        result = Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        raise ValueError(f"KRX {field} is not numeric") from None
-    if not result.is_finite():
-        raise ValueError(f"KRX {field} is not finite")
-    return result
-
-
-def _index_metrics(
+def _compute_krx_metrics(
     payload: ProviderPayload, *, evidence_id: str, session_date: date
-) -> tuple[tuple[DeterministicMetric, ...], RegimeAssessment]:
+) -> kr_metrics.KRComputedMetrics:
     rows = payload.payload.get("index_history")
     if not isinstance(rows, list) or len(rows) < 20:
         raise ValueError("KRX index history requires at least 20 completed sessions")
-    normalized: list[tuple[date, Decimal]] = []
+    normalized: list[tuple[date, Decimal | int | str]] = []
     for row in rows:
         if not isinstance(row, Mapping):
             raise ValueError("KRX index history contains a malformed row")
@@ -362,54 +347,15 @@ def _index_metrics(
             trade_date = date.fromisoformat(str(row.get("trade_date", "")))
         except ValueError:
             raise ValueError("KRX index history contains an invalid trade date") from None
-        normalized.append((trade_date, _finite_decimal(row.get("close"), field="index close")))
-    normalized.sort(key=lambda item: item[0])
-    if len({item[0] for item in normalized}) != len(normalized):
-        raise ValueError("KRX index history contains duplicate sessions")
-    if normalized[-1][0] != session_date:
-        raise ValueError("KRX index history does not match the completed KIS session")
-    closes = [item[1] for item in normalized]
-    if closes[-11] == 0:
-        raise ValueError("KRX 10-session return denominator cannot be zero")
-    with localcontext(Context(prec=28, rounding=ROUND_HALF_EVEN)):
-        values = {
-            "kospi_close": +closes[-1],
-            "kospi_ma20": sum(closes[-20:], start=Decimal(0)) / Decimal(20),
-            "kospi_return_10d_pct": (
-                closes[-1] / closes[-11] - Decimal(1)
-            )
-            * Decimal(100),
-        }
-    metrics = tuple(
-        DeterministicMetric(
-            name=name,
-            value=value,
-            unit="percent" if name.endswith("_pct") else "index_points",
-            source="KRX",
-            evidence_ids=(evidence_id,),
-        )
-        for name, value in sorted(values.items())
-    )
-    features = tuple(
-        RegimeFeature(
-            name=metric.name,
-            value=metric.value,
-            unit="percent" if metric.name.endswith("_pct") else "index_points",
-            evidence_ids=metric.evidence_ids,
-        )
-        for metric in metrics
-    )
-    return metrics, classify_kr_regime(features)
-
-
-def _authoritative_breadth_metrics(
-    payload: ProviderPayload, *, evidence_id: str
-) -> tuple[DeterministicMetric, ...]:
-    raw = payload.payload.get("equity_breadth")
-    if not isinstance(raw, Mapping) or raw.get("universe") != "KOSPI_KOSDAQ_EQUITIES":
+        close = row.get("close")
+        if not isinstance(close, (Decimal, int, str)):
+            raise ValueError("KRX index close is not numeric")
+        normalized.append((trade_date, close))
+    breadth = payload.payload.get("equity_breadth")
+    if not isinstance(breadth, Mapping) or breadth.get("universe") != "KOSPI_KOSDAQ_EQUITIES":
         raise ValueError("KRX breadth must use the KOSPI/KOSDAQ equity universe")
-    values = {
-        name: _finite_decimal(raw.get(name), field=f"breadth {name}")
+    breadth_counts = {
+        name: breadth.get(name)
         for name in (
             "advance_count",
             "decline_count",
@@ -419,23 +365,14 @@ def _authoritative_breadth_metrics(
             "unchanged_count",
         )
     }
-    if any(value < 0 or value != value.to_integral_value() for value in values.values()):
-        raise ValueError("KRX breadth counts must be non-negative integers")
-    if values["advance_count"] + values["decline_count"] + values["unchanged_count"] != values["eligible_equity_count"]:
-        raise ValueError("KRX breadth counts must cover the complete eligible equity universe")
-    return _metric_tuple(values, unit="count", source="KRX", evidence_id=evidence_id)
-
-
-def _investor_flow_metrics(
-    payload: ProviderPayload, *, evidence_id: str
-) -> tuple[DeterministicMetric, ...]:
-    raw = payload.payload.get("investor_flows")
-    if raw is None:
-        return ()
-    if not isinstance(raw, Mapping):
+    flows = payload.payload.get("investor_flows")
+    if flows is not None and not isinstance(flows, Mapping):
         raise ValueError("KRX investor flows must be an object when present")
-    values = {
-        str(name): _finite_decimal(value, field=f"investor flow {name}")
-        for name, value in raw.items()
-    }
-    return _metric_tuple(values, unit="KRW", source="KRX", evidence_id=evidence_id)
+    return kr_metrics.compute_kr_market_metrics(
+        session_date=session_date,
+        index_history=normalized,
+        breadth_counts=cast(Mapping[str, Decimal | int | str], breadth_counts),
+        investor_flows=cast(Mapping[str, Decimal | int | str] | None, flows),
+        source_quality=payload.quality,
+        evidence_id=evidence_id,
+    )

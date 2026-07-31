@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import prism_core.market.composer as composer_module
+import prism_core.market.kr_metrics as kr_metrics_module
 from prism_core.data.contracts import DataQualityStatus
 from prism_core.data.providers.agentnews import AgentNewsFetchEvidence, AgentNewsFetchResult
 from prism_core.data.providers.agentnews_models import AgentNewsBoard, AgentNewsSnapshot
@@ -272,6 +273,31 @@ async def test_composer_uses_krx_equity_universe_for_index_breadth_flows_and_reg
     assert "DART" not in context.missing_fields
     assert "KIND" not in context.missing_fields
     assert not any(metric.name.startswith("volume_rank_") for metric in context.breadth)
+
+
+@pytest.mark.asyncio
+async def test_composer_delegates_authoritative_calculation_to_kr_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    compute = kr_metrics_module.compute_kr_market_metrics
+
+    def tracking_compute(**kwargs: object) -> kr_metrics_module.KRComputedMetrics:
+        calls.append(kwargs)
+        return compute(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(kr_metrics_module, "compute_kr_market_metrics", tracking_compute)
+
+    await KRMarketContextComposer(
+        kis_transport=FixtureKISMarketContextTransport(),
+        krx_provider=FixtureKRXMarketContextProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert len(calls) == 1
+    assert calls[0]["source_quality"] is DataQualityStatus.FRESH
+    assert calls[0]["evidence_id"] == "KRX:market-context:fixture"
 
 
 @pytest.mark.asyncio

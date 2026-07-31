@@ -255,6 +255,25 @@ class KRXMarketContextProvider:
         self._history_calendar_days = history_calendar_days
         self._timeout_seconds = timeout_seconds
 
+    @staticmethod
+    async def _drain_request(request: asyncio.Task[pd.DataFrame]) -> bool:
+        """Wait for a synchronous worker despite repeated outer cancellation."""
+        cancellation_requested = False
+        while not request.done():
+            try:
+                await asyncio.shield(request)
+            except asyncio.CancelledError:
+                cancellation_requested = True
+            except Exception:
+                break
+        try:
+            request.result()
+        except BaseException:
+            # Retrieving the terminal outcome prevents an orphaned task warning;
+            # the caller preserves its timeout or cancellation disposition.
+            pass
+        return cancellation_requested
+
     async def _call(
         self,
         operation: str,
@@ -267,19 +286,19 @@ class KRXMarketContextProvider:
                 asyncio.shield(request), timeout=self._timeout_seconds
             )
         except TimeoutError:
+            if request.done():
+                # Preserve a TimeoutError raised by the client itself instead
+                # of misclassifying it as the outer request deadline.
+                return request.result()
             # Python cannot terminate a running worker thread. Drain it before
             # returning the fail-soft timeout so session/network work never
             # survives provider cleanup or continues behind the next batch.
-            try:
-                await asyncio.shield(request)
-            except Exception:
-                pass
+            cancelled_during_drain = await self._drain_request(request)
+            if cancelled_during_drain:
+                raise asyncio.CancelledError
             raise TimeoutError(f"KRX {operation} request timed out") from None
         except asyncio.CancelledError:
-            try:
-                await asyncio.shield(request)
-            except Exception:
-                pass
+            await self._drain_request(request)
             raise
 
     async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:

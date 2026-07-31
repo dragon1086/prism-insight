@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import threading
@@ -459,6 +460,80 @@ async def test_provider_bounds_each_official_request() -> None:
         )
 
     assert request_finished.is_set(), "timed-out KRX work must not outlive fail-soft return"
+
+
+@pytest.mark.asyncio
+async def test_call_preserves_timeout_raised_by_completed_client_request() -> None:
+    provider = KRXMarketContextProvider(
+        client=FixtureKRXClient(),
+        clock=lambda: datetime(2026, 7, 29, 15, 34, tzinfo=KST),
+        timeout_seconds=1,
+    )
+
+    def raise_client_timeout() -> pd.DataFrame:
+        raise TimeoutError("client transport timeout")
+
+    with pytest.raises(TimeoutError, match="client transport timeout"):
+        await provider._call("fixture", raise_client_timeout)
+
+
+@pytest.mark.asyncio
+async def test_provider_defers_cancellation_and_owned_client_cleanup_until_worker_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_started = threading.Event()
+    release_request = threading.Event()
+    request_finished = threading.Event()
+
+    class CancellationTrackingClient(FixtureKRXClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_called = False
+            self.worker_finished_when_closed = False
+
+        def get_index_history(self, start: date, end: date, ticker: str) -> pd.DataFrame:
+            request_started.set()
+            try:
+                assert release_request.wait(timeout=1)
+                return super().get_index_history(start, end, ticker)
+            finally:
+                request_finished.set()
+
+        def close(self) -> None:
+            self.close_called = True
+            self.worker_finished_when_closed = request_finished.is_set()
+
+    client = CancellationTrackingClient()
+    monkeypatch.setattr(
+        "prism_core.market.krx.OfficialKRXEquityMarketClient", lambda: client
+    )
+    provider = KRXMarketContextProvider(
+        clock=lambda: datetime(2026, 7, 29, 15, 34, tzinfo=KST),
+        timeout_seconds=0.01,
+    )
+    task = asyncio.create_task(
+        provider.fetch_market_context(
+            as_of=datetime(2026, 7, 29, 15, 33, tzinfo=KST)
+        )
+    )
+
+    deadline = asyncio.get_running_loop().time() + 1
+    while not request_started.is_set() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.001)
+    assert request_started.is_set()
+    await asyncio.sleep(0.02)
+    task.cancel()
+    await asyncio.sleep(0.01)
+    try:
+        assert not task.done(), "cancellation must wait for synchronous worker cleanup"
+        assert client.close_called is False
+    finally:
+        release_request.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert client.close_called is True
+    assert client.worker_finished_when_closed is True
 
 
 @pytest.mark.asyncio
