@@ -185,6 +185,54 @@ async def test_composer_contract_exposes_authoritative_timestamped_kr_context() 
 
 
 @pytest.mark.asyncio
+async def test_optional_sources_and_flows_can_be_missing_without_invalidating_kis_core() -> None:
+    class NoFlowOfficialKRXProvider(FixtureOfficialKRXProvider):
+        async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:
+            payload = await super().fetch_market_context(as_of=as_of)
+            body = dict(payload.payload)
+            body.pop("investor_flows")
+            body["investor_flow_markets"] = []
+            body["investor_flow_missing_markets"] = ["KOSDAQ", "KOSPI"]
+            return replace(payload, payload=body)
+
+    context = await KRMarketContextComposer(
+        kis_transport=FixtureKISMarketContextTransport(),
+        krx_provider=NoFlowOfficialKRXProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: AS_OF,
+    ).compose()
+
+    assert context.quality is DataQualityStatus.FRESH
+    assert context.disposition is ContextDisposition.ELIGIBLE
+    assert context.missing_fields == ()
+    assert context.investor_flows == ()
+    assert context.optional_missing_sources == (
+        "DART",
+        "KIND",
+        "KRX_INVESTOR_FLOWS",
+        "KRX_INVESTOR_FLOWS_KOSDAQ",
+        "KRX_INVESTOR_FLOWS_KOSPI",
+    )
+
+
+@pytest.mark.asyncio
+async def test_kis_core_unavailability_is_a_hard_failure_not_an_optional_skip() -> None:
+    class UnavailableKISTransport:
+        async def fetch_volume_rank(self) -> ProviderPayload:
+            raise TimeoutError("fixture KIS core unavailable")
+
+    composer = KRMarketContextComposer(
+        kis_transport=UnavailableKISTransport(),
+        krx_provider=FixtureOfficialKRXProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: AS_OF,
+    )
+
+    with pytest.raises(TimeoutError, match="fixture KIS core unavailable"):
+        await composer.compose()
+
+
+@pytest.mark.asyncio
 async def test_composer_rejects_kis_krx_completed_session_mismatch() -> None:
     class MismatchedSessionKRXProvider(FixtureOfficialKRXProvider):
         async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:

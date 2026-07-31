@@ -163,6 +163,49 @@ def test_official_krx_reuses_only_an_isolated_read_only_session_copy(
     assert not isolated_copy.parent.exists()
 
 
+def test_official_krx_prefers_explicit_environment_credentials_over_stale_session_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "stale-session.json"
+    source.write_text(
+        json.dumps({"cookies": {"session": "stale"}, "last_login": "2026-07-01"}),
+        encoding="utf-8",
+    )
+    source.chmod(0o600)
+    monkeypatch.setenv("KRX_LOGIN_METHOD", "krx")
+    monkeypatch.setenv("KRX_ID", "synthetic-id")
+    monkeypatch.setenv("KRX_PW", "synthetic-password")
+    login_calls: list[bool] = []
+
+    class AuthManager:
+        def _load_session(self) -> bool:
+            raise AssertionError("explicit credentials must not load a stale session copy")
+
+        def login(self) -> None:
+            login_calls.append(True)
+
+    class StockModule:
+        class KRXDataClient:
+            def __init__(self, *, auto_login: bool) -> None:
+                assert auto_login is False
+                self._auth_manager = AuthManager()
+
+            def get_index_ohlcv_by_date(self, *args: object) -> pd.DataFrame:
+                return pd.DataFrame()
+
+    monkeypatch.setattr(
+        OfficialKRXEquityMarketClient,
+        "_stock_module",
+        staticmethod(lambda: StockModule()),
+    )
+
+    client = OfficialKRXEquityMarketClient(session_source_path=source)
+    client.get_index_history(date(2026, 6, 1), date(2026, 7, 29), "1001")
+
+    assert login_calls == [True]
+    client.close()
+
+
 def test_official_krx_stock_endpoint_binds_authoritative_equity_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

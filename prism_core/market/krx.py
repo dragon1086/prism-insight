@@ -55,6 +55,17 @@ class OfficialKRXEquityMarketClient:
     def _stock_module() -> object:
         return importlib.import_module("krx_data_client")
 
+    @staticmethod
+    def _environment_credentials_available() -> bool:
+        method = os.environ.get("KRX_LOGIN_METHOD", "krx").strip().lower()
+        if method == "kakao":
+            required = ("KAKAO_ID", "KAKAO_PW")
+        elif method == "krx":
+            required = ("KRX_ID", "KRX_PW")
+        else:
+            return False
+        return all(os.environ.get(name) for name in required)
+
     def _data_client(self) -> object:
         if self._client is not None:
             return self._client
@@ -66,7 +77,11 @@ class OfficialKRXEquityMarketClient:
         try:
             stock = self._stock_module()
             session_source = self._session_source_path
-            use_session_copy = session_source is not None and session_source.exists()
+            use_session_copy = (
+                session_source is not None
+                and session_source.exists()
+                and not self._environment_credentials_available()
+            )
             if use_session_copy:
                 client = stock.KRXDataClient(  # type: ignore[attr-defined]
                     auto_login=False,
