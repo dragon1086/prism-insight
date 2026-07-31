@@ -82,15 +82,15 @@ class _LocalAgentNewsProvider:
 
 
 class _BoundedKRXClient:
-    """Allow exactly the five core official reads and no optional flow request."""
+    """Allow seven core official reads and no optional flow request."""
 
     def __init__(self) -> None:
         self._client = OfficialKRXEquityMarketClient()
         self.calls: list[dict[str, str]] = []
 
     def _guard_call(self, call: dict[str, str]) -> None:
-        if len(self.calls) >= 5:
-            raise RuntimeError("KRX smoke exhausted its five-request core budget")
+        if len(self.calls) >= 7:
+            raise RuntimeError("KRX smoke exhausted its seven-request core budget")
         if call in self.calls:
             raise RuntimeError("KRX smoke rejected a duplicate core request")
         self.calls.append(call)
@@ -119,6 +119,18 @@ class _BoundedKRXClient:
             }
         )
         return self._client.get_equity_ohlcv(session, market)
+
+    def get_sector_classification(self, session: date, market: str) -> dict[str, str]:
+        if market not in {"KOSPI", "KOSDAQ"}:
+            raise ValueError("KRX smoke sector request exceeded its approved scope")
+        self._guard_call(
+            {
+                "operation": "sector_classification",
+                "market": market,
+                "session": session.isoformat(),
+            }
+        )
+        return self._client.get_sector_classification(session, market)
 
     def get_investor_flows(self, session: date, market: str) -> pd.DataFrame:
         del session, market
@@ -206,13 +218,15 @@ async def test_live_kis_krx_compose_one_bounded_sanitized_market_context() -> No
         f"completed_bounded_calls={len(krx_client.calls)}"
     )
     krx_payload = krx_provider.payload
-    assert len(krx_client.calls) == 5
+    assert len(krx_client.calls) == 7
     assert [call["operation"] for call in krx_client.calls] == [
         "index_history",
         "equity_ohlcv",
         "equity_ohlcv",
         "equity_ohlcv",
         "equity_ohlcv",
+        "sector_classification",
+        "sector_classification",
     ]
     assert {call.get("market") for call in krx_client.calls[1:]} == {"KOSPI", "KOSDAQ"}
 
@@ -228,6 +242,9 @@ async def test_live_kis_krx_compose_one_bounded_sanitized_market_context() -> No
     assert context.quality in {DataQualityStatus.FRESH, DataQualityStatus.PARTIAL}
     assert context.action_eligible is (context.quality is DataQualityStatus.FRESH)
     assert context.missing_fields == ()
+    assert context.group_leadership
+    assert context.group_leadership_state is not None
+    assert context.group_leadership_state.quality is DataQualityStatus.FRESH
     metrics = {metric.name: metric for metric in context.index_state}
     assert set(metrics) == {"kospi_close", "kospi_ma20", "kospi_return_10d_pct"}
     assert metrics["kospi_close"].value > 0

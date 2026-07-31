@@ -45,7 +45,14 @@ class FixtureKISMarketContextTransport:
             available_at=observed_at,
             payload={
                 "volume_rank": [
-                    {"mksc_shrn_iscd": f"RANK{index:02d}", "prdy_ctrt": "9.9"}
+                    {
+                        "mksc_shrn_iscd": f"{index + 1:06d}",
+                        **(
+                            {"prdy_ctrt": "9.9", "acml_tr_pbmn": "500000000"}
+                            if index < 2
+                            else {}
+                        ),
+                    }
                     for index in range(30)
                 ],
                 "ranking_session": {
@@ -112,6 +119,34 @@ class FixtureOfficialKRXProvider:
                     "unclassified_equity_count": 0,
                     "universe": "KOSPI_KOSDAQ_EQUITIES",
                 },
+                "group_taxonomy": {
+                    "version": "KRX_SECTOR_2026-07-29",
+                    "assignments": [
+                        {
+                            "provider_symbol": "000001",
+                            "group_id": "KRX:SECTOR:CONTRACT",
+                        },
+                        {
+                            "provider_symbol": "000002",
+                            "group_id": "KRX:SECTOR:CONTRACT",
+                        },
+                    ],
+                },
+                "group_observations": [
+                    {
+                        "provider_symbol": "000001",
+                        "current_close": "110",
+                        "previous_close": "100",
+                        "turnover_krw": "500000000",
+                    },
+                    {
+                        "provider_symbol": "000002",
+                        "current_close": "105",
+                        "previous_close": "100",
+                        "turnover_krw": "500000000",
+                    },
+                ],
+                "group_taxonomy_unclassified_count": 0,
                 "investor_flows": {
                     "foreign_net_purchase_krw": "125000000000",
                     "institution_net_purchase_krw": "-32000000000",

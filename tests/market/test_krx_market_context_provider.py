@@ -6,6 +6,7 @@ import json
 import threading
 import time
 from datetime import date, datetime
+from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 from pathlib import Path
 from stat import S_IMODE
 from zoneinfo import ZoneInfo
@@ -14,6 +15,7 @@ import pandas as pd
 import pytest
 
 from prism_core.data.contracts import DataQualityStatus
+from prism_core.data.providers.kis import ProviderPayload
 from prism_core.market.krx import KRXMarketContextProvider, OfficialKRXEquityMarketClient
 
 
@@ -251,12 +253,30 @@ class FixtureKRXClient:
     def get_equity_ohlcv(self, session: date, market: str) -> pd.DataFrame:
         self.calls.append(("equity", session, market))
         closes = [101, 99, 100] if session == date(2026, 7, 29) else [100, 100, 100]
+        amounts = [500_000_000, 300_000_000, 200_000_000]
+        symbols = ["000001", "000002", "000003"]
         if market == "KOSDAQ":
             closes = [103, 99] if session == date(2026, 7, 29) else [100, 100]
+            amounts = [400_000_000, 100_000_000]
+            symbols = ["100001", "100002"]
         return pd.DataFrame(
-            {"Close": closes, "SecurityType": ["EQUITY"] * len(closes)},
-            index=[f"{market}-{index}" for index in range(len(closes))],
+            {
+                "Close": closes,
+                "Amount": amounts,
+                "SecurityType": ["EQUITY"] * len(closes),
+            },
+            index=symbols,
         )
+
+    def get_sector_classification(self, session: date, market: str) -> dict[str, str]:
+        self.calls.append(("sector", session, market))
+        if market == "KOSPI":
+            return {
+                "000001": "전기 전자",
+                "000002": "자동차",
+                "000003": "전기 전자",
+            }
+        return {"100001": "반도체", "100002": "바이오"}
 
     def get_investor_flows(self, session: date, market: str) -> pd.DataFrame:
         self.calls.append(("flows", session, market))
@@ -297,6 +317,14 @@ async def test_provider_fetches_official_index_complete_equities_and_optional_fl
         "foreign_net_purchase_krw": "200",
         "institution_net_purchase_krw": "-80",
     }
+    assert payload.payload["group_taxonomy"]["version"] == "KRX_SECTOR_2026-07-29"
+    assert len(payload.payload["group_taxonomy"]["assignments"]) == 5
+    assert payload.payload["group_observations"][0] == {
+        "current_close": "101",
+        "previous_close": "100",
+        "provider_symbol": "000001",
+        "turnover_krw": "500000000",
+    }
     component_hashes = payload.payload["component_hashes"]
     assert isinstance(component_hashes, dict)
     assert set(component_hashes) == {
@@ -307,6 +335,8 @@ async def test_provider_fetches_official_index_complete_equities_and_optional_fl
         "index_history",
         "investor_flows_KOSDAQ",
         "investor_flows_KOSPI",
+        "sector_taxonomy_KOSDAQ",
+        "sector_taxonomy_KOSPI",
     }
     assert all(
         len(component_hash) == 64
@@ -318,9 +348,68 @@ async def test_provider_fetches_official_index_complete_equities_and_optional_fl
         ("equity", "KOSDAQ"),
         ("equity", "KOSPI"),
         ("equity", "KOSDAQ"),
+        ("sector", "KOSPI"),
+        ("sector", "KOSDAQ"),
         ("flows", "KOSPI"),
         ("flows", "KOSDAQ"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_provider_decimal_arithmetic_is_independent_of_ambient_context() -> None:
+    class HighMagnitudeFlowClient(FixtureKRXClient):
+        def get_investor_flows(self, session: date, market: str) -> pd.DataFrame:
+            self.calls.append(("flows", session, market))
+            return pd.DataFrame(
+                {
+                    "NetPurchaseKRW": [
+                        Decimal("999999999999999999"),
+                        Decimal("-888888888888888888"),
+                    ]
+                },
+                index=["Foreign", "Institution"],
+            )
+
+    async def fetch() -> ProviderPayload:
+        return await KRXMarketContextProvider(
+            client=HighMagnitudeFlowClient(),
+            clock=lambda: datetime(2026, 7, 29, 15, 34, tzinfo=KST),
+        ).fetch_market_context(
+            as_of=datetime(2026, 7, 29, 15, 33, tzinfo=KST)
+        )
+
+    expected = await fetch()
+    with localcontext(Context(prec=6, rounding=ROUND_HALF_EVEN)):
+        actual = await fetch()
+
+    assert actual.payload["equity_breadth"] == expected.payload["equity_breadth"]
+    assert actual.payload["investor_flows"] == expected.payload["investor_flows"]
+
+
+@pytest.mark.asyncio
+async def test_taxonomy_failure_preserves_authoritative_index_and_breadth_as_partial() -> None:
+    class TaxonomyUnavailableClient(FixtureKRXClient):
+        def get_sector_classification(
+            self, session: date, market: str
+        ) -> dict[str, str]:
+            del session, market
+            raise RuntimeError("sanitized fixture taxonomy outage")
+
+    payload = await KRXMarketContextProvider(
+        client=TaxonomyUnavailableClient(),
+        clock=lambda: datetime(2026, 7, 29, 15, 34, tzinfo=KST),
+    ).fetch_market_context(as_of=datetime(2026, 7, 29, 15, 33, tzinfo=KST))
+
+    assert payload.quality is DataQualityStatus.FRESH
+    assert payload.payload["index_history"]
+    breadth = payload.payload["equity_breadth"]
+    assert isinstance(breadth, dict)
+    assert breadth["eligible_equity_count"] == 5
+    assert "group_taxonomy" not in payload.payload
+    assert payload.payload["group_leadership_availability"] == {
+        "quality": "UNAVAILABLE",
+        "reason_codes": ["KRX_SECTOR_TAXONOMY_UNAVAILABLE"],
+    }
 
 
 @pytest.mark.asyncio
@@ -354,7 +443,7 @@ async def test_provider_rejects_non_equity_rows_instead_of_polluting_breadth() -
         def get_equity_ohlcv(self, session: date, market: str) -> pd.DataFrame:
             frame = super().get_equity_ohlcv(session, market)
             if market == "KOSPI":
-                frame.loc["leveraged-etf"] = [108, "LEVERAGED_ETF"]
+                frame.loc["leveraged-etf"] = [108, 0, "LEVERAGED_ETF"]
             return frame
 
     payload = await KRXMarketContextProvider(
@@ -407,7 +496,7 @@ async def test_provider_fails_closed_on_duplicate_equity_identity() -> None:
             frame = super().get_equity_ohlcv(session, market)
             if market == "KOSDAQ":
                 frame.index = [
-                    "KOSPI-0" if index == 0 else ticker
+                    "000001" if index == 0 else ticker
                     for index, ticker in enumerate(frame.index)
                 ]
             return frame

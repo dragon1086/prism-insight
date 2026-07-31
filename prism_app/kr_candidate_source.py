@@ -267,9 +267,16 @@ def _legacy_context(
         "leading_sectors": [
             {
                 "sector": group.group_id,
-                "confidence": float(group.concentration_pct / Decimal("100")),
+                "confidence": float(
+                    (
+                        group.leadership_score
+                        if group.leadership_score is not None
+                        else group.concentration_pct
+                    )
+                    / Decimal("100")
+                ),
             }
-            for group in context.group_leadership
+            for group in sorted(context.group_leadership, key=lambda item: item.rank)
         ],
         "sector_map": dict(sector_map),
         "context_id": context.content_hash,

@@ -14,9 +14,9 @@ import os
 import stat
 import tempfile
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Context, Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Protocol, TypeVar
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -26,12 +26,17 @@ from prism_core.data.exchange_calendar import ExchangeMarket, latest_completed_s
 from prism_core.data.providers.kis import ProviderPayload
 
 
+_DECIMAL_CONTEXT = Context(prec=28, rounding=ROUND_HALF_EVEN)
+
+
 class KRXEquityMarketClient(Protocol):
     """Synchronous official-data client restricted to equity market context."""
 
     def get_index_history(self, start: date, end: date, ticker: str) -> pd.DataFrame: ...
 
     def get_equity_ohlcv(self, session: date, market: str) -> pd.DataFrame: ...
+
+    def get_sector_classification(self, session: date, market: str) -> dict[str, str]: ...
 
     def get_investor_flows(self, session: date, market: str) -> pd.DataFrame: ...
 
@@ -204,6 +209,15 @@ class OfficialKRXEquityMarketClient:
         frame["SecurityType"] = "EQUITY"
         return frame
 
+    def get_sector_classification(self, session: date, market: str) -> dict[str, str]:
+        client = self._data_client()
+        result = client.get_market_sector_info(  # type: ignore[attr-defined]
+            session.strftime("%Y%m%d"), market=market
+        )
+        if not isinstance(result, dict):
+            raise ValueError("KRX sector classification returned an invalid mapping")
+        return {str(symbol): str(group) for symbol, group in result.items()}
+
     def get_investor_flows(self, session: date, market: str) -> pd.DataFrame:
         del session, market
         raise NotImplementedError(
@@ -249,6 +263,16 @@ def _frame_hash(frame: pd.DataFrame) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _mapping_hash(mapping: dict[str, str]) -> str:
+    encoded = json.dumps(
+        mapping, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+_T = TypeVar("_T")
+
+
 class KRXMarketContextProvider:
     """Normalize one completed-session official KRX context payload."""
 
@@ -271,7 +295,7 @@ class KRXMarketContextProvider:
         self._timeout_seconds = timeout_seconds
 
     @staticmethod
-    async def _drain_request(request: asyncio.Task[pd.DataFrame]) -> bool:
+    async def _drain_request(request: asyncio.Task[_T]) -> bool:
         """Wait for a synchronous worker despite repeated outer cancellation."""
         cancellation_requested = False
         while not request.done():
@@ -292,9 +316,9 @@ class KRXMarketContextProvider:
     async def _call(
         self,
         operation: str,
-        function: Callable[..., pd.DataFrame],
+        function: Callable[..., _T],
         *args: object,
-    ) -> pd.DataFrame:
+    ) -> _T:
         request = asyncio.create_task(asyncio.to_thread(function, *args))
         try:
             return await asyncio.wait_for(
@@ -356,6 +380,20 @@ class KRXMarketContextProvider:
             )
             for market in markets
         }
+        sector_taxonomies: dict[str, dict[str, str]] = {}
+        missing_taxonomy_markets: list[str] = []
+        for market in markets:
+            try:
+                taxonomy = await self._call(
+                    f"sector_taxonomy_{market}",
+                    self._client.get_sector_classification,
+                    session,
+                    market,
+                )
+            except Exception:
+                missing_taxonomy_markets.append(market)
+                continue
+            sector_taxonomies[market] = taxonomy
         flow_frames: list[pd.DataFrame] = []
         flow_markets: list[str] = []
         missing_flow_markets: list[str] = []
@@ -370,6 +408,12 @@ class KRXMarketContextProvider:
                 for market in markets
             },
         }
+        component_hashes.update(
+            {
+                f"sector_taxonomy_{market}": _mapping_hash(taxonomy)
+                for market, taxonomy in sector_taxonomies.items()
+            }
+        )
         for market in markets:
             try:
                 frame = await self._call(
@@ -404,6 +448,21 @@ class KRXMarketContextProvider:
             "investor_flow_markets": sorted(flow_markets),
             "investor_flow_missing_markets": sorted(missing_flow_markets),
         }
+        if missing_taxonomy_markets:
+            payload["group_leadership_availability"] = {
+                "quality": DataQualityStatus.UNAVAILABLE.value,
+                "reason_codes": ["KRX_SECTOR_TAXONOMY_UNAVAILABLE"],
+            }
+        else:
+            group_taxonomy, group_observations, group_unclassified = self._group_inputs(
+                session=session,
+                current_frames=current_equity_frames,
+                previous_frames=previous_equity_frames,
+                sector_taxonomies=sector_taxonomies,
+            )
+            payload["group_taxonomy"] = group_taxonomy
+            payload["group_observations"] = group_observations
+            payload["group_taxonomy_unclassified_count"] = group_unclassified
         flows = self._investor_flows(flow_frames)
         if flows:
             payload["investor_flows"] = flows
@@ -423,6 +482,7 @@ class KRXMarketContextProvider:
             quality=(
                 DataQualityStatus.PARTIAL
                 if equity_breadth["unclassified_equity_count"]
+                or payload.get("group_taxonomy_unclassified_count", 0)
                 else DataQualityStatus.FRESH
             ),
             raw_payload_hash=source_hash,
@@ -473,7 +533,8 @@ class KRXMarketContextProvider:
                     continue
                 current_close = _decimal(row[current_close_column])
                 previous_close = _decimal(previous.loc[ticker, previous_close_column])
-                change = current_close - previous_close
+                with localcontext(_DECIMAL_CONTEXT):
+                    change = current_close - previous_close
                 advances += int(change > 0)
                 declines += int(change < 0)
                 unchanged += int(change == 0)
@@ -491,24 +552,79 @@ class KRXMarketContextProvider:
         }
 
     @staticmethod
+    def _group_inputs(
+        *,
+        session: date,
+        current_frames: dict[str, pd.DataFrame],
+        previous_frames: dict[str, pd.DataFrame],
+        sector_taxonomies: dict[str, dict[str, str]],
+    ) -> tuple[dict[str, object], list[dict[str, str]], int]:
+        assignments: list[dict[str, str]] = []
+        observations: list[dict[str, str]] = []
+        unclassified = 0
+        for market in sorted(current_frames):
+            current = current_frames[market]
+            previous = previous_frames[market]
+            taxonomy = sector_taxonomies[market]
+            current_close_column = _column(current, "Close", "종가")
+            previous_close_column = _column(previous, "Close", "종가")
+            turnover_column = _column(current, "Amount", "거래대금")
+            for raw_symbol, row in current.iterrows():
+                symbol = str(raw_symbol)
+                if row["SecurityType"] != "EQUITY":
+                    continue
+                raw_group = taxonomy.get(symbol, "").strip()
+                if not raw_group or raw_symbol not in previous.index:
+                    unclassified += 1
+                    continue
+                normalized_group = "_".join(raw_group.split())
+                assignments.append(
+                    {
+                        "provider_symbol": symbol,
+                        "group_id": f"KRX:SECTOR:{normalized_group}",
+                    }
+                )
+                observations.append(
+                    {
+                        "provider_symbol": symbol,
+                        "current_close": str(_decimal(row[current_close_column])),
+                        "previous_close": str(
+                            _decimal(previous.loc[raw_symbol, previous_close_column])
+                        ),
+                        "turnover_krw": str(_decimal(row[turnover_column])),
+                    }
+                )
+        assignments.sort(key=lambda item: (item["group_id"], item["provider_symbol"]))
+        observations.sort(key=lambda item: item["provider_symbol"])
+        return (
+            {
+                "version": f"KRX_SECTOR_{session.isoformat()}",
+                "assignments": assignments,
+            },
+            observations,
+            unclassified,
+        )
+
+    @staticmethod
     def _investor_flows(frames: list[pd.DataFrame]) -> dict[str, str]:
-        totals = {"Foreign": Decimal(0), "Institution": Decimal(0)}
-        for frame in frames:
-            if frame.empty:
-                continue
-            if {"외국인합계", "기관합계"}.issubset(frame.columns):
-                latest = frame.iloc[-1]
-                totals["Foreign"] += _decimal(latest["외국인합계"])
-                totals["Institution"] += _decimal(latest["기관합계"])
-                continue
-            value_column = _column(frame, "NetPurchaseKRW", "순매수")
-            for investor in totals:
-                if investor in frame.index:
-                    totals[investor] += _decimal(frame.loc[investor, value_column])
-                else:
-                    korean = "외국인합계" if investor == "Foreign" else "기관합계"
-                    if korean in frame.index:
-                        totals[investor] += _decimal(frame.loc[korean, value_column])
+        with localcontext(_DECIMAL_CONTEXT):
+            totals = {"Foreign": Decimal(0), "Institution": Decimal(0)}
+            for frame in frames:
+                if frame.empty:
+                    continue
+                if {"외국인합계", "기관합계"}.issubset(frame.columns):
+                    latest = frame.iloc[-1]
+                    totals["Foreign"] += _decimal(latest["외국인합계"])
+                    totals["Institution"] += _decimal(latest["기관합계"])
+                    continue
+                value_column = _column(frame, "NetPurchaseKRW", "순매수")
+                for investor in totals:
+                    if investor in frame.index:
+                        totals[investor] += _decimal(frame.loc[investor, value_column])
+                    else:
+                        korean = "외국인합계" if investor == "Foreign" else "기관합계"
+                        if korean in frame.index:
+                            totals[investor] += _decimal(frame.loc[korean, value_column])
         if not frames:
             return {}
         return {

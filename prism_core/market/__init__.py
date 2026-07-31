@@ -4,6 +4,8 @@ from prism_core.market.context import (
     ContextDisposition,
     DeterministicMetric,
     GroupLeadership,
+    GroupLeadershipExclusion,
+    GroupLeadershipState,
     KRMarketContext,
     KRMarketRegime,
     MarketContextTiming,
@@ -22,17 +24,32 @@ from prism_core.market.composer import (
     KRMarketContextComposer,
 )
 from prism_core.market.kr_metrics import KRComputedMetrics, compute_kr_market_metrics
+from prism_core.market.kr_group_leadership import (
+    GroupExclusionReason,
+    GroupSecurityObservation,
+    GroupTaxonomyAssignment,
+    KISGroupSecurityObservation,
+    KRGroupLeadershipComputation,
+    compute_kr_group_leadership,
+)
 
 __all__ = [
     "AgentNewsKRContextProvider",
     "ContextDisposition",
     "DeterministicMetric",
     "GroupLeadership",
+    "GroupLeadershipExclusion",
+    "GroupLeadershipState",
+    "GroupExclusionReason",
+    "GroupSecurityObservation",
+    "GroupTaxonomyAssignment",
     "KRMarketContext",
     "KRMarketContextComposer",
     "KRComputedMetrics",
+    "KRGroupLeadershipComputation",
     "KRMarketRegime",
     "KISMarketContextTransport",
+    "KISGroupSecurityObservation",
     "MarketContextTiming",
     "RegimeAssessment",
     "RegimeFeature",
@@ -42,5 +59,6 @@ __all__ = [
     "SupplementalEvidence",
     "classify_kr_regime",
     "compute_kr_market_metrics",
+    "compute_kr_group_leadership",
     "derive_context_quality",
 ]

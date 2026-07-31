@@ -104,6 +104,17 @@ class GroupLeadership(ContractModel):
     concentration_pct: Annotated[Decimal, Field(ge=0, le=100, allow_inf_nan=False)]
     source: NonEmptyStr
     evidence_ids: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    session_date: date | None = None
+    taxonomy_version: NonEmptyStr | None = None
+    leadership_score: Annotated[Decimal, Field(ge=0, le=100, allow_inf_nan=False)] | None = None
+    member_count: Annotated[int, Field(ge=1)] | None = None
+    advance_count: Annotated[int, Field(ge=0)] | None = None
+    breadth_pct: Annotated[Decimal, Field(ge=0, le=100, allow_inf_nan=False)] | None = None
+    momentum_pct: FiniteDecimal | None = None
+    relative_strength_pct: Annotated[Decimal, Field(ge=0, le=100, allow_inf_nan=False)] | None = None
+    turnover_krw: NonNegativeDecimal | None = None
+    kis_numeric_member_count: Annotated[int, Field(ge=0)] | None = None
+    quality: DataQualityStatus = DataQualityStatus.FRESH
 
     @field_validator("evidence_ids", mode="after")
     @classmethod
@@ -111,6 +122,82 @@ class GroupLeadership(ContractModel):
         if len(set(value)) != len(value):
             raise ValueError("leadership evidence IDs must be unique")
         return tuple(sorted(value))
+
+    @model_validator(mode="after")
+    def validate_authoritative_details(self) -> "GroupLeadership":
+        details = (
+            self.session_date,
+            self.taxonomy_version,
+            self.leadership_score,
+            self.member_count,
+            self.advance_count,
+            self.breadth_pct,
+            self.momentum_pct,
+            self.relative_strength_pct,
+            self.turnover_krw,
+            self.kis_numeric_member_count,
+        )
+        if any(item is not None for item in details) and not all(
+            item is not None for item in details
+        ):
+            raise ValueError("authoritative group-leadership details must be complete")
+        if self.member_count is not None:
+            assert self.advance_count is not None
+            assert self.kis_numeric_member_count is not None
+            if self.advance_count > self.member_count:
+                raise ValueError("advance_count cannot exceed member_count")
+            if self.kis_numeric_member_count > self.member_count:
+                raise ValueError("KIS numeric member count cannot exceed member_count")
+        if self.quality is not DataQualityStatus.FRESH:
+            raise ValueError("ranked group leadership must use fresh authoritative data")
+        return self
+
+
+class GroupLeadershipExclusion(ContractModel):
+    group_id: NonEmptyStr
+    reason_codes: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    turnover_krw: NonNegativeDecimal
+    member_count: Annotated[int, Field(ge=0)]
+
+    @field_validator("reason_codes", mode="after")
+    @classmethod
+    def normalize_reason_codes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("group exclusion reason codes must be unique")
+        return tuple(sorted(value))
+
+
+class GroupLeadershipState(ContractModel):
+    version: Annotated[str, Field(pattern="^kr_group_leadership_v1$")] = (
+        "kr_group_leadership_v1"
+    )
+    session_date: date
+    taxonomy_version: NonEmptyStr | None = None
+    quality: DataQualityStatus
+    conflicts: tuple[NonEmptyStr, ...] = ()
+    missing_fields: tuple[NonEmptyStr, ...] = ()
+    reason_codes: tuple[NonEmptyStr, ...] = Field(min_length=1)
+    excluded_groups: tuple[GroupLeadershipExclusion, ...] = ()
+    source_evidence_ids: tuple[NonEmptyStr, ...] = Field(min_length=1)
+
+    @field_validator(
+        "conflicts", "missing_fields", "reason_codes", "source_evidence_ids", mode="after"
+    )
+    @classmethod
+    def normalize_identifiers(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("group leadership state identifiers must be unique")
+        return tuple(sorted(value))
+
+    @field_validator("excluded_groups", mode="after")
+    @classmethod
+    def require_stable_exclusions(
+        cls, value: tuple[GroupLeadershipExclusion, ...]
+    ) -> tuple[GroupLeadershipExclusion, ...]:
+        keys = tuple(item.group_id for item in value)
+        if len(set(keys)) != len(keys) or keys != tuple(sorted(keys)):
+            raise ValueError("group leadership exclusions must be sorted and unique")
+        return value
 
 
 class RegimeFeature(ContractModel):
@@ -293,6 +380,7 @@ class KRMarketContext(ContractModel):
     investor_flows: tuple[DeterministicMetric, ...]
     macro_indicators: tuple[DeterministicMetric, ...]
     group_leadership: tuple[GroupLeadership, ...]
+    group_leadership_state: GroupLeadershipState | None = None
     regime: RegimeAssessment
     supplemental_evidence: tuple[SupplementalEvidence, ...] = ()
     evidence_ids: tuple[NonEmptyStr, ...] = Field(min_length=1)
@@ -320,7 +408,7 @@ class KRMarketContext(ContractModel):
             elif isinstance(item, DeterministicMetric):
                 keys.append((item.name, item.source))
             elif isinstance(item, GroupLeadership):
-                keys.append((item.group_id, item.source))
+                keys.append((f"{item.rank:010d}", item.group_id, item.source))
             elif isinstance(item, SupplementalEvidence):
                 keys.append((item.evidence_id,))
             else:
@@ -348,6 +436,18 @@ class KRMarketContext(ContractModel):
 
     @model_validator(mode="after")
     def validate_context(self) -> "KRMarketContext":
+        if self.group_leadership:
+            ranks = tuple(item.rank for item in self.group_leadership)
+            group_ids = tuple(item.group_id for item in self.group_leadership)
+            if ranks != tuple(range(1, len(ranks) + 1)):
+                raise ValueError("group leadership ranks must be contiguous and ordered")
+            if len(set(group_ids)) != len(group_ids):
+                raise ValueError("group leadership group IDs must be unique")
+        if self.group_leadership_state is not None:
+            if self.group_leadership_state.session_date != self.timing.session_date:
+                raise ValueError("group leadership state must use the context session")
+            if self.group_leadership and self.group_leadership_state.quality is not DataQualityStatus.FRESH:
+                raise ValueError("ranked leadership requires fresh leadership state")
         for source in self.source_clocks:
             if source.available_at > self.timing.as_of:
                 raise ValueError("available_at must be at or before context as_of")
@@ -410,6 +510,9 @@ class KRMarketContext(ContractModel):
         if (
             self.quality is DataQualityStatus.FRESH
             and self.regime.regime is not KRMarketRegime.UNKNOWN
+            and self.group_leadership_state is not None
+            and self.group_leadership_state.quality is DataQualityStatus.FRESH
+            and bool(self.group_leadership)
             and not self.conflicts
             and not self.missing_fields
         ):

@@ -31,9 +31,21 @@ class FixtureKISMarketContextTransport:
             available_at=observed_at,
             payload={
                 "volume_rank": [
-                    {"mksc_shrn_iscd": "005930", "prdy_ctrt": "2.5"},
-                    {"mksc_shrn_iscd": "000660", "prdy_ctrt": "-1.0"},
-                    {"mksc_shrn_iscd": "035420", "prdy_ctrt": "0"},
+                    {
+                        "mksc_shrn_iscd": "005930",
+                        "prdy_ctrt": "2.5",
+                        "acml_tr_pbmn": "500000000",
+                    },
+                    {
+                        "mksc_shrn_iscd": "000660",
+                        "prdy_ctrt": "-1.0",
+                        "acml_tr_pbmn": "400000000",
+                    },
+                    {
+                        "mksc_shrn_iscd": "035420",
+                        "prdy_ctrt": "0",
+                        "acml_tr_pbmn": "200000000",
+                    },
                 ],
                 "ranking_session": {
                     "latest_completed_session": "2026-07-29",
@@ -78,6 +90,44 @@ class FixtureKRXMarketContextProvider:
                     "unclassified_equity_count": 0,
                     "universe": "KOSPI_KOSDAQ_EQUITIES",
                 },
+                "group_taxonomy": {
+                    "version": "KRX_SECTOR_2026-07-29",
+                    "assignments": [
+                        {
+                            "provider_symbol": "000660",
+                            "group_id": "KRX:SECTOR:SEMICONDUCTOR",
+                        },
+                        {
+                            "provider_symbol": "005930",
+                            "group_id": "KRX:SECTOR:SEMICONDUCTOR",
+                        },
+                        {
+                            "provider_symbol": "035420",
+                            "group_id": "KRX:SECTOR:INTERNET",
+                        },
+                    ],
+                },
+                "group_observations": [
+                    {
+                        "provider_symbol": "000660",
+                        "current_close": "120",
+                        "previous_close": "100",
+                        "turnover_krw": "400000000",
+                    },
+                    {
+                        "provider_symbol": "005930",
+                        "current_close": "110",
+                        "previous_close": "100",
+                        "turnover_krw": "500000000",
+                    },
+                    {
+                        "provider_symbol": "035420",
+                        "current_close": "101",
+                        "previous_close": "100",
+                        "turnover_krw": "200000000",
+                    },
+                ],
+                "group_taxonomy_unclassified_count": 0,
                 "investor_flows": {
                     "foreign_net_purchase_krw": "125000000000",
                     "institution_net_purchase_krw": "-32000000000",
@@ -267,12 +317,152 @@ async def test_composer_uses_krx_equity_universe_for_index_breadth_flows_and_reg
         "institution_net_purchase_krw": Decimal("-32000000000"),
     }
     assert context.regime.regime is KRMarketRegime.STRONG_BULL
+    assert [group.group_id for group in context.group_leadership] == [
+        "KRX:SECTOR:SEMICONDUCTOR",
+        "KRX:SECTOR:INTERNET",
+    ]
+    assert [group.rank for group in context.group_leadership] == [1, 2]
+    assert context.group_leadership[0].source == "KIS+KRX"
+    assert context.group_leadership[0].breadth_pct == Decimal("100")
+    assert context.group_leadership_state.quality is DataQualityStatus.FRESH
+    assert context.group_leadership_state.reason_codes == (
+        "AUTHORITATIVE_GROUPS_RANKED",
+    )
     assert context.quality is DataQualityStatus.FRESH
     assert context.action_eligible is True
     assert context.optional_missing_sources == ("DART", "KIND")
     assert "DART" not in context.missing_fields
     assert "KIND" not in context.missing_fields
     assert not any(metric.name.startswith("volume_rank_") for metric in context.breadth)
+
+
+@pytest.mark.asyncio
+async def test_all_low_turnover_groups_preserve_exclusions_and_fail_closed() -> None:
+    class LowTurnoverKRXProvider(FixtureKRXMarketContextProvider):
+        async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:
+            payload = await super().fetch_market_context(as_of=as_of)
+            body = dict(payload.payload)
+            body["group_observations"] = [
+                {**row, "turnover_krw": "10000000"}
+                for row in body["group_observations"]  # type: ignore[union-attr]
+            ]
+            return replace(payload, payload=body)
+
+    class LowTurnoverKISTransport(FixtureKISMarketContextTransport):
+        async def fetch_volume_rank(self) -> ProviderPayload:
+            payload = await super().fetch_volume_rank()
+            body = dict(payload.payload)
+            body["volume_rank"] = [
+                {**row, "acml_tr_pbmn": "10000000"}
+                for row in body["volume_rank"]  # type: ignore[union-attr]
+            ]
+            return replace(payload, payload=body)
+
+    context = await KRMarketContextComposer(
+        kis_transport=LowTurnoverKISTransport(),
+        krx_provider=LowTurnoverKRXProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert context.group_leadership == ()
+    assert context.group_leadership_state is not None
+    assert context.group_leadership_state.quality is DataQualityStatus.PARTIAL
+    assert len(context.group_leadership_state.excluded_groups) == 2
+    assert {item.reason_codes for item in context.group_leadership_state.excluded_groups} == {
+        ("LOW_TURNOVER",)
+    }
+    assert "group_leadership" in context.missing_fields
+    assert context.action_eligible is False
+
+
+@pytest.mark.asyncio
+async def test_missing_taxonomy_keeps_index_and_breadth_but_blocks_leadership() -> None:
+    class MissingTaxonomyKRXProvider(FixtureKRXMarketContextProvider):
+        async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:
+            payload = await super().fetch_market_context(as_of=as_of)
+            body = dict(payload.payload)
+            body.pop("group_taxonomy")
+            body.pop("group_observations")
+            body["group_leadership_availability"] = {
+                "quality": "UNAVAILABLE",
+                "reason_codes": ["KRX_SECTOR_TAXONOMY_UNAVAILABLE"],
+            }
+            return replace(payload, payload=body, quality=DataQualityStatus.PARTIAL)
+
+    context = await KRMarketContextComposer(
+        kis_transport=FixtureKISMarketContextTransport(),
+        krx_provider=MissingTaxonomyKRXProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert context.index_state
+    assert context.breadth
+    assert context.group_leadership == ()
+    assert context.group_leadership_state is not None
+    assert context.group_leadership_state.reason_codes == (
+        "KRX_SECTOR_TAXONOMY_UNAVAILABLE",
+    )
+    assert "group_leadership" in context.missing_fields
+    assert context.action_eligible is False
+
+
+@pytest.mark.asyncio
+async def test_malformed_taxonomy_keeps_index_and_breadth_but_blocks_leadership() -> None:
+    class MalformedTaxonomyKRXProvider(FixtureKRXMarketContextProvider):
+        async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:
+            payload = await super().fetch_market_context(as_of=as_of)
+            body = dict(payload.payload)
+            body["group_taxonomy"] = {"version": "KRX_SECTOR_2026-07-29"}
+            return replace(payload, payload=body)
+
+    context = await KRMarketContextComposer(
+        kis_transport=FixtureKISMarketContextTransport(),
+        krx_provider=MalformedTaxonomyKRXProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert context.index_state
+    assert context.breadth
+    assert context.group_leadership == ()
+    assert context.group_leadership_state is not None
+    assert context.group_leadership_state.quality is DataQualityStatus.UNAVAILABLE
+    assert context.group_leadership_state.reason_codes == (
+        "KRX_GROUP_LEADERSHIP_INVALID",
+    )
+    assert "group_leadership" in context.missing_fields
+    assert context.action_eligible is False
+
+
+@pytest.mark.asyncio
+async def test_malformed_kis_group_numeric_keeps_index_and_breadth() -> None:
+    class MalformedNumericKISTransport(FixtureKISMarketContextTransport):
+        async def fetch_volume_rank(self) -> ProviderPayload:
+            payload = await super().fetch_volume_rank()
+            body = dict(payload.payload)
+            rows = list(body["volume_rank"])  # type: ignore[arg-type]
+            rows[0] = {**rows[0], "prdy_ctrt": "N/A"}
+            body["volume_rank"] = rows
+            return replace(payload, payload=body)
+
+    context = await KRMarketContextComposer(
+        kis_transport=MalformedNumericKISTransport(),
+        krx_provider=FixtureKRXMarketContextProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert context.index_state
+    assert context.breadth
+    assert context.group_leadership == ()
+    assert context.group_leadership_state is not None
+    assert context.group_leadership_state.reason_codes == (
+        "KRX_GROUP_LEADERSHIP_INVALID",
+    )
+    assert "group_leadership" in context.missing_fields
+    assert context.action_eligible is False
 
 
 @pytest.mark.asyncio
@@ -352,6 +542,7 @@ async def test_krx_unavailability_fails_closed_without_blocking_context_readback
     assert context.action_eligible is False
     assert context.missing_fields == (
         "breadth",
+        "group_leadership",
         "index_state",
         "regime_features",
     )

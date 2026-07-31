@@ -13,6 +13,7 @@ from prism_core.data.contracts import DataQualityStatus
 from prism_core.market import (
     DeterministicMetric,
     GroupLeadership,
+    GroupLeadershipState,
     KRMarketContext,
     MarketContextTiming,
     RegimeAssessment,
@@ -100,7 +101,22 @@ def _known_context() -> KRMarketContext:
         breadth=(),
         investor_flows=(),
         macro_indicators=(),
-        group_leadership=(),
+        group_leadership=(
+            GroupLeadership(
+                group_id="KRX:SECTOR:FIXTURE",
+                rank=1,
+                concentration_pct=Decimal("100"),
+                source="KIS+KRX",
+                evidence_ids=("kis:index",),
+            ),
+        ),
+        group_leadership_state=GroupLeadershipState(
+            session_date=date(2026, 7, 29),
+            taxonomy_version="KRX_SECTOR_2026-07-29",
+            quality=DataQualityStatus.FRESH,
+            reason_codes=("AUTHORITATIVE_GROUPS_RANKED",),
+            source_evidence_ids=("kis:index",),
+        ),
         regime=regime,
         evidence_ids=("kis:context", "kis:index"),
         quality=DataQualityStatus.FRESH,
@@ -288,11 +304,38 @@ def test_leadership_context_uses_authoritative_fields_and_injected_sector_map() 
         update={
             "group_leadership": (
                 GroupLeadership(
+                    group_id="KRX:SECTOR:AUTO",
+                    rank=2,
+                    concentration_pct=Decimal("42.5"),
+                    source="KRX",
+                    evidence_ids=("krx:sector:auto",),
+                    session_date=date(2026, 7, 24),
+                    taxonomy_version="KRX_SECTOR_2026-07-24",
+                    leadership_score=Decimal("0"),
+                    member_count=2,
+                    advance_count=1,
+                    breadth_pct=Decimal("50"),
+                    momentum_pct=Decimal("1"),
+                    relative_strength_pct=Decimal("50"),
+                    turnover_krw=Decimal("425000000"),
+                    kis_numeric_member_count=0,
+                ),
+                GroupLeadership(
                     group_id="KRX:SECTOR:SEMICONDUCTOR",
                     rank=1,
-                    concentration_pct=Decimal("42.5"),
-                    source="KIS",
-                    evidence_ids=("kis:sector:semiconductor",),
+                    concentration_pct=Decimal("20"),
+                    source="KIS+KRX",
+                    evidence_ids=("kis:sector:semiconductor", "krx:sector:semiconductor"),
+                    session_date=date(2026, 7, 24),
+                    taxonomy_version="KRX_SECTOR_2026-07-24",
+                    leadership_score=Decimal("91"),
+                    member_count=2,
+                    advance_count=2,
+                    breadth_pct=Decimal("100"),
+                    momentum_pct=Decimal("5"),
+                    relative_strength_pct=Decimal("100"),
+                    turnover_krw=Decimal("200000000"),
+                    kis_numeric_member_count=1,
                 ),
             )
         }
@@ -310,7 +353,8 @@ def test_leadership_context_uses_authoritative_fields_and_injected_sector_map() 
     source.discover(trigger_time="afternoon", market_context=context)
 
     assert captured[0]["leading_sectors"] == [
-        {"sector": "KRX:SECTOR:SEMICONDUCTOR", "confidence": 0.425}
+        {"sector": "KRX:SECTOR:SEMICONDUCTOR", "confidence": 0.91},
+        {"sector": "KRX:SECTOR:AUTO", "confidence": 0.0},
     ]
     assert captured[0]["sector_map"] == {
         "005930": "KRX:SECTOR:SEMICONDUCTOR"

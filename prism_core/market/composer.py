@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, time
-from decimal import Decimal
+from decimal import Context, Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 from typing import Callable, Mapping, Protocol, cast
 from zoneinfo import ZoneInfo
 
+import prism_core.market.kr_group_leadership as kr_group_leadership
 import prism_core.market.kr_metrics as kr_metrics
 from prism_core.data.contracts import DataQualityStatus
 from prism_core.data.exchange_calendar import (
@@ -21,6 +22,7 @@ from prism_core.data.providers.agentnews_models import AgentNewsBoard
 from prism_core.data.providers.kis import ProviderPayload
 from prism_core.market.context import (
     DeterministicMetric,
+    GroupLeadershipState,
     KRMarketContext,
     MarketContextTiming,
     RegimeAssessment,
@@ -30,6 +32,10 @@ from prism_core.market.context import (
     SupplementalEvidence,
     derive_context_quality,
 )
+
+
+_MIN_GROUP_TURNOVER_KRW = Decimal("100000000")
+_DECIMAL_CONTEXT = Context(prec=28, rounding=ROUND_HALF_EVEN)
 
 
 class KISMarketContextTransport(Protocol):
@@ -170,6 +176,15 @@ class KRMarketContextComposer:
         index_state: tuple[DeterministicMetric, ...] = ()
         breadth: tuple[DeterministicMetric, ...] = ()
         investor_flows: tuple[DeterministicMetric, ...] = ()
+        group_leadership = ()
+        group_state = GroupLeadershipState(
+            session_date=session_date,
+            quality=DataQualityStatus.UNAVAILABLE,
+            missing_fields=("group_leadership",),
+            reason_codes=("KRX_GROUP_LEADERSHIP_UNAVAILABLE",),
+            source_evidence_ids=(kis_evidence_id,),
+        )
+        group_conflicts: tuple[str, ...] = ()
         regime = RegimeAssessment.unknown(
             missing_features=(
                 "kospi_close",
@@ -180,7 +195,12 @@ class KRMarketContextComposer:
         optional_missing_sources = ["DART", "KIND"]
         if krx_payload is None:
             optional_missing_sources.append("KRX")
-        core_missing = {"index_state", "breadth", "regime_features"}
+        core_missing = {
+            "index_state",
+            "breadth",
+            "group_leadership",
+            "regime_features",
+        }
         evidence_ids = [agentnews_evidence_id, kis_evidence_id]
         if krx_payload is not None:
             krx_session_raw = krx_payload.payload.get("session_date")
@@ -215,6 +235,59 @@ class KRMarketContextComposer:
             investor_flows = computed.investor_flows
             regime = computed.regime
             core_missing.clear()
+            if "group_taxonomy" in krx_payload.payload:
+                try:
+                    group_computation = _compute_group_leadership(
+                        krx_payload=krx_payload,
+                        kis_payload=kis_payload,
+                        session_date=session_date,
+                        krx_evidence_id=krx_evidence_id,
+                        kis_evidence_id=kis_evidence_id,
+                    )
+                except (InvalidOperation, KeyError, TypeError, ValueError):
+                    group_state = GroupLeadershipState(
+                        session_date=session_date,
+                        quality=DataQualityStatus.UNAVAILABLE,
+                        missing_fields=("group_leadership",),
+                        reason_codes=("KRX_GROUP_LEADERSHIP_INVALID",),
+                        source_evidence_ids=(krx_evidence_id,),
+                    )
+                    core_missing.add("group_leadership")
+                else:
+                    group_leadership = group_computation.ranked_groups
+                    group_conflicts = group_computation.conflicts
+                    group_state = GroupLeadershipState(
+                        session_date=group_computation.session_date,
+                        taxonomy_version=group_computation.taxonomy_version,
+                        quality=group_computation.quality,
+                        conflicts=group_computation.conflicts,
+                        missing_fields=group_computation.missing_fields,
+                        reason_codes=group_computation.reason_codes,
+                        excluded_groups=group_computation.excluded_groups,
+                        source_evidence_ids=group_computation.source_evidence_ids,
+                    )
+                    if not (
+                        group_state.quality is DataQualityStatus.FRESH
+                        and group_leadership
+                    ):
+                        core_missing.add("group_leadership")
+            else:
+                availability = krx_payload.payload.get("group_leadership_availability")
+                reason_codes = ("KRX_GROUP_LEADERSHIP_UNAVAILABLE",)
+                if isinstance(availability, Mapping):
+                    raw_reasons = availability.get("reason_codes")
+                    if isinstance(raw_reasons, list) and all(
+                        isinstance(item, str) and item for item in raw_reasons
+                    ):
+                        reason_codes = tuple(sorted(set(raw_reasons)))
+                group_state = GroupLeadershipState(
+                    session_date=session_date,
+                    quality=DataQualityStatus.UNAVAILABLE,
+                    missing_fields=("group_leadership",),
+                    reason_codes=reason_codes,
+                    source_evidence_ids=(krx_evidence_id,),
+                )
+                core_missing.add("group_leadership")
             if "breadth" in computed.missing_fields:
                 core_missing.add("breadth")
             if any(
@@ -242,11 +315,12 @@ class KRMarketContextComposer:
                 optional_missing_sources.append("KRX_INVESTOR_FLOWS")
         source_clocks = tuple(sorted(source_clock_items, key=lambda item: item.source))
         missing_fields = tuple(sorted(core_missing))
-        conflicts = (
-            ("KIS_PRIMARY_QUALITY_CONFLICT",)
-            if kis_payload.quality is DataQualityStatus.CONFLICT
-            else ()
-        )
+        conflict_items = set(group_conflicts)
+        if kis_payload.quality is DataQualityStatus.CONFLICT:
+            conflict_items.add("KIS_PRIMARY_QUALITY_CONFLICT")
+        if krx_payload is not None and krx_payload.quality is DataQualityStatus.CONFLICT:
+            conflict_items.add("KRX_OFFICIAL_QUALITY_CONFLICT")
+        conflicts = tuple(sorted(conflict_items))
         primary_source_clocks = tuple(
             source
             for source in source_clocks
@@ -259,36 +333,38 @@ class KRMarketContextComposer:
             conflicts=conflicts,
             missing_fields=missing_fields,
         )
-        return KRMarketContext(
-            timing=MarketContextTiming(
-                session_date=session_date,
-                session_state=session_state,
-                as_of=as_of,
-                ingested_at=as_of,
-            ),
-            source_clocks=source_clocks,
-            index_state=index_state,
-            breadth=breadth,
-            investor_flows=investor_flows,
-            macro_indicators=(),
-            group_leadership=(),
-            regime=regime,
-            supplemental_evidence=(
-                SupplementalEvidence(
-                    evidence_id=agentnews_evidence_id,
-                    provider="AgentNews",
-                    role=agentnews.role.value,
-                    trust=agentnews.trust.value,
-                    executable=agentnews.executable,
-                    quality=agentnews.quality,
+        with localcontext(_DECIMAL_CONTEXT):
+            return KRMarketContext(
+                timing=MarketContextTiming(
+                    session_date=session_date,
+                    session_state=session_state,
+                    as_of=as_of,
+                    ingested_at=as_of,
                 ),
-            ),
-            evidence_ids=tuple(sorted(evidence_ids)),
-            quality=quality,
-            conflicts=conflicts,
-            missing_fields=missing_fields,
-            optional_missing_sources=tuple(sorted(optional_missing_sources)),
-        )
+                source_clocks=source_clocks,
+                index_state=index_state,
+                breadth=breadth,
+                investor_flows=investor_flows,
+                macro_indicators=(),
+                group_leadership=group_leadership,
+                group_leadership_state=group_state,
+                regime=regime,
+                supplemental_evidence=(
+                    SupplementalEvidence(
+                        evidence_id=agentnews_evidence_id,
+                        provider="AgentNews",
+                        role=agentnews.role.value,
+                        trust=agentnews.trust.value,
+                        executable=agentnews.executable,
+                        quality=agentnews.quality,
+                    ),
+                ),
+                evidence_ids=tuple(sorted(evidence_ids)),
+                quality=quality,
+                conflicts=conflicts,
+                missing_fields=missing_fields,
+                optional_missing_sources=tuple(sorted(optional_missing_sources)),
+            )
 
 
 def resolve_session_state(
@@ -375,4 +451,97 @@ def _compute_krx_metrics(
         investor_flows=cast(Mapping[str, Decimal | int | str] | None, flows),
         source_quality=payload.quality,
         evidence_id=evidence_id,
+    )
+
+
+def _combined_source_quality(
+    kis_quality: DataQualityStatus, krx_quality: DataQualityStatus
+) -> DataQualityStatus:
+    for status in (
+        DataQualityStatus.CONFLICT,
+        DataQualityStatus.UNAVAILABLE,
+        DataQualityStatus.STALE,
+        DataQualityStatus.PARTIAL,
+    ):
+        if status in {kis_quality, krx_quality}:
+            return status
+    return DataQualityStatus.FRESH
+
+
+def _compute_group_leadership(
+    *,
+    krx_payload: ProviderPayload,
+    kis_payload: ProviderPayload,
+    session_date: date,
+    krx_evidence_id: str,
+    kis_evidence_id: str,
+) -> kr_group_leadership.KRGroupLeadershipComputation:
+    taxonomy = krx_payload.payload.get("group_taxonomy")
+    rows = krx_payload.payload.get("group_observations")
+    index_rows = krx_payload.payload.get("index_history")
+    if not isinstance(taxonomy, Mapping):
+        raise ValueError("KRX group taxonomy must be an object")
+    version = taxonomy.get("version")
+    assignments_raw = taxonomy.get("assignments")
+    if not isinstance(version, str) or not isinstance(assignments_raw, list):
+        raise ValueError("KRX group taxonomy is malformed")
+    if not isinstance(rows, list) or not isinstance(index_rows, list) or len(index_rows) < 2:
+        raise ValueError("KRX group observations require price and benchmark history")
+    assignments = tuple(
+        kr_group_leadership.GroupTaxonomyAssignment.model_validate(item)
+        for item in assignments_raw
+    )
+    krx_observations = tuple(
+        kr_group_leadership.GroupSecurityObservation(
+            provider_symbol=str(item["provider_symbol"]),
+            current_close=Decimal(str(item["current_close"])),
+            previous_close=Decimal(str(item["previous_close"])),
+            turnover_krw=Decimal(str(item["turnover_krw"])),
+            evidence_ids=(krx_evidence_id,),
+        )
+        for item in rows
+        if isinstance(item, Mapping)
+    )
+    previous_index_close = Decimal(str(index_rows[-2]["close"]))
+    current_index_close = Decimal(str(index_rows[-1]["close"]))
+    if previous_index_close <= 0:
+        raise ValueError("KRX benchmark previous close must be positive")
+    with localcontext(_DECIMAL_CONTEXT):
+        benchmark_return_pct = (
+            current_index_close / previous_index_close - Decimal(1)
+        ) * Decimal(100)
+    rank_rows = kis_payload.payload.get("volume_rank", ())
+    if not isinstance(rank_rows, (list, tuple)):
+        raise ValueError("KIS volume rank must be a collection")
+    kis_observations = []
+    for item in rank_rows:
+        if not isinstance(item, Mapping):
+            continue
+        symbol = item.get("mksc_shrn_iscd")
+        return_pct = item.get("prdy_ctrt")
+        turnover = item.get("acml_tr_pbmn")
+        if not symbol or (return_pct is None and turnover is None):
+            continue
+        if return_pct is None or turnover is None:
+            raise ValueError("KIS group numeric evidence is incomplete")
+        kis_observations.append(
+            kr_group_leadership.KISGroupSecurityObservation(
+                provider_symbol=str(symbol),
+                return_pct=Decimal(str(return_pct)),
+                turnover_krw=Decimal(str(turnover)),
+                evidence_ids=(kis_evidence_id,),
+            )
+        )
+    return kr_group_leadership.compute_kr_group_leadership(
+        session_date=session_date,
+        taxonomy_version=version,
+        taxonomy_assignments=assignments,
+        krx_observations=krx_observations,
+        kis_observations=tuple(kis_observations),
+        benchmark_return_pct=benchmark_return_pct,
+        source_quality=_combined_source_quality(
+            kis_payload.quality, krx_payload.quality
+        ),
+        source_evidence_ids=(krx_evidence_id, kis_evidence_id),
+        min_group_turnover_krw=_MIN_GROUP_TURNOVER_KRW,
     )
