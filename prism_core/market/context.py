@@ -42,6 +42,7 @@ class ContextDisposition(str, Enum):
 
 class SourceRole(str, Enum):
     PRIMARY = "PRIMARY"
+    OFFICIAL = "OFFICIAL"
     SUPPLEMENTAL = "SUPPLEMENTAL"
 
 
@@ -298,6 +299,7 @@ class KRMarketContext(ContractModel):
     quality: DataQualityStatus
     conflicts: tuple[NonEmptyStr, ...]
     missing_fields: tuple[NonEmptyStr, ...]
+    optional_missing_sources: tuple[NonEmptyStr, ...] = ()
 
     @field_validator(
         "source_clocks",
@@ -329,7 +331,13 @@ class KRMarketContext(ContractModel):
             raise ValueError("market context collections must use deterministic order")
         return value
 
-    @field_validator("evidence_ids", "conflicts", "missing_fields", mode="after")
+    @field_validator(
+        "evidence_ids",
+        "conflicts",
+        "missing_fields",
+        "optional_missing_sources",
+        mode="after",
+    )
     @classmethod
     def require_sorted_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(set(value)) != len(value):
@@ -379,8 +387,13 @@ class KRMarketContext(ContractModel):
         )
         if not primary_clocks:
             raise ValueError("market context requires at least one primary source")
+        core_clocks = tuple(
+            source
+            for source in self.source_clocks
+            if source.role in {SourceRole.PRIMARY, SourceRole.OFFICIAL}
+        )
         derived_quality = derive_context_quality(
-            source_clocks=primary_clocks,
+            source_clocks=core_clocks,
             conflicts=self.conflicts,
             missing_fields=self.missing_fields,
         )

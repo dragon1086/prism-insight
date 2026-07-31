@@ -978,6 +978,7 @@ async def _run_command(args: argparse.Namespace) -> dict[str, object]:
         SecureFileKISTokenCache,
     )
     from prism_core.market.composer import KRMarketContextComposer
+    from prism_core.market.krx import KRXMarketContextProvider
     from prism_core.storage.database import open_database
     from prism_core.storage.migrations import DatabaseKind, migrate_database
 
@@ -993,6 +994,7 @@ async def _run_command(args: argparse.Namespace) -> dict[str, object]:
     agentnews_provider = _RecordingAgentNewsProvider(AgentNewsProvider())
     context_composer = KRMarketContextComposer(
         kis_transport=context_transport,
+        krx_provider=KRXMarketContextProvider(clock=lambda: datetime.now(tz=KST)),
         agentnews_provider=agentnews_provider,
         clock=lambda: resolve_runtime_as_of(
             requested=args.as_of,

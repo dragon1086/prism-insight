@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -9,6 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from prism_core.data.providers.agentnews import AgentNewsProvider
+from prism_core.data.contracts import DataQualityStatus
 from prism_core.data.providers.kis_http import (
     KISHTTPTransport,
     KISMarketDataCredentials,
@@ -17,12 +19,46 @@ from prism_core.data.providers.kis_http import (
 )
 from prism_core.market import KRMarketContext, KRMarketRegime
 from prism_core.market.composer import KRMarketContextComposer
+from prism_core.market.krx import KRXMarketContextProvider, OfficialKRXEquityMarketClient
 
 
 KST = ZoneInfo("Asia/Seoul")
 
+
+def _krx_live_activation_available() -> bool:
+    method = os.environ.get("KRX_LOGIN_METHOD", "krx").lower()
+    required = (
+        ("KAKAO_ID", "KAKAO_PW")
+        if method == "kakao"
+        else ("KRX_ID", "KRX_PW")
+    )
+    return all(os.environ.get(name) for name in required) or (
+        OfficialKRXEquityMarketClient.default_session_copy_available()
+    )
+
+
+def _krx_private_session_metadata() -> dict[str, tuple[int, int, int, str] | None]:
+    paths = (
+        Path.home() / ".krx_session.json",
+        Path.home() / ".krx_cookies.json",
+        Path.home() / ".krx_session.lock",
+        Path.home() / ".krx_isin_cache.json",
+    )
+    return {
+        path.name: None
+        if not path.exists()
+        else (
+            path.stat().st_mtime_ns,
+            path.stat().st_size,
+            path.stat().st_mode,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in paths
+    }
+
 pytestmark = [
     pytest.mark.live_kis,
+    pytest.mark.live_kr_official,
     pytest.mark.live_agentnews,
     pytest.mark.skipif(
         os.environ.get("PRISM_RUN_KR_CONTEXT_LIVE") != "1",
@@ -33,6 +69,9 @@ pytestmark = [
 
 @pytest.mark.asyncio
 async def test_live_kis_and_agentnews_compose_one_sanitized_context_readback() -> None:
+    if not _krx_live_activation_available():
+        pytest.skip("KRX live integration blocked: authenticated wrapper credentials are unavailable")
+    private_session_before = _krx_private_session_metadata()
     transport = KISHTTPTransport(
         credentials=KISMarketDataCredentials.from_env(),
         symbols=(),
@@ -52,14 +91,35 @@ async def test_live_kis_and_agentnews_compose_one_sanitized_context_readback() -
     )
     composer = KRMarketContextComposer(
         kis_transport=transport,
+        krx_provider=KRXMarketContextProvider(clock=lambda: datetime.now(tz=KST)),
         agentnews_provider=agentnews,
         clock=lambda: datetime.now(tz=KST),
     )
 
-    context = await composer.compose()
+    try:
+        context = await composer.compose()
+    finally:
+        assert _krx_private_session_metadata() == private_session_before
 
-    assert context.regime.regime is KRMarketRegime.UNKNOWN
-    assert context.action_eligible is False
+    assert context.regime.regime is not KRMarketRegime.UNKNOWN
+    assert context.quality in {DataQualityStatus.FRESH, DataQualityStatus.PARTIAL}
+    assert context.action_eligible is (context.quality is DataQualityStatus.FRESH)
+    assert context.missing_fields == ()
+    assert {metric.name for metric in context.index_state} == {
+        "kospi_close",
+        "kospi_ma20",
+        "kospi_return_10d_pct",
+    }
+    assert {metric.name for metric in context.breadth} == {
+        "advance_count",
+        "decline_count",
+        "eligible_equity_count",
+        "excluded_non_equity_count",
+        "unclassified_equity_count",
+        "unchanged_count",
+    }
+    assert all(metric.source == "KRX" for metric in context.breadth)
+    assert context.optional_missing_sources[:2] == ("DART", "KIND")
     assert context.evidence_ids
     assert [item["endpoint"] for item in transport.evidence][-1] == VOLUME_RANK_PATH
     assert all(item["status_code"] == 200 for item in transport.evidence)
