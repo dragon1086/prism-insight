@@ -21,6 +21,7 @@ from prism_core.market.composer import (
     KISMarketContextTransport,
     KRMarketContextComposer,
 )
+from prism_core.market.kr_metrics import KRComputedMetrics, compute_kr_market_metrics
 
 __all__ = [
     "AgentNewsKRContextProvider",
@@ -29,6 +30,7 @@ __all__ = [
     "GroupLeadership",
     "KRMarketContext",
     "KRMarketContextComposer",
+    "KRComputedMetrics",
     "KRMarketRegime",
     "KISMarketContextTransport",
     "MarketContextTiming",
@@ -39,5 +41,6 @@ __all__ = [
     "SourceRole",
     "SupplementalEvidence",
     "classify_kr_regime",
+    "compute_kr_market_metrics",
     "derive_context_quality",
 ]

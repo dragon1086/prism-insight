@@ -1,15 +1,18 @@
+import asyncio
 from datetime import date, datetime, timedelta
+from decimal import Context, Decimal, ROUND_HALF_EVEN, localcontext
 from dataclasses import replace
 from zoneinfo import ZoneInfo
 
 import pytest
 
 import prism_core.market.composer as composer_module
+import prism_core.market.kr_metrics as kr_metrics_module
 from prism_core.data.contracts import DataQualityStatus
 from prism_core.data.providers.agentnews import AgentNewsFetchEvidence, AgentNewsFetchResult
 from prism_core.data.providers.agentnews_models import AgentNewsBoard, AgentNewsSnapshot
 from prism_core.data.providers.kis import ProviderPayload
-from prism_core.market import ContextDisposition, KRMarketRegime
+from prism_core.market import ContextDisposition, KRMarketContext, KRMarketRegime
 from prism_core.market.composer import KRMarketContextComposer, resolve_session_state
 
 
@@ -50,6 +53,41 @@ class FixtureKISMarketContextTransport:
         )
 
 
+class FixtureKRXMarketContextProvider:
+    async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:
+        assert as_of == datetime(2026, 7, 29, 15, 33, tzinfo=KST)
+        observed_at = datetime(2026, 7, 29, 15, 32, tzinfo=KST)
+        return ProviderPayload(
+            provider="KRX",
+            source_record_id="KRX:market-context:fixture",
+            revision=0,
+            observed_at=observed_at,
+            available_at=observed_at,
+            payload={
+                "session_date": "2026-07-29",
+                "index_history": [
+                    {"trade_date": f"2026-07-{day:02d}", "close": str(99 + day)}
+                    for day in range(10, 30)
+                ],
+                "equity_breadth": {
+                    "advance_count": 1200,
+                    "decline_count": 900,
+                    "unchanged_count": 100,
+                    "eligible_equity_count": 2200,
+                    "excluded_non_equity_count": 175,
+                    "unclassified_equity_count": 0,
+                    "universe": "KOSPI_KOSDAQ_EQUITIES",
+                },
+                "investor_flows": {
+                    "foreign_net_purchase_krw": "125000000000",
+                    "institution_net_purchase_krw": "-32000000000",
+                },
+            },
+            quality=DataQualityStatus.FRESH,
+            raw_payload_hash="b" * 64,
+        )
+
+
 class FixtureAgentNewsProvider:
     async def fetch_result(self, board: AgentNewsBoard) -> AgentNewsFetchResult:
         assert board is AgentNewsBoard.KR
@@ -76,6 +114,36 @@ class FixtureAgentNewsProvider:
             ),
             used_last_known_good=False,
         )
+
+
+@pytest.mark.asyncio
+async def test_composer_awaits_all_provider_cleanup_before_propagating_failure() -> None:
+    class FailingAgentNewsProvider:
+        async def fetch_result(self, board: AgentNewsBoard) -> AgentNewsFetchResult:
+            assert board is AgentNewsBoard.KR
+            raise RuntimeError("fixture AgentNews failure")
+
+    class CleanupTrackingKRXProvider(FixtureKRXMarketContextProvider):
+        completed = False
+
+        async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:
+            await asyncio.sleep(0.01)
+            result = await super().fetch_market_context(as_of=as_of)
+            self.completed = True
+            return result
+
+    krx_provider = CleanupTrackingKRXProvider()
+    composer = KRMarketContextComposer(
+        kis_transport=FixtureKISMarketContextTransport(),
+        krx_provider=krx_provider,
+        agentnews_provider=FailingAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    )
+
+    with pytest.raises(RuntimeError, match="fixture AgentNews failure"):
+        await composer.compose()
+
+    assert krx_provider.completed is True
 
 
 @pytest.mark.asyncio
@@ -151,13 +219,8 @@ async def test_composer_uses_real_provider_contracts_and_keeps_news_non_executab
     context = await composer.compose()
 
     assert context.timing.session_date.isoformat() == "2026-07-29"
-    assert [metric.name for metric in context.breadth] == [
-        "volume_rank_advance_count",
-        "volume_rank_decline_count",
-        "volume_rank_returned_security_count",
-        "volume_rank_unchanged_count",
-    ]
-    assert [metric.value for metric in context.breadth] == [1, 1, 3, 1]
+    assert context.breadth == ()
+    assert "breadth" in context.missing_fields
     assert tuple(clock.source for clock in context.source_clocks) == (
         "AgentNews",
         "KIS",
@@ -169,6 +232,152 @@ async def test_composer_uses_real_provider_contracts_and_keeps_news_non_executab
     assert context.action_eligible is False
     assert "index_state" in context.missing_fields
     assert "SIDEWAYS" not in context.to_canonical_json()
+
+
+@pytest.mark.asyncio
+async def test_composer_uses_krx_equity_universe_for_index_breadth_flows_and_regime() -> None:
+    context = await KRMarketContextComposer(
+        kis_transport=FixtureKISMarketContextTransport(),
+        krx_provider=FixtureKRXMarketContextProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert {metric.name: metric.value for metric in context.index_state} == {
+        "kospi_close": Decimal("128"),
+        "kospi_ma20": Decimal("118.5"),
+        "kospi_return_10d_pct": Decimal("8.474576271186440677966101700"),
+    }
+    assert {metric.name: metric.unit for metric in context.index_state} == {
+        "kospi_close": "index_points",
+        "kospi_ma20": "index_points",
+        "kospi_return_10d_pct": "percent",
+    }
+    assert {metric.name: metric.value for metric in context.breadth} == {
+        "advance_count": Decimal("1200"),
+        "decline_count": Decimal("900"),
+        "eligible_equity_count": Decimal("2200"),
+        "excluded_non_equity_count": Decimal("175"),
+        "unclassified_equity_count": Decimal("0"),
+        "unchanged_count": Decimal("100"),
+    }
+    assert all(metric.source == "KRX" for metric in context.breadth)
+    assert {metric.name: metric.value for metric in context.investor_flows} == {
+        "foreign_net_purchase_krw": Decimal("125000000000"),
+        "institution_net_purchase_krw": Decimal("-32000000000"),
+    }
+    assert context.regime.regime is KRMarketRegime.STRONG_BULL
+    assert context.quality is DataQualityStatus.FRESH
+    assert context.action_eligible is True
+    assert context.optional_missing_sources == ("DART", "KIND")
+    assert "DART" not in context.missing_fields
+    assert "KIND" not in context.missing_fields
+    assert not any(metric.name.startswith("volume_rank_") for metric in context.breadth)
+
+
+@pytest.mark.asyncio
+async def test_composer_delegates_authoritative_calculation_to_kr_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    compute = kr_metrics_module.compute_kr_market_metrics
+
+    def tracking_compute(**kwargs: object) -> kr_metrics_module.KRComputedMetrics:
+        calls.append(kwargs)
+        return compute(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(kr_metrics_module, "compute_kr_market_metrics", tracking_compute)
+
+    await KRMarketContextComposer(
+        kis_transport=FixtureKISMarketContextTransport(),
+        krx_provider=FixtureKRXMarketContextProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert len(calls) == 1
+    assert calls[0]["source_quality"] is DataQualityStatus.FRESH
+    assert calls[0]["evidence_id"] == "KRX:market-context:fixture"
+
+
+@pytest.mark.asyncio
+async def test_index_metrics_and_regime_are_independent_of_ambient_decimal_context() -> None:
+    class BoundaryKRXProvider(FixtureKRXMarketContextProvider):
+        async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:
+            payload = await super().fetch_market_context(as_of=as_of)
+            body = dict(payload.payload)
+            body["index_history"] = [
+                {
+                    "trade_date": f"2026-07-{day:02d}",
+                    "close": "104.99996" if day == 29 else "100",
+                }
+                for day in range(10, 30)
+            ]
+            return replace(payload, payload=body)
+
+    async def compose() -> KRMarketContext:
+        return await KRMarketContextComposer(
+            kis_transport=FixtureKISMarketContextTransport(),
+            krx_provider=BoundaryKRXProvider(),
+            agentnews_provider=FixtureAgentNewsProvider(),
+            clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+        ).compose()
+
+    with localcontext(Context(prec=28, rounding=ROUND_HALF_EVEN)):
+        expected = await compose()
+    with localcontext(Context(prec=6, rounding=ROUND_HALF_EVEN)):
+        actual = await compose()
+
+    assert actual.index_state == expected.index_state
+    assert actual.regime == expected.regime
+    assert actual.regime.regime is KRMarketRegime.MODERATE_BULL
+
+
+@pytest.mark.asyncio
+async def test_krx_unavailability_fails_closed_without_blocking_context_readback() -> None:
+    class UnavailableKRXProvider:
+        async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:
+            del as_of
+            raise TimeoutError("fixture KRX timeout")
+
+    context = await KRMarketContextComposer(
+        kis_transport=FixtureKISMarketContextTransport(),
+        krx_provider=UnavailableKRXProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert context.regime.regime is KRMarketRegime.UNKNOWN
+    assert context.breadth == ()
+    assert context.action_eligible is False
+    assert context.missing_fields == (
+        "breadth",
+        "index_state",
+        "regime_features",
+    )
+    assert "KRX" in context.optional_missing_sources
+
+
+@pytest.mark.asyncio
+async def test_optional_partial_investor_flows_are_visible_without_blocking_core() -> None:
+    class PartialFlowKRXProvider(FixtureKRXMarketContextProvider):
+        async def fetch_market_context(self, *, as_of: datetime) -> ProviderPayload:
+            payload = await super().fetch_market_context(as_of=as_of)
+            body = dict(payload.payload)
+            body["investor_flow_missing_markets"] = ["KOSDAQ"]
+            return replace(payload, payload=body)
+
+    context = await KRMarketContextComposer(
+        kis_transport=FixtureKISMarketContextTransport(),
+        krx_provider=PartialFlowKRXProvider(),
+        agentnews_provider=FixtureAgentNewsProvider(),
+        clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
+    ).compose()
+
+    assert context.quality is DataQualityStatus.FRESH
+    assert context.action_eligible is True
+    assert "KRX_INVESTOR_FLOWS_KOSDAQ" in context.optional_missing_sources
+    assert context.investor_flows
 
 
 @pytest.mark.asyncio
@@ -322,29 +531,24 @@ async def test_kis_conflict_is_represented_with_an_explicit_reason() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("rows", "expected_missing"),
-    [
-        ([], "breadth.volume_rank"),
-        ([{"prdy_ctrt": "NaN"}, {"prdy_ctrt": "not-a-number"}], "breadth.advance_decline"),
-    ],
-)
-async def test_empty_or_malformed_breadth_rows_are_explicitly_missing(
-    rows: list[object], expected_missing: str
-) -> None:
-    class BreadthDefectTransport(FixtureKISMarketContextTransport):
+async def test_volume_rank_rows_are_never_inferred_as_market_breadth() -> None:
+    class VolumeRankTransport(FixtureKISMarketContextTransport):
         async def fetch_volume_rank(self) -> ProviderPayload:
             payload = await super().fetch_volume_rank()
             body = dict(payload.payload)
-            body["volume_rank"] = rows
+            body["volume_rank"] = [
+                {"mksc_shrn_iscd": f"ETF{index}", "prdy_ctrt": "10"}
+                for index in range(30)
+            ]
             return replace(payload, payload=body)
 
     context = await KRMarketContextComposer(
-        kis_transport=BreadthDefectTransport(),
+        kis_transport=VolumeRankTransport(),
         agentnews_provider=FixtureAgentNewsProvider(),
         clock=lambda: datetime(2026, 7, 29, 15, 33, tzinfo=KST),
     ).compose()
 
-    assert expected_missing in context.missing_fields
+    assert context.breadth == ()
+    assert "breadth" in context.missing_fields
     assert context.quality is DataQualityStatus.UNAVAILABLE
     assert context.action_eligible is False
