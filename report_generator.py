@@ -1327,23 +1327,37 @@ async def generate_firecrawl_search_response(
     """
     try:
         from firecrawl_client import firecrawl_search_multi
+        from cores.search_presets import widen_tbs
 
         queries = [search_query] if isinstance(search_query, str) else list(search_query)
 
         loop = asyncio.get_running_loop()
-        items = await loop.run_in_executor(
-            None,
-            lambda: firecrawl_search_multi(
-                queries,
-                limit=limit,
-                with_content=True,
-                tbs=tbs,
-                sources=sources,
-                location=location,
-                include_domains=include_domains,
-                exclude_domains=exclude_domains,
-            ),
-        )
+
+        async def _search(recency: Optional[str]) -> list:
+            return await loop.run_in_executor(
+                None,
+                lambda: firecrawl_search_multi(
+                    queries,
+                    limit=limit,
+                    with_content=True,
+                    tbs=recency,
+                    sources=sources,
+                    location=location,
+                    include_domains=include_domains,
+                    exclude_domains=exclude_domains,
+                ),
+            )
+
+        items = await _search(tbs)
+
+        # A tight recency window legitimately returns nothing on a quiet news day.
+        # Widening one rung at a time beats handing the user "결과 없음" — every
+        # article still carries its publish date downstream, so the model can see
+        # for itself that the material is older than asked for.
+        window = tbs
+        while not items and (window := widen_tbs(window)):
+            logger.info(f"No results at tbs={tbs!r}; widening to {window!r}")
+            items = await _search(window)
 
         # Prefer dated results, newest first; undated ones sink to the bottom.
         items.sort(key=lambda it: (bool(it.get("date")), it.get("date") or ""), reverse=True)
