@@ -39,6 +39,7 @@ from report_generator import (
 )
 from tracking.user_memory import UserMemoryManager
 from firecrawl_client import firecrawl_agent
+from cores.search_presets import search_preset
 from cores.disclaimer_utils import strip_trailing_disclaimer as _strip_trailing_disclaimer
 from datetime import timedelta
 from dataclasses import dataclass
@@ -2868,7 +2869,8 @@ class TelegramAIBot:
                                      model: str = "spark-1-mini", max_credits: int = 200,
                                      fallback_search_query: str = None,
                                      fallback_analysis_prompt: str = None,
-                                     timeout: int = None):
+                                     timeout: int = None,
+                                     search_opts: dict = None):
         """
         Common helper for Firecrawl-based commands.
         Sends a waiting message, calls firecrawl_agent, then replaces it with the result.
@@ -2883,6 +2885,10 @@ class TelegramAIBot:
             timeout: Seconds to wait for the Spark agent before giving up (defaults to
                 _FIRECRAWL_AGENT_TIMEOUT). Heavy spark-1-pro jobs need a larger budget so
                 legitimate deep-research runs are not cut off prematurely.
+            search_opts: Retrieval filters for the fallback search, from
+                cores.search_presets.search_preset(). Omitting these is what made the
+                fallback return undated quote pages instead of dated news — measured
+                0% dated bare vs 50% dated tuned (tools/bench/probe_firecrawl_tbs.py).
 
         Returns:
             tuple: (success: bool, response_text: str | None, sent_msg_id: int | None)
@@ -2915,7 +2921,8 @@ class TelegramAIBot:
                     pass
                 try:
                     result = await generate_firecrawl_search_response(
-                        fallback_search_query, fallback_analysis_prompt
+                        fallback_search_query, fallback_analysis_prompt,
+                        **(search_opts or {}),
                     )
                 except Exception as fe:
                     logger.error(f"Search+LLM fallback failed: {fe}", exc_info=True)
@@ -2965,9 +2972,14 @@ class TelegramAIBot:
             )
             return False, None, None
 
-    async def _run_search_and_claude(self, update: Update, search_query: str, analysis_prompt: str, disclaimer: str):
+    async def _run_search_and_claude(self, update: Update, search_query: str, analysis_prompt: str, disclaimer: str,
+                                     search_opts: dict = None):
         """
         Cost-efficient helper using Firecrawl /search (2 credits) plus shared LLM analysis.
+
+        Args:
+            search_opts: Retrieval filters from cores.search_presets.search_preset().
+                See _run_firecrawl_command for why omitting these degrades results.
 
         Returns:
             tuple: (success: bool, response_text: str | None, sent_msg_id: int | None)
@@ -2976,7 +2988,9 @@ class TelegramAIBot:
         waiting_msg = await update.message.reply_text("🔍 리서치 중...")
 
         try:
-            result = await generate_firecrawl_search_response(search_query, analysis_prompt)
+            result = await generate_firecrawl_search_response(
+                search_query, analysis_prompt, **(search_opts or {})
+            )
 
             try:
                 await waiting_msg.delete()
@@ -3061,7 +3075,9 @@ class TelegramAIBot:
         ) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
             update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
-            fallback_search_query=event, fallback_analysis_prompt=prompt
+            fallback_search_query=event, fallback_analysis_prompt=prompt,
+            # Event impact is a "what just happened" question — keep the window tight.
+            search_opts=search_preset("KR", tbs="qdr:w"),
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("signal", event)
@@ -3111,7 +3127,8 @@ class TelegramAIBot:
         ) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
             update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
-            fallback_search_query=event, fallback_analysis_prompt=prompt
+            fallback_search_query=event, fallback_analysis_prompt=prompt,
+            search_opts=search_preset("US", tbs="qdr:w"),
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("us_signal", event)
@@ -3162,7 +3179,9 @@ class TelegramAIBot:
         ) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
             update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
-            fallback_search_query=theme, fallback_analysis_prompt=prompt
+            fallback_search_query=theme, fallback_analysis_prompt=prompt,
+            # Theme health needs a longer arc than a single news week.
+            search_opts=search_preset("KR", tbs="qdr:m"),
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("theme", theme)
@@ -3213,7 +3232,8 @@ class TelegramAIBot:
         ) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
             update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
-            fallback_search_query=theme, fallback_analysis_prompt=prompt
+            fallback_search_query=theme, fallback_analysis_prompt=prompt,
+            search_opts=search_preset("US", tbs="qdr:m"),
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("us_theme", theme)
@@ -3265,7 +3285,11 @@ class TelegramAIBot:
         ) + self._FIRECRAWL_GROUNDING
         success, response_text, msg_id = await self._run_firecrawl_command(
             update, prompt, self._DISCLAIMER_KR, model="spark-1-pro", max_credits=2000,
-            fallback_search_query=question, fallback_analysis_prompt=prompt, timeout=240
+            fallback_search_query=question, fallback_analysis_prompt=prompt, timeout=240,
+            # Free-form: the subject is unpredictable ("워렌 버핏이 올해 뭘 샀어?"), so a
+            # KR-press allowlist would drop legitimate sources. Keep recency + news
+            # channel, drop the allowlist.
+            search_opts=search_preset("KR", tbs="qdr:m", allowlist=False),
         )
         if success:
             if remaining > 0:

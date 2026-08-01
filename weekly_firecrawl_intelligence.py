@@ -28,16 +28,11 @@ _DISCLAIMER = "\n\n⚠️ 본 내용은 투자 참고용이며, 투자 판단의
 
 
 # 1차 매체만 허용. 블로그·커뮤니티가 검색 상위를 먹으면 리포트 수치가 오염된다.
-_KR_DOMAINS = [
-    "yna.co.kr", "einfomax.co.kr", "hankyung.com", "mk.co.kr", "edaily.co.kr",
-    "sedaily.com", "fnnews.com", "mt.co.kr", "asiae.co.kr", "newsis.com",
-    "biz.chosun.com", "wowtv.co.kr", "infostock.co.kr", "thebell.co.kr",
-]
-_US_DOMAINS = [
-    "reuters.com", "cnbc.com", "bloomberg.com", "marketwatch.com", "wsj.com",
-    "barrons.com", "ft.com", "investors.com", "apnews.com", "finance.yahoo.com",
-    "fool.com", "seekingalpha.com",
-]
+# Shared with the Telegram bot commands so the two paths cannot drift apart.
+from cores.search_presets import (  # noqa: E402
+    KR_PRIMARY_DOMAINS as _KR_DOMAINS,
+    US_PRIMARY_DOMAINS as _US_DOMAINS,
+)
 
 
 async def _generate_kr_report(start, end) -> str:
