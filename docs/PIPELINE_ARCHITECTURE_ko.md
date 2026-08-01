@@ -245,8 +245,42 @@ CAN SLIM 관점의 매수 시나리오를 만듭니다. 이후 코드는 최소�
 추적 배치와 독립 보호 도구가 규칙을 나누어 소유하며, 연속 일봉 확인이나
 종가 확인 같은 조건도 도구마다 다릅니다.
 
+#### 손절 판정 기준이 도구마다 다르다 — 판단 로그를 읽을 때 주의
+
+가장 헷갈리는 사례입니다. **손절 판정 기준을 두 주체가 다르게 씁니다.**
+
+| 주체 | 실행 주기 | 판정 기준 | LLM |
+|---|---|---|---|
+| 메인 추적 배치 | 하루 2회 | **종가** | 사용 |
+| `tools/hardstop_seller.py` | **5분** | **장중가** | 미사용(`skip_llm_agent=True`) |
+
+프롬프트는 종가 기준을 명시적으로 지시합니다 —
+`cores/agents/trading_agents.py:672` "하드 스탑: 종가 기준 stop_loss 이탈 시에만
+전량 매도. 장중 wick(intraday low)으로 일시 이탈한 것은 매도 사유로 인정하지 않음",
+같은 파일 `:970` "모든 손절가·trailing stop 판단은 종가 기준", US 는
+`prism-us/cores/agents/trading_agents.py:688`, `:984-986`.
+
+**그러나 5분 주기 `hardstop_seller` 가 장중가로 먼저 발동하므로, 실제 시스템은
+장중 기준으로 움직입니다.** 두 주체 사이에 조율 장치는 없습니다.
+
+그 결과 **AI 가 남긴 판단 로그가 실제 동작을 설명하지 못합니다.** 실제 사례 —
+2026-07-31 IP(International Paper) 보유 판단은 "종가가 41.90달러 아래에서 마감하면
+전량 매도" 라고 기록했지만, 실제로는 같은 날 **10:44 ET 에 장중가 41.57 로 청산**됐습니다
+(종가는 41.71 로 역시 41.90 미만이라 방향 자체는 같았습니다).
+
+`stock_holdings.scenario` 에 저장되는 매수 시점 시나리오도
+`create_trading_scenario_agent` 가 같은 종가 기준 문구로 작성합니다
+(`stock_tracking_agent.py:238`). **시나리오·판단 로그의 "종가 기준" 서술은
+의도된 설계 문구이지 실제 청산 트리거가 아닙니다.**
+
+> 측정 결과 **장중 기준이 종가 기준보다 우수**합니다. 실측 슬리피지(평균 2.08%)를
+> 모두 반영해도 거래당 기대값이 +0.52pp 앞섰고, 슬리피지가 없다면 +2.11pp 입니다
+> (신호 688건, 10슬랏, `tasks/exit_execution_quality_results.md`).
+> 따라서 **현재 동작을 종가 기준으로 되돌리지 마십시오.** 프롬프트 문구를 실제 동작에
+> 맞추는 수정은 손절가 산정 행동까지 바꿀 수 있어 의도적으로 보류했습니다.
+
 코드 근거: `cores/oneil_fallback.py`, `stock_tracking_agent.py`,
-`tools/trend_exit_seller.py`
+`tools/trend_exit_seller.py`, `tools/hardstop_seller.py:278`
 
 ### 3.4 독립 보호 도구는 “코드가 있다”와 “운영 중이다”가 다르다
 
@@ -261,6 +295,23 @@ CAN SLIM 관점의 매수 시나리오를 만듭니다. 이후 코드는 최소�
 관리가 `SHADOW`입니다. 운영 문서는 앞의 두 기능을 `LIVE`로 기록하고 있어
 실제 배포 서버의 cron과 환경 변수를 확인하지 않고 “항상 작동한다”고
 단정해서는 안 됩니다.
+
+**실측(2026-08-01, db-server):** 세 도구 모두 root crontab 에 등록되어 있고
+`mode=LIVE` 로 동작합니다. 즉 저장소 파일과 운영 서버가 다릅니다 — 위 경고가
+그대로 유효하다는 뜻입니다. 확인 시점의 KR 장중 스케줄은 다음과 같습니다.
+
+| 도구 | 크론(분) | 최대 공백 |
+|---|---|---|
+| `hardstop_seller` | `0-50/10,6-56/10` | 6분 |
+| `trend_exit_seller` | `2-52/10` | 10분 |
+| `fill_chaser` | `1-59/2` (홀수분) | 2분 |
+
+**분(minute) 오프셋 분리는 편의가 아니라 안전장치입니다.** `hardstop` 은
+`loop_a_position_state`/`loop_a_inflight_orders`, `trend_exit` 은 `loop_b_*` 로
+**락 네임스페이스가 분리**되어 서로의 락을 보지 못합니다. 두 도구가 같은 분에
+돌면 동일 종목 동시 매도 경합이 생길 수 있으므로, 스케줄을 바꿀 때는 반드시
+겹치지 않는 분을 배정해야 합니다. (US 는 `CRON_TZ=America/New_York` 로
+분리되어 KR 장중과 겹치지 않습니다.)
 
 코드 근거: `tools/hardstop_seller.py`, `tools/trend_exit_seller.py`,
 `tools/fill_chaser.py`
