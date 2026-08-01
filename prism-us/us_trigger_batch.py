@@ -581,8 +581,13 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame,
     snap["IntradayChange"] = (snap["Close"] / snap["Open"] - 1) * 100
     snap["DailyChange"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100
 
-    # Filter: 3% <= change <= 15%
-    snap = snap[(snap["DailyChange"] >= 3.0) & (snap["DailyChange"] <= 15.0)]
+    # Bullish candle required (Close > Open) — same rule the other triggers already apply.
+    # Without it a stock that gapped up and then faded all day still qualifies on
+    # DailyChange alone, which contradicts the "Intraday Rise" premise of this trigger.
+    snap["IsRising"] = snap["Close"] > snap["Open"]
+
+    # Filter: 3% <= change <= 15%, bullish candle only
+    snap = snap[(snap["DailyChange"] >= 3.0) & (snap["DailyChange"] <= 15.0) & snap["IsRising"]]
 
     if snap.empty:
         logger.debug("trigger_afternoon_daily_rise_top: No qualifying stocks")
@@ -839,6 +844,14 @@ def trigger_macro_sector_leader(trade_date: str, snapshot: pd.DataFrame,
     # Calculate daily change for relative strength
     snap_filtered["DailyChange"] = ((snap_filtered["Close"] - prev.loc[matched_rows, "Close"]) /
                                      prev.loc[matched_rows, "Close"]) * 100
+
+    # Bullish candle required (Close > Open) — same rule the other triggers already apply.
+    # A "sector leader" that closes below its own open is not showing leadership today;
+    # relative strength alone can stay positive in a falling market.
+    snap_filtered = snap_filtered[snap_filtered["Close"] > snap_filtered["Open"]]
+    if snap_filtered.empty:
+        logger.debug("trigger_macro_sector_leader: No leaders with a bullish candle")
+        return pd.DataFrame()
 
     # Market average change for relative strength calculation
     market_avg_change = (
