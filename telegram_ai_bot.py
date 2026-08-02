@@ -40,6 +40,7 @@ from report_generator import (
 from tracking.user_memory import UserMemoryManager
 from firecrawl_client import firecrawl_agent
 from cores.search_presets import search_preset
+from cores.market_facts_cache import daily_facts
 from cores.disclaimer_utils import strip_trailing_disclaimer as _strip_trailing_disclaimer
 from datetime import timedelta
 from dataclasses import dataclass
@@ -3077,7 +3078,7 @@ class TelegramAIBot:
             update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
             fallback_search_query=event, fallback_analysis_prompt=prompt,
             # Event impact is a "what just happened" question — keep the window tight.
-            search_opts=search_preset("KR", tbs="qdr:w"),
+            search_opts=search_preset("KR", tbs="qdr:w") | await daily_facts("KR"),
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("signal", event)
@@ -3128,7 +3129,7 @@ class TelegramAIBot:
         success, response_text, msg_id = await self._run_firecrawl_command(
             update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
             fallback_search_query=event, fallback_analysis_prompt=prompt,
-            search_opts=search_preset("US", tbs="qdr:w"),
+            search_opts=search_preset("US", tbs="qdr:w") | await daily_facts("US"),
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("us_signal", event)
@@ -3181,7 +3182,7 @@ class TelegramAIBot:
             update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
             fallback_search_query=theme, fallback_analysis_prompt=prompt,
             # Theme health needs a longer arc than a single news week.
-            search_opts=search_preset("KR", tbs="qdr:m"),
+            search_opts=search_preset("KR", tbs="qdr:m") | await daily_facts("KR"),
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("theme", theme)
@@ -3233,7 +3234,7 @@ class TelegramAIBot:
         success, response_text, msg_id = await self._run_firecrawl_command(
             update, prompt, self._DISCLAIMER_KR, model="spark-1-mini",
             fallback_search_query=theme, fallback_analysis_prompt=prompt,
-            search_opts=search_preset("US", tbs="qdr:m"),
+            search_opts=search_preset("US", tbs="qdr:m") | await daily_facts("US"),
         )
         if success and msg_id and response_text:
             ctx = FirecrawlConversationContext("us_theme", theme)
@@ -3289,7 +3290,8 @@ class TelegramAIBot:
             # Free-form: the subject is unpredictable ("워렌 버핏이 올해 뭘 샀어?"), so a
             # KR-press allowlist would drop legitimate sources. Keep recency + news
             # channel, drop the allowlist.
-            search_opts=search_preset("KR", tbs="qdr:m", allowlist=False),
+            search_opts=search_preset("KR", tbs="qdr:m", allowlist=False)
+                        | await daily_facts("KR"),
         )
         if success:
             if remaining > 0:
