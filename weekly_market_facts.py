@@ -46,6 +46,68 @@ def resolve_week_range(today: Optional[date] = None) -> tuple[date, date]:
     return monday, friday
 
 
+def resolve_recent_sessions(
+    today: Optional[date] = None, lookback_days: int = 14
+) -> Optional[tuple[date, date]]:
+    """
+    (직전 거래일, 최근 거래일)을 KRX 지수 캘린더에서 직접 읽어 반환한다.
+
+    주말·공휴일을 달력 계산으로 흉내내지 않는다. KOSPI 지수가 값을 가진 날이
+    곧 거래일이므로, 그 인덱스의 마지막 두 행이 정답이다. 임시휴장·조기폐장도
+    자동으로 따라간다.
+
+    일간 팩트에 이 두 날짜가 모두 필요한 이유는 _kr_movers_block 이
+    close(직전 거래일) → close(최근 거래일) 로 등락률을 계산하기 때문이다.
+    한 날짜만 넘기면 등락률이 전부 0% 로 나온다.
+
+    Returns:
+        (baseline, latest) 또는 조회 실패/거래일 부족 시 None.
+    """
+    get_index_ohlcv_by_date = _krx_fn("get_index_ohlcv_by_date")
+    if get_index_ohlcv_by_date is None:
+        return None
+
+    today = today or datetime.now().date()
+    try:
+        df = get_index_ohlcv_by_date(
+            _ymd(today - timedelta(days=lookback_days)), _ymd(today), KOSPI_INDEX
+        )
+        if df is None or len(df) < 2:
+            logger.warning("[facts] session calendar: fewer than 2 sessions in window")
+            return None
+        sessions = [idx.date() if hasattr(idx, "date") else idx for idx in df.index[-2:]]
+        return sessions[0], sessions[1]
+    except Exception as e:  # noqa: BLE001 - fail-soft by design
+        logger.warning(f"[facts] session calendar lookup failed: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 기간 라벨
+# ---------------------------------------------------------------------------
+# 같은 숫자라도 문구가 틀리면 LLM 이 그 문구를 그대로 인용한다. 일간 종가를
+# "금요일 종가" 로 넘기면 리포트에 금요일이라고 적힌다. 그래서 산문을 기간
+# 종류에서 분리한다.
+_PERIOD_LABELS = {
+    "weekly": {
+        "open": "주간 시가", "close": "금요일 종가",
+        "high": "주간 고가", "low": "저가",
+        "daily_closes": "일별 종가",
+        "flow": "주간 누적 순매수", "movers": "주간 상승률 상위",
+        "span": "주간",
+        "ref": "전주 종가",  # baseline 경로 전용 (주간은 사용하지 않음)
+    },
+    "daily": {
+        "open": "시가", "close": "종가",
+        "high": "고가", "low": "저가",
+        "daily_closes": "종가",
+        "flow": "당일 순매수", "movers": "당일 상승률 상위",
+        "span": "당일",
+        "ref": "전일 종가",
+    },
+}
+
+
 def _ymd(d: date) -> str:
     return d.strftime("%Y%m%d")
 
@@ -99,15 +161,29 @@ def _col(df, key: str) -> Optional[str]:
     return None
 
 
-def _kr_index_block(start: date, end: date) -> list[str]:
+def _kr_index_block(
+    start: date, end: date, labels: dict, *, baseline: Optional[date] = None
+) -> list[str]:
+    """
+    지수 블록.
+
+    baseline 이 없으면(주간) 구간 첫 시가 → 마지막 종가로 구간 수익률을 낸다.
+
+    baseline 이 있으면(일간) **전일 종가 대비** 등락률을 낸다. 시가 대비가
+    아니다 — 한국 시장에서 "등락률"은 전일 종가 기준이고, 언론·HTS 가 모두
+    그 숫자를 쓴다. 시가 대비(장중 변동)를 확정값이라며 넘기면 기사 수치와
+    어긋나 오히려 근거를 오염시킨다.
+    실측 2026-07-31 KOSPI: 시가 대비 +16.57% vs 전일 종가 대비 +17.91%.
+    """
     get_index_ohlcv_by_date = _krx_fn("get_index_ohlcv_by_date")
     if get_index_ohlcv_by_date is None:
         return []
 
+    fetch_from = baseline or start
     lines: list[str] = []
     for name, ticker in (("KOSPI", KOSPI_INDEX), ("KOSDAQ", KOSDAQ_INDEX)):
         try:
-            df = get_index_ohlcv_by_date(_ymd(start), _ymd(end), ticker)
+            df = get_index_ohlcv_by_date(_ymd(fetch_from), _ymd(end), ticker)
             if df is None or df.empty:
                 continue
             c_open, c_close = _col(df, "open"), _col(df, "close")
@@ -115,20 +191,38 @@ def _kr_index_block(start: date, end: date) -> list[str]:
             if not (c_open and c_close):
                 logger.warning(f"[facts] {name}: unexpected columns {list(df.columns)}")
                 continue
-            first_open = float(df.iloc[0][c_open])
-            last_close = float(df.iloc[-1][c_close])
-            week_high = float(df[c_high].max()) if c_high else last_close
-            week_low = float(df[c_low].min()) if c_low else last_close
-            pct = (last_close - first_open) / first_open * 100 if first_open else 0.0
+
+            if baseline is not None:
+                if len(df) < 2:
+                    logger.warning(
+                        f"[facts] {name}: need a prior session for the daily change, "
+                        f"got {len(df)} row(s) for {fetch_from}~{end}"
+                    )
+                    continue
+                # 마지막 행이 당일, 그 앞이 직전 거래일.
+                session = df.iloc[-1:]
+                ref = float(df.iloc[-2][c_close])
+                ref_label = labels["ref"]
+            else:
+                session = df
+                ref = float(df.iloc[0][c_open])
+                ref_label = labels["open"]
+
+            last_close = float(session.iloc[-1][c_close])
+            week_high = float(session[c_high].max()) if c_high else last_close
+            week_low = float(session[c_low].min()) if c_low else last_close
+            pct = (last_close - ref) / ref * 100 if ref else 0.0
             lines.append(
-                f"- {name}: 주간 시가 {first_open:,.2f} → 금요일 종가 {last_close:,.2f} "
-                f"({pct:+.2f}%), 주간 고가 {week_high:,.2f} / 저가 {week_low:,.2f}"
+                f"- {name}: {ref_label} {ref:,.2f} → "
+                f"{labels['close']} {last_close:,.2f} "
+                f"({pct:+.2f}%), {labels['high']} {week_high:,.2f} / "
+                f"{labels['low']} {week_low:,.2f}"
             )
             daily = " / ".join(
                 f"{idx:%m-%d} {float(row[c_close]):,.2f}"
-                for idx, row in df.iterrows()
+                for idx, row in session.iterrows()
             )
-            lines.append(f"  · 일별 종가: {daily}")
+            lines.append(f"  · {labels['daily_closes']}: {daily}")
         except Exception as e:  # noqa: BLE001 - fail-soft by design
             logger.warning(f"[facts] {name} index fetch failed: {e}")
     return lines
@@ -210,7 +304,7 @@ def _naver_investor_daily(sosok: str, bizdate: date) -> dict[date, dict[str, flo
     return result
 
 
-def _kr_investor_block(start: date, end: date) -> list[str]:
+def _kr_investor_block(start: date, end: date, labels: dict) -> list[str]:
     lines: list[str] = []
     for market, sosok in (("KOSPI", "01"), ("KOSDAQ", "02")):
         try:
@@ -233,7 +327,7 @@ def _kr_investor_block(start: date, end: date) -> list[str]:
             ]
             if parts:
                 lines.append(
-                    f"- {market} 투자자별 주간 누적 순매수({len(in_week)}거래일): "
+                    f"- {market} 투자자별 {labels['flow']}({len(in_week)}거래일): "
                     + ", ".join(parts)
                 )
         except Exception as e:  # noqa: BLE001
@@ -241,12 +335,19 @@ def _kr_investor_block(start: date, end: date) -> list[str]:
     return lines
 
 
-def _kr_movers_block(start: date, end: date, top_n: int = 7) -> list[str]:
+def _kr_movers_block(
+    baseline: date, end: date, labels: dict, top_n: int = 7
+) -> list[str]:
     """
-    주간 등락률 상위 종목.
+    등락률 상위 종목.
 
     krx_data_client에는 get_market_price_change_by_ticker가 없으므로
-    주 시작/종료 시점의 전종목 종가를 받아 직접 계산한다.
+    baseline/end 두 시점의 전종목 종가를 받아 직접 계산한다.
+
+    ⚠️ baseline 은 end 와 **다른 거래일**이어야 한다. 같은 날을 넘기면
+    close(x)/close(x)-1 이라 전 종목이 +0.0% 로 나온다 — 예외가 아니라
+    조용히 틀린 값이 리포트에 실린다. 일간 팩트는 resolve_recent_sessions()
+    가 돌려주는 직전 거래일을 baseline 으로 쓴다.
     """
     get_ohlcv_by_ticker = _krx_fn("get_market_ohlcv_by_ticker")
     get_ticker_list = _krx_fn("get_market_ticker_list")
@@ -254,8 +355,15 @@ def _kr_movers_block(start: date, end: date, top_n: int = 7) -> list[str]:
     if get_ohlcv_by_ticker is None:
         return []
 
+    if baseline == end:
+        logger.warning(
+            f"[facts] movers skipped: baseline == end ({end}); "
+            "every stock would print +0.0%"
+        )
+        return []
+
     try:
-        first = get_ohlcv_by_ticker(_ymd(start))
+        first = get_ohlcv_by_ticker(_ymd(baseline))
         last = get_ohlcv_by_ticker(_ymd(end))
         if first is None or last is None or first.empty or last.empty:
             return []
@@ -299,25 +407,59 @@ def _kr_movers_block(start: date, end: date, top_n: int = 7) -> list[str]:
                     return tk
 
             names = ", ".join(f"{label(tk)} {v:+.1f}%" for tk, v in top.items())
-            lines.append(f"- {market} 주간 상승률 상위(거래대금 상위 300 내): {names}")
+            lines.append(
+                f"- {market} {labels['movers']}(거래대금 상위 300 내): {names}"
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[facts] {market} movers ranking failed: {e}")
     return lines
 
 
-def build_kr_facts(start: date, end: date) -> str:
-    """한국 시장 검증 수치 블록. 실패 시 빈 문자열."""
-    index_lines = _kr_index_block(start, end)
-    investor_lines = _kr_investor_block(start, end)
-    movers_lines = _kr_movers_block(start, end)
+def build_kr_facts(
+    start: date,
+    end: date,
+    *,
+    kind: str = "weekly",
+    baseline: Optional[date] = None,
+) -> str:
+    """
+    한국 시장 검증 수치 블록. 실패 시 빈 문자열.
+
+    Args:
+        start, end: 집계 구간. index(시가→종가)와 investor(순매수 합산)가 쓴다.
+                    일간이면 start == end == 최근 거래일.
+        kind: "weekly" | "daily". 숫자가 아니라 **문구**를 고른다. 일간 종가를
+              주간 문구로 넘기면 LLM 이 "금요일 종가"라고 받아쓴다.
+        baseline: movers 등락률의 기준 시점. 생략하면 start.
+                  주간은 start(월요일)가 곧 기준이라 기존 동작과 동일하고,
+                  일간은 직전 거래일을 넘겨야 한다(같은 날이면 전부 0%).
+
+    주간 호출(build_kr_facts(mon, fri))의 출력은 이 변경 전후로 동일하다.
+    """
+    if kind not in _PERIOD_LABELS:
+        raise ValueError(f"unknown kind {kind!r}; expected 'weekly' or 'daily'")
+    labels = _PERIOD_LABELS[kind]
+    baseline = baseline or start
+
+    # 주간은 구간 시가 기준, 일간은 전일 종가 기준. 주간 경로에 baseline 을
+    # 넘기면 살아 있는 일요일 리포트의 숫자가 바뀌므로 daily 에서만 넘긴다.
+    index_lines = _kr_index_block(
+        start, end, labels, baseline=baseline if kind == "daily" else None
+    )
+    investor_lines = _kr_investor_block(start, end, labels)
+    movers_lines = _kr_movers_block(baseline, end, labels)
     lines = index_lines + investor_lines + movers_lines
 
     if not lines:
         logger.warning("[facts] KR facts empty — KRX 조회 전부 실패")
         return ""
 
+    period_text = (
+        f"{end:%Y-%m-%d}" if start == end
+        else f"{start:%Y-%m-%d} ~ {end:%Y-%m-%d}"
+    )
     header = (
-        f"[검증된 시장 데이터 — KRX 원천 조회, {start:%Y-%m-%d} ~ {end:%Y-%m-%d}]\n"
+        f"[검증된 시장 데이터 — KRX 원천 조회, {period_text}]\n"
         "아래 수치는 한국거래소 데이터에서 직접 조회한 확정값이다.\n"
         "지수 레벨·등락률·종목 등락률은 반드시 아래 값만 사용하고, "
         "웹 검색 결과에 다른 숫자가 있어도 무시하라.\n"
@@ -346,8 +488,47 @@ _US_TICKERS = (
 )
 
 
-def build_us_facts(start: date, end: date) -> str:
-    """미국 시장 검증 수치 블록. 실패 시 빈 문자열."""
+def resolve_recent_us_sessions(
+    today: Optional[date] = None, lookback_days: int = 14
+) -> Optional[tuple[date, date]]:
+    """
+    (직전 거래일, 최근 거래일) — S&P 500 캘린더 기준.
+
+    KR 과 같은 이유로 달력 계산 대신 지수 인덱스를 신뢰한다. 미국 공휴일은
+    한국과 겹치지 않으므로 시장별로 따로 풀어야 한다.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        logger.warning("[facts] yfinance not installed — US session lookup skipped")
+        return None
+
+    today = today or datetime.now().date()
+    try:
+        hist = yf.Ticker("^GSPC").history(
+            start=(today - timedelta(days=lookback_days)).strftime("%Y-%m-%d"),
+            end=(today + timedelta(days=2)).strftime("%Y-%m-%d"),
+        )
+        if hist is None or len(hist) < 2:
+            logger.warning("[facts] US session calendar: fewer than 2 sessions")
+            return None
+        return hist.index[-2].date(), hist.index[-1].date()
+    except Exception as e:  # noqa: BLE001 - fail-soft by design
+        logger.warning(f"[facts] US session calendar lookup failed: {e}")
+        return None
+
+
+def build_us_facts(start: date, end: date, *, kind: str = "weekly") -> str:
+    """
+    미국 시장 검증 수치 블록. 실패 시 빈 문자열.
+
+    KR 과 달리 movers 블록이 없어 baseline 개념이 필요 없다. yfinance history 는
+    [start, end+2) 구간의 첫 시가 → 마지막 종가를 쓰므로 단일일 구간에서도
+    계산은 옳다. 문구만 kind 로 고른다.
+    """
+    if kind not in _PERIOD_LABELS:
+        raise ValueError(f"unknown kind {kind!r}; expected 'weekly' or 'daily'")
+    labels = _PERIOD_LABELS[kind]
     try:
         import yfinance as yf
     except ImportError:
@@ -369,10 +550,13 @@ def build_us_facts(start: date, end: date) -> str:
             pct = (last_close - first_open) / first_open * 100 if first_open else 0.0
             last_day = hist.index[-1].strftime("%m-%d")
             if ticker == "^TNX":
-                lines.append(f"- {name}: {last_close:.3f}% ({last_day} 기준, 주간 {pct:+.2f}%)")
+                lines.append(
+                    f"- {name}: {last_close:.3f}% "
+                    f"({last_day} 기준, {labels['span']} {pct:+.2f}%)"
+                )
             else:
                 lines.append(
-                    f"- {name}: 주간 시가 {first_open:,.2f} → {last_day} 종가 "
+                    f"- {name}: {labels['open']} {first_open:,.2f} → {last_day} 종가 "
                     f"{last_close:,.2f} ({pct:+.2f}%)"
                 )
         except Exception as e:  # noqa: BLE001
@@ -382,8 +566,12 @@ def build_us_facts(start: date, end: date) -> str:
         logger.warning("[facts] US facts empty — yfinance 조회 전부 실패")
         return ""
 
+    period_text = (
+        f"{end:%Y-%m-%d}" if start == end
+        else f"{start:%Y-%m-%d} ~ {end:%Y-%m-%d}"
+    )
     header = (
-        f"[검증된 시장 데이터 — yfinance 원천 조회, {start:%Y-%m-%d} ~ {end:%Y-%m-%d}]\n"
+        f"[검증된 시장 데이터 — yfinance 원천 조회, {period_text}]\n"
         "아래 수치는 시장 데이터에서 직접 조회한 확정값이다.\n"
         "지수 레벨·등락률은 반드시 아래 값만 사용하고, 웹 검색 결과의 다른 숫자는 무시하라.\n"
     )
