@@ -518,13 +518,14 @@ def resolve_recent_us_sessions(
         return None
 
 
-def build_us_facts(start: date, end: date, *, kind: str = "weekly") -> str:
+def build_us_facts(
+    start: date, end: date, *, kind: str = "weekly", baseline: Optional[date] = None
+) -> str:
     """
     미국 시장 검증 수치 블록. 실패 시 빈 문자열.
 
-    KR 과 달리 movers 블록이 없어 baseline 개념이 필요 없다. yfinance history 는
-    [start, end+2) 구간의 첫 시가 → 마지막 종가를 쓰므로 단일일 구간에서도
-    계산은 옳다. 문구만 kind 로 고른다.
+    KR 과 달리 movers 블록이 없어 종목 등락률용 baseline 은 필요 없지만, 지수
+    등락률의 기준점 문제는 동일하다. baseline 을 주면 전일 종가 대비로 낸다.
     """
     if kind not in _PERIOD_LABELS:
         raise ValueError(f"unknown kind {kind!r}; expected 'weekly' or 'daily'")
@@ -537,7 +538,7 @@ def build_us_facts(start: date, end: date, *, kind: str = "weekly") -> str:
 
     lines: list[str] = []
     # 미국장은 한국 대비 하루 늦게 마감되므로 여유를 둔다
-    fetch_start = start.strftime("%Y-%m-%d")
+    fetch_start = (baseline or start).strftime("%Y-%m-%d")
     fetch_end = (end + timedelta(days=2)).strftime("%Y-%m-%d")
 
     for name, ticker in _US_TICKERS:
@@ -545,9 +546,22 @@ def build_us_facts(start: date, end: date, *, kind: str = "weekly") -> str:
             hist = yf.Ticker(ticker).history(start=fetch_start, end=fetch_end)
             if hist is None or hist.empty:
                 continue
-            first_open = float(hist.iloc[0]["Open"])
+
+            if baseline is not None:
+                if len(hist) < 2:
+                    logger.warning(
+                        f"[facts] {name}: need a prior session for the daily change, "
+                        f"got {len(hist)} row(s)"
+                    )
+                    continue
+                ref = float(hist.iloc[-2]["Close"])
+                ref_label = labels["ref"]
+            else:
+                ref = float(hist.iloc[0]["Open"])
+                ref_label = labels["open"]
+
             last_close = float(hist.iloc[-1]["Close"])
-            pct = (last_close - first_open) / first_open * 100 if first_open else 0.0
+            pct = (last_close - ref) / ref * 100 if ref else 0.0
             last_day = hist.index[-1].strftime("%m-%d")
             if ticker == "^TNX":
                 lines.append(
@@ -556,7 +570,7 @@ def build_us_facts(start: date, end: date, *, kind: str = "weekly") -> str:
                 )
             else:
                 lines.append(
-                    f"- {name}: {labels['open']} {first_open:,.2f} → {last_day} 종가 "
+                    f"- {name}: {ref_label} {ref:,.2f} → {last_day} 종가 "
                     f"{last_close:,.2f} ({pct:+.2f}%)"
                 )
         except Exception as e:  # noqa: BLE001
