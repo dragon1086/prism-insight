@@ -24,7 +24,7 @@ import asyncio
 import inspect
 import sys
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -237,8 +237,58 @@ def test_cache_degrades() -> None:
           ({"tbs": "qdr:w"} | {}) == {"tbs": "qdr:w"})
 
 
+def test_timeout_does_not_duplicate() -> None:
+    """
+    Regression: wait_for cancels the await, never the thread.
+
+    The first version cached {} on timeout and released the lock, so once that
+    short empty-TTL expired the next caller launched a *second* KRX scan while
+    the first was still running. Under a slow upstream that multiplies threads
+    exactly when the system can least afford it. shield() + a shared in-flight
+    task is what prevents it, and this pins that behaviour.
+    """
+    print("\n[6] a timed-out build is never restarted")
+    mfc.reset_cache()
+    active = {"now": 0, "peak": 0, "builds": 0}
+
+    def slow(market: str) -> dict:
+        active["builds"] += 1
+        active["now"] += 1
+        active["peak"] = max(active["peak"], active["now"])
+        time.sleep(0.6)
+        active["now"] -= 1
+        return {"grounded_facts": "X", "period_label": "2026-07-31 (최근 거래일)"}
+
+    orig_build, orig_timeout, orig_ttl = mfc._build, mfc._BUILD_TIMEOUT, mfc._TTL_EMPTY
+    mfc._build, mfc._BUILD_TIMEOUT, mfc._TTL_EMPTY = slow, 0.15, 0.0
+    try:
+        async def run():
+            first = await mfc.daily_facts("KR")      # gives up at 0.15s
+            second = await mfc.daily_facts("KR")     # must attach, not restart
+            await asyncio.sleep(0.8)                 # let the build land
+            third = await mfc.daily_facts("KR")      # served from cache
+            return first, second, third
+
+        first, second, third = asyncio.run(run())
+    finally:
+        mfc._build = orig_build
+        mfc._BUILD_TIMEOUT = orig_timeout
+        mfc._TTL_EMPTY = orig_ttl
+        mfc.reset_cache()
+
+    check("timed-out caller gets {}", first == {}, f"got {first!r}")
+    check("second caller does not start a new build", active["peak"] == 1,
+          f"peak_concurrent={active['peak']}")
+    check("only one build ever ran", active["builds"] == 1,
+          f"builds={active['builds']}")
+    check("the survivor populates the cache",
+          third.get("grounded_facts") == "X", f"got {third!r}")
+    check("second caller also timed out (build still running)", second == {},
+          f"got {second!r}")
+
+
 def test_signature() -> None:
-    print("\n[6] receiver accepts the grounding kwargs")
+    print("\n[7] receiver accepts the grounding kwargs")
     from report_generator import generate_firecrawl_search_response
     params = inspect.signature(generate_firecrawl_search_response).parameters
     for key in ("grounded_facts", "period_label"):
@@ -247,7 +297,7 @@ def test_signature() -> None:
 
 def test_call_sites() -> None:
     """A command that forgets the merge fails silently — pin it in the AST."""
-    print("\n[7] every command call site merges daily_facts")
+    print("\n[8] every command call site merges daily_facts")
     src = (ROOT / "telegram_ai_bot.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     merged = 0
@@ -273,7 +323,7 @@ def test_call_sites() -> None:
 
 
 def test_live() -> None:
-    print("\n[8] LIVE: real KRX / yfinance daily facts")
+    print("\n[9] LIVE: real KRX / yfinance daily facts")
     sessions = wmf.resolve_recent_sessions()
     check("KR sessions resolve", sessions is not None, str(sessions))
     if sessions:
@@ -303,9 +353,25 @@ def test_live() -> None:
     us = wmf.resolve_recent_us_sessions()
     check("US sessions resolve", us is not None, str(us))
     if us:
-        us_facts = wmf.build_us_facts(us[1], us[1], kind="daily")
+        # Must mirror cores.market_facts_cache._build exactly — calling without
+        # baseline would exercise a branch production never takes.
+        us_facts = wmf.build_us_facts(us[1], us[1], kind="daily", baseline=us[0])
         check("US daily facts non-empty", bool(us_facts), f"{len(us_facts)} chars")
         check("US drops weekly wording", "주간" not in us_facts)
+        check("US references 전일 종가", "전일 종가" in us_facts,
+              next((ln for ln in us_facts.splitlines() if "S&P" in ln), ""))
+
+        import yfinance as yf
+        hist = yf.Ticker("^GSPC").history(
+            start=us[0].strftime("%Y-%m-%d"),
+            end=(us[1] + timedelta(days=1)).strftime("%Y-%m-%d"),
+        )
+        if len(hist) >= 2:
+            prev, last = float(hist.iloc[0]["Close"]), float(hist.iloc[-1]["Close"])
+            expected = f"({(last - prev) / prev * 100:+.2f}%)"
+            sp = next((ln for ln in us_facts.splitlines() if "S&P 500" in ln), "")
+            check("US S&P pct equals close-to-close", expected in sp,
+                  f"expected {expected} in {sp!r}")
 
 
 def main() -> int:
@@ -320,13 +386,14 @@ def main() -> int:
 
     test_cache_single_flight()
     test_cache_degrades()
+    test_timeout_does_not_duplicate()
     test_signature()
     test_call_sites()
 
     if "--live" in sys.argv:
         test_live()
     else:
-        print("\n[8] LIVE skipped (pass --live to run)")
+        print("\n[9] LIVE skipped (pass --live to run)")
 
     print("\n" + "=" * 60)
     if failures:
