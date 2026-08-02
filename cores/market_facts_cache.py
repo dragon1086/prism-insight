@@ -95,8 +95,10 @@ def _build(market: str) -> dict:
         sessions = resolve_recent_us_sessions()
         if not sessions:
             return {}
-        _, latest = sessions
-        facts = build_us_facts(latest, latest, kind="daily")
+        baseline, latest = sessions
+        # 지수 등락률은 전일 종가 대비가 관례다. baseline 없이 부르면 시가 대비
+        # (장중 변동)가 나와 기사 수치와 어긋난다.
+        facts = build_us_facts(latest, latest, kind="daily", baseline=baseline)
 
     if not facts:
         return {}

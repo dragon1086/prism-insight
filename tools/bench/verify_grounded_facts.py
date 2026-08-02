@@ -140,6 +140,17 @@ def test_daily_labels() -> None:
     check("uses '당일 순매수'", "당일 순매수" in out)
     check("uses '당일 상승률 상위'", "당일 상승률 상위" in out)
     check("header shows a single date", "2026-07-31]" in out)
+
+    # 등락률의 기준점. 한국 시장 관례는 전일 종가 대비이고, 시가 대비(장중
+    # 변동)를 쓰면 같은 날인데 기사와 다른 숫자가 나온다.
+    # fake: 07-28 종가 1010 / 07-31 종가 1015 -> +0.50% (시가 대비면 +1.50%)
+    check("daily references 전일 종가", "전일 종가" in out)
+    check("daily pct is close-to-close, not open-to-close",
+          "(+0.50%)" in out and "(+1.50%)" not in out,
+          next((ln for ln in out.splitlines() if "KOSPI:" in ln), ""))
+    check("daily bar shows only the session itself",
+          "07-28" not in out.split("· 종가:")[1].split("\n")[0]
+          if "· 종가:" in out else False)
     try:
         wmf.build_kr_facts(date(2026, 7, 31), date(2026, 7, 31), kind="hourly")
         check("unknown kind rejected", False, "no ValueError raised")
@@ -277,6 +288,17 @@ def test_live() -> None:
                   bool(movers) and not all("+0.0%" in m for m in movers),
                   f"{len(movers)} lines")
             check("no weekly wording leaked", "주간" not in facts and "금요일" not in facts)
+
+            # 실데이터 교차검증: 리포트에 실린 등락률이 정말 전일 종가 대비인가.
+            # 2026-07-31 KOSPI 는 시가 대비 +16.57%, 전일 종가 대비 +17.91% 로
+            # 두 기준의 차이가 큰 날이라 이 검사가 실제로 변별력을 가진다.
+            fn = wmf._krx_fn("get_index_ohlcv_by_date")
+            raw = fn(wmf._ymd(baseline), wmf._ymd(latest), wmf.KOSPI_INDEX)
+            col = wmf._col(raw, "close")
+            expected = (float(raw.iloc[-1][col]) / float(raw.iloc[-2][col]) - 1) * 100
+            check("KOSPI pct equals close-to-close",
+                  f"({expected:+.2f}%)" in facts,
+                  f"expected {expected:+.2f}%")
 
     us = wmf.resolve_recent_us_sessions()
     check("US sessions resolve", us is not None, str(us))
