@@ -95,7 +95,15 @@ def _build(market: str) -> dict:
         baseline, latest = sessions
         # movers compares close(baseline) -> close(latest); passing the same day
         # twice would print +0.0% for every stock, so the prior session matters.
-        facts = build_kr_facts(latest, latest, kind="daily", baseline=baseline)
+        #
+        # movers is OFF here. Measured on app-server: index 0.1s + investor 0.2s
+        # against 63.0s for movers alone — it scans every ticker twice through a
+        # KRX client that re-logs-in per call. That is fine for the Sunday batch
+        # and hopeless for a chat command; with it on, KR grounding never landed
+        # inside the timeout and every /signal answer went out ungrounded.
+        facts = build_kr_facts(
+            latest, latest, kind="daily", baseline=baseline, include_movers=False
+        )
     else:
         sessions = resolve_recent_us_sessions()
         if not sessions:

@@ -170,6 +170,20 @@ def test_movers_guard() -> None:
           bool(ok) and not all("+0.0%" in ln for ln in ok),
           " | ".join(ok))
 
+    # Latency guard. movers costs 63.0s on app-server against 0.3s for the other
+    # two blocks combined; leaving it on made KR grounding miss the timeout every
+    # time, so the interactive path must never request it.
+    fast = wmf.build_kr_facts(
+        date(2026, 7, 31), date(2026, 7, 31),
+        kind="daily", baseline=date(2026, 7, 28), include_movers=False,
+    )
+    check("include_movers=False drops the movers block", "상승률 상위" not in fast)
+    check("...but keeps index and investor", "KOSPI:" in fast and "순매수" in fast)
+
+    src = inspect.getsource(mfc._build)
+    check("production KR path disables movers", "include_movers=False" in src,
+          "cores.market_facts_cache._build must not pay the 63s cost")
+
 
 def test_cache_single_flight() -> None:
     print("\n[4] one build shared by concurrent callers")
