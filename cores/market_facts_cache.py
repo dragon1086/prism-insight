@@ -36,6 +36,7 @@ which is what the bot did before this module existed.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from typing import Optional
@@ -54,6 +55,10 @@ _SUPPORTED = ("KR", "US")
 
 # market -> (stored_at_monotonic, payload)
 _cache: dict[str, tuple[float, dict]] = {}
+# market -> the build currently running, if any. A timed-out caller walks away
+# but the build keeps going, so later callers must attach to it rather than
+# starting a second scan of the same data.
+_inflight: dict[str, asyncio.Task] = {}
 _locks: dict[str, asyncio.Lock] = {}
 _locks_guard = asyncio.Lock()
 
@@ -108,6 +113,43 @@ def _build(market: str) -> dict:
     }
 
 
+def _store(market: str, task: asyncio.Task) -> None:
+    """
+    Land a finished build in the cache.
+
+    This is the only writer, so a build that outlives the caller who started it
+    still benefits everyone who asks next — which is the whole point of letting
+    a timed-out build keep running.
+    """
+    _inflight.pop(market, None)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(f"[facts] {market} daily facts failed: {exc}", exc_info=exc)
+        _cache[market] = (time.monotonic(), {})
+        return
+
+    payload = task.result()
+    _cache[market] = (time.monotonic(), payload)
+    if payload:
+        logger.info(
+            f"[facts] {market} daily facts ready "
+            f"({len(payload['grounded_facts'])} chars, {payload['period_label']})"
+        )
+
+
+def _build_task(market: str) -> asyncio.Task:
+    """The one build in flight for this market, started if there isn't one."""
+    task = _inflight.get(market)
+    if task is not None and not task.done():
+        return task
+    task = asyncio.create_task(asyncio.to_thread(_build, market))
+    task.add_done_callback(functools.partial(_store, market))
+    _inflight[market] = task
+    return task
+
+
 async def daily_facts(market: str) -> dict:
     """
     Grounding kwargs for the most recent trading session.
@@ -134,31 +176,28 @@ async def daily_facts(market: str) -> dict:
         entry = _cache.get(market)
         if _fresh(entry):
             return entry[1]
+        task = _build_task(market)
 
-        loop = asyncio.get_running_loop()
-        try:
-            payload = await asyncio.wait_for(
-                loop.run_in_executor(None, _build, market),
-                timeout=_BUILD_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"[facts] {market} daily facts timed out after {_BUILD_TIMEOUT}s "
-                "— answering without numeric grounding"
-            )
-            payload = {}
-        except Exception as e:  # noqa: BLE001 - fail-soft by design
-            logger.error(f"[facts] {market} daily facts failed: {e}", exc_info=True)
-            payload = {}
-
-        _cache[market] = (time.monotonic(), payload)
-        if payload:
-            logger.info(
-                f"[facts] {market} daily facts ready "
-                f"({len(payload['grounded_facts'])} chars, "
-                f"{payload['period_label']})"
-            )
-        return payload
+    # Awaited outside the lock: a caller that gives up on a slow build must not
+    # keep everyone else queued behind it.
+    #
+    # shield() is the point of this whole shape. wait_for() cancels what it
+    # awaits, and cancelling an executor call does NOT stop the thread — the KRX
+    # scan runs to completion regardless. Without the shield the task would be
+    # cancelled, the next caller would start a *second* scan on top of the first,
+    # and a slow upstream would multiply threads instead of sharing one.
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=_BUILD_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"[facts] {market} daily facts timed out after {_BUILD_TIMEOUT}s "
+            "— answering without numeric grounding; the build continues and "
+            "will populate the cache for later callers"
+        )
+        return {}
+    except Exception as e:  # noqa: BLE001 - fail-soft by design
+        logger.error(f"[facts] {market} daily facts failed: {e}", exc_info=True)
+        return {}
 
 
 def reset_cache() -> None:
@@ -171,3 +210,6 @@ def reset_cache() -> None:
     """
     _cache.clear()
     _locks.clear()
+    for task in _inflight.values():
+        task.cancel()
+    _inflight.clear()
