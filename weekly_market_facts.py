@@ -421,6 +421,7 @@ def build_kr_facts(
     *,
     kind: str = "weekly",
     baseline: Optional[date] = None,
+    include_movers: bool = True,
 ) -> str:
     """
     한국 시장 검증 수치 블록. 실패 시 빈 문자열.
@@ -433,6 +434,18 @@ def build_kr_facts(
         baseline: movers 등락률의 기준 시점. 생략하면 start.
                   주간은 start(월요일)가 곧 기준이라 기존 동작과 동일하고,
                   일간은 직전 거래일을 넘겨야 한다(같은 날이면 전부 0%).
+        include_movers: 등락률 상위 블록 포함 여부.
+
+            **대화형 호출에서는 반드시 False 로 꺼라.** app-server 실측:
+
+                resolve 0.7s | index 0.1s | investor 0.2s | movers 63.0s
+
+            movers 혼자 전체의 98% 다. 전종목 스냅샷 2회 + 종목명 조회 14회를
+            krx_data_client 로 도는데, 서버 자격증명 경로는 호출마다 KRX
+            브라우저 로그인(안정화 대기 7~13초, 지터 5~15초)을 태운다.
+            주간 배치는 일회성이라 1분이 무해하지만 봇 커맨드는 못 기다린다.
+            끄면 1.0초에 끝나고, 시장 질문의 핵심 근거(지수 레벨·등락률·수급)는
+            index/investor 에 다 들어 있다.
 
     주간 호출(build_kr_facts(mon, fri))의 출력은 이 변경 전후로 동일하다.
     """
@@ -447,7 +460,9 @@ def build_kr_facts(
         start, end, labels, baseline=baseline if kind == "daily" else None
     )
     investor_lines = _kr_investor_block(start, end, labels)
-    movers_lines = _kr_movers_block(baseline, end, labels)
+    movers_lines = (
+        _kr_movers_block(baseline, end, labels) if include_movers else []
+    )
     lines = index_lines + investor_lines + movers_lines
 
     if not lines:
