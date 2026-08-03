@@ -42,6 +42,7 @@ from firecrawl_client import firecrawl_agent
 from cores.search_presets import search_preset
 from cores.market_facts_cache import daily_facts
 from cores.disclaimer_utils import strip_trailing_disclaimer as _strip_trailing_disclaimer
+from prism_core.ticker_resolver import resolve_ticker
 from datetime import timedelta
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -2115,106 +2116,11 @@ class TelegramAIBot:
         Returns:
             tuple: (stock code, stock name, error message)
         """
-        # Input value defense code
-        if not stock_input:
-            logger.warning("Empty input value passed")
-            return None, None, "종목명이나 코드를 입력해주세요."
-
-        if not isinstance(stock_input, str):
-            logger.warning(f"Invalid input type: {type(stock_input)}")
-            stock_input = str(stock_input)
-
-        original_input = stock_input
-        stock_input = stock_input.strip()
-
-        logger.info(f"Stock search started - Input: '{original_input}' -> Cleaned input: '{stock_input}'")
-
-        # Check stock_name_map status
-        if not hasattr(self, 'stock_name_map') or self.stock_name_map is None:
-            logger.error("stock_name_map is not initialized")
-            return None, None, "시스템 오류: 주식 데이터가 로드되지 않았습니다."
-
-        if not isinstance(self.stock_name_map, dict):
-            logger.error(f"stock_name_map type error: {type(self.stock_name_map)}")
-            return None, None, "시스템 오류: 주식 데이터 형식이 잘못되었습니다."
-
-        logger.info(f"stock_name_map status - Size: {len(self.stock_name_map)}")
-
-        # Check stock_map status
-        if not hasattr(self, 'stock_map') or self.stock_map is None:
-            logger.warning("stock_map is not initialized")
-            self.stock_map = {}
-
-        # If already a stock code (6-digit number)
-        if re.match(r'^\d{6}$', stock_input):
-            logger.info(f"Recognized as 6-digit numeric code: {stock_input}")
-            stock_code = stock_input
-            stock_name = self.stock_map.get(stock_code)
-
-            if stock_name:
-                logger.info(f"Stock code match successful: {stock_code} -> {stock_name}")
-                return stock_code, stock_name, None
-            else:
-                logger.warning(f"No name information for stock code {stock_code}")
-                return stock_code, f"종목_{stock_code}", "해당 종목 코드에 대한 정보가 없습니다. 코드가 정확한지 확인해주세요."
-
-        # If entered as stock name - check for exact match
-        logger.info(f"Starting exact name match search: '{stock_input}'")
-
-        # Log key samples for debugging
-        sample_keys = list(self.stock_name_map.keys())[:5]
-        logger.debug(f"stock_name_map key samples: {sample_keys}")
-
-        # Exact match check
-        if stock_input in self.stock_name_map:
-            stock_code = self.stock_name_map[stock_input]
-            logger.info(f"Exact match successful: '{stock_input}' -> {stock_code}")
-            return stock_code, stock_input, None
-        else:
-            logger.info(f"Exact match failed: '{stock_input}'")
-
-            # Log input value details
-            logger.debug(f"Input details - Length: {len(stock_input)}, "
-                         f"Bytes: {stock_input.encode('utf-8')}, "
-                         f"Unicode: {[ord(c) for c in stock_input]}")
-
-        # Partial stock name match search
-        logger.info("Starting partial match search")
-        possible_matches = []
-
-        try:
-            for name, code in self.stock_name_map.items():
-                if not isinstance(name, str) or not isinstance(code, str):
-                    logger.warning(f"Invalid data type: name={type(name)}, code={type(code)}")
-                    continue
-
-                if stock_input.lower() in name.lower():
-                    possible_matches.append((name, code))
-                    logger.debug(f"Partial match found: '{name}' ({code})")
-
-        except Exception as e:
-            logger.error(f"Error during partial match search: {e}")
-            return None, None, "검색 중 오류가 발생했습니다."
-
-        logger.info(f"Partial match results: {len(possible_matches)} found")
-
-        if len(possible_matches) == 1:
-            # Use if single match found
-            stock_name, stock_code = possible_matches[0]
-            logger.info(f"Single partial match successful: '{stock_name}' ({stock_code})")
-            return stock_code, stock_name, None
-        elif len(possible_matches) > 1:
-            # Return error message if multiple matches
-            logger.info(f"Multiple matches: {[f'{name}({code})' for name, code in possible_matches]}")
-            match_info = "\n".join([f"{name} ({code})" for name, code in possible_matches[:5]])
-            if len(possible_matches) > 5:
-                match_info += f"\n... 외 {len(possible_matches)-5}개"
-
-            return None, None, f"'{stock_input}'에 해당하는 종목이 여러 개 있습니다. 정확한 종목명이나 코드를 입력해주세요:\n{match_info}"
-        else:
-            # Return error message if no matches
-            logger.warning(f"No matching stock: '{stock_input}'")
-            return None, None, f"'{stock_input}'에 해당하는 종목을 찾을 수 없습니다. 정확한 종목명이나 코드를 입력해주세요."
+        return resolve_ticker(
+            stock_input,
+            code_to_name=self.stock_map,
+            name_to_code=self.stock_name_map,
+        )
 
     # US ticker validation cache
     _us_ticker_cache: dict = {}
