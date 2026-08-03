@@ -7,7 +7,7 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -1328,6 +1328,7 @@ async def generate_firecrawl_search_response(
     try:
         from firecrawl_client import firecrawl_search_multi
         from cores.search_presets import widen_tbs
+        from cores.temporal_gate import apply_temporal_gate
 
         queries = [search_query] if isinstance(search_query, str) else list(search_query)
 
@@ -1348,19 +1349,23 @@ async def generate_firecrawl_search_response(
                 ),
             )
 
-        items = await _search(tbs)
+        window = tbs
+        items, _gate = apply_temporal_gate(await _search(window), tbs=window)
 
         # A tight recency window legitimately returns nothing on a quiet news day.
-        # Widening one rung at a time beats handing the user "결과 없음" — every
-        # article still carries its publish date downstream, so the model can see
-        # for itself that the material is older than asked for.
-        window = tbs
+        # Widening one rung at a time beats handing the user "결과 없음".
+        #
+        # The condition is what *survives the gate*, not what the search returned.
+        # tbs is a hint the engine may ignore, so a full-looking result set can be
+        # entirely out of window — that case used to read as success and never
+        # widened, which is exactly how stale articles reached the report.
         while not items and (window := widen_tbs(window)):
-            logger.info(f"No results at tbs={tbs!r}; widening to {window!r}")
-            items = await _search(window)
+            logger.info(f"No in-window results at tbs={tbs!r}; widening to {window!r}")
+            items, _gate = apply_temporal_gate(await _search(window), tbs=window)
 
-        # Prefer dated results, newest first; undated ones sink to the bottom.
-        items.sort(key=lambda it: (bool(it.get("date")), it.get("date") or ""), reverse=True)
+        # Newest first. Survivors all carry a parsed date; the fallback only
+        # matters when the gate was skipped for an unrecognized window.
+        items.sort(key=lambda it: it.get("_published") or date.min, reverse=True)
 
         context = _build_search_context(items)
         if not context:
