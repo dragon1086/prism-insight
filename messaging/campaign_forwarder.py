@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
+
+# ssh is invoked with a fixed argv list and shell=False; the only caller-supplied
+# value is the payload, and that goes in on stdin.
+import subprocess  # nosec B404
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -108,12 +111,15 @@ class SshCampaignShipper:
         return command
 
     def ship(self, payload: Mapping[str, object]) -> bool:
-        completed = subprocess.run(
+        completed = subprocess.run(  # nosec B603
             self._command(),
             input=json.dumps(dict(payload), ensure_ascii=False),
             capture_output=True,
             text=True,
             timeout=self._timeout,
+            # Handled below: a non-zero return has to become a retryable
+            # RuntimeError, not a CalledProcessError that skips the message.
+            check=False,
         )
         if completed.returncode != 0:
             raise RuntimeError(
