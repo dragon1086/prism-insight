@@ -133,15 +133,14 @@ def test_follow_up_item_titles_are_commands_that_actually_work():
     a card headed "이어서 해보기" answered "아직 준비 중인 기능입니다" twice.
     """
 
-    from kakao_bot.application.command_service import IMPLEMENTED_COMMANDS
+    from kakao_bot.application.command_service import leads_somewhere
 
     response = render_report_delivery(delivery("analysis_result", result_payload()))
     items = outputs(response)[1]["listCard"]["items"]
 
     assert items, "the card must offer at least one next step"
     for item in items:
-        kind = parse_command(item["title"]).kind
-        assert kind in IMPLEMENTED_COMMANDS, f"{item['title']!r} goes nowhere"
+        assert leads_somewhere(item["title"]), f"{item['title']!r} goes nowhere"
 
 
 def test_a_mention_button_lets_the_user_ask_about_another_stock():
