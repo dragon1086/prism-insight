@@ -26,6 +26,8 @@ _MENTION = re.compile(r"^@\S+\s*")
 _KR_CODE = re.compile(r"^\d{6}$")
 _US_TICKER = re.compile(r"^[A-Za-z]{1,5}$")
 _NUMERIC = re.compile(r"^\d+(?:[.,]\d+)?$")
+# Marks that make a token part of a sentence rather than a name on its own.
+_SENTENCE_MARK = re.compile(r"[?？!！.,、。]")
 _PERIOD = re.compile(r"^(\d+)\s*(?:개월|달|months?|m)?$", re.IGNORECASE)
 
 
@@ -34,6 +36,10 @@ class CommandKind(Enum):
     EVALUATE = "evaluate"
     ASK = "ask"
     HELP = "help"
+    # No keyword was used. Which command this becomes depends on whether the
+    # text names a stock, and only the ticker resolver knows that — so the
+    # decision belongs to the service, not here (see `ParsedCommand`).
+    NATURAL = "natural"
     UNKNOWN = "unknown"
 
 
@@ -74,6 +80,10 @@ class ParsedCommand:
     market: str | None = None
     avg_price: float | None = None
     period_months: int | None = None
+    # Only meaningful for NATURAL: whether the text is shaped like a single
+    # stock reference and is therefore worth handing to the resolver. A whole
+    # sentence is not, so "삼성전자 어때?" never becomes a report request.
+    resembles_ticker: bool = False
 
     @property
     def is_actionable(self) -> bool:
@@ -88,12 +98,25 @@ def parse_command(utterance: str) -> ParsedCommand:
 
     text = _MENTION.sub("", utterance.strip())
     if not text:
-        return ParsedCommand(kind=CommandKind.UNKNOWN)
+        # A bare mention is someone reaching for the bot without knowing what
+        # to say. Showing what it can do is the whole answer; silence used to
+        # be the answer, which reads as a broken bot.
+        return ParsedCommand(kind=CommandKind.HELP)
 
     tokens = text.split()
     kind, market, rest = _take_keyword(tokens)
     if kind is None:
-        return ParsedCommand(kind=CommandKind.UNKNOWN)
+        # Kakao only delivers group messages the bot was mentioned in, so
+        # anything that reaches here was aimed at the bot on purpose. Demanding
+        # a keyword on top of the mention makes the user say "this is for you"
+        # twice, and answering nothing when they get the grammar wrong is the
+        # worst outcome available.
+        return ParsedCommand(
+            kind=CommandKind.NATURAL,
+            query=text,
+            market=_infer_market(text),
+            resembles_ticker=_resembles_ticker(text),
+        )
 
     if kind is CommandKind.ASK:
         # A free-form question is prose, not arguments. "질문 미국 금리 언제
@@ -186,6 +209,24 @@ def _to_period(token: str) -> int | None:
         return int(match.group(1))
     except ValueError:
         return None
+
+
+def _resembles_ticker(text: str) -> bool:
+    """Is this one stock reference, rather than something said about one?
+
+    Deliberately strict, because the resolver matches substrings: handing it a
+    sentence risks "화장품" quietly resolving to whichever single stock happens
+    to contain that word, and a keyword-free utterance has no explicit intent
+    to justify that guess. One token, no sentence punctuation.
+
+    An explicit `리포트 …` keeps the forgiving path — asking for a report is
+    already an unambiguous intent, so a partial match there is helpful rather
+    than surprising.
+    """
+
+    if len(text.split()) != 1:
+        return False
+    return not _SENTENCE_MARK.search(text)
 
 
 def _infer_market(query: str | None) -> str | None:
