@@ -18,7 +18,7 @@
 
 > **AI 기반 주식시장 분석 및 매매 시스템**
 >
-> 13개 이상의 전문화된 AI 에이전트가 협업하여 급등주를 포착하고, 애널리스트급 리포트를 생성하며, 자동으로 매매를 실행합니다.
+> 역할별 AI 에이전트와 결정론적 안전 게이트가 협업하여 후보 종목을 찾고, 분석 보고서를 생성하며, 설정에 따라 매매까지 실행합니다.
 
 <p align="center">
   <a href="README.md">English</a> |
@@ -177,14 +177,15 @@ pip install -r requirements.txt
 # 2. Playwright 설치 (PDF 생성용)
 python3 -m playwright install chromium
 
-# 3. perplexity-ask MCP 서버 설치
-cd perplexity-ask && npm install && npm run build && cd ..
+# 3. MCP 서버는 설정에 따라 npx/uvx가 실행
+# Firecrawl: firecrawl-mcp@3.17.0
+# Perplexity: @perplexity-ai/mcp-server
 
 # 4. 설정
 cp mcp_agent.config.yaml.example mcp_agent.config.yaml
 cp mcp_agent.secrets.yaml.example mcp_agent.secrets.yaml
 # mcp_agent.secrets.yaml에 OpenAI API 키 입력
-# mcp_agent.config.yaml에 KRX 인증 정보 입력 (카카오 계정)
+# mcp_agent.config.yaml에 KRX 직접 로그인 정보 입력
 
 # 5. 분석 실행 (텔레그램 설정 불필요!)
 python stock_analysis_orchestrator.py --mode morning --no-telegram
@@ -223,25 +224,27 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 - **텔레그램 통합** — 실시간 알림 및 다국어 브로드캐스팅
 - **거시경제 인텔리전스** — 시장 국면 판단, 섹터 로테이션 분석, 리스크 이벤트 모니터링
 
-### AI 모델
-- **분석 및 매매**: OpenAI GPT-5 / GPT-5.4-mini (API 또는 ChatGPT Plus 구독)
-- **리포트 생성**: Anthropic Claude Sonnet 4.6
-- **번역**: OpenAI GPT-5 (영어, 일본어, 중국어, 스페인어 지원)
+### AI 실행 계층
+- **보고서·상담·매매**: OpenAI Agents 백엔드 (API 또는 ChatGPT Plus/Pro OAuth)
+- **역할별 모델**: 보고서, 매매, 거시경제, 번역, 저널이 서로 다른 기본 모델·추론 강도를 사용
+- **호환 경로**: 일부 레거시/선택 워크플로우는 mcp-agent 및 Anthropic 설정을 유지
+
+정확한 기본 모델과 호출 경로는 [AI 에이전트 시스템 문서](docs/CLAUDE_AGENTS_ko.md#4-기본-모델-매트릭스)를 참조하세요.
 
 ---
 
 ## AI 에이전트 시스템
 
-13개 이상의 전문 에이전트가 팀으로 협업합니다:
+고정된 숫자보다 실행 경로에 따라 에이전트를 구분합니다:
 
 | 팀 | 에이전트 | 역할 |
 |---|---------|------|
-| **거시경제 팀** | 1개 | 시장 국면, 섹터 로테이션, 리스크 이벤트 |
-| **분석 팀** | 6개 | 기술적, 재무, 산업, 뉴스, 시장 분석 |
-| **전략 팀** | 1개 | 투자 전략 수립 |
-| **커뮤니케이션 팀** | 3개 | 요약, 품질 평가, 번역 |
-| **매매 팀** | 3개 | 매수/매도 결정, 매매 저널 |
-| **상담 팀** | 2개 | 텔레그램을 통한 사용자 상호작용 |
+| **거시경제** | KR/US | 결정론적 시장 체제를 보강하는 주도 업종·리스크·이벤트 조사 |
+| **종목 분석** | 시장별 6개 기본 섹션 | 기술·수급/기관·기업·뉴스·시장 분석 |
+| **전략·요약** | 실행 중 동적 생성 | 기본 섹션을 투자전략과 핵심 요약으로 통합 |
+| **매매** | KR/US 매수·매도 | LLM 시나리오와 점수·포트폴리오·재진입 게이트 결합 |
+| **저널·메모리** | 회고·압축·원칙 | 청산 결과를 다음 의사결정의 근거로 제공 |
+| **커뮤니케이션·상담** | 평가·최적화·번역·후속 질문 | 텔레그램 요약과 사용자 상호작용 |
 
 <details>
 <summary>에이전트 워크플로우 다이어그램 보기</summary>
@@ -249,7 +252,7 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 <img src="docs/images/aiagent/agent_workflow2.png" alt="에이전트 워크플로우" width="700">
 </details>
 
-**상세 에이전트 문서**: [docs/CLAUDE_AGENTS_ko.md](docs/CLAUDE_AGENTS_ko.md)
+**상세 문서**: [4단계 파이프라인 아키텍처](docs/PIPELINE_ARCHITECTURE_ko.md) | [AI 에이전트 시스템](docs/CLAUDE_AGENTS_ko.md)
 
 ---
 
@@ -263,7 +266,7 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 | **매매 시뮬레이션** | AI 기반 투자 전략 시뮬레이션 |
 | **자동매매** | 한국투자증권 API를 통한 실행 |
 | **대시보드** | 투명한 포트폴리오, 거래내역, 성과 추적 |
-| **자기개선 매매** | 매매 일지 피드백 루프 — 과거 트리거 승률이 자동으로 미래 매수 결정에 반영 ([상세](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)) |
+| **자기개선 매매** | 매매 일지 피드백 루프 — 과거 트리거 성과·원칙·재진입 경고를 미래 판단에 반영 ([상세](docs/TRADING_JOURNAL.md#performance-tracker-피드백-루프-self-improving-trading)) |
 | **미국 시장** | NYSE/NASDAQ 분석 완벽 지원 |
 | **거시경제 인텔리전스** | 시장 국면 판단 및 섹터 로테이션으로 더 스마트한 종목 선정 |
 | **모바일 앱** | iOS & Android 앱, 스마트 필터링 및 PDF 리포트 |
@@ -305,6 +308,22 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 
 ---
 
+## 매매 시스템은 어떻게 실패에서 배웠나
+
+한국 시장의 매매 기록에는 서로 반대되는 두 문제가 나타났습니다. 처음에는
+진입을 지나치게 피했고, 이후에는 시장과 주문 상태를 충분히 통제하지 못한
+채 위험을 감수했습니다. v1.16.7부터 v2.18까지의 개선은 단순한 프롬프트
+교정을 넘어 레짐·청산 상태·재진입을 결정론적으로 통제하는 방향으로
+진화했습니다.
+
+![관망 편향에서 상태 기반 리스크 통제로 발전한 PRISM-INSIGHT 매매 시스템](docs/images/trading-evolution-ko.png)
+
+> 수치는 시스템 변화를 진단하기 위한 값입니다. 누적 수익은 거래별 수익률의
+> 합계이며, 미진입 후보의 성과는 사후 관찰값입니다. 시간가중 포트폴리오
+> 수익률이나 실제로 실현 가능한 백테스트 수익률을 뜻하지 않습니다.
+
+---
+
 ## 미국 주식 모듈
 
 미국 시장을 위한 동일한 AI 기반 워크플로우:
@@ -326,9 +345,10 @@ python prism-us/us_stock_analysis_orchestrator.py --mode morning --language en
 | 문서 | 설명 |
 |-----|------|
 | [docs/SETUP_ko.md](docs/SETUP_ko.md) | 완전한 설치 가이드 |
-| [docs/CLAUDE_AGENTS.md](docs/CLAUDE_AGENTS.md) | AI 에이전트 시스템 상세 |
-| [docs/TRIGGER_BATCH_ALGORITHMS.md](docs/TRIGGER_BATCH_ALGORITHMS.md) | 급등주 탐지 알고리즘 |
-| [docs/TRADING_JOURNAL.md](docs/TRADING_JOURNAL.md) | 매매 메모리 시스템 |
+| [docs/PIPELINE_ARCHITECTURE_ko.md](docs/PIPELINE_ARCHITECTURE_ko.md) | 스크리닝 → 분석 → 매매 → 피드백 설계 |
+| [docs/CLAUDE_AGENTS_ko.md](docs/CLAUDE_AGENTS_ko.md) | AI 에이전트와 실행 계층 상세 |
+| [docs/TRIGGER_BATCH_ALGORITHMS.md](docs/TRIGGER_BATCH_ALGORITHMS.md) | 후보 선별·시장 체제·배치·진입/청산 알고리즘 |
+| [docs/TRADING_JOURNAL.md](docs/TRADING_JOURNAL.md) | 매매일지·메모리·재진입 피드백 |
 
 ---
 
@@ -389,7 +409,7 @@ npm run dev
 SaaS 기업은 별도의 상업 라이선스가 필요합니다.
 
 **연락처**: dragon1086@naver.com
-**상세**: [LICENSE-COMMERCIAL-ko.md](LICENSE-COMMERCIAL-ko.md)
+**상세 조건**: 위 연락처로 문의해 주세요.
 
 ---
 

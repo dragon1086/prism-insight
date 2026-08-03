@@ -56,6 +56,7 @@ from core.actions import (
     OpenIntent,
 )
 from core.risk import compute_operating_risk
+from core.leadership import leadership_multipliers
 
 from live import tracking
 from live.tracking import PositionRow, TradeRow
@@ -66,8 +67,10 @@ from live.tracking import PositionRow, TradeRow
 # 내고 MDD 1%p 를 사는 손해 보는 보험. 추세전략의 큰 승리가 손실 직후에
 # 오는 구조라, DD 트리거가 정확히 회복 트레이드의 사이즈를 반토막낸다.
 # compute_operating_risk 배관은 유지 (가변 리스크 재검토 시 값만 변경).
-SHADOW_BASE_RISK: float = 0.02
-SHADOW_REDUCED_RISK: float = 0.02  # == base → E4 비활성
+# 라운드7 G-1 (2026-07-24, Rocky 1.5x 승인): 2% → 3% (engine/sizing.py 참조).
+# E4 중립화(reduced == base)는 유지 — 위 재시뮬 근거 그대로.
+SHADOW_BASE_RISK: float = 0.03
+SHADOW_REDUCED_RISK: float = 0.03  # == base → E4 비활성
 SHADOW_DD_THRESHOLD: float = 0.05
 
 INITIAL_EQUITY: float = 10_000.0
@@ -549,6 +552,9 @@ class ShadowAdapter:
             dd_threshold=SHADOW_DD_THRESHOLD,
             reduced_risk=SHADOW_REDUCED_RISK,
         )
+        # 라운드8 L 계층: BTC/ETH 상대강도 노출 배수 (fail-open=1.0, 신규 진입만)
+        l_long, l_short, _l_reason = leadership_multipliers()
+        op_risk *= l_long if sig.side == "long" else l_short
         orig = _sizing.RISK_PER_TRADE
         _sizing.RISK_PER_TRADE = op_risk
         try:
