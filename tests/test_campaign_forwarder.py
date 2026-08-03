@@ -195,14 +195,26 @@ class TestSshShipper:
 
         assert "BatchMode=yes" in command
 
-    def test_the_remote_runs_the_projects_own_enqueue(self):
+    def test_the_remote_runs_the_projects_own_entrypoint(self):
         # Not a raw sqlite3 INSERT — validation and INSERT OR IGNORE stay in
-        # one implementation.
-        script = self.shipper()._command()[-1]
+        # one implementation, shipped with the repo.
+        command = self.shipper()._command()
 
-        assert "SQLiteBatchCampaignQueue" in script
-        assert "queue.enqueue(payload)" in script
-        assert "/home/prism/prism-insight" in script
+        assert "/home/prism/prism-insight/tools/enqueue_campaign_event.py" in command
+        assert "/home/prism/venv/bin/python" in command
+        assert "--queue-path" in command
+
+    def test_nothing_is_sent_inline_for_the_remote_shell_to_mangle(self):
+        # `ssh host python -c "<multi-line script>"` does not survive the hop:
+        # ssh joins its trailing args into one string for the REMOTE SHELL,
+        # which then splits the script into separate commands and reports
+        # "import: command not found". Only a file path has no quoting surface.
+        # Found in production, not by unit tests — so it is pinned here.
+        command = self.shipper()._command()
+
+        assert "-c" not in command
+        assert not any("import " in part for part in command)
+        assert not any("\n" in part for part in command)
 
     def test_an_identity_file_is_passed_through_when_given(self):
         command = self.shipper(identity_file="/root/.ssh/id_ed25519")._command()
