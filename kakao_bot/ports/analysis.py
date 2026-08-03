@@ -61,3 +61,10 @@ class AnalysisPort(Protocol):
         market: str,
     ) -> AnalysisOutcome:
         """Produce a report. Blocking; callers run this off the event loop."""
+
+    def answer(self, question: str) -> AnalysisOutcome:
+        """Answer a free-form question from current web sources.
+
+        There is no ticker and no PDF — the answer arrives whole in
+        ``summary``. Blocking, like :meth:`generate`.
+        """

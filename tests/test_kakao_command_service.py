@@ -206,7 +206,7 @@ def test_unrecognized_utterance_is_ignored_silently(repository, service):
 
 
 def test_not_yet_implemented_commands_say_so(repository, service):
-    outcome = service.handle(message("순위"), now=NOW)
+    outcome = service.handle(message("평가 삼성전자 70000 6"), now=NOW)
 
     assert outcome.kind is CommandOutcomeKind.REJECTED
     assert "준비" in outcome.message

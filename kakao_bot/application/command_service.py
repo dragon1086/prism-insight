@@ -33,13 +33,20 @@ _UNAPPROVED = "이 채팅방은 아직 승인되지 않았습니다. 관리자�
 _USER_LIMIT = "오늘 요청 한도를 모두 사용했습니다. 내일 다시 이용해주세요."
 _ROOM_LIMIT = "이 채팅방의 오늘 요청 한도를 모두 사용했습니다."
 _NEED_TICKER = "종목을 함께 알려주세요. 예: 리포트 삼성전자"
+_NEED_QUESTION = "궁금한 내용을 함께 적어주세요. 예: 질문 오늘 코스피 왜 빠졌어?"
 _NOT_READY = "아직 준비 중인 기능입니다."
+
+# Telegram's /ask truncates at the same length; a question longer than this is
+# a pasted article, not a question.
+_QUESTION_LIMIT = 500
 
 # Single source of truth for what actually works. Help text and every card that
 # offers a follow-up read this, because they drifted apart once: the card said
 # "이어서 해보기" and both of its items answered "아직 준비 중인 기능입니다".
 # Add a kind here only when it is wired end to end.
-IMPLEMENTED_COMMANDS = frozenset({CommandKind.REPORT, CommandKind.HELP})
+IMPLEMENTED_COMMANDS = frozenset(
+    {CommandKind.REPORT, CommandKind.ASK, CommandKind.HELP}
+)
 
 _HELP_LINES = {
     CommandKind.REPORT: (
@@ -47,7 +54,7 @@ _HELP_LINES = {
         " · 리포트 AAPL — 미국 종목은 티커로"
     ),
     CommandKind.EVALUATE: " · 평가 삼성전자 70000 6 — 평단가·보유개월 기준 평가",
-    CommandKind.LEADERBOARD: " · 순위 — 예측 리더보드",
+    CommandKind.ASK: " · 질문 오늘 시장 어때? — 시장·종목 자유 질문",
 }
 
 
@@ -139,12 +146,19 @@ class CommandService:
         if not command.query:
             return CommandOutcome(
                 kind=CommandOutcomeKind.REJECTED,
-                message=_NEED_TICKER,
+                message=(
+                    _NEED_QUESTION
+                    if command.kind is CommandKind.ASK
+                    else _NEED_TICKER
+                ),
             )
 
         refusal = self._check_limits(message, moment)
         if refusal is not None:
             return refusal
+
+        if command.kind is CommandKind.ASK:
+            return self._enqueue_ask(message, command.query, moment)
 
         resolution = self._resolver.resolve(command.query, market=command.market)
         if not resolution.succeeded:
@@ -173,6 +187,42 @@ class CommandService:
             job_id=job.job_id,
             ticker=resolved.ticker,
             company_name=resolved.company_name,
+        )
+
+    def _enqueue_ask(
+        self,
+        message: InboundMessage,
+        question: str,
+        moment: datetime,
+    ) -> CommandOutcome:
+        """Queue a free-form question — no ticker to resolve.
+
+        `ticker`/`company_name` are NOT NULL on the jobs table because every
+        job used to be a report. An ask has neither, so they are stored empty
+        and `kind` is what tells the worker which shape it is holding.
+        """
+
+        job = AnalysisJob(
+            job_id=str(uuid.uuid4()),
+            room_id=message.room_id,
+            user_id=message.user_id,
+            ticker="",
+            company_name="",
+            # Retrieval for ask is market-agnostic (Telegram's /ask uses the KR
+            # preset with the allowlist off); 'kr' just satisfies the CHECK.
+            market="kr",
+            kind="ask",
+            payload={"question": question[:_QUESTION_LIMIT]},
+        )
+        self._repository.enqueue_analysis_job(job, now=moment)
+
+        return CommandOutcome(
+            kind=CommandOutcomeKind.ACCEPTED,
+            message=(
+                "🔍 질문을 확인했습니다. 최신 정보를 찾아볼게요.\n"
+                "완료되면 이 방으로 답변을 보내드릴게요."
+            ),
+            job_id=job.job_id,
         )
 
     def _check_limits(

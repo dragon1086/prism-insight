@@ -13,12 +13,14 @@ from kakao_bot.adapters.kakao.campaign_renderer import render_campaign_delivery
 from kakao_bot.adapters.kakao.report_renderer import (
     ANALYSIS_FAILED,
     ANALYSIS_RESULT,
+    ASK_FAILED,
+    ASK_RESULT,
     render_report_delivery,
 )
 from kakao_bot.domain.models import ClaimedOutboundDelivery
 
 CAMPAIGN_TYPES = frozenset({"signal_campaign", "campaign_rest_notice"})
-REPORT_TYPES = frozenset({ANALYSIS_RESULT, ANALYSIS_FAILED})
+REPORT_TYPES = frozenset({ANALYSIS_RESULT, ANALYSIS_FAILED, ASK_RESULT, ASK_FAILED})
 
 SUPPORTED_TYPES = CAMPAIGN_TYPES | REPORT_TYPES
 

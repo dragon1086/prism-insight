@@ -64,13 +64,13 @@ def _help_card() -> dict[str, object]:
             "messageText": "리포트 AAPL",
         },
     ]
-    if CommandKind.LEADERBOARD in IMPLEMENTED_COMMANDS:
+    if CommandKind.ASK in IMPLEMENTED_COMMANDS:
         items.append(
             {
-                "title": "순위",
-                "description": "예측 리더보드를 봅니다",
+                "title": "질문 하기",
+                "description": "시장·종목에 대해 자유롭게 물어봅니다",
                 "action": "message",
-                "messageText": "순위",
+                "messageText": "질문 ",
             }
         )
 
