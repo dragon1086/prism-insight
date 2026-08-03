@@ -132,7 +132,17 @@ async def run_gateway(
             repository = SQLiteKakaoRepository(config.database_path)
         resolved_state_store = state_store or SQLiteGatewayStateStore(repository)
         resolved_handler = event_handler or GatewayDispatchHandler(
-            GatewayInboundService(repository),
+            GatewayInboundService(
+                repository,
+                # Off by default: with real users an invitation should not be
+                # enough to start broadcasting into someone's room. Turned on
+                # for the review period, where an operator cannot approve ten
+                # reviewers' rooms by hand fast enough to matter.
+                auto_approve=_is_enabled(
+                    "KAKAO_AUTO_APPROVE_ROOMS", default=False
+                ),
+                greet_on_join=_is_enabled("KAKAO_GREET_ON_JOIN"),
+            ),
             message_handler=_build_message_handler(config, repository),
         )
         async with aiohttp.ClientSession() as session:

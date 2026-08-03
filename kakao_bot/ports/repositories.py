@@ -54,8 +54,13 @@ class KakaoRepository(Protocol):
         room_id: str,
         event_type: RoomLifecycleType | None,
         occurred_at: datetime,
+        auto_approve: bool = False,
     ) -> bool:
-        """Atomically deduplicate an event and apply room lifecycle state."""
+        """Atomically deduplicate an event and apply room lifecycle state.
+
+        With `auto_approve`, an invitation is the approval. Either way an
+        already-approved room keeps its approval when ENTRANCE repeats.
+        """
 
     def save_campaign(self, campaign: BatchCampaign) -> bool:
         """Return True only when a new campaign_id is recorded."""
