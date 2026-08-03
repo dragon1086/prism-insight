@@ -60,16 +60,11 @@ class CampaignShipper(Protocol):
         """
 
 
-# Runs on the remote host. Reads one event on stdin so the payload never
-# appears in argv, where `ps` would show it, and no shell quoting can mangle it.
-_REMOTE_SCRIPT = """
-import json, sys
-sys.path.insert(0, {repo!r})
-from messaging.local_campaign_queue import SQLiteBatchCampaignQueue
-payload = json.load(sys.stdin)
-with SQLiteBatchCampaignQueue({queue!r}) as queue:
-    print("NEW" if queue.enqueue(payload) else "DUPLICATE")
-"""
+# The remote half ships with the repo. Sending it inline as `python -c` does
+# not survive the hop: ssh joins its trailing arguments into one string for the
+# *remote shell*, which then splits a multi-line script into separate commands
+# and reports "import: command not found". A file has no quoting surface.
+_REMOTE_ENTRYPOINT = "tools/enqueue_campaign_event.py"
 
 
 class SshCampaignShipper:
@@ -103,11 +98,14 @@ class SshCampaignShipper:
         command = [self._ssh_binary, "-o", "BatchMode=yes"]
         if self._identity_file:
             command += ["-i", self._identity_file]
-        script = _REMOTE_SCRIPT.format(
-            repo=self._repo_path,
-            queue=self._queue_path,
-        )
-        command += [self._host, self._python_path, "-c", script]
+        entrypoint = f"{self._repo_path.rstrip('/')}/{_REMOTE_ENTRYPOINT}"
+        command += [
+            self._host,
+            self._python_path,
+            entrypoint,
+            "--queue-path",
+            self._queue_path,
+        ]
         return command
 
     def ship(self, payload: Mapping[str, object]) -> bool:
