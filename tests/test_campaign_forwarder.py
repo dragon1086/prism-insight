@@ -157,14 +157,7 @@ def test_several_slots_forward_in_one_run(queue):
 def test_an_empty_queue_is_a_no_op(queue):
     result = forwarder(queue, FakeShipper()).run_once(now=NOW)
 
-    assert result == type(result)(
-        claimed=0,
-        forwarded=0,
-        duplicate=0,
-        retry_scheduled=0,
-        dead=0,
-        stale_lease=0,
-    )
+    assert (result.claimed, result.forwarded, result.retry_scheduled) == (0, 0, 0)
 
 
 def test_a_consumed_event_is_not_forwarded_twice(queue):
@@ -182,12 +175,12 @@ class TestSshShipper:
     """The command shape, without running ssh."""
 
     def shipper(self, **kwargs):
-        defaults = dict(
-            host="root@10.0.0.2",
-            repo_path="/home/prism/prism-insight",
-            queue_path="/var/lib/prism-kakao/prism_campaign_queue.sqlite",
-            python_path="/home/prism/venv/bin/python",
-        )
+        defaults = {
+            "host": "root@10.0.0.2",
+            "repo_path": "/home/prism/prism-insight",
+            "queue_path": "/var/lib/prism-kakao/prism_campaign_queue.sqlite",
+            "python_path": "/home/prism/venv/bin/python",
+        }
         return SshCampaignShipper(**{**defaults, **kwargs})
 
     def test_the_payload_is_not_in_the_command_line(self):

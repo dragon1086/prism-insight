@@ -27,11 +27,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from messaging.campaign_forwarder import (  # noqa: E402
+from messaging.campaign_forwarder import (
     CampaignForwarder,
     SshCampaignShipper,
 )
-from messaging.local_campaign_queue import SQLiteBatchCampaignQueue  # noqa: E402
+from messaging.local_campaign_queue import SQLiteBatchCampaignQueue
 
 logger = logging.getLogger("forward_campaign_events")
 
