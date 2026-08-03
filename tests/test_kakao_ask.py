@@ -169,7 +169,8 @@ def test_ask_is_actually_enabled():
     # The last switch. Without this the command parses, and then answers
     # "아직 준비 중인 기능입니다".
     assert CommandKind.ASK in IMPLEMENTED_COMMANDS
-    assert "질문" in help_text()
+    # Help advertises asking as a plain question now, not a keyword.
+    assert "물어보" in help_text() or "어때" in help_text()
 
 
 def test_ask_enqueues_without_touching_the_resolver(repository):

@@ -198,11 +198,15 @@ def test_help_is_answered_without_touching_the_room_gate(tmp_path):
         assert "리포트" in outcome.message
 
 
-def test_unrecognized_utterance_is_ignored_silently(repository, service):
+def test_text_without_a_keyword_is_answered_rather_than_ignored(
+    repository, service
+):
+    # Group rooms only deliver messages the bot was mentioned in, so silence
+    # here meant ignoring someone who had deliberately addressed the bot.
     outcome = service.handle(message("아무말"), now=NOW)
 
-    assert outcome.kind is CommandOutcomeKind.IGNORED
-    assert outcome.should_reply is False
+    assert outcome.should_reply is True
+    assert outcome.kind is not CommandOutcomeKind.IGNORED
 
 
 def test_not_yet_implemented_commands_say_so(repository, service):

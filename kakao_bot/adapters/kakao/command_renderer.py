@@ -50,27 +50,31 @@ def help_card() -> dict[str, object]:
     기능입니다" is worse than a shorter list.
     """
 
+    # Tapping sends the title verbatim, so each title is written the way we
+    # want people to type: a bare stock name, or a plain question. Titles that
+    # read `리포트 삼성전자` would teach a command grammar that is no longer
+    # necessary — and that users would then keep using.
     items: list[dict[str, object]] = [
         {
-            "title": f"리포트 {_EXAMPLE_TICKER}",
-            "description": "종목 분석 리포트를 생성합니다",
+            "title": _EXAMPLE_TICKER,
+            "description": "종목 이름만 보내면 분석 리포트를 만들어드려요",
             "action": "message",
-            "messageText": f"리포트 {_EXAMPLE_TICKER}",
+            "messageText": _EXAMPLE_TICKER,
         },
         {
-            "title": "리포트 AAPL",
-            "description": "미국 종목은 티커로 입력합니다",
+            "title": "AAPL",
+            "description": "미국 종목은 티커로 보내주세요",
             "action": "message",
-            "messageText": "리포트 AAPL",
+            "messageText": "AAPL",
         },
     ]
     if CommandKind.ASK in IMPLEMENTED_COMMANDS:
         items.append(
             {
-                "title": "질문 하기",
-                "description": "시장·종목에 대해 자유롭게 물어봅니다",
+                "title": "오늘 시장 어때?",
+                "description": "궁금한 걸 그냥 물어보세요",
                 "action": "message",
-                "messageText": "질문 ",
+                "messageText": "오늘 시장 어때?",
             }
         )
 

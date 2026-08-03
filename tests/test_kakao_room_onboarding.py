@@ -198,7 +198,9 @@ class TestWelcomeRendering:
 
         card = response["template"]["outputs"][1]["listCard"]
         titles = [item["title"] for item in card["items"]]
-        assert any("리포트" in title for title in titles)
+        # Titles are written the way we want people to type: a bare stock
+        # name, not a command spelling.
+        assert "삼성전자" in titles
 
     def test_the_greeting_only_offers_commands_that_work(self):
         # Reuses the help card, which reads IMPLEMENTED_COMMANDS, so it cannot
