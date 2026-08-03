@@ -34,6 +34,10 @@ _USER_LIMIT = "오늘 요청 한도를 모두 사용했습니다. 내일 다시 
 _ROOM_LIMIT = "이 채팅방의 오늘 요청 한도를 모두 사용했습니다."
 _NEED_TICKER = "종목을 함께 알려주세요. 예: 리포트 삼성전자"
 _NEED_QUESTION = "궁금한 내용을 함께 적어주세요. 예: 질문 오늘 코스피 왜 빠졌어?"
+_NEED_AVG_PRICE = (
+    "평단가를 함께 알려주세요.\n예: 평가 {stock} 70000 6\n"
+    "(종목 · 평단가 · 보유개월 순서, 보유개월은 생략해도 됩니다)"
+)
 _NOT_READY = "아직 준비 중인 기능입니다."
 
 # Telegram's /ask truncates at the same length; a question longer than this is
@@ -45,7 +49,12 @@ _QUESTION_LIMIT = 500
 # "이어서 해보기" and both of its items answered "아직 준비 중인 기능입니다".
 # Add a kind here only when it is wired end to end.
 IMPLEMENTED_COMMANDS = frozenset(
-    {CommandKind.REPORT, CommandKind.ASK, CommandKind.HELP}
+    {
+        CommandKind.REPORT,
+        CommandKind.ASK,
+        CommandKind.EVALUATE,
+        CommandKind.HELP,
+    }
 )
 
 _HELP_LINES = {
@@ -53,7 +62,7 @@ _HELP_LINES = {
         " · 삼성전자 — 종목 이름만 보내면 분석 리포트\n"
         " · AAPL — 미국 종목은 티커로"
     ),
-    CommandKind.EVALUATE: " · 평가 삼성전자 70000 6 — 평단가·보유개월 기준 평가",
+    CommandKind.EVALUATE: " · 평가 삼성전자 70000 6 — 내 평단가 기준으로 평가",
     CommandKind.ASK: " · 오늘 시장 어때? — 그냥 물어보면 답변",
 }
 
@@ -218,6 +227,15 @@ class CommandService:
         if kind is CommandKind.ASK:
             return self._enqueue_ask(message, command.query, moment)
 
+        if kind is CommandKind.EVALUATE and command.avg_price is None:
+            # Not a refusal with nothing after it: the user already named the
+            # stock, so tell them the one thing still missing and show it in
+            # their own words.
+            return CommandOutcome(
+                kind=CommandOutcomeKind.REJECTED,
+                message=_NEED_AVG_PRICE.format(stock=command.query),
+            )
+
         if resolution is None:
             resolution = self._resolver.resolve(
                 command.query, market=command.market
@@ -229,6 +247,7 @@ class CommandService:
             )
 
         resolved = resolution.ticker
+        is_evaluate = kind is CommandKind.EVALUATE
         job = AnalysisJob(
             job_id=str(uuid.uuid4()),
             room_id=message.room_id,
@@ -236,15 +255,36 @@ class CommandService:
             ticker=resolved.ticker,
             company_name=resolved.company_name,
             market=resolved.market,
+            kind="evaluate" if is_evaluate else "report",
+            payload=(
+                {
+                    "avg_price": command.avg_price,
+                    "period_months": command.period_months,
+                    # Whatever was left after the numbers were taken off the
+                    # end is the requested tone: "평가 삼성전자 70000 6 취한
+                    # 친구처럼". Empty means the default.
+                    "tone": command.tone or "",
+                }
+                if is_evaluate
+                else None
+            ),
         )
         self._repository.enqueue_analysis_job(job, now=moment)
 
-        return CommandOutcome(
-            kind=CommandOutcomeKind.ACCEPTED,
-            message=(
+        if is_evaluate:
+            ack = (
+                f"🧮 {resolved.company_name} ({resolved.ticker}) 평가를 시작했습니다.\n"
+                "완료되면 이 방으로 결과를 보내드릴게요."
+            )
+        else:
+            ack = (
                 f"📊 {resolved.company_name} ({resolved.ticker}) 분석을 시작했습니다.\n"
                 "완료되면 이 방으로 결과를 보내드릴게요."
-            ),
+            )
+
+        return CommandOutcome(
+            kind=CommandOutcomeKind.ACCEPTED,
+            message=ack,
             job_id=job.job_id,
             ticker=resolved.ticker,
             company_name=resolved.company_name,

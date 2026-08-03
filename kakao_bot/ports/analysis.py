@@ -68,3 +68,23 @@ class AnalysisPort(Protocol):
         There is no ticker and no PDF — the answer arrives whole in
         ``summary``. Blocking, like :meth:`generate`.
         """
+
+    def evaluate(
+        self,
+        ticker: str,
+        company_name: str,
+        *,
+        market: str,
+        avg_price: float,
+        period_months: int | None,
+        tone: str,
+        background: str,
+    ) -> AnalysisOutcome:
+        """Judge a holding against its entry price.
+
+        Distinct from :meth:`answer` on purpose. This one has to state a
+        return, so it needs the actual price series and flow data rather than
+        whatever the web happens to say — a number invented from search results
+        would be worse than no answer. No PDF; the verdict arrives in
+        ``summary``. Blocking, like the rest.
+        """

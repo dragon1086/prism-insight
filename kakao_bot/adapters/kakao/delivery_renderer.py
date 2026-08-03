@@ -15,6 +15,8 @@ from kakao_bot.adapters.kakao.report_renderer import (
     ANALYSIS_RESULT,
     ASK_FAILED,
     ASK_RESULT,
+    EVALUATE_FAILED,
+    EVALUATE_RESULT,
     render_report_delivery,
 )
 from kakao_bot.adapters.kakao.welcome_renderer import (
@@ -24,7 +26,16 @@ from kakao_bot.adapters.kakao.welcome_renderer import (
 from kakao_bot.domain.models import ClaimedOutboundDelivery
 
 CAMPAIGN_TYPES = frozenset({"signal_campaign", "campaign_rest_notice"})
-REPORT_TYPES = frozenset({ANALYSIS_RESULT, ANALYSIS_FAILED, ASK_RESULT, ASK_FAILED})
+REPORT_TYPES = frozenset(
+    {
+        ANALYSIS_RESULT,
+        ANALYSIS_FAILED,
+        ASK_RESULT,
+        ASK_FAILED,
+        EVALUATE_RESULT,
+        EVALUATE_FAILED,
+    }
+)
 LIFECYCLE_TYPES = frozenset({ROOM_WELCOME})
 
 SUPPORTED_TYPES = CAMPAIGN_TYPES | REPORT_TYPES | LIFECYCLE_TYPES
