@@ -17,12 +17,17 @@ from kakao_bot.adapters.kakao.report_renderer import (
     ASK_RESULT,
     render_report_delivery,
 )
+from kakao_bot.adapters.kakao.welcome_renderer import (
+    ROOM_WELCOME,
+    render_welcome_delivery,
+)
 from kakao_bot.domain.models import ClaimedOutboundDelivery
 
 CAMPAIGN_TYPES = frozenset({"signal_campaign", "campaign_rest_notice"})
 REPORT_TYPES = frozenset({ANALYSIS_RESULT, ANALYSIS_FAILED, ASK_RESULT, ASK_FAILED})
+LIFECYCLE_TYPES = frozenset({ROOM_WELCOME})
 
-SUPPORTED_TYPES = CAMPAIGN_TYPES | REPORT_TYPES
+SUPPORTED_TYPES = CAMPAIGN_TYPES | REPORT_TYPES | LIFECYCLE_TYPES
 
 
 def render_delivery(delivery: ClaimedOutboundDelivery) -> dict[str, object]:
@@ -30,4 +35,6 @@ def render_delivery(delivery: ClaimedOutboundDelivery) -> dict[str, object]:
         return render_campaign_delivery(delivery)
     if delivery.message_type in REPORT_TYPES:
         return render_report_delivery(delivery)
+    if delivery.message_type in LIFECYCLE_TYPES:
+        return render_welcome_delivery(delivery)
     raise ValueError(f"unsupported Kakao delivery type: {delivery.message_type}")

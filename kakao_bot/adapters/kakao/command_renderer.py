@@ -36,14 +36,14 @@ def render_command_outcome(outcome: CommandOutcome) -> dict[str, object]:
         return skill_response(
             [
                 simple_text_output(outcome.message),
-                _help_card(),
+                help_card(),
             ]
         )
 
     return simple_text(outcome.message)
 
 
-def _help_card() -> dict[str, object]:
+def help_card() -> dict[str, object]:
     """Item titles are commands, because tapping one sends its title.
 
     Only advertises what is wired up: a first impression of "아직 준비 중인

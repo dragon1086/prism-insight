@@ -502,8 +502,17 @@ class SQLiteKakaoRepository:
         room_id: str,
         event_type: RoomLifecycleType | None,
         occurred_at: datetime,
+        auto_approve: bool = False,
     ) -> bool:
-        """Deduplicate and apply room lifecycle state in one transaction."""
+        """Deduplicate and apply room lifecycle state in one transaction.
+
+        `auto_approve` decides what an invitation means. Off, a new room lands
+        in PENDING and someone has to approve it by hand — right for a bot with
+        real users. On, an invitation is the approval, which is what a review
+        period needs: ten reviewers adding the bot to their own rooms cannot
+        each wait for an operator to run a CLI. The gate itself stays; only its
+        default moves.
+        """
 
         if not event_id.strip():
             raise ValueError("event_id must not be empty")
@@ -528,40 +537,64 @@ class SQLiteKakaoRepository:
                 return False
 
             if event_type is RoomLifecycleType.ENTRANCE:
+                existing = self._connection.execute(
+                    "SELECT approval_status FROM kakao_rooms WHERE room_id = ?",
+                    (room_id,),
+                ).fetchone()
+                # A re-invitation must not cost a room its approval. Kakao
+                # redelivers ENTRANCE, and being kicked and re-added is normal;
+                # both used to drop the room silently back to PENDING, which
+                # reads in the room as "the bot stopped working" — no error
+                # anywhere, just refusals.
+                was_approved = (
+                    existing is not None
+                    and existing["approval_status"] == ApprovalStatus.APPROVED.value
+                )
+                status = (
+                    ApprovalStatus.APPROVED
+                    if (was_approved or auto_approve)
+                    else ApprovalStatus.PENDING
+                )
                 self._connection.execute(
                     """
                     INSERT INTO kakao_rooms(
                         room_id, approval_status, discovered_at, updated_at
                     )
-                    VALUES (?, 'PENDING', ?, ?)
+                    VALUES (?, ?, ?, ?)
                     ON CONFLICT(room_id) DO UPDATE SET
-                        approval_status = 'PENDING',
+                        approval_status = excluded.approval_status,
                         updated_at = excluded.updated_at
                     """,
-                    (room_id, occurred_iso, recorded_iso),
+                    (room_id, status.value, occurred_iso, recorded_iso),
                 )
-                self._connection.execute(
-                    """
-                    INSERT INTO kakao_room_subscriptions(
-                        room_id,
-                        kr_morning,
-                        kr_afternoon,
-                        us_morning,
-                        us_afternoon,
-                        rest_notices,
-                        updated_at
+                if not was_approved:
+                    # Same default profile `set_room_approval` applies, so an
+                    # auto-approved room is subscribed exactly like a
+                    # hand-approved one. An already-approved room is left alone
+                    # — its owner may have changed these on purpose.
+                    afternoon = 1 if status is ApprovalStatus.APPROVED else 0
+                    self._connection.execute(
+                        """
+                        INSERT INTO kakao_room_subscriptions(
+                            room_id,
+                            kr_morning,
+                            kr_afternoon,
+                            us_morning,
+                            us_afternoon,
+                            rest_notices,
+                            updated_at
+                        )
+                        VALUES (?, 0, ?, 0, 0, 0, ?)
+                        ON CONFLICT(room_id) DO UPDATE SET
+                            kr_morning = 0,
+                            kr_afternoon = excluded.kr_afternoon,
+                            us_morning = 0,
+                            us_afternoon = 0,
+                            rest_notices = 0,
+                            updated_at = excluded.updated_at
+                        """,
+                        (room_id, afternoon, recorded_iso),
                     )
-                    VALUES (?, 0, 0, 0, 0, 0, ?)
-                    ON CONFLICT(room_id) DO UPDATE SET
-                        kr_morning = 0,
-                        kr_afternoon = 0,
-                        us_morning = 0,
-                        us_afternoon = 0,
-                        rest_notices = 0,
-                        updated_at = excluded.updated_at
-                    """,
-                    (room_id, recorded_iso),
-                )
             elif event_type is RoomLifecycleType.LEAVE:
                 self._connection.execute(
                     """
