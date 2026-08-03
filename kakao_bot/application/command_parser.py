@@ -80,6 +80,8 @@ class ParsedCommand:
     market: str | None = None
     avg_price: float | None = None
     period_months: int | None = None
+    # Free text after the numbers on an evaluate: the requested feedback style.
+    tone: str | None = None
     # Only meaningful for NATURAL: whether the text is shaped like a single
     # stock reference and is therefore worth handing to the resolver. A whole
     # sentence is not, so "삼성전자 어때?" never becomes a report request.
@@ -166,31 +168,46 @@ def _take_market_hint(tokens: list[str]) -> tuple[str | None, list[str]]:
 
 
 def _parse_evaluate(market: str | None, tokens: list[str]) -> ParsedCommand:
-    """``평가 <종목> <평단가> [기간]`` — trailing numbers are the arguments."""
+    """``평가 <종목> <평단가> [기간] [말투]``.
 
+    The numbers are located rather than taken off the end, because anything
+    after them is a requested tone — "평가 삼성전자 70000 6 취한 친구처럼".
+    Reading from the end would see "친구처럼", find no number, and silently
+    drop the price the user did supply.
+    """
+
+    stock: list[str] = []
     numbers: list[str] = []
-    while tokens and (_NUMERIC.match(tokens[-1]) or _PERIOD.match(tokens[-1])):
-        # A six-digit KR code is a ticker, not a price.
-        if _KR_CODE.match(tokens[-1]) and len(numbers) >= 1:
-            break
-        numbers.insert(0, tokens.pop())
-        if len(numbers) == 2:
-            break
+    tone: list[str] = []
 
-    avg_price: float | None = None
-    period: int | None = None
-    if numbers:
-        avg_price = _to_price(numbers[0])
-    if len(numbers) == 2:
-        period = _to_period(numbers[1])
+    for index, token in enumerate(tokens):
+        if numbers:
+            # Past the numbers: a second number is the holding period, anything
+            # else begins the tone.
+            if len(numbers) < 2 and _PERIOD.match(token):
+                numbers.append(token)
+            else:
+                tone = tokens[index:]
+                break
+            continue
+        # A six-digit KR code is a ticker, not a price, and a price cannot come
+        # before the stock it belongs to.
+        if stock and _NUMERIC.match(token) and not _KR_CODE.match(token):
+            numbers.append(token)
+            continue
+        stock.append(token)
 
-    query = " ".join(tokens).strip() or None
+    avg_price = _to_price(numbers[0]) if numbers else None
+    period = _to_period(numbers[1]) if len(numbers) == 2 else None
+
+    query = " ".join(stock).strip() or None
     return ParsedCommand(
         kind=CommandKind.EVALUATE,
         query=query,
         market=market or _infer_market(query),
         avg_price=avg_price,
         period_months=period,
+        tone=" ".join(tone).strip() or None,
     )
 
 

@@ -23,6 +23,7 @@ _TOKEN_BYTES = 32
 # `AnalysisJob.kind` for a free-form question. Anything else is a report, which
 # is what every job was before ask existed.
 ASK_KIND = "ask"
+EVALUATE_KIND = "evaluate"
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,7 @@ class AnalysisService:
                 now=now,
                 expires_at=now + self._link_ttl,
             )
-        except Exception:  # noqa: BLE001 - a missing link must not lose the report
+        except Exception:  # a missing link must not cost us the report
             logger.exception("Could not mint a report link for %s", job.job_id)
             return None
         return token
@@ -103,16 +104,31 @@ class AnalysisService:
 
         for job in jobs:
             is_ask = job.kind == ASK_KIND
+            is_evaluate = job.kind == EVALUATE_KIND
             try:
                 if is_ask:
                     outcome = self._analysis.answer(_question_of(job))
+                elif is_evaluate:
+                    payload = job.payload or {}
+                    outcome = self._analysis.evaluate(
+                        job.ticker,
+                        job.company_name,
+                        market=job.market,
+                        avg_price=float(payload.get("avg_price") or 0.0),
+                        period_months=payload.get("period_months"),
+                        # Empty is meaningful: the adapter owns the default
+                        # tone, because the tone only means anything to the
+                        # prompt that consumes it.
+                        tone=str(payload.get("tone") or ""),
+                        background="",
+                    )
                 else:
                     outcome = self._analysis.generate(
                         job.ticker,
                         job.company_name,
                         market=job.market,
                     )
-            except Exception as exc:  # noqa: BLE001 - transient vs. permanent below
+            except Exception as exc:  # noqa: BLE001 - transient vs permanent below
                 if job.attempt_count >= self._max_attempts:
                     error_code = str(exc) or type(exc).__name__
                     self._repository.fail_analysis_job(
@@ -144,6 +160,17 @@ class AnalysisService:
                         "job_id": job.job_id,
                         "question": _question_of(job),
                         "answer": summary[:_SUMMARY_PAYLOAD_LIMIT],
+                    }
+                elif is_evaluate:
+                    message_type = "evaluate_result"
+                    payload = {
+                        "job_id": job.job_id,
+                        "ticker": job.ticker,
+                        "company_name": job.company_name,
+                        "avg_price": (job.payload or {}).get("avg_price"),
+                        "period_months": (job.payload or {}).get("period_months"),
+                        "verdict": summary[:_SUMMARY_PAYLOAD_LIMIT],
+                        "market": job.market,
                     }
                 else:
                     message_type = "analysis_result"
@@ -180,6 +207,14 @@ class AnalysisService:
                     failure: dict[str, object] = {
                         "job_id": job.job_id,
                         "question": _question_of(job),
+                        "error_code": error_code,
+                    }
+                elif is_evaluate:
+                    message_type = "evaluate_failed"
+                    failure = {
+                        "job_id": job.job_id,
+                        "ticker": job.ticker,
+                        "company_name": job.company_name,
                         "error_code": error_code,
                     }
                 else:

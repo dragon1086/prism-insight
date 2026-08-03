@@ -30,6 +30,8 @@ ANALYSIS_RESULT = "analysis_result"
 ANALYSIS_FAILED = "analysis_failed"
 ASK_RESULT = "ask_result"
 ASK_FAILED = "ask_failed"
+EVALUATE_RESULT = "evaluate_result"
+EVALUATE_FAILED = "evaluate_failed"
 
 _SUMMARY_BUDGET = MAX_SIMPLE_TEXT_LENGTH - 120  # leave room for the header
 # The echoed question is a header, so it has to fit inside that same slack.
@@ -62,6 +64,10 @@ def render_report_delivery(
         return _ask_result(delivery.payload)
     if delivery.message_type == ASK_FAILED:
         return _ask_failed(delivery.payload)
+    if delivery.message_type == EVALUATE_RESULT:
+        return _evaluate_result(delivery.payload)
+    if delivery.message_type == EVALUATE_FAILED:
+        return _evaluate_failed(delivery.payload)
     raise ValueError(f"unsupported Kakao delivery type: {delivery.message_type}")
 
 
@@ -99,6 +105,53 @@ def _failed(payload: Mapping[str, object]) -> dict[str, object]:
             _next_actions(ticker, company_name),
         ]
     )
+
+
+def _evaluate_result(payload: Mapping[str, object]) -> dict[str, object]:
+    """Render a verdict on someone's holding.
+
+    The header repeats the entry price back. In a group room the answer lands
+    minutes after the request, and "삼성전자 평가" alone would leave everyone —
+    including the person who asked — unsure which position it is about.
+    """
+
+    ticker = _required_text(payload, "ticker")
+    company_name = _required_text(payload, "company_name")
+    verdict = payload.get("verdict")
+    body = _condense(verdict if isinstance(verdict, str) else "")
+    if not body:
+        return _evaluate_failed(payload)
+
+    header = f"🧮 {company_name} ({ticker}) 평가{_position_suffix(payload)}"
+    return skill_response(
+        [
+            simple_text_output(f"{header}\n\n{body}"[:MAX_SIMPLE_TEXT_LENGTH]),
+            _next_actions(ticker, company_name),
+        ]
+    )
+
+
+def _evaluate_failed(payload: Mapping[str, object]) -> dict[str, object]:
+    ticker = _required_text(payload, "ticker")
+    company_name = _required_text(payload, "company_name")
+    return skill_response(
+        [
+            simple_text_output(
+                f"⚠️ {company_name} ({ticker}) 평가에 실패했습니다.\n"
+                "잠시 후 다시 시도해주세요."
+            ),
+            _next_actions(ticker, company_name),
+        ]
+    )
+
+
+def _position_suffix(payload: Mapping[str, object]) -> str:
+    avg_price = payload.get("avg_price")
+    if not isinstance(avg_price, (int, float)):
+        return ""
+    months = payload.get("period_months")
+    held = f" · {months}개월 보유" if isinstance(months, int) else ""
+    return f"\n평단 {avg_price:,.0f}{held}"
 
 
 def _ask_result(payload: Mapping[str, object]) -> dict[str, object]:
@@ -186,10 +239,14 @@ def _next_actions(
 
     items: list[dict[str, object]] = []
     if CommandKind.EVALUATE in IMPLEMENTED_COMMANDS:
+        # Tapping sends this title as-is, which is deliberately incomplete: the
+        # bot replies asking for the price, showing the exact line to copy. A
+        # card cannot prefill part of the input box (`messageText` is ignored),
+        # so one refusal that teaches the format is the shortest honest path.
         items.append(
             {
-                "title": f"{company_name} 평가",
-                "description": "평단가와 보유 개월을 붙여 보내주세요",
+                "title": f"평가 {company_name}",
+                "description": "내 평단가 기준으로 평가받기",
                 "action": "message",
                 "messageText": f"평가 {company_name}",
             }
