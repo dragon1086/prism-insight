@@ -168,7 +168,26 @@ class TestEvaluate:
     "utterance",
     ["", "   ", "안녕하세요", "오늘 날씨 어때", "@prism-test", None, 123],
 )
-def test_unrecognized_input_is_unknown_and_never_raises(utterance):
+def test_no_input_ever_raises(utterance):
+    parse_command(utterance)
+
+
+@pytest.mark.parametrize("utterance", ["", "   ", "@prism-test"])
+def test_reaching_for_the_bot_with_nothing_to_say_gets_help(utterance):
+    # Kakao strips the mention before delivery, so all of these arrive empty.
+    assert parse_command(utterance).kind is CommandKind.HELP
+
+
+@pytest.mark.parametrize("utterance", ["안녕하세요", "오늘 날씨 어때"])
+def test_keywordless_text_is_natural_rather_than_unknown(utterance):
+    # The bot only receives messages it was mentioned in, so text without a
+    # keyword is still someone talking to it. Answering nothing was the worst
+    # of the available options.
+    assert parse_command(utterance).kind is CommandKind.NATURAL
+
+
+@pytest.mark.parametrize("utterance", [None, 123])
+def test_only_non_text_is_unknown(utterance):
     command = parse_command(utterance)
 
     assert command.kind is CommandKind.UNKNOWN

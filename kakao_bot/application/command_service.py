@@ -50,23 +50,51 @@ IMPLEMENTED_COMMANDS = frozenset(
 
 _HELP_LINES = {
     CommandKind.REPORT: (
-        " · 리포트 삼성전자 — 종목 분석 리포트\n"
-        " · 리포트 AAPL — 미국 종목은 티커로"
+        " · 삼성전자 — 종목 이름만 보내면 분석 리포트\n"
+        " · AAPL — 미국 종목은 티커로"
     ),
     CommandKind.EVALUATE: " · 평가 삼성전자 70000 6 — 평단가·보유개월 기준 평가",
-    CommandKind.ASK: " · 질문 오늘 시장 어때? — 시장·종목 자유 질문",
+    CommandKind.ASK: " · 오늘 시장 어때? — 그냥 물어보면 답변",
 }
+
+_HELP_FOOTER = "\n\n저를 멘션해서 편하게 말 걸어주세요. 명령어를 외울 필요 없어요."
+
+
+def leads_somewhere(utterance: str) -> bool:
+    """Would this text get a real answer if someone tapped it?
+
+    Card item titles are sent verbatim when tapped, so a title that parses into
+    a command we have not built is a dead end — the card promises something and
+    the bot replies "아직 준비 중인 기능입니다". Cards check their own titles
+    against this.
+
+    Keyword-free text always leads somewhere as long as either report or ask
+    exists, because that is what NATURAL resolves into.
+    """
+
+    kind = parse_command(utterance).kind
+    if kind is CommandKind.NATURAL:
+        return bool(
+            IMPLEMENTED_COMMANDS & {CommandKind.REPORT, CommandKind.ASK}
+        )
+    return kind in IMPLEMENTED_COMMANDS
 
 
 def help_text() -> str:
-    """Describe only the commands that are actually wired up."""
+    """Describe only the commands that are actually wired up.
+
+    Phrased as things to say rather than a command grammar, because there is no
+    grammar to learn any more: a stock name is a report, anything else is a
+    question. Teaching `리포트 …` here would be teaching a longer way to do the
+    same thing.
+    """
 
     lines = [
         text
         for kind, text in _HELP_LINES.items()
         if kind in IMPLEMENTED_COMMANDS
     ]
-    return "📊 PRISM 사용법\n" + "\n".join(lines)
+    return "📊 PRISM 사용법\n" + "\n".join(lines) + _HELP_FOOTER
 
 
 class CommandOutcomeKind(Enum):
@@ -117,15 +145,22 @@ class CommandService:
         command = parse_command(message.text)
 
         if command.kind is CommandKind.UNKNOWN:
-            # Group chatter reaches us only when the bot is addressed, so an
-            # unrecognized utterance is a real miss, not noise. Still, saying
-            # nothing is better than arguing with the room.
+            # Reserved for input that is not text at all. Anything a person
+            # typed now parses as NATURAL, because a mention is already an
+            # unambiguous request for the bot's attention.
             return CommandOutcome(kind=CommandOutcomeKind.IGNORED)
 
         if command.kind is CommandKind.HELP:
             return CommandOutcome(kind=CommandOutcomeKind.HELP, message=help_text())
 
-        if command.kind not in IMPLEMENTED_COMMANDS:
+        # A keyword-free utterance becomes a report or a question depending on
+        # whether it names a stock, and only the resolver knows that. Resolving
+        # it here — before the approval gate — would spend a lookup on a room
+        # that cannot use the answer, so the decision waits until after.
+        if (
+            command.kind is not CommandKind.NATURAL
+            and command.kind not in IMPLEMENTED_COMMANDS
+        ):
             return CommandOutcome(
                 kind=CommandOutcomeKind.REJECTED,
                 message=_NOT_READY,
@@ -157,10 +192,36 @@ class CommandService:
         if refusal is not None:
             return refusal
 
-        if command.kind is CommandKind.ASK:
+        kind = command.kind
+        resolution = None
+        if kind is CommandKind.NATURAL:
+            # "삼성전자" is a request for a report; "삼성전자 어때?" is a
+            # question. Only a bare stock reference is offered to the resolver,
+            # and anything it cannot place falls through to a question rather
+            # than to a refusal — a question can answer almost anything, so
+            # guessing wrong costs a slower answer, not a dead end.
+            if command.resembles_ticker:
+                resolution = self._resolver.resolve(
+                    command.query, market=command.market
+                )
+            kind = (
+                CommandKind.REPORT
+                if resolution is not None and resolution.succeeded
+                else CommandKind.ASK
+            )
+            if kind not in IMPLEMENTED_COMMANDS:
+                return CommandOutcome(
+                    kind=CommandOutcomeKind.REJECTED,
+                    message=_NOT_READY,
+                )
+
+        if kind is CommandKind.ASK:
             return self._enqueue_ask(message, command.query, moment)
 
-        resolution = self._resolver.resolve(command.query, market=command.market)
+        if resolution is None:
+            resolution = self._resolver.resolve(
+                command.query, market=command.market
+            )
         if not resolution.succeeded:
             return CommandOutcome(
                 kind=CommandOutcomeKind.REJECTED,

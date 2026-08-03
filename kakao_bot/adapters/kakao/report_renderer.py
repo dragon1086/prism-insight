@@ -195,12 +195,14 @@ def _next_actions(
             }
         )
     if CommandKind.ASK in IMPLEMENTED_COMMANDS:
+        # A whole sentence routes to a question on its own, so the title can be
+        # the question itself rather than a command spelling.
         items.append(
             {
-                "title": f"{company_name} 질문",
+                "title": f"{company_name} 지금 사도 될까?",
                 "description": "궁금한 점을 이어서 물어보세요",
                 "action": "message",
-                "messageText": f"질문 {company_name} ",
+                "messageText": f"{company_name} 지금 사도 될까?",
             }
         )
     if not items:
