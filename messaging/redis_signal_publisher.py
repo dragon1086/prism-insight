@@ -35,6 +35,11 @@ try:
 except ImportError:
     pass  # If dotenv is not available, read from environment variables directly
 
+# NOTE: the load_dotenv() above is exactly why publish_guard exists — merely
+# importing this module pulls the production Redis credentials into the process,
+# including inside a test run.
+from .publish_guard import signal_publishing_disabled, block_reason
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,6 +87,16 @@ class SignalPublisher:
 
     async def connect(self):
         """Connect to Redis"""
+        # Fail closed under test — see messaging/publish_guard.py. Importing a
+        # trading agent loads the production .env, so without this a pytest run
+        # publishes fixture sells to the live signal stream.
+        if signal_publishing_disabled():
+            logger.warning(
+                "Redis connect REFUSED — signal publishing is disabled (%s). "
+                "No trading signal will be published from this process.",
+                block_reason(),
+            )
+            return
         if not self.redis_url or not self.redis_token:
             logger.warning("Redis not configured, signals will not be published")
             return

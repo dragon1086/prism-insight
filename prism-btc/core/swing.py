@@ -80,19 +80,21 @@ class SwingSizing:
     reject_reason: str = ""
 
 
-def compute_swing_sizing(equity: float, entry: float, stop: float) -> SwingSizing:
+def compute_swing_sizing(equity: float, entry: float, stop: float,
+                         risk_mult: float = 1.0) -> SwingSizing:
     """리스크 기반 사이징.
 
-    qty = (equity × SWING_RISK_PER_TRADE) / |entry − stop|.
+    qty = (equity × SWING_RISK_PER_TRADE × risk_mult) / |entry − stop|.
     명목/equity 가 SWING_MAX_LEVERAGE 를 넘으면 수량을 캡한다 (이때 실제
-    리스크는 1% 미만으로 줄어든다 — 스탑 가격은 불변).
+    리스크는 명목 리스크 미만으로 줄어든다 — 스탑 가격은 불변).
+    risk_mult: 라운드8 L 계층 노출 배수 (기본 1.0 = 기존과 동일).
     """
     if equity <= 0 or entry <= 0:
         return SwingSizing(0.0, 0.0, 0.0, True, "invalid equity/entry")
     sl_dist = abs(entry - stop)
     if sl_dist <= 0:
         return SwingSizing(0.0, 0.0, 0.0, True, "zero stop distance")
-    risk_amount = equity * SWING_RISK_PER_TRADE
+    risk_amount = equity * SWING_RISK_PER_TRADE * risk_mult
     qty = risk_amount / sl_dist
     leverage = qty * entry / equity
     if leverage > SWING_MAX_LEVERAGE:

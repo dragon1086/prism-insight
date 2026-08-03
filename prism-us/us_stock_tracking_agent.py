@@ -62,7 +62,7 @@ if _error_spec and _error_spec.loader:
     log_openai_error = _error_mod.log_openai_error
 
 from telegram import Bot
-from telegram.error import TelegramError
+from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 
 # O'Neil 룰베이스 매도 fallback (2026-06-04 quota 사고 대응).
 # prism-us/cores 가 sys.path 우선이라 prism-us/cores/oneil_fallback 로 해석됨.
@@ -3459,6 +3459,38 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         """Schedule Firebase notification as non-blocking task. Returns the task."""
         return asyncio.create_task(self._notify_firebase(message, chat_id, message_id, msg_type=msg_type))
 
+    async def _send_with_retry(self, chat_id: str, text: str, max_attempts: int = 3):
+        """sendMessage with generous timeouts + retry on transient network errors.
+
+        Bot() 기본 read/write 타임아웃 5초에서 TimedOut 이 나면 메시지가 그대로
+        유실되던 문제의 수리 (2026-07-24 us_afternoon: 매수보류 1건 + 실시간
+        포트폴리오 유실, 방송채널 en/es 3건 유실 — logs/us_afternoon.log).
+        주의: TimedOut 은 서버가 이미 수신했을 수 있어 재시도 시 드물게 중복
+        발송 가능 — 채널 공지 특성상 유실보다 중복이 낫다는 운영 판단.
+        """
+        last_err = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await self.telegram_bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    connect_timeout=10,
+                    read_timeout=30,
+                    write_timeout=30,
+                    pool_timeout=10,
+                )
+            except RetryAfter as e:
+                last_err = e
+                wait = float(getattr(e, "retry_after", 3)) + 1.0
+                logger.warning(f"Telegram flood control (attempt {attempt}/{max_attempts}): wait {wait}s")
+                await asyncio.sleep(wait)
+            except (TimedOut, NetworkError) as e:
+                last_err = e
+                if attempt < max_attempts:
+                    logger.warning(f"Telegram send attempt {attempt}/{max_attempts} failed ({e}); retrying")
+                    await asyncio.sleep(2 * attempt)
+        raise last_err
+
     async def send_telegram_message(self, chat_id: str, language: str = "ko",
                                     portfolio_force: bool = False,
                                     await_broadcast: bool = False) -> bool:
@@ -3549,11 +3581,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     MAX_MESSAGE_LENGTH = 4096
 
                     if len(message) <= MAX_MESSAGE_LENGTH:
-                        # Send short message at once
-                        result = await self.telegram_bot.send_message(
-                            chat_id=chat_id,
-                            text=message
-                        )
+                        # Send short message at once (transient-error retry inside)
+                        result = await self._send_with_retry(chat_id, message)
                         firebase_tasks.append(self._schedule_firebase(message, chat_id, result.message_id, msg_type=msg_type))
                     else:
                         # Split long message
@@ -3571,12 +3600,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         if current_part:
                             parts.append(current_part.rstrip())
 
-                        # Send split messages
+                        # Send split messages (transient-error retry inside)
                         first_msg_id = None
                         for i, part in enumerate(parts, 1):
-                            result = await self.telegram_bot.send_message(
-                                chat_id=chat_id,
-                                text=f"[{i}/{len(parts)}]\n{part}"
+                            result = await self._send_with_retry(
+                                chat_id, f"[{i}/{len(parts)}]\n{part}"
                             )
                             if i == 1:
                                 first_msg_id = result.message_id
@@ -3662,10 +3690,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             MAX_MESSAGE_LENGTH = 4096
 
                             if len(translated_message) <= MAX_MESSAGE_LENGTH:
-                                result = await self.telegram_bot.send_message(
-                                    chat_id=channel_id,
-                                    text=translated_message
-                                )
+                                result = await self._send_with_retry(channel_id, translated_message)
                                 firebase_tasks.append(self._schedule_firebase(translated_message, channel_id, result.message_id, msg_type=msg_type))
                             else:
                                 # Split long messages
@@ -3685,9 +3710,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                                 first_msg_id = None
                                 for i, part in enumerate(parts, 1):
-                                    result = await self.telegram_bot.send_message(
-                                        chat_id=channel_id,
-                                        text=f"[{i}/{len(parts)}]\n{part}"
+                                    result = await self._send_with_retry(
+                                        channel_id, f"[{i}/{len(parts)}]\n{part}"
                                     )
                                     if i == 1:
                                         first_msg_id = result.message_id

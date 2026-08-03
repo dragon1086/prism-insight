@@ -43,6 +43,7 @@ from core.swing import (
     rule_exit_due,
     stop_price,
 )
+from core.leadership import leadership_multipliers
 from engine.config import SWING_ENABLED, SWING_INITIAL_EQUITY, SWING_MAX_LEVERAGE
 from live import tracking
 from live.demo import _f, _order_id, _pstr, _qstr, _result_list
@@ -393,7 +394,10 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
     hint_price = float(bar["close"])
     sizing_equity = backend.equity(fallback=equity)
     sl = stop_price(side, hint_price, float(cur["atr14"]))
-    sz = compute_swing_sizing(sizing_equity, hint_price, sl)
+    # 라운드8 L 계층: BTC/ETH 상대강도 노출 배수 (fail-open=1.0, 신규 진입만)
+    l_long, l_short, _l_reason = leadership_multipliers()
+    sz = compute_swing_sizing(sizing_equity, hint_price, sl,
+                              risk_mult=(l_long if side == "long" else l_short))
     if sz.rejected:
         _log_signal_safe(conn, bar_time_str, side,
                          f"swing 기각: sizing ({sz.reject_reason})", 0)

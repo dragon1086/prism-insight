@@ -7,7 +7,7 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -1259,64 +1259,180 @@ async def generate_journal_conversation_response(
 # Firecrawl Search + shared LLM analysis
 # =============================================================================
 
-async def generate_firecrawl_search_response(search_query: str, analysis_prompt: str, limit: int = 5) -> Optional[str]:
+MAX_ARTICLE_CHARS = 3000
+MAX_CONTEXT_CHARS = 60000
+
+
+def _build_search_context(items: list) -> str:
     """
-    Cost-efficient Firecrawl /search (2 credits) plus shared LLM analysis.
+    Render normalized search results into LLM context.
+
+    Every article carries its published date and a trust marker. Without the
+    date the model cannot tell a week-old recap from a two-year-old one; without
+    the trust marker it quotes hard numbers straight out of blog posts.
+    """
+    chunks: list[str] = []
+    total = 0
+    for item in items:
+        body = (item.get("body") or "").strip() or (item.get("snippet") or "").strip()
+        if not body:
+            continue
+        body = body[:MAX_ARTICLE_CHARS]
+        tag = "블로그·커뮤니티(수치 인용 금지)" if item.get("low_trust") else item.get("channel", "web")
+        published = item.get("date") or "발행일 미상"
+        if item.get("_stale"):
+            # Only set on the last-resort path, where the temporal gate rejected
+            # everything and no grounded facts survived. Say so in the context
+            # instead of letting it read as current material.
+            published += " ⚠️ 신선도 미검증 — 최근 일로 서술 금지"
+        chunk = (
+            f"[{item.get('title') or '제목 없음'}]\n"
+            f"발행일: {published} | 출처유형: {tag}\n"
+            f"URL: {item.get('url')}\n{body}\n\n"
+        )
+        if total + len(chunk) > MAX_CONTEXT_CHARS:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+
+    logger.info(f"Search context built: {len(chunks)} articles, {total} chars")
+    return "".join(chunks)
+
+
+async def generate_firecrawl_search_response(
+    search_query,
+    analysis_prompt: str,
+    limit: int = 5,
+    *,
+    tbs: Optional[str] = None,
+    sources: Optional[list] = None,
+    location: Optional[str] = None,
+    include_domains: Optional[list] = None,
+    exclude_domains: Optional[list] = None,
+    grounded_facts: str = "",
+    period_label: str = "",
+) -> Optional[str]:
+    """
+    Firecrawl /search plus shared LLM analysis.
 
     Args:
-        search_query: Web search query for Firecrawl
+        search_query: A query string, or a list of queries to fan out and merge.
         analysis_prompt: Prompt used to analyze the search results
-        limit: Number of search results (default 5)
+        limit: Number of search results per query
+        tbs: Recency filter, e.g. "qdr:w" for the past week
+        sources: Search channels, e.g. ["news", "web"]
+        location: Country bias, e.g. "KR" / "US"
+        include_domains / exclude_domains: Domain allow/block lists
+        grounded_facts: Authoritative numbers fetched from a primary data source.
+                        These override anything found on the web.
+        period_label: Explicit period the report covers, e.g. "2026-07-20 ~ 2026-07-24"
 
     Returns:
         str: Generated analysis, or None on error
     """
     try:
-        from firecrawl_client import firecrawl_search
+        from firecrawl_client import firecrawl_search_multi
+        from cores.search_presets import widen_tbs
+        from cores.temporal_gate import apply_temporal_gate
 
-        # Step 1: Firecrawl search with full article content
-        # with_content=True fetches markdown body per result — much richer than meta descriptions.
+        queries = [search_query] if isinstance(search_query, str) else list(search_query)
+
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None, lambda: firecrawl_search(search_query, limit=limit, with_content=True)
-        )
-        items = result.web if result and result.web else []
 
-        if not items:
-            logger.warning(f"No search results for: {search_query[:50]}, falling back to model-only analysis")
-            context = "(최신 웹 검색 결과를 찾지 못했습니다. 알려진 시장 지식을 바탕으로 분석합니다.)\n\n"
-        else:
-            # Step 2: Build context — prefer full markdown, fall back to description snippet
-            context = ""
+        async def _search(recency: Optional[str]) -> list:
+            return await loop.run_in_executor(
+                None,
+                lambda: firecrawl_search_multi(
+                    queries,
+                    limit=limit,
+                    with_content=True,
+                    tbs=recency,
+                    sources=sources,
+                    location=location,
+                    include_domains=include_domains,
+                    exclude_domains=exclude_domains,
+                ),
+            )
+
+        window = tbs
+        raw = await _search(window)
+        items, _gate = apply_temporal_gate(raw, tbs=window)
+
+        # A tight recency window legitimately returns nothing on a quiet news day.
+        # Widening one rung at a time beats handing the user "결과 없음".
+        #
+        # The condition is what *survives the gate*, not what the search returned.
+        # tbs is a hint the engine may ignore, so a full-looking result set can be
+        # entirely out of window — that case used to read as success and never
+        # widened, which is exactly how stale articles reached the report.
+        while not items and (window := widen_tbs(window)):
+            logger.info(f"No in-window results at tbs={tbs!r}; widening to {window!r}")
+            raw = await _search(window)
+            items, _gate = apply_temporal_gate(raw, tbs=window)
+
+        # Last resort. The gate emptied every rung *and* there are no grounded
+        # facts to stand on — build_kr_facts() returns "" and daily_facts()
+        # returns {} when their sources fail, so "grounded facts always cover the
+        # floor" is only true while those lookups work. With both gone, returning
+        # None deletes the section outright; the Sunday report would simply lose
+        # its KR or US half. Stale material the model is explicitly told is stale
+        # beats no material at all, so pass it through marked.
+        if not items and raw and not grounded_facts:
+            logger.warning(
+                f"Temporal gate dropped all {len(raw)} results and no grounded "
+                "facts are available — falling back to unverified-freshness items"
+            )
+            items = raw
             for item in items:
-                title = getattr(item, 'title', '') or ''
-                url = getattr(item, 'url', '') or ''
-                desc = getattr(item, 'description', '') or ''
-                # markdown is populated when with_content=True; truncate to 2000 chars per article
-                markdown = getattr(item, 'markdown', '') or ''
-                body = markdown[:2000] if markdown else desc
-                context += f"[{title}]\nURL: {url}\n{body}\n\n"
+                item["_stale"] = True
 
-            logger.info(f"Search context built: {len(items)} results, {len(context)} chars")
+        # Newest first. Survivors all carry a parsed date; the fallback only
+        # matters when the gate was skipped or the stale path above fired.
+        items.sort(key=lambda it: it.get("_published") or date.min, reverse=True)
 
-        # Step 3: analyze the gathered content with the shared LLM backend.
+        context = _build_search_context(items)
+        if not context:
+            logger.warning(f"No usable search results for: {queries[0][:60]}")
+            if not grounded_facts:
+                return None
+            context = "(웹 검색 결과 없음 — 아래 검증 데이터만으로 작성)\n\n"
+
         current_date = datetime.now().strftime("%Y년 %m월 %d일")
+        period_line = f"이 리포트가 다루는 기간은 {period_label} 입니다.\n" if period_label else ""
+
         agent = Agent(
             name="firecrawl_search_analyst",
             instruction=(
                 f"당신은 웹 검색 결과를 분석하여 투자자에게 유용한 인사이트를 제공하는 전문가입니다.\n"
-                f"오늘은 {current_date}입니다. '최근'·'올해'·'현재' 등은 이 날짜 기준으로 해석하고, "
-                f"모델 학습 시점의 연도로 착각하지 마세요.\n"
-                "텔레그램 메시지 형태로, 이모지를 포함하여 자연스럽게 작성하세요.\n"
-                "마크다운 형식 대신 텔레그램에 적합한 플레인 텍스트로 작성하세요.\n"
-                "검색 결과에 없는 내용을 지어내지 마세요."
+                f"오늘은 {current_date}입니다. {period_line}"
+                f"'최근'·'올해'·'현재' 등은 이 날짜 기준으로 해석하고, "
+                f"모델 학습 시점의 연도로 착각하지 마세요.\n\n"
+                "[사실 검증 규칙]\n"
+                "1. '검증된 시장 데이터' 블록이 주어지면 지수 레벨·등락률·수급 금액은 "
+                "반드시 그 값만 사용한다. 검색 결과의 숫자와 충돌하면 검증 데이터가 항상 우선한다.\n"
+                "2. 출처유형이 '블로그·커뮤니티'인 자료의 수치는 인용하지 않는다. "
+                "정황·분위기 파악에만 참고한다.\n"
+                "3. 리포트 기간을 벗어난 발행일의 기사 내용은 '이번 주 일'로 서술하지 않는다.\n"
+                "4. 근거가 없으면 그 항목을 축소하거나 생략한다. 추정치를 지어내지 않는다.\n\n"
+                "[서술 규칙]\n"
+                "- '제공된 검색 결과에는', '검색 결과 내 확인되지 않음', '재확인이 필요' 같은 "
+                "자료 수집 과정에 대한 메타 언급을 독자에게 노출하지 마세요. "
+                "근거가 부족하면 그 대목을 조용히 빼고 확실한 내용으로 채우세요.\n"
+                "- 텔레그램 메시지 형태로, 이모지를 포함하여 자연스럽게 작성하세요.\n"
+                "- 마크다운 형식 대신 텔레그램에 적합한 플레인 텍스트로 작성하세요."
             ),
             server_names=[]
         )
 
+        message_parts = []
+        if grounded_facts:
+            message_parts.append(grounded_facts)
+        message_parts.append(f"다음은 웹 검색 결과입니다:\n\n{context}")
+        message_parts.append(f"---\n\n{analysis_prompt}")
+
         response = await _generate_telegram_text(
             agent=agent,
-            message=f"다음은 웹 검색 결과입니다:\n\n{context}\n\n---\n\n{analysis_prompt}",
+            message="\n\n".join(message_parts),
             max_tokens=4000,
         )
         logger.info(f"Firecrawl search analysis response: {len(response)} chars")
