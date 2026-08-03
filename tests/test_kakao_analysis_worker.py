@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from kakao_bot.adapters.persistence.sqlite import SQLiteKakaoRepository
+from kakao_bot.application.analysis_service import AnalysisService
+from kakao_bot.domain.models import AnalysisJob, ApprovalStatus, OutboundDelivery
+from kakao_bot.ports.analysis import AnalysisOutcome
+
+NOW = datetime(2026, 7, 23, 5, 0, tzinfo=timezone.utc)
+
+
+class FakeAnalysisPort:
+    """Records calls and returns/raises whatever the test queues up."""
+
+    def __init__(self, *results):
+        self._results = list(results)
+        self.calls = []
+
+    def generate(self, ticker, company_name, *, market):
+        self.calls.append((ticker, company_name, market))
+        result = self._results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def make_job(
+    *,
+    job_id: str = "job-1",
+    room_id: str = "room-1",
+    user_id: str = "user-1",
+    ticker: str = "005930",
+    company_name: str = "Samsung Electronics",
+    market: str = "kr",
+) -> AnalysisJob:
+    return AnalysisJob(
+        job_id=job_id,
+        room_id=room_id,
+        user_id=user_id,
+        ticker=ticker,
+        company_name=company_name,
+        market=market,
+    )
+
+
+def prepare_room(repository: SQLiteKakaoRepository, room_id: str = "room-1") -> None:
+    repository.discover_room(room_id)
+    repository.set_room_approval(room_id, ApprovalStatus.APPROVED)
+
+
+def test_successful_job_completes_and_enqueues_analysis_result(tmp_path):
+    with SQLiteKakaoRepository(tmp_path / "kakao.sqlite") as repository:
+        prepare_room(repository)
+        repository.enqueue_analysis_job(make_job(), now=NOW)
+
+        analysis = FakeAnalysisPort(
+            AnalysisOutcome(succeeded=True, summary="Buy signal detected.")
+        )
+        service = AnalysisService(repository, analysis)
+
+        result = service.run_once(now=NOW, lease_seconds=900, limit=1)
+
+        assert result.claimed == 1
+        assert result.completed == 1
+        assert result.failed == 0
+        assert result.released == 0
+        assert len(analysis.calls) == 1
+
+        [job_row] = repository.list_analysis_jobs()
+        assert job_row["status"] == "COMPLETED"
+        assert job_row["summary"] == "Buy signal detected."
+
+        [delivery] = repository.list_outbox()
+        assert delivery["message_type"] == "analysis_result"
+        assert delivery["delivery_key"] == "analysis:job-1"
+
+
+def test_explicit_failure_marks_job_failed_and_enqueues_notice(tmp_path):
+    with SQLiteKakaoRepository(tmp_path / "kakao.sqlite") as repository:
+        prepare_room(repository)
+        repository.enqueue_analysis_job(make_job(), now=NOW)
+
+        analysis = FakeAnalysisPort(
+            AnalysisOutcome(succeeded=False, error_code="generation_failed")
+        )
+        service = AnalysisService(repository, analysis)
+
+        result = service.run_once(now=NOW, lease_seconds=900, limit=1)
+
+        assert result.claimed == 1
+        assert result.failed == 1
+        assert result.completed == 0
+        assert result.released == 0
+
+        [job_row] = repository.list_analysis_jobs()
+        assert job_row["status"] == "FAILED"
+        assert job_row["error_code"] == "generation_failed"
+
+        [delivery] = repository.list_outbox()
+        assert delivery["message_type"] == "analysis_failed"
+        assert delivery["delivery_key"] == "analysis:job-1"
+
+
+def test_exception_below_attempt_threshold_is_released_for_retry(tmp_path):
+    with SQLiteKakaoRepository(tmp_path / "kakao.sqlite") as repository:
+        prepare_room(repository)
+        repository.enqueue_analysis_job(make_job(), now=NOW)
+
+        analysis = FakeAnalysisPort(RuntimeError("transient upstream error"))
+        service = AnalysisService(repository, analysis, max_attempts=3)
+
+        result = service.run_once(now=NOW, lease_seconds=900, limit=1)
+
+        assert result.released == 1
+        assert result.failed == 0
+
+        [job_row] = repository.list_analysis_jobs()
+        assert job_row["status"] == "PENDING"
+        assert job_row["lease_expires_at"] is None
+
+        # Released job can be claimed again.
+        [reclaimed] = repository.claim_analysis_jobs(
+            now=NOW + timedelta(seconds=1), lease_seconds=900, limit=1
+        )
+        assert reclaimed.job_id == "job-1"
+        assert reclaimed.attempt_count == 2
+        assert repository.list_outbox() == ()
+
+
+def test_exception_at_or_above_attempt_threshold_is_confirmed_failed(tmp_path):
+    with SQLiteKakaoRepository(tmp_path / "kakao.sqlite") as repository:
+        prepare_room(repository)
+        repository.enqueue_analysis_job(make_job(), now=NOW)
+        # Simulate two prior failed attempts by claiming and releasing twice
+        # so attempt_count reaches the threshold on the next claim.
+        repository.claim_analysis_jobs(now=NOW, lease_seconds=900, limit=1)
+        repository.release_analysis_job("job-1", now=NOW)
+        repository.claim_analysis_jobs(now=NOW, lease_seconds=900, limit=1)
+        repository.release_analysis_job("job-1", now=NOW)
+
+        analysis = FakeAnalysisPort(RuntimeError("permanent upstream error"))
+        service = AnalysisService(repository, analysis, max_attempts=3)
+
+        result = service.run_once(now=NOW, lease_seconds=900, limit=1)
+
+        assert result.failed == 1
+        assert result.released == 0
+
+        [job_row] = repository.list_analysis_jobs()
+        assert job_row["status"] == "FAILED"
+        assert "permanent upstream error" in job_row["error_code"]
+
+
+def test_delivery_key_is_job_id_based_and_deduplicates_on_reprocessing(tmp_path):
+    with SQLiteKakaoRepository(tmp_path / "kakao.sqlite") as repository:
+        prepare_room(repository)
+        repository.enqueue_analysis_job(make_job(), now=NOW)
+
+        analysis = FakeAnalysisPort(
+            AnalysisOutcome(succeeded=True, summary="First summary."),
+        )
+        service = AnalysisService(repository, analysis)
+        service.run_once(now=NOW, lease_seconds=900, limit=1)
+
+        # Simulate the same job being processed again after a restart (the
+        # job row is reset to PENDING as if it had never completed): the
+        # delivery_key derived from job_id must be the same, so re-enqueuing
+        # is a no-op and the outbox does not gain a second entry.
+        assert (
+            repository.enqueue_outbound(
+                OutboundDelivery(
+                    delivery_key="analysis:job-1",
+                    room_id="room-1",
+                    message_type="analysis_result",
+                    payload={"job_id": "job-1"},
+                    created_at=NOW,
+                )
+            )
+            is False
+        )
+        assert len(repository.list_outbox()) == 1
+
+
+def test_empty_queue_does_nothing(tmp_path):
+    with SQLiteKakaoRepository(tmp_path / "kakao.sqlite") as repository:
+        analysis = FakeAnalysisPort()
+        service = AnalysisService(repository, analysis)
+
+        result = service.run_once(now=NOW, lease_seconds=900, limit=1)
+
+        assert result.claimed == 0
+        assert result.completed == 0
+        assert result.failed == 0
+        assert result.released == 0
+        assert analysis.calls == []
+        assert repository.list_outbox() == ()
+
+
+def test_batch_size_is_respected(tmp_path):
+    with SQLiteKakaoRepository(tmp_path / "kakao.sqlite") as repository:
+        prepare_room(repository)
+        for index in range(3):
+            repository.enqueue_analysis_job(
+                make_job(job_id=f"job-{index}"), now=NOW + timedelta(seconds=index)
+            )
+
+        analysis = FakeAnalysisPort(
+            AnalysisOutcome(succeeded=True, summary="Summary A."),
+            AnalysisOutcome(succeeded=True, summary="Summary B."),
+        )
+        service = AnalysisService(repository, analysis)
+
+        result = service.run_once(now=NOW, lease_seconds=900, limit=2)
+
+        assert result.claimed == 2
+        assert result.completed == 2
+        assert len(analysis.calls) == 2
+        assert len(repository.list_outbox()) == 2

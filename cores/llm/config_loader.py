@@ -127,20 +127,26 @@ def resolve_openai_api_key(
 
 
 def load_report_mcp_registry(config_path: "str | Path | None" = None):
-    """Load report MCP servers while preserving the current production config."""
+    """Load the MCP servers the report pipeline uses.
+
+    This used to prefer ``mcp_agent.config.yaml`` because credentials were
+    written into that file rather than the environment. Keeping a per-machine
+    config also let each host drift: one listed ``sec_edgar``, another
+    ``deepsearch``, and the Mac mini pointed perplexity at a path belonging to
+    a different computer — which silently dropped two sections from every
+    report generated there.
+
+    Credentials now come from ``.env``, so this resolves the same tracked
+    config as every other caller. ``REPORT_MCP_CONFIG`` remains for pinning a
+    specific file during a migration or a test.
+    """
+
     if config_path is not None:
         return load_mcp_registry(config_path)
 
     report_override = os.environ.get("REPORT_MCP_CONFIG")
     if report_override:
         return load_mcp_registry(report_override)
-
-    if _LEGACY_CONFIG.exists():
-        logger.warning(
-            "DEPRECATION: report MCP servers still use the legacy config because "
-            "production credentials have not yet moved to environment variables."
-        )
-        return load_mcp_registry(_LEGACY_CONFIG)
 
     return load_mcp_registry()
 

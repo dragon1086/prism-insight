@@ -1,0 +1,408 @@
+"""The `질문` command, end to end: parse, enqueue, run, render.
+
+Ask is the first job that is not a report. It has no ticker, so it skips the
+resolver entirely and carries its input in `payload` instead — these tests pin
+that seam, because the report path and the ask path share one table, one
+worker, and one outbox.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+
+import pytest
+
+from kakao_bot.adapters.kakao.delivery_renderer import render_delivery
+from kakao_bot.adapters.persistence.sqlite import SQLiteKakaoRepository
+from kakao_bot.application.analysis_service import AnalysisService
+from kakao_bot.application.command_parser import CommandKind
+from kakao_bot.application.command_service import (
+    IMPLEMENTED_COMMANDS,
+    CommandOutcomeKind,
+    CommandService,
+    help_text,
+)
+from kakao_bot.domain.models import (
+    AnalysisJob,
+    ApprovalStatus,
+    ClaimedOutboundDelivery,
+    InboundMessage,
+)
+from kakao_bot.ports.analysis import AnalysisOutcome, ResolvedTicker, TickerResolution
+
+NOW = datetime(2026, 8, 3, 5, 0, tzinfo=timezone.utc)
+ROOM = "room-1"
+USER = "user-1"
+QUESTION = "오늘 코스피 왜 빠졌어?"
+
+
+class FakeResolver:
+    """Records calls so a test can assert the ask path never reaches it."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+
+    def resolve(self, query: str, *, market: str | None) -> TickerResolution:
+        self.calls.append((query, market))
+        return TickerResolution(
+            ticker=ResolvedTicker(ticker="005930", company_name="삼성전자", market="kr")
+        )
+
+
+class FakeAnalysisPort:
+    def __init__(self, *results):
+        self._results = list(results)
+        self.generate_calls: list[tuple] = []
+        self.answer_calls: list[str] = []
+
+    def generate(self, ticker, company_name, *, market):
+        self.generate_calls.append((ticker, company_name, market))
+        return self._pop()
+
+    def answer(self, question):
+        self.answer_calls.append(question)
+        return self._pop()
+
+    def _pop(self):
+        result = self._results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def message(text: str) -> InboundMessage:
+    return InboundMessage(
+        event_id=f"evt-{text}",
+        sequence=1,
+        room_id=ROOM,
+        user_id=USER,
+        nickname=None,
+        text=text,
+        callback_token="cb",
+        occurred_at=NOW,
+    )
+
+
+def delivery(message_type: str, payload: dict) -> ClaimedOutboundDelivery:
+    return ClaimedOutboundDelivery(
+        delivery_key="d-1",
+        room_id=ROOM,
+        message_type=message_type,
+        payload=payload,
+        attempt_count=1,
+        lease_owner="worker-1",
+        lease_expires_at=NOW,
+        created_at=NOW,
+    )
+
+
+@pytest.fixture
+def repository(tmp_path):
+    with SQLiteKakaoRepository(tmp_path / "kakao.sqlite") as repo:
+        repo.discover_room(ROOM, discovered_at=NOW)
+        repo.set_room_approval(ROOM, ApprovalStatus.APPROVED)
+        yield repo
+
+
+def ask_job(question: str = QUESTION, *, job_id: str = "job-ask") -> AnalysisJob:
+    return AnalysisJob(
+        job_id=job_id,
+        room_id=ROOM,
+        user_id=USER,
+        ticker="",
+        company_name="",
+        market="kr",
+        kind="ask",
+        payload={"question": question},
+    )
+
+
+# --------------------------------------------------------------------------
+# Persistence: kind and payload have to survive the round trip
+# --------------------------------------------------------------------------
+
+
+def test_ask_job_keeps_its_kind_and_question_through_claim(repository):
+    repository.enqueue_analysis_job(ask_job(), now=NOW)
+
+    [claimed] = repository.claim_analysis_jobs(now=NOW, lease_seconds=900, limit=1)
+
+    assert claimed.kind == "ask"
+    assert claimed.payload == {"question": QUESTION}
+
+
+def test_a_report_job_still_claims_as_a_report_with_no_payload(repository):
+    repository.enqueue_analysis_job(
+        AnalysisJob(
+            job_id="job-report",
+            room_id=ROOM,
+            user_id=USER,
+            ticker="005930",
+            company_name="삼성전자",
+            market="kr",
+        ),
+        now=NOW,
+    )
+
+    [claimed] = repository.claim_analysis_jobs(now=NOW, lease_seconds=900, limit=1)
+
+    assert claimed.kind == "report"
+    assert claimed.payload is None
+
+
+def test_a_question_with_quotes_and_unicode_survives_json(repository):
+    tricky = '삼성전자 "목표가" 어때? 「급등」 이유는?'
+    repository.enqueue_analysis_job(ask_job(tricky), now=NOW)
+
+    [claimed] = repository.claim_analysis_jobs(now=NOW, lease_seconds=900, limit=1)
+
+    assert claimed.payload == {"question": tricky}
+
+
+# --------------------------------------------------------------------------
+# Command service: ask skips ticker resolution
+# --------------------------------------------------------------------------
+
+
+def test_ask_is_actually_enabled():
+    # The last switch. Without this the command parses, and then answers
+    # "아직 준비 중인 기능입니다".
+    assert CommandKind.ASK in IMPLEMENTED_COMMANDS
+    assert "질문" in help_text()
+
+
+def test_ask_enqueues_without_touching_the_resolver(repository):
+    resolver = FakeResolver()
+    service = CommandService(repository, resolver)
+
+    outcome = service.handle(message(f"질문 {QUESTION}"), now=NOW)
+
+    assert outcome.kind is CommandOutcomeKind.ACCEPTED
+    assert resolver.calls == []
+
+    [claimed] = repository.claim_analysis_jobs(now=NOW, lease_seconds=900, limit=1)
+    assert claimed.kind == "ask"
+    assert claimed.payload == {"question": QUESTION}
+
+
+def test_a_bare_ask_asks_for_a_question_not_a_ticker(repository):
+    service = CommandService(repository, FakeResolver())
+
+    outcome = service.handle(message("질문"), now=NOW)
+
+    assert outcome.kind is CommandOutcomeKind.REJECTED
+    assert "종목" not in outcome.message
+
+
+def test_an_overlong_question_is_truncated_before_storage(repository):
+    service = CommandService(repository, FakeResolver())
+
+    service.handle(message("질문 " + "가" * 900), now=NOW)
+
+    [claimed] = repository.claim_analysis_jobs(now=NOW, lease_seconds=900, limit=1)
+    assert len(claimed.payload["question"]) == 500
+
+
+def test_ask_counts_against_the_same_daily_quota(repository):
+    service = CommandService(repository, FakeResolver())
+
+    service.handle(message(f"질문 {QUESTION}"), now=NOW)
+
+    assert repository.count_analysis_jobs_since(
+        room_id=ROOM, user_id=None, since=NOW.replace(hour=0)
+    ) == 1
+
+
+# --------------------------------------------------------------------------
+# Worker: the ask branch calls answer(), not generate()
+# --------------------------------------------------------------------------
+
+
+def test_worker_answers_an_ask_job_and_enqueues_an_ask_result(repository):
+    repository.enqueue_analysis_job(ask_job(), now=NOW)
+    analysis = FakeAnalysisPort(
+        AnalysisOutcome(succeeded=True, summary="코스피는 외국인 순매도로 하락했습니다.")
+    )
+
+    result = AnalysisService(repository, analysis).run_once(now=NOW, limit=1)
+
+    assert result.completed == 1
+    assert analysis.answer_calls == [QUESTION]
+    assert analysis.generate_calls == []
+
+    [out] = repository.list_outbox()
+    assert out["message_type"] == "ask_result"
+
+
+def test_a_failed_ask_enqueues_an_ask_failure_that_still_names_the_question(
+    repository,
+):
+    repository.enqueue_analysis_job(ask_job(), now=NOW)
+    analysis = FakeAnalysisPort(
+        AnalysisOutcome(succeeded=False, error_code="ask_empty")
+    )
+
+    result = AnalysisService(repository, analysis).run_once(now=NOW, limit=1)
+
+    assert result.failed == 1
+    [out] = repository.list_outbox()
+    assert out["message_type"] == "ask_failed"
+    assert out["payload"]["question"] == QUESTION
+
+
+def test_a_report_job_is_unaffected_by_the_ask_branch(repository):
+    repository.enqueue_analysis_job(
+        AnalysisJob(
+            job_id="job-report",
+            room_id=ROOM,
+            user_id=USER,
+            ticker="005930",
+            company_name="삼성전자",
+            market="kr",
+        ),
+        now=NOW,
+    )
+    analysis = FakeAnalysisPort(AnalysisOutcome(succeeded=True, summary="요약"))
+
+    AnalysisService(repository, analysis).run_once(now=NOW, limit=1)
+
+    assert analysis.generate_calls == [("005930", "삼성전자", "kr")]
+    assert analysis.answer_calls == []
+    [out] = repository.list_outbox()
+    assert out["message_type"] == "analysis_result"
+
+
+# --------------------------------------------------------------------------
+# The adapter must survive the worker's threading shape
+# --------------------------------------------------------------------------
+
+
+def test_answer_works_when_called_the_way_the_worker_calls_it(monkeypatch):
+    """`run_once` is always reached through `asyncio.to_thread`.
+
+    An earlier version used `asyncio.run()` inside that thread. Retrieval and
+    the LLM both succeeded, and then `asyncio.run`'s teardown raised — because
+    `daily_facts` imports `krx_data_client`, which applies `nest_asyncio` — so
+    a finished answer was recorded as a failed job. This pins the shape.
+    """
+
+    import cores.market_facts_cache as mfc
+    import report_generator as rg
+    from kakao_bot.adapters.prism.report_adapter import PrismReportAdapter
+
+    async def facts(market):
+        return {"grounded_facts": "KOSPI 3100", "period_label": "2026-08-03"}
+
+    async def search(query, prompt, **kwargs):
+        assert kwargs.get("grounded_facts") == "KOSPI 3100"
+        return "외국인 순매도로 하락했습니다."
+
+    monkeypatch.setattr(mfc, "daily_facts", facts)
+    monkeypatch.setattr(rg, "generate_firecrawl_search_response", search)
+
+    async def drive():
+        return await asyncio.to_thread(PrismReportAdapter().answer, QUESTION)
+
+    outcome = asyncio.run(drive())
+
+    assert outcome.succeeded, outcome.error_code
+    assert outcome.summary == "외국인 순매도로 하락했습니다."
+
+
+def test_a_blank_answer_is_reported_as_a_failure(monkeypatch):
+    import cores.market_facts_cache as mfc
+    import report_generator as rg
+    from kakao_bot.adapters.prism.report_adapter import ASK_EMPTY, PrismReportAdapter
+
+    async def facts(market):
+        return {}
+
+    async def search(query, prompt, **kwargs):
+        return "   "
+
+    monkeypatch.setattr(mfc, "daily_facts", facts)
+    monkeypatch.setattr(rg, "generate_firecrawl_search_response", search)
+
+    outcome = PrismReportAdapter().answer(QUESTION)
+
+    assert not outcome.succeeded
+    assert outcome.error_code == ASK_EMPTY
+
+
+# --------------------------------------------------------------------------
+# Rendering
+# --------------------------------------------------------------------------
+
+
+def _first_text(response: dict) -> str:
+    return response["template"]["outputs"][0]["simpleText"]["text"]
+
+
+def test_ask_result_shows_the_question_and_the_answer():
+    response = render_delivery(
+        delivery("ask_result", {"question": QUESTION, "answer": "외국인 순매도 탓입니다."})
+    )
+
+    text = _first_text(response)
+    assert QUESTION in text
+    assert "외국인 순매도" in text
+
+
+def test_ask_result_strips_markdown_the_bubble_cannot_show():
+    response = render_delivery(
+        delivery(
+            "ask_result",
+            {"question": QUESTION, "answer": "## 요약\n- **외국인** 순매도\n- 금리 우려"},
+        )
+    )
+
+    text = _first_text(response)
+    assert "**" not in text
+    assert "##" not in text
+    assert "· 외국인 순매도" in text
+
+
+def test_a_long_answer_is_cut_to_fit_the_bubble():
+    response = render_delivery(
+        delivery("ask_result", {"question": QUESTION, "answer": "가" * 5_000})
+    )
+
+    assert len(_first_text(response)) <= 1_000
+
+
+def test_an_empty_answer_falls_back_to_the_failure_card():
+    # A blank answer used to render as a header with nothing under it, which
+    # reads as a broken message rather than a failure.
+    response = render_delivery(
+        delivery("ask_result", {"question": QUESTION, "answer": "   "})
+    )
+
+    assert "답하지 못했습니다" in _first_text(response)
+
+
+def test_ask_failure_names_the_question():
+    response = render_delivery(
+        delivery("ask_failed", {"question": QUESTION, "error_code": "ask_error"})
+    )
+
+    text = _first_text(response)
+    assert QUESTION in text
+    assert "ask_error" not in text  # an error code means nothing to the room
+
+
+def test_a_missing_question_still_renders():
+    # The question is echoed for the room's benefit, not required for correctness.
+    response = render_delivery(delivery("ask_result", {"answer": "답변입니다."}))
+
+    assert "답변입니다." in _first_text(response)
+
+
+def test_ask_cards_offer_no_ticker_follow_ups():
+    # There is no stock to run 평가 or 리포트 on without inventing one.
+    response = render_delivery(
+        delivery("ask_result", {"question": QUESTION, "answer": "답변입니다."})
+    )
+
+    card = response["template"]["outputs"][1]["listCard"]
+    assert [item["title"] for item in card["items"]] == ["도움말"]
