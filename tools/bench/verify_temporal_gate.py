@@ -88,6 +88,10 @@ def test_url_recovery() -> None:
         "https://example.com/2099/01/01/future",       # 미래
         "https://example.com/1999/12/31/too-old",      # 2000년 이전
         "https://example.com/no-digits-here",
+        # 창 안의 날짜처럼 보이지만 발행일이 아닌 슬러그. 이걸 승격시키면
+        # 날짜를 지어내는 셈이라 게이트가 막으려던 오염 그 자체가 된다.
+        "https://example.com/company-20260731-results-preview",
+        "https://example.com/reports?id=20260731999",
     ]
     for url in bad:
         check(f"rejects {url[-26:]}", recover_from_url(url, as_of=AS_OF) is None,
@@ -156,6 +160,14 @@ def test_gate_drops() -> None:
     check("survivors carry _published for sorting",
           all(isinstance(i.get("_published"), date) for i in kept))
 
+    # 복원 경로에만 상한이 있고 메타데이터 경로에 없어서 미래 발행일이 통과했다.
+    # 미래 날짜는 신선한 게 아니라 소스가 틀린 것이다.
+    future = [_item("September 1, 2026"), _item("2026-12-31"), _item("2026-08-04")]
+    kept_f, st_f = apply_temporal_gate(future, tbs="qdr:w", as_of=AS_OF)
+    check("future-dated items are dropped", st_f["dropped_future"] == 2, str(st_f))
+    check("as_of+1 is still allowed (timezone skew)",
+          len(kept_f) == 1 and kept_f[0]["date"] == "2026-08-04", str(st_f))
+
 
 def test_boundary() -> None:
     print("\n[5] boundary is tolerant of timezone skew")
@@ -212,6 +224,13 @@ def test_widening_uses_survivors() -> None:
               ast.dump(loop.test)[:110])
 
     check("sort uses the parsed date", "_published" in src)
+
+    # 팩트 조회는 fail-soft 다 — build_kr_facts 는 "", daily_facts 는 {} 를
+    # 돌려준다. 그게 게이트 전량 폐기와 겹치면 섹션이 통째로 사라진다.
+    check("last-resort keeps stale items when facts are also missing",
+          "_stale" in src and "not grounded_facts" in src)
+    check("stale items are labelled in the context",
+          "신선도 미검증" in src)
 
 
 def test_live() -> None:
