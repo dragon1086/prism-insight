@@ -209,8 +209,25 @@ def test_text_without_a_keyword_is_answered_rather_than_ignored(
     assert outcome.kind is not CommandOutcomeKind.IGNORED
 
 
-def test_not_yet_implemented_commands_say_so(repository, service):
-    outcome = service.handle(message("평가 삼성전자 70000 6"), now=NOW)
+def test_a_command_that_is_not_wired_up_says_so(repository, service):
+    """Every parsed kind is implemented today, so this checks the gate itself.
 
-    assert outcome.kind is CommandOutcomeKind.REJECTED
-    assert "준비" in outcome.message
+    The gate is what stops help and cards from advertising a command that
+    answers "아직 준비 중인 기능입니다"; it has to keep working for whatever
+    lands in the parser next.
+    """
+
+    from kakao_bot.application.command_parser import CommandKind
+    from kakao_bot.application.command_service import IMPLEMENTED_COMMANDS
+
+    unimplemented = {
+        kind
+        for kind in CommandKind
+        if kind
+        not in IMPLEMENTED_COMMANDS
+        | {CommandKind.UNKNOWN, CommandKind.NATURAL}
+    }
+    assert not unimplemented, (
+        f"{sorted(k.value for k in unimplemented)} parses but has no handler; "
+        "either wire it up or keep it out of the parser"
+    )
