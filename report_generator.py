@@ -1280,6 +1280,11 @@ def _build_search_context(items: list) -> str:
         body = body[:MAX_ARTICLE_CHARS]
         tag = "블로그·커뮤니티(수치 인용 금지)" if item.get("low_trust") else item.get("channel", "web")
         published = item.get("date") or "발행일 미상"
+        if item.get("_stale"):
+            # Only set on the last-resort path, where the temporal gate rejected
+            # everything and no grounded facts survived. Say so in the context
+            # instead of letting it read as current material.
+            published += " ⚠️ 신선도 미검증 — 최근 일로 서술 금지"
         chunk = (
             f"[{item.get('title') or '제목 없음'}]\n"
             f"발행일: {published} | 출처유형: {tag}\n"
@@ -1350,7 +1355,8 @@ async def generate_firecrawl_search_response(
             )
 
         window = tbs
-        items, _gate = apply_temporal_gate(await _search(window), tbs=window)
+        raw = await _search(window)
+        items, _gate = apply_temporal_gate(raw, tbs=window)
 
         # A tight recency window legitimately returns nothing on a quiet news day.
         # Widening one rung at a time beats handing the user "결과 없음".
@@ -1361,10 +1367,27 @@ async def generate_firecrawl_search_response(
         # widened, which is exactly how stale articles reached the report.
         while not items and (window := widen_tbs(window)):
             logger.info(f"No in-window results at tbs={tbs!r}; widening to {window!r}")
-            items, _gate = apply_temporal_gate(await _search(window), tbs=window)
+            raw = await _search(window)
+            items, _gate = apply_temporal_gate(raw, tbs=window)
+
+        # Last resort. The gate emptied every rung *and* there are no grounded
+        # facts to stand on — build_kr_facts() returns "" and daily_facts()
+        # returns {} when their sources fail, so "grounded facts always cover the
+        # floor" is only true while those lookups work. With both gone, returning
+        # None deletes the section outright; the Sunday report would simply lose
+        # its KR or US half. Stale material the model is explicitly told is stale
+        # beats no material at all, so pass it through marked.
+        if not items and raw and not grounded_facts:
+            logger.warning(
+                f"Temporal gate dropped all {len(raw)} results and no grounded "
+                "facts are available — falling back to unverified-freshness items"
+            )
+            items = raw
+            for item in items:
+                item["_stale"] = True
 
         # Newest first. Survivors all carry a parsed date; the fallback only
-        # matters when the gate was skipped for an unrecognized window.
+        # matters when the gate was skipped or the stale path above fired.
         items.sort(key=lambda it: it.get("_published") or date.min, reverse=True)
 
         context = _build_search_context(items)

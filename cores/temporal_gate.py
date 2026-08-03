@@ -65,7 +65,12 @@ _KO = re.compile(r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
 
 # URL 복원. 구분자가 있는 형태를 먼저 보고, 없으면 8자리 연속 숫자를 본다.
 _URL_SEP = re.compile(r"/(20\d{2})[/._-](\d{1,2})[/._-](\d{1,2})(?:\D|$)")
-_URL_RUN = re.compile(r"(20\d{2})(\d{2})(\d{2})")
+# 8자리 연속 숫자는 경계를 좁게 잡는다. 앞이 `/` 이거나 대문자 기사코드
+# (연합 `AKR20260731...`) 인 경우만 인정한다. 그냥 어디서든 잡으면
+# `.../company-20260731-results-preview` 같은 슬러그가 "발행일이 확인된 문서"로
+# 승격되는데, 그건 날짜를 지어내는 것이라 게이트가 막으려던 바로 그 오염이다.
+# 놓치는 쪽(본문 복원으로 넘어감)이 지어내는 쪽보다 훨씬 싸다.
+_URL_RUN = re.compile(r"(?:/|[A-Z]{2,})(20\d{2})(\d{2})(\d{2})")
 
 
 def _mk(y: int, m: int, d: int) -> Optional[date]:
@@ -204,6 +209,7 @@ def apply_temporal_gate(
         "recovered_from_body": 0,
         "dropped_undated": 0,
         "dropped_out_of_window": 0,
+        "dropped_future": 0,
     }
 
     days = window_days(tbs)
@@ -214,6 +220,10 @@ def apply_temporal_gate(
 
     as_of = as_of or datetime.now().date()
     oldest = as_of - timedelta(days=days)
+    # 복원 경로에만 상한이 있고 메타데이터 경로에 없으면 미래 날짜가 그대로
+    # 통과한다. 실제로 as_of=2026-08-03 / qdr:w 에서 "September 1, 2026" 이
+    # 살아남았다. 미래 발행일은 신선한 게 아니라 소스가 잘못된 것이다.
+    horizon = as_of + timedelta(days=1)
     kept: list = []
 
     for item in items:
@@ -239,6 +249,9 @@ def apply_temporal_gate(
         if published < oldest:
             stats["dropped_out_of_window"] += 1
             continue
+        if published > horizon:
+            stats["dropped_future"] += 1
+            continue
 
         item["_published"] = published
         kept.append(item)
@@ -249,6 +262,7 @@ def apply_temporal_gate(
         f"{stats['kept']}/{stats['total']} kept, "
         f"{stats['dropped_undated']} undated, "
         f"{stats['dropped_out_of_window']} out-of-window, "
+        f"{stats['dropped_future']} future-dated, "
         f"{stats['recovered_from_url']} recovered from URL, "
         f"{stats['recovered_from_body']} from body"
     )
