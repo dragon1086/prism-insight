@@ -32,8 +32,7 @@ _PERIOD = re.compile(r"^(\d+)\s*(?:개월|달|months?|m)?$", re.IGNORECASE)
 class CommandKind(Enum):
     REPORT = "report"
     EVALUATE = "evaluate"
-    PREDICTION = "prediction"
-    LEADERBOARD = "leaderboard"
+    ASK = "ask"
     HELP = "help"
     UNKNOWN = "unknown"
 
@@ -51,10 +50,9 @@ _KEYWORDS: tuple[tuple[str, CommandKind, str | None], ...] = (
     ("us평가", CommandKind.EVALUATE, US_MARKET),
     ("평가", CommandKind.EVALUATE, None),
     ("evaluate", CommandKind.EVALUATE, None),
-    ("예측", CommandKind.PREDICTION, None),
-    ("리더보드", CommandKind.LEADERBOARD, None),
-    ("랭킹", CommandKind.LEADERBOARD, None),
-    ("순위", CommandKind.LEADERBOARD, None),
+    ("질문", CommandKind.ASK, None),
+    ("물어봐", CommandKind.ASK, None),
+    ("ask", CommandKind.ASK, None),
     ("도움말", CommandKind.HELP, None),
     ("help", CommandKind.HELP, None),
 )
@@ -96,6 +94,14 @@ def parse_command(utterance: str) -> ParsedCommand:
     kind, market, rest = _take_keyword(tokens)
     if kind is None:
         return ParsedCommand(kind=CommandKind.UNKNOWN)
+
+    if kind is CommandKind.ASK:
+        # A free-form question is prose, not arguments. "질문 미국 금리 언제
+        # 내려?" is about US rates, not a US ticker lookup — stripping "미국" as
+        # a market hint would silently change what the user asked. Retrieval for
+        # ask is market-agnostic anyway (no ticker to resolve), so nothing here
+        # is consumed.
+        return ParsedCommand(kind=kind, query=" ".join(rest).strip() or None)
 
     market_hint, rest = _take_market_hint(rest)
     market = market or market_hint

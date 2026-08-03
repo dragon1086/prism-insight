@@ -173,6 +173,22 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON kakao_report_links(expires_at);
         """,
     ),
+    (
+        5,
+        # The job table was report-only: ticker plus company name and nothing
+        # else. `질문` carries a free-form question and no ticker at all, and
+        # `평가` carries an average price and a holding period, so both need a
+        # place to put their own input. One nullable JSON column keeps every
+        # future command from needing its own migration.
+        #
+        # `kind` defaults to 'report' so rows written before this migration keep
+        # working without a backfill.
+        """
+        ALTER TABLE kakao_analysis_jobs
+            ADD COLUMN kind TEXT NOT NULL DEFAULT 'report';
+        ALTER TABLE kakao_analysis_jobs ADD COLUMN payload TEXT;
+        """,
+    ),
 )
 
 
@@ -945,12 +961,14 @@ class SQLiteKakaoRepository:
                     ticker,
                     company_name,
                     market,
+                    kind,
+                    payload,
                     status,
                     attempt_count,
                     requested_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -959,6 +977,10 @@ class SQLiteKakaoRepository:
                     job.ticker,
                     job.company_name,
                     job.market,
+                    job.kind,
+                    json.dumps(dict(job.payload), ensure_ascii=False)
+                    if job.payload
+                    else None,
                     timestamp,
                     timestamp,
                 ),
@@ -1021,6 +1043,8 @@ class SQLiteKakaoRepository:
                         ticker,
                         company_name,
                         market,
+                        kind,
+                        payload,
                         attempt_count,
                         requested_at
                     FROM kakao_analysis_jobs
@@ -1046,6 +1070,8 @@ class SQLiteKakaoRepository:
                 market=row["market"],
                 attempt_count=row["attempt_count"],
                 requested_at=_parse_utc(row["requested_at"]),
+                kind=row["kind"],
+                payload=json.loads(row["payload"]) if row["payload"] else None,
             )
             for row in claimed_rows
         )
@@ -1143,6 +1169,8 @@ class SQLiteKakaoRepository:
                 ticker,
                 company_name,
                 market,
+                kind,
+                payload,
                 status,
                 summary,
                 artifact_token,
@@ -1164,6 +1192,11 @@ class SQLiteKakaoRepository:
                 "ticker": row["ticker"],
                 "company_name": row["company_name"],
                 "market": row["market"],
+                # Without these an ask job is indistinguishable from a report
+                # in the admin listing: both show an empty ticker and nothing
+                # explaining what was actually requested.
+                "kind": row["kind"],
+                "payload": json.loads(row["payload"]) if row["payload"] else None,
                 "status": row["status"],
                 "summary": row["summary"],
                 "artifact_token": row["artifact_token"],

@@ -20,6 +20,10 @@ _SUMMARY_PAYLOAD_LIMIT = 8_000
 DEFAULT_LINK_TTL_HOURS = 72
 _TOKEN_BYTES = 32
 
+# `AnalysisJob.kind` for a free-form question. Anything else is a report, which
+# is what every job was before ask existed.
+ASK_KIND = "ask"
+
 
 @dataclass(frozen=True)
 class AnalysisBatchResult:
@@ -98,12 +102,16 @@ class AnalysisService:
         released = 0
 
         for job in jobs:
+            is_ask = job.kind == ASK_KIND
             try:
-                outcome = self._analysis.generate(
-                    job.ticker,
-                    job.company_name,
-                    market=job.market,
-                )
+                if is_ask:
+                    outcome = self._analysis.answer(_question_of(job))
+                else:
+                    outcome = self._analysis.generate(
+                        job.ticker,
+                        job.company_name,
+                        market=job.market,
+                    )
             except Exception as exc:  # noqa: BLE001 - transient vs. permanent below
                 if job.attempt_count >= self._max_attempts:
                     error_code = str(exc) or type(exc).__name__
@@ -128,22 +136,34 @@ class AnalysisService:
                     now=run_at,
                 )
                 completed += 1
+                # Assigned to a local rather than passed inline so the renderer
+                # coverage test can still read the literals out of the AST.
+                if is_ask:
+                    message_type = "ask_result"
+                    payload: dict[str, object] = {
+                        "job_id": job.job_id,
+                        "question": _question_of(job),
+                        "answer": summary[:_SUMMARY_PAYLOAD_LIMIT],
+                    }
+                else:
+                    message_type = "analysis_result"
+                    payload = {
+                        "job_id": job.job_id,
+                        "ticker": job.ticker,
+                        "company_name": job.company_name,
+                        # The renderer only needs enough to lift the
+                        # executive summary; full reports run to hundreds
+                        # of kilobytes and would bloat the outbox row.
+                        "summary": summary[:_SUMMARY_PAYLOAD_LIMIT],
+                        "market": job.market,
+                        "pdf_url": self._link_url(token),
+                    }
                 self._repository.enqueue_outbound(
                     OutboundDelivery(
                         delivery_key=_delivery_key(job.job_id),
                         room_id=job.room_id,
-                        message_type="analysis_result",
-                        payload={
-                            "job_id": job.job_id,
-                            "ticker": job.ticker,
-                            "company_name": job.company_name,
-                            # The renderer only needs enough to lift the
-                            # executive summary; full reports run to hundreds
-                            # of kilobytes and would bloat the outbox row.
-                            "summary": summary[:_SUMMARY_PAYLOAD_LIMIT],
-                            "market": job.market,
-                            "pdf_url": self._link_url(token),
-                        },
+                        message_type=message_type,
+                        payload=payload,
                         created_at=run_at,
                     )
                 )
@@ -155,17 +175,27 @@ class AnalysisService:
                     now=run_at,
                 )
                 failed += 1
+                if is_ask:
+                    message_type = "ask_failed"
+                    failure: dict[str, object] = {
+                        "job_id": job.job_id,
+                        "question": _question_of(job),
+                        "error_code": error_code,
+                    }
+                else:
+                    message_type = "analysis_failed"
+                    failure = {
+                        "job_id": job.job_id,
+                        "ticker": job.ticker,
+                        "company_name": job.company_name,
+                        "error_code": error_code,
+                    }
                 self._repository.enqueue_outbound(
                     OutboundDelivery(
                         delivery_key=_delivery_key(job.job_id),
                         room_id=job.room_id,
-                        message_type="analysis_failed",
-                        payload={
-                            "job_id": job.job_id,
-                            "ticker": job.ticker,
-                            "company_name": job.company_name,
-                            "error_code": error_code,
-                        },
+                        message_type=message_type,
+                        payload=failure,
                         created_at=run_at,
                     )
                 )
@@ -176,6 +206,12 @@ class AnalysisService:
             failed=failed,
             released=released,
         )
+
+
+def _question_of(job) -> str:
+    payload = job.payload or {}
+    question = payload.get("question")
+    return question if isinstance(question, str) else ""
 
 
 def _delivery_key(job_id: str) -> str:

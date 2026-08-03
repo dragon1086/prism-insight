@@ -176,6 +176,11 @@ class AnalysisJob:
     ticker: str
     company_name: str
     market: str
+    # `질문` has no ticker and `평가` needs an average price and a holding
+    # period, so the job carries its own kind and free-form input instead of
+    # every command being forced through the report shape.
+    kind: str = "report"
+    payload: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.market not in ("kr", "us"):
@@ -194,6 +199,8 @@ class ClaimedAnalysisJob:
     market: str
     attempt_count: int
     requested_at: datetime
+    kind: str = "report"
+    payload: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)

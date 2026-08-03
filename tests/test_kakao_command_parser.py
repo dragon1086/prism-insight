@@ -75,10 +75,9 @@ def test_keyword_matching_is_case_insensitive():
 @pytest.mark.parametrize(
     ("utterance", "expected"),
     [
-        ("순위", CommandKind.LEADERBOARD),
-        ("리더보드", CommandKind.LEADERBOARD),
-        ("랭킹", CommandKind.LEADERBOARD),
-        ("예측", CommandKind.PREDICTION),
+        ("질문", CommandKind.ASK),
+        ("물어봐", CommandKind.ASK),
+        ("ask", CommandKind.ASK),
         ("도움말", CommandKind.HELP),
         ("help", CommandKind.HELP),
     ],
@@ -88,6 +87,22 @@ def test_argumentless_commands(utterance, expected):
 
     assert command.kind is expected
     assert command.query is None
+
+
+class TestAsk:
+    def test_question_is_kept_whole(self):
+        command = parse_command("질문 오늘 코스피 왜 빠졌어?")
+
+        assert command.kind is CommandKind.ASK
+        assert command.query == "오늘 코스피 왜 빠졌어?"
+
+    def test_market_hint_is_not_stripped_from_a_free_form_question(self):
+        # "미국" is a hint for a ticker lookup, but in a question it is part of
+        # the sentence — dropping it would change what the user asked.
+        command = parse_command("질문 미국 금리 언제 내려?")
+
+        assert command.kind is CommandKind.ASK
+        assert command.query == "미국 금리 언제 내려?"
 
 
 class TestEvaluate:

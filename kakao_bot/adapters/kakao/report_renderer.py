@@ -28,8 +28,12 @@ from kakao_bot.domain.models import ClaimedOutboundDelivery
 
 ANALYSIS_RESULT = "analysis_result"
 ANALYSIS_FAILED = "analysis_failed"
+ASK_RESULT = "ask_result"
+ASK_FAILED = "ask_failed"
 
 _SUMMARY_BUDGET = MAX_SIMPLE_TEXT_LENGTH - 120  # leave room for the header
+# The echoed question is a header, so it has to fit inside that same slack.
+_QUESTION_ECHO = 60
 _MARKDOWN_NOISE = re.compile(r"^[#>\s*\-=_]+|[*_`]+", re.MULTILINE)
 _BLANK_RUN = re.compile(r"\n{3,}")
 # Kakao renders plain text, so list structure has to survive as a character.
@@ -54,6 +58,10 @@ def render_report_delivery(
         return _result(delivery.payload)
     if delivery.message_type == ANALYSIS_FAILED:
         return _failed(delivery.payload)
+    if delivery.message_type == ASK_RESULT:
+        return _ask_result(delivery.payload)
+    if delivery.message_type == ASK_FAILED:
+        return _ask_failed(delivery.payload)
     raise ValueError(f"unsupported Kakao delivery type: {delivery.message_type}")
 
 
@@ -93,6 +101,72 @@ def _failed(payload: Mapping[str, object]) -> dict[str, object]:
     )
 
 
+def _ask_result(payload: Mapping[str, object]) -> dict[str, object]:
+    """Render an answer to a free-form question.
+
+    Unlike a report there is no ticker to head the bubble, so the question
+    itself is the header — in a group chat the answer arrives minutes after it
+    was asked, by which time the room has moved on.
+    """
+
+    answer = payload.get("answer")
+    body = _condense(answer if isinstance(answer, str) else "")
+    if not body:
+        return _ask_failed(payload)
+
+    header = f"💬 {_echo_question(payload)}"
+    text = f"{header}\n\n{body}"
+    return skill_response(
+        [
+            simple_text_output(text[:MAX_SIMPLE_TEXT_LENGTH]),
+            _ask_actions(),
+        ]
+    )
+
+
+def _ask_failed(payload: Mapping[str, object]) -> dict[str, object]:
+    return skill_response(
+        [
+            simple_text_output(
+                f"⚠️ 질문에 답하지 못했습니다.\n{_echo_question(payload)}\n"
+                "잠시 후 다시 시도해주세요."
+            ),
+            _ask_actions(),
+        ]
+    )
+
+
+def _echo_question(payload: Mapping[str, object]) -> str:
+    """The user's own words, short enough to sit in a header."""
+
+    question = payload.get("question")
+    text = question.strip() if isinstance(question, str) else ""
+    if not text:
+        return "질문"
+    return text if len(text) <= _QUESTION_ECHO else text[: _QUESTION_ECHO - 1] + "…"
+
+
+def _ask_actions() -> dict[str, object]:
+    """Follow-ups for an answer. Same rule as `_next_actions`: only live ones.
+
+    An answer has no ticker, so there is nothing to offer 평가 or 리포트 on
+    without guessing a stock the user never named.
+    """
+
+    return list_card_output(
+        header_title="이어서 해보기",
+        buttons=[{"action": "mention", "label": "💬 다시 질문하기"}],
+        items=[
+            {
+                "title": "도움말",
+                "description": "PRISM으로 할 수 있는 것들",
+                "action": "message",
+                "messageText": "도움말",
+            }
+        ],
+    )
+
+
 def _next_actions(
     ticker: str,
     company_name: str,
@@ -120,13 +194,13 @@ def _next_actions(
                 "messageText": f"평가 {company_name}",
             }
         )
-    if CommandKind.LEADERBOARD in IMPLEMENTED_COMMANDS:
+    if CommandKind.ASK in IMPLEMENTED_COMMANDS:
         items.append(
             {
-                "title": "순위",
-                "description": "예측 리더보드 보기",
+                "title": f"{company_name} 질문",
+                "description": "궁금한 점을 이어서 물어보세요",
                 "action": "message",
-                "messageText": "순위",
+                "messageText": f"질문 {company_name} ",
             }
         )
     if not items:
