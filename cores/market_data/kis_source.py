@@ -132,13 +132,26 @@ class KisSource:
             raise Unavailable(f"KIS {tr_id} failed: {exc}") from exc
 
         if not response or not response.isOK():
-            detail = ""
-            try:
-                detail = response.getErrorMessage()
-            except Exception:  # noqa: BLE001 - the error body is best-effort
-                pass
-            raise Unavailable(f"KIS {tr_id} rejected the request: {detail}")
+            raise Unavailable(
+                f"KIS {tr_id} rejected the request: {self._error_detail(response)}"
+            )
         return response.getBody()
+
+    @staticmethod
+    def _error_detail(response) -> str:
+        """KIS's reason for refusing, or why we could not read one.
+
+        Reported rather than swallowed: the difference between a rate limit and
+        a bad ticker is the whole diagnosis, and a rejection that says nothing
+        is what turned the 2026-08-04 outage into a two-hour hunt.
+        """
+        getter = getattr(response, "getErrorMessage", None)
+        if getter is None:
+            return "no error message on the response"
+        try:
+            return str(getter() or "").strip() or "empty error message"
+        except Exception as exc:  # noqa: BLE001 - never mask the original failure
+            return f"error message unreadable ({type(exc).__name__}: {exc})"
 
     # ------------------------------------------------------------------ frames
 

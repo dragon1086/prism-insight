@@ -237,3 +237,24 @@ def test_module_imports_without_kis_credentials():
     assert "kis" in module._BUILDERS
     # Registered but not default: existing behaviour is unchanged until promoted.
     assert module._DEFAULT_ORDER == "krx,fdr"
+
+
+def test_rejection_reports_why_even_when_the_error_body_is_broken():
+    """A rejection that says nothing is what makes an outage take hours."""
+    class _Broken(_Response):
+        def getErrorMessage(self):  # noqa: N802
+            raise RuntimeError("body parse failed")
+
+    class _BrokenClient(_FakeClient):
+        def _request(self, api_url, tr_id, params):
+            self.calls.append(params)
+            return _Broken([], ok=False)
+
+    with pytest.raises(Unavailable, match="unreadable"):
+        _source(_BrokenClient()).price_history("005930", "20260803", "20260803")
+
+
+def test_rejection_includes_the_kis_reason():
+    client = _FakeClient(ok=False, error="초당 거래건수를 초과하였습니다")
+    with pytest.raises(Unavailable, match="초당 거래건수"):
+        _source(client).price_history("005930", "20260803", "20260803")
