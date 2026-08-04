@@ -402,13 +402,13 @@ def create_mpf_style(base_mpl_style='seaborn-v0_8-whitegrid'):
 
     return s
 
-# Sourced through cores.market_data_source rather than krx_data_client directly.
+# Sourced through cores.market_data rather than krx_data_client directly.
 # Charts used to die whole whenever KRX was unavailable: every call returned
 # None and the report shipped with no prices and no charts (2026-08-04: 17,387
-# characters against a normal 351,311, with no error anywhere). The seam adds a
-# Naver fallback for the price series and keeps the investor-flow calls
-# unchanged, since no free source replaces those.
-from cores.market_data_source import (
+# characters against a normal 351,311, with no error anywhere). The package
+# tries each configured provider in turn and says so in the log when it falls
+# through; investor flows stay on KRX because nothing else publishes them.
+from cores.market_data import (
     get_index_ohlcv_by_date,
     get_market_cap_by_date,
     get_market_fundamental_by_date,
