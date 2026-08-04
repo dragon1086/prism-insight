@@ -402,15 +402,20 @@ def create_mpf_style(base_mpl_style='seaborn-v0_8-whitegrid'):
 
     return s
 
-# Import functions from krx_data_client (pykrx compatible)
-from krx_data_client import (
-    get_market_ohlcv_by_date,
+# Sourced through cores.market_data_source rather than krx_data_client directly.
+# Charts used to die whole whenever KRX was unavailable: every call returned
+# None and the report shipped with no prices and no charts (2026-08-04: 17,387
+# characters against a normal 351,311, with no error anywhere). The seam adds a
+# Naver fallback for the price series and keeps the investor-flow calls
+# unchanged, since no free source replaces those.
+from cores.market_data_source import (
+    get_index_ohlcv_by_date,
     get_market_cap_by_date,
     get_market_fundamental_by_date,
-    get_market_trading_volume_by_investor,
-    get_market_trading_volume_by_date,
+    get_market_ohlcv_by_date,
     get_market_ticker_name,
-    get_index_ohlcv_by_date,
+    get_market_trading_volume_by_date,
+    get_market_trading_volume_by_investor,
 )
 
 # Professional chart style configuration
