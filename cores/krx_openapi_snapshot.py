@@ -154,13 +154,24 @@ def _rows_for_date(
     trade_date: str,
     auth_key: str,
     request_get: Callable,
-    **kwargs,
+    *,
+    timeout: float,
+    max_attempts: int,
+    retry_wait_sec: float,
 ) -> list[dict]:
     """Both markets for one date, keyed to stocks only."""
     rows: list[dict] = []
     for market in _ENDPOINTS:
         rows.extend(
-            _fetch_market(market, trade_date, auth_key, request_get, **kwargs)
+            _fetch_market(
+                market,
+                trade_date,
+                auth_key,
+                request_get,
+                timeout=timeout,
+                max_attempts=max_attempts,
+                retry_wait_sec=retry_wait_sec,
+            )
         )
 
     kept = [row for row in rows if _TICKER_RE.fullmatch(str(row.get("ISU_CD", "")))]
@@ -225,11 +236,14 @@ def fetch_krx_openapi_bundle(
         raise ValueError("trade_date must be YYYYMMDD")
 
     key = _auth_key(auth_key)
-    request_kwargs = dict(
-        timeout=timeout, max_attempts=max_attempts, retry_wait_sec=retry_wait_sec
+    rows = _rows_for_date(
+        trade_date,
+        key,
+        request_get,
+        timeout=timeout,
+        max_attempts=max_attempts,
+        retry_wait_sec=retry_wait_sec,
     )
-
-    rows = _rows_for_date(trade_date, key, request_get, **request_kwargs)
     if not rows:
         raise KrxOpenApiError(
             f"{trade_date}: no rows. Either not a trading day, or end-of-day data "
@@ -241,7 +255,13 @@ def fetch_krx_openapi_bundle(
         )
 
     prev_date, prev_rows = _previous_session(
-        trade_date, key, request_get, max_lookback_days, request_kwargs
+        trade_date,
+        key,
+        request_get,
+        max_lookback_days,
+        timeout=timeout,
+        max_attempts=max_attempts,
+        retry_wait_sec=retry_wait_sec,
     )
     if len(prev_rows) < min_stock_count:
         raise KrxOpenApiError(
@@ -274,7 +294,10 @@ def _previous_session(
     auth_key: str,
     request_get: Callable,
     max_lookback_days: int,
-    request_kwargs: dict,
+    *,
+    timeout: float,
+    max_attempts: int,
+    retry_wait_sec: float,
 ) -> tuple[str, list[dict]]:
     """Walk back day by day until a session with data appears.
 
@@ -286,7 +309,14 @@ def _previous_session(
     for _ in range(max_lookback_days):
         day -= pd.Timedelta(days=1)
         candidate = day.strftime("%Y%m%d")
-        rows = _rows_for_date(candidate, auth_key, request_get, **request_kwargs)
+        rows = _rows_for_date(
+            candidate,
+            auth_key,
+            request_get,
+            timeout=timeout,
+            max_attempts=max_attempts,
+            retry_wait_sec=retry_wait_sec,
+        )
         if rows:
             return candidate, rows
 
