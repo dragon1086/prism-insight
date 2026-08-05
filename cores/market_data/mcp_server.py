@@ -57,15 +57,36 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# MCP 자식 프로세스가 부모의 환경을 온전히 물려받는다는 보장이 없다(레지스트리가
-# env 블록을 명시적으로 넘긴다). KIS 자격증명이 없으면 체인이 조용히 KIS 를 건너뛰고
-# 다음 소스로 내려가므로, 여기서 직접 .env 를 읽어 그 실패 모드를 없앤다.
-try:
-    from dotenv import load_dotenv
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+logger = logging.getLogger("market_data_mcp")
 
-    load_dotenv(os.path.join(_REPO_ROOT, ".env"))
-except Exception:  # noqa: BLE001 - 없으면 상속된 환경으로 진행한다
-    pass
+
+def _load_repo_env() -> None:
+    """리포의 ``.env`` 를 읽어 KIS 자격증명을 확보한다.
+
+    MCP 자식 프로세스가 부모의 환경을 온전히 물려받는다는 보장이 없다 —
+    레지스트리가 env 블록을 명시적으로 넘긴다. 자격증명이 없으면 체인이 **조용히**
+    KIS 를 건너뛰고 다음 소스로 내려간다. 그 조용함이 문제라서, 실패하면 반드시
+    말하게 둔다(삼키고 pass 하면 8/4 장애를 숨긴 것과 같은 모양이 된다).
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        logger.warning("python-dotenv 없음 — 상속된 환경변수만 사용한다")
+        return
+
+    env_path = os.path.join(_REPO_ROOT, ".env")
+    if not os.path.exists(env_path):
+        logger.warning("%s 없음 — 상속된 환경변수만 사용한다", env_path)
+        return
+
+    try:
+        load_dotenv(env_path)
+    except OSError as exc:
+        logger.warning("%s 읽기 실패(%s) — 상속된 환경변수만 사용한다", env_path, exc)
+
+
+_load_repo_env()
 
 from cores.market_data import (  # noqa: E402
     get_index_ohlcv_by_date,
@@ -75,9 +96,6 @@ from cores.market_data import (  # noqa: E402
     get_market_ticker_name,
     get_market_trading_volume_by_date,
 )
-
-logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-logger = logging.getLogger("market_data_mcp")
 
 mcp = FastMCP("kospi_kosdaq")
 
