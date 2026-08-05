@@ -279,6 +279,52 @@ def test_a_report_job_is_unaffected_by_the_ask_branch(repository):
 # --------------------------------------------------------------------------
 
 
+def test_stock_investment_question_expands_into_research_queries():
+    from kakao_bot.adapters.prism.report_adapter import _ask_search_plan
+
+    queries, use_primary_sources = _ask_search_plan("카카오 지금 사도 될까?")
+
+    assert use_primary_sources is True
+    assert len(queries) == 2
+    assert all("카카오" in query for query in queries)
+    assert any("실적" in query and "전망" in query for query in queries)
+    assert any("공시" in query and "수급" in query for query in queries)
+    assert all("사도 될까" not in query for query in queries)
+
+
+def test_general_question_keeps_the_users_original_search_query():
+    from kakao_bot.adapters.prism.report_adapter import _ask_search_plan
+
+    assert _ask_search_plan(QUESTION) == ([QUESTION], False)
+
+
+@pytest.mark.asyncio
+async def test_stock_question_requires_dated_source_evidence(monkeypatch):
+    import cores.market_facts_cache as mfc
+    import report_generator as rg
+    from kakao_bot.adapters.prism.report_adapter import _ask
+
+    captured = {}
+
+    async def facts(market):
+        return {}
+
+    async def search(query, prompt, **kwargs):
+        captured.update(query=query, prompt=prompt, kwargs=kwargs)
+        return "연합뉴스(7/29)에 따르면 AI 수익화가 관건입니다."
+
+    monkeypatch.setattr(mfc, "daily_facts", facts)
+    monkeypatch.setattr(rg, "generate_firecrawl_search_response", search)
+
+    answer = await _ask("카카오 지금 사도 될까?")
+
+    assert answer.startswith("연합뉴스")
+    assert isinstance(captured["query"], list)
+    assert captured["kwargs"].get("include_domains")
+    assert "매체명과 발행일" in captured["prompt"]
+    assert "근거가 없다" in captured["prompt"]
+
+
 def test_answer_works_when_called_the_way_the_worker_calls_it(monkeypatch):
     """`run_once` is always reached through `asyncio.to_thread`.
 
