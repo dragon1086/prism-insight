@@ -61,9 +61,14 @@ servers:
     - --db-path
     - ../stock_tracking_db.sqlite
   time:
-    command: uvx
+    # The external mcp-server-time package broke against newer mcp releases
+    # (McpError -> MCPError). Keep this deterministic and in-repo instead.
+    command: ${PRISM_MCP_PYTHON:-python3}
     args:
-    - mcp-server-time
+    - -m
+    - cores.llm.time_mcp_server
+    env:
+      PYTHONPATH: ${PRISM_REPO_ROOT:-.}
   deepsearch:
     command: npx
     args:
