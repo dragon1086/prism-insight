@@ -965,9 +965,15 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame, pr
     # Calculate two types of change rates
     snap["intraday_change_rate"] = (snap["Close"] / snap["Open"] - 1) * 100  # Current vs opening price
     snap["prev_day_change_rate"] = ((snap["Close"] - prev["Close"]) / prev["Close"]) * 100  # Same as brokerage app
+    snap["is_rising"] = snap["Close"] > snap["Open"]
 
     # Change rate filter: 3% or more, 20% or less (v1.16.6: surge stocks can enter)
-    snap = snap[(snap["prev_day_change_rate"] >= 3.0) & (snap["prev_day_change_rate"] <= 15.0)]
+    # Bullish candle required — prev_day_change_rate alone measures the move from
+    # yesterday's close, so a stock that gapped up and then sold off all day still
+    # clears +3% while printing a bearish candle. Mirrors us_trigger_batch.py.
+    snap = snap[(snap["prev_day_change_rate"] >= 3.0)
+                & (snap["prev_day_change_rate"] <= 15.0)
+                & snap["is_rising"]]
 
     if snap.empty:
         logger.debug("trigger_afternoon_daily_rise_top: No stocks meeting criteria")
@@ -1096,6 +1102,7 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
 
     # Determine sideways stocks (change rate within ±5%) - v1.16.6: Changed to previous day change rate basis
     snap["is_sideways"] = (snap["prev_day_change_rate"].abs() <= 5)
+    snap["is_rising"] = snap["Close"] > snap["Open"]
 
     # Additional filter: Only stocks with 50% or more volume increase vs previous day
     snap = snap[snap["volume_increase_rate"] >= 50]
@@ -1110,8 +1117,11 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
     # Primary filtering: Top stocks by composite score
     candidates = scored.head(top_n)
 
-    # Secondary filtering: Select only sideways stocks
-    result = candidates[candidates["is_sideways"] == True].copy()
+    # Secondary filtering: Select only sideways stocks, and only on a bullish candle.
+    # A volume surge that closes below its own open is distribution, not the
+    # accumulation base this trigger is meant to find — is_sideways alone (|move| <= 5%)
+    # cannot tell the two apart.
+    result = candidates[candidates["is_sideways"] & candidates["is_rising"]].copy()
 
     if result.empty:
         logger.debug("trigger_afternoon_volume_surge_flat: No stocks meeting criteria")
@@ -1224,6 +1234,14 @@ def trigger_macro_sector_leader(trade_date: str, snapshot: pd.DataFrame,
     # Expose as prev_day_change_rate so the downstream dispatch (which only reads
     # prev_day_change_rate) reports the real change rate instead of 0.
     snap_filtered["prev_day_change_rate"] = snap_filtered["DailyChange"]
+
+    # Bullish candle required (Close > Open) — same rule the other triggers already apply.
+    # A "sector leader" that closes below its own open is not showing leadership today;
+    # relative strength alone can stay positive in a falling market.
+    snap_filtered = snap_filtered[snap_filtered["Close"] > snap_filtered["Open"]]
+    if snap_filtered.empty:
+        logger.debug("trigger_macro_sector_leader: No leaders with a bullish candle")
+        return pd.DataFrame()
 
     # Market average change for relative strength calculation
     market_avg_change = (

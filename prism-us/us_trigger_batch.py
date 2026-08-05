@@ -726,6 +726,7 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
 
     # Sideways determination (change within +-5%)
     snap["IsSideways"] = (snap["DailyChange"].abs() <= 5)
+    snap["IsRising"] = snap["Close"] > snap["Open"]
 
     # Additional filter: Volume increase >= 50%
     snap = snap[snap["VolumeIncreaseRate"] >= 50]
@@ -740,8 +741,11 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
     # Primary filter: Top N by composite score
     candidates = scored.head(top_n)
 
-    # Secondary filter: Sideways stocks only
-    result = candidates[candidates["IsSideways"]].copy()
+    # Secondary filter: Sideways stocks only, and only on a bullish candle.
+    # A volume surge that closes below its own open is distribution, not the
+    # accumulation base this trigger is meant to find — IsSideways alone (|move| <= 5%)
+    # cannot tell the two apart.
+    result = candidates[candidates["IsSideways"] & candidates["IsRising"]].copy()
 
     if result.empty:
         logger.debug("trigger_afternoon_volume_surge_flat: No sideways stocks")
