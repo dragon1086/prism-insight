@@ -379,3 +379,42 @@ class TestRendering:
         )
 
         assert len(self.text_of(response)) <= 1000
+
+    def test_a_long_verdict_uses_two_bubbles_without_losing_the_conclusion(self):
+        verdict = (
+            "첫 번째 판단 문장입니다. " * 80
+            + "\n마지막 결론: 추가매수보다 반등 확인이 먼저입니다."
+        )
+
+        response = render_delivery(
+            delivery("evaluate_result", self.payload(verdict=verdict))
+        )
+
+        outputs = response["template"]["outputs"]
+        texts = [output["simpleText"]["text"] for output in outputs[:2]]
+        assert len(outputs) == 3
+        assert all(len(text) <= 1000 for text in texts)
+        assert "마지막 결론" in texts[1]
+        assert not texts[0].endswith("…")
+
+    def test_a_long_verdict_splits_at_a_sentence_boundary(self):
+        verdict = "가" * 900 + ". " + "다음 문장은 두 번째 말풍선에 있어야 합니다. " * 4
+
+        response = render_delivery(
+            delivery("evaluate_result", self.payload(verdict=verdict))
+        )
+
+        outputs = response["template"]["outputs"]
+        first = outputs[0]["simpleText"]["text"]
+        second = outputs[1]["simpleText"]["text"]
+        assert first.endswith(".")
+        assert second.startswith("다음 문장은")
+
+    def test_evaluation_paragraphs_get_visible_spacing(self):
+        verdict = "현재 손익을 확인했어.\n추세 전환은 아직 일러.\n한 줄 평: 기다리자."
+
+        response = render_delivery(
+            delivery("evaluate_result", self.payload(verdict=verdict))
+        )
+
+        assert "확인했어.\n\n추세 전환" in self.text_of(response)
