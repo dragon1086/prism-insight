@@ -69,8 +69,40 @@ def _get_ticker_name_map() -> dict[str, str]:
 
 
 def _get_display_ticker_name(ticker, name_map: dict[str, str]) -> str:
+    """Company name for display, falling back through the source chain.
+
+    The bulk lookup above is a single KRX call, so when KRX blocks the host it
+    returns an empty map and *every* name silently degrades to a bare code. That
+    reached users on 2026-08-05: the afternoon signal alert read "009150 (009150)"
+    instead of "삼성전기 (009150)".
+
+    ``cores.market_data`` resolves names through the configured chain, where the
+    FDR source answers from a KRX listing snapshot that has nothing to do with
+    the blocked Data Marketplace session. Only selected candidates are ever
+    rendered — a handful of tickers — and FDR caches the listing after the first
+    call, so this stays cheap.
+
+    Resolved names are written back into ``name_map`` (the process-wide cache),
+    so each ticker costs at most one lookup per run.
+    """
     ticker_code = _normalize_ticker_code(ticker)
-    return name_map.get(ticker_code, ticker_code)
+    name = name_map.get(ticker_code)
+    if name:
+        return name
+
+    try:
+        from cores.market_data import get_market_ticker_name
+
+        resolved = get_market_ticker_name(ticker_code)
+    except Exception as e:  # noqa: BLE001 - a label is never worth failing over
+        logger.debug(f"Ticker name chain lookup failed for {ticker_code}: {e}")
+        return ticker_code
+
+    # The chain returns the ticker itself when no source can answer.
+    if resolved and resolved != ticker_code:
+        name_map[ticker_code] = resolved
+        return resolved
+    return ticker_code
 
 
 # --- Data collection and caching functions ---
