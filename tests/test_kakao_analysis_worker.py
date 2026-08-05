@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from kakao_bot.adapters.persistence.sqlite import SQLiteKakaoRepository
 from kakao_bot.application.analysis_service import AnalysisService
 from kakao_bot.domain.models import AnalysisJob, ApprovalStatus, OutboundDelivery
 from kakao_bot.ports.analysis import AnalysisOutcome
+from kakao_bot.runtime.analysis_worker_main import (
+    AnalysisWorkerConfigurationError,
+    _start_llm_runtime,
+    _stop_llm_runtime,
+)
 
 NOW = datetime(2026, 7, 23, 5, 0, tzinfo=timezone.utc)
 
@@ -217,3 +224,61 @@ def test_batch_size_is_respected(tmp_path):
         assert result.completed == 2
         assert len(analysis.calls) == 2
         assert len(repository.list_outbox()) == 2
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_oauth_worker_starts_and_stops_proxy(monkeypatch):
+    from cores import chatgpt_proxy
+
+    calls = []
+
+    def fake_inject_env():
+        calls.append("inject")
+
+    async def fake_start_proxy():
+        calls.append("start")
+        return True
+
+    async def fake_stop_proxy():
+        calls.append("stop")
+
+    monkeypatch.setattr(chatgpt_proxy, "inject_env", fake_inject_env)
+    monkeypatch.setattr(chatgpt_proxy, "start_proxy", fake_start_proxy)
+    monkeypatch.setattr(chatgpt_proxy, "stop_proxy", fake_stop_proxy)
+
+    started = await _start_llm_runtime(
+        {"PRISM_OPENAI_AUTH_MODE": "chatgpt_oauth"}
+    )
+    await _stop_llm_runtime(started)
+
+    assert started is True
+    assert calls == ["inject", "start", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_non_oauth_worker_does_not_start_proxy(monkeypatch):
+    from cores import chatgpt_proxy
+
+    async def unexpected_start():
+        raise AssertionError("proxy should not start")
+
+    monkeypatch.setattr(chatgpt_proxy, "start_proxy", unexpected_start)
+
+    assert await _start_llm_runtime({"PRISM_OPENAI_AUTH_MODE": "api_key"}) is False
+
+
+@pytest.mark.asyncio
+async def test_oauth_proxy_start_failure_stops_worker(monkeypatch):
+    from cores import chatgpt_proxy
+
+    monkeypatch.setattr(chatgpt_proxy, "inject_env", lambda: None)
+
+    async def failed_start():
+        return False
+
+    monkeypatch.setattr(chatgpt_proxy, "start_proxy", failed_start)
+
+    with pytest.raises(AnalysisWorkerConfigurationError, match="could not start"):
+        await _start_llm_runtime(
+            {"PRISM_OPENAI_AUTH_MODE": "chatgpt_oauth"}
+        )
