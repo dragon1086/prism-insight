@@ -22,6 +22,7 @@ from kakao_bot.adapters.kakao.gateway_inbound_handler import (
     GatewayDispatchHandler,
 )
 from kakao_bot.adapters.kakao.gateway_protocol import GatewayDispatch
+from kakao_bot.adapters.kakao.rest_client import KakaoRestClient
 from kakao_bot.adapters.persistence.sqlite import (
     SQLiteGatewayStateStore,
     SQLiteKakaoRepository,
@@ -32,6 +33,18 @@ from kakao_bot.ports.gateway_state import GatewayStatePort
 logger = logging.getLogger(__name__)
 
 DEFAULT_LOCK_PATH = Path("/tmp/prism-kakao-gateway.lock")
+
+REGISTERED_COMMAND_UTTERANCES = [
+    {
+        "buttonName": "리포트",
+        "description": "국내 종목 분석 리포트를 생성합니다.",
+    },
+    {
+        "buttonName": "평가",
+        "description": "보유 종목을 평단가 기준으로 평가합니다.",
+    },
+    {"buttonName": "도움말", "description": None},
+]
 
 
 class GatewayConfigurationError(ValueError):
@@ -66,6 +79,29 @@ def load_config(
 
 
 EventHandler = Callable[[GatewayDispatch], Awaitable[None]]
+
+
+async def sync_command_menu(
+    config: GatewayRuntimeConfig,
+    *,
+    client: KakaoRestClient | None = None,
+) -> bool:
+    """Replace Kakao's persistent mention menu with supported commands."""
+
+    resolved_client = client or KakaoRestClient(config.token)
+    result = await resolved_client.update_commands(REGISTERED_COMMAND_UTTERANCES)
+    if not result.success:
+        logger.warning(
+            "Kakao command menu sync failed: status=%s code=%s",
+            result.status_code,
+            result.error_code,
+        )
+        return False
+    logger.info(
+        "Kakao command menu synced (%d commands)",
+        len(REGISTERED_COMMAND_UTTERANCES),
+    )
+    return True
 
 
 def _is_enabled(name: str, *, default: bool = True) -> bool:
@@ -186,6 +222,7 @@ async def async_main() -> int:
     except GatewayConfigurationError as exc:
         logger.error("%s", exc)
         return 2
+    await sync_command_menu(config)
     return await run_gateway(config)
 
 

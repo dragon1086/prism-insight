@@ -9,6 +9,7 @@ import pytest
 
 from kakao_bot.adapters.kakao.rest_client import (
     CALLBACK_PATH,
+    COMMANDS_UPDATE_PATH,
     SEND_MESSAGE_PATH,
     KakaoHttpRequest,
     KakaoHttpResponse,
@@ -70,6 +71,45 @@ def test_request_builder_isolates_unverified_rest_envelopes():
     assert callback.headers["Authorization"] == "KakaoAK secret-token"
     assert callback.headers["X-Bot-Callback-Token"] == "callback-token"
     assert callback.json_body == {"skillResponse": skill}
+
+
+def test_command_menu_request_contains_only_supported_commands():
+    builder = KakaoRequestBuilder(
+        "secret-token",
+        base_url="https://example.test/",
+    )
+
+    request = builder.update_commands(
+        [
+            {"buttonName": "리포트", "description": "종목 분석"},
+            {"buttonName": "평가", "description": "보유 종목 평가"},
+            {"buttonName": "도움말", "description": None},
+        ]
+    )
+
+    assert request.url == f"https://example.test{COMMANDS_UPDATE_PATH}"
+    assert request.json_body == {
+        "utterances": [
+            {"buttonName": "리포트", "description": "종목 분석"},
+            {"buttonName": "평가", "description": "보유 종목 평가"},
+            {"buttonName": "도움말", "description": None},
+        ]
+    }
+    rendered = repr(request.json_body)
+    assert "예측" not in rendered
+    assert "순위" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_update_commands_posts_the_complete_replacement_menu():
+    transport = FakeTransport(response(200, body={"utterances": []}))
+    client = KakaoRestClient("token", transport=transport)
+    utterances = [{"buttonName": "도움말", "description": None}]
+
+    result = await client.update_commands(utterances)
+
+    assert result.success is True
+    assert transport.requests[0].json_body == {"utterances": utterances}
 
 
 @pytest.mark.asyncio
