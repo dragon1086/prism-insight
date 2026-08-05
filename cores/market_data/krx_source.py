@@ -13,10 +13,44 @@ credentials, which defeats the point of having alternatives.
 
 from __future__ import annotations
 
+import os
+import random
+import threading
+import time
+
 import pandas as pd
 
 from cores.market_data.schema import has_ohlcv, normalize
 from cores.market_data.source import Unavailable
+
+# Minimum spacing between consecutive KRX requests, plus jitter.
+#
+# This lived in ``trigger_batch.get_multi_day_ohlcv`` and therefore protected
+# exactly one call site; every other path into KRX — including everything routed
+# through this chain — hit the service back to back. Bursts are what produce the
+# read-timeouts, and sustained bursts are what KRX calls "비정상 대량 조회".
+# Spacing belongs to the source, not to one caller.
+#
+# ``KRX_MIN_GAP_SEC=0`` disables it.
+_THROTTLE_LOCK = threading.Lock()
+_LAST_CALL = [0.0]
+
+
+def _throttle() -> None:
+    try:
+        min_gap = float(os.getenv("KRX_MIN_GAP_SEC", "0.4"))
+    except (TypeError, ValueError):
+        min_gap = 0.4
+    if min_gap <= 0:
+        return
+    with _THROTTLE_LOCK:
+        wait = min_gap - (time.monotonic() - _LAST_CALL[0])
+        if wait > 0:
+            # Jitter spreads request timing so concurrent workers do not line up
+            # on the same instant. Nothing here is a secret or a token, so an
+            # unpredictable-to-an-attacker value would buy nothing (B311).
+            time.sleep(wait + random.uniform(0.0, 0.2))  # nosec B311
+        _LAST_CALL[0] = time.monotonic()
 
 
 class KrxSource:
@@ -26,6 +60,7 @@ class KrxSource:
     def _client():
         import krx_data_client
 
+        _throttle()
         return krx_data_client
 
     @staticmethod
