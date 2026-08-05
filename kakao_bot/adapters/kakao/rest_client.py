@@ -19,11 +19,13 @@ from kakao_bot.domain.models import MessageSendErrorCode, MessageSendResult
 DEFAULT_BASE_URL = "https://kapi.kakao.com"
 SEND_MESSAGE_PATH = "/v1/bot/send_message"
 CALLBACK_PATH = "/v1/bot/callback"
+COMMANDS_UPDATE_PATH = "/v1/bot/commands/update"
 
 
 class RequestKind(str, Enum):
     SEND_MESSAGE = "send_message"
     CALLBACK = "callback"
+    COMMANDS_UPDATE = "commands_update"
 
 
 @dataclass(frozen=True)
@@ -150,6 +152,20 @@ class KakaoRequestBuilder:
             json_body={"skillResponse": dict(skill_response)},
         )
 
+    def update_commands(
+        self,
+        utterances: list[dict[str, object]],
+    ) -> KakaoHttpRequest:
+        if len(utterances) > 20:
+            raise ValueError("Kakao command menu accepts at most 20 utterances")
+        if any(not str(item.get("buttonName", "")).strip() for item in utterances):
+            raise ValueError("every command must have a non-empty buttonName")
+        return KakaoHttpRequest(
+            url=f"{self._base_url}{COMMANDS_UPDATE_PATH}",
+            headers=self._headers(),
+            json_body={"utterances": [dict(item) for item in utterances]},
+        )
+
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": self._authorization,
@@ -197,6 +213,7 @@ class KakaoRestClient:
         self._retry_policies = {
             RequestKind.SEND_MESSAGE: EndpointRetryPolicy(max_attempts),
             RequestKind.CALLBACK: EndpointRetryPolicy(callback_max_attempts),
+            RequestKind.COMMANDS_UPDATE: EndpointRetryPolicy(max_attempts),
         }
         self._base_retry_delay = base_retry_delay
         self._max_retry_delay = max_retry_delay
@@ -218,6 +235,16 @@ class KakaoRestClient:
     ) -> MessageSendResult:
         request = self._request_builder.callback(callback_token, skill_response)
         return await self._post_with_retry(request, kind=RequestKind.CALLBACK)
+
+    async def update_commands(
+        self,
+        utterances: list[dict[str, object]],
+    ) -> MessageSendResult:
+        request = self._request_builder.update_commands(utterances)
+        return await self._post_with_retry(
+            request,
+            kind=RequestKind.COMMANDS_UPDATE,
+        )
 
     async def _post_with_retry(
         self,
