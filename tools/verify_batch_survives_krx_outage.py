@@ -78,16 +78,19 @@ def force_krx_outage() -> KrxCallCounter:
     ):
         setattr(trigger_batch.stock_api, attr, counter.fail(f"stock_api.{attr}"))
 
-    for attr in (
-        "get_market_ohlcv_by_date",
-        "get_market_fundamental_by_date",
-        "_get_client",
-    ):
+    for attr in ("get_market_ohlcv_by_date", "get_market_fundamental_by_date"):
         if hasattr(krx_data_client, attr):
             setattr(krx_data_client, attr, counter.fail(f"krx_data_client.{attr}"))
 
-    # 종목명 캐시는 조회 자체를 건너뛰게 둔다(빈 dict = 조회 완료).
-    trigger_batch._TICKER_NAME_CACHE = {}
+    # ``trigger_batch`` 는 ``_get_client`` 를 모듈 최상단에서 직접 import 한다.
+    # ``krx_data_client._get_client`` 만 막으면 이 참조가 그대로 살아 있다.
+    trigger_batch._get_client = counter.fail("trigger_batch._get_client")
+
+    # 종목명 캐시는 **비우지 않는다.** 초판은 여기에 빈 dict 를 심어 대량 조회를
+    # 건너뛰게 했는데, 그러면 "KRX 대량 조회 실패 → 전 종목이 코드로 강등" 경로가
+    # 아예 안 태워진다. 실제로 그 버그(2026-08-05 얼럿의 "009150 (009150)")를
+    # 이 하네스가 놓쳤다. None 으로 두어 조회를 시도시키고 실패하게 만든다.
+    trigger_batch._TICKER_NAME_CACHE = None
 
     return counter
 
@@ -150,6 +153,8 @@ def main() -> int:
 
     total = 0
     bearish: list[tuple[str, str, float, float]] = []
+    unnamed: list[str] = []
+    name_map = trigger_batch._get_ticker_name_map()
     print()
     print("최종 선정:")
     for trigger_type, df in result.items():
@@ -161,11 +166,23 @@ def main() -> int:
             open_px = float(row.get("Open", 0) or 0)
             close_px = float(row.get("Close", 0) or 0)
             candle = "양봉" if close_px > open_px else "🔴음봉"
-            print(f"      - {ticker}  시가 {open_px:,.0f} → 종가 {close_px:,.0f}  {candle}")
+            name = trigger_batch._get_display_ticker_name(ticker, name_map)
+            print(
+                f"      - {name} ({ticker})  "
+                f"시가 {open_px:,.0f} → 종가 {close_px:,.0f}  {candle}"
+            )
             if open_px > 0 and close_px <= open_px:
                 bearish.append((trigger_type, str(ticker), open_px, close_px))
+            # 이름이 코드 그대로면 사용자 얼럿에 "009150 (009150)" 이 나간다.
+            if name == trigger_batch._normalize_ticker_code(ticker):
+                unnamed.append(str(ticker))
 
     print()
+    if unnamed:
+        print("❌ 종목명이 코드로 강등됐다 — 얼럿에 그대로 나간다.")
+        print(f"   {', '.join(unnamed)}")
+        return 4
+
     if bearish:
         # PR #527 이 실데이터에서 안 먹었다는 뜻이다. 합성 테스트만으로는 못 잡는다.
         print("❌ 음봉이 선정됐다 — 매수 트리거 음봉 배제(PR #527)가 실데이터에서 안 먹었다.")
