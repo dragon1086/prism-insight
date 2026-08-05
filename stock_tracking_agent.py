@@ -561,7 +561,13 @@ class StockTrackingAgent:
             )
 
             end_dt = datetime.now()
-            start_dt = end_dt - timedelta(days=120)
+            # 400 calendar days ≈ 270 sessions: enough for MA200 with room to spare.
+            # It was 120 days (~82 sessions), which cannot produce a 200-day average
+            # at all — so the facts block simply had no MA200 line, and the agent
+            # filled the silence itself. On 2026-08-04 a PLTR skip cited "200일선
+            # 저항" while the close sat 6.6% *above* its 200-day. O'Neil's own
+            # criterion is price above the 200-day, so this was not a minor detail.
+            start_dt = end_dt - timedelta(days=400)
             end = end_dt.strftime("%Y%m%d")
             start = start_dt.strftime("%Y%m%d")
 
@@ -576,6 +582,7 @@ class StockTrackingAgent:
             ma20_s = close_s.rolling(window=20).mean()
             ma50_s = close_s.rolling(window=50).mean()
             ma60_s = close_s.rolling(window=60).mean()
+            ma200_s = close_s.rolling(window=200).mean()
 
             def _val(s):
                 try:
@@ -600,9 +607,11 @@ class StockTrackingAgent:
             ma20 = _val(ma20_s)
             ma50 = _val(ma50_s)
             ma60 = _val(ma60_s)
+            ma200 = _val(ma200_s)
             ma20_up = _slope_up(ma20_s)
             ma50_up = _slope_up(ma50_s)
             ma60_up = _slope_up(ma60_s)
+            ma200_up = _slope_up(ma200_s)
 
             # 50일선 우선, 없으면 60일선 fallback (T1용)
             ma_mid = ma50 if ma50 is not None else ma60
@@ -660,12 +669,32 @@ class StockTrackingAgent:
             def _fmt(v, suffix=""):
                 return f"{v:+.1f}{suffix}" if v is not None else "n/a"
 
+            def _ma200_line():
+                """State the 200-day, or state plainly that there isn't one.
+
+                Omitting it is what caused the invention this fixes: the agent is
+                told to reason from this block, and a missing line reads as
+                "unmentioned" rather than "unknown". Newly listed names will
+                always land here, so the absence has to say so out loud.
+                """
+                if ma200 is None:
+                    return (
+                        f"- vs MA200: **데이터 없음** — 확보 {len(close_s)}거래일로 "
+                        "200일 이동평균을 계산할 수 없습니다. "
+                        "200일선을 근거로 서술하지 마십시오."
+                    )
+                return (
+                    f"- vs MA200: {_above(close, ma200)} "
+                    f"({_fmt(_pct(close, ma200), '%')}), MA200 기울기: {_dir(ma200_up)}"
+                )
+
             lines = [
                 "### 📉 개별 추세 팩트 (추세 게이트용 · as-of 오늘)",
                 f"- 종가: {close:,.0f}",
                 f"- vs MA20: {_above(close, ma20)} ({_fmt(_pct(close, ma20), '%')}), MA20 기울기: {_dir(ma20_up)}",
                 f"- vs MA50: {_above(close, ma50)} ({_fmt(_pct(close, ma50), '%')}), MA50 기울기: {_dir(ma50_up)}",
                 f"- vs MA60: {_above(close, ma60)} ({_fmt(_pct(close, ma60), '%')}), MA60 기울기: {_dir(ma60_up)}",
+                _ma200_line(),
                 f"- RS(60일, 종목-지수): {_fmt(rs, '%p')} (종목 {_fmt(stock_ret, '%')} / 지수 {_fmt(idx_ret, '%')})",
                 f"- T1_hit(종가<{ma_mid_label}, 오닐 10주선 이탈): {t1_hit} / "
                 f"T2_hit(MA20 하락 and 종가 MA20 대비 -5%↓): {t2_hit}",
