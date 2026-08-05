@@ -68,6 +68,38 @@ def load_config(
     )
 
 
+async def _start_llm_runtime(
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Start the OAuth proxy before the worker creates any LLM clients.
+
+    The batch orchestrators already own this lifecycle, but the standalone
+    Kakao analysis worker did not.  In ``chatgpt_oauth`` mode that left the
+    worker without ``OPENAI_BASE_URL`` or ``OPENAI_API_KEY`` and every report,
+    ask, and evaluation job failed only after it had been accepted from chat.
+    """
+    values = os.environ if environ is None else environ
+    if values.get("PRISM_OPENAI_AUTH_MODE", "").strip() != "chatgpt_oauth":
+        return False
+
+    from cores.chatgpt_proxy import inject_env, start_proxy
+
+    inject_env()
+    if not await start_proxy():
+        raise AnalysisWorkerConfigurationError(
+            "ChatGPT OAuth proxy could not start; analysis worker will not accept jobs"
+        )
+    return True
+
+
+async def _stop_llm_runtime(started: bool) -> None:
+    if not started:
+        return
+    from cores.chatgpt_proxy import stop_proxy
+
+    await stop_proxy()
+
+
 async def run_analysis_worker_once(
     config: AnalysisWorkerRuntimeConfig,
     *,
@@ -140,8 +172,10 @@ def _analysis_service(
 
 
 async def async_main() -> int:
+    llm_runtime_started = False
     try:
         config = load_config()
+        llm_runtime_started = await _start_llm_runtime()
     except AnalysisWorkerConfigurationError as exc:
         logger.error("%s", exc)
         return 2
@@ -160,6 +194,7 @@ async def async_main() -> int:
     finally:
         for sig in installed_signals:
             loop.remove_signal_handler(sig)
+        await _stop_llm_runtime(llm_runtime_started)
 
 
 def main() -> int:
