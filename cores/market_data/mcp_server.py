@@ -91,7 +91,6 @@ _load_repo_env()
 from cores.market_data import (  # noqa: E402
     get_index_ohlcv_by_date,
     get_market_cap_by_date,
-    get_market_fundamental_by_date,
     get_market_ohlcv_by_date,
     get_market_ticker_name,
     get_market_trading_volume_by_date,
@@ -214,29 +213,20 @@ def get_stock_market_cap(
     )
 
 
-@mcp.tool()
-def get_stock_fundamental(
-    fromdate: Union[str, int],
-    todate: Union[str, int],
-    ticker: Union[str, int],
-) -> Dict[str, Any]:
-    """Retrieves fundamental data (PER/PBR/Dividend Yield) for a specific stock.
-
-    Args:
-        fromdate (str): Start date for retrieval (YYYYMMDD)
-        todate   (str): End date for retrieval (YYYYMMDD)
-        ticker   (str): Stock ticker symbol
-
-    Returns:
-        Dict with date keys containing fundamental data.
-    """
-    return _guard(
-        f"{validate_ticker(ticker)} 펀더멘털(PER/PBR)",
-        get_market_fundamental_by_date,
-        validate_date(fromdate),
-        validate_date(todate),
-        validate_ticker(ticker),
-    )
+# 펀더멘털(PER/PBR) 도구는 의도적으로 노출하지 않는다.
+#
+# 리포트의 펀더멘털은 아래쪽 `기업 현황`·`기업 개요` 섹션이 WiseReport 크롤링
+# (`cores/agents/company_info_agents.py`)으로 이미 채운다. 그쪽이 훨씬 넓다 —
+# EPS·BPS·PER·PBR·PCR·EV/EBITDA·배당수익률·배당성향의 현재값과 과거 3개년,
+# **Fwd 12M 컨센서스**, 업종 평균 PER 대비 할인/할증까지 준다.
+#
+# 여기서 줄 수 있는 것은 PER/PBR/배당수익률의 과거 시계열뿐이고, KRX 수치 자체가
+# 정확하지 않다는 관측도 있었다(Rocky, 2026-08-05). 좁고 덜 정확한 두 번째 출처를
+# 함께 노출하면 LLM 이 어느 쪽을 쓸지 갈리고, 두 값이 어긋나면 리포트가 모순된다.
+#
+# 체인의 `get_market_fundamental_by_date` 자체는 남아 있다 —
+# `trigger_contrarian_value`(스크리닝 PER 필터)와 `cores/stock_chart.py` 가 쓴다.
+# 노출을 끊는 것은 **리포트 경로**뿐이다.
 
 
 @mcp.tool()
