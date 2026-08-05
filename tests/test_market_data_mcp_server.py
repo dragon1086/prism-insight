@@ -175,11 +175,21 @@ def test_exposes_the_same_tool_names_the_prompts_reference():
     for name in (
         "get_stock_ohlcv",
         "get_stock_market_cap",
-        "get_stock_fundamental",
         "get_stock_trading_volume",
         "get_index_ohlcv",
     ):
         assert callable(getattr(srv, name)), name
+
+
+def test_does_not_expose_a_fundamental_tool():
+    """펀더멘털은 WiseReport 섹션이 담당한다 — 두 번째 출처를 노출하지 않는다.
+
+    `cores/agents/company_info_agents.py` 가 EPS·BPS·PER·PBR·PCR·EV/EBITDA·
+    배당수익률·배당성향의 현재값과 과거 3개년, Fwd 12M 컨센서스, 업종 평균 대비
+    할인/할증까지 준다. 여기서 줄 수 있는 것은 PER/PBR 과거 시계열뿐이고 KRX
+    수치의 정확도 문제도 관측됐다. 둘 다 노출하면 값이 어긋날 때 리포트가 모순된다.
+    """
+    assert not hasattr(srv, "get_stock_fundamental")
 
 
 def test_server_name_matches_the_configured_mcp_server():
