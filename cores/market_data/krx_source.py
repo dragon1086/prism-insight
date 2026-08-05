@@ -46,7 +46,10 @@ def _throttle() -> None:
     with _THROTTLE_LOCK:
         wait = min_gap - (time.monotonic() - _LAST_CALL[0])
         if wait > 0:
-            time.sleep(wait + random.uniform(0.0, 0.2))
+            # Jitter spreads request timing so concurrent workers do not line up
+            # on the same instant. Nothing here is a secret or a token, so an
+            # unpredictable-to-an-attacker value would buy nothing (B311).
+            time.sleep(wait + random.uniform(0.0, 0.2))  # nosec B311
         _LAST_CALL[0] = time.monotonic()
 
 
