@@ -99,6 +99,10 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - (T2) The 20-day MA is sloping down AND close is ≥5% below the 20-day MA — a sharp early breakdown
         Use the provided '개별 추세 팩트 / Individual Trend Facts' input and report section '1-1 Price'
         (if facts absent, judge conservatively from the report).
+        **Only cite a moving average that appears in the facts block.** If a line is marked
+        데이터 없음, or is not listed at all, do not assert where price sits relative to it and do not
+        call it support or resistance — say the data is unavailable instead. A market index's
+        200-day MA is the index's, never the stock's.
         **Exception (entry allowed)** only when the stock reclaims/breaks above the declining MA with
         volume, confirming a trend change. "It looks like it will bounce soon" is NOT an exception.
         State the trend basis in rejection_reason (No Entry) or rationale (exception entry).

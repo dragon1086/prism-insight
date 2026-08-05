@@ -907,8 +907,13 @@ class USStockTrackingAgent:
 
             client = get_us_data_client()
 
-            # ~6 months of daily bars: enough for MA60 + 60-session RS window (fail-open if short).
-            df = client.get_ohlcv(ticker, period="6mo")
+            # 2 years of daily bars. It was 6mo (~124 sessions), which cannot
+            # produce a 200-day average at all — so the facts block had no MA200
+            # line and the agent filled the silence itself. On 2026-08-04 a PLTR
+            # skip cited "200일선 저항" while the close sat 6.6% *above* its
+            # 200-day. O'Neil's own criterion is price above the 200-day, so this
+            # was not a minor detail. (fail-open if short.)
+            df = client.get_ohlcv(ticker, period="2y")
             if df is None or len(df) < 25 or 'close' not in df.columns:
                 logger.warning(f"[TrendFacts] {ticker} insufficient OHLCV rows; skipping")
                 return ""
@@ -919,6 +924,7 @@ class USStockTrackingAgent:
             ma20_s = close_s.rolling(window=20).mean()
             ma50_s = close_s.rolling(window=50).mean()
             ma60_s = close_s.rolling(window=60).mean()
+            ma200_s = close_s.rolling(window=200).mean()
 
             def _val(s):
                 try:
@@ -943,9 +949,11 @@ class USStockTrackingAgent:
             ma20 = _val(ma20_s)
             ma50 = _val(ma50_s)
             ma60 = _val(ma60_s)
+            ma200 = _val(ma200_s)
             ma20_up = _slope_up(ma20_s)
             ma50_up = _slope_up(ma50_s)
             ma60_up = _slope_up(ma60_s)
+            ma200_up = _slope_up(ma200_s)
 
             # 50일선 우선, 없으면 60일선 fallback (T1용)
             ma_mid = ma50 if ma50 is not None else ma60
@@ -998,12 +1006,32 @@ class USStockTrackingAgent:
             def _fmt(v, suffix=""):
                 return f"{v:+.1f}{suffix}" if v is not None else "n/a"
 
+            def _ma200_line():
+                """State the 200-day, or state plainly that there isn't one.
+
+                Omitting it is what caused the invention this fixes: the agent is
+                told to reason from this block, and a missing line reads as
+                "unmentioned" rather than "unknown". Recent IPOs will always land
+                here, so the absence has to say so out loud.
+                """
+                if ma200 is None:
+                    return (
+                        f"- vs MA200: **데이터 없음** — 확보 {len(close_s)}거래일로 "
+                        "200일 이동평균을 계산할 수 없습니다. "
+                        "200일선을 근거로 서술하지 마십시오."
+                    )
+                return (
+                    f"- vs MA200: {_above(close, ma200)} "
+                    f"({_fmt(_pct(close, ma200), '%')}), MA200 기울기: {_dir(ma200_up)}"
+                )
+
             lines = [
                 "### 📉 개별 추세 팩트 (추세 게이트용 · as-of 오늘)",
                 f"- 종가: {close:,.2f}",
                 f"- vs MA20: {_above(close, ma20)} ({_fmt(_pct(close, ma20), '%')}), MA20 기울기: {_dir(ma20_up)}",
                 f"- vs MA50: {_above(close, ma50)} ({_fmt(_pct(close, ma50), '%')}), MA50 기울기: {_dir(ma50_up)}",
                 f"- vs MA60: {_above(close, ma60)} ({_fmt(_pct(close, ma60), '%')}), MA60 기울기: {_dir(ma60_up)}",
+                _ma200_line(),
                 f"- RS(60일, 종목-S&P500): {_fmt(rs, '%p')} (종목 {_fmt(stock_ret, '%')} / 지수 {_fmt(idx_ret, '%')})",
                 f"- T1_hit(종가<{ma_mid_label}, 오닐 10주선 이탈): {t1_hit} / "
                 f"T2_hit(MA20 하락 and 종가 MA20 대비 -5%↓): {t2_hit}",
