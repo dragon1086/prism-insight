@@ -15,6 +15,7 @@ pd = pytest.importorskip("pandas")
 from cores.krx_openapi_snapshot import (  # noqa: E402
     KrxOpenApiError,
     fetch_krx_openapi_bundle,
+    fetch_previous_krx_openapi_snapshot,
 )
 
 AUTH = "test-key"
@@ -176,3 +177,18 @@ def test_mismatched_date_in_payload_is_rejected():
 def test_bad_date_format_is_rejected():
     with pytest.raises(ValueError, match="YYYYMMDD"):
         fetch_krx_openapi_bundle("2026-08-03", auth_key=AUTH)
+
+
+def test_previous_snapshot_works_when_current_session_is_not_published():
+    rows = {
+        "20260804": _universe("20260804", 2600, close=1100),
+        "20260803": _universe("20260803", 2600, close=1000),
+    }
+    previous = fetch_previous_krx_openapi_snapshot(
+        "20260805", auth_key=AUTH, request_get=_make_get(rows), min_stock_count=2500
+    )
+
+    assert previous.trade_date == "20260804"
+    assert previous.snapshot.shape == (2600, 6)
+    assert previous.snapshot.iloc[0]["Close"] == 1100
+    assert list(previous.cap_df.columns) == ["시가총액"]
