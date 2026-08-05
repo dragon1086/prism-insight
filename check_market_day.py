@@ -17,9 +17,14 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def is_market_day():
-    """Check if it's a Korean stock market trading day"""
-    today = date.today()
+def is_market_day(target_date=None):
+    """Check if a date is a Korean stock market trading day.
+
+    ``target_date`` defaults to today, which is how the scheduler and the
+    orchestrator call it. ``trigger_batch`` passes an explicit date so it can
+    walk backwards to the most recent session without reaching for KRX.
+    """
+    today = target_date or date.today()
 
     # Weekend check (5: Saturday, 6: Sunday)
     if today.weekday() >= 5:

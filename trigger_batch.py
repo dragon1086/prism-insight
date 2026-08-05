@@ -1697,6 +1697,63 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
 
     return final_result
 
+# How far back to walk when today is not a trading session. A long weekend plus
+# a holiday stretch stays inside a week; beyond that something is wrong and we
+# should say so rather than silently screening month-old data.
+_TRADE_DATE_LOOKBACK_DAYS = 7
+
+
+def _resolve_trade_date(today_str: str) -> str:
+    """Resolve the batch reference trading date **without depending on KRX**.
+
+    This used to be a single ``stock_api.get_nearest_business_day_in_a_week()``
+    call — the batch's very first data call, with no fallback. When KRX blocked
+    the db-server IP, the 2026-08-05 afternoon batch died here 64 seconds in and
+    produced **zero KR reports**:
+
+        KRXBlockedError: KRX 접근이 차단된 상태입니다. 198분 뒤(18:04)에 ...
+        → "No stocks selected. Terminating process."
+
+    Every other KRX call in this module is already protected — the ticker-name
+    lookup degrades to bare codes, and the snapshot/market-cap calls sit behind
+    ``load_market_snapshot_bundle``'s Naver fallback. This one line was the only
+    unguarded one, and it ran first.
+
+    The orchestrator already decides whether to run at all via
+    ``check_market_day.is_market_day()``, which reads a local holiday calendar
+    and touches no network. Using that same calendar here is both consistent
+    with the gate that let the batch start and immune to KRX being unreachable.
+    KRX is kept only as a fallback for the case where the calendar is
+    unavailable, so it can no longer take the batch down on its own.
+    """
+    try:
+        from check_market_day import is_market_day
+
+        day = datetime.datetime.strptime(today_str, "%Y%m%d").date()
+        for _ in range(_TRADE_DATE_LOOKBACK_DAYS):
+            if is_market_day(day):
+                return day.strftime("%Y%m%d")
+            day -= datetime.timedelta(days=1)
+        logger.warning(
+            "No trading day found within %d days of %s; falling back to KRX",
+            _TRADE_DATE_LOOKBACK_DAYS,
+            today_str,
+        )
+    except Exception as exc:  # noqa: BLE001 - calendar must never end the batch
+        logger.warning("Local trading calendar unavailable (%s); falling back to KRX", exc)
+
+    try:
+        return stock_api.get_nearest_business_day_in_a_week(today_str, prev=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "KRX trading-date lookup failed too (%s); using %s as-is. "
+            "Screening may run against a non-session date.",
+            exc,
+            today_str,
+        )
+        return today_str
+
+
 # --- Batch execution function ---
 def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None):
     """
@@ -1710,7 +1767,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     logger.info(f"Log level: {log_level.upper()}")
 
     today_str = datetime.datetime.today().strftime("%Y%m%d")
-    trade_date = stock_api.get_nearest_business_day_in_a_week(today_str, prev=True)
+    trade_date = _resolve_trade_date(today_str)
     logger.info(f"Batch reference trading date: {trade_date}")
 
     market_data = load_market_snapshot_bundle(trade_date)
