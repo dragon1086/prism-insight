@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
@@ -53,7 +54,17 @@ _ASK_ANSWER_BUDGET = 1_200
 
 _ASK_GROUNDING = (
     "\n\n반드시 웹을 검색하고 실제 뉴스/기사 페이지를 스크랩하여 각 주장에 출처를 밝혀라. "
-    "너의 사전지식이 아니라 오늘 기준 최신 웹 데이터에 근거하라."
+    "너의 사전지식이 아니라 오늘 기준 최신 웹 데이터에 근거하라. "
+    "질문 대상과 직접 관련된 기사가 하나라도 있으면 '최신 근거가 없다'고 답하지 마라. "
+    "관련 핵심 사실을 우선 제시하고, 가능하면 최소 2개 사실에 매체명과 발행일을 붙여라."
+)
+
+_STOCK_RESEARCH_SUFFIX = re.compile(
+    r"\s*(?:지금\s*)?"
+    r"(?:사도\s*(?:될까|돼)|살까|매수(?:해도)?\s*(?:될까|괜찮을까)|"
+    r"주가\s*전망(?:은|이)?|전망(?:은|이)?\s*어때|어때)"
+    r"[?？!！.\s]*$",
+    re.IGNORECASE,
 )
 
 
@@ -256,7 +267,34 @@ async def _ask(question: str) -> str | None:
         f"{_ASK_ANSWER_BUDGET}자 이내. 표와 마크다운 문법은 쓰지 마라."
     ) + _ASK_GROUNDING
 
-    # Free-form: the subject is unpredictable, so a KR-press allowlist would
-    # drop legitimate sources. Keep recency and the news channel, drop the list.
-    search_opts = search_preset("KR", tbs="qdr:m", allowlist=False) | await daily_facts("KR")
-    return await generate_firecrawl_search_response(question, prompt, **search_opts)
+    queries, use_primary_sources = _ask_search_plan(question)
+    # General free-form questions stay unrestricted because their subject is
+    # unpredictable. A detected stock question is different: primary business
+    # outlets are much safer than social posts and generic "지금 사도 될까"
+    # matches, and the expanded queries carry the actual research dimensions.
+    search_opts = search_preset(
+        "KR",
+        tbs="qdr:m",
+        allowlist=use_primary_sources,
+    ) | await daily_facts("KR")
+    return await generate_firecrawl_search_response(queries, prompt, **search_opts)
+
+
+def _ask_search_plan(question: str) -> tuple[list[str], bool]:
+    """Turn a conversational stock question into evidence-oriented queries."""
+
+    match = _STOCK_RESEARCH_SUFFIX.search(question.strip())
+    if not match:
+        return [question], False
+
+    subject = question[: match.start()].strip()
+    if not subject or len(subject) > 40:
+        return [question], False
+
+    return (
+        [
+            f"{subject} 최신 뉴스 실적 전망 주가",
+            f"{subject} 실적 공시 외국인 기관 수급 리스크",
+        ],
+        True,
+    )
