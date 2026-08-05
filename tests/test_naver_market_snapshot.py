@@ -221,15 +221,15 @@ def test_daily_parser_never_resolves_external_xml_entities():
         _parse_daily_xml(malicious, TRADE_DATE)
 
 
-def test_trigger_batch_uses_naver_bundle_after_krx_failure(monkeypatch):
+def test_trigger_batch_uses_naver_bundle_after_kis_openapi_failure(monkeypatch):
     import trigger_batch
 
     fake_get = _FixtureGet()
     naver_bundle = _fetch(fake_get)
     monkeypatch.setattr(
         trigger_batch,
-        "get_snapshot",
-        lambda _date: (_ for _ in ()).throw(RuntimeError("KRX down")),
+        "build_kis_openapi_snapshot_bundle",
+        lambda _date: (_ for _ in ()).throw(RuntimeError("KIS down")),
     )
     monkeypatch.setattr(
         trigger_batch,
@@ -243,7 +243,7 @@ def test_trigger_batch_uses_naver_bundle_after_krx_failure(monkeypatch):
     assert result.source == "naver"
 
 
-def test_trigger_batch_keeps_krx_as_primary(monkeypatch):
+def test_trigger_batch_uses_kis_openapi_as_primary(monkeypatch):
     import trigger_batch
 
     snapshot = pd.DataFrame(
@@ -259,13 +259,8 @@ def test_trigger_batch_keeps_krx_as_primary(monkeypatch):
     )
     previous = snapshot.copy()
     cap = pd.DataFrame({"시가총액": [1_000_000]}, index=["005930"])
-    monkeypatch.setattr(trigger_batch, "get_snapshot", lambda _date: snapshot)
-    monkeypatch.setattr(
-        trigger_batch,
-        "get_previous_snapshot",
-        lambda _date: (previous, "20260721"),
-    )
-    monkeypatch.setattr(trigger_batch, "get_market_cap_df", lambda _date: cap)
+    primary = MarketSnapshotBundle(snapshot, previous, cap, "20260721", "kis+krx_openapi")
+    monkeypatch.setattr(trigger_batch, "build_kis_openapi_snapshot_bundle", lambda _date: primary)
     monkeypatch.setattr(
         trigger_batch,
         "fetch_naver_snapshot_bundle",
@@ -274,7 +269,7 @@ def test_trigger_batch_keeps_krx_as_primary(monkeypatch):
 
     result = trigger_batch.load_market_snapshot_bundle(TRADE_DATE)
 
-    assert result.source == "krx"
+    assert result.source == "kis+krx_openapi"
     assert result.snapshot is snapshot
     assert result.prev_snapshot is previous
     assert result.cap_df is cap
@@ -285,8 +280,8 @@ def test_trigger_batch_raises_typed_error_when_both_sources_fail(monkeypatch):
 
     monkeypatch.setattr(
         trigger_batch,
-        "get_snapshot",
-        lambda _date: (_ for _ in ()).throw(RuntimeError("KRX down")),
+        "build_kis_openapi_snapshot_bundle",
+        lambda _date: (_ for _ in ()).throw(RuntimeError("KIS down")),
     )
     monkeypatch.setattr(
         trigger_batch,

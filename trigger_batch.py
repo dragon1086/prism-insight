@@ -14,6 +14,7 @@ from cores.naver_market_snapshot import (
     MarketSnapshotBundle,
     fetch_naver_snapshot_bundle,
 )
+from cores.kis_market_snapshot import build_kis_openapi_snapshot_bundle
 from cores.rs_rating import oneil_weighted_return, percentile_ratings
 from krx_data_client import (
     _get_client,
@@ -276,33 +277,20 @@ def get_market_cap_df(trade_date: str, market: str = "ALL") -> pd.DataFrame:
 
 
 def load_market_snapshot_bundle(trade_date: str) -> MarketSnapshotBundle:
-    """Load current, previous, and market-cap data from one coherent source.
-
-    KRX is always primary.  If any market-wide KRX input fails, rebuild the
-    complete bundle from Naver rather than mixing sources with different
-    timestamps or universes.
-    """
+    """Load current KIS quotes plus previous OPEN API data, or Naver fallback."""
     try:
-        snapshot = get_snapshot(trade_date)
-        prev_snapshot, prev_date = get_previous_snapshot(trade_date)
-        cap_df = get_market_cap_df(trade_date)
+        bundle = build_kis_openapi_snapshot_bundle(trade_date)
         logger.info(
-            "[MARKET-DATA] source=KRX stocks=%d prev_date=%s cap_rows=%d",
-            len(snapshot),
-            prev_date,
-            len(cap_df),
+            "[MARKET-DATA] source=KIS+KRX_OPENAPI stocks=%d prev_date=%s cap_rows=%d",
+            len(bundle.snapshot),
+            bundle.prev_date,
+            len(bundle.cap_df),
         )
-        return MarketSnapshotBundle(
-            snapshot=snapshot,
-            prev_snapshot=prev_snapshot,
-            cap_df=cap_df,
-            prev_date=prev_date,
-            source="krx",
-        )
-    except Exception as krx_exc:
+        return bundle
+    except Exception as primary_exc:
         logger.warning(
-            "[MARKET-DATA] KRX bundle failed; switching to Naver fallback: %s",
-            krx_exc,
+            "[MARKET-DATA] KIS+OPENAPI bundle failed; switching to Naver fallback: %s",
+            primary_exc,
         )
         try:
             bundle = fetch_naver_snapshot_bundle(
@@ -311,13 +299,13 @@ def load_market_snapshot_bundle(trade_date: str) -> MarketSnapshotBundle:
             )
         except Exception as naver_exc:
             logger.error(
-                "[MARKET-DATA] both KRX and Naver snapshot sources failed: "
-                "krx=%s naver=%s",
-                krx_exc,
+                "[MARKET-DATA] both KIS+OPENAPI and Naver snapshot sources failed: "
+                "primary=%s naver=%s",
+                primary_exc,
                 naver_exc,
             )
             raise MarketSnapshotUnavailableError(
-                f"Market snapshot unavailable from KRX and Naver: {naver_exc}"
+                f"Market snapshot unavailable from KIS+OPENAPI and Naver: {naver_exc}"
             ) from naver_exc
 
         logger.warning(

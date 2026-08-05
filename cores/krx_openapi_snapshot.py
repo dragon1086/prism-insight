@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from typing import Callable
 
 import pandas as pd
@@ -65,6 +66,46 @@ _FIELD_MAP = {
 
 class KrxOpenApiError(RuntimeError):
     """The OPEN API could not produce a usable snapshot."""
+
+
+@dataclass(frozen=True)
+class PreviousKrxOpenApiSnapshot:
+    snapshot: pd.DataFrame
+    cap_df: pd.DataFrame
+    trade_date: str
+
+
+def fetch_previous_krx_openapi_snapshot(
+    trade_date: str,
+    *,
+    auth_key: str | None = None,
+    request_get: Callable = requests.get,
+    min_stock_count: int = 2500,
+    timeout: float = 20.0,
+    max_attempts: int = 3,
+    retry_wait_sec: float = 0.5,
+    max_lookback_days: int = 10,
+) -> PreviousKrxOpenApiSnapshot:
+    """Return the latest published market snapshot strictly before trade_date."""
+    if not re.fullmatch(r"\d{8}", trade_date):
+        raise ValueError("trade_date must be YYYYMMDD")
+    key = _auth_key(auth_key)
+    previous_date, rows = _previous_session(
+        trade_date,
+        key,
+        request_get,
+        max_lookback_days,
+        timeout=timeout,
+        max_attempts=max_attempts,
+        retry_wait_sec=retry_wait_sec,
+    )
+    if len(rows) < min_stock_count:
+        raise KrxOpenApiError(
+            f"{previous_date}: previous-session universe too small "
+            f"({len(rows)}/{min_stock_count})"
+        )
+    snapshot, cap_df = _frames(rows)
+    return PreviousKrxOpenApiSnapshot(snapshot, cap_df, previous_date)
 
 
 def _auth_key(explicit: str | None) -> str:
