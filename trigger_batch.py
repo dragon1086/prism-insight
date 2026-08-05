@@ -174,32 +174,13 @@ def get_previous_snapshot(trade_date: str) -> (pd.DataFrame, str):
 
     return df, prev_date
 
-import time as _time
-import random as _random
-import threading as _threading
-
 # --- KRX request throttle ---------------------------------------------------
-# data.krx.co.kr는 IP 차단(403/RST)이 아니라 버스트 요청·장마감 트래픽에 응답이
-# 느려져 Read timeout을 낸다. 요청 사이 최소 간격 + 지터로 연타를 눌러 timeout
-# 빈도를 낮춘다. env로 조절 — KRX_MIN_GAP_SEC=0 이면 스로틀 비활성(기본 0.4s).
-_KRX_THROTTLE_LOCK = _threading.Lock()
-_KRX_LAST_CALL = [0.0]
-
-
-def _krx_throttle() -> None:
-    """Enforce a minimum spacing (+jitter) between consecutive KRX requests."""
-    try:
-        min_gap = float(os.getenv("KRX_MIN_GAP_SEC", "0.4"))
-    except (TypeError, ValueError):
-        min_gap = 0.4
-    if min_gap <= 0:
-        return
-    with _KRX_THROTTLE_LOCK:
-        elapsed = _time.monotonic() - _KRX_LAST_CALL[0]
-        wait = min_gap - elapsed
-        if wait > 0:
-            _time.sleep(wait + _random.uniform(0.0, 0.2))
-        _KRX_LAST_CALL[0] = _time.monotonic()
+# 여기 있던 _krx_throttle 은 cores/market_data/krx_source.py 로 옮겼다.
+# data.krx.co.kr 는 버스트 요청·장마감 트래픽에 응답이 느려져 Read timeout 을
+# 내고, 지속되면 "비정상 대량 조회"로 IP 가 차단된다. 간격 유지는 호출자 한 곳이
+# 아니라 **소스**의 책임이다 — 이 파일에 두었을 때는 get_multi_day_ohlcv 한
+# 군데만 보호했고 체인을 타는 나머지 KRX 호출은 전부 무방비였다.
+# 조절은 그대로 KRX_MIN_GAP_SEC (기본 0.4s, 0 이면 비활성).
 
 
 def get_multi_day_ohlcv(ticker: str, end_date: str, days: int = 10) -> pd.DataFrame:
@@ -215,28 +196,44 @@ def get_multi_day_ohlcv(ticker: str, end_date: str, days: int = 10) -> pd.DataFr
         DataFrame with columns: Open, High, Low, Close, Volume, Amount
         Index: Date
     """
-    from krx_data_client import get_market_ohlcv_by_date
+    # Routed through the source chain (default kis -> fdr -> krx) rather than
+    # calling krx_data_client directly.
+    #
+    # This is the hottest KRX path in the batch: the 2026-08-05 outage run made
+    # 42 KRX attempts and **39 of them came from here**. Going direct meant the
+    # chain order was irrelevant — KIS could be first and this still hammered
+    # KRX, which is both what gets the host restricted and what Plan A exists to
+    # remove.
+    #
+    # The chain returns an empty frame when every source is exhausted (it does
+    # not raise), so the FDR retry below now only runs after kis/fdr/krx have all
+    # declined. It is kept because it calls FinanceDataReader differently from
+    # the chain's FDR source, so it is a genuine second chance rather than a
+    # repeat of the same request.
+    from cores.market_data import get_market_ohlcv_by_date
 
     # Calculate sufficient past date from end date (with margin for business days)
     end_dt = datetime.datetime.strptime(end_date, '%Y%m%d')
     start_dt = end_dt - datetime.timedelta(days=days * 2)  # 2x margin for business days
     start_date = start_dt.strftime('%Y%m%d')
 
-    krx_failed = False
+    chain_failed = False
     try:
-        _krx_throttle()  # 버스트 스로틀: KRX 연타 방지로 read-timeout 빈도↓
         df = get_market_ohlcv_by_date(start_date, end_date, ticker)
         if df.empty:
-            logger.warning(f"No {days}-day data for {ticker} from KRX; attempting FinanceDataReader fallback.")
-            krx_failed = True
+            logger.warning(
+                f"No {days}-day data for {ticker} from any source; "
+                f"attempting FinanceDataReader fallback."
+            )
+            chain_failed = True
         else:
             # Select only recent N days
             return df.tail(days)
     except Exception as e:
-        logger.warning(f"KRX query failed for {ticker}: {e}; attempting FinanceDataReader fallback.")
-        krx_failed = True
+        logger.warning(f"Market data chain failed for {ticker}: {e}; attempting FinanceDataReader fallback.")
+        chain_failed = True
 
-    if krx_failed:
+    if chain_failed:
         try:
             import FinanceDataReader as fdr
             fdr_start = start_dt.strftime('%Y-%m-%d')
