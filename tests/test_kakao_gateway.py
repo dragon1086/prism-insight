@@ -31,8 +31,14 @@ from kakao_bot.adapters.kakao.gateway_protocol import (
     SendCommand,
     classify_close,
 )
+from kakao_bot.domain.models import MessageSendResult
 from kakao_bot.ports.gateway_state import GatewayState
-from kakao_bot.runtime.gateway_main import GatewayRuntimeConfig, load_config
+from kakao_bot.runtime.gateway_main import (
+    REGISTERED_COMMAND_UTTERANCES,
+    GatewayRuntimeConfig,
+    load_config,
+    sync_command_menu,
+)
 
 TOKEN = "never-log-this-bot-token"
 
@@ -493,3 +499,26 @@ def test_runtime_config_reads_token_without_exposing_it_in_repr(tmp_path):
         database_path=tmp_path / "kakao.sqlite",
     )
     assert TOKEN not in repr(config)
+
+
+@pytest.mark.asyncio
+async def test_gateway_syncs_only_currently_supported_command_menu(tmp_path):
+    class FakeClient:
+        def __init__(self):
+            self.utterances = None
+
+        async def update_commands(self, utterances):
+            self.utterances = utterances
+            return MessageSendResult(success=True, status_code=200)
+
+    client = FakeClient()
+    config = GatewayRuntimeConfig(
+        token=TOKEN,
+        lock_path=tmp_path / "gateway.lock",
+        database_path=tmp_path / "kakao.sqlite",
+    )
+
+    assert await sync_command_menu(config, client=client) is True
+    assert client.utterances == REGISTERED_COMMAND_UTTERANCES
+    labels = [item["buttonName"] for item in client.utterances]
+    assert labels == ["리포트", "평가", "도움말"]
