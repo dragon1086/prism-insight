@@ -41,6 +41,7 @@ _BLANK_RUN = re.compile(r"\n{3,}")
 # Kakao renders plain text, so list structure has to survive as a character.
 _BULLET = re.compile(r"^[ \t]*[-*+][ \t]+", re.MULTILINE)
 _TRAILING_SPACES = re.compile(r"[ \t]+$", re.MULTILINE)
+_SINGLE_LINE_BREAK = re.compile(r"(?<!\n)\n(?!\n)")
 
 # Reports open with an executive summary. Lifting it beats truncating from the
 # top, which cuts off mid-sentence inside the first technical section and reads
@@ -118,14 +119,24 @@ def _evaluate_result(payload: Mapping[str, object]) -> dict[str, object]:
     ticker = _required_text(payload, "ticker")
     company_name = _required_text(payload, "company_name")
     verdict = payload.get("verdict")
-    body = _condense(verdict if isinstance(verdict, str) else "")
+    body = _clean_text(verdict if isinstance(verdict, str) else "")
     if not body:
         return _evaluate_failed(payload)
+    body = _SINGLE_LINE_BREAK.sub("\n\n", body)
 
     header = f"🧮 {company_name} ({ticker}) 평가{_position_suffix(payload)}"
+    body_parts = _split_text(
+        body,
+        first_limit=MAX_SIMPLE_TEXT_LENGTH - len(header) - 2,
+        continuation_limit=MAX_SIMPLE_TEXT_LENGTH,
+    )
+    text_outputs = [
+        simple_text_output(f"{header}\n\n{body_parts[0]}"),
+        *[simple_text_output(part) for part in body_parts[1:]],
+    ]
     return skill_response(
         [
-            simple_text_output(f"{header}\n\n{body}"[:MAX_SIMPLE_TEXT_LENGTH]),
+            *text_outputs,
             _next_actions(ticker, company_name),
         ]
     )
@@ -293,15 +304,60 @@ def _next_actions(
 def _condense(summary: str) -> str:
     """Flatten report markdown into something a chat bubble can hold."""
 
-    if not summary.strip():
-        return ""
-    text = _BULLET.sub("· ", _executive_summary(summary))
-    text = _MARKDOWN_NOISE.sub("", text)
-    text = _TRAILING_SPACES.sub("", text)
-    text = _BLANK_RUN.sub("\n\n", text).strip()
+    text = _clean_text(summary)
     if len(text) <= _SUMMARY_BUDGET:
         return text
     return text[: _SUMMARY_BUDGET - 1].rstrip() + "…"
+
+
+def _clean_text(text: str) -> str:
+    """Remove Markdown noise without discarding any content."""
+
+    if not text.strip():
+        return ""
+    cleaned = _BULLET.sub("· ", _executive_summary(text))
+    cleaned = _MARKDOWN_NOISE.sub("", cleaned)
+    cleaned = _TRAILING_SPACES.sub("", cleaned)
+    return _BLANK_RUN.sub("\n\n", cleaned).strip()
+
+
+def _split_text(
+    text: str,
+    *,
+    first_limit: int,
+    continuation_limit: int,
+) -> list[str]:
+    """Fit text into two bubbles, preferring paragraph and sentence ends."""
+
+    if len(text) <= first_limit:
+        return [text]
+
+    split_at, resume_at = _natural_split(text, first_limit)
+    first = text[:split_at].rstrip()
+    remainder = text[resume_at:].lstrip()
+    if len(remainder) <= continuation_limit:
+        return [first, remainder]
+
+    final_limit = continuation_limit - 1
+    final_at, _ = _natural_split(remainder, final_limit)
+    second = remainder[:final_at].rstrip() + "…"
+    return [first, second]
+
+
+def _natural_split(text: str, limit: int) -> tuple[int, int]:
+    """Return cut/resume offsets at the latest useful boundary."""
+
+    window = text[: limit + 1]
+    candidates: list[tuple[int, int]] = []
+    for match in re.finditer(r"\n{2,}", window):
+        candidates.append((match.start(), match.end()))
+    for match in re.finditer(r"(?<=[.!?。！？])(?:[ \t]+|\n+)", window):
+        candidates.append((match.start(), match.end()))
+
+    useful = [candidate for candidate in candidates if candidate[0] >= limit // 2]
+    if useful:
+        return max(useful, key=lambda candidate: candidate[0])
+    return limit, limit
 
 
 def _executive_summary(summary: str) -> str:
