@@ -12,15 +12,34 @@ servers:
     - firecrawl-mcp
     env:
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
+  # 2026-08-05: kospi_kosdaq_stock_server(PyPI) 에서 리포 내 서버로 교체했다.
+  #
+  # 그 패키지는 KRX Data Marketplace 를 카카오 로그인으로 스크래핑한다. KRX 가
+  # db-server IP 를 막자 리포트의 이동평균·RSI·MACD·볼린저·지지저항·수급이 통째로
+  # "산출 불가"로 나갔다. 차트는 멀쩡했는데 cores/stock_chart.py 는 소스 체인을
+  # 타고 리포트 텍스트만 이 MCP 경로를 탔기 때문이다.
+  #
+  # 새 서버는 cores.market_data 체인 위에서 돈다. 도구 이름·인자·반환 형태와
+  # **서버 이름까지 동일**하므로 report_generator 의 프롬프트는 바뀌지 않는다.
+  # KRX 자격증명(KAKAO_ID/KAKAO_PW)이 더 이상 필요 없다.
+  #
+  # command: 이 서버는 리포 코드를 import 하므로 **리포 의존성이 설치된 인터프리터**
+  # 여야 한다. 맨 `python3` 는 호스트마다 다른 것을 가리킨다 — 맥미니에서는
+  # Homebrew 3.14 라서 `mcp` 조차 없다. 오케스트레이터를 띄우는 것과 같은 파이썬을
+  # PRISM_MCP_PYTHON 으로 지정한다.
   kospi_kosdaq:
-    command: python3
+    command: ${PRISM_MCP_PYTHON:-python3}
     args:
     - -m
-    - kospi_kosdaq_stock_server
+    - cores.market_data.mcp_server
     env:
-      KAKAO_ID: ${KAKAO_ID}
-      KAKAO_PW: ${KAKAO_PW}
-      KRX_LOGIN_METHOD: ${KRX_LOGIN_METHOD}
+      # 레지스트리가 env 를 명시적으로 넘기므로 리포 루트를 직접 준다.
+      # 기본값 '.' 는 자식의 cwd(오케스트레이터가 리포 루트에서 실행)를 가리킨다.
+      PYTHONPATH: ${PRISM_REPO_ROOT:-.}
+      # 리포트에 실리는 수치는 순서를 따로 둘 수 있다(미설정 시 일반 체인 순서).
+      # 치환기가 중첩 ${A:-${B}} 를 못 다루므로 여기서는 그대로 넘기고,
+      # 우선순위 결정은 서버가 한다.
+      PRISM_REPORT_DATA_SOURCES: ${PRISM_REPORT_DATA_SOURCES:-}
   perplexity:
     # Published from github.com/modelcontextprotocol/servers by Perplexity
     # (maintainer james.liounis@perplexity.ai). Fetching it removes the need to
