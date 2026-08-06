@@ -185,9 +185,16 @@ def _report_public_base_url(environ: Mapping[str, str] | None = None) -> str | N
 def _configure_report_data_sources(
     environ: MutableMapping[str, str] | None = None,
 ) -> str:
-    """Give Kakao reports a public recent-flow fallback without overriding ops."""
+    """Give Kakao reports a public recent-flow fallback without overriding ops.
+
+    ``fdr,krx`` was deployed as an outage-era fallback before the public recent
+    flow source existed. Upgrade only that exact legacy value; a deliberately
+    configured order such as ``kis,fdr,krx`` remains untouched.
+    """
 
     values = os.environ if environ is None else environ
+    if values.get("PRISM_REPORT_DATA_SOURCES") == "fdr,krx":
+        values["PRISM_REPORT_DATA_SOURCES"] = DEFAULT_KAKAO_REPORT_DATA_SOURCES
     return values.setdefault(
         "PRISM_REPORT_DATA_SOURCES", DEFAULT_KAKAO_REPORT_DATA_SOURCES
     )
