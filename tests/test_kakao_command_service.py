@@ -10,12 +10,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from kakao_bot.adapters.persistence.sqlite import SQLiteKakaoRepository
 from kakao_bot.application.command_service import (
     CommandLimits,
     CommandOutcomeKind,
     CommandService,
 )
-from kakao_bot.adapters.persistence.sqlite import SQLiteKakaoRepository
 from kakao_bot.domain.models import ApprovalStatus, InboundMessage
 from kakao_bot.ports.analysis import ResolvedTicker, TickerResolution
 
@@ -71,6 +71,8 @@ def test_report_command_enqueues_a_job_and_acknowledges(repository, service):
     assert outcome.ticker == "005930"
     assert outcome.company_name == "삼성전자"
     assert "삼성전자" in outcome.message
+    assert "2~5분" in outcome.message
+    assert "중간 표시가 없어도" in outcome.message
 
     [job] = repository.list_analysis_jobs()
     assert job["room_id"] == ROOM
