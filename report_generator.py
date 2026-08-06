@@ -32,6 +32,17 @@ TELEGRAM_ANALYSIS_EFFORT = os.environ.get(
 
 _telegram_backend = None
 
+_FAILED_REPORT_MARKERS = ("analysis failed", "분석 실패")
+_MAX_CACHEABLE_FAILURE_MARKERS = 2
+
+
+def _is_cacheable_report(content: str) -> bool:
+    """Reject generated artifacts whose analysis mostly failed."""
+
+    normalized = content.casefold()
+    failure_count = sum(normalized.count(marker) for marker in _FAILED_REPORT_MARKERS)
+    return bool(content.strip()) and failure_count <= _MAX_CACHEABLE_FAILURE_MARKERS
+
 
 def _get_telegram_backend():
     """Lazily configure the shared SDK backend for Telegram analysis calls."""
@@ -114,6 +125,10 @@ def get_cached_us_report(ticker: str) -> tuple:
 
     with open(latest_file, "r", encoding="utf-8") as f:
         content = f.read()
+
+    if not _is_cacheable_report(content):
+        logger.warning("Ignoring failed cached US report: %s", latest_file)
+        return False, "", None, None
 
     # Generate PDF if it doesn't exist
     if not pdf_file:
@@ -352,6 +367,10 @@ def get_cached_report(stock_code: str) -> tuple:
 
     with open(latest_file, "r", encoding="utf-8") as f:
         content = f.read()
+
+    if not _is_cacheable_report(content):
+        logger.warning("Ignoring failed cached report: %s", latest_file)
+        return False, "", None, None
 
     # Generate PDF if it doesn't exist
     if not pdf_file:
