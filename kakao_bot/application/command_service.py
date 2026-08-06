@@ -27,7 +27,6 @@ from kakao_bot.ports.repositories import KakaoRepository
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_DAILY_LIMIT = 5
-DEFAULT_ROOM_DAILY_LIMIT = 20
 
 _UNAPPROVED = "이 채팅방은 아직 승인되지 않았습니다. 관리자에게 승인을 요청해주세요."
 _USER_LIMIT = (
@@ -78,7 +77,6 @@ _HELP_LINES = {
 _HELP_FOOTER = (
     "\n\n📌 일일 요청 한도(최근 24시간)"
     f"\n · 리포트·평가·질문 합산 사용자당 {DEFAULT_USER_DAILY_LIMIT}회"
-    f"\n · 채팅방 전체 {DEFAULT_ROOM_DAILY_LIMIT}회"
     "\n\n저를 멘션해서 편하게 말 걸어주세요. 명령어를 외울 필요 없어요."
 )
 
@@ -143,7 +141,7 @@ class CommandOutcome:
 @dataclass(frozen=True)
 class CommandLimits:
     user_daily: int = DEFAULT_USER_DAILY_LIMIT
-    room_daily: int = DEFAULT_ROOM_DAILY_LIMIT
+    room_daily: int | None = None
 
 
 class CommandService:
@@ -360,6 +358,9 @@ class CommandService:
                 kind=CommandOutcomeKind.REJECTED,
                 message=_USER_LIMIT.format(limit=self._limits.user_daily),
             )
+
+        if self._limits.room_daily is None:
+            return None
 
         used_by_room = self._repository.count_analysis_jobs_since(
             room_id=message.room_id,
