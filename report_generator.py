@@ -1261,7 +1261,7 @@ async def generate_journal_conversation_response(
 
 MAX_ARTICLE_CHARS = 3000
 MAX_CONTEXT_CHARS = 60000
-_EVIDENCE_REFERENCE = re.compile(r"\[자료\s*(\d+)\]")
+_EVIDENCE_REFERENCE = re.compile(r"\[[^\]]*?자료\s*(\d+)[^\]]*\]")
 
 
 def _build_search_context(items: list) -> str:
