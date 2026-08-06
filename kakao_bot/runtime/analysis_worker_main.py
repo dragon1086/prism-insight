@@ -22,6 +22,8 @@ from kakao_bot.ports.analysis import AnalysisPort
 logger = logging.getLogger(__name__)
 
 DEFAULT_KAKAO_REPORT_DATA_SOURCES = "fdr,naver,krx"
+DEFAULT_KAKAO_REPORT_MODEL = "gpt-5.6-luna"
+DEFAULT_KAKAO_REPORT_EFFORT = "high"
 
 
 class AnalysisWorkerConfigurationError(ValueError):
@@ -200,11 +202,23 @@ def _configure_report_data_sources(
     )
 
 
+def _configure_report_model(
+    environ: MutableMapping[str, str] | None = None,
+) -> tuple[str, str]:
+    """Default Kakao's formal report subprocesses to Luna with high reasoning."""
+
+    values = os.environ if environ is None else environ
+    model = values.setdefault("REPORT_MODEL", DEFAULT_KAKAO_REPORT_MODEL)
+    effort = values.setdefault("REPORT_EFFORT", DEFAULT_KAKAO_REPORT_EFFORT)
+    return model, effort
+
+
 async def async_main() -> int:
     llm_runtime_started = False
     try:
         config = load_config()
         _configure_report_data_sources()
+        _configure_report_model()
         llm_runtime_started = await _start_llm_runtime()
     except AnalysisWorkerConfigurationError as exc:
         logger.error("%s", exc)
