@@ -174,15 +174,23 @@ def _ask_result(payload: Mapping[str, object]) -> dict[str, object]:
     """
 
     answer = payload.get("answer")
-    body = _condense(answer if isinstance(answer, str) else "")
+    body = _clean_text(answer if isinstance(answer, str) else "")
     if not body:
         return _ask_failed(payload)
 
     header = f"💬 {_echo_question(payload)}"
-    text = f"{header}\n\n{body}"
+    body_parts = _split_text(
+        body,
+        first_limit=MAX_SIMPLE_TEXT_LENGTH - len(header) - 2,
+        continuation_limit=MAX_SIMPLE_TEXT_LENGTH,
+    )
+    text_outputs = [
+        simple_text_output(f"{header}\n\n{body_parts[0]}"),
+        *[simple_text_output(part) for part in body_parts[1:]],
+    ]
     return skill_response(
         [
-            simple_text_output(text[:MAX_SIMPLE_TEXT_LENGTH]),
+            *text_outputs,
             _ask_actions(),
         ]
     )
