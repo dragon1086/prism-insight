@@ -1,5 +1,6 @@
 import os
 import asyncio
+from collections.abc import Mapping
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -40,6 +41,22 @@ from cores.utils import clean_markdown
 
 # Market analysis cache storage (global variable)
 _market_analysis_cache = {}
+
+
+def _report_parallel_limit(
+    section_count: int,
+    environ: Mapping[str, str] | None = None,
+) -> int:
+    """Resolve an optional bound while preserving legacy full parallelism."""
+
+    values = os.environ if environ is None else environ
+    raw_limit = values.get("PRISM_PARALLEL_REPORT_MAX_CONCURRENCY")
+    if raw_limit is None:
+        return section_count
+    try:
+        return min(section_count, max(1, int(raw_limit)))
+    except ValueError:
+        return section_count
 
 async def analyze_stock(company_code: str = "000660", company_name: str = "SK하이닉스", reference_date: str = None, language: str = "ko", macro_context: dict = None):
     """
@@ -96,9 +113,15 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         if parallel_enabled:
             # Parallel execution mode
             # Keep independent section loggers; the backend owns MCP server lifecycles.
-            logger.info(f"Running analysis in PARALLEL mode for {company_name}...")
+            parallel_limit = _report_parallel_limit(len(base_sections))
+            parallel_semaphore = asyncio.Semaphore(parallel_limit)
+            logger.info(
+                "Running analysis in PARALLEL mode for %s (max concurrency=%d)...",
+                company_name,
+                parallel_limit,
+            )
 
-            async def process_section(section):
+            async def process_section_unbounded(section):
                 """Process a single section with its own logger context."""
                 if section not in agents:
                     return section, None
@@ -125,6 +148,10 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                     except Exception as e:
                         section_logger.error(f"Final failure processing {section}: {e}")
                         return section, f"Analysis failed: {section}"
+
+            async def process_section(section):
+                async with parallel_semaphore:
+                    return await process_section_unbounded(section)
 
             # Execute all sections in parallel (each with its own logger context).
             results = await asyncio.gather(*[process_section(section) for section in base_sections])
