@@ -193,6 +193,17 @@ def test_room_limit_counts_across_users(repository):
     assert "2회" in blocked.message
 
 
+def test_room_limit_is_disabled_by_default(repository):
+    service = CommandService(repository, FakeResolver())
+
+    outcomes = [
+        service.handle(message("리포트 삼성전자", user_id=f"user-{index}"), now=NOW)
+        for index in range(21)
+    ]
+
+    assert all(outcome.kind is CommandOutcomeKind.ACCEPTED for outcome in outcomes)
+
+
 def test_help_explains_evaluation_period_and_shared_daily_limits():
     text = help_text()
 
@@ -200,7 +211,7 @@ def test_help_explains_evaluation_period_and_shared_daily_limits():
     assert "뒤의 6은 보유기간(월)" in text
     assert "리포트·평가·질문 합산" in text
     assert "사용자당 5회" in text
-    assert "채팅방 전체 20회" in text
+    assert "채팅방 전체" not in text
 
 
 def test_help_is_answered_without_touching_the_room_gate(tmp_path):
