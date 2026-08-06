@@ -181,6 +181,8 @@ def test_ask_enqueues_without_touching_the_resolver(repository):
 
     assert outcome.kind is CommandOutcomeKind.ACCEPTED
     assert resolver.calls == []
+    assert "1분" in outcome.message
+    assert "중간 표시가 없어도" in outcome.message
 
     [claimed] = repository.claim_analysis_jobs(now=NOW, lease_seconds=900, limit=1)
     assert claimed.kind == "ask"
