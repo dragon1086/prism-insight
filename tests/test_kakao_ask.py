@@ -440,6 +440,7 @@ def test_source_links_limit_referenced_articles_and_compact_the_dates():
     assert all(f"https://news.example/{index}" in answer for index in range(1, 4))
     assert "https://news.example/4" not in answer
     assert "2026-08-06T" not in answer
+    assert "https://news.example/2\n\n3. 기사 3" in answer
 
 
 def test_intraday_facts_calculate_the_candle_and_low_rebound():
