@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import signal
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +20,8 @@ from kakao_bot.application.analysis_service import (
 from kakao_bot.ports.analysis import AnalysisPort
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_KAKAO_REPORT_DATA_SOURCES = "fdr,naver,krx"
 
 
 class AnalysisWorkerConfigurationError(ValueError):
@@ -180,10 +182,22 @@ def _report_public_base_url(environ: Mapping[str, str] | None = None) -> str | N
     )
 
 
+def _configure_report_data_sources(
+    environ: MutableMapping[str, str] | None = None,
+) -> str:
+    """Give Kakao reports a public recent-flow fallback without overriding ops."""
+
+    values = os.environ if environ is None else environ
+    return values.setdefault(
+        "PRISM_REPORT_DATA_SOURCES", DEFAULT_KAKAO_REPORT_DATA_SOURCES
+    )
+
+
 async def async_main() -> int:
     llm_runtime_started = False
     try:
         config = load_config()
+        _configure_report_data_sources()
         llm_runtime_started = await _start_llm_runtime()
     except AnalysisWorkerConfigurationError as exc:
         logger.error("%s", exc)
