@@ -259,6 +259,12 @@ def test_explicit_report_source_order_wins_over_kakao_default():
     assert _configure_report_data_sources(environ) == "kis,fdr,krx"
 
 
+def test_legacy_report_source_order_gains_recent_flow_fallback():
+    environ = {"PRISM_REPORT_DATA_SOURCES": "fdr,krx"}
+
+    assert _configure_report_data_sources(environ) == "fdr,naver,krx"
+
+
 @pytest.mark.asyncio
 async def test_chatgpt_oauth_worker_starts_and_stops_proxy(monkeypatch):
     from cores import chatgpt_proxy
