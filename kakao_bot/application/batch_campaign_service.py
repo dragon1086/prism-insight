@@ -25,9 +25,6 @@ class BatchCampaignService:
     def ingest_and_plan(self, campaign: BatchCampaign) -> CampaignPlanResult:
         campaign_created = self._repository.save_campaign(campaign)
 
-        if campaign.status is CampaignStatus.COLLECTING:
-            return CampaignPlanResult(campaign_created, 0)
-
         is_rest_notice = campaign.status is CampaignStatus.SKIPPED
         room_ids = self._repository.list_delivery_targets(
             campaign.market,
@@ -69,6 +66,8 @@ class BatchCampaignService:
             common_payload["candidates"] = [
                 candidate.as_payload() for candidate in campaign.candidates
             ]
+            if campaign.display_message:
+                common_payload["display_message"] = campaign.display_message
             message_type = "signal_campaign"
             delivery_kind = "candidates"
 

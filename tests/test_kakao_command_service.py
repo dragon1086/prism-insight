@@ -207,6 +207,10 @@ def test_room_limit_is_disabled_by_default(repository):
 def test_help_explains_evaluation_period_and_shared_daily_limits():
     text = help_text()
 
+    assert text.index("시장을 읽고") < text.index("종목을 깊게")
+    assert text.index("종목을 깊게") < text.index("내 상황에 맞춰")
+    assert "가상 포트폴리오" in text
+    assert "투자 리딩" in text
     assert "70000은 평단가" in text
     assert "뒤의 6은 보유기간(월)" in text
     assert "리포트·평가·질문 합산" in text

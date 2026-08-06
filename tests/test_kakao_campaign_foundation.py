@@ -28,6 +28,7 @@ def campaign(
     session: Session = Session.AFTERNOON,
     status: CampaignStatus = CampaignStatus.COMPLETED,
     skip_reason: str | None = None,
+    display_message: str | None = "🔔 프리즘 시그널",
 ) -> BatchCampaign:
     candidates = (
         ()
@@ -49,6 +50,7 @@ def campaign(
         status=status,
         candidates=candidates,
         skip_reason=skip_reason,
+        display_message=display_message,
     )
 
 
@@ -122,6 +124,20 @@ def test_completed_kr_afternoon_campaign_is_delivered_to_approved_opt_in_room(
     assert delivery["message_type"] == "signal_campaign"
     assert delivery["payload"]["campaign_id"] == "kr-afternoon-1"
     assert delivery["payload"]["session"] == "AFTERNOON"
+    assert delivery["payload"]["display_message"] == "🔔 프리즘 시그널"
+
+
+def test_collecting_screening_campaign_is_delivered_immediately(repository):
+    approve_with_defaults(repository, "room-1")
+
+    result = BatchCampaignService(repository).ingest_and_plan(
+        campaign("kr-afternoon-screening", status=CampaignStatus.COLLECTING)
+    )
+
+    assert result.deliveries_created == 1
+    [delivery] = repository.list_outbox()
+    assert delivery["message_type"] == "signal_campaign"
+    assert delivery["payload"]["display_message"] == "🔔 프리즘 시그널"
 
 
 def test_delivery_planning_excludes_room_without_current_approval(repository):

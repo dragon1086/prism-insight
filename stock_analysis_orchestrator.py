@@ -25,10 +25,9 @@ from pathlib import Path
 
 from cores.openai_error_logging import log_openai_error
 from messaging.batch_campaign_publisher import (  # noqa: E402
-    COMPLETED,
+    COLLECTING,
     SKIPPED,
     publish_batch_campaign_best_effort,
-    select_reported_candidates,
 )
 
 # Logger configuration
@@ -84,6 +83,7 @@ class StockAnalysisOrchestrator:
         self.selected_tickers = {}  # Store selected stock information
         self.telegram_config = telegram_config or TelegramConfig(use_telegram=True)
         self._broadcast_tasks = []  # Collect fire-and-forget broadcast tasks
+        self._campaign_messages = {}  # Reuse the subscriber briefing on Kakao
 
     @staticmethod
     def _parse_report_filename(filename_stem: str) -> dict:
@@ -864,6 +864,7 @@ class StockAnalysisOrchestrator:
 
             # Generate telegram message
             message = self._create_trigger_alert_message(mode, all_results, trade_date)
+            self._campaign_messages[mode] = message
 
             # Translate message if English is requested
             if language == "en":
@@ -990,6 +991,10 @@ class StockAnalysisOrchestrator:
         # Message header
         message = f"{title}\n"
         message += f"📅 {formatted_date} {time_desc} 포착된 관심종목\n"
+        message += (
+            "🤖 프리즘봇의 가상 포트폴리오 운용 과정을 투명하게 공개합니다. "
+            "실제 매수 권유가 아닙니다.\n"
+        )
 
         # Hybrid selection summary (regime + strategy)
         if market_regime and "hybrid" in selection_strategy:
@@ -1064,8 +1069,8 @@ class StockAnalysisOrchestrator:
                 message += "\n"
 
         # Footer message
-        message += "💡 상세 분석 보고서는 약 10-30분 내 제공 예정\n"
-        message += "⚠️ 본 정보는 투자 참고용이며, 투자 결정과 책임은 투자자에게 있습니다."
+        message += "💡 프리즘봇이 검토할 상세 분석 보고서는 약 10-30분 내 제공 예정\n"
+        message += "⚠️ 가상 운용 과정 공유이며 투자 리딩 또는 실제 매수 권유가 아닙니다."
 
         return message
 
@@ -1135,24 +1140,23 @@ class StockAnalysisOrchestrator:
             else:
                 logger.warning(f"Trigger results file not found: {results_file}")
 
+            # Mirror the immediate screening briefing to subscribed channels.
+            # Publishing is fail-open and must not delay report generation.
+            await publish_batch_campaign_best_effort(
+                market="KR",
+                session=mode,
+                trade_date=campaign_trade_date,
+                regime=campaign_regime,
+                status=COLLECTING,
+                candidates=tickers,
+                display_message=self._campaign_messages.get(mode),
+            )
+
             # 2. Generate reports - important: await added here!
             report_paths = await self.generate_reports(tickers, mode, timeout=600, language=language, macro_context=macro_context)
             if not report_paths:
                 logger.warning("No reports generated. Terminating process.")
                 return
-
-            # Channel-neutral terminal event. Only candidates with a successfully
-            # generated report are included; local queue failure is fail-open.
-            final_tickers = select_reported_candidates(tickers, report_paths)
-            if final_tickers:
-                await publish_batch_campaign_best_effort(
-                    market="KR",
-                    session=mode,
-                    trade_date=campaign_trade_date,
-                    regime=campaign_regime,
-                    status=COMPLETED,
-                    candidates=final_tickers,
-                )
 
             # Archive ingest (fire-and-forget, does not block pipeline)
             try:

@@ -14,6 +14,7 @@ import pytest
 
 from messaging.batch_campaign_publisher import (
     BatchCampaignPublisher,
+    COLLECTING,
     COMPLETED,
     SKIPPED,
     build_batch_campaign_event,
@@ -88,6 +89,7 @@ def test_completed_payload_is_canonical_and_limited_to_five_candidates():
         regime="correction",
         status=COMPLETED,
         candidates=candidates,
+        display_message="🔔 텔레그램과 공유하는 프리즘 시그널",
         occurred_at=occurred_at,
     )
 
@@ -110,6 +112,7 @@ def test_completed_payload_is_canonical_and_limited_to_five_candidates():
             }
             for index in range(5)
         ],
+        "display_message": "🔔 텔레그램과 공유하는 프리즘 시그널",
     }
 
 
@@ -127,6 +130,21 @@ def test_skipped_payload_has_reason_and_no_candidates():
     assert event["event_type"] == "BATCH_CAMPAIGN_SKIPPED"
     assert event["skip_reason"] == "CORRECTION morning batch rests"
     assert "candidates" not in event
+
+
+def test_collecting_payload_carries_the_immediate_screening_briefing():
+    event = build_batch_campaign_event(
+        market="KR",
+        session="AFTERNOON",
+        trade_date="20260723",
+        regime="UPTREND",
+        status=COLLECTING,
+        candidates=[{"code": "005930", "name": "삼성전자"}],
+        display_message="🔔 선정 직후 프리즘 시그널",
+    )
+
+    assert event["event_type"] == "BATCH_CAMPAIGN_COLLECTING"
+    assert event["display_message"] == "🔔 선정 직후 프리즘 시그널"
 
 
 def test_report_filter_excludes_candidates_whose_generation_failed():
@@ -267,7 +285,7 @@ def test_orchestrators_depend_on_messaging_not_kakao(orchestrator_path):
 
 
 @pytest.mark.parametrize("orchestrator_path", ORCHESTRATORS)
-def test_orchestrator_terminal_hooks_are_at_safe_boundaries(orchestrator_path):
+def test_orchestrator_publishes_screening_before_report_generation(orchestrator_path):
     tree = ast.parse(orchestrator_path.read_text(encoding="utf-8"))
 
     run_pipeline = next(
@@ -275,6 +293,30 @@ def test_orchestrator_terminal_hooks_are_at_safe_boundaries(orchestrator_path):
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_full_pipeline"
     )
+    collecting_calls = [
+        node
+        for node in ast.walk(run_pipeline)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") == "publish_batch_campaign_best_effort"
+        and any(
+            keyword.arg == "status"
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == "COLLECTING"
+            for keyword in node.keywords
+        )
+    ]
+    report_calls = [
+        node
+        for node in ast.walk(run_pipeline)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "generate_reports"
+    ]
+    assert len(collecting_calls) == 1
+    assert len(report_calls) == 1
+    keyword_names = {keyword.arg for keyword in collecting_calls[0].keywords}
+    assert "display_message" in keyword_names
+    assert collecting_calls[0].lineno < report_calls[0].lineno
     completed_calls = [
         node
         for node in ast.walk(run_pipeline)
@@ -287,29 +329,7 @@ def test_orchestrator_terminal_hooks_are_at_safe_boundaries(orchestrator_path):
             for keyword in node.keywords
         )
     ]
-    report_guards = [
-        node
-        for node in ast.walk(run_pipeline)
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.UnaryOp)
-        and isinstance(node.test.op, ast.Not)
-        and isinstance(node.test.operand, ast.Name)
-        and node.test.operand.id == "report_paths"
-        and any(isinstance(child, ast.Return) for child in node.body)
-    ]
-    assert len(completed_calls) == 1
-    assert len(report_guards) == 1
-    assert completed_calls[0].lineno > report_guards[0].end_lineno
-    completed_gate = next(
-        node
-        for node in ast.walk(run_pipeline)
-        if isinstance(node, ast.If)
-        and any(child is completed_calls[0] for child in ast.walk(node))
-    )
-    gate_names = {
-        node.id for node in ast.walk(completed_gate.test) if isinstance(node, ast.Name)
-    }
-    assert "final_tickers" in gate_names
+    assert completed_calls == []
 
     main = next(
         node

@@ -37,10 +37,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PRISM_US_DIR))
 
 from messaging.batch_campaign_publisher import (  # noqa: E402
-    COMPLETED,
+    COLLECTING,
     SKIPPED,
     publish_batch_campaign_best_effort,
-    select_reported_candidates,
 )
 
 # Load openai_debug from project root via importlib (prism-us/cores/ shadows root cores/)
@@ -173,6 +172,7 @@ class USStockAnalysisOrchestrator:
         self.selected_tickers = {}
         self.telegram_config = telegram_config or TelegramConfig(use_telegram=True)
         self._broadcast_tasks = []  # Collect fire-and-forget broadcast tasks
+        self._campaign_messages = {}  # Reuse the subscriber briefing on Kakao
 
     @staticmethod
     def _extract_base64_images(markdown_text: str) -> tuple:
@@ -840,6 +840,8 @@ class USStockAnalysisOrchestrator:
 
             # Generate message based on language (no translation needed - direct templates)
             message = self._create_trigger_alert_message(mode, all_results, trade_date, language)
+            if language == "ko":
+                self._campaign_messages[mode] = message
 
             # Use main channel (Korean) by default
             chat_id = self.telegram_config.channel_id
@@ -962,7 +964,14 @@ class USStockAnalysisOrchestrator:
             header = f"{title}\n📅 {formatted_date} {time_desc} 포착된 관심종목\n"
             volume_label = "거래량 증가"
             gap_label = "갭상승"
-            footer = "📋 10~30분 후 상세 분석 리포트가 제공됩니다\n※ 본 정보는 투자 참고용이며, 투자 결정은 본인 책임입니다."
+            header += (
+                "🤖 프리즘봇의 가상 포트폴리오 운용 과정을 투명하게 공개합니다. "
+                "실제 매수 권유가 아닙니다.\n"
+            )
+            footer = (
+                "📋 프리즘봇이 검토할 상세 분석 리포트는 10~30분 후 제공됩니다\n"
+                "※ 가상 운용 과정 공유이며 투자 리딩 또는 실제 매수 권유가 아닙니다."
+            )
             channel_map = CHANNEL_KO
             regime_map = REGIME_KO
             score_label = "점수"
@@ -978,7 +987,14 @@ class USStockAnalysisOrchestrator:
             header = f"{title}\n📅 {formatted_date} Stocks detected {time_desc}\n"
             volume_label = "Volume Increase"
             gap_label = "Gap Up"
-            footer = "📋 Detailed analysis report will be available in 10-30 minutes\n※ This is for investment reference only. Investment decisions are your responsibility."
+            header += (
+                "🤖 This transparently shares Prism Bot's virtual-portfolio process; "
+                "it is not a real buy recommendation.\n"
+            )
+            footer = (
+                "📋 The detailed report Prism Bot will review arrives in 10-30 minutes\n"
+                "※ Virtual-operation disclosure only; not investment guidance or a buy recommendation."
+            )
             channel_map = CHANNEL_EN
             regime_map = REGIME_EN
             score_label = "Score"
@@ -1118,24 +1134,23 @@ class USStockAnalysisOrchestrator:
             else:
                 logger.warning(f"US trigger results file not found: {results_file}")
 
+            # Mirror the immediate screening briefing to subscribed channels.
+            # Publishing is fail-open and must not delay report generation.
+            await publish_batch_campaign_best_effort(
+                market="US",
+                session=mode,
+                trade_date=effective_date,
+                regime=campaign_regime,
+                status=COLLECTING,
+                candidates=tickers,
+                display_message=self._campaign_messages.get(mode),
+            )
+
             # 2. Generate reports
             report_paths = await self.generate_reports(tickers, mode, timeout=600, language=language, macro_context=macro_context)
             if not report_paths:
                 logger.warning("No US reports generated. Terminating process.")
                 return
-
-            # Channel-neutral terminal event. Only candidates with a successfully
-            # generated report are included; local queue failure is fail-open.
-            final_tickers = select_reported_candidates(tickers, report_paths)
-            if final_tickers:
-                await publish_batch_campaign_best_effort(
-                    market="US",
-                    session=mode,
-                    trade_date=effective_date,
-                    regime=campaign_regime,
-                    status=COMPLETED,
-                    candidates=final_tickers,
-                )
 
             # 3. Archive ingest (fire-and-forget, does not block pipeline)
             try:
