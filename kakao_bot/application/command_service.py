@@ -30,8 +30,14 @@ DEFAULT_USER_DAILY_LIMIT = 5
 DEFAULT_ROOM_DAILY_LIMIT = 20
 
 _UNAPPROVED = "이 채팅방은 아직 승인되지 않았습니다. 관리자에게 승인을 요청해주세요."
-_USER_LIMIT = "오늘 요청 한도를 모두 사용했습니다. 내일 다시 이용해주세요."
-_ROOM_LIMIT = "이 채팅방의 오늘 요청 한도를 모두 사용했습니다."
+_USER_LIMIT = (
+    "사용자별 일일 요청 한도 {limit}회를 모두 사용했습니다.\n"
+    "리포트·평가·질문 합산, 최근 24시간 기준입니다."
+)
+_ROOM_LIMIT = (
+    "이 채팅방의 일일 요청 한도 {limit}회를 모두 사용했습니다.\n"
+    "모든 사용자의 리포트·평가·질문 합산, 최근 24시간 기준입니다."
+)
 _NEED_TICKER = "종목을 함께 알려주세요. 예: 리포트 삼성전자"
 _NEED_QUESTION = "궁금한 내용을 함께 적어주세요. 예: 질문 오늘 코스피 왜 빠졌어?"
 _NEED_AVG_PRICE = (
@@ -62,11 +68,19 @@ _HELP_LINES = {
         " · 삼성전자 — 종목 이름만 보내면 분석 리포트\n"
         " · AAPL — 미국 종목은 티커로"
     ),
-    CommandKind.EVALUATE: " · 평가 삼성전자 70000 6 — 내 평단가 기준으로 평가",
+    CommandKind.EVALUATE: (
+        " · 평가 삼성전자 70000 6 — 내 평단가 기준으로 평가\n"
+        "   70000은 평단가, 뒤의 6은 보유기간(월)"
+    ),
     CommandKind.ASK: " · 오늘 시장 어때? — 그냥 물어보면 답변",
 }
 
-_HELP_FOOTER = "\n\n저를 멘션해서 편하게 말 걸어주세요. 명령어를 외울 필요 없어요."
+_HELP_FOOTER = (
+    "\n\n📌 일일 요청 한도(최근 24시간)"
+    f"\n · 리포트·평가·질문 합산 사용자당 {DEFAULT_USER_DAILY_LIMIT}회"
+    f"\n · 채팅방 전체 {DEFAULT_ROOM_DAILY_LIMIT}회"
+    "\n\n저를 멘션해서 편하게 말 걸어주세요. 명령어를 외울 필요 없어요."
+)
 
 
 def leads_somewhere(utterance: str) -> bool:
@@ -344,7 +358,7 @@ class CommandService:
         if used_by_user >= self._limits.user_daily:
             return CommandOutcome(
                 kind=CommandOutcomeKind.REJECTED,
-                message=_USER_LIMIT,
+                message=_USER_LIMIT.format(limit=self._limits.user_daily),
             )
 
         used_by_room = self._repository.count_analysis_jobs_since(
@@ -355,6 +369,6 @@ class CommandService:
         if used_by_room >= self._limits.room_daily:
             return CommandOutcome(
                 kind=CommandOutcomeKind.REJECTED,
-                message=_ROOM_LIMIT,
+                message=_ROOM_LIMIT.format(limit=self._limits.room_daily),
             )
         return None
