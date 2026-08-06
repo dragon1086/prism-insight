@@ -783,11 +783,16 @@ class TelegramAIBot:
         report_conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("report", self.handle_report_start),
-                MessageHandler(filters.Regex(r'^/report(@\w+)?$'), self.handle_report_start)
+                MessageHandler(filters.Regex(r'^/report(@\w+)?$'), self.handle_report_start),
+                CommandHandler("us_report", self.handle_us_report_start),
+                MessageHandler(filters.Regex(r'^/us_report(@\w+)?$'), self.handle_us_report_start),
             ],
             states={
                 REPORT_CHOOSING_TICKER: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_report_ticker_input)
+                ],
+                US_REPORT_CHOOSING_TICKER: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_us_report_ticker_input)
                 ]
             },
             fallbacks=[
@@ -796,6 +801,7 @@ class TelegramAIBot:
             per_chat=False,
             per_user=True,
             conversation_timeout=300,
+            allow_reentry=True,
         )
         self.application.add_handler(report_conv_handler)
 
@@ -894,26 +900,6 @@ class TelegramAIBot:
             conversation_timeout=300,
         )
         self.application.add_handler(us_evaluate_handler)
-
-        # US report conversation handler (/us_report)
-        us_report_handler = ConversationHandler(
-            entry_points=[
-                CommandHandler("us_report", self.handle_us_report_start),
-                MessageHandler(filters.Regex(r'^/us_report(@\w+)?$'), self.handle_us_report_start)
-            ],
-            states={
-                US_REPORT_CHOOSING_TICKER: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_us_report_ticker_input)
-                ]
-            },
-            fallbacks=[
-                CommandHandler("cancel", self.handle_cancel)
-            ],
-            per_chat=False,
-            per_user=True,
-            conversation_timeout=300,
-        )
-        self.application.add_handler(us_report_handler)
 
         # ==========================================================================
         # Journal (investment diary) conversation handler (/journal)
@@ -1676,6 +1662,18 @@ class TelegramAIBot:
         stock_code, stock_name, error_message = await self.get_stock_code(user_input)
 
         if error_message:
+            # A previous /report conversation can remain active when the user
+            # switches to /us_report. Because the domestic handler is
+            # registered first, it would otherwise consume the next plain-text
+            # ticker. Route an unmistakable US ticker through the existing US
+            # report path instead of rejecting it as an unknown Korean stock.
+            if re.fullmatch(r"[A-Za-z]{1,5}", user_input):
+                logger.info(
+                    "Routing US ticker from domestic report state: %s",
+                    user_input.upper(),
+                )
+                return await self.handle_us_report_ticker_input(update, context)
+
             # Notify user of error and request re-input
             await update.message.reply_text(error_message)
             return REPORT_CHOOSING_TICKER
