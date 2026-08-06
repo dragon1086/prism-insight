@@ -211,8 +211,9 @@ def test_help_explains_evaluation_period_and_shared_daily_limits():
     assert text.index("종목을 깊게") < text.index("내 상황에 맞춰")
     assert "가상 포트폴리오" in text
     assert "투자 리딩" in text
-    assert "70000은 평단가" in text
-    assert "뒤의 6은 보유기간(월)" in text
+    assert "평단 50000원" in text
+    assert "평단가는 필수" in text
+    assert "보유기간은 선택" in text
     assert "리포트·평가·질문 합산" in text
     assert "사용자당 5회" in text
     assert "채팅방 전체" not in text

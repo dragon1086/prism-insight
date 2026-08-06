@@ -184,6 +184,19 @@ class TestEnqueue:
         assert "1~2분" in outcome.message
         assert "중간 표시가 없어도" in outcome.message
 
+    def test_a_natural_evaluate_becomes_an_evaluate_job(self, repository, service):
+        outcome = service.handle(
+            message("카카오 보유종목 평가해줘. 평단 50000원 3개월 보유"),
+            now=NOW,
+        )
+
+        assert outcome.kind is CommandOutcomeKind.ACCEPTED
+        [job] = repository.list_analysis_jobs()
+        assert job["kind"] == "evaluate"
+        assert job["ticker"] == "005930"
+        assert job["payload"]["avg_price"] == 50000.0
+        assert job["payload"]["period_months"] == 3
+
     def test_the_tone_travels_with_the_job(self, repository, service):
         service.handle(message("평가 삼성전자 70000 6 취한 친구처럼"), now=NOW)
 
@@ -197,7 +210,19 @@ class TestEnqueue:
 
         assert outcome.kind is CommandOutcomeKind.REJECTED
         assert "삼성전자" in outcome.message
-        assert "70000" in outcome.message
+        assert "50000원" in outcome.message
+        assert repository.list_analysis_jobs() == ()
+
+    def test_a_natural_missing_price_explains_required_and_optional_values(
+        self, repository, service
+    ):
+        outcome = service.handle(message("카카오 평가해줘"), now=NOW)
+
+        assert outcome.kind is CommandOutcomeKind.REJECTED
+        assert "평단가는 필수" in outcome.message
+        assert "보유기간은 선택" in outcome.message
+        assert "카카오" in outcome.message
+        assert "50000원" in outcome.message
         assert repository.list_analysis_jobs() == ()
 
     def test_evaluate_counts_against_the_same_quota(self, repository, service):
