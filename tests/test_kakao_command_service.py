@@ -15,6 +15,7 @@ from kakao_bot.application.command_service import (
     CommandLimits,
     CommandOutcomeKind,
     CommandService,
+    help_text,
 )
 from kakao_bot.domain.models import ApprovalStatus, InboundMessage
 from kakao_bot.ports.analysis import ResolvedTicker, TickerResolution
@@ -158,6 +159,7 @@ def test_user_daily_limit_blocks_further_requests(repository):
 
     assert blocked.kind is CommandOutcomeKind.REJECTED
     assert "한도" in blocked.message
+    assert "2회" in blocked.message
     assert len(repository.list_analysis_jobs()) == 2
 
 
@@ -188,6 +190,17 @@ def test_room_limit_counts_across_users(repository):
 
     assert blocked.kind is CommandOutcomeKind.REJECTED
     assert "채팅방" in blocked.message
+    assert "2회" in blocked.message
+
+
+def test_help_explains_evaluation_period_and_shared_daily_limits():
+    text = help_text()
+
+    assert "70000은 평단가" in text
+    assert "뒤의 6은 보유기간(월)" in text
+    assert "리포트·평가·질문 합산" in text
+    assert "사용자당 5회" in text
+    assert "채팅방 전체 20회" in text
 
 
 def test_help_is_answered_without_touching_the_room_gate(tmp_path):

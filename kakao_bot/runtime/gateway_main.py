@@ -37,11 +37,17 @@ DEFAULT_LOCK_PATH = Path("/tmp/prism-kakao-gateway.lock")
 REGISTERED_COMMAND_UTTERANCES = [
     {
         "buttonName": "리포트",
-        "description": "국내 종목 분석 리포트를 생성합니다.",
+        "description": (
+            "한 칸 띄우고 국내 종목명 또는 미국 티커를 입력하세요. "
+            "예: 리포트 삼성전자 / 리포트 AAPL"
+        ),
     },
     {
         "buttonName": "평가",
-        "description": "보유 종목을 평단가 기준으로 평가합니다.",
+        "description": (
+            "한 칸 띄우고 종목명·평단가·보유기간(월)을 입력하세요. "
+            "예: 평가 삼성전자 70000 6"
+        ),
     },
     {"buttonName": "도움말", "description": None},
 ]
