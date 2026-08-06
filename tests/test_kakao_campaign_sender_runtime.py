@@ -42,7 +42,7 @@ def claimed(
     )
 
 
-def test_signal_campaign_renderer_builds_one_list_card_with_five_item_cap():
+def test_signal_campaign_renderer_reuses_the_orchestrator_briefing_without_actions():
     response = render_campaign_delivery(
         claimed(
             message_type="signal_campaign",
@@ -52,6 +52,10 @@ def test_signal_campaign_renderer_builds_one_list_card_with_five_item_cap():
                 "session": "AFTERNOON",
                 "trade_date": "2026-07-23",
                 "regime": "UPTREND",
+                "display_message": (
+                    "🔔 오후 프리즘 시그널 얼럿\n"
+                    "삼성전자와 SK하이닉스를 관심종목으로 관찰합니다."
+                ),
                 "candidates": [
                     {
                         "ticker": f"00000{index}",
@@ -67,23 +71,15 @@ def test_signal_campaign_renderer_builds_one_list_card_with_five_item_cap():
 
     assert response["version"] == "2.0"
     [output] = response["template"]["outputs"]
-    card = output["listCard"]
-    assert card["header"]["title"] == "🇰🇷 한국 오후 시그널"
-    assert len(card["items"]) == 5
-    # The title is what a tap sends, so it reads as a command; the ticker moves
-    # into the description. Without this the daily card was a dead end.
-    assert card["items"][0]["title"] == "기업 0 리포트"
-    assert card["items"][0]["action"] == "message"
-    assert "점수 90" in card["items"][0]["description"]
-    assert "000000" in card["items"][0]["description"]
+    text = output["simpleText"]["text"]
+    assert "가상 포트폴리오" in text
+    assert "매수 권유가 아닙니다" in text
+    assert "오후 프리즘 시그널 얼럿" in text
+    assert "삼성전자와 SK하이닉스" in text
+    assert "messageText" not in str(response)
 
 
-def test_signal_card_items_are_commands_the_bot_accepts():
-    """A tap on the daily card must start a report, not fall through."""
-
-    from kakao_bot.application.command_parser import parse_command
-    from kakao_bot.application.command_service import IMPLEMENTED_COMMANDS
-
+def test_legacy_signal_campaign_without_display_message_is_still_non_interactive():
     response = render_campaign_delivery(
         claimed(
             message_type="signal_campaign",
@@ -105,11 +101,11 @@ def test_signal_card_items_are_commands_the_bot_accepts():
         )
     )
 
-    [item] = response["template"]["outputs"][0]["listCard"]["items"]
-    command = parse_command(item["title"])
-
-    assert command.kind in IMPLEMENTED_COMMANDS
-    assert command.query == "삼성전자"
+    text = response["template"]["outputs"][0]["simpleText"]["text"]
+    assert "삼성전자 (005930)" in text
+    assert "AI 메모리 수요" in text
+    assert "리포트 삼성전자" not in text
+    assert "messageText" not in str(response)
 
 
 def test_rest_notice_renderer_does_not_create_candidate_card():

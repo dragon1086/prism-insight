@@ -62,19 +62,32 @@ IMPLEMENTED_COMMANDS = frozenset(
     }
 )
 
-_HELP_LINES = {
-    CommandKind.REPORT: (
+_HELP_STORY = (
+    (
+        CommandKind.ASK,
+        "1️⃣ 시장을 읽고\n · 오늘 시장 어때? — 시장 흐름을 함께 살펴봐요",
+    ),
+    (
+        CommandKind.ASK,
+        "2️⃣ 최신 이슈를 묻고\n · SK하이닉스 최근 전망 — 뉴스와 근거를 찾아 답해요",
+    ),
+    (
+        CommandKind.REPORT,
+        "3️⃣ 종목을 깊게 분석하고\n"
         " · 삼성전자 — 종목 이름만 보내면 분석 리포트\n"
-        " · AAPL — 미국 종목은 티커로"
+        " · AAPL — 미국 종목은 티커로",
     ),
-    CommandKind.EVALUATE: (
+    (
+        CommandKind.EVALUATE,
+        "4️⃣ 내 상황에 맞춰 점검해요\n"
         " · 평가 삼성전자 70000 6 — 내 평단가 기준으로 평가\n"
-        "   70000은 평단가, 뒤의 6은 보유기간(월)"
+        "   70000은 평단가, 뒤의 6은 보유기간(월)",
     ),
-    CommandKind.ASK: " · 오늘 시장 어때? — 그냥 물어보면 답변",
-}
+)
 
 _HELP_FOOTER = (
+    "\n\n🤖 PRISM은 스스로 가상 포트폴리오를 운용하며 판단 과정을 공개합니다."
+    "\n투자 리딩이나 실제 매수 권유가 아닌 AI 애널리스트의 분석 기록입니다."
     "\n\n📌 일일 요청 한도(최근 24시간)"
     f"\n · 리포트·평가·질문 합산 사용자당 {DEFAULT_USER_DAILY_LIMIT}회"
     "\n\n저를 멘션해서 편하게 말 걸어주세요. 명령어를 외울 필요 없어요."
@@ -112,7 +125,7 @@ def help_text() -> str:
 
     lines = [
         text
-        for kind, text in _HELP_LINES.items()
+        for kind, text in _HELP_STORY
         if kind in IMPLEMENTED_COMMANDS
     ]
     return "📊 PRISM 사용법\n" + "\n".join(lines) + _HELP_FOOTER
