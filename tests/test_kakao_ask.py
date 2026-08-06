@@ -401,6 +401,8 @@ def test_source_links_follow_the_evidence_numbers_used_by_the_answer():
 
     assert "https://news.example/two" in answer
     assert "https://news.example/one" not in answer
+    assert "자료 2" not in answer
+    assert "1. 두 번째 기사" in answer
 
 
 def test_source_links_fall_back_to_the_newest_three_when_model_omits_numbers():
@@ -415,6 +417,29 @@ def test_source_links_fall_back_to_the_newest_three_when_model_omits_numbers():
 
     assert all(f"https://n/{index}" in answer for index in range(1, 4))
     assert "https://n/4" not in answer
+
+
+def test_source_links_limit_referenced_articles_and_compact_the_dates():
+    from report_generator import _append_source_links
+
+    items = [
+        {
+            "title": f"기사 {index}",
+            "date": "2026-08-06T09:56:07+09:00",
+            "url": f"https://news.example/{index}",
+        }
+        for index in range(1, 5)
+    ]
+
+    answer = _append_source_links(
+        "원인입니다. [자료 1] [자료 2] [자료 3] [자료 4]",
+        items,
+    )
+
+    assert "자료" not in answer
+    assert all(f"https://news.example/{index}" in answer for index in range(1, 4))
+    assert "https://news.example/4" not in answer
+    assert "2026-08-06T" not in answer
 
 
 def test_intraday_facts_calculate_the_candle_and_low_rebound():
