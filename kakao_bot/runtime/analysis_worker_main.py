@@ -166,8 +166,17 @@ def _analysis_service(
         max_attempts=config.max_attempts,
         # Unset means no public endpoint exists yet, in which case no link is
         # minted and the card ships summary-only rather than a dead button.
-        public_base_url=os.getenv("KAKAO_PUBLIC_BASE_URL"),
+        public_base_url=_report_public_base_url(),
         link_ttl_hours=int(os.getenv("KAKAO_REPORT_LINK_TTL_HOURS", "72")),
+    )
+
+
+def _report_public_base_url(environ: Mapping[str, str] | None = None) -> str | None:
+    """Resolve the deployed PDF-link setting with legacy compatibility."""
+
+    values = os.environ if environ is None else environ
+    return values.get("KAKAO_BOT_PUBLIC_BASE_URL") or values.get(
+        "KAKAO_PUBLIC_BASE_URL"
     )
 
 

@@ -10,6 +10,7 @@ from kakao_bot.domain.models import AnalysisJob, ApprovalStatus, OutboundDeliver
 from kakao_bot.ports.analysis import AnalysisOutcome
 from kakao_bot.runtime.analysis_worker_main import (
     AnalysisWorkerConfigurationError,
+    _report_public_base_url,
     _start_llm_runtime,
     _stop_llm_runtime,
 )
@@ -224,6 +225,24 @@ def test_batch_size_is_respected(tmp_path):
         assert result.completed == 2
         assert len(analysis.calls) == 2
         assert len(repository.list_outbox()) == 2
+
+
+def test_report_public_base_url_uses_deployed_env_name():
+    assert (
+        _report_public_base_url(
+            {"KAKAO_BOT_PUBLIC_BASE_URL": "https://analysis.example.test"}
+        )
+        == "https://analysis.example.test"
+    )
+
+
+def test_report_public_base_url_keeps_legacy_env_compatibility():
+    assert (
+        _report_public_base_url(
+            {"KAKAO_PUBLIC_BASE_URL": "https://legacy.example.test"}
+        )
+        == "https://legacy.example.test"
+    )
 
 
 @pytest.mark.asyncio
