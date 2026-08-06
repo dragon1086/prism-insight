@@ -29,6 +29,17 @@ _NUMERIC = re.compile(r"^\d+(?:[.,]\d+)?$")
 # Marks that make a token part of a sentence rather than a name on its own.
 _SENTENCE_MARK = re.compile(r"[?？!！.,、。]")
 _PERIOD = re.compile(r"^(\d+)\s*(?:개월|달|months?|m)?$", re.IGNORECASE)
+_REPORT_REQUEST_SUFFIXES = frozenset(
+    {
+        "써줘",
+        "작성해줘",
+        "만들어줘",
+        "해주세요",
+        "해줘",
+        "부탁해",
+        "부탁해요",
+    }
+)
 
 
 class CommandKind(Enum):
@@ -134,12 +145,24 @@ def parse_command(utterance: str) -> ParsedCommand:
     if kind is CommandKind.EVALUATE:
         return _parse_evaluate(market, rest)
 
+    if kind is CommandKind.REPORT:
+        rest = _strip_report_request_suffixes(rest)
+
     query = " ".join(rest).strip() or None
     return ParsedCommand(
         kind=kind,
         query=query,
         market=market or _infer_market(query),
     )
+
+
+def _strip_report_request_suffixes(tokens: list[str]) -> list[str]:
+    """Drop polite request words that are not part of a stock name."""
+
+    result = list(tokens)
+    while result and result[-1].strip().lower() in _REPORT_REQUEST_SUFFIXES:
+        result.pop()
+    return result
 
 
 def _take_keyword(
