@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_KAKAO_REPORT_DATA_SOURCES = "fdr,naver,krx"
 DEFAULT_KAKAO_REPORT_MODEL = "gpt-5.6-luna"
-DEFAULT_KAKAO_REPORT_EFFORT = "high"
+DEFAULT_KAKAO_REPORT_EFFORT = "medium"
+DEFAULT_KAKAO_REPORT_MAX_CONCURRENCY = "3"
 
 
 class AnalysisWorkerConfigurationError(ValueError):
@@ -205,12 +206,26 @@ def _configure_report_data_sources(
 def _configure_report_model(
     environ: MutableMapping[str, str] | None = None,
 ) -> tuple[str, str]:
-    """Default Kakao's formal report subprocesses to Luna with high reasoning."""
+    """Default Kakao's formal report subprocesses to Luna with medium reasoning."""
 
     values = os.environ if environ is None else environ
     model = values.setdefault("REPORT_MODEL", DEFAULT_KAKAO_REPORT_MODEL)
     effort = values.setdefault("REPORT_EFFORT", DEFAULT_KAKAO_REPORT_EFFORT)
     return model, effort
+
+
+def _configure_report_parallelism(
+    environ: MutableMapping[str, str] | None = None,
+) -> tuple[str, str]:
+    """Enable bounded parallel base-section generation for Kakao reports."""
+
+    values = os.environ if environ is None else environ
+    enabled = values.setdefault("PRISM_PARALLEL_REPORT", "true")
+    max_concurrency = values.setdefault(
+        "PRISM_PARALLEL_REPORT_MAX_CONCURRENCY",
+        DEFAULT_KAKAO_REPORT_MAX_CONCURRENCY,
+    )
+    return enabled, max_concurrency
 
 
 async def async_main() -> int:
@@ -219,6 +234,7 @@ async def async_main() -> int:
         config = load_config()
         _configure_report_data_sources()
         _configure_report_model()
+        _configure_report_parallelism()
         llm_runtime_started = await _start_llm_runtime()
     except AnalysisWorkerConfigurationError as exc:
         logger.error("%s", exc)
