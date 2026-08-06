@@ -54,32 +54,48 @@ def help_card() -> dict[str, object]:
     # want people to type: a bare stock name, or a plain question. Titles that
     # read `리포트 삼성전자` would teach a command grammar that is no longer
     # necessary — and that users would then keep using.
-    items: list[dict[str, object]] = [
-        {
-            "title": _EXAMPLE_TICKER,
-            "description": "종목 이름만 보내면 분석 리포트를 만들어드려요",
-            "action": "message",
-            "messageText": _EXAMPLE_TICKER,
-        },
-        {
-            "title": "AAPL",
-            "description": "미국 종목은 티커로 보내주세요",
-            "action": "message",
-            "messageText": "AAPL",
-        },
-    ]
-    if CommandKind.ASK in IMPLEMENTED_COMMANDS:
+    items: list[dict[str, object]] = []
+    examples = (
+        (
+            CommandKind.ASK,
+            "오늘 시장 어때?",
+            "① 시장 흐름을 함께 읽어요",
+        ),
+        (
+            CommandKind.ASK,
+            "SK하이닉스 최근 전망",
+            "② 최신 뉴스와 근거를 찾아봐요",
+        ),
+        (
+            CommandKind.REPORT,
+            _EXAMPLE_TICKER,
+            "③ 종목을 깊게 분석해요",
+        ),
+        (
+            CommandKind.EVALUATE,
+            "평가 삼성전자 70000 6",
+            "④ 내 평단가와 보유기간으로 점검해요",
+        ),
+        (
+            CommandKind.REPORT,
+            "AAPL",
+            "⑤ 미국 종목은 티커로 물어봐요",
+        ),
+    )
+    for kind, title, description in examples:
+        if kind not in IMPLEMENTED_COMMANDS:
+            continue
         items.append(
             {
-                "title": "오늘 시장 어때?",
-                "description": "궁금한 걸 그냥 물어보세요",
+                "title": title,
+                "description": description,
                 "action": "message",
-                "messageText": "오늘 시장 어때?",
+                "messageText": title,
             }
         )
 
     return list_card_output(
-        header_title="바로 해보기",
+        header_title="PRISM과 투자 여정 시작하기",
         items=items,
         # Fills the bot mention into the input box, so asking about a stock we
         # did not list costs a tap plus a name instead of remembering syntax.

@@ -21,7 +21,7 @@ class BatchCampaignPayloadError(ValueError):
 
 
 def map_batch_campaign_payload(payload: Mapping[str, object]) -> BatchCampaign:
-    """Validate and map a schema-version-1 terminal campaign event."""
+    """Validate and map a schema-version-1 campaign event."""
 
     if not isinstance(payload, Mapping):
         raise BatchCampaignPayloadError("payload must be a mapping")
@@ -39,9 +39,13 @@ def map_batch_campaign_payload(payload: Mapping[str, object]) -> BatchCampaign:
         raise BatchCampaignPayloadError(
             f"unsupported campaign status: {status_text}"
         ) from exc
-    if status not in (CampaignStatus.COMPLETED, CampaignStatus.SKIPPED):
+    if status not in (
+        CampaignStatus.COLLECTING,
+        CampaignStatus.COMPLETED,
+        CampaignStatus.SKIPPED,
+    ):
         raise BatchCampaignPayloadError(
-            f"campaign status is not terminal: {status_text}"
+            f"unsupported campaign status: {status_text}"
         )
 
     event_type = _required_string(payload, "event_type")
@@ -58,13 +62,14 @@ def map_batch_campaign_payload(payload: Mapping[str, object]) -> BatchCampaign:
     occurred_at = _parse_occurred_at(payload.get("occurred_at"))
     campaign_id = _required_string(payload, "campaign_id")
 
-    if status is CampaignStatus.COMPLETED:
+    if status in (CampaignStatus.COLLECTING, CampaignStatus.COMPLETED):
         if "skip_reason" in payload:
             raise BatchCampaignPayloadError(
-                "completed campaign must not include skip_reason"
+                "screening campaign must not include skip_reason"
             )
         candidates = _parse_candidates(payload.get("candidates"))
         skip_reason = None
+        display_message = _optional_string(payload, "display_message")
     else:
         if "candidates" in payload:
             raise BatchCampaignPayloadError(
@@ -72,6 +77,7 @@ def map_batch_campaign_payload(payload: Mapping[str, object]) -> BatchCampaign:
             )
         candidates = ()
         skip_reason = _required_string(payload, "skip_reason")
+        display_message = None
 
     return BatchCampaign(
         campaign_id=campaign_id,
@@ -82,6 +88,7 @@ def map_batch_campaign_payload(payload: Mapping[str, object]) -> BatchCampaign:
         status=status,
         candidates=candidates,
         skip_reason=skip_reason,
+        display_message=display_message,
         created_at=occurred_at,
     )
 
@@ -90,6 +97,17 @@ def _required_string(payload: Mapping[str, object], field: str) -> str:
     value = payload.get(field)
     if not isinstance(value, str) or not value.strip():
         raise BatchCampaignPayloadError(f"{field} must be a non-empty string")
+    return value.strip()
+
+
+def _optional_string(payload: Mapping[str, object], field: str) -> str | None:
+    value = payload.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise BatchCampaignPayloadError(
+            f"{field} must be a non-empty string or null"
+        )
     return value.strip()
 
 

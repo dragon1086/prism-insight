@@ -4,11 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from kakao_bot.adapters.kakao.skill_response import (
-    list_card_output,
-    simple_text,
-    skill_response,
-)
+from kakao_bot.adapters.kakao.skill_response import MAX_SIMPLE_TEXT_LENGTH, simple_text
 from kakao_bot.domain.models import ClaimedOutboundDelivery
 
 _MARKET_LABELS = {
@@ -40,7 +36,7 @@ def _signal_campaign(payload: Mapping[str, object]) -> dict[str, object]:
     ):
         raise ValueError("signal campaign requires candidates")
 
-    items: list[dict[str, object]] = []
+    fallback_lines: list[str] = []
     for raw_candidate in candidates[:5]:
         if not isinstance(raw_candidate, Mapping):
             raise ValueError("campaign candidates must be objects")
@@ -53,30 +49,31 @@ def _signal_campaign(payload: Mapping[str, object]) -> dict[str, object]:
         rationale = raw_candidate.get("rationale")
         if isinstance(rationale, str) and rationale.strip():
             descriptions.append(rationale.strip())
-        descriptions.append(ticker)
-        # The title is what a tap sends, so it has to read as a command. This
-        # card is the daily touchpoint; without an action it was a dead end.
-        items.append(
-            {
-                "title": f"{company_name} 리포트",
-                "description": " · ".join(descriptions),
-                "action": "message",
-                "messageText": f"리포트 {company_name}",
-            }
+        detail = " · ".join(descriptions)
+        fallback_lines.append(
+            f"· {company_name} ({ticker})" + (f"\n  {detail}" if detail else "")
         )
 
     market, session = _slot_labels(payload)
-    _required_text(payload, "trade_date")
+    trade_date = _required_text(payload, "trade_date")
     _required_text(payload, "regime")
-    header = f"{market[0]} {market[1]} {session} 시그널"
-    return skill_response(
-        [
-            list_card_output(
-                header_title=header,
-                items=items,
-            )
-        ]
+    display_message = payload.get("display_message")
+    if isinstance(display_message, str) and display_message.strip():
+        body = display_message.strip().replace("*", "")
+    else:
+        body = (
+            f"🔔 {market[0]} {market[1]} {session} 프리즘 시그널\n"
+            f"📅 {trade_date} 포착된 관심종목\n\n"
+            + "\n\n".join(fallback_lines)
+        )
+
+    disclosure = (
+        "🤖 프리즘봇의 가상 포트폴리오 운용 과정을 투명하게 공유합니다. "
+        "실제 매수 권유가 아닙니다."
     )
+    if "가상 포트폴리오" not in body:
+        body = f"{disclosure}\n\n{body}"
+    return simple_text(body[:MAX_SIMPLE_TEXT_LENGTH])
 
 
 def _rest_notice(payload: Mapping[str, object]) -> dict[str, object]:
