@@ -11,6 +11,7 @@ from kakao_bot.ports.analysis import AnalysisOutcome
 from kakao_bot.runtime.analysis_worker_main import (
     AnalysisWorkerConfigurationError,
     _configure_report_data_sources,
+    _configure_report_model,
     _report_public_base_url,
     _start_llm_runtime,
     _stop_llm_runtime,
@@ -263,6 +264,20 @@ def test_legacy_report_source_order_gains_recent_flow_fallback():
     environ = {"PRISM_REPORT_DATA_SOURCES": "fdr,krx"}
 
     assert _configure_report_data_sources(environ) == "fdr,naver,krx"
+
+
+def test_kakao_reports_default_to_luna_with_high_reasoning():
+    environ = {}
+
+    assert _configure_report_model(environ) == ("gpt-5.6-luna", "high")
+    assert environ["REPORT_MODEL"] == "gpt-5.6-luna"
+    assert environ["REPORT_EFFORT"] == "high"
+
+
+def test_explicit_report_model_configuration_wins_over_kakao_default():
+    environ = {"REPORT_MODEL": "custom-model", "REPORT_EFFORT": "medium"}
+
+    assert _configure_report_model(environ) == ("custom-model", "medium")
 
 
 @pytest.mark.asyncio
