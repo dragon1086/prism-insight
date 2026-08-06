@@ -320,6 +320,25 @@ def test_intraday_stock_move_question_uses_today_cause_queries():
     assert all("뭐야" not in query for query in queries)
 
 
+def test_intraday_stock_alias_is_found_after_the_time_word():
+    from kakao_bot.adapters.prism.report_adapter import _ask_search_plan
+
+    queries, use_primary_sources = _ask_search_plan(
+        "오늘 하이닉스 거의 하한가까지 갔다 올라왔는데 왜그래?"
+    )
+
+    assert use_primary_sources is True
+    assert all("SK하이닉스" in query for query in queries)
+    assert all(not query.startswith("오늘 오늘") for query in queries)
+
+
+def test_common_time_word_is_never_resolved_as_a_partial_stock_name():
+    from kakao_bot.adapters.prism.report_adapter import _resolve_kr_stock
+
+    assert _resolve_kr_stock("오늘") is None
+    assert _resolve_kr_stock("하이닉스") == ("000660", "SK하이닉스")
+
+
 def test_general_question_keeps_the_users_original_search_query():
     from kakao_bot.adapters.prism.report_adapter import _ask_search_plan
 
@@ -538,12 +557,31 @@ def test_ask_result_strips_markdown_the_bubble_cannot_show():
     assert "· 외국인 순매도" in text
 
 
-def test_a_long_answer_is_cut_to_fit_the_bubble():
+def test_a_long_answer_is_split_to_fit_two_bubbles():
     response = render_delivery(
         delivery("ask_result", {"question": QUESTION, "answer": "가" * 5_000})
     )
 
-    assert len(_first_text(response)) <= 1_000
+    text_outputs = response["template"]["outputs"][:-1]
+    assert len(text_outputs) == 2
+    assert all(len(output["simpleText"]["text"]) <= 1_000 for output in text_outputs)
+
+
+def test_ask_source_url_survives_when_answer_crosses_the_first_bubble_limit():
+    url = "https://www.example.com/news/2026/08/06/complete-article-url"
+    answer = "가" * 850 + f"\n\n🔗 출처\n1. 오늘 기사 (2026-08-06)\n{url}"
+
+    response = render_delivery(
+        delivery("ask_result", {"question": QUESTION, "answer": answer})
+    )
+
+    rendered = "\n".join(
+        output["simpleText"]["text"]
+        for output in response["template"]["outputs"]
+        if "simpleText" in output
+    )
+    assert url in rendered
+    assert not rendered.endswith("…")
 
 
 def test_an_empty_answer_falls_back_to_the_failure_card():

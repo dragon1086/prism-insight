@@ -8,6 +8,7 @@ or its file layout.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -81,11 +82,15 @@ _STOCK_RESEARCH_SUFFIX = re.compile(
 )
 
 _INTRADAY_EVENT_QUESTION = re.compile(
-    r"^(?P<subject>[A-Za-z0-9가-힣&().-]{2,30})\s+"
     r"(?=.*(?:오늘|장중|일봉|급락|급등|하한가|상한가))"
-    r".*(?:왜|이유|원인|무슨\s*일)",
+    r"(?=.*(?:왜|이유|원인|무슨\s*일)).*",
     re.IGNORECASE,
 )
+
+_STOCK_ALIASES = {
+    "하이닉스": "SK하이닉스",
+    "삼전": "삼성전자",
+}
 
 
 class PrismReportAdapter:
@@ -351,30 +356,77 @@ def _stock_question(question: str) -> tuple[str | None, bool]:
     text = question.strip()
     event = _INTRADAY_EVENT_QUESTION.search(text)
     if event:
-        subject = event.group("subject").strip()
-        if _resolve_kr_stock(subject):
+        subject = _find_kr_stock_mention(text)
+        if subject:
             return subject, True
 
     match = _STOCK_RESEARCH_SUFFIX.search(text)
     if not match:
         return None, False
-    subject = text[: match.start()].strip()
-    if not subject or len(subject) > 40 or not _resolve_kr_stock(subject):
+    prefix = text[: match.start()].strip()
+    subject = _find_kr_stock_mention(prefix)
+    if not subject or len(subject) > 40:
         return None, False
     return subject, False
 
 
+@lru_cache(maxsize=8)
+def _load_kr_stock_maps(path: str) -> tuple[dict[str, str], dict[str, str]]:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Stock map unavailable for ask detection: %s", exc)
+        return {}, {}
+    return (
+        payload.get("name_to_code", {}) or {},
+        payload.get("code_to_name", {}) or {},
+    )
+
+
+def _stock_map_path() -> str:
+    return os.getenv("KAKAO_STOCK_MAP_PATH", "stock_map.json")
+
+
 @lru_cache(maxsize=256)
 def _resolve_kr_stock(subject: str) -> tuple[str, str] | None:
-    """Resolve an exact KR company name without spending a network request."""
+    """Resolve only exact names, explicit aliases, or six-digit codes."""
 
-    from kakao_bot.adapters.prism.ticker_adapter import PrismTickerResolver
+    name_to_code, code_to_name = _load_kr_stock_maps(_stock_map_path())
+    candidate = _STOCK_ALIASES.get(subject.strip(), subject.strip())
+    if re.fullmatch(r"\d{6}", candidate):
+        name = code_to_name.get(candidate)
+        return (candidate, name) if name else None
+    code = name_to_code.get(candidate)
+    return (code, candidate) if code else None
 
-    resolver = PrismTickerResolver(os.getenv("KAKAO_STOCK_MAP_PATH", "stock_map.json"))
-    resolution = resolver.resolve(subject, market="kr")
-    if not resolution.succeeded or resolution.ticker is None:
-        return None
-    return resolution.ticker.ticker, resolution.ticker.company_name
+
+@lru_cache(maxsize=8)
+def _searchable_stock_names(path: str) -> tuple[tuple[str, str], ...]:
+    name_to_code, _ = _load_kr_stock_maps(path)
+    return tuple(
+        sorted(
+            ((name.casefold(), name) for name in name_to_code if len(name) >= 2),
+            key=lambda pair: len(pair[0]),
+            reverse=True,
+        )
+    )
+
+
+def _find_kr_stock_mention(text: str) -> str | None:
+    """Find a real stock name anywhere in a conversational question."""
+
+    folded = text.casefold()
+    for alias, canonical in sorted(
+        _STOCK_ALIASES.items(), key=lambda pair: len(pair[0]), reverse=True
+    ):
+        if alias.casefold() in folded:
+            return canonical
+
+    for folded_name, canonical in _searchable_stock_names(_stock_map_path()):
+        if folded_name in folded:
+            return canonical
+    return None
 
 
 def _format_stock_session_facts(
