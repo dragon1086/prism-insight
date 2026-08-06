@@ -375,7 +375,10 @@ def test_source_links_follow_the_evidence_numbers_used_by_the_answer():
         },
     ]
 
-    answer = _append_source_links("전망이 개선됐습니다. [자료 2]", items)
+    answer = _append_source_links(
+        "전망이 개선됐습니다. [서울경제·8월 6일, 자료 2]",
+        items,
+    )
 
     assert "https://news.example/two" in answer
     assert "https://news.example/one" not in answer
