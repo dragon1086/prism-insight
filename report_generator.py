@@ -11,6 +11,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import markdown
 
@@ -34,6 +35,16 @@ _telegram_backend = None
 
 _FAILED_REPORT_MARKERS = ("analysis failed", "분석 실패")
 _MAX_CACHEABLE_FAILURE_MARKERS = 2
+_KST = ZoneInfo("Asia/Seoul")
+
+
+def _now_kst() -> datetime:
+    return datetime.now(_KST)
+
+
+def _is_current_kst_day(path: Path) -> bool:
+    modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=_KST)
+    return modified_at.date() == _now_kst().date()
 
 
 def _is_cacheable_report(content: str) -> bool:
@@ -112,9 +123,8 @@ def get_cached_us_report(ticker: str) -> tuple:
     # Sort by latest
     latest_file = max(report_files, key=lambda p: p.stat().st_mtime)
 
-    # Check if file was created within 24 hours
-    file_age = datetime.now() - datetime.fromtimestamp(latest_file.stat().st_mtime)
-    if file_age.days >= 1:  # Don't use files older than 24 hours as cache
+    # Cache is valid only for the same KST calendar date.
+    if not _is_current_kst_day(latest_file):
         return False, "", None, None
 
     # Check if corresponding PDF file exists
@@ -354,9 +364,8 @@ def get_cached_report(stock_code: str) -> tuple:
     # Sort by latest
     latest_file = max(report_files, key=lambda p: p.stat().st_mtime)
 
-    # Check if file was created within 24 hours
-    file_age = datetime.now() - datetime.fromtimestamp(latest_file.stat().st_mtime)
-    if file_age.days >= 1:  # Don't use files older than 24 hours as cache
+    # Cache is valid only for the same KST calendar date.
+    if not _is_current_kst_day(latest_file):
         return False, "", None, None
 
     # Check if corresponding PDF file exists
