@@ -73,7 +73,7 @@ def help_card() -> dict[str, object]:
         ),
         (
             CommandKind.EVALUATE,
-            "평가 삼성전자 70000 6",
+            "삼성전자 평가해줘. 평단 50000원 3개월 보유",
             "④ 내 평단가와 보유기간으로 점검해요",
         ),
         (
