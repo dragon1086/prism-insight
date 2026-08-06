@@ -184,6 +184,12 @@ class TestConfiguredOrder:
 
         assert default_chain().names == ["fdr"]
 
+    def test_naver_can_be_configured_as_an_investor_flow_fallback(self, monkeypatch):
+        monkeypatch.setenv("PRISM_MARKET_DATA_SOURCES", "fdr,naver,krx")
+        set_default_chain(None)
+
+        assert default_chain().names == ["fdr", "naver", "krx"]
+
     def test_an_unknown_name_is_ignored_rather_than_fatal(self, monkeypatch):
         monkeypatch.setenv("PRISM_MARKET_DATA_SOURCES", "nonsense,fdr")
         set_default_chain(None)
