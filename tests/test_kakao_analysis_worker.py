@@ -12,6 +12,7 @@ from kakao_bot.runtime.analysis_worker_main import (
     AnalysisWorkerConfigurationError,
     _configure_report_data_sources,
     _configure_report_model,
+    _configure_report_parallelism,
     _report_public_base_url,
     _start_llm_runtime,
     _stop_llm_runtime,
@@ -266,18 +267,35 @@ def test_legacy_report_source_order_gains_recent_flow_fallback():
     assert _configure_report_data_sources(environ) == "fdr,naver,krx"
 
 
-def test_kakao_reports_default_to_luna_with_high_reasoning():
+def test_kakao_reports_default_to_luna_with_medium_reasoning():
     environ = {}
 
-    assert _configure_report_model(environ) == ("gpt-5.6-luna", "high")
+    assert _configure_report_model(environ) == ("gpt-5.6-luna", "medium")
     assert environ["REPORT_MODEL"] == "gpt-5.6-luna"
-    assert environ["REPORT_EFFORT"] == "high"
+    assert environ["REPORT_EFFORT"] == "medium"
 
 
 def test_explicit_report_model_configuration_wins_over_kakao_default():
     environ = {"REPORT_MODEL": "custom-model", "REPORT_EFFORT": "medium"}
 
     assert _configure_report_model(environ) == ("custom-model", "medium")
+
+
+def test_kakao_reports_default_to_three_way_parallelism():
+    environ = {}
+
+    assert _configure_report_parallelism(environ) == ("true", "3")
+    assert environ["PRISM_PARALLEL_REPORT"] == "true"
+    assert environ["PRISM_PARALLEL_REPORT_MAX_CONCURRENCY"] == "3"
+
+
+def test_explicit_report_parallelism_wins_over_kakao_default():
+    environ = {
+        "PRISM_PARALLEL_REPORT": "false",
+        "PRISM_PARALLEL_REPORT_MAX_CONCURRENCY": "2",
+    }
+
+    assert _configure_report_parallelism(environ) == ("false", "2")
 
 
 @pytest.mark.asyncio
