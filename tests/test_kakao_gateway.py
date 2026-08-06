@@ -522,3 +522,10 @@ async def test_gateway_syncs_only_currently_supported_command_menu(tmp_path):
     assert client.utterances == REGISTERED_COMMAND_UTTERANCES
     labels = [item["buttonName"] for item in client.utterances]
     assert labels == ["리포트", "평가", "도움말"]
+    report_tip = client.utterances[0]["description"]
+    assert "한 칸 띄우고" in report_tip
+    assert "리포트 삼성전자" in report_tip
+    assert "리포트 AAPL" in report_tip
+    evaluation_tip = client.utterances[1]["description"]
+    assert "보유기간(월)" in evaluation_tip
+    assert "평가 삼성전자 70000 6" in evaluation_tip
