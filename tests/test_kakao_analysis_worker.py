@@ -10,6 +10,7 @@ from kakao_bot.domain.models import AnalysisJob, ApprovalStatus, OutboundDeliver
 from kakao_bot.ports.analysis import AnalysisOutcome
 from kakao_bot.runtime.analysis_worker_main import (
     AnalysisWorkerConfigurationError,
+    _configure_report_data_sources,
     _report_public_base_url,
     _start_llm_runtime,
     _stop_llm_runtime,
@@ -243,6 +244,19 @@ def test_report_public_base_url_keeps_legacy_env_compatibility():
         )
         == "https://legacy.example.test"
     )
+
+
+def test_kakao_reports_default_to_recent_investor_flow_fallback():
+    environ = {}
+
+    assert _configure_report_data_sources(environ) == "fdr,naver,krx"
+    assert environ["PRISM_REPORT_DATA_SOURCES"] == "fdr,naver,krx"
+
+
+def test_explicit_report_source_order_wins_over_kakao_default():
+    environ = {"PRISM_REPORT_DATA_SOURCES": "kis,fdr,krx"}
+
+    assert _configure_report_data_sources(environ) == "kis,fdr,krx"
 
 
 @pytest.mark.asyncio
