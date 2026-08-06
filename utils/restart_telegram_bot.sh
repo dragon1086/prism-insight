@@ -32,6 +32,12 @@ ENTRY="telegram_ai_bot.py"
 LOG="${APP_DIR}/telegram_bot.log"
 PY="${PY:-python3}"
 
+# The bot imports report generation modules before loading its .env file, so
+# formal-report model defaults must exist in the process environment at launch.
+# Explicit operator overrides still win.
+export REPORT_MODEL="${REPORT_MODEL:-gpt-5.6-luna}"
+export REPORT_EFFORT="${REPORT_EFFORT:-high}"
+
 # pyenv python 이 ENTRY 를 직접 실행하는 프로세스만 매칭한다.
 # `-bash -c ... nohup python3 telegram_ai_bot.py ...` 형태의 래퍼 셸까지
 # 잡으면 애먼 것을 죽이게 되므로 정규식을 실행 이미지에 고정한다.
