@@ -56,13 +56,18 @@ _ASK_GROUNDING = (
     "\n\n반드시 웹을 검색하고 실제 뉴스/기사 페이지를 스크랩하여 각 주장에 출처를 밝혀라. "
     "너의 사전지식이 아니라 오늘 기준 최신 웹 데이터에 근거하라. "
     "질문 대상과 직접 관련된 기사가 하나라도 있으면 '최신 근거가 없다'고 답하지 마라. "
-    "관련 핵심 사실을 우선 제시하고, 가능하면 최소 2개 사실에 매체명과 발행일을 붙여라."
+    "관련 핵심 사실을 우선 제시하고, 가능하면 최소 2개 사실에 매체명과 발행일을 붙여라. "
+    "각 사실 뒤에는 근거가 된 검색 결과 번호를 [자료 n] 형식으로 표시하라. "
+    "현재가·등락률·실적·목표주가처럼 투자 판단에 영향을 주는 숫자는 검증된 시장 데이터가 "
+    "있거나 서로 독립된 최신 기사에서 같은 값이 확인될 때만 쓰고, 아니면 생략하라. "
+    "검증된 시장 데이터 블록이 없으면 정확한 현재가·장중 고저가·당일 등락률은 절대 쓰지 마라."
 )
 
 _STOCK_RESEARCH_SUFFIX = re.compile(
     r"\s*(?:지금\s*)?"
     r"(?:사도\s*(?:될까|돼)|살까|매수(?:해도)?\s*(?:될까|괜찮을까)|"
-    r"주가\s*전망(?:은|이)?|전망(?:은|이)?\s*어때|어때)"
+    r"(?:최근\s*)?(?:주가\s*)?전망(?:은|이|을)?"
+    r"(?:\s*(?:알려\s*줘|말해\s*줘|분석해\s*줘|어때))?|어때)"
     r"[?？!！.\s]*$",
     re.IGNORECASE,
 )
@@ -274,9 +279,16 @@ async def _ask(question: str) -> str | None:
     # matches, and the expanded queries carry the actual research dimensions.
     search_opts = search_preset(
         "KR",
-        tbs="qdr:m",
+        tbs="qdr:d" if use_primary_sources else "qdr:m",
         allowlist=use_primary_sources,
     ) | await daily_facts("KR")
+    if use_primary_sources:
+        # Firecrawl's news vertical currently returns fresh but weakly related
+        # results for Korean stock queries. The web vertical finds the actual
+        # article pages and respects the primary-outlet allowlist; the shared
+        # temporal gate widens to a week/month only when today is genuinely quiet.
+        search_opts["sources"] = ["web"]
+        search_opts["include_source_links"] = True
     return await generate_firecrawl_search_response(queries, prompt, **search_opts)
 
 
@@ -293,8 +305,8 @@ def _ask_search_plan(question: str) -> tuple[list[str], bool]:
 
     return (
         [
-            f"{subject} 최신 뉴스 실적 전망 주가",
-            f"{subject} 실적 공시 외국인 기관 수급 리스크",
+            f"{subject} 오늘 최신 뉴스 주가 실적 전망",
+            f"{subject} 증권사 목표주가 실적 공시 외국인 기관 수급",
         ],
         True,
     )

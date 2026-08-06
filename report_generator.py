@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from datetime import date, datetime
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 import markdown
+
 from cores.agents.report_agent import ReportAgent as Agent
 from cores.llm.agent_bridge import ensure_openai_agents_configured
 from cores.llm.backends.openai_agents_backend import OpenAIAgentsBackend
@@ -611,8 +613,6 @@ if __name__ == "__main__":
         import traceback
         logger.error(traceback.format_exc())
         return f"보고서 생성 중 오류가 발생했습니다: {str(e)}"
-
-import re
 
 def clean_model_response(response):
     # 마지막 평가 문장 패턴
@@ -1261,6 +1261,7 @@ async def generate_journal_conversation_response(
 
 MAX_ARTICLE_CHARS = 3000
 MAX_CONTEXT_CHARS = 60000
+_EVIDENCE_REFERENCE = re.compile(r"\[자료\s*(\d+)\]")
 
 
 def _build_search_context(items: list) -> str:
@@ -1273,7 +1274,7 @@ def _build_search_context(items: list) -> str:
     """
     chunks: list[str] = []
     total = 0
-    for item in items:
+    for index, item in enumerate(items, start=1):
         body = (item.get("body") or "").strip() or (item.get("snippet") or "").strip()
         if not body:
             continue
@@ -1286,7 +1287,7 @@ def _build_search_context(items: list) -> str:
             # instead of letting it read as current material.
             published += " ⚠️ 신선도 미검증 — 최근 일로 서술 금지"
         chunk = (
-            f"[{item.get('title') or '제목 없음'}]\n"
+            f"[자료 {index}] {item.get('title') or '제목 없음'}\n"
             f"발행일: {published} | 출처유형: {tag}\n"
             f"URL: {item.get('url')}\n{body}\n\n"
         )
@@ -1297,6 +1298,30 @@ def _build_search_context(items: list) -> str:
 
     logger.info(f"Search context built: {len(chunks)} articles, {total} chars")
     return "".join(chunks)
+
+
+def _append_source_links(response: str, items: list, *, fallback_limit: int = 3) -> str:
+    """Attach clickable article URLs matching the evidence numbers in the answer."""
+
+    referenced = []
+    for raw in _EVIDENCE_REFERENCE.findall(response):
+        index = int(raw)
+        if 1 <= index <= len(items) and index not in referenced:
+            referenced.append(index)
+    if not referenced:
+        referenced = list(range(1, min(len(items), fallback_limit) + 1))
+
+    selected = [(index, items[index - 1]) for index in referenced]
+    selected = [(index, item) for index, item in selected if item.get("url")]
+    if not selected or all(item["url"] in response for _, item in selected):
+        return response
+
+    lines = ["🔗 출처"]
+    for index, item in selected:
+        title = " ".join((item.get("title") or "기사").split())[:70]
+        published = item.get("date") or "발행일 미상"
+        lines.extend((f"{index}. {title} ({published})", item["url"]))
+    return response.rstrip() + "\n\n" + "\n".join(lines)
 
 
 async def generate_firecrawl_search_response(
@@ -1311,6 +1336,7 @@ async def generate_firecrawl_search_response(
     exclude_domains: Optional[list] = None,
     grounded_facts: str = "",
     period_label: str = "",
+    include_source_links: bool = False,
 ) -> Optional[str]:
     """
     Firecrawl /search plus shared LLM analysis.
@@ -1326,14 +1352,15 @@ async def generate_firecrawl_search_response(
         grounded_facts: Authoritative numbers fetched from a primary data source.
                         These override anything found on the web.
         period_label: Explicit period the report covers, e.g. "2026-07-20 ~ 2026-07-24"
+        include_source_links: Append clickable URLs for evidence referenced by the model.
 
     Returns:
         str: Generated analysis, or None on error
     """
     try:
-        from firecrawl_client import firecrawl_search_multi
         from cores.search_presets import widen_tbs
         from cores.temporal_gate import apply_temporal_gate
+        from firecrawl_client import firecrawl_search_multi
 
         queries = [search_query] if isinstance(search_query, str) else list(search_query)
 
@@ -1437,7 +1464,10 @@ async def generate_firecrawl_search_response(
         )
         logger.info(f"Firecrawl search analysis response: {len(response)} chars")
 
-        return clean_model_response(response)
+        cleaned = clean_model_response(response)
+        if include_source_links:
+            cleaned = _append_source_links(cleaned, items)
+        return cleaned
 
     except Exception as e:
         logger.error(f"generate_firecrawl_search_response failed: {e}")
