@@ -32,6 +32,21 @@ def test_report_parses_regardless_of_word_order_or_mention(utterance):
     assert command.market is None, "한글 종목명의 시장은 resolver가 정한다"
 
 
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "@프리즘인사이트테스트 카카오 리포트 써줘",
+        "카카오 리포트 작성해줘",
+        "리포트 카카오 만들어줘",
+    ],
+)
+def test_report_request_suffix_is_not_part_of_stock_name(utterance):
+    command = parse_command(utterance)
+
+    assert command.kind is CommandKind.REPORT
+    assert command.query == "카카오"
+
+
 def test_six_digit_code_is_recognized_as_kr():
     command = parse_command("리포트 005930")
 
