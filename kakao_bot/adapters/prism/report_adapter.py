@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import threading
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
+from functools import lru_cache
 
 from kakao_bot.ports.analysis import AnalysisOutcome
 from prism_core.report_service import generate_report
@@ -63,12 +65,25 @@ _ASK_GROUNDING = (
     "검증된 시장 데이터 블록이 없으면 정확한 현재가·장중 고저가·당일 등락률은 절대 쓰지 마라."
 )
 
+_INTRADAY_GROUNDING = (
+    "\n\n오늘 장중 움직임의 원인은 오늘자 직접 관련 기사로 확인된 내용만 단정하라. "
+    "과거 유사 사례로 오늘 원인을 단정하지 마라. 직접 보도가 부족하면 검증된 일봉 형태와 "
+    "가능한 요인을 구분하고, 확인되지 않은 원인은 명확히 미확정이라고 밝혀라."
+)
+
 _STOCK_RESEARCH_SUFFIX = re.compile(
     r"\s*(?:지금\s*)?"
     r"(?:사도\s*(?:될까|돼)|살까|매수(?:해도)?\s*(?:될까|괜찮을까)|"
     r"(?:최근\s*)?(?:주가\s*)?전망(?:은|이|을)?"
     r"(?:\s*(?:알려\s*줘|말해\s*줘|분석해\s*줘|어때))?|어때)"
     r"[?？!！.\s]*$",
+    re.IGNORECASE,
+)
+
+_INTRADAY_EVENT_QUESTION = re.compile(
+    r"^(?P<subject>[A-Za-z0-9가-힣&().-]{2,30})\s+"
+    r"(?=.*(?:오늘|장중|일봉|급락|급등|하한가|상한가))"
+    r".*(?:왜|이유|원인|무슨\s*일)",
     re.IGNORECASE,
 )
 
@@ -265,23 +280,36 @@ async def _ask(question: str) -> str | None:
     # Local time on purpose: this is the date the user and the market are
     # living in, not a timestamp to be compared across zones.
     today = datetime.now().strftime("%Y년 %m월 %d일")  # noqa: DTZ005
+    subject, is_intraday = _stock_question(question)
     prompt = (
         f"오늘은 {today}입니다. 다음 투자 관련 질문에 대해 최신 정보를 기반으로 답변해줘:\n\n"
         f"{question}\n\n"
         f"한국어로, 카카오톡 메시지 형태로 이모지 포함하여 작성. "
         f"{_ASK_ANSWER_BUDGET}자 이내. 표와 마크다운 문법은 쓰지 마라."
-    ) + _ASK_GROUNDING
+    ) + _ASK_GROUNDING + (_INTRADAY_GROUNDING if is_intraday else "")
 
     queries, use_primary_sources = _ask_search_plan(question)
     # General free-form questions stay unrestricted because their subject is
     # unpredictable. A detected stock question is different: primary business
     # outlets are much safer than social posts and generic "지금 사도 될까"
     # matches, and the expanded queries carry the actual research dimensions.
+    market_facts = await daily_facts("KR")
     search_opts = search_preset(
         "KR",
         tbs="qdr:d" if use_primary_sources else "qdr:m",
         allowlist=use_primary_sources,
-    ) | await daily_facts("KR")
+    ) | market_facts
+    if subject:
+        stock_facts = await _stock_session_facts(subject)
+        if stock_facts:
+            existing = search_opts.get("grounded_facts", "").strip()
+            search_opts["grounded_facts"] = "\n\n".join(
+                part for part in (existing, stock_facts) if part
+            )
+            if is_intraday:
+                search_opts["period_label"] = (
+                    f"{datetime.now():%Y-%m-%d} 당일 장중"  # noqa: DTZ005
+                )
     if use_primary_sources:
         # Firecrawl's news vertical currently returns fresh but weakly related
         # results for Korean stock queries. The web vertical finds the actual
@@ -295,13 +323,18 @@ async def _ask(question: str) -> str | None:
 def _ask_search_plan(question: str) -> tuple[list[str], bool]:
     """Turn a conversational stock question into evidence-oriented queries."""
 
-    match = _STOCK_RESEARCH_SUFFIX.search(question.strip())
-    if not match:
+    subject, is_intraday = _stock_question(question)
+    if not subject:
         return [question], False
 
-    subject = question[: match.start()].strip()
-    if not subject or len(subject) > 40:
-        return [question], False
+    if is_intraday:
+        return (
+            [
+                f"{subject} 오늘 장중 급락 반등 이유",
+                f"{subject} 오늘 주가 하락 수급 차익실현 매도 원인",
+            ],
+            True,
+        )
 
     return (
         [
@@ -310,3 +343,104 @@ def _ask_search_plan(question: str) -> tuple[list[str], bool]:
         ],
         True,
     )
+
+
+def _stock_question(question: str) -> tuple[str | None, bool]:
+    """Return a validated stock subject and whether the question is intraday."""
+
+    text = question.strip()
+    event = _INTRADAY_EVENT_QUESTION.search(text)
+    if event:
+        subject = event.group("subject").strip()
+        if _resolve_kr_stock(subject):
+            return subject, True
+
+    match = _STOCK_RESEARCH_SUFFIX.search(text)
+    if not match:
+        return None, False
+    subject = text[: match.start()].strip()
+    if not subject or len(subject) > 40 or not _resolve_kr_stock(subject):
+        return None, False
+    return subject, False
+
+
+@lru_cache(maxsize=256)
+def _resolve_kr_stock(subject: str) -> tuple[str, str] | None:
+    """Resolve an exact KR company name without spending a network request."""
+
+    from kakao_bot.adapters.prism.ticker_adapter import PrismTickerResolver
+
+    resolver = PrismTickerResolver(os.getenv("KAKAO_STOCK_MAP_PATH", "stock_map.json"))
+    resolution = resolver.resolve(subject, market="kr")
+    if not resolution.succeeded or resolution.ticker is None:
+        return None
+    return resolution.ticker.ticker, resolution.ticker.company_name
+
+
+def _format_stock_session_facts(
+    company_name: str,
+    ticker: str,
+    current: dict,
+    previous: dict,
+    *,
+    observed_at: str,
+) -> str:
+    """Render authoritative intraday OHLCV without asking the model to calculate."""
+
+    previous_close = int(previous["Close"])
+    close = int(current["Close"])
+    low = int(current["Low"])
+    change_pct = (close / previous_close - 1) * 100
+    rebound_pct = (close / low - 1) * 100
+    return (
+        "[검증된 종목 당일 일봉 데이터]\n"
+        f"종목: {company_name} ({ticker})\n"
+        f"조회 시각: {observed_at}\n"
+        f"전일 종가: {previous_close:,}원\n"
+        f"시가: {int(current['Open']):,}원\n"
+        f"장중 고가: {int(current['High']):,}원\n"
+        f"장중 저가: {low:,}원\n"
+        f"현재가: {close:,}원\n"
+        f"전일 대비: {change_pct:+.2f}%\n"
+        f"저가 대비 반등: {rebound_pct:+.2f}%\n"
+        f"거래량: {int(current['Volume']):,}주\n"
+        "출처: 네이버 금융 일봉 데이터\n"
+        "주의: 당일 장중 값이며 정규장 종가가 아닙니다."
+    )
+
+
+async def _stock_session_facts(subject: str) -> str:
+    """Fetch one stock's current daily candle through the existing safe fallback."""
+
+    resolved = _resolve_kr_stock(subject)
+    if resolved is None:
+        return ""
+    ticker, company_name = resolved
+
+    def fetch() -> str:
+        import requests
+
+        from cores.naver_market_snapshot import _fetch_daily_pair
+
+        trade_date = datetime.now().strftime("%Y%m%d")  # noqa: DTZ005
+        current, previous = _fetch_daily_pair(
+            requests.get,
+            ticker,
+            trade_date,
+            timeout=10,
+            max_attempts=2,
+            retry_wait_sec=0.2,
+        )
+        return _format_stock_session_facts(
+            company_name,
+            ticker,
+            current,
+            previous,
+            observed_at=datetime.now().strftime("%Y-%m-%d %H:%M KST"),  # noqa: DTZ005
+        )
+
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fetch), timeout=25)
+    except Exception as exc:  # noqa: BLE001 - retrieval fails soft
+        logger.warning("Intraday facts unavailable for %s: %s", subject, exc)
+        return ""

@@ -305,6 +305,21 @@ def test_recent_stock_outlook_question_uses_the_stock_research_plan():
     assert all("알려줘" not in query for query in queries)
 
 
+def test_intraday_stock_move_question_uses_today_cause_queries():
+    from kakao_bot.adapters.prism.report_adapter import _ask_search_plan
+
+    queries, use_primary_sources = _ask_search_plan(
+        "SK하이닉스 오늘 거의 하한가까지 갔다가 올라온 이유는 뭐야"
+    )
+
+    assert use_primary_sources is True
+    assert len(queries) == 2
+    assert all("SK하이닉스" in query for query in queries)
+    assert any("장중 급락 반등 이유" in query for query in queries)
+    assert any("수급" in query and "원인" in query for query in queries)
+    assert all("뭐야" not in query for query in queries)
+
+
 def test_general_question_keeps_the_users_original_search_query():
     from kakao_bot.adapters.prism.report_adapter import _ask_search_plan
 
@@ -378,6 +393,61 @@ def test_source_links_fall_back_to_the_newest_three_when_model_omits_numbers():
 
     assert all(f"https://n/{index}" in answer for index in range(1, 4))
     assert "https://n/4" not in answer
+
+
+def test_intraday_facts_calculate_the_candle_and_low_rebound():
+    from kakao_bot.adapters.prism.report_adapter import _format_stock_session_facts
+
+    facts = _format_stock_session_facts(
+        "SK하이닉스",
+        "000660",
+        {"Open": 1_600_000, "High": 1_606_000, "Low": 1_505_000, "Close": 1_522_000, "Volume": 2_259_466},
+        {"Close": 1_668_000, "Date": "20260805"},
+        observed_at="2026-08-06 11:20 KST",
+    )
+
+    assert "전일 종가: 1,668,000원" in facts
+    assert "장중 저가: 1,505,000원" in facts
+    assert "현재가: 1,522,000원" in facts
+    assert "전일 대비: -8.75%" in facts
+    assert "저가 대비 반등: +1.13%" in facts
+    assert "당일 장중 값" in facts
+
+
+@pytest.mark.asyncio
+async def test_intraday_question_adds_stock_facts_and_forbids_old_cause_inference(
+    monkeypatch,
+):
+    import cores.market_facts_cache as mfc
+    import kakao_bot.adapters.prism.report_adapter as adapter
+    import report_generator as rg
+
+    captured = {}
+
+    async def facts(market):
+        return {}
+
+    async def stock_facts(subject):
+        assert subject == "SK하이닉스"
+        return "[검증된 종목 당일 일봉 데이터]\n현재가: 1,522,000원"
+
+    async def search(query, prompt, **kwargs):
+        captured.update(query=query, prompt=prompt, kwargs=kwargs)
+        return "오늘자 수급 기사에 따르면 차익실현 매물이 나왔습니다."
+
+    monkeypatch.setattr(mfc, "daily_facts", facts)
+    monkeypatch.setattr(adapter, "_stock_session_facts", stock_facts)
+    monkeypatch.setattr(rg, "generate_firecrawl_search_response", search)
+
+    answer = await adapter._ask(
+        "SK하이닉스 오늘 거의 하한가까지 갔다가 올라온 이유는 뭐야"
+    )
+
+    assert answer.startswith("오늘자")
+    assert "현재가: 1,522,000원" in captured["kwargs"]["grounded_facts"]
+    assert captured["kwargs"]["period_label"].endswith("당일 장중")
+    assert "과거 유사 사례로 오늘 원인을 단정하지 마라" in captured["prompt"]
+    assert "오늘자 직접 관련 기사" in captured["prompt"]
 
 
 def test_answer_works_when_called_the_way_the_worker_calls_it(monkeypatch):
