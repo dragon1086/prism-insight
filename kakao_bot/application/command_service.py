@@ -274,12 +274,14 @@ class CommandService:
         if is_evaluate:
             ack = (
                 f"🧮 {resolved.company_name} ({resolved.ticker}) 평가를 시작했습니다.\n"
-                "완료되면 이 방으로 결과를 보내드릴게요."
+                "보통 1~2분 정도 걸립니다.\n"
+                "중간 표시가 없어도 정상 처리 중이며, 완료되면 이 방으로 보내드릴게요."
             )
         else:
             ack = (
                 f"📊 {resolved.company_name} ({resolved.ticker}) 분석을 시작했습니다.\n"
-                "완료되면 이 방으로 결과를 보내드릴게요."
+                "보통 2~5분 정도 걸립니다.\n"
+                "중간 표시가 없어도 정상 처리 중이며, 완료되면 이 방으로 보내드릴게요."
             )
 
         return CommandOutcome(
@@ -321,7 +323,8 @@ class CommandService:
             kind=CommandOutcomeKind.ACCEPTED,
             message=(
                 "🔍 질문을 확인했습니다. 최신 정보를 찾아볼게요.\n"
-                "완료되면 이 방으로 답변을 보내드릴게요."
+                "보통 1분 안팎으로 걸립니다.\n"
+                "중간 표시가 없어도 정상 처리 중이며, 완료되면 이 방으로 보내드릴게요."
             ),
             job_id=job.job_id,
         )

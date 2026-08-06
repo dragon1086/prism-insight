@@ -181,6 +181,8 @@ class TestEnqueue:
         assert job["ticker"] == "005930"
         assert job["payload"]["avg_price"] == 70000.0
         assert job["payload"]["period_months"] == 6
+        assert "1~2분" in outcome.message
+        assert "중간 표시가 없어도" in outcome.message
 
     def test_the_tone_travels_with_the_job(self, repository, service):
         service.handle(message("평가 삼성전자 70000 6 취한 친구처럼"), now=NOW)
