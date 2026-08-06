@@ -28,6 +28,7 @@ import pandas as pd
 from cores.market_data.fdr_source import FdrSource
 from cores.market_data.kis_source import KisSource
 from cores.market_data.krx_source import KrxSource
+from cores.market_data.naver_source import NaverSource
 from cores.market_data.source import (
     MarketDataSource,
     SourceChain,
@@ -42,6 +43,7 @@ __all__ = [
     "KisSource",
     "KrxSource",
     "MarketDataSource",
+    "NaverSource",
     "SourceChain",
     "Unavailable",
     "Unsupported",
@@ -56,7 +58,12 @@ __all__ = [
     "set_default_chain",
 ]
 
-_BUILDERS = {"krx": KrxSource, "fdr": FdrSource, "kis": KisSource}
+_BUILDERS = {
+    "krx": KrxSource,
+    "fdr": FdrSource,
+    "kis": KisSource,
+    "naver": NaverSource,
+}
 # KIS is registered but not in the default order. It is the route we intend to
 # migrate to, and putting it first is a decision to make with measurements
 # rather than at import time — `PRISM_MARKET_DATA_SOURCES=kis,fdr,krx` promotes
