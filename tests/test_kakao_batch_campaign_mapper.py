@@ -40,6 +40,7 @@ def test_maps_completed_producer_event_to_batch_campaign():
                 "trigger_type": "closing_confirmation",
             }
         ],
+        display_message="🔔 오후 프리즘 시그널",
         occurred_at=occurred_at,
     )
 
@@ -58,6 +59,7 @@ def test_maps_completed_producer_event_to_batch_campaign():
     assert candidate.score == 91.0
     assert candidate.rationale == "closing_confirmation"
     assert mapped.skip_reason is None
+    assert mapped.display_message == "🔔 오후 프리즘 시그널"
 
 
 def test_maps_skipped_producer_event_to_batch_campaign():
@@ -94,6 +96,23 @@ def test_maps_completed_event_with_unknown_fail_open_regime():
     mapped = map_batch_campaign_payload(payload)
 
     assert mapped.regime is Regime.UNKNOWN
+
+
+def test_maps_collecting_screening_event():
+    payload = build_batch_campaign_event(
+        market="US",
+        session="MORNING",
+        trade_date="20260723",
+        regime="UPTREND",
+        status="COLLECTING",
+        candidates=[{"ticker": "AAPL", "name": "Apple"}],
+        display_message="US screening briefing",
+    )
+
+    mapped = map_batch_campaign_payload(payload)
+
+    assert mapped.status is CampaignStatus.COLLECTING
+    assert mapped.display_message == "US screening briefing"
 
 
 @pytest.mark.parametrize(

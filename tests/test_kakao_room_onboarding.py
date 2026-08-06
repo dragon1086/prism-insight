@@ -189,6 +189,8 @@ class TestWelcomeRendering:
 
         text = response["template"]["outputs"][0]["simpleText"]["text"]
         assert "PRISM" in text
+        assert "가상 포트폴리오" in text
+        assert "투자 리딩" in text
         # Group rooms only deliver mentioned messages, so this is the one thing
         # the room has to be told.
         assert "멘션" in text
@@ -198,9 +200,13 @@ class TestWelcomeRendering:
 
         card = response["template"]["outputs"][1]["listCard"]
         titles = [item["title"] for item in card["items"]]
-        # Titles are written the way we want people to type: a bare stock
-        # name, not a command spelling.
-        assert "삼성전자" in titles
+        assert titles == [
+            "오늘 시장 어때?",
+            "SK하이닉스 최근 전망",
+            "삼성전자",
+            "평가 삼성전자 70000 6",
+            "AAPL",
+        ]
 
     def test_the_greeting_only_offers_commands_that_work(self):
         # Reuses the help card, which reads IMPLEMENTED_COMMANDS, so it cannot
@@ -209,7 +215,9 @@ class TestWelcomeRendering:
 
         card = response["template"]["outputs"][1]["listCard"]
         titles = [item["title"] for item in card["items"]]
-        assert not any("평가" in title for title in titles)
+        from kakao_bot.application.command_service import leads_somewhere
+
+        assert all(leads_somewhere(title) for title in titles)
 
 
 def _kr_afternoon():

@@ -1,6 +1,6 @@
 """Channel-neutral batch campaign events published to a local durable queue.
 
-The analysis orchestrators publish one terminal event per market/session/date.
+The analysis orchestrators publish one screening or rest event per market/session/date.
 Consumers (Kakao today, other channels later) decide independently whether and
 where to deliver it. Publishing is deliberately fail-open: queue failures
 must never fail analysis or trading.
@@ -19,9 +19,10 @@ from messaging.local_campaign_queue import SQLiteBatchCampaignQueue
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
+COLLECTING = "COLLECTING"
 COMPLETED = "COMPLETED"
 SKIPPED = "SKIPPED"
-_VALID_STATUSES = frozenset({COMPLETED, SKIPPED})
+_VALID_STATUSES = frozenset({COLLECTING, COMPLETED, SKIPPED})
 _VALID_MARKETS = frozenset({"KR", "US"})
 _VALID_SESSIONS = frozenset({"MORNING", "AFTERNOON"})
 _VALID_REGIMES = frozenset({"UNKNOWN", "UPTREND", "UNDER_PRESSURE", "CORRECTION"})
@@ -134,6 +135,7 @@ def build_batch_campaign_event(
     status: str,
     candidates: Optional[Sequence[Any]] = None,
     skip_reason: Optional[str] = None,
+    display_message: Optional[str] = None,
     occurred_at: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Build and validate the canonical JSON-compatible campaign payload."""
@@ -166,7 +168,7 @@ def build_batch_campaign_event(
         "occurred_at": timestamp.isoformat().replace("+00:00", "Z"),
     }
 
-    if normalized_status == COMPLETED:
+    if normalized_status in {COLLECTING, COMPLETED}:
         normalized_candidates = []
         for candidate in candidates or ():
             normalized = _normalized_candidate(candidate)
@@ -175,8 +177,11 @@ def build_batch_campaign_event(
             if len(normalized_candidates) == 5:
                 break
         if not normalized_candidates:
-            raise ValueError("completed campaign requires at least one candidate")
+            raise ValueError("screening campaign requires at least one candidate")
         event["candidates"] = normalized_candidates
+        rendered_message = str(display_message or "").strip()
+        if rendered_message:
+            event["display_message"] = rendered_message
     else:
         reason = str(skip_reason or "").strip()
         if not reason:

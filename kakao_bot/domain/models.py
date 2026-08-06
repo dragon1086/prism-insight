@@ -85,6 +85,7 @@ class BatchCampaign:
     status: CampaignStatus
     candidates: tuple[CampaignCandidate, ...] = ()
     skip_reason: str | None = None
+    display_message: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
