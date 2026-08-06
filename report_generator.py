@@ -1321,14 +1321,16 @@ def _append_source_links(response: str, items: list, *, fallback_limit: int = 3)
     if not selected or all(item["url"] in visible_response for _, item in selected):
         return visible_response
 
-    lines = ["🔗 출처"]
+    source_blocks = ["🔗 출처"]
     for display_index, (_, item) in enumerate(selected, start=1):
         title = " ".join((item.get("title") or "기사").split())[:55]
         raw_date = str(item.get("date") or "")
         matched_date = re.search(r"\d{4}-\d{2}-\d{2}", raw_date)
         published = matched_date.group(0) if matched_date else "발행일 미상"
-        lines.extend((f"{display_index}. {title} ({published})", item["url"]))
-    return visible_response + "\n\n" + "\n".join(lines)
+        source_blocks.append(
+            f"{display_index}. {title} ({published})\n{item['url']}"
+        )
+    return visible_response + "\n\n" + "\n\n".join(source_blocks)
 
 
 async def generate_firecrawl_search_response(
