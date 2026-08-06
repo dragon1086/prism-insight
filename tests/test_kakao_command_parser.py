@@ -121,6 +121,38 @@ class TestAsk:
 
 
 class TestEvaluate:
+    @pytest.mark.parametrize(
+        ("utterance", "price", "months"),
+        [
+            (
+                "@프리즘 카카오 보유종목 평가해줘. 평단 50000원 3개월 보유",
+                50000.0,
+                3,
+            ),
+            ("카카오 평가해줘 평단가 50,000원 보유 3개월", 50000.0, 3),
+            ("평가해줘 카카오 평단 50000원", 50000.0, None),
+            (
+                "카카오 평가해주세요. 평균매수가 50000원 3달 보유",
+                50000.0,
+                3,
+            ),
+        ],
+    )
+    def test_natural_labeled_form(self, utterance, price, months):
+        command = parse_command(utterance)
+
+        assert command.kind is CommandKind.EVALUATE
+        assert command.query == "카카오"
+        assert command.avg_price == price
+        assert command.period_months == months
+
+    def test_natural_evaluate_without_price_still_requests_evaluate(self):
+        command = parse_command("카카오 보유종목 평가해줘")
+
+        assert command.kind is CommandKind.EVALUATE
+        assert command.query == "카카오"
+        assert command.avg_price is None
+
     def test_full_form(self):
         command = parse_command("평가 삼성전자 70000 6")
 

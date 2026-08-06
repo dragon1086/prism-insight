@@ -16,6 +16,7 @@ tolerated anyway so that hand-typed input behaves the same as a tap.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
@@ -25,10 +26,28 @@ US_MARKET = "us"
 _MENTION = re.compile(r"^@\S+\s*")
 _KR_CODE = re.compile(r"^\d{6}$")
 _US_TICKER = re.compile(r"^[A-Za-z]{1,5}$")
-_NUMERIC = re.compile(r"^\d+(?:[.,]\d+)?$")
+_PRICE = re.compile(r"^₩?(\d+(?:,\d{3})*(?:\.\d+)?)원?$")
 # Marks that make a token part of a sentence rather than a name on its own.
 _SENTENCE_MARK = re.compile(r"[?？!！.,、。]")
 _PERIOD = re.compile(r"^(\d+)\s*(?:개월|달|months?|m)?$", re.IGNORECASE)
+_NATURAL_EVALUATE = re.compile(
+    r"(?<!\S)평가(?:\s*해)?\s*(?:줘|주세요|줄래|주실래)?[.!?？！。]*(?=\s|$)"
+)
+_EVALUATE_FILLERS = frozenset(
+    {
+        "보유종목",
+        "종목",
+        "평단",
+        "평단가",
+        "평균",
+        "평균매수가",
+        "매수가",
+        "보유기간",
+        "보유",
+        "부탁해",
+        "부탁해요",
+    }
+)
 _REPORT_REQUEST_SUFFIXES = frozenset(
     {
         "써줘",
@@ -119,6 +138,13 @@ def parse_command(utterance: str) -> ParsedCommand:
     tokens = text.split()
     kind, market, rest = _take_keyword(tokens)
     if kind is None:
+        natural_evaluate = _NATURAL_EVALUATE.search(text)
+        if natural_evaluate is not None:
+            kind = CommandKind.EVALUATE
+            rest = (
+                text[: natural_evaluate.start()] + text[natural_evaluate.end() :]
+            ).split()
+    if kind is None:
         # Kakao only delivers group messages the bot was mentioned in, so
         # anything that reaches here was aimed at the bot on purpose. Demanding
         # a keyword on top of the mention makes the user say "this is for you"
@@ -199,6 +225,13 @@ def _parse_evaluate(market: str | None, tokens: list[str]) -> ParsedCommand:
     drop the price the user did supply.
     """
 
+    tokens = [
+        cleaned
+        for token in tokens
+        if (cleaned := _clean_evaluate_token(token))
+        and not _is_evaluate_filler(cleaned)
+    ]
+
     stock: list[str] = []
     numbers: list[str] = []
     tone: list[str] = []
@@ -215,7 +248,7 @@ def _parse_evaluate(market: str | None, tokens: list[str]) -> ParsedCommand:
             continue
         # A six-digit KR code is a ticker, not a price, and a price cannot come
         # before the stock it belongs to.
-        if stock and _NUMERIC.match(token) and not _KR_CODE.match(token):
+        if stock and _PRICE.match(token) and not _KR_CODE.match(token):
             numbers.append(token)
             continue
         stock.append(token)
@@ -235,10 +268,31 @@ def _parse_evaluate(market: str | None, tokens: list[str]) -> ParsedCommand:
 
 
 def _to_price(token: str) -> float | None:
+    match = _PRICE.match(token)
+    if not match:
+        return None
     try:
-        return float(token.replace(",", ""))
+        return float(match.group(1).replace(",", ""))
     except ValueError:
         return None
+
+
+def _clean_evaluate_token(token: str) -> str:
+    cleaned = token.strip()
+    while cleaned and unicodedata.category(cleaned[0]).startswith("P"):
+        cleaned = cleaned[1:]
+    while cleaned and unicodedata.category(cleaned[-1]).startswith("P"):
+        cleaned = cleaned[:-1]
+    return cleaned
+
+
+def _is_evaluate_filler(token: str) -> bool:
+    if token in _EVALUATE_FILLERS:
+        return True
+    for particle in ("은", "는", "이", "가", "을", "를"):
+        if token.endswith(particle) and token[: -len(particle)] in _EVALUATE_FILLERS:
+            return True
+    return False
 
 
 def _to_period(token: str) -> int | None:
