@@ -294,6 +294,17 @@ def test_stock_investment_question_expands_into_research_queries():
     assert all("사도 될까" not in query for query in queries)
 
 
+def test_recent_stock_outlook_question_uses_the_stock_research_plan():
+    from kakao_bot.adapters.prism.report_adapter import _ask_search_plan
+
+    queries, use_primary_sources = _ask_search_plan("삼성전자 최근 전망 알려줘")
+
+    assert use_primary_sources is True
+    assert len(queries) == 2
+    assert all("삼성전자" in query for query in queries)
+    assert all("알려줘" not in query for query in queries)
+
+
 def test_general_question_keeps_the_users_original_search_query():
     from kakao_bot.adapters.prism.report_adapter import _ask_search_plan
 
@@ -323,8 +334,50 @@ async def test_stock_question_requires_dated_source_evidence(monkeypatch):
     assert answer.startswith("연합뉴스")
     assert isinstance(captured["query"], list)
     assert captured["kwargs"].get("include_domains")
+    assert captured["kwargs"]["tbs"] == "qdr:d"
+    assert captured["kwargs"]["sources"] == ["web"]
+    assert captured["kwargs"]["include_source_links"] is True
     assert "매체명과 발행일" in captured["prompt"]
     assert "근거가 없다" in captured["prompt"]
+    assert "현재가·등락률·실적" in captured["prompt"]
+    assert "현재가·장중 고저가·당일 등락률은 절대" in captured["prompt"]
+    assert "[자료 n]" in captured["prompt"]
+
+
+def test_source_links_follow_the_evidence_numbers_used_by_the_answer():
+    from report_generator import _append_source_links
+
+    items = [
+        {
+            "title": "첫 번째 기사",
+            "date": "2026-08-06",
+            "url": "https://news.example/one",
+        },
+        {
+            "title": "두 번째 기사",
+            "date": "2026-08-06",
+            "url": "https://news.example/two",
+        },
+    ]
+
+    answer = _append_source_links("전망이 개선됐습니다. [자료 2]", items)
+
+    assert "https://news.example/two" in answer
+    assert "https://news.example/one" not in answer
+
+
+def test_source_links_fall_back_to_the_newest_three_when_model_omits_numbers():
+    from report_generator import _append_source_links
+
+    items = [
+        {"title": f"기사 {index}", "date": "2026-08-06", "url": f"https://n/{index}"}
+        for index in range(1, 5)
+    ]
+
+    answer = _append_source_links("출처 번호 없는 답변", items)
+
+    assert all(f"https://n/{index}" in answer for index in range(1, 4))
+    assert "https://n/4" not in answer
 
 
 def test_answer_works_when_called_the_way_the_worker_calls_it(monkeypatch):
