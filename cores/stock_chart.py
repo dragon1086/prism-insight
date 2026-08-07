@@ -1089,6 +1089,14 @@ def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=Non
     else:
         return fig
 
+def _investor_types_for_chart(frame):
+    """Return mutually exclusive investor groups for the available data."""
+    if getattr(frame, "attrs", {}).get("intraday_estimate"):
+        return ['기관합계', '외국인합계', '개인·기타합계']
+    other_type = '기타합계' if '기타합계' in frame.columns else '기타법인'
+    return ['기관합계', '외국인합계', '개인', other_type]
+
+
 def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=None):
     """
     Generate trading volume chart by investor type
@@ -1140,7 +1148,10 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
 
     # 1. Net purchase analysis by major investor groups
     # Korean investor type names (as returned by pykrx API)
-    investor_types = ['기관합계', '외국인합계', '개인', '기타법인']
+    # An intraday latest row contains a derived personal+other residual rather
+    # than its components. Plot mutually exclusive groups so the estimate is
+    # neither omitted nor double-counted.
+    investor_types = _investor_types_for_chart(df_daily)
 
     # Korean to English investor name mapping (comprehensive pykrx field mapping)
     investor_names_en = {
@@ -1148,6 +1159,8 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
         '기관합계': 'Institutions',
         '외국인합계': 'Foreigners',
         '개인': 'Individuals',
+        '개인·기타합계': 'Individuals + Others (estimated)',
+        '기타합계': 'Others',
         '기타법인': 'Other Corps',
         # Institutional subcategories
         '금융투자': 'Securities',

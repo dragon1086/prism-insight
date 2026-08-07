@@ -226,11 +226,16 @@ class TestCallerFacingApi:
 
     def test_intraday_estimate_is_appended_to_daily_history(self, monkeypatch):
         history = pd.DataFrame(
-            {"외국인합계": [10], "기관합계": [20], "개인": [-30]},
+            {
+                "외국인합계": [10],
+                "기관합계": [20],
+                "개인": [-35],
+                "기타합계": [5],
+            },
             index=pd.to_datetime(["2026-08-06"]),
         )
         estimate = pd.DataFrame(
-            {"외국인합계": [100], "기관합계": [200]},
+            {"외국인합계": [100], "기관합계": [200], "개인·기타합계": [-300]},
             index=pd.to_datetime(["2026-08-07"]),
         )
         estimate.attrs.update(
@@ -260,6 +265,8 @@ class TestCallerFacingApi:
         assert list(frame.index.strftime("%Y%m%d")) == ["20260806", "20260807"]
         assert frame.loc["2026-08-07", "외국인합계"] == 100
         assert pd.isna(frame.loc["2026-08-07", "개인"])
+        assert frame.loc["2026-08-06", "개인·기타합계"] == -30
+        assert frame.loc["2026-08-07", "개인·기타합계"] == -300
         assert frame.attrs["intraday_estimate"] is True
         assert source.calls[0][3] == "20260806"
 
