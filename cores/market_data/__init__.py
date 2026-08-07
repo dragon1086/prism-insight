@@ -152,6 +152,30 @@ def get_market_fundamental_by_date(
     return _empty_on_exhaustion("fundamentals", ticker, start_date, end_date)
 
 
+def _with_individual_other_total(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add the combined group used by an intraday estimate chart.
+
+    Historical daily rows provide exact personal and other values, while the
+    intraday endpoint exposes only their combined residual. Giving historical
+    rows the same combined column keeps the cumulative series continuous and
+    avoids charting the combined estimate alongside its component columns.
+    """
+    if frame.empty or "개인·기타합계" in frame.columns or "개인" not in frame.columns:
+        return frame
+
+    if "기타합계" in frame.columns:
+        other = frame["기타합계"]
+    else:
+        other_columns = [
+            column for column in ("기타법인", "기타단체") if column in frame.columns
+        ]
+        if not other_columns:
+            return frame
+        other = frame[other_columns].sum(axis=1, min_count=1)
+
+    return frame.assign(**{"개인·기타합계": frame["개인"].add(other)})
+
+
 def get_market_trading_volume_by_date(
     start_date: str, end_date: str, ticker: str
 ) -> pd.DataFrame:
@@ -187,6 +211,7 @@ def get_market_trading_volume_by_date(
         logger.warning("KIS intraday investor estimate unavailable: %s", exc)
         return history
 
+    history = _with_individual_other_total(history)
     combined = pd.concat([history, estimate]).sort_index()
     combined = combined[~combined.index.duplicated(keep="last")]
     combined.attrs.update(estimate.attrs)
