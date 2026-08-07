@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Protocol
 
@@ -154,6 +155,21 @@ class KakaoRepository(Protocol):
 
     def list_analysis_jobs(self) -> tuple[dict, ...]:
         """Return decoded analysis job rows for diagnostics and tests."""
+
+    def record_search_query_observation(
+        self,
+        observation_key: str,
+        *,
+        utterance: str,
+        plan: Mapping[str, object] | None,
+        analysis_succeeded: bool,
+        analysis_error_code: str | None,
+        observed_at: datetime,
+    ) -> None:
+        """Store an identifier-free query-planning corpus row indefinitely."""
+
+    def list_search_query_observations(self) -> tuple[dict, ...]:
+        """Return structured query-planning observations for diagnostics."""
 
     def create_report_link(
         self,

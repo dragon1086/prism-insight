@@ -9,6 +9,7 @@ worker, and one outbox.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -212,9 +213,12 @@ def test_ask_counts_against_the_same_daily_quota(repository):
 
     service.handle(message(f"질문 {QUESTION}"), now=NOW)
 
-    assert repository.count_analysis_jobs_since(
-        room_id=ROOM, user_id=None, since=NOW.replace(hour=0)
-    ) == 1
+    assert (
+        repository.count_analysis_jobs_since(
+            room_id=ROOM, user_id=None, since=NOW.replace(hour=0)
+        )
+        == 1
+    )
 
 
 # --------------------------------------------------------------------------
@@ -225,7 +229,24 @@ def test_ask_counts_against_the_same_daily_quota(repository):
 def test_worker_answers_an_ask_job_and_enqueues_an_ask_result(repository):
     repository.enqueue_analysis_job(ask_job(), now=NOW)
     analysis = FakeAnalysisPort(
-        AnalysisOutcome(succeeded=True, summary="코스피는 외국인 순매도로 하락했습니다.")
+        AnalysisOutcome(
+            succeeded=True,
+            summary="코스피는 외국인 순매도로 하락했습니다.",
+            metadata={
+                "search_plan": {
+                    "queries": ["코스피 오늘 하락 외국인 수급"],
+                    "intent": "GENERAL",
+                    "subject": None,
+                    "use_primary_sources": False,
+                    "is_intraday": False,
+                    "source": "LLM",
+                    "model": "gpt-5.6-luna",
+                    "effort": "low",
+                    "latency_ms": 321,
+                    "error": None,
+                }
+            },
+        )
     )
 
     result = AnalysisService(repository, analysis).run_once(now=NOW, limit=1)
@@ -236,6 +257,18 @@ def test_worker_answers_an_ask_job_and_enqueues_an_ask_result(repository):
 
     [out] = repository.list_outbox()
     assert out["message_type"] == "ask_result"
+
+    [observation] = repository.list_search_query_observations()
+    assert observation["utterance"] == QUESTION
+    assert observation["planner_model"] == "gpt-5.6-luna"
+    assert observation["planner_effort"] == "low"
+    assert observation["planner_source"] == "LLM"
+    assert observation["queries"] == ["코스피 오늘 하락 외국인 수급"]
+    assert observation["analysis_succeeded"] is True
+    assert len(observation["observation_key"]) == 64
+    assert observation["observation_key"] != "job-ask"
+    assert "room_id" not in observation
+    assert "user_id" not in observation
 
 
 def test_a_failed_ask_enqueues_an_ask_failure_that_still_names_the_question(
@@ -252,6 +285,11 @@ def test_a_failed_ask_enqueues_an_ask_failure_that_still_names_the_question(
     [out] = repository.list_outbox()
     assert out["message_type"] == "ask_failed"
     assert out["payload"]["question"] == QUESTION
+    [observation] = repository.list_search_query_observations()
+    assert observation["utterance"] == QUESTION
+    assert observation["planner_source"] == "UNKNOWN"
+    assert observation["analysis_succeeded"] is False
+    assert observation["analysis_error_code"] == "ask_empty"
 
 
 def test_a_report_job_is_unaffected_by_the_ask_branch(repository):
@@ -366,6 +404,94 @@ def test_general_question_keeps_the_users_original_search_query():
 
 
 @pytest.mark.asyncio
+async def test_llm_search_planner_uses_luna_low_and_validates_json(monkeypatch):
+    import openai
+    from kakao_bot.adapters.prism.report_adapter import _plan_search_queries
+
+    captured = {}
+
+    class Completions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            message = type(
+                "Message",
+                (),
+                {
+                    "content": json.dumps(
+                        {
+                            "intent": "STOCK_FORECAST",
+                            "subject": "SK하이닉스",
+                            "queries": [
+                                "최신 실적 전망",
+                                "SK하이닉스 증권사 목표주가",
+                            ],
+                            "use_primary_sources": True,
+                            "is_intraday": False,
+                        },
+                        ensure_ascii=False,
+                    )
+                },
+            )()
+            return type(
+                "Response",
+                (),
+                {
+                    "choices": [
+                        type("Choice", (), {"message": message})(),
+                    ]
+                },
+            )()
+
+    class Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": Completions()})()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", lambda **_kwargs: Client())
+    monkeypatch.setenv("KAKAO_SEARCH_PLANNER_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost.test/v1")
+
+    plan = await _plan_search_queries(
+        "하이닉스 얼마까지 오를지 작두탄듯이 예측해보세요"
+    )
+
+    assert captured["model"] == "gpt-5.6-luna"
+    assert captured["reasoning_effort"] == "low"
+    assert captured["max_completion_tokens"] == 900
+    assert plan.source == "LLM"
+    assert plan.intent == "STOCK_FORECAST"
+    assert plan.subject == "SK하이닉스"
+    assert all("SK하이닉스" in query for query in plan.queries)
+    assert plan.error is None
+
+
+@pytest.mark.asyncio
+async def test_llm_search_planner_falls_back_without_losing_the_question(
+    monkeypatch,
+):
+    import kakao_bot.adapters.prism.report_adapter as adapter
+
+    async def broken(_question):
+        raise TimeoutError
+
+    monkeypatch.setattr(adapter, "_llm_search_plan", broken)
+    monkeypatch.setenv("KAKAO_SEARCH_PLANNER_ENABLED", "true")
+
+    plan = await adapter._plan_search_queries("카카오 지금 사도 될까?")
+
+    assert plan.source == "FALLBACK"
+    assert plan.intent == "STOCK_OUTLOOK"
+    assert all("카카오" in query for query in plan.queries)
+    assert plan.error == "TimeoutError"
+
+
+@pytest.mark.asyncio
 async def test_stock_question_requires_dated_source_evidence(monkeypatch):
     import cores.market_facts_cache as mfc
     import report_generator as rg
@@ -469,7 +595,13 @@ def test_intraday_facts_calculate_the_candle_and_low_rebound():
     facts = _format_stock_session_facts(
         "SK하이닉스",
         "000660",
-        {"Open": 1_600_000, "High": 1_606_000, "Low": 1_505_000, "Close": 1_522_000, "Volume": 2_259_466},
+        {
+            "Open": 1_600_000,
+            "High": 1_606_000,
+            "Low": 1_505_000,
+            "Close": 1_522_000,
+            "Volume": 2_259_466,
+        },
         {"Close": 1_668_000, "Date": "20260805"},
         observed_at="2026-08-06 11:20 KST",
     )
@@ -581,7 +713,9 @@ def _first_text(response: dict) -> str:
 
 def test_ask_result_shows_the_question_and_the_answer():
     response = render_delivery(
-        delivery("ask_result", {"question": QUESTION, "answer": "외국인 순매도 탓입니다."})
+        delivery(
+            "ask_result", {"question": QUESTION, "answer": "외국인 순매도 탓입니다."}
+        )
     )
 
     text = _first_text(response)
@@ -593,7 +727,10 @@ def test_ask_result_strips_markdown_the_bubble_cannot_show():
     response = render_delivery(
         delivery(
             "ask_result",
-            {"question": QUESTION, "answer": "## 요약\n- **외국인** 순매도\n- 금리 우려"},
+            {
+                "question": QUESTION,
+                "answer": "## 요약\n- **외국인** 순매도\n- 금리 우려",
+            },
         )
     )
 

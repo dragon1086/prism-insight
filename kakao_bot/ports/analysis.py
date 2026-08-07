@@ -9,7 +9,7 @@ and are the only Kakao code that knows Prism exists.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Mapping, Protocol
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,7 @@ class AnalysisOutcome:
     summary: str | None = None
     pdf_path: str | None = None
     error_code: str | None = None
+    metadata: Mapping[str, object] | None = None
 
 
 class TickerResolverPort(Protocol):

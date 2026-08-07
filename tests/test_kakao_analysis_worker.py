@@ -13,6 +13,7 @@ from kakao_bot.runtime.analysis_worker_main import (
     _configure_report_data_sources,
     _configure_report_model,
     _configure_report_parallelism,
+    _configure_search_planner,
     _report_public_base_url,
     _start_llm_runtime,
     _stop_llm_runtime,
@@ -298,6 +299,36 @@ def test_explicit_report_parallelism_wins_over_kakao_default():
     assert _configure_report_parallelism(environ) == ("false", "2")
 
 
+def test_kakao_search_planner_defaults_to_fast_luna_low():
+    environ = {}
+
+    assert _configure_search_planner(environ) == (
+        "true",
+        "gpt-5.6-luna",
+        "low",
+        "12",
+    )
+    assert environ["KAKAO_SEARCH_PLANNER_ENABLED"] == "true"
+    assert environ["KAKAO_SEARCH_PLANNER_MODEL"] == "gpt-5.6-luna"
+    assert environ["KAKAO_SEARCH_PLANNER_EFFORT"] == "low"
+
+
+def test_explicit_search_planner_configuration_wins_over_defaults():
+    environ = {
+        "KAKAO_SEARCH_PLANNER_ENABLED": "false",
+        "KAKAO_SEARCH_PLANNER_MODEL": "custom-model",
+        "KAKAO_SEARCH_PLANNER_EFFORT": "medium",
+        "KAKAO_SEARCH_PLANNER_TIMEOUT_SECONDS": "5",
+    }
+
+    assert _configure_search_planner(environ) == (
+        "false",
+        "custom-model",
+        "medium",
+        "5",
+    )
+
+
 @pytest.mark.asyncio
 async def test_chatgpt_oauth_worker_starts_and_stops_proxy(monkeypatch):
     from cores import chatgpt_proxy
@@ -318,9 +349,7 @@ async def test_chatgpt_oauth_worker_starts_and_stops_proxy(monkeypatch):
     monkeypatch.setattr(chatgpt_proxy, "start_proxy", fake_start_proxy)
     monkeypatch.setattr(chatgpt_proxy, "stop_proxy", fake_stop_proxy)
 
-    started = await _start_llm_runtime(
-        {"PRISM_OPENAI_AUTH_MODE": "chatgpt_oauth"}
-    )
+    started = await _start_llm_runtime({"PRISM_OPENAI_AUTH_MODE": "chatgpt_oauth"})
     await _stop_llm_runtime(started)
 
     assert started is True
@@ -351,6 +380,4 @@ async def test_oauth_proxy_start_failure_stops_worker(monkeypatch):
     monkeypatch.setattr(chatgpt_proxy, "start_proxy", failed_start)
 
     with pytest.raises(AnalysisWorkerConfigurationError, match="could not start"):
-        await _start_llm_runtime(
-            {"PRISM_OPENAI_AUTH_MODE": "chatgpt_oauth"}
-        )
+        await _start_llm_runtime({"PRISM_OPENAI_AUTH_MODE": "chatgpt_oauth"})
