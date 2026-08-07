@@ -19,6 +19,7 @@ class McpServerSpec:
           command: uvx
           args: [mcp-server-perplexity-ask]
           env: {PERPLEXITY_API_KEY: "..."}
+          cwd: /tmp
           read_timeout_seconds: 120
     """
 
@@ -26,6 +27,7 @@ class McpServerSpec:
     command: str
     args: tuple = ()
     env: dict = field(default_factory=dict, compare=False, hash=False)
+    cwd: Optional[str] = None
     read_timeout_seconds: Optional[int] = None
 
 
@@ -74,6 +76,7 @@ class McpServerRegistry:
                 command=entry["command"],
                 args=tuple(raw_args),
                 env=dict(entry.get("env", {})),
+                cwd=entry.get("cwd"),
                 read_timeout_seconds=entry.get("read_timeout_seconds"),
             )
 
