@@ -305,6 +305,26 @@ def test_recent_stock_outlook_question_uses_the_stock_research_plan():
     assert all("알려줘" not in query for query in queries)
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "하이닉스 얼마까지 오를지 작두탄듯이 예측해보세요",
+        "SK하이닉스 어디까지 내릴지 예측해줘",
+        "하이닉스 목표주가 얼마야?",
+    ),
+)
+def test_stock_price_forecast_question_uses_the_stock_research_plan(question):
+    from kakao_bot.adapters.prism.report_adapter import _ask_search_plan
+
+    queries, use_primary_sources = _ask_search_plan(question)
+
+    assert use_primary_sources is True
+    assert len(queries) == 2
+    assert all("SK하이닉스" in query for query in queries)
+    assert any("목표주가" in query for query in queries)
+    assert all("작두" not in query and "예측해" not in query for query in queries)
+
+
 def test_intraday_stock_move_question_uses_today_cause_queries():
     from kakao_bot.adapters.prism.report_adapter import _ask_search_plan
 
