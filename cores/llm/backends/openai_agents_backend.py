@@ -130,7 +130,7 @@ def build_mcp_server(name: str, registry: McpServerRegistry) -> "MCPServerStdio"
         command=spec.command,
         args=list(spec.args),
         env=dict(spec.env) if spec.env else None,
-        cwd=None,
+        cwd=spec.cwd,
     )
 
     return MCPServerStdio(
