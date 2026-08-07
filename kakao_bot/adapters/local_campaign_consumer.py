@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from kakao_bot.adapters.prism.batch_campaign_mapper import (
     BatchCampaignPayloadError,
+    is_batch_story_payload,
     map_batch_campaign_payload,
+    map_batch_story_payload,
 )
 from kakao_bot.application.batch_campaign_service import BatchCampaignService
+from kakao_bot.application.batch_story_service import BatchStoryService
 from kakao_bot.ports.repositories import KakaoRepository
 from messaging.local_campaign_queue import SQLiteBatchCampaignQueue
 
@@ -85,7 +89,16 @@ class LocalBatchCampaignConsumer:
                 stale_lease += int(not marked)
                 continue
             try:
-                campaign = map_batch_campaign_payload(entry.payload)
+                story = (
+                    map_batch_story_payload(entry.payload)
+                    if is_batch_story_payload(entry.payload)
+                    else None
+                )
+                campaign = (
+                    None
+                    if story is not None
+                    else map_batch_campaign_payload(entry.payload)
+                )
             except (BatchCampaignPayloadError, TypeError, ValueError) as exc:
                 marked = self._queue.mark_dead(
                     entry.queue_id,
@@ -99,7 +112,23 @@ class LocalBatchCampaignConsumer:
             repository: KakaoRepository | None = None
             try:
                 repository = self._repository_factory()
-                result = self._service_factory(repository).ingest_and_plan(campaign)
+                if story is not None:
+                    result = BatchStoryService(
+                        repository,
+                        public_base_url=(
+                            os.getenv("KAKAO_BOT_PUBLIC_BASE_URL")
+                            or os.getenv("KAKAO_PUBLIC_BASE_URL")
+                        ),
+                        link_ttl_hours=int(
+                            os.getenv("KAKAO_REPORT_LINK_TTL_HOURS", "72")
+                        ),
+                    ).ingest_and_plan(story)
+                    log_id = story.event_id
+                    campaign_created = None
+                else:
+                    result = self._service_factory(repository).ingest_and_plan(campaign)
+                    log_id = campaign.campaign_id
+                    campaign_created = result.campaign_created
                 marked = self._queue.acknowledge(
                     entry.queue_id,
                     lease_owner=self._lease_owner,
@@ -109,14 +138,14 @@ class LocalBatchCampaignConsumer:
                 stale_lease += int(not marked)
                 logger.info(
                     "Consumed local campaign %s (created=%s, deliveries=%s)",
-                    campaign.campaign_id,
-                    result.campaign_created,
+                    log_id,
+                    campaign_created,
                     result.deliveries_created,
                 )
             except Exception as exc:
                 logger.exception(
                     "Local campaign ingestion failed for %s",
-                    campaign.campaign_id,
+                    entry.campaign_id,
                 )
                 marked = self._queue.release(
                     entry.queue_id,

@@ -20,6 +20,8 @@ from messaging.batch_campaign_publisher import (
     build_batch_campaign_event,
     campaign_id_for,
     publish_batch_campaign_best_effort,
+    publish_batch_reports_best_effort,
+    publish_batch_tracking_story_best_effort,
     select_reported_candidates,
 )
 from messaging.local_campaign_queue import SQLiteBatchCampaignQueue
@@ -228,6 +230,74 @@ async def test_best_effort_helper_swallows_invalid_event():
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_tracking_story_publishes_each_decision_before_portfolio(monkeypatch):
+    events = []
+
+    async def capture(event):
+        events.append(event)
+        return event["event_id"]
+
+    monkeypatch.setattr(
+        "messaging.batch_campaign_publisher.publish_batch_event_best_effort",
+        capture,
+    )
+
+    count = await publish_batch_tracking_story_best_effort(
+        market="US",
+        session="MORNING",
+        trade_date="20260807",
+        regime="UPTREND",
+        messages=[
+            ("analysis", "MU 진입 보류"),
+            ("analysis", "PH 진입 보류"),
+            ("portfolio", "실시간 포트폴리오 4/10"),
+        ],
+    )
+
+    assert count == 3
+    assert [event["event_type"] for event in events] == [
+        "BATCH_CAMPAIGN_DECISION_READY",
+        "BATCH_CAMPAIGN_DECISION_READY",
+        "BATCH_CAMPAIGN_PORTFOLIO_SNAPSHOT",
+    ]
+    assert events[0]["event_id"].endswith(":decision:01")
+    assert events[1]["event_id"].endswith(":decision:02")
+
+
+@pytest.mark.asyncio
+async def test_report_story_skips_partial_artifact_failures(tmp_path, monkeypatch):
+    complete_pdf = tmp_path / "005930_삼성_전자_20260807.pdf"
+    complete_pdf.write_bytes(b"%PDF-1.7")
+    no_summary_pdf = tmp_path / "000660_SK하이닉스_20260807.pdf"
+    no_summary_pdf.write_bytes(b"%PDF-1.7")
+    summary = tmp_path / "005930_삼성_전자_telegram.txt"
+    summary.write_text("실제 텔레그램 요약", encoding="utf-8")
+    events = []
+
+    async def capture(event):
+        events.append(event)
+        return event["event_id"]
+
+    monkeypatch.setattr(
+        "messaging.batch_campaign_publisher.publish_batch_event_best_effort",
+        capture,
+    )
+
+    count = await publish_batch_reports_best_effort(
+        market="KR",
+        session="AFTERNOON",
+        trade_date="20260807",
+        regime="UPTREND",
+        pdf_paths=[complete_pdf, no_summary_pdf, tmp_path / "missing.pdf"],
+        message_paths=[summary],
+    )
+
+    assert count == 1
+    assert events[0]["ticker"] == "005930"
+    assert events[0]["company_name"] == "삼성_전자"
 
 
 def test_campaign_publisher_has_no_network_transport_dependency():
