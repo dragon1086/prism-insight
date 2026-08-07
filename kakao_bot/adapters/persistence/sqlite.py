@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import sqlite3
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -187,6 +188,35 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
         ALTER TABLE kakao_analysis_jobs
             ADD COLUMN kind TEXT NOT NULL DEFAULT 'report';
         ALTER TABLE kakao_analysis_jobs ADD COLUMN payload TEXT;
+        """,
+    ),
+    (
+        6,
+        """
+        CREATE TABLE kakao_search_query_observations (
+            observation_key TEXT PRIMARY KEY,
+            utterance TEXT NOT NULL,
+            planner_model TEXT NOT NULL,
+            planner_effort TEXT NOT NULL,
+            planner_source TEXT NOT NULL,
+            intent TEXT NOT NULL,
+            subject TEXT,
+            queries_json TEXT NOT NULL,
+            use_primary_sources INTEGER NOT NULL
+                CHECK (use_primary_sources IN (0, 1)),
+            is_intraday INTEGER NOT NULL CHECK (is_intraday IN (0, 1)),
+            planner_latency_ms INTEGER,
+            planner_error TEXT,
+            analysis_succeeded INTEGER NOT NULL
+                CHECK (analysis_succeeded IN (0, 1)),
+            analysis_error_code TEXT,
+            observed_at TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_kakao_search_observations_time
+            ON kakao_search_query_observations(observed_at);
+        CREATE INDEX idx_kakao_search_observations_intent
+            ON kakao_search_query_observations(intent, planner_source);
         """,
     ),
 )
@@ -1239,6 +1269,109 @@ class SQLiteKakaoRepository:
                 "requested_at": row["requested_at"],
                 "updated_at": row["updated_at"],
                 "completed_at": row["completed_at"],
+            }
+            for row in rows
+        )
+
+    def record_search_query_observation(
+        self,
+        observation_key: str,
+        *,
+        utterance: str,
+        plan: Mapping[str, object] | None,
+        analysis_succeeded: bool,
+        analysis_error_code: str | None,
+        observed_at: datetime,
+    ) -> None:
+        """Persist an identifier-free corpus row for future planner tuning."""
+
+        if not observation_key.strip():
+            raise ValueError("observation_key must not be empty")
+        if not utterance.strip():
+            raise ValueError("utterance must not be empty")
+        values = plan or {}
+        raw_queries = values.get("queries")
+        queries = (
+            [str(query) for query in raw_queries]
+            if isinstance(raw_queries, (list, tuple))
+            else []
+        )
+        params = (
+            observation_key,
+            utterance,
+            str(values.get("model") or "unknown")[:100],
+            str(values.get("effort") or "unknown")[:20],
+            str(values.get("source") or "UNKNOWN")[:20],
+            str(values.get("intent") or "UNKNOWN")[:40],
+            str(values["subject"])[:100] if values.get("subject") else None,
+            json.dumps(queries, ensure_ascii=False),
+            int(bool(values.get("use_primary_sources", False))),
+            int(bool(values.get("is_intraday", False))),
+            values.get("latency_ms")
+            if isinstance(values.get("latency_ms"), int)
+            else None,
+            str(values["error"])[:500] if values.get("error") else None,
+            int(analysis_succeeded),
+            analysis_error_code[:500] if analysis_error_code else None,
+            _utc_iso(observed_at),
+        )
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO kakao_search_query_observations(
+                    observation_key,
+                    utterance,
+                    planner_model,
+                    planner_effort,
+                    planner_source,
+                    intent,
+                    subject,
+                    queries_json,
+                    use_primary_sources,
+                    is_intraday,
+                    planner_latency_ms,
+                    planner_error,
+                    analysis_succeeded,
+                    analysis_error_code,
+                    observed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(observation_key) DO UPDATE SET
+                    utterance = excluded.utterance,
+                    planner_model = excluded.planner_model,
+                    planner_effort = excluded.planner_effort,
+                    planner_source = excluded.planner_source,
+                    intent = excluded.intent,
+                    subject = excluded.subject,
+                    queries_json = excluded.queries_json,
+                    use_primary_sources = excluded.use_primary_sources,
+                    is_intraday = excluded.is_intraday,
+                    planner_latency_ms = excluded.planner_latency_ms,
+                    planner_error = excluded.planner_error,
+                    analysis_succeeded = excluded.analysis_succeeded,
+                    analysis_error_code = excluded.analysis_error_code,
+                    observed_at = excluded.observed_at
+                """,
+                params,
+            )
+
+    def list_search_query_observations(self) -> tuple[dict[str, object], ...]:
+        """Return the structured corpus without joining room or user data."""
+
+        rows = self._connection.execute(
+            """
+            SELECT *
+            FROM kakao_search_query_observations
+            ORDER BY observed_at, observation_key
+            """
+        ).fetchall()
+        return tuple(
+            {
+                **dict(row),
+                "queries": json.loads(row["queries_json"]),
+                "use_primary_sources": bool(row["use_primary_sources"]),
+                "is_intraday": bool(row["is_intraday"]),
+                "analysis_succeeded": bool(row["analysis_succeeded"]),
             }
             for row in rows
         )

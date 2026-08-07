@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from kakao_bot.domain.models import OutboundDelivery
-from kakao_bot.ports.analysis import AnalysisPort
+from kakao_bot.ports.analysis import AnalysisOutcome, AnalysisPort
 from kakao_bot.ports.repositories import KakaoRepository
 
 logger = logging.getLogger(__name__)
@@ -129,6 +131,15 @@ class AnalysisService:
                         market=job.market,
                     )
             except Exception as exc:  # noqa: BLE001 - transient vs permanent below
+                if is_ask:
+                    self._record_search_observation(
+                        job,
+                        AnalysisOutcome(
+                            succeeded=False,
+                            error_code=str(exc) or type(exc).__name__,
+                        ),
+                        run_at,
+                    )
                 if job.attempt_count >= self._max_attempts:
                     error_code = str(exc) or type(exc).__name__
                     self._repository.fail_analysis_job(
@@ -141,6 +152,9 @@ class AnalysisService:
                     self._repository.release_analysis_job(job.job_id, now=run_at)
                     released += 1
                 continue
+
+            if is_ask:
+                self._record_search_observation(job, outcome, run_at)
 
             if outcome.succeeded:
                 summary = outcome.summary or ""
@@ -241,6 +255,30 @@ class AnalysisService:
             failed=failed,
             released=released,
         )
+
+    def _record_search_observation(
+        self,
+        job,
+        outcome: AnalysisOutcome,
+        observed_at: datetime,
+    ) -> None:
+        """Collect planner training data without ever costing the user an answer."""
+
+        metadata = outcome.metadata or {}
+        raw_plan = metadata.get("search_plan")
+        plan = dict(raw_plan) if isinstance(raw_plan, Mapping) else None
+        observation_key = hashlib.sha256(job.job_id.encode("utf-8")).hexdigest()
+        try:
+            self._repository.record_search_query_observation(
+                observation_key,
+                utterance=_question_of(job),
+                plan=plan,
+                analysis_succeeded=outcome.succeeded,
+                analysis_error_code=outcome.error_code,
+                observed_at=observed_at,
+            )
+        except Exception:  # collection is fail-open by design
+            logger.exception("Could not record search observation for %s", job.job_id)
 
 
 def _question_of(job) -> str:
