@@ -26,7 +26,8 @@ US_MARKET = "us"
 _MENTION = re.compile(r"^@\S+\s*")
 _KR_CODE = re.compile(r"^\d{6}$")
 _US_TICKER = re.compile(r"^[A-Za-z]{1,5}$")
-_PRICE = re.compile(r"^₩?(\d+(?:,\d{3})*(?:\.\d+)?)원?$")
+_PRICE = re.compile(r"^₩?(\d+(?:,\d{3})*(?:\.\d+)?)(만)?원?$")
+_KRW_SUFFIX = "원"
 # Marks that make a token part of a sentence rather than a name on its own.
 _SENTENCE_MARK = re.compile(r"[?？!！.,、。]")
 _PERIOD = re.compile(r"^(\d+)\s*(?:개월|달|months?|m)?$", re.IGNORECASE)
@@ -240,6 +241,11 @@ def _parse_evaluate(market: str | None, tokens: list[str]) -> ParsedCommand:
         if numbers:
             # Past the numbers: a second number is the holding period, anything
             # else begins the tone.
+            if token == _KRW_SUFFIX:
+                # Korean amounts are commonly spaced as "5만 원". The price
+                # token already carries the multiplier, so consume only the
+                # separated currency suffix here.
+                continue
             if len(numbers) < 2 and _PERIOD.match(token):
                 numbers.append(token)
             else:
@@ -272,7 +278,8 @@ def _to_price(token: str) -> float | None:
     if not match:
         return None
     try:
-        return float(match.group(1).replace(",", ""))
+        value = float(match.group(1).replace(",", ""))
+        return value * 10_000 if match.group(2) else value
     except ValueError:
         return None
 
