@@ -119,7 +119,12 @@ class SQLiteBatchCampaignQueue:
         self._connection.close()
 
     def enqueue(self, payload: Mapping[str, object]) -> str | None:
-        campaign_id = payload.get("campaign_id")
+        # A screening campaign has one event and historically used campaign_id
+        # as its queue key.  The automatic batch story adds report, decision,
+        # and portfolio events under that same campaign, so those events carry
+        # a distinct event_id.  Keep the column name for an online-compatible
+        # migration while storing the most specific id available.
+        campaign_id = payload.get("event_id") or payload.get("campaign_id")
         if not isinstance(campaign_id, str) or not campaign_id.strip():
             raise ValueError("campaign payload requires campaign_id")
         created_at = payload.get("occurred_at")

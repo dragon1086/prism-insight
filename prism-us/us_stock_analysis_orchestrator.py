@@ -40,6 +40,8 @@ from messaging.batch_campaign_publisher import (  # noqa: E402
     COLLECTING,
     SKIPPED,
     publish_batch_campaign_best_effort,
+    publish_batch_reports_best_effort,
+    publish_batch_tracking_story_best_effort,
 )
 
 # Load openai_debug from project root via importlib (prism-us/cores/ shadows root cores/)
@@ -1162,14 +1164,22 @@ class USStockAnalysisOrchestrator:
             # 4. PDF conversion
             pdf_paths = await self.convert_to_pdf(report_paths)
 
-            # 4-5. Generate and send telegram messages
-            if self.telegram_config.use_telegram:
-                logger.info("Telegram enabled - proceeding with US message generation and transmission")
+            message_paths = await self.generate_telegram_messages(pdf_paths, language)
+            await publish_batch_reports_best_effort(
+                market="US",
+                session=mode,
+                trade_date=effective_date,
+                regime=campaign_regime,
+                pdf_paths=pdf_paths,
+                message_paths=message_paths,
+            )
 
-                message_paths = await self.generate_telegram_messages(pdf_paths, language)
+            # 5. Send Telegram without coupling Kakao story production to it.
+            if self.telegram_config.use_telegram:
+                logger.info("Telegram enabled - proceeding with US transmission")
                 await self.send_telegram_messages(message_paths, pdf_paths, report_paths)
             else:
-                logger.info("Telegram disabled - skipping US message generation and transmission")
+                logger.info("Telegram disabled - skipping US Telegram transmission")
 
             # 6. Tracking system batch (runs concurrently with broadcast I/O tasks via async)
             if pdf_paths:
@@ -1203,6 +1213,14 @@ class USStockAnalysisOrchestrator:
                             pdf_paths, chat_id, language,
                             telegram_config=self.telegram_config,
                             trigger_results_file=trigger_results_file
+                        )
+
+                        await publish_batch_tracking_story_best_effort(
+                            market="US",
+                            session=mode,
+                            trade_date=effective_date,
+                            regime=campaign_regime,
+                            messages=tracking_agent.last_batch_messages,
                         )
 
                         if tracking_success:

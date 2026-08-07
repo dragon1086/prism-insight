@@ -509,6 +509,29 @@ async def test_process_reports_returns_zero_for_empty_accounts(caplog):
 
 
 @pytest.mark.asyncio
+async def test_batch_story_messages_survive_when_telegram_is_disabled():
+    agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent.message_queue = ["삼성전자 가상운용 판단: 관망"]
+    agent._msg_types = ["analysis"]
+    agent._msg_effect_ids = [None]
+    agent.last_batch_messages = []
+    agent.generate_report_summary = AsyncMock(
+        return_value="실시간 포트폴리오 4/10"
+    )
+
+    sent = await StockTrackingAgent.send_telegram_message(
+        agent, None, portfolio_force=True
+    )
+
+    assert sent is True
+    assert agent.last_batch_messages == [
+        ("analysis", "삼성전자 가상운용 판단: 관망"),
+        ("portfolio", "실시간 포트폴리오 4/10"),
+    ]
+    assert agent.message_queue == []
+
+
+@pytest.mark.asyncio
 async def test_process_reports_saves_watchlist_once_when_not_traded(monkeypatch):
     agent = StockTrackingAgent.__new__(StockTrackingAgent)
     agent.account_configs = [

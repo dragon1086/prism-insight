@@ -180,6 +180,7 @@ class StockTrackingAgent:
         self.message_queue = []  # For storing Telegram messages
         self._msg_types = []  # msg_type for each message in queue
         self._msg_effect_ids = []  # durable effect id for each queued message
+        self.last_batch_messages: list[tuple[str | None, str]] = []
         self._broadcast_task = None  # Track broadcast translation task
         self.trading_agent = None
         self.db_path = db_path
@@ -3887,6 +3888,30 @@ class StockTrackingAgent:
             bool: Send success status
         """
         try:
+            # Build the post-batch portfolio before checking the Telegram
+            # transport. Kakao's automatic story must still be available when
+            # Telegram delivery is disabled or temporarily unavailable.
+            try:
+                from portfolio_broadcast import should_send_portfolio
+                _emit_portfolio = should_send_portfolio("KR", force=portfolio_force)
+            except Exception:
+                _emit_portfolio = True  # fail-open
+            if _emit_portfolio:
+                summary = await self.generate_report_summary()
+                self._queue_message(summary, "portfolio")
+            else:
+                logger.info("[portfolio-dedup] KR portfolio summary skipped (sent within debounce window)")
+
+            self.last_batch_messages = [
+                (
+                    self._msg_types[index]
+                    if index < len(self._msg_types)
+                    else None,
+                    message,
+                )
+                for index, message in enumerate(self.message_queue)
+            ]
+
             # Skip Telegram sending if chat_id is None
             if not chat_id:
                 logger.info("No Telegram channel ID. Skipping message send")
@@ -3910,21 +3935,6 @@ class StockTrackingAgent:
                 # Initialize message queue
                 self._clear_message_queue()
                 return False
-
-            # Generate summary report — de-duplicated so near-simultaneous run-ends
-            # (KR batch + intraday loops A/B) don't emit 2-3 identical portfolio
-            # summaries. Other queued messages (sell notices) are unaffected.
-            try:
-                from portfolio_broadcast import should_send_portfolio
-                # 배치 run-end(portfolio_force=True)는 완전한 최종 요약이므로 디바운스 우회.
-                _emit_portfolio = should_send_portfolio("KR", force=portfolio_force)
-            except Exception:
-                _emit_portfolio = True  # fail-open
-            if _emit_portfolio:
-                summary = await self.generate_report_summary()
-                self._queue_message(summary, "portfolio")
-            else:
-                logger.info("[portfolio-dedup] KR portfolio summary skipped (sent within debounce window)")
 
             # Translate messages if English is requested
             if language == "en":

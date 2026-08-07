@@ -26,6 +26,9 @@ _VALID_STATUSES = frozenset({COLLECTING, COMPLETED, SKIPPED})
 _VALID_MARKETS = frozenset({"KR", "US"})
 _VALID_SESSIONS = frozenset({"MORNING", "AFTERNOON"})
 _VALID_REGIMES = frozenset({"UNKNOWN", "UPTREND", "UNDER_PRESSURE", "CORRECTION"})
+REPORT_READY = "REPORT_READY"
+DECISION_READY = "DECISION_READY"
+PORTFOLIO_SNAPSHOT = "PORTFOLIO_SNAPSHOT"
 
 
 def _enum_value(value: Any) -> Any:
@@ -191,6 +194,134 @@ def build_batch_campaign_event(
     return event
 
 
+def _story_base(
+    *,
+    market: str,
+    session: str,
+    trade_date: Any,
+    regime: Optional[str],
+    stage: str,
+    occurred_at: Optional[datetime],
+) -> Dict[str, Any]:
+    normalized_market = str(_enum_value(market) or "").strip().upper()
+    normalized_session = str(_enum_value(session) or "").strip().upper()
+    normalized_regime = str(_enum_value(regime) or "UNKNOWN").strip().upper()
+    if normalized_market not in _VALID_MARKETS:
+        raise ValueError(f"unsupported market: {market}")
+    if normalized_session not in _VALID_SESSIONS:
+        raise ValueError(f"unsupported session: {session}")
+    if normalized_regime not in _VALID_REGIMES:
+        raise ValueError(f"unsupported campaign regime: {regime}")
+    normalized_date = _normalized_trade_date(trade_date)
+    campaign_id = campaign_id_for(
+        normalized_market, normalized_session, normalized_date
+    )
+    timestamp = occurred_at or datetime.now(timezone.utc)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "event_type": f"BATCH_CAMPAIGN_{stage}",
+        "campaign_id": campaign_id,
+        "market": normalized_market,
+        "session": normalized_session,
+        "trade_date": normalized_date,
+        "regime": normalized_regime,
+        "occurred_at": timestamp.astimezone(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z"),
+    }
+
+
+def build_batch_report_event(
+    *,
+    market: str,
+    session: str,
+    trade_date: Any,
+    regime: Optional[str],
+    ticker: str,
+    company_name: str,
+    summary: str,
+    artifact_path: str | Path,
+    occurred_at: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    event = _story_base(
+        market=market,
+        session=session,
+        trade_date=trade_date,
+        regime=regime,
+        stage=REPORT_READY,
+        occurred_at=occurred_at,
+    )
+    normalized_ticker = str(ticker or "").strip().upper()
+    normalized_name = str(company_name or normalized_ticker).strip()
+    normalized_summary = str(summary or "").strip()
+    normalized_path = str(artifact_path or "").strip()
+    if not normalized_ticker or not normalized_name:
+        raise ValueError("report event requires ticker and company_name")
+    if not normalized_summary:
+        raise ValueError("report event requires summary")
+    if not normalized_path.lower().endswith(".pdf"):
+        raise ValueError("report event requires a PDF artifact_path")
+    event.update(
+        {
+            "event_id": f"{event['campaign_id']}:report:{normalized_ticker}",
+            "ticker": normalized_ticker,
+            "company_name": normalized_name,
+            "message": normalized_summary,
+            "artifact_path": normalized_path,
+        }
+    )
+    return event
+
+
+def _build_text_story_event(
+    *,
+    market: str,
+    session: str,
+    trade_date: Any,
+    regime: Optional[str],
+    stage: str,
+    suffix: str,
+    message: str,
+    occurred_at: Optional[datetime],
+) -> Dict[str, Any]:
+    event = _story_base(
+        market=market,
+        session=session,
+        trade_date=trade_date,
+        regime=regime,
+        stage=stage,
+        occurred_at=occurred_at,
+    )
+    normalized_message = str(message or "").strip()
+    if not normalized_message:
+        raise ValueError(f"{suffix} event requires message")
+    event["event_id"] = f"{event['campaign_id']}:{suffix}"
+    event["message"] = normalized_message
+    return event
+
+
+def build_batch_decision_event(
+    *, decision_key: str | None = None, **fields: Any
+) -> Dict[str, Any]:
+    event = _build_text_story_event(**fields, stage=DECISION_READY, suffix="decision")
+    if decision_key is not None:
+        normalized_key = str(decision_key).strip().lower()
+        if not normalized_key or not normalized_key.replace("-", "").isalnum():
+            raise ValueError(
+                "decision_key must contain only letters, numbers, or hyphens"
+            )
+        event["event_id"] = f"{event['campaign_id']}:decision:{normalized_key}"
+    return event
+
+
+def build_batch_portfolio_event(**fields: Any) -> Dict[str, Any]:
+    return _build_text_story_event(
+        **fields, stage=PORTFOLIO_SNAPSHOT, suffix="portfolio"
+    )
+
+
 class BatchCampaignPublisher:
     """Local queue publisher isolated from Kakao and trading-signal transports."""
 
@@ -272,3 +403,129 @@ async def publish_batch_campaign_best_effort(**event_fields: Any) -> Optional[st
     finally:
         if publisher is not None:
             await publisher.disconnect()
+
+
+async def publish_batch_event_best_effort(
+    event: Mapping[str, Any],
+) -> Optional[str]:
+    """Publish an already-built story event without affecting the batch."""
+    publisher: Optional[BatchCampaignPublisher] = None
+    try:
+        publisher = BatchCampaignPublisher()
+        await publisher.connect()
+        return await publisher.publish(event)
+    except Exception as exc:
+        logger.warning("Batch story hook failed (ignored): %s", exc)
+        return None
+    finally:
+        if publisher is not None:
+            await publisher.disconnect()
+
+
+async def publish_batch_reports_best_effort(
+    *,
+    market: str,
+    session: str,
+    trade_date: Any,
+    regime: Optional[str],
+    pdf_paths: Sequence[Any],
+    message_paths: Sequence[Any],
+) -> int:
+    """Publish only PDF reports that have a matching Telegram summary."""
+    summaries: dict[str, tuple[str, str]] = {}
+    for raw_path in message_paths:
+        path = Path(str(raw_path))
+        stem = path.stem.removesuffix("_telegram")
+        if "_" not in stem:
+            continue
+        ticker, company_name = stem.split("_", 1)
+        try:
+            message = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            logger.warning("Could not read campaign summary %s: %s", path, exc)
+            continue
+        if message:
+            summaries[ticker.upper()] = (company_name, message)
+
+    published = 0
+    for raw_path in pdf_paths:
+        path = Path(str(raw_path))
+        parts = path.stem.split("_")
+        ticker = parts[0].upper() if parts else ""
+        matched = summaries.get(ticker)
+        if matched is None or not path.is_file():
+            logger.warning("Skipping Kakao report without complete artifacts: %s", path)
+            continue
+        company_name, message = matched
+        try:
+            event = build_batch_report_event(
+                market=market,
+                session=session,
+                trade_date=trade_date,
+                regime=regime,
+                ticker=ticker,
+                company_name=company_name,
+                summary=message,
+                artifact_path=path.resolve(),
+            )
+        except Exception as exc:
+            logger.warning("Could not build Kakao report event for %s: %s", path, exc)
+            continue
+        published += int(await publish_batch_event_best_effort(event) is not None)
+    return published
+
+
+async def publish_batch_tracking_story_best_effort(
+    *,
+    market: str,
+    session: str,
+    trade_date: Any,
+    regime: Optional[str],
+    messages: Sequence[tuple[Optional[str], str]],
+) -> int:
+    """Publish the tracking agent's actual decision and portfolio messages."""
+    decision_messages = [
+        str(message).strip()
+        for message_type, message in messages
+        if message_type == "analysis" and str(message).strip()
+    ]
+    portfolio_messages = [
+        str(message).strip()
+        for message_type, message in messages
+        if message_type == "portfolio" and str(message).strip()
+    ]
+    common = {
+        "market": market,
+        "session": session,
+        "trade_date": trade_date,
+        "regime": regime,
+        "occurred_at": None,
+    }
+    events = []
+    if decision_messages:
+        events.extend(
+            build_batch_decision_event(
+                **common,
+                decision_key=f"{index:02d}",
+                message=message,
+            )
+            for index, message in enumerate(decision_messages, 1)
+        )
+    else:
+        events.append(
+            build_batch_decision_event(
+                **common,
+                message="이번 배치에서 새로 실행된 가상 매수·매도는 없습니다.",
+            )
+        )
+    if portfolio_messages:
+        events.append(
+            build_batch_portfolio_event(
+                **common, message="\n\n".join(portfolio_messages)
+            )
+        )
+
+    published = 0
+    for event in events:
+        published += int(await publish_batch_event_best_effort(event) is not None)
+    return published

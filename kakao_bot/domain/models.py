@@ -31,6 +31,12 @@ class CampaignStatus(str, Enum):
     SKIPPED = "SKIPPED"
 
 
+class BatchStoryKind(str, Enum):
+    REPORT = "REPORT"
+    DECISION = "DECISION"
+    PORTFOLIO = "PORTFOLIO"
+
+
 class ApprovalStatus(str, Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
@@ -98,6 +104,32 @@ class BatchCampaign:
                 raise ValueError("a skipped campaign requires skip_reason")
         elif self.skip_reason is not None:
             raise ValueError("skip_reason is only valid for skipped campaigns")
+
+
+@dataclass(frozen=True)
+class BatchStoryEvent:
+    event_id: str
+    campaign_id: str
+    market: Market
+    session: Session
+    trade_date: date
+    regime: Regime
+    kind: BatchStoryKind
+    message: str
+    ticker: str | None = None
+    company_name: str | None = None
+    artifact_path: str | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self) -> None:
+        if not self.event_id.strip() or not self.campaign_id.strip():
+            raise ValueError("batch story ids must not be empty")
+        if not self.message.strip():
+            raise ValueError("batch story message must not be empty")
+        if self.kind is BatchStoryKind.REPORT and (
+            not self.ticker or not self.company_name or not self.artifact_path
+        ):
+            raise ValueError("report story requires stock and artifact fields")
 
 
 @dataclass(frozen=True)

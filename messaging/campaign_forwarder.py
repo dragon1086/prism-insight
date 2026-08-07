@@ -20,15 +20,17 @@ need the Kakao stack installed to run it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 
 # ssh is invoked with a fixed argv list and shell=False; the only caller-supplied
 # value is the payload, and that goes in on stdin.
 import subprocess  # nosec B404
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Protocol
 
 from messaging.local_campaign_queue import SQLiteBatchCampaignQueue
@@ -83,7 +85,10 @@ class SshCampaignShipper:
         queue_path: str,
         python_path: str,
         ssh_binary: str = "ssh",
+        scp_binary: str = "scp",
         identity_file: str | None = None,
+        local_artifact_roots: Sequence[str | Path] = (),
+        remote_artifact_root: str | None = None,
         timeout: int = DEFAULT_SSH_TIMEOUT,
     ) -> None:
         self._host = host
@@ -91,7 +96,14 @@ class SshCampaignShipper:
         self._queue_path = queue_path
         self._python_path = python_path
         self._ssh_binary = ssh_binary
+        self._scp_binary = scp_binary
         self._identity_file = identity_file
+        self._local_artifact_roots = tuple(
+            Path(root).resolve() for root in local_artifact_roots
+        )
+        self._remote_artifact_root = (
+            remote_artifact_root.rstrip("/") if remote_artifact_root else None
+        )
         self._timeout = timeout
 
     def _command(self) -> list[str]:
@@ -109,9 +121,15 @@ class SshCampaignShipper:
         return command
 
     def ship(self, payload: Mapping[str, object]) -> bool:
+        outbound = dict(payload)
+        artifact = outbound.get("artifact_path")
+        if artifact is not None:
+            outbound["artifact_path"] = self._copy_artifact(
+                str(artifact), event_id=str(outbound.get("event_id") or "")
+            )
         completed = subprocess.run(  # nosec B603
             self._command(),
-            input=json.dumps(dict(payload), ensure_ascii=False),
+            input=json.dumps(outbound, ensure_ascii=False),
             capture_output=True,
             text=True,
             timeout=self._timeout,
@@ -125,6 +143,54 @@ class SshCampaignShipper:
                 f"{completed.stderr.strip()[:300]}"
             )
         return completed.stdout.strip().endswith("NEW")
+
+    def _copy_artifact(self, artifact_path: str, *, event_id: str) -> str:
+        if not self._remote_artifact_root:
+            raise RuntimeError("remote artifact root is not configured")
+        source = Path(artifact_path).resolve()
+        if source.suffix.lower() != ".pdf" or not source.is_file():
+            raise RuntimeError(f"report artifact is unavailable: {source}")
+        if self._local_artifact_roots and not any(
+            source.is_relative_to(root) for root in self._local_artifact_roots
+        ):
+            raise RuntimeError(
+                f"report artifact is outside the allowed roots: {source}"
+            )
+        digest = hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:16]
+        remote_path = f"{self._remote_artifact_root}/{digest}.pdf"
+        command = [self._scp_binary, "-q", "-o", "BatchMode=yes"]
+        if self._identity_file:
+            command += ["-i", self._identity_file]
+        command += [str(source), f"{self._host}:{remote_path}"]
+        completed = subprocess.run(  # nosec B603
+            command,
+            capture_output=True,
+            text=True,
+            timeout=self._timeout,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"artifact copy failed (rc={completed.returncode}): "
+                f"{completed.stderr.strip()[:300]}"
+            )
+        chmod = [self._ssh_binary, "-o", "BatchMode=yes"]
+        if self._identity_file:
+            chmod += ["-i", self._identity_file]
+        chmod += [self._host, "chmod", "0644", remote_path]
+        completed = subprocess.run(  # nosec B603
+            chmod,
+            capture_output=True,
+            text=True,
+            timeout=self._timeout,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"artifact permission failed (rc={completed.returncode}): "
+                f"{completed.stderr.strip()[:300]}"
+            )
+        return remote_path
 
 
 class CampaignForwarder:
