@@ -25,6 +25,9 @@ DEFAULT_KAKAO_REPORT_DATA_SOURCES = "fdr,naver,krx"
 DEFAULT_KAKAO_REPORT_MODEL = "gpt-5.6-luna"
 DEFAULT_KAKAO_REPORT_EFFORT = "medium"
 DEFAULT_KAKAO_REPORT_MAX_CONCURRENCY = "3"
+DEFAULT_KAKAO_SEARCH_PLANNER_MODEL = "gpt-5.6-luna"
+DEFAULT_KAKAO_SEARCH_PLANNER_EFFORT = "low"
+DEFAULT_KAKAO_SEARCH_PLANNER_TIMEOUT_SECONDS = "12"
 
 
 class AnalysisWorkerConfigurationError(ValueError):
@@ -228,6 +231,26 @@ def _configure_report_parallelism(
     return enabled, max_concurrency
 
 
+def _configure_search_planner(
+    environ: MutableMapping[str, str] | None = None,
+) -> tuple[str, str, str, str]:
+    """Enable the fast LLM query planner without changing report reasoning."""
+
+    values = os.environ if environ is None else environ
+    enabled = values.setdefault("KAKAO_SEARCH_PLANNER_ENABLED", "true")
+    model = values.setdefault(
+        "KAKAO_SEARCH_PLANNER_MODEL", DEFAULT_KAKAO_SEARCH_PLANNER_MODEL
+    )
+    effort = values.setdefault(
+        "KAKAO_SEARCH_PLANNER_EFFORT", DEFAULT_KAKAO_SEARCH_PLANNER_EFFORT
+    )
+    timeout = values.setdefault(
+        "KAKAO_SEARCH_PLANNER_TIMEOUT_SECONDS",
+        DEFAULT_KAKAO_SEARCH_PLANNER_TIMEOUT_SECONDS,
+    )
+    return enabled, model, effort, timeout
+
+
 async def async_main() -> int:
     llm_runtime_started = False
     try:
@@ -235,6 +258,7 @@ async def async_main() -> int:
         _configure_report_data_sources()
         _configure_report_model()
         _configure_report_parallelism()
+        _configure_search_planner()
         llm_runtime_started = await _start_llm_runtime()
     except AnalysisWorkerConfigurationError as exc:
         logger.error("%s", exc)
