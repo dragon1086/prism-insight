@@ -7,6 +7,9 @@ loops share.
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 pd = pytest.importorskip("pandas")
@@ -42,12 +45,14 @@ class _FakeClient:
     def __init__(self, windows=None, ok=True, error="", name="삼성전자"):
         self.windows = windows if windows is not None else []
         self.calls: list[dict] = []
+        self.requests: list[tuple[str, str, dict]] = []
         self._ok = ok
         self._error = error
         self._name = name
 
     def _request(self, api_url, tr_id, params):
         self.calls.append(params)
+        self.requests.append((api_url, tr_id, params))
         if not self._ok:
             return _Response([], ok=False, error=self._error)
         index = min(len(self.calls) - 1, len(self.windows) - 1) if self.windows else 0
@@ -149,6 +154,64 @@ def test_investor_flows_asks_as_of_the_end_date():
     client = _FakeClient([[_flow_row("20260803")]])
     _source(client).investor_flows("005930", "20260728", "20260803")
     assert client.calls[0]["FID_INPUT_DATE_1"] == "20260803"
+
+
+def _estimate_row(bucket, foreign="100", institution="200"):
+    return {
+        "bsop_hour_gb": str(bucket),
+        "frgn_fake_ntby_qty": foreign,
+        "orgn_fake_ntby_qty": institution,
+        "sum_fake_ntby_qty": str(int(foreign) + int(institution)),
+    }
+
+
+def _kst(hour, minute):
+    return datetime(2026, 8, 7, hour, minute, tzinfo=ZoneInfo("Asia/Seoul"))
+
+
+@pytest.mark.parametrize(
+    "as_of,expected_bucket,expected_label",
+    [
+        (_kst(9, 30), "1", "09:30"),
+        (_kst(10, 0), "2", "10:00"),
+        (_kst(11, 20), "3", "11:20"),
+        (_kst(13, 20), "4", "13:20"),
+        (_kst(14, 30), "5", "14:30"),
+    ],
+)
+def test_intraday_estimate_selects_latest_published_bucket(
+    as_of, expected_bucket, expected_label
+):
+    rows = [_estimate_row(bucket, str(int(bucket) * 100), str(int(bucket) * 200))
+            for bucket in range(1, 6)]
+    client = _FakeClient([rows])
+
+    frame = _source(client).intraday_investor_estimate("005930", as_of=as_of)
+
+    assert frame.attrs["estimate_bucket"] == expected_bucket
+    assert expected_label in frame.attrs["estimate_note"]
+    assert frame.iloc[0]["외국인합계"] == int(expected_bucket) * 100
+    assert client.requests[0][1] == "HHPTJ04160200"
+    assert client.calls[0] == {"MKSC_SHRN_ISCD": "005930"}
+
+
+def test_first_intraday_bucket_does_not_fabricate_institution_zero():
+    frame = _source(_FakeClient([[_estimate_row(1, "753000", "0")]])).intraday_investor_estimate(
+        "005930", as_of=_kst(9, 35)
+    )
+
+    assert frame.iloc[0]["외국인합계"] == 753000
+    assert pd.isna(frame.iloc[0]["기관합계"])
+    assert "개인" not in frame.columns
+    assert "기타법인" not in frame.columns
+
+
+@pytest.mark.parametrize("as_of", [_kst(9, 29), _kst(15, 40)])
+def test_intraday_estimate_is_not_used_outside_published_window(as_of):
+    client = _FakeClient([[_estimate_row(1)]])
+    with pytest.raises(Unsupported, match="session window"):
+        _source(client).intraday_investor_estimate("005930", as_of=as_of)
+    assert client.calls == []
 
 
 def _index_row():

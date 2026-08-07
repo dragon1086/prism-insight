@@ -15,6 +15,8 @@ import pytest
 from cores.market_data import (
     default_chain,
     get_market_ohlcv_by_date,
+    get_market_trading_volume_by_date,
+    get_market_trading_volume_by_investor,
     set_default_chain,
 )
 from cores.market_data.schema import has_ohlcv, normalize, to_dashed
@@ -221,6 +223,72 @@ class TestCallerFacingApi:
         frame = get_market_ohlcv_by_date("20260801", "20260803", "005930")
 
         assert frame.empty
+
+    def test_intraday_estimate_is_appended_to_daily_history(self, monkeypatch):
+        history = pd.DataFrame(
+            {"외국인합계": [10], "기관합계": [20], "개인": [-30]},
+            index=pd.to_datetime(["2026-08-06"]),
+        )
+        estimate = pd.DataFrame(
+            {"외국인합계": [100], "기관합계": [200]},
+            index=pd.to_datetime(["2026-08-07"]),
+        )
+        estimate.attrs.update(
+            intraday_estimate=True,
+            estimate_as_of="2026-08-07 14:30 KST",
+            estimate_note="오늘 값은 KIS 장중 추정치입니다.",
+        )
+
+        class HybridSource(FakeSource):
+            def investor_flows(self, ticker, start, end):
+                self.calls.append(("investor_flows", ticker, start, end))
+                return history
+
+            def intraday_investor_estimate(self, ticker, *, as_of=None):
+                self.calls.append(("intraday_investor_estimate", ticker, as_of))
+                return estimate
+
+        source = HybridSource("kis")
+        set_default_chain(SourceChain([source]))
+        monkeypatch.setattr(
+            "cores.market_data._now_kst",
+            lambda: pd.Timestamp("2026-08-07 14:52", tz="Asia/Seoul").to_pydatetime(),
+        )
+
+        frame = get_market_trading_volume_by_date("20260801", "20260807", "005930")
+
+        assert list(frame.index.strftime("%Y%m%d")) == ["20260806", "20260807"]
+        assert frame.loc["2026-08-07", "외국인합계"] == 100
+        assert pd.isna(frame.loc["2026-08-07", "개인"])
+        assert frame.attrs["intraday_estimate"] is True
+        assert source.calls[0][3] == "20260806"
+
+    def test_after_1540_uses_daily_flow_without_estimate(self, monkeypatch):
+        source = FakeSource("kis", result=ohlcv(150))
+        set_default_chain(SourceChain([source]))
+        monkeypatch.setattr(
+            "cores.market_data._now_kst",
+            lambda: pd.Timestamp("2026-08-07 15:40", tz="Asia/Seoul").to_pydatetime(),
+        )
+
+        get_market_trading_volume_by_date("20260801", "20260807", "005930")
+
+        assert source.calls == [("investor_flows", "005930")]
+
+    def test_investor_compatibility_api_no_longer_calls_krx_directly(self, monkeypatch):
+        source = FakeSource("chain", result=ohlcv(175))
+        set_default_chain(SourceChain([source]))
+        monkeypatch.setattr(
+            "cores.market_data._now_kst",
+            lambda: pd.Timestamp("2026-08-07 16:00", tz="Asia/Seoul").to_pydatetime(),
+        )
+
+        frame = get_market_trading_volume_by_investor(
+            "20260801", "20260807", "005930"
+        )
+
+        assert frame["Close"].iloc[0] == 175
+        assert source.calls == [("investor_flows", "005930")]
 
 
 class TestRealSources:

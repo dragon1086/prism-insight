@@ -35,7 +35,9 @@ def _dict_to_markdown(data: dict, title: str = "") -> str:
     if not data or "error" in data:
         return ""
 
-    df = pd.DataFrame.from_dict(data, orient='index')
+    metadata = data.get("__meta__") if isinstance(data, dict) else None
+    rows = {key: value for key, value in data.items() if key != "__meta__"}
+    df = pd.DataFrame.from_dict(rows, orient='index')
     if df.empty:
         return ""
 
@@ -44,6 +46,9 @@ def _dict_to_markdown(data: dict, title: str = "") -> str:
     result = ""
     if title:
         result += f"### {title}\n\n"
+
+    if metadata and metadata.get("note"):
+        result += f"> **데이터 상태:** {metadata['note']}\n\n"
 
     result += df.to_markdown(index=True) + "\n"
     return result

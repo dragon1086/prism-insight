@@ -407,7 +407,8 @@ def create_mpf_style(base_mpl_style='seaborn-v0_8-whitegrid'):
 # None and the report shipped with no prices and no charts (2026-08-04: 17,387
 # characters against a normal 351,311, with no error anywhere). The package
 # tries each configured provider in turn and says so in the log when it falls
-# through; investor flows stay on KRX because nothing else publishes them.
+# through. Investor flows use KIS intraday estimates before 15:40 KST and KIS
+# daily values afterward when KIS is configured first.
 from cores.market_data import (
     get_index_ohlcv_by_date,
     get_market_cap_by_date,
@@ -415,7 +416,6 @@ from cores.market_data import (
     get_market_ohlcv_by_date,
     get_market_ticker_name,
     get_market_trading_volume_by_date,
-    get_market_trading_volume_by_investor,
 )
 
 # Professional chart style configuration
@@ -1120,19 +1120,20 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
         except Exception:
             company_name = ticker
 
-    # Fetch stock data - trading volume by investor
-    df_volume = get_market_trading_volume_by_investor(start_date, end_date, ticker)
+    # Fetch once through the shared source chain.  This may merge KIS's latest
+    # intraday estimate onto the historical daily series before 15:40 KST.
+    df_volume = get_market_trading_volume_by_date(start_date, end_date, ticker)
 
     if df_volume is None or len(df_volume) == 0:
         logger.info(f"No trading volume data available for {ticker}.")
         return None
 
-    # Fetch daily net purchase data
-    df_daily = get_market_trading_volume_by_date(start_date, end_date, ticker)
-
-    if df_daily is None or len(df_daily) == 0:
-        logger.info(f"No daily trading volume data available for {ticker}.")
-        return None
+    df_daily = df_volume
+    estimate_note = getattr(df_daily, "attrs", {}).get("estimate_note")
+    estimate_as_of = getattr(df_daily, "attrs", {}).get("estimate_as_of")
+    estimate_title = None
+    if estimate_as_of:
+        estimate_title = estimate_as_of.split(" ", 1)[-1]
 
     # Create chart
     fig, axes = plt.subplots(2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [2, 3]})
@@ -1183,7 +1184,11 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
         )
 
         # Set subplot title
-        axes[0].set_title("Net Purchase by Investor Type", fontsize=12, loc='left')
+        bar_title = "Net Purchase by Investor Type"
+        if estimate_note:
+            suffix = f", {estimate_title}" if estimate_title else ""
+            bar_title += f" (latest: KIS intraday estimate{suffix})"
+        axes[0].set_title(bar_title, fontsize=12, loc='left')
 
         axes[0].set_xticks(pos)
 
@@ -1258,7 +1263,11 @@ def create_trading_volume_chart(ticker, company_name=None, days=30, save_path=No
         )
 
     # Set subplot title and labels
-    axes[1].set_title("Daily Cumulative Net Purchase Trend", fontsize=12, loc='left')
+    trend_title = "Daily Cumulative Net Purchase Trend"
+    if estimate_note:
+        suffix = f", {estimate_title}" if estimate_title else ""
+        trend_title += f" (latest: KIS intraday estimate{suffix})"
+    axes[1].set_title(trend_title, fontsize=12, loc='left')
 
     axes[1].set_xlabel('')
     axes[1].axhline(y=0, color='black', linestyle='-', alpha=0.3)  # Zero reference line

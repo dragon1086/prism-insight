@@ -64,6 +64,11 @@ class MarketDataSource(Protocol):
     def investor_flows(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         """Net buying by investor type — the figure only exchanges publish."""
 
+    def intraday_investor_estimate(
+        self, ticker: str, *, as_of=None
+    ) -> pd.DataFrame:
+        """Current-session investor-flow estimate, when a provider publishes it."""
+
     def fundamentals(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         """PER/PBR/dividend yield over time."""
 
