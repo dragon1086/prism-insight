@@ -3109,6 +3109,25 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             logger.error(f"Error generating report summary: {str(e)}")
             return f"Error generating report: {str(e)}"
 
+    def _queue_existing_holding_decision(
+        self, analysis_result: Dict[str, Any], reason: str
+    ) -> None:
+        """Surface a candidate decision even when an existing holding blocks entry."""
+        ticker = analysis_result.get("ticker", "")
+        company_name = analysis_result.get("company_name", ticker)
+        current_price = analysis_result.get("current_price", 0)
+        scenario = analysis_result.get("scenario", {}) or {}
+        rationale = scenario.get("rationale") or "기존 보유분을 유지하며 추가 진입하지 않습니다."
+        message = (
+            f"ℹ️ 추가매수 보류: {company_name}({ticker})\n"
+            f"현재가: ${current_price:,.2f}\n"
+            "결정: 기존 보유 유지 (추가매수 없음)\n"
+            f"보류 사유: {reason}\n"
+            f"분석 의견: {rationale}"
+        )
+        self._msg_types.append("analysis")
+        self.message_queue.append(message)
+
     async def process_reports(self, pdf_report_paths: List[str]) -> Tuple[int, int]:
         """
         Process analysis reports and make buy/sell decisions.
@@ -3150,6 +3169,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         "traded": False,
                         "should_save_watchlist": False,
                         "skip_reason": None,
+                        "held_skip_reason": None,
                     }
                 )
 
@@ -3193,6 +3213,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             _pilot_freeze = False
                         if _pilot_freeze:
                             logger.info(f"[PULSE_PILOT] 중복매수 동결: {ticker} ({company_name}) already in holdings")
+                            state["held_skip_reason"] = state["held_skip_reason"] or (
+                                "기존 보유 종목이며 파일럿 정책에 따라 추가매수를 동결했습니다."
+                            )
                             continue
                         acct_key = self._account_scope()[0]
                         existing = get_us_existing_position_for_ticker(self.cursor, ticker, account_key=acct_key)
@@ -3204,6 +3227,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         )
                         if not allowed:
                             logger.info(f"Skipping stock in holdings: {ticker} — add gate blocked: {gate_reason}")
+                            state["held_skip_reason"] = state["held_skip_reason"] or (
+                                f"기존 보유 종목이며 추가매수 조건을 충족하지 못했습니다 ({gate_reason})."
+                            )
                             continue
                         logger.info(f"{ticker} pyramiding add gate passed: {gate_reason}")
                         is_add = True
@@ -3443,7 +3469,16 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         state["skip_reason"] = state["skip_reason"] or reason
 
             for state in analysis_states:
-                if state["traded"] or not state["should_save_watchlist"]:
+                if state["traded"]:
+                    continue
+
+                if state["held_skip_reason"] and not state["should_save_watchlist"]:
+                    self._queue_existing_holding_decision(
+                        state["analysis"], state["held_skip_reason"]
+                    )
+                    continue
+
+                if not state["should_save_watchlist"]:
                     continue
 
                 analysis_result = state["analysis"]
