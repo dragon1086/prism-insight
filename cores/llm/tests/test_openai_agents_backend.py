@@ -203,6 +203,26 @@ def test_build_mcp_server_perplexity_env():
     assert server.params.env == {"PERPLEXITY_API_KEY": "test-key"}
 
 
+def test_build_mcp_server_passes_configured_working_directory():
+    registry = McpServerRegistry.from_yaml_dict(
+        {
+            "mcp": {
+                "servers": {
+                    "yahoo_finance": {
+                        "command": "uvx",
+                        "args": ["yahoo-finance-mcp"],
+                        "cwd": "/tmp",
+                    }
+                }
+            }
+        }
+    )
+
+    server = build_mcp_server("yahoo_finance", registry)
+
+    assert server.params.cwd == "/tmp"
+
+
 def test_build_mcp_server_perplexity_name():
     """build_mcp_server sets the server name correctly."""
     registry = make_registry()
