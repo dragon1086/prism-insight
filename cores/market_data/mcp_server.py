@@ -139,6 +139,13 @@ def _answer(df, what: str) -> Dict[str, Any]:
     """
     payload = _frame_to_dated_dict(df)
     if payload:
+        note = getattr(df, "attrs", {}).get("estimate_note")
+        if note:
+            payload["__meta__"] = {
+                "data_status": "intraday_estimate",
+                "note": note,
+                "as_of": df.attrs.get("estimate_as_of"),
+            }
         return payload
     return {
         "error": (

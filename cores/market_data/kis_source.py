@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -48,6 +50,21 @@ _INDEX_CHART_TR = "FHKUP03500100"
 
 _INVESTOR_DAILY = "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
 _INVESTOR_DAILY_TR = "FHPTJ04160001"
+
+_INVESTOR_ESTIMATE = "/uapi/domestic-stock/v1/quotations/investor-trend-estimate"
+_INVESTOR_ESTIMATE_TR = "HHPTJ04160200"
+
+_KST = ZoneInfo("Asia/Seoul")
+
+# KIS publishes five intraday snapshots.  The first contains only the foreign
+# estimate because the first institution snapshot is published at 10:00.
+_ESTIMATE_BUCKETS = {
+    "1": (time(9, 30), "09:30"),
+    "2": (time(10, 0), "10:00"),
+    "3": (time(11, 20), "11:20"),
+    "4": (time(13, 20), "13:20"),
+    "5": (time(14, 30), "14:30"),
+}
 
 # KIS names every price field the same way across these endpoints.
 _PRICE_COLUMNS = {
@@ -288,6 +305,71 @@ class KisSource:
         return frame[
             (frame.index >= pd.Timestamp(start)) & (frame.index <= pd.Timestamp(end))
         ]
+
+    def intraday_investor_estimate(
+        self, ticker: str, *, as_of: datetime | None = None
+    ) -> pd.DataFrame:
+        """Latest KIS intraday foreign/institution net-buy estimate.
+
+        This is explicitly an estimate, not a substitute for the daily endpoint.
+        KIS publishes snapshots during the session; callers merge the latest one
+        onto the historical daily series and preserve the metadata in ``attrs``.
+        """
+        current = as_of or datetime.now(_KST)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=_KST)
+        else:
+            current = current.astimezone(_KST)
+
+        if current.weekday() >= 5:
+            raise Unsupported("KIS intraday investor estimate is unavailable on weekends")
+
+        eligible = [
+            bucket
+            for bucket, (published_at, _) in _ESTIMATE_BUCKETS.items()
+            if current.time() >= published_at
+        ]
+        if not eligible or current.time() >= time(15, 40):
+            raise Unsupported("KIS intraday investor estimate is outside its session window")
+
+        bucket = max(eligible, key=int)
+        body = self._fetch(
+            _INVESTOR_ESTIMATE,
+            _INVESTOR_ESTIMATE_TR,
+            {"MKSC_SHRN_ISCD": ticker},
+        )
+        rows = list(getattr(body, "output2", None) or [])
+        row = next((item for item in rows if str(item.get("bsop_hour_gb")) == bucket), None)
+        if row is None:
+            raise Unavailable(f"KIS investor estimate has no published bucket {bucket}")
+
+        values = {
+            "외국인합계": pd.to_numeric(row.get("frgn_fake_ntby_qty"), errors="coerce"),
+            "기관합계": pd.to_numeric(row.get("orgn_fake_ntby_qty"), errors="coerce"),
+        }
+        # At 09:30 KIS has not published an institution estimate.  Its zero is
+        # a placeholder, not an observed zero, so keep it missing.
+        if bucket == "1":
+            values["기관합계"] = float("nan")
+
+        if all(pd.isna(value) for value in values.values()):
+            raise Unavailable(f"KIS investor estimate bucket {bucket} has no usable values")
+
+        label = _ESTIMATE_BUCKETS[bucket][1]
+        frame = pd.DataFrame([values], index=[pd.Timestamp(current.date())])
+        frame.attrs.update(
+            {
+                "intraday_estimate": True,
+                "estimate_source": "KIS",
+                "estimate_bucket": bucket,
+                "estimate_as_of": f"{current.date().isoformat()} {label} KST",
+                "estimate_note": (
+                    f"오늘 외국인·기관 값은 KIS 장중 추정치({label} KST 기준)이며 "
+                    "개인·기타법인 장중 값은 제공되지 않습니다."
+                ),
+            }
+        )
+        return frame
 
     def market_cap_history(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         # The chart endpoint carries 시가총액 only in output1, as one current
