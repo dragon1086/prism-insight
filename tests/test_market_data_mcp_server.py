@@ -89,6 +89,20 @@ def test_trading_volume_reads_through_the_chain(monkeypatch):
     assert called["ticker"] == "005930"
 
 
+def test_trading_volume_preserves_intraday_estimate_note(monkeypatch):
+    frame = _ohlcv()
+    frame.attrs.update(
+        estimate_note="오늘 외국인·기관 값은 KIS 장중 추정치(14:30 KST 기준)입니다.",
+        estimate_as_of="2026-08-07 14:30 KST",
+    )
+    monkeypatch.setattr(srv, "get_market_trading_volume_by_date", lambda *a: frame)
+
+    result = srv.get_stock_trading_volume("20260701", "20260807", "005930")
+
+    assert result["__meta__"]["data_status"] == "intraday_estimate"
+    assert "14:30" in result["__meta__"]["note"]
+
+
 def test_index_ohlcv_keeps_the_index_code_unpadded(monkeypatch):
     """지수 코드는 종목코드가 아니다 — 1001 을 001001 로 만들면 안 된다."""
     seen = {}

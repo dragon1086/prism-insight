@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -71,6 +73,11 @@ _BUILDERS = {
 _DEFAULT_ORDER = "krx,fdr"
 
 _chain: SourceChain | None = None
+_KST = ZoneInfo("Asia/Seoul")
+
+
+def _now_kst() -> datetime:
+    return datetime.now(_KST)
 
 
 def default_chain() -> SourceChain:
@@ -148,18 +155,55 @@ def get_market_fundamental_by_date(
 def get_market_trading_volume_by_date(
     start_date: str, end_date: str, ticker: str
 ) -> pd.DataFrame:
-    return _empty_on_exhaustion("investor_flows", ticker, start_date, end_date)
+    now = _now_kst()
+    today = now.strftime("%Y%m%d")
+    wants_today = start_date <= today <= end_date
+    estimate_window = (
+        wants_today
+        and now.weekday() < 5
+        and time(9, 30) <= now.time() < time(15, 40)
+    )
+
+    if not estimate_window:
+        return _empty_on_exhaustion("investor_flows", ticker, start_date, end_date)
+
+    # Keep the historical part on the ordinary source chain, but ask only
+    # through yesterday: KIS's daily endpoint rejects requests before 15:40
+    # when today's date is used as the as-of date.
+    history_end = min(
+        end_date, (now.date() - timedelta(days=1)).strftime("%Y%m%d")
+    )
+    history = (
+        _empty_on_exhaustion("investor_flows", ticker, start_date, history_end)
+        if start_date <= history_end
+        else pd.DataFrame()
+    )
+
+    try:
+        estimate = default_chain().fetch(
+            "intraday_investor_estimate", ticker, as_of=now
+        )
+    except Unavailable as exc:
+        logger.warning("KIS intraday investor estimate unavailable: %s", exc)
+        return history
+
+    combined = pd.concat([history, estimate]).sort_index()
+    combined = combined[~combined.index.duplicated(keep="last")]
+    combined.attrs.update(estimate.attrs)
+    logger.info(
+        "using %s intraday investor estimate for %s as of %s",
+        estimate.attrs.get("estimate_source", "KIS"),
+        ticker,
+        estimate.attrs.get("estimate_as_of", "unknown"),
+    )
+    return combined
 
 
-def get_market_trading_volume_by_investor(*args, **kwargs):
-    """Not re-routed: no alternative source publishes investor flows.
-
-    Kept as a direct pass-through so the caller's behaviour is unchanged rather
-    than quietly becoming something else.
-    """
-    import krx_data_client
-
-    return krx_data_client.get_market_trading_volume_by_investor(*args, **kwargs)
+def get_market_trading_volume_by_investor(
+    start_date: str, end_date: str, ticker: str
+) -> pd.DataFrame:
+    """Compatibility alias for the shared investor-flow source chain."""
+    return get_market_trading_volume_by_date(start_date, end_date, ticker)
 
 
 def get_market_ticker_name(ticker: str) -> str:
