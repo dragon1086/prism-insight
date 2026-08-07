@@ -148,10 +148,14 @@ def load_report_mcp_registry(config_path: "str | Path | None" = None):
     if report_override:
         return load_mcp_registry(report_override)
 
-    return load_mcp_registry()
+    return load_mcp_registry(legacy_env_fallback=_LEGACY_CONFIG)
 
 
-def load_mcp_registry(config_path: "str | Path | None" = None):
+def load_mcp_registry(
+    config_path: "str | Path | None" = None,
+    *,
+    legacy_env_fallback: "str | Path | None" = None,
+):
     """Load and return a :class:`McpServerRegistry` from YAML config.
 
     Search order:
@@ -208,7 +212,9 @@ def load_mcp_registry(config_path: "str | Path | None" = None):
                 f"  - {_LEGACY_CONFIG}"
             )
 
-    raw = yaml.safe_load(resolved.read_text())
+    raw = yaml.safe_load(resolved.read_text()) or {}
+    if legacy_env_fallback is not None:
+        raw = _merge_missing_env_from_legacy(raw, Path(legacy_env_fallback))
     raw = _interpolate_obj(raw)
 
     # Auto-detect shape and normalise to {"mcp": {"servers": {...}}}
@@ -220,3 +226,52 @@ def load_mcp_registry(config_path: "str | Path | None" = None):
         normalised = raw
 
     return McpServerRegistry.from_yaml_dict(normalised)
+
+
+def _server_entries(raw: dict) -> dict:
+    """Return server entries from either native or legacy YAML shape."""
+    if "servers" in raw and "mcp" not in raw:
+        return raw.get("servers") or {}
+    return ((raw.get("mcp") or {}).get("servers") or {})
+
+
+def _merge_missing_env_from_legacy(raw: dict, legacy_path: Path) -> dict:
+    """Transitionally fill unresolved native MCP env values from legacy YAML.
+
+    Report MCP configuration moved to tracked, secret-free YAML before every
+    production host had migrated its credentials to ``.env``.  An unresolved
+    ``${VAR}`` became an empty string and launched a broken MCP child process.
+    Until host migration is complete, reuse only the same server/key pair from
+    the legacy config.  Environment variables still win, and secret values are
+    never logged.
+    """
+    if not legacy_path.exists():
+        return raw
+
+    legacy_raw = yaml.safe_load(legacy_path.read_text()) or {}
+    current_servers = _server_entries(raw)
+    legacy_servers = _server_entries(legacy_raw)
+    recovered: list[str] = []
+
+    for server_name, current_spec in current_servers.items():
+        current_env = current_spec.get("env") or {}
+        legacy_env = (legacy_servers.get(server_name) or {}).get("env") or {}
+        for key, configured in list(current_env.items()):
+            if os.environ.get(key):
+                continue
+            if configured != f"${{{key}}}":
+                continue
+            legacy_value = legacy_env.get(key)
+            if not legacy_value or _ENV_VAR_RE.search(str(legacy_value)):
+                continue
+            current_env[key] = str(legacy_value)
+            recovered.append(f"{server_name}.{key}")
+
+    if recovered:
+        logger.warning(
+            "DEPRECATION: recovered missing report MCP environment keys from "
+            "legacy config (%s). Move these keys to .env: %s",
+            legacy_path.name,
+            ", ".join(recovered),
+        )
+    return raw

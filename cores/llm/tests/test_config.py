@@ -207,6 +207,60 @@ class TestLoadMcpRegistry:
 
         assert "legacyserver" in registry.names()
 
+    def test_report_registry_recovers_unmigrated_legacy_server_secret(
+        self, tmp_path, monkeypatch
+    ):
+        native = tmp_path / "native.yaml"
+        native.write_text(
+            "servers:\n"
+            "  perplexity:\n"
+            "    command: node\n"
+            "    env:\n"
+            "      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY}\n"
+        )
+        legacy = tmp_path / "legacy.yaml"
+        legacy.write_text(
+            "mcp:\n"
+            "  servers:\n"
+            "    perplexity:\n"
+            "      command: node\n"
+            "      env:\n"
+            "        PERPLEXITY_API_KEY: legacy-secret\n"
+        )
+        monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+        monkeypatch.setattr("cores.llm.config_loader._NATIVE_CONFIG", native)
+        monkeypatch.setattr("cores.llm.config_loader._LEGACY_CONFIG", legacy)
+
+        registry = load_report_mcp_registry()
+
+        assert registry.get("perplexity").env == {
+            "PERPLEXITY_API_KEY": "legacy-secret"
+        }
+
+    def test_environment_secret_wins_over_legacy_fallback(self, tmp_path, monkeypatch):
+        native = tmp_path / "native.yaml"
+        native.write_text(
+            "servers:\n"
+            "  perplexity:\n"
+            "    command: node\n"
+            "    env: {PERPLEXITY_API_KEY: '${PERPLEXITY_API_KEY}'}\n"
+        )
+        legacy = tmp_path / "legacy.yaml"
+        legacy.write_text(
+            "mcp:\n"
+            "  servers:\n"
+            "    perplexity:\n"
+            "      command: node\n"
+            "      env: {PERPLEXITY_API_KEY: legacy-secret}\n"
+        )
+        monkeypatch.setenv("PERPLEXITY_API_KEY", "environment-secret")
+        monkeypatch.setattr("cores.llm.config_loader._NATIVE_CONFIG", native)
+        monkeypatch.setattr("cores.llm.config_loader._LEGACY_CONFIG", legacy)
+
+        assert load_report_mcp_registry().get("perplexity").env == {
+            "PERPLEXITY_API_KEY": "environment-secret"
+        }
+
 
 # ---------------------------------------------------------------------------
 # Real mcp_servers.yaml: exists and contains no inline secrets
@@ -236,3 +290,11 @@ class TestRealMcpServersYaml:
         assert inline == [], (
             f"Found inline secret values (should be ${{VAR}}): {inline}"
         )
+
+    def test_yahoo_mcp_dependencies_and_workdir_are_pinned(self):
+        from cores.llm.config_loader import _NATIVE_CONFIG
+
+        yahoo = yaml.safe_load(_NATIVE_CONFIG.read_text())["servers"]["yahoo_finance"]
+        assert "yahoo-finance-mcp==0.1.2" in yahoo["args"]
+        assert "mcp==1.26.0" in yahoo["args"]
+        assert yahoo["cwd"] == "${PRISM_MCP_WORKDIR:-/tmp}"

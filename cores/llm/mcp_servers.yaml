@@ -80,6 +80,11 @@ servers:
     command: uvx
     args:
     - --from
+    - yahoo-finance-mcp==0.1.2
+    - --with
+    - mcp==1.26.0
     - yahoo-finance-mcp
-    - yahoo-finance-mcp
+    # yahoo-finance-mcp's FastMCP settings auto-read .env from cwd.  Running
+    # outside the repo prevents an unrelated protected .env from aborting it.
+    cwd: ${PRISM_MCP_WORKDIR:-/tmp}
     read_timeout_seconds: 120
