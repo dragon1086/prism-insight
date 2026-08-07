@@ -120,3 +120,18 @@ def test_queue_concurrent_initialization_is_serialized(tmp_path):
 
     assert results.count("campaign-1") == 1
     assert results.count(None) == 7
+
+
+def test_queue_uses_event_id_to_allow_several_stages_for_one_campaign(tmp_path):
+    database_path = tmp_path / "campaigns.sqlite"
+    first = {**payload("kr-afternoon-2026-08-07"), "event_id": "batch:report:005930"}
+    second = {**payload("kr-afternoon-2026-08-07"), "event_id": "batch:portfolio"}
+
+    with SQLiteBatchCampaignQueue(database_path) as queue:
+        assert queue.enqueue(first) == "batch:report:005930"
+        assert queue.enqueue(second) == "batch:portfolio"
+        assert queue.enqueue(first) is None
+        assert [row["campaign_id"] for row in queue.list_entries()] == [
+            "batch:report:005930",
+            "batch:portfolio",
+        ]

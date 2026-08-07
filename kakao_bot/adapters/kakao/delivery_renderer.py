@@ -25,7 +25,15 @@ from kakao_bot.adapters.kakao.welcome_renderer import (
 )
 from kakao_bot.domain.models import ClaimedOutboundDelivery
 
-CAMPAIGN_TYPES = frozenset({"signal_campaign", "campaign_rest_notice"})
+CAMPAIGN_TYPES = frozenset(
+    {
+        "signal_campaign",
+        "campaign_rest_notice",
+        "campaign_report",
+        "campaign_decision",
+        "campaign_portfolio",
+    }
+)
 REPORT_TYPES = frozenset(
     {
         ANALYSIS_RESULT,

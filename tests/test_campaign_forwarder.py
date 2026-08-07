@@ -224,3 +224,85 @@ class TestSshShipper:
 
     def test_no_identity_flag_when_none_is_configured(self):
         assert "-i" not in self.shipper()._command()
+
+    def test_report_artifact_copy_failure_prevents_remote_enqueue(
+        self, tmp_path, monkeypatch
+    ):
+        artifact = tmp_path / "005930.pdf"
+        artifact.write_bytes(b"%PDF-1.7")
+        shipper = self.shipper(remote_artifact_root="/srv/prism-reports")
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[0] == "scp":
+                return type(
+                    "Completed", (), {"returncode": 1, "stderr": "copy failed"}
+                )()
+            raise AssertionError("enqueue must not run after a failed artifact copy")
+
+        monkeypatch.setattr("messaging.campaign_forwarder.subprocess.run", run)
+
+        with pytest.raises(RuntimeError, match="artifact copy failed"):
+            shipper.ship(
+                {
+                    **event(),
+                    "event_id": "kr-afternoon-20260803:report:005930",
+                    "event_type": "BATCH_CAMPAIGN_REPORT_READY",
+                    "artifact_path": str(artifact),
+                }
+            )
+        assert calls[0][0] == "scp"
+
+    def test_report_artifact_remote_name_is_hash_only(self, tmp_path, monkeypatch):
+        artifact = tmp_path / "회사 이름;touch nope.pdf"
+        artifact.write_bytes(b"%PDF-1.7")
+        shipper = self.shipper(remote_artifact_root="/srv/prism-reports")
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            return type(
+                "Completed",
+                (),
+                {"returncode": 0, "stderr": "", "stdout": "NEW\n"},
+            )()
+
+        monkeypatch.setattr("messaging.campaign_forwarder.subprocess.run", run)
+        shipper.ship(
+            {
+                **event(),
+                "event_id": "kr-afternoon-20260803:report:005930",
+                "event_type": "BATCH_CAMPAIGN_REPORT_READY",
+                "artifact_path": str(artifact),
+            }
+        )
+
+        remote_target = calls[0][0][-1]
+        assert remote_target.startswith("root@10.0.0.2:/srv/prism-reports/")
+        assert remote_target.endswith(".pdf")
+        assert "회사" not in remote_target
+        assert calls[1][0][-3:] == ["chmod", "0644", remote_target.split(":", 1)[1]]
+        forwarded = calls[2][1]["input"]
+        assert "/srv/prism-reports/" in forwarded
+        assert str(artifact) not in forwarded
+
+    def test_report_artifact_outside_allowed_roots_is_rejected(self, tmp_path):
+        artifact = tmp_path / "secret.pdf"
+        artifact.write_bytes(b"%PDF-1.7")
+        allowed = tmp_path / "pdf_reports"
+        allowed.mkdir()
+        shipper = self.shipper(
+            local_artifact_roots=[allowed],
+            remote_artifact_root="/srv/prism-reports",
+        )
+
+        with pytest.raises(RuntimeError, match="outside the allowed roots"):
+            shipper.ship(
+                {
+                    **event(),
+                    "event_id": "kr-afternoon-20260803:report:005930",
+                    "event_type": "BATCH_CAMPAIGN_REPORT_READY",
+                    "artifact_path": str(artifact),
+                }
+            )

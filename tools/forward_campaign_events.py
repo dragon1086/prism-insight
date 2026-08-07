@@ -39,6 +39,7 @@ DEFAULT_QUEUE = "/var/lib/prism-kakao/prism_campaign_queue.sqlite"
 DEFAULT_REMOTE_REPO = "/home/prism/prism-insight"
 DEFAULT_REMOTE_QUEUE = "/var/lib/prism-kakao/prism_campaign_queue.sqlite"
 DEFAULT_REMOTE_PYTHON = "python3"
+DEFAULT_REMOTE_ARTIFACT_ROOT = "/home/prism/prism-insight/pdf_reports"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,6 +65,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--remote-python",
         default=os.getenv("PRISM_CAMPAIGN_REMOTE_PYTHON", DEFAULT_REMOTE_PYTHON),
+    )
+    parser.add_argument(
+        "--remote-artifact-root",
+        default=os.getenv(
+            "PRISM_CAMPAIGN_REMOTE_ARTIFACT_ROOT", DEFAULT_REMOTE_ARTIFACT_ROOT
+        ),
+        help="remote directory served by the Kakao report-link runtime",
     )
     parser.add_argument(
         "--identity-file",
@@ -120,6 +128,11 @@ def main(argv: list[str] | None = None) -> int:
         queue_path=args.remote_queue,
         python_path=args.remote_python,
         identity_file=args.identity_file,
+        local_artifact_roots=(
+            Path.cwd() / "pdf_reports",
+            Path.cwd() / "prism-us" / "pdf_reports",
+        ),
+        remote_artifact_root=args.remote_artifact_root,
     )
 
     with SQLiteBatchCampaignQueue(queue_path) as queue:

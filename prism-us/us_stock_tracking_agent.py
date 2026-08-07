@@ -520,6 +520,7 @@ class USStockTrackingAgent:
         self.max_slots = self.MAX_SLOTS
         self.message_queue = []
         self._msg_types = []  # msg_type for each message in queue
+        self.last_batch_messages: list[tuple[str | None, str]] = []
         self._broadcast_task = None  # Track broadcast translation task
         self.trading_agent = None
         self.sell_decision_agent = None
@@ -3541,6 +3542,28 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             bool: Send success status
         """
         try:
+            try:
+                from portfolio_broadcast import should_send_portfolio
+                _emit_portfolio = should_send_portfolio("US", force=portfolio_force)
+            except Exception:
+                _emit_portfolio = True  # fail-open
+            if _emit_portfolio:
+                summary = await self.generate_report_summary()
+                self._msg_types.append("portfolio")
+                self.message_queue.append(summary)
+            else:
+                logger.info("[portfolio-dedup] US portfolio summary skipped (sent within debounce window)")
+
+            self.last_batch_messages = [
+                (
+                    self._msg_types[index]
+                    if index < len(self._msg_types)
+                    else None,
+                    message,
+                )
+                for index, message in enumerate(self.message_queue)
+            ]
+
             # Skip Telegram sending if chat_id is None
             if not chat_id:
                 logger.info("No Telegram channel ID. Skipping message send")
@@ -3566,21 +3589,6 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 self.message_queue = []
                 self._msg_types = []
                 return False
-
-            # Generate summary report — de-duplicated so near-simultaneous run-ends
-            # (US batch + intraday loops A/B) don't emit 2-3 identical portfolio
-            # summaries. Other queued messages (sell notices) are unaffected.
-            try:
-                from portfolio_broadcast import should_send_portfolio
-                _emit_portfolio = should_send_portfolio("US", force=portfolio_force)
-            except Exception:
-                _emit_portfolio = True  # fail-open
-            if _emit_portfolio:
-                summary = await self.generate_report_summary()
-                self._msg_types.append("portfolio")
-                self.message_queue.append(summary)
-            else:
-                logger.info("[portfolio-dedup] US portfolio summary skipped (sent within debounce window)")
 
             # Translate messages if English is requested
             if language == "en":
@@ -3948,14 +3956,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                 # Send Telegram message
                 if chat_id:
-                    message_sent = await self.send_telegram_message(chat_id, language)
+                    message_sent = await self.send_telegram_message(
+                        chat_id, language, portfolio_force=True
+                    )
                     if message_sent:
                         logger.info("US Telegram message sent successfully")
                     else:
                         logger.warning("US Telegram message send failed")
                 else:
                     logger.info("Telegram channel ID not provided, skipping message send")
-                    await self.send_telegram_message(None, language)
+                    await self.send_telegram_message(
+                        None, language, portfolio_force=True
+                    )
 
                 logger.info("US tracking system batch execution complete")
                 return True

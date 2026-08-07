@@ -28,6 +28,8 @@ from messaging.batch_campaign_publisher import (  # noqa: E402
     COLLECTING,
     SKIPPED,
     publish_batch_campaign_best_effort,
+    publish_batch_reports_best_effort,
+    publish_batch_tracking_story_best_effort,
 )
 
 # Logger configuration
@@ -1168,17 +1170,24 @@ class StockAnalysisOrchestrator:
             # 3. PDF conversion
             pdf_paths = await self.convert_to_pdf(report_paths)
 
-            # 4-5. Generate and send telegram messages (only when telegram is enabled)
+            # 4. Generate the channel-neutral summary artifacts regardless of
+            # whether Telegram transport is enabled.
+            message_paths = await self.generate_telegram_messages(pdf_paths, language)
+            await publish_batch_reports_best_effort(
+                market="KR",
+                session=mode,
+                trade_date=campaign_trade_date,
+                regime=campaign_regime,
+                pdf_paths=pdf_paths,
+                message_paths=message_paths,
+            )
+
+            # 5. Telegram is one consumer; disabling it must not disable Kakao.
             if self.telegram_config.use_telegram:
-                logger.info("Telegram enabled - proceeding with message generation and transmission steps")
-
-                # 4. Generate telegram messages
-                message_paths = await self.generate_telegram_messages(pdf_paths, language)
-
-                # 5. Send telegram messages and PDFs
+                logger.info("Telegram enabled - proceeding with transmission steps")
                 await self.send_telegram_messages(message_paths, pdf_paths, report_paths)
             else:
-                logger.info("Telegram disabled - skipping message generation and transmission steps")
+                logger.info("Telegram disabled - skipping Telegram transmission")
 
             # 6. Tracking system batch (runs concurrently with broadcast I/O tasks via async)
             if pdf_paths:
@@ -1224,6 +1233,14 @@ class StockAnalysisOrchestrator:
                             pdf_paths, chat_id, language, self.telegram_config,
                             trigger_results_file=trigger_results_file,
                             sector_names=kr_sector_names
+                        )
+
+                        await publish_batch_tracking_story_best_effort(
+                            market="KR",
+                            session=mode,
+                            trade_date=campaign_trade_date,
+                            regime=campaign_regime,
+                            messages=tracking_agent.last_batch_messages,
                         )
 
                         if tracking_success:
