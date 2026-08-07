@@ -73,6 +73,12 @@ _INTRADAY_GROUNDING = (
     "가능한 요인을 구분하고, 확인되지 않은 원인은 명확히 미확정이라고 밝혀라."
 )
 
+_FORECAST_GROUNDING = (
+    "\n\n미래 주가를 확정적으로 예언하지 마라. 최신 증권사 목표주가와 실적·밸류에이션 "
+    "근거가 확인되면 낙관·기준·비관 시나리오의 조건과 범위로 답하고, 확인되지 않은 "
+    "숫자는 만들지 마라."
+)
+
 _STOCK_RESEARCH_SUFFIX = re.compile(
     r"\s*(?:지금\s*)?"
     r"(?:사도\s*(?:될까|돼)|살까|매수(?:해도)?\s*(?:될까|괜찮을까)|"
@@ -85,6 +91,11 @@ _STOCK_RESEARCH_SUFFIX = re.compile(
 _INTRADAY_EVENT_QUESTION = re.compile(
     r"(?=.*(?:오늘|장중|일봉|급락|급등|하한가|상한가))"
     r"(?=.*(?:왜|이유|원인|무슨\s*일)).*",
+    re.IGNORECASE,
+)
+
+_STOCK_FORECAST_QUESTION = re.compile(
+    r"(?:얼마|어디)까지|목표\s*(?:주)?가|주가\s*예측|(?:오를|내릴)지",
     re.IGNORECASE,
 )
 
@@ -293,6 +304,8 @@ async def _ask(question: str) -> str | None:
         f"한국어로, 카카오톡 메시지 형태로 이모지 포함하여 작성. "
         f"{_ASK_ANSWER_BUDGET}자 이내. 표와 마크다운 문법은 쓰지 마라."
     ) + _ASK_GROUNDING + (_INTRADAY_GROUNDING if is_intraday else "")
+    if _STOCK_FORECAST_QUESTION.search(question):
+        prompt += _FORECAST_GROUNDING
 
     queries, use_primary_sources = _ask_search_plan(question)
     # General free-form questions stay unrestricted because their subject is
@@ -360,6 +373,11 @@ def _stock_question(question: str) -> tuple[str | None, bool]:
         subject = _find_kr_stock_mention(text)
         if subject:
             return subject, True
+
+    if _STOCK_FORECAST_QUESTION.search(text):
+        subject = _find_kr_stock_mention(text)
+        if subject:
+            return subject, False
 
     match = _STOCK_RESEARCH_SUFFIX.search(text)
     if not match:
