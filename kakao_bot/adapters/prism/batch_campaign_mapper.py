@@ -8,6 +8,8 @@ from datetime import date, datetime, timezone
 
 from kakao_bot.domain.models import (
     BatchCampaign,
+    BatchStoryEvent,
+    BatchStoryKind,
     CampaignCandidate,
     CampaignStatus,
     Market,
@@ -15,9 +17,59 @@ from kakao_bot.domain.models import (
     Session,
 )
 
+_STORY_TYPES = {
+    "BATCH_CAMPAIGN_REPORT_READY": BatchStoryKind.REPORT,
+    "BATCH_CAMPAIGN_DECISION_READY": BatchStoryKind.DECISION,
+    "BATCH_CAMPAIGN_PORTFOLIO_SNAPSHOT": BatchStoryKind.PORTFOLIO,
+}
+
 
 class BatchCampaignPayloadError(ValueError):
     """Raised when a producer payload violates the batch campaign v1 contract."""
+
+
+def is_batch_story_payload(payload: Mapping[str, object]) -> bool:
+    return payload.get("event_type") in _STORY_TYPES
+
+
+def map_batch_story_payload(payload: Mapping[str, object]) -> BatchStoryEvent:
+    if not isinstance(payload, Mapping):
+        raise BatchCampaignPayloadError("payload must be a mapping")
+    if (
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
+    ):
+        raise BatchCampaignPayloadError("schema_version must be integer 1")
+    event_type = _required_string(payload, "event_type")
+    try:
+        kind = _STORY_TYPES[event_type]
+    except KeyError as exc:
+        raise BatchCampaignPayloadError(
+            f"unsupported batch story event_type: {event_type}"
+        ) from exc
+
+    market = _parse_enum(payload, "market", Market)
+    session = _parse_enum(payload, "session", Session)
+    regime = _parse_enum(payload, "regime", Regime)
+    common = {
+        "event_id": _required_string(payload, "event_id"),
+        "campaign_id": _required_string(payload, "campaign_id"),
+        "market": market,
+        "session": session,
+        "trade_date": _parse_trade_date(payload.get("trade_date")),
+        "regime": regime,
+        "kind": kind,
+        "message": _required_string(payload, "message"),
+        "created_at": _parse_occurred_at(payload.get("occurred_at")),
+    }
+    if kind is BatchStoryKind.REPORT:
+        return BatchStoryEvent(
+            **common,
+            ticker=_required_string(payload, "ticker"),
+            company_name=_required_string(payload, "company_name"),
+            artifact_path=_required_string(payload, "artifact_path"),
+        )
+    return BatchStoryEvent(**common)
 
 
 def map_batch_campaign_payload(payload: Mapping[str, object]) -> BatchCampaign:
@@ -44,9 +96,7 @@ def map_batch_campaign_payload(payload: Mapping[str, object]) -> BatchCampaign:
         CampaignStatus.COMPLETED,
         CampaignStatus.SKIPPED,
     ):
-        raise BatchCampaignPayloadError(
-            f"unsupported campaign status: {status_text}"
-        )
+        raise BatchCampaignPayloadError(f"unsupported campaign status: {status_text}")
 
     event_type = _required_string(payload, "event_type")
     expected_event_type = f"BATCH_CAMPAIGN_{status.value}"
@@ -105,9 +155,7 @@ def _optional_string(payload: Mapping[str, object], field: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
-        raise BatchCampaignPayloadError(
-            f"{field} must be a non-empty string or null"
-        )
+        raise BatchCampaignPayloadError(f"{field} must be a non-empty string or null")
     return value.strip()
 
 

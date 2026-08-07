@@ -13,8 +13,14 @@ if TYPE_CHECKING:
     from messaging.batch_campaign_publisher import (
         BatchCampaignPublisher,
         build_batch_campaign_event,
+        build_batch_decision_event,
+        build_batch_portfolio_event,
+        build_batch_report_event,
         campaign_id_for,
         publish_batch_campaign_best_effort,
+        publish_batch_event_best_effort,
+        publish_batch_reports_best_effort,
+        publish_batch_tracking_story_best_effort,
     )
     from messaging.redis_signal_publisher import (
         SignalPublisher,
@@ -30,8 +36,14 @@ __all__ = [
     "publish_sell_signal",
     "BatchCampaignPublisher",
     "build_batch_campaign_event",
+    "build_batch_decision_event",
+    "build_batch_portfolio_event",
+    "build_batch_report_event",
     "campaign_id_for",
     "publish_batch_campaign_best_effort",
+    "publish_batch_event_best_effort",
+    "publish_batch_reports_best_effort",
+    "publish_batch_tracking_story_best_effort",
 ]
 
 _EXPORT_MODULES = {
@@ -41,8 +53,14 @@ _EXPORT_MODULES = {
     "publish_sell_signal": "messaging.redis_signal_publisher",
     "BatchCampaignPublisher": "messaging.batch_campaign_publisher",
     "build_batch_campaign_event": "messaging.batch_campaign_publisher",
+    "build_batch_decision_event": "messaging.batch_campaign_publisher",
+    "build_batch_portfolio_event": "messaging.batch_campaign_publisher",
+    "build_batch_report_event": "messaging.batch_campaign_publisher",
     "campaign_id_for": "messaging.batch_campaign_publisher",
     "publish_batch_campaign_best_effort": "messaging.batch_campaign_publisher",
+    "publish_batch_event_best_effort": "messaging.batch_campaign_publisher",
+    "publish_batch_reports_best_effort": "messaging.batch_campaign_publisher",
+    "publish_batch_tracking_story_best_effort": "messaging.batch_campaign_publisher",
 }
 
 
