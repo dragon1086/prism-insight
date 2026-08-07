@@ -197,6 +197,24 @@ class TestEnqueue:
         assert job["payload"]["avg_price"] == 50000.0
         assert job["payload"]["period_months"] == 3
 
+    @pytest.mark.parametrize(
+        "utterance",
+        (
+            "카카오 5만원 3개월 평가해줘",
+            "카카오 5만 원 3개월 평가해줘",
+        ),
+    )
+    def test_a_natural_evaluate_accepts_manwon_price_units(
+        self, repository, service, utterance
+    ):
+        outcome = service.handle(message(utterance), now=NOW)
+
+        assert outcome.kind is CommandOutcomeKind.ACCEPTED
+        [job] = repository.list_analysis_jobs()
+        assert job["ticker"] == "005930"
+        assert job["payload"]["avg_price"] == 50000.0
+        assert job["payload"]["period_months"] == 3
+
     def test_the_tone_travels_with_the_job(self, repository, service):
         service.handle(message("평가 삼성전자 70000 6 취한 친구처럼"), now=NOW)
 
