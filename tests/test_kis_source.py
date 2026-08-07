@@ -125,18 +125,29 @@ def test_investor_flows_uses_the_column_names_the_chart_indexes():
             "orgn_ntby_qty": "1000",
             "frgn_ntby_qty": "-2000",
             "prsn_ntby_qty": "500",
+            "etc_ntby_qty": "500",
             "etc_corp_ntby_vol": "12",
+            "etc_orgt_ntby_vol": "488",
         }
     ]
     frame = _source(_FakeClient([rows])).investor_flows("005930", "20260801", "20260803")
 
-    assert set(frame.columns) == {"기관합계", "외국인합계", "개인", "기타법인"}
+    assert set(frame.columns) == {
+        "기관합계",
+        "외국인합계",
+        "개인",
+        "기타합계",
+        "기타법인",
+        "기타단체",
+    }
     assert frame.loc["2026-08-03", "외국인합계"] == -2000
+    assert frame.loc["2026-08-03", "기타합계"] == 500
 
 
 def _flow_row(date, qty="1"):
     return {"stck_bsop_date": date, "orgn_ntby_qty": qty, "frgn_ntby_qty": qty,
-            "prsn_ntby_qty": qty, "etc_corp_ntby_vol": qty}
+            "prsn_ntby_qty": qty, "etc_ntby_qty": qty,
+            "etc_corp_ntby_vol": qty, "etc_orgt_ntby_vol": "0"}
 
 
 def test_investor_flows_trims_to_the_requested_range():
@@ -191,6 +202,8 @@ def test_intraday_estimate_selects_latest_published_bucket(
     assert frame.attrs["estimate_bucket"] == expected_bucket
     assert expected_label in frame.attrs["estimate_note"]
     assert frame.iloc[0]["외국인합계"] == int(expected_bucket) * 100
+    assert frame.iloc[0]["개인·기타합계"] == -(int(expected_bucket) * 300)
+    assert "역산" in frame.attrs["estimate_note"]
     assert client.requests[0][1] == "HHPTJ04160200"
     assert client.calls[0] == {"MKSC_SHRN_ISCD": "005930"}
 
@@ -202,6 +215,7 @@ def test_first_intraday_bucket_does_not_fabricate_institution_zero():
 
     assert frame.iloc[0]["외국인합계"] == 753000
     assert pd.isna(frame.iloc[0]["기관합계"])
+    assert frame.iloc[0]["개인·기타합계"] == -753000
     assert "개인" not in frame.columns
     assert "기타법인" not in frame.columns
 
