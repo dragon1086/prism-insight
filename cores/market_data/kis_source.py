@@ -102,7 +102,9 @@ _FLOW_COLUMNS = {
     "orgn_ntby_qty": "기관합계",
     "frgn_ntby_qty": "외국인합계",
     "prsn_ntby_qty": "개인",
+    "etc_ntby_qty": "기타합계",
     "etc_corp_ntby_vol": "기타법인",
+    "etc_orgt_ntby_vol": "기타단체",
 }
 
 _DATE_FIELD = "stck_bsop_date"
@@ -343,9 +345,23 @@ class KisSource:
         if row is None:
             raise Unavailable(f"KIS investor estimate has no published bucket {bucket}")
 
+        foreign = pd.to_numeric(row.get("frgn_fake_ntby_qty"), errors="coerce")
+        institution = pd.to_numeric(row.get("orgn_fake_ntby_qty"), errors="coerce")
+        combined_estimate = pd.to_numeric(
+            row.get("sum_fake_ntby_qty"), errors="coerce"
+        )
+        if pd.isna(combined_estimate) and not (
+            pd.isna(foreign) or pd.isna(institution)
+        ):
+            combined_estimate = foreign + institution
+
         values = {
-            "외국인합계": pd.to_numeric(row.get("frgn_fake_ntby_qty"), errors="coerce"),
-            "기관합계": pd.to_numeric(row.get("orgn_fake_ntby_qty"), errors="coerce"),
+            "외국인합계": foreign,
+            "기관합계": institution,
+            # KIS does not split personal and other investors intraday. Since
+            # all investor groups net to zero, the opposite of its published
+            # foreign+institution estimate is the remaining combined group.
+            "개인·기타합계": -combined_estimate,
         }
         # At 09:30 KIS has not published an institution estimate.  Its zero is
         # a placeholder, not an observed zero, so keep it missing.
@@ -365,7 +381,8 @@ class KisSource:
                 "estimate_as_of": f"{current.date().isoformat()} {label} KST",
                 "estimate_note": (
                     f"오늘 외국인·기관 값은 KIS 장중 추정치({label} KST 기준)이며 "
-                    "개인·기타법인 장중 값은 제공되지 않습니다."
+                    "개인·기타합계는 두 집단 합계의 반대값으로 역산한 잔여 "
+                    "추정치입니다. 개인 단독 수급이 아닙니다."
                 ),
             }
         )
