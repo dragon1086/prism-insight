@@ -16,7 +16,8 @@ PYTHONPATH=/app/prism-insight
 # Daily config backup at 02:00 KST
 0 2 * * * cd /app/prism-insight && chmod +x utils/backup_configs.sh && ./utils/backup_configs.sh >> /app/prism-insight/logs/backup.log 2>&1
 
-# Weekly memory compression at 03:00 KST (Sunday only)
+# Weekly KR+US memory compression at 03:00 KST (Sunday only)
+# compress_trading_memory.py runs the US pass via run_us_compression().
 0 3 * * 0 cd /app/prism-insight && python3 compress_trading_memory.py >> /app/prism-insight/logs/compression.log 2>&1
 
 # Daily log cleanup at 03:00 KST
@@ -65,9 +66,6 @@ PYTHONPATH=/app/prism-insight
 
 # US log cleanup at 03:30 KST (daily) - keep 30 days
 30 3 * * * find /app/prism-insight/logs -name "us_*.log" -mtime +30 -delete
-
-# US memory compression at 04:00 KST (Sunday only)
-0 4 * * 0 cd /app/prism-insight && python3 prism-us/compress_us_trading_memory.py >> /app/prism-insight/logs/us_compression.log 2>&1 || true
 
 # =============================================================================
 # Empty line required at the end of crontab file
