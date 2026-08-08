@@ -130,7 +130,97 @@ PRISM은 첫 번째 클라이언트일 뿐이며, 프로토콜에는 PRISM 고�
 **분할매수** = `buy` 이벤트 여러 개. **분할매도** = `reduce: 0.3` 세 번.
 프로토콜에 분할 개념이 따로 없다.
 
-### 4.3 서버가 덧붙이는 필드 (클라이언트가 쓸 수 없음)
+### 4.3 클라이언트 계산 규칙 (참여자 가이드)
+
+> **이 절이 프로토콜에서 가장 자주 깨지는 지점이다.**
+> 참여자마다 계산 기준이 다르면 리더보드 전체가 무의미해지므로, 정의를 여기서 못 박는다.
+
+#### 클라이언트가 계산할 값은 2개뿐이다
+
+| 값 | 언제 | 공식 |
+|---|---|---|
+| `weight` | 매수 시 | `이번 매수에 투입한 금액 ÷ 전략 자본(NAV)` |
+| `reduce` | 매도 시 | `이번에 매도한 수량 ÷ 매도 직전 보유 수량` |
+
+**둘 다 나눗셈 한 번이다.** 평단·손익·수익률·NAV 추이를 계산할 필요가 없다.
+
+#### 클라이언트가 절대 계산하면 안 되는 값
+
+수익률 · 실현손익 · 평균단가 · MDD · 승률 · 손익비 · 포지션 비중 — **전부 서버가 계산한다.**
+클라이언트가 이 값들을 보내더라도 채점에 사용되지 않는다 (§2 원칙 1).
+
+#### NAV(전략 자본)의 정의 — 가장 중요
+
+> **NAV = 전략이 운용하는 현금 + 전략이 보유한 모든 종목의 현재 평가액**
+
+두 가지를 반드시 지켜야 한다.
+
+1. **현금만 쓰면 안 된다.** 보유 종목 평가액을 포함한 총액이 분모다.
+2. **전략 전용 자본만 센다.** 같은 계좌에 다른 목적의 자금이 섞여 있으면 제외한다.
+   계좌 1억 중 5천만원만 이 전략이 운용한다면 NAV는 5천만원이다.
+
+#### 흔한 오류 (반례)
+
+| ❌ 잘못된 계산 | 무슨 일이 벌어지나 |
+|---|---|
+| `weight = 투입금액 ÷ 예수금` | 분모가 작아 weight가 과대평가됨. 보유가 많을수록 심해져 `Σweight > 1.0` 거부 폭증 |
+| `weight = 투입금액` (절대금액) | 스케일 완전 붕괴. 100,000 같은 값이 들어와 즉시 거부 |
+| `weight = 투입금액 ÷ 계좌 전체` (다른 자금 포함) | weight가 과소평가됨. 실제보다 소극적인 전략으로 기록됨 |
+| `reduce = 매도금액 ÷ 총자산` | 완전히 다른 의미. 거의 항상 지나치게 작은 값 |
+| `reduce = 매도수량 ÷ 최초 매수수량` | 이미 분할매도한 뒤라면 틀림. **분모는 언제나 "매도 직전" 보유 수량** |
+| 실제로 30% 팔고 `reduce: 0.5` 전송 | 아무도 못 막는다. 다만 **자기 성과만 부정확해질 뿐 이득이 없다** |
+
+#### "대충 던지는" 참여자는 어떻게 막나
+
+**막지 않는다. 막을 수 없고, 막을 필요도 없다.**
+
+부정확하게 보고하면 **자기 전략의 기록만 부정확해진다.** 유리해지는 방향이 없다.
+`weight`를 부풀리면 `Σweight ≤ 1.0` 에 걸려 거부되고, 줄이면 성과가 축소 기록된다.
+`reduce`를 부정확하게 보내면 서버 모델 포지션이 실계좌와 벌어져 이후 채점이 자기 실제 판단과 멀어진다.
+
+대신 **틀렸다는 사실을 즉시 알 수 있게** 만든다 — 아래 검산 응답과 드리프트 소멸 성질이 그 장치다.
+
+#### 서버 검산 응답 (echo-back)
+
+워커가 fold를 마치면 각 선언에 결과가 채워진다. 클라이언트는 `GET /declarations/{id}` 또는
+`GET /portfolio` 로 이를 조회해 자기 계좌와 대조할 수 있다.
+
+```json
+{ "status": "accepted",
+  "fill_price": 20000,
+  "position_after": { "symbol": "005930", "avg_cost": 10000, "weight": 0.0909 },
+  "nav_after": 1.0998,
+  "realized_pnl": 0.0498,
+  "realized_return": 0.996 }
+```
+
+**계산을 클라이언트가 하지 않고, 서버가 해서 돌려준다.** 이것이 기준 불일치를 없애는 핵심 장치다.
+
+> v0.1에서 이 응답은 **비동기**다. INSERT 직후에는 `status: pending` 이며,
+> 워커가 시세 실측과 fold를 마친 뒤(수 초) 값이 채워진다.
+> 클라이언트는 즉시 확인할 필요가 없고, 다음 거래 전에 `GET /portfolio` 로 확인하면 충분하다.
+
+#### 드리프트는 누적되지 않는다
+
+`reduce` 를 부정확하게 보내면 서버 모델의 보유 수량이 실계좌와 벌어진다.
+그러나 이 괴리는 **해당 포지션을 전량 청산(`reduce: 1.0`)하는 순간 소멸한다.**
+다음 매수는 `weight` 로 새로 시작하므로 수량 오차가 이월되지 않는다.
+
+즉 드리프트는 **포지션 단위로 격리**되며 전략 전체로 번지지 않는다.
+(실현손익 금액을 통해 NAV에 남는 잔여 영향은 있으나, 부분매도를 정확히 보고하면 0이다.)
+
+#### 서버측 이상 감지
+
+서버는 다음을 감지해 참여자에게 경고한다. **순위에는 반영하지 않는다** — 처벌이 아니라 교정이 목적이다.
+
+| 신호 | 추정 원인 |
+|---|---|
+| `Σweight` 가 지속적으로 0.1 미만 | 분모를 계좌 전체로 잡았거나 절대금액 혼동 |
+| `weight` 거부율 20% 초과 | 분모를 예수금으로 잡음 |
+| `reduce > 1.0` 시도 | 분모를 최초 매수 수량으로 잡음 |
+| 매수만 있고 매도가 없음 | 매도 이벤트 발행 누락 |
+
+### 4.4 서버가 덧붙이는 필드 (클라이언트가 쓸 수 없음)
 
 ```json
 {
@@ -425,6 +515,24 @@ create policy declarations_read on declarations
 
 ---
 
+### 8.4 조회 API — `GET /portfolio`
+
+클라이언트의 검산과 리밸런싱 비율 계산에 필요한 최소 정보를 제공한다.
+
+```json
+{ "strategy_id": "prism-kr-gpt5",
+  "as_of":       "2026-08-09T06:30:00Z",
+  "last_seq":    43,
+  "nav":         1.0998,
+  "cash":        0.9998,
+  "positions": [
+    { "market": "KRX", "symbol": "005930",
+      "avg_cost": 10000, "market_value": 0.1, "weight": 0.0909 }
+  ] }
+```
+
+`last_seq` 는 클라이언트 프로세스 재시작 시 `seq` 복구에 사용한다.
+
 ## 9. 리더보드 순위 설계
 
 ### 9.1 해결해야 할 문제
@@ -622,3 +730,101 @@ curl -X POST "https://<project>.supabase.co/rest/v1/declarations" \
 { "protocol":"otd/0.1", "strategy_id":"my-strategy", "seq":43,
   "market":"KRX", "symbol":"005930", "action":"sell", "reduce":1.0 }
 ```
+
+---
+
+## 부록 B — 레퍼런스 클라이언트
+
+§4.3의 계산 규칙을 코드로 강제한 최소 구현이다.
+**파라미터 이름이 곧 정의**이므로, 시그니처를 따르면 §4.3의 오류를 범할 수 없다.
+
+```python
+import requests
+
+
+class OTDClient:
+    """OTD 선언 클라이언트. 계산은 두 개의 나눗셈이 전부다."""
+
+    def __init__(self, endpoint, strategy_id, api_key, start_seq=0):
+        self.endpoint = endpoint.rstrip("/")
+        self.strategy_id = strategy_id
+        self.api_key = api_key
+        self.seq = start_seq          # 영속화는 호출자 책임. GET /portfolio 로 복구 가능
+
+    def buy(self, market, symbol, invested_amount, nav, price=None, reason=None, meta=None):
+        """
+        invested_amount : 이번 매수에 실제로 투입한 금액
+        nav             : 전략 자본 = 운용 현금 + 전략 보유 종목 평가액 총합
+                          (예수금만 쓰지 말 것. 다른 목적의 자금은 제외할 것)
+        """
+        return self._send(market, symbol, "buy",
+                          weight=invested_amount / nav,
+                          price=price, reason=reason, meta=meta)
+
+    def sell(self, market, symbol, sold_qty, qty_before_sell,
+             price=None, reason=None, meta=None):
+        """
+        sold_qty        : 이번에 매도한 수량
+        qty_before_sell : 매도 '직전' 보유 수량 (최초 매수 수량이 아님)
+        """
+        return self._send(market, symbol, "sell",
+                          reduce=sold_qty / qty_before_sell,
+                          price=price, reason=reason, meta=meta)
+
+    def sell_all(self, market, symbol, price=None, reason=None, meta=None):
+        return self._send(market, symbol, "sell", reduce=1.0,
+                          price=price, reason=reason, meta=meta)
+
+    def portfolio(self):
+        """현재 포지션·NAV 스냅샷. 리밸런싱 비율 계산과 검산에 사용."""
+        r = requests.get(f"{self.endpoint}/portfolio",
+                         headers={"apikey": self.api_key},
+                         params={"strategy_id": self.strategy_id}, timeout=10)
+        r.raise_for_status()
+        return r.json()
+
+    def _send(self, market, symbol, action, weight=None, reduce=None,
+              price=None, reason=None, meta=None):
+        self.seq += 1
+        body = {
+            "protocol": "otd/0.1",
+            "strategy_id": self.strategy_id,
+            "seq": self.seq,
+            "market": market,
+            "symbol": symbol,
+            "action": action,
+        }
+        for k, v in (("weight", weight), ("reduce", reduce),
+                     ("price", price), ("reason", reason), ("meta", meta)):
+            if v is not None:
+                body[k] = v
+
+        r = requests.post(f"{self.endpoint}/declarations",
+                          headers={"apikey": self.api_key,
+                                   "Content-Type": "application/json"},
+                          json=body, timeout=10)
+        r.raise_for_status()
+        return r.json()
+```
+
+사용 예:
+
+```python
+otd = OTDClient("https://<project>.supabase.co/rest/v1", "my-strategy", KEY)
+
+# 총자산 5,000만원 중 500만원어치 매수 → weight 0.1
+otd.buy("KRX", "005930", invested_amount=5_000_000, nav=50_000_000,
+        price=71_200, reason="20일선 눌림목")
+
+# 100주 보유 중 50주 매도 → reduce 0.5
+otd.sell("KRX", "005930", sold_qty=50, qty_before_sell=100, price=142_000)
+
+# 잔량 전부 청산
+otd.sell_all("KRX", "005930", price=150_000, reason="추세 이탈")
+
+# 검산: 서버가 계산한 포지션·NAV를 자기 계좌와 대조
+print(otd.portfolio())
+```
+
+**주의**: `seq` 는 전략별 단조증가여야 하며 누락·중복 감지에 쓰인다.
+프로세스 재시작 시 `portfolio()` 응답의 `last_seq` 로 복구하거나 로컬에 영속화한다.
