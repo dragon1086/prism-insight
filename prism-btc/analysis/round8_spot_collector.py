@@ -35,12 +35,27 @@ CREATE TABLE IF NOT EXISTS spot_klines (
 
 
 def fetch(symbol: str, start_ms: int) -> list:
-    params = {"symbol": symbol, "interval": INTERVAL,
-              "startTime": start_ms, "limit": 1000}
-    resp = requests.get(BASE, params=params,
-                        headers={"User-Agent": "prism-btc-research"}, timeout=30)
+    params = {
+        "symbol": symbol,
+        "interval": INTERVAL,
+        "startTime": start_ms,
+        "limit": 1000,
+    }
+    resp = requests.get(
+        BASE, params=params, headers={"User-Agent": "prism-btc-research"}, timeout=30
+    )
     resp.raise_for_status()
     return resp.json()
+
+
+def get_fetch_cursor(conn: sqlite3.Connection, symbol: str) -> int:
+    """Resume after the latest confirmed bar so open bars are re-fetched."""
+    row = conn.execute(
+        "SELECT MAX(open_time) FROM spot_klines "
+        "WHERE symbol=? AND timeframe=? AND confirmed=1",
+        (symbol, INTERVAL),
+    ).fetchone()
+    return (int(row[0]) + 1) if row and row[0] is not None else START_MS
 
 
 def main() -> None:
@@ -50,17 +65,15 @@ def main() -> None:
     now_ms = int(time.time() * 1000)
 
     for sym in SYMBOLS:
-        row = conn.execute(
-            "SELECT MAX(open_time) FROM spot_klines WHERE symbol=? AND timeframe=?",
-            (sym, INTERVAL)).fetchone()
-        cursor = (row[0] + 1) if row and row[0] else START_MS
+        cursor = get_fetch_cursor(conn, sym)
         total = 0
         while True:
             batch = fetch(sym, cursor)
             if not batch:
                 break
             for k in batch:
-                open_time, o, h, l, c, v = int(k[0]), k[1], k[2], k[3], k[4], k[5]
+                open_time = int(k[0])
+                open_value, high, low, close, volume = k[1], k[2], k[3], k[4], k[5]
                 close_time, qv = int(k[6]), k[7]
                 confirmed = 1 if close_time < now_ms else 0
                 conn.execute(
@@ -70,8 +83,20 @@ def main() -> None:
                     "close=excluded.close, volume=excluded.volume, "
                     "quote_volume=excluded.quote_volume, confirmed=excluded.confirmed, "
                     "fetched_at=excluded.fetched_at",
-                    (sym, INTERVAL, open_time, float(o), float(h), float(l),
-                     float(c), float(v), float(qv), confirmed, now_ms))
+                    (
+                        sym,
+                        INTERVAL,
+                        open_time,
+                        float(open_value),
+                        float(high),
+                        float(low),
+                        float(close),
+                        float(volume),
+                        float(qv),
+                        confirmed,
+                        now_ms,
+                    ),
+                )
             total += len(batch)
             cursor = int(batch[-1][6]) + 1  # last close_time + 1ms
             conn.commit()
@@ -80,10 +105,14 @@ def main() -> None:
             time.sleep(0.3)  # rate-limit 예의
         n, lo, hi = conn.execute(
             "SELECT COUNT(*), MIN(open_time), MAX(open_time) FROM spot_klines "
-            "WHERE symbol=? AND confirmed=1", (sym,)).fetchone()
-        print(f"{sym}: fetched {total}, confirmed rows {n}, "
-              f"range {time.strftime('%Y-%m-%d', time.gmtime(lo/1000))} ~ "
-              f"{time.strftime('%Y-%m-%d', time.gmtime(hi/1000))}")
+            "WHERE symbol=? AND confirmed=1",
+            (sym,),
+        ).fetchone()
+        print(
+            f"{sym}: fetched {total}, confirmed rows {n}, "
+            f"range {time.strftime('%Y-%m-%d', time.gmtime(lo / 1000))} ~ "
+            f"{time.strftime('%Y-%m-%d', time.gmtime(hi / 1000))}"
+        )
     conn.close()
     print(f"saved → {DB}")
 
