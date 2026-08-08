@@ -41,14 +41,12 @@ servers:
       # 우선순위 결정은 서버가 한다.
       PRISM_REPORT_DATA_SOURCES: ${PRISM_REPORT_DATA_SOURCES:-}
   perplexity:
-    # Published from github.com/modelcontextprotocol/servers by Perplexity
-    # (maintainer james.liounis@perplexity.ai). Fetching it removes the need to
-    # build and ship perplexity-ask/dist on every host, which is how the Mac
-    # mini ended up pointing at a path from someone else's machine.
+    # Official Perplexity MCP server. Pin the package so tool schemas cannot
+    # drift between cron runs or hosts.
     command: npx
     args:
     - -y
-    - server-perplexity-ask
+    - '@perplexity-ai/mcp-server@1.2.0'
     env:
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY}
   sqlite:
