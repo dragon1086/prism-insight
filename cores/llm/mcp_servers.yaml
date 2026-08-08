@@ -6,10 +6,11 @@ servers:
     - '@mzxrai/mcp-webresearch@latest'
     read_timeout_seconds: 120
   firecrawl:
+    # Keep tool schemas deterministic across hosts and cron runs.
     command: npx
     args:
     - -y
-    - firecrawl-mcp
+    - firecrawl-mcp@3.23.6
     env:
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY}
   # 2026-08-05: kospi_kosdaq_stock_server(PyPI) 에서 리포 내 서버로 교체했다.
