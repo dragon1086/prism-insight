@@ -35,8 +35,8 @@ Run Ubuntu 24.04-based AI stock analysis system easily with Docker.
 - **Cron**: Built-in scheduled task automation (KR/US stock analysis)
 
 #### Python Packages
-- OpenAI API (GPT-4.1, GPT-5.1)
-- Anthropic API (Claude Sonnet 4.5)
+- OpenAI SDK 2.43.0 and OpenAI Agents 0.7.0
+- Anthropic API (optional compatibility workflows)
 - MCP Agent and related servers
 - pykrx (Korean stock data)
 - matplotlib, seaborn (data visualization)
@@ -44,7 +44,7 @@ Run Ubuntu 24.04-based AI stock analysis system easily with Docker.
 
 #### MCP Servers
 - **kospi-kosdaq**: Korean stock data
-- **perplexity-ask**: AI search
+- **perplexity**: AI search
 - **firecrawl**: Web crawling
 - **sqlite**: Database
 - **time**: Time management
@@ -192,26 +192,23 @@ mcp:
   servers:
     firecrawl:
       command: "npx"
-      args: [ "-y", "firecrawl-mcp" ]
+      args: [ "-y", "firecrawl-mcp@3.23.6" ]
       env:
         FIRECRAWL_API_KEY: "your_firecrawl_api_key_here"
     kospi_kosdaq:
       command: "python3"
-      args: ["-m", "kospi_kosdaq_stock_server"]
+      args: ["-m", "cores.market_data.mcp_server"]
     perplexity:
-      command: "node"
-      args: ["perplexity-ask/dist/index.js"]
+      command: "npx"
+      args: ["-y", "@perplexity-ai/mcp-server@1.2.0"]
       env:
         PERPLEXITY_API_KEY: "your_perplexity_api_key_here"
     sqlite:
       command: "uv"
-      args: ["--directory", "sqlite", "run", "mcp-server-sqlite", "--db-path", "stock_tracking_db"]
+      args: ["--directory", "sqlite", "run", "mcp-server-sqlite", "--db-path", "../stock_tracking_db.sqlite"]
     time:
-      command: "uvx"
-      args: ["mcp-server-time"]
-openai:
-  default_model: gpt-5.1
-  reasoning_effort: high
+      command: "python3"
+      args: ["-m", "cores.llm.time_mcp_server"]
 ```
 
 #### 3. `mcp_agent.secrets.yaml` File
@@ -247,7 +244,7 @@ The Docker container includes **built-in cron** for automated stock analysis. Cr
 |------|-----|------|
 | 02:00 | Config backup | Daily |
 | 03:00 | Log cleanup | Daily |
-| 03:00 | Memory compression | Sunday |
+| 03:00 | KR+US memory compression | Sunday |
 | 07:00 | Stock data update | Mon-Fri |
 | 09:30 | **KR Morning batch** | Mon-Fri |
 | 15:40 | **KR Afternoon batch** | Mon-Fri |
@@ -255,18 +252,19 @@ The Docker container includes **built-in cron** for automated stock analysis. Cr
 | 17:00 | Performance tracker | Mon-Fri |
 | 17:10 | Dashboard refresh | Mon-Fri |
 
-#### US Stock Market (KST, based on EST)
+#### US Stock Market (KST)
 
 | Time (KST) | US Time (EST) | Job | Days |
 |------------|---------------|-----|------|
 | 00:15 | 10:15 | **US Morning batch** | Tue-Sat |
+| 03:30 | - | US log cleanup (30 days) | Daily |
 | 06:30 | 16:30 | **US Afternoon batch** | Tue-Sat |
 | 07:30 | 17:30 | US Performance tracker | Tue-Sat |
 | 08:00 | 18:00 | US Dashboard refresh | Tue-Sat |
-| 03:30 | - | US log cleanup (30 days) | Daily |
-| 04:00 | - | US memory compression | Sunday |
+| 10:05 | - | US pending-order reconciliation | Tue-Sat |
 
-> **Note**: US market runs 3 times daily (no price limits). Tue-Sat in KST = Mon-Fri in US time.
+> **Note**: Docker cron runs in the `Asia/Seoul` timezone and US analysis runs twice daily.
+> Tue-Sat in KST = Mon-Fri in US time. EST/EDT columns are explanatory and do not change the cron timezone.
 > Yahoo Finance data has 15-20 min delay, so schedules are adjusted accordingly.
 
 ### Cron Management Commands
@@ -612,7 +610,6 @@ sudo chown -R $USER:$USER data reports pdf_reports
 └── prism-insight/            # Project root
     ├── cores/                # AI analysis engine
     ├── trading/              # Automated trading
-    ├── perplexity-ask/       # MCP server
     ├── sqlite/               # Database
     ├── reports/              # Analysis reports
     └── pdf_reports/          # PDF reports
