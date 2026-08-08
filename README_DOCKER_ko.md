@@ -33,8 +33,8 @@ Ubuntu 24.04 기반 AI 주식 분석 시스템을 Docker로 간편하게 실행�
 - **Cron**: 내장 스케줄 자동화 (한국/미국 주식 분석)
 
 #### Python 패키지
-- OpenAI API (GPT-4.1, GPT-5.1)
-- Anthropic API (Claude Sonnet 4.5)
+- OpenAI SDK 2.43.0 및 OpenAI Agents 0.7.0
+- Anthropic API (선택적 호환 워크플로우)
 - MCP Agent 및 관련 서버들
 - pykrx (한국 주식 데이터)
 - matplotlib, seaborn (데이터 시각화)
@@ -42,7 +42,7 @@ Ubuntu 24.04 기반 AI 주식 분석 시스템을 Docker로 간편하게 실행�
 
 #### MCP 서버
 - **kospi-kosdaq**: 한국 주식 데이터
-- **perplexity-ask**: AI 검색
+- **perplexity**: AI 검색
 - **firecrawl**: 웹 크롤링
 - **sqlite**: 데이터베이스
 - **time**: 시간 관리
@@ -190,26 +190,23 @@ mcp:
   servers:
     firecrawl:
       command: "npx"
-      args: [ "-y", "firecrawl-mcp" ]
+      args: [ "-y", "firecrawl-mcp@3.23.6" ]
       env:
         FIRECRAWL_API_KEY: "여기에_Firecrawl_API키_입력"
     kospi_kosdaq:
       command: "python3"
-      args: ["-m", "kospi_kosdaq_stock_server"]
+      args: ["-m", "cores.market_data.mcp_server"]
     perplexity:
-      command: "node"
-      args: ["perplexity-ask/dist/index.js"]
+      command: "npx"
+      args: ["-y", "@perplexity-ai/mcp-server@1.2.0"]
       env:
         PERPLEXITY_API_KEY: "여기에_Perplexity_API키_입력"
     sqlite:
       command: "uv"
-      args: ["--directory", "sqlite", "run", "mcp-server-sqlite", "--db-path", "stock_tracking_db"]
+      args: ["--directory", "sqlite", "run", "mcp-server-sqlite", "--db-path", "../stock_tracking_db.sqlite"]
     time:
-      command: "uvx"
-      args: ["mcp-server-time"]
-openai:
-  default_model: gpt-5.1
-  reasoning_effort: high
+      command: "python3"
+      args: ["-m", "cores.llm.time_mcp_server"]
 ```
 
 #### 3. `mcp_agent.secrets.yaml` 파일
@@ -245,7 +242,7 @@ Docker 컨테이너에는 **내장 cron**이 포함되어 있어 주식 분석�
 |------|------|------|
 | 02:00 | 설정 백업 | 매일 |
 | 03:00 | 로그 정리 | 매일 |
-| 03:00 | 메모리 압축 | 일요일 |
+| 03:00 | KR+US 메모리 압축 | 일요일 |
 | 07:00 | 종목 데이터 업데이트 | 월-금 |
 | 09:30 | **KR 오전 배치** | 월-금 |
 | 15:40 | **KR 오후 배치** | 월-금 |
@@ -253,19 +250,19 @@ Docker 컨테이너에는 **내장 cron**이 포함되어 있어 주식 분석�
 | 17:00 | 성과 추적 | 월-금 |
 | 17:10 | 대시보드 갱신 | 월-금 |
 
-#### 미국 주식 시장 (KST 기준, EST 기반)
+#### 미국 주식 시장 (KST)
 
 | 시간 (KST) | 미국 시간 (EST) | 작업 | 요일 |
 |------------|----------------|------|------|
 | 00:15 | 10:15 | **US 오전 배치** | 화-토 |
-| 02:30 | 12:30 | **US 장중 배치** | 화-토 |
+| 03:30 | - | US 로그 정리 (30일) | 매일 |
 | 06:30 | 16:30 | **US 마감 배치** | 화-토 |
 | 07:30 | 17:30 | US 성과 추적 | 화-토 |
 | 08:00 | 18:00 | US 대시보드 갱신 | 화-토 |
-| 03:30 | - | US 로그 정리 (30일) | 매일 |
-| 04:00 | - | US 메모리 압축 | 일요일 |
+| 10:05 | - | US 미체결 주문 정합화 | 화-토 |
 
-> **참고**: 미국 시장은 가격제한이 없어 하루 3회 실행합니다. KST 기준 화-토는 미국 시간 기준 월-금에 해당합니다.
+> **참고**: Docker cron은 `Asia/Seoul` 시간대에서 실행되며 US 분석은 하루 2회 실행합니다.
+> KST 기준 화-토는 미국 시간 기준 월-금입니다. EST/EDT 표기는 설명용이며 cron 시간대를 바꾸지 않습니다.
 > Yahoo Finance 데이터는 15-20분 지연이 있어 이를 감안하여 스케줄을 설정했습니다.
 
 ### Cron 관리 명령어
@@ -611,7 +608,6 @@ sudo chown -R $USER:$USER data reports pdf_reports
 └── prism-insight/            # 프로젝트 루트
     ├── cores/                # AI 분석 엔진
     ├── trading/              # 자동매매
-    ├── perplexity-ask/       # MCP 서버
     ├── sqlite/               # 데이터베이스
     ├── reports/              # 분석 보고서
     └── pdf_reports/          # PDF 보고서

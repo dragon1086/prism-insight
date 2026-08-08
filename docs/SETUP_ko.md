@@ -130,6 +130,9 @@ cd prism-insight
 pip install -r requirements.txt
 ```
 
+현재 검증된 OpenAI 런타임 조합은 `openai==2.43.0`, `openai-agents==0.7.0`입니다.
+호환성 검증 없이 OpenAI SDK 범위를 넓히지 마십시오.
+
 ### 3단계: 설정 파일 준비
 
 예시 파일을 복사하여 설정 파일을 생성합니다:
@@ -174,24 +177,27 @@ mcp:
   servers:
     kospi_kosdaq:
       command: "python3"
-      args: ["-m", "kospi_kosdaq_stock_server"]
-      env:
-        KAKAO_ID: "your_kakao_email@example.com"
-        KAKAO_PW: "your_kakao_password"
+      args: ["-m", "cores.market_data.mcp_server"]
 
-    firecrawl: firecrawl-mcp
-    perplexity: npx -y @perplexity-ai/mcp-server
-    sqlite: uv run mcp-server-sqlite --directory sqlite stock_tracking_db.sqlite
-    time: uvx mcp-server-time
+    firecrawl:
+      command: "npx"
+      args: ["-y", "firecrawl-mcp@3.23.6"]
 
-openai:
-  default_model: gpt-5
-  reasoning_effort: medium
+    perplexity:
+      command: "npx"
+      args: ["-y", "@perplexity-ai/mcp-server@1.2.0"]
+
+    sqlite:
+      command: "uv"
+      args: ["--directory", "sqlite", "run", "mcp-server-sqlite", "--db-path", "../stock_tracking_db.sqlite"]
+
+    time:
+      command: "python3"
+      args: ["-m", "cores.llm.time_mcp_server"]
 ```
 
-> **참고**: 한국 시장 데이터(KRX 데이터 마켓플레이스 인증)를 위해 카카오 계정 정보가 필요합니다.
->
-> **2단계 인증 사용자**: 카카오 2단계 인증이 설정되어 있으면 매 분석시마다 앱에서 확인이 필요합니다. 비활성화하려면: 카카오앱 > 전체 설정 > 카카오계정 > 계정 보안 > 2단계 인증 '사용 안함'.
+> **참고**: 현재 한국 시장 MCP는 저장소 내부 market-data 소스 체인을 사용합니다.
+> 운영 환경에서는 오케스트레이터와 같은 Python을 `PRISM_MCP_PYTHON`으로 지정하십시오.
 
 ### 6단계: Playwright 설치 (PDF 생성용)
 
@@ -208,8 +214,8 @@ python3 -m playwright install chromium
 ### 7단계: Perplexity MCP 서버 설치
 
 ```bash
-# 방법 A: 글로벌 설치 (권장)
-npm install -g @perplexity-ai/mcp-server
+# 방법 A: 검증 버전 글로벌 설치
+npm install -g @perplexity-ai/mcp-server@1.2.0
 
 # 방법 B: npx 사용 (설치 불필요, 필요시 자동 실행)
 # mcp_agent.config.yaml.example에서 이미 npx 방식을 사용합니다
