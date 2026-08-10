@@ -24,13 +24,14 @@ from datetime import date
 from decimal import Decimal
 from typing import Callable
 
-from .engine import Engine, replay
+from .engine import replay
 from .ledger import Ledger
 from .markets import profile_for
 
 logger = logging.getLogger(__name__)
 
 PriceFetcher = Callable[[str, str], "object | None"]
+TradingDayCheck = Callable[[date], bool]
 
 
 def held_symbols(ledger: Ledger, market: str) -> set[str]:
@@ -56,14 +57,25 @@ def close_day(
     fetcher: PriceFetcher | None,
     on: date | None = None,
     force: bool = False,
+    is_trading_day: TradingDayCheck | None = None,
 ) -> dict:
     """하루를 마감한다.
 
     같은 날을 두 번 마감하지 않는다 — 원장은 고칠 수 없으므로
     잘못 마감하면 되돌릴 방법이 없다.
+
+    `is_trading_day` 는 시장 캘린더다. 주지 않으면 매일이 거래일로 취급된다.
+    휴장일을 걸러야 하는 이유는 그날이 시간축에 거래일로 박히면
+    운영일수와 연율화가 부풀려지기 때문이다.
+    캘린더는 시장마다 다르므로 코어가 아니라 **주입 대상**이다.
     """
     profile = profile_for(market)
     on = on or date.today()
+
+    if is_trading_day is not None and not is_trading_day(on):
+        logger.info("[%s] %s 는 거래일이 아닙니다 — 마감하지 않습니다.", profile.code, on)
+        return {"market": profile.code, "date": on.isoformat(),
+                "skipped": True, "reason": "not_a_trading_day"}
 
     if ledger.has_mark(profile.code, on) and not force:
         logger.info("[%s] %s 는 이미 마감되었습니다.", profile.code, on)
@@ -103,39 +115,8 @@ def close_day(
     }
 
 
-def main() -> int:
-    import argparse
-    import os
-
-    parser = argparse.ArgumentParser(description="Stance 하루 마감")
-    parser.add_argument("--market", default="KRX")
-    parser.add_argument("--db", default=os.getenv("STANCE_DB", "stance_ledger.db"))
-    parser.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 오늘)")
-    parser.add_argument("--quotes", default=os.getenv("STANCE_QUOTES", "kis"))
-    args = parser.parse_args()
-
-    logging.basicConfig(level="INFO", format="%(asctime)s %(levelname)-7s | %(message)s")
-
-    fetcher = None
-    if args.quotes != "none":
-        try:
-            from prism_core.stance_quotes import KisQuoteProvider
-            from trading.domestic_stock_trading import DomesticStockTrading
-
-            fetcher = KisQuoteProvider(DomesticStockTrading(mode="real"))
-        except Exception:
-            logger.exception("시세 제공자를 만들지 못했습니다 — 마감을 중단합니다.")
-            return 1
-
-    ledger = Ledger(args.db)
-    try:
-        on = date.fromisoformat(args.date) if args.date else None
-        result = close_day(ledger, args.market, fetcher, on=on)
-        print(result)
-        return 0
-    finally:
-        ledger.close()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+# CLI 는 여기 없다.
+#
+# 시세 제공자와 시장 캘린더는 PRISM 이 쥐고 있고, `stance/` 는 그것을 알아서는 안 된다.
+# 그 규칙을 지켜야 `git subtree split` 으로 이 디렉터리를 그대로 떼어낼 수 있다.
+# 기동은 저장소 루트의 `stance_mark.py` 가 담당한다.

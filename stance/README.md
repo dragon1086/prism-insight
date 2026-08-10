@@ -50,15 +50,23 @@ stance/
 │   ├── service.py      서비스 계층. HTTP 를 모른다 — 그래서 프레임워크 없이 테스트된다
 │   ├── api.py          HTTP 껍데기 (FastAPI). 얇게 유지한다
 │   ├── leaderboard.py  원장 재생 → 채점 → 화면용 JSON
-│   └── marker.py       하루 마감. 채점의 시간축을 만든다
+│   └── marker.py       하루 마감. 채점의 시간축을 만든다 (CLI 는 루트에)
 ├── client/client.py    참여자용. 목표비중 변환 헬퍼 포함
-├── tests/              154개
+├── tests/              164개
 └── demo.py             원장 → 재구성 → 채점 전체 흐름
 ```
 
 `stance/` 안에서는 PRISM 코드를 **import 하지 않는다.**
 그 규칙을 지키는 한 `git subtree split` 으로 별도 저장소로 그대로 뽑아낼 수 있다.
-PRISM 연동은 바깥의 [`prism_core/stance_adapter.py`](../prism_core/stance_adapter.py) 한 파일만 안다.
+`tests/test_boundary.py` 가 모든 소스를 ast 로 훑어 이를 강제한다 — 함수 안의 지연 임포트도 잡는다.
+
+연동은 저장소 루트의 세 파일이 담당한다.
+
+| 파일 | 역할 |
+|---|---|
+| `prism_core/stance_adapter.py` | PRISM 슬롯 → 목표비중 변환 |
+| `stance_server.py` | KIS 시세를 물려 서버를 띄운다 |
+| `stance_mark.py` | KIS 종가 + 휴장일 필터를 물려 하루를 마감한다 |
 
 ---
 
@@ -124,8 +132,11 @@ STANCE_DB=/var/lib/prism-stance/ledger.db python -m stance_server
 **리더보드가 죽는다.**
 
 ```cron
-40 15 * * 1-5  cd /opt/prism-insight && .venv/bin/python -m stance.server.marker --market KRX
+40 15 * * 1-5  cd /opt/prism-insight && .venv/bin/python -m stance_mark --market KRX
 ```
+
+`stance_mark` 가 KIS 종가와 휴장일 필터를 함께 물려준다.
+`stance/` 자체는 시세도 캘린더도 모른다 — 둘 다 시장마다 다르므로 **주입 대상**이다.
 
 그 밖에 지켜야 할 것이 둘 있다.
 
