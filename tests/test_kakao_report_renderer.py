@@ -114,7 +114,9 @@ def test_summary_is_truncated_within_the_simple_text_limit():
 
     text = outputs(response)[0]["simpleText"]["text"]
     assert len(text) <= MAX_SIMPLE_TEXT_LENGTH
-    assert text.endswith("…")
+    # The bubble now closes on the rendered disclaimer, so the ellipsis marks
+    # the end of the summary rather than the end of the message.
+    assert "…" in text
 
 
 def test_missing_summary_still_renders_a_header():
