@@ -166,11 +166,13 @@ python -m kakao_bot.runtime.campaign_smoke_main --confirm-enqueue
 
 ## 6. systemd
 
-템플릿:
+템플릿 (prism-backend 운영 유닛과 동일한 내용):
 
 - `deploy/systemd/prism-kakao-gateway.service.example`
-- `deploy/systemd/prism-kakao-consumer.service.example`
+- `deploy/systemd/prism-kakao-analysis.service.example`
 - `deploy/systemd/prism-kakao-sender.service.example`
+- `deploy/systemd/prism-kakao-consumer.service.example`
+- `deploy/systemd/prism-kakao-report.service.example`
 
 운영 서버 경로와 사용자를 맞춘 뒤 `/etc/systemd/system`에 배치한다.
 
@@ -178,20 +180,57 @@ python -m kakao_bot.runtime.campaign_smoke_main --confirm-enqueue
 sudo systemctl daemon-reload
 sudo systemctl enable --now \
   prism-kakao-gateway \
+  prism-kakao-analysis \
+  prism-kakao-sender \
   prism-kakao-consumer \
-  prism-kakao-sender
+  prism-kakao-report
 ```
 
 Gateway는 반드시 하나만 실행한다. 배포 순서는 stop-old, 종료 확인,
 start-new다.
+
+### 프로세스를 수동으로 띄우지 않는다
+
+다섯 프로세스는 전부 systemd 유닛으로만 기동한다. `runuser`나 SSH 셸에서
+직접 띄우면 두 가지가 동시에 깨진다.
+
+- 세션이 끊기면 프로세스가 같이 죽는다 (`Session terminated, killing shell`).
+- 재기동 시 `/etc/prism/kakao-bot.env`가 로드되지 않는다.
+
+두 번째가 특히 조용하게 위험하다. `KAKAO_BOT_DATABASE_PATH`가 없으면
+`kakao_bot.sqlite`는 CWD 기준 상대경로로 열린다. analysis worker가 gateway와
+**다른 빈 DB**를 폴링하게 되고, 할 일이 없으니 로그도 남기지 않는다.
+프로세스는 살아 있고 gateway는 접수 응답까지 정상으로 보내는데 분석 결과만
+영영 오지 않는다. 2026-08-07 장애가 정확히 이 경로였다.
+
+점검 방법:
+
+```bash
+# 다섯 프로세스가 모두 같은 DB를 열고 있어야 한다
+for s in gateway analysis sender consumer report; do
+  pid=$(systemctl show -p MainPID --value prism-kakao-$s)
+  echo "$s: $(tr '\0' '\n' < /proc/$pid/environ | grep '^KAKAO_BOT_DATABASE_PATH=')"
+done
+```
+
+### 유닛 작성 시 주의
+
+- `ProtectHome=false`가 필요하다. 저장소·venv·로그·PDF 산출물이 모두
+  `/home/prism` 아래에 있어서 기본값 `true`로 두면 기동에 실패한다.
+- `ProtectSystem=strict` 대신 `full`을 쓴다. `strict`는 `/home`까지
+  읽기 전용으로 만들어 로그 기록이 막힌다.
+- gateway만 `RuntimeDirectory=prism-kakao`가 필요하다. 싱글턴 lock이
+  `/run/prism-kakao/gateway.lock`인데 `/run`은 tmpfs라 재부팅 시 사라진다.
 
 ## 7. Rollback
 
 ```bash
 sudo systemctl stop \
   prism-kakao-gateway \
+  prism-kakao-analysis \
+  prism-kakao-sender \
   prism-kakao-consumer \
-  prism-kakao-sender
+  prism-kakao-report
 ```
 
 Kakao consumer/sender 장애는 기존 Telegram과 매매 실행을 중단시키지 않는다.
