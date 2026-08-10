@@ -71,8 +71,8 @@ def build(ledger: Ledger, strategies: list[tuple[str, str, str, str]]) -> dict:
 
     for strategy_id, display_name, handle, market in strategies:
         profile = profile_for(market)
-        timeline = ledger.timeline(strategy_id)
-        result = replay(timeline, costs=profile.costs)
+        # 일별 마킹까지 포함해 재생한다. 빠지면 시간축이 없어 지표가 전부 0 이 된다.
+        result = replay(ledger.full_timeline(strategy_id), costs=profile.costs)
         metrics = score(result, cadence=ledger.cadence_of(strategy_id), profile=profile)
         entry = Entry(strategy_id, display_name, handle, profile.code, metrics)
 

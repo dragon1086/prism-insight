@@ -2,6 +2,7 @@
 
 from .engine import Book, Engine, ReplayResult, replay
 from .ledger import Ledger
+from .marker import close_day, held_symbols
 from .models import (
     Admit, Cadence, Costs, DailyMark, EventType, Fill, Kind,
     MarketEvent, Position, Quote, Stance, PROTOCOL_VERSION,
@@ -15,6 +16,7 @@ from .scoring import Metrics, PROFILE_VERSION, score, summary_lines
 
 __all__ = [
     "Book", "Engine", "ReplayResult", "replay", "Ledger",
+    "close_day", "held_symbols",
     "Admit", "Cadence", "Costs", "DailyMark", "EventType", "Fill", "Kind",
     "normalize_symbol",
     "MarketEvent", "Position", "Quote", "Stance", "PROTOCOL_VERSION",

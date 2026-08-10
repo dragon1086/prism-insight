@@ -4,7 +4,11 @@
 
     stances        참여자가 보낸 선언
     quotes         서버가 그 순간 찍은 시세 (사후 재조회가 불가능하므로 원장이다)
+    daily_marks    하루를 마감하며 찍은 종가. 채점의 시간축이 된다
     market_events  기업행위·상장폐지 (서버가 발행)
+
+종가를 원장에 넣는 이유는 재현 가능성 때문이다. 외부 시세 공급자를 다시 조회해야 한다면
+"원장만 공개하면 제3자가 순위를 독립 재현한다" 는 주장이 성립하지 않는다.
 
 체결가·보유현황·자산추이·순위는 여기에 없다. 그것들은 계산장부이며
 원장을 다시 읽어 언제든 만들 수 있다. 이 분리가 두 가지를 동시에 해결한다.
@@ -22,12 +26,12 @@ import hashlib
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, time as dtime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 from .models import (
-    PROTOCOL_VERSION, Cadence, EventType, Kind, MarketEvent, Quote, Stance,
+    PROTOCOL_VERSION, Cadence, DailyMark, EventType, Kind, MarketEvent, Quote, Stance,
 )
 
 SCHEMA = """
@@ -83,6 +87,16 @@ CREATE TABLE IF NOT EXISTS market_events (
   hash          TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS daily_marks (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  market        TEXT NOT NULL,
+  on_date       TEXT NOT NULL,
+  prices        TEXT NOT NULL,          -- {symbol: price} 종가
+  prev_hash     TEXT,
+  hash          TEXT NOT NULL,
+  UNIQUE (market, on_date)
+);
+
 CREATE INDEX IF NOT EXISTS idx_stances_strategy ON stances(strategy_id, seq);
 CREATE INDEX IF NOT EXISTS idx_quotes_stance ON quotes(stance_id);
 """
@@ -96,6 +110,10 @@ BEGIN SELECT RAISE(ABORT, '원장은 삭제할 수 없다'); END;
 CREATE TRIGGER IF NOT EXISTS quotes_no_update BEFORE UPDATE ON quotes
 BEGIN SELECT RAISE(ABORT, '원장은 수정할 수 없다'); END;
 CREATE TRIGGER IF NOT EXISTS quotes_no_delete BEFORE DELETE ON quotes
+BEGIN SELECT RAISE(ABORT, '원장은 삭제할 수 없다'); END;
+CREATE TRIGGER IF NOT EXISTS marks_no_update BEFORE UPDATE ON daily_marks
+BEGIN SELECT RAISE(ABORT, '원장은 수정할 수 없다'); END;
+CREATE TRIGGER IF NOT EXISTS marks_no_delete BEFORE DELETE ON daily_marks
 BEGIN SELECT RAISE(ABORT, '원장은 삭제할 수 없다'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON market_events
 BEGIN SELECT RAISE(ABORT, '원장은 수정할 수 없다'); END;
@@ -227,6 +245,40 @@ class Ledger:
             self.conn.commit()
             return int(cur.lastrowid)
 
+    def append_daily_mark(self, market: str, on: date, prices: dict[str, Decimal]) -> int:
+        """하루를 마감하고 종가를 봉인한다. 같은 날을 두 번 마감할 수 없다."""
+        body = {s: str(p) for s, p in sorted(prices.items())}
+        payload = {"market": market, "on_date": on.isoformat(), "prices": body}
+        with self._lock:
+            prev = self._tail_hash("daily_marks")
+            cur = self.conn.execute(
+                "INSERT INTO daily_marks (market, on_date, prices, prev_hash, hash)"
+                " VALUES (?,?,?,?,?)",
+                (market, on.isoformat(), json.dumps(body), prev, _digest(prev, payload)),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid)
+
+    def has_mark(self, market: str, on: date) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM daily_marks WHERE market=? AND on_date=?",
+            (market, on.isoformat()),
+        ).fetchone()
+        return row is not None
+
+    def daily_marks(self, market: str) -> list[DailyMark]:
+        rows = self.conn.execute(
+            "SELECT on_date, prices FROM daily_marks WHERE market=? ORDER BY on_date, id",
+            (market,),
+        ).fetchall()
+        return [
+            DailyMark(
+                on=date.fromisoformat(r["on_date"]),
+                prices={s: Decimal(v) for s, v in json.loads(r["prices"]).items()},
+            )
+            for r in rows
+        ]
+
     # ── 읽기 ──────────────────────────────────────────────────────────────
 
     def timeline(self, strategy_id: str) -> list:
@@ -257,6 +309,27 @@ class Ledger:
             )
             items.append((stance, quote))
         return items
+
+    def full_timeline(self, strategy_id: str) -> list:
+        """선언과 일별 마킹을 시간순으로 병합한다. 채점에 쓰이는 진짜 타임라인이다.
+
+        같은 날에 선언과 마감이 함께 있으면 **마감이 나중**이다.
+        그날의 선언이 모두 반영된 뒤 자산을 찍어야 하기 때문이다.
+        """
+        row = self.conn.execute(
+            "SELECT market FROM strategies WHERE strategy_id=?", (strategy_id,)
+        ).fetchone()
+        market = row["market"] if row else "KRX"
+
+        items: list[tuple[datetime, int, object]] = []
+        for stance, quote in self.timeline(strategy_id):
+            items.append((stance.received_at, 0, (stance, quote)))
+        for mark in self.daily_marks(market):
+            end_of_day = datetime.combine(mark.on, dtime.max, tzinfo=timezone.utc)
+            items.append((end_of_day, 1, mark))
+
+        items.sort(key=lambda x: (x[0], x[1]))
+        return [item for _, _, item in items]
 
     def market_events(self, market: str) -> list[MarketEvent]:
         rows = self.conn.execute(
