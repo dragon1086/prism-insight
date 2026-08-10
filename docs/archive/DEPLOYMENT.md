@@ -216,7 +216,35 @@ ARCHIVE_API_PORT=8765
 EOF
 
 # archive_api 상주 실행 (단일 서버 모드에서는 텔레그램 봇이 직접 import하므로 불필요)
-nohup python archive_api.py >> logs/archive_api.log 2>&1 &
+#
+# ⚠️ nohup 으로 띄우지 말 것. 2026-07-21 호스팅사 리부트로 archive_api 와
+#    app-server 터널이 동시에 사라졌고, 되살리는 주체가 없어 /insight 가
+#    20일간 조용히 죽어 있었다. 반드시 systemd 로 상주시킨다.
+cat > /etc/systemd/system/prism-archive-api.service <<'EOF'
+[Unit]
+Description=PRISM Archive API (serves /insight to app-server over SSH tunnel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/prism-insight
+Environment=PYTHONPATH=/root/prism-insight
+Environment=PYTHONUNBUFFERED=1
+# bash -c 래핑 이유: systemd 239(RHEL 8)는 StandardOutput=append: 를 모른다
+# (그대로 쓰면 status=209/STDOUT 으로 죽는다).
+ExecStart=/bin/bash -c "exec /root/.pyenv/versions/3.11.11/bin/python /root/prism-insight/archive_api.py >> /root/prism-insight/logs/archive_api.log 2>&1"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable --now prism-archive-api.service
+
+# 기동에 15~20초 걸린다 (무거운 import). active 확인 후 헬스 체크.
+systemctl is-active prism-archive-api.service
 
 # 헬스 체크
 curl -s http://127.0.0.1:8765/health
@@ -237,25 +265,28 @@ sudo -u prism ssh-keygen -t ed25519 -f ~prism/.ssh/id_ed25519 -N ""
 PRISM_PUB=$(sudo cat /home/prism/.ssh/id_ed25519.pub)
 ssh root@DB_SERVER_IP "echo 'command=\"echo tunnel-only\",no-pty,no-X11-forwarding,no-agent-forwarding,no-user-rc,permitopen=\"127.0.0.1:8765\" $PRISM_PUB' >> ~/.ssh/authorized_keys"
 
-# 3. SSH 터널 wrapper 스크립트
-sudo -u prism tee /home/prism/prism-insight/bin/archive_tunnel.sh <<'EOF'
-#!/bin/bash
-# Persistent SSH tunnel: app-server -> db-server:8765
-while true; do
-  ssh -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-      -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
-      -L 127.0.0.1:8765:127.0.0.1:8765 \
-      root@DB_SERVER_IP
-  echo "tunnel exited at $(date), reconnecting in 5s" >&2
-  sleep 5
-done
-EOF
-sudo chmod +x /home/prism/prism-insight/bin/archive_tunnel.sh
-sudo chown prism:prism /home/prism/prism-insight/bin/archive_tunnel.sh
+# 3~4. SSH 터널을 systemd 로 상주 (재부팅·연결 끊김 자동 복구)
+#      bin/archive_tunnel.sh 의 while 루프는 systemd Restart=always 가 대체한다.
+cat > /etc/systemd/system/prism-archive-tunnel.service <<'EOF'
+[Unit]
+Description=PRISM Archive API SSH tunnel (app-server -> db-server:8765)
+After=network-online.target
+Wants=network-online.target
 
-# 4. 터널 기동
-sudo -u prism nohup /home/prism/prism-insight/bin/archive_tunnel.sh \
-  >> /home/prism/prism-insight/logs/archive_tunnel.log 2>&1 &
+[Service]
+Type=simple
+User=prism
+# bash -c 래핑 이유: SELinux(Enforcing) 에서 systemd 가 /usr/bin/ssh 를 직접
+# exec 하면 status=203/EXEC "Permission denied" 로 죽는다 (ssh_exec_t 전이 거부).
+ExecStart=/bin/bash -c "exec /usr/bin/ssh -N -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -L 127.0.0.1:8765:127.0.0.1:8765 root@DB_SERVER_IP"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable --now prism-archive-tunnel.service
+systemctl is-active prism-archive-tunnel.service
 
 # 5. .env에 app-server 설정 추가
 sudo -u prism tee -a /home/prism/prism-insight/.env <<EOF
@@ -347,11 +378,26 @@ systemctl enable --now archive-tunnel              # app-server
 ### 봇이 `/insight` 응답 없음
 
 - **단일 서버 모드**: `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 확인. `python archive_query.py --insight-stats`가 에러 없으면 DB는 정상.
-- **양 서버 모드**: 봇 로그에서 `Archive API returned` 에러 확인. 터널 살아있는지:
+- **양 서버 모드**: 봇 로그에 `_call_insight_agent unreachable` 또는
+  `Cannot connect to host 127.0.0.1:8765` 가 찍히면 **터널 또는 archive_api 가 죽은 것**이다.
+  사용자에게는 "🛠 인사이트 서비스가 일시적으로 중단되어 있습니다" 가 나간다.
+
   ```bash
-  pgrep -af archive_tunnel.sh
-  pgrep -af "ssh.*8765:127.0.0.1:8765"
-  curl -s http://127.0.0.1:8765/health    # app-server에서
+  # app-server: 터널
+  systemctl status prism-archive-tunnel.service
+  ss -tln | grep 8765
+  sudo -u prism curl -s http://127.0.0.1:8765/health
+
+  # db-server: API 본체
+  systemctl status prism-archive-api.service
+  curl -s http://127.0.0.1:8765/health
+  tail -50 /root/prism-insight/logs/archive_api.log
+  ```
+
+  둘 중 하나라도 `enabled` 가 아니면 재부팅 때 다시 죽는다:
+  ```bash
+  systemctl is-enabled prism-archive-tunnel.service   # app-server
+  systemctl is-enabled prism-archive-api.service      # db-server
   ```
 
 ### `uvx: command not found` 오류
