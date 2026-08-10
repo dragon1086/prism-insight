@@ -232,6 +232,12 @@ User=root
 WorkingDirectory=/root/prism-insight
 Environment=PYTHONPATH=/root/prism-insight
 Environment=PYTHONUNBUFFERED=1
+# ⚠️ PATH 를 반드시 명시한다. systemd 기본 PATH 에는 pyenv 와 ~/.local/bin 이
+# 없어서 MCP 서버가 조용히 죽는다 — kospi_kosdaq 은 `command: python3` 이라
+# /usr/bin/python3 로 해석돼 모듈을 못 찾고, yahoo_finance 는 uvx 를 못 찾는다.
+# 무료 도구가 사라지면 에이전트가 유료 도구(perplexity·firecrawl)로 밀린다.
+# 증상이 "동작하지만 비싸고 느리다" 라서 알아채기 어렵다(§6 참조).
+Environment=PATH=/root/.pyenv/plugins/pyenv-virtualenv/shims:/root/.pyenv/shims:/root/.pyenv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin:/root/.cargo/bin
 # bash -c 래핑 이유: systemd 239(RHEL 8)는 StandardOutput=append: 를 모른다
 # (그대로 쓰면 status=209/STDOUT 으로 죽는다).
 ExecStart=/bin/bash -c "exec /root/.pyenv/versions/3.11.11/bin/python /root/prism-insight/archive_api.py >> /root/prism-insight/logs/archive_api.log 2>&1"
@@ -399,6 +405,30 @@ systemctl enable --now archive-tunnel              # app-server
   systemctl is-enabled prism-archive-tunnel.service   # app-server
   systemctl is-enabled prism-archive-api.service      # db-server
   ```
+
+### `/insight` 가 느리고 유료 도구만 쓴다 (무료 MCP 서버 조용한 죽음)
+
+증상: 답변은 나오는데 느리고, `perplexity`·`firecrawl` 만 호출된다. KR 종목
+질문인데도 `kospi_kosdaq` 데이터가 안 보인다.
+
+```bash
+# 서비스가 보는 PATH 확인 — pyenv 와 ~/.local/bin 이 있어야 한다
+tr '\0' '\n' < /proc/$(systemctl show -p MainPID --value prism-archive-api.service)/environ | grep ^PATH
+
+# 초기화 실패가 찍히는지
+grep "Failed to initialize" logs/archive_api.log | tail
+
+# 실제로 호출된 도구 (자기신고 tools_used 를 믿지 말 것)
+grep -A2 "Calling Tool" logs/archive_api.log | grep tool_name | sort | uniq -c
+```
+
+PATH 에 pyenv 가 없으면 §4-1 유닛의 `Environment=PATH=` 를 확인한다.
+
+`yahoo_finance` 는 PATH 와 별개로 uvx 캐시 문제가 있다 —
+`uvx --from yahoo-finance-mcp yahoo-finance-mcp` 가
+`ModuleNotFoundError: No module named 'mcp.server.fastmcp'` 로 죽는다.
+캐시된 `mcp` 가 너무 최신이라 그 모듈이 없다. 미국 종목 무료 시세 경로가
+이것 때문에 막혀 있다.
 
 ### `uvx: command not found` 오류
 
