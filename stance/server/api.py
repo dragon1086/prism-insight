@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -33,6 +34,10 @@ from .models import PROTOCOL_VERSION
 from .scoring import PROFILE_VERSION
 from .service import StanceError, StanceService
 
+logger = logging.getLogger(__name__)
+
+DEFAULT_DB = "stance_ledger.db"
+
 app = FastAPI(
     title="Stance",
     description="매매 판단 공개 프로토콜 — 실적을 신고받지 말고, 판단을 미리 선언받아라.",
@@ -42,11 +47,39 @@ app = FastAPI(
 _service: StanceService | None = None
 
 
+def _db_path() -> str:
+    """원장은 반드시 디스크에 남아야 한다.
+
+    인메모리로 띄우면 프로세스가 죽는 순간 원장이 통째로 사라진다.
+    "기록은 고치거나 지울 수 없다" 는 규칙 ④ 와 정면으로 충돌하므로
+    기본값을 파일로 두고, 굳이 인메모리를 쓸 때만 크게 경고한다.
+    """
+    path = os.getenv("STANCE_DB")
+    if not path:
+        logger.warning(
+            "STANCE_DB 가 지정되지 않아 %s 를 사용합니다. "
+            "운영에서는 영속 경로를 명시하십시오.", DEFAULT_DB
+        )
+        return DEFAULT_DB
+    if path == ":memory:":
+        logger.error(
+            "STANCE_DB=:memory: — 프로세스가 죽으면 원장이 사라집니다. "
+            "테스트 용도로만 사용하십시오."
+        )
+    return path
+
+
 def get_service() -> StanceService:
-    """운영에서는 lifespan 에서 원장 경로와 시세 제공자를 주입한다."""
+    """운영에서는 기동 스크립트가 시세 제공자를 주입한다 (set_service).
+
+    ⚠️ **단일 워커로 띄워야 한다.** 장부(계산장부)를 프로세스 메모리에 캐시하므로
+       워커가 여럿이면 한쪽에서 접수한 선언이 다른 쪽 장부에 반영되지 않아
+       현금 판정(축소 수락)이 어긋난다. SQLite 다중 프로세스 쓰기 경합도 생긴다.
+       `uvicorn ... --workers 1` (기본값) 을 유지할 것.
+    """
     global _service
     if _service is None:
-        _service = StanceService(ledger=Ledger(os.getenv("STANCE_DB", ":memory:")))
+        _service = StanceService(ledger=Ledger(_db_path()))
     return _service
 
 
@@ -109,7 +142,15 @@ class StanceIn(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "protocol": PROTOCOL_VERSION, "score_profile": PROFILE_VERSION}
+    db = os.getenv("STANCE_DB", DEFAULT_DB)
+    return {
+        "status": "ok",
+        "protocol": PROTOCOL_VERSION,
+        "score_profile": PROFILE_VERSION,
+        "ledger": db,
+        # 인메모리면 재시작 시 원장이 사라진다. 운영 점검에서 바로 보이도록 노출한다.
+        "durable": db != ":memory:",
+    }
 
 
 @app.get("/markets")

@@ -279,6 +279,8 @@ stance/                              ← 여기서 PRISM 코드를 import 하지
 
 prism_core/stance_adapter.py         PRISM 슬롯 → 목표비중 변환
 prism_core/stance_quotes.py          KIS 시세 → Stance Quote  ⚠️ 실 API 미검증
+stance_server.py                     기동 스크립트. 시세 제공자를 주입해 서버를 띄운다
+deploy/systemd/prism-stance.service.example   상주 서비스 유닛
 examples/dashboard/components/stance-leaderboard-page.tsx   대시보드 탭
 
 docs/superpowers/specs/
@@ -305,11 +307,34 @@ docs/superpowers/specs/
 > ⚠️ **상한가 잠김을 판정하지 못한다.** 현재가 API 에 호가 잔량이 없어 거래정지(`iscd_stat_cls_code=58`)만
 > 걸러진다. 상한가 판정을 넣으려면 호가 API(`inquire-asking-price`)를 추가로 붙여야 한다.
 
-### ② 서버 운영 준비
+### ② 서버 배포
 
-서버 자체는 동작한다(`uvicorn stance.server.api:app`). 남은 것은 운영 설정이다.
-`STANCE_DB` 환경변수로 원장 파일 경로를 주고, 시세 제공자를 주입해야 한다.
-인메모리 기본값은 프로세스가 죽으면 원장이 사라진다.
+**Stance 서버는 계속 떠 있어야 하는 앱 서버다.** 배치 스크립트가 아니다.
+`deploy/systemd/prism-stance.service.example` 를 저장소의 다른 상주 서비스와 같은 방식으로 올린다.
+
+```bash
+sudo install -d -o prism -g prism -m 0750 /var/lib/prism-stance
+sudo cp deploy/systemd/prism-stance.service.example /etc/systemd/system/prism-stance.service
+sudo systemctl enable --now prism-stance
+curl -s localhost:8800/health      # durable 이 true 인지 확인
+```
+
+KIS 시세를 붙이려면 `python -m stance_server` 로 띄운다.
+`uvicorn` 으로 직접 띄우면 시세 제공자가 없어 **모든 선언이 보류로만 쌓인다.**
+
+반드시 지켜야 할 두 가지가 있다.
+
+**① `STANCE_DB` 에 영속 경로를 준다.** 비우면 작업 디렉터리에 파일을 만들고 경고를 남기고,
+`:memory:` 면 프로세스가 죽는 순간 원장이 사라져 **규칙 ④(기록은 고칠 수 없다)가 무너진다.**
+`/health` 의 `durable` 필드로 즉시 확인할 수 있게 해뒀다.
+
+**② 워커를 늘리지 않는다.** 장부를 프로세스 메모리에 캐시하므로 워커가 여럿이면
+한쪽에서 접수한 선언이 다른 쪽 장부에 반영되지 않아 현금 판정이 어긋난다.
+SQLite 다중 프로세스 쓰기 경합도 생긴다.
+**수평 확장이 필요해지면 장부 캐시를 프로세스 밖으로 빼고 원장을 Postgres 로 옮겨야 한다.**
+지금 구조로는 서버가 한 대여야 한다.
+
+(재시작 후 원장과 `last_seq` 가 복원되는 것은 실제로 확인했다.)
 
 ### ③ 접수 시각별 체결 규칙
 
