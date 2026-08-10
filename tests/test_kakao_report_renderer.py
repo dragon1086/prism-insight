@@ -13,7 +13,6 @@ import pytest
 
 from kakao_bot.adapters.kakao.report_renderer import render_report_delivery
 from kakao_bot.adapters.kakao.skill_response import MAX_SIMPLE_TEXT_LENGTH
-from kakao_bot.application.command_parser import CommandKind, parse_command
 from kakao_bot.domain.models import ClaimedOutboundDelivery
 
 NOW = datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)

@@ -34,15 +34,30 @@ DISCLAIMER = "참고용 분석입니다. 투자 판단과 그 결과에 대한 �
 # bubble, and a paragraph of conclusion would push the reasoning out.
 _VERDICT_BUDGET = 160
 
+# The failure this exists to stop: an answer that ends by handing the research
+# back — "향후 실적을 확인해야 한다", "고객사향 수요를 체크해보라". The user asked
+# precisely because they wanted that work done. Checking is the bot's job, and an
+# unresolved question is a reason to state a provisional read, not to withhold one.
+NO_HOMEWORK_RULE = (
+    "조사와 확인은 네 몫이다. '향후 실적을 확인해야 한다', '고객사향 수요를 "
+    "체크해보라', '공시를 지켜볼 필요가 있다'처럼 사용자에게 확인 과제를 "
+    "넘기지 마라. 사용자는 그 일을 대신 해달라고 물은 것이다. "
+    "결론에 필요한 항목이 있으면 네가 먼저 조사해서 지금 확인되는 범위까지 "
+    "답하고, 거기서 읽히는 방향을 네 판단으로 말하라. 근거가 끝내 부족하면 "
+    "부족하다는 사실까지 포함해서 현재 시점의 견해를 내놓아라. "
+    "조건을 달아야 한다면 사용자에게 시키는 문장이 아니라 네 전망으로 써라. "
+    "'다음 실적에서 마진이 꺾이면 달라지겠지만 지금은 ~로 본다'처럼."
+)
+
 VERDICT_INSTRUCTION = (
     f"\n\n답변 마지막 줄에 '{VERDICT_MARK}'을 쓰고, 그 아래 2문장 이내로 "
     "네 주관적 결론을 밝혀라. 긍정·부정 중 한쪽으로 분명히 기울여서 맺어라. "
     "괜찮아 보이면 어떤 점이 좋은지 짚고 관심 가져볼 만하다고 권하고, "
     "위험해 보이면 지금은 피하는 게 낫겠다고 분명히 말하라. "
-    "판단을 유보해야 할 근거가 실제로 있을 때만 중립으로 맺되, 그때도 "
-    "무엇이 확인되면 생각이 바뀌는지 한 가지를 말하라. "
-    "'상황에 따라 다르다', '신중한 접근이 필요하다'처럼 어느 쪽도 아닌 "
-    "문장으로 끝내지 마라. 면책 문구는 쓰지 마라. 시스템이 자동으로 붙인다."
+    f"{NO_HOMEWORK_RULE} "
+    "'상황에 따라 다르다', '신중한 접근이 필요하다', '지켜봐야 한다'처럼 "
+    "어느 쪽도 아닌 문장으로 끝내지 마라. "
+    "면책 문구는 쓰지 마라. 시스템이 자동으로 붙인다."
 )
 
 # `tone` reaches the shared evaluation agent as "원하는 피드백 스타일/톤", so the
@@ -51,6 +66,7 @@ EVALUATE_TONE_SUFFIX = (
     f" 그리고 마지막은 반드시 '{VERDICT_MARK}' 줄로 맺어라. 그 아래 2문장 이내로 "
     "보유를 이어갈 만한지 정리하되, 들고 갈 만하다 / 줄이는 게 낫겠다 중 한쪽으로 "
     "분명히 기울여 말하라. 양쪽 다 가능하다는 식으로 끝내지 마라. "
+    f"{NO_HOMEWORK_RULE} "
     "면책 문구는 쓰지 마라."
 )
 

@@ -221,10 +221,14 @@ def test_an_empty_verdict_block_is_not_rendered_as_a_heading():
 def test_ask_prompt_asks_for_a_one_directional_close():
     assert VERDICT_MARK in VERDICT_INSTRUCTION
     assert "면책" in VERDICT_INSTRUCTION
+    assert "사용자에게 확인 과제를" in VERDICT_INSTRUCTION
+    assert "네가 먼저 조사" in VERDICT_INSTRUCTION
 
 
 def test_evaluate_tone_carries_the_same_rule():
     assert VERDICT_MARK in EVALUATE_TONE_SUFFIX
+    assert "사용자에게 확인 과제를" in EVALUATE_TONE_SUFFIX
+    assert "네가 먼저 조사" in EVALUATE_TONE_SUFFIX
 
 
 # --- append_verdict ---------------------------------------------------------
