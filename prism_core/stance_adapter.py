@@ -67,9 +67,48 @@ def buy_target_weight(
     return max(Decimal(0), min(Decimal(1), target))
 
 
-def sell_target_weight() -> Decimal:
-    """PRISM 은 올아웃만 한다. 부분 매도가 생기면 여기를 바꾼다."""
-    return Decimal(0)
+def sell_target_weight(
+    snapshot: AccountSnapshot, symbol: str,
+    sold_qty: Decimal | float | None = None,
+    held_qty: Decimal | float | None = None,
+) -> Decimal:
+    """매도 후 남을 목표비중.
+
+    PRISM 은 올인/올아웃이라 대개 0 이지만, 수량을 주면 부분매도도 계산한다.
+    """
+    if sold_qty is None or held_qty is None:
+        return Decimal(0)
+
+    sold, held = Decimal(str(sold_qty)), Decimal(str(held_qty))
+    if held <= 0 or sold >= held:
+        return Decimal(0)
+
+    total = snapshot.total_assets
+    if total <= 0:
+        return Decimal(0)
+    remaining = snapshot.value_of(symbol) * (held - sold) / held
+    return max(Decimal(0), min(Decimal(1), remaining / total))
+
+
+def snapshot_from_trader(trader) -> AccountSnapshot:
+    """브로커 클라이언트에서 계좌 스냅샷을 만든다.
+
+    `get_portfolio()` 와 `get_account_summary()` 를 쓴다.
+    실패하면 예외가 올라가며, 호출자가 선언을 건너뛴다 — 매매를 막지는 않는다.
+    """
+    positions: dict[str, Decimal] = {}
+    for row in trader.get_portfolio() or []:
+        code = str(row.get("stock_code") or "").strip()
+        if code:
+            positions[code] = Decimal(str(row.get("eval_amount") or 0))
+
+    summary = trader.get_account_summary() or {}
+    cash = Decimal(str(summary.get("deposit") or 0))
+    return AccountSnapshot(
+        cash=cash,
+        holdings_value=sum(positions.values(), Decimal(0)),
+        position_values=positions,
+    )
 
 
 class StanceReporter:
@@ -94,14 +133,51 @@ class StanceReporter:
             logger.exception("[stance] 매수 선언 전송 실패 (%s) — 매매는 계속 진행한다", symbol)
             return None
 
-    def report_sell(self, symbol: str, reason: str | None = None):
+    def report_sell(self, symbol: str, reason: str | None = None,
+                    snapshot: AccountSnapshot | None = None,
+                    sold_qty=None, held_qty=None):
         if not self.enabled:
             return None
         try:
-            return self.client.set(symbol, sell_target_weight(), reason=reason)
+            target = (
+                sell_target_weight(snapshot, symbol, sold_qty, held_qty)
+                if snapshot is not None else Decimal(0)
+            )
+            return self.client.set(symbol, target, reason=reason)
         except Exception:
             logger.exception("[stance] 매도 선언 전송 실패 (%s) — 매매는 계속 진행한다", symbol)
             return None
+
+    @classmethod
+    def from_env(cls) -> "StanceReporter":
+        """환경변수가 없으면 **꺼진 상태**로 만들어진다.
+
+        서버가 뜨기 전에 켜면 주문마다 죽은 엔드포인트로 HTTP 를 때린다.
+        그래서 기본이 꺼짐이고, 명시적으로 설정해야만 켜진다.
+
+            STANCE_ENDPOINT   http://127.0.0.1:8800
+            STANCE_API_KEY    stk_...
+            STANCE_STRATEGY   전략 ID
+            STANCE_UNIT_AMOUNT  슬롯 금액 (기본 kis_devlp.yaml 의 default_unit_amount)
+        """
+        import os
+
+        endpoint = os.getenv("STANCE_ENDPOINT")
+        api_key = os.getenv("STANCE_API_KEY")
+        strategy = os.getenv("STANCE_STRATEGY")
+        if not (endpoint and api_key and strategy):
+            return cls(client=None)
+
+        try:
+            from stance.client import StanceClient
+
+            client = StanceClient(endpoint, strategy, api_key, market="KRX")
+            client.timeout = float(os.getenv("STANCE_TIMEOUT", "3"))
+        except Exception:
+            logger.exception("[stance] 클라이언트를 만들지 못했습니다 — 선언을 보내지 않는다")
+            return cls(client=None)
+
+        return cls(client=client, unit_amount=os.getenv("STANCE_UNIT_AMOUNT") or 0)
 
     def report_hold(self, reason: str | None = None):
         """매매하지 않은 날에도 보낸다. 제출률에 반영된다."""

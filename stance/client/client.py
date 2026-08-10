@@ -51,11 +51,17 @@ def to_target_weight(
 class StanceClient:
     """선언을 보낸다. 이게 전부다."""
 
-    def __init__(self, endpoint: str, strategy_id: str, token: str, market: str = "KRX"):
+    def __init__(self, endpoint: str, strategy_id: str, token: str, market: str = "KRX",
+                 timeout: float = 10.0):
+        """timeout 은 매매 경로에 물릴 때 특히 중요하다.
+
+        서버가 죽어 있으면 그 시간만큼 주문이 지연된다. 3초 안팎을 권한다.
+        """
         self.endpoint = endpoint.rstrip("/")
         self.strategy_id = strategy_id
         self.token = token
         self.market = market
+        self.timeout = timeout
         self.seq = self._recover_seq()
 
     # ── 선언 ──────────────────────────────────────────────────────────────
@@ -90,7 +96,7 @@ class StanceClient:
     def portfolio(self) -> dict:
         """검산용. 선언을 보내기 전에 호출할 필요는 없다."""
         r = requests.get(f"{self.endpoint}/portfolio", headers=self._headers(),
-                         params={"strategy_id": self.strategy_id}, timeout=10)
+                         params={"strategy_id": self.strategy_id}, timeout=self.timeout)
         r.raise_for_status()
         return r.json()
 
@@ -113,7 +119,7 @@ class StanceClient:
                    **{k: v for k, v in body.items() if v is not None}}
 
         r = requests.post(f"{self.endpoint}/stances", headers=self._headers(),
-                          json=payload, timeout=10)
+                          json=payload, timeout=self.timeout)
         r.raise_for_status()
         self.seq = next_seq
 
