@@ -40,6 +40,8 @@ GATE_MIN_TRADES = 20
 @dataclass
 class Metrics:
     profile: str = PROFILE_VERSION
+    market: str = ""
+    experimental: bool = False
 
     trading_days: int = 0
     cumulative_return: float = 0.0
@@ -87,7 +89,8 @@ def _max_drawdown(series: list[tuple[date, Decimal]]) -> float:
     return abs(worst)
 
 
-def _sortino(rets: list[float], floor: float = DOWNSIDE_FLOOR_DAILY) -> float:
+def _sortino(rets: list[float], floor: float = DOWNSIDE_FLOOR_DAILY,
+             periods: int = TRADING_DAYS) -> float:
     """하락위험 대비 수익.
 
     분모가 0 에 수렴하면 값이 무한대로 발산한다. 하한이 그것을 막는다.
@@ -99,7 +102,7 @@ def _sortino(rets: list[float], floor: float = DOWNSIDE_FLOOR_DAILY) -> float:
     downs = [r for r in rets if r < 0]
     dd = math.sqrt(sum(r * r for r in downs) / len(rets)) if downs else 0.0
     dd = max(dd, floor)
-    return (mean * TRADING_DAYS) / (dd * math.sqrt(TRADING_DAYS))
+    return (mean * periods) / (dd * math.sqrt(periods))
 
 
 CADENCE_INTERVAL = {          # 거래일 단위 기대 주기
@@ -132,8 +135,20 @@ def score(
     result: ReplayResult,
     benchmark: list[tuple[date, Decimal]] | None = None,
     cadence: Cadence = Cadence.DAILY,
+    profile=None,
 ) -> Metrics:
+    """profile 은 시장 프로파일(markets.py). 주지 않으면 주식 기준을 쓴다.
+
+    하락편차 하한과 최소 운영 기간은 시장마다 달라야 한다.
+    크립토는 휴장일이 없어 60일이 2개월밖에 안 되고, 일간 변동성이 주식의 3~5배다.
+    """
+    floor = profile.downside_floor_daily if profile else DOWNSIDE_FLOOR_DAILY
+    periods = profile.periods_per_year if profile else TRADING_DAYS
+    min_days = profile.min_track_periods if profile else GATE_MIN_DAYS
+
     m = Metrics()
+    m.market = profile.code if profile else ""
+    m.experimental = bool(profile and profile.is_experimental)
     series = result.daily_assets
     m.trading_days = len(series)
 
@@ -142,11 +157,11 @@ def score(
         m.cumulative_return = (end / start - 1.0) if start > 0 else 0.0
 
         rets = _returns(series)
-        m.sortino = _sortino(rets)
+        m.sortino = _sortino(rets, floor=floor, periods=periods)
         m.losing_days = sum(1 for r in rets if r < 0)
         m.max_drawdown = _max_drawdown(series)
 
-        years = m.trading_days / TRADING_DAYS
+        years = m.trading_days / periods
         if years > 0 and m.max_drawdown > 0:
             annual = (1.0 + m.cumulative_return) ** (1.0 / years) - 1.0
             m.calmar = annual / m.max_drawdown
@@ -178,11 +193,11 @@ def score(
             m.benchmark_return = b1 / b0 - 1.0
             m.excess_return = m.cumulative_return - m.benchmark_return
 
-    _apply_gate(m)
+    _apply_gate(m, min_days)
     return m
 
 
-def _apply_gate(m: Metrics) -> None:
+def _apply_gate(m: Metrics, min_days: int = GATE_MIN_DAYS) -> None:
     """참가 요건은 둘뿐이다 — 충분히 오래 돌았는가, 표본이 충분한가.
 
     제출률은 요건이 아니다. 두 가지 이유다.
@@ -198,8 +213,8 @@ def _apply_gate(m: Metrics) -> None:
     둘 다 요건이 아니라 전략 카드에 항상 표시되는 항목이다.
     """
     fails: list[str] = []
-    if m.trading_days < GATE_MIN_DAYS:
-        fails.append(f"운영 {m.trading_days}일 (필요 {GATE_MIN_DAYS}일)")
+    if m.trading_days < min_days:
+        fails.append(f"운영 {m.trading_days}일 (필요 {min_days}일)")
     if m.closed_trades_material < GATE_MIN_TRADES:
         fails.append(f"청산 거래 {m.closed_trades_material}건 (필요 {GATE_MIN_TRADES}건)")
     m.gate_failures = fails
@@ -210,7 +225,9 @@ def summary_lines(m: Metrics) -> list[str]:
     """사람이 읽는 요약. 하나의 숫자로 줄이지 않는다."""
     pct = lambda x: f"{x:+.2%}" if x is not None else "—"
     lines = [
-        f"프로파일        {m.profile}",
+        f"프로파일        {m.profile}"
+        + (f"  ·  {m.market}" if m.market else "")
+        + ("  ⚠️ 실험적 지원" if m.experimental else ""),
         f"운영 거래일     {m.trading_days}일",
         f"누적 수익       {pct(m.cumulative_return)}",
         f"하락위험 대비   {m.sortino:.2f}",

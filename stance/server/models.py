@@ -51,11 +51,13 @@ class Cadence(str, Enum):
 
 
 class EventType(str, Enum):
-    SPLIT = "split"        # 액면분할·병합
+    SPLIT = "split"        # 액면분할·병합·무상증자 (비율로 표현)
     DIVIDEND = "dividend"  # 현금배당
     DELIST = "delist"      # 상장폐지
     HALT = "halt"          # 거래정지
     RESUME = "resume"      # 거래재개
+    RENAME = "rename"      # 종목코드 변경 — 놔두면 포지션이 끊긴다
+    MERGE = "merge"        # 합병·주식교환 — A 가 비율에 따라 B 로 전환된다
 
 
 @dataclass(frozen=True)
@@ -107,9 +109,10 @@ class MarketEvent:
     event_type: EventType
     symbol: str
     at: datetime
-    ratio: Decimal | None = None            # split: 1주가 몇 주가 되는가
+    ratio: Decimal | None = None            # split/merge: 1주가 몇 주가 되는가
     per_share: Decimal | None = None        # dividend: 주당 배당금
     final_price: Decimal | None = None      # delist: 정리매매 최종가 (없으면 0)
+    to_symbol: str | None = None            # rename/merge: 어느 종목이 되는가
 
 
 @dataclass(frozen=True)
@@ -198,10 +201,42 @@ def normalize_symbol(symbol: str, market: str = "KRX") -> str:
     s = (symbol or "").strip().upper()
     if not s:
         raise ValueError("종목 코드가 비어 있다")
-    if market.upper() == "KRX":
+    m = market.upper()
+
+    if m in ("KRX", "KOSPI", "KOSDAQ"):
         s = s.split(".")[0]
         if len(s) == 7 and s[0] == "A" and s[1:].isdigit():
             s = s[1:]
         if s.isdigit():
             s = s.zfill(6)
-    return s
+        return s
+
+    if m in ("CRYPTO", "UPBIT", "BINANCE"):
+        # BTC/KRW · BTC-KRW · KRW-BTC · BTCKRW · XBT 는 전부 BTC 다.
+        # 보유하는 것은 기초자산이며, 상대통화는 전략 단위로 이미 고정되어 있다.
+        #
+        # 까다로운 점: BTC 와 ETH 는 기초자산이면서 동시에 상대통화로도 쓰인다
+        # (ETH/BTC). 그래서 법정통화 계열과 코인 계열을 나눠서 판정한다.
+        for sep in ("/", "-", "_"):
+            if sep in s:
+                a, b = s.split(sep, 1)
+                if b in _QUOTE_ALL and a not in _QUOTE_FIAT:
+                    s = a          # BTC/KRW · BTC_USDT · ETH/BTC
+                elif a in _QUOTE_ALL:
+                    s = b          # KRW-BTC (업비트식 상대통화 선행)
+                else:
+                    s = a
+                break
+        else:
+            for q in _QUOTE_SUFFIX:   # 긴 것부터 — USDT 가 USD 보다 먼저
+                if len(s) > len(q) and s.endswith(q):
+                    s = s[: -len(q)]
+                    break
+        return "BTC" if s == "XBT" else s
+
+    return s.split(".")[0]
+
+
+_QUOTE_FIAT = ("KRW", "USD", "USDT", "USDC", "JPY", "EUR")
+_QUOTE_ALL = _QUOTE_FIAT + ("BTC", "ETH")
+_QUOTE_SUFFIX = tuple(sorted(_QUOTE_ALL, key=len, reverse=True))

@@ -89,7 +89,15 @@ class Engine:
     """원장을 받아 장부를 만든다."""
 
     def __init__(self, costs: Costs | None = None, material_weight: Decimal = Decimal("0.01"),
-                 market: str = "KRX"):
+                 market: str = "KRX", profile=None):
+        """시장 프로파일을 주면 비용·정규화 규칙이 그 시장 기준으로 적용된다.
+
+        프로파일은 코어가 아니다 (markets.py 참조). 주지 않으면 KRX 기본값을 쓴다.
+        """
+        if profile is not None:
+            market = profile.code
+            costs = costs or profile.costs
+        self.profile = profile
         self.costs = costs or Costs()
         self.material_weight = material_weight
         self.market = market
@@ -279,6 +287,35 @@ class Engine:
 
         elif ev.event_type is EventType.RESUME:
             self.book.halted.discard(ev.symbol)
+
+        elif ev.event_type in (EventType.RENAME, EventType.MERGE):
+            # 놔두면 포지션이 그 자리에서 끊긴다. 이후 매도가 전부 거부된다.
+            if not ev.to_symbol:
+                return
+            dest = normalize_symbol(ev.to_symbol, self.market)
+            ratio = ev.ratio if ev.ratio and ev.ratio > ZERO else ONE
+            if pos:
+                moved_qty = pos.qty * ratio
+                moved_cost = pos.qty * pos.avg_cost      # 원가는 보존한다
+                old = self.book.positions.pop(ev.symbol)
+                tgt = self.book.positions.get(dest)
+                if tgt is None:
+                    self.book.positions[dest] = Position(
+                        qty=moved_qty, avg_cost=moved_cost / moved_qty
+                    )
+                else:
+                    total_qty = tgt.qty + moved_qty
+                    tgt.avg_cost = (tgt.qty * tgt.avg_cost + moved_cost) / total_qty
+                    tgt.qty = total_qty
+                self._peak_weight[dest] = max(
+                    self._peak_weight.get(dest, ZERO), self._peak_weight.pop(ev.symbol, ZERO)
+                )
+                del old
+            if ev.symbol in self.book.last_price:
+                px = self.book.last_price.pop(ev.symbol)
+                self.book.last_price.setdefault(dest, px / ratio)
+            if ev.symbol in self.book.halted:
+                self.book.halted.discard(ev.symbol)
 
         elif ev.event_type is EventType.DELIST:
             self.book.halted.discard(ev.symbol)
