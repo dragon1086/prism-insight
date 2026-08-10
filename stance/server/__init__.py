@@ -7,6 +7,10 @@ from .models import (
     MarketEvent, Position, Quote, Stance, PROTOCOL_VERSION,
     normalize_symbol,
 )
+from .markets import (
+    CRYPTO, KRX, NASDAQ, NYSE, MarketProfile, PROFILES, Support,
+    describe, profile_for, stable_markets,
+)
 from .scoring import Metrics, PROFILE_VERSION, score, summary_lines
 
 __all__ = [
@@ -15,4 +19,6 @@ __all__ = [
     "normalize_symbol",
     "MarketEvent", "Position", "Quote", "Stance", "PROTOCOL_VERSION",
     "Metrics", "PROFILE_VERSION", "score", "summary_lines",
+    "CRYPTO", "KRX", "NASDAQ", "NYSE", "MarketProfile", "PROFILES",
+    "Support", "describe", "profile_for", "stable_markets",
 ]
