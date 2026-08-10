@@ -47,8 +47,21 @@ def test_reentry_adds_to_existing_value():
     assert w == D("0.7")         # (600만 + 100만) / 1,000만
 
 
-def test_sell_is_always_zero():
-    assert sell_target_weight() == D(0)
+def test_sell_defaults_to_full_exit():
+    """PRISM 은 올인/올아웃이라 수량을 주지 않으면 전량 청산으로 본다."""
+    assert sell_target_weight(snap(1_000_000), "005930") == D(0)
+
+
+def test_partial_sell_leaves_remaining_weight():
+    s = snap(5_000_000, {"005930": D(5_000_000)})
+    # 100주 중 40주 매도 → 남는 평가액 300만 / 총자산 1,000만
+    assert sell_target_weight(s, "005930", sold_qty=40, held_qty=100) == D("0.3")
+
+
+def test_selling_everything_is_zero():
+    s = snap(5_000_000, {"005930": D(5_000_000)})
+    assert sell_target_weight(s, "005930", sold_qty=100, held_qty=100) == D(0)
+    assert sell_target_weight(s, "005930", sold_qty=150, held_qty=100) == D(0)
 
 
 def test_weight_is_clamped_to_one():
@@ -192,3 +205,47 @@ def test_missing_limit_fields_are_ignored():
     """필드가 없으면 판정하지 않는다 — 없다고 막아버리면 안 된다."""
     q = KisQuoteProvider(FakeKis({"current_price": 1000, "iscd_stat_cls_code": "00"}))("KRX", "A")
     assert not q.at_upper_limit and not q.at_lower_limit
+
+
+# ── 계좌 스냅샷 ───────────────────────────────────────────────────────────
+
+class FakeTrader:
+    def __init__(self, portfolio=None, summary=None, boom=False):
+        self._p, self._s, self.boom = portfolio or [], summary or {}, boom
+
+    def get_portfolio(self):
+        if self.boom:
+            raise RuntimeError("잔고 조회 실패")
+        return self._p
+
+    def get_account_summary(self):
+        return self._s
+
+
+def test_snapshot_from_trader():
+    from prism_core.stance_adapter import snapshot_from_trader
+
+    s = snapshot_from_trader(FakeTrader(
+        portfolio=[{"stock_code": "005930", "eval_amount": 7_000_000},
+                   {"stock_code": "000660", "eval_amount": 1_000_000}],
+        summary={"deposit": 2_000_000},
+    ))
+    assert s.cash == D(2_000_000)
+    assert s.total_assets == D(10_000_000)
+    assert buy_target_weight(s, "005930", D(1_000_000)) == D("0.8")
+
+
+# ── 환경변수 게이팅 ───────────────────────────────────────────────────────
+
+def test_reporter_is_off_without_env(monkeypatch):
+    """서버가 뜨기 전에 켜지면 주문마다 죽은 엔드포인트를 때린다. 기본은 꺼짐이다."""
+    for k in ("STANCE_ENDPOINT", "STANCE_API_KEY", "STANCE_STRATEGY"):
+        monkeypatch.delenv(k, raising=False)
+    assert not StanceReporter.from_env().enabled
+
+
+def test_reporter_needs_all_three_env_vars(monkeypatch):
+    monkeypatch.setenv("STANCE_ENDPOINT", "http://127.0.0.1:8800")
+    monkeypatch.setenv("STANCE_API_KEY", "stk_x")
+    monkeypatch.delenv("STANCE_STRATEGY", raising=False)
+    assert not StanceReporter.from_env().enabled

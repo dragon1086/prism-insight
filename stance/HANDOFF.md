@@ -7,6 +7,7 @@
 > 5차 — **실 KIS 검증 통과.** 검증 중 일별 마킹 누락을 발견해 구현 (§3.15)
 > 6차 — 휴장일 필터 연결. 경계 위반을 발견해 고치고 테스트로 고정 (§3.16)
 > 7차 — 세율 2026년 기준으로 정정, 상한가·하한가 방향별 판정 (§3.17)
+> 8차 — PRISM 매매 경로에 선언 훅 연결. **기본 꺼짐** (§3.18)
 
 ---
 
@@ -14,7 +15,8 @@
 
 **되는 것** — 선언을 HTTP 로 받아 원장에 쌓고, 장부를 재구성하고, 채점해서
 리더보드까지 내놓는 흐름이 끝까지 돈다. 대시보드 Stance 탭도 붙었다.
-테스트 **172개** 통과 (FastAPI 없는 환경에서는 154개 + HTTP 계층 1건 자동 skip).
+테스트 **205개** 통과 (Stance 187 + PRISM 어댑터·훅 18).
+기존 매매 테스트 164개도 회귀 없이 통과한다.
 
 `uvicorn` 으로 실제 기동해 등록 → 선언 → 조회까지 확인했다.
 
@@ -332,6 +334,31 @@ SQLite 커넥션은 만들어진 스레드에서만 쓸 수 있는데, 웹 서�
 실측 확인 (2026-08-10): 삼성전자 232,000 (상한 300,000 / 하한 162,000),
 SK하이닉스 1,442,000 (1,848,000 / 996,000) — 전부 정상 판정.
 
+### 3.18 PRISM 매매 경로에 훅을 붙였다 (8차)
+
+`ExecutionService` 의 네 진입점(`execute_buy` / `execute_sell` / 예약 변형 2개)에서
+주문이 끝난 뒤 선언을 보낸다. 생성 지점이 13곳이 넘어 각각 고치는 대신
+**`ExecutionService` 한 곳**에만 넣고 `domestic()` 이 환경변수로 리포터를 만들게 했다.
+호출부는 한 줄도 바뀌지 않았다.
+
+실제 돈이 오가는 경로라 안전장치를 네 겹으로 걸었다.
+
+- **기본 꺼짐.** 환경변수 셋이 다 있어야 켜진다. 없으면 리포터가 `enabled=False` 로 만들어진다
+- **주문이 끝난 뒤** 호출한다. 주문 자체를 지연시키지 않는다
+- **모든 예외를 삼킨다.** 리포터가 터지든 잔고 조회가 터지든 주문 결과는 그대로 반환된다
+- **스레드에서 돌린다.** 블로킹 I/O 가 이벤트 루프를 잡지 않는다.
+  클라이언트 타임아웃도 3초로 낮췄다(기존 10초는 주문 경로에 너무 길다)
+
+`tests/test_stance_execution_hook.py` 10개가 이를 고정한다 —
+서버가 죽어도, 잔고 조회가 깨져도 주문은 성공한다.
+
+계좌 스냅샷은 `get_portfolio()` + `get_account_summary()` 로 만든다.
+앞서 미검증이라고 적어둔 `snapshot_from_kis()` 의 원시 응답 파싱 대신
+**이미 검증된 상위 메서드**를 쓰므로 그 위험이 사라졌다.
+
+부분 매도도 계산한다. `sell_target_weight(snapshot, symbol, sold_qty, held_qty)` 로
+남을 비중을 구한다. PRISM 은 올인/올아웃이라 대개 0 이지만 규약은 일반화해 뒀다.
+
 ---
 
 ## 4. 파일 지도
@@ -364,7 +391,8 @@ prism_core/stance_adapter.py         PRISM 슬롯 → 목표비중 변환
 prism_core/stance_quotes.py          KIS 시세 → Stance Quote  ⚠️ 실 API 미검증
 stance_server.py                     서버 기동. KIS 시세를 주입한다
 stance_mark.py                       하루 마감. KIS 종가 + 휴장일 필터를 주입한다
-tests/test_stance_adapter.py         PRISM 어댑터·시세 제공자 (16개)
+tests/test_stance_adapter.py         PRISM 어댑터·시세 제공자 (28개)
+tests/test_stance_execution_hook.py  매매 경로 훅 안전성 (10개)
 deploy/systemd/prism-stance.service.example   상주 서비스 유닛
 examples/dashboard/components/stance-leaderboard-page.tsx   대시보드 탭
 
@@ -436,14 +464,20 @@ SQLite 다중 프로세스 쓰기 경합도 생긴다.
 매 거래일 장 시작 전 전 보유 종목을 훑어야 한다. 선언이 없는 종목도 포함해야 한다 —
 기업행위는 참여자 행동과 무관하게 발생한다. 실무에서 이 항목이 공수의 절반을 먹는다.
 
-### ⑤ PRISM 연동
+### ⑤ Stance 선언을 켠다 — 서버를 띄운 **뒤에**
 
-`prism_core/stance_adapter.py` 는 준비됐다. 남은 것은 호출 지점을 찾아 한 줄 붙이는 것.
-`prism_core/order_intents.py` 의 `IntentStore` 발행 훅이 자연스러울 것이다.
-`StanceReporter` 는 모든 예외를 삼키므로 전송 실패가 매매를 막지 않는다.
+훅은 이미 붙어 있다(§3.18). 환경변수 셋을 주면 켜진다.
 
-> ⚠️ `snapshot_from_kis()` 의 KIS 응답 키 매핑(`output1/pdno/evlu_amt`, `output2/dnca_tot_amt`)은
-> **실제 응답으로 검증하지 않았다.** 계좌 유형·API 버전에 따라 다르므로 반드시 확인할 것.
+```bash
+STANCE_ENDPOINT=http://127.0.0.1:8800
+STANCE_API_KEY=stk_...
+STANCE_STRATEGY=prism-kr-gpt5
+STANCE_UNIT_AMOUNT=1000000     # 선택. 슬롯 금액
+STANCE_TIMEOUT=3               # 선택. 주문 경로에 물리므로 짧게
+```
+
+**서버가 뜨기 전에 켜지 말 것.** 주문마다 죽은 엔드포인트를 때리게 된다.
+그래서 기본이 꺼짐이고, 셋 중 하나라도 없으면 아무 일도 하지 않는다.
 
 ### ⑥ 대시보드 탭
 
