@@ -102,6 +102,38 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     return module
 
 
+def _import_main_archive_ingest():
+    """Import ROOT ``cores.archive.ingest`` without leaking it globally.
+
+    File-path loading via :func:`_import_from_main_cores` is insufficient for
+    package modules such as ``cores.archive.ingest`` because they use relative
+    imports. Temporarily make the project root authoritative, import the whole
+    package chain, then restore the prism-us ``cores`` modules exactly as they
+    were. The returned module retains its already-resolved ROOT dependencies.
+    """
+    saved_path = list(sys.path)
+    saved_modules = {
+        name: module
+        for name, module in list(sys.modules.items())
+        if name == "cores" or name.startswith("cores.")
+    }
+    try:
+        for name in saved_modules:
+            sys.modules.pop(name, None)
+        sys.path.insert(0, str(PROJECT_ROOT))
+        import cores.archive.ingest as archive_ingest
+        return archive_ingest
+    finally:
+        sys.path[:] = saved_path
+        for name in [
+            key
+            for key in list(sys.modules)
+            if key == "cores" or key.startswith("cores.")
+        ]:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved_modules)
+
+
 def _import_proxy_safe():
     """Load chatgpt_proxy from main project cores/ without polluting sys.modules['cores'].
 
@@ -1156,10 +1188,12 @@ class USStockAnalysisOrchestrator:
 
             # 3. Archive ingest (fire-and-forget, does not block pipeline)
             try:
-                from cores.archive.ingest import ingest_reports_async  # type: ignore[import]
-                asyncio.create_task(ingest_reports_async(report_paths, market="us"))
+                archive_ingest = _import_main_archive_ingest()
+                asyncio.create_task(
+                    archive_ingest.ingest_reports_async(report_paths, market="us")
+                )
             except Exception as _e:
-                logger.warning(f"Archive ingest hook skipped: {_e}")
+                logger.exception(f"Archive ingest hook failed to start: {_e}")
 
             # 4. PDF conversion
             pdf_paths = await self.convert_to_pdf(report_paths)
