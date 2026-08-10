@@ -45,8 +45,8 @@ stance/
 │   ├── models.py       원장에 기록되는 사실들. 계산이 없다
 │   ├── engine.py       장부 재구성. 순수 함수이며 DB 를 모른다
 │   ├── ledger.py       원장. append-only 와 해시체인을 DB 가 강제한다
-│   └── scoring.py      채점 프로파일 stance-score/1  ← 코어가 아니다. 갈아끼운다
-│   ├── markets.py      시장 프로파일. ★코어가 아니다★ v1 지원 범위가 여기 있다
+│   ├── scoring.py      채점 프로파일 stance-score/1  ← 코어가 아니다. 갈아끼운다
+│   ├── markets.py      시장 프로파일  ← 코어가 아니다. v1 지원 범위가 여기 있다
 │   ├── service.py      서비스 계층. HTTP 를 모른다 — 그래서 프레임워크 없이 테스트된다
 │   ├── api.py          HTTP 껍데기 (FastAPI). 얇게 유지한다
 │   └── leaderboard.py  원장 재생 → 채점 → 화면용 JSON
@@ -97,6 +97,37 @@ curl -X POST localhost:8800/stances \
   -H "Authorization: Bearer $STANCE_KEY" \
   -d '{"protocol":"stance/1","seq":42,"symbol":"005930","target_weight":0.1}'
 ```
+
+### 배포 — 상주 프로세스다
+
+Stance 서버는 **계속 떠 있어야 하는 앱 서버**다. 배치 스크립트가 아니다.
+저장소의 다른 상주 서비스와 같은 방식으로 systemd 에 올린다.
+
+```bash
+sudo install -d -o prism -g prism -m 0750 /var/lib/prism-stance
+sudo cp deploy/systemd/prism-stance.service.example \
+        /etc/systemd/system/prism-stance.service
+sudo systemctl enable --now prism-stance
+curl -s localhost:8800/health      # durable 이 true 인지 확인할 것
+```
+
+KIS 시세를 붙이려면 `stance_server.py` 로 띄운다. 그냥 `uvicorn` 으로 띄우면
+시세 제공자가 없어 **모든 선언이 보류(pending)로만 쌓인다.**
+
+```bash
+STANCE_DB=/var/lib/prism-stance/ledger.db python -m stance_server
+```
+
+지켜야 할 것이 둘 있다.
+
+**① 원장 경로를 반드시 지정한다.** `STANCE_DB` 를 비우면 작업 디렉터리에 파일을 만들고
+경고를 남긴다. `:memory:` 로 두면 프로세스가 죽는 순간 원장이 통째로 사라져
+**"기록은 고치거나 지울 수 없다" 는 규칙 ④ 가 무너진다.**
+
+**② 워커를 늘리지 않는다.** 장부를 프로세스 메모리에 캐시하므로 워커가 여럿이면
+한쪽에서 접수한 선언이 다른 쪽 장부에 반영되지 않아 현금 판정(축소 수락)이 어긋난다.
+SQLite 다중 프로세스 쓰기 경합도 생긴다. 수평 확장이 필요해지면
+장부 캐시를 프로세스 밖으로 빼고 원장을 Postgres 로 옮겨야 한다.
 
 ---
 

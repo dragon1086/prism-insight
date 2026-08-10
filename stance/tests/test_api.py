@@ -13,6 +13,9 @@ from decimal import Decimal as D
 import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="FastAPI 미설치 — HTTP 계층 테스트 생략")
+# TestClient 는 httpx 를 요구한다. 없으면 import 단계에서 수집 에러가 나므로 먼저 거른다.
+pytest.importorskip("httpx", reason="httpx 미설치 — TestClient 를 쓸 수 없다")
+
 from fastapi.testclient import TestClient  # noqa: E402
 
 from stance.server import Ledger, Quote  # noqa: E402
