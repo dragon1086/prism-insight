@@ -448,6 +448,10 @@ class InsightPayload:
     tools_used: list
 
 
+class InsightServiceUnavailable(Exception):
+    """Archive API unreachable (tunnel/service down) — no quota was consumed."""
+
+
 class TelegramAIBot:
     """Telegram AI Conversational Bot"""
 
@@ -545,7 +549,7 @@ class TelegramAIBot:
             BotCommand("theme",       "국내 테마 진단"),
             BotCommand("us_theme",    "미국 테마 진단"),
             BotCommand("ask",         "자유 질문 (최신 정보 기반)"),
-            BotCommand("insight",     "누적 인사이트 기반 장기 분석"),
+            BotCommand("insight",     "그동안 발행된 분석 리포트에서 답 찾기 (일 20회)"),
             BotCommand("journal",     "매매 저널 조회"),
             BotCommand("cancel",      "진행 중인 명령어 취소 (evaluate·us_evaluate·report·us_report·history·signal·us_signal·theme·us_theme·ask·insight·journal)"),
             BotCommand("help",        "도움말"),
@@ -1453,6 +1457,9 @@ class TelegramAIBot:
             "/theme 2차전지 - 테마가 아직 살아있는지 진단\n"
             "/us_theme AI 반도체 - 미국 테마 건강도 체크\n"
             "/ask 코스피 17년래 최강 상승인데 다음주도 오를까? - 자유 질문 (일 3회)\n\n"
+            "🗂 <b>누적 리포트 인사이트</b>\n"
+            "/insight - 프리즘이 그동안 발행한 분석 리포트를 근거로 답변 (일 20회)\n"
+            "  명령어를 입력하면 봇이 질문을 물어봅니다\n\n"
             "💡 평가 응답에 답장(Reply)하여 추가 질문을 할 수 있습니다!\n\n"
             "이 봇은 '프리즘 인사이트' 채널 구독자만 사용할 수 있습니다.\n"
             "채널에서는 장 시작과 마감 시 AI가 선별한 특징주 3개를 소개하고,\n"
@@ -1498,6 +1505,17 @@ class TelegramAIBot:
             "/ask [질문] - AI에게 투자 관련 자유 질문 (일 3회)\n"
             "  예: <code>/ask 코스피 17년래 최강 상승 다음주도 오를까?</code>\n"
             "  예: <code>/ask 워렌 버핏이 올해 뭘 샀어?</code>\n\n"
+            "🗂 <b>누적 리포트 인사이트 (일 20회):</b>\n"
+            "/insight - 프리즘이 그동안 발행한 분석 리포트를 모아둔 창고에서 답을 찾아드립니다\n"
+            "  • 명령어만 입력하면 봇이 질문을 물어봅니다 (질문은 그다음에 입력)\n"
+            "  • <code>/ask</code>는 <b>웹의 최신 정보</b>를 찾아 답하고,\n"
+            "    <code>/insight</code>는 <b>프리즘이 실제로 분석한 종목과 그 이후 결과</b>를 근거로 답합니다\n"
+            "  • 그래서 '우리가 과거에 뭐라고 했고, 그게 맞았나?'를 묻기에 좋습니다\n"
+            "  예: <code>지난달 분석된 반도체 종목들 지금 수익률 어때?</code>\n"
+            "  예: <code>손절 신호가 떴다가 다시 오른 종목 비율은?</code>\n"
+            "  예: <code>2차전지 리포트에서 반복해서 지적된 리스크는?</code>\n"
+            "  • 답변에 답장(Reply)하면 30분간 이어서 캐물을 수 있습니다\n"
+            "  • 답변 아래 👍/👎를 눌러주시면 다음 답변 품질이 좋아집니다\n\n"
             "🖼️ <b>차트 이미지 분석 (일 10회):</b>\n"
             "차트 스크린샷을 그냥 사진으로 보내면 AI가 추세·지지/저항·거래량·리스크를 분석해 드립니다.\n"
             "  • 사진에 캡션을 달면 참고 정보로 활용됩니다\n\n"
@@ -3223,10 +3241,11 @@ class TelegramAIBot:
             )
             return ConversationHandler.END
         await update.message.reply_text(
-            "🗂 PRISM 아카이브에 쌓인 실제 분석 데이터를 기반으로 답변합니다.\n\n"
-            "질문을 입력해주세요:\n"
-            "예: 하락장에서 분석된 반도체 종목들 30일 수익률은?\n"
-            "예: 손절 발동 후 회복한 종목 비율은?"
+            "🗂 프리즘이 그동안 발행한 분석 리포트를 근거로 답해드립니다.\n"
+            "(웹의 최신 뉴스가 아니라, 실제로 분석했던 종목들의 기록입니다)\n\n"
+            "궁금한 점을 입력해주세요:\n"
+            "예: 지난달 분석된 반도체 종목들 지금 수익률 어때?\n"
+            "예: 손절 신호가 떴다가 다시 오른 종목 비율은?"
         )
         return INSIGHT_ENTERING_QUERY
 
@@ -3389,6 +3408,19 @@ class TelegramAIBot:
                 )
                 ic.add_turn(question, payload.answer, payload.insight_id)
                 self.insight_contexts[sent.message_id] = ic
+        except InsightServiceUnavailable:
+            logger.error("/insight archive service unavailable")
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "🛠 인사이트 서비스가 일시적으로 중단되어 있습니다.\n"
+                    "사용 횟수는 차감되지 않았으니 잠시 후 다시 시도해주세요."
+                ),
+            )
         except Exception as e:
             logger.error(f"/insight error: {e}", exc_info=True)
             try:
@@ -3446,6 +3478,13 @@ class TelegramAIBot:
                             tickers_mentioned=data.get("tickers_mentioned", []),
                             tools_used=data.get("tools_used", []),
                         )
+            except aiohttp.ClientConnectorError as e:
+                # Could not even open the connection (tunnel or archive_api is
+                # down), so the request never ran and no quota was consumed.
+                # Narrower than ClientConnectionError on purpose: a mid-request
+                # disconnect may have consumed quota, so that stays generic.
+                logger.error(f"_call_insight_agent unreachable: {e}")
+                raise InsightServiceUnavailable(str(e)) from e
             except Exception as e:
                 logger.error(
                     f"_call_insight_agent HTTP error: {e}", exc_info=True,
@@ -3521,6 +3560,16 @@ class TelegramAIBot:
             ic.add_turn(user_question, payload.answer, payload.insight_id)
             if sent is not None:
                 self.insight_contexts[sent.message_id] = ic
+        except InsightServiceUnavailable:
+            logger.error("/insight reply: archive service unavailable")
+            try:
+                await waiting.delete()
+            except Exception:
+                pass
+            await update.message.reply_text(
+                "🛠 인사이트 서비스가 일시적으로 중단되어 있습니다.\n"
+                "사용 횟수는 차감되지 않았으니 잠시 후 다시 시도해주세요."
+            )
         except Exception as e:
             logger.error(f"_handle_insight_reply error: {e}", exc_info=True)
             try:
