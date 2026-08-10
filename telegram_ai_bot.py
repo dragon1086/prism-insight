@@ -452,6 +452,11 @@ class InsightServiceUnavailable(Exception):
     """Archive API unreachable (tunnel/service down) — no quota was consumed."""
 
 
+class InsightTimeout(Exception):
+    """Client gave up waiting. The server keeps going and usually finishes, so
+    the answer may already be saved and the quota already consumed."""
+
+
 class TelegramAIBot:
     """Telegram AI Conversational Bot"""
 
@@ -3356,7 +3361,7 @@ class TelegramAIBot:
         logger.info(f"/insight - user={user_id}, q='{question[:60]}'")
 
         waiting_msg = await update.message.reply_text(
-            "🧭 누적 인사이트 + 시장 데이터 결합 중…"
+            "🧭 누적 인사이트 + 시장 데이터 결합 중…\n(1~2분 걸릴 수 있습니다)"
         )
 
         try:
@@ -3421,6 +3426,19 @@ class TelegramAIBot:
                     "사용 횟수는 차감되지 않았으니 잠시 후 다시 시도해주세요."
                 ),
             )
+        except InsightTimeout:
+            try:
+                await waiting_msg.delete()
+            except Exception:
+                pass
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    "⏳ 답변 생성이 예상보다 오래 걸려 응답을 받지 못했습니다.\n"
+                    "질문이 무거우면 시간이 더 걸립니다. 범위를 좁혀 다시 물어봐 주세요.\n"
+                    "(이번 시도는 사용 횟수가 차감됐을 수 있습니다)"
+                ),
+            )
         except Exception as e:
             logger.error(f"/insight error: {e}", exc_info=True)
             try:
@@ -3444,6 +3462,11 @@ class TelegramAIBot:
         api_url = os.getenv("ARCHIVE_API_URL", "").rstrip("/")
         api_key = os.getenv("ARCHIVE_API_KEY", "")
         daily_limit = int(os.getenv("INSIGHT_DAILY_LIMIT", "20"))
+        # The agent runs retrieval + Claude with 4 MCP servers, then embeds and
+        # saves. A measured heavy question took 101s, so the old 90s ceiling cut
+        # off work the server went on to finish — the answer was persisted and
+        # the quota consumed while the user only saw an error.
+        http_timeout = int(os.getenv("INSIGHT_HTTP_TIMEOUT", "300"))
 
         if api_url:
             import aiohttp
@@ -3462,7 +3485,7 @@ class TelegramAIBot:
                     async with s.post(
                         f"{api_url}/insight_agent",
                         json=payload_body, headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=90),
+                        timeout=aiohttp.ClientTimeout(total=http_timeout),
                     ) as resp:
                         if resp.status != 200:
                             logger.error(
@@ -3478,6 +3501,14 @@ class TelegramAIBot:
                             tickers_mentioned=data.get("tickers_mentioned", []),
                             tools_used=data.get("tools_used", []),
                         )
+            except asyncio.TimeoutError as e:
+                # Server-side work is NOT cancelled by our giving up: it goes on
+                # to save the insight and charge the quota. Say so honestly
+                # instead of implying the request never happened.
+                logger.error(
+                    f"_call_insight_agent timeout after {http_timeout}s"
+                )
+                raise InsightTimeout(str(e)) from e
             except aiohttp.ClientConnectorError as e:
                 # Could not even open the connection (tunnel or archive_api is
                 # down), so the request never ran and no quota was consumed.
@@ -3522,7 +3553,7 @@ class TelegramAIBot:
             return
         chat_id = update.effective_chat.id
         waiting = await update.message.reply_text(
-            "🧭 누적 인사이트 + 시장 데이터 결합 중…"
+            "🧭 누적 인사이트 + 시장 데이터 결합 중…\n(1~2분 걸릴 수 있습니다)"
         )
         try:
             payload = await self._call_insight_agent(
@@ -3569,6 +3600,16 @@ class TelegramAIBot:
             await update.message.reply_text(
                 "🛠 인사이트 서비스가 일시적으로 중단되어 있습니다.\n"
                 "사용 횟수는 차감되지 않았으니 잠시 후 다시 시도해주세요."
+            )
+        except InsightTimeout:
+            try:
+                await waiting.delete()
+            except Exception:
+                pass
+            await update.message.reply_text(
+                "⏳ 답변 생성이 예상보다 오래 걸려 응답을 받지 못했습니다.\n"
+                "질문 범위를 좁혀 다시 물어봐 주세요.\n"
+                "(이번 시도는 사용 횟수가 차감됐을 수 있습니다)"
             )
         except Exception as e:
             logger.error(f"_handle_insight_reply error: {e}", exc_info=True)
