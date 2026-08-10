@@ -365,22 +365,47 @@ class InsightAgent:
         logger.warning("InsightAgent: 응답에서 JSON 을 찾지 못했다")
         return None
 
-    async def _repair_to_json(self, llm) -> Optional[Dict[str, Any]]:
+    async def _repair_to_json(
+        self, llm, question: str, context_str: str, draft: str,
+    ) -> Optional[Dict[str, Any]]:
         """JSON 파싱이 실패했을 때의 복구 패스.
 
         `generate_structured` 는 Anthropic 의 강제 tool_call 로 스키마를 받아내는
-        한 턴 호출이라 형식이 보장된다. 도구를 주지 않으므로 추가 유료 호출도
-        없고, use_history=True 라 앞선 도구 결과를 그대로 활용한다.
+        한 턴 호출이라 형식이 보장된다. 도구를 주지 않으므로 추가 유료 호출도 없다.
+
+        **`use_history=False` 가 핵심이다.** 파싱이 깨지는 상황은 대개 도구 루프가
+        중간에 끊긴 경우인데, 그때 이력의 마지막이 `tool_result` 없는 `tool_use` 로
+        남는다. 그 이력을 재생하면 Anthropic 이 400 으로 거절한다:
+
+            messages.4: `tool_use` ids were found without `tool_result` blocks
+            immediately after
+
+        그래서 이력을 버리고 질문·컨텍스트·조사 메모를 직접 실어 자립적인 한 턴으로
+        만든다. 메모에서 도구 추적 줄은 걷어낸다 — 모델에게 다시 먹일 내용이 아니다.
         """
+        clean_draft = "\n".join(
+            ln for ln in (draft or "").splitlines()
+            if not ln.lstrip().startswith(_TRACE_MARKER)
+        ).strip()
+
+        msg = (
+            f"## 사용자 질문\n{question}\n\n"
+            f"## 컨텍스트 (누적 인사이트 + 리포트)\n{context_str}\n\n"
+        )
+        if clean_draft:
+            msg += f"## 앞선 조사 메모\n{clean_draft[:2000]}\n\n"
+        msg += (
+            "위 내용만으로 최종 답변을 만드세요. 도구를 쓰지 마세요.\n"
+            "answer 는 합쇼체 400~1200자로, 확인된 사실만 담으세요."
+        )
+
         try:
             result = await llm.generate_structured(
-                message=(
-                    "위 조사 결과만으로 최종 답변을 만드세요. 새로 도구를 쓰지 마세요.\n"
-                    "answer 는 합쇼체 400~1200자로, 확인된 사실만 담으세요."
-                ),
+                message=msg,
                 response_model=InsightJSON,
                 request_params=RequestParams(
-                    model=self.model, maxTokens=4000, max_iterations=1,
+                    model=self.model, maxTokens=4000,
+                    max_iterations=1, use_history=False,
                 ),
             )
         except Exception as e:
@@ -471,7 +496,9 @@ class InsightAgent:
                     # 위에서 구조화 복구를 한 번 시도한다.
                     parsed = self._parse_response(response_text)
                     if parsed is None:
-                        parsed = await self._repair_to_json(llm)
+                        parsed = await self._repair_to_json(
+                            llm, question, context_str, response_text,
+                        )
             except Exception as agent_err:
                 logger.error(
                     f"InsightAgent LLM call failed: {agent_err}", exc_info=True
