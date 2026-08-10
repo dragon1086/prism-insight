@@ -49,9 +49,10 @@ stance/
 │   ├── markets.py      시장 프로파일  ← 코어가 아니다. v1 지원 범위가 여기 있다
 │   ├── service.py      서비스 계층. HTTP 를 모른다 — 그래서 프레임워크 없이 테스트된다
 │   ├── api.py          HTTP 껍데기 (FastAPI). 얇게 유지한다
-│   └── leaderboard.py  원장 재생 → 채점 → 화면용 JSON
+│   ├── leaderboard.py  원장 재생 → 채점 → 화면용 JSON
+│   └── marker.py       하루 마감. 채점의 시간축을 만든다
 ├── client/client.py    참여자용. 목표비중 변환 헬퍼 포함
-├── tests/              145개
+├── tests/              154개
 └── demo.py             원장 → 재구성 → 채점 전체 흐름
 ```
 
@@ -118,7 +119,15 @@ KIS 시세를 붙이려면 `stance_server.py` 로 띄운다. 그냥 `uvicorn` �
 STANCE_DB=/var/lib/prism-stance/ledger.db python -m stance_server
 ```
 
-지켜야 할 것이 둘 있다.
+**하루 마감을 cron 에 걸어야 한다.** 이것이 채점의 시간축을 만든다.
+돌지 않으면 자산 추이가 비어 운영일수·투자비중·위험지표가 전부 0 으로 남는다 —
+**리더보드가 죽는다.**
+
+```cron
+40 15 * * 1-5  cd /opt/prism-insight && .venv/bin/python -m stance.server.marker --market KRX
+```
+
+그 밖에 지켜야 할 것이 둘 있다.
 
 **① 원장 경로를 반드시 지정한다.** `STANCE_DB` 를 비우면 작업 디렉터리에 파일을 만들고
 경고를 남긴다. `:memory:` 로 두면 프로세스가 죽는 순간 원장이 통째로 사라져

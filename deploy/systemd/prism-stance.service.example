@@ -53,3 +53,13 @@ WantedBy=multi-user.target
 # KIS 를 붙이려면 stance_server.py 를 대신 실행한다.
 #
 #   ExecStart=/opt/prism-insight/.venv/bin/python -m stance_server
+#
+# ── 하루 마감 (필수) ──────────────────────────────────────────────────────
+#
+# 서버만 띄우면 리더보드가 죽는다. 마감이 채점의 시간축을 만들기 때문이다.
+# 돌지 않으면 운영일수·투자비중·위험지표가 전부 0 으로 남는다.
+#
+#   # 정규장 마감 후 (KST 15:40)
+#   40 15 * * 1-5  cd /opt/prism-insight && .venv/bin/python -m stance.server.marker --market KRX
+#
+# 휴장일에도 돌면 그날이 거래일로 잡힌다. check_market_day.py 로 먼저 거를 것.

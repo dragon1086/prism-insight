@@ -1,9 +1,10 @@
 # HANDOFF — Stance 프로토콜
 
-> 작성 2026-08-10 · 브랜치 `feat/stance-protocol` · 상태 **서버까지 동작. 시세 연동 미검증**
+> 작성 2026-08-10 · 브랜치 `feat/stance-protocol` · 상태 **실 KIS 연동까지 검증 완료**
 > 2차 — 다양한 클라이언트 환경을 대입해 불합리한 지점 6개를 수정 (§3.11)
 > 3차 — 자산군을 코어에서 분리. v1 정식 지원은 현물 주식뿐 (§3.12–3.13)
 > 4차 — HTTP 서버·대시보드 탭·README 홍보 추가 (§3.14)
+> 5차 — **실 KIS 검증 통과.** 검증 중 일별 마킹 누락을 발견해 구현 (§3.15)
 
 ---
 
@@ -11,13 +12,14 @@
 
 **되는 것** — 선언을 HTTP 로 받아 원장에 쌓고, 장부를 재구성하고, 채점해서
 리더보드까지 내놓는 흐름이 끝까지 돈다. 대시보드 Stance 탭도 붙었다.
-테스트 **145개** 통과 (FastAPI 없는 환경에서는 127개 + HTTP 계층 1건 자동 skip).
+테스트 **154개** 통과 (FastAPI 없는 환경에서는 136개 + HTTP 계층 1건 자동 skip).
 
 `uvicorn` 으로 실제 기동해 등록 → 선언 → 조회까지 확인했다.
 
-**미검증** — KIS 시세 제공자(`prism_core/stance_quotes.py`)는 **실제 API 로 확인하지 못했다.**
-가짜 클라이언트로 매핑만 테스트했다. 자격증명이 있는 환경에서 반드시 확인할 것.
-시세 제공자를 주입하지 않으면 모든 선언이 보류(PENDING)로 쌓인다.
+**KIS 시세 연동은 실 API 로 검증했다.** (2026-08-10 정규장 중)
+인증 → 시세 조회 → Quote 변환 → 장부 반영 → 마감 → 리더보드까지 실제 값으로 확인했다.
+시세 제공자를 주입하지 않으면 모든 선언이 보류(PENDING)로 쌓이므로
+반드시 `python -m stance_server` 로 띄울 것.
 
 배포는 하지 않았다. Supabase 프로젝트 생성·자격증명·외부 공개는 승인이 필요한 작업이라
 의도적으로 손대지 않았다.
@@ -251,6 +253,37 @@ SQLite 커넥션은 만들어진 스레드에서만 쓸 수 있는데, 웹 서�
 **요청 한도의 기본값을 다시 잡았다.** 앞서 계획했던 분당 30건은 분 단위로 도는 시스템을 막는다.
 분당 120건으로 넉넉히 열되 **일 5,000건으로 실질 상한**을 건다.
 
+### 3.15 실 KIS 검증이 잡아낸 것 — 일별 마킹이 아예 없었다 (5차)
+
+실 자격증명으로 서버를 띄워 선언까지 넣어보니 이런 상태였다.
+
+```
+/portfolio   invested_ratio = 0.35     ← 실제로 35% 를 들고 있다
+/leaderboard avg_exposure   = 0.0%     ← 그런데 리더보드는 0
+             trading_days   = 0일
+```
+
+원인은 단순했다. **`apply_mark()` 를 서버에서 단 한 번도 부르지 않았다.**
+데모와 테스트에만 있었다.
+
+일별 마킹은 **채점 전체의 시간축**이다. 없으면 `daily_assets` 가 영원히 비어서
+운영일수·투자비중·하락위험 지수·최대낙폭이 전부 0 으로 남는다.
+즉 **리더보드가 구조적으로 죽어 있었다.** 참가 요건도 영원히 통과할 수 없었다.
+
+`stance/server/marker.py` 를 만들어 해결했다.
+
+**종가를 원장에 넣는다.** 계산장부에 두면 재계산할 때 외부 시세 공급자를 다시 조회해야 하는데,
+그러면 *"원장만 공개하면 제3자가 순위를 독립 재현한다"* 는 주장이 성립하지 않는다.
+`daily_marks` 를 네 번째 원장 테이블로 추가하고 해시체인에 넣었다.
+
+**같은 날 두 번 마감하지 않는다.** 원장은 고칠 수 없으므로 잘못 마감하면 되돌릴 방법이 없다.
+
+**종가를 못 구한 종목이 있어도 마감은 진행한다.** 건너뛰면 시간축에 구멍이 나고,
+구멍은 나중에 메울 수 없다. 못 구한 종목은 직전 가격이 유지된다.
+
+**타임라인 병합 규칙** — 같은 날에는 선언이 먼저, 마감이 나중이다.
+그날의 선언이 모두 반영된 뒤 자산을 찍어야 한다.
+
 ---
 
 ## 4. 파일 지도
@@ -266,6 +299,7 @@ stance/                              ← 여기서 PRISM 코드를 import 하지
 ├── server/service.py                서비스 계층. HTTP 를 모른다 (프레임워크 없이 테스트됨)
 ├── server/api.py                    HTTP 껍데기 (FastAPI). 얇게 유지한다
 ├── server/leaderboard.py            원장 재생 → 채점 → 화면용 JSON
+├── server/marker.py                 하루 마감. cron 필수 — 없으면 리더보드가 죽는다
 ├── client/client.py                 참여자용 + to_target_weight() 변환 헬퍼
 ├── tests/test_engine.py             21개 — 회계·기업행위·원장 불변성·채점
 ├── tests/test_adapter.py            10개 — PRISM 슬롯 변환
@@ -274,6 +308,7 @@ stance/                              ← 여기서 PRISM 코드를 import 하지
 ├── tests/test_service.py            28개 — 등록·인증·접수·한도·복원
 ├── tests/test_api.py                18개 — HTTP 경계 (FastAPI 없으면 skip)
 ├── tests/test_leaderboard.py         5개 — 리더보드 산출
+├── tests/test_marker.py              9개 — 하루 마감·타임라인 병합·재현성
 ├── demo.py                          전체 흐름
 └── HANDOFF.md                       이 문서
 
@@ -295,14 +330,17 @@ docs/superpowers/specs/
 
 ## 5. 다음에 할 일 (순서대로)
 
-### ① 시세 연동 검증 — 지금 가장 급하다
+### ① 하루 마감을 cron 에 건다 — 안 걸면 리더보드가 죽는다
 
-`prism_core/stance_quotes.py` 의 `KisQuoteProvider` 를 **실제 KIS 자격증명으로 확인해야 한다.**
-가짜 클라이언트로 매핑만 테스트한 상태다. 이게 안 붙으면 모든 선언이 보류로만 쌓인다.
+```cron
+# 정규장 마감 후 (KST 15:40)
+40 15 * * 1-5  cd /opt/prism-insight && .venv/bin/python -m stance.server.marker --market KRX
+```
 
-`cores/kis_market_snapshot.py: fetch_kis_intraday_snapshot` 은 **쓸 수 없다** —
-2,500종목 이상을 한 번에 요구하는 벌크 스냅샷이라 단건 시세에 맞지 않는다.
-대신 `DomesticStockTrading.get_current_price()` 를 쓴다.
+**이것이 채점의 시간축을 만든다.** 돌지 않으면 자산 추이가 비어
+운영일수·투자비중·하락위험 지표가 전부 0 으로 남는다 (§3.15).
+
+휴장일에도 돌면 그날이 거래일로 잡힌다. 저장소의 `check_market_day.py` 로 먼저 거르는 것이 좋다.
 
 > ⚠️ **상한가 잠김을 판정하지 못한다.** 현재가 API 에 호가 잔량이 없어 거래정지(`iscd_stat_cls_code=58`)만
 > 걸러진다. 상한가 판정을 넣으려면 호가 API(`inquire-asking-price`)를 추가로 붙여야 한다.
@@ -421,7 +459,7 @@ SQLite 다중 프로세스 쓰기 경합도 생긴다.
 ```bash
 cd ~/work/prism-insight
 python3 stance/demo.py                       # 세 전략 성적표 + 액면분할 검증
-python3 -m pytest stance/tests/ -q           # 145 passed (FastAPI 없으면 127 + 1 skip)
+python3 -m pytest stance/tests/ -q           # 154 passed (FastAPI 없으면 136 + 1 skip)
 ```
 
 데모는 슬랏형·현금파킹·매수후보유 세 전략을 같은 시세로 돌려 비교한다.

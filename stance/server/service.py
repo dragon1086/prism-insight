@@ -269,8 +269,13 @@ class StanceService:
         if strategy_id not in self._engines:
             profile = self._profile(strategy_id)
             engine = Engine(profile=profile)
-            for stance, quote in self.ledger.timeline(strategy_id):
-                engine.apply_stance(stance, quote)
+            # 선언만이 아니라 일별 마킹도 재생해야 한다.
+            # 마킹이 빠지면 자산 추이가 비어 채점 지표가 전부 0 이 된다.
+            for item in self.ledger.full_timeline(strategy_id):
+                if isinstance(item, tuple):
+                    engine.apply_stance(*item)
+                else:
+                    engine.apply_mark(item)
             self._engines[strategy_id] = engine
         return self._engines[strategy_id]
 
