@@ -24,6 +24,8 @@ must not corrupt the pytest interpreter's sys.modules) and assert:
 2. With the fix, importing ``cores.us_analysis`` under the shadow succeeds, the
    ReportAgent-backed callables are present, and ``sys.modules['cores']`` is
    restored to the prism-us package afterwards (no global corruption).
+3. The US orchestrator can load ROOT ``cores.archive.ingest`` with its relative
+   imports intact, then restores the prism-us ``cores`` package.
 """
 import subprocess
 import sys
@@ -121,3 +123,27 @@ def test_us_analysis_loader_resolves_root_cores_under_shadow():
     assert "FIX_OK" in result.stdout, (
         "Post-fix assertions did not pass:\n" + result.stdout + result.stderr
     )
+
+
+def test_us_orchestrator_loads_archive_ingest_under_shadow():
+    """The archive hook must load ROOT cores.archive, not prism-us/cores."""
+    body = """
+        import cores
+        shadow_cores = cores
+
+        import us_stock_analysis_orchestrator as orchestrator
+        ingest = orchestrator._import_main_archive_ingest()
+
+        assert callable(ingest.ingest_reports_async)
+        assert ingest.__file__.replace("\\\\", "/").endswith(
+            "/cores/archive/ingest.py"
+        )
+        assert sys.modules["cores"] is shadow_cores
+        print("ARCHIVE_IMPORT_OK")
+    """
+    result = _run_in_shadow_subprocess(body)
+    assert result.returncode == 0, (
+        "Loading ROOT cores.archive.ingest under the shadow failed:\n"
+        + result.stdout + result.stderr
+    )
+    assert "ARCHIVE_IMPORT_OK" in result.stdout
