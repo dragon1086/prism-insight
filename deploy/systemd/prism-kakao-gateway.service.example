@@ -2,25 +2,25 @@
 Description=PRISM Kakao Gateway
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=120
-StartLimitBurst=5
 
 [Service]
 Type=simple
 User=prism
 Group=prism
-WorkingDirectory=/opt/prism-insight
+WorkingDirectory=/home/prism/prism-insight-repo
 EnvironmentFile=/etc/prism/kakao-bot.env
-ExecStart=/opt/prism-insight/.venv/bin/python -m kakao_bot.runtime.gateway_main
-Restart=on-failure
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/prism/prism-insight-repo/venv/bin/python -m kakao_bot.runtime.gateway_main
+Restart=always
 RestartSec=5
-RuntimeDirectory=prism-kakao
-UMask=0077
+StandardOutput=append:/home/prism/prism-insight-repo/logs/kakao_gateway.log
+StandardError=append:/home/prism/prism-insight-repo/logs/kakao_gateway.log
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/prism-kakao /run/prism-kakao
+ProtectSystem=full
+ProtectHome=false
+RuntimeDirectory=prism-kakao
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 
 [Install]
 WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 [Unit]
-Description=PRISM Kakao Analysis Worker
+Description=PRISM Kakao Report Server
 After=network-online.target
 Wants=network-online.target
 
@@ -10,11 +10,11 @@ Group=prism
 WorkingDirectory=/home/prism/prism-insight-repo
 EnvironmentFile=/etc/prism/kakao-bot.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/prism/prism-insight-repo/venv/bin/python -m kakao_bot.runtime.analysis_worker_main
+ExecStart=/home/prism/prism-insight-repo/venv/bin/python -m kakao_bot.runtime.report_server_main
 Restart=always
 RestartSec=5
-StandardOutput=append:/home/prism/prism-insight-repo/logs/kakao_analysis_worker.log
-StandardError=append:/home/prism/prism-insight-repo/logs/kakao_analysis_worker.log
+StandardOutput=append:/home/prism/prism-insight-repo/logs/kakao_report_server.log
+StandardError=append:/home/prism/prism-insight-repo/logs/kakao_report_server.log
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=false
