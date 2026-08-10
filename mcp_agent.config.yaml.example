@@ -79,8 +79,8 @@ mcp:
     # Python-based, uses stable yfinance library (not deprecated yahoo-finance2)
     # Provides: OHLCV, company info, financials, institutional holders, news, recommendations
     yahoo_finance:
-      command: "uvx"
-      args: ["--from", "yahoo-finance-mcp", "yahoo-finance-mcp"]
+      command: "uv"
+      args: ["tool", "run", "--from", "yahoo-finance-mcp==0.1.2", "--with", "mcp==1.26.0", "yahoo-finance-mcp"]
       read_timeout_seconds: 120
 
     # SEC EDGAR MCP server for official SEC filings and financial data (PyPI: sec-edgar-mcp)

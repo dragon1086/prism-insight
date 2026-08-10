@@ -22,23 +22,26 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-
-from pydantic import BaseModel, Field
-
-from datetime import datetime, timezone, timedelta
 
 from mcp_agent.agents.agent import Agent
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_anthropic import AnthropicAugmentedLLM
-
-_KST = timezone(timedelta(hours=9))
+from pydantic import BaseModel, Field
 
 from . import persistent_insights as pi_store
 from .archive_db import ARCHIVE_DB_PATH
 from .embedding import embed_text
 from .insight_prompts import INSIGHT_SYSTEM_PROMPT
-from .query_engine import QueryEngine, load_api_key
+from .query_engine import (
+    QueryEngine,
+    extract_query_tickers,
+    load_api_key,
+    parse_query_hints,
+)
+
+_KST = timezone(timedelta(hours=9))
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +68,8 @@ _MAX_AGENT_ITERATIONS = 6
 # 전부 0 인 UUID 로 호출하고 `perplexity_ask` 를 'placeholder'·'ignore' 같은
 # 인자로 8번 호출해 유료 크레딧을 태웠다.
 #
-# 필터 dict 에 없는 서버는 필터링되지 않는다(전체 허용). yahoo_finance 를
-# 일부러 비워둔 이유는 현재 그 서버가 도구를 0개 노출하기 때문이다 —
-# uvx 캐시의 yahoo-finance-mcp 가 `mcp.server.fastmcp` 를 못 찾아 죽는다.
-# 고쳐지면 도구가 그대로 돌아오도록 열어둔다.
+# 필터 dict 에 없는 서버는 필터링되지 않는다(전체 허용). yahoo_finance 는
+# 서버가 제공하는 금융 도구 전체를 쓸 수 있도록 의도적으로 비워둔다.
 _MCP_TOOL_ALLOWLIST = {
     "perplexity": {"perplexity_ask"},
     "firecrawl": {"firecrawl_scrape"},
@@ -86,6 +87,27 @@ _MCP_TOOL_ALLOWLIST = {
 # generate_str() 은 모든 반복의 assistant 턴을 이어붙이므로 tool_use 블록이
 # 이 문자열로 함께 들어온다. 사용자에게 절대 나가면 안 되는 표식이다.
 _TRACE_MARKER = "[Calling tool "
+
+
+def _is_archive_only_question(question: str) -> bool:
+    """Return True when the user explicitly forbids external research."""
+    patterns = (
+        r"(?:PRISM|프리즘)?\s*(?:리포트|보고서|아카이브)\s*(?:만|만을|에만)",
+        r"외부\s*(?:검색|도구|자료)\s*(?:없이|금지|사용하지)",
+        r"웹\s*검색\s*(?:없이|금지|사용하지)",
+        r"\b(?:archive|prism)\s+(?:reports?\s+)?only\b",
+        r"\bno\s+(?:external|web)\s+(?:search|tools?|sources?)\b",
+    )
+    return any(re.search(pattern, question, re.IGNORECASE) for pattern in patterns)
+
+
+def _extract_actual_tools(raw: str) -> List[str]:
+    """Extract de-duplicated tool names from mcp-agent's actual call trace."""
+    tools: List[str] = []
+    for name in re.findall(r"\[Calling tool\s+([^\s\]]+)", raw or ""):
+        if name not in tools:
+            tools.append(name)
+    return tools[:10]
 
 
 def _balanced_json_objects(text: str) -> List[str]:
@@ -161,18 +183,51 @@ class InsightAgent:
     async def _build_retrieval_context(self, question: str) -> Dict[str, Any]:
         api_key = self._api_key or load_api_key()
         self._api_key = api_key
-        q_emb = await embed_text(question, api_key) if api_key else None
-
         engine = QueryEngine(db_path=self.db_path, model=self.model)
+        hints = parse_query_hints(question)
+        explicit_tickers = extract_query_tickers(question)
+
+        async def retrieve_reports():
+            if len(explicit_tickers) <= 1:
+                return await engine.retrieve(
+                    text=question, market=hints["market"],
+                    ticker=hints["ticker"], date_from=hints["date_from"],
+                    date_to=hints["date_to"],
+                )
+            batches = await asyncio.gather(*(
+                engine.retrieve(
+                    text=question, market=hints["market"], ticker=ticker,
+                    date_from=hints["date_from"], date_to=hints["date_to"],
+                )
+                for ticker in explicit_tickers
+            ))
+            seen: set[int] = set()
+            merged = []
+            for batch in batches:
+                for report in batch:
+                    if report.report_id not in seen:
+                        seen.add(report.report_id)
+                        merged.append(report)
+            return merged[:_MAX_REPORTS_IN_CONTEXT]
+
+        reports_task = retrieve_reports()
+
+        # "PRISM 리포트만" means exactly that: skip accumulated summaries and
+        # derived facts as well as all external MCP tools.
+        if _is_archive_only_question(question):
+            reports = await reports_task
+            return {
+                "insights": [], "weekly": [],
+                "reports": (reports or [])[:_MAX_REPORTS_IN_CONTEXT],
+                "outcomes": {}, "semantic_facts": {}, "q_emb": None,
+            }
+
+        q_emb = await embed_text(question, api_key) if api_key else None
 
         insights_task = pi_store.search_insights(
             question, q_emb, limit=5, exclude_superseded=True, db_path=self.db_path,
         )
         weekly_task = pi_store.recent_weekly_summaries(weeks=4, db_path=self.db_path)
-        reports_task = engine.retrieve(
-            text=question, market=None, ticker=None,
-            date_from=None, date_to=None,
-        )
         insights, weekly, reports = await asyncio.gather(
             insights_task, weekly_task, reports_task,
             return_exceptions=True,
@@ -311,6 +366,26 @@ class InsightAgent:
                 excerpt = ((r.content_excerpt or "")[:400]).replace("\n", " ")
                 parts.append(f"  {excerpt}")
         return "\n".join(parts) if parts else "(관련 컨텍스트 없음)"
+
+    def _ground_response_metadata(
+        self,
+        parsed: Dict[str, Any],
+        ctx: Dict[str, Any],
+        response_text: str,
+    ) -> Dict[str, Any]:
+        """Replace model self-reporting with server-observed provenance."""
+        allowed_ids = [r.report_id for r in (ctx.get("reports") or [])]
+        allowed_set = set(allowed_ids)
+        claimed_ids = parsed.get("evidence_report_ids") or []
+        evidence_ids = [rid for rid in claimed_ids if rid in allowed_set]
+        if not evidence_ids and allowed_ids:
+            evidence_ids = allowed_ids
+
+        actual_tools = _extract_actual_tools(response_text)
+        tools_used = (["archive_retrieval"] if allowed_ids else []) + actual_tools
+        parsed["evidence_report_ids"] = evidence_ids[:10]
+        parsed["tools_used"] = tools_used[:10]
+        return parsed
 
     # ------------------------------------------------------------------
     # JSON response parser — resilient to model quirks
@@ -470,10 +545,19 @@ class InsightAgent:
                 "- 외부 도구 호출 시에도 이 기준일 범위의 데이터를 요청하세요.\n\n"
                 f"{INSIGHT_SYSTEM_PROMPT}"
             )
+            archive_only = _is_archive_only_question(question)
+            server_names = [] if archive_only else _MCP_SERVERS
+            tool_filter = {} if archive_only else _MCP_TOOL_ALLOWLIST
+            if archive_only:
+                dated_prompt += (
+                    "\n\n# 이번 요청의 도구 정책\n"
+                    "사용자가 PRISM 아카이브만 요청했습니다. 외부 검색이나 "
+                    "MCP 도구를 사용하지 말고 제공된 리포트만 근거로 답하세요."
+                )
             agent = Agent(
                 name="insight_agent",
                 instruction=dated_prompt,
-                server_names=_MCP_SERVERS,
+                server_names=server_names,
             )
             try:
                 async with agent:
@@ -489,7 +573,7 @@ class InsightAgent:
                             model=self.model,
                             maxTokens=4000,
                             max_iterations=_MAX_AGENT_ITERATIONS,
-                            tool_filter=_MCP_TOOL_ALLOWLIST,
+                            tool_filter=tool_filter,
                         ),
                     )
                     # 세션이 살아 있는 동안 파싱한다. 실패 시 같은 대화 이력
@@ -544,6 +628,8 @@ class InsightAgent:
                 evidence_report_ids=[],
                 remaining_quota=remaining, model_used=self.model,
             )
+
+        parsed = self._ground_response_metadata(parsed, ctx, response_text)
 
         # 5. Embedding for key_takeaways (fire-and-forget 성격)
         api_key = self._api_key or load_api_key()
