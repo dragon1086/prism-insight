@@ -149,3 +149,32 @@ def test_leaderboard_shows_real_exposure_after_marking(svc):
     entry = build(svc.ledger, [("s1", "테스트 전략", "@me", "KRX")])["boards"]["KRX"]["entries"][0]
     assert entry["metrics"]["avg_exposure"] == pytest.approx(0.6, abs=0.01)
     assert entry["metrics"]["trading_days"] == 4
+
+
+# ── 시장 캘린더 ───────────────────────────────────────────────────────────
+
+def test_holiday_is_not_closed(svc):
+    """휴장일에 마감하면 그날이 거래일로 박혀 운영일수와 연율화가 부풀려진다."""
+    svc.submit("s1", 1, symbol="AAA", target_weight="0.5")
+    holiday = date(2026, 1, 1)
+
+    result = close_day(svc.ledger, "KRX", prices(AAA=1000), on=holiday,
+                       is_trading_day=lambda d: False)
+
+    assert result["skipped"] is True
+    assert result["reason"] == "not_a_trading_day"
+    assert svc.ledger.daily_marks("KRX") == []
+
+
+def test_trading_day_is_closed(svc):
+    svc.submit("s1", 1, symbol="AAA", target_weight="0.5")
+    result = close_day(svc.ledger, "KRX", prices(AAA=1000),
+                       on=date.today(), is_trading_day=lambda d: True)
+    assert result["skipped"] is False
+
+
+def test_without_calendar_every_day_is_a_trading_day(svc):
+    """캘린더는 주입 대상이다. 주지 않으면 매일이 거래일로 취급된다."""
+    svc.submit("s1", 1, symbol="AAA", target_weight="0.5")
+    result = close_day(svc.ledger, "KRX", prices(AAA=1000), on=date(2026, 1, 1))
+    assert result["skipped"] is False

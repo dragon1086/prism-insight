@@ -5,6 +5,7 @@
 > 3차 — 자산군을 코어에서 분리. v1 정식 지원은 현물 주식뿐 (§3.12–3.13)
 > 4차 — HTTP 서버·대시보드 탭·README 홍보 추가 (§3.14)
 > 5차 — **실 KIS 검증 통과.** 검증 중 일별 마킹 누락을 발견해 구현 (§3.15)
+> 6차 — 휴장일 필터 연결. 경계 위반을 발견해 고치고 테스트로 고정 (§3.16)
 
 ---
 
@@ -12,7 +13,7 @@
 
 **되는 것** — 선언을 HTTP 로 받아 원장에 쌓고, 장부를 재구성하고, 채점해서
 리더보드까지 내놓는 흐름이 끝까지 돈다. 대시보드 Stance 탭도 붙었다.
-테스트 **154개** 통과 (FastAPI 없는 환경에서는 136개 + HTTP 계층 1건 자동 skip).
+테스트 **164개** 통과 (FastAPI 없는 환경에서는 146개 + HTTP 계층 1건 자동 skip).
 
 `uvicorn` 으로 실제 기동해 등록 → 선언 → 조회까지 확인했다.
 
@@ -284,6 +285,24 @@ SQLite 커넥션은 만들어진 스레드에서만 쓸 수 있는데, 웹 서�
 **타임라인 병합 규칙** — 같은 날에는 선언이 먼저, 마감이 나중이다.
 그날의 선언이 모두 반영된 뒤 자산을 찍어야 한다.
 
+### 3.16 경계가 이미 새고 있었다 (6차)
+
+휴장일 필터를 붙이려다 **내가 세운 규칙을 내가 어긴 것**을 발견했다.
+`stance/server/marker.py` 의 CLI 가 `prism_core` 와 `trading` 을 import 하고 있었다.
+함수 안의 지연 임포트라 당장은 돌지만, 그 상태로 `subtree split` 하면 **떼어낸 저장소가 깨진다.**
+
+셋을 고쳤다.
+
+- marker.py 에서 CLI 를 들어내고 루트에 `stance_mark.py` 를 만들었다
+- `stance/tests/test_adapter.py` 를 `tests/test_stance_adapter.py` 로 옮겼다
+  (PRISM 쪽 코드를 테스트하므로 애초에 저 안에 있을 이유가 없었다)
+- `stance/tests/test_boundary.py` 를 추가해 **ast 로 모든 소스를 훑어** 강제한다.
+  함수 안의 지연 임포트도 잡히고, 코어가 외부 패키지를 쓰는지도 함께 본다.
+
+**휴장일 필터는 주입 대상으로 만들었다.** 캘린더는 시장마다 다르므로 코어가 알 수 없다.
+`close_day(..., is_trading_day=...)` 로 받고, 주지 않으면 매일이 거래일이 된다.
+휴장일에 마감하면 그날이 시간축에 거래일로 박혀 **운영일수와 연율화가 부풀려진다.**
+
 ---
 
 ## 4. 파일 지도
@@ -300,21 +319,23 @@ stance/                              ← 여기서 PRISM 코드를 import 하지
 ├── server/api.py                    HTTP 껍데기 (FastAPI). 얇게 유지한다
 ├── server/leaderboard.py            원장 재생 → 채점 → 화면용 JSON
 ├── server/marker.py                 하루 마감. cron 필수 — 없으면 리더보드가 죽는다
+├── tests/test_boundary.py           ★경계 강제★ stance/ 가 PRISM 을 import 하면 실패한다
 ├── client/client.py                 참여자용 + to_target_weight() 변환 헬퍼
 ├── tests/test_engine.py             21개 — 회계·기업행위·원장 불변성·채점
-├── tests/test_adapter.py            10개 — PRISM 슬롯 변환
 ├── tests/test_resilience.py         24개 — 서버 장애·비일간 시스템·중단·표기·비용
 ├── tests/test_markets.py            30개 — 시장 프로파일·크립토 한계·합병/코드변경
 ├── tests/test_service.py            28개 — 등록·인증·접수·한도·복원
 ├── tests/test_api.py                18개 — HTTP 경계 (FastAPI 없으면 skip)
 ├── tests/test_leaderboard.py         5개 — 리더보드 산출
-├── tests/test_marker.py              9개 — 하루 마감·타임라인 병합·재현성
+├── tests/test_marker.py             12개 — 하루 마감·타임라인 병합·재현성·휴장일
 ├── demo.py                          전체 흐름
 └── HANDOFF.md                       이 문서
 
 prism_core/stance_adapter.py         PRISM 슬롯 → 목표비중 변환
 prism_core/stance_quotes.py          KIS 시세 → Stance Quote  ⚠️ 실 API 미검증
-stance_server.py                     기동 스크립트. 시세 제공자를 주입해 서버를 띄운다
+stance_server.py                     서버 기동. KIS 시세를 주입한다
+stance_mark.py                       하루 마감. KIS 종가 + 휴장일 필터를 주입한다
+tests/test_stance_adapter.py         PRISM 어댑터·시세 제공자 (16개)
 deploy/systemd/prism-stance.service.example   상주 서비스 유닛
 examples/dashboard/components/stance-leaderboard-page.tsx   대시보드 탭
 
@@ -334,13 +355,14 @@ docs/superpowers/specs/
 
 ```cron
 # 정규장 마감 후 (KST 15:40)
-40 15 * * 1-5  cd /opt/prism-insight && .venv/bin/python -m stance.server.marker --market KRX
+40 15 * * 1-5  cd /opt/prism-insight && .venv/bin/python -m stance_mark --market KRX
 ```
 
 **이것이 채점의 시간축을 만든다.** 돌지 않으면 자산 추이가 비어
 운영일수·투자비중·하락위험 지표가 전부 0 으로 남는다 (§3.15).
 
-휴장일에도 돌면 그날이 거래일로 잡힌다. 저장소의 `check_market_day.py` 로 먼저 거르는 것이 좋다.
+`stance_mark` 가 KIS 종가와 휴장일 필터(`check_market_day`)를 함께 물린다.
+실측으로 월요일=거래일, 일요일·신정·근로자의날·광복절=휴장 확인했다.
 
 > ⚠️ **상한가 잠김을 판정하지 못한다.** 현재가 API 에 호가 잔량이 없어 거래정지(`iscd_stat_cls_code=58`)만
 > 걸러진다. 상한가 판정을 넣으려면 호가 API(`inquire-asking-price`)를 추가로 붙여야 한다.
@@ -459,7 +481,7 @@ SQLite 다중 프로세스 쓰기 경합도 생긴다.
 ```bash
 cd ~/work/prism-insight
 python3 stance/demo.py                       # 세 전략 성적표 + 액면분할 검증
-python3 -m pytest stance/tests/ -q           # 154 passed (FastAPI 없으면 136 + 1 skip)
+python3 -m pytest stance/tests/ -q           # 164 passed (FastAPI 없으면 146 + 1 skip)
 ```
 
 데모는 슬랏형·현금파킹·매수후보유 세 전략을 같은 시세로 돌려 비교한다.
