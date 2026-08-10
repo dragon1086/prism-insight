@@ -148,7 +148,30 @@ def _to_fts_query(text: str) -> str:
     return " OR ".join(parts)
 
 
-def _parse_hints(text: str) -> Dict[str, Optional[str]]:
+_TICKER_STOPWORDS = frozenset({
+    "AI", "US", "OR", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "IF",
+    "IN", "IS", "IT", "ME", "MY", "NO", "OF", "OK", "ON", "SO", "TO",
+    "UP", "WE", "AM", "ARE", "THE", "AND", "FOR", "NOT", "BUT", "ALL",
+    "CAN", "HAS", "HER", "HIM", "HIS", "HOW", "ITS", "MAY", "NEW",
+    "NOW", "OLD", "OUR", "OUT", "OWN", "SAY", "SHE", "TOO", "USE",
+    "ETF", "IPO", "CEO", "CFO", "NYSE", "SEC", "FDA", "GDP", "PRISM",
+})
+
+
+def extract_query_tickers(text: str) -> List[str]:
+    """Extract unique explicit US symbols and Korean six-digit codes."""
+    tickers: List[str] = []
+    # Python's \b treats Korean particles as word characters, so `HPE의` and
+    # `005930은` need ASCII-specific boundaries.
+    candidates = re.findall(r"(?<![A-Z0-9])([A-Z]{2,5})(?![A-Z0-9])", text)
+    candidates.extend(re.findall(r"(?<!\d)(\d{6})(?!\d)", text))
+    for ticker in candidates:
+        if ticker not in _TICKER_STOPWORDS and ticker not in tickers:
+            tickers.append(ticker)
+    return tickers
+
+
+def parse_query_hints(text: str) -> Dict[str, Optional[str]]:
     """
     Best-effort extraction of ticker / market / date hints from NL query.
 
@@ -164,26 +187,37 @@ def _parse_hints(text: str) -> Dict[str, Optional[str]]:
     elif re.search(r"\b(kr|코스피|코스닥|한국|국내|kospi|kosdaq)\b", text, re.IGNORECASE):
         hints["market"] = "kr"
 
-    # Ticker hint — US: 2-5 uppercase letters; KR: 6-digit code
-    _TICKER_STOPWORDS = frozenset({
-        "AI", "US", "OR", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "IF",
-        "IN", "IS", "IT", "ME", "MY", "NO", "OF", "OK", "ON", "SO", "TO",
-        "UP", "WE", "AM", "ARE", "THE", "AND", "FOR", "NOT", "BUT", "ALL",
-        "CAN", "HAS", "HER", "HIM", "HIS", "HOW", "ITS", "MAY", "NEW",
-        "NOW", "OLD", "OUR", "OUT", "OWN", "SAY", "SHE", "TOO", "USE",
-        "ETF", "IPO", "CEO", "CFO", "NYSE", "SEC", "FDA", "GDP",
-    })
-    m = re.search(r"\b([A-Z]{2,5})\b", text)
-    if m and m.group(1) not in _TICKER_STOPWORDS:
-        hints["ticker"] = m.group(1)
-    m = re.search(r"\b(\d{6})\b", text)
-    if m:
-        hints["ticker"] = m.group(1)
+    # A single ticker can use the structured fast path. Multiple tickers are
+    # handled by callers as separate constrained retrievals.
+    tickers = extract_query_tickers(text)
+    if len(tickers) == 1:
+        hints["ticker"] = tickers[0]
 
-    # Date hints — ISO dates or Korean shorthand like "10월", "2025년 4분기"
+    # Exact dates are closed ranges. A lower bound alone silently mixed older
+    # reports into "on YYYY-MM-DD" requests in the /insight agent.
     m = re.search(r"(\d{4}-\d{2}-\d{2})", text)
     if m:
         hints["date_from"] = m.group(1)
+        hints["date_to"] = m.group(1)
+    else:
+        m = re.search(
+            r"(\d{4})\s*[년./-]\s*(\d{1,2})\s*[월./-]\s*(\d{1,2})\s*일?",
+            text,
+        )
+        if not m:
+            m = re.search(r"(?<!\d)(\d{1,2})\s*[월/]\s*(\d{1,2})\s*일?(?!\d)", text)
+            date_parts = (datetime.today().year, *m.groups()) if m else None
+        else:
+            date_parts = m.groups()
+        if m:
+            try:
+                exact_date = datetime(
+                    *(int(part) for part in date_parts)
+                ).strftime("%Y-%m-%d")
+                hints["date_from"] = exact_date
+                hints["date_to"] = exact_date
+            except ValueError:
+                pass
 
     # "지난 N일" / "최근 N일"
     m = re.search(r"(?:지난|최근)\s*(\d+)일", text)
@@ -192,6 +226,10 @@ def _parse_hints(text: str) -> Dict[str, Optional[str]]:
         hints["date_from"] = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
 
     return hints
+
+
+# Backward compatibility for code/tests that imported the former private name.
+_parse_hints = parse_query_hints
 
 
 def _parse_outcome_filter(text: str) -> Dict[str, Any]:
@@ -455,7 +493,7 @@ class QueryEngine:
         await init_db(self.db_path)
 
         # Merge explicit args with hints parsed from NL
-        hints = _parse_hints(text)
+        hints = parse_query_hints(text)
         effective_market = market or hints["market"]
         effective_ticker = ticker or hints["ticker"]
         effective_date_from = date_from or hints["date_from"]
@@ -649,7 +687,14 @@ class QueryEngine:
                 db_path=self.db_path,
             )
 
-        # Merge: FTS hits first (most relevant), then structured-only hits
+        # Structured constraints are hard filters, not extra candidates. The
+        # old union allowed an older, highly relevant FTS hit to bypass an exact
+        # date requested by the user.
+        if ticker or date_from or date_to:
+            allowed_ids = {hit["id"] for hit in structured_hits}
+            fts_hits = [hit for hit in fts_hits if hit["id"] in allowed_ids]
+
+        # Merge: constrained FTS hits first, then structured-only hits.
         seen: set = set()
         merged: List[Dict] = []
         for hit in fts_hits:
