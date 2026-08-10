@@ -13,7 +13,6 @@ import pytest
 
 from kakao_bot.adapters.kakao.report_renderer import render_report_delivery
 from kakao_bot.adapters.kakao.skill_response import MAX_SIMPLE_TEXT_LENGTH
-from kakao_bot.application.command_parser import CommandKind, parse_command
 from kakao_bot.domain.models import ClaimedOutboundDelivery
 
 NOW = datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)
@@ -114,7 +113,9 @@ def test_summary_is_truncated_within_the_simple_text_limit():
 
     text = outputs(response)[0]["simpleText"]["text"]
     assert len(text) <= MAX_SIMPLE_TEXT_LENGTH
-    assert text.endswith("…")
+    # The bubble now closes on the rendered disclaimer, so the ellipsis marks
+    # the end of the summary rather than the end of the message.
+    assert "…" in text
 
 
 def test_missing_summary_still_renders_a_header():
