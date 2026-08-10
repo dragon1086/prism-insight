@@ -1,6 +1,7 @@
 # HANDOFF — Stance 프로토콜
 
-> 작성 2026-08-10 · 브랜치 `feat/stance-protocol` · 상태 **실 KIS 연동까지 검증 완료**
+> 작성 2026-08-10 · 브랜치 `feat/stance-protocol` · PR [#577](https://github.com/dragon1086/prism-insight/pull/577)
+> 상태 **서버 기동 중.** 실 매매 연동만 남음 (§8 참조)
 > 2차 — 다양한 클라이언트 환경을 대입해 불합리한 지점 6개를 수정 (§3.11)
 > 3차 — 자산군을 코어에서 분리. v1 정식 지원은 현물 주식뿐 (§3.12–3.13)
 > 4차 — HTTP 서버·대시보드 탭·README 홍보 추가 (§3.14)
@@ -8,6 +9,7 @@
 > 6차 — 휴장일 필터 연결. 경계 위반을 발견해 고치고 테스트로 고정 (§3.16)
 > 7차 — 세율 2026년 기준으로 정정, 상한가·하한가 방향별 판정 (§3.17)
 > 8차 — PRISM 매매 경로에 선언 훅 연결. **기본 꺼짐** (§3.18)
+> 9차 — **launchd 로 배포. 서버가 돌고 있다** (§1.1). 배포가 세율 버그를 또 잡았다
 
 ---
 
@@ -15,7 +17,7 @@
 
 **되는 것** — 선언을 HTTP 로 받아 원장에 쌓고, 장부를 재구성하고, 채점해서
 리더보드까지 내놓는 흐름이 끝까지 돈다. 대시보드 Stance 탭도 붙었다.
-테스트 **205개** 통과 (Stance 187 + PRISM 어댑터·훅 18).
+테스트 **207개** 통과 (Stance 179 + PRISM 어댑터·훅 28).
 기존 매매 테스트 164개도 회귀 없이 통과한다.
 
 `uvicorn` 으로 실제 기동해 등록 → 선언 → 조회까지 확인했다.
@@ -25,8 +27,39 @@
 시세 제공자를 주입하지 않으면 모든 선언이 보류(PENDING)로 쌓이므로
 반드시 `python -m stance_server` 로 띄울 것.
 
-배포는 하지 않았다. Supabase 프로젝트 생성·자격증명·외부 공개는 승인이 필요한 작업이라
-의도적으로 손대지 않았다.
+### 1.1 지금 돌고 있는 것
+
+이 맥이 PRISM 호스트다(`com.prism.*` launchd 서비스가 이미 있었다).
+리눅스용 systemd 예시 대신 **launchd 로 배포**했다.
+
+```
+com.prism.stance        상주 · KeepAlive · http://127.0.0.1:8800
+com.prism.stance-mark   평일 15:40 KST · 하루 마감 + 리더보드 JSON 갱신
+```
+
+| 항목 | 값 |
+|---|---|
+| 원장 | `/Users/rocky/prism-stance/ledger.db` (`durable: true`) |
+| 로그 | `~/prism-stance/server.log` · `mark.log` |
+| 인증키 | `~/prism-stance/strategy.env` (600, **저장소 밖**) |
+| venv | `.venv-stance` — 저장소 `venv/` 가 깨져 있어 새로 만들었다 |
+| 등록 전략 | `prism-kr-gpt5` / PRISM KR (GPT-5) / `@dragon1086` / KRX / daily |
+
+**운영 원장은 테스트 선언으로 오염시키지 않았다.** 고칠 수 없는 기록이므로
+쓰기가 없는 경로(401/400 경계)만 운영에서 확인하고 나머지는 임시 DB 로 검증했다.
+현재 원장 — 전략 1건, 선언 0건, 마킹 0건.
+
+운영 명령
+
+```bash
+launchctl list | grep stance                       # 상태
+curl -s localhost:8800/health                      # durable 확인
+launchctl kickstart -k gui/$(id -u)/com.prism.stance   # 재시작
+tail -f ~/prism-stance/server.log
+```
+
+첫 마감은 **오늘 15:40** 에 자동으로 돈다.
+그때 `daily_marks` 1건이 생기고 대시보드 JSON 이 갱신된다.
 
 ---
 
@@ -546,3 +579,24 @@ python3 -m pytest stance/tests/ -q           # 172 passed (FastAPI 없으면 154
 
 데모는 슬랏형·현금파킹·매수후보유 세 전략을 같은 시세로 돌려 비교한다.
 현금파킹이 위험지표에서도 이기지 못하고, 평균 투자비중 0.8% 가 나란히 표시되는 것을 확인할 수 있다.
+
+---
+
+## 10. 다음 세션
+
+**Stance 는 여기서 멈춘다.** 다음 세션 주제는 **카카오톡 봇 수정**이다.
+
+Stance 를 다시 잡을 때 이어서 할 일은 §5 와 §8 에 순서대로 적혀 있다.
+가장 먼저 할 것은 **실 매매 연동**이며, 그것은 PR #577 병합이 선행되어야 한다.
+
+돌아왔을 때 가장 먼저 확인할 것
+
+```bash
+launchctl list | grep stance                 # 서버가 아직 살아 있는가
+curl -s localhost:8800/health                # durable 이 true 인가
+sqlite3 ~/prism-stance/ledger.db "SELECT COUNT(*) FROM daily_marks"   # 마감이 쌓이고 있는가
+tail -20 ~/prism-stance/mark.log             # 마감 작업이 정상인가
+```
+
+마감이 며칠째 0 이면 `com.prism.stance-mark` 가 안 돌고 있는 것이다.
+그 상태로 두면 시간축에 구멍이 나고 **구멍은 나중에 메울 수 없다**(원장이 불변이므로).
