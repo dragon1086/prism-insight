@@ -27,6 +27,7 @@ from datetime import date
 from decimal import Decimal
 
 from .engine import ReplayResult
+from .models import Cadence
 
 PROFILE_VERSION = "stance-score/1"
 
@@ -34,7 +35,6 @@ TRADING_DAYS = 252
 DOWNSIDE_FLOOR_DAILY = 0.0005   # 0 으로 나누는 것을 막는 최소한의 하한
 GATE_MIN_DAYS = 60
 GATE_MIN_TRADES = 20
-GATE_MIN_COVERAGE = 0.70
 
 
 @dataclass
@@ -48,7 +48,10 @@ class Metrics:
     calmar: float = 0.0
 
     avg_exposure: float = 0.0          # 순위와 함께 항상 보여준다
-    coverage: float = 0.0              # 성실하게 보고했는가
+    coverage: float = 0.0              # 자기 주기 대비 제출률. 요건이 아니라 표시 항목
+    cadence: str = Cadence.DAILY.value
+    paused_days: int = 0               # 명시적으로 중단을 밝힌 기간
+    pending: int = 0                   # 서버가 시세를 못 구한 건수 (참여자 무책임)
     turnover: float = 0.0
     closed_trades: int = 0
     closed_trades_material: int = 0
@@ -99,9 +102,36 @@ def _sortino(rets: list[float], floor: float = DOWNSIDE_FLOOR_DAILY) -> float:
     return (mean * TRADING_DAYS) / (dd * math.sqrt(TRADING_DAYS))
 
 
+CADENCE_INTERVAL = {          # 거래일 단위 기대 주기
+    Cadence.DAILY: 1,
+    Cadence.WEEKLY: 5,
+    Cadence.MONTHLY: 21,
+}
+
+
+def _coverage(sent: set[date], expected: set[date], cadence: Cadence) -> float:
+    """제출률을 각자의 판단 주기 대비로 잰다.
+
+    거래일 기준으로 재면 주 1회 도는 시스템은 20%, 월 1회는 5% 가 나온다.
+    매일 실행되지 않는 시스템은 hold 조차 보낼 수 없으므로 구조적으로 불리해진다.
+
+    달력 경계로 묶지 않고 **횟수**로 센다. 30일마다 도는 시스템은
+    달력상 한 달을 통째로 건너뛸 수 있어(1/1 → 1/31 → 3/2 …) 달력 버킷이 부당하게 깎인다.
+    """
+    if not expected:
+        return 0.0
+    if cadence is Cadence.EVENT:
+        return 1.0  # 기대 주기가 없다. 성실성을 이 지표로 재지 않는다.
+
+    interval = CADENCE_INTERVAL.get(cadence, 1)
+    want = max(1, round(len(expected) / interval))
+    return min(1.0, len(sent) / want)
+
+
 def score(
     result: ReplayResult,
     benchmark: list[tuple[date, Decimal]] | None = None,
+    cadence: Cadence = Cadence.DAILY,
 ) -> Metrics:
     m = Metrics()
     series = result.daily_assets
@@ -125,8 +155,11 @@ def score(
         m.avg_exposure = sum(float(e) for _, e in result.daily_exposure) / len(result.daily_exposure)
 
     if m.trading_days:
-        marked = {d for d, _ in series}
-        m.coverage = len(result.declared_days & marked) / len(marked)
+        marked = {d for d, _ in series} - result.paused_days
+        m.paused_days = len(result.paused_days)
+        m.coverage = _coverage(result.declared_days & marked, marked, cadence)
+        m.cadence = cadence.value
+    m.pending = len(result.pending)
 
     start_assets = float(series[0][1]) if series else 1.0
     if start_assets > 0:
@@ -150,14 +183,25 @@ def score(
 
 
 def _apply_gate(m: Metrics) -> None:
-    """참가 요건은 셋뿐이다. 투자비중은 요건이 아니라 표시 항목이다."""
+    """참가 요건은 둘뿐이다 — 충분히 오래 돌았는가, 표본이 충분한가.
+
+    제출률은 요건이 아니다. 두 가지 이유다.
+
+    ① 제출률이 막으려던 조작('지는 날은 선언 생략')이 목표비중 방식에서는
+       구조적으로 불가능하다. 선언을 생략하면 포지션이 그대로 유지되어
+       손실이 온전히 반영된다. 피할 방법이 없으므로 막을 것도 없다.
+    ② 요건으로 삼으면 매일 실행되지 않는 시스템이 전멸한다.
+       주간 리밸런싱은 20%, 월간은 5% 가 나온다. 그들은 hold 조차 보낼 수 없다.
+
+    투자비중도 요건이 아니다. 현금을 드는 것 역시 하나의 판단이며,
+    판단 리더보드가 특정 판단을 금지하면 자기모순이다.
+    둘 다 요건이 아니라 전략 카드에 항상 표시되는 항목이다.
+    """
     fails: list[str] = []
     if m.trading_days < GATE_MIN_DAYS:
         fails.append(f"운영 {m.trading_days}일 (필요 {GATE_MIN_DAYS}일)")
     if m.closed_trades_material < GATE_MIN_TRADES:
         fails.append(f"청산 거래 {m.closed_trades_material}건 (필요 {GATE_MIN_TRADES}건)")
-    if m.coverage < GATE_MIN_COVERAGE:
-        fails.append(f"제출률 {m.coverage:.0%} (필요 {GATE_MIN_COVERAGE:.0%})")
     m.gate_failures = fails
     m.qualified = not fails
 
@@ -173,10 +217,14 @@ def summary_lines(m: Metrics) -> list[str]:
         f"최대 낙폭       {m.max_drawdown:.2%}",
         f"낙폭 대비 수익  {m.calmar:.2f}",
         f"평균 투자비중   {m.avg_exposure:.1%}   ← 위 지표는 이 값과 함께 읽어야 한다",
-        f"제출률          {m.coverage:.0%}",
+        f"제출률          {m.coverage:.0%} ({m.cadence} 주기 기준)",
         f"회전율          {m.turnover:.2f}회",
         f"청산 거래       {m.closed_trades_material}건 (전체 {m.closed_trades}건)",
     ]
+    if m.paused_days:
+        lines.append(f"중단 기간       {m.paused_days}일 (자산 추이는 그대로 계산됨)")
+    if m.pending:
+        lines.append(f"시세 미확보     {m.pending}건 (서버측 사유, 무벌점)")
     if m.win_rate is not None:
         lines.append(f"승률            {m.win_rate:.0%}")
     if m.excess_return is not None:
