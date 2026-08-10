@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -113,15 +114,26 @@ def _digest(prev: str | None, payload: dict) -> str:
 
 
 class Ledger:
+    """원장.
+
+    SQLite 커넥션은 기본적으로 만들어진 스레드에서만 쓸 수 있다.
+    그런데 웹 서버는 동기 핸들러를 스레드풀에서 돌리므로 요청마다 스레드가 달라진다.
+    그래서 `check_same_thread=False` 로 열고, 쓰기는 락으로 직렬화한다.
+    (읽기는 WAL 모드라 동시에 이뤄져도 안전하다.)
+    """
+
     def __init__(self, path: str | Path = ":memory:"):
-        self.conn = sqlite3.connect(str(path))
+        self._lock = threading.RLock()
+        self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
-        self.conn.executescript(IMMUTABILITY)
-        self.conn.commit()
+        with self._lock:
+            self.conn.executescript(SCHEMA)
+            self.conn.executescript(IMMUTABILITY)
+            self.conn.commit()
 
     def close(self) -> None:
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
 
     # ── 등록 ──────────────────────────────────────────────────────────────
 
@@ -137,12 +149,13 @@ class Ledger:
         각자의 주기 대비로 해석하기 위해 받는다.
         """
         c = cadence.value if isinstance(cadence, Cadence) else str(cadence)
-        self.conn.execute(
-            "INSERT INTO strategies (strategy_id, display_name, handle, market,"
-            " currency, cadence, api_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (strategy_id, display_name, handle, market, currency, c, api_key_hash, _now()),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO strategies (strategy_id, display_name, handle, market,"
+                " currency, cadence, api_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (strategy_id, display_name, handle, market, currency, c, api_key_hash, _now()),
+            )
+            self.conn.commit()
 
     def cadence_of(self, strategy_id: str) -> Cadence:
         row = self.conn.execute(
@@ -168,30 +181,32 @@ class Ledger:
             "target_weight": str(target_weight) if target_weight is not None else None,
             "reason": reason, "received_at": received_at,
         }
-        prev = self._tail_hash("stances")
-        cur = self.conn.execute(
-            "INSERT INTO stances (strategy_id, seq, kind, symbol, target_weight,"
-            " reason, received_at, prev_hash, hash) VALUES (?,?,?,?,?,?,?,?,?)",
-            (strategy_id, seq, kind.value, symbol,
-             str(target_weight) if target_weight is not None else None,
-             reason, received_at, prev, _digest(prev, payload)),
-        )
-        self.conn.commit()
-        return int(cur.lastrowid)
+        with self._lock:
+            prev = self._tail_hash("stances")
+            cur = self.conn.execute(
+                "INSERT INTO stances (strategy_id, seq, kind, symbol, target_weight,"
+                " reason, received_at, prev_hash, hash) VALUES (?,?,?,?,?,?,?,?,?)",
+                (strategy_id, seq, kind.value, symbol,
+                 str(target_weight) if target_weight is not None else None,
+                 reason, received_at, prev, _digest(prev, payload)),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid)
 
     def append_quote(self, stance_id: int | None, q: Quote) -> int:
         observed = (q.observed_at.isoformat() if q.observed_at else _now())
         payload = {"stance_id": stance_id, "symbol": q.symbol, "price": str(q.price),
                    "tradable": q.tradable, "observed_at": observed, "source": q.source}
-        prev = self._tail_hash("quotes")
-        cur = self.conn.execute(
-            "INSERT INTO quotes (stance_id, symbol, price, tradable, observed_at,"
-            " source, prev_hash, hash) VALUES (?,?,?,?,?,?,?,?)",
-            (stance_id, q.symbol, str(q.price), int(q.tradable), observed,
-             q.source, prev, _digest(prev, payload)),
-        )
-        self.conn.commit()
-        return int(cur.lastrowid)
+        with self._lock:
+            prev = self._tail_hash("quotes")
+            cur = self.conn.execute(
+                "INSERT INTO quotes (stance_id, symbol, price, tradable, observed_at,"
+                " source, prev_hash, hash) VALUES (?,?,?,?,?,?,?,?)",
+                (stance_id, q.symbol, str(q.price), int(q.tradable), observed,
+                 q.source, prev, _digest(prev, payload)),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid)
 
     def append_event(self, market: str, ev: MarketEvent) -> int:
         body = {"ratio": str(ev.ratio) if ev.ratio is not None else None,
@@ -201,15 +216,16 @@ class Ledger:
         payload = {"market": market, "symbol": ev.symbol,
                    "event_type": ev.event_type.value, "payload": body,
                    "effective_at": effective}
-        prev = self._tail_hash("market_events")
-        cur = self.conn.execute(
-            "INSERT INTO market_events (market, symbol, event_type, payload,"
-            " effective_at, prev_hash, hash) VALUES (?,?,?,?,?,?,?)",
-            (market, ev.symbol, ev.event_type.value, json.dumps(body),
-             effective, prev, _digest(prev, payload)),
-        )
-        self.conn.commit()
-        return int(cur.lastrowid)
+        with self._lock:
+            prev = self._tail_hash("market_events")
+            cur = self.conn.execute(
+                "INSERT INTO market_events (market, symbol, event_type, payload,"
+                " effective_at, prev_hash, hash) VALUES (?,?,?,?,?,?,?)",
+                (market, ev.symbol, ev.event_type.value, json.dumps(body),
+                 effective, prev, _digest(prev, payload)),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid)
 
     # ── 읽기 ──────────────────────────────────────────────────────────────
 

@@ -45,6 +45,27 @@ proudly sponsors **PRISM-INSIGHT** - the AI assistant for investors.
 
 ---
 
+## NEW: Stance — An Open Protocol for Trading Decisions
+
+**Comparing trading systems has been impossible.** Screenshots can be edited, and verifying a track record means opening your entire account.
+
+**Stance flips the question.** Instead of *"how much did you make?"* it asks *"what are you buying right now?"* A statement already made cannot be falsified — the server stamps the receipt time, and the market decides the rest. So **you never expose your account**: balances, account numbers and broker keys do not exist in the protocol.
+
+Two messages and five rules are the entire standard.
+
+```json
+{ "protocol": "stance/1", "strategy": "my-strategy", "seq": 42,
+  "symbol": "005930", "target_weight": 0.10 }
+```
+
+A target weight above the current one means buying, below means selling, `0` means exit. **There is no buy/sell distinction.**
+
+- 📐 **[Read the specification](stance/spec/core-spec.md)** — layered like MCP: the core knows nothing about scoring or asset class
+- 🔌 **Ten minutes to integrate** — any language, any system, one HTTP request. A live brokerage account is *not* required
+- 🏆 **Leaderboard** — see the **Stance** tab on the dashboard
+
+---
+
 ## NEW: ChatGPT Plus/Pro Subscription Support
 
 **No API key? No problem.** PRISM-INSIGHT now supports running analysis directly through your ChatGPT Plus ($20/mo) or Pro ($200/mo) subscription via the **Codex OAuth Proxy**.

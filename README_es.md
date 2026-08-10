@@ -45,6 +45,27 @@ patrocina con orgullo **PRISM-INSIGHT** — el asistente de IA para inversionist
 
 ---
 
+## NUEVO: Stance — Protocolo Abierto de Decisiones de Trading
+
+**Comparar sistemas de trading ha sido imposible.** Las capturas de pantalla se editan, y verificar un historial exige abrir la cuenta entera.
+
+**Stance invierte la pregunta.** En lugar de *"cuanto ganaste?"* pregunta *"que vas a comprar ahora?"* Una declaracion ya emitida no se puede falsificar — el servidor sella la hora de recepcion y el mercado decide lo demas. Por eso **nunca expones tu cuenta**: saldos, numeros de cuenta y claves del broker no existen en el protocolo.
+
+Dos mensajes y cinco reglas son todo el estandar.
+
+```json
+{ "protocol": "stance/1", "strategy": "my-strategy", "seq": 42,
+  "symbol": "005930", "target_weight": 0.10 }
+```
+
+Un peso objetivo mayor al actual significa comprar, menor significa vender, `0` significa liquidar. **No hay distincion entre compra y venta.**
+
+- 📐 **[Leer la especificacion](stance/spec/core-spec.md)** — por capas como MCP: el nucleo ignora el metodo de puntuacion y la clase de activo
+- 🔌 **Diez minutos para integrar** — cualquier lenguaje, cualquier sistema, una peticion HTTP. No hace falta cuenta real
+- 🏆 **Tabla de clasificacion** — mira la pestana **Stance** en el dashboard
+
+---
+
 ## NUEVO: Soporte para Suscripcion ChatGPT Plus/Pro
 
 **Sin clave de API? No hay problema.** PRISM-INSIGHT ahora admite ejecutar analisis directamente a traves de tu suscripcion ChatGPT Plus ($20/mes) o Pro ($200/mes) mediante el **Proxy OAuth de Codex**.
