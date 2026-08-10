@@ -108,3 +108,52 @@ def test_snapshot_from_kis_shape():
     assert s.holdings_value == D(8_000_000)
     assert s.total_assets == D(10_000_000)
     assert buy_target_weight(s, "005930", D(1_000_000)) == D("0.8")
+
+
+# ── KIS 시세 제공자 ───────────────────────────────────────────────────────
+
+from prism_core.stance_quotes import KisQuoteProvider, StaticQuoteProvider  # noqa: E402
+
+
+class FakeKis:
+    def __init__(self, payload=None, boom=False):
+        self.payload, self.boom = payload, boom
+
+    def get_current_price(self, code):
+        if self.boom:
+            raise RuntimeError("KIS 장애")
+        return self.payload
+
+
+def test_quote_provider_maps_price():
+    q = KisQuoteProvider(FakeKis({"current_price": 71200, "iscd_stat_cls_code": "00"}))("KRX", "005930")
+    assert q.price == D(71200)
+    assert q.tradable
+    assert q.source == "kis"
+
+
+def test_halted_stock_is_not_tradable():
+    """거래정지(58)는 현실에서 체결할 수 없다."""
+    q = KisQuoteProvider(FakeKis({"current_price": 1000, "iscd_stat_cls_code": "58"}))("KRX", "005930")
+    assert not q.tradable
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"current_price": 0}, {"current_price": -1}])
+def test_unusable_response_becomes_none(payload):
+    """None 을 돌려주면 서버가 보류(PENDING)로 처리한다. 참여자를 벌하지 않는다."""
+    assert KisQuoteProvider(FakeKis(payload))("KRX", "005930") is None
+
+
+def test_provider_never_raises():
+    """시세 조회 예외가 선언 접수를 깨뜨리면 안 된다."""
+    assert KisQuoteProvider(FakeKis(boom=True))("KRX", "005930") is None
+
+
+def test_provider_is_krx_only():
+    assert KisQuoteProvider(FakeKis({"current_price": 100}))("NASDAQ", "AAPL") is None
+
+
+def test_static_provider_for_demo():
+    p = StaticQuoteProvider({"005930": 70000})
+    assert p("KRX", "005930").price == D(70000)
+    assert p("KRX", "000660") is None

@@ -1,21 +1,26 @@
 # HANDOFF — Stance 프로토콜
 
-> 작성 2026-08-10 · 브랜치 `feat/stance-protocol` · 상태 **초안 구현 완료, 서버 미구현**
+> 작성 2026-08-10 · 브랜치 `feat/stance-protocol` · 상태 **서버까지 동작. 시세 연동 미검증**
 > 2차 — 다양한 클라이언트 환경을 대입해 불합리한 지점 6개를 수정 (§3.11)
 > 3차 — 자산군을 코어에서 분리. v1 정식 지원은 현물 주식뿐 (§3.12–3.13)
+> 4차 — HTTP 서버·대시보드 탭·README 홍보 추가 (§3.14)
 
 ---
 
 ## 1. 지금 어디까지 왔나
 
-**되는 것** — 원장에 선언을 쌓고, 장부를 재구성하고, 채점해서 성적표를 뽑는 흐름이 끝까지 돈다.
-테스트 85개 통과. `python3 stance/demo.py` 로 즉시 확인 가능하다.
+**되는 것** — 선언을 HTTP 로 받아 원장에 쌓고, 장부를 재구성하고, 채점해서
+리더보드까지 내놓는 흐름이 끝까지 돈다. 대시보드 Stance 탭도 붙었다.
+테스트 **145개** 통과 (FastAPI 없는 환경에서는 127개 + HTTP 계층 1건 자동 skip).
 
-**안 되는 것** — HTTP 서버가 없다. 즉 **아직 아무도 선언을 보낼 수 없다.**
-지금은 라이브러리이지 서비스가 아니다. §5 에 남은 일을 순서대로 적었다.
+`uvicorn` 으로 실제 기동해 등록 → 선언 → 조회까지 확인했다.
 
-배포는 하지 않았다. Supabase 프로젝트 생성·자격증명·외부 공개는 전부 승인이 필요한 작업이라
-의도적으로 손대지 않았다. 원격 push 도 하지 않았다.
+**미검증** — KIS 시세 제공자(`prism_core/stance_quotes.py`)는 **실제 API 로 확인하지 못했다.**
+가짜 클라이언트로 매핑만 테스트했다. 자격증명이 있는 환경에서 반드시 확인할 것.
+시세 제공자를 주입하지 않으면 모든 선언이 보류(PENDING)로 쌓인다.
+
+배포는 하지 않았다. Supabase 프로젝트 생성·자격증명·외부 공개는 승인이 필요한 작업이라
+의도적으로 손대지 않았다.
 
 ---
 
@@ -230,6 +235,22 @@ Layer 0  선언 프로토콜 ★코어★            ← 자산군을 모른다
 **합병·주식교환(`MERGE`)** — A 가 비율에 따라 B 로 전환된다.
 전환 시 **원가를 보존**해야 손익이 왜곡되지 않는다. 이미 B 를 들고 있으면 평단을 합산한다.
 
+### 3.14 서버를 붙이며 드러난 것 (4차)
+
+**서비스 계층과 HTTP 계층을 나눴다.** 로직은 `service.py` 에 있고 `api.py` 는 껍데기다.
+그래서 FastAPI 없이도 로직 28개를 전부 검증할 수 있고, 프레임워크를 갈아타도 로직은 그대로다.
+
+**접수 순서를 못 박았다.** 선언을 원장에 먼저 넣어 접수시각을 박고, **그 다음에** 시세를 찍는다.
+접수시각이 권위 시각이므로 그보다 앞선 가격은 원리적으로 인정될 수 없어야 하기 때문이다.
+
+**HTTP 계층 테스트가 실제 버그를 잡았다.**
+SQLite 커넥션은 만들어진 스레드에서만 쓸 수 있는데, 웹 서버는 동기 핸들러를
+스레드풀에서 돌리므로 요청마다 스레드가 다르다. 그대로 뒀으면 **운영에서 첫 요청부터 터졌을 것이다.**
+`check_same_thread=False` + 쓰기 락으로 고쳤다.
+
+**요청 한도의 기본값을 다시 잡았다.** 앞서 계획했던 분당 30건은 분 단위로 도는 시스템을 막는다.
+분당 120건으로 넉넉히 열되 **일 5,000건으로 실질 상한**을 건다.
+
 ---
 
 ## 4. 파일 지도
@@ -242,15 +263,23 @@ stance/                              ← 여기서 PRISM 코드를 import 하지
 ├── server/ledger.py                 SQLite 원장. 트리거로 UPDATE/DELETE 차단 + 해시체인
 ├── server/scoring.py                채점 프로파일. ★교체 가능★
 ├── server/markets.py                시장 프로파일. ★교체 가능★ v1 지원 범위가 여기 있다
+├── server/service.py                서비스 계층. HTTP 를 모른다 (프레임워크 없이 테스트됨)
+├── server/api.py                    HTTP 껍데기 (FastAPI). 얇게 유지한다
+├── server/leaderboard.py            원장 재생 → 채점 → 화면용 JSON
 ├── client/client.py                 참여자용 + to_target_weight() 변환 헬퍼
 ├── tests/test_engine.py             21개 — 회계·기업행위·원장 불변성·채점
 ├── tests/test_adapter.py            10개 — PRISM 슬롯 변환
 ├── tests/test_resilience.py         24개 — 서버 장애·비일간 시스템·중단·표기·비용
 ├── tests/test_markets.py            30개 — 시장 프로파일·크립토 한계·합병/코드변경
+├── tests/test_service.py            28개 — 등록·인증·접수·한도·복원
+├── tests/test_api.py                18개 — HTTP 경계 (FastAPI 없으면 skip)
+├── tests/test_leaderboard.py         5개 — 리더보드 산출
 ├── demo.py                          전체 흐름
 └── HANDOFF.md                       이 문서
 
-prism_core/stance_adapter.py         ★양쪽을 아는 유일한 파일★
+prism_core/stance_adapter.py         PRISM 슬롯 → 목표비중 변환
+prism_core/stance_quotes.py          KIS 시세 → Stance Quote  ⚠️ 실 API 미검증
+examples/dashboard/components/stance-leaderboard-page.tsx   대시보드 탭
 
 docs/superpowers/specs/
 ├── 2026-08-09-otd-declaration-protocol-design.md       v0.1 원본 (구버전)
@@ -264,20 +293,23 @@ docs/superpowers/specs/
 
 ## 5. 다음에 할 일 (순서대로)
 
-### ① HTTP 서버 — 이게 없으면 아무도 못 쓴다
+### ① 시세 연동 검증 — 지금 가장 급하다
 
-`POST /stances` 하나와 `GET /portfolio` 하나면 시작할 수 있다.
-접수 즉시 동기로 판정(accepted/clamped/rejected)을 돌려주는 것이 중요하다.
-축소·거부를 몇 초 뒤에 알려주면 참여자는 이미 실계좌 주문을 낸 뒤다.
+`prism_core/stance_quotes.py` 의 `KisQuoteProvider` 를 **실제 KIS 자격증명으로 확인해야 한다.**
+가짜 클라이언트로 매핑만 테스트한 상태다. 이게 안 붙으면 모든 선언이 보류로만 쌓인다.
 
-인증은 `Authorization: Bearer <JWT>` 로 하고, JWT 의 `strategy_id` 클레임을 검사한다.
-Supabase 의 `apikey` 헤더(프로젝트 공용 키 자리)에 전략 키를 넣으면 **안 된다.**
+`cores/kis_market_snapshot.py: fetch_kis_intraday_snapshot` 은 **쓸 수 없다** —
+2,500종목 이상을 한 번에 요구하는 벌크 스냅샷이라 단건 시세에 맞지 않는다.
+대신 `DomesticStockTrading.get_current_price()` 를 쓴다.
 
-### ② 시세 실측 연동
+> ⚠️ **상한가 잠김을 판정하지 못한다.** 현재가 API 에 호가 잔량이 없어 거래정지(`iscd_stat_cls_code=58`)만
+> 걸러진다. 상한가 판정을 넣으려면 호가 API(`inquire-asking-price`)를 추가로 붙여야 한다.
 
-`cores/kis_market_snapshot.py: fetch_kis_intraday_snapshot` 이 그대로 쓰일 수 있다.
-스냅샷에 상하한가와 호가 잔량이 함께 오므로 **체결 불가 판정(§5.5)** 도 같이 붙인다.
-엔진은 이미 `Quote.tradable` 을 받아 처리한다.
+### ② 서버 운영 준비
+
+서버 자체는 동작한다(`uvicorn stance.server.api:app`). 남은 것은 운영 설정이다.
+`STANCE_DB` 환경변수로 원장 파일 경로를 주고, 시세 제공자를 주입해야 한다.
+인메모리 기본값은 프로세스가 죽으면 원장이 사라진다.
 
 ### ③ 접수 시각별 체결 규칙
 
@@ -364,7 +396,7 @@ Supabase 의 `apikey` 헤더(프로젝트 공용 키 자리)에 전략 키를 �
 ```bash
 cd ~/work/prism-insight
 python3 stance/demo.py                       # 세 전략 성적표 + 액면분할 검증
-python3 -m pytest stance/tests/ -q           # 85 passed
+python3 -m pytest stance/tests/ -q           # 145 passed (FastAPI 없으면 127 + 1 skip)
 ```
 
 데모는 슬랏형·현금파킹·매수후보유 세 전략을 같은 시세로 돌려 비교한다.

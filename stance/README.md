@@ -46,8 +46,12 @@ stance/
 │   ├── engine.py       장부 재구성. 순수 함수이며 DB 를 모른다
 │   ├── ledger.py       원장. append-only 와 해시체인을 DB 가 강제한다
 │   └── scoring.py      채점 프로파일 stance-score/1  ← 코어가 아니다. 갈아끼운다
+│   ├── markets.py      시장 프로파일. ★코어가 아니다★ v1 지원 범위가 여기 있다
+│   ├── service.py      서비스 계층. HTTP 를 모른다 — 그래서 프레임워크 없이 테스트된다
+│   ├── api.py          HTTP 껍데기 (FastAPI). 얇게 유지한다
+│   └── leaderboard.py  원장 재생 → 채점 → 화면용 JSON
 ├── client/client.py    참여자용. 목표비중 변환 헬퍼 포함
-├── tests/              55개
+├── tests/              145개
 └── demo.py             원장 → 재구성 → 채점 전체 흐름
 ```
 
@@ -60,12 +64,39 @@ PRISM 연동은 바깥의 [`prism_core/stance_adapter.py`](../prism_core/stance_
 ## 실행
 
 ```bash
-python3 stance/demo.py                    # 전체 흐름 데모
+python3 stance/demo.py                    # 전체 흐름 데모 (의존성 없음)
 python3 -m pytest stance/tests/ -q        # 테스트
+
+pip install fastapi uvicorn               # 서버를 띄울 때만 필요하다
+uvicorn stance.server.api:app --port 8800
 ```
 
-외부 의존성이 없다. 표준 라이브러리와 pytest 만 있으면 된다.
-(`client.py` 의 전송 기능만 `requests` 를 쓰며, 없으면 헬퍼만 사용 가능하다.)
+**코어와 엔진은 외부 의존성이 없다.** 표준 라이브러리만으로 돈다.
+FastAPI 는 HTTP 껍데기에만 필요하며, 없으면 관련 테스트는 자동으로 건너뛴다.
+
+## 서버
+
+```
+POST /strategies    전략 등록 → 인증키 발급 (전략당 1회)
+POST /stances       선언 접수  ← 참여자가 쓰는 유일한 쓰기 엔드포인트
+GET  /portfolio     검산용 보유·자산 스냅샷
+GET  /leaderboard   리더보드
+GET  /markets       지원 시장과 각 보드의 규칙
+```
+
+**판정은 동기로 돌려준다.** 축소·거부를 몇 초 뒤에 알려주면
+참여자는 이미 실계좌 주문을 낸 뒤이기 때문이다.
+
+접수 순서가 중요하다 — **선언을 원장에 먼저 넣어 접수시각을 박고, 그 다음에 시세를 찍는다.**
+접수시각이 권위 시각이므로 그보다 앞선 가격은 원리적으로 인정될 수 없어야 한다.
+
+시세를 못 구하면 거부가 아니라 **보류**다. 소스 장애는 서버 책임이지 참여자 책임이 아니다.
+
+```bash
+curl -X POST localhost:8800/stances \
+  -H "Authorization: Bearer $STANCE_KEY" \
+  -d '{"protocol":"stance/1","seq":42,"symbol":"005930","target_weight":0.1}'
+```
 
 ---
 
