@@ -28,6 +28,7 @@ from .models import (
     Position,
     Quote,
     Stance,
+    normalize_symbol,
 )
 
 ZERO = Decimal(0)
@@ -76,25 +77,52 @@ class ReplayResult:
     daily_assets: list[tuple[date, Decimal]] = field(default_factory=list)
     daily_exposure: list[tuple[date, Decimal]] = field(default_factory=list)
     declared_days: set[date] = field(default_factory=set)
+    paused_days: set[date] = field(default_factory=set)
     closed_trades: int = 0
     closed_trades_material: int = 0  # 투입비중 1% 이상이었던 거래만
     turnover: Decimal = ZERO         # 누적 거래대금 (자산 대비)
+    pending: list[Fill] = field(default_factory=list)  # 서버가 시세를 못 구한 건
+    pause_started: date | None = None
 
 
 class Engine:
     """원장을 받아 장부를 만든다."""
 
-    def __init__(self, costs: Costs | None = None, material_weight: Decimal = Decimal("0.01")):
+    def __init__(self, costs: Costs | None = None, material_weight: Decimal = Decimal("0.01"),
+                 market: str = "KRX"):
         self.costs = costs or Costs()
         self.material_weight = material_weight
+        self.market = market
         self.book = Book()
         self.result = ReplayResult(book=self.book)
+        self.paused = False
         self._peak_weight: dict[str, Decimal] = {}
 
     # ── 스탠스 ────────────────────────────────────────────────────────────
 
     def apply_stance(self, stance: Stance, quote: Quote | None = None) -> Fill:
-        self.result.declared_days.add(stance.received_at.date())
+        day = stance.received_at.date()
+        self.result.declared_days.add(day)
+
+        if stance.kind is Kind.PAUSE:
+            # 점검·휴가를 명시적으로 밝힌다. 자산 추이는 그대로 계산되므로
+            # 하락장에 pause 를 걸어 손실을 피하는 것은 불가능하다.
+            self.paused = True
+            self.result.pause_started = self.result.pause_started or day
+            fill = Fill(seq=stance.seq, admit=Admit.ACCEPTED, reason="pause",
+                        assets_after=self.book.assets())
+            self.result.fills.append(fill)
+            return fill
+
+        if stance.kind is Kind.RESUME:
+            self.paused = False
+            fill = Fill(seq=stance.seq, admit=Admit.ACCEPTED, reason="resume",
+                        assets_after=self.book.assets())
+            self.result.fills.append(fill)
+            return fill
+
+        # 선언이 들어오면 중단 상태는 자동으로 풀린다
+        self.paused = False
 
         if stance.kind is Kind.HOLD:
             fill = Fill(seq=stance.seq, admit=Admit.ACCEPTED, reason="hold",
@@ -103,7 +131,7 @@ class Engine:
             return fill
 
         assert stance.symbol is not None and stance.target_weight is not None
-        symbol = stance.symbol
+        symbol = normalize_symbol(stance.symbol, self.market)
         fill = self._apply_set(stance, symbol, stance.target_weight, quote)
         self.result.fills.append(fill)
         return fill
@@ -121,10 +149,15 @@ class Engine:
     def _apply_set(
         self, stance: Stance, symbol: str, target: Decimal, quote: Quote | None
     ) -> Fill:
-        if quote is None:
-            return self._reject(stance, "시세를 구하지 못함")
-        if quote.price <= ZERO:
-            return self._reject(stance, "유효하지 않은 가격")
+        if quote is None or quote.price <= ZERO:
+            # 시세를 못 구한 것은 서버 책임이다. 참여자를 벌하지 않는다.
+            # 재시도 대상으로 남기고, 끝내 실패하면 다음 정규장 시가로 확정한다.
+            fill = Fill(seq=stance.seq, admit=Admit.PENDING, symbol=symbol,
+                        requested_weight=target, assets_after=self.book.assets(),
+                        reason="시세 확보 대기 — 서버측 사유")
+            self.result.pending.append(fill)
+            return fill
+
         if not quote.tradable or symbol in self.book.halted:
             # 상한가 잠김·하한가 잠김·거래정지 — 현실에서 체결할 수 없다
             return self._reject(stance, "체결 불가 상태")
@@ -263,11 +296,15 @@ class Engine:
     def apply_mark(self, mark: DailyMark) -> None:
         """하루를 마감하고 자산을 기록한다. 채점의 시간축이 된다."""
         for symbol, price in mark.prices.items():
-            if symbol in self.book.halted:
+            sym = normalize_symbol(symbol, self.market)
+            if sym in self.book.halted:
                 continue  # 거래정지 종목은 정지 직전 가격으로 고정한다
-            self.book.last_price[symbol] = price
+            self.book.last_price[sym] = price
         self.result.daily_assets.append((mark.on, self.book.assets()))
         self.result.daily_exposure.append((mark.on, self.book.exposure()))
+        if self.paused:
+            # 중단 기간에도 자산은 그대로 계산된다. 제출률 집계에서만 빠진다.
+            self.result.paused_days.add(mark.on)
 
 
 def replay(timeline: list, costs: Costs | None = None) -> ReplayResult:

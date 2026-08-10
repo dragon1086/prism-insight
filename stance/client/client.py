@@ -73,6 +73,18 @@ class StanceClient:
         """매매하지 않기로 판단한 날에도 보낸다. 제출률에 반영된다."""
         return self._send({"kind": "hold", "reason": reason})
 
+    def pause(self, reason: str | None = None) -> dict:
+        """점검·휴가 등으로 당분간 판단하지 않음을 밝힌다.
+
+        제출률 집계에서만 빠진다. **자산 추이는 그대로 계산된다** —
+        수익까지 면제하면 하락장에 중단을 걸어 손실을 피하는 공짜 보험이 된다.
+        """
+        return self._send({"kind": "pause", "reason": reason})
+
+    def resume(self, reason: str | None = None) -> dict:
+        """다시 판단을 시작한다. 선언을 보내면 자동으로 풀리므로 생략해도 된다."""
+        return self._send({"kind": "resume", "reason": reason})
+
     # ── 조회 ──────────────────────────────────────────────────────────────
 
     def portfolio(self) -> dict:

@@ -25,7 +25,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from .models import PROTOCOL_VERSION, EventType, Kind, MarketEvent, Quote, Stance
+from .models import (
+    PROTOCOL_VERSION, Cadence, EventType, Kind, MarketEvent, Quote, Stance,
+)
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -36,6 +38,7 @@ CREATE TABLE IF NOT EXISTS strategies (
   handle        TEXT NOT NULL,          -- 계정 핸들. 한 계정의 전 전략이 함께 노출된다
   market        TEXT NOT NULL,          -- 한 전략 = 한 시장 = 한 통화
   currency      TEXT NOT NULL,
+  cadence       TEXT NOT NULL DEFAULT 'daily',  -- daily|weekly|monthly|event
   api_key_hash  TEXT NOT NULL,
   created_at    TEXT NOT NULL           -- 트랙레코드 시작의 유일한 권위. 참여자가 못 정한다
 );
@@ -44,7 +47,7 @@ CREATE TABLE IF NOT EXISTS stances (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   strategy_id   TEXT NOT NULL REFERENCES strategies(strategy_id),
   seq           INTEGER NOT NULL,
-  kind          TEXT NOT NULL CHECK (kind IN ('set','hold')),
+  kind          TEXT NOT NULL CHECK (kind IN ('set','hold','pause','resume')),
   symbol        TEXT,
   target_weight TEXT,                   -- Decimal 을 문자열로 보존 (부동소수 오차 방지)
   reason        TEXT CHECK (reason IS NULL OR length(reason) <= 500),
@@ -52,8 +55,8 @@ CREATE TABLE IF NOT EXISTS stances (
   prev_hash     TEXT,
   hash          TEXT NOT NULL,
   UNIQUE (strategy_id, seq),
-  CHECK ((kind='set'  AND symbol IS NOT NULL AND target_weight IS NOT NULL)
-      OR (kind='hold' AND symbol IS NULL AND target_weight IS NULL))
+  CHECK ((kind='set' AND symbol IS NOT NULL AND target_weight IS NOT NULL)
+      OR (kind IN ('hold','pause','resume') AND symbol IS NULL AND target_weight IS NULL))
 );
 
 CREATE TABLE IF NOT EXISTS quotes (
@@ -125,13 +128,27 @@ class Ledger:
     def register(
         self, strategy_id: str, display_name: str, handle: str,
         market: str = "KRX", currency: str = "KRW", api_key_hash: str = "",
+        cadence: Cadence | str = Cadence.DAILY,
     ) -> None:
+        """전략을 등록한다.
+
+        cadence 는 '이 시스템이 얼마나 자주 판단하는가' 를 스스로 밝히는 값이다.
+        제출률을 거래일 기준으로 재면 주간·월간·이벤트 기반 시스템이 전멸하므로,
+        각자의 주기 대비로 해석하기 위해 받는다.
+        """
+        c = cadence.value if isinstance(cadence, Cadence) else str(cadence)
         self.conn.execute(
             "INSERT INTO strategies (strategy_id, display_name, handle, market,"
-            " currency, api_key_hash, created_at) VALUES (?,?,?,?,?,?,?)",
-            (strategy_id, display_name, handle, market, currency, api_key_hash, _now()),
+            " currency, cadence, api_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (strategy_id, display_name, handle, market, currency, c, api_key_hash, _now()),
         )
         self.conn.commit()
+
+    def cadence_of(self, strategy_id: str) -> Cadence:
+        row = self.conn.execute(
+            "SELECT cadence FROM strategies WHERE strategy_id=?", (strategy_id,)
+        ).fetchone()
+        return Cadence(row["cadence"]) if row else Cadence.DAILY
 
     # ── 원장 기록 ─────────────────────────────────────────────────────────
 

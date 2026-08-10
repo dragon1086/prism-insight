@@ -52,12 +52,12 @@ def test_worked_example_from_spec():
     # 절반 익절 = 지금 비중의 절반을 목표로 선언한다
     f2 = e.apply_stance(st(2, "005930", w / 2), Quote("005930", D(20000)))
     assert f2.admit is Admit.ACCEPTED
-    assert approx(f2.realized_pnl, "0.0498")      # 문서값
-    assert approx(e.book.cash, "0.9998")          # 문서값
-    assert approx(e.book.assets(), "1.0998")      # 문서값
+    assert approx(f2.realized_pnl, "0.049820")    # 문서값 (거래세 0.18%)
+    assert approx(e.book.cash, "0.99982")         # 문서값
+    assert approx(e.book.assets(), "1.099820")    # 문서값
     # 잔여 평가액 0.1 을 자산 1.0998 로 나눈 값. 매도 비용만큼 분모가 줄어 있으므로
     # 0.1/1.1 (=9.0909%) 이 아니라 9.0926% 다. 반올림하면 문서의 9.09% 와 같다.
-    assert approx(e.book.weight_of("005930"), D("0.1") / D("1.0998"), "1e-18")
+    assert approx(e.book.weight_of("005930"), D("0.1") / D("1.099820"), "1e-18")
     assert round(float(e.book.weight_of("005930")) * 100, 2) == 9.09
 
 
@@ -87,7 +87,7 @@ def test_exit_is_target_zero():
     f = e.apply_stance(st(2, "005930", "0"), Quote("005930", D(1000)))
     assert f.admit is Admit.ACCEPTED
     assert "005930" not in e.book.positions
-    assert approx(e.book.assets(), "0.999")       # 매도 0.5 에 0.20% 비용
+    assert approx(e.book.assets(), "0.9991")      # 매도 0.5 에 거래세 0.18%
     assert e.result.closed_trades == 1
 
 
@@ -171,7 +171,7 @@ def test_delist_forces_liquidation():
     e.apply_event(MarketEvent(EventType.DELIST, "BAD", T0, final_price=D(100)))
     assert "BAD" not in e.book.positions
     assert e.result.closed_trades == 1
-    assert approx(e.book.assets(), "0.81996")     # 0.8 + 0.02*(1-0.002)
+    assert approx(e.book.assets(), "0.819964")    # 0.8 + 0.02*(1-0.0018)
 
 
 def test_halt_freezes_price_and_blocks_trading():
@@ -308,7 +308,7 @@ def test_gate_blocks_insufficient_record():
 
     m = score(r)
     assert not m.qualified
-    assert len(m.gate_failures) == 3          # 기간·거래수·제출률 전부 미달
+    assert len(m.gate_failures) == 2          # 기간·거래수. 제출률은 요건이 아니다
 
 
 def test_small_trades_do_not_count_toward_gate():

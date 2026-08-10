@@ -47,7 +47,7 @@ stance/
 │   ├── ledger.py       원장. append-only 와 해시체인을 DB 가 강제한다
 │   └── scoring.py      채점 프로파일 stance-score/1  ← 코어가 아니다. 갈아끼운다
 ├── client/client.py    참여자용. 목표비중 변환 헬퍼 포함
-├── tests/              31개
+├── tests/              55개
 └── demo.py             원장 → 재구성 → 채점 전체 흐름
 ```
 

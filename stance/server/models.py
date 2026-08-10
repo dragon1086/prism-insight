@@ -20,18 +20,34 @@ PROTOCOL_VERSION = "stance/1"
 
 
 class Kind(str, Enum):
-    """스탠스의 종류. 둘뿐이다."""
+    """스탠스의 종류."""
 
-    SET = "set"    # 이 종목을 자산의 X% 로 만든다
-    HOLD = "hold"  # 오늘은 판단상 아무것도 바꾸지 않는다
+    SET = "set"      # 이 종목을 자산의 X% 로 만든다
+    HOLD = "hold"    # 오늘은 판단상 아무것도 바꾸지 않는다
+    PAUSE = "pause"  # 점검·휴가 등으로 당분간 판단하지 않는다
+    RESUME = "resume"  # 다시 판단을 시작한다
 
 
 class Admit(str, Enum):
-    """접수 판정. 거부하지 않고 줄여서 받아들이는 CLAMPED 가 핵심이다."""
+    """접수 판정."""
 
     ACCEPTED = "accepted"  # 요청대로 반영
     CLAMPED = "clamped"    # 현금이 모자라 가능한 만큼만 반영
-    REJECTED = "rejected"  # 반영 불가
+    REJECTED = "rejected"  # 참여자 사유로 반영 불가
+    PENDING = "pending"    # 서버가 시세를 구하지 못함 — 참여자 잘못이 아니다
+
+
+class Cadence(str, Enum):
+    """이 전략이 얼마나 자주 판단하는가. 등록 시 스스로 밝힌다.
+
+    제출률을 '거래일마다 보냈는가' 로 재면 주간·월간·이벤트 기반 시스템이
+    구조적으로 전멸한다. 자기 주기를 밝히게 하고 그 대비로 해석한다.
+    """
+
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+    EVENT = "event"    # 신호가 나올 때만. 기대 주기가 없다
 
 
 class EventType(str, Enum):
@@ -66,7 +82,7 @@ class Stance:
                 raise ValueError(f"target_weight 는 0 이상 1 이하여야 한다: {self.target_weight}")
         else:
             if self.symbol is not None or self.target_weight is not None:
-                raise ValueError("hold 스탠스에는 symbol/target_weight 를 넣지 않는다")
+                raise ValueError(f"{self.kind.value} 스탠스에는 symbol/target_weight 를 넣지 않는다")
 
 
 @dataclass(frozen=True)
@@ -132,14 +148,60 @@ class Fill:
 
 @dataclass(frozen=True)
 class Costs:
-    """시장별 상수 하나. 참여자가 지정할 수 없다."""
+    """거래비용.
 
-    sell_fee: Decimal = Decimal("0.0020")      # KRX 거래세 0.18% + 수수료 근사
-    dividend_tax: Decimal = Decimal("0.154")   # 배당소득세
+    ── 무엇을 반영하고 무엇을 빼는가 ───────────────────────────────────
+
+    기준은 하나다. **모두에게 똑같이 적용되는 것만 반영하고,
+    사람마다 다른 것은 제외한다.**
+
+    반영한다 — 법정 거래세. 누가 어느 증권사에서 팔든 세율은 같다.
+              그리고 "얼마나 자주 거래할 것인가" 는 집행이 아니라 판단이다.
+              반영하지 않으면 연 100회전 전략에게 18%p 를 공짜로 주는 셈이 된다.
+
+    빼놓는다 — 증권사 수수료(회사마다 다르다), 호가 스프레드와 시장충격
+              (주문 크기·유동성·집행 실력에 따라 달라진다).
+              상수로 근사하면 새로운 왜곡이 생기므로 아예 넣지 않는다.
+
+    빠진 비용은 고회전 전략에 유리하게 작용하므로,
+    회전율을 전략 카드에 항상 함께 노출해 해석 가능하게 만든다.
+
+    ⚠️ 세율은 시기와 시장에 따라 바뀐다. 아래 값은 초안이며
+       실제 운영 전에 반드시 확인하고, 채점 프로파일 버전에 함께 기록해야 한다.
+    """
+
+    tax: Decimal = Decimal("0.0018")            # 법정 거래세 (매도 시)
+    commission: Decimal = Decimal("0")          # 증권사 수수료 — 의도적으로 0
+    dividend_tax: Decimal = Decimal("0.154")    # 배당소득세
+
+    @property
+    def sell_fee(self) -> Decimal:
+        return self.tax + self.commission
 
     @staticmethod
     def for_market(market: str) -> "Costs":
         m = market.upper()
         if m in ("NASDAQ", "NYSE", "US"):
-            return Costs(sell_fee=Decimal("0.0001"), dividend_tax=Decimal("0.15"))
+            # 미국은 매도 시 SEC fee 등 소액. 거래세 성격의 법정 비용만 반영한다.
+            return Costs(tax=Decimal("0.0001"), dividend_tax=Decimal("0.15"))
+        if m in ("CRYPTO", "UPBIT", "BINANCE"):
+            # 거래소 수수료는 거래소·등급마다 달라 법정 비용이라 볼 수 없다.
+            return Costs(tax=Decimal("0"), dividend_tax=Decimal("0"))
         return Costs()
+
+
+def normalize_symbol(symbol: str, market: str = "KRX") -> str:
+    """같은 종목이 다른 표기로 들어와 두 개의 포지션이 되는 것을 막는다.
+
+    005930 · A005930 · 005930.KS 는 전부 같은 종목이다.
+    """
+    s = (symbol or "").strip().upper()
+    if not s:
+        raise ValueError("종목 코드가 비어 있다")
+    if market.upper() == "KRX":
+        s = s.split(".")[0]
+        if len(s) == 7 and s[0] == "A" and s[1:].isdigit():
+            s = s[1:]
+        if s.isdigit():
+            s = s.zfill(6)
+    return s
