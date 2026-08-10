@@ -207,56 +207,7 @@ export interface DashboardData {
   market_condition: MarketCondition[]
   prism_performance?: PrismPerformance[]
   holding_decisions?: HoldingDecision[]
-  jeoningu_lab?: JeoninguLabData
   trading_insights?: TradingInsightsData
-}
-
-export interface JeoninguLabData {
-  enabled: boolean
-  message?: string
-  error?: string
-  summary: {
-    total_trades: number
-    winning_trades: number
-    losing_trades: number
-    win_rate: number
-    cumulative_return: number
-    avg_return_per_trade: number
-    initial_capital: number
-    current_balance: number
-  }
-  current_position: {
-    stock_code: string
-    stock_name: string
-    quantity: number
-    buy_price: number
-    buy_amount: number
-    buy_date: string
-    video_id: string
-    video_title: string
-  } | null
-  timeline: Array<{
-    video_id: string
-    video_title: string
-    video_date: string
-    video_url: string
-    analyzed_date: string
-    jeon_sentiment: string
-    jeon_reasoning: string
-    contrarian_action: string
-    trade_type: string
-    stock_code: string | null
-    stock_name: string | null
-    notes: string
-    profit_loss: number | null
-    profit_loss_pct: number | null
-  }>
-  cumulative_chart: Array<{
-    date: string
-    cumulative_return: number
-    balance: number
-  }>
-  trade_history: any[]
 }
 
 export interface HoldingDecision {
@@ -518,4 +469,56 @@ export interface TradingInsightsData {
   intuitions: TradingIntuition[]
   performance_analysis?: PerformanceAnalysis
   trigger_reliability?: TriggerReliabilityData
+}
+
+// ── Stance 프로토콜 리더보드 ──────────────────────────────────────
+// 대시보드 데이터와 별도 파일(/stance_leaderboard.json)로 제공된다.
+// 원장을 재생해 만든 계산 결과이므로 언제든 다시 만들 수 있다.
+
+export interface StanceMetrics {
+  trading_days: number
+  cumulative_return: number
+  sortino: number
+  max_drawdown: number
+  calmar: number
+  avg_exposure: number      // 다른 지표는 이 값과 함께 읽어야 한다
+  coverage: number
+  cadence: string
+  turnover: number
+  closed_trades: number
+  win_rate: number | null
+  excess_return: number | null
+  paused_days: number
+  pending: number
+}
+
+export interface StanceEntry {
+  strategy: string
+  display_name: string
+  handle: string
+  market: string
+  qualified: boolean
+  gate_failures: string[]
+  experimental: boolean
+  metrics: StanceMetrics
+}
+
+export interface StanceBoard {
+  market: string
+  currency: string
+  support: string           // stable | experimental
+  price_authority: string
+  mark_at: string
+  min_track_periods: number
+  notes: string[]
+  entries: StanceEntry[]
+}
+
+export interface StanceLeaderboard {
+  schema: string
+  protocol: string
+  score_profile: string
+  generated_at: string
+  status: "live" | "preparing"
+  boards: Record<string, StanceBoard>
 }

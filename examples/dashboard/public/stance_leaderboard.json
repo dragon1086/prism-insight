@@ -1,0 +1,23 @@
+{
+  "schema": "stance-leaderboard/1",
+  "protocol": "stance/1",
+  "score_profile": "stance-score/1",
+  "generated_at": "2026-08-10T01:15:14.503780+00:00",
+  "status": "preparing",
+  "boards": {
+    "KRX": {
+      "market": "KRX",
+      "currency": "KRW",
+      "support": "stable",
+      "price_authority": "한국거래소 정규장 체결가",
+      "mark_at": "정규장 종가 (15:30 KST)",
+      "min_track_periods": 63,
+      "notes": [
+        "동시호가 구간(08:30–09:00, 15:20–15:30)은 확정 체결가를 기다려야 한다 — 미구현",
+        "장 마감 후 접수분은 다음 정규장 시가로 확정해야 한다 — 미구현",
+        "결제 주기 T+2 를 반영하지 않는다. 매도 대금을 즉시 현금으로 본다 (§비고)"
+      ],
+      "entries": []
+    }
+  }
+}
