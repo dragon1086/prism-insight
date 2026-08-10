@@ -22,6 +22,10 @@ from kakao_bot.adapters.kakao.skill_response import (
     simple_text_output,
     skill_response,
 )
+
+# The marker the analysis side writes and this side reads. One definition, so
+# the two cannot drift apart; `verdict` pulls in no Prism modules of its own.
+from kakao_bot.adapters.prism.verdict import DISCLAIMER, VERDICT_MARK
 from kakao_bot.application.command_parser import CommandKind
 from kakao_bot.application.command_service import IMPLEMENTED_COMMANDS
 from kakao_bot.domain.models import ClaimedOutboundDelivery
@@ -76,10 +80,12 @@ def _result(payload: Mapping[str, object]) -> dict[str, object]:
     ticker = _required_text(payload, "ticker")
     company_name = _required_text(payload, "company_name")
     summary = payload.get("summary")
-    body = _condense(summary if isinstance(summary, str) else "")
+    raw, verdict = _split_verdict(summary if isinstance(summary, str) else "")
+    closing = _closing(verdict)
+    body = _condense(raw, reserve=len(closing) + 2)
 
     header = f"📊 {company_name} ({ticker}) 분석 완료"
-    text = f"{header}\n\n{body}" if body else header
+    text = "\n\n".join(part for part in (header, body, closing) if part)
 
     pdf_url = payload.get("pdf_url")
     return skill_response(
@@ -118,18 +124,24 @@ def _evaluate_result(payload: Mapping[str, object]) -> dict[str, object]:
 
     ticker = _required_text(payload, "ticker")
     company_name = _required_text(payload, "company_name")
-    verdict = payload.get("verdict")
-    body = _clean_text(verdict if isinstance(verdict, str) else "")
+    evaluation = payload.get("verdict")
+    raw, closing_verdict = _split_verdict(
+        evaluation if isinstance(evaluation, str) else ""
+    )
+    body = _clean_text(raw)
     if not body:
         return _evaluate_failed(payload)
     body = _SINGLE_LINE_BREAK.sub("\n\n", body)
 
     header = f"🧮 {company_name} ({ticker}) 평가{_position_suffix(payload)}"
+    closing = _closing(closing_verdict)
+    reserve = len(closing) + 2
     body_parts = _split_text(
         body,
-        first_limit=MAX_SIMPLE_TEXT_LENGTH - len(header) - 2,
-        continuation_limit=MAX_SIMPLE_TEXT_LENGTH,
+        first_limit=MAX_SIMPLE_TEXT_LENGTH - len(header) - 2 - reserve,
+        continuation_limit=MAX_SIMPLE_TEXT_LENGTH - reserve,
     )
+    body_parts[-1] = f"{body_parts[-1]}\n\n{closing}"
     text_outputs = [
         simple_text_output(f"{header}\n\n{body_parts[0]}"),
         *[simple_text_output(part) for part in body_parts[1:]],
@@ -174,16 +186,20 @@ def _ask_result(payload: Mapping[str, object]) -> dict[str, object]:
     """
 
     answer = payload.get("answer")
-    body = _clean_text(answer if isinstance(answer, str) else "")
+    raw, verdict = _split_verdict(answer if isinstance(answer, str) else "")
+    body = _clean_text(raw)
     if not body:
         return _ask_failed(payload)
 
     header = f"💬 {_echo_question(payload)}"
+    closing = _closing(verdict)
+    reserve = len(closing) + 2
     body_parts = _split_text(
         body,
-        first_limit=MAX_SIMPLE_TEXT_LENGTH - len(header) - 2,
-        continuation_limit=MAX_SIMPLE_TEXT_LENGTH,
+        first_limit=MAX_SIMPLE_TEXT_LENGTH - len(header) - 2 - reserve,
+        continuation_limit=MAX_SIMPLE_TEXT_LENGTH - reserve,
     )
+    body_parts[-1] = f"{body_parts[-1]}\n\n{closing}"
     text_outputs = [
         simple_text_output(f"{header}\n\n{body_parts[0]}"),
         *[simple_text_output(part) for part in body_parts[1:]],
@@ -309,13 +325,56 @@ def _next_actions(
     )
 
 
-def _condense(summary: str) -> str:
+def _condense(summary: str, *, reserve: int = 0) -> str:
     """Flatten report markdown into something a chat bubble can hold."""
 
     text = _clean_text(summary)
-    if len(text) <= _SUMMARY_BUDGET:
+    budget = _SUMMARY_BUDGET - reserve
+    if len(text) <= budget:
         return text
-    return text[: _SUMMARY_BUDGET - 1].rstrip() + "…"
+    return text[: budget - 1].rstrip() + "…"
+
+
+def _split_verdict(body: str) -> tuple[str, str | None]:
+    """Separate the closing verdict from the analysis above it.
+
+    Split before any cleaning. `_clean_text` narrows a report down to its
+    executive summary section, which would drop a verdict appended below it,
+    and `_split_text` truncates the tail — the exact place the verdict sits.
+    """
+
+    index = body.rfind(VERDICT_MARK)
+    if index == -1:
+        return _strip_disclaimer(body), None
+    verdict = _strip_disclaimer(body[index + len(VERDICT_MARK) :].strip())
+    return _strip_disclaimer(body[:index].rstrip()), (verdict or None)
+
+
+def _strip_disclaimer(text: str) -> str:
+    """Drop a disclaimer the model wrote itself.
+
+    The prompts tell it not to, and it has no way to know the exact wording, so
+    this only catches a reply that echoed text back. Cheap insurance against the
+    notice appearing twice in one bubble.
+    """
+
+    if DISCLAIMER not in text:
+        return text
+    kept = [line for line in text.splitlines() if DISCLAIMER not in line]
+    return _BLANK_RUN.sub("\n\n", "\n".join(kept)).strip()
+
+
+def _closing(verdict: str | None) -> str:
+    """The block every successful reply ends on.
+
+    The disclaimer is rendered rather than prompted so that it survives a model
+    that ignored its instructions, and so its wording lives in one place.
+    """
+
+    disclaimer = f"※ {DISCLAIMER}"
+    if not verdict:
+        return disclaimer
+    return f"{VERDICT_MARK}\n{verdict}\n\n{disclaimer}"
 
 
 def _clean_text(text: str) -> str:

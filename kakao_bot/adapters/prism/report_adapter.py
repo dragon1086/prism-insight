@@ -19,6 +19,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import lru_cache
 
+from kakao_bot.adapters.prism.verdict import (
+    EVALUATE_TONE_SUFFIX,
+    VERDICT_INSTRUCTION,
+    append_verdict,
+    build_report_verdict,
+)
 from kakao_bot.ports.analysis import AnalysisOutcome
 from prism_core.report_service import generate_report
 
@@ -51,6 +57,10 @@ _ASK_TIMEOUT = 240
 # search) before it writes, so it needs more room than a single search does.
 _EVALUATE_TIMEOUT = 420
 _DEFAULT_PERIOD_MONTHS = 6
+# One short call over a report that already exists. Generous enough to survive a
+# retry inside the client, short enough that a stuck call cannot hold a finished
+# report hostage.
+_VERDICT_TIMEOUT = 60
 
 # Telegram's /ask answers in 3000 characters; Kakao's bubble is far smaller and
 # the renderer condenses anyway, but asking for less up front keeps the model
@@ -175,7 +185,10 @@ class PrismReportAdapter:
 
         return AnalysisOutcome(
             succeeded=True,
-            summary=artifact.content,
+            summary=append_verdict(
+                artifact.content,
+                _report_verdict(company_name, ticker, artifact.content),
+            ),
             pdf_path=str(artifact.pdf_path) if artifact.pdf_path else None,
         )
 
@@ -238,7 +251,12 @@ class PrismReportAdapter:
                     market=market,
                     avg_price=avg_price,
                     period_months=period_months,
-                    tone=tone or DEFAULT_TONE,
+                    # The shared agent reads `tone` as the requested speaking
+                    # style, which is where a Kakao-only closing rule belongs.
+                    # Anything Kakao adds to the prompt has to ride an argument
+                    # Kakao already owns; the evaluation prompt itself serves
+                    # Telegram too.
+                    tone=(tone or DEFAULT_TONE) + EVALUATE_TONE_SUFFIX,
                     background=background or DEFAULT_BACKGROUND,
                 ),
                 _ask_loop(),
@@ -291,6 +309,27 @@ def _ask_loop() -> asyncio.AbstractEventLoop:
                 daemon=True,
             ).start()
         return _loop
+
+
+def _report_verdict(company_name: str, ticker: str, report: str) -> str | None:
+    """Run the verdict call from the worker thread, never raising.
+
+    `generate` is synchronous and already holds a finished report by the time
+    this runs. Losing the closing line is an acceptable outcome; losing the
+    report because the extra call misbehaved is not.
+    """
+
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            build_report_verdict(company_name, ticker, report), _ask_loop()
+        )
+        return future.result(timeout=_VERDICT_TIMEOUT)
+    except FuturesTimeoutError:
+        logger.warning("Verdict timed out after %ss for %s", _VERDICT_TIMEOUT, ticker)
+        return None
+    except Exception:
+        logger.exception("Verdict call failed for %s", ticker)
+        return None
 
 
 async def _evaluate(
@@ -370,6 +409,8 @@ async def _ask_with_plan(question: str) -> tuple[str | None, SearchQueryPlan]:
     )
     if _STOCK_FORECAST_QUESTION.search(question):
         prompt += _FORECAST_GROUNDING
+    # Last, so the closing instruction is the one nearest the model's output.
+    prompt += VERDICT_INSTRUCTION
 
     queries = list(plan.queries)
     use_primary_sources = plan.use_primary_sources
