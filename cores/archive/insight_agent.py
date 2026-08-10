@@ -3,7 +3,8 @@ insight_agent.py — /insight 명령을 처리하는 메인 에이전트.
 
 흐름:
   1. retrieval: persistent_insights (FTS + embedding) + weekly_summary + report_archive
-  2. synthesis: mcp-agent Agent + AnthropicAugmentedLLM (claude-sonnet-4-6)
+  2. synthesis: mcp-agent Agent + AnthropicAugmentedLLM (기본 claude-sonnet-5,
+                INSIGHT_MODEL 로 교체 가능)
                 function calling으로 필요시 MCP 도구 자동 선택
                 (perplexity / firecrawl / yahoo_finance / kospi_kosdaq)
 
@@ -18,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -39,7 +41,9 @@ from .query_engine import QueryEngine, load_api_key
 logger = logging.getLogger(__name__)
 
 # Claude handles MCP function calling reliably in this repo (firecrawl pattern).
-DEFAULT_MODEL = "claude-sonnet-4-6"
+# Overridable so model swaps don't need a code change — the report path already
+# works this way via REPORT_MODEL.
+DEFAULT_MODEL = os.getenv("INSIGHT_MODEL", "claude-sonnet-5")
 _MAX_REPORTS_IN_CONTEXT = 6
 
 # MCP 서버 연결 순서 — 무료 우선, 유료 후순 (프롬프트 가드레일과 함께 동작)
