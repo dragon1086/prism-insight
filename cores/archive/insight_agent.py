@@ -24,6 +24,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel, Field
+
 from datetime import datetime, timezone, timedelta
 
 from mcp_agent.agents.agent import Agent
@@ -48,6 +50,87 @@ _MAX_REPORTS_IN_CONTEXT = 6
 
 # MCP 서버 연결 순서 — 무료 우선, 유료 후순 (프롬프트 가드레일과 함께 동작)
 _MCP_SERVERS = ["yahoo_finance", "kospi_kosdaq", "perplexity", "firecrawl"]
+
+# 도구 루프 상한. mcp-agent 기본값은 10인데, 그 값을 다 쓰면 마지막 턴에
+# 라이브러리가 "도구를 멈추고 최종 답변을 하라"는 프롬프트를 주입한다.
+# 그 프롬프트에는 JSON 요구가 없어서 모델이 산문으로 답하고, 결과적으로
+# JSON 파싱이 깨진다. 상한에 닿지 않는 것이 1차 방어선이다.
+_MAX_AGENT_ITERATIONS = 6
+
+# 도구 화이트리스트 (bare 이름 → mcp-agent 가 namespaced 이름으로 노출).
+#
+# firecrawl 서버는 도구를 24개 노출한다 — browser_*, monitor_*, crawl, extract,
+# search_feedback 등 이 에이전트가 쓸 일이 없는 것들이다. 이 숲을 그대로 주면
+# 모델이 길을 잃는다. 실제로 Sonnet 5 는 `firecrawl_search_feedback` 을
+# 전부 0 인 UUID 로 호출하고 `perplexity_ask` 를 'placeholder'·'ignore' 같은
+# 인자로 8번 호출해 유료 크레딧을 태웠다.
+#
+# 필터 dict 에 없는 서버는 필터링되지 않는다(전체 허용). yahoo_finance 를
+# 일부러 비워둔 이유는 현재 그 서버가 도구를 0개 노출하기 때문이다 —
+# uvx 캐시의 yahoo-finance-mcp 가 `mcp.server.fastmcp` 를 못 찾아 죽는다.
+# 고쳐지면 도구가 그대로 돌아오도록 열어둔다.
+_MCP_TOOL_ALLOWLIST = {
+    "perplexity": {"perplexity_ask"},
+    "firecrawl": {"firecrawl_scrape"},
+    "kospi_kosdaq": {
+        "load_all_tickers",
+        "get_stock_ohlcv",
+        "get_stock_market_cap",
+        "get_stock_fundamental",
+        "get_stock_trading_volume",
+        "get_index_ohlcv",
+        "get_sector_info",
+    },
+}
+
+# generate_str() 은 모든 반복의 assistant 턴을 이어붙이므로 tool_use 블록이
+# 이 문자열로 함께 들어온다. 사용자에게 절대 나가면 안 되는 표식이다.
+_TRACE_MARKER = "[Calling tool "
+
+
+def _balanced_json_objects(text: str) -> List[str]:
+    """텍스트에서 균형 잡힌 최상위 `{...}` 덩어리를 순서대로 뽑는다.
+
+    문자열 리터럴 안의 중괄호와 이스케이프를 건너뛴다. 최종 판정은 호출부의
+    `json.loads` 가 하므로 여기서는 후보만 만든다.
+    """
+    out: List[str] = []
+    depth = 0
+    start = None
+    in_str = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    out.append(text[start:i + 1])
+                    start = None
+    return out
+
+
+class InsightJSON(BaseModel):
+    """구조화 복구 패스용 스키마. 프롬프트의 응답 형식과 같은 모양이다."""
+
+    answer: str = ""
+    key_takeaways: List[str] = Field(default_factory=list)
+    tickers_mentioned: List[str] = Field(default_factory=list)
+    tools_used: List[str] = Field(default_factory=list)
+    evidence_report_ids: List[int] = Field(default_factory=list)
 
 
 @dataclass
@@ -232,19 +315,37 @@ class InsightAgent:
     # ------------------------------------------------------------------
     # JSON response parser — resilient to model quirks
     # ------------------------------------------------------------------
-    def _parse_response(self, raw: str) -> Dict[str, Any]:
+    def _parse_response(self, raw: str) -> Optional[Dict[str, Any]]:
+        """생성 텍스트에서 JSON 을 뽑는다. 실패하면 None — 원문을 답변으로
+        쓰지 않는다.
+
+        예전에는 파싱 실패 시 `raw[:1500]` 을 답변으로 내보냈다. generate_str()
+        이 도구 호출 추적을 포함하므로, 그 폴백은 내부 추적 텍스트를 그대로
+        사용자에게 보내는 경로였다(실제 사고: insight id=29, 정확히 1500자).
+        """
         # JSON 블록 추출 (```json ... ``` 또는 순수 JSON)
         text = raw.strip()
         fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-        candidate = fence.group(1) if fence else None
-        if not candidate:
-            m = re.search(r"\{.*\}", text, re.DOTALL)
-            candidate = m.group(0) if m else None
-        if candidate:
+        candidates: List[str] = [fence.group(1)] if fence else []
+        # 펜스가 없으면 균형 잡힌 최상위 객체를 뒤에서부터 시도한다.
+        # `re.search(r"\{.*\}", ...)` 는 탐욕적이라 도구 추적의 첫 `{` 부터
+        # 마지막 `}` 까지를 한 덩어리로 잡아 깨진다 — 추적 뒤에 순수 JSON 이
+        # 오는 실제 형태에서 정확히 그 일이 났다.
+        if not candidates:
+            candidates = list(reversed(_balanced_json_objects(text)))
+        for candidate in candidates:
             try:
                 obj = json.loads(candidate)
+                if "answer" not in obj:
+                    continue
+                answer = str(obj.get("answer") or "").strip()
+                if not answer or _TRACE_MARKER in answer:
+                    logger.warning(
+                        "InsightAgent: answer 가 비었거나 도구 추적을 포함한다"
+                    )
+                    return None
                 return {
-                    "answer": str(obj.get("answer") or raw[:1500]),
+                    "answer": answer,
                     "key_takeaways": [
                         str(x) for x in obj.get("key_takeaways", []) if x
                     ][:5],
@@ -261,13 +362,46 @@ class InsightAgent:
                 }
             except Exception as e:
                 logger.warning(f"InsightAgent JSON parse failed: {e}")
-        logger.warning("InsightAgent: fallback to raw response (no JSON)")
+        logger.warning("InsightAgent: 응답에서 JSON 을 찾지 못했다")
+        return None
+
+    async def _repair_to_json(self, llm) -> Optional[Dict[str, Any]]:
+        """JSON 파싱이 실패했을 때의 복구 패스.
+
+        `generate_structured` 는 Anthropic 의 강제 tool_call 로 스키마를 받아내는
+        한 턴 호출이라 형식이 보장된다. 도구를 주지 않으므로 추가 유료 호출도
+        없고, use_history=True 라 앞선 도구 결과를 그대로 활용한다.
+        """
+        try:
+            result = await llm.generate_structured(
+                message=(
+                    "위 조사 결과만으로 최종 답변을 만드세요. 새로 도구를 쓰지 마세요.\n"
+                    "answer 는 합쇼체 400~1200자로, 확인된 사실만 담으세요."
+                ),
+                response_model=InsightJSON,
+                request_params=RequestParams(
+                    model=self.model, maxTokens=4000, max_iterations=1,
+                ),
+            )
+        except Exception as e:
+            logger.error(f"InsightAgent structured 복구 실패: {e}")
+            return None
+
+        answer = (result.answer or "").strip()
+        if not answer or _TRACE_MARKER in answer:
+            return None
+        logger.info("InsightAgent: structured 복구 패스로 JSON 을 확보했다")
         return {
-            "answer": raw[:1500],
-            "key_takeaways": [raw[:200]] if raw else [],
-            "tickers_mentioned": [],
-            "tools_used": [],
-            "evidence_report_ids": [],
+            "answer": answer,
+            "key_takeaways": [str(x) for x in result.key_takeaways if x][:5],
+            "tickers_mentioned": [
+                str(x).upper() for x in result.tickers_mentioned if x
+            ][:10],
+            "tools_used": [str(x) for x in result.tools_used if x][:10],
+            "evidence_report_ids": [
+                int(x) for x in result.evidence_report_ids
+                if str(x).lstrip("-").isdigit()
+            ][:10],
         }
 
     # ------------------------------------------------------------------
@@ -301,6 +435,7 @@ class InsightAgent:
 
         # 3. Agent + LLM (archive-only legacy mcp-agent path)
         response_text = ""
+        parsed: Optional[Dict[str, Any]] = None
         try:
             today_kst = datetime.now(_KST).strftime("%Y-%m-%d")
             dated_prompt = (
@@ -328,8 +463,15 @@ class InsightAgent:
                         request_params=RequestParams(
                             model=self.model,
                             maxTokens=4000,
+                            max_iterations=_MAX_AGENT_ITERATIONS,
+                            tool_filter=_MCP_TOOL_ALLOWLIST,
                         ),
                     )
+                    # 세션이 살아 있는 동안 파싱한다. 실패 시 같은 대화 이력
+                    # 위에서 구조화 복구를 한 번 시도한다.
+                    parsed = self._parse_response(response_text)
+                    if parsed is None:
+                        parsed = await self._repair_to_json(llm)
             except Exception as agent_err:
                 logger.error(
                     f"InsightAgent LLM call failed: {agent_err}", exc_info=True
@@ -359,8 +501,22 @@ class InsightAgent:
                 remaining_quota=remaining, model_used=self.model,
             )
 
-        # 4. Parse response
-        parsed = self._parse_response(response_text)
+        # 4. 파싱·복구가 모두 실패하면 여기서 끝낸다.
+        #    원문에는 도구 호출 추적이 섞여 있어 사용자에게 내보낼 수 없다.
+        if parsed is None:
+            logger.error(
+                "InsightAgent: JSON 확보 실패 — 응답을 폐기한다 "
+                f"(raw {len(response_text)}자, trace={_TRACE_MARKER in response_text})"
+            )
+            return InsightResult(
+                answer=(
+                    "⚠️ 답변을 정리하는 데 실패했습니다. "
+                    "질문 범위를 좁혀 다시 시도해주세요."
+                ),
+                key_takeaways=[], tickers_mentioned=[], tools_used=[],
+                evidence_report_ids=[],
+                remaining_quota=remaining, model_used=self.model,
+            )
 
         # 5. Embedding for key_takeaways (fire-and-forget 성격)
         api_key = self._api_key or load_api_key()
