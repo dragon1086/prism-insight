@@ -52,12 +52,12 @@ def test_worked_example_from_spec():
     # 절반 익절 = 지금 비중의 절반을 목표로 선언한다
     f2 = e.apply_stance(st(2, "005930", w / 2), Quote("005930", D(20000)))
     assert f2.admit is Admit.ACCEPTED
-    assert approx(f2.realized_pnl, "0.049820")    # 문서값 (거래세 0.18%)
-    assert approx(e.book.cash, "0.99982")         # 문서값
-    assert approx(e.book.assets(), "1.099820")    # 문서값
+    assert approx(f2.realized_pnl, "0.0498")      # 문서값 (거래세 0.20%)
+    assert approx(e.book.cash, "0.9998")          # 문서값
+    assert approx(e.book.assets(), "1.0998")      # 문서값
     # 잔여 평가액 0.1 을 자산 1.0998 로 나눈 값. 매도 비용만큼 분모가 줄어 있으므로
     # 0.1/1.1 (=9.0909%) 이 아니라 9.0926% 다. 반올림하면 문서의 9.09% 와 같다.
-    assert approx(e.book.weight_of("005930"), D("0.1") / D("1.099820"), "1e-18")
+    assert approx(e.book.weight_of("005930"), D("0.1") / D("1.0998"), "1e-18")
     assert round(float(e.book.weight_of("005930")) * 100, 2) == 9.09
 
 
@@ -87,7 +87,7 @@ def test_exit_is_target_zero():
     f = e.apply_stance(st(2, "005930", "0"), Quote("005930", D(1000)))
     assert f.admit is Admit.ACCEPTED
     assert "005930" not in e.book.positions
-    assert approx(e.book.assets(), "0.9991")      # 매도 0.5 에 거래세 0.18%
+    assert approx(e.book.assets(), "0.999")       # 매도 0.5 에 거래세 0.20%
     assert e.result.closed_trades == 1
 
 
@@ -171,7 +171,7 @@ def test_delist_forces_liquidation():
     e.apply_event(MarketEvent(EventType.DELIST, "BAD", T0, final_price=D(100)))
     assert "BAD" not in e.book.positions
     assert e.result.closed_trades == 1
-    assert approx(e.book.assets(), "0.819964")    # 0.8 + 0.02*(1-0.0018)
+    assert approx(e.book.assets(), "0.81996")     # 0.8 + 0.02*(1-0.0020)
 
 
 def test_halt_freezes_price_and_blocks_trading():
@@ -330,3 +330,55 @@ def test_us_costs_differ():
     e.apply_stance(st(1, "AAPL", "0.5"), Quote("AAPL", D(200)))
     e.apply_stance(st(2, "AAPL", "0"), Quote("AAPL", D(200)))
     assert approx(e.book.assets(), "0.99995")     # 0.5 매도에 0.01%
+
+
+# ── 상한가·하한가 (방향별) ────────────────────────────────────────────────
+
+def test_upper_limit_blocks_buying_only():
+    """상한가에서는 살 물량이 없다. 그러나 파는 것은 오히려 유리하게 된다.
+
+    하나의 boolean 으로 뭉치면 상한가에서 매도까지 막게 되는데 그건 틀렸다.
+    """
+    e = Engine()
+    e.apply_stance(st(1, "UP", "0.4"), Quote("UP", D(1000)))
+
+    limited = Quote("UP", D(1300), at_upper_limit=True)
+    blocked = e.apply_stance(st(2, "UP", "0.8"), limited)
+    assert blocked.admit is Admit.REJECTED
+    assert "상한가" in blocked.reason
+
+    sold = e.apply_stance(st(3, "UP", "0"), limited)
+    assert sold.admit is Admit.ACCEPTED       # 매도는 막지 않는다
+
+
+def test_lower_limit_blocks_selling_only():
+    """하한가에서는 받아줄 사람이 없다. 그러나 사는 것은 가능하다."""
+    e = Engine()
+    e.apply_stance(st(1, "DN", "0.4"), Quote("DN", D(1000)))
+
+    limited = Quote("DN", D(700), at_lower_limit=True)
+    blocked = e.apply_stance(st(2, "DN", "0"), limited)
+    assert blocked.admit is Admit.REJECTED
+    assert "하한가" in blocked.reason
+
+    bought = e.apply_stance(st(3, "DN", "0.6"), limited)
+    assert bought.admit is Admit.ACCEPTED     # 매수는 막지 않는다
+
+
+def test_halt_blocks_both_directions():
+    e = Engine()
+    e.apply_stance(st(1, "HL", "0.4"), Quote("HL", D(1000)))
+    stopped = Quote("HL", D(1000), tradable=False)
+
+    assert e.apply_stance(st(2, "HL", "0.6"), stopped).admit is Admit.REJECTED
+    assert e.apply_stance(st(3, "HL", "0"), stopped).admit is Admit.REJECTED
+
+
+def test_quote_direction_properties():
+    assert Quote("A", D(1)).can_buy and Quote("A", D(1)).can_sell
+    assert not Quote("A", D(1), at_upper_limit=True).can_buy
+    assert Quote("A", D(1), at_upper_limit=True).can_sell
+    assert not Quote("A", D(1), at_lower_limit=True).can_sell
+    assert Quote("A", D(1), at_lower_limit=True).can_buy
+    assert not Quote("A", D(1), tradable=False).can_buy
+    assert not Quote("A", D(1), tradable=False).can_sell

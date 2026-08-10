@@ -157,3 +157,38 @@ def test_static_provider_for_demo():
     p = StaticQuoteProvider({"005930": 70000})
     assert p("KRX", "005930").price == D(70000)
     assert p("KRX", "000660") is None
+
+
+def test_provider_detects_upper_limit():
+    """상한가 도달 — 매수는 막고 매도는 허용해야 한다."""
+    q = KisQuoteProvider(FakeKis({
+        "current_price": 300000, "iscd_stat_cls_code": "00",
+        "upper_limit": "300000", "lower_limit": "162000",
+    }))("KRX", "005930")
+    assert q.at_upper_limit and not q.can_buy
+    assert q.can_sell
+
+
+def test_provider_detects_lower_limit():
+    q = KisQuoteProvider(FakeKis({
+        "current_price": 162000, "iscd_stat_cls_code": "00",
+        "upper_limit": "300000", "lower_limit": "162000",
+    }))("KRX", "005930")
+    assert q.at_lower_limit and not q.can_sell
+    assert q.can_buy
+
+
+def test_normal_price_has_no_limit_flags():
+    """실측값 — 삼성전자 231,500 / 상한가 300,000 / 하한가 162,000"""
+    q = KisQuoteProvider(FakeKis({
+        "current_price": 231500, "iscd_stat_cls_code": "55",
+        "upper_limit": "300000", "lower_limit": "162000",
+    }))("KRX", "005930")
+    assert not q.at_upper_limit and not q.at_lower_limit
+    assert q.can_buy and q.can_sell
+
+
+def test_missing_limit_fields_are_ignored():
+    """필드가 없으면 판정하지 않는다 — 없다고 막아버리면 안 된다."""
+    q = KisQuoteProvider(FakeKis({"current_price": 1000, "iscd_stat_cls_code": "00"}))("KRX", "A")
+    assert not q.at_upper_limit and not q.at_lower_limit

@@ -34,9 +34,13 @@ class KisQuoteProvider:
         provider = KisQuoteProvider(DomesticStockTrading(mode="real"))
         service = StanceService(ledger=..., quote_provider=provider)
 
-    ⚠️ 상한가 잠김(매도 잔량 0)은 판정하지 못한다.
-       현재가 API 에 호가 잔량이 없기 때문이다. 거래정지만 걸러진다.
-       상한가 판정을 넣으려면 호가 API(inquire-asking-price)를 추가로 붙여야 한다.
+    현재가 API 응답에 상한가(stck_mxpr)·하한가(stck_llam)가 함께 오므로
+    **추가 호출 없이** 방향별 체결 가능성을 판정한다.
+
+    ⚠️ 정확히는 "상한가 도달" 이지 "상한가 잠김(매도 잔량 0)" 이 아니다.
+       호가 잔량은 별도 API(inquire-asking-price)에만 있다.
+       상한가에 닿았으나 물량이 남아 살 수 있는 경우까지 거부하므로 보수적이다.
+       그 편이 "못 사는데 샀다고 인정" 하는 것보다 낫다고 판단했다.
     """
 
     def __init__(self, trading_client, source: str = "kis"):
@@ -63,12 +67,27 @@ class KisQuoteProvider:
             return None
 
         status = str(data.get("iscd_stat_cls_code", "")).strip()
+        current = Decimal(str(price))
+        upper = _to_decimal(data.get("upper_limit"))
+        lower = _to_decimal(data.get("lower_limit"))
+
         return Quote(
             symbol=symbol,
-            price=Decimal(str(price)),
+            price=current,
             tradable=status not in HALTED,
+            at_upper_limit=upper is not None and current >= upper,
+            at_lower_limit=lower is not None and current <= lower,
             source=self.source,
         )
+
+
+def _to_decimal(value) -> Decimal | None:
+    """KIS 는 숫자를 문자열로 준다. 비었거나 0 이면 판정에 쓰지 않는다."""
+    try:
+        d = Decimal(str(value).strip())
+    except Exception:
+        return None
+    return d if d > 0 else None
 
 
 class StaticQuoteProvider:

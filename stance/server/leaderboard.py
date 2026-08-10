@@ -101,6 +101,8 @@ def _empty_board(profile: MarketProfile) -> dict:
         "price_authority": profile.price_authority,
         "mark_at": profile.mark_at,
         "min_track_periods": profile.min_track_periods,
+        # 채점에 쓰인 세율을 남긴다. 나중에 바뀌어도 과거 결과를 해석할 수 있어야 한다.
+        "sell_tax": float(profile.costs.tax),
         "notes": list(profile.notes),
         "entries": [],
     }

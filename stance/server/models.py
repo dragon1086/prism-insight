@@ -89,13 +89,32 @@ class Stance:
 
 @dataclass(frozen=True)
 class Quote:
-    """서버가 그 순간 직접 찍은 시세. 참여자는 가격을 보낼 수 없다."""
+    """서버가 그 순간 직접 찍은 시세. 참여자는 가격을 보낼 수 없다.
+
+    체결 가능성은 **방향마다 다르다.**
+
+        거래정지   양쪽 다 불가
+        상한가     매수 불가 (살 물량이 없다). 매도는 오히려 유리하게 된다
+        하한가     매도 불가 (받아줄 사람이 없다). 매수는 가능하다
+
+    하나의 boolean 으로 뭉치면 상한가에서 매도까지 막게 되는데, 그건 틀렸다.
+    """
 
     symbol: str
     price: Decimal
-    tradable: bool = True          # 상한가 잠김·거래정지면 False
+    tradable: bool = True            # 거래정지 등 양방향 불가
+    at_upper_limit: bool = False     # 상한가 도달
+    at_lower_limit: bool = False     # 하한가 도달
     observed_at: datetime | None = None
     source: str = "primary"
+
+    @property
+    def can_buy(self) -> bool:
+        return self.tradable and not self.at_upper_limit
+
+    @property
+    def can_sell(self) -> bool:
+        return self.tradable and not self.at_lower_limit
 
 
 @dataclass(frozen=True)
@@ -160,7 +179,7 @@ class Costs:
 
     반영한다 — 법정 거래세. 누가 어느 증권사에서 팔든 세율은 같다.
               그리고 "얼마나 자주 거래할 것인가" 는 집행이 아니라 판단이다.
-              반영하지 않으면 연 100회전 전략에게 18%p 를 공짜로 주는 셈이 된다.
+              반영하지 않으면 연 100회전 전략에게 20%p 를 공짜로 주는 셈이 된다.
 
     빼놓는다 — 증권사 수수료(회사마다 다르다), 호가 스프레드와 시장충격
               (주문 크기·유동성·집행 실력에 따라 달라진다).
@@ -169,11 +188,20 @@ class Costs:
     빠진 비용은 고회전 전략에 유리하게 작용하므로,
     회전율을 전략 카드에 항상 함께 노출해 해석 가능하게 만든다.
 
-    ⚠️ 세율은 시기와 시장에 따라 바뀐다. 아래 값은 초안이며
-       실제 운영 전에 반드시 확인하고, 채점 프로파일 버전에 함께 기록해야 한다.
+    ── KRX 세율 (2026-01-01 시행) ─────────────────────────────────────
+
+        KOSPI    증권거래세 0.05% + 농어촌특별세 0.15%  = 0.20%
+        KOSDAQ   증권거래세 0.20% (농특세 없음)          = 0.20%
+        KONEX    0.10%  ← 구분하지 않는다. KRX 를 0.20% 로 본다
+
+    둘 다 0.20% 라 상수 하나로 충분하다. **전액 법정 부담**이므로
+    "모두에게 똑같이 적용되는 것만 반영한다" 는 기준에 정확히 들어맞는다.
+
+    ⚠️ 세율은 바뀐다. 2026년에도 인상되었다(코스피 0% → 0.05%).
+       바꿀 때는 채점 프로파일 버전을 함께 올려 과거 채점과 구분해야 한다.
     """
 
-    tax: Decimal = Decimal("0.0018")            # 법정 거래세 (매도 시)
+    tax: Decimal = Decimal("0.0020")            # 법정 거래세 + 농특세 (매도 시)
     commission: Decimal = Decimal("0")          # 증권사 수수료 — 의도적으로 0
     dividend_tax: Decimal = Decimal("0.154")    # 배당소득세
 

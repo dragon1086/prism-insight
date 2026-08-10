@@ -167,8 +167,8 @@ class Engine:
             return fill
 
         if not quote.tradable or symbol in self.book.halted:
-            # 상한가 잠김·하한가 잠김·거래정지 — 현실에서 체결할 수 없다
-            return self._reject(stance, "체결 불가 상태")
+            # 거래정지 — 양방향 모두 불가하므로 방향을 따질 필요가 없다
+            return self._reject(stance, "거래정지")
 
         price = quote.price
         self.book.last_price[symbol] = price
@@ -191,7 +191,15 @@ class Engine:
                         assets_after=total)
 
         if delta > ZERO:
+            if not quote.can_buy:
+                # 상한가 — 살 물량이 없다. 막지 않으면 매일 상한가만 담는 전략이
+                # 현실에서 한 주도 못 사면서 순위표 1등을 한다.
+                return self._reject(stance, "상한가 — 매수 불가")
             return self._buy(stance, symbol, price, delta, target)
+
+        if not quote.can_sell:
+            # 하한가 — 받아줄 사람이 없다. 매도는 인정하지 않는다.
+            return self._reject(stance, "하한가 — 매도 불가")
         return self._sell(stance, symbol, price, -delta, target, cur_value)
 
     def _buy(
