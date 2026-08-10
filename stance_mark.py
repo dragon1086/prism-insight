@@ -54,6 +54,24 @@ def build_calendar(market: str):
     return is_market_day
 
 
+def _write_dashboard_json(ledger, path: str) -> None:
+    """리더보드 JSON 을 갱신한다. 실패해도 마감 자체는 성공으로 둔다."""
+    from stance.server.leaderboard import build, preparing, write_json
+
+    try:
+        rows = ledger.conn.execute(
+            "SELECT strategy_id, display_name, handle, market FROM strategies"
+            " ORDER BY created_at"
+        ).fetchall()
+        entries = [(r["strategy_id"], r["display_name"], r["handle"], r["market"])
+                   for r in rows]
+        payload = build(ledger, entries) if entries else preparing(["KRX"])
+        write_json(payload, path)
+        logger.info("리더보드 JSON 갱신: %s (전략 %d개)", path, len(entries))
+    except Exception:
+        logger.exception("리더보드 JSON 갱신 실패 — 마감은 성공했다")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Stance 하루 마감")
     parser.add_argument("--market", default="KRX")
@@ -62,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--quotes", default=os.getenv("STANCE_QUOTES", "kis"))
     parser.add_argument("--ignore-calendar", action="store_true",
                         help="휴장일 필터를 끈다. 테스트용")
+    parser.add_argument("--dashboard-json",
+                        default=os.getenv("STANCE_DASHBOARD_JSON"),
+                        help="리더보드 JSON 을 쓸 경로. 대시보드가 이 파일을 읽는다")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=os.getenv("STANCE_LOG_LEVEL", "INFO"),
@@ -82,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
         on = date.fromisoformat(args.date) if args.date else None
         result = close_day(ledger, args.market, fetcher, on=on, is_trading_day=calendar)
         print(result)
+
+        # 마감 직후 리더보드를 다시 만든다. 계산장부라 언제든 재생성해도 된다.
+        if args.dashboard_json:
+            _write_dashboard_json(ledger, args.dashboard_json)
         return 0
     finally:
         ledger.close()

@@ -19,6 +19,7 @@ from stance.server import (
 from stance.server.markets import (
     CRYPTO, KRX, NASDAQ, PROFILES, Support, describe, profile_for, stable_markets,
 )
+from stance.server.models import Costs
 
 UTC = timezone.utc
 T0 = datetime(2026, 8, 10, 0, 30, tzinfo=UTC)
@@ -206,3 +207,21 @@ def test_all_profiles_are_self_consistent():
         assert p.mark_at
         if p.is_experimental:
             assert p.notes, f"{code}: 실험적이면 미해결 항목을 밝혀야 한다"
+
+
+def test_profile_tax_matches_the_current_statutory_rate():
+    """프로파일의 세율이 곧 채점에 쓰이는 값이다.
+
+    models.Costs 기본값만 고치고 프로파일의 하드코딩 값을 놓쳐
+    실제로는 옛 세율로 채점되던 적이 있다. 배포 후에야 드러났다.
+    """
+    assert KRX.costs.tax == D("0.0020")      # 2026-01-01 시행
+    assert KRX.costs.sell_fee == D("0.0020")  # 증권사 수수료는 0
+    assert Costs().tax == KRX.costs.tax       # 기본값과 프로파일이 어긋나면 안 된다
+
+
+def test_every_stable_profile_declares_its_tax_explicitly():
+    for code, p in PROFILES.items():
+        if p.support is Support.STABLE:
+            assert p.costs.tax >= 0, code
+            assert p.costs.commission == D(0), f"{code}: 증권사 수수료는 반영하지 않는다"

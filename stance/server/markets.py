@@ -97,7 +97,8 @@ KRX = MarketProfile(
     code="KRX",
     currency="KRW",
     support=Support.STABLE,
-    costs=Costs(tax=Decimal("0.0018"), dividend_tax=Decimal("0.154")),
+    # 2026-01-01 시행: 코스피 거래세 0.05% + 농특세 0.15%, 코스닥 0.20%
+    costs=Costs(tax=Decimal("0.0020"), dividend_tax=Decimal("0.154")),
     periods_per_year=252,
     downside_floor_daily=0.0005,
     price_authority="한국거래소 정규장 체결가",
