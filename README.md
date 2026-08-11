@@ -28,6 +28,30 @@
   <a href="README_es.md">Español</a>
 </p>
 
+## Stance — The Open Decision Layer for Every Strategy
+
+<p align="center">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Stance ecosystem: strategies declare target weights, an immutable ledger seals time and price, market data calculates performance, and a public dashboard compares results" width="100%">
+</p>
+
+**Most track records show the result after the fact. Stance records the decision before the market moves.** Publish one target weight; the server seals its time and price; the dashboard measures every strategy under the same rules. No balances, account numbers, or broker keys.
+
+- **Build** — connect any human, bot, or model with one HTTP request
+- **Verify** — replace screenshots and return claims with timestamped decisions
+- **Compare** — turn independent strategies into a shared, auditable ecosystem
+
+**[Connect in minutes](stance/QUICKSTART.md)** · **[Read the open standard](stance/spec/core-spec.md)** · **[Explore the live dashboard](https://analysis.stocksimulation.kr/)**
+
+<details>
+<summary><strong>Developer view — two messages, five rules</strong></summary>
+
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Stance integration guide: register, declare target weights, verify, and publish performance" width="100%">
+</p>
+
+A target weight above the current weight means buy, below means sell, and `0` means exit. The protocol needs no separate buy/sell command. Copy-ready curl, Python, JavaScript, retries, and key rotation are in the **[quickstart](stance/QUICKSTART.md)**.
+</details>
+
 ---
 
 ### Platinum Sponsor
@@ -42,31 +66,6 @@
 AI3, creator of **WrksAI** - the AI assistant for professionals,<br>
 proudly sponsors **PRISM-INSIGHT** - the AI assistant for investors.
 </div>
-
----
-
-## NEW: Stance — An Open Protocol for Trading Decisions
-
-<p align="center">
-  <img src="docs/images/stance-integration-en.png" alt="Stance integration guide: register, declare target weights, verify, and publish performance" width="100%">
-</p>
-
-**Comparing trading systems has been impossible.** Screenshots can be edited, and verifying a track record means opening your entire account.
-
-**Stance flips the question.** Instead of *"how much did you make?"* it asks *"what are you buying right now?"* A statement already made cannot be falsified — the server stamps the receipt time, and the market decides the rest. So **you never expose your account**: balances, account numbers and broker keys do not exist in the protocol.
-
-Two messages and five rules are the entire standard.
-
-```json
-{ "protocol": "stance/1", "strategy": "my-strategy", "seq": 42,
-  "symbol": "005930", "target_weight": 0.10 }
-```
-
-A target weight above the current one means buying, below means selling, `0` means exit. **There is no buy/sell distinction.**
-
-- 📐 **[Read the specification](stance/spec/core-spec.md)** — layered like MCP: the core knows nothing about scoring or asset class
-- 🔌 **[Integration quickstart](stance/QUICKSTART.md)** — curl, Python, JavaScript, retries, and key rotation
-- 🏆 **Leaderboard** — see the **Stance** tab on the dashboard
 
 ---
 

@@ -28,6 +28,30 @@
   <a href="README_es.md">Español</a>
 </p>
 
+## Stance — 面向所有策略的开放决策层
+
+<p align="center">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Stance 生态：策略声明目标权重，不可篡改的账本封存时间和价格，公开仪表盘统一比较结果" width="100%">
+</p>
+
+**传统业绩记录只展示事后结果，Stance 记录市场波动前的决策。** 发布一个目标权重，服务器封存时间和价格，仪表盘用同一套规则评估每个策略。无需余额、账号或券商密钥。
+
+- **连接** — 人、机器人或 AI，只需一次 HTTP 请求
+- **验证** — 用带时间戳的决策记录取代截图和事后宣称
+- **比较** — 将独立策略汇入可审计的开放生态
+
+**[几分钟完成接入](stance/QUICKSTART.md)** · **[阅读开放标准](stance/spec/core-spec.md)** · **[查看实时仪表盘](https://analysis.stocksimulation.kr/)**
+
+<details>
+<summary><strong>开发者速览 — 两类消息、五条规则</strong></summary>
+
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Stance 接入指南：注册、声明目标权重、验证并公开绩效" width="100%">
+</p>
+
+目标权重高于当前值代表买入，低于当前值代表卖出，`0`代表清仓；协议无需单独的买卖命令。可直接复制的 curl、Python、JavaScript 示例，以及重试和密钥轮换说明，均在**[快速入门](stance/QUICKSTART.md)**中。
+</details>
+
 ---
 
 ### 铂金赞助商
@@ -42,31 +66,6 @@
 **WrksAI** 的开发者 **AI3** —— 专为职场人士打造的 AI 助手，<br>
 自豪地赞助 **PRISM-INSIGHT** —— 专为投资者打造的 AI 助手。
 </div>
-
----
-
-## 新功能：Stance — 交易决策公开协议
-
-<p align="center">
-  <img src="docs/images/stance-integration-en.png" alt="Stance integration guide: register, declare target weights, verify, and publish performance" width="100%">
-</p>
-
-**运行系统交易的人很多，却没有办法比较谁的系统更好。** 截图可以编辑，要验证收益就得把整个账户摊开。
-
-**Stance 把问题反转了。** 它不问 *"你赚了多少"*，而是问 *"你现在要买什么"*。已经说出口的宣告无法伪造，之后由市场决定。因此 **你不需要公开账户** — 余额、账号、券商密钥都不存在于协议之中。
-
-两条消息和五条规则就是标准的全部。
-
-```json
-{ "protocol": "stance/1", "strategy": "my-strategy", "seq": 42,
-  "symbol": "005930", "target_weight": 0.10 }
-```
-
-目标权重高于当前即为买入，低于即为卖出，`0` 表示清仓。**没有买卖之分。**
-
-- 📐 **[阅读规范](stance/spec/core-spec.md)** — 像 MCP 一样分层，核心不关心评分方式，也不关心资产类别
-- 🔌 **[Integration quickstart](stance/QUICKSTART.md)** — curl, Python, JavaScript, retries, and key rotation
-- 🏆 **排行榜** — 请查看仪表盘的 **Stance** 标签页
 
 ---
 

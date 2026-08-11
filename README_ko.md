@@ -28,6 +28,30 @@
   <a href="README_es.md">Español</a>
 </p>
 
+## Stance — 모든 전략을 위한 공개 판단 인프라
+
+<p align="center">
+  <img src="docs/images/stance-ecosystem-ko.png" alt="Stance 생태계: 전략이 목표 비중을 선언하면 원장이 시각과 가격을 봉인하고, 시장 데이터로 성과를 계산해 공개 대시보드에서 비교" width="100%">
+</p>
+
+**기존 수익률 인증은 결과부터 보여줍니다. Stance는 시장이 움직이기 전의 판단부터 기록합니다.** 목표 비중 하나를 공개하면 서버가 시각과 가격을 봉인하고, 대시보드가 모든 전략을 같은 규칙으로 평가합니다. 잔고·계좌번호·증권사 키는 받지 않습니다.
+
+- **연결** — 사람·봇·AI, 무엇이든 HTTP 요청 한 번
+- **검증** — 캡처와 사후 주장 대신 시각이 찍힌 판단 기록
+- **확장** — 흩어진 전략을 비교 가능한 공개 생태계로
+
+**[몇 분 만에 연동](stance/QUICKSTART_ko.md)** · **[공개 표준 읽기](stance/spec/core-spec.md)** · **[라이브 대시보드](https://analysis.stocksimulation.kr/)**
+
+<details>
+<summary><strong>개발자용 한눈 요약 — 메시지 2개, 규칙 5개</strong></summary>
+
+<p align="center">
+  <img src="docs/images/stance-integration-ko.png" alt="Stance 연동 가이드: 전략 등록, 목표 비중 선언, 서버 검증, 성과 공개" width="100%">
+</p>
+
+목표 비중이 현재보다 크면 매수, 작으면 매도, `0`이면 청산입니다. 별도의 매수·매도 명령은 없습니다. 복사해서 쓰는 curl·Python·JavaScript 예제와 재시도·키 교체는 **[빠른 시작](stance/QUICKSTART_ko.md)**에 모았습니다.
+</details>
+
 ---
 
 ### 플래티넘 스폰서
@@ -42,31 +66,6 @@
 직장인을 위한 AI 비서 **웍스AI**를 만드는 **AI3**가<br>
 투자자를 위한 AI 비서 **PRISM-INSIGHT**를 후원합니다.
 </div>
-
----
-
-## 신기능: Stance — 매매 판단 공개 프로토콜
-
-<p align="center">
-  <img src="docs/images/stance-integration-ko.png" alt="Stance 연동 가이드: 전략 등록, 목표 비중 선언, 서버 검증, 성과 공개" width="100%">
-</p>
-
-**시스템 트레이딩을 돌리는 사람은 많은데 누구 시스템이 더 나은지 비교할 방법이 없었습니다.** 수익률 인증은 편집할 수 있고, 검증하려면 계좌를 통째로 열어야 하니까요.
-
-**Stance는 질문을 뒤집습니다.** *"얼마 벌었어?"* 대신 *"지금 뭘 살 건데?"* 를 묻습니다. 이미 뱉은 말은 조작할 수 없고, 그 다음은 시장이 정해줍니다. 그래서 **계좌를 공개할 필요가 없습니다** — 잔고도, 계좌번호도, 증권사 키도 프로토콜에 존재하지 않습니다.
-
-메시지 2개와 규칙 5개가 표준의 전부입니다.
-
-```json
-{ "protocol": "stance/1", "strategy": "my-strategy", "seq": 42,
-  "symbol": "005930", "target_weight": 0.10 }
-```
-
-목표 비중이 지금보다 크면 사는 것이고 작으면 파는 것입니다. `0`이면 청산이고요. **매수와 매도라는 구분이 없습니다.**
-
-- 📐 **[표준 문서 보기](stance/spec/core-spec.md)** — MCP처럼 레이어를 나눠, 코어는 채점 방식도 자산군도 모릅니다
-- 🔌 **[연동 빠른 시작](stance/QUICKSTART_ko.md)** — curl·Python·JavaScript, 재시도, 키 교체까지 한 문서
-- 🏆 **리더보드** — 대시보드의 **Stance** 탭에서 확인하세요
 
 ---
 
