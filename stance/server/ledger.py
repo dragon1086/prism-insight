@@ -195,7 +195,24 @@ class Ledger:
     # ── 원장 기록 ─────────────────────────────────────────────────────────
 
     def _tail_hash(self, table: str) -> str | None:
-        row = self.conn.execute(f"SELECT hash FROM {table} ORDER BY id DESC LIMIT 1").fetchone()
+        if table == "stances":
+            row = self.conn.execute(
+                "SELECT hash FROM stances ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        elif table == "quotes":
+            row = self.conn.execute(
+                "SELECT hash FROM quotes ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        elif table == "market_events":
+            row = self.conn.execute(
+                "SELECT hash FROM market_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        elif table == "daily_marks":
+            row = self.conn.execute(
+                "SELECT hash FROM daily_marks ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        else:
+            raise ValueError(f"해시체인 대상이 아닙니다: {table}")
         return row["hash"] if row else None
 
     def append_stance(
@@ -373,7 +390,17 @@ class Ledger:
         그것이 운영자 조작을 막는 유일한 방법이다.
         """
         prev: str | None = None
-        for r in self.conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall():
+        if table == "stances":
+            rows = self.conn.execute("SELECT * FROM stances ORDER BY id").fetchall()
+        elif table == "quotes":
+            rows = self.conn.execute("SELECT * FROM quotes ORDER BY id").fetchall()
+        elif table == "market_events":
+            rows = self.conn.execute("SELECT * FROM market_events ORDER BY id").fetchall()
+        elif table == "daily_marks":
+            rows = self.conn.execute("SELECT * FROM daily_marks ORDER BY id").fetchall()
+        else:
+            raise ValueError(f"해시체인 대상이 아닙니다: {table}")
+        for r in rows:
             if r["prev_hash"] != prev:
                 return False
             prev = r["hash"]

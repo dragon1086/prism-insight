@@ -138,7 +138,8 @@ class Engine:
             self.result.fills.append(fill)
             return fill
 
-        assert stance.symbol is not None and stance.target_weight is not None
+        if stance.symbol is None or stance.target_weight is None:
+            return self._reject(stance, "set 선언 형식 오류")
         symbol = normalize_symbol(stance.symbol, self.market)
         fill = self._apply_set(stance, symbol, stance.target_weight, quote)
         self.result.fills.append(fill)
@@ -305,7 +306,7 @@ class Engine:
             if pos:
                 moved_qty = pos.qty * ratio
                 moved_cost = pos.qty * pos.avg_cost      # 원가는 보존한다
-                old = self.book.positions.pop(ev.symbol)
+                self.book.positions.pop(ev.symbol)
                 tgt = self.book.positions.get(dest)
                 if tgt is None:
                     self.book.positions[dest] = Position(
@@ -318,7 +319,6 @@ class Engine:
                 self._peak_weight[dest] = max(
                     self._peak_weight.get(dest, ZERO), self._peak_weight.pop(ev.symbol, ZERO)
                 )
-                del old
             if ev.symbol in self.book.last_price:
                 px = self.book.last_price.pop(ev.symbol)
                 self.book.last_price.setdefault(dest, px / ratio)
