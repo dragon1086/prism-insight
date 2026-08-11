@@ -125,6 +125,11 @@ def _select_mcp_servers(
     """Expose only servers necessary for this question."""
     if _is_archive_only_question(question):
         return []
+    # Broad screening is grounded in the diversified, latest archive set.
+    # Live tools are reserved for a follow-up about a concrete ticker; there is
+    # no reliable per-tool hard cap in mcp-agent's loop.
+    if _is_broad_recommendation(question):
+        return []
     market = hints.get("market")
     if market == "kr":
         servers = ["kospi_kosdaq"]
@@ -154,6 +159,19 @@ def _strip_internal_tool_status(answer: str) -> str:
     paragraphs = re.split(r"\n\s*\n", answer or "")
     clean = [p for p in paragraphs if not _has_internal_tool_status(p)]
     return "\n\n".join(clean).strip()
+
+
+def _clean_answer_text(answer: str) -> str:
+    """Remove structured-output residue accidentally embedded in answer."""
+    text = (answer or "").strip()
+    text = re.split(
+        r"</?answer>|<key_takeaways>|<tickers_mentioned>|<tools_used>|"
+        r"<evidence_report_ids>|</invoke>",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return text.strip()
 
 
 def _extract_actual_tools(raw: str) -> List[str]:
@@ -472,7 +490,7 @@ class InsightAgent:
                 obj = json.loads(candidate)
                 if "answer" not in obj:
                     continue
-                answer = str(obj.get("answer") or "").strip()
+                answer = _clean_answer_text(str(obj.get("answer") or ""))
                 if not answer or _TRACE_MARKER in answer:
                     logger.warning(
                         "InsightAgent: answer 가 비었거나 도구 추적을 포함한다"
@@ -548,7 +566,7 @@ class InsightAgent:
             logger.error(f"InsightAgent structured 복구 실패: {e}")
             return None
 
-        answer = (result.answer or "").strip()
+        answer = _clean_answer_text(result.answer or "")
         if not answer or _TRACE_MARKER in answer:
             return None
         logger.info("InsightAgent: structured 복구 패스로 JSON 을 확보했다")
@@ -607,6 +625,7 @@ class InsightAgent:
                 f"{INSIGHT_SYSTEM_PROMPT}"
             )
             archive_only = _is_archive_only_question(question)
+            broad_recommendation = _is_broad_recommendation(question)
             hints = parse_query_hints(question)
             server_names = _select_mcp_servers(question, hints)
             tool_filter = {} if archive_only else _MCP_TOOL_ALLOWLIST
@@ -615,6 +634,14 @@ class InsightAgent:
                     "\n\n# 이번 요청의 도구 정책\n"
                     "사용자가 PRISM 아카이브만 요청했습니다. 외부 검색이나 "
                     "MCP 도구를 사용하지 말고 제공된 리포트만 근거로 답하세요."
+                )
+            elif broad_recommendation:
+                dated_prompt += (
+                    "\n\n# 이번 요청의 선별 정책\n"
+                    "여러 종목의 최신 대표 리포트가 이미 제공됐습니다. 도구를 "
+                    "사용하지 말고 이 후보군을 비교해 1차 선별 결과를 답하세요. "
+                    "장기 수익률·MDD가 부족하면 그 한계를 사용자 데이터 관점에서 "
+                    "설명하고, 내부 실행 상태나 도구는 언급하지 마세요."
                 )
             else:
                 dated_prompt += (
