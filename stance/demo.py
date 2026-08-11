@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stance.server import (
     Costs, DailyMark, Engine, EventType, Kind, Ledger,
-    MarketEvent, Quote, Stance, replay, score, summary_lines,
+    MarketEvent, Quote, Stance, score, summary_lines,
 )
 
 UTC = timezone.utc
@@ -29,7 +29,8 @@ SYMBOLS = ["005930", "000660", "035420", "051910"]
 
 def price_paths(days: int, seed: int) -> dict[str, list[D]]:
     """재현 가능한 가상 시세."""
-    rng = random.Random(seed)
+    # 재현 가능한 데모 시세용이다. 키·토큰 등 보안 난수를 만들지 않는다.
+    rng = random.Random(seed)  # noqa: S311  # nosec B311
     out = {}
     for s in SYMBOLS:
         px, path = 10_000.0, []
@@ -79,7 +80,8 @@ def run_strategy(name: str, decide, days: int = 80, seed: int = 7) -> None:
     for line in summary_lines(m):
         print("│ " + line)
     print("└" + "─" * 58)
-    assert led.verify_chain("stances"), "해시체인 검증 실패"
+    if not led.verify_chain("stances"):
+        raise RuntimeError("해시체인 검증 실패")
     led.close()
 
 

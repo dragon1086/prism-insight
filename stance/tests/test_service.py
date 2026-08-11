@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import timezone
 from decimal import Decimal as D
 
 import pytest

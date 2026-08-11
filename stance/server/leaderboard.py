@@ -19,7 +19,6 @@ from pathlib import Path
 from .engine import replay
 from .ledger import Ledger
 from .markets import MarketProfile, profile_for
-from .models import Cadence
 from .scoring import PROFILE_VERSION, Metrics, score
 
 SCHEMA = "stance-leaderboard/1"

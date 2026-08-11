@@ -227,6 +227,13 @@ def test_hash_chain_detects_tampering():
     led.close()
 
 
+def test_hash_chain_rejects_unknown_table_name():
+    led = Ledger()
+    with pytest.raises(ValueError, match="해시체인 대상"):
+        led.verify_chain("stances; DROP TABLE strategies")
+    led.close()
+
+
 def test_ledger_roundtrip_replays_identically():
     """원장만 있으면 누구든 같은 결과를 재현할 수 있다."""
     led = Ledger()
