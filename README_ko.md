@@ -40,7 +40,7 @@
 - **검증** — 캡처와 사후 주장 대신 시각이 찍힌 판단 기록
 - **확장** — 흩어진 전략을 비교 가능한 공개 생태계로
 
-**[몇 분 만에 연동](stance/QUICKSTART_ko.md)** · **[공개 표준 읽기](stance/spec/core-spec.md)** · **[라이브 대시보드](https://analysis.stocksimulation.kr/)**
+**[몇 분 만에 연동](stance/QUICKSTART_ko.md)** · **[공개 표준 읽기](stance/spec/core-spec.md)** · **[라이브 대시보드](https://analysis.stocksimulation.kr/?tab=stance)**
 
 <details>
 <summary><strong>개발자용 한눈 요약 — 메시지 2개, 규칙 5개</strong></summary>

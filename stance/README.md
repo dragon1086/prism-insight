@@ -155,8 +155,9 @@ STANCE_DB=/var/lib/prism-stance/ledger.db python -m stance_server
 SQLite 다중 프로세스 쓰기 경합도 생긴다. 수평 확장이 필요해지면
 장부 캐시를 프로세스 밖으로 빼고 원장을 Postgres 로 옮겨야 한다.
 
-**③ 공개 서버는 등록을 잠근다.** `STANCE_REGISTRATION_TOKEN`을 설정하면
-`POST /strategies`가 `X-Stance-Registration-Token` 헤더를 요구한다.
+**③ 공개 등록은 대시보드 앱 서버를 통한다.** 내부 Stance 서버에는
+`STANCE_REGISTRATION_TOKEN`을 설정하고 `127.0.0.1`에만 바인딩한다. 대시보드 서버가
+같은 비밀값을 내부 요청에만 주입한다. 브라우저와 참여자는 등록 토큰을 받지 않는다.
 
 ---
 

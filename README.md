@@ -40,7 +40,7 @@
 - **Verify** — replace screenshots and return claims with timestamped decisions
 - **Compare** — turn independent strategies into a shared, auditable ecosystem
 
-**[Connect in minutes](stance/QUICKSTART.md)** · **[Read the open standard](stance/spec/core-spec.md)** · **[Explore the live dashboard](https://analysis.stocksimulation.kr/)**
+**[Connect in minutes](stance/QUICKSTART.md)** · **[Read the open standard](stance/spec/core-spec.md)** · **[Explore the live dashboard](https://analysis.stocksimulation.kr/?tab=stance)**
 
 <details>
 <summary><strong>Developer view — two messages, five rules</strong></summary>

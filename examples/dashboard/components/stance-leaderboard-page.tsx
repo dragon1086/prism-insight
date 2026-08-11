@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useLanguage } from "@/components/language-provider"
+import { StanceRegistrationCard } from "@/components/stance-registration-card"
 import type { StanceLeaderboard, StanceBoard, StanceEntry } from "@/types/dashboard"
 
 const SPEC_URL = "https://github.com/dragon1086/prism-insight/blob/main/stance/spec/core-spec.md"
@@ -20,8 +21,12 @@ export function StanceLeaderboardPage() {
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
-    fetch("/stance_leaderboard.json")
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+    fetch("/api/stance/v1/leaderboard", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : Promise.reject(response.status)))
+      // 로컬 UI 개발에서는 Stance 서버가 없을 수 있으므로 생성된 스냅샷을 사용한다.
+      .catch(() => fetch("/stance_leaderboard.json").then((response) => (
+        response.ok ? response.json() : Promise.reject(response.status)
+      )))
       .then(setData)
       .catch(() => setFailed(true))
   }, [])
@@ -104,6 +109,8 @@ export function StanceLeaderboardPage() {
           </a>
         </CardContent>
       </Card>
+
+      <StanceRegistrationCard ko={ko} />
 
       {/* ── 리더보드 ────────────────────────────────────────────── */}
       {failed && (

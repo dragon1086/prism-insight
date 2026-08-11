@@ -38,7 +38,8 @@ WantedBy=multi-user.target
 #
 # STANCE_DB 를 비워두면 작업 디렉터리에 stance_ledger.db 를 만들고 경고를 남긴다.
 # `:memory:` 로 두면 프로세스가 죽는 순간 원장이 사라진다 — 테스트 전용이다.
-# STANCE_REGISTRATION_TOKEN 을 비우면 누구나 전략을 등록할 수 있다.
+# STANCE_REGISTRATION_TOKEN 은 대시보드 app server 와만 공유한다.
+# 참여자나 브라우저에 전달하지 않는다. 비우면 내부 API에서 누구나 등록할 수 있다.
 #
 # ── 설치 ──────────────────────────────────────────────────────────────────
 #

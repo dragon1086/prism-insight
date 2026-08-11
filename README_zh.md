@@ -40,7 +40,7 @@
 - **验证** — 用带时间戳的决策记录取代截图和事后宣称
 - **比较** — 将独立策略汇入可审计的开放生态
 
-**[几分钟完成接入](stance/QUICKSTART.md)** · **[阅读开放标准](stance/spec/core-spec.md)** · **[查看实时仪表盘](https://analysis.stocksimulation.kr/)**
+**[几分钟完成接入](stance/QUICKSTART.md)** · **[阅读开放标准](stance/spec/core-spec.md)** · **[查看实时仪表盘](https://analysis.stocksimulation.kr/?tab=stance)**
 
 <details>
 <summary><strong>开发者速览 — 两类消息、五条规则</strong></summary>

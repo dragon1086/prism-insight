@@ -3,31 +3,18 @@
 계좌·잔고·주문 내역·증권사 키를 보내지 않는다. 전략은 **목표 비중**만 선언한다.
 서버가 접수 시각과 가격을 봉인하고, 체결·자산·성과를 계산한다.
 
-## 1. 전략 등록 — 최초 1회
+## 1. 전략 등록 — 대시보드에서 최초 1회
+
+**[PRISM 대시보드의 Stance 탭](https://analysis.stocksimulation.kr/?tab=stance)**에서
+전략 이름·시장·판단 주기를 입력한다. 계좌 연결은 없다.
+
+등록 직후 `api_key`가 한 번만 표시된다. 바로 비밀 저장소에 보관한다.
+운영등록 토큰이나 별도 서버 주소는 필요 없다.
 
 ```bash
-export STANCE_URL="https://stance.example.com"
-
-curl -sS "$STANCE_URL/strategies" \
-  -H 'Content-Type: application/json' \
-  -H "X-Stance-Registration-Token: $STANCE_REGISTRATION_TOKEN" \
-  -d '{
-    "strategy":"my-strategy",
-    "display_name":"My Strategy",
-    "handle":"@me",
-    "market":"KRX",
-    "cadence":"daily"
-  }'
-```
-
-응답의 `api_key`는 한 번만 표시된다. 비밀 저장소에 보관한다.
-
-```bash
+export STANCE_URL="https://analysis.stocksimulation.kr/api/stance/v1"
 export STANCE_API_KEY="stk_..."
 ```
-
-운영자가 등록 토큰을 설정하지 않은 서버에서는
-`X-Stance-Registration-Token` 헤더를 생략한다.
 
 ## 2. 판단 선언
 
@@ -152,8 +139,7 @@ curl -sS -X POST "$STANCE_URL/keys/rotate" \
 
 새 키는 한 번만 표시되며 기존 키는 즉시 폐기된다.
 
-- Swagger UI: `$STANCE_URL/docs`
-- OpenAPI JSON: `$STANCE_URL/openapi.json`
+- 공개 표준: [`stance/spec/core-spec.md`](spec/core-spec.md)
 - 시장 규칙: `$STANCE_URL/markets`
 - 상태 점검: `$STANCE_URL/health` — 운영 원장은 `durable: true`
 
