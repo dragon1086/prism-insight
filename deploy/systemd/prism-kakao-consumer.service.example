@@ -1,5 +1,5 @@
 [Unit]
-Description=PRISM Kakao Local Campaign Consumer
+Description=PRISM Kakao Campaign Consumer
 After=network-online.target
 Wants=network-online.target
 
@@ -7,17 +7,18 @@ Wants=network-online.target
 Type=simple
 User=prism
 Group=prism
-WorkingDirectory=/opt/prism-insight
+WorkingDirectory=/home/prism/prism-insight-repo
 EnvironmentFile=/etc/prism/kakao-bot.env
-ExecStart=/opt/prism-insight/.venv/bin/python -m kakao_bot.runtime.campaign_consumer_main
-Restart=on-failure
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/prism/prism-insight-repo/venv/bin/python -m kakao_bot.runtime.campaign_consumer_main
+Restart=always
 RestartSec=5
-UMask=0077
+StandardOutput=append:/home/prism/prism-insight-repo/logs/kakao_campaign_consumer.log
+StandardError=append:/home/prism/prism-insight-repo/logs/kakao_campaign_consumer.log
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/prism-kakao
+ProtectSystem=full
+ProtectHome=false
+
 
 [Install]
 WantedBy=multi-user.target
