@@ -5,6 +5,7 @@ import pytest
 from cores.archive import insight_agent as insight_module
 from cores.archive.insight_agent import (
     InsightAgent,
+    _clean_answer_text,
     _extract_actual_tools,
     _has_internal_tool_status,
     _is_archive_only_question,
@@ -46,13 +47,13 @@ def test_archive_only_language_disables_external_tools():
     assert not _is_archive_only_question("최신 주가까지 확인해줘")
 
 
-def test_broad_korean_recommendation_uses_only_free_kr_server():
+def test_broad_korean_recommendation_uses_archive_without_mcp_tools():
     question = "우리나라 주식중에 지금부터 장기투자할만한거 찾아줘"
     hints = parse_query_hints(question)
 
     assert hints["market"] == "kr"
     assert _is_broad_recommendation(question)
-    assert _select_mcp_servers(question, hints) == ["kospi_kosdaq"]
+    assert _select_mcp_servers(question, hints) == []
 
 
 def test_explicit_news_request_enables_single_paid_research_server():
@@ -66,6 +67,15 @@ def test_internal_tool_limit_language_requires_repair():
     assert _has_internal_tool_status("본 답변은 도구 호출 한도 도달로 완전하지 않습니다")
     assert _has_internal_tool_status("perplexity 도구 호출이 정상 응답을 반환하지 않았습니다")
     assert not _has_internal_tool_status("현재 데이터가 부족해 후보를 추천하기 어렵습니다")
+
+
+def test_clean_answer_removes_structured_xml_tail():
+    raw = (
+        "확보된 데이터 기준으로 후보를 정리합니다.</answer>\n"
+        '<key_takeaways>["내부 배열"]</key_takeaways>\n</invoke>'
+    )
+
+    assert _clean_answer_text(raw) == "확보된 데이터 기준으로 후보를 정리합니다."
 
 
 def test_actual_tools_come_from_trace_not_model_claims():
