@@ -51,14 +51,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = os.getenv("INSIGHT_MODEL", "claude-sonnet-5")
 _MAX_REPORTS_IN_CONTEXT = 6
 
-# MCP 서버 연결 순서 — 무료 우선, 유료 후순 (프롬프트 가드레일과 함께 동작)
-_MCP_SERVERS = ["yahoo_finance", "kospi_kosdaq", "perplexity", "firecrawl"]
-
 # 도구 루프 상한. mcp-agent 기본값은 10인데, 그 값을 다 쓰면 마지막 턴에
 # 라이브러리가 "도구를 멈추고 최종 답변을 하라"는 프롬프트를 주입한다.
 # 그 프롬프트에는 JSON 요구가 없어서 모델이 산문으로 답하고, 결과적으로
 # JSON 파싱이 깨진다. 상한에 닿지 않는 것이 1차 방어선이다.
-_MAX_AGENT_ITERATIONS = 6
+_MAX_AGENT_ITERATIONS = 8
 
 # 도구 화이트리스트 (bare 이름 → mcp-agent 가 namespaced 이름으로 노출).
 #
@@ -99,6 +96,64 @@ def _is_archive_only_question(question: str) -> bool:
         r"\bno\s+(?:external|web)\s+(?:search|tools?|sources?)\b",
     )
     return any(re.search(pattern, question, re.IGNORECASE) for pattern in patterns)
+
+
+def _is_broad_recommendation(question: str) -> bool:
+    """Detect cross-company recommendation requests without explicit tickers."""
+    if extract_query_tickers(question):
+        return False
+    return bool(re.search(
+        r"장기\s*투자.{0,20}(?:할\s*만|추천|찾아|골라)|"
+        r"(?:추천|찾아|골라).{0,20}장기\s*투자",
+        question,
+        re.IGNORECASE,
+    ))
+
+
+def _needs_paid_research(question: str) -> bool:
+    return bool(re.search(
+        r"최신\s*(?:뉴스|업황|이벤트)|뉴스|외부\s*검색|웹\s*검색|"
+        r"latest\s+news|web\s+search",
+        question,
+        re.IGNORECASE,
+    ))
+
+
+def _select_mcp_servers(
+    question: str, hints: Dict[str, Optional[str]],
+) -> List[str]:
+    """Expose only servers necessary for this question."""
+    if _is_archive_only_question(question):
+        return []
+    market = hints.get("market")
+    if market == "kr":
+        servers = ["kospi_kosdaq"]
+    elif market == "us":
+        servers = ["yahoo_finance"]
+    else:
+        servers = ["yahoo_finance", "kospi_kosdaq"]
+    if _needs_paid_research(question):
+        servers.append("perplexity")
+    if re.search(r"https?://", question):
+        servers.append("firecrawl")
+    return servers
+
+
+def _has_internal_tool_status(answer: str) -> bool:
+    """Detect internal orchestration state that must never reach Telegram."""
+    return bool(re.search(
+        r"도구\s*호출\s*한도|도구.{0,20}(?:정상\s*응답|실패)|"
+        r"perplexity.{0,30}(?:정상\s*응답|실패)|max_iterations|"
+        r"tool\s*call\s*limit",
+        answer or "",
+        re.IGNORECASE,
+    ))
+
+
+def _strip_internal_tool_status(answer: str) -> str:
+    paragraphs = re.split(r"\n\s*\n", answer or "")
+    clean = [p for p in paragraphs if not _has_internal_tool_status(p)]
+    return "\n\n".join(clean).strip()
 
 
 def _extract_actual_tools(raw: str) -> List[str]:
@@ -188,6 +243,10 @@ class InsightAgent:
         explicit_tickers = extract_query_tickers(question)
 
         async def retrieve_reports():
+            if _is_broad_recommendation(question):
+                return await engine.retrieve_recent_diverse(
+                    market=hints["market"], limit=_MAX_REPORTS_IN_CONTEXT,
+                )
             if len(explicit_tickers) <= 1:
                 return await engine.retrieve(
                     text=question, market=hints["market"],
@@ -471,6 +530,8 @@ class InsightAgent:
             msg += f"## 앞선 조사 메모\n{clean_draft[:2000]}\n\n"
         msg += (
             "위 내용만으로 최종 답변을 만드세요. 도구를 쓰지 마세요.\n"
+            "도구명, 도구 호출 한도, 도구 실패나 내부 실행 상태는 언급하지 "
+            "마세요. 확보된 데이터의 범위와 한계만 사용자 관점에서 설명하세요.\n"
             "answer 는 합쇼체 400~1200자로, 확인된 사실만 담으세요."
         )
 
@@ -546,13 +607,25 @@ class InsightAgent:
                 f"{INSIGHT_SYSTEM_PROMPT}"
             )
             archive_only = _is_archive_only_question(question)
-            server_names = [] if archive_only else _MCP_SERVERS
+            hints = parse_query_hints(question)
+            server_names = _select_mcp_servers(question, hints)
             tool_filter = {} if archive_only else _MCP_TOOL_ALLOWLIST
             if archive_only:
                 dated_prompt += (
                     "\n\n# 이번 요청의 도구 정책\n"
                     "사용자가 PRISM 아카이브만 요청했습니다. 외부 검색이나 "
                     "MCP 도구를 사용하지 말고 제공된 리포트만 근거로 답하세요."
+                )
+            else:
+                dated_prompt += (
+                    "\n\n# 이번 요청의 도구 실행 규칙\n"
+                    "- 컨텍스트에서 후보를 먼저 좁힌 뒤 무료 도구는 합계 4회 "
+                    "이내로 핵심 후보 2~3개만 검증하세요.\n"
+                    "- 같은 도구와 같은 종목을 반복 호출하지 마세요.\n"
+                    "- Perplexity가 제공된 경우에도 전체 요청에서 최대 1회만 "
+                    "사용하세요.\n"
+                    "- 최종 답변에는 도구명, 도구 실패, 호출 횟수나 내부 실행 "
+                    "상태를 절대 언급하지 마세요. 확보된 근거만으로 결론내리세요."
                 )
             agent = Agent(
                 name="insight_agent",
@@ -579,7 +652,9 @@ class InsightAgent:
                     # 세션이 살아 있는 동안 파싱한다. 실패 시 같은 대화 이력
                     # 위에서 구조화 복구를 한 번 시도한다.
                     parsed = self._parse_response(response_text)
-                    if parsed is None:
+                    if parsed is None or _has_internal_tool_status(
+                        parsed.get("answer", "") if parsed else ""
+                    ):
                         parsed = await self._repair_to_json(
                             llm, question, context_str, response_text,
                         )
@@ -628,6 +703,15 @@ class InsightAgent:
                 evidence_report_ids=[],
                 remaining_quota=remaining, model_used=self.model,
             )
+
+        if _has_internal_tool_status(parsed["answer"]):
+            parsed["answer"] = _strip_internal_tool_status(parsed["answer"])
+            if not parsed["answer"]:
+                parsed["answer"] = (
+                    "현재 확보된 PRISM 데이터만으로는 신뢰도 높은 후보를 "
+                    "확정하기 어렵습니다. 종목별 장기 시계열과 낙폭 데이터가 "
+                    "보강된 뒤 다시 비교하겠습니다."
+                )
 
         parsed = self._ground_response_metadata(parsed, ctx, response_text)
 
