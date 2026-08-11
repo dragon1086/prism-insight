@@ -184,7 +184,11 @@ def parse_query_hints(text: str) -> Dict[str, Optional[str]]:
     # Market hint
     if re.search(r"\b(us|미국|nasdaq|nyse|s&p|s&p500|spy)\b", text, re.IGNORECASE):
         hints["market"] = "us"
-    elif re.search(r"\b(kr|코스피|코스닥|한국|국내|kospi|kosdaq)\b", text, re.IGNORECASE):
+    elif re.search(
+        r"\b(kr|코스피|코스닥|한국|국내|우리나라|국장|kospi|kosdaq)\b",
+        text,
+        re.IGNORECASE,
+    ):
         hints["market"] = "kr"
 
     # A single ticker can use the structured fast path. Multiple tickers are
@@ -734,6 +738,58 @@ class QueryEngine:
             ))
 
         return snippets
+
+    async def retrieve_recent_diverse(
+        self,
+        market: Optional[str],
+        limit: int = _MAX_REPORTS_IN_CONTEXT,
+    ) -> List[ReportSnippet]:
+        """Return one recent representative report per well-covered ticker.
+
+        Broad recommendation questions do not contain a company keyword, so
+        FTS relevance can collapse onto one accidental match. Coverage count
+        supplies a deterministic cross-company candidate set instead.
+        """
+        rows = await get_report_ids(market=market, db_path=self.db_path)
+        if not rows:
+            return []
+
+        counts: Dict[str, int] = {}
+        latest: Dict[str, Dict] = {}
+        for row in rows:
+            ticker = str(row.get("ticker") or "").upper()
+            if not ticker:
+                continue
+            counts[ticker] = counts.get(ticker, 0) + 1
+            latest.setdefault(ticker, row)
+
+        selected = sorted(
+            latest.values(),
+            key=lambda row: (
+                counts[str(row["ticker"]).upper()],
+                row.get("report_date") or "",
+            ),
+            reverse=True,
+        )[:limit]
+        ids = [row["id"] for row in selected]
+        enrichments, excerpts = await asyncio.gather(
+            _fetch_enrichments(ids, self.db_path),
+            _fetch_content_excerpts(ids, self.db_path),
+        )
+        return [
+            ReportSnippet(
+                report_id=row["id"],
+                ticker=row["ticker"],
+                company_name=row.get("company_name", ""),
+                report_date=row.get("report_date", ""),
+                market=row.get("market", ""),
+                mode=row.get("mode", ""),
+                snippet=row.get("snippet", ""),
+                content_excerpt=excerpts.get(row["id"], ""),
+                enrichment=enrichments.get(row["id"], {}),
+            )
+            for row in selected
+        ]
 
     async def retrieve_by_outcome(
         self,
