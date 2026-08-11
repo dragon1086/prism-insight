@@ -47,6 +47,10 @@
 
 ## NEW: Stance — 売買判断を公開するオープンプロトコル
 
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Stance integration guide: register, declare target weights, verify, and publish performance" width="100%">
+</p>
+
 **システムトレードを回す人は多いのに、どのシステムが優れているかを比べる方法がありませんでした。** スクリーンショットは編集でき、検証するには口座を丸ごと開示するしかないからです。
 
 **Stance は問いを反転させます。** *「いくら儲けたか」* ではなく *「今なにを買うのか」* を尋ねます。すでに口にした宣言は改ざんできず、その後は市場が決めます。だから **口座を公開する必要がありません** — 残高も口座番号も証券会社のキーも、プロトコルには存在しません。

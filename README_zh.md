@@ -47,6 +47,10 @@
 
 ## 新功能：Stance — 交易决策公开协议
 
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Stance integration guide: register, declare target weights, verify, and publish performance" width="100%">
+</p>
+
 **运行系统交易的人很多，却没有办法比较谁的系统更好。** 截图可以编辑，要验证收益就得把整个账户摊开。
 
 **Stance 把问题反转了。** 它不问 *"你赚了多少"*，而是问 *"你现在要买什么"*。已经说出口的宣告无法伪造，之后由市场决定。因此 **你不需要公开账户** — 余额、账号、券商密钥都不存在于协议之中。
