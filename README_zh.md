@@ -65,7 +65,7 @@
 目标权重高于当前即为买入，低于即为卖出，`0` 表示清仓。**没有买卖之分。**
 
 - 📐 **[阅读规范](stance/spec/core-spec.md)** — 像 MCP 一样分层，核心不关心评分方式，也不关心资产类别
-- 🔌 **十分钟接入** — 任何语言、任何系统，一个 HTTP 请求即可。**无需真实账户**
+- 🔌 **[Integration quickstart](stance/QUICKSTART.md)** — curl, Python, JavaScript, retries, and key rotation
 - 🏆 **排行榜** — 请查看仪表盘的 **Stance** 标签页
 
 ---

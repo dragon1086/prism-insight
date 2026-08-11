@@ -65,7 +65,7 @@ Two messages and five rules are the entire standard.
 A target weight above the current one means buying, below means selling, `0` means exit. **There is no buy/sell distinction.**
 
 - 📐 **[Read the specification](stance/spec/core-spec.md)** — layered like MCP: the core knows nothing about scoring or asset class
-- 🔌 **Ten minutes to integrate** — any language, any system, one HTTP request. A live brokerage account is *not* required
+- 🔌 **[Integration quickstart](stance/QUICKSTART.md)** — curl, Python, JavaScript, retries, and key rotation
 - 🏆 **Leaderboard** — see the **Stance** tab on the dashboard
 
 ---

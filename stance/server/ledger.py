@@ -181,6 +181,17 @@ class Ledger:
         ).fetchone()
         return Cadence(row["cadence"]) if row else Cadence.DAILY
 
+    def rotate_api_key(self, strategy_id: str, api_key_hash: str) -> None:
+        """인증 메타데이터만 교체한다. 선언 원장은 건드리지 않는다."""
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE strategies SET api_key_hash=? WHERE strategy_id=?",
+                (api_key_hash, strategy_id),
+            )
+            if cur.rowcount != 1:
+                raise KeyError(strategy_id)
+            self.conn.commit()
+
     # ── 원장 기록 ─────────────────────────────────────────────────────────
 
     def _tail_hash(self, table: str) -> str | None:

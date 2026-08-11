@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal as D
 
@@ -41,6 +42,18 @@ def test_register_returns_key_once_and_stores_only_hash():
 def test_authenticate_maps_key_to_its_own_strategy():
     svc, reg = make()
     assert svc.authenticate(reg.api_key) == "s1"
+
+
+def test_rotate_key_revokes_old_key_immediately():
+    svc, reg = make()
+    rotated = svc.rotate_key("s1")
+
+    assert rotated.startswith("stk_")
+    assert rotated != reg.api_key
+    with pytest.raises(StanceError) as exc:
+        svc.authenticate(reg.api_key)
+    assert exc.value.status == 401
+    assert svc.authenticate(rotated) == "s1"
 
 
 @pytest.mark.parametrize("key", [None, "", "stk_wrong"])
@@ -121,12 +134,47 @@ def test_stale_seq_is_409():
     assert e.value.status == 409
 
 
+def test_identical_retry_is_idempotent_and_does_not_append():
+    svc, _ = make()
+    first = svc.submit("s1", 1, symbol="AAA", target_weight="0.2", reason="signal")
+    retried = svc.submit("s1", 1, symbol="AAA", target_weight="0.2", reason="signal")
+
+    assert retried == {**first, "replayed": True}
+    assert svc.ledger.next_seq("s1") == 2
+
+
+def test_same_seq_with_different_body_is_still_409():
+    svc, _ = make()
+    svc.submit("s1", 1, symbol="AAA", target_weight="0.2")
+    with pytest.raises(StanceError) as exc:
+        svc.submit("s1", 1, symbol="AAA", target_weight="0.3")
+    assert exc.value.status == 409
+
+
+def test_concurrent_identical_retry_appends_once():
+    svc, _ = make()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda _: svc.submit("s1", 1, symbol="AAA", target_weight="0.2"),
+            range(2),
+        ))
+
+    assert sorted(result["replayed"] for result in results) == [False, True]
+    assert svc.ledger.next_seq("s1") == 2
+
+
 def test_seq_gap_is_allowed():
     """누락은 감지 대상이지 차단 대상이 아니다. 앞선 번호는 그대로 받는다."""
     svc, _ = make()
     svc.submit("s1", 1, symbol="AAA", target_weight="0.2")
     out = svc.submit("s1", 9, symbol="AAA", target_weight="0.3")
     assert out["admit"] == "accepted"
+
+
+def test_seq_must_be_positive():
+    svc, _ = make()
+    with pytest.raises(StanceError):
+        svc.submit("s1", 0, kind="hold")
 
 
 @pytest.mark.parametrize("bad", ["1.5", "-0.1", "abc", 2])

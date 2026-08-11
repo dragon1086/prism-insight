@@ -10,6 +10,7 @@
 엔드포인트
     POST /strategies        전략 등록 → 인증키 발급 (전략당 1회)
     POST /stances           선언 접수  ← 참여자가 쓰는 유일한 쓰기 엔드포인트
+    POST /keys/rotate       인증키 교체
     GET  /portfolio         검산용 보유·자산 스냅샷
     GET  /leaderboard       리더보드 (원장을 재생해 만든 계산 결과)
     GET  /markets           지원 시장과 각 보드의 규칙
@@ -20,11 +21,13 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+import secrets
+from datetime import datetime
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .leaderboard import build as build_leaderboard
 from .leaderboard import preparing
@@ -116,11 +119,36 @@ def current_strategy(
 # ── 스키마 ────────────────────────────────────────────────────────────────
 
 class RegisterIn(BaseModel):
-    strategy: str = Field(description="전략 ID. 등록 후 바꿀 수 없다")
-    display_name: str
-    handle: str = Field(description="계정 핸들. 한 계정의 전 전략이 함께 노출된다")
-    market: str = "KRX"
-    cadence: str = Field(default="daily", description="daily | weekly | monthly | event")
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        description="전략 ID. 등록 후 바꿀 수 없다",
+    )
+    display_name: str = Field(min_length=1, max_length=100)
+    handle: str = Field(
+        min_length=1,
+        max_length=100,
+        description="계정 핸들. 한 계정의 전 전략이 함께 노출된다",
+    )
+    market: str = Field(default="KRX", min_length=1, max_length=16)
+    cadence: Literal["daily", "weekly", "monthly", "event"] = "daily"
+
+
+class RegisterOut(BaseModel):
+    strategy: str
+    market: str
+    cadence: str
+    api_key: str
+    notice: str
+
+
+class KeyRotationOut(BaseModel):
+    strategy: str
+    api_key: str
+    notice: str
 
 
 class StanceIn(BaseModel):
@@ -129,13 +157,52 @@ class StanceIn(BaseModel):
     가격·수량·금액·시각을 담지 않는다. 그것들은 서버가 정한다.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     protocol: str = PROTOCOL_VERSION
-    strategy: str | None = None          # 인증키로 결정되므로 참고용
-    seq: int
-    kind: str = "set"                    # set | hold | pause | resume
+    strategy: str | None = Field(
+        default=None,
+        deprecated=True,
+        description="생략 권장. 인증키가 전략을 식별하며, 이전 클라이언트 호환용이다",
+    )
+    seq: int = Field(gt=0)
+    kind: Literal["set", "hold", "pause", "resume"] = "set"
     symbol: str | None = None
     target_weight: float | str | None = Field(default=None, description="0 이상 1 이하")
     reason: str | None = Field(default=None, max_length=500)
+
+class AdmissionOut(BaseModel):
+    seq: int
+    next_seq: int
+    received_at: datetime
+    admit: Literal["accepted", "clamped", "rejected", "pending"]
+    reason: str | None = None
+    symbol: str | None = None
+    fill_price: float | None = None
+    requested_weight: float | None = None
+    effective_weight: float | None = None
+    realized_pnl: float | None = None
+    total_assets_after: float | None = None
+    pending: bool
+    replayed: bool
+
+
+class PositionOut(BaseModel):
+    symbol: str
+    avg_cost: float | None = None
+    market_value: float | None = None
+    weight: float | None = None
+
+
+class PortfolioOut(BaseModel):
+    strategy: str
+    market: str
+    as_of: datetime
+    last_seq: int
+    total_assets: float | None = None
+    cash: float | None = None
+    invested_ratio: float | None = None
+    positions: list[PositionOut]
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────────────
@@ -150,6 +217,7 @@ def health() -> dict[str, Any]:
         "ledger": db,
         # 인메모리면 재시작 시 원장이 사라진다. 운영 점검에서 바로 보이도록 노출한다.
         "durable": db != ":memory:",
+        "registration": "closed" if os.getenv("STANCE_REGISTRATION_TOKEN") else "open",
     }
 
 
@@ -174,30 +242,51 @@ def markets() -> dict[str, Any]:
     }
 
 
-@app.post("/strategies", status_code=201)
-def register(body: RegisterIn, service: StanceService = Depends(get_service)) -> dict[str, Any]:
+@app.post("/strategies", status_code=201, response_model=RegisterOut)
+def register(
+    body: RegisterIn,
+    registration_token: str | None = Header(default=None, alias="X-Stance-Registration-Token"),
+    service: StanceService = Depends(get_service),
+) -> RegisterOut:
     """전략을 등록하고 인증키를 발급한다.
 
     **인증키는 이 응답에서만 평문으로 보인다.** 서버는 해시만 저장한다.
     전략은 삭제할 수 없다 — 여러 개 등록해 놓고 잘된 것만 홍보하는 것을 막기 위해서다.
     """
+    required_token = os.getenv("STANCE_REGISTRATION_TOKEN")
+    if required_token and not secrets.compare_digest(registration_token or "", required_token):
+        raise HTTPException(401, "등록 토큰이 올바르지 않습니다")
+
     reg = service.register(body.strategy, body.display_name, body.handle,
                            market=body.market, cadence=body.cadence)
-    return {
-        "strategy": reg.strategy_id,
-        "market": reg.market,
-        "cadence": reg.cadence,
-        "api_key": reg.api_key,
-        "notice": "이 키는 다시 볼 수 없습니다. 안전한 곳에 보관하세요.",
-    }
+    return RegisterOut(
+        strategy=reg.strategy_id,
+        market=reg.market,
+        cadence=reg.cadence,
+        api_key=reg.api_key,
+        notice="이 키는 다시 볼 수 없습니다. 안전한 곳에 보관하세요.",
+    )
 
 
-@app.post("/stances")
+@app.post("/keys/rotate", response_model=KeyRotationOut)
+def rotate_key(
+    strategy_id: str = Depends(current_strategy),
+    service: StanceService = Depends(get_service),
+) -> KeyRotationOut:
+    """새 키를 한 번만 보여주고 기존 키를 즉시 폐기한다."""
+    return KeyRotationOut(
+        strategy=strategy_id,
+        api_key=service.rotate_key(strategy_id),
+        notice="이 키는 다시 볼 수 없습니다. 기존 키는 폐기되었습니다.",
+    )
+
+
+@app.post("/stances", response_model=AdmissionOut)
 def submit(
     body: StanceIn,
     strategy_id: str = Depends(current_strategy),
     service: StanceService = Depends(get_service),
-) -> dict[str, Any]:
+) -> AdmissionOut:
     """선언을 접수한다.
 
     판정(accepted / clamped / rejected / pending)을 **그 자리에서** 돌려준다.
@@ -205,26 +294,27 @@ def submit(
     """
     if body.protocol != PROTOCOL_VERSION:
         raise HTTPException(400, f"지원하지 않는 프로토콜 버전: {body.protocol}")
-    if body.strategy and body.strategy != strategy_id:
+    claimed_strategy = body.model_dump().get("strategy")
+    if claimed_strategy and claimed_strategy != strategy_id:
         raise HTTPException(403, "인증키가 가리키는 전략과 다릅니다")
 
-    return service.submit(
+    return AdmissionOut(**service.submit(
         strategy_id, body.seq, kind=body.kind, symbol=body.symbol,
         target_weight=body.target_weight, reason=body.reason,
-    )
+    ))
 
 
-@app.get("/portfolio")
+@app.get("/portfolio", response_model=PortfolioOut)
 def portfolio(
     strategy_id: str = Depends(current_strategy),
     service: StanceService = Depends(get_service),
-) -> dict[str, Any]:
+) -> PortfolioOut:
     """검산용 스냅샷.
 
     선언을 보내기 전에 호출할 필요는 없다 — 목표 비중은 자기 시스템이 아는 값으로 계산된다.
     `last_seq` 는 프로세스 재시작 시 일련번호 복구에 쓴다.
     """
-    return service.portfolio(strategy_id)
+    return PortfolioOut(**service.portfolio(strategy_id))
 
 
 @app.get("/leaderboard")

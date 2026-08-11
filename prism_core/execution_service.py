@@ -63,7 +63,7 @@ class _LocalFlatPersistenceError(RuntimeError):
 def _stance_reporter_from_env():
     """Stance 리포터를 만든다. 환경변수가 없으면 꺼진 것을 돌려준다.
 
-    STANCE_ENDPOINT / STANCE_API_KEY / STANCE_STRATEGY 가 모두 있어야 켜진다.
+    STANCE_ENDPOINT / STANCE_API_KEY 가 모두 있어야 켜진다.
     서버가 뜨기 전에 켜면 주문마다 죽은 엔드포인트를 때리므로 기본은 꺼짐이다.
     """
     try:

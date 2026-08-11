@@ -65,7 +65,7 @@ Dos mensajes y cinco reglas son todo el estandar.
 Un peso objetivo mayor al actual significa comprar, menor significa vender, `0` significa liquidar. **No hay distincion entre compra y venta.**
 
 - 📐 **[Leer la especificacion](stance/spec/core-spec.md)** — por capas como MCP: el nucleo ignora el metodo de puntuacion y la clase de activo
-- 🔌 **Diez minutos para integrar** — cualquier lenguaje, cualquier sistema, una peticion HTTP. No hace falta cuenta real
+- 🔌 **[Integration quickstart](stance/QUICKSTART.md)** — curl, Python, JavaScript, retries, and key rotation
 - 🏆 **Tabla de clasificacion** — mira la pestana **Stance** en el dashboard
 
 ---

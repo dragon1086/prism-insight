@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -107,6 +108,7 @@ class StanceService:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._engines: dict[str, Engine] = {}
         self._profiles: dict[str, MarketProfile] = {}
+        self._submit_lock = threading.RLock()
 
     # ── 등록 ──────────────────────────────────────────────────────────
 
@@ -148,6 +150,14 @@ class StanceService:
             raise StanceError("인증키가 올바르지 않습니다", status=401)
         return row["strategy_id"]
 
+    def rotate_key(self, strategy_id: str) -> str:
+        """새 키를 한 번만 반환하고 기존 키를 즉시 폐기한다."""
+        if not self._exists(strategy_id):
+            raise StanceError("등록되지 않은 전략입니다", status=404)
+        api_key = "stk_" + secrets.token_urlsafe(32)
+        self.ledger.rotate_api_key(strategy_id, _hash(api_key))
+        return api_key
+
     # ── 선언 접수 ─────────────────────────────────────────────────────
 
     def submit(
@@ -155,20 +165,24 @@ class StanceService:
         symbol: str | None = None, target_weight: str | float | None = None,
         reason: str | None = None,
     ) -> dict:
+        with self._submit_lock:
+            return self._submit(strategy_id, seq, kind, symbol, target_weight, reason)
+
+    def _submit(
+        self, strategy_id: str, seq: int, kind: str = "set",
+        symbol: str | None = None, target_weight: str | float | None = None,
+        reason: str | None = None,
+    ) -> dict:
         self.rate_limit.check(strategy_id)
         profile = self._profile(strategy_id)
+
+        if seq <= 0:
+            raise StanceError("seq 는 1 이상의 정수여야 합니다")
 
         try:
             k = Kind(kind)
         except ValueError:
             raise StanceError(f"알 수 없는 선언 종류: {kind}")
-
-        expected = self.ledger.next_seq(strategy_id)
-        if seq < expected:
-            # 재전송·역순. 원장이 append-only 이므로 조용히 덮어쓸 수 없다.
-            raise StanceError(
-                f"일련번호가 이미 지난 값입니다 (기대 {expected}, 받은 {seq})", status=409
-            )
 
         weight: Decimal | None = None
         if k is Kind.SET:
@@ -183,6 +197,19 @@ class StanceService:
 
         if reason and len(reason) > 500:
             raise StanceError("reason 은 500자를 넘을 수 없습니다")
+
+        expected = self.ledger.next_seq(strategy_id)
+        if seq < expected:
+            replayed = self._replay_identical(
+                strategy_id, seq, k, symbol, weight, reason,
+            )
+            if replayed is not None:
+                replayed["replayed"] = True
+                return replayed
+            raise StanceError(
+                f"일련번호가 이미 다른 선언에 사용됐습니다 (기대 {expected}, 받은 {seq})",
+                status=409,
+            )
 
         # ① 원장에 먼저 — 접수시각이 여기서 박힌다
         received_at = self.clock().isoformat()
@@ -205,6 +232,30 @@ class StanceService:
             quote,
         )
         return _fill_to_dict(fill, received_at, seq)
+
+    def _replay_identical(
+        self, strategy_id: str, seq: int, kind: Kind, symbol: str | None,
+        target_weight: Decimal | None, reason: str | None,
+    ) -> dict | None:
+        """타임아웃 뒤 같은 요청을 안전하게 재전송할 수 있게 원 판정을 재생한다."""
+        engine = Engine(profile=self._profile(strategy_id))
+        for item in self.ledger.full_timeline(strategy_id):
+            if not isinstance(item, tuple):
+                engine.apply_mark(item)
+                continue
+            stance, quote = item
+            fill = engine.apply_stance(stance, quote)
+            if stance.seq != seq:
+                continue
+            if (
+                stance.kind is not kind
+                or stance.symbol != symbol
+                or stance.target_weight != target_weight
+                or stance.reason != reason
+            ):
+                return None
+            return _fill_to_dict(fill, stance.received_at.isoformat(), seq)
+        return None
 
     def _observe(self, profile: MarketProfile, symbol: str | None) -> Quote | None:
         if not symbol or self.quote_provider is None:
@@ -303,6 +354,7 @@ def _num(v: Decimal | None) -> float | None:
 def _fill_to_dict(fill: Fill, received_at: str, seq: int) -> dict:
     return {
         "seq": seq,
+        "next_seq": seq + 1,
         "received_at": received_at,
         "admit": fill.admit.value,
         "reason": fill.reason,
@@ -313,4 +365,5 @@ def _fill_to_dict(fill: Fill, received_at: str, seq: int) -> dict:
         "realized_pnl": _num(fill.realized_pnl),
         "total_assets_after": _num(fill.assets_after),
         "pending": fill.admit is Admit.PENDING,
+        "replayed": False,
     }

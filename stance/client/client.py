@@ -51,18 +51,30 @@ def to_target_weight(
 class StanceClient:
     """선언을 보낸다. 이게 전부다."""
 
-    def __init__(self, endpoint: str, strategy_id: str, token: str, market: str = "KRX",
-                 timeout: float = 10.0):
+    def __init__(
+        self,
+        endpoint: str,
+        api_key_or_strategy: str,
+        token: str | None = None,
+        market: str | None = None,
+        timeout: float = 3.0,
+        *,
+        seq: int | None = None,
+        session=None,
+    ):
         """timeout 은 매매 경로에 물릴 때 특히 중요하다.
 
-        서버가 죽어 있으면 그 시간만큼 주문이 지연된다. 3초 안팎을 권한다.
+        새 사용법은 ``StanceClient(endpoint, api_key)`` 이다.
+        예전 ``(endpoint, strategy_id, token, market=...)`` 호출도 호환한다.
+        생성자에서는 네트워크를 호출하지 않는다. 첫 선언 때 일련번호를 복구한다.
         """
         self.endpoint = endpoint.rstrip("/")
-        self.strategy_id = strategy_id
-        self.token = token
-        self.market = market
+        self.strategy_id = api_key_or_strategy if token is not None else None
+        self.token = token or api_key_or_strategy
+        self.market = market  # 이전 호출 호환용. 서버는 키에서 시장을 결정한다.
         self.timeout = timeout
-        self.seq = self._recover_seq()
+        self.seq = seq
+        self._session = session
 
     # ── 선언 ──────────────────────────────────────────────────────────────
 
@@ -95,8 +107,9 @@ class StanceClient:
 
     def portfolio(self) -> dict:
         """검산용. 선언을 보내기 전에 호출할 필요는 없다."""
-        r = requests.get(f"{self.endpoint}/portfolio", headers=self._headers(),
-                         params={"strategy_id": self.strategy_id}, timeout=self.timeout)
+        transport = self._transport()
+        r = transport.get(f"{self.endpoint}/portfolio", headers=self._headers(),
+                          timeout=self.timeout)
         r.raise_for_status()
         return r.json()
 
@@ -109,17 +122,26 @@ class StanceClient:
         """프로세스를 재시작해도 일련번호가 1 로 돌아가지 않게 서버에서 복구한다."""
         try:
             return int(self.portfolio().get("last_seq", 0))
-        except Exception:
-            return 0
+        except Exception as exc:
+            raise RuntimeError(
+                "Stance 일련번호를 복구하지 못했습니다. 서버 연결과 API 키를 확인하세요."
+            ) from exc
+
+    def _transport(self):
+        transport = self._session or requests
+        if transport is None:
+            raise RuntimeError("StanceClient 사용에는 requests 패키지가 필요합니다")
+        return transport
 
     def _send(self, body: dict) -> dict:
+        if self.seq is None:
+            self.seq = self._recover_seq()
         next_seq = self.seq + 1          # 전송에 성공했을 때만 증가시킨다
-        payload = {"protocol": PROTOCOL, "strategy": self.strategy_id,
-                   "seq": next_seq, "market": self.market,
+        payload = {"protocol": PROTOCOL, "seq": next_seq,
                    **{k: v for k, v in body.items() if v is not None}}
 
-        r = requests.post(f"{self.endpoint}/stances", headers=self._headers(),
-                          json=payload, timeout=self.timeout)
+        r = self._transport().post(f"{self.endpoint}/stances", headers=self._headers(),
+                                   json=payload, timeout=self.timeout)
         r.raise_for_status()
         self.seq = next_seq
 

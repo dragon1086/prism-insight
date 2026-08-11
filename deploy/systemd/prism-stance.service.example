@@ -34,9 +34,11 @@ WantedBy=multi-user.target
 # ── /etc/prism/stance.env 예시 ────────────────────────────────────────────
 #
 #   STANCE_DB=/var/lib/prism-stance/ledger.db
+#   STANCE_REGISTRATION_TOKEN=충분히-긴-무작위-등록-토큰
 #
 # STANCE_DB 를 비워두면 작업 디렉터리에 stance_ledger.db 를 만들고 경고를 남긴다.
 # `:memory:` 로 두면 프로세스가 죽는 순간 원장이 사라진다 — 테스트 전용이다.
+# STANCE_REGISTRATION_TOKEN 을 비우면 누구나 전략을 등록할 수 있다.
 #
 # ── 설치 ──────────────────────────────────────────────────────────────────
 #

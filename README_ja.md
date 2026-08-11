@@ -65,7 +65,7 @@
 目標比率が現在より大きければ買い、小さければ売り、`0` なら全部売却です。**買いと売りの区別がありません。**
 
 - 📐 **[仕様書を読む](stance/spec/core-spec.md)** — MCP と同じくレイヤー分離。コアは採点方式も資産クラスも知りません
-- 🔌 **導入は10分** — どの言語・どのシステムでも HTTP リクエスト1本。実口座は不要です
+- 🔌 **[Integration quickstart](stance/QUICKSTART.md)** — curl, Python, JavaScript, retries, and key rotation
 - 🏆 **リーダーボード** — ダッシュボードの **Stance** タブをご覧ください
 
 ---
