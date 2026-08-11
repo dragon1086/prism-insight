@@ -28,6 +28,30 @@
   <a href="README_es.md">Español</a>
 </p>
 
+## Stance — La capa abierta de decisiones para cualquier estrategia
+
+<p align="center">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Ecosistema Stance: las estrategias declaran pesos objetivo, un registro inmutable sella hora y precio, y un panel público compara los resultados" width="100%">
+</p>
+
+**Los historiales tradicionales enseñan el resultado después. Stance registra la decisión antes de que se mueva el mercado.** Publica un peso objetivo; el servidor sella hora y precio; el panel evalúa cada estrategia con las mismas reglas. Sin saldos, números de cuenta ni claves del bróker.
+
+- **Conecta** — personas, bots o modelos con una sola petición HTTP
+- **Verifica** — decisiones fechadas en lugar de capturas y promesas
+- **Compara** — estrategias independientes dentro de un ecosistema auditable
+
+**[Conectar en minutos](stance/QUICKSTART.md)** · **[Leer el estándar abierto](stance/spec/core-spec.md)** · **[Ver el panel en vivo](https://analysis.stocksimulation.kr/)**
+
+<details>
+<summary><strong>Vista para desarrolladores — dos mensajes, cinco reglas</strong></summary>
+
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Guía de integración Stance: registrar, declarar pesos objetivo, verificar y publicar rendimiento" width="100%">
+</p>
+
+Un peso objetivo mayor que el actual implica compra; uno menor, venta; `0`, salida. El protocolo no necesita órdenes separadas de compra y venta. curl, Python, JavaScript, reintentos y rotación de claves están en la **[guía rápida](stance/QUICKSTART.md)**.
+</details>
+
 ---
 
 ### Patrocinador Platino
@@ -42,31 +66,6 @@
 AI3, creador de **WrksAI** — el asistente de IA para profesionales,<br>
 patrocina con orgullo **PRISM-INSIGHT** — el asistente de IA para inversionistas.
 </div>
-
----
-
-## NUEVO: Stance — Protocolo Abierto de Decisiones de Trading
-
-<p align="center">
-  <img src="docs/images/stance-integration-en.png" alt="Stance integration guide: register, declare target weights, verify, and publish performance" width="100%">
-</p>
-
-**Comparar sistemas de trading ha sido imposible.** Las capturas de pantalla se editan, y verificar un historial exige abrir la cuenta entera.
-
-**Stance invierte la pregunta.** En lugar de *"cuanto ganaste?"* pregunta *"que vas a comprar ahora?"* Una declaracion ya emitida no se puede falsificar — el servidor sella la hora de recepcion y el mercado decide lo demas. Por eso **nunca expones tu cuenta**: saldos, numeros de cuenta y claves del broker no existen en el protocolo.
-
-Dos mensajes y cinco reglas son todo el estandar.
-
-```json
-{ "protocol": "stance/1", "strategy": "my-strategy", "seq": 42,
-  "symbol": "005930", "target_weight": 0.10 }
-```
-
-Un peso objetivo mayor al actual significa comprar, menor significa vender, `0` significa liquidar. **No hay distincion entre compra y venta.**
-
-- 📐 **[Leer la especificacion](stance/spec/core-spec.md)** — por capas como MCP: el nucleo ignora el metodo de puntuacion y la clase de activo
-- 🔌 **[Integration quickstart](stance/QUICKSTART.md)** — curl, Python, JavaScript, retries, and key rotation
-- 🏆 **Tabla de clasificacion** — mira la pestana **Stance** en el dashboard
 
 ---
 

@@ -28,6 +28,30 @@
   <a href="README_es.md">Español</a>
 </p>
 
+## Stance — あらゆる戦略のための公開意思決定レイヤー
+
+<p align="center">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Stanceエコシステム：戦略が目標比率を宣言し、改ざん不能な台帳が時刻と価格を封印し、公開ダッシュボードで成果を比較" width="100%">
+</p>
+
+**従来の運用実績は、結果を後から見せるもの。Stanceは、市場が動く前の判断を記録します。** 目標比率を公開すると、サーバーが時刻と価格を封印し、すべての戦略を同じルールで評価します。残高・口座番号・証券会社のキーは不要です。
+
+- **接続** — 人・ボット・AIをHTTPリクエスト1回で
+- **検証** — スクリーンショットや事後主張ではなく、時刻付きの判断記録
+- **比較** — 独立した戦略を、監査可能な共通エコシステムへ
+
+**[数分で接続](stance/QUICKSTART.md)** · **[公開仕様](stance/spec/core-spec.md)** · **[ライブダッシュボード](https://analysis.stocksimulation.kr/)**
+
+<details>
+<summary><strong>開発者向け概要 — メッセージ2つ、ルール5つ</strong></summary>
+
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Stance連携ガイド：登録、目標比率の宣言、検証、成績公開" width="100%">
+</p>
+
+目標比率が現在より高ければ買い、低ければ売り、`0`なら手仕舞いです。売買ごとの別コマンドはありません。curl・Python・JavaScriptの例、再試行、キーのローテーションは**[クイックスタート](stance/QUICKSTART.md)**にまとめています。
+</details>
+
 ---
 
 ### プラチナスポンサー
@@ -42,31 +66,6 @@
 **WrksAI**（プロフェッショナル向けAIアシスタント）の開発元であるAI3が、<br>
 投資家のためのAIアシスタント **PRISM-INSIGHT** を誇りを持ってスポンサーしています。
 </div>
-
----
-
-## NEW: Stance — 売買判断を公開するオープンプロトコル
-
-<p align="center">
-  <img src="docs/images/stance-integration-en.png" alt="Stance integration guide: register, declare target weights, verify, and publish performance" width="100%">
-</p>
-
-**システムトレードを回す人は多いのに、どのシステムが優れているかを比べる方法がありませんでした。** スクリーンショットは編集でき、検証するには口座を丸ごと開示するしかないからです。
-
-**Stance は問いを反転させます。** *「いくら儲けたか」* ではなく *「今なにを買うのか」* を尋ねます。すでに口にした宣言は改ざんできず、その後は市場が決めます。だから **口座を公開する必要がありません** — 残高も口座番号も証券会社のキーも、プロトコルには存在しません。
-
-メッセージ2つとルール5つが標準のすべてです。
-
-```json
-{ "protocol": "stance/1", "strategy": "my-strategy", "seq": 42,
-  "symbol": "005930", "target_weight": 0.10 }
-```
-
-目標比率が現在より大きければ買い、小さければ売り、`0` なら全部売却です。**買いと売りの区別がありません。**
-
-- 📐 **[仕様書を読む](stance/spec/core-spec.md)** — MCP と同じくレイヤー分離。コアは採点方式も資産クラスも知りません
-- 🔌 **[Integration quickstart](stance/QUICKSTART.md)** — curl, Python, JavaScript, retries, and key rotation
-- 🏆 **リーダーボード** — ダッシュボードの **Stance** タブをご覧ください
 
 ---
 
