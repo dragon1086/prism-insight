@@ -47,6 +47,10 @@ patrocina con orgullo **PRISM-INSIGHT** — el asistente de IA para inversionist
 
 ## NUEVO: Stance — Protocolo Abierto de Decisiones de Trading
 
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Stance integration guide: register, declare target weights, verify, and publish performance" width="100%">
+</p>
+
 **Comparar sistemas de trading ha sido imposible.** Las capturas de pantalla se editan, y verificar un historial exige abrir la cuenta entera.
 
 **Stance invierte la pregunta.** En lugar de *"cuanto ganaste?"* pregunta *"que vas a comprar ahora?"* Una declaracion ya emitida no se puede falsificar — el servidor sella la hora de recepcion y el mercado decide lo demas. Por eso **nunca expones tu cuenta**: saldos, numeros de cuenta y claves del broker no existen en el protocolo.

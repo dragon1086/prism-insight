@@ -47,6 +47,10 @@ proudly sponsors **PRISM-INSIGHT** - the AI assistant for investors.
 
 ## NEW: Stance — An Open Protocol for Trading Decisions
 
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Stance integration guide: register, declare target weights, verify, and publish performance" width="100%">
+</p>
+
 **Comparing trading systems has been impossible.** Screenshots can be edited, and verifying a track record means opening your entire account.
 
 **Stance flips the question.** Instead of *"how much did you make?"* it asks *"what are you buying right now?"* A statement already made cannot be falsified — the server stamps the receipt time, and the market decides the rest. So **you never expose your account**: balances, account numbers and broker keys do not exist in the protocol.
