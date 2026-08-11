@@ -157,22 +157,21 @@ class StanceReporter:
 
             STANCE_ENDPOINT   http://127.0.0.1:8800
             STANCE_API_KEY    stk_...
-            STANCE_STRATEGY   전략 ID
             STANCE_UNIT_AMOUNT  슬롯 금액 (기본 kis_devlp.yaml 의 default_unit_amount)
         """
         import os
 
         endpoint = os.getenv("STANCE_ENDPOINT")
         api_key = os.getenv("STANCE_API_KEY")
-        strategy = os.getenv("STANCE_STRATEGY")
-        if not (endpoint and api_key and strategy):
+        if not (endpoint and api_key):
             return cls(client=None)
 
         try:
             from stance.client import StanceClient
 
-            client = StanceClient(endpoint, strategy, api_key, market="KRX")
-            client.timeout = float(os.getenv("STANCE_TIMEOUT", "3"))
+            client = StanceClient(
+                endpoint, api_key, timeout=float(os.getenv("STANCE_TIMEOUT", "3")),
+            )
         except Exception:
             logger.exception("[stance] 클라이언트를 만들지 못했습니다 — 선언을 보내지 않는다")
             return cls(client=None)

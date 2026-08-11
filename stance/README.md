@@ -10,7 +10,9 @@
 Stance 는 질문을 뒤집는다. **"얼마 벌었어?"** 대신 **"지금 뭘 살 건데?"** 를 묻는다.
 이미 뱉은 말은 조작할 수 없고, 그 다음은 시장이 정해준다.
 
-전체 설계는 **[spec/core-spec.md](spec/core-spec.md)** 에 있다. 이 README 는 코드 안내다.
+바로 붙이려면 **[한국어 빠른 시작](QUICKSTART_ko.md)** 또는
+**[English quickstart](QUICKSTART.md)** 를 본다. 전체 설계는
+**[spec/core-spec.md](spec/core-spec.md)** 에 있다. 이 README 는 코드 안내다.
 
 ---
 
@@ -87,7 +89,8 @@ FastAPI 는 HTTP 껍데기에만 필요하며, 없으면 관련 테스트는 자
 
 ```
 POST /strategies    전략 등록 → 인증키 발급 (전략당 1회)
-POST /stances       선언 접수  ← 참여자가 쓰는 유일한 쓰기 엔드포인트
+POST /stances       선언 접수  ← 참여자가 쓰는 유일한 거래 쓰기 엔드포인트
+POST /keys/rotate   인증키 교체
 GET  /portfolio     검산용 보유·자산 스냅샷
 GET  /leaderboard   리더보드
 GET  /markets       지원 시장과 각 보드의 규칙
@@ -106,6 +109,9 @@ curl -X POST localhost:8800/stances \
   -H "Authorization: Bearer $STANCE_KEY" \
   -d '{"protocol":"stance/1","seq":42,"symbol":"005930","target_weight":0.1}'
 ```
+
+타임아웃이면 **같은 seq와 같은 본문**을 다시 보낸다. 서버는 원장을 추가하지 않고
+원 판정을 `replayed: true`로 반환한다. 같은 seq에 다른 본문을 보내면 `409`다.
 
 ### 배포 — 상주 프로세스다
 
@@ -148,6 +154,9 @@ STANCE_DB=/var/lib/prism-stance/ledger.db python -m stance_server
 한쪽에서 접수한 선언이 다른 쪽 장부에 반영되지 않아 현금 판정(축소 수락)이 어긋난다.
 SQLite 다중 프로세스 쓰기 경합도 생긴다. 수평 확장이 필요해지면
 장부 캐시를 프로세스 밖으로 빼고 원장을 Postgres 로 옮겨야 한다.
+
+**③ 공개 서버는 등록을 잠근다.** `STANCE_REGISTRATION_TOKEN`을 설정하면
+`POST /strategies`가 `X-Stance-Registration-Token` 헤더를 요구한다.
 
 ---
 

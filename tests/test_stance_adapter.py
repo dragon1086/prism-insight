@@ -244,8 +244,8 @@ def test_reporter_is_off_without_env(monkeypatch):
     assert not StanceReporter.from_env().enabled
 
 
-def test_reporter_needs_all_three_env_vars(monkeypatch):
+def test_reporter_needs_only_endpoint_and_api_key(monkeypatch):
     monkeypatch.setenv("STANCE_ENDPOINT", "http://127.0.0.1:8800")
     monkeypatch.setenv("STANCE_API_KEY", "stk_x")
     monkeypatch.delenv("STANCE_STRATEGY", raising=False)
-    assert not StanceReporter.from_env().enabled
+    assert StanceReporter.from_env().enabled
