@@ -78,6 +78,15 @@ def test_clean_answer_removes_structured_xml_tail():
     assert _clean_answer_text(raw) == "확보된 데이터 기준으로 후보를 정리합니다."
 
 
+def test_clean_answer_accepts_wrapped_answer_and_removes_xml_tail():
+    raw = (
+        "<answer>**핵심 판단**\n조정 완료로 보기 어렵습니다.</answer>\n"
+        '<tools_used>["none"]</tools_used>'
+    )
+
+    assert _clean_answer_text(raw) == "**핵심 판단**\n조정 완료로 보기 어렵습니다."
+
+
 def test_actual_tools_come_from_trace_not_model_claims():
     raw = """[Calling tool perplexity_ask with arguments {'messages': []}]
     [Calling tool get_stock_ohlcv with arguments {'ticker': '005930'}]
