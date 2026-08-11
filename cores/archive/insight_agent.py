@@ -164,8 +164,9 @@ def _strip_internal_tool_status(answer: str) -> str:
 def _clean_answer_text(answer: str) -> str:
     """Remove structured-output residue accidentally embedded in answer."""
     text = (answer or "").strip()
+    text = re.sub(r"^\s*<answer>\s*", "", text, flags=re.IGNORECASE)
     text = re.split(
-        r"</?answer>|<key_takeaways>|<tickers_mentioned>|<tools_used>|"
+        r"</answer>|<key_takeaways>|<tickers_mentioned>|<tools_used>|"
         r"<evidence_report_ids>|</invoke>",
         text,
         maxsplit=1,
@@ -550,6 +551,9 @@ class InsightAgent:
             "위 내용만으로 최종 답변을 만드세요. 도구를 쓰지 마세요.\n"
             "도구명, 도구 호출 한도, 도구 실패나 내부 실행 상태는 언급하지 "
             "마세요. 확보된 데이터의 범위와 한계만 사용자 관점에서 설명하세요.\n"
+            "answer는 텔레그램 Markdown으로 작성하세요: **핵심 판단**, "
+            "**종목별 근거**, **리스크 및 대응** 순서로 나누고, 종목별 근거는 "
+            "`- **종목명(코드):**` 불릿을 사용하세요. XML 태그는 금지합니다.\n"
             "answer 는 합쇼체 400~1200자로, 확인된 사실만 담으세요."
         )
 
