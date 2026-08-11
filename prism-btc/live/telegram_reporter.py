@@ -35,12 +35,13 @@ def _load_env() -> None:
     """루트 .env 를 best-effort 로 로드. python-dotenv 없으면 조용히 스킵."""
     try:
         from pathlib import Path
+
         from dotenv import load_dotenv
         # prism-btc/live/telegram_reporter.py → prism-insight/.env
         root_env = Path(__file__).resolve().parent.parent.parent / ".env"
         if root_env.exists():
             load_dotenv(root_env)
-    except Exception:  # noqa: BLE001 — dotenv 없거나 실패해도 무해
+    except Exception:  # noqa: BLE001, S110 — dotenv 없거나 실패해도 무해
         pass
 
 
@@ -85,6 +86,17 @@ def _uptime_days(conn, mode: str) -> float | None:
 def _open_positions(conn, mode: str) -> list:
     try:
         return tracking.load_open_positions(conn, mode)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _swing_positions(conn, mode: str) -> list:
+    """현재 리포트 모드와 함께 구동되는 스윙 레인의 열린 포지션."""
+    try:
+        from engine.config import SWING_ENABLED, SWING_RUN_MODES
+        if not SWING_ENABLED or mode not in SWING_RUN_MODES:
+            return []
+        return tracking.load_open_positions(conn, "swing")
     except Exception:  # noqa: BLE001
         return []
 
@@ -246,6 +258,19 @@ def _unrealized_r(pos, cur_price: float | None) -> float | None:
         return None
 
 
+def _position_line(pos, cur_price: float | None, strategy: str) -> str:
+    """전략 이름을 포함한 열린 포지션 표시 한 줄."""
+    ur = _unrealized_r(pos, cur_price)
+    if ur is not None:
+        tail = f"현재 {'수익권' if ur >= 0 else '손실권'} ({ur:+.1f}배)"
+    else:
+        tail = "진행 중"
+    return (
+        f"• {strategy}: {_side_kr(pos.side)} · "
+        f"진입가 {pos.entry_price:,.0f}달러 · {tail}"
+    )
+
+
 # 청산 사유 → 일반인 한국어. 내부 코드값을 사람이 읽는 말로 바꾼다.
 _EXIT_REASON_KR = {
     "tp1": "1차 목표 도달", "tp2": "2차 목표 도달", "tp3": "최종 목표 도달",
@@ -320,18 +345,16 @@ def build_message(conn, mode: str) -> str:
     # 2) 지금 사고 있나
     lines.append("📊 *지금 포지션*")
     positions = _open_positions(conn, mode)
-    if not positions:
+    swing_positions = _swing_positions(conn, mode)
+    if not positions and not swing_positions:
         lines.append("• 관망 중 (좋은 기회를 기다리는 중)")
     else:
+        if not positions:
+            lines.append("• 메인 추세 전략: 관망 중 (신규 기회를 기다리는 중)")
         for p in positions:
-            ur = _unrealized_r(p, cur_price)
-            if ur is not None:
-                tail = f"현재 {'수익권' if ur >= 0 else '손실권'} ({ur:+.1f}배)"
-            else:
-                tail = "진행 중"
-            lines.append(
-                f"• {_side_kr(p.side)} · 진입가 {p.entry_price:,.0f}달러 · {tail}"
-            )
+            lines.append(_position_line(p, cur_price, "메인 추세 전략"))
+        for p in swing_positions:
+            lines.append(_position_line(p, cur_price, "스윙 전략"))
     lines.append("")
 
     # 3) 최근 거래 결과
@@ -374,7 +397,13 @@ def build_message(conn, mode: str) -> str:
         ts_4h = sig.get("ts_4h")
         ts_1d = sig.get("ts_1d")
         if side == "none":
-            lines.append("• 종합 판단: *관망 (진입 보류)* — 무리하지 않음")
+            if swing_positions:
+                lines.append(
+                    "• 메인 추세 전략 신규진입 판단: "
+                    "*관망 (진입 보류)* — 보유 중인 스윙은 별도 관리"
+                )
+            else:
+                lines.append("• 종합 판단: *관망 (진입 보류)* — 무리하지 않음")
             # 방향 기울기 + 점수
             if score is not None:
                 if score > 5:
