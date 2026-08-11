@@ -40,7 +40,7 @@
 - **検証** — スクリーンショットや事後主張ではなく、時刻付きの判断記録
 - **比較** — 独立した戦略を、監査可能な共通エコシステムへ
 
-**[数分で接続](stance/QUICKSTART.md)** · **[公開仕様](stance/spec/core-spec.md)** · **[ライブダッシュボード](https://analysis.stocksimulation.kr/)**
+**[数分で接続](stance/QUICKSTART.md)** · **[公開仕様](stance/spec/core-spec.md)** · **[ライブダッシュボード](https://analysis.stocksimulation.kr/?tab=stance)**
 
 <details>
 <summary><strong>開発者向け概要 — メッセージ2つ、ルール5つ</strong></summary>

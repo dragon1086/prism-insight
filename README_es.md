@@ -40,7 +40,7 @@
 - **Verifica** — decisiones fechadas en lugar de capturas y promesas
 - **Compara** — estrategias independientes dentro de un ecosistema auditable
 
-**[Conectar en minutos](stance/QUICKSTART.md)** · **[Leer el estándar abierto](stance/spec/core-spec.md)** · **[Ver el panel en vivo](https://analysis.stocksimulation.kr/)**
+**[Conectar en minutos](stance/QUICKSTART.md)** · **[Leer el estándar abierto](stance/spec/core-spec.md)** · **[Ver el panel en vivo](https://analysis.stocksimulation.kr/?tab=stance)**
 
 <details>
 <summary><strong>Vista para desarrolladores — dos mensajes, cinco reglas</strong></summary>

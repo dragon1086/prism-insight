@@ -4,21 +4,16 @@ Never send account data, balances, orders, or broker credentials. A strategy dec
 its **target weight**. The server seals receipt time and price, then calculates fills, equity,
 and performance.
 
-## 1. Register once
+## 1. Register once in the dashboard
+
+Open the **[Stance tab in the PRISM dashboard](https://analysis.stocksimulation.kr/?tab=stance)**.
+Enter a strategy name, market, and decision cadence. No account connection is involved.
+
+The dashboard shows the `api_key` once immediately after registration. Store it in your
+secret manager. You need no operator registration token and no separate server URL.
 
 ```bash
-export STANCE_URL="https://stance.example.com"
-
-curl -sS "$STANCE_URL/strategies" \
-  -H 'Content-Type: application/json' \
-  -H "X-Stance-Registration-Token: $STANCE_REGISTRATION_TOKEN" \
-  -d '{"strategy":"my-strategy","display_name":"My Strategy","handle":"@me","market":"KRX","cadence":"daily"}'
-```
-
-Store the one-time `api_key` response in your secret manager.
-Omit `X-Stance-Registration-Token` when the server operator leaves registration open.
-
-```bash
+export STANCE_URL="https://analysis.stocksimulation.kr/api/stance/v1"
 export STANCE_API_KEY="stk_..."
 ```
 
@@ -103,8 +98,7 @@ curl -sS -X POST "$STANCE_URL/keys/rotate" \
 
 The replacement key appears once and revokes the old key immediately.
 
-- Swagger UI: `$STANCE_URL/docs`
-- OpenAPI JSON: `$STANCE_URL/openapi.json`
+- open standard: [`stance/spec/core-spec.md`](spec/core-spec.md)
 - market rules: `$STANCE_URL/markets`
 - health: `$STANCE_URL/health` — production must report `durable: true`
 
