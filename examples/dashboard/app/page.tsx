@@ -119,6 +119,26 @@ function DashboardContent() {
     setIsRealTrading(isReal)
   }
 
+  // Stance is a standalone public surface. Keep onboarding and the leaderboard
+  // available even when the unrelated portfolio data feed is missing or delayed.
+  if (activeTab === "stance") {
+    return (
+      <div className="min-h-screen bg-background">
+        <DashboardHeader
+          activeTab={activeTab}
+          onTabChange={handleTabChange}
+          lastUpdated={data?.generated_at}
+          market={market}
+          onMarketChange={handleMarketChange}
+        />
+        <main className="container mx-auto px-4 py-6 max-w-[1600px]">
+          <StanceLeaderboardPage />
+        </main>
+        <ProjectFooter />
+      </div>
+    )
+  }
+
   if (dataError) {
     return (
       <div className="min-h-screen bg-background">
@@ -250,7 +270,6 @@ function DashboardContent() {
 
         {activeTab === "insights" && data.trading_insights && <TradingInsightsPage data={data.trading_insights} market={market} />}
 
-        {activeTab === "stance" && <StanceLeaderboardPage />}
       </main>
 
       {/* 프로젝트 소개 Footer */}
