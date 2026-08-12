@@ -16,6 +16,22 @@ function pct(v: number | null | undefined, digits = 2) {
   return `${v >= 0 ? "+" : ""}${(v * 100).toFixed(digits)}%`
 }
 
+function plainGateFailure(message: string, ko: boolean) {
+  const days = message.match(/^운영 (\d+)일 \(필요 (\d+)일\)$/)
+  if (days) {
+    return ko
+      ? `공식 순위까지: ${days[1]}/${days[2]}거래일 기록`
+      : `Official rank: ${days[1]}/${days[2]} trading days recorded`
+  }
+  const trades = message.match(/^청산 거래 (\d+)건 \(필요 (\d+)건\)$/)
+  if (trades) {
+    return ko
+      ? `공식 순위까지: 주요 거래 ${trades[1]}/${trades[2]}건 완료`
+      : `Official rank: ${trades[1]}/${trades[2]} qualifying trades closed`
+  }
+  return message
+}
+
 export function StanceLeaderboardPage() {
   const { language } = useLanguage()
   const ko = language === "ko"
@@ -38,61 +54,47 @@ export function StanceLeaderboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* ── 프로토콜 소개 ───────────────────────────────────────── */}
+      {/* ── 처음 온 사람을 위한 소개 ────────────────────────────── */}
       <Card className="border-border/50 overflow-hidden">
         <div className="bg-gradient-to-r from-slate-900 to-slate-700 dark:from-slate-800 dark:to-slate-900 px-6 py-8 text-white">
           <div className="flex items-center gap-3 mb-3">
             <h2 className="text-2xl font-bold tracking-tight">Stance</h2>
-            <Badge variant="secondary" className="font-mono text-xs">
-              {data?.protocol ?? "stance/1"}
-            </Badge>
             <Badge variant="outline" className="text-white/80 border-white/30 text-xs">
-              Draft
+              {ko ? "베타" : "Beta"}
             </Badge>
           </div>
-          <p className="text-lg text-white/90 font-medium">
+          <p className="max-w-3xl break-keep text-2xl font-bold leading-snug text-white sm:text-3xl">
             {ko
-              ? "실적을 신고받지 말고, 판단을 미리 선언받아라. 성과는 서버가 계산한다."
-              : "Don't collect reported returns. Collect decisions in advance — the server computes the rest."}
+              ? "말로만 잘하는 투자 전략, 이제 기록으로 비교하세요."
+              : "Stop taking trading claims on faith. Compare the record."}
+          </p>
+          <p className="mt-3 max-w-3xl break-keep text-base leading-relaxed text-white/75">
+            {ko
+              ? "사기 전에 종목과 투자 비중을 남기면, 그다음 성과는 Stance가 계산합니다. 계좌를 공개하지 않아도 전략의 실력을 확인할 수 있습니다."
+              : "Record the stock and target weight before buying. Stance computes what happens next, so anyone can verify a strategy without seeing the account."}
           </p>
         </div>
 
-        <CardContent className="pt-6 space-y-4 text-sm leading-relaxed">
-          <p className="text-muted-foreground">
+        <CardContent className="space-y-5 pt-6 text-sm leading-relaxed">
+          <p className="break-keep text-base text-foreground">
             {ko ? (
               <>
-                시스템 트레이딩을 돌리는 사람은 많은데 <strong className="text-foreground">누구 시스템이 더 나은지 비교할 방법이 없습니다.</strong>{" "}
-                수익률 인증은 편집할 수 있고, 검증하려면 계좌를 통째로 열어야 하니까요.
+                수익 인증 화면은 편집할 수 있고, 잘된 거래만 골라 보여줄 수도 있습니다. Stance는 결과가 나온 뒤의 자랑 대신
+                <strong> 결과가 나오기 전의 선택</strong>을 기록합니다.
               </>
             ) : (
               <>
-                Many people run trading systems, but <strong className="text-foreground">there is no way to compare them.</strong>{" "}
-                Screenshots can be edited, and verifying means opening your entire account.
-              </>
-            )}
-          </p>
-          <p className="text-muted-foreground">
-            {ko ? (
-              <>
-                Stance는 질문을 뒤집습니다. <strong className="text-foreground">&ldquo;얼마 벌었어?&rdquo;</strong> 대신{" "}
-                <strong className="text-foreground">&ldquo;지금 뭘 살 건데?&rdquo;</strong>를 묻습니다. 이미 뱉은 말은 조작할 수 없고,
-                그 다음은 시장이 정해줍니다. 그래서 <strong className="text-foreground">계좌를 공개할 필요가 없습니다.</strong>{" "}
-                잔고도, 계좌번호도, 증권사 키도 프로토콜에 존재하지 않습니다.
-              </>
-            ) : (
-              <>
-                Stance flips the question. Instead of <strong className="text-foreground">&ldquo;how much did you make?&rdquo;</strong> it asks{" "}
-                <strong className="text-foreground">&ldquo;what are you buying right now?&rdquo;</strong> A statement already made cannot be
-                falsified, and the market decides the rest. So <strong className="text-foreground">you never expose your account.</strong>
+                Profit screenshots can be edited, and winning trades can be cherry-picked. Stance records the
+                <strong> choice before the outcome</strong>, not the claim after it.
               </>
             )}
           </p>
 
           <div className="grid gap-3 sm:grid-cols-3 pt-2">
             {[
-              [ko ? "선언" : "Stance", ko ? "이 종목을 자산의 몇 %로 만들겠다는 한 줄" : "One line: make this N% of my assets"],
-              [ko ? "접수시각" : "Receipt time", ko ? "서버가 찍는다. 위조 방지는 이게 전부다" : "Stamped by the server — the whole anti-forgery story"],
-              [ko ? "재구성" : "Replay", ko ? "선언만 다시 읽어 성과를 서버가 계산한다" : "The server replays declarations to compute results"],
+              [ko ? "1. 사기 전에 계획 남기기" : "1. Record the plan first", ko ? "어떤 종목을 자산의 몇 %까지 살지 기록" : "Save the stock and intended share of the portfolio"],
+              [ko ? "2. 그때 가격 자동 저장" : "2. Lock in the price", ko ? "서버가 시간과 당시 시장가격을 자동으로 보관" : "The server saves the time and market price automatically"],
+              [ko ? "3. 결과 자동 계산" : "3. Let the record speak", ko ? "이후 가격을 따라 수익과 위험을 같은 기준으로 계산" : "Returns and risk are calculated later on the same rules"],
             ].map(([title, desc]) => (
               <div key={title} className="rounded-lg border border-border/50 bg-muted/30 p-4">
                 <div className="font-semibold mb-1">{title}</div>
@@ -107,7 +109,7 @@ export function StanceLeaderboardPage() {
             rel="noopener noreferrer"
             className="inline-block text-sm text-primary hover:underline pt-1"
           >
-            {ko ? "표준 문서 전문 보기 →" : "Read the full specification →"}
+            {ko ? "개발자를 위한 계산·기록 규칙 보기 →" : "Technical recording and calculation rules →"}
           </a>
         </CardContent>
       </Card>
@@ -120,7 +122,7 @@ export function StanceLeaderboardPage() {
       {failed && (
         <Card className="border-border/50">
           <CardContent className="py-10 text-center text-muted-foreground text-sm">
-            {ko ? "리더보드 데이터를 불러올 수 없습니다." : "Failed to load leaderboard data."}
+            {ko ? "전략 순위표를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요." : "The strategy ranking could not be loaded. Please try again shortly."}
           </CardContent>
         </Card>
       )}
@@ -144,20 +146,20 @@ export function StanceLeaderboardPage() {
         <Card className="border-border/50">
           <CardHeader>
             <CardTitle className="text-base">
-              {ko ? "순위를 하나의 숫자로 줄이지 않습니다" : "We don't reduce rank to a single number"}
+              {ko ? "왜 종합점수 하나로 줄 세우지 않나요?" : "Why isn't there one overall score?"}
             </CardTitle>
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground space-y-3 leading-relaxed">
             <p>
               {ko
-                ? "하나로 줄이면 반드시 그 숫자를 겨냥한 조작이 생깁니다. 수익을 위험으로 나누는 지표는 현금을 많이 든 전략을 구조적으로 우대하고, 시장 대비 초과수익으로 재면 국면에 따라 노출 방향에 베팅하게 됩니다. 중립적인 단일 숫자는 존재하지 않습니다."
-                : "Any single number invites gaming. Risk-adjusted ratios structurally favor cash-heavy strategies; benchmark-relative measures turn the board into a bet on market regime. No single neutral number exists."}
+                ? "수익률만 보면 큰 위험을 감수한 전략이 유리하고, 위험만 낮추면 현금을 오래 들고 있던 전략이 유리합니다. 어떤 종합점수도 한쪽을 편들게 됩니다."
+                : "Return alone rewards risk-taking, while minimizing risk rewards strategies that sit in cash. Any combined score favors one style."}
             </p>
             <p>
               {ko ? (
                 <>
-                  그래서 여러 지표를 나란히 두고, 모든 항목 옆에 <strong className="text-foreground">평균 투자비중</strong>을 붙입니다.
-                  &ldquo;노출 얼마로 낸 점수인지&rdquo;가 보여야 해석이 되기 때문입니다.
+                  그래서 <strong className="text-foreground">얼마나 벌었는지, 얼마나 크게 떨어졌는지, 실제로 얼마를 투자했는지</strong>를
+                  함께 보여줍니다. 무엇을 중요하게 볼지는 직접 선택할 수 있습니다.
                 </>
               ) : (
                 <>
@@ -166,8 +168,23 @@ export function StanceLeaderboardPage() {
                 </>
               )}
             </p>
+            <div className="grid gap-2 pt-1 sm:grid-cols-2 lg:grid-cols-3">
+              {[
+                [ko ? "누적 수익" : "Total return", ko ? "기록을 시작한 날부터 지금까지 번 비율" : "Gain or loss since the record began"],
+                [ko ? "가장 큰 하락" : "Worst drop", ko ? "고점에서 가장 많이 떨어졌던 폭" : "The deepest fall from a previous high"],
+                [ko ? "평균 투자 비율" : "Average invested", ko ? "전체 자산 중 실제 투자한 평균 비율" : "Average share of assets actually invested"],
+                [ko ? "위험 대비 수익" : "Risk-adjusted return", ko ? "손실로 흔들린 정도에 비해 얼마나 벌었는지. 높을수록 좋음" : "Return compared with downside volatility; higher is better"],
+                [ko ? "기록한 비율" : "Record rate", ko ? "정해둔 판단 시점에 빠짐없이 기록한 비율" : "How consistently scheduled decisions were recorded"],
+                [ko ? "매매 빈도" : "Trading activity", ko ? "자산을 얼마나 자주 사고팔았는지" : "How frequently the portfolio was bought and sold"],
+              ].map(([label, description]) => (
+                <div key={label} className="rounded-md border border-border/50 bg-muted/20 p-3">
+                  <div className="text-xs font-semibold text-foreground">{label}</div>
+                  <div className="mt-1 text-xs">{description}</div>
+                </div>
+              ))}
+            </div>
             <p className="text-xs font-mono pt-1 opacity-70">
-              {ko ? "채점 프로파일" : "Scoring profile"}: {data.score_profile}
+              {ko ? "계산 규칙 버전" : "Calculation rules"}: {data.score_profile}
             </p>
           </CardContent>
         </Card>
@@ -182,56 +199,46 @@ function PreparingNotice({ boards, ko }: { boards: StanceBoard[]; ko: boolean })
     <Card className="border-border/50">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
-          {ko ? "리더보드 준비 중" : "Leaderboard in preparation"}
+          {ko ? "첫 전략을 기다리고 있어요" : "Waiting for the first strategy"}
           <Badge variant="outline" className="text-xs">
-            {ko ? "참여 전략 0개" : "0 strategies"}
+            {ko ? "현재 0개" : "0 so far"}
           </Badge>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-5 text-sm">
         <p className="text-muted-foreground leading-relaxed">
           {ko
-            ? "아직 기록이 쌓이지 않았습니다. 첫 단계는 같은 코드에서 판단 모델만 바꾼 인스턴스들을 서로 겨루게 하는 것입니다. 사람이 섞이면 변수가 오염되지만, 모델만 다른 동일 코드는 비교가 깨끗합니다."
-            : "No track record yet. The first phase pits instances of the same codebase against each other, varying only the decision model — clean comparison without human variables."}
+            ? "아직 참가한 전략이 없습니다. 등록하면 즉시 ‘기록 쌓는 중’ 목록에 나타나고, 첫 판단부터 성과가 공개됩니다. 충분한 기간과 거래 기록이 쌓이면 공식 순위에 들어갑니다."
+            : "No strategy has joined yet. Registration puts it in the building-record list immediately, and performance appears from the first decision. It enters the official ranking after enough time and trades."}
         </p>
 
         {board && (
           <div className="rounded-lg border border-border/50 bg-muted/30 p-4 space-y-2 text-xs">
             <div className="font-semibold text-sm mb-2">
-              {ko ? "이 보드의 규칙" : "Rules for this board"}
+              {ko ? "이 시장에서는 이렇게 계산해요" : "How this market is measured"}
             </div>
             <Row label={ko ? "시장" : "Market"} value={`${board.market} (${board.currency})`} />
-            <Row label={ko ? "시세 권위" : "Price authority"} value={board.price_authority} />
-            <Row label={ko ? "일별 마감" : "Daily mark"} value={board.mark_at} />
+            <Row label={ko ? "가격 기준" : "Price source"} value={board.price_authority} />
+            <Row label={ko ? "하루 성과를 확정하는 때" : "Daily cutoff"} value={board.mark_at} />
             <Row
-              label={ko ? "최소 운영 기간" : "Minimum track record"}
-              value={ko ? `${board.min_track_periods}일 (3개월 환산)` : `${board.min_track_periods} days (≈3 months)`}
+              label={ko ? "공식 순위에 필요한 기록" : "Record needed for official rank"}
+              value={ko ? `${board.min_track_periods}거래일 + 자산 1% 이상 거래 20번 완료` : `${board.min_track_periods} trading days + 20 closed trades using at least 1% of assets`}
             />
             {board.support !== "stable" && (
               <div className="pt-2 text-amber-600 dark:text-amber-500">
-                ⚠️ {ko ? "실험적 지원 — 미해결 항목이 있습니다" : "Experimental support — unresolved items exist"}
+                ⚠️ {ko ? "시험 운영 중인 시장입니다" : "This market is in experimental support"}
               </div>
             )}
           </div>
         )}
 
-        <div>
-          <div className="font-semibold mb-2">{ko ? "붙이는 데 10분" : "Ten minutes to integrate"}</div>
+        <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+          <div className="font-semibold mb-2">{ko ? "자동매매 전략이 있다면 바로 참여할 수 있어요" : "Already have an automated strategy? Join now"}</div>
           <p className="text-muted-foreground text-xs mb-2 leading-relaxed">
             {ko
-              ? "어떤 언어, 어떤 시스템이든 HTTP 요청 하나면 참여할 수 있습니다. 실계좌가 없어도 됩니다 — 기록하는 것은 체결이 아니라 판단이니까요."
-              : "Any language, any system — one HTTP request. You don't even need a live account: what's recorded is the decision, not the fill."}
+              ? "위의 연결 지시문을 코딩 에이전트에 붙여넣으면 등록과 코드 연결을 도와줍니다. 실계좌는 없어도 됩니다."
+              : "Paste the connection instruction above into a coding agent. It can handle registration and integration. No live brokerage account is required."}
           </p>
-          <pre className="text-[11px] leading-relaxed bg-slate-950 text-slate-100 rounded-lg p-4 overflow-x-auto">
-{`POST /stances
-{
-  "protocol": "stance/1",
-  "strategy": "my-strategy",
-  "seq": 42,
-  "symbol": "005930",
-  "target_weight": 0.10
-}`}
-          </pre>
         </div>
       </CardContent>
     </Card>
@@ -261,7 +268,7 @@ function BoardTable({ board, ko }: { board: StanceBoard; ko: boolean }) {
           </Badge>
           {board.support !== "stable" && (
             <Badge variant="outline" className="text-xs text-amber-600 border-amber-500/50">
-              {ko ? "실험적" : "experimental"}
+              {ko ? "시험 운영" : "experimental"}
             </Badge>
           )}
         </CardTitle>
@@ -272,12 +279,12 @@ function BoardTable({ board, ko }: { board: StanceBoard; ko: boolean }) {
         {provisional.length > 0 && (
           <div>
             <div className="text-sm font-semibold mb-2 text-muted-foreground">
-              {ko ? "예선 — 참가 요건 미달" : "Provisional — gate not met"}
+              {ko ? "기록 쌓는 중" : "Building a record"}
             </div>
             <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
               {ko
-                ? "숨기지 않고 함께 보여줍니다. 실패한 전략이 사라지면 전체 평균이 부풀려지기 때문입니다."
-                : "Shown rather than hidden — if failures disappear, the averages lie."}
+                ? "공식 순위에 필요한 기간과 거래 수를 채우기 전입니다. 이 단계에서도 모든 기록과 성과를 그대로 볼 수 있습니다."
+                : "These strategies are still completing the time and trade requirements for official ranking. Their full records remain visible."}
             </p>
             <EntryTable entries={provisional} ko={ko} provisional />
           </div>
@@ -299,7 +306,7 @@ function EntryTable({
   if (entries.length === 0) {
     return (
       <div className="text-sm text-muted-foreground py-6 text-center">
-        {ko ? "해당 전략이 없습니다." : "No strategies."}
+        {ko ? "아직 공식 순위에 오른 전략이 없습니다." : "No strategy has reached the official ranking yet."}
       </div>
     )
   }
@@ -310,15 +317,15 @@ function EntryTable({
         <thead>
           <tr className="border-b border-border/50 text-xs text-muted-foreground">
             <th className="text-left font-medium py-2 pr-4">{ko ? "전략" : "Strategy"}</th>
-            <th className="text-right font-medium py-2 px-3">{ko ? "누적" : "Return"}</th>
-            <th className="text-right font-medium py-2 px-3">{ko ? "하락위험 대비" : "Sortino"}</th>
-            <th className="text-right font-medium py-2 px-3">{ko ? "최대낙폭" : "MDD"}</th>
+            <th className="text-right font-medium py-2 px-3">{ko ? "누적 수익" : "Total return"}</th>
+            <th className="text-right font-medium py-2 px-3">{ko ? "위험 대비 수익" : "Risk-adjusted"}</th>
+            <th className="text-right font-medium py-2 px-3">{ko ? "가장 큰 하락" : "Worst drop"}</th>
             <th className="text-right font-medium py-2 px-3 text-primary">
-              {ko ? "평균 투자비중" : "Avg exposure"}
+              {ko ? "평균 투자 비율" : "Avg invested"}
             </th>
-            <th className="text-right font-medium py-2 px-3">{ko ? "제출률" : "Coverage"}</th>
-            <th className="text-right font-medium py-2 px-3">{ko ? "회전율" : "Turnover"}</th>
-            <th className="text-right font-medium py-2 pl-3">{ko ? "거래" : "Trades"}</th>
+            <th className="text-right font-medium py-2 px-3">{ko ? "기록한 비율" : "Record rate"}</th>
+            <th className="text-right font-medium py-2 px-3">{ko ? "매매 빈도" : "Trading activity"}</th>
+            <th className="text-right font-medium py-2 pl-3">{ko ? "완료 거래" : "Closed trades"}</th>
           </tr>
         </thead>
         <tbody>
@@ -356,7 +363,7 @@ function EntryTable({
                 )}
                 {provisional && e.gate_failures.length > 0 && (
                   <div className="text-[11px] text-amber-600 dark:text-amber-500 mt-1">
-                    {e.gate_failures.join(" · ")}
+                    {e.gate_failures.map((failure) => plainGateFailure(failure, ko)).join(" · ")}
                   </div>
                 )}
               </td>
