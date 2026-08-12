@@ -65,14 +65,27 @@ export function StanceLeaderboardPage() {
           </div>
           <p className="max-w-3xl break-keep text-2xl font-bold leading-snug text-white sm:text-3xl">
             {ko
-              ? "과거 실적? 안 받습니다. 등록한 순간부터 기록합니다."
-              : "Past results? We don't take them. The record starts at registration."}
+              ? "말로만 잘하는 투자 전략, 이제 기록으로 비교하세요."
+              : "Stop taking trading claims on faith. Compare the record."}
           </p>
           <p className="mt-3 max-w-3xl break-keep text-base leading-relaxed text-white/75">
             {ko
-              ? "과거 수익률을 올리거나 소급 입력할 수 없습니다. 연결 뒤의 모든 판단과 성과가 이어서 쌓이니, 잘된 구간만 골라낸 홍보가 아니라 전략의 실제 모습을 볼 수 있습니다."
-              : "No uploaded track records and no backfills. Every decision and outcome after connection builds one continuous record, revealing the strategy rather than a cherry-picked highlight reel."}
+              ? "Stance는 전략이 등록한 뒤 내리는 판단을 결과가 나오기 전에 기록하고, 수익과 위험을 같은 기준으로 계산합니다."
+              : "Stance records each decision after registration, before its outcome, then measures return and risk under the same rules."}
           </p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            {(ko
+              ? ["과거 실적 제출 없음", "소급 입력 없음", "등록 이후만 공개"]
+              : ["No submitted history", "No backfills", "Public from registration onward"]
+            ).map((item) => (
+              <span
+                key={item}
+                className="rounded-full border border-amber-300/35 bg-amber-300/10 px-3 py-1.5 text-xs font-semibold text-amber-100"
+              >
+                {item}
+              </span>
+            ))}
+          </div>
         </div>
 
         <CardContent className="space-y-5 pt-6 text-sm leading-relaxed">
