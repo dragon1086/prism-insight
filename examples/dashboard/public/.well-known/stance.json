@@ -14,15 +14,28 @@
     "method": "POST",
     "path": "/strategies",
     "content_type": "application/json",
-    "body": {
+      "body": {
       "strategy": "stable ASCII identifier: A-Z, a-z, 0-9, dot, underscore, hyphen",
       "display_name": "public display name",
       "handle": "public owner or project handle",
       "market": "KRX | NASDAQ | NYSE | CRYPTO",
-      "cadence": "daily | weekly | monthly | event"
+        "cadence": "daily | weekly | monthly | event"
+      },
+      "profile_fields": {
+        "owner_name": { "required": false, "max_length": 100 },
+        "tagline": { "required": false, "max_length": 120 },
+        "description": { "required": false, "max_length": 500 },
+        "website_url": { "required": false, "format": "https URL", "max_length": 500 },
+        "source_url": { "required": false, "format": "https URL", "max_length": 500 }
+      },
+      "api_key": "Returned once as api_key. Never print it in chat or logs. Store it outside the repository with mode 0600 or in a secret manager."
     },
-    "api_key": "Returned once as api_key. Never print it in chat or logs. Store it outside the repository with mode 0600 or in a secret manager."
-  },
+    "profile_update": {
+      "method": "PATCH",
+      "path": "/profile",
+      "authentication": "Authorization: Bearer <api_key>",
+      "note": "Optional public presentation metadata only. It never affects scoring or rank."
+    },
   "declaration": {
     "method": "POST",
     "path": "/stances",
@@ -39,6 +52,11 @@
   },
   "agent_rules": [
     "Inspect the repository before proposing registration metadata.",
+    "Identify all multiple independent strategies by inspecting market, decision pipeline, schedule, and portfolio boundaries.",
+    "Do not split one portfolio merely because it trades on multiple exchanges; report unsupported market spans before registration.",
+    "Ask only for optional public profile information that cannot be established from the project.",
+    "Show a per-strategy registration plan and obtain explicit user approval before calling POST /strategies; registration is irreversible.",
+    "Use a separate API key, seq, writer, and recovery state for every strategy.",
     "Do not migrate or backfill historical trades.",
     "If positions already exist, declare only their current target weights from the connection time onward.",
     "Never expose the API key in chat, logs, commits, patches, screenshots, or command output.",
