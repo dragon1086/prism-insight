@@ -58,8 +58,9 @@ def _domestic_order_window(now: Optional[datetime.datetime] = None) -> str:
     from prism_core.time_windows import domestic_order_window
     return domestic_order_window(now)
 
-# Load configuration file
-CONFIG_FILE = TRADING_DIR / "config" / "kis_devlp.yaml"
+# Use the same credential root as kis_auth so clean deploy worktrees can share
+# one protected, external KIS configuration directory.
+CONFIG_FILE = Path(ka.config_root) / "kis_devlp.yaml"
 with open(CONFIG_FILE, encoding="UTF-8") as f:
     _cfg = yaml.safe_load(f)
 
