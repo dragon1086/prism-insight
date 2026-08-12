@@ -497,6 +497,11 @@ export interface StanceEntry {
   display_name: string
   handle: string
   market: string
+  owner_name: string | null
+  tagline: string | null
+  description: string | null
+  website_url: string | null
+  source_url: string | null
   qualified: boolean
   gate_failures: string[]
   experimental: boolean

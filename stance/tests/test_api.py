@@ -79,6 +79,70 @@ def test_register_returns_key_and_notice(client):
     assert "다시 볼 수 없습니다" in body["notice"]
 
 
+def test_register_accepts_optional_public_profile(client):
+    response = client.post("/strategies", json={
+        "strategy": "brand", "display_name": "Brand Strategy", "handle": "@team",
+        "owner_name": "Team Prism",
+        "tagline": "시장 국면을 따르는 추세 전략",
+        "description": "한국 시장에서 매일 목표 비중을 선언합니다.",
+        "website_url": "https://example.com/strategy",
+        "source_url": "https://github.com/example/strategy",
+    })
+    assert response.status_code == 201
+
+    entry = client.get("/leaderboard").json()["boards"]["KRX"]["entries"][0]
+    assert entry["owner_name"] == "Team Prism"
+    assert entry["tagline"] == "시장 국면을 따르는 추세 전략"
+    assert entry["description"].startswith("한국 시장")
+    assert entry["website_url"] == "https://example.com/strategy"
+    assert entry["source_url"] == "https://github.com/example/strategy"
+
+
+def test_profile_can_be_updated_with_own_key(client, registered):
+    response = client.patch("/profile", headers=auth(registered), json={
+        "owner_name": "Prism Team",
+        "tagline": "검증 가능한 판단 기록",
+        "website_url": "https://example.com",
+    })
+    assert response.status_code == 200
+    assert response.json()["strategy"] == "s1"
+
+    entry = client.get("/leaderboard").json()["boards"]["KRX"]["entries"][0]
+    assert entry["owner_name"] == "Prism Team"
+    assert entry["tagline"] == "검증 가능한 판단 기록"
+
+
+def test_profile_patch_preserves_fields_that_were_not_sent(client):
+    registered = client.post("/strategies", json={
+        "strategy": "partial", "display_name": "Partial", "handle": "@owner",
+        "owner_name": "Original owner", "website_url": "https://example.com/original",
+    }).json()
+
+    response = client.patch(
+        "/profile", headers=auth(registered["api_key"]), json={"tagline": "New tagline"},
+    )
+    assert response.status_code == 200
+    assert response.json()["owner_name"] == "Original owner"
+    assert response.json()["website_url"] == "https://example.com/original"
+    assert response.json()["tagline"] == "New tagline"
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.com",
+    "javascript:alert(1)",
+    "https://user:pass@example.com",
+])
+def test_profile_links_require_safe_https_urls(client, registered, url):
+    response = client.patch(
+        "/profile", headers=auth(registered), json={"website_url": url},
+    )
+    assert response.status_code == 422
+
+
+def test_profile_update_requires_authentication(client):
+    assert client.patch("/profile", json={"tagline": "hello"}).status_code == 401
+
+
 def test_registration_token_can_close_public_registration(client, monkeypatch):
     monkeypatch.setenv("STANCE_REGISTRATION_TOKEN", "invite-only")
     body = {"strategy": "locked", "display_name": "A", "handle": "@x"}
