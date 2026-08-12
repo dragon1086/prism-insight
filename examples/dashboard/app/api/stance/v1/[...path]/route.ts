@@ -14,6 +14,7 @@ const ALLOWED = new Map<string, ReadonlySet<string>>([
   ["stances", new Set(["POST"])],
   ["keys/rotate", new Set(["POST"])],
   ["portfolio", new Set(["GET"])],
+  ["profile", new Set(["PATCH"])],
 ])
 
 const registrations = new Map<string, number[]>()
@@ -114,3 +115,4 @@ export const dynamic = "force-dynamic"
 
 export const GET = proxy
 export const POST = proxy
+export const PATCH = proxy

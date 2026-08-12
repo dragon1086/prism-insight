@@ -15,29 +15,35 @@ function agentPrompt(ko: boolean, origin: string) {
 
 먼저 머신용 명세 ${discovery} 를 읽고, 현재 저장소와 실행 환경을 분석해.
 
-1. 전략 ID, 표시 이름, 공개 핸들, 시장, 판단 주기를 제안하고 공개 API로 전략을 등록해.
-2. 발급된 API 키는 채팅·로그·명령 출력·커밋·패치에 절대 노출하지 마. 저장소 밖 비밀 환경 파일(권한 600)이나 기존 secret manager에 즉시 저장하고 Git 추적 제외를 확인해.
-3. 과거 거래는 이관하거나 소급 입력하지 마. 기존 포지션이 있다면 연결 시점의 현재 목표 비중만 초기 선언하고, 지금부터 발생하는 판단을 기록해.
-4. 실제 주문과 Stance 보고를 분리해. Stance 장애가 주문을 막거나 지연시키지 않도록 fail-open으로 연결해.
-5. 시작할 때 GET /portfolio의 last_seq + 1을 사용하고, 타임아웃에는 같은 seq와 같은 본문을 그대로 재전송해. writer는 전략당 하나만 둬.
-6. 기존 프로젝트의 패턴과 유틸을 재사용하고 새 의존성은 추가하지 마. 관련 테스트를 추가하고 실행해.
-7. health, 인증된 portfolio 조회, 연동 테스트를 검증한 뒤 결과만 요약해. API 키 값은 어떤 결과에도 쓰지 마.
+1. 저장소, 설정, 실행 진입점, 스케줄, 포트폴리오 경계를 조사해 독립 전략을 모두 식별해. 별도 포트폴리오나 의사결정 파이프라인이면 별도 전략으로 취급하되, 하나의 포트폴리오가 여러 거래소를 다룬다는 이유만으로 쪼개지는 마.
+2. 각 전략의 ID, 표시 이름, 공개 핸들, 시장, 판단 주기와 선택 프로필(운영자·팀 이름, 한 줄 소개, 상세 소개, 대표 링크, 소스 링크)을 제안해. 코드에서 확정할 수 없는 공개 정보만 사용자에게 짧게 질문해.
+3. 실제 등록 전에 감지 근거와 전략별 등록 계획을 표로 보여줘. 한 전략이 Stance의 여러 시장 코드에 걸치면 임의로 고르거나 쪼개지 말고 지원 제약으로 명시해. 등록은 되돌릴 수 없으므로 사용자가 이 계획을 명시적으로 승인하기 전에는 POST /strategies를 호출하지 마.
+4. 승인 후 각 전략을 따로 등록해. 각 전략마다 별도 API 키, seq, writer, 포트폴리오 복구 상태를 사용하고 시장 간에 공유하지 마.
+5. 발급된 API 키는 채팅·로그·명령 출력·커밋·패치에 절대 노출하지 마. 저장소 밖 비밀 환경 파일(권한 600)이나 기존 secret manager에 즉시 저장하고 Git 추적 제외를 확인해.
+6. 과거 거래는 이관하거나 소급 입력하지 마. 기존 포지션이 있다면 연결 시점의 현재 목표 비중만 초기 선언하고, 지금부터 발생하는 판단을 기록해.
+7. 실제 주문과 Stance 보고를 분리해. Stance 장애가 주문을 막거나 지연시키지 않도록 fail-open으로 연결해.
+8. 시작할 때 각 전략의 GET /portfolio last_seq + 1을 사용하고, 타임아웃에는 같은 seq와 같은 본문을 그대로 재전송해.
+9. 기존 프로젝트의 패턴과 유틸을 재사용하고 새 의존성은 추가하지 마. 관련 테스트를 추가하고 실행해.
+10. health, 인증된 portfolio 조회, 연동 테스트를 검증한 뒤 결과만 요약해. API 키 값은 어떤 결과에도 쓰지 마.
 
-명확하고 되돌릴 수 있는 단계는 묻지 말고 진행하되, 전략의 공개 신원이나 시장을 확정할 근거가 없을 때만 질문해.`
+조사와 계획 작성은 묻지 말고 진행해. 필요한 공개 정보와 최종 등록 승인만 질문해.`
   }
   return `Connect the currently open project to Stance automatically. This instruction is for a coding agent with repository and terminal access.
 
 First read the machine-readable contract at ${discovery}, then inspect the repository and runtime.
 
-1. Propose a strategy ID, display name, public handle, market, and cadence, then register through the public API.
-2. Never expose the issued API key in chat, logs, command output, commits, patches, or screenshots. Store it immediately outside the repository in a mode-0600 secret file or the existing secret manager, and verify it is not tracked by Git.
-3. Do not migrate or backfill historical trades. If positions already exist, declare only their current target weights from the connection time onward, then record new decisions.
-4. Keep live order execution separate from Stance reporting. Stance failures must not block or delay orders; integrate fail-open.
-5. Recover with GET /portfolio last_seq + 1. On timeout, retry the identical seq and body. Use one writer per strategy.
-6. Reuse existing project patterns and utilities. Add no dependency. Add and run relevant tests.
-7. Verify health, authenticated portfolio recovery, and integration tests, then report only the results. Never include the API key value.
+1. Inspect the repository, configuration, entry points, schedules, and portfolio boundaries to identify all multiple independent strategies. Separate distinct portfolios or decision pipelines, but do not split one portfolio merely because it trades on multiple exchanges.
+2. Propose each strategy's ID, display name, public handle, market, cadence, and optional profile (operator or team, tagline, description, website, and source URL). Ask the user only for public information that cannot be established from the project.
+3. Before any registration, show the evidence and a per-strategy registration plan. If one strategy spans multiple Stance market codes, report that support constraint instead of guessing or splitting it. Registration is irreversible: do not call POST /strategies until the user explicitly approves that plan.
+4. After approval, register every strategy separately. Give each strategy its own API key, seq, writer, and portfolio recovery state; never share them across markets.
+5. Never expose the issued API key in chat, logs, command output, commits, patches, or screenshots. Store it immediately outside the repository in a mode-0600 secret file or the existing secret manager, and verify it is not tracked by Git.
+6. Do not migrate or backfill historical trades. If positions already exist, declare only their current target weights from the connection time onward, then record new decisions.
+7. Keep live order execution separate from Stance reporting. Stance failures must not block or delay orders; integrate fail-open.
+8. Recover each strategy with GET /portfolio last_seq + 1. On timeout, retry the identical seq and body.
+9. Reuse existing project patterns and utilities. Add no dependency. Add and run relevant tests.
+10. Verify health, authenticated portfolio recovery, and integration tests, then report only the results. Never include an API key value.
 
-Proceed without asking for clear, reversible steps. Ask only if the public identity or market cannot be determined safely.`
+Proceed with inspection and planning without asking. Ask only for missing public profile information and final registration approval.`
 }
 
 export function StanceAgentConnectCard({ ko }: { ko: boolean }) {
@@ -87,11 +93,12 @@ export function StanceAgentConnectCard({ ko }: { ko: boolean }) {
       </CardHeader>
 
       <CardContent className="space-y-5">
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {[
             [FolderCode, ko ? "1. 전략 프로젝트 열기" : "1. Open your strategy project", ko ? "Codex CLI · Claude Code · Cursor Agent 등" : "Codex CLI · Claude Code · Cursor Agent, etc."],
             [MessageSquareCode, ko ? "2. 에이전트 채팅에 붙여넣기" : "2. Paste into the agent chat", ko ? "일반 채팅이 아닌 파일·터미널 접근 모드" : "Use a mode with file and terminal access"],
-            [ShieldCheck, ko ? "3. 완료 보고 확인" : "3. Review the completion report", ko ? "등록 · 키 보관 · 코드 연동 · 테스트" : "Registration · key storage · code · tests"],
+            [Bot, ko ? "3. 등록 계획 승인" : "3. Approve the plan", ko ? "감지된 전략 · 공개 프로필 · 시장 확인" : "Review strategies · profiles · markets"],
+            [ShieldCheck, ko ? "4. 완료 보고 확인" : "4. Review completion", ko ? "전략별 등록 · 키 보관 · 코드 연동 · 테스트" : "Per-strategy registration · secrets · code · tests"],
           ].map(([Icon, title, description]) => (
             <div key={String(title)} className="rounded-xl border border-border/60 bg-background/70 p-4 backdrop-blur-sm">
               <Icon className="mb-3 h-5 w-5 text-violet-600" />

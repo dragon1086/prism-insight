@@ -58,6 +58,27 @@ def test_build_from_ledger():
     led.close()
 
 
+def test_profile_metadata_is_public_but_does_not_change_metrics():
+    led = Ledger()
+    led.register(
+        "profiled", "Profiled", "@owner", market="KRX",
+        owner_name="Owner", tagline="One line", description="Longer introduction",
+        website_url="https://example.com", source_url="https://github.com/example/repo",
+    )
+
+    payload = build(led, [(
+        "profiled", "Profiled", "@owner", "KRX", "Owner", "One line",
+        "Longer introduction", "https://example.com", "https://github.com/example/repo",
+    )])
+    entry = payload["boards"]["KRX"]["entries"][0]
+
+    assert entry["owner_name"] == "Owner"
+    assert entry["website_url"] == "https://example.com"
+    assert entry["source_url"].startswith("https://github.com/")
+    assert entry["metrics"]["cumulative_return"] == 0
+    led.close()
+
+
 def test_boards_are_not_mixed_across_markets():
     """시장을 섞으면 벤치마크와 변동성 스케일이 달라 비교가 무의미해진다."""
     led = Ledger()

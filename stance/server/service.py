@@ -115,6 +115,9 @@ class StanceService:
     def register(
         self, strategy_id: str, display_name: str, handle: str,
         market: str = "KRX", cadence: str = "daily",
+        owner_name: str | None = None, tagline: str | None = None,
+        description: str | None = None, website_url: str | None = None,
+        source_url: str | None = None,
     ) -> Registration:
         profile = profile_for(market)          # 알 수 없는 시장이면 여기서 걸린다
         try:
@@ -130,8 +133,32 @@ class StanceService:
             strategy_id, display_name, handle,
             market=profile.code, currency=profile.currency,
             api_key_hash=_hash(api_key), cadence=cad,
+            owner_name=owner_name, tagline=tagline, description=description,
+            website_url=website_url, source_url=source_url,
         )
         return Registration(strategy_id, api_key, profile.code, cad.value)
+
+    def update_profile(
+        self, strategy_id: str, **updates: str | None,
+    ) -> dict[str, str | None]:
+        fields = ("owner_name", "tagline", "description", "website_url", "source_url")
+        unknown = set(updates) - set(fields)
+        if unknown:
+            raise StanceError(f"알 수 없는 프로필 필드: {', '.join(sorted(unknown))}")
+        row = self.ledger.conn.execute(
+            f"SELECT {', '.join(fields)} FROM strategies WHERE strategy_id=?",
+            (strategy_id,),
+        ).fetchone()
+        if row is None:
+            raise StanceError("등록되지 않은 전략입니다", status=404)
+        profile = {field: updates.get(field, row[field]) for field in fields}
+        self.ledger.update_profile(
+            strategy_id, **profile,
+        )
+        return {
+            "strategy": strategy_id,
+            **profile,
+        }
 
     def _exists(self, strategy_id: str) -> bool:
         row = self.ledger.conn.execute(
@@ -297,11 +324,12 @@ class StanceService:
                      cadence=self.ledger.cadence_of(strategy_id),
                      profile=self._profile(strategy_id))
 
-    def strategies(self) -> list[tuple[str, str, str, str]]:
+    def strategies(self) -> list[tuple[str | None, ...]]:
         rows = self.ledger.conn.execute(
-            "SELECT strategy_id, display_name, handle, market FROM strategies ORDER BY created_at"
+            "SELECT strategy_id, display_name, handle, market, owner_name, tagline,"
+            " description, website_url, source_url FROM strategies ORDER BY created_at"
         ).fetchall()
-        return [(r["strategy_id"], r["display_name"], r["handle"], r["market"]) for r in rows]
+        return [tuple(r) for r in rows]
 
     # ── 내부 ──────────────────────────────────────────────────────────
 

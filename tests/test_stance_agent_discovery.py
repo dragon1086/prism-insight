@@ -75,3 +75,34 @@ def test_onboarding_explains_where_to_paste_and_when_results_appear():
     assert "예선 명단에 바로 표시" in card
     assert "63거래일과 자산의 1% 이상을 투자했던 포지션 청산 20건" in card
     assert "그전에도 기록과 성과는 보입니다" in card
+
+
+def test_agent_onboarding_plans_multiple_strategies_before_registration():
+    card = (
+        ROOT
+        / "examples"
+        / "dashboard"
+        / "components"
+        / "stance-agent-connect-card.tsx"
+    ).read_text(encoding="utf-8")
+    contract = json.loads(DISCOVERY.read_text(encoding="utf-8"))
+
+    assert "독립 전략을 모두 식별" in card
+    assert "등록 계획" in card
+    assert "명시적으로 승인" in card
+    assert "각 전략마다 별도 API 키" in card
+    assert any("multiple independent strategies" in rule for rule in contract["agent_rules"])
+    assert contract["registration"]["profile_fields"]["tagline"]["required"] is False
+
+
+def test_dashboard_marks_participant_links_as_untrusted_content():
+    page = (
+        ROOT
+        / "examples"
+        / "dashboard"
+        / "components"
+        / "stance-leaderboard-page.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'rel="nofollow ugc noopener noreferrer"' in page
+    assert "참여자가 직접 작성한 공개 정보" in page

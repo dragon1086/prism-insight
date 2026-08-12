@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { ExternalLink, Github } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useLanguage } from "@/components/language-provider"
@@ -325,7 +326,34 @@ function EntryTable({
             <tr key={e.strategy} className="border-b border-border/30 last:border-0">
               <td className="py-3 pr-4">
                 <div className="font-medium">{e.display_name}</div>
-                <div className="text-xs text-muted-foreground font-mono">{e.handle}</div>
+                <div className="text-xs text-muted-foreground">
+                  <span className="font-mono">{e.handle}</span>
+                  {e.owner_name && <span> · {e.owner_name}</span>}
+                </div>
+                {e.tagline && <div className="mt-1 max-w-sm text-xs text-muted-foreground">{e.tagline}</div>}
+                {(e.description || e.website_url || e.source_url) && (
+                  <details className="mt-1.5 max-w-sm text-xs">
+                    <summary className="cursor-pointer text-primary hover:underline">
+                      {ko ? "전략 소개" : "Strategy profile"}
+                    </summary>
+                    <div className="mt-2 space-y-2 rounded-md border border-border/50 bg-muted/20 p-3 text-muted-foreground">
+                      {e.description && <p className="whitespace-pre-wrap leading-relaxed">{e.description}</p>}
+                      <div className="flex flex-wrap gap-3">
+                        {e.website_url && (
+                          <a href={e.website_url} target="_blank" rel="nofollow ugc noopener noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
+                            {ko ? "대표 링크" : "Website"}<ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                        {e.source_url && (
+                          <a href={e.source_url} target="_blank" rel="nofollow ugc noopener noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
+                            {ko ? "소스" : "Source"}<Github className="h-3 w-3" />
+                          </a>
+                        )}
+                      </div>
+                      <p className="text-[10px] opacity-70">{ko ? "참여자가 직접 작성한 공개 정보" : "Public information supplied by the participant"}</p>
+                    </div>
+                  </details>
+                )}
                 {provisional && e.gate_failures.length > 0 && (
                   <div className="text-[11px] text-amber-600 dark:text-amber-500 mt-1">
                     {e.gate_failures.join(" · ")}

@@ -9,6 +9,7 @@
 
 엔드포인트
     POST /strategies        전략 등록 → 인증키 발급 (전략당 1회)
+    PATCH /profile          선택 공개 프로필 수정 (점수와 무관)
     POST /stances           선언 접수  ← 참여자가 쓰는 유일한 쓰기 엔드포인트
     POST /keys/rotate       인증키 교체
     GET  /portfolio         검산용 보유·자산 스냅샷
@@ -24,10 +25,11 @@ import os
 import secrets
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .leaderboard import build as build_leaderboard
 from .leaderboard import preparing
@@ -118,9 +120,35 @@ def current_strategy(
 
 # ── 스키마 ────────────────────────────────────────────────────────────────
 
-class RegisterIn(BaseModel):
+class PublicProfileFields(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    owner_name: str | None = Field(default=None, max_length=100)
+    tagline: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    website_url: str | None = Field(default=None, max_length=500)
+    source_url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("owner_name", "tagline", "description", "website_url", "source_url", mode="before")
+    @classmethod
+    def empty_profile_values_are_none(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("website_url", "source_url")
+    @classmethod
+    def safe_public_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("공개 링크는 사용자 정보가 없는 HTTPS 주소여야 합니다")
+        return value
+
+
+class RegisterIn(PublicProfileFields):
     strategy: str = Field(
         min_length=1,
         max_length=64,
@@ -143,6 +171,14 @@ class RegisterOut(BaseModel):
     cadence: str
     api_key: str
     notice: str
+
+
+class ProfileIn(PublicProfileFields):
+    pass
+
+
+class ProfileOut(ProfileIn):
+    strategy: str
 
 
 class KeyRotationOut(BaseModel):
@@ -258,7 +294,10 @@ def register(
         raise HTTPException(401, "등록 토큰이 올바르지 않습니다")
 
     reg = service.register(body.strategy, body.display_name, body.handle,
-                           market=body.market, cadence=body.cadence)
+                           market=body.market, cadence=body.cadence,
+                           owner_name=body.owner_name, tagline=body.tagline,
+                           description=body.description, website_url=body.website_url,
+                           source_url=body.source_url)
     return RegisterOut(
         strategy=reg.strategy_id,
         market=reg.market,
@@ -266,6 +305,18 @@ def register(
         api_key=reg.api_key,
         notice="이 키는 다시 볼 수 없습니다. 안전한 곳에 보관하세요.",
     )
+
+
+@app.patch("/profile", response_model=ProfileOut)
+def update_profile(
+    body: ProfileIn,
+    strategy_id: str = Depends(current_strategy),
+    service: StanceService = Depends(get_service),
+) -> ProfileOut:
+    """Update optional public presentation metadata; scoring inputs remain unchanged."""
+    return ProfileOut(**service.update_profile(
+        strategy_id, **body.model_dump(exclude_unset=True)
+    ))
 
 
 @app.post("/keys/rotate", response_model=KeyRotationOut)

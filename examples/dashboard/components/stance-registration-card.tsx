@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Textarea } from "@/components/ui/textarea"
 
 type Registration = {
   strategy: string
@@ -23,6 +24,11 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
   const [strategy, setStrategy] = useState("")
   const [displayName, setDisplayName] = useState("")
   const [handle, setHandle] = useState("")
+  const [ownerName, setOwnerName] = useState("")
+  const [tagline, setTagline] = useState("")
+  const [description, setDescription] = useState("")
+  const [websiteUrl, setWebsiteUrl] = useState("")
+  const [sourceUrl, setSourceUrl] = useState("")
   const [market, setMarket] = useState("KRX")
   const [cadence, setCadence] = useState("daily")
   const [registration, setRegistration] = useState<Registration | null>(null)
@@ -49,6 +55,11 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
           handle,
           market,
           cadence,
+          owner_name: ownerName || null,
+          tagline: tagline || null,
+          description: description || null,
+          website_url: websiteUrl || null,
+          source_url: sourceUrl || null,
         }),
       })
       const body = await response.json().catch(() => ({}))
@@ -188,6 +199,37 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
               </Select>
             </div>
           </div>
+
+          <details className="sm:col-span-2 rounded-lg border border-border/60 bg-muted/20">
+            <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
+              {ko ? "선택 · 전략 소개와 링크" : "Optional · Strategy profile and links"}
+            </summary>
+            <div className="grid gap-4 border-t border-border/60 p-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="stance-owner">{ko ? "운영자·팀 이름" : "Operator or team"}</Label>
+                <Input id="stance-owner" value={ownerName} onChange={(event) => setOwnerName(event.target.value)} maxLength={100} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="stance-tagline">{ko ? "한 줄 소개" : "Tagline"}</Label>
+                <Input id="stance-tagline" value={tagline} onChange={(event) => setTagline(event.target.value)} maxLength={120} />
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="stance-description">{ko ? "상세 소개" : "Description"}</Label>
+                <Textarea id="stance-description" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} rows={3} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="stance-website">{ko ? "대표 링크" : "Website"}</Label>
+                <Input id="stance-website" type="url" inputMode="url" value={websiteUrl} onChange={(event) => setWebsiteUrl(event.target.value)} placeholder="https://" maxLength={500} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="stance-source">{ko ? "소스 저장소" : "Source repository"}</Label>
+                <Input id="stance-source" type="url" inputMode="url" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://github.com/..." maxLength={500} />
+              </div>
+              <p className="text-xs text-muted-foreground sm:col-span-2">
+                {ko ? "모두 선택사항이며 점수와 순위에는 영향을 주지 않습니다. 공개 링크는 HTTPS만 허용합니다." : "All fields are optional and never affect scoring or rank. Public links must use HTTPS."}
+              </p>
+            </div>
+          </details>
 
           {error && (
             <div className="sm:col-span-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
