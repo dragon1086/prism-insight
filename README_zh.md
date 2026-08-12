@@ -28,28 +28,31 @@
   <a href="README_es.md">Español</a>
 </p>
 
-## Stance — 面向所有策略的开放决策层
+## Which System Trading Strategy Is Winning Right Now? — Stance
 
 <p align="center">
-  <img src="docs/images/stance-ecosystem-en.png" alt="Stance 生态：策略声明目标权重，不可篡改的账本封存时间和价格，公开仪表盘统一比较结果" width="100%">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Stance strategy leaderboard comparing return, worst drawdown, average invested exposure, and record rate across KRX and US strategies" width="100%">
 </p>
 
-**传统业绩记录只展示事后结果，Stance 记录市场波动前的决策。** 发布一个目标权重，服务器封存时间和价格，仪表盘用同一套规则评估每个策略。无需余额、账号或券商密钥。
+**The highest return is only half the answer.** Stance separates KRX and US rankings, then shows return beside worst drawdown, average invested exposure, and record rate—so you can see which strategies are performing well and how they got there.
 
-- **连接** — 人、机器人或 AI，只需一次 HTTP 请求
-- **验证** — 用带时间戳的决策记录取代截图和事后宣称
-- **比较** — 将独立策略汇入可审计的开放生态
+- **Find what is working now** — compare every strategy under one rulebook
+- **Look past the headline return** — see risk, real exposure, and missing records
+- **Trust the timeline** — decisions are recorded before outcomes; the server seals time and price and calculates performance
+- **Enter your own strategy** — let a coding agent discover, register, connect, and test it
 
-**[几分钟完成接入](stance/QUICKSTART.md)** · **[阅读开放标准](stance/spec/core-spec.md)** · **[查看实时仪表盘](https://analysis.stocksimulation.kr/?tab=stance)**
+**[See the live leaderboard](https://analysis.stocksimulation.kr/?tab=stance)** · **[Enter my strategy](https://analysis.stocksimulation.kr/?tab=stance)** · **[Read the quickstart](stance/QUICKSTART.md)**
 
 <details>
-<summary><strong>开发者速览 — 两类消息、五条规则</strong></summary>
+<summary><strong>How does my strategy join?</strong></summary>
 
 <p align="center">
-  <img src="docs/images/stance-integration-en.png" alt="Stance 接入指南：注册、声明目标权重、验证并公开绩效" width="100%">
+  <img src="docs/images/stance-integration-en.png" alt="Connect a strategy to Stance by opening its project, pasting one instruction into a coding agent, reviewing detected strategies and profiles, and approving automatic registration and integration" width="100%">
 </p>
 
-目标权重高于当前值代表买入，低于当前值代表卖出，`0`代表清仓；协议无需单独的买卖命令。可直接复制的 curl、Python、JavaScript 示例，以及重试和密钥轮换说明，均在**[快速入门](stance/QUICKSTART.md)**中。
+Open your strategy project in **Codex CLI, Cursor, Claude Code, or another coding agent**, then paste the instruction copied from the Stance dashboard into its chat. The agent finds separate strategies and KRX/US portfolios, asks only for missing public profile details, shows the registration plan, and proceeds only after your approval. It also stores keys, changes the code, and runs tests.
+
+Your strategy appears under **Building a record** from its first decision. For stock markets, official ranking begins after **63 trading days and 20 closed trades that each used at least 1% of assets**. The record starts on connection day; historical results cannot be backfilled. No live brokerage account, balance, or broker key is required.
 </details>
 
 ---
