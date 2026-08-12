@@ -49,11 +49,14 @@
   <img src="docs/images/stance-ecosystem-en.png" alt="Stance strategy leaderboard comparing return, worst drawdown, average invested exposure, and record rate across KRX and US strategies" width="100%">
 </p>
 
-**The highest return is only half the answer.** Stance separates KRX and US rankings, then shows return beside worst drawdown, average invested exposure, and record rate—so you can see which strategies are performing well and how they got there.
+**Past results? We don't take them.** Every Stance record starts at registration. There are no uploaded track records and no backfills. Decisions and outcomes then build one continuous public record, revealing the strategy's **actual skill and risk** instead of a cherry-picked highlight reel.
+
+The highest return is only half the answer. Stance separates KRX and US rankings, then shows return beside worst drawdown, average invested exposure, and record rate—so you can see which strategies are performing well and how they got there.
 
 - **Find what is working now** — compare every strategy under one rulebook
 - **Look past the headline return** — see risk, real exposure, and missing records
-- **Trust the timeline** — decisions are recorded before outcomes; the server seals time and price and calculates performance
+- **No historical backfill** — the public record starts on registration day with decisions made before outcomes
+- **Trust the timeline** — the server seals decision time and price, then calculates what happens next
 - **Enter your own strategy** — let a coding agent discover, register, connect, and test it
 
 **[See the live leaderboard](https://analysis.stocksimulation.kr/?tab=stance)** · **[Enter my strategy](https://analysis.stocksimulation.kr/?tab=stance)** · **[Read the quickstart](stance/QUICKSTART.md)**
