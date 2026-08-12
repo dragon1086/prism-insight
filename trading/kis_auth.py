@@ -72,9 +72,13 @@ class TokenRequestError(KISAuthError):
 clearConsole = lambda: subprocess.run(["cls" if os.name in ("nt", "dos") else "clear"], check=False, shell=(os.name in ("nt", "dos")))
 
 key_bytes = 32
-# Find config folder based on kis_auth.py file directory
+# Keep credentials outside deploy worktrees when KIS_CONFIG_ROOT is provided.
 current_dir = os.path.dirname(os.path.abspath(__file__))
-config_root = os.path.join(current_dir, "config")
+config_root = os.path.abspath(
+    os.path.expanduser(
+        os.environ.get("KIS_CONFIG_ROOT", os.path.join(current_dir, "config"))
+    )
+)
 # config_root = "$HOME/KIS/config/"  # Folder where token files are stored, set path to be difficult for third parties to find
 # token_tmp = config_root + 'KIS000000'  # Specify file name for local token storage, avoid file names that can infer token value
 # token_tmp = config_root + 'KIS' + datetime.today().strftime("%Y%m%d%H%M%S")  # Token local storage filename YYYYMMDDHHMMSS
