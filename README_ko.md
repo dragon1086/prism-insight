@@ -28,7 +28,22 @@
   <a href="README_es.md">Español</a>
 </p>
 
-## 그래서 요즘, 어떤 시스템 트레이딩 전략이 제일 잘나가는데? — Stance
+### 플래티넘 스폰서
+
+<div align="center">
+<a href="https://wrks.ai/ko">
+  <img src="docs/images/wrks_ai_logo.png" alt="AI3 WrksAI" width="50">
+</a>
+
+**[AI3](https://www.ai3.kr/) | [WrksAI](https://wrks.ai/ko)**
+
+직장인을 위한 AI 비서 **웍스AI**를 만드는 **AI3**가<br>
+투자자를 위한 AI 비서 **PRISM-INSIGHT**를 후원합니다.
+</div>
+
+---
+
+## 신기능: Stance — 그래서 요즘, 어떤 시스템 트레이딩 전략이 제일 잘나가는데?
 
 <p align="center">
   <img src="docs/images/stance-ecosystem-ko.png" alt="한국과 미국 시스템 트레이딩 전략의 수익, 최대 하락, 평균 투자비중, 기록률을 비교하는 Stance 리더보드" width="100%">
@@ -54,21 +69,6 @@
 
 등록 직후부터 **‘기록 쌓는 중’**에 나오고 첫 판단부터 성과가 공개됩니다. 주식 공식 순위는 **63거래일 동안 기록하고, 자산의 1% 이상을 넣었던 거래를 20번 마친 뒤** 시작됩니다. 연결한 날부터 새 기록이 쌓이며 과거 성과는 끼워 넣을 수 없습니다. 실계좌·잔고·증권사 키는 필요 없습니다.
 </details>
-
----
-
-### 플래티넘 스폰서
-
-<div align="center">
-<a href="https://wrks.ai/ko">
-  <img src="docs/images/wrks_ai_logo.png" alt="AI3 WrksAI" width="50">
-</a>
-
-**[AI3](https://www.ai3.kr/) | [WrksAI](https://wrks.ai/ko)**
-
-직장인을 위한 AI 비서 **웍스AI**를 만드는 **AI3**가<br>
-투자자를 위한 AI 비서 **PRISM-INSIGHT**를 후원합니다.
-</div>
 
 ---
 

@@ -28,7 +28,22 @@
   <a href="README_es.md">Español</a>
 </p>
 
-## Which System Trading Strategy Is Winning Right Now? — Stance
+### 铂金赞助商
+
+<div align="center">
+<a href="https://wrks.ai/en">
+  <img src="docs/images/wrks_ai_logo.png" alt="AI3 WrksAI" width="50">
+</a>
+
+**[AI3](https://www.ai3.kr/) | [WrksAI](https://wrks.ai/en)**
+
+**WrksAI** 的开发者 **AI3** —— 专为职场人士打造的 AI 助手，<br>
+自豪地赞助 **PRISM-INSIGHT** —— 专为投资者打造的 AI 助手。
+</div>
+
+---
+
+## NEW: Stance — Which System Trading Strategy Is Winning Right Now?
 
 <p align="center">
   <img src="docs/images/stance-ecosystem-en.png" alt="Stance strategy leaderboard comparing return, worst drawdown, average invested exposure, and record rate across KRX and US strategies" width="100%">
@@ -54,21 +69,6 @@ Open your strategy project in **Codex CLI, Cursor, Claude Code, or another codin
 
 Your strategy appears under **Building a record** from its first decision. For stock markets, official ranking begins after **63 trading days and 20 closed trades that each used at least 1% of assets**. The record starts on connection day; historical results cannot be backfilled. No live brokerage account, balance, or broker key is required.
 </details>
-
----
-
-### 铂金赞助商
-
-<div align="center">
-<a href="https://wrks.ai/en">
-  <img src="docs/images/wrks_ai_logo.png" alt="AI3 WrksAI" width="50">
-</a>
-
-**[AI3](https://www.ai3.kr/) | [WrksAI](https://wrks.ai/en)**
-
-**WrksAI** 的开发者 **AI3** —— 专为职场人士打造的 AI 助手，<br>
-自豪地赞助 **PRISM-INSIGHT** —— 专为投资者打造的 AI 助手。
-</div>
 
 ---
 
