@@ -1,10 +1,11 @@
 "use client"
 
 import { FormEvent, useEffect, useState } from "react"
-import { Check, Copy, KeyRound, Loader2 } from "lucide-react"
+import { Check, ChevronDown, Copy, KeyRound, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -35,6 +36,7 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
   const [error, setError] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [manualOpen, setManualOpen] = useState(false)
   const [publicApiBase, setPublicApiBase] = useState(API_BASE)
 
   useEffect(() => {
@@ -126,19 +128,32 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
   }
 
   return (
-    <Card className="border-primary/30">
-      <CardHeader>
-        <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-          {ko ? "AI 없이 직접 등록하기" : "Register without an AI"}
-          <Badge variant="secondary">{ko ? "대안" : "Alternative"}</Badge>
-        </CardTitle>
-        <p className="text-sm text-muted-foreground">
-          {ko
-            ? "코드를 직접 연결할 수 있는 개발자는 여기서 등록하세요. 연결용 비밀키는 등록 직후 한 번만 보여드립니다."
-            : "Developers who prefer to integrate the code themselves can register here. The secret connection key is shown once."}
-        </p>
-      </CardHeader>
-      <CardContent>
+    <Collapsible open={manualOpen} onOpenChange={setManualOpen}>
+      <Card className="border-border/60">
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-4 rounded-xl px-6 py-4 text-left transition-colors hover:bg-muted/40"
+          >
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+                {ko ? "AI 없이 직접 등록하기" : "Register without an AI"}
+                <Badge variant="secondary">{ko ? "선택" : "Optional"}</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {ko
+                  ? "직접 코드를 연결할 개발자용 등록 양식"
+                  : "Manual registration for developers integrating the code themselves"}
+              </p>
+            </div>
+            <ChevronDown
+              className={`h-5 w-5 shrink-0 text-muted-foreground transition-transform ${manualOpen ? "rotate-180" : ""}`}
+              aria-hidden="true"
+            />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <CardContent className="border-t border-border/60 pt-6">
         <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="stance-strategy">{ko ? "전략 주소용 ID (영문)" : "Strategy ID for URLs"}</Label>
@@ -247,7 +262,9 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
             </Button>
           </div>
         </form>
-      </CardContent>
-    </Card>
+          </CardContent>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
   )
 }

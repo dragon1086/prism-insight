@@ -114,10 +114,6 @@ export function StanceLeaderboardPage() {
         </CardContent>
       </Card>
 
-      <StanceAgentConnectCard ko={ko} />
-
-      <StanceRegistrationCard ko={ko} />
-
       {/* ── 리더보드 ────────────────────────────────────────────── */}
       {failed && (
         <Card className="border-border/50">
@@ -140,6 +136,11 @@ export function StanceLeaderboardPage() {
       {data &&
         !isEmpty &&
         boards.map((board) => <BoardTable key={board.market} board={board} ko={ko} />)}
+
+      {/* ── 참가 안내 ───────────────────────────────────────────── */}
+      <StanceAgentConnectCard ko={ko} />
+
+      <StanceRegistrationCard ko={ko} />
 
       {/* ── 채점 방식 ───────────────────────────────────────────── */}
       {data && (
