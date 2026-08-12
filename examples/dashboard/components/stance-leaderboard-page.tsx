@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useLanguage } from "@/components/language-provider"
 import { StanceRegistrationCard } from "@/components/stance-registration-card"
+import { StanceAgentConnectCard } from "@/components/stance-agent-connect-card"
 import type { StanceLeaderboard, StanceBoard, StanceEntry } from "@/types/dashboard"
 
 const SPEC_URL = "https://github.com/dragon1086/prism-insight/blob/main/stance/spec/core-spec.md"
@@ -109,6 +110,8 @@ export function StanceLeaderboardPage() {
           </a>
         </CardContent>
       </Card>
+
+      <StanceAgentConnectCard ko={ko} />
 
       <StanceRegistrationCard ko={ko} />
 
