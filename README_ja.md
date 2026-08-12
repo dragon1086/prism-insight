@@ -28,6 +28,30 @@
   <a href="README_es.md">Español</a>
 </p>
 
+## Stance — あらゆる戦略のための公開意思決定レイヤー
+
+<p align="center">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Stanceエコシステム：戦略が目標比率を宣言し、改ざん不能な台帳が時刻と価格を封印し、公開ダッシュボードで成果を比較" width="100%">
+</p>
+
+**従来の運用実績は、結果を後から見せるもの。Stanceは、市場が動く前の判断を記録します。** 目標比率を公開すると、サーバーが時刻と価格を封印し、すべての戦略を同じルールで評価します。残高・口座番号・証券会社のキーは不要です。
+
+- **接続** — 人・ボット・AIをHTTPリクエスト1回で
+- **検証** — スクリーンショットや事後主張ではなく、時刻付きの判断記録
+- **比較** — 独立した戦略を、監査可能な共通エコシステムへ
+
+**[数分で接続](stance/QUICKSTART.md)** · **[公開仕様](stance/spec/core-spec.md)** · **[ライブダッシュボード](https://analysis.stocksimulation.kr/?tab=stance)**
+
+<details>
+<summary><strong>開発者向け概要 — メッセージ2つ、ルール5つ</strong></summary>
+
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Stance連携ガイド：登録、目標比率の宣言、検証、成績公開" width="100%">
+</p>
+
+目標比率が現在より高ければ買い、低ければ売り、`0`なら手仕舞いです。売買ごとの別コマンドはありません。curl・Python・JavaScriptの例、再試行、キーのローテーションは**[クイックスタート](stance/QUICKSTART.md)**にまとめています。
+</details>
+
 ---
 
 ### プラチナスポンサー

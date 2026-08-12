@@ -1,0 +1,69 @@
+[Unit]
+Description=Stance — 매매 판단 공개 프로토콜 서버
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prism
+Group=prism
+WorkingDirectory=/opt/prism-insight
+EnvironmentFile=/etc/prism/stance.env
+
+# ⚠️ 워커를 늘리지 말 것.
+#    장부(계산장부)를 프로세스 메모리에 캐시하므로 워커가 여럿이면
+#    한쪽에서 접수한 선언이 다른 쪽 장부에 반영되지 않아 현금 판정이 어긋난다.
+#    SQLite 다중 프로세스 쓰기 경합도 생긴다.
+ExecStart=/opt/prism-insight/.venv/bin/uvicorn stance.server.api:app \
+    --host 127.0.0.1 --port 8800 --workers 1
+
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+# 원장이 저장되는 곳. 이 경로가 없으면 기록이 남지 않는다.
+ReadWritePaths=/var/lib/prism-stance
+
+[Install]
+WantedBy=multi-user.target
+
+# ── /etc/prism/stance.env 예시 ────────────────────────────────────────────
+#
+#   STANCE_DB=/var/lib/prism-stance/ledger.db
+#   STANCE_REGISTRATION_TOKEN=충분히-긴-무작위-등록-토큰
+#
+# STANCE_DB 를 비워두면 작업 디렉터리에 stance_ledger.db 를 만들고 경고를 남긴다.
+# `:memory:` 로 두면 프로세스가 죽는 순간 원장이 사라진다 — 테스트 전용이다.
+# STANCE_REGISTRATION_TOKEN 은 대시보드 app server 와만 공유한다.
+# 참여자나 브라우저에 전달하지 않는다. 비우면 내부 API에서 누구나 등록할 수 있다.
+#
+# ── 설치 ──────────────────────────────────────────────────────────────────
+#
+#   sudo install -d -o prism -g prism -m 0750 /var/lib/prism-stance
+#   sudo cp deploy/systemd/prism-stance.service.example \
+#           /etc/systemd/system/prism-stance.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now prism-stance
+#   curl -s localhost:8800/health   # durable 이 true 인지 확인
+#
+# ── 시세 연동 ─────────────────────────────────────────────────────────────
+#
+# 위 ExecStart 는 시세 제공자를 주입하지 않으므로 **모든 선언이 보류(pending)로 쌓인다.**
+# KIS 를 붙이려면 stance_server.py 를 대신 실행한다.
+#
+#   ExecStart=/opt/prism-insight/.venv/bin/python -m stance_server
+#
+# ── 하루 마감 (필수) ──────────────────────────────────────────────────────
+#
+# 서버만 띄우면 리더보드가 죽는다. 마감이 채점의 시간축을 만들기 때문이다.
+# 돌지 않으면 운영일수·투자비중·위험지표가 전부 0 으로 남는다.
+#
+#   # 정규장 마감 후 (KST 15:40)
+#   40 15 * * 1-5  cd /opt/prism-insight && .venv/bin/python -m stance_mark --market KRX
+#
+# stance_mark 가 휴장일 필터(check_market_day)와 KIS 종가를 함께 물린다.
+# 휴장일에 마감하면 그날이 거래일로 박혀 운영일수와 연율화가 부풀려진다.

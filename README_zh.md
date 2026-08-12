@@ -28,6 +28,30 @@
   <a href="README_es.md">Español</a>
 </p>
 
+## Stance — 面向所有策略的开放决策层
+
+<p align="center">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Stance 生态：策略声明目标权重，不可篡改的账本封存时间和价格，公开仪表盘统一比较结果" width="100%">
+</p>
+
+**传统业绩记录只展示事后结果，Stance 记录市场波动前的决策。** 发布一个目标权重，服务器封存时间和价格，仪表盘用同一套规则评估每个策略。无需余额、账号或券商密钥。
+
+- **连接** — 人、机器人或 AI，只需一次 HTTP 请求
+- **验证** — 用带时间戳的决策记录取代截图和事后宣称
+- **比较** — 将独立策略汇入可审计的开放生态
+
+**[几分钟完成接入](stance/QUICKSTART.md)** · **[阅读开放标准](stance/spec/core-spec.md)** · **[查看实时仪表盘](https://analysis.stocksimulation.kr/?tab=stance)**
+
+<details>
+<summary><strong>开发者速览 — 两类消息、五条规则</strong></summary>
+
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Stance 接入指南：注册、声明目标权重、验证并公开绩效" width="100%">
+</p>
+
+目标权重高于当前值代表买入，低于当前值代表卖出，`0`代表清仓；协议无需单独的买卖命令。可直接复制的 curl、Python、JavaScript 示例，以及重试和密钥轮换说明，均在**[快速入门](stance/QUICKSTART.md)**中。
+</details>
+
 ---
 
 ### 铂金赞助商

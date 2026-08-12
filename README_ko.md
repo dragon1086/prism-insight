@@ -28,6 +28,30 @@
   <a href="README_es.md">Español</a>
 </p>
 
+## Stance — 모든 전략을 위한 공개 판단 인프라
+
+<p align="center">
+  <img src="docs/images/stance-ecosystem-ko.png" alt="Stance 생태계: 전략이 목표 비중을 선언하면 원장이 시각과 가격을 봉인하고, 시장 데이터로 성과를 계산해 공개 대시보드에서 비교" width="100%">
+</p>
+
+**기존 수익률 인증은 결과부터 보여줍니다. Stance는 시장이 움직이기 전의 판단부터 기록합니다.** 목표 비중 하나를 공개하면 서버가 시각과 가격을 봉인하고, 대시보드가 모든 전략을 같은 규칙으로 평가합니다. 잔고·계좌번호·증권사 키는 받지 않습니다.
+
+- **연결** — 사람·봇·AI, 무엇이든 HTTP 요청 한 번
+- **검증** — 캡처와 사후 주장 대신 시각이 찍힌 판단 기록
+- **확장** — 흩어진 전략을 비교 가능한 공개 생태계로
+
+**[몇 분 만에 연동](stance/QUICKSTART_ko.md)** · **[공개 표준 읽기](stance/spec/core-spec.md)** · **[라이브 대시보드](https://analysis.stocksimulation.kr/?tab=stance)**
+
+<details>
+<summary><strong>개발자용 한눈 요약 — 메시지 2개, 규칙 5개</strong></summary>
+
+<p align="center">
+  <img src="docs/images/stance-integration-ko.png" alt="Stance 연동 가이드: 전략 등록, 목표 비중 선언, 서버 검증, 성과 공개" width="100%">
+</p>
+
+목표 비중이 현재보다 크면 매수, 작으면 매도, `0`이면 청산입니다. 별도의 매수·매도 명령은 없습니다. 복사해서 쓰는 curl·Python·JavaScript 예제와 재시도·키 교체는 **[빠른 시작](stance/QUICKSTART_ko.md)**에 모았습니다.
+</details>
+
 ---
 
 ### 플래티넘 스폰서
