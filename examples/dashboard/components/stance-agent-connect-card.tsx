@@ -70,24 +70,24 @@ export function StanceAgentConnectCard({ ko }: { ko: boolean }) {
                 {ko ? "추천" : "Recommended"}
               </Badge>
               <Badge variant="outline" className="border-violet-500/30 text-violet-700 dark:text-violet-300">
-                {ko ? "등록 즉시" : "Instant registration"}
+                {ko ? "바로 시작" : "Start now"}
               </Badge>
             </div>
             <CardTitle className="flex items-center gap-2 text-xl">
               <Bot className="h-6 w-6 text-violet-600" />
-              {ko ? "코딩 에이전트로 자동 연결" : "Connect with a coding agent"}
+              {ko ? "내 자동매매 전략도 기록 시작하기" : "Start tracking my automated strategy"}
             </CardTitle>
             <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
               {ko
-                ? "프로젝트 코드를 읽고 수정할 수 있는 AI에게 아래 지시문을 건네면, 등록부터 연동 테스트까지 처리합니다."
-                : "Give the instruction below to an AI that can read and edit your project. It handles registration through integration testing."}
+                ? "Codex CLI, Claude Code, Cursor처럼 프로젝트 파일을 다룰 수 있는 AI를 쓰고 있다면, 아래 지시문 하나로 연결할 수 있습니다."
+                : "Using Codex CLI, Claude Code, Cursor, or another AI that can work with project files? One instruction handles the connection."}
             </p>
           </div>
           <Button onClick={copyPrompt} size="lg" className="min-w-48 bg-violet-600 text-white hover:bg-violet-700">
             {copied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
             {copied
               ? (ko ? "복사 완료" : "Copied")
-              : (ko ? "연결 지시문 복사" : "Copy connection instruction")}
+              : (ko ? "AI에게 줄 지시문 복사" : "Copy instructions for my AI")}
           </Button>
         </div>
       </CardHeader>
@@ -95,10 +95,10 @@ export function StanceAgentConnectCard({ ko }: { ko: boolean }) {
       <CardContent className="space-y-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {[
-            [FolderCode, ko ? "1. 전략 프로젝트 열기" : "1. Open your strategy project", ko ? "Codex CLI · Claude Code · Cursor Agent 등" : "Codex CLI · Claude Code · Cursor Agent, etc."],
-            [MessageSquareCode, ko ? "2. 에이전트 채팅에 붙여넣기" : "2. Paste into the agent chat", ko ? "일반 채팅이 아닌 파일·터미널 접근 모드" : "Use a mode with file and terminal access"],
-            [Bot, ko ? "3. 등록 계획 승인" : "3. Approve the plan", ko ? "감지된 전략 · 공개 프로필 · 시장 확인" : "Review strategies · profiles · markets"],
-            [ShieldCheck, ko ? "4. 완료 보고 확인" : "4. Review completion", ko ? "전략별 등록 · 키 보관 · 코드 연동 · 테스트" : "Per-strategy registration · secrets · code · tests"],
+            [FolderCode, ko ? "1. 내 전략 폴더 열기" : "1. Open the strategy folder", ko ? "AI 코딩 도구에서 프로젝트를 엽니다" : "Open the project in your AI coding tool"],
+            [MessageSquareCode, ko ? "2. AI 채팅에 붙여넣기" : "2. Paste into its chat", ko ? "복사한 지시문을 그대로 보냅니다" : "Send the copied instruction as-is"],
+            [Bot, ko ? "3. AI가 찾은 내용 확인" : "3. Review what it found", ko ? "한국·미국 전략, 이름, 소개를 확인하고 승인" : "Approve the strategies, names, and profiles"],
+            [ShieldCheck, ko ? "4. 자동 연결 완료" : "4. Connection complete", ko ? "등록, 비밀키 보관, 코드 수정, 테스트까지" : "Registration, secret storage, code, and tests"],
           ].map(([Icon, title, description]) => (
             <div key={String(title)} className="rounded-xl border border-border/60 bg-background/70 p-4 backdrop-blur-sm">
               <Icon className="mb-3 h-5 w-5 text-violet-600" />
@@ -113,10 +113,10 @@ export function StanceAgentConnectCard({ ko }: { ko: boolean }) {
             <Bot className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500" />
             <div>
               <div className="text-sm font-semibold">
-                {ko ? "등록 직후" : "Immediately after registration"}
+                {ko ? "등록하면 바로" : "Right after registration"}
               </div>
               <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                {ko ? "예선 명단에 바로 표시되고, 그 시점부터 판단 기록이 쌓입니다." : "Your strategy appears in the provisional field immediately, and decisions start accumulating from that point."}
+                {ko ? "‘기록 쌓는 중’ 목록에 나타나고, 첫 판단부터 성과가 공개됩니다." : "It appears under Building a record, and performance is visible from the first decision."}
               </div>
             </div>
           </div>
@@ -124,24 +124,24 @@ export function StanceAgentConnectCard({ ko }: { ko: boolean }) {
             <Trophy className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
             <div>
               <div className="text-sm font-semibold">
-                {ko ? "공식 순위 자격" : "Official ranking eligibility"}
+                {ko ? "공식 순위에 들어가는 때" : "When official ranking begins"}
               </div>
               <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                {ko ? "주식 기준 63거래일과 자산의 1% 이상을 투자했던 포지션 청산 20건을 모두 채우면 예선을 통과합니다. 그전에도 기록과 성과는 보입니다." : "For stocks, qualify after both 63 trading days and 20 closed positions that each carried at least 1% of assets. Records and performance remain visible before then."}
+                {ko ? "주식은 63거래일 동안 기록하고, 자산의 1% 이상을 넣었던 거래를 20번 마치면 들어갑니다. 그전 기록도 숨기지 않습니다." : "For stocks: record 63 trading days and close 20 positions that each used at least 1% of assets. Earlier records remain visible."}
               </div>
             </div>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 pt-4 text-xs text-muted-foreground">
-          <span>{ko ? "과거 거래 소급 없음 · 연결 시점부터 기록" : "No backfill · records begin at connection time"}</span>
+          <span>{ko ? "연결한 날부터 새 기록 시작 · 과거 성과 끼워 넣기 없음" : "A fresh record starts on connection day · no historical backfill"}</span>
           <a
             href={DISCOVERY_PATH}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 font-medium text-violet-700 hover:underline dark:text-violet-300"
           >
-            {ko ? "AI용 연결 명세 보기" : "View agent discovery contract"}
+            {ko ? "개발자용 연결 규칙" : "Technical connection rules"}
             <ExternalLink className="h-3 w-3" />
           </a>
         </div>

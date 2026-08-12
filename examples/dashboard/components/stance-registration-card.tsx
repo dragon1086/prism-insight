@@ -87,13 +87,13 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
         <CardHeader className="bg-emerald-500/10">
           <CardTitle className="flex items-center gap-2 text-base">
             <KeyRound className="h-5 w-5 text-emerald-600" />
-            {ko ? "연동 키 발급 완료" : "Integration key issued"}
+            {ko ? "전략 등록 완료" : "Strategy registered"}
             <Badge variant="outline" className="ml-auto font-mono">{registration.strategy}</Badge>
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-6 space-y-5">
           <div>
-            <Label>{ko ? "API 키 · 지금 한 번만 표시" : "API key · shown once"}</Label>
+            <Label>{ko ? "연결용 비밀키 · 지금 한 번만 표시" : "Secret connection key · shown once"}</Label>
             <div className="mt-2 flex gap-2">
               <code className="min-w-0 flex-1 overflow-x-auto rounded-md border bg-slate-950 px-3 py-2.5 text-sm text-emerald-300">
                 {registration.api_key}
@@ -110,7 +110,7 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
           </div>
 
           <div>
-            <Label>{ko ? "공개 API 주소" : "Public API endpoint"}</Label>
+            <Label>{ko ? "전략이 기록을 보낼 주소" : "Where the strategy sends records"}</Label>
             <code className="mt-2 block overflow-x-auto rounded-md bg-muted px-3 py-2.5 text-sm">{publicApiBase}</code>
           </div>
 
@@ -129,19 +129,19 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
     <Card className="border-primary/30">
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-          {ko ? "직접 등록" : "Manual registration"}
+          {ko ? "AI 없이 직접 등록하기" : "Register without an AI"}
           <Badge variant="secondary">{ko ? "대안" : "Alternative"}</Badge>
         </CardTitle>
         <p className="text-sm text-muted-foreground">
           {ko
-            ? "AI 에이전트를 쓰지 않는다면 이름과 시장을 직접 등록할 수 있습니다. 연동 키는 등록 직후 한 번만 표시됩니다."
-            : "If you are not using an AI agent, register the name and market manually. Your integration key appears once."}
+            ? "코드를 직접 연결할 수 있는 개발자는 여기서 등록하세요. 연결용 비밀키는 등록 직후 한 번만 보여드립니다."
+            : "Developers who prefer to integrate the code themselves can register here. The secret connection key is shown once."}
         </p>
       </CardHeader>
       <CardContent>
         <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
-            <Label htmlFor="stance-strategy">{ko ? "전략 ID" : "Strategy ID"}</Label>
+            <Label htmlFor="stance-strategy">{ko ? "전략 주소용 ID (영문)" : "Strategy ID for URLs"}</Label>
             <Input
               id="stance-strategy"
               value={strategy}
@@ -153,7 +153,7 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="stance-name">{ko ? "표시 이름" : "Display name"}</Label>
+            <Label htmlFor="stance-name">{ko ? "사람들에게 보여줄 전략 이름" : "Public strategy name"}</Label>
             <Input
               id="stance-name"
               value={displayName}
@@ -164,7 +164,7 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="stance-handle">{ko ? "공개 핸들" : "Public handle"}</Label>
+            <Label htmlFor="stance-handle">{ko ? "운영자 닉네임" : "Operator handle"}</Label>
             <Input
               id="stance-handle"
               value={handle}
@@ -187,7 +187,7 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>{ko ? "판단 주기" : "Cadence"}</Label>
+              <Label>{ko ? "투자 판단 빈도" : "Decision frequency"}</Label>
               <Select value={cadence} onValueChange={setCadence}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -202,7 +202,7 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
 
           <details className="sm:col-span-2 rounded-lg border border-border/60 bg-muted/20">
             <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
-              {ko ? "선택 · 전략 소개와 링크" : "Optional · Strategy profile and links"}
+              {ko ? "선택사항 · 전략을 소개하고 링크 알리기" : "Optional · Introduce and link your strategy"}
             </summary>
             <div className="grid gap-4 border-t border-border/60 p-4 sm:grid-cols-2">
               <div className="space-y-2">
@@ -243,7 +243,7 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
             </p>
             <Button type="submit" disabled={submitting}>
               {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {ko ? "전략 등록하고 키 받기" : "Register and get key"}
+              {ko ? "전략 등록하고 연결키 받기" : "Register and get connection key"}
             </Button>
           </div>
         </form>
