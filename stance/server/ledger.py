@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS strategies (
   strategy_id   TEXT PRIMARY KEY,
   display_name  TEXT NOT NULL,
   handle        TEXT NOT NULL,          -- 계정 핸들. 한 계정의 전 전략이 함께 노출된다
+  owner_name    TEXT,                   -- 선택 공개 프로필. 채점에는 쓰지 않는다
+  tagline       TEXT,
+  description   TEXT,
+  website_url   TEXT,
+  source_url    TEXT,
   market        TEXT NOT NULL,          -- 한 전략 = 한 시장 = 한 통화
   currency      TEXT NOT NULL,
   cadence       TEXT NOT NULL DEFAULT 'daily',  -- daily|weekly|monthly|event
@@ -146,6 +151,7 @@ class Ledger:
         self.conn.row_factory = sqlite3.Row
         with self._lock:
             self.conn.executescript(SCHEMA)
+            self._migrate_strategy_profiles()
             self.conn.executescript(IMMUTABILITY)
             self.conn.commit()
 
@@ -153,12 +159,32 @@ class Ledger:
         with self._lock:
             self.conn.close()
 
+    def _migrate_strategy_profiles(self) -> None:
+        """Add optional public profile columns to pre-profile databases."""
+        existing = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(strategies)").fetchall()
+        }
+        migrations = {
+            "owner_name": "ALTER TABLE strategies ADD COLUMN owner_name TEXT",
+            "tagline": "ALTER TABLE strategies ADD COLUMN tagline TEXT",
+            "description": "ALTER TABLE strategies ADD COLUMN description TEXT",
+            "website_url": "ALTER TABLE strategies ADD COLUMN website_url TEXT",
+            "source_url": "ALTER TABLE strategies ADD COLUMN source_url TEXT",
+        }
+        for column, statement in migrations.items():
+            if column not in existing:
+                self.conn.execute(statement)
+
     # ── 등록 ──────────────────────────────────────────────────────────────
 
     def register(
         self, strategy_id: str, display_name: str, handle: str,
         market: str = "KRX", currency: str = "KRW", api_key_hash: str = "",
         cadence: Cadence | str = Cadence.DAILY,
+        owner_name: str | None = None, tagline: str | None = None,
+        description: str | None = None, website_url: str | None = None,
+        source_url: str | None = None,
     ) -> None:
         """전략을 등록한다.
 
@@ -169,10 +195,27 @@ class Ledger:
         c = cadence.value if isinstance(cadence, Cadence) else str(cadence)
         with self._lock:
             self.conn.execute(
-                "INSERT INTO strategies (strategy_id, display_name, handle, market,"
-                " currency, cadence, api_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                (strategy_id, display_name, handle, market, currency, c, api_key_hash, _now()),
+                "INSERT INTO strategies (strategy_id, display_name, handle, owner_name,"
+                " tagline, description, website_url, source_url, market, currency, cadence,"
+                " api_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (strategy_id, display_name, handle, owner_name, tagline, description,
+                 website_url, source_url, market, currency, c, api_key_hash, _now()),
             )
+            self.conn.commit()
+
+    def update_profile(
+        self, strategy_id: str, *, owner_name: str | None, tagline: str | None,
+        description: str | None, website_url: str | None, source_url: str | None,
+    ) -> None:
+        """Update presentation metadata only; declarations and scoring inputs stay immutable."""
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE strategies SET owner_name=?, tagline=?, description=?,"
+                " website_url=?, source_url=? WHERE strategy_id=?",
+                (owner_name, tagline, description, website_url, source_url, strategy_id),
+            )
+            if cur.rowcount != 1:
+                raise KeyError(strategy_id)
             self.conn.commit()
 
     def cadence_of(self, strategy_id: str) -> Cadence:

@@ -31,6 +31,11 @@ class Entry:
     handle: str
     market: str
     metrics: Metrics
+    owner_name: str | None = None
+    tagline: str | None = None
+    description: str | None = None
+    website_url: str | None = None
+    source_url: str | None = None
 
     def to_dict(self) -> dict:
         m = self.metrics
@@ -39,6 +44,11 @@ class Entry:
             "display_name": self.display_name,
             "handle": self.handle,
             "market": self.market,
+            "owner_name": self.owner_name,
+            "tagline": self.tagline,
+            "description": self.description,
+            "website_url": self.website_url,
+            "source_url": self.source_url,
             "qualified": m.qualified,
             "gate_failures": m.gate_failures,
             "experimental": m.experimental,
@@ -61,19 +71,26 @@ class Entry:
         }
 
 
-def build(ledger: Ledger, strategies: list[tuple[str, str, str, str]]) -> dict:
+def build(ledger: Ledger, strategies: list[tuple[str | None, ...]]) -> dict:
     """리더보드 한 판을 만든다.
 
-    strategies 는 (strategy_id, display_name, handle, market) 목록이다.
+    첫 네 값은 strategy_id, display_name, handle, market 이며 뒤에는 선택 프로필이 온다.
     """
     boards: dict[str, dict] = {}
 
-    for strategy_id, display_name, handle, market in strategies:
+    for strategy in strategies:
+        strategy_id, display_name, handle, market = strategy[:4]
+        public_profile = (*strategy[4:9], None, None, None, None, None)[:5]
         profile = profile_for(market)
         # 일별 마킹까지 포함해 재생한다. 빠지면 시간축이 없어 지표가 전부 0 이 된다.
         result = replay(ledger.full_timeline(strategy_id), costs=profile.costs)
         metrics = score(result, cadence=ledger.cadence_of(strategy_id), profile=profile)
-        entry = Entry(strategy_id, display_name, handle, profile.code, metrics)
+        entry = Entry(
+            strategy_id, display_name, handle, profile.code, metrics,
+            owner_name=public_profile[0], tagline=public_profile[1],
+            description=public_profile[2], website_url=public_profile[3],
+            source_url=public_profile[4],
+        )
 
         board = boards.setdefault(profile.code, _empty_board(profile))
         board["entries"].append(entry.to_dict())
