@@ -146,7 +146,8 @@ class StanceService:
         if unknown:
             raise StanceError(f"알 수 없는 프로필 필드: {', '.join(sorted(unknown))}")
         row = self.ledger.conn.execute(
-            f"SELECT {', '.join(fields)} FROM strategies WHERE strategy_id=?",
+            "SELECT owner_name, tagline, description, website_url, source_url"
+            " FROM strategies WHERE strategy_id=?",
             (strategy_id,),
         ).fetchone()
         if row is None:

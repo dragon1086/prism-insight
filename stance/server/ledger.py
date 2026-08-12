@@ -165,9 +165,16 @@ class Ledger:
             row["name"]
             for row in self.conn.execute("PRAGMA table_info(strategies)").fetchall()
         }
-        for column in ("owner_name", "tagline", "description", "website_url", "source_url"):
+        migrations = {
+            "owner_name": "ALTER TABLE strategies ADD COLUMN owner_name TEXT",
+            "tagline": "ALTER TABLE strategies ADD COLUMN tagline TEXT",
+            "description": "ALTER TABLE strategies ADD COLUMN description TEXT",
+            "website_url": "ALTER TABLE strategies ADD COLUMN website_url TEXT",
+            "source_url": "ALTER TABLE strategies ADD COLUMN source_url TEXT",
+        }
+        for column, statement in migrations.items():
             if column not in existing:
-                self.conn.execute(f"ALTER TABLE strategies ADD COLUMN {column} TEXT")
+                self.conn.execute(statement)
 
     # ── 등록 ──────────────────────────────────────────────────────────────
 
