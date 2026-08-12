@@ -28,28 +28,31 @@
   <a href="README_es.md">Español</a>
 </p>
 
-## Stance — La capa abierta de decisiones para cualquier estrategia
+## Which System Trading Strategy Is Winning Right Now? — Stance
 
 <p align="center">
-  <img src="docs/images/stance-ecosystem-en.png" alt="Ecosistema Stance: las estrategias declaran pesos objetivo, un registro inmutable sella hora y precio, y un panel público compara los resultados" width="100%">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Stance strategy leaderboard comparing return, worst drawdown, average invested exposure, and record rate across KRX and US strategies" width="100%">
 </p>
 
-**Los historiales tradicionales enseñan el resultado después. Stance registra la decisión antes de que se mueva el mercado.** Publica un peso objetivo; el servidor sella hora y precio; el panel evalúa cada estrategia con las mismas reglas. Sin saldos, números de cuenta ni claves del bróker.
+**The highest return is only half the answer.** Stance separates KRX and US rankings, then shows return beside worst drawdown, average invested exposure, and record rate—so you can see which strategies are performing well and how they got there.
 
-- **Conecta** — personas, bots o modelos con una sola petición HTTP
-- **Verifica** — decisiones fechadas en lugar de capturas y promesas
-- **Compara** — estrategias independientes dentro de un ecosistema auditable
+- **Find what is working now** — compare every strategy under one rulebook
+- **Look past the headline return** — see risk, real exposure, and missing records
+- **Trust the timeline** — decisions are recorded before outcomes; the server seals time and price and calculates performance
+- **Enter your own strategy** — let a coding agent discover, register, connect, and test it
 
-**[Conectar en minutos](stance/QUICKSTART.md)** · **[Leer el estándar abierto](stance/spec/core-spec.md)** · **[Ver el panel en vivo](https://analysis.stocksimulation.kr/?tab=stance)**
+**[See the live leaderboard](https://analysis.stocksimulation.kr/?tab=stance)** · **[Enter my strategy](https://analysis.stocksimulation.kr/?tab=stance)** · **[Read the quickstart](stance/QUICKSTART.md)**
 
 <details>
-<summary><strong>Vista para desarrolladores — dos mensajes, cinco reglas</strong></summary>
+<summary><strong>How does my strategy join?</strong></summary>
 
 <p align="center">
-  <img src="docs/images/stance-integration-en.png" alt="Guía de integración Stance: registrar, declarar pesos objetivo, verificar y publicar rendimiento" width="100%">
+  <img src="docs/images/stance-integration-en.png" alt="Connect a strategy to Stance by opening its project, pasting one instruction into a coding agent, reviewing detected strategies and profiles, and approving automatic registration and integration" width="100%">
 </p>
 
-Un peso objetivo mayor que el actual implica compra; uno menor, venta; `0`, salida. El protocolo no necesita órdenes separadas de compra y venta. curl, Python, JavaScript, reintentos y rotación de claves están en la **[guía rápida](stance/QUICKSTART.md)**.
+Open your strategy project in **Codex CLI, Cursor, Claude Code, or another coding agent**, then paste the instruction copied from the Stance dashboard into its chat. The agent finds separate strategies and KRX/US portfolios, asks only for missing public profile details, shows the registration plan, and proceeds only after your approval. It also stores keys, changes the code, and runs tests.
+
+Your strategy appears under **Building a record** from its first decision. For stock markets, official ranking begins after **63 trading days and 20 closed trades that each used at least 1% of assets**. The record starts on connection day; historical results cannot be backfilled. No live brokerage account, balance, or broker key is required.
 </details>
 
 ---
