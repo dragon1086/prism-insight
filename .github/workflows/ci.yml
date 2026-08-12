@@ -6,6 +6,27 @@ on:
   pull_request:
 
 jobs:
+  dashboard:
+    name: Dashboard production build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: examples/dashboard/package-lock.json
+
+      - name: Install dashboard dependencies
+        working-directory: examples/dashboard
+        run: npm ci --legacy-peer-deps
+
+      - name: Build dashboard
+        working-directory: examples/dashboard
+        run: npm run build
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

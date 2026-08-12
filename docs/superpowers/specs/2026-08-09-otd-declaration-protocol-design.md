@@ -1,5 +1,11 @@
 # OTD — 매매 선언 프로토콜 설계
 
+> ⚠️ **이 문서는 낡았습니다.** 현재 정본은 [`stance/spec/core-spec.md`](../../../stance/spec/core-spec.md) 입니다.
+> 이 문서의 `weight`/`sell_ratio` 기준은 현재 `set`/`target_weight` 로 대체되었습니다.
+> 설계 논의의 기록으로만 참고하십시오.
+
+---
+
 > **Status**: Draft · **Date**: 2026-08-09 · **Issue**: [#328](https://github.com/dragon1086/prism-insight/issues/328)
 > **Protocol version**: `otd/0.1`
 

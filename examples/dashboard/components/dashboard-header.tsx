@@ -13,8 +13,8 @@ import {
 import type { Market } from "@/types/dashboard"
 
 interface DashboardHeaderProps {
-  activeTab: "dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "jeoningu-lab"
-  onTabChange: (tab: "dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "jeoningu-lab") => void
+  activeTab: "dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "stance"
+  onTabChange: (tab: "dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "stance") => void
   lastUpdated?: string
   market?: Market
   onMarketChange?: (market: Market) => void
@@ -316,20 +316,17 @@ export function DashboardHeader({ activeTab, onTabChange, lastUpdated, market = 
           >
             💡 {t("header.insights")}
           </Button>
-          {/* Jeoningu Lab - Only show for Korean market */}
-          {market === "KR" && (
-            <Button
-              variant={activeTab === "jeoningu-lab" ? "secondary" : "ghost"}
-              onClick={() => onTabChange("jeoningu-lab")}
-              className={`font-medium ${
-                activeTab === "jeoningu-lab"
-                  ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white hover:from-purple-700 hover:to-indigo-700"
-                  : "hover:bg-purple-50 dark:hover:bg-purple-950"
-              }`}
-            >
-              🧪 {language === "ko" ? "실험실" : "Lab"}
-            </Button>
-          )}
+          <Button
+            variant={activeTab === "stance" ? "secondary" : "ghost"}
+            onClick={() => onTabChange("stance")}
+            className={`font-medium ${
+              activeTab === "stance"
+                ? "bg-gradient-to-r from-slate-800 to-slate-600 text-white hover:from-slate-900 hover:to-slate-700"
+                : "hover:bg-slate-100 dark:hover:bg-slate-800"
+            }`}
+          >
+            📐 Stance
+          </Button>
         </nav>
 
         {/* Mobile Navigation */}
@@ -374,21 +371,18 @@ export function DashboardHeader({ activeTab, onTabChange, lastUpdated, market = 
           >
             💡 {t("header.insights")}
           </Button>
-          {/* Jeoningu Lab - Only show for Korean market (Mobile) */}
-          {market === "KR" && (
-            <Button
-              variant={activeTab === "jeoningu-lab" ? "secondary" : "ghost"}
-              onClick={() => onTabChange("jeoningu-lab")}
-              size="sm"
-              className={`font-medium whitespace-nowrap ${
-                activeTab === "jeoningu-lab"
-                  ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white hover:from-purple-700 hover:to-indigo-700"
-                  : "hover:bg-purple-50 dark:hover:bg-purple-950"
-              }`}
-            >
-              🧪 {language === "ko" ? "실험실" : "Lab"}
-            </Button>
-          )}
+          <Button
+            variant={activeTab === "stance" ? "secondary" : "ghost"}
+            onClick={() => onTabChange("stance")}
+            size="sm"
+            className={`font-medium whitespace-nowrap ${
+              activeTab === "stance"
+                ? "bg-gradient-to-r from-slate-800 to-slate-600 text-white hover:from-slate-900 hover:to-slate-700"
+                : "hover:bg-slate-100 dark:hover:bg-slate-800"
+            }`}
+          >
+            📐 Stance
+          </Button>
         </nav>
       </div>
     </header>

@@ -18,6 +18,38 @@ This document guides you through the installation and execution of the dashboard
 
 > The two services use different ports, so they can run **without port conflicts** simultaneously.
 
+## Stance on the dashboard domain
+
+The dashboard app server exposes the public Stance API at
+`https://analysis.stocksimulation.kr/api/stance/v1`. It proxies only the supported
+Stance routes to the internal single-worker service; the ledger remains private on
+`127.0.0.1:8800`.
+
+```bash
+cp .env.example .env.production
+
+# .env.production
+STANCE_INTERNAL_URL=http://127.0.0.1:8800
+STANCE_PUBLIC_REGISTRATION=true
+STANCE_REGISTRATION_TOKEN=<same-long-random-secret-as-the-internal-service>
+```
+
+The registration secret is server-only. Never prefix it with `NEXT_PUBLIC_`, return it
+from an API response, or put it in browser code. The Stance tab collects registration
+details and displays the resulting `stk_...` integration key once.
+
+Public surface:
+
+- `/?tab=stance` — registration and leaderboard
+- `/api/stance/v1/stances` — submit a decision
+- `/api/stance/v1/portfolio` — authenticated strategy snapshot
+- `/api/stance/v1/keys/rotate` — rotate an integration key
+- `/api/stance/v1/leaderboard`, `/markets`, `/health` — public reads
+
+Keep the internal Stance service bound to loopback with exactly one worker. Add an
+edge or reverse-proxy rate limit for `/api/stance/v1/strategies`; the app also applies
+a small per-process registration guard.
+
 ### If Port Change is Needed
 
 If port 3000 is already in use, you can change the port as follows:

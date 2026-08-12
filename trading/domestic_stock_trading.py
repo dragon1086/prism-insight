@@ -280,6 +280,10 @@ class DomesticStockTrading:
                     # iscd_stat_cls_code: 00/55 정상, 51 관리종목, 52 투자위험, 53 투자경고, 58 거래정지
                     'iscd_stat_cls_code': data.get('iscd_stat_cls_code', ''),
                     'mrkt_warn_cls_code': data.get('mrkt_warn_cls_code', ''),  # 00 없음/01 주의/02 경고/03 위험
+                    # 상한가/하한가 (Stance 체결 가능성 판정용 — prism_core.stance_quotes)
+                    # 현재가가 상한가면 살 물량이 없고, 하한가면 받아줄 사람이 없다.
+                    'upper_limit': data.get('stck_mxpr', ''),
+                    'lower_limit': data.get('stck_llam', ''),
                 }
 
                 logger.info(f"[{stock_code}] Current price: {result['current_price']:,} KRW ({result['change_rate']:+.2f}%)")

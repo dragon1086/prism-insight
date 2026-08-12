@@ -16,6 +16,37 @@
 
 > 두 서비스는 서로 다른 포트를 사용하므로 **포트 충돌 없이** 동시 실행 가능합니다.
 
+## 대시보드 도메인에서 Stance 운영
+
+대시보드 app server가 `https://analysis.stocksimulation.kr/api/stance/v1`을 공개한다.
+허용된 Stance 경로만 내부 단일 워커로 전달하며, 원장 서버는
+`127.0.0.1:8800` 밖으로 노출하지 않는다.
+
+```bash
+cp .env.example .env.production
+
+# .env.production
+STANCE_INTERNAL_URL=http://127.0.0.1:8800
+STANCE_PUBLIC_REGISTRATION=true
+STANCE_REGISTRATION_TOKEN=<내부-Stance-서버와-같은-긴-무작위-비밀값>
+```
+
+등록 비밀값은 서버끼리만 공유한다. `NEXT_PUBLIC_` 접두사를 붙이거나 API 응답·브라우저
+코드에 넣으면 안 된다. 사용자는 Stance 탭에서 등록 정보를 입력하고 `stk_...` 연동 키를
+한 번만 확인한다.
+
+공개 경로:
+
+- `/?tab=stance` — 전략 등록·리더보드
+- `/api/stance/v1/stances` — 판단 선언
+- `/api/stance/v1/portfolio` — 인증된 전략 스냅샷
+- `/api/stance/v1/keys/rotate` — 연동 키 교체
+- `/api/stance/v1/leaderboard`, `/markets`, `/health` — 공개 조회
+
+내부 Stance 서버는 반드시 루프백 주소와 단일 워커를 유지한다.
+`/api/stance/v1/strategies`에는 CDN이나 리버스 프록시의 요청 제한도 추가한다.
+app server 자체에도 프로세스 단위의 소규모 등록 제한이 들어 있다.
+
 ### 포트 변경이 필요한 경우
 
 만약 포트 3000이 이미 사용 중이라면 다음과 같이 포트를 변경할 수 있습니다:

@@ -1,0 +1,252 @@
+"""Stance 프로토콜 — 채점 프로파일 `stance-score/1`.
+
+★ 이 파일은 코어가 아니다. ★
+
+어떤 지표가 좋은 전략을 가려내는지에는 정답이 없다.
+수익을 위험으로 나누는 방식은 현금을 많이 든 전략을 구조적으로 우대하고,
+시장 대비 초과수익으로 재면 국면에 따라 노출 방향에 베팅하게 된다.
+노출 5% 짜리와 85% 짜리를 하나의 숫자로 줄 세우려면
+낮은 노출이 좋은지 높은 노출이 좋은지를 미리 정해야 하는데, 그 결정 자체가 편향이다.
+
+그래서 정답을 하나 고르는 대신 갈아끼울 수 있게 만든다.
+이 모듈을 통째로 바꿔도 원장과 엔진은 그대로다.
+
+설계 메모
+    · 하락편차에 하한을 둔다. 조작을 벌하려는 것이 아니라 0 으로 나누는 것을 막는 장치다.
+      하한을 크게 잡으면 정상적인 방어 전략이 벌을 받는다. 실측으로 0.05%/일 이 적정했다.
+    · 참가 요건에 투자비중을 넣지 않는다. 현금을 드는 것도 하나의 판단이며,
+      판단 리더보드가 특정 판단을 금지하면 자기모순이다.
+    · 하나의 순위로 줄이지 않는다. 하나로 줄이면 반드시 그 숫자를 겨냥한 조작이 생긴다.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from datetime import date
+from decimal import Decimal
+
+from .engine import ReplayResult
+from .models import Cadence
+
+PROFILE_VERSION = "stance-score/1"
+
+TRADING_DAYS = 252
+DOWNSIDE_FLOOR_DAILY = 0.0005   # 0 으로 나누는 것을 막는 최소한의 하한
+GATE_MIN_DAYS = 60
+GATE_MIN_TRADES = 20
+
+
+@dataclass
+class Metrics:
+    profile: str = PROFILE_VERSION
+    market: str = ""
+    experimental: bool = False
+
+    trading_days: int = 0
+    cumulative_return: float = 0.0
+    sortino: float = 0.0
+    max_drawdown: float = 0.0
+    calmar: float = 0.0
+
+    avg_exposure: float = 0.0          # 순위와 함께 항상 보여준다
+    coverage: float = 0.0              # 자기 주기 대비 제출률. 요건이 아니라 표시 항목
+    cadence: str = Cadence.DAILY.value
+    paused_days: int = 0               # 명시적으로 중단을 밝힌 기간
+    pending: int = 0                   # 서버가 시세를 못 구한 건수 (참여자 무책임)
+    turnover: float = 0.0
+    closed_trades: int = 0
+    closed_trades_material: int = 0
+    losing_days: int = 0
+    win_rate: float | None = None
+
+    benchmark_return: float | None = None
+    excess_return: float | None = None
+
+    qualified: bool = False
+    gate_failures: list[str] = field(default_factory=list)
+
+
+def _returns(series: list[tuple[date, Decimal]]) -> list[float]:
+    out: list[float] = []
+    for i in range(1, len(series)):
+        prev = float(series[i - 1][1])
+        if prev <= 0:
+            out.append(0.0)
+            continue
+        out.append(float(series[i][1]) / prev - 1.0)
+    return out
+
+
+def _max_drawdown(series: list[tuple[date, Decimal]]) -> float:
+    peak = float("-inf")
+    worst = 0.0
+    for _, v in series:
+        x = float(v)
+        peak = max(peak, x)
+        if peak > 0:
+            worst = min(worst, x / peak - 1.0)
+    return abs(worst)
+
+
+def _sortino(rets: list[float], floor: float = DOWNSIDE_FLOOR_DAILY,
+             periods: int = TRADING_DAYS) -> float:
+    """하락위험 대비 수익.
+
+    분모가 0 에 수렴하면 값이 무한대로 발산한다. 하한이 그것을 막는다.
+    하한을 넘는 실제 하락편차를 가진 전략에는 아무 영향이 없다.
+    """
+    if not rets:
+        return 0.0
+    mean = sum(rets) / len(rets)
+    downs = [r for r in rets if r < 0]
+    dd = math.sqrt(sum(r * r for r in downs) / len(rets)) if downs else 0.0
+    dd = max(dd, floor)
+    return (mean * periods) / (dd * math.sqrt(periods))
+
+
+CADENCE_INTERVAL = {          # 거래일 단위 기대 주기
+    Cadence.DAILY: 1,
+    Cadence.WEEKLY: 5,
+    Cadence.MONTHLY: 21,
+}
+
+
+def _coverage(sent: set[date], expected: set[date], cadence: Cadence) -> float:
+    """제출률을 각자의 판단 주기 대비로 잰다.
+
+    거래일 기준으로 재면 주 1회 도는 시스템은 20%, 월 1회는 5% 가 나온다.
+    매일 실행되지 않는 시스템은 hold 조차 보낼 수 없으므로 구조적으로 불리해진다.
+
+    달력 경계로 묶지 않고 **횟수**로 센다. 30일마다 도는 시스템은
+    달력상 한 달을 통째로 건너뛸 수 있어(1/1 → 1/31 → 3/2 …) 달력 버킷이 부당하게 깎인다.
+    """
+    if not expected:
+        return 0.0
+    if cadence is Cadence.EVENT:
+        return 1.0  # 기대 주기가 없다. 성실성을 이 지표로 재지 않는다.
+
+    interval = CADENCE_INTERVAL.get(cadence, 1)
+    want = max(1, round(len(expected) / interval))
+    return min(1.0, len(sent) / want)
+
+
+def score(
+    result: ReplayResult,
+    benchmark: list[tuple[date, Decimal]] | None = None,
+    cadence: Cadence = Cadence.DAILY,
+    profile=None,
+) -> Metrics:
+    """profile 은 시장 프로파일(markets.py). 주지 않으면 주식 기준을 쓴다.
+
+    하락편차 하한과 최소 운영 기간은 시장마다 달라야 한다.
+    크립토는 휴장일이 없어 60일이 2개월밖에 안 되고, 일간 변동성이 주식의 3~5배다.
+    """
+    floor = profile.downside_floor_daily if profile else DOWNSIDE_FLOOR_DAILY
+    periods = profile.periods_per_year if profile else TRADING_DAYS
+    min_days = profile.min_track_periods if profile else GATE_MIN_DAYS
+
+    m = Metrics()
+    m.market = profile.code if profile else ""
+    m.experimental = bool(profile and profile.is_experimental)
+    series = result.daily_assets
+    m.trading_days = len(series)
+
+    if m.trading_days >= 2:
+        start, end = float(series[0][1]), float(series[-1][1])
+        m.cumulative_return = (end / start - 1.0) if start > 0 else 0.0
+
+        rets = _returns(series)
+        m.sortino = _sortino(rets, floor=floor, periods=periods)
+        m.losing_days = sum(1 for r in rets if r < 0)
+        m.max_drawdown = _max_drawdown(series)
+
+        years = m.trading_days / periods
+        if years > 0 and m.max_drawdown > 0:
+            annual = (1.0 + m.cumulative_return) ** (1.0 / years) - 1.0
+            m.calmar = annual / m.max_drawdown
+
+    if result.daily_exposure:
+        m.avg_exposure = sum(float(e) for _, e in result.daily_exposure) / len(result.daily_exposure)
+
+    if m.trading_days:
+        marked = {d for d, _ in series} - result.paused_days
+        m.paused_days = len(result.paused_days)
+        m.coverage = _coverage(result.declared_days & marked, marked, cadence)
+        m.cadence = cadence.value
+    m.pending = len(result.pending)
+
+    start_assets = float(series[0][1]) if series else 1.0
+    if start_assets > 0:
+        m.turnover = float(result.turnover) / start_assets
+
+    m.closed_trades = result.closed_trades
+    m.closed_trades_material = result.closed_trades_material
+
+    wins = [f for f in result.fills if f.realized_pnl != 0]
+    if wins:
+        m.win_rate = sum(1 for f in wins if f.realized_pnl > 0) / len(wins)
+
+    if benchmark and len(benchmark) >= 2:
+        b0, b1 = float(benchmark[0][1]), float(benchmark[-1][1])
+        if b0 > 0:
+            m.benchmark_return = b1 / b0 - 1.0
+            m.excess_return = m.cumulative_return - m.benchmark_return
+
+    _apply_gate(m, min_days)
+    return m
+
+
+def _apply_gate(m: Metrics, min_days: int = GATE_MIN_DAYS) -> None:
+    """참가 요건은 둘뿐이다 — 충분히 오래 돌았는가, 표본이 충분한가.
+
+    제출률은 요건이 아니다. 두 가지 이유다.
+
+    ① 제출률이 막으려던 조작('지는 날은 선언 생략')이 목표비중 방식에서는
+       구조적으로 불가능하다. 선언을 생략하면 포지션이 그대로 유지되어
+       손실이 온전히 반영된다. 피할 방법이 없으므로 막을 것도 없다.
+    ② 요건으로 삼으면 매일 실행되지 않는 시스템이 전멸한다.
+       주간 리밸런싱은 20%, 월간은 5% 가 나온다. 그들은 hold 조차 보낼 수 없다.
+
+    투자비중도 요건이 아니다. 현금을 드는 것 역시 하나의 판단이며,
+    판단 리더보드가 특정 판단을 금지하면 자기모순이다.
+    둘 다 요건이 아니라 전략 카드에 항상 표시되는 항목이다.
+    """
+    fails: list[str] = []
+    if m.trading_days < min_days:
+        fails.append(f"운영 {m.trading_days}일 (필요 {min_days}일)")
+    if m.closed_trades_material < GATE_MIN_TRADES:
+        fails.append(f"청산 거래 {m.closed_trades_material}건 (필요 {GATE_MIN_TRADES}건)")
+    m.gate_failures = fails
+    m.qualified = not fails
+
+
+def summary_lines(m: Metrics) -> list[str]:
+    """사람이 읽는 요약. 하나의 숫자로 줄이지 않는다."""
+    pct = lambda x: f"{x:+.2%}" if x is not None else "—"
+    lines = [
+        f"프로파일        {m.profile}"
+        + (f"  ·  {m.market}" if m.market else "")
+        + ("  ⚠️ 실험적 지원" if m.experimental else ""),
+        f"운영 거래일     {m.trading_days}일",
+        f"누적 수익       {pct(m.cumulative_return)}",
+        f"하락위험 대비   {m.sortino:.2f}",
+        f"최대 낙폭       {m.max_drawdown:.2%}",
+        f"낙폭 대비 수익  {m.calmar:.2f}",
+        f"평균 투자비중   {m.avg_exposure:.1%}   ← 위 지표는 이 값과 함께 읽어야 한다",
+        f"제출률          {m.coverage:.0%} ({m.cadence} 주기 기준)",
+        f"회전율          {m.turnover:.2f}회",
+        f"청산 거래       {m.closed_trades_material}건 (전체 {m.closed_trades}건)",
+    ]
+    if m.paused_days:
+        lines.append(f"중단 기간       {m.paused_days}일 (자산 추이는 그대로 계산됨)")
+    if m.pending:
+        lines.append(f"시세 미확보     {m.pending}건 (서버측 사유, 무벌점)")
+    if m.win_rate is not None:
+        lines.append(f"승률            {m.win_rate:.0%}")
+    if m.excess_return is not None:
+        lines.append(f"시장 대비       {pct(m.excess_return)}")
+    lines.append(
+        "자격            " + ("본선" if m.qualified else "예선 — " + ", ".join(m.gate_failures))
+    )
+    return lines

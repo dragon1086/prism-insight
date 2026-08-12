@@ -28,6 +28,30 @@
   <a href="README_es.md">Español</a>
 </p>
 
+## Stance — The Open Decision Layer for Every Strategy
+
+<p align="center">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Stance ecosystem: strategies declare target weights, an immutable ledger seals time and price, market data calculates performance, and a public dashboard compares results" width="100%">
+</p>
+
+**Most track records show the result after the fact. Stance records the decision before the market moves.** Publish one target weight; the server seals its time and price; the dashboard measures every strategy under the same rules. No balances, account numbers, or broker keys.
+
+- **Build** — connect any human, bot, or model with one HTTP request
+- **Verify** — replace screenshots and return claims with timestamped decisions
+- **Compare** — turn independent strategies into a shared, auditable ecosystem
+
+**[Connect in minutes](stance/QUICKSTART.md)** · **[Read the open standard](stance/spec/core-spec.md)** · **[Explore the live dashboard](https://analysis.stocksimulation.kr/?tab=stance)**
+
+<details>
+<summary><strong>Developer view — two messages, five rules</strong></summary>
+
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Stance integration guide: register, declare target weights, verify, and publish performance" width="100%">
+</p>
+
+A target weight above the current weight means buy, below means sell, and `0` means exit. The protocol needs no separate buy/sell command. Copy-ready curl, Python, JavaScript, retries, and key rotation are in the **[quickstart](stance/QUICKSTART.md)**.
+</details>
+
 ---
 
 ### Platinum Sponsor

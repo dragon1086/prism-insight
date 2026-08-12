@@ -28,6 +28,30 @@
   <a href="README_es.md">Español</a>
 </p>
 
+## Stance — La capa abierta de decisiones para cualquier estrategia
+
+<p align="center">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Ecosistema Stance: las estrategias declaran pesos objetivo, un registro inmutable sella hora y precio, y un panel público compara los resultados" width="100%">
+</p>
+
+**Los historiales tradicionales enseñan el resultado después. Stance registra la decisión antes de que se mueva el mercado.** Publica un peso objetivo; el servidor sella hora y precio; el panel evalúa cada estrategia con las mismas reglas. Sin saldos, números de cuenta ni claves del bróker.
+
+- **Conecta** — personas, bots o modelos con una sola petición HTTP
+- **Verifica** — decisiones fechadas en lugar de capturas y promesas
+- **Compara** — estrategias independientes dentro de un ecosistema auditable
+
+**[Conectar en minutos](stance/QUICKSTART.md)** · **[Leer el estándar abierto](stance/spec/core-spec.md)** · **[Ver el panel en vivo](https://analysis.stocksimulation.kr/?tab=stance)**
+
+<details>
+<summary><strong>Vista para desarrolladores — dos mensajes, cinco reglas</strong></summary>
+
+<p align="center">
+  <img src="docs/images/stance-integration-en.png" alt="Guía de integración Stance: registrar, declarar pesos objetivo, verificar y publicar rendimiento" width="100%">
+</p>
+
+Un peso objetivo mayor que el actual implica compra; uno menor, venta; `0`, salida. El protocolo no necesita órdenes separadas de compra y venta. curl, Python, JavaScript, reintentos y rotación de claves están en la **[guía rápida](stance/QUICKSTART.md)**.
+</details>
+
 ---
 
 ### Patrocinador Platino
