@@ -118,13 +118,13 @@ export function StanceRegistrationCard({ ko }: { ko: boolean }) {
     <Card className="border-primary/30">
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-          {ko ? "내 전략 연결" : "Connect my strategy"}
-          <Badge variant="secondary">{ko ? "약 2분" : "≈ 2 min"}</Badge>
+          {ko ? "직접 등록" : "Manual registration"}
+          <Badge variant="secondary">{ko ? "대안" : "Alternative"}</Badge>
         </CardTitle>
         <p className="text-sm text-muted-foreground">
           {ko
-            ? "계좌 연결 없이 이름과 시장만 등록합니다. 연동 키는 등록 직후 한 번만 표시됩니다."
-            : "Register a name and market—no account connection. Your integration key appears once after registration."}
+            ? "AI 에이전트를 쓰지 않는다면 이름과 시장을 직접 등록할 수 있습니다. 연동 키는 등록 직후 한 번만 표시됩니다."
+            : "If you are not using an AI agent, register the name and market manually. Your integration key appears once."}
         </p>
       </CardHeader>
       <CardContent>

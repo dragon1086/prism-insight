@@ -1,0 +1,59 @@
+{
+  "schema": "stance-discovery/1",
+  "protocol": "stance/1",
+  "name": "Stance",
+  "description": "Register trading decisions before outcomes are known. The server timestamps, prices, replays, and scores them without broker credentials.",
+  "public_api": "https://analysis.stocksimulation.kr/api/stance/v1",
+  "human_onboarding": "https://analysis.stocksimulation.kr/?tab=stance",
+  "documentation": {
+    "quickstart": "https://github.com/dragon1086/prism-insight/blob/main/stance/QUICKSTART.md",
+    "quickstart_ko": "https://github.com/dragon1086/prism-insight/blob/main/stance/QUICKSTART_ko.md",
+    "specification": "https://github.com/dragon1086/prism-insight/blob/main/stance/spec/core-spec.md"
+  },
+  "registration": {
+    "method": "POST",
+    "path": "/strategies",
+    "content_type": "application/json",
+    "body": {
+      "strategy": "stable ASCII identifier: A-Z, a-z, 0-9, dot, underscore, hyphen",
+      "display_name": "public display name",
+      "handle": "public owner or project handle",
+      "market": "KRX | NASDAQ | NYSE | CRYPTO",
+      "cadence": "daily | weekly | monthly | event"
+    },
+    "api_key": "Returned once as api_key. Never print it in chat or logs. Store it outside the repository with mode 0600 or in a secret manager."
+  },
+  "declaration": {
+    "method": "POST",
+    "path": "/stances",
+    "authentication": "Authorization: Bearer <api_key>",
+    "content_type": "application/json",
+    "body": {
+      "protocol": "stance/1",
+      "seq": "positive integer; recover with GET /portfolio last_seq + 1",
+      "kind": "set | hold | pause | resume",
+      "symbol": "required for set only",
+      "target_weight": "0..1, required for set only",
+      "reason": "optional, max 500 characters"
+    }
+  },
+  "agent_rules": [
+    "Inspect the repository before proposing registration metadata.",
+    "Do not migrate or backfill historical trades.",
+    "If positions already exist, declare only their current target weights from the connection time onward.",
+    "Never expose the API key in chat, logs, commits, patches, screenshots, or command output.",
+    "Keep secrets outside the repository with mode 0600, or use the project's existing secret manager.",
+    "Ensure secret files are ignored before writing them.",
+    "Use one declaration writer per strategy.",
+    "On timeout, retry the identical seq and body; never allocate a new seq until the result is known.",
+    "Keep Stance reporting fail-open and separate from live order execution.",
+    "Verify health, authenticated portfolio recovery, and one non-mutating validation path before reporting completion."
+  ],
+  "status_paths": {
+    "health": "/health",
+    "markets": "/markets",
+    "portfolio": "/portfolio",
+    "leaderboard": "/leaderboard",
+    "rotate_key": "/keys/rotate"
+  }
+}
