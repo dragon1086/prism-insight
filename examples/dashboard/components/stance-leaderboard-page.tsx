@@ -65,13 +65,13 @@ export function StanceLeaderboardPage() {
           </div>
           <p className="max-w-3xl break-keep text-2xl font-bold leading-snug text-white sm:text-3xl">
             {ko
-              ? "말로만 잘하는 투자 전략, 이제 기록으로 비교하세요."
-              : "Stop taking trading claims on faith. Compare the record."}
+              ? "과거 실적? 안 받습니다. 등록한 순간부터 기록합니다."
+              : "Past results? We don't take them. The record starts at registration."}
           </p>
           <p className="mt-3 max-w-3xl break-keep text-base leading-relaxed text-white/75">
             {ko
-              ? "사기 전에 종목과 투자 비중을 남기면, 그다음 성과는 Stance가 계산합니다. 계좌를 공개하지 않아도 전략의 실력을 확인할 수 있습니다."
-              : "Record the stock and target weight before buying. Stance computes what happens next, so anyone can verify a strategy without seeing the account."}
+              ? "과거 수익률을 올리거나 소급 입력할 수 없습니다. 연결 뒤의 모든 판단과 성과가 이어서 쌓이니, 잘된 구간만 골라낸 홍보가 아니라 전략의 실제 모습을 볼 수 있습니다."
+              : "No uploaded track records and no backfills. Every decision and outcome after connection builds one continuous record, revealing the strategy rather than a cherry-picked highlight reel."}
           </p>
         </div>
 
@@ -79,22 +79,22 @@ export function StanceLeaderboardPage() {
           <p className="break-keep text-base text-foreground">
             {ko ? (
               <>
-                수익 인증 화면은 편집할 수 있고, 잘된 거래만 골라 보여줄 수도 있습니다. Stance는 결과가 나온 뒤의 자랑 대신
-                <strong> 결과가 나오기 전의 선택</strong>을 기록합니다.
+                오늘 등록하고 어제의 수익을 가져오는 일은 불가능합니다. Stance는
+                <strong> 등록 이후, 결과가 나오기 전의 선택부터</strong> 공개 기록합니다.
               </>
             ) : (
               <>
-                Profit screenshots can be edited, and winning trades can be cherry-picked. Stance records the
-                <strong> choice before the outcome</strong>, not the claim after it.
+                Registering today and importing yesterday&apos;s gains is impossible. Stance publicly records
+                <strong> each choice before its outcome, from registration onward</strong>.
               </>
             )}
           </p>
 
           <div className="grid gap-3 sm:grid-cols-3 pt-2">
             {[
-              [ko ? "1. 사기 전에 계획 남기기" : "1. Record the plan first", ko ? "어떤 종목을 자산의 몇 %까지 살지 기록" : "Save the stock and intended share of the portfolio"],
-              [ko ? "2. 그때 가격 자동 저장" : "2. Lock in the price", ko ? "서버가 시간과 당시 시장가격을 자동으로 보관" : "The server saves the time and market price automatically"],
-              [ko ? "3. 결과 자동 계산" : "3. Let the record speak", ko ? "이후 가격을 따라 수익과 위험을 같은 기준으로 계산" : "Returns and risk are calculated later on the same rules"],
+              [ko ? "1. 등록한 날부터 새 기록" : "1. A fresh record from day one", ko ? "과거 실적 업로드·소급 입력 없음" : "No uploaded history and no backfills"],
+              [ko ? "2. 결과 전에 판단 기록" : "2. Decisions before outcomes", ko ? "서버가 판단 시각과 당시 시장가격을 보관" : "The server saves decision time and market price"],
+              [ko ? "3. 실력과 위험 자동 누적" : "3. Skill and risk accumulate", ko ? "수익·하락폭·투자비중을 같은 기준으로 계산" : "Return, drawdown, and exposure on one rulebook"],
             ].map(([title, desc]) => (
               <div key={title} className="rounded-lg border border-border/50 bg-muted/30 p-4">
                 <div className="font-semibold mb-1">{title}</div>
