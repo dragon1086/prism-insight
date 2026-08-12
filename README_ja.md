@@ -28,28 +28,31 @@
   <a href="README_es.md">Español</a>
 </p>
 
-## Stance — あらゆる戦略のための公開意思決定レイヤー
+## Which System Trading Strategy Is Winning Right Now? — Stance
 
 <p align="center">
-  <img src="docs/images/stance-ecosystem-en.png" alt="Stanceエコシステム：戦略が目標比率を宣言し、改ざん不能な台帳が時刻と価格を封印し、公開ダッシュボードで成果を比較" width="100%">
+  <img src="docs/images/stance-ecosystem-en.png" alt="Stance strategy leaderboard comparing return, worst drawdown, average invested exposure, and record rate across KRX and US strategies" width="100%">
 </p>
 
-**従来の運用実績は、結果を後から見せるもの。Stanceは、市場が動く前の判断を記録します。** 目標比率を公開すると、サーバーが時刻と価格を封印し、すべての戦略を同じルールで評価します。残高・口座番号・証券会社のキーは不要です。
+**The highest return is only half the answer.** Stance separates KRX and US rankings, then shows return beside worst drawdown, average invested exposure, and record rate—so you can see which strategies are performing well and how they got there.
 
-- **接続** — 人・ボット・AIをHTTPリクエスト1回で
-- **検証** — スクリーンショットや事後主張ではなく、時刻付きの判断記録
-- **比較** — 独立した戦略を、監査可能な共通エコシステムへ
+- **Find what is working now** — compare every strategy under one rulebook
+- **Look past the headline return** — see risk, real exposure, and missing records
+- **Trust the timeline** — decisions are recorded before outcomes; the server seals time and price and calculates performance
+- **Enter your own strategy** — let a coding agent discover, register, connect, and test it
 
-**[数分で接続](stance/QUICKSTART.md)** · **[公開仕様](stance/spec/core-spec.md)** · **[ライブダッシュボード](https://analysis.stocksimulation.kr/?tab=stance)**
+**[See the live leaderboard](https://analysis.stocksimulation.kr/?tab=stance)** · **[Enter my strategy](https://analysis.stocksimulation.kr/?tab=stance)** · **[Read the quickstart](stance/QUICKSTART.md)**
 
 <details>
-<summary><strong>開発者向け概要 — メッセージ2つ、ルール5つ</strong></summary>
+<summary><strong>How does my strategy join?</strong></summary>
 
 <p align="center">
-  <img src="docs/images/stance-integration-en.png" alt="Stance連携ガイド：登録、目標比率の宣言、検証、成績公開" width="100%">
+  <img src="docs/images/stance-integration-en.png" alt="Connect a strategy to Stance by opening its project, pasting one instruction into a coding agent, reviewing detected strategies and profiles, and approving automatic registration and integration" width="100%">
 </p>
 
-目標比率が現在より高ければ買い、低ければ売り、`0`なら手仕舞いです。売買ごとの別コマンドはありません。curl・Python・JavaScriptの例、再試行、キーのローテーションは**[クイックスタート](stance/QUICKSTART.md)**にまとめています。
+Open your strategy project in **Codex CLI, Cursor, Claude Code, or another coding agent**, then paste the instruction copied from the Stance dashboard into its chat. The agent finds separate strategies and KRX/US portfolios, asks only for missing public profile details, shows the registration plan, and proceeds only after your approval. It also stores keys, changes the code, and runs tests.
+
+Your strategy appears under **Building a record** from its first decision. For stock markets, official ranking begins after **63 trading days and 20 closed trades that each used at least 1% of assets**. The record starts on connection day; historical results cannot be backfilled. No live brokerage account, balance, or broker key is required.
 </details>
 
 ---
