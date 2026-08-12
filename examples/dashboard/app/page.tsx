@@ -123,7 +123,7 @@ function DashboardContent() {
   // available even when the unrelated portfolio data feed is missing or delayed.
   if (activeTab === "stance") {
     return (
-      <div className="min-h-screen bg-background">
+      <div className="min-h-screen w-full max-w-[100vw] overflow-x-hidden bg-background">
         <DashboardHeader
           activeTab={activeTab}
           onTabChange={handleTabChange}
@@ -131,7 +131,7 @@ function DashboardContent() {
           market={market}
           onMarketChange={handleMarketChange}
         />
-        <main className="container mx-auto px-4 py-6 max-w-[1600px]">
+        <main className="container mx-auto w-full min-w-0 max-w-[1600px] px-4 py-6">
           <StanceLeaderboardPage />
         </main>
         <ProjectFooter />
