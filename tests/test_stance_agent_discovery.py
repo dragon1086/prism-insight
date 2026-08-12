@@ -58,3 +58,20 @@ def test_copyable_agent_prompt_contains_operational_safety_rules():
     assert "mode-0600" in card
     assert "fail-open" in card
     assert "last_seq + 1" in card
+
+
+def test_onboarding_explains_where_to_paste_and_when_results_appear():
+    card = (
+        ROOT
+        / "examples"
+        / "dashboard"
+        / "components"
+        / "stance-agent-connect-card.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "에이전트 채팅에 붙여넣기" in card
+    assert "파일·터미널 접근 모드" in card
+    assert "등록 · 키 보관 · 코드 연동 · 테스트" in card
+    assert "예선 명단에 바로 표시" in card
+    assert "63거래일과 자산의 1% 이상을 투자했던 포지션 청산 20건" in card
+    assert "그전에도 기록과 성과는 보입니다" in card

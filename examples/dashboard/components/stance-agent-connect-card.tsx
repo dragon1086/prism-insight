@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Bot, Check, Copy, ExternalLink, KeyRound, ShieldCheck, WandSparkles } from "lucide-react"
+import { Bot, Check, Copy, ExternalLink, FolderCode, MessageSquareCode, ShieldCheck, Trophy, WandSparkles } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -11,7 +11,7 @@ const DISCOVERY_PATH = "/.well-known/stance.json"
 function agentPrompt(ko: boolean, origin: string) {
   const discovery = `${origin}${DISCOVERY_PATH}`
   if (ko) {
-    return `이 프로젝트를 Stance에 자동 연결해줘.
+    return `지금 열려 있는 이 프로젝트를 Stance에 자동 연결해줘. 이 지시문은 저장소 파일과 터미널에 접근할 수 있는 코딩 에이전트용이야.
 
 먼저 머신용 명세 ${discovery} 를 읽고, 현재 저장소와 실행 환경을 분석해.
 
@@ -25,7 +25,7 @@ function agentPrompt(ko: boolean, origin: string) {
 
 명확하고 되돌릴 수 있는 단계는 묻지 말고 진행하되, 전략의 공개 신원이나 시장을 확정할 근거가 없을 때만 질문해.`
   }
-  return `Connect this project to Stance automatically.
+  return `Connect the currently open project to Stance automatically. This instruction is for a coding agent with repository and terminal access.
 
 First read the machine-readable contract at ${discovery}, then inspect the repository and runtime.
 
@@ -64,24 +64,24 @@ export function StanceAgentConnectCard({ ko }: { ko: boolean }) {
                 {ko ? "추천" : "Recommended"}
               </Badge>
               <Badge variant="outline" className="border-violet-500/30 text-violet-700 dark:text-violet-300">
-                {ko ? "약 1분" : "≈ 1 min"}
+                {ko ? "등록 즉시" : "Instant registration"}
               </Badge>
             </div>
             <CardTitle className="flex items-center gap-2 text-xl">
               <Bot className="h-6 w-6 text-violet-600" />
-              {ko ? "AI 에이전트에게 연결을 맡기세요" : "Let your AI agent connect it"}
+              {ko ? "코딩 에이전트로 자동 연결" : "Connect with a coding agent"}
             </CardTitle>
             <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
               {ko
-                ? "프롬프트 하나로 등록, 키 보관, 코드 연동, 테스트까지 끝냅니다. 계좌나 증권사 키는 Stance에 보내지 않습니다."
-                : "One prompt handles registration, secret storage, integration, and tests. Stance never receives your account or broker keys."}
+                ? "프로젝트 코드를 읽고 수정할 수 있는 AI에게 아래 지시문을 건네면, 등록부터 연동 테스트까지 처리합니다."
+                : "Give the instruction below to an AI that can read and edit your project. It handles registration through integration testing."}
             </p>
           </div>
           <Button onClick={copyPrompt} size="lg" className="min-w-48 bg-violet-600 text-white hover:bg-violet-700">
             {copied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
             {copied
               ? (ko ? "복사 완료" : "Copied")
-              : (ko ? "AI 연결 프롬프트 복사" : "Copy agent prompt")}
+              : (ko ? "연결 지시문 복사" : "Copy connection instruction")}
           </Button>
         </div>
       </CardHeader>
@@ -89,9 +89,9 @@ export function StanceAgentConnectCard({ ko }: { ko: boolean }) {
       <CardContent className="space-y-5">
         <div className="grid gap-3 sm:grid-cols-3">
           {[
-            [Bot, ko ? "1. 붙여넣기" : "1. Paste", ko ? "Codex, Claude Code, Cursor 등" : "Codex, Claude Code, Cursor, and more"],
-            [KeyRound, ko ? "2. 자동 연결" : "2. Auto-connect", ko ? "등록 · 비밀 저장 · 코드 적용" : "Register · secure · integrate"],
-            [ShieldCheck, ko ? "3. 검증" : "3. Verify", ko ? "키 노출 없이 테스트 결과만" : "Results only, never the key"],
+            [FolderCode, ko ? "1. 전략 프로젝트 열기" : "1. Open your strategy project", ko ? "Codex CLI · Claude Code · Cursor Agent 등" : "Codex CLI · Claude Code · Cursor Agent, etc."],
+            [MessageSquareCode, ko ? "2. 에이전트 채팅에 붙여넣기" : "2. Paste into the agent chat", ko ? "일반 채팅이 아닌 파일·터미널 접근 모드" : "Use a mode with file and terminal access"],
+            [ShieldCheck, ko ? "3. 완료 보고 확인" : "3. Review the completion report", ko ? "등록 · 키 보관 · 코드 연동 · 테스트" : "Registration · key storage · code · tests"],
           ].map(([Icon, title, description]) => (
             <div key={String(title)} className="rounded-xl border border-border/60 bg-background/70 p-4 backdrop-blur-sm">
               <Icon className="mb-3 h-5 w-5 text-violet-600" />
@@ -99,6 +99,31 @@ export function StanceAgentConnectCard({ ko }: { ko: boolean }) {
               <div className="mt-1 text-xs leading-relaxed text-muted-foreground">{String(description)}</div>
             </div>
           ))}
+        </div>
+
+        <div className="grid overflow-hidden rounded-xl border border-border/70 bg-background/70 sm:grid-cols-2">
+          <div className="flex gap-3 p-4 sm:border-r sm:border-border/70">
+            <Bot className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500" />
+            <div>
+              <div className="text-sm font-semibold">
+                {ko ? "등록 직후" : "Immediately after registration"}
+              </div>
+              <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {ko ? "예선 명단에 바로 표시되고, 그 시점부터 판단 기록이 쌓입니다." : "Your strategy appears in the provisional field immediately, and decisions start accumulating from that point."}
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-3 border-t border-border/70 p-4 sm:border-t-0">
+            <Trophy className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+            <div>
+              <div className="text-sm font-semibold">
+                {ko ? "공식 순위 자격" : "Official ranking eligibility"}
+              </div>
+              <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {ko ? "주식 기준 63거래일과 자산의 1% 이상을 투자했던 포지션 청산 20건을 모두 채우면 예선을 통과합니다. 그전에도 기록과 성과는 보입니다." : "For stocks, qualify after both 63 trading days and 20 closed positions that each carried at least 1% of assets. Records and performance remain visible before then."}
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/50 pt-4 text-xs text-muted-foreground">
