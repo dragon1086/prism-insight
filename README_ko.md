@@ -28,28 +28,31 @@
   <a href="README_es.md">Español</a>
 </p>
 
-## Stance — 모든 전략을 위한 공개 판단 인프라
+## 그래서 요즘, 어떤 시스템 트레이딩 전략이 제일 잘나가는데? — Stance
 
 <p align="center">
-  <img src="docs/images/stance-ecosystem-ko.png" alt="Stance 생태계: 전략이 목표 비중을 선언하면 원장이 시각과 가격을 봉인하고, 시장 데이터로 성과를 계산해 공개 대시보드에서 비교" width="100%">
+  <img src="docs/images/stance-ecosystem-ko.png" alt="한국과 미국 시스템 트레이딩 전략의 수익, 최대 하락, 평균 투자비중, 기록률을 비교하는 Stance 리더보드" width="100%">
 </p>
 
-**기존 수익률 인증은 결과부터 보여줍니다. Stance는 시장이 움직이기 전의 판단부터 기록합니다.** 목표 비중 하나를 공개하면 서버가 시각과 가격을 봉인하고, 대시보드가 모든 전략을 같은 규칙으로 평가합니다. 잔고·계좌번호·증권사 키는 받지 않습니다.
+**수익률 1등만 보면 답이 반쪽입니다.** Stance는 한국과 미국 순위를 나누고, 수익 옆에 최대 하락·평균 투자비중·기록률을 함께 보여줍니다. 지금 잘나가는 전략이 무엇인지, 얼마나 위험을 감수했고 실제로 얼마나 투자했는지 한눈에 볼 수 있습니다.
 
-- **연결** — 사람·봇·AI, 무엇이든 HTTP 요청 한 번
-- **검증** — 캡처와 사후 주장 대신 시각이 찍힌 판단 기록
-- **확장** — 흩어진 전략을 비교 가능한 공개 생태계로
+- **요즘 잘나가는 전략 찾기** — 모든 전략을 같은 기준으로 비교
+- **수익률 너머까지 보기** — 하락폭·실제 투자비중·빠진 기록까지 확인
+- **기록을 믿을 근거** — 결과가 나오기 전 판단을 남기고, 서버가 시각과 가격을 확인해 성과 계산
+- **내 전략도 참가** — 코딩 에이전트가 전략 찾기부터 등록·연동·테스트까지
 
-**[몇 분 만에 연동](stance/QUICKSTART_ko.md)** · **[공개 표준 읽기](stance/spec/core-spec.md)** · **[라이브 대시보드](https://analysis.stocksimulation.kr/?tab=stance)**
+**[실시간 순위 보기](https://analysis.stocksimulation.kr/?tab=stance)** · **[내 전략 참가하기](https://analysis.stocksimulation.kr/?tab=stance)** · **[빠른 시작](stance/QUICKSTART_ko.md)**
 
 <details>
-<summary><strong>개발자용 한눈 요약 — 메시지 2개, 규칙 5개</strong></summary>
+<summary><strong>내 전략은 어떻게 참가하나?</strong></summary>
 
 <p align="center">
-  <img src="docs/images/stance-integration-ko.png" alt="Stance 연동 가이드: 전략 등록, 목표 비중 선언, 서버 검증, 성과 공개" width="100%">
+  <img src="docs/images/stance-integration-ko.png" alt="전략 프로젝트를 열고 코딩 에이전트에 지시문을 붙여넣은 뒤, 찾은 전략과 소개를 확인하고 승인하면 등록과 연동을 자동으로 마치는 과정" width="100%">
 </p>
 
-목표 비중이 현재보다 크면 매수, 작으면 매도, `0`이면 청산입니다. 별도의 매수·매도 명령은 없습니다. 복사해서 쓰는 curl·Python·JavaScript 예제와 재시도·키 교체는 **[빠른 시작](stance/QUICKSTART_ko.md)**에 모았습니다.
+전략 프로젝트를 **Codex CLI·Cursor·Claude Code 같은 코딩 에이전트**로 연 뒤, Stance 대시보드에서 복사한 지시문을 채팅에 붙여넣으면 됩니다. 에이전트가 독립 전략과 한국·미국 포트폴리오를 찾아내고, 공개할 이름·소개·링크 중 필요한 것만 묻습니다. 등록 계획을 먼저 보여주며, 사용자가 승인한 뒤에만 키 보관·코드 수정·테스트까지 진행합니다.
+
+등록 직후부터 **‘기록 쌓는 중’**에 나오고 첫 판단부터 성과가 공개됩니다. 주식 공식 순위는 **63거래일 동안 기록하고, 자산의 1% 이상을 넣었던 거래를 20번 마친 뒤** 시작됩니다. 연결한 날부터 새 기록이 쌓이며 과거 성과는 끼워 넣을 수 없습니다. 실계좌·잔고·증권사 키는 필요 없습니다.
 </details>
 
 ---
