@@ -421,6 +421,76 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
 
 
 @pytest.mark.asyncio
+async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, tmp_path):
+    from cores import regime_policy
+
+    agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent.db_path = str(tmp_path / "kr-rebound-pilot.sqlite")
+    agent.account_configs = [{
+        "name": "kr-primary",
+        "account_key": "vps:kr-primary:01",
+        "buy_amount_krw": 1_000_000,
+    }]
+    agent.active_account = None
+    agent.max_slots = 10
+    agent._position_pending_kr_ready = False
+
+    async def fake_core(_report_path):
+        return {
+            "success": True,
+            "ticker": "005930",
+            "company_name": "Samsung Electronics",
+            "current_price": 70000,
+            "scenario": {"buy_score": 6, "min_score": 5, "sector": "Technology"},
+            "decision": "Enter",
+            "sector": "Technology",
+            "rank_change_msg": "Up",
+        }
+
+    agent._analyze_report_core = fake_core
+    agent.update_holdings = AsyncMock(return_value=[])
+    agent._is_ticker_in_holdings = AsyncMock(return_value=False)
+    agent._get_current_slots_count = AsyncMock(return_value=0)
+    agent._check_sector_diversity = AsyncMock(return_value=True)
+    agent._buy_floor_regime = lambda: "sideways"
+    agent._buy_stock_with_position = AsyncMock(
+        return_value=LegacyPositionWriteResult(True, 1)
+    )
+    agent._link_position_entry_intent = lambda **_kwargs: True
+
+    buy_amounts = []
+
+    class PilotTradingContext(_FakeAsyncTradingContext):
+        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None):
+            buy_amounts.append(buy_amount)
+            return await super().async_buy_stock(stock_code, limit_price, buy_amount)
+
+    redis_calls, gcp_calls = [], []
+    _install_signal_modules(monkeypatch, redis_calls, gcp_calls)
+    monkeypatch.setattr(domestic_trading, "AsyncTradingContext", PilotTradingContext)
+    monkeypatch.setattr(regime_policy, "get_market_pulse_state", lambda _market: "UPTREND")
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "false")
+
+    buy_count, sell_count = await StockTrackingAgent.process_reports(
+        agent, ["report-a.pdf"]
+    )
+
+    assert (buy_count, sell_count) == (1, 0)
+    assert buy_amounts == [500_000]
+    assert redis_calls[0]["scenario"]["regime_entry_policy"] == {
+        "mode": "rebound_pilot",
+        "position_fraction": 0.5,
+        "regime": "sideways",
+        "market_pulse": "UPTREND",
+    }
+    cash_amount = sqlite3.connect(agent.db_path).execute(
+        "SELECT cash_amount FROM order_intents"
+    ).fetchone()[0]
+    assert int(cash_amount) == 500_000
+
+
+@pytest.mark.asyncio
 async def test_kr_pending_gate_false_preserves_legacy_message_broker_publish_order(
     monkeypatch, tmp_path
 ):
