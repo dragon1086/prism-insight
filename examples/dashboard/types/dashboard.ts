@@ -502,6 +502,14 @@ export interface StanceEntry {
   description: string | null
   website_url: string | null
   source_url: string | null
+  latest_decision: {
+    seq: number
+    kind: "set" | "hold" | "pause" | "resume"
+    symbol: string | null
+    target_weight: number | null
+    received_at: string
+    admit: "accepted" | "clamped" | "rejected" | "pending" | null
+  } | null
   qualified: boolean
   gate_failures: string[]
   experimental: boolean

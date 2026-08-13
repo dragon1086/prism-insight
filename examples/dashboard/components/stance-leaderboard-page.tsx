@@ -32,6 +32,30 @@ function plainGateFailure(message: string, ko: boolean) {
   return message
 }
 
+function latestDecision(entry: StanceEntry, ko: boolean) {
+  const decision = entry.latest_decision
+  if (!decision) return ko ? "아직 판단 기록 없음" : "No decision recorded yet"
+
+  let action: string
+  if (decision.kind === "hold") action = ko ? "관망" : "Hold"
+  else if (decision.kind === "pause") action = ko ? "기록 일시중지" : "Paused"
+  else if (decision.kind === "resume") action = ko ? "기록 재개" : "Resumed"
+  else if ((decision.target_weight ?? 0) === 0) action = `${decision.symbol ?? ""} ${ko ? "전량 매도" : "Exit"}`.trim()
+  else action = `${decision.symbol ?? ""} ${((decision.target_weight ?? 0) * 100).toFixed(1)}% ${ko ? "목표" : "target"}`.trim()
+
+  if (decision.admit === "pending") action += ko ? " · 가격 확인 중" : " · price pending"
+  if (decision.admit === "rejected") action += ko ? " · 미반영" : " · not applied"
+  if (decision.admit === "clamped") action += ko ? " · 가능 비중만 반영" : " · capped"
+
+  const time = new Intl.DateTimeFormat(ko ? "ko-KR" : "en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(decision.received_at))
+  return `${action} · ${time}`
+}
+
 export function StanceLeaderboardPage() {
   const { language } = useLanguage()
   const ko = language === "ko"
@@ -352,6 +376,9 @@ function EntryTable({
                   {e.owner_name && <span> · {e.owner_name}</span>}
                 </div>
                 {e.tagline && <div className="mt-1 max-w-sm text-xs text-muted-foreground">{e.tagline}</div>}
+                <div className="mt-2 inline-flex rounded-full border border-primary/25 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary">
+                  {ko ? "최근 판단" : "Latest"}: {latestDecision(e, ko)}
+                </div>
                 {(e.description || e.website_url || e.source_url) && (
                   <details className="mt-1.5 max-w-sm text-xs">
                     <summary className="cursor-pointer text-primary hover:underline">
