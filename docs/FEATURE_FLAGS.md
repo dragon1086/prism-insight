@@ -27,6 +27,7 @@
 |---|---|---|---|---|
 | OAuth LLM 백엔드(ChatGPT 구독) | **LIVE** | crontab `PRISM_OPENAI_AUTH_MODE=chatgpt_oauth` | 카나리 검증 완료 | 전 배치 적용 |
 | Market Pulse 배치 정책 | **LIVE** | `.env MARKET_PULSE_MODE=live` | 정책 단위테스트 + 정규장 관측 | KR/US 모두 오전·오후 2회. `UNDER_PRESSURE`는 두 배치 유지, `CORRECTION`은 오후만 실행. 10분 hardstop/trend-exit 및 2분 fill-chaser는 모든 상태에서 유지 |
+| 레짐 최소점수 + 상승전환 파일럿 | **LIVE** | `.env REGIME_MIN_SCORE_FLOOR=true` | 순증 차단·차단 후 1/3/5/10일 성과 지속 관측 | 기본 `strong_bear=9`, `moderate_bear=8`, `sideways=8`. 단 `sideways + MARKET_PULSE=UPTREND`는 7점, AI가 `Enter`한 정확히 6점(원래 문턱 ≤6)은 설정 주문액의 50%로만 진입. 로그 `[REGIME_REBOUND_PILOT]` |
 | TIER0 이벤트 강제청산(뉴스 자율매도 + KIS 51 관리종목) | **LIVE** | 코드 상시 | 더존 등 실증 | KR+US 매도 프롬프트 핵심-0 |
 | Loop A — 고빈도 하드스톱(−7%/시나리오손절) | **LIVE** | `.env HARDSTOP_LIVE=true` (구 `LOOP_A_LIVE`, alias 유효) + cron 10분 | SHADOW 관측 후 승격(06-20) | KR 9–15 / US 9–16. 킬: `HARDSTOP_ENABLED=false` |
 | Loop B — 50MA 종가확인 추세이탈 | **LIVE** | `.env TREND_EXIT_LIVE=true` (구 `LOOP_B_LIVE`) + cron(KR 9–15 / US 9–16) | 백테스트 KR/US 순효과(휩쏘0·추가DD0) + 사용자 승인(06-24) | 코드: `tools/trend_exit_seller.py` (구 `tools/loop_b_trend_exit.py` shim 유효). 킬: `TREND_EXIT_ENABLED=false` |

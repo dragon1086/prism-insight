@@ -7,6 +7,7 @@ import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -689,6 +690,85 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     assert len(gcp_calls) == 1
     assert watchlist_calls == []
     assert "partial success" in caplog.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, tmp_path):
+    regime_policy = _load_module(
+        "root_regime_policy_rebound_test", PROJECT_ROOT / "cores" / "regime_policy.py"
+    )
+
+    agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+    agent.db_path = str(tmp_path / "us-rebound-pilot.sqlite")
+    agent.account_configs = [{
+        "name": "us-primary",
+        "account_key": "vps:us-primary:01",
+        "product": "01",
+        "buy_amount_usd": 2000.0,
+    }]
+    agent.active_account = None
+    agent.max_slots = 10
+    agent.enable_journal = False
+    agent.conn = sqlite3.connect(":memory:")
+    agent.cursor = agent.conn.cursor()
+
+    async def fake_core(_report_path):
+        return {
+            "success": True,
+            "ticker": "AAPL",
+            "company_name": "Apple Inc.",
+            "current_price": 180.5,
+            "scenario": {"buy_score": 6, "min_score": 5, "sector": "Technology"},
+            "decision": "entry",
+            "raw_decision": "Enter",
+            "sector": "Technology",
+            "rank_change_msg": "Up",
+        }
+
+    agent._analyze_report_core = fake_core
+    agent.update_holdings = AsyncMock(return_value=[])
+    agent._is_ticker_in_holdings = AsyncMock(return_value=False)
+    agent._get_current_slots_count = AsyncMock(return_value=0)
+    agent._check_sector_diversity = AsyncMock(return_value=True)
+    agent._buy_floor_regime = lambda: "sideways"
+    agent._regime_policy_mod = lambda: regime_policy
+    agent._buy_stock_with_position = AsyncMock(
+        return_value=LegacyPositionWriteResult(True, 1)
+    )
+    agent._link_position_entry_intent = lambda **_kwargs: True
+    agent._save_watchlist_item = AsyncMock(return_value=True)
+
+    buy_amounts = []
+
+    class PilotTradingContext(_FakeAsyncUSTradingContext):
+        async def async_buy_stock(self, ticker, limit_price=None, buy_amount=None):
+            buy_amounts.append(buy_amount)
+            return await super().async_buy_stock(ticker, limit_price, buy_amount)
+
+    module = types.ModuleType("trading.us_stock_trading")
+    module.AsyncUSTradingContext = PilotTradingContext
+    monkeypatch.setitem(sys.modules, "trading.us_stock_trading", module)
+    redis_calls, gcp_calls = [], []
+    _install_signal_modules(monkeypatch, redis_calls, gcp_calls)
+    monkeypatch.setattr(regime_policy, "get_market_pulse_state", lambda _market: "UPTREND")
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
+
+    buy_count, sell_count = await USStockTrackingAgent.process_reports(
+        agent, ["report-a.pdf"]
+    )
+
+    assert (buy_count, sell_count) == (1, 0)
+    assert buy_amounts == [1000.0]
+    assert redis_calls[0]["scenario"]["regime_entry_policy"] == {
+        "mode": "rebound_pilot",
+        "position_fraction": 0.5,
+        "regime": "sideways",
+        "market_pulse": "UPTREND",
+    }
+    cash_amount = sqlite3.connect(agent.db_path).execute(
+        "SELECT cash_amount FROM order_intents"
+    ).fetchone()[0]
+    assert float(cash_amount) == 1000.0
 
 
 @pytest.mark.asyncio

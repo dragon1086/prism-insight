@@ -1313,6 +1313,9 @@ class StockTrackingAgent:
             f"투자기간: {scenario.get('investment_period', '단기')}\n"
             f"산업군: {scenario.get('sector', '알 수 없음')}\n"
         )
+        entry_policy = scenario.get("regime_entry_policy") or {}
+        if entry_policy.get("mode") == "rebound_pilot":
+            message += "진입비중: 50% (상승 전환 파일럿)\n"
 
         trigger_win_rate = self._get_trigger_win_rate(trigger_type)
         if trigger_win_rate:
@@ -1432,6 +1435,7 @@ class StockTrackingAgent:
         source: str = "kr_batch",
         is_add: bool = False,
         expected_open_count: int | None = None,
+        cash_amount: int | None = None,
     ) -> _PreparedKrEntry:
         """Atomically persist the legacy holding, intent, and PENDING_ENTRY."""
 
@@ -1489,6 +1493,7 @@ class StockTrackingAgent:
                 source=source,
                 source_decision_id=source_decision_id,
                 source_position_id=legacy_position_id("KR", legacy_holding_id),
+                cash_amount=cash_amount,
                 limit_price=current_price,
                 reason="AI analysis entry",
             )
@@ -1541,6 +1546,7 @@ class StockTrackingAgent:
         ) as trading:
             return await trading.execute_pre_reserved_buy(
                 stock_code=prepared.symbol,
+                buy_amount=prepared.intent.cash_amount,
                 limit_price=current_price,
                 intent=prepared.intent,
                 reservation=prepared.reservation,
@@ -2221,6 +2227,10 @@ class StockTrackingAgent:
                           f"손절가: {scenario.get('stop_loss', 0):,.0f}원\n" \
                           f"투자기간: {scenario.get('investment_period', '단기')}\n" \
                           f"산업군: {scenario.get('sector', '알 수 없음')}\n"
+
+            entry_policy = scenario.get("regime_entry_policy") or {}
+            if entry_policy.get("mode") == "rebound_pilot":
+                message += "진입비중: 50% (상승 전환 파일럿)\n"
 
             # Add trigger win rate
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)
@@ -3513,6 +3523,8 @@ class StockTrackingAgent:
 
                     buy_score = scenario.get("buy_score", 0)
                     min_score = scenario.get("min_score", 0)
+                    llm_min_score = min_score
+                    entry_cash_amount = None
                     logger.info(f"Buy score check: {company_name}({ticker}) - Score: {buy_score}")
 
                     # 레짐 적응 하한선 게이트(env-gated REGIME_MIN_SCORE_FLOOR, 기본 off).
@@ -3523,19 +3535,61 @@ class StockTrackingAgent:
                     _regime_floor_block = False
                     try:
                         from cores.regime_policy import (
+                            configured_entry_amount,
                             effective_min_score,
+                            get_market_pulse_state,
+                            is_rebound_pilot_entry,
                             regime_min_score_floor_enabled,
                         )
                         if regime_min_score_floor_enabled():
                             _fr = self._buy_floor_regime()
-                            _eff = effective_min_score(min_score, _fr)
+                            _pulse = get_market_pulse_state("kr")
+                            _eff = effective_min_score(min_score, _fr, _pulse)
                             if _eff > min_score:
                                 logger.info(
                                     f"[REGIME_MIN_SCORE_FLOOR] {company_name}({ticker}) "
-                                    f"min_score {min_score}->{_eff} (regime={_fr})"
+                                    f"min_score {min_score}->{_eff} "
+                                    f"(regime={_fr}, pulse={_pulse})"
                                 )
                                 min_score = _eff
-                            if buy_score < min_score:
+                            _pilot = is_rebound_pilot_entry(
+                                buy_score,
+                                llm_min_score,
+                                _fr,
+                                _pulse,
+                                analysis_result.get("decision"),
+                            )
+                            if _pilot:
+                                entry_cash_amount = configured_entry_amount(
+                                    account, "kr", 0.5
+                                )
+                                if entry_cash_amount is None:
+                                    _regime_floor_block = True
+                                    logger.error(
+                                        "[REGIME_REBOUND_PILOT] %s(%s) blocked: "
+                                        "configured KR buy amount unavailable",
+                                        company_name,
+                                        ticker,
+                                    )
+                                else:
+                                    scenario = dict(scenario)
+                                    scenario["regime_entry_policy"] = {
+                                        "mode": "rebound_pilot",
+                                        "position_fraction": 0.5,
+                                        "regime": _fr,
+                                        "market_pulse": _pulse,
+                                    }
+                                    analysis_result["scenario"] = scenario
+                                    logger.warning(
+                                        "[REGIME_REBOUND_PILOT] %s(%s) score=%s "
+                                        "min=%s position=50%% cash_amount=%s",
+                                        company_name,
+                                        ticker,
+                                        buy_score,
+                                        min_score,
+                                        entry_cash_amount,
+                                    )
+                            elif buy_score < min_score:
                                 _regime_floor_block = True
                     except Exception as _fe:
                         logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {_fe}")
@@ -3573,6 +3627,7 @@ class StockTrackingAgent:
                                     rank_change_msg=rank_change_msg,
                                     source_decision_id=source_decision_id,
                                     source="kr_batch",
+                                    cash_amount=entry_cash_amount,
                                 )
                                 trade_result = await self._execute_pending_kr_entry(
                                     prepared, current_price=current_price
@@ -3713,6 +3768,7 @@ class StockTrackingAgent:
                                 source="kr_batch",
                                 source_decision_id=source_decision_id,
                                 source_position_id=opened_position_id,
+                                cash_amount=entry_cash_amount,
                                 limit_price=current_price,
                                 reason="AI analysis entry",
                             )
@@ -3723,6 +3779,7 @@ class StockTrackingAgent:
                                 ) as trading:
                                     trade_result = await trading.execute_buy(
                                         stock_code=ticker,
+                                        buy_amount=entry_cash_amount,
                                         limit_price=current_price,
                                         intent=order_intent,
                                     )

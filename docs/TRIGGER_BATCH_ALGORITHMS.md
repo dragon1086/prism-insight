@@ -308,7 +308,7 @@ KR은 시나리오의 `buy_score`, US는 저널 조정까지 반영한 `adjusted
 - 동일 섹터 최대 3개
 - 보유 4개 이상일 때 섹터 비중 30% 제한
 
-`REGIME_MIN_SCORE_FLOOR`는 기본 비활성입니다. 활성 시 기본 바닥점수는 `strong_bear=9`, `sideways/moderate_bear=8`, 강세 체제는 추가 바닥 없음입니다.
+`REGIME_MIN_SCORE_FLOOR`는 기본 비활성입니다. 활성 시 기본 바닥점수는 `strong_bear=9`, `sideways/moderate_bear=8`, 강세 체제는 추가 바닥 없음입니다. 단 레짐이 `sideways`여도 독립적인 `MARKET_PULSE=UPTREND`가 확인되면 상승 전환 지연을 보완하기 위해 바닥점수를 7로 낮춥니다. 이때 AI가 명시적으로 진입을 선택했고 원래 문턱이 6 이하인 정확히 6점 신호는 `[REGIME_REBOUND_PILOT]`로 기록하며 설정 주문액의 50%만 진입합니다. Pulse 조회 실패, AI `Skip`, 약세 레짐에는 이 예외를 적용하지 않습니다.
 
 ## 11. 피라미딩
 
