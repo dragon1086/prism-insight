@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,8 @@ from prism_core.order_intents import IntentStore, OrderIntent
 
 
 logger = logging.getLogger(__name__)
+_stance_count_lock = threading.Lock()
+_stance_set_counts = {"KR": 0, "US": 0}
 
 
 def normalize_checked_holding(result: Any) -> tuple[str, int | None]:
@@ -60,7 +64,10 @@ class _LocalFlatPersistenceError(RuntimeError):
         self.cause = cause
 
 
-def _stance_reporter_from_env():
+def _stance_reporter_from_env(
+    market: str | None = None,
+    account_name: str | None = None,
+):
     """Stance 리포터를 만든다. 환경변수가 없으면 꺼진 것을 돌려준다.
 
     STANCE_ENDPOINT / STANCE_API_KEY 가 모두 있어야 켜진다.
@@ -69,10 +76,33 @@ def _stance_reporter_from_env():
     try:
         from prism_core.stance_adapter import StanceReporter
 
-        return StanceReporter.from_env()
+        normalized_market = (market or "").upper()
+        selected_account = os.getenv(f"STANCE_{normalized_market}_ACCOUNT")
+        if selected_account and account_name is not None and selected_account != account_name:
+            return None
+        return StanceReporter.from_env(market)
     except Exception:  # pragma: no cover - 리포터가 매매를 막아서는 안 된다
         logger.debug("Stance reporter unavailable", exc_info=True)
         return None
+
+
+def stance_declaration_count(market: str) -> int:
+    """현재 프로세스에서 시도한 시장별 set 선언 수를 돌려준다."""
+    with _stance_count_lock:
+        return _stance_set_counts.get(market.upper(), 0)
+
+
+async def declare_stance_hold(market: str, reason: str = "prism:no_portfolio_change") -> bool:
+    """거래 없는 판단 주기의 Hold를 fail-open으로 한 번 전송한다."""
+    reporter = _stance_reporter_from_env(market)
+    if reporter is None or not getattr(reporter, "enabled", False):
+        return False
+    try:
+        result = await asyncio.to_thread(reporter.report_hold, reason=reason)
+        return result is not None
+    except Exception:  # pragma: no cover - 리포터가 매매 배치를 막아서는 안 된다
+        logger.warning("[STANCE] hold declaration failed market=%s", market, exc_info=True)
+        return False
 
 
 class ExecutionService:
@@ -103,6 +133,7 @@ class ExecutionService:
         *,
         intent_store: IntentStore | None = None,
         stance_reporter: Any | None = None,
+        stance_market: str | None = None,
     ):
         self._resource = context_or_trader
         self._trader: Any | None = None
@@ -110,6 +141,7 @@ class ExecutionService:
         self._intent_store = intent_store
         # Stance 선언 전송. 환경변수가 없으면 꺼진 상태로 만들어져 아무 일도 하지 않는다.
         self._stance = stance_reporter
+        self._stance_market = (stance_market or "").upper() or None
 
     @classmethod
     def domestic(
@@ -136,7 +168,8 @@ class ExecutionService:
         return cls(
             AsyncTradingContext(account_name=account_name),
             intent_store=store,
-            stance_reporter=_stance_reporter_from_env(),
+            stance_reporter=_stance_reporter_from_env("KR", account_name),
+            stance_market="KR",
         )
 
     @classmethod
@@ -168,6 +201,8 @@ class ExecutionService:
         return cls(
             AsyncUSTradingContext(account_name=account_name),
             intent_store=store,
+            stance_reporter=_stance_reporter_from_env("US", account_name),
+            stance_market="US",
         )
 
     async def __aenter__(self) -> "ExecutionService":
@@ -235,9 +270,12 @@ class ExecutionService:
         method,
         *args,
         intent: OrderIntent | None = None,
+        before_order=None,
         **kwargs,
     ):
         if intent is None:
+            if before_order is not None:
+                await before_order()
             return await method(*args, **kwargs)
         if self._intent_store is None:
             raise RuntimeError(
@@ -255,6 +293,9 @@ class ExecutionService:
             )
             return self._intent_store.blocked_result(existing)
         await asyncio.to_thread(self._intent_store.mark_submitting, intent.id)
+
+        if before_order is not None:
+            await before_order()
 
         return await self._execute_submitting_order(
             method, *args, intent=intent, **kwargs
@@ -356,6 +397,7 @@ class ExecutionService:
         intent: OrderIntent,
         reservation: Any,
         side: str,
+        before_order=None,
         **kwargs,
     ):
         await self._claim_pre_reserved(
@@ -363,6 +405,8 @@ class ExecutionService:
             reservation=reservation,
             side=side,
         )
+        if before_order is not None:
+            await before_order()
         return await self._execute_submitting_order(
             method, *args, intent=intent, **kwargs
         )
@@ -423,9 +467,12 @@ class ExecutionService:
         method,
         *args,
         intent: OrderIntent | None = None,
+        before_order=None,
         **kwargs,
     ):
         if intent is None:
+            if before_order is not None:
+                before_order()
             return method(*args, **kwargs)
         if self._intent_store is None:
             raise RuntimeError(
@@ -441,6 +488,9 @@ class ExecutionService:
             )
             return self._intent_store.blocked_result(existing)
         self._intent_store.mark_submitting(intent.id)
+
+        if before_order is not None:
+            before_order()
 
         return self._execute_submitting_order_sync(
             method, *args, intent=intent, **kwargs
@@ -514,6 +564,7 @@ class ExecutionService:
         intent: OrderIntent,
         reservation: Any,
         side: str,
+        before_order=None,
         **kwargs,
     ):
         if self._intent_store is None:
@@ -523,17 +574,18 @@ class ExecutionService:
         self._intent_store.claim_reservation(
             reservation, intent, expected_side=side
         )
+        if before_order is not None:
+            before_order()
         return self._execute_submitting_order_sync(
             method, *args, intent=intent, **kwargs
         )
 
 
-    async def _declare_stance(self, side: str, kwargs: dict) -> None:
+    def _declare_stance_sync(self, side: str, kwargs: dict) -> None:
         """Stance 에 판단을 선언한다. **매매를 막지 않는 것이 최우선이다.**
 
-        - 주문이 끝난 뒤에 호출된다. 주문 자체를 지연시키지 않는다.
+        - 주문 전에 호출한다. 사후 성과가 아니라 당시 판단을 기록한다.
         - 모든 예외를 삼킨다.
-        - 블로킹 I/O 라 스레드에서 돌린다. 이벤트 루프를 잡지 않는다.
         - 서버가 죽어 있으면 클라이언트 타임아웃(기본 3초)만큼만 기다린다.
         """
         reporter = self._stance
@@ -544,23 +596,35 @@ class ExecutionService:
         if not symbol:
             return
 
-        def _send() -> None:
+        if self._stance_market:
+            with _stance_count_lock:
+                _stance_set_counts[self._stance_market] = (
+                    _stance_set_counts.get(self._stance_market, 0) + 1
+                )
+
+        try:
             from prism_core.stance_adapter import snapshot_from_trader
 
             snapshot = snapshot_from_trader(self._active_trader)
             if side == "BUY":
-                reporter.report_buy(snapshot, symbol, reason="prism")
+                reporter.report_buy(
+                    snapshot,
+                    symbol,
+                    reason="prism",
+                    add_amount=kwargs.get("buy_amount"),
+                )
             else:
                 reporter.report_sell(
                     symbol, reason="prism", snapshot=snapshot,
                     sold_qty=kwargs.get("quantity"),
                     held_qty=self._active_trader.get_holding_quantity(symbol),
                 )
-
-        try:
-            await asyncio.to_thread(_send)
         except Exception:
             logger.warning("Stance declaration failed (%s %s)", side, symbol, exc_info=True)
+
+    async def _declare_stance(self, side: str, kwargs: dict) -> None:
+        """블로킹 선언 I/O를 이벤트 루프 밖에서 실행한다."""
+        await asyncio.to_thread(self._declare_stance_sync, side, kwargs)
 
     async def execute_buy(
         self,
@@ -568,14 +632,13 @@ class ExecutionService:
         intent: OrderIntent | None = None,
         **kwargs,
     ):
-        result = await self._execute_order(
+        return await self._execute_order(
             self._active_trader.async_buy_stock,
             *args,
             intent=intent,
+            before_order=lambda: self._declare_stance("BUY", kwargs),
             **kwargs,
         )
-        await self._declare_stance("BUY", kwargs)
-        return result
 
     async def execute_sell(
         self,
@@ -583,14 +646,13 @@ class ExecutionService:
         intent: OrderIntent | None = None,
         **kwargs,
     ):
-        result = await self._execute_order(
+        return await self._execute_order(
             self._active_trader.async_sell_stock,
             *args,
             intent=intent,
+            before_order=lambda: self._declare_stance("SELL", kwargs),
             **kwargs,
         )
-        await self._declare_stance("SELL", kwargs)
-        return result
 
     async def execute_pre_reserved_buy(
         self,
@@ -599,16 +661,15 @@ class ExecutionService:
         reservation: Any,
         **kwargs,
     ):
-        result = await self._execute_pre_reserved_order(
+        return await self._execute_pre_reserved_order(
             self._active_trader.async_buy_stock,
             *args,
             intent=intent,
             reservation=reservation,
             side="BUY",
+            before_order=lambda: self._declare_stance("BUY", kwargs),
             **kwargs,
         )
-        await self._declare_stance("BUY", kwargs)
-        return result
 
     async def execute_pre_reserved_sell(
         self,
@@ -617,16 +678,15 @@ class ExecutionService:
         reservation: Any,
         **kwargs,
     ):
-        result = await self._execute_pre_reserved_order(
+        return await self._execute_pre_reserved_order(
             self._active_trader.async_sell_stock,
             *args,
             intent=intent,
             reservation=reservation,
             side="SELL",
+            before_order=lambda: self._declare_stance("SELL", kwargs),
             **kwargs,
         )
-        await self._declare_stance("SELL", kwargs)
-        return result
 
     async def execute_pre_reserved_local_flat_sell(
         self,
@@ -735,6 +795,7 @@ class ExecutionService:
             self._active_trader.buy_reserved_order,
             *args,
             intent=intent,
+            before_order=lambda: self._declare_stance_sync("BUY", kwargs),
             **kwargs,
         )
 
@@ -748,6 +809,7 @@ class ExecutionService:
             self._active_trader.sell_reserved_order,
             *args,
             intent=intent,
+            before_order=lambda: self._declare_stance_sync("SELL", kwargs),
             **kwargs,
         )
 
@@ -764,6 +826,7 @@ class ExecutionService:
             intent=intent,
             reservation=reservation,
             side="BUY",
+            before_order=lambda: self._declare_stance_sync("BUY", kwargs),
             **kwargs,
         )
 
@@ -780,6 +843,7 @@ class ExecutionService:
             intent=intent,
             reservation=reservation,
             side="SELL",
+            before_order=lambda: self._declare_stance_sync("SELL", kwargs),
             **kwargs,
         )
 
