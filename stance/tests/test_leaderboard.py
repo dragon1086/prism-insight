@@ -55,6 +55,31 @@ def test_build_from_ledger():
     assert e["gate_failures"]
     # 투자비중은 항상 실려야 한다 — 다른 지표를 해석하는 기준이다
     assert "avg_exposure" in e["metrics"]
+    assert e["latest_decision"] == {
+        "seq": 3,
+        "kind": "set",
+        "symbol": "005930",
+        "target_weight": 0.0,
+        "received_at": (T0 + timedelta(days=3)).isoformat(),
+        "admit": "accepted",
+    }
+    led.close()
+
+
+def test_latest_hold_is_visible_without_a_symbol():
+    led = Ledger()
+    led.register("holding", "Holding", "@me", market="NASDAQ")
+    led.append_stance(
+        "holding", 1, Kind.HOLD, received_at=T0.isoformat(), reason="no signal",
+    )
+
+    entry = build(
+        led, [("holding", "Holding", "@me", "NASDAQ")]
+    )["boards"]["NASDAQ"]["entries"][0]
+
+    assert entry["latest_decision"]["kind"] == "hold"
+    assert entry["latest_decision"]["symbol"] is None
+    assert entry["latest_decision"]["received_at"] == T0.isoformat()
     led.close()
 
 
