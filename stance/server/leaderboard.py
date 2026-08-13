@@ -36,6 +36,7 @@ class Entry:
     description: str | None = None
     website_url: str | None = None
     source_url: str | None = None
+    latest_decision: dict | None = None
 
     def to_dict(self) -> dict:
         m = self.metrics
@@ -49,6 +50,7 @@ class Entry:
             "description": self.description,
             "website_url": self.website_url,
             "source_url": self.source_url,
+            "latest_decision": self.latest_decision,
             "qualified": m.qualified,
             "gate_failures": m.gate_failures,
             "experimental": m.experimental,
@@ -83,13 +85,16 @@ def build(ledger: Ledger, strategies: list[tuple[str | None, ...]]) -> dict:
         public_profile = (*strategy[4:9], None, None, None, None, None)[:5]
         profile = profile_for(market)
         # 일별 마킹까지 포함해 재생한다. 빠지면 시간축이 없어 지표가 전부 0 이 된다.
+        timeline = ledger.timeline(strategy_id)
         result = replay(ledger.full_timeline(strategy_id), costs=profile.costs)
         metrics = score(result, cadence=ledger.cadence_of(strategy_id), profile=profile)
+        latest_decision = _latest_decision(timeline, result)
         entry = Entry(
             strategy_id, display_name, handle, profile.code, metrics,
             owner_name=public_profile[0], tagline=public_profile[1],
             description=public_profile[2], website_url=public_profile[3],
             source_url=public_profile[4],
+            latest_decision=latest_decision,
         )
 
         board = boards.setdefault(profile.code, _empty_board(profile))
@@ -106,6 +111,24 @@ def build(ledger: Ledger, strategies: list[tuple[str | None, ...]]) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "status": "live" if any(b["entries"] for b in boards.values()) else "preparing",
         "boards": boards,
+    }
+
+
+def _latest_decision(timeline: list, result) -> dict | None:
+    """화면에 보여줄 마지막 원본 판단과 서버 판정을 함께 만든다."""
+    if not timeline:
+        return None
+    stance, _quote = timeline[-1]
+    fill = next((item for item in reversed(result.fills) if item.seq == stance.seq), None)
+    return {
+        "seq": stance.seq,
+        "kind": stance.kind.value,
+        "symbol": stance.symbol,
+        "target_weight": (
+            None if stance.target_weight is None else float(stance.target_weight)
+        ),
+        "received_at": stance.received_at.isoformat(),
+        "admit": None if fill is None else fill.admit.value,
     }
 
 
