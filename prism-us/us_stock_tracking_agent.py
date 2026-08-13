@@ -1489,6 +1489,10 @@ class USStockTrackingAgent:
                           f"Period: {scenario.get('investment_period', 'short')}\n" \
                           f"Sector: {scenario.get('sector', 'Unknown')}\n"
 
+            entry_policy = scenario.get("regime_entry_policy") or {}
+            if entry_policy.get("mode") == "rebound_pilot":
+                message += "Position Size: 50% (rebound pilot)\n"
+
             # Add trigger win rate
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)
             if trigger_win_rate:
@@ -3251,6 +3255,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                     buy_score = scenario.get("buy_score", 0)
                     min_score = scenario.get("min_score", 0)
+                    llm_min_score = min_score
+                    floor_regime = None
+                    pulse_state = None
+                    rebound_pilot = False
+                    entry_cash_amount = None
+                    _rp = None
 
                     # 레짐 적응 하한선(env-gated REGIME_MIN_SCORE_FLOOR, 기본 off). 플래그 ON 시
                     # 약세장 하한(strong_bear 9 / bear·sideways 8)을 강제해 min_score 를 끌어올린다.
@@ -3260,12 +3270,16 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     try:
                         _rp = self._regime_policy_mod()
                         if _rp is not None and _rp.regime_min_score_floor_enabled():
-                            _fr = self._buy_floor_regime()
-                            _eff = _rp.effective_min_score(min_score, _fr)
+                            floor_regime = self._buy_floor_regime()
+                            pulse_state = _rp.get_market_pulse_state("us")
+                            _eff = _rp.effective_min_score(
+                                min_score, floor_regime, pulse_state
+                            )
                             if _eff > min_score:
                                 logger.info(
                                     f"[REGIME_MIN_SCORE_FLOOR] {company_name}({ticker}) "
-                                    f"min_score {min_score}->{_eff} (regime={_fr})"
+                                    f"min_score {min_score}->{_eff} "
+                                    f"(regime={floor_regime}, pulse={pulse_state})"
                                 )
                                 min_score = _eff
                     except Exception as _fe:
@@ -3293,6 +3307,45 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     normalized_decision = analysis_result.get("decision", "no_entry")
                     if raw_decision and raw_decision.lower() != normalized_decision:
                         logger.debug(f"Decision normalized: '{raw_decision}' -> '{normalized_decision}'")
+
+                    if _rp is not None and floor_regime is not None:
+                        rebound_pilot = _rp.is_rebound_pilot_entry(
+                            adjusted_score,
+                            llm_min_score,
+                            floor_regime,
+                            pulse_state,
+                            normalized_decision,
+                        )
+                        if rebound_pilot:
+                            entry_cash_amount = _rp.configured_entry_amount(
+                                account, "us", 0.5
+                            )
+                            if entry_cash_amount is None:
+                                rebound_pilot = False
+                                logger.error(
+                                    "[REGIME_REBOUND_PILOT] %s(%s) blocked: "
+                                    "configured US buy amount unavailable",
+                                    company_name,
+                                    ticker,
+                                )
+                            else:
+                                scenario = dict(scenario)
+                                scenario["regime_entry_policy"] = {
+                                    "mode": "rebound_pilot",
+                                    "position_fraction": 0.5,
+                                    "regime": floor_regime,
+                                    "market_pulse": pulse_state,
+                                }
+                                analysis_result["scenario"] = scenario
+                                logger.warning(
+                                    "[REGIME_REBOUND_PILOT] %s(%s) score=%s "
+                                    "min=%s position=50%% cash_amount=%s",
+                                    company_name,
+                                    ticker,
+                                    adjusted_score,
+                                    min_score,
+                                    entry_cash_amount,
+                                )
 
                     rationale = scenario.get("rationale", "") or ""
                     logger.info(
@@ -3324,7 +3377,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 _cd["window_hours"], _cd["after_loss"], _cd.get("exit_kind"), _risk_only)
                             _cd_block = _enforce
 
-                    if normalized_decision == "entry" and adjusted_score >= min_score and sector_diverse and not _cd_block:
+                    if normalized_decision == "entry" and (adjusted_score >= min_score or rebound_pilot) and sector_diverse and not _cd_block:
                         # is_add => pyramiding additional independent row (#288)
                         buy_result = await self._buy_stock_with_position(
                             ticker,
@@ -3354,6 +3407,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         source="us_batch",
                                         source_decision_id=source_decision_id,
                                         source_position_id=opened_position_id,
+                                        cash_amount=entry_cash_amount,
                                         limit_price=current_price,
                                         reason="AI analysis entry",
                                     )
@@ -3363,6 +3417,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     ) as trading:
                                         trade_result = await trading.execute_buy(
                                             ticker=ticker,
+                                            buy_amount=entry_cash_amount,
                                             limit_price=current_price,
                                             intent=order_intent,
                                         )
@@ -3459,7 +3514,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         reason_parts = []
                         if normalized_decision != "entry":
                             reason_parts.append(f"AI judgment: {normalized_decision}")
-                        if adjusted_score < min_score:
+                        if adjusted_score < min_score and not rebound_pilot:
                             reason_parts.append(f"Insufficient score ({adjusted_score}/{min_score})")
                         if not sector_diverse:
                             reason_parts.append(f"Sector concentration ({sector})")

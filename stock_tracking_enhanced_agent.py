@@ -476,6 +476,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 # Check entry decision
                 buy_score = scenario.get("buy_score", 0)
                 min_score = scenario.get("min_score", 0)
+                llm_min_score = min_score
+                decision = analysis_result.get("decision")
+                entry_cash_amount = None
+                rebound_pilot = False
 
                 # 레짐 적응 하한선(env-gated REGIME_MIN_SCORE_FLOOR, 기본 off). 플래그 ON 시
                 # 약세장 하한(strong_bear 9 / bear·sideways 8)을 강제해 min_score 를 끌어올린다.
@@ -484,22 +488,59 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 # 종목별 LLM market_condition은 설명용이며 안전 게이트 입력으로 쓰지 않는다.
                 try:
                     from cores.regime_policy import (
+                        configured_entry_amount,
                         effective_min_score,
+                        get_market_pulse_state,
+                        is_rebound_pilot_entry,
                         regime_min_score_floor_enabled,
                     )
                     if regime_min_score_floor_enabled():
                         _fr = self._buy_floor_regime()
-                        _eff = effective_min_score(min_score, _fr)
+                        _pulse = get_market_pulse_state("kr")
+                        _eff = effective_min_score(min_score, _fr, _pulse)
                         if _eff > min_score:
                             logger.info(
                                 f"[REGIME_MIN_SCORE_FLOOR] {company_name}({ticker}) "
-                                f"min_score {min_score}->{_eff} (regime={_fr})"
+                                f"min_score {min_score}->{_eff} "
+                                f"(regime={_fr}, pulse={_pulse})"
                             )
                             min_score = _eff
+                        rebound_pilot = is_rebound_pilot_entry(
+                            buy_score, llm_min_score, _fr, _pulse, decision
+                        )
+                        if rebound_pilot:
+                            entry_cash_amount = configured_entry_amount(
+                                getattr(self, "active_account", None), "kr", 0.5
+                            )
+                            if entry_cash_amount is None:
+                                rebound_pilot = False
+                                logger.error(
+                                    "[REGIME_REBOUND_PILOT] %s(%s) blocked: "
+                                    "configured KR buy amount unavailable",
+                                    company_name,
+                                    ticker,
+                                )
+                            else:
+                                scenario = dict(scenario)
+                                scenario["regime_entry_policy"] = {
+                                    "mode": "rebound_pilot",
+                                    "position_fraction": 0.5,
+                                    "regime": _fr,
+                                    "market_pulse": _pulse,
+                                }
+                                analysis_result["scenario"] = scenario
+                                logger.warning(
+                                    "[REGIME_REBOUND_PILOT] %s(%s) score=%s "
+                                    "min=%s position=50%% cash_amount=%s",
+                                    company_name,
+                                    ticker,
+                                    buy_score,
+                                    min_score,
+                                    entry_cash_amount,
+                                )
                 except Exception as _fe:
                     logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {_fe}")
 
-                decision = analysis_result.get("decision")
                 rationale = scenario.get("rationale", "") or ""
                 logger.info(f"Buy score check: {company_name}({ticker}) - Score: {buy_score}, Min required score: {min_score}")
                 logger.info(
@@ -519,7 +560,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     )
 
                 # Generate message if not buying (watch/insufficient score/sector constraints)
-                if decision != "Enter" or buy_score < min_score or not sector_diverse:
+                if decision != "Enter" or (buy_score < min_score and not rebound_pilot) or not sector_diverse:
                     # Build a single reason string that lists ALL applicable causes,
                     # ordered by who actually blocked the entry. AI judgment is shown
                     # first when the AI itself rejected — so the displayed reason
@@ -528,7 +569,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                     if decision != "Enter":
                         reason_parts.append(f"AI 판단: {decision}")
-                    elif buy_score < min_score:
+                    elif buy_score < min_score and not rebound_pilot:
                         # AI said Enter but score is below threshold — flip to Skip
                         decision = "Skip"
                         logger.info(
@@ -537,7 +578,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             f"(Score: {buy_score} < {min_score})"
                         )
 
-                    if buy_score < min_score:
+                    if buy_score < min_score and not rebound_pilot:
                         reason_parts.append(f"점수 부족 ({buy_score}/{min_score})")
                     if not sector_diverse:
                         reason_parts.append(f"섹터 집중 ({sector})")
@@ -635,7 +676,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         _cd_block = _enforce
 
                 # Process buy if entry decision
-                if decision == "Enter" and buy_score >= min_score and sector_diverse and not _cd_block:
+                if decision == "Enter" and (buy_score >= min_score or rebound_pilot) and sector_diverse and not _cd_block:
                     if self._position_pending_kr_enabled():
                         prepared = None
                         active_account = getattr(self, "active_account", None)
@@ -671,6 +712,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                     if is_add
                                     else None
                                 ),
+                                cash_amount=entry_cash_amount,
                             )
                             trade_result = await self._execute_pending_kr_entry(
                                 prepared, current_price=current_price
@@ -786,6 +828,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             source="kr_enhanced_batch",
                             source_decision_id=f"report:{os.path.basename(pdf_report_path)}",
                             source_position_id=opened_position_id,
+                            cash_amount=entry_cash_amount,
                             limit_price=current_price,
                             reason="AI analysis entry",
                         )
@@ -798,6 +841,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                 # Execute async buy with limit price for reserved orders
                                 trade_result = await trading.execute_buy(
                                     stock_code=ticker,
+                                    buy_amount=entry_cash_amount,
                                     limit_price=current_price,
                                     intent=order_intent,
                                 )
