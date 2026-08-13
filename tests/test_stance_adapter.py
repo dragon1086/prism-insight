@@ -110,6 +110,21 @@ def test_reporter_sends_expected_weight():
     assert sent == [("005930", D("0.1"), "눌림목")]
 
 
+def test_reporter_buy_uses_actual_order_amount_when_provided():
+    """반 슬롯 매수는 기본 슬롯이 아니라 실제 주문금액으로 선언한다."""
+    sent = []
+
+    class Recorder:
+        def set(self, symbol, weight, reason=None):
+            sent.append((symbol, weight, reason))
+            return {"admit": "accepted"}
+
+    r = StanceReporter(client=Recorder(), unit_amount=D(1_000_000))
+    r.report_buy(snap(10_000_000), "005930", add_amount=500_000)
+
+    assert sent == [("005930", D("0.05"), None)]
+
+
 def test_snapshot_from_kis_shape():
     balance = {
         "output1": [{"pdno": "005930", "evlu_amt": "7000000"},
@@ -249,3 +264,30 @@ def test_reporter_needs_only_endpoint_and_api_key(monkeypatch):
     monkeypatch.setenv("STANCE_API_KEY", "stk_x")
     monkeypatch.delenv("STANCE_STRATEGY", raising=False)
     assert StanceReporter.from_env().enabled
+
+
+def test_reporter_uses_market_specific_key_and_amount(monkeypatch):
+    monkeypatch.setenv("STANCE_ENDPOINT", "http://127.0.0.1:8800")
+    monkeypatch.setenv("STANCE_API_KEY", "stk_legacy")
+    monkeypatch.setenv("STANCE_KR_API_KEY", "stk_kr")
+    monkeypatch.setenv("STANCE_US_API_KEY", "stk_us")
+    monkeypatch.setenv("STANCE_KR_UNIT_AMOUNT", "1000000")
+    monkeypatch.setenv("STANCE_US_UNIT_AMOUNT", "750")
+
+    kr = StanceReporter.from_env("KR")
+    us = StanceReporter.from_env("US")
+
+    assert kr.client.token == "stk_kr"
+    assert us.client.token == "stk_us"
+    assert kr.unit_amount == D("1000000")
+    assert us.unit_amount == D("750")
+
+
+def test_market_specific_config_does_not_fall_back_to_other_market(monkeypatch):
+    monkeypatch.setenv("STANCE_ENDPOINT", "http://127.0.0.1:8800")
+    monkeypatch.setenv("STANCE_KR_API_KEY", "stk_kr")
+    monkeypatch.delenv("STANCE_API_KEY", raising=False)
+    monkeypatch.delenv("STANCE_US_API_KEY", raising=False)
+
+    assert StanceReporter.from_env("KR").enabled
+    assert not StanceReporter.from_env("US").enabled

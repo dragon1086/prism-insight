@@ -123,14 +123,34 @@ class StanceReporter:
         self.unit_amount = Decimal(str(unit_amount))
         self.enabled = enabled and client is not None
 
-    def report_buy(self, snapshot: AccountSnapshot, symbol: str, reason: str | None = None):
+    @staticmethod
+    def _log_success(kind: str, symbol: str | None, result) -> None:
+        detail = result if isinstance(result, dict) else {}
+        logger.info(
+            "[STANCE] declared kind=%s symbol=%s admit=%s seq=%s",
+            kind,
+            symbol or "-",
+            detail.get("admit", "accepted"),
+            detail.get("seq", "-"),
+        )
+
+    def report_buy(
+        self,
+        snapshot: AccountSnapshot,
+        symbol: str,
+        reason: str | None = None,
+        add_amount: Decimal | float | None = None,
+    ):
         if not self.enabled:
             return None
         try:
-            w = buy_target_weight(snapshot, symbol, self.unit_amount)
-            return self.client.set(symbol, w, reason=reason)
+            amount = self.unit_amount if add_amount is None else Decimal(str(add_amount))
+            w = buy_target_weight(snapshot, symbol, amount)
+            result = self.client.set(symbol, w, reason=reason)
+            self._log_success("set", symbol, result)
+            return result
         except Exception:
-            logger.exception("[stance] 매수 선언 전송 실패 (%s) — 매매는 계속 진행한다", symbol)
+            logger.exception("[STANCE] 매수 선언 전송 실패 (%s) — 매매는 계속 진행한다", symbol)
             return None
 
     def report_sell(self, symbol: str, reason: str | None = None,
@@ -143,26 +163,33 @@ class StanceReporter:
                 sell_target_weight(snapshot, symbol, sold_qty, held_qty)
                 if snapshot is not None else Decimal(0)
             )
-            return self.client.set(symbol, target, reason=reason)
+            result = self.client.set(symbol, target, reason=reason)
+            self._log_success("set", symbol, result)
+            return result
         except Exception:
-            logger.exception("[stance] 매도 선언 전송 실패 (%s) — 매매는 계속 진행한다", symbol)
+            logger.exception("[STANCE] 매도 선언 전송 실패 (%s) — 매매는 계속 진행한다", symbol)
             return None
 
     @classmethod
-    def from_env(cls) -> "StanceReporter":
+    def from_env(cls, market: str | None = None) -> "StanceReporter":
         """환경변수가 없으면 **꺼진 상태**로 만들어진다.
 
         서버가 뜨기 전에 켜면 주문마다 죽은 엔드포인트로 HTTP 를 때린다.
         그래서 기본이 꺼짐이고, 명시적으로 설정해야만 켜진다.
 
             STANCE_ENDPOINT   http://127.0.0.1:8800
-            STANCE_API_KEY    stk_...
-            STANCE_UNIT_AMOUNT  슬롯 금액 (기본 kis_devlp.yaml 의 default_unit_amount)
+            STANCE_KR_API_KEY / STANCE_US_API_KEY  시장별 전략 키
+            STANCE_KR_UNIT_AMOUNT / STANCE_US_UNIT_AMOUNT  시장별 슬롯 금액
+
+        기존 STANCE_API_KEY / STANCE_UNIT_AMOUNT 도 단일 시장 연동용으로 지원한다.
         """
         import os
 
         endpoint = os.getenv("STANCE_ENDPOINT")
-        api_key = os.getenv("STANCE_API_KEY")
+        market_name = (market or "").strip().upper()
+        api_key = (
+            os.getenv(f"STANCE_{market_name}_API_KEY") if market_name else None
+        ) or os.getenv("STANCE_API_KEY")
         if not (endpoint and api_key):
             return cls(client=None)
 
@@ -176,16 +203,21 @@ class StanceReporter:
             logger.exception("[stance] 클라이언트를 만들지 못했습니다 — 선언을 보내지 않는다")
             return cls(client=None)
 
-        return cls(client=client, unit_amount=os.getenv("STANCE_UNIT_AMOUNT") or 0)
+        unit_amount = (
+            os.getenv(f"STANCE_{market_name}_UNIT_AMOUNT") if market_name else None
+        ) or os.getenv("STANCE_UNIT_AMOUNT") or 0
+        return cls(client=client, unit_amount=unit_amount)
 
     def report_hold(self, reason: str | None = None):
         """매매하지 않은 날에도 보낸다. 제출률에 반영된다."""
         if not self.enabled:
             return None
         try:
-            return self.client.hold(reason=reason)
+            result = self.client.hold(reason=reason)
+            self._log_success("hold", None, result)
+            return result
         except Exception:
-            logger.exception("[stance] hold 선언 전송 실패 — 매매는 계속 진행한다")
+            logger.exception("[STANCE] hold 선언 전송 실패 — 매매는 계속 진행한다")
             return None
 
 

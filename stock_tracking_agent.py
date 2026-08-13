@@ -52,7 +52,9 @@ from cores.utils import parse_llm_json
 from prism_core.execution_service import (
     ExecutionService,
     OrderOutcomeUnknown,
+    declare_stance_hold,
     normalize_checked_holding,
+    stance_declaration_count,
 )
 from prism_core.exit_effects import ExitEffectStore
 from prism_core.exit_effect_replay import deliver_exit_effect_once
@@ -4270,7 +4272,10 @@ class StockTrackingAgent:
 
             try:
                 # Process reports
+                stance_before = stance_declaration_count("KR")
                 buy_count, sell_count = await self.process_reports(pdf_report_paths)
+                if stance_declaration_count("KR") == stance_before:
+                    await declare_stance_hold("KR")
 
                 # Send Telegram message (only if chat_id is provided)
                 if chat_id:
