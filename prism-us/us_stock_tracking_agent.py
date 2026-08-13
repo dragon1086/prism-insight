@@ -40,6 +40,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from prism_core.execution_service import (  # noqa: E402
     ExecutionService,
     OrderOutcomeUnknown,
+    declare_stance_hold,
+    stance_declaration_count,
 )
 from prism_core.order_intents import OrderIntent  # noqa: E402
 from prism_core.positions import (  # noqa: E402
@@ -4042,7 +4044,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             try:
                 # Process reports
+                stance_before = stance_declaration_count("US")
                 buy_count, sell_count = await self.process_reports(pdf_report_paths)
+                if stance_declaration_count("US") == stance_before:
+                    await declare_stance_hold("US")
 
                 # Send Telegram message
                 if chat_id:
