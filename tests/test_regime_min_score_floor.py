@@ -9,7 +9,9 @@ from __future__ import annotations
 import pytest
 
 from cores.regime_policy import (
+    configured_entry_amount,
     effective_min_score,
+    is_rebound_pilot_entry,
     min_score_floor,
     regime_min_score_floor_enabled,
 )
@@ -61,6 +63,64 @@ def test_flag_on_applies_max(monkeypatch):
     assert effective_min_score(5, "strong_bull") == 5
     assert effective_min_score(2, "unknown") == 2
     assert effective_min_score(4, None) == 4
+
+
+def test_sideways_uptrend_relaxes_floor_to_seven(monkeypatch):
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
+
+    assert min_score_floor("sideways", "UPTREND") == 7
+    assert effective_min_score(5, "sideways", "UPTREND") == 7
+    assert effective_min_score(8, "sideways", "UPTREND") == 8
+
+
+@pytest.mark.parametrize("pulse_state", [None, "", "UNDER_PRESSURE", "CORRECTION"])
+def test_sideways_without_uptrend_keeps_floor_eight(monkeypatch, pulse_state):
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
+
+    assert min_score_floor("sideways", pulse_state) == 8
+    assert effective_min_score(5, "sideways", pulse_state) == 8
+
+
+@pytest.mark.parametrize("decision", ["Enter", "entry", " ENTER "])
+def test_score_six_enter_is_half_size_rebound_pilot(monkeypatch, decision):
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
+
+    assert is_rebound_pilot_entry(6, 5, "sideways", "UPTREND", decision)
+
+
+@pytest.mark.parametrize(
+    "buy_score,llm_min_score,regime,pulse_state,decision",
+    [
+        (7, 5, "sideways", "UPTREND", "Enter"),
+        (6, 7, "sideways", "UPTREND", "Enter"),
+        (6, 5, "moderate_bear", "UPTREND", "Enter"),
+        (6, 5, "sideways", "UNDER_PRESSURE", "Enter"),
+        (6, 5, "sideways", "UPTREND", "Skip"),
+    ],
+)
+def test_rebound_pilot_remains_narrow(
+    monkeypatch, buy_score, llm_min_score, regime, pulse_state, decision
+):
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
+
+    assert not is_rebound_pilot_entry(
+        buy_score, llm_min_score, regime, pulse_state, decision
+    )
+
+
+def test_rebound_pilot_is_disabled_with_floor_flag(monkeypatch):
+    monkeypatch.delenv("REGIME_MIN_SCORE_FLOOR", raising=False)
+
+    assert not is_rebound_pilot_entry(6, 5, "sideways", "UPTREND", "Enter")
+
+
+def test_configured_entry_amount_scales_by_market():
+    account = {"buy_amount_krw": 1_000_000, "buy_amount_usd": "2000"}
+
+    assert configured_entry_amount(account, "kr", 0.5) == 500_000
+    assert configured_entry_amount(account, "us", 0.5) == 1000.0
+    assert configured_entry_amount(account, "kr", 1.0) is None
+    assert configured_entry_amount({}, "us", 0.5) is None
 
 
 @pytest.mark.parametrize("raw,enabled", [
