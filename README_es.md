@@ -467,7 +467,7 @@ Actualmente sirviendo a mas de 450 usuarios de forma gratuita.
 
 ## Crecimiento del Proyecto
 
-[![Star History Chart](https://api.star-history.com/svg?repos=dragon1086/prism-insight&type=Date)](https://star-history.com/#dragon1086/prism-insight&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=dragon1086/prism-insight&type=Date)](https://star-history.dera.page/#dragon1086/prism-insight&type=Date)
 
 ---
 
