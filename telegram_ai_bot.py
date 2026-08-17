@@ -23,7 +23,8 @@ from dotenv import load_dotenv
 from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, ContextTypes,
-    ConversationHandler, CallbackQueryHandler,
+    ConversationHandler, CallbackQueryHandler, ApplicationHandlerStop,
+    ChatMemberHandler,
 )
 from telegram.request import HTTPXRequest
 
@@ -43,6 +44,7 @@ from cores.search_presets import search_preset
 from cores.market_facts_cache import daily_facts
 from cores.disclaimer_utils import strip_trailing_disclaimer as _strip_trailing_disclaimer
 from prism_core.ticker_resolver import resolve_ticker
+from telegram_moderation import CommunityModerator, community_notice
 from datetime import timedelta
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -518,6 +520,7 @@ class TelegramAIBot:
             write_timeout=120.0,
         )
         self.application = Application.builder().token(self.token).request(request).build()
+        self.community_moderator = CommunityModerator.from_env()
         self.setup_handlers()
 
         # Start background worker
@@ -529,7 +532,49 @@ class TelegramAIBot:
         self.scheduler.add_job(self.cleanup_expired_contexts, "interval", hours=1)
         # Add user memory compression task (daily at 3 AM)
         self.scheduler.add_job(self.compress_user_memories, "cron", hour=3, minute=0)
+        if self.community_moderator.active:
+            self.scheduler.add_job(
+                self.post_community_notice,
+                "interval",
+                hours=self.community_moderator.config.announcement_interval_hours,
+                id="community-rules-announcement",
+                replace_existing=True,
+            )
+            self.scheduler.add_job(
+                self.cleanup_moderation_state,
+                "interval",
+                hours=1,
+                id="community-moderation-cleanup",
+                replace_existing=True,
+            )
+            logger.info(
+                "Community moderation enabled for chat %s (LLM=%s, auto_ban=%s)",
+                self.community_moderator.config.target_chat_id,
+                self.community_moderator.config.llm_enabled,
+                self.community_moderator.config.auto_ban,
+            )
         self.scheduler.start()
+
+    async def post_community_notice(self):
+        """Post the community rules to the explicitly configured discussion chat."""
+        if not self.community_moderator.active:
+            return
+        try:
+            await self.application.bot.send_message(
+                chat_id=self.community_moderator.config.target_chat_id,
+                text=community_notice(),
+                disable_web_page_preview=True,
+            )
+            logger.info(
+                "Posted community rules to chat %s",
+                self.community_moderator.config.target_chat_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — scheduled notice must not stop the bot
+            logger.warning("Community rules announcement failed: %s", exc)
+
+    def cleanup_moderation_state(self):
+        """Trim in-memory and 90-day moderation audit state."""
+        self.community_moderator.prune_state()
     
     async def _register_bot_commands(self):
         """Sync slash-command menu with BotFather across all scopes
@@ -556,6 +601,8 @@ class TelegramAIBot:
             BotCommand("ask",         "자유 질문 (최신 정보 기반)"),
             BotCommand("insight",     "그동안 발행된 분석 리포트에서 답 찾기 (일 20회)"),
             BotCommand("journal",     "매매 저널 조회"),
+            BotCommand("rules",       "토론방 이용 안내"),
+            BotCommand("chatid",      "관리자용 현재 채팅 ID 확인"),
             BotCommand("cancel",      "진행 중인 명령어 취소 (evaluate·us_evaluate·report·us_report·history·signal·us_signal·theme·us_theme·ask·insight·journal)"),
             BotCommand("help",        "도움말"),
         ]
@@ -768,9 +815,24 @@ class TelegramAIBot:
         """
         Register handlers
         """
+        # Moderation runs before conversations. A flagged message raises
+        # ApplicationHandlerStop so it cannot also trigger an AI workflow.
+        self.application.add_handler(ChatMemberHandler(
+            self.handle_moderation_chat_member,
+            chat_member_types=ChatMemberHandler.CHAT_MEMBER,
+        ), group=-1)
+        self.application.add_handler(MessageHandler(
+            filters.ChatType.GROUPS
+            & (filters.TEXT | filters.CAPTION)
+            & ~filters.COMMAND,
+            self.handle_moderation_message,
+        ), group=-1)
+
         # Basic commands
         self.application.add_handler(CommandHandler("start", self.handle_start))
         self.application.add_handler(CommandHandler("help", self.handle_help))
+        self.application.add_handler(CommandHandler("rules", self.handle_community_rules))
+        self.application.add_handler(CommandHandler("chatid", self.handle_chatid))
         self.application.add_handler(CommandHandler("cancel", self.handle_cancel_standalone), group=1)
         self.application.add_handler(CommandHandler("memories", self.handle_memories))
         self.application.add_handler(CommandHandler("triggers", self.handle_triggers))
@@ -1025,6 +1087,57 @@ class TelegramAIBot:
 
         # Error handler
         self.application.add_error_handler(self.handle_error)
+
+    async def handle_moderation_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Run layered moderation and stop downstream handlers after an action."""
+        handled = await self.community_moderator.moderate_update(
+            self.application.bot, update
+        )
+        if handled:
+            raise ApplicationHandlerStop
+
+    async def handle_moderation_chat_member(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Record joins and alert on room-level influx without acting on joins alone."""
+        await self.community_moderator.moderate_chat_member_update(
+            self.application.bot, update
+        )
+
+    @staticmethod
+    async def handle_community_rules(
+        update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Show the same rules used by the periodic announcement."""
+        if update.message:
+            await update.message.reply_text(community_notice())
+
+    @staticmethod
+    async def handle_chatid(
+        update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Return the current chat ID to configured administrators only."""
+        user = update.effective_user
+        chat = update.effective_chat
+        if not user or not chat or not update.message:
+            return
+        raw_admin_ids = (
+            os.getenv("TELEGRAM_ADMIN_IDS", "")
+            + ","
+            + os.getenv("TELEGRAM_MODERATION_ADMIN_IDS", "")
+        )
+        try:
+            admin_ids = {int(value.strip()) for value in raw_admin_ids.split(",") if value.strip()}
+        except ValueError:
+            admin_ids = set()
+        if user.id not in admin_ids:
+            return
+        title = getattr(chat, "title", None) or getattr(chat, "username", None) or "개인 대화"
+        await update.message.reply_text(
+            f"현재 채팅 ID: {chat.id}\n채팅 유형: {chat.type}\n이름: {title}"
+        )
     
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Analyze a chart image sent as a reply to an ongoing bot conversation.
