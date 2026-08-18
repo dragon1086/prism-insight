@@ -467,6 +467,19 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 company_name = analysis_result.get("company_name")
                 current_price = analysis_result.get("current_price", 0)
                 scenario = analysis_result.get("scenario", {})
+                if scenario.get("analysis_status") == "failed":
+                    failure = scenario.get("analysis_error", "trading_scenario_unavailable")
+                    logger.error(
+                        "Trading scenario unavailable; suppressing misleading buy message: "
+                        "%s(%s) error=%s",
+                        company_name,
+                        ticker,
+                        failure,
+                    )
+                    analysis_failures.append(
+                        f"{os.path.basename(pdf_report_path)}: {failure}"
+                    )
+                    continue
                 sector = analysis_result.get("sector", "Unknown")
                 sector_diverse = analysis_result.get("sector_diverse", True)
                 rank_change_percentage = analysis_result.get("rank_change_percentage", 0)
