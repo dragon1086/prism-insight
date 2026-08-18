@@ -525,10 +525,12 @@ def parse_price_value(value: Any) -> float:
         return 0
 
 
-def default_scenario() -> Dict[str, Any]:
-    """Return default trading scenario."""
+def default_scenario(error: str = "trading_scenario_unavailable") -> Dict[str, Any]:
+    """Return a safe scenario that is explicitly marked as incomplete."""
     return {
         "portfolio_analysis": "Analysis failed",
+        "analysis_status": "failed",
+        "analysis_error": error,
         "buy_score": 0,
         "decision": "No Entry",
         "target_price": 0,

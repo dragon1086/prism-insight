@@ -151,6 +151,62 @@ class _PreparedKrExit:
     journal_stock_data: Dict[str, Any]
 
 
+async def _generate_trading_scenario_json(
+    llm,
+    prompt_message: str,
+    *,
+    attempts: int = 2,
+    retry_delay_seconds: float = 1.0,
+) -> Optional[Dict[str, Any]]:
+    """Generate and parse a trading scenario without silently accepting empties.
+
+    The ChatGPT OAuth proxy occasionally returns an empty completion after a
+    transient MCP/tool failure. Treating that as a valid ``No Entry`` scenario
+    produces misleading score-0 Telegram messages. A single bounded retry is
+    enough to recover common transient failures while keeping batch latency
+    bounded; callers still receive an explicitly failed fallback if both calls
+    are unusable.
+    """
+    last_response = ""
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            last_response = await llm.generate_str(
+                message=prompt_message,
+                request_params=RequestParams(
+                    model="gpt-5.6-sol",
+                    reasoning_effort="high",
+                    maxTokens=30000,
+                ),
+            ) or ""
+        except Exception as exc:  # noqa: BLE001 — retry transient LLM failures
+            logger.warning(
+                "Trading scenario LLM call failed (attempt %s/%s): %s",
+                attempt,
+                max(1, attempts),
+                type(exc).__name__,
+            )
+            last_response = ""
+
+        scenario_json = parse_llm_json(last_response, context="trading scenario")
+        if scenario_json is not None:
+            return scenario_json
+
+        logger.warning(
+            "Trading scenario response empty or invalid (attempt %s/%s, chars=%s)",
+            attempt,
+            max(1, attempts),
+            len(last_response),
+        )
+        if attempt < max(1, attempts):
+            await asyncio.sleep(retry_delay_seconds)
+
+    logger.error(
+        "Trading scenario parse failed after %s attempt(s); using explicit failure fallback",
+        max(1, attempts),
+    )
+    return None
+
+
 class StockTrackingAgent:
     """Stock Tracking and Trading Agent"""
 
@@ -891,18 +947,10 @@ class StockTrackingAgent:
                 {report_content}
                 """
 
-            response = await llm.generate_str(
-                message=prompt_message,
-                request_params=RequestParams(
-                    model="gpt-5.6-sol",
-                    reasoning_effort="high",
-                    maxTokens=30000
-                )
+            scenario_json = await _generate_trading_scenario_json(
+                llm,
+                prompt_message,
             )
-
-            # JSON parsing (consolidated in cores/utils.py)
-            # TODO: Create model and call generate_structured function to improve code maintainability
-            scenario_json = parse_llm_json(response, context='trading scenario')
             if scenario_json is not None:
                 # Persist the experience-based score adjustment alongside the scenario.
                 # It rides inside the scenario JSON, which is stored in
@@ -913,23 +961,22 @@ class StockTrackingAgent:
                 logger.info(f"Scenario parsed: {json.dumps(scenario_json, ensure_ascii=False)[:200]}")
                 return scenario_json
 
-            logger.error(f"Trading scenario parse failed. Full response: {response}")
-            return self._default_scenario()
+            return self._default_scenario("scenario_llm_empty_or_invalid")
 
         except Exception as e:
             log_openai_error(logger, e, "KR trading scenario extraction")
             logger.error(f"Error extracting trading scenario: {str(e)}")
             logger.error(traceback.format_exc())
-            return self._default_scenario()
+            return self._default_scenario("scenario_llm_exception")
         finally:
             # Guard against holding the lock past an exception in the DB phase,
             # which would deadlock the remaining concurrent pre-pass tasks.
             if _lock_held:
                 db_lock.release()
 
-    def _default_scenario(self) -> Dict[str, Any]:
-        """Return default trading scenario (delegates to tracking.helpers)"""
-        return default_scenario()
+    def _default_scenario(self, error: str = "trading_scenario_unavailable") -> Dict[str, Any]:
+        """Return an explicitly marked incomplete trading scenario."""
+        return default_scenario(error)
 
     async def _analyze_report_core(self, pdf_report_path: str) -> Dict[str, Any]:
         """Analyze a report once before per-account execution checks.
