@@ -68,6 +68,20 @@ def test_distribution_is_caution_not_automatic_veto():
     assert any(f["code"] == "distribution_day_caution" for f in result["findings"])
 
 
+def test_stop_noise_floor_is_shadow_only():
+    result = validate_scenario(
+        _scenario(target_price=110.0, stop_loss=98.0, risk_reward_ratio=5.0),
+        current_price=100.0,
+        regime="moderate_bull",
+        asof_features={"price": 100.0, "atr20_pct": 8.0, "adr20_pct": 10.0},
+    )
+    assert not result["would_block"]
+    assert any(
+        f["code"] == "stop_below_volatility_noise_floor"
+        for f in result["shadow_findings"]
+    )
+
+
 def test_asof_features_are_independent_of_scenario_fields():
     closes = [100.0 + i for i in range(80)]
     frame = pd.DataFrame(

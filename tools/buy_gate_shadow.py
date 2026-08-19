@@ -179,6 +179,8 @@ def validate_scenario(
     regime = features.get("regime", regime)
     trend_facts = features.get("trend_facts", trend_facts)
     distribution_days = features.get("distribution_days", distribution_days)
+    atr20_pct = features.get("atr20_pct")
+    adr20_pct = features.get("adr20_pct")
     if distribution_days is None:
         match = _DIST_RE.search(trend_facts or "")
         if match:
@@ -251,6 +253,22 @@ def validate_scenario(
             if expected_return is not None and expected_loss and expected_loss > 0
             else None
         )
+        if expected_loss is not None:
+            volatility_values = [
+                float(v) for v in (atr20_pct, adr20_pct)
+                if _number(v) is not None and float(v) > 0
+            ]
+            if volatility_values:
+                noise_floor = max(volatility_values) * 0.5
+                if expected_loss < noise_floor:
+                    findings.append(_finding(
+                        "stop_below_volatility_noise_floor",
+                        (
+                            f"stop width {expected_loss:.2f}% < 0.5×max(ATR20/ADR20) "
+                            f"{noise_floor:.2f}% (ATR20={atr20_pct}, ADR20={adr20_pct})"
+                        ),
+                        hard=False,
+                    ))
         reported_rr = _number(data.get("risk_reward_ratio"))
         if rule is not None and recomputed_rr is not None and recomputed_rr < rule.rr_floor:
             findings.append(_finding(
@@ -291,6 +309,7 @@ def validate_scenario(
         "regime_source": "computed" if authoritative_regime else "scenario",
         "findings": findings,
         "hard_findings": hard_findings,
+        "shadow_findings": [f for f in findings if not f["hard"]],
     }
 
 
