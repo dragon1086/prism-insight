@@ -14,15 +14,22 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from cores.shadow_lifecycle import apply_expiry, snapshot
+from cores.shadow_lifecycle import apply_expiry, set_feature_mode, snapshot
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply-expiry", action="store_true")
+    parser.add_argument("--set-mode", nargs=2, metavar=("FEATURE", "MODE"))
+    parser.add_argument("--reason", default="manual operator review")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    result = apply_expiry() if args.apply_expiry else snapshot()
+    if args.set_mode:
+        result = set_feature_mode(
+            args.set_mode[0], args.set_mode[1], reason=args.reason
+        )
+    else:
+        result = apply_expiry() if args.apply_expiry else snapshot()
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:

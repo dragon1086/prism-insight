@@ -1,7 +1,6 @@
 from datetime import date
-import json
 
-from cores.shadow_lifecycle import apply_expiry, feature_mode, snapshot
+from cores.shadow_lifecycle import apply_expiry, feature_mode, set_feature_mode
 
 
 def test_shadow_expires_to_off_without_cron(tmp_path):
@@ -12,7 +11,7 @@ def test_shadow_expires_to_off_without_cron(tmp_path):
 
 def test_manual_live_survives_expiry(tmp_path):
     state = tmp_path / "shadow.json"
-    state.write_text(json.dumps({"features": {"fill_chaser": {"mode": "live"}}}))
+    set_feature_mode("fill_chaser", "live", reason="validated KIS canary", path=state)
     assert feature_mode("fill_chaser", now=date(2027, 1, 1), path=state) == "live"
 
 
