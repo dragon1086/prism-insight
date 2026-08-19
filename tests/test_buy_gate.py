@@ -78,3 +78,17 @@ def test_optional_new_fields_are_checked_when_present():
     )
     codes = {item["code"] for item in result["hard_findings"]}
     assert {"fundamental_gate_failed", "momentum_count_below_floor", "confirmation_count_below_floor"} <= codes
+
+
+def test_stop_volatility_noise_floor_is_shadow_only():
+    result = evaluate_production_buy_gate(
+        _scenario(target_price=110.0, stop_loss=98.0, risk_reward_ratio=5.0),
+        current_price=100.0,
+        market_regime="moderate_bull",
+        trend_facts="- Volatility: ATR20=8.0% / ADR20=10.0%",
+    )
+    assert result["allowed"]
+    assert any(
+        item["code"] == "stop_below_volatility_noise_floor"
+        for item in result["shadow_findings"]
+    )

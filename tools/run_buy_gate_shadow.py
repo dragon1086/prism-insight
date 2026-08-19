@@ -97,6 +97,7 @@ def main() -> int:
     client = _us_client() if args.market in ("us", "both") else None
     stats = Counter()
     findings = Counter()
+    shadow_findings = Counter()
     examples: list[tuple] = []
 
     for outer, scenario in rows:
@@ -129,6 +130,10 @@ def main() -> int:
         stats[("would_block", decision, result["would_block"])] += 1
         for finding in result["hard_findings"]:
             findings[finding["code"]] += 1
+        for finding in result.get("shadow_findings", []):
+            shadow_findings[finding["code"]] += 1
+        if result.get("shadow_findings"):
+            stats[("shadow", decision, outcome)] += 1
         if result["would_block"] and len(examples) < 10:
             examples.append((ticker, buy_date, decision, outcome, [f["code"] for f in result["hard_findings"]]))
 
@@ -141,6 +146,12 @@ def main() -> int:
         if isinstance(k, tuple) and k[0] == "would_block"
     })
     print("hard_findings:", dict(findings))
+    print("shadow_findings:", dict(shadow_findings))
+    print("shadow_by_decision_outcome:", {
+        f"{k[1]}:{k[2]}": v
+        for k, v in stats.items()
+        if isinstance(k, tuple) and k[0] == "shadow"
+    })
     print("examples:", examples)
     return 0
 

@@ -717,6 +717,29 @@ class StockTrackingAgent:
             t2_hit = bool(ma20 is not None and ma20_up is not None
                           and ma20_up is False and close <= ma20 * 0.95)
 
+            # Volatility facts for the stop-width shadow check.  These are
+            # descriptive only; the final gate does not veto on this signal yet.
+            atr20_pct = None
+            adr20_pct = None
+            try:
+                high_col = next((c for c in ("High", "고가") if c in df.columns), None)
+                low_col = next((c for c in ("Low", "저가") if c in df.columns), None)
+                if high_col and low_col:
+                    highs = [float(v) for v in df[high_col].tail(21)]
+                    lows = [float(v) for v in df[low_col].tail(21)]
+                    closes = [float(v) for v in close_s.tail(21)]
+                    adr_values = [((h / l) - 1.0) * 100.0 for h, l in zip(highs[-20:], lows[-20:]) if l > 0]
+                    tr_values = [
+                        max(h - l, abs(h - prev), abs(l - prev))
+                        for h, l, prev in zip(highs[1:], lows[1:], closes[:-1])
+                    ]
+                    if adr_values:
+                        adr20_pct = sum(adr_values[-20:]) / len(adr_values[-20:])
+                    if tr_values and close > 0:
+                        atr20_pct = (sum(tr_values[-20:]) / len(tr_values[-20:])) / close * 100.0
+            except Exception as _ve:
+                logger.debug("[TrendFacts] %s volatility facts unavailable: %s", ticker, _ve)
+
             def _above(a, b):
                 if a is None or b is None:
                     return "n/a"
@@ -755,6 +778,7 @@ class StockTrackingAgent:
                 f"- vs MA60: {_above(close, ma60)} ({_fmt(_pct(close, ma60), '%')}), MA60 기울기: {_dir(ma60_up)}",
                 _ma200_line(),
                 f"- RS(60일, 종목-지수): {_fmt(rs, '%p')} (종목 {_fmt(stock_ret, '%')} / 지수 {_fmt(idx_ret, '%')})",
+                f"- Volatility: ATR20={_fmt(atr20_pct, '%')} / ADR20={_fmt(adr20_pct, '%')} (손절폭 shadow 검증)",
                 f"- T1_hit(종가<{ma_mid_label}, 오닐 10주선 이탈): {t1_hit} / "
                 f"T2_hit(MA20 하락 and 종가 MA20 대비 -5%↓): {t2_hit}",
             ]
@@ -2441,7 +2465,7 @@ class StockTrackingAgent:
         try:
             from cores.buy_gate import evaluate_production_buy_gate
 
-            return evaluate_production_buy_gate(
+            result = evaluate_production_buy_gate(
                 scenario,
                 current_price=current_price,
                 market_regime=self._buy_floor_regime(),
@@ -2449,6 +2473,12 @@ class StockTrackingAgent:
                 trend_facts=str(scenario.get("_deterministic_trend_facts") or ""),
                 is_add=is_add,
             )
+            if result.get("shadow_findings"):
+                logger.info(
+                    "[BUY_GATE][KR][SHADOW] %s",
+                    "; ".join(item["message"] for item in result["shadow_findings"]),
+                )
+            return result
         except Exception as exc:  # noqa: BLE001 - new buys fail closed on gate errors
             logger.error("[BUY_GATE][KR] deterministic gate failed closed: %s", exc)
             return {

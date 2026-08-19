@@ -33,6 +33,8 @@ _REGIME_RE = re.compile(
 _T1_RE = re.compile(r"T1_hit[^:]*:\s*(true|false)", re.IGNORECASE)
 _T2_RE = re.compile(r"T2_hit[^:]*:\s*(true|false)", re.IGNORECASE)
 _DIST_RE = re.compile(r"distribution\s*days[^:]*:\s*(\d+)", re.IGNORECASE)
+_ATR_RE = re.compile(r"ATR20\s*[:=]\s*([0-9.]+)", re.IGNORECASE)
+_ADR_RE = re.compile(r"ADR20\s*[:=]\s*([0-9.]+)", re.IGNORECASE)
 
 _DISTRIBUTION_CAUTION = 6
 _REGIME_STEP_DOWN = {
@@ -94,6 +96,15 @@ def _distribution_from_text(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _volatility_from_text(text: str) -> tuple[float | None, float | None]:
+    atr = _ATR_RE.search(text or "")
+    adr = _ADR_RE.search(text or "")
+    return (
+        _number(atr.group(1)) if atr else None,
+        _number(adr.group(1)) if adr else None,
+    )
+
+
 def effective_buy_regime(regime: Any, distribution_days: int | None) -> tuple[str | None, bool]:
     """Return the computed regime after the deterministic distribution caution."""
     base = normalize_regime(regime)
@@ -123,6 +134,7 @@ def evaluate_production_buy_gate(
     facts = trend_facts or str(data.get("_deterministic_trend_facts") or "")
     if distribution_days is None:
         distribution_days = _distribution_from_text(facts)
+    atr20_pct, adr20_pct = _volatility_from_text(facts)
 
     findings: list[dict[str, Any]] = []
     computed_regime = normalize_regime(market_regime)
@@ -174,6 +186,7 @@ def evaluate_production_buy_gate(
     target = _number(data.get("target_price"))
     stop = _number(data.get("stop_loss"))
     recomputed_rr = None
+    volatility_shadow: dict[str, Any] | None = None
     if price is None or price <= 0:
         findings.append(_finding("invalid_current_price", "current price is unavailable or non-positive"))
     else:
@@ -188,6 +201,20 @@ def evaluate_production_buy_gate(
 
         expected_return = ((target - price) / price * 100.0) if target is not None and target > price else None
         expected_loss = ((price - stop) / price * 100.0) if stop is not None and 0 < stop < price else None
+        if expected_loss is not None:
+            volatility_values = [v for v in (atr20_pct, adr20_pct) if v is not None and v > 0]
+            if volatility_values:
+                noise_floor = max(volatility_values) * 0.5
+                if expected_loss < noise_floor:
+                    volatility_shadow = {
+                        "code": "stop_below_volatility_noise_floor",
+                        "message": (
+                            f"stop width {expected_loss:.2f}% < 0.5×max(ATR20/ADR20) "
+                            f"{noise_floor:.2f}% (ATR20={atr20_pct}, ADR20={adr20_pct})"
+                        ),
+                        "hard": False,
+                    }
+                    findings.append(volatility_shadow)
         if expected_return is not None and expected_loss and expected_loss > 0:
             recomputed_rr = expected_return / expected_loss
             if rule is not None and recomputed_rr < float(rule["rr_floor"]):
@@ -221,6 +248,7 @@ def evaluate_production_buy_gate(
         ))
 
     hard_findings = [item for item in findings if item["hard"]]
+    shadow_findings = [item for item in findings if not item["hard"]]
     return {
         "allowed": not hard_findings,
         "would_block": bool(hard_findings),
@@ -233,6 +261,14 @@ def evaluate_production_buy_gate(
         "recomputed_rr": recomputed_rr,
         "findings": findings,
         "hard_findings": hard_findings,
+        "shadow_findings": shadow_findings,
+        "atr20_pct": atr20_pct,
+        "adr20_pct": adr20_pct,
+        "volatility_noise_floor_pct": (
+            max(v for v in (atr20_pct, adr20_pct) if v is not None and v > 0) * 0.5
+            if any(v is not None and v > 0 for v in (atr20_pct, adr20_pct))
+            else None
+        ),
         "reason": "; ".join(item["message"] for item in hard_findings),
     }
 
