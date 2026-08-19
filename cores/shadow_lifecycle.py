@@ -156,4 +156,31 @@ def apply_expiry(*, now: date | datetime | None = None,
     return result
 
 
-__all__ = ["POLICIES", "STATE_PATH", "apply_expiry", "feature_mode", "snapshot"]
+def set_feature_mode(feature: str, mode: str, *, reason: str,
+                     path: Path | None = None) -> dict[str, Any]:
+    """Manually set a feature state after human review.
+
+    This is the only supported path to LIVE.  The lifecycle cron never calls
+    this function and never promotes a feature automatically.
+    """
+    if feature not in POLICIES:
+        raise ValueError(f"unknown shadow feature: {feature}")
+    if mode not in {"shadow", "live", "off"}:
+        raise ValueError("mode must be shadow, live, or off")
+    target = path or STATE_PATH
+    state = _read_state(target)
+    features = state.setdefault("features", {})
+    features[feature] = {
+        "mode": mode,
+        "changed_at": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+    }
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_state(state, target)
+    return snapshot(path=target)
+
+
+__all__ = [
+    "POLICIES", "STATE_PATH", "apply_expiry", "feature_mode",
+    "set_feature_mode", "snapshot",
+]
