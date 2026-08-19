@@ -108,13 +108,13 @@ def test_integration_active_mode_downgrades():
     assert r["index_summary"]["highvol_drawdown_override"] is not None
 
 
-def test_integration_shadow_mode_logs_but_does_not_apply():
-    # shadow(기본): 강등 '판단'은 기록하되 regime 은 그대로(매매 무영향)
-    os.environ.pop("REGIME_HIVOL_OVERRIDE", None)  # 기본값 = shadow
+def test_integration_active_mode_is_default():
+    # active(기본): 급락형 휩쏘를 실제 매수 레짐에 반영한다.
+    os.environ.pop("REGIME_HIVOL_OVERRIDE", None)
     r = _compute_kr_regime(_ohlcv(_JULY_CRASH), None)
-    assert r["market_regime"] == "moderate_bull"          # 미적용
-    assert r["index_summary"]["highvol_override_mode"] == "shadow"
-    assert r["index_summary"]["highvol_drawdown_override"] is not None  # 사유는 기록
+    assert r["market_regime"] == "sideways"
+    assert r["index_summary"]["highvol_override_mode"] == "active"
+    assert r["index_summary"]["highvol_drawdown_override"] is not None
 
 
 def test_integration_off_mode_no_field():

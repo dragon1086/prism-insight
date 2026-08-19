@@ -7,12 +7,20 @@ import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 PRISM_US_DIR = Path(__file__).parent.parent
 PROJECT_ROOT = PRISM_US_DIR.parent
+
+
+def _ensure_reentry_schema(path):
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS us_trading_history "
+            "(ticker TEXT, account_key TEXT, sell_date TEXT, profit_rate REAL, exit_kind TEXT)"
+        )
 
 
 def _load_module(name: str, path: Path):
@@ -590,6 +598,7 @@ def _install_us_trading_module(monkeypatch):
 async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, caplog, tmp_path):
     agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
     agent.db_path = str(tmp_path / "us_stock_tracking.sqlite")
+    _ensure_reentry_schema(agent.db_path)
     agent.account_configs = [
         {"name": "us-primary", "account_key": "vps:us-primary:01", "product": "01"},
         {"name": "us-secondary", "account_key": "vps:us-secondary:01", "product": "01"},
@@ -617,7 +626,11 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
             "ticker": "AAPL",
             "company_name": "Apple Inc.",
             "current_price": 180.5,
-            "scenario": {"buy_score": 8, "min_score": 7, "sector": "Technology"},
+            "scenario": {
+                "buy_score": 8, "min_score": 7, "sector": "Technology",
+                "target_price": 198.0, "stop_loss": 170.0,
+                "risk_reward_ratio": 1.75,
+            },
             "decision": "entry",
             "raw_decision": "Enter",
             "sector": "Technology",
@@ -662,6 +675,7 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     agent._buy_stock_with_position = fake_buy_stock
     agent._link_position_entry_intent = fake_link_position_entry_intent
     agent._save_watchlist_item = fake_save_watchlist_item
+    agent._buy_floor_regime = MagicMock(return_value="strong_bull")
 
     _install_signal_modules(monkeypatch, redis_calls, gcp_calls)
     _install_us_trading_module(monkeypatch)

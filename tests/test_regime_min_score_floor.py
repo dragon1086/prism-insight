@@ -1,6 +1,6 @@
 """레짐 적응 하한선(REGIME_MIN_SCORE_FLOOR) 순수 헬퍼 단위테스트.
 
-network 없음. 표 매핑 / max() 동작 / 플래그 off=무보정 / 라벨 관용성 검증.
+ network 없음. 표 매핑 / max() 동작 / 기본 ON·긴급 off / 라벨 관용성 검증.
 Run: .venv/bin/python -m pytest tests/test_regime_min_score_floor.py -q
 """
 
@@ -42,7 +42,7 @@ def test_min_score_floor_mapping(regime, expected):
 # effective_min_score — flag gating + max() behavior                          #
 # --------------------------------------------------------------------------- #
 def test_flag_off_is_noop(monkeypatch):
-    monkeypatch.delenv("REGIME_MIN_SCORE_FLOOR", raising=False)
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "false")
     assert not regime_min_score_floor_enabled()
     # Flag off: LLM value returned unchanged even in the harshest regime.
     assert effective_min_score(3, "strong_bear") == 3
@@ -124,7 +124,7 @@ def test_configured_entry_amount_scales_by_market():
 
 
 @pytest.mark.parametrize("raw,enabled", [
-    (None, False), ("", False), ("false", False), ("0", False), ("no", False),
+    (None, True), ("", False), ("false", False), ("0", False), ("no", False),
     ("off", False), ("bogus", False),
     ("1", True), ("true", True), ("TRUE", True), ("yes", True), ("on", True),
     ("  On  ", True),
@@ -142,4 +142,4 @@ def test_effective_handles_non_int_llm(monkeypatch):
     assert effective_min_score(None, "strong_bear") == 9
     assert effective_min_score("bad", "sideways") == 8
     monkeypatch.delenv("REGIME_MIN_SCORE_FLOOR", raising=False)
-    assert effective_min_score(None, "strong_bear") == 0
+    assert effective_min_score(None, "strong_bear") == 9

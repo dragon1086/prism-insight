@@ -418,6 +418,17 @@ class StockAnalysisOrchestrator:
                 elif not macro_data:
                     return None
 
+                # Keep the deterministic index regime authoritative. The LLM
+                # supplies qualitative context, but cannot silently replace
+                # the regime used by screening and entry gates.
+                try:
+                    from cores.regime_policy import enforce_computed_regime
+                    macro_data = enforce_computed_regime(
+                        macro_data, prefetched.get("computed_regime")
+                    )
+                except Exception as _regime_e:
+                    logger.warning(f"Failed to enforce computed KR regime: {_regime_e}")
+
                 # Merge sector_map from prefetch (stored separately, not in LLM output)
                 if prefetched.get("sector_map"):
                     macro_data["sector_map"] = prefetched["sector_map"]

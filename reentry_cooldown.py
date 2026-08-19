@@ -1,4 +1,4 @@
-"""Re-entry cooldown gate (deterministic, SHADOW-first).
+"""Re-entry cooldown gate (deterministic, LIVE by default).
 
 Diagnosis (2026-06-25, prod trading_history): churn is systemic — 31 KR intraday
 round-trips averaging -5.6%, and same-ticker re-buys within ~1 day of a losing
@@ -14,8 +14,9 @@ under both the root and the prism-us cores-shadowed runtimes.
 Fail-open: any error returns None (= allow the buy). A bug here must never block a
 legitimate entry; at worst it falls back to the old (no-gate) behavior.
 
-Default is SHADOW: `reentry_block()` returns the block verdict for logging, and
-COOLDOWN_LIVE controls whether the caller actually skips the buy.
+The default is LIVE: callers skip a fresh buy inside the configured cooldown.
+The env flag remains as an emergency rollback switch, and `reentry_block()`
+continues to return the full verdict for audit logging.
 """
 from __future__ import annotations
 
@@ -26,8 +27,9 @@ from pathlib import Path
 from typing import Optional
 
 ENABLED = str(os.getenv("REENTRY_COOLDOWN_ENABLED", "true")).strip().lower() in ("1", "true", "yes", "on")
-# Enforce (skip the buy) when LIVE; otherwise SHADOW = log only, buy proceeds.
-COOLDOWN_LIVE = str(os.getenv("REENTRY_COOLDOWN_LIVE", "false")).strip().lower() in ("1", "true", "yes", "on")
+# Enforce (skip the buy) when LIVE; default ON after the shadow observation
+# period. Set false only as an explicit emergency rollback.
+COOLDOWN_LIVE = str(os.getenv("REENTRY_COOLDOWN_LIVE", "true")).strip().lower() in ("1", "true", "yes", "on")
 # Cooldown after a normal/winning sell (default 0 = OFF: re-entering a name you
 # sold at a PROFIT is often legitimate momentum continuation, and prod history
 # showed those re-buys happen 0.1-0.4h after a +25%/+10% win — not churn), and
@@ -35,12 +37,9 @@ COOLDOWN_LIVE = str(os.getenv("REENTRY_COOLDOWN_LIVE", "false")).strip().lower()
 # block: prod showed -5%/-7% sells re-bought within ~24h).
 COOLDOWN_HOURS = float(os.getenv("REENTRY_COOLDOWN_HOURS", "0"))
 COOLDOWN_LOSS_HOURS = float(os.getenv("REENTRY_COOLDOWN_LOSS_HOURS", "24"))
-# Enforce the NEW exit-kind-driven block — a stop/trend-exit re-entry that is NOT a
-# loss (tagged out at a marginal profit) — only when this is ALSO on. Default False
-# = SHADOW for the new branch: it is logged (WOULD_BLOCK … risk_only=True) but not
-# vetoed, while legacy loss-based blocks keep obeying COOLDOWN_LIVE unchanged. Lets
-# the exit-kind churn guard be observed for a few sessions before enforcing.
-COOLDOWN_RISK_EXIT_LIVE = str(os.getenv("REENTRY_COOLDOWN_RISK_EXIT_LIVE", "false")).strip().lower() in ("1", "true", "yes", "on")
+# Enforce the exit-kind-driven branch by default too: a stop/trend-exit
+# re-entry remains churn-risk even when it closed at a marginal profit.
+COOLDOWN_RISK_EXIT_LIVE = str(os.getenv("REENTRY_COOLDOWN_RISK_EXIT_LIVE", "true")).strip().lower() in ("1", "true", "yes", "on")
 
 _TABLE = {"KR": "trading_history", "US": "us_trading_history"}
 
@@ -106,7 +105,7 @@ _LAST_SELL_SQL = {
 
 
 def _query_last_sell(path: str, table: str, ticker: str,
-                     account_key: Optional[str]) -> Optional[tuple]:
+                     account_key: Optional[str], *, fail_closed: bool = False) -> Optional[tuple]:
     """Most recent completed sell -> (sell_date, profit_rate, exit_kind) or None.
 
     exit_kind is None when the column does not exist yet (DB not migrated) so
@@ -129,11 +128,14 @@ def _query_last_sell(path: str, table: str, ticker: str,
         finally:
             conn.close()
     except Exception:
-        return None  # fail-open
+        if fail_closed:
+            raise
+        return None  # legacy/shadow callers remain fail-open
 
 
 def reentry_block(market: str, ticker: str, account_key: Optional[str] = None,
-                  db_path: Optional[str] = None, now: Optional[datetime] = None) -> Optional[dict]:
+                  db_path: Optional[str] = None, now: Optional[datetime] = None,
+                  fail_closed: bool = False) -> Optional[dict]:
     """If `ticker` is still inside its re-entry cooldown (relative to its most
     recent completed sell), return a verdict dict; else None.
 
@@ -147,7 +149,26 @@ def reentry_block(market: str, ticker: str, account_key: Optional[str] = None,
         return None
     now = now or datetime.now()
     path = db_path or _db_path()
-    row = _query_last_sell(path, table, ticker, account_key)
+    try:
+        row = _query_last_sell(
+            path, table, ticker, account_key, fail_closed=fail_closed
+        )
+    except Exception as exc:
+        if not fail_closed:
+            return None
+        return {
+            "action": "BLOCK_CHECK_ERROR",
+            "market": (market or "").upper(),
+            "ticker": ticker,
+            "last_sell": None,
+            "last_ret": 0.0,
+            "gap_hours": 0.0,
+            "window_hours": COOLDOWN_LOSS_HOURS,
+            "after_loss": False,
+            "exit_kind": None,
+            "risk_exit": True,
+            "check_error": type(exc).__name__,
+        }
     if not row or not row[0]:
         return None
     sell_dt = _parse_dt(row[0])

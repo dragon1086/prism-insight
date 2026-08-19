@@ -127,14 +127,14 @@ def test_batchpolicy_is_frozen():
 # market_pulse_mode — env parsing                                              #
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("raw,expected", [
-    (None, "shadow"),          # unset -> default
-    ("", "shadow"),            # empty -> default
+    (None, "live"),            # unset -> default
+    ("", "live"),              # empty -> default
     ("shadow", "shadow"),
     ("live", "live"),
     ("off", "off"),
     ("SHADOW", "shadow"),      # case-insensitive
     ("  live  ", "live"),      # whitespace trimmed
-    ("bogus", "shadow"),       # unknown -> safe default
+    ("bogus", "live"),         # unknown -> safe default
     ("Live", "live"),
 ])
 def test_market_pulse_mode_parsing(monkeypatch, raw, expected):
