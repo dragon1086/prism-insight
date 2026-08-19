@@ -20,6 +20,7 @@ breaks pytest collection — we do not copy that pattern).
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import sys
 import time
 import types
@@ -55,7 +56,16 @@ def _make_agent() -> EnhancedStockTrackingAgent:
     agent._save_watchlist_item = AsyncMock(return_value=True)
     agent._dynamic_target_price = AsyncMock(return_value=81000)
     agent._dynamic_stop_loss = AsyncMock(return_value=65000)
+    agent._buy_floor_regime = MagicMock(return_value="strong_bull")
     return agent
+
+
+def _ensure_reentry_schema(path):
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS trading_history "
+            "(ticker TEXT, account_key TEXT, sell_date TEXT, profit_rate REAL, exit_kind TEXT)"
+        )
 
 
 def _core_ok(ticker: str, company: str, *, decision: str = "Skip",
@@ -216,6 +226,7 @@ async def test_gates_run_sequentially_after_parallel_phase(monkeypatch, tmp_path
 
     agent = _make_agent()
     agent.db_path = str(tmp_path / "parallel-order-intents.sqlite")
+    _ensure_reentry_schema(agent.db_path)
 
     path_a = "reports/005930_A_20260101_morning.pdf"
     path_b = "reports/000660_B_20260101_morning.pdf"
@@ -296,6 +307,7 @@ async def test_enhanced_pending_gate_false_preserves_legacy_message_broker_publi
     monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "false")
     agent = _make_agent()
     agent.db_path = str(tmp_path / "enhanced-legacy-order.sqlite")
+    _ensure_reentry_schema(agent.db_path)
     events: list[str] = []
 
     async def core_stub(_path):
@@ -364,6 +376,7 @@ async def test_enhanced_pending_gate_true_uses_shared_entry_lifecycle_before_pub
     monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
     agent = _make_agent()
     agent.db_path = str(tmp_path / "enhanced-pending-entry.sqlite")
+    _ensure_reentry_schema(agent.db_path)
     events: list[str] = []
     prepare_calls: list[dict] = []
     broker_states: list[tuple[int, str, str, int]] = []
@@ -473,6 +486,7 @@ async def test_enhanced_pending_gate_true_failed_entry_uses_shared_compensation_
     monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
     agent = _make_agent()
     agent.db_path = str(tmp_path / "enhanced-pending-entry-failed.sqlite")
+    _ensure_reentry_schema(agent.db_path)
     prepared = SimpleNamespace(intent=SimpleNamespace(id="intent-enhanced-failed"))
     prepare_calls: list[dict] = []
     execute_calls: list[tuple[object, float]] = []
@@ -539,6 +553,7 @@ async def test_enhanced_pending_gate_true_unknown_entry_preserves_pending_withou
     monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
     agent = _make_agent()
     agent.db_path = str(tmp_path / "enhanced-pending-entry-unknown.sqlite")
+    _ensure_reentry_schema(agent.db_path)
     prepared = SimpleNamespace(intent=SimpleNamespace(id="intent-enhanced-unknown"))
 
     async def core_stub(_path):

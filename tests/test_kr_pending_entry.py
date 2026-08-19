@@ -86,6 +86,9 @@ def _pending_entry_agent(db_path: Path):
     agent._position_pending_kr_ready = True
     agent.trigger_info_map = {}
     agent._get_trigger_win_rate = lambda _trigger: ""
+    # The production gate consumes a computed snapshot; keep this DB-only
+    # lifecycle fixture deterministic and network-free.
+    agent._buy_floor_regime = lambda: "strong_bull"
 
     async def analyze_report(_report_path):
         return {

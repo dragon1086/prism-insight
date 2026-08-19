@@ -56,7 +56,7 @@ CORRECTION: str = "CORRECTION"
 
 # Valid MARKET_PULSE_MODE values and default.
 _VALID_MODES = ("shadow", "live", "off")
-_DEFAULT_MODE = "shadow"
+_DEFAULT_MODE = "live"
 
 # Table: batches that REST during CORRECTION, per market. Any batch NOT listed
 # here still runs during CORRECTION (the retained daily window).
@@ -186,11 +186,11 @@ def decide_batch_policy(
 
 
 def market_pulse_mode() -> str:
-    """Return the MARKET_PULSE_MODE env flag: 'shadow' (default) | 'live' | 'off'.
+    """Return the MARKET_PULSE_MODE env flag: 'live' (default) | 'shadow' | 'off'.
 
     Unknown/empty values fall back to 'shadow' (the safe, log-only default).
     """
-    raw = (os.getenv("MARKET_PULSE_MODE") or "").strip().lower()
+    raw = (os.getenv("MARKET_PULSE_MODE") or "live").strip().lower()
     return raw if raw in _VALID_MODES else _DEFAULT_MODE
 
 
@@ -200,7 +200,7 @@ def market_pulse_mode() -> str:
 # 7월 -42%p 손실 재발 방지책의 하나: 매수 임계(min_score)는 지금 LLM이 시나리오마다
 # 자유롭게 정한다(약세장에서 낮아질 수 있음). 아래 표는 시장 레짐별 "절대 하한선"을
 # 강제해, 약세장에서는 LLM이 무슨 값을 주더라도 그 밑으로는 못 사게 한다(안전 게이트).
-# 기본 OFF(REGIME_MIN_SCORE_FLOOR 미설정) = 현행 유지(LLM 값 그대로).
+# 기본 ON. 환경변수 false/off는 긴급 롤백용이다.
 _REGIME_MIN_SCORE_FLOORS = {
     "strong_bear": 9,
     "moderate_bear": 8,
@@ -212,11 +212,11 @@ _REGIME_MIN_SCORE_FLOORS = {
 
 
 def regime_min_score_floor_enabled() -> bool:
-    """Return True when REGIME_MIN_SCORE_FLOOR is truthy (1/true/yes/on). Default OFF.
+    """Return True when REGIME_MIN_SCORE_FLOOR is truthy. Default ON.
 
     Same truthy parsing as trigger_batch's REGIME_WEAK_NO_TOPDOWN gate.
     """
-    return os.getenv("REGIME_MIN_SCORE_FLOOR", "false").strip().lower() in (
+    return os.getenv("REGIME_MIN_SCORE_FLOOR", "true").strip().lower() in (
         "1", "true", "yes", "on"
     )
 
@@ -314,6 +314,30 @@ def configured_entry_amount(
         return None
     scaled = configured * position_fraction
     return int(scaled) if key == "buy_amount_krw" else scaled
+
+
+def enforce_computed_regime(
+    macro_data: Optional[dict], computed_regime: Optional[dict]
+) -> dict:
+    """Make programmatic regime fields authoritative after LLM JSON parsing.
+
+    Macro LLM output may still contribute qualitative fields such as sectors,
+    events, and prose. It must not silently replace the deterministic regime,
+    confidence, or index summary that drove screening. The original LLM value
+    is retained under ``llm_market_regime`` for auditability.
+    """
+    merged = dict(macro_data or {})
+    computed = dict(computed_regime or {})
+    if not computed:
+        return merged
+
+    if "market_regime" in merged:
+        merged["llm_market_regime"] = merged.get("market_regime")
+    for key in ("market_regime", "regime_confidence", "simple_ma_regime", "index_summary"):
+        if key in computed:
+            merged[key] = computed[key]
+    merged["computed_regime"] = computed
+    return merged
 
 
 # --------------------------------------------------------------------------- #

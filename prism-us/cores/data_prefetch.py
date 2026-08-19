@@ -11,6 +11,8 @@ parameterized data fetches (OHLCV, holder info, market indices).
 import logging
 from pathlib import Path
 import importlib.util
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -921,7 +923,8 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     programmatically from price data (not LLM-based).
 
     Args:
-        reference_date: Analysis date (YYYYMMDD) - used for logging
+        reference_date: Analysis date (YYYYMMDD). All fetched rows are capped
+            at this ET trading-date boundary; it is not merely a log label.
 
     Returns:
         Dictionary with:
@@ -933,6 +936,17 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     result = {}
 
     try:
+        if reference_date:
+            ref_dt = datetime.strptime(str(reference_date), "%Y%m%d")
+        else:
+            ref_dt = datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
+        history_start = (ref_dt - timedelta(days=400)).strftime("%Y-%m-%d")
+        history_end = (ref_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+    except (TypeError, ValueError) as exc:
+        logger.warning("Invalid US macro reference_date=%r: %s", reference_date, exc)
+        return result
+
+    try:
         client = _get_us_data_client()
     except Exception as e:
         logger.error(f"Failed to get US data client: {e}")
@@ -941,7 +955,9 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     # 1. S&P 500
     sp500_df = None
     try:
-        sp500_df = client.get_ohlcv("^GSPC", period="1y", interval="1d")
+        sp500_df = client.get_ohlcv(
+            "^GSPC", start=history_start, end=history_end, interval="1d"
+        )
         if sp500_df is not None and not sp500_df.empty:
             sp500_20d = sp500_df.tail(20)
             sp500_20d.columns = [col.title().replace("_", " ") for col in sp500_20d.columns]
@@ -953,7 +969,9 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     # 2. NASDAQ
     nasdaq_df = None
     try:
-        nasdaq_df = client.get_ohlcv("^IXIC", period="1y", interval="1d")
+        nasdaq_df = client.get_ohlcv(
+            "^IXIC", start=history_start, end=history_end, interval="1d"
+        )
         if nasdaq_df is not None and not nasdaq_df.empty:
             nasdaq_20d = nasdaq_df.tail(20)
             nasdaq_20d.columns = [col.title().replace("_", " ") for col in nasdaq_20d.columns]
@@ -965,7 +983,9 @@ def prefetch_us_macro_intelligence_data(reference_date: str = None) -> dict:
     # 3. VIX
     vix_df = None
     try:
-        vix_df = client.get_ohlcv("^VIX", period="1y", interval="1d")
+        vix_df = client.get_ohlcv(
+            "^VIX", start=history_start, end=history_end, interval="1d"
+        )
         if vix_df is not None and not vix_df.empty:
             vix_20d = vix_df.tail(20)
             vix_20d.columns = [col.title().replace("_", " ") for col in vix_20d.columns]
@@ -1294,11 +1314,13 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
     # O'Neil 분산일 결정론 카운트를 index_summary에 정보로 주입(강등 없음 — LLM이 프롬프트에서 판단)
     _inject_distribution_days(index_summary, sp500_df, close_col)
 
-    # 고변동·낙폭 override (모드: shadow[기본]/active/off). KR 과 동일 시맨틱.
-    #   shadow = 강등 '판단'만 계산·로깅, regime 은 그대로(매매 무영향, 관찰용).
+    # 고변동·낙폭 override (모드: active[기본]/shadow/off). KR 과 동일 시맨틱.
+    #   shadow = 강등 '판단'만 계산·로깅, regime 은 그대로(긴급 관찰용).
     #   active = 실제 강등 적용.  off = 완전 비활성.
     import os as _os
-    _mode = _os.environ.get("REGIME_HIVOL_OVERRIDE", "shadow").strip().lower()
+    # The validated acute-drawdown override is now active by default.  The env
+    # flag remains available for an explicit emergency rollback to shadow/off.
+    _mode = _os.environ.get("REGIME_HIVOL_OVERRIDE", "active").strip().lower()
     index_summary["highvol_override_mode"] = _mode
     index_summary["highvol_drawdown_override"] = None
     if _mode != "off":

@@ -110,3 +110,11 @@ def test_disabled_returns_none(rc, monkeypatch):
 def test_fail_open_on_bad_db(rc):
     m, _ = rc
     assert m.reentry_block("US", "MU", db_path="/proc/nope/x.sqlite") is None
+
+
+def test_fail_closed_on_bad_db_blocks_new_entry(rc):
+    m, _ = rc
+    verdict = m.reentry_block(
+        "US", "MU", db_path="/proc/nope/x.sqlite", fail_closed=True
+    )
+    assert verdict and verdict["action"] == "BLOCK_CHECK_ERROR"

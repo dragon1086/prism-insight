@@ -952,6 +952,10 @@ class StockTrackingAgent:
                 prompt_message,
             )
             if scenario_json is not None:
+                # Preserve the deterministic facts used in the prompt so the
+                # final pre-buy gate validates the exact same as-of snapshot.
+                if trend_facts:
+                    scenario_json["_deterministic_trend_facts"] = trend_facts
                 # Persist the experience-based score adjustment alongside the scenario.
                 # It rides inside the scenario JSON, which is stored in
                 # stock_holdings.scenario and copied to trading_history.scenario on sell —
@@ -2419,6 +2423,51 @@ class StockTrackingAgent:
             self._buy_floor_regime_cache = _c
         return _c
 
+    def _evaluate_production_buy_gate(
+        self,
+        scenario: Dict[str, Any],
+        current_price: float,
+        *,
+        score_override: Optional[float] = None,
+        is_add: bool = False,
+    ) -> Dict[str, Any]:
+        """Run the deterministic final KR new-entry underwriting gate.
+
+        A missing computed market regime is intentionally fail-closed here. The
+        older score-floor helper was fail-open because it was advisory; this is
+        now the last line before a simulator entry and must not silently vanish
+        during a macro-data failure.
+        """
+        try:
+            from cores.buy_gate import evaluate_production_buy_gate
+
+            return evaluate_production_buy_gate(
+                scenario,
+                current_price=current_price,
+                market_regime=self._buy_floor_regime(),
+                score_override=score_override,
+                trend_facts=str(scenario.get("_deterministic_trend_facts") or ""),
+                is_add=is_add,
+            )
+        except Exception as exc:  # noqa: BLE001 - new buys fail closed on gate errors
+            logger.error("[BUY_GATE][KR] deterministic gate failed closed: %s", exc)
+            return {
+                "allowed": False,
+                "would_block": True,
+                "effective_regime": None,
+                "findings": [{
+                    "code": "buy_gate_error",
+                    "message": f"deterministic buy gate unavailable: {type(exc).__name__}",
+                    "hard": True,
+                }],
+                "hard_findings": [{
+                    "code": "buy_gate_error",
+                    "message": f"deterministic buy gate unavailable: {type(exc).__name__}",
+                    "hard": True,
+                }],
+                "reason": f"deterministic buy gate unavailable: {type(exc).__name__}",
+            }
+
     async def _analyze_sell_decision(self, stock_data: Dict[str, Any]) -> Tuple[bool, str]:
         """
         Sell decision analysis
@@ -3649,14 +3698,27 @@ class StockTrackingAgent:
                     if analysis_result.get("decision") == "Enter":
                         try:
                             from reentry_cooldown import reentry_block, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE
-                            _cd = reentry_block("KR", ticker)
-                        except Exception:
-                            _cd, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE = None, False, False
+                            _account_key, _ = self._account_scope()
+                            _cd = reentry_block(
+                                "KR", ticker, account_key=_account_key,
+                                db_path=self.db_path, fail_closed=True,
+                            )
+                        except Exception as _cd_error:
+                            logger.error("[REENTRY_COOLDOWN][KR] check failed closed: %s", _cd_error)
+                            _cd = {
+                                "action": "BLOCK_CHECK_ERROR", "market": "KR", "ticker": ticker,
+                                "last_sell": None, "last_ret": 0.0, "gap_hours": 0.0,
+                                "window_hours": 24.0, "after_loss": False, "risk_exit": True,
+                                "check_error": type(_cd_error).__name__,
+                            }
+                            COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE = True, True
                         if _cd:
                             # A stop/trend-exit block that is NOT also a loss is the new
                             # exit-kind branch -> SHADOW unless COOLDOWN_RISK_EXIT_LIVE.
                             _risk_only = bool(_cd.get("risk_exit")) and not _cd.get("after_loss")
-                            _enforce = COOLDOWN_LIVE and (COOLDOWN_RISK_EXIT_LIVE or not _risk_only)
+                            _enforce = bool(_cd.get("check_error")) or (
+                                COOLDOWN_LIVE and (COOLDOWN_RISK_EXIT_LIVE or not _risk_only)
+                            )
                             logger.warning(
                                 "[REENTRY_COOLDOWN][%s] %s ticker=%s last_sell=%s ret=%.1f%% gap=%.1fh<%sh after_loss=%s exit_kind=%s risk_only=%s",
                                 "LIVE" if _enforce else "SHADOW", _cd["action"], ticker,
@@ -3664,7 +3726,23 @@ class StockTrackingAgent:
                                 _cd["window_hours"], _cd["after_loss"], _cd.get("exit_kind"), _risk_only)
                             _cd_block = _enforce
 
-                    if analysis_result.get("decision") == "Enter" and not _cd_block and not _regime_floor_block:
+                    _buy_gate = {"allowed": False, "reason": "not an entry candidate"}
+                    if analysis_result.get("decision") == "Enter":
+                        _buy_gate = self._evaluate_production_buy_gate(
+                            scenario, current_price, score_override=buy_score
+                        )
+                        if not _buy_gate.get("allowed"):
+                            logger.warning(
+                                "[BUY_GATE][KR] %s(%s) blocked: %s",
+                                company_name, ticker, _buy_gate.get("reason", "unknown"),
+                            )
+
+                    if (
+                        analysis_result.get("decision") == "Enter"
+                        and not _cd_block
+                        and not _regime_floor_block
+                        and _buy_gate.get("allowed", False)
+                    ):
                         if self._position_pending_kr_enabled():
                             prepared = None
                             try:
@@ -3901,11 +3979,22 @@ class StockTrackingAgent:
                             logger.warning(f"Purchase failed: {company_name}({ticker})")
                         continue
 
-                    reason = ""
+                    reason_parts = []
                     if buy_score < min_score:
-                        reason = f"Buy score insufficient ({buy_score} < {min_score})"
-                    elif analysis_result.get("decision") != "Enter":
-                        reason = f"Not an entry decision (Decision: {analysis_result.get('decision')})"
+                        reason_parts.append(f"Buy score insufficient ({buy_score} < {min_score})")
+                    if analysis_result.get("decision") != "Enter":
+                        reason_parts.append(
+                            f"Not an entry decision (Decision: {analysis_result.get('decision')})"
+                        )
+                    if analysis_result.get("decision") == "Enter" and not _buy_gate.get("allowed", False):
+                        reason_parts.append(
+                            f"Deterministic gate: {_buy_gate.get('reason', 'blocked')}"
+                        )
+                    if _cd_block:
+                        reason_parts.append("Recent risk-exit re-entry cooldown")
+                    if _regime_floor_block:
+                        reason_parts.append("Market regime score floor")
+                    reason = " / ".join(reason_parts) or "Deterministic gate blocked entry"
 
                     logger.info(f"Purchase deferred: {company_name}({ticker}) - {reason}")
                     state["should_save_watchlist"] = True

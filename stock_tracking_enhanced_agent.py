@@ -494,6 +494,18 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 entry_cash_amount = None
                 rebound_pilot = False
 
+                # Resolve the legacy dynamic-risk fallback before the final
+                # deterministic gate so missing prices are validated rather
+                # than silently filled only after the buy decision.
+                if scenario.get("target_price", 0) <= 0:
+                    scenario["target_price"] = await self._dynamic_target_price(
+                        ticker, current_price
+                    )
+                if scenario.get("stop_loss", 0) <= 0:
+                    scenario["stop_loss"] = await self._dynamic_stop_loss(
+                        ticker, current_price
+                    )
+
                 # 레짐 적응 하한선(env-gated REGIME_MIN_SCORE_FLOOR, 기본 off). 플래그 ON 시
                 # 약세장 하한(strong_bear 9 / bear·sideways 8)을 강제해 min_score 를 끌어올린다.
                 # 아래 진입 게이트(buy_score < min_score → Skip)가 그대로 차단을 수행한다.
@@ -563,6 +575,17 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 if rationale:
                     logger.info(f"Scenario rationale ({company_name}/{ticker}): {rationale[:300]}")
 
+                _buy_gate = {"allowed": False, "reason": "not an entry candidate"}
+                if decision == "Enter":
+                    _buy_gate = self._evaluate_production_buy_gate(
+                        scenario, current_price, score_override=buy_score, is_add=is_add
+                    )
+                    if not _buy_gate.get("allowed"):
+                        logger.warning(
+                            "[BUY_GATE][KR][enhanced] %s(%s) blocked: %s",
+                            company_name, ticker, _buy_gate.get("reason", "unknown"),
+                        )
+
                 # Respect AI agent's decision (consistent with US logic)
                 # AI considers qualitative factors (RSI, support structure, volume, sector outlook, etc.)
                 # beyond just the score, so do not override its decision
@@ -573,7 +596,12 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     )
 
                 # Generate message if not buying (watch/insufficient score/sector constraints)
-                if decision != "Enter" or (buy_score < min_score and not rebound_pilot) or not sector_diverse:
+                if (
+                    decision != "Enter"
+                    or (buy_score < min_score and not rebound_pilot)
+                    or not sector_diverse
+                    or (decision == "Enter" and not _buy_gate.get("allowed", False))
+                ):
                     # Build a single reason string that lists ALL applicable causes,
                     # ordered by who actually blocked the entry. AI judgment is shown
                     # first when the AI itself rejected — so the displayed reason
@@ -595,6 +623,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         reason_parts.append(f"점수 부족 ({buy_score}/{min_score})")
                     if not sector_diverse:
                         reason_parts.append(f"섹터 집중 ({sector})")
+                    if decision == "Enter" and not _buy_gate.get("allowed", False):
+                        reason_parts.append(
+                            f"결정론적 게이트: {_buy_gate.get('reason', '차단')}"
+                        )
 
                     reason = " / ".join(reason_parts) if reason_parts else "기타"
 
@@ -675,12 +707,25 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 if decision == "Enter" and not is_add:
                     try:
                         from reentry_cooldown import reentry_block, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE
-                        _cd = reentry_block("KR", ticker)
-                    except Exception:
-                        _cd, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE = None, False, False
+                        _account_key, _ = self._account_scope()
+                        _cd = reentry_block(
+                            "KR", ticker, account_key=_account_key,
+                            db_path=self.db_path, fail_closed=True,
+                        )
+                    except Exception as _cd_error:
+                        logger.error("[REENTRY_COOLDOWN][KR][enhanced] check failed closed: %s", _cd_error)
+                        _cd = {
+                            "action": "BLOCK_CHECK_ERROR", "market": "KR", "ticker": ticker,
+                            "last_sell": None, "last_ret": 0.0, "gap_hours": 0.0,
+                            "window_hours": 24.0, "after_loss": False, "risk_exit": True,
+                            "check_error": type(_cd_error).__name__,
+                        }
+                        COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE = True, True
                     if _cd:
                         _risk_only = bool(_cd.get("risk_exit")) and not _cd.get("after_loss")
-                        _enforce = COOLDOWN_LIVE and (COOLDOWN_RISK_EXIT_LIVE or not _risk_only)
+                        _enforce = bool(_cd.get("check_error")) or (
+                            COOLDOWN_LIVE and (COOLDOWN_RISK_EXIT_LIVE or not _risk_only)
+                        )
                         logger.warning(
                             "[REENTRY_COOLDOWN][%s] %s ticker=%s last_sell=%s ret=%.1f%% gap=%.1fh<%sh after_loss=%s exit_kind=%s risk_only=%s",
                             "LIVE" if _enforce else "SHADOW", _cd["action"], ticker,
@@ -689,7 +734,13 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         _cd_block = _enforce
 
                 # Process buy if entry decision
-                if decision == "Enter" and (buy_score >= min_score or rebound_pilot) and sector_diverse and not _cd_block:
+                if (
+                    decision == "Enter"
+                    and (buy_score >= min_score or rebound_pilot)
+                    and sector_diverse
+                    and not _cd_block
+                    and _buy_gate.get("allowed", False)
+                ):
                     if self._position_pending_kr_enabled():
                         prepared = None
                         active_account = getattr(self, "active_account", None)

@@ -1219,6 +1219,10 @@ class USStockTrackingAgent:
                     await asyncio.sleep(2 * attempt)  # linear backoff: 2s, 4s
 
             if scenario_json is not None:
+                # Preserve the deterministic facts used in the prompt so the
+                # final pre-buy gate validates the exact same as-of snapshot.
+                if trend_facts:
+                    scenario_json["_deterministic_trend_facts"] = trend_facts
                 # Persist the experience-based score adjustment alongside the scenario.
                 # It rides inside the scenario JSON, stored in us_stock_holdings.scenario and
                 # copied to us_trading_history.scenario on sell — giving the weekly influence
@@ -2084,6 +2088,43 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 _m = None
             self._regime_policy_mod_cache = _m
         return _m
+
+    def _evaluate_production_buy_gate(
+        self,
+        scenario: Dict[str, Any],
+        current_price: float,
+        *,
+        score_override: Optional[float] = None,
+        is_add: bool = False,
+    ) -> Dict[str, Any]:
+        """Run the deterministic final US new-entry underwriting gate."""
+        try:
+            _gate = _import_from_main_cores(
+                "prism_root_buy_gate", "cores/buy_gate.py"
+            )
+            return _gate.evaluate_production_buy_gate(
+                scenario,
+                current_price=current_price,
+                market_regime=self._buy_floor_regime(),
+                score_override=score_override,
+                trend_facts=str(scenario.get("_deterministic_trend_facts") or ""),
+                is_add=is_add,
+            )
+        except Exception as exc:  # noqa: BLE001 - new buys fail closed on gate errors
+            logger.error("[BUY_GATE][US] deterministic gate failed closed: %s", exc)
+            finding = {
+                "code": "buy_gate_error",
+                "message": f"deterministic buy gate unavailable: {type(exc).__name__}",
+                "hard": True,
+            }
+            return {
+                "allowed": False,
+                "would_block": True,
+                "effective_regime": None,
+                "findings": [finding],
+                "hard_findings": [finding],
+                "reason": finding["message"],
+            }
 
     async def _fallback_sell_decision(self, stock_data: Dict[str, Any]) -> Tuple[bool, str]:
         """Rule-based sell decision (fallback when AI unavailable).
@@ -3357,6 +3398,20 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     if rationale:
                         logger.info(f"Scenario rationale ({company_name}/{ticker}): {rationale[:300]}")
 
+                    _buy_gate = {"allowed": False, "reason": "not an entry candidate"}
+                    if normalized_decision == "entry":
+                        _buy_gate = self._evaluate_production_buy_gate(
+                            scenario,
+                            current_price,
+                            score_override=adjusted_score,
+                            is_add=is_add,
+                        )
+                        if not _buy_gate.get("allowed"):
+                            logger.warning(
+                                "[BUY_GATE][US] %s(%s) blocked: %s",
+                                company_name, ticker, _buy_gate.get("reason", "unknown"),
+                            )
+
                     # Re-entry cooldown gate (SHADOW logs only; LIVE vetoes a churn
                     # re-entry — longer cooldown after a loss). Fresh entries only;
                     # pyramiding adds (is_add) are exempt.
@@ -3364,14 +3419,27 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     if normalized_decision == "entry" and not is_add:
                         try:
                             from reentry_cooldown import reentry_block, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE
-                            _cd = reentry_block("US", ticker)
-                        except Exception:
-                            _cd, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE = None, False, False
+                            _account_key, _ = self._account_scope()
+                            _cd = reentry_block(
+                                "US", ticker, account_key=_account_key,
+                                db_path=self.db_path, fail_closed=True,
+                            )
+                        except Exception as _cd_error:
+                            logger.error("[REENTRY_COOLDOWN][US] check failed closed: %s", _cd_error)
+                            _cd = {
+                                "action": "BLOCK_CHECK_ERROR", "market": "US", "ticker": ticker,
+                                "last_sell": None, "last_ret": 0.0, "gap_hours": 0.0,
+                                "window_hours": 24.0, "after_loss": False, "risk_exit": True,
+                                "check_error": type(_cd_error).__name__,
+                            }
+                            COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE = True, True
                         if _cd:
                             # A stop/trend-exit block that is NOT also a loss is the new
                             # exit-kind branch -> SHADOW unless COOLDOWN_RISK_EXIT_LIVE.
                             _risk_only = bool(_cd.get("risk_exit")) and not _cd.get("after_loss")
-                            _enforce = COOLDOWN_LIVE and (COOLDOWN_RISK_EXIT_LIVE or not _risk_only)
+                            _enforce = bool(_cd.get("check_error")) or (
+                                COOLDOWN_LIVE and (COOLDOWN_RISK_EXIT_LIVE or not _risk_only)
+                            )
                             logger.warning(
                                 "[REENTRY_COOLDOWN][%s] %s ticker=%s last_sell=%s ret=%.1f%% gap=%.1fh<%sh after_loss=%s exit_kind=%s risk_only=%s",
                                 "LIVE" if _enforce else "SHADOW", _cd["action"], ticker,
@@ -3379,7 +3447,13 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 _cd["window_hours"], _cd["after_loss"], _cd.get("exit_kind"), _risk_only)
                             _cd_block = _enforce
 
-                    if normalized_decision == "entry" and (adjusted_score >= min_score or rebound_pilot) and sector_diverse and not _cd_block:
+                    if (
+                        normalized_decision == "entry"
+                        and (adjusted_score >= min_score or rebound_pilot)
+                        and sector_diverse
+                        and not _cd_block
+                        and _buy_gate.get("allowed", False)
+                    ):
                         # is_add => pyramiding additional independent row (#288)
                         buy_result = await self._buy_stock_with_position(
                             ticker,
@@ -3520,6 +3594,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             reason_parts.append(f"Insufficient score ({adjusted_score}/{min_score})")
                         if not sector_diverse:
                             reason_parts.append(f"Sector concentration ({sector})")
+                        if normalized_decision == "entry" and not _buy_gate.get("allowed", False):
+                            reason_parts.append(
+                                f"Deterministic gate: {_buy_gate.get('reason', 'blocked')}"
+                            )
+                        if _cd_block:
+                            reason_parts.append("Recent risk-exit re-entry cooldown")
                         reason = " / ".join(reason_parts) if reason_parts else "Other"
                         logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
                         state["should_save_watchlist"] = True

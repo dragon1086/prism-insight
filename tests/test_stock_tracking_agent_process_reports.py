@@ -19,6 +19,14 @@ from prism_core.positions import LegacyPositionWriteResult
 from tracking.db_schema import TABLE_STOCK_HOLDINGS, TABLE_TRADING_HISTORY
 
 
+def _ensure_reentry_schema(path):
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS trading_history "
+            "(ticker TEXT, account_key TEXT, sell_date TEXT, profit_rate REAL, exit_kind TEXT)"
+        )
+
+
 class _FakeAsyncTradingContext:
     def __init__(self, account_name=None, **kwargs):
         self.account_name = account_name
@@ -331,6 +339,7 @@ def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):
 async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, caplog, tmp_path):
     agent = StockTrackingAgent.__new__(StockTrackingAgent)
     agent.db_path = str(tmp_path / "stock_tracking.sqlite")
+    _ensure_reentry_schema(agent.db_path)
     agent.account_configs = [
         {"name": "kr-primary", "account_key": "vps:kr-primary:01"},
         {"name": "kr-secondary", "account_key": "vps:kr-secondary:01"},
@@ -354,7 +363,11 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
             "ticker": "005930",
             "company_name": "Samsung Electronics",
             "current_price": 70000,
-            "scenario": {"buy_score": 8, "min_score": 7, "sector": "Technology"},
+            "scenario": {
+                "buy_score": 8, "min_score": 7, "sector": "Technology",
+                "target_price": 77000, "stop_loss": 65000,
+                "risk_reward_ratio": 1.4,
+            },
             "decision": "Enter",
             "sector": "Technology",
             "rank_change_msg": "Up",
@@ -391,6 +404,7 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     agent._check_sector_diversity = fake_check_sector_diversity
     agent._buy_stock_with_position = fake_buy_stock
     agent._link_position_entry_intent = fake_link_position_entry_intent
+    agent._buy_floor_regime = MagicMock(return_value="strong_bull")
 
     monkeypatch.setattr(domestic_trading, "AsyncTradingContext", _FakeAsyncTradingContext)
     _install_signal_modules(monkeypatch, redis_calls, gcp_calls)
@@ -497,6 +511,7 @@ async def test_kr_pending_gate_false_preserves_legacy_message_broker_publish_ord
     monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "false")
     agent = StockTrackingAgent.__new__(StockTrackingAgent)
     agent.db_path = str(tmp_path / "legacy-order.sqlite")
+    _ensure_reentry_schema(agent.db_path)
     agent.account_configs = [
         {"name": "kr-primary", "account_key": "vps:kr-primary:01"},
     ]
@@ -512,7 +527,11 @@ async def test_kr_pending_gate_false_preserves_legacy_message_broker_publish_ord
             "ticker": "005930",
             "company_name": "Samsung Electronics",
             "current_price": 70000,
-            "scenario": {"buy_score": 8, "min_score": 7, "sector": "Technology"},
+            "scenario": {
+                "buy_score": 8, "min_score": 7, "sector": "Technology",
+                "target_price": 77000, "stop_loss": 65000,
+                "risk_reward_ratio": 1.4,
+            },
             "decision": "Enter",
             "sector": "Technology",
             "rank_change_msg": "Up",
@@ -549,6 +568,7 @@ async def test_kr_pending_gate_false_preserves_legacy_message_broker_publish_ord
     agent._check_sector_diversity = AsyncMock(return_value=True)
     agent._buy_stock_with_position = fake_buy_stock
     agent._link_position_entry_intent = MagicMock(return_value=True)
+    agent._buy_floor_regime = MagicMock(return_value="strong_bull")
     monkeypatch.setattr(domestic_trading, "AsyncTradingContext", OrderedTradingContext)
     redis_calls = OrderedCalls("redis")
     gcp_calls = OrderedCalls("gcp")

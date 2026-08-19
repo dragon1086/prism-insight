@@ -29,6 +29,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 import importlib.util as _ilu
+from zoneinfo import ZoneInfo
 
 # Add paths for imports
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -66,6 +67,26 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+def resolve_us_trade_date(override_date: str | None = None) -> str:
+    """Return one canonical US ET trading date for the whole pipeline.
+
+    The US trigger batch already resolves dates in America/New_York, while the
+    orchestrator historically used the machine's local (KST) calendar date for
+    macro/report paths. Keeping this helper at the orchestrator boundary makes
+    trigger, macro, report, and artifact names share one date contract.
+    """
+    if override_date:
+        value = str(override_date).strip()
+        if len(value) != 8 or not value.isdigit():
+            raise ValueError(f"override_date must be YYYYMMDD, got {override_date!r}")
+        return value
+
+    from cores.us_surge_detector import get_nearest_business_day
+
+    today_et = datetime.now(tz=ZoneInfo("America/New_York")).strftime("%Y%m%d")
+    return get_nearest_business_day(today_et, prev=True)
 
 
 # =============================================================================
@@ -414,6 +435,19 @@ class USStockAnalysisOrchestrator:
                 elif not macro_data:
                     return None
 
+                # Keep the deterministic index regime authoritative. The LLM
+                # supplies qualitative context, but cannot silently replace
+                # the regime used by screening and entry gates.
+                try:
+                    _rp = _import_from_main_cores(
+                        "prism_root_regime_policy_merge", "cores/regime_policy.py"
+                    )
+                    macro_data = _rp.enforce_computed_regime(
+                        macro_data, prefetched.get("computed_regime")
+                    )
+                except Exception as _regime_e:
+                    logger.warning(f"Failed to enforce computed US regime: {_regime_e}")
+
                 regime = macro_data.get("market_regime", "sideways")
                 macro_logger.info(f"US macro intelligence complete - regime: {regime}, "
                                  f"leading_sectors: {len(macro_data.get('leading_sectors', []))}, "
@@ -443,7 +477,7 @@ class USStockAnalysisOrchestrator:
             from us_trigger_batch import run_batch
 
             # Results file path (use PRISM_US_DIR for consistent path with telegram_summary_agent)
-            effective_date = override_date if override_date else datetime.now().strftime("%Y%m%d")
+            effective_date = resolve_us_trade_date(override_date)
             results_file = str(PRISM_US_DIR / f"trigger_results_us_{mode}_{effective_date}.json")
 
             # Run batch
@@ -500,7 +534,15 @@ class USStockAnalysisOrchestrator:
             logger.error(traceback.format_exc())
             return []
 
-    async def generate_reports(self, tickers: list, mode: str, timeout: int = None, language: str = "ko", macro_context: dict = None) -> list:
+    async def generate_reports(
+        self,
+        tickers: list,
+        mode: str,
+        timeout: int = None,
+        language: str = "ko",
+        macro_context: dict = None,
+        reference_date: str | None = None,
+    ) -> list:
         """
         Generate reports serially for all US stocks.
 
@@ -527,8 +569,8 @@ class USStockAnalysisOrchestrator:
 
             logger.info(f"[{idx}/{len(tickers)}] Starting US stock analysis: {company_name}({ticker})")
 
-            reference_date = datetime.now().strftime("%Y%m%d")
-            output_file = str(US_REPORTS_DIR / f"{ticker}_{company_name}_{reference_date}_{mode}_gpt5.4-mini.md")
+            report_date = reference_date or resolve_us_trade_date()
+            output_file = str(US_REPORTS_DIR / f"{ticker}_{company_name}_{report_date}_{mode}_gpt5.4-mini.md")
 
             try:
                 from cores.us_analysis import analyze_us_stock
@@ -537,7 +579,7 @@ class USStockAnalysisOrchestrator:
                 report = await analyze_us_stock(
                     ticker=ticker,
                     company_name=company_name,
-                    reference_date=reference_date,
+                    reference_date=report_date,
                     language=language,
                     macro_context=macro_context
                 )
@@ -1138,7 +1180,7 @@ class USStockAnalysisOrchestrator:
 
         try:
             # 0. Run macro intelligence (US market regime, sector data)
-            effective_date = override_date if override_date else datetime.now().strftime("%Y%m%d")
+            effective_date = resolve_us_trade_date(override_date)
             macro_context = await self.run_macro_intelligence(
                 reference_date=effective_date,
                 language=language
@@ -1181,7 +1223,14 @@ class USStockAnalysisOrchestrator:
             )
 
             # 2. Generate reports
-            report_paths = await self.generate_reports(tickers, mode, timeout=600, language=language, macro_context=macro_context)
+            report_paths = await self.generate_reports(
+                tickers,
+                mode,
+                timeout=600,
+                language=language,
+                macro_context=macro_context,
+                reference_date=effective_date,
+            )
             if not report_paths:
                 logger.warning("No US reports generated. Terminating process.")
                 return
@@ -1321,6 +1370,7 @@ async def main():
     # by file path via _import_from_main_cores (same pattern as the translator/
     # utils modules above). Lazy + guarded: never kills a production batch.
     _mp_state = None
+    _mp_live_skips: set[str] = set()
     try:
         _rp_mod = _import_from_main_cores(
             "prism_root_regime_policy", "cores/regime_policy.py"
@@ -1328,45 +1378,63 @@ async def main():
         _mp_mode = _rp_mod.market_pulse_mode()
         if _mp_mode != "off":
             _mp_state = _rp_mod.get_market_pulse_state("us")
-            _mp_pol = _rp_mod.decide_batch_policy("us", args.mode, _mp_state)
-            logger.info(
-                f"[MARKET_PULSE] state={_mp_state} batch={args.mode} "
-                f"run={_mp_pol.run_batch} ({_mp_pol.reason}) mode={_mp_mode}"
+            _mp_batch_modes = (
+                [args.mode]
+                if args.mode in ("morning", "afternoon")
+                else ["morning", "afternoon"]
             )
-            if not _mp_pol.run_batch:
+            for _mp_batch_mode in _mp_batch_modes:
+                _mp_pol = _rp_mod.decide_batch_policy(
+                    "us", _mp_batch_mode, _mp_state
+                )
+                logger.info(
+                    f"[MARKET_PULSE] state={_mp_state} batch={_mp_batch_mode} "
+                    f"run={_mp_pol.run_batch} ({_mp_pol.reason}) mode={_mp_mode}"
+                )
+                if _mp_pol.run_batch:
+                    continue
                 if _mp_mode == "live":
-                    logger.info("[MARKET_PULSE] LIVE: resting this batch "
-                                "(agents rest; exit loops unaffected)")
-                    # Notify subscriber channels so the rest is not silent.
-                    # Own try/except: a Telegram failure must NOT block the
-                    # clean early-exit below. cron runs once per (mode, day),
-                    # so no dedup is needed here.
+                    _mp_live_skips.add(_mp_batch_mode)
+                    logger.info(
+                        "[MARKET_PULSE] LIVE: resting %s batch "
+                        "(agents rest; exit loops unaffected)",
+                        _mp_batch_mode,
+                    )
                     try:
                         from telegram_config import (
                             TelegramConfig,
                             send_market_pulse_rest_notice,
                         )
-                        _mp_bl = [l.strip() for l in args.broadcast_languages.split(",") if l.strip()]
+                        _mp_bl = [
+                            l.strip()
+                            for l in args.broadcast_languages.split(",")
+                            if l.strip()
+                        ]
                         _mp_tc = TelegramConfig(
-                            use_telegram=not args.no_telegram, broadcast_languages=_mp_bl
+                            use_telegram=not args.no_telegram,
+                            broadcast_languages=_mp_bl,
                         )
-                        await send_market_pulse_rest_notice(_mp_tc, args.mode, market="US")
+                        await send_market_pulse_rest_notice(
+                            _mp_tc, _mp_batch_mode, market="US"
+                        )
                     except Exception as _mp_notice_e:
                         logger.warning(
                             f"[MARKET_PULSE] rest notice failed (ignored): {_mp_notice_e}"
                         )
                     await publish_batch_campaign_best_effort(
                         market="US",
-                        session=args.mode,
-                        trade_date=args.date or datetime.now().strftime("%Y%m%d"),
+                        session=_mp_batch_mode,
+                        trade_date=resolve_us_trade_date(args.date),
                         regime=_mp_state,
                         status=SKIPPED,
                         skip_reason=_mp_pol.reason,
                     )
-                    return
                 else:
-                    logger.info("[MARKET_PULSE][SHADOW] WOULD_SKIP this batch "
-                                "— continuing normally")
+                    logger.info(
+                        "[MARKET_PULSE][SHADOW] WOULD_SKIP %s batch "
+                        "— continuing normally",
+                        _mp_batch_mode,
+                    )
     except Exception as _mp_e:  # fail-open: batch continues on any error
         logger.warning(f"[MARKET_PULSE] hook failed, fail-open (batch continues): {_mp_e}")
     # --- end Market Pulse hook ---
@@ -1412,7 +1480,7 @@ async def main():
 
     orchestrator = USStockAnalysisOrchestrator(telegram_config=telegram_config)
 
-    if args.mode == "morning" or args.mode == "both":
+    if (args.mode == "morning" or args.mode == "both") and "morning" not in _mp_live_skips:
         await orchestrator.run_full_pipeline(
             "morning",
             language=args.language,
@@ -1420,7 +1488,7 @@ async def main():
             campaign_regime=_mp_state,
         )
 
-    if args.mode == "afternoon" or args.mode == "both":
+    if (args.mode == "afternoon" or args.mode == "both") and "afternoon" not in _mp_live_skips:
         await orchestrator.run_full_pipeline(
             "afternoon",
             language=args.language,
