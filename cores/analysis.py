@@ -274,7 +274,12 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
 
         # 10b. Render QA (Phase 6 S2) — OFF by default, non-blocking
         from cores.llm.capabilities import vision_available
-        if vision_available():
+        try:
+            from cores.shadow_lifecycle import feature_mode as _shadow_feature_mode
+            _vision_buy_quality_mode = _shadow_feature_mode("vision_buy_quality")
+        except Exception:
+            _vision_buy_quality_mode = "shadow"
+        if vision_available() and _vision_buy_quality_mode != "off":
             try:
                 import base64
                 import re

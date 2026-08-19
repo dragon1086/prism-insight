@@ -123,8 +123,18 @@ def _env_flag(suffix: str, default: bool) -> bool:
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
-FILL_CHASER_ENABLED = _env_flag("ENABLED", True)               # master kill switch
-FILL_CHASER_LIVE = _env_flag("LIVE", False)                    # False => SHADOW (no real amend/cancel)
+try:
+    from cores.shadow_lifecycle import feature_mode as _shadow_feature_mode
+    _FILL_CHASER_LIFECYCLE_MODE = _shadow_feature_mode("fill_chaser")
+except Exception:
+    _FILL_CHASER_LIFECYCLE_MODE = "shadow"
+
+FILL_CHASER_ENABLED = _env_flag("ENABLED", True) and _FILL_CHASER_LIFECYCLE_MODE != "off"
+# LIVE requires both the explicit broker flag and a manually promoted lifecycle
+# state. Expiry can therefore turn the loop OFF without touching .env.
+FILL_CHASER_LIVE = (
+    _env_flag("LIVE", False) and _FILL_CHASER_LIFECYCLE_MODE == "live"
+)
 LOCK_TTL_SEC = int(_env("LOCK_TTL_SEC", "300"))
 # Chase an order only after it has been unfilled this long.
 CHASE_AFTER_SEC = int(_env("CHASE_AFTER_SEC", "60"))

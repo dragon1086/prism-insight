@@ -542,6 +542,14 @@ class USStockTrackingAgent:
         self.position_ledger_shadow_enabled = os.environ.get(
             "POSITION_LEDGER_SHADOW_ENABLED", "true"
         ).strip().lower() not in {"0", "false", "no", "off"}
+        try:
+            from cores.shadow_lifecycle import feature_mode
+            self.position_ledger_shadow_enabled = (
+                self.position_ledger_shadow_enabled
+                and feature_mode("position_ledger") != "off"
+            )
+        except Exception:
+            pass
 
         # Journal and compression managers (initialized in initialize())
         self.journal_manager = None

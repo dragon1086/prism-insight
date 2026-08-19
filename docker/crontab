@@ -23,6 +23,11 @@ PYTHONPATH=/app/prism-insight
 # Daily log cleanup at 03:00 KST
 0 3 * * * cd /app/prism-insight && chmod +x utils/cleanup_logs.sh && ./utils/cleanup_logs.sh >> /app/prism-insight/logs/cleanup.log 2>&1
 
+# Shadow lifecycle review/expiry at 18:05 KST. Expired shadows become OFF;
+# LIVE is never granted automatically. The runtime also checks deadlines
+# directly, so a missed cron cannot keep an expired shadow active.
+5 18 * * 1-5 cd /app/prism-insight && python3 tools/shadow_lifecycle.py --apply-expiry >> /app/prism-insight/logs/shadow_lifecycle.log 2>&1
+
 # Stock data update at 07:00 KST (Mon-Fri)
 0 7 * * 1-5 cd /app/prism-insight && python3 update_stock_data.py >> /app/prism-insight/logs/stock_update_$(date +\%Y\%m\%d).log 2>&1
 

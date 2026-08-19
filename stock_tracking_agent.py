@@ -249,6 +249,14 @@ class StockTrackingAgent:
         self.position_ledger_shadow_enabled = os.environ.get(
             "POSITION_LEDGER_SHADOW_ENABLED", "true"
         ).strip().lower() not in {"0", "false", "no", "off"}
+        try:
+            from cores.shadow_lifecycle import feature_mode
+            self.position_ledger_shadow_enabled = (
+                self.position_ledger_shadow_enabled
+                and feature_mode("position_ledger") != "off"
+            )
+        except Exception:
+            pass
         self._position_pending_kr_ready = False
 
         # Set trading journal feature flag
