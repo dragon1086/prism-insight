@@ -38,6 +38,7 @@
 | KR 주문 선기록(PENDING ENTRY/EXIT) | **OFF** | `.env` 또는 cron inline `POSITION_PENDING_KR_ENABLED=true` (기본 off) | 피라미딩 fill reconciliation + post-CLOSED 외부효과 복구 검증/사용자 승인 | gate OFF 배포만 허용. gate=true에서 피라미딩은 주문 전 차단. 활성화 전 `failed_exit_linked_open_positions`, PENDING/EXIT_UNKNOWN 0 확인 필수 |
 | 재진입 쿨다운 게이트(매수측) | **LIVE** | `REENTRY_COOLDOWN_LIVE=true` (기본값) | SHADOW 관측 및 prod 이력검증 완료 | 코드: `reentry_cooldown.py` (KR/US 매수 caller 훅). 손실·stop/trend-exit 후 24h 재매수 차단(승리후 0h). 계좌별 DB 경로·account_key로 조회 |
 | 고변동·급락 레짐 강등 | **LIVE** | `REGIME_HIVOL_OVERRIDE=active` (기본값) | KR/US 합성데이터 회귀 완료 | 장기 이평 위에 남은 급락형 휩쏘를 sideways로 강등. `shadow/off`는 긴급 롤백용 |
+| Shadow lifecycle 자동 만료 | **LIVE** | `tools/shadow_lifecycle.py` + db-server 18:05 KST cron | review_by 도달 시 자동 OFF, LIVE 자동승격 금지 | ATR/ADR·Fill-chaser·Vision 품질·Position ledger에 기한·최소표본을 강제. 수동 LIVE만 허용 |
 | 비전 배관(S1) / 렌더QA(S2) | **ON(log-only)** | `PRISM_FEATURE_VISION=on` | 무손상 인프라 | 렌더QA 비차단 경고만 |
 | 비전 매수 품질검사(S3 + S3.5 오닐 일/주봉·RS) | **SHADOW** | `PRISM_FEATURE_VISION=on` + `PRISM_VISION_SHADOW=true` | **A/B 홀드아웃 측정(승률·손절률·MDD 순효과)** → 미정 | 관측 로그 `[BUY_QUALITY][SHADOW]`. 매매영향 0 |
 | 비전 인사이트 이미지 발행(S6) | **LIVE** | `.env PRISM_FEATURE_INSIGHT_IMAGE=on` **AND** `vision_available()`(`PRISM_FEATURE_VISION=on` + 실 API 키) | 샘플 사용자 승인 후 활성화(06-24) | KR(₩)/US($) 발송 중. 차트에 매수▲/매도▼ 마커·용어설명 포함. 끄기: `PRISM_FEATURE_INSIGHT_IMAGE=off` |

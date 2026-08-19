@@ -203,7 +203,12 @@ def evaluate_production_buy_gate(
         expected_loss = ((price - stop) / price * 100.0) if stop is not None and 0 < stop < price else None
         if expected_loss is not None:
             volatility_values = [v for v in (atr20_pct, adr20_pct) if v is not None and v > 0]
-            if volatility_values:
+            try:
+                from cores.shadow_lifecycle import feature_mode
+                volatility_mode = feature_mode("atr_stop_width")
+            except Exception:
+                volatility_mode = "shadow"
+            if volatility_values and volatility_mode != "off":
                 noise_floor = max(volatility_values) * 0.5
                 if expected_loss < noise_floor:
                     volatility_shadow = {
@@ -212,7 +217,7 @@ def evaluate_production_buy_gate(
                             f"stop width {expected_loss:.2f}% < 0.5×max(ATR20/ADR20) "
                             f"{noise_floor:.2f}% (ATR20={atr20_pct}, ADR20={adr20_pct})"
                         ),
-                        "hard": False,
+                        "hard": volatility_mode == "live",
                     }
                     findings.append(volatility_shadow)
         if expected_return is not None and expected_loss and expected_loss > 0:
