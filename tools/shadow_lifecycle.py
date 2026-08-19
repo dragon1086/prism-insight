@@ -5,7 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import sys
+
+# Cron invokes this file directly, so make the repository root importable
+# without relying on an inherited PYTHONPATH.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from cores.shadow_lifecycle import apply_expiry, snapshot
 
