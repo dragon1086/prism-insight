@@ -149,8 +149,8 @@ class TestPercentileRatings:
 
 
 # ---------------------------------------------------------------------------
-# (c) SHADOW 기본: rs_score 경로 불변
-# (d) LIVE 플래그: rs_score = oneil 백분위
+# (c) 기본 LIVE: rs_score = oneil 백분위
+# (d) 명시적 false: 기존 rs_score 경로 유지
 # ---------------------------------------------------------------------------
 
 class TestShadowLiveLogic:
@@ -194,10 +194,15 @@ class TestShadowLiveLogic:
                     result[t] = oneil_pct_map[t] / 99.0
         return result, oneil_pct_map
 
-    def test_shadow_rs_score_unchanged(self, monkeypatch):
-        """RS_RATING_ENABLED 미설정 → rs_score_map 변화 없음."""
+    def test_default_rs_rating_is_live(self, monkeypatch):
         monkeypatch.delenv("RS_RATING_ENABLED", raising=False)
-        enabled = os.getenv("RS_RATING_ENABLED", "false").strip().lower() == "true"
+        enabled = os.getenv("RS_RATING_ENABLED", "true").strip().lower() == "true"
+        assert enabled
+
+    def test_shadow_opt_out_keeps_rs_score_unchanged(self, monkeypatch):
+        """RS_RATING_ENABLED=false → rs_score_map 변화 없음."""
+        monkeypatch.setenv("RS_RATING_ENABLED", "false")
+        enabled = os.getenv("RS_RATING_ENABLED", "true").strip().lower() == "true"
         assert not enabled
 
         signals = self._build_screening({"AAPL": 1.5, "MSFT": 2.5, "NVDA": 3.0})
@@ -208,7 +213,7 @@ class TestShadowLiveLogic:
     def test_live_rs_score_replaced_with_oneil_pct(self, monkeypatch):
         """RS_RATING_ENABLED=true → rs_score = oneil_pct / 99.0."""
         monkeypatch.setenv("RS_RATING_ENABLED", "true")
-        enabled = os.getenv("RS_RATING_ENABLED", "false").strip().lower() == "true"
+        enabled = os.getenv("RS_RATING_ENABLED", "true").strip().lower() == "true"
         assert enabled
 
         signals = self._build_screening({"AAPL": 1.5, "MSFT": 2.5})
@@ -223,7 +228,7 @@ class TestShadowLiveLogic:
     def test_live_none_oneil_raw_keeps_fallback(self, monkeypatch):
         """LIVE: oneil_raw=None 종목은 return_nd 기반 rs_score 유지."""
         monkeypatch.setenv("RS_RATING_ENABLED", "true")
-        enabled = os.getenv("RS_RATING_ENABLED", "false").strip().lower() == "true"
+        enabled = os.getenv("RS_RATING_ENABLED", "true").strip().lower() == "true"
 
         # "NEW": 상장 이력 부족, "OLD": 충분한 이력
         signals = self._build_screening({"NEW": None, "OLD": 1.5})
@@ -240,7 +245,7 @@ class TestShadowLiveLogic:
     def test_live_all_none_rs_score_unchanged(self, monkeypatch):
         """LIVE이더라도 모두 oneil_raw=None → rs_score 전혀 변경 없음."""
         monkeypatch.setenv("RS_RATING_ENABLED", "true")
-        enabled = os.getenv("RS_RATING_ENABLED", "false").strip().lower() == "true"
+        enabled = os.getenv("RS_RATING_ENABLED", "true").strip().lower() == "true"
 
         signals = self._build_screening({"A": None, "B": None})
         rs_score_map = self._compute_rs_score_map(signals)

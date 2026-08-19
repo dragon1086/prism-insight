@@ -29,6 +29,7 @@
 | Market Pulse 배치 정책 | **LIVE** | `.env MARKET_PULSE_MODE=live` | 정책 단위테스트 + 정규장 관측 | KR/US 모두 오전·오후 2회. `UNDER_PRESSURE`는 두 배치 유지, `CORRECTION`은 오후만 실행. 10분 hardstop/trend-exit 및 2분 fill-chaser는 모든 상태에서 유지 |
 | 레짐 최소점수 + 상승전환 파일럿 | **LIVE** | `.env REGIME_MIN_SCORE_FLOOR=true` | 순증 차단·차단 후 1/3/5/10일 성과 지속 관측 | 기본 `strong_bear=9`, `moderate_bear=8`, `sideways=8`. 단 `sideways + MARKET_PULSE=UPTREND`는 7점, AI가 `Enter`한 정확히 6점(원래 문턱 ≤6)은 설정 주문액의 50%로만 진입. 로그 `[REGIME_REBOUND_PILOT]` |
 | 결정론적 신규매수 최종 게이트 | **LIVE** | 코드 상시 (`cores/buy_gate.py`) | KR/US process_reports 회귀 + 순수 게이트 테스트 | 계산 레짐·분산일 보수화·점수·목표/손절·R/R·개별 T1/T2를 LLM 결정 뒤 최종 재검증. 데이터/게이트 오류 시 신규매수 차단. 기존 보유·매도에는 영향 없음 |
+| US O'Neil RS Rating | **LIVE** | `RS_RATING_ENABLED=true` (기본값) | KR/US 2022~2026 백테스트, 49회 리밸런스 | 기존 60일 수익률 RS를 O'Neil 1~99 백분위로 대체. US 스크리닝에만 적용. 긴급 롤백은 `false` |
 | 손절폭 변동성 shadow | **SHADOW** | `cores/buy_gate.py` ATR20/ADR20 팩트 | 균형 표본에서 손실 포착·승자 제거율 확인 후 판단 | `손절폭 < 0.5×max(ATR20, ADR20)`만 로그. 현재 매수 veto 아님 |
 | TIER0 이벤트 강제청산(뉴스 자율매도 + KIS 51 관리종목) | **LIVE** | 코드 상시 | 더존 등 실증 | KR+US 매도 프롬프트 핵심-0 |
 | Loop A — 고빈도 하드스톱(−7%/시나리오손절) | **LIVE** | `.env HARDSTOP_LIVE=true` (구 `LOOP_A_LIVE`, alias 유효) + cron 10분 | SHADOW 관측 후 승격(06-20) | KR 9–15 / US 9–16. 킬: `HARDSTOP_ENABLED=false` |
@@ -68,5 +69,6 @@ SHADOW→LIVE **자동 승격**은 아래를 **모두** 충족할 때만:
 - 2026-06-25: **재진입 쿨다운 게이트 신설(SHADOW)** — `reentry_cooldown.py` + KR/US 매수 caller 훅. 손실매도 후 같은 종목 24h 재매수 차단(승리후 0h=정당 연속진입 허용). MU 과매매(당일왕복 −5.6% 31건·손절후 재매수) 대응. prod 이력검증: 리벤지 재매수 3건 차단·오탐 0.
 - 2026-08-19: **결정론적 신규매수 최종 게이트 LIVE** — LLM의 진입 결정을 KR/US 모두 계산 레짐·분산일·R/R·손절 상한·T1/T2로 독립 재검증. 레짐/게이트 오류는 신규매수 차단하며 보유·매도 경로는 건드리지 않음.
 - 2026-08-19: **재진입 쿨다운 LIVE 승격** — 손실·stop/trend-exit 뒤 24시간 재매수를 KR/US 모두 실제 차단. 계좌별 DB 경로와 `account_key`를 함께 조회하며, 기존 env는 긴급 롤백 스위치로 유지.
+- 2026-08-19: **US RS Rating LIVE 승격** — 2022~2026 49회 리밸런스 백테스트에서 기존 60일 RS 대비 CAGR +8.6%p, MDD 큰 악화 없음. `RS_RATING_ENABLED` 기본값을 true로 변경.
 - 2026-07-12: **Post-FTD 파일럿 재진입 재설계(sim/real parity 결함 수정)** — 구 `PULSE_PILOT_FACTOR` 금액 절반매수를 **제거**했다. 결함: 실 KIS 주문(`buy_amount`)만 절반이고 시뮬레이터(방송/저널의 진실원)는 전량 기록 → sim-vs-real 괴리. 본 시스템은 포지션당 all-in/all-out이고 포트폴리오 비중은 **중복매수(피라미딩) 허용**으로만 표현하므로 fractional sizing 자체가 계약 위반이었다. 신규 세만틱: `PULSE_PILOT_REEXPOSURE` ON 시 조정 종료 후 5거래일간 **신규 진입 배치당 1종목(주도주 top-down 우선) + 중복매수 동결**을 시뮬레이터/실주문 공통 결정 레이어(`_get_regime_slots` + tracking agents 보유중복 프리체크)에서 적용. **금액은 항상 100% 정상.** 기본 off, fail-open.
 - 2026-07-13: **US 분석 배치 3회→2회** — 장중 분석 배치를 제거했다. US는 정상·UNDER_PRESSURE에서 오전+오후를 실행하고, CORRECTION에서는 KR과 동일하게 오전을 쉬고 오후만 실행한다. 고빈도 hardstop/trend-exit/fill-chaser 스케줄은 변경하지 않는다. 상세 검증·배포 체크는 `docs/US_TWO_BATCH_POLICY.md`를 따른다.

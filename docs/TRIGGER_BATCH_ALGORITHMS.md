@@ -223,7 +223,7 @@ agent_fit = risk_reward_score * 0.60
 
 확장도 점수는 MA20 이격이 `<=2 ADR`이면 1, `>=6 ADR`이면 0으로 보간합니다.
 
-`RS_RATING_ENABLED=false`가 기본입니다.
+`RS_RATING_ENABLED=true`가 기본입니다. 검증된 US O'Neil RS Rating을 사용하며, 문제 시 `false`로 긴급 롤백할 수 있습니다.
 
 - 기본: 후보군 60일 수익률 min-max 상대강도
 - `true`: percentile/99 방식 RS Rating을 실제 점수에 사용

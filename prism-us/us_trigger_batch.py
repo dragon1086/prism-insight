@@ -1202,10 +1202,10 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
             for _ticker, s in screening_signals.items():
                 rs_score_map[_ticker] = ((s["return_nd"] - _r_min) / _r_range) if _r_range > 0 else 0.5
 
-        # Phase B: RS Rating SHADOW/LIVE gate (env: RS_RATING_ENABLED, 기본 false=SHADOW).
-        # SHADOW: 기존 return_nd 기반 rs_score 100% 불변, oneil 백분위 로그만.
+        # Phase B: RS Rating SHADOW/LIVE gate (env: RS_RATING_ENABLED, 기본 true=LIVE).
+        # SHADOW(false): 기존 return_nd 기반 rs_score 100% 불변, oneil 백분위 로그만.
         # LIVE:   RSScore를 oneil 백분위(pct/99.0)로 교체; oneil_raw=None은 기존 값 유지.
-        _rs_rating_enabled = os.getenv("RS_RATING_ENABLED", "false").strip().lower() == "true"
+        _rs_rating_enabled = os.getenv("RS_RATING_ENABLED", "true").strip().lower() == "true"
         _oneil_raw_map = {t: s["oneil_raw"] for t, s in screening_signals.items()
                           if s.get("oneil_raw") is not None}
         _oneil_pct_map = percentile_ratings(_oneil_raw_map) if _oneil_raw_map else {}
