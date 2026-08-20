@@ -999,7 +999,8 @@ class TelegramAIBot:
         # ==========================================================================
         # Firecrawl AI Research commands — interactive ConversationHandlers
         # Each command first asks for the required parameter, then calls Firecrawl.
-        # Subsequent replies to the bot's response continue via Anthropic Sonnet 5.
+        # Subsequent replies use the shared report LLM backend configured in
+        # report_generator.py (currently OpenAI Agents / Responses API).
         # BotFather commands to register:
         #   signal - 이벤트/뉴스 임팩트 분석 (한국)
         #   us_signal - 이벤트/뉴스 임팩트 분석 (미국)
@@ -3575,7 +3576,7 @@ class TelegramAIBot:
         api_url = os.getenv("ARCHIVE_API_URL", "").rstrip("/")
         api_key = os.getenv("ARCHIVE_API_KEY", "")
         daily_limit = int(os.getenv("INSIGHT_DAILY_LIMIT", "20"))
-        # The agent runs retrieval + Claude with 4 MCP servers, then embeds and
+        # The agent runs retrieval + the configured report LLM backend with 4 MCP servers, then embeds and
         # saves. A measured heavy question took 101s, so the old 90s ceiling cut
         # off work the server went on to finish — the answer was persisted and
         # the quota consumed while the user only saw an error.
