@@ -57,3 +57,21 @@ def test_telegram_runtime_sources_are_mcp_agent_free():
         source = (root / relative).read_text()
         assert "mcp_agent" not in source
         assert "MCPApp" not in source
+
+
+def test_clean_model_response_removes_telegram_markdown_artifacts():
+    result = report_generator.clean_model_response(
+        """# 📌 결론: **매수**
+
+        - 왜 이렇게 보냐면
+        - 추세가 살아 있습니다.
+
+        [차트 보기](https://example.com/chart)
+        """
+    )
+
+    assert "#" not in result
+    assert "**" not in result
+    assert "- 왜" not in result
+    assert "📌 결론: 매수" in result
+    assert "차트 보기 (https://example.com/chart)" in result
