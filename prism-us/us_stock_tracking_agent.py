@@ -1251,6 +1251,7 @@ class USStockTrackingAgent:
                     await asyncio.sleep(2 * attempt)  # linear backoff: 2s, 4s
 
             if scenario_json is not None:
+                scenario_json = self._stamp_scenario_market_regime(scenario_json)
                 # Preserve the deterministic facts used in the prompt so the
                 # final pre-buy gate validates the exact same as-of snapshot.
                 if trend_facts:
@@ -2137,7 +2138,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             result = _gate.evaluate_production_buy_gate(
                 scenario,
                 current_price=current_price,
-                market_regime=self._buy_floor_regime(),
+                market_regime=(
+                    scenario.get("_deterministic_market_regime")
+                    or self._buy_floor_regime()
+                ),
                 score_override=score_override,
                 trend_facts=str(scenario.get("_deterministic_trend_facts") or ""),
                 is_add=is_add,
@@ -2163,6 +2167,24 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 "hard_findings": [finding],
                 "reason": finding["message"],
             }
+
+    def _stamp_scenario_market_regime(self, scenario: Dict[str, Any]) -> Dict[str, Any]:
+        """Use the trigger-batch regime for gates and user-facing text."""
+        try:
+            _rp = self._regime_policy_mod()
+            regime = getattr(self, "_pipeline_market_regime", None) or self._buy_floor_regime()
+            if _rp is not None:
+                return _rp.stamp_scenario_market_regime(scenario, regime)
+        except Exception as exc:  # noqa: BLE001 - visible unknown + gate fail-closed
+            logger.error("[REGIME_SNAPSHOT][US] scenario stamp failed: %s", exc)
+        merged = dict(scenario or {})
+        merged.update({
+            "market_condition": "unknown",
+            "market_regime": None,
+            "_deterministic_market_regime": None,
+            "market_regime_source": "unavailable",
+        })
+        return merged
 
     async def _fallback_sell_decision(self, stock_data: Dict[str, Any]) -> Tuple[bool, str]:
         """Rule-based sell decision (fallback when AI unavailable).
@@ -4113,7 +4135,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
     async def run(self, pdf_report_paths: List[str], chat_id: str = None,
                   language: str = "ko", telegram_config=None, trigger_results_file: str = None,
-                  sector_names: list = None) -> bool:
+                  sector_names: list = None, market_regime: str = None) -> bool:
         """
         Main execution function for US stock tracking system.
 
@@ -4132,6 +4154,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             # Store telegram_config for use in send_telegram_message
             self.telegram_config = telegram_config
+            self._pipeline_market_regime = market_regime
 
             # Load trigger type mapping
             self.trigger_info_map = {}

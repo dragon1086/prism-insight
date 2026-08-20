@@ -340,6 +340,30 @@ def enforce_computed_regime(
     return merged
 
 
+def stamp_scenario_market_regime(
+    scenario: Optional[dict],
+    computed_regime: Optional[str | dict],
+    *,
+    source: str = "trigger_batch",
+) -> dict:
+    """Make one deterministic regime authoritative in a trading scenario."""
+    merged = dict(scenario or {})
+    raw = computed_regime.get("market_regime") if isinstance(computed_regime, dict) else computed_regime
+    token = str(raw or "").strip().lower().split()[0] if str(raw or "").strip() else ""
+    known = token in {
+        "parabolic", "strong_bull", "moderate_bull", "sideways",
+        "moderate_bear", "strong_bear",
+    }
+    old_condition = merged.get("market_condition")
+    if old_condition and old_condition != token:
+        merged["llm_market_condition"] = old_condition
+    merged["market_condition"] = token if known else "unknown"
+    merged["market_regime"] = token if known else None
+    merged["_deterministic_market_regime"] = token if known else None
+    merged["market_regime_source"] = source if known else "unavailable"
+    return merged
+
+
 # --------------------------------------------------------------------------- #
 # Pulse-state computation (lazy, fail-open, shadow-safe imports)               #
 # --------------------------------------------------------------------------- #
