@@ -33,6 +33,23 @@ TELEGRAM_ANALYSIS_EFFORT = os.environ.get(
 
 _telegram_backend = None
 
+TELEGRAM_OPINION_STYLE_GUIDE = """
+## 프리즘 텔레그램 의견 작성 규칙
+1. 데이터와 과거 결과를 확인한 뒤 반드시 한쪽 결론을 선택하세요.
+   결론은 매수 / 보유 / 매도 / 관망 중 하나만 사용합니다.
+2. 상승 우위가 분명하면 애매하게 중립을 취하지 말고 "매수" 또는 "강한 매수"라고 분명히 말하세요.
+   하락 우위면 "매도" 또는 "강한 매도", 우위가 없으면 "관망"이라고 판단하세요.
+3. "오를 수도 있지만 내릴 수도 있다", "상승 가능성과 하락 가능성이 공존한다"처럼 양방향으로 빠져나가는 문장을 쓰지 마세요.
+   반대 리스크는 결론을 바꾸는 조건으로 한 문장만 덧붙이세요.
+4. 답변 첫 부분에 반드시 "📌 결론: ..."을 쓰고, 이어서 판단 근거 2~3개와 행동 기준 1개를 설명하세요.
+5. 확률을 계산할 근거가 없으면 숫자를 지어내지 말고, 확률 대신 판단의 강도(강함/보통/약함)를 말하세요.
+6. 번역체·보고서체를 피하고 실제 한국 사람이 대화하듯 자연스럽게 윤문하세요.
+   문장은 짧게, 단락은 2~4문장씩 나누고 접속어를 반복하지 마세요.
+7. Markdown 문법을 절대 사용하지 마세요. #, *, **, _, 백틱, Markdown 표, Markdown 링크를 쓰지 마세요.
+   제목은 "📌 결론", "왜 이렇게 보냐면", "리스크", "내 판단을 바꾸는 조건"처럼 일반 텍스트로 작성하세요.
+8. 투자 권유가 아니라 분석 의견이라는 고지는 기존 시스템 문구로 처리하므로, 본문에서 모호한 면책 문장을 반복하지 마세요.
+"""
+
 _FAILED_REPORT_MARKERS = ("analysis failed", "분석 실패")
 _MAX_CACHEABLE_FAILURE_MARKERS = 2
 _KST = ZoneInfo("Asia/Seoul")
@@ -643,6 +660,7 @@ if __name__ == "__main__":
         return f"보고서 생성 중 오류가 발생했습니다: {str(e)}"
 
 def clean_model_response(response):
+    response = str(response or "")
     # 마지막 평가 문장 패턴
     final_analysis_pattern = r'이제 수집한 정보를 바탕으로.*평가를 해보겠습니다\.'
 
@@ -661,8 +679,21 @@ def clean_model_response(response):
         # 패턴을 찾지 못한 경우 그냥 도구 호출만 제거된 버전 사용
         cleaned_response = temp_response
 
+    # Telegram plain-text cleanup: models occasionally emit Markdown despite the
+    # prompt. Keep URLs and ordinary underscores inside words, but remove the
+    # formatting syntax that Telegram clients may display literally.
+    cleaned_response = re.sub(r"```(?:[A-Za-z0-9_+-]+)?\s*", "", cleaned_response)
+    cleaned_response = cleaned_response.replace("```", "")
+    cleaned_response = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", cleaned_response)
+    cleaned_response = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1 (\2)", cleaned_response)
+    cleaned_response = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", cleaned_response)
+    cleaned_response = cleaned_response.replace("**", "").replace("__", "")
+    cleaned_response = re.sub(r"(?m)^\s*[-*+]\s+", "", cleaned_response)
+    cleaned_response = cleaned_response.replace("`", "")
+    cleaned_response = re.sub(r"\n{3,}", "\n\n", cleaned_response)
+
     # 앞부분 빈 줄 제거
-    cleaned_response = cleaned_response.lstrip()
+    cleaned_response = cleaned_response.strip()
 
     return cleaned_response
 
@@ -718,6 +749,7 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
                         - 사용자의 질문이 이전 대화와 관련이 있다면, 그 맥락을 참고하여 답변
                         - 새로운 정보가 필요한 경우에만 도구를 사용
                         - 도구 호출 과정을 사용자에게 노출하지 마세요
+                        {TELEGRAM_OPINION_STYLE_GUIDE}
                         """,
             server_names=["perplexity", "kospi_kosdaq"]
         )
@@ -876,7 +908,6 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                         - 줄바꿈으로 단락을 명확히 구분
                         - 중요 부분은 ✨ 또는 ❗️ 등으로 강조
                         - 텍스트 블록은 짧게 유지하여 모바일에서 읽기 쉽게 작성
-                        - 해시태그(#)를 활용하여 핵심 키워드 강조
                         - 절대 마크다운 형식으로 쓰지 말고, 텔레그램 메시지로 보낸다고 생각하고 사람처럼 자연스럽게 말할 것
                         
                         ## 주의사항
@@ -890,6 +921,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                         - 5000자 이내로 작성하세요
                         - 중요: 도구를 호출할 때는 사용자에게 "[Calling tool...]"과 같은 형식의 메시지를 표시하지 마세요.
                           도구 호출은 내부 처리 과정이며 최종 응답에서는 도구 사용 결과만 자연스럽게 통합하여 제시해야 합니다.
+                        {TELEGRAM_OPINION_STYLE_GUIDE}
                         {memory_section}
                         """,
             server_names=["perplexity", "kospi_kosdaq", "time"]
@@ -1059,7 +1091,6 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                         - 줄바꿈으로 단락을 명확히 구분
                         - 중요 부분은 ✨ 또는 ❗️ 등으로 강조
                         - 텍스트 블록은 짧게 유지하여 모바일에서 읽기 쉽게 작성
-                        - 해시태그(#)를 활용하여 핵심 키워드 강조
                         - 절대 마크다운 형식으로 쓰지 말고, 텔레그램 메시지로 보낸다고 생각하고 사람처럼 자연스럽게 말할 것
                         - 가격은 반드시 달러($) 단위로 표시
 
@@ -1075,6 +1106,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                         - 중요: 도구를 호출할 때는 사용자에게 "[Calling tool...]"과 같은 형식의 메시지를 표시하지 마세요.
                           도구 호출은 내부 처리 과정이며 최종 응답에서는 도구 사용 결과만 자연스럽게 통합하여 제시해야 합니다.
                         - 미국 주식 분석이므로 한국어로 응답하되, 가격은 달러($)로 표시하세요.
+                        {TELEGRAM_OPINION_STYLE_GUIDE}
                         {memory_section}
                         """,
             server_names=["perplexity", "yahoo_finance", "time"]
@@ -1155,6 +1187,7 @@ async def generate_us_follow_up_response(ticker, ticker_name, conversation_conte
                         - 새로운 정보가 필요한 경우에만 도구를 사용
                         - 도구 호출 과정을 사용자에게 노출하지 마세요
                         - 한국어로 응답하되, 미국 주식이므로 가격은 달러($)로 표시
+                        {TELEGRAM_OPINION_STYLE_GUIDE}
                         """,
             server_names=["perplexity", "yahoo_finance"]
         )
@@ -1254,6 +1287,7 @@ async def generate_journal_conversation_response(
 4. 2000자 이내로 작성하세요
 5. 사용자의 과거 기록을 자연스럽게 언급할 수 있습니다
 6. 투자 조언을 할 때는 항상 "의견"임을 명시하세요
+{TELEGRAM_OPINION_STYLE_GUIDE if ticker else ""}
 
 ## 중요
 - 사용자가 일반적인 대화를 원하면 주식 얘기를 강요하지 마세요
@@ -1483,7 +1517,8 @@ async def generate_firecrawl_search_response(
                 "자료 수집 과정에 대한 메타 언급을 독자에게 노출하지 마세요. "
                 "근거가 부족하면 그 대목을 조용히 빼고 확실한 내용으로 채우세요.\n"
                 "- 텔레그램 메시지 형태로, 이모지를 포함하여 자연스럽게 작성하세요.\n"
-                "- 마크다운 형식 대신 텔레그램에 적합한 플레인 텍스트로 작성하세요."
+                "- 마크다운 형식 대신 텔레그램에 적합한 플레인 텍스트로 작성하세요.\n"
+                f"{TELEGRAM_OPINION_STYLE_GUIDE}"
             ),
             server_names=[]
         )
@@ -1591,6 +1626,7 @@ async def generate_firecrawl_followup_response(
 4. 마크다운 대신 플레인 텍스트로 작성하세요.
 5. 2000자 이내로 작성하세요.
 6. 도구 호출 과정을 사용자에게 노출하지 마세요.
+{TELEGRAM_OPINION_STYLE_GUIDE}
 """,
             server_names=server_names,
         )
