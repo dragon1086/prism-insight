@@ -1295,7 +1295,8 @@ class USStockAnalysisOrchestrator:
                         tracking_success = await tracking_agent.run(
                             pdf_paths, chat_id, language,
                             telegram_config=self.telegram_config,
-                            trigger_results_file=trigger_results_file
+                            trigger_results_file=trigger_results_file,
+                            market_regime=(macro_context or {}).get("market_regime"),
                         )
 
                         await publish_batch_tracking_story_best_effort(
