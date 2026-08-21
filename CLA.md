@@ -2,6 +2,8 @@
 
 Version 1.0 — Effective August 22, 2026
 
+> [한국어 번역](CLA_ko.md)
+
 Thank you for contributing to PRISM-INSIGHT. This Individual Contributor
 License Agreement (the "Agreement") explains the rights that you grant when
 you submit a Contribution to the Project.
@@ -62,9 +64,11 @@ patent claims that You can license and that are necessarily infringed by Your
 Contribution alone or by combining Your Contribution with the Project as it
 existed when You submitted the Contribution.
 
-If You initiate patent litigation alleging that the Project or a Contribution
-infringes a patent, the patent licenses granted to You under this Agreement for
-the accused work terminate as of the date the litigation is filed.
+If You initiate patent litigation against the Project Owner, a Project
+Successor, or a recipient of the Project alleging that the Project or a
+Contribution infringes a patent, the patent license You granted under this Section
+to the party against whom You filed the litigation terminates as of the filing
+date.
 
 ## 5. Your Representations
 
