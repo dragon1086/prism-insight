@@ -88,3 +88,7 @@ def test_cla_workflow_is_pinned_and_minimally_scoped() -> None:
     assert action_step["with"]["path-to-signatures"] == "signatures/cla.json"
     assert action_step["with"]["branch"] == "cla-signatures"
     assert SIGN_COMMENT in workflow_text
+    unsigned_comment = action_step["with"]["custom-notsigned-prcomment"]
+    assert "$pathToCLADocument" not in unsigned_comment
+    assert "/blob/main/CLA.md" in unsigned_comment
+    assert "/blob/main/CLA_ko.md" in unsigned_comment

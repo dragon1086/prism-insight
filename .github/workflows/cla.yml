@@ -47,8 +47,10 @@ jobs:
           allowlist: dragon1086,cokac-bot,dependabot[bot],github-actions[bot]
           custom-notsigned-prcomment: >-
             Thank you for your contribution. Before this pull request can be
-            merged, each contributor must read $pathToCLADocument and comment
-            the exact signature statement shown below.
+            merged, each contributor must read the
+            [authoritative English CLA](https://github.com/dragon1086/prism-insight/blob/main/CLA.md)
+            or its [Korean translation](https://github.com/dragon1086/prism-insight/blob/main/CLA_ko.md),
+            then comment the exact signature statement shown below.
           custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA
           custom-allsigned-prcomment: All contributors have signed the CLA.
           create-file-commit-message: Create the PRISM-INSIGHT CLA signature ledger
