@@ -4,6 +4,29 @@
 
 Thank you for contributing to the PRISM-INSIGHT project! 🎉
 
+## Contributor License Agreement
+
+PRISM-INSIGHT is offered under the AGPL-3.0 and under separate commercial
+license terms. To keep that dual-licensing model legally clear, every pull
+request contributor must accept the [Individual Contributor License
+Agreement](CLA.md) before a pull request can be merged.
+
+The CLA does not transfer ownership of your contribution. You keep your
+copyright while granting the Project the rights needed to distribute your
+contribution under both open-source and commercial terms.
+
+The CLA Assistant will comment on a pull request when a signature is needed.
+After reading the CLA, post the following exact comment on the pull request:
+
+```text
+I have read the CLA Document and I hereby sign the CLA
+```
+
+The signature is normally required once for each version of the CLA. If more
+than one person authored a pull request, every author must sign. A contributor
+must also have authority to submit the contribution; if an employer or another
+party owns relevant rights, obtain the necessary authorization before signing.
+
 ## 📋 How to Contribute
 
 ### 1. Issue Reporting
@@ -25,6 +48,7 @@ Please report through GitHub Issues for:
 7. **Create Pull Request**: Create PR on GitHub
 
 #### PR Submission Checklist
+- [ ] Read and accept the [CLA](CLA.md)
 - [ ] Verify code runs correctly
 - [ ] Perform simple tests for new features
 - [ ] Add appropriate code comments
