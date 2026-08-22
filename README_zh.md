@@ -464,7 +464,7 @@ SaaS 公司需要单独的商业许可证。
 
 ## 项目成长
 
-[![Star History Chart](https://api.star-history.com/svg?repos=dragon1086/prism-insight&type=Date)](https://star-history.com/#dragon1086/prism-insight&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=dragon1086/prism-insight&type=Date)](https://star-history.dera.page/#dragon1086/prism-insight&type=Date)
 
 ---
 
