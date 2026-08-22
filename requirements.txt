@@ -33,7 +33,6 @@ python-dotenv>=1.0.0
 playwright>=1.40.0  # Chromium 기반 PDF 변환 (권장)
 pdfkit>=1.0.0  # wkhtmltopdf 기반 PDF 변환 (레거시, 백업용)
 reportlab>=4.0.0  # 직접 PDF 생성 (대체 방식)
-mdpdf>=0.0.9  # 간편한 마크다운 변환 (대체 방식)
 
 # 주식 데이터 관련
 pykrx==1.0.48
@@ -65,7 +64,6 @@ mplfinance~=0.12.10b0
 tenacity
 
 PyPDF2
-html2text
 
 scipy
 
