@@ -97,6 +97,17 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Coerce a KIS response field (often an empty string) to float. Never raises."""
+    try:
+        s = str(value).strip()
+        if not s:
+            return default
+        return float(s)
+    except (TypeError, ValueError):
+        return default
+
+
 class DomesticStockTrading:
     """Domestic stock trading class"""
 
@@ -275,7 +286,7 @@ class DomesticStockTrading:
                     'stock_code': stock_code,
                     'stock_name': data.get('rprs_mrkt_kor_name', ''),
                     'current_price': int(data.get('stck_prpr', 0)),  # Current price
-                    'change_rate': float(data.get('prdy_ctrt', 0)),  # Change rate from previous day
+                    'change_rate': _safe_float(data.get('prdy_ctrt', 0)),  # Change rate from previous day
                     'volume': int(data.get('acml_vol', 0)),  # Cumulative volume
                     # 종목상태/시장경고 (이벤트 강제청산 자동탐지용 — cores.corporate_status)
                     # iscd_stat_cls_code: 00/55 정상, 51 관리종목, 52 투자위험, 53 투자경고, 58 거래정지
@@ -1662,24 +1673,24 @@ class DomesticStockTrading:
                     ):
                         authoritative = False
                     # Only add stocks with quantity > 0
-                    quantity = int(item.get('hldg_qty', 0))
+                    quantity = _safe_int(item.get('hldg_qty', 0))
                     if quantity > 0:
                         stock_info = {
                             'stock_code': item.get('pdno', ''),
                             'stock_name': item.get('prdt_name', ''),
                             'quantity': quantity,
-                            'avg_price': float(item.get('pchs_avg_pric', 0)),
-                            'current_price': float(item.get('prpr', 0)),
-                            'eval_amount': float(item.get('evlu_amt', 0)),
-                            'profit_amount': float(item.get('evlu_pfls_amt', 0)),
-                            'profit_rate': float(item.get('evlu_pfls_rt', 0))
+                            'avg_price': _safe_float(item.get('pchs_avg_pric', 0)),
+                            'current_price': _safe_float(item.get('prpr', 0)),
+                            'eval_amount': _safe_float(item.get('evlu_amt', 0)),
+                            'profit_amount': _safe_float(item.get('evlu_pfls_amt', 0)),
+                            'profit_rate': _safe_float(item.get('evlu_pfls_rt', 0))
                         }
                         current_portfolio.append(stock_info)
 
                 # Log account summary
                 if output2:
-                    total_eval = float(output2.get('tot_evlu_amt', 0))
-                    total_profit = float(output2.get('evlu_pfls_smtl_amt', 0))
+                    total_eval = _safe_float(output2.get('tot_evlu_amt', 0))
+                    total_profit = _safe_float(output2.get('evlu_pfls_smtl_amt', 0))
                     logger.info(f"Account total evaluation: {total_eval:,.0f} KRW, total profit/loss: {total_profit:+,.0f} KRW")
 
                 logger.info(f"Portfolio: {len(current_portfolio)} holdings")
@@ -1764,12 +1775,12 @@ class DomesticStockTrading:
                 output2 = res.getBody().output2[0]  # Account summary
 
                 if output2:
-                    pchs_amt = float(output2.get('pchs_amt_smtl_amt', 0)) or 1  # Replace 0 with 1
+                    pchs_amt = _safe_float(output2.get('pchs_amt_smtl_amt', 0)) or 1  # Replace 0 with 1
 
                     # Total evaluation amount and securities evaluation amount
-                    tot_evlu_amt = float(output2.get('tot_evlu_amt', 0))
-                    scts_evlu_amt = float(output2.get('scts_evlu_amt', 0))
-                    dnca_tot_amt = float(output2.get('dnca_tot_amt', 0))
+                    tot_evlu_amt = _safe_float(output2.get('tot_evlu_amt', 0))
+                    scts_evlu_amt = _safe_float(output2.get('scts_evlu_amt', 0))
+                    dnca_tot_amt = _safe_float(output2.get('dnca_tot_amt', 0))
 
                     # Total cash (including D+2) = Total evaluation amount - Securities evaluation amount
                     # This includes deposit (D+0) + D+1 + D+2 receivables
@@ -1777,11 +1788,11 @@ class DomesticStockTrading:
 
                     account_summary = {
                         'total_eval_amount': tot_evlu_amt,
-                        'total_profit_amount': float(output2.get('evlu_pfls_smtl_amt', 0)),
-                        'total_profit_rate': round(float(output2.get('evlu_pfls_smtl_amt', 0)) / pchs_amt * 100, 2),
+                        'total_profit_amount': _safe_float(output2.get('evlu_pfls_smtl_amt', 0)),
+                        'total_profit_rate': round(_safe_float(output2.get('evlu_pfls_smtl_amt', 0)) / pchs_amt * 100, 2),
                         'deposit': dnca_tot_amt,  # Deposit (D+0, same-day withdrawal available)
                         'total_cash': total_cash,  # Total cash (including D+2)
-                        'available_amount': float(output2.get('ord_psbl_cash', 0))
+                        'available_amount': _safe_float(output2.get('ord_psbl_cash', 0))
                     }
 
                     logger.info(f"Account summary: Total eval {account_summary['total_eval_amount']:,.0f} KRW, "
