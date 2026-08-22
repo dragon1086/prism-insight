@@ -1673,7 +1673,10 @@ class DomesticStockTrading:
                     ):
                         authoritative = False
                     # Only add stocks with quantity > 0
-                    quantity = _safe_int(item.get('hldg_qty', 0))
+                    quantity = _safe_int(item.get('hldg_qty', 0), default=-1)
+                    if quantity < 0:
+                        authoritative = False
+                        continue
                     if quantity > 0:
                         stock_info = {
                             'stock_code': item.get('pdno', ''),
