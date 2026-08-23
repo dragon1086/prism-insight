@@ -439,7 +439,11 @@ npm run dev
 SaaS 기업은 별도의 상업 라이선스가 필요합니다.
 
 **연락처**: dragon1086@naver.com
-**상세 조건**: 위 연락처로 문의해 주세요.
+**상세 조건**: [COMMERCIAL-LICENSE-ko.md](COMMERCIAL-LICENSE-ko.md)
+
+제3자 오픈소스 구성요소에는 각 구성요소의 라이선스가 적용됩니다. 고지,
+소스 코드 안내 및 라이선스 원문은
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에서 확인할 수 있습니다.
 
 ---
 
