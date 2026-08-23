@@ -436,7 +436,11 @@ Free under AGPL-3.0 for personal use, non-commercial projects, and open-source d
 Separate commercial license required for SaaS companies.
 
 **Contact**: dragon1086@naver.com
-**Details**: [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md)
+**Details**: [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)
+
+Third-party open source components remain subject to their respective terms.
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for notices, source links,
+and license texts.
 
 ---
 
