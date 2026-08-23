@@ -1,0 +1,14 @@
+{
+  "approved_copyleft_packages": {
+    "python-telegram-bot": {
+      "license_family": "LGPL-3.0"
+    },
+    "frozendict": {
+      "license_family": "LGPL-3.0"
+    }
+  },
+  "required_license_files": [
+    "GPL-3.0.txt",
+    "LGPL-3.0.txt"
+  ]
+}
