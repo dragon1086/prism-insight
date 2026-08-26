@@ -22,7 +22,13 @@ class _CollectorHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers["Content-Length"])
-        self.__class__.payloads.append((self.path, json.loads(self.rfile.read(length))))
+        self.__class__.payloads.append(
+            (
+                self.path,
+                json.loads(self.rfile.read(length)),
+                self.headers.get("Authorization"),
+            )
+        )
         self.send_response(self.__class__.status)
         self.end_headers()
 
@@ -80,12 +86,14 @@ def test_success_advances_checkpoint_and_does_not_resend(tmp_path, collector):
         endpoint=collector,
         batch_size=100,
         timeout=2,
+        auth_token="collector-secret",
     ) == 2
     saved = load_checkpoint(checkpoint)
     assert saved is not None
     assert saved.offset == spool.stat().st_size
     assert len(_CollectorHandler.payloads) == 1
     assert _CollectorHandler.payloads[0][0] == "/v1/logs"
+    assert _CollectorHandler.payloads[0][2] == "collector-secret"
 
     assert run_once(
         spool_path=spool,

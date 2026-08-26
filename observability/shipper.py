@@ -181,7 +181,9 @@ def send_batch(
     encoded = json.dumps(build_otlp_payload(events), ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
+        # ClickStack's static bearertokenauth extension compares the complete
+        # Authorization value to OTLP_AUTH_TOKEN (without a "Bearer " prefix).
+        headers["Authorization"] = auth_token
     request = urllib.request.Request(endpoint, data=encoded, headers=headers, method="POST")
     with urllib.request.urlopen(request, timeout=timeout) as response:
         if not 200 <= response.status < 300:
