@@ -75,6 +75,10 @@ credential-free JSON snapshot. tools/publish_observability_insights.py
 publishes it atomically to app-server every five minutes through the systemd
 timer template.
 
+The publisher uses a dedicated SSH identity and the unprivileged prism account
+on app-server. Host, port, user, identity path, and destination stay outside Git
+in /etc/prism-observability/dashboard-export.env.
+
 The existing dashboard reads /observability_insights.json independently from
 its portfolio JSON. Missing or delayed observability data hides only the new
 panel and never breaks the existing dashboard.

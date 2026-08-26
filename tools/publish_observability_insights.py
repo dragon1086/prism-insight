@@ -43,6 +43,7 @@ def publish(
     port: int,
     user: str,
     destination: str,
+    identity_file: str | None = None,
 ) -> dict[str, object]:
     if not _SAFE_HOST.fullmatch(host):
         raise ValueError("invalid dashboard host")
@@ -52,6 +53,8 @@ def publish(
         raise ValueError("invalid dashboard destination")
     if not 1 <= port <= 65535:
         raise ValueError("invalid dashboard SSH port")
+    if identity_file and not Path(identity_file).is_absolute():
+        raise ValueError("dashboard identity file must be absolute")
 
     events = load_clickhouse_events(container, days=days)
     snapshot = build_snapshot(events, retention_days=days)
@@ -59,18 +62,20 @@ def publish(
 
     remote = f"{user}@{host}"
     remote_temporary = destination + ".tmp"
-    common_ssh = [
+    common_options = [
         "-o",
         "BatchMode=yes",
         "-o",
         "ConnectTimeout=10",
-        "-p",
-        str(port),
     ]
+    if identity_file:
+        common_options.extend(["-i", identity_file])
+    scp_options = [*common_options, "-P", str(port)]
+    ssh_options = [*common_options, "-p", str(port)]
     subprocess.run(
         [
             "scp",
-            *common_ssh,
+            *scp_options,
             str(local_output),
             f"{remote}:{remote_temporary}",
         ],
@@ -80,7 +85,7 @@ def publish(
     subprocess.run(
         [
             "ssh",
-            *common_ssh,
+            *ssh_options,
             remote,
             "/usr/bin/install",
             "-m",
@@ -93,7 +98,7 @@ def publish(
         timeout=30,
     )
     subprocess.run(
-        ["ssh", *common_ssh, remote, "/usr/bin/rm", "-f", "--", remote_temporary],
+        ["ssh", *ssh_options, remote, "/usr/bin/rm", "-f", "--", remote_temporary],
         check=True,
         timeout=30,
     )
@@ -125,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         port=int(os.getenv("PRISM_DASHBOARD_PORT", "22")),
         user=os.getenv("PRISM_DASHBOARD_USER", "root"),
         destination=_required_env("PRISM_DASHBOARD_DESTINATION"),
+        identity_file=os.getenv("PRISM_DASHBOARD_IDENTITY") or None,
     )
     print(json.dumps(result))
     return 0
