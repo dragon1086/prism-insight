@@ -20,6 +20,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
+from tracking.performance_feedback import get_trigger_feedback
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -392,34 +394,21 @@ class PerformanceTrackerBatch:
             """)
             status_stats = {row['tracking_status']: row['count'] for row in cursor.fetchall()}
 
-            # Statistics by trigger type
-            cursor = conn.execute("""
-                SELECT
-                    trigger_type,
-                    COUNT(*) as count,
-                    SUM(CASE WHEN was_traded = 1 THEN 1 ELSE 0 END) as traded_count,
-                    AVG(tracked_7d_return) as avg_7d_return,
-                    AVG(tracked_14d_return) as avg_14d_return,
-                    AVG(tracked_30d_return) as avg_30d_return
-                FROM analysis_performance_tracker
-                WHERE tracking_status = 'completed'
-                GROUP BY trigger_type
-            """)
-            trigger_stats = cursor.fetchall()
-
-            # Traded vs watched performance comparison
-            cursor = conn.execute("""
-                SELECT
-                    CASE WHEN was_traded = 1 THEN 'Traded' ELSE 'Watched' END as decision,
-                    COUNT(*) as count,
-                    AVG(tracked_7d_return) as avg_7d_return,
-                    AVG(tracked_14d_return) as avg_14d_return,
-                    AVG(tracked_30d_return) as avg_30d_return
-                FROM analysis_performance_tracker
-                WHERE tracking_status = 'completed'
-                GROUP BY was_traded
-            """)
-            decision_stats = cursor.fetchall()
+            trigger_names = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT DISTINCT trigger_type FROM analysis_performance_tracker
+                       WHERE trigger_type IS NOT NULL
+                       UNION
+                       SELECT DISTINCT trigger_type FROM trading_history
+                       WHERE trigger_type IS NOT NULL
+                       ORDER BY trigger_type"""
+                ).fetchall()
+            ]
+            trigger_feedback = [
+                get_trigger_feedback(conn.cursor(), "KR", trigger_type)
+                for trigger_type in trigger_names
+            ]
 
             # Generate report
             report = []
@@ -440,50 +429,36 @@ class PerformanceTrackerBatch:
                 report.append(f"  {status_name}: {count} records")
             report.append("")
 
-            # Performance by trigger type
-            report.append("## 2. Performance by Trigger Type (Completed only)")
+            # Candidate fixed-horizon vs actual realized performance.
+            report.append("## 2. Trigger Performance — Candidate vs Actual")
             report.append("-"*40)
-            if trigger_stats:
-                report.append(f"{'Trigger Type':<25} {'Count':>6} {'Traded':>6} {'7d':>8} {'14d':>8} {'30d':>8}")
-                report.append("-"*70)
-                for row in trigger_stats:
-                    trigger_type = row['trigger_type'] or 'unknown'
-                    count = row['count']
-                    traded = row['traded_count'] or 0
-                    avg_7d = row['avg_7d_return']
-                    avg_14d = row['avg_14d_return']
-                    avg_30d = row['avg_30d_return']
-
-                    # Format returns
-                    r7 = f"{avg_7d*100:+.1f}%" if avg_7d else "N/A"
-                    r14 = f"{avg_14d*100:+.1f}%" if avg_14d else "N/A"
-                    r30 = f"{avg_30d*100:+.1f}%" if avg_30d else "N/A"
-
-                    report.append(f"{trigger_type:<25} {count:>6} {traded:>6} {r7:>8} {r14:>8} {r30:>8}")
+            if trigger_feedback:
+                for feedback in trigger_feedback:
+                    report.append(f"- {feedback['trigger_type']}")
+                    candidate = feedback.get("candidate_trigger")
+                    actual = feedback.get("actual_trigger")
+                    if candidate:
+                        report.append(
+                            "    Candidate: "
+                            f"n={candidate['n']}, "
+                            f"30d positive={candidate['positive_rate_30d']*100:.0f}%, "
+                            f"avg7={candidate['avg_7d_pct']:+.1f}%, "
+                            f"avg30={candidate['avg_30d_pct']:+.1f}%"
+                        )
+                    else:
+                        report.append("    Candidate: unavailable")
+                    if actual:
+                        pf = actual.get("profit_factor")
+                        pf_text = f"{pf:.2f}" if pf is not None else "N/A"
+                        report.append(
+                            "    Actual:    "
+                            f"n={actual['n']}, win={actual['win_rate']*100:.0f}%, "
+                            f"PF={pf_text}, avg={actual['avg_return_pct']:+.1f}%"
+                        )
+                    else:
+                        report.append("    Actual:    unavailable")
             else:
-                report.append("  No completed tracking data.")
-            report.append("")
-
-            # Traded vs watched performance
-            report.append("## 3. Traded vs Watched Performance")
-            report.append("-"*40)
-            if decision_stats:
-                report.append(f"{'Type':<10} {'Count':>6} {'7d':>10} {'14d':>10} {'30d':>10}")
-                report.append("-"*50)
-                for row in decision_stats:
-                    decision = row['decision']
-                    count = row['count']
-                    avg_7d = row['avg_7d_return']
-                    avg_14d = row['avg_14d_return']
-                    avg_30d = row['avg_30d_return']
-
-                    r7 = f"{avg_7d*100:+.1f}%" if avg_7d else "N/A"
-                    r14 = f"{avg_14d*100:+.1f}%" if avg_14d else "N/A"
-                    r30 = f"{avg_30d*100:+.1f}%" if avg_30d else "N/A"
-
-                    report.append(f"{decision:<10} {count:>6} {r7:>10} {r14:>10} {r30:>10}")
-            else:
-                report.append("  No completed tracking data.")
+                report.append("  No trigger performance data.")
             report.append("")
 
             # Recently completed tracking
