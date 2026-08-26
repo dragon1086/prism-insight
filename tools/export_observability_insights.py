@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import statistics
 import urllib.parse
-import urllib.request
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -364,19 +364,29 @@ def load_clickhouse_events(
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
         raise ValueError("ClickHouse dashboard endpoint must be local HTTP")
     query = urllib.parse.urlencode({"param_days": max(1, days)})
-    url = endpoint.rstrip("/") + "/?" + query
-    request = urllib.request.Request(
-        url,
-        data=_CLICKHOUSE_EVENTS_QUERY.encode("utf-8"),
-        headers={
+    path = (parsed.path.rstrip("/") or "") + "/?" + query
+    connection = http.client.HTTPConnection(
+        parsed.hostname,
+        parsed.port or 80,
+        timeout=15,
+    )
+    try:
+        connection.request(
+            "POST",
+            path,
+            body=_CLICKHOUSE_EVENTS_QUERY.encode("utf-8"),
+            headers={
             "Content-Type": "text/plain; charset=utf-8",
             "X-ClickHouse-User": user,
             "X-ClickHouse-Key": password,
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=15) as response:
+            },
+        )
+        response = connection.getresponse()
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"ClickHouse HTTP {response.status}")
         output = response.read().decode("utf-8")
+    finally:
+        connection.close()
     events = []
     for line in output.splitlines():
         if not line.strip():
