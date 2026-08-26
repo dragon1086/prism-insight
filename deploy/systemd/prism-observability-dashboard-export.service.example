@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/prism-observability/dashboard-export.env
+EnvironmentFile=/etc/prism-observability/clickstack.env
 WorkingDirectory=/opt/prism-observability
 ExecStart=/usr/bin/python3 /opt/prism-observability/publish_observability_insights.py --days 180
 Nice=10

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from tools import publish_observability_insights as publisher
-from tools.export_observability_insights import build_snapshot
+from tools.export_observability_insights import build_snapshot, load_clickhouse_events
 
 
 def _event(
@@ -85,6 +85,16 @@ def test_snapshot_separates_actual_candidate_and_market():
     assert snapshot["data_quality"]["backfill_events"] == 3
 
 
+def test_clickhouse_exporter_rejects_non_local_endpoint():
+    with pytest.raises(ValueError, match="local HTTP"):
+        load_clickhouse_events(
+            "https://clickhouse.example",
+            user="user",
+            password="secret",
+            days=180,
+        )
+
+
 def test_snapshot_deduplicates_event_ids_and_deployments():
     deployment = _event(
         "deploy-live",
@@ -152,7 +162,7 @@ def test_deployment_impact_uses_buy_date_cohorts():
 def test_publisher_validates_remote_destination_before_execution(tmp_path):
     with pytest.raises(ValueError, match="destination"):
         publisher.publish(
-            container="clickstack",
+            endpoint="http://127.0.0.1:18123",
             local_output=tmp_path / "snapshot.json",
             days=180,
             host="app.example",
@@ -169,6 +179,8 @@ def test_publisher_generates_then_installs_atomically(tmp_path, monkeypatch):
         "data_quality": {"total_events": 3},
     }
     calls = []
+    monkeypatch.setenv("CLICKHOUSE_USER", "prism_otel")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test-password")
     monkeypatch.setattr(publisher, "load_clickhouse_events", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(publisher, "build_snapshot", lambda *_args, **_kwargs: snapshot)
     monkeypatch.setattr(
@@ -183,7 +195,7 @@ def test_publisher_generates_then_installs_atomically(tmp_path, monkeypatch):
     )
 
     result = publisher.publish(
-        container="clickstack",
+        endpoint="http://127.0.0.1:18123",
         local_output=tmp_path / "snapshot.json",
         days=180,
         host="app.example",
@@ -194,12 +206,12 @@ def test_publisher_generates_then_installs_atomically(tmp_path, monkeypatch):
     )
 
     assert result["events"] == 3
-    assert calls[0][0][0] == "scp"
+    assert calls[0][0][0].endswith("/scp")
     assert "-P" in calls[0][0]
     assert "2222" in calls[0][0]
     assert "/etc/prism-observability/dashboard-publisher" in calls[0][0]
     assert calls[0][0][-1].endswith("observability_insights.json.tmp")
-    assert calls[1][0][0] == "ssh"
+    assert calls[1][0][0].endswith("/ssh")
     assert "-p" in calls[1][0]
     assert "/usr/bin/install" in calls[1][0]
-    assert calls[2][0][0] == "ssh"
+    assert calls[2][0][0].endswith("/ssh")

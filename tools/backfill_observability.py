@@ -11,9 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import sqlite3
-import subprocess
 import sys
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime, timedelta, timezone
@@ -32,6 +30,57 @@ BACKFILL_VERSION = 1
 DEFAULT_DB = PROJECT_ROOT / "stock_tracking_db.sqlite"
 DEFAULT_REGIME_LOG = PROJECT_ROOT / "logs" / "regime_history.jsonl"
 DEFAULT_STATE = PROJECT_ROOT / "logs" / "observability_backfill_state.json"
+
+_ACTUAL_TABLES = {
+    "KR": "trading_history",
+    "US": "us_trading_history",
+}
+_ACTUAL_QUERIES = {
+    "KR": """
+        SELECT id, ticker, company_name, buy_price, buy_date, sell_price,
+               sell_date, profit_rate, holding_days, scenario, trigger_type,
+               trigger_mode, sector, exit_kind
+        FROM trading_history
+        ORDER BY id
+    """,
+    "US": """
+        SELECT id, ticker, company_name, buy_price, buy_date, sell_price,
+               sell_date, profit_rate, holding_days, scenario, trigger_type,
+               trigger_mode, sector, exit_kind
+        FROM us_trading_history
+        ORDER BY id
+    """,
+}
+_CANDIDATE_TABLES = {
+    "KR": "analysis_performance_tracker",
+    "US": "us_analysis_performance_tracker",
+}
+_CANDIDATE_QUERIES = {
+    "KR": """
+        SELECT id, ticker, company_name, trigger_type, trigger_mode,
+               analyzed_date AS analysis_date, decision, was_traded,
+               skip_reason, buy_score, min_score, target_price, stop_loss,
+               risk_reward_ratio, tracked_7d_return AS return_7d,
+               tracked_14d_return AS return_14d,
+               tracked_30d_return AS return_30d,
+               tracked_30d_date AS outcome_observed_at,
+               NULL AS hit_target, NULL AS hit_stop_loss, NULL AS sector
+        FROM analysis_performance_tracker
+        WHERE tracked_30d_return IS NOT NULL
+        ORDER BY id
+    """,
+    "US": """
+        SELECT id, ticker, company_name, trigger_type, trigger_mode,
+               analysis_date, decision, was_traded, skip_reason, buy_score,
+               NULL AS min_score, target_price, stop_loss,
+               risk_reward_ratio, return_7d, return_14d, return_30d,
+               last_updated AS outcome_observed_at,
+               hit_target, hit_stop_loss, sector
+        FROM us_analysis_performance_tracker
+        WHERE return_30d IS NOT NULL
+        ORDER BY id
+    """,
+}
 
 
 def _event_id(source_key: str) -> str:
@@ -73,14 +122,9 @@ def iter_actual_events(
     *,
     since: datetime,
 ) -> Iterator[dict[str, Any]]:
-    table = "trading_history" if market == "KR" else "us_trading_history"
-    columns = (
-        "id, ticker, company_name, buy_price, buy_date, sell_price, sell_date, "
-        "profit_rate, holding_days, scenario, trigger_type, trigger_mode, "
-        "sector, exit_kind"
-    )
+    table = _ACTUAL_TABLES[market]
     connection.row_factory = sqlite3.Row
-    for row in connection.execute(f"SELECT {columns} FROM {table} ORDER BY id"):
+    for row in connection.execute(_ACTUAL_QUERIES[market]):
         event_time = _parse_time(row["sell_date"])
         if event_time is None or event_time < since:
             continue
@@ -121,36 +165,8 @@ def iter_candidate_events(
     since: datetime,
 ) -> Iterator[dict[str, Any]]:
     connection.row_factory = sqlite3.Row
-    if market == "KR":
-        table = "analysis_performance_tracker"
-        query = f"""
-            SELECT id, ticker, company_name, trigger_type, trigger_mode,
-                   analyzed_date AS analysis_date, decision, was_traded,
-                   skip_reason, buy_score, min_score, target_price, stop_loss,
-                   risk_reward_ratio, tracked_7d_return AS return_7d,
-                   tracked_14d_return AS return_14d,
-                   tracked_30d_return AS return_30d,
-                   tracked_30d_date AS outcome_observed_at,
-                   NULL AS hit_target, NULL AS hit_stop_loss, NULL AS sector
-            FROM {table}
-            WHERE tracked_30d_return IS NOT NULL
-            ORDER BY id
-        """
-    else:
-        table = "us_analysis_performance_tracker"
-        query = f"""
-            SELECT id, ticker, company_name, trigger_type, trigger_mode,
-                   analysis_date, decision, was_traded, skip_reason, buy_score,
-                   NULL AS min_score, target_price, stop_loss,
-                   risk_reward_ratio, return_7d, return_14d, return_30d,
-                   last_updated AS outcome_observed_at,
-                   hit_target, hit_stop_loss, sector
-            FROM {table}
-            WHERE return_30d IS NOT NULL
-            ORDER BY id
-        """
-
-    for row in connection.execute(query):
+    table = _CANDIDATE_TABLES[market]
+    for row in connection.execute(_CANDIDATE_QUERIES[market]):
         event_time = _parse_time(row["analysis_date"])
         if event_time is None or event_time < since:
             continue
@@ -242,53 +258,48 @@ def iter_deployment_events(
     *,
     since: datetime,
 ) -> Iterator[dict[str, Any]]:
-    subjects_result = subprocess.run(
-        ["git", "log", "--all", "--format=%H%x1f%s"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    subjects = {}
-    for row in subjects_result.stdout.splitlines():
-        sha, separator, subject = row.partition("\x1f")
-        if separator:
-            subjects[sha] = subject
-    result = subprocess.run(
-        [
-            "git",
-            "reflog",
-            "--date=iso",
-            "--format=%gd%x1f%H%x1f%gs",
-        ],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    for raw in result.stdout.splitlines():
-        parts = raw.split("\x1f", 2)
-        if len(parts) != 3:
+    dot_git = repo / ".git"
+    if dot_git.is_dir():
+        git_dir = dot_git
+    elif dot_git.is_file():
+        marker = dot_git.read_text(encoding="utf-8").strip()
+        if not marker.startswith("gitdir:"):
+            return
+        git_dir = (repo / marker.split(":", 1)[1].strip()).resolve()
+    else:
+        return
+    reflog = git_dir / "logs" / "HEAD"
+    if not reflog.exists():
+        return
+
+    for raw in reflog.read_text(encoding="utf-8").splitlines():
+        metadata, separator, message = raw.partition("\t")
+        fields = metadata.split()
+        if not separator or len(fields) < 4:
             continue
-        selector, git_sha, message = parts
+        git_sha = fields[1]
         if "pull" not in message and "merge origin/main" not in message:
             continue
-        if "@{" not in selector or not selector.endswith("}"):
+        try:
+            epoch_seconds = int(fields[-2])
+            offset_text = fields[-1]
+            sign = 1 if offset_text.startswith("+") else -1
+            offset = timedelta(
+                hours=int(offset_text[1:3]),
+                minutes=int(offset_text[3:5]),
+            )
+            reflog_timezone = timezone(sign * offset)
+            event_time = datetime.fromtimestamp(
+                epoch_seconds,
+                tz=reflog_timezone,
+            ).astimezone(timezone.utc)
+        except (ValueError, IndexError):
             continue
-        event_time = _parse_time(selector.split("@{", 1)[1][:-1])
-        if event_time is None or event_time < since:
+        if event_time < since:
             continue
-        source_key = f"reflog:{selector}:{git_sha}:v{BACKFILL_VERSION}"
-        subject = subjects.get(git_sha, "")
-        prs = sorted(
-            {
-                int(match)
-                for match in re.findall(
-                    r"(?:pull request |PR\s*)#(\d+)",
-                    subject,
-                    re.IGNORECASE,
-                )
-            }
+        source_key = (
+            f"reflog:{epoch_seconds}:{git_sha}:{message}:"
+            f"v{BACKFILL_VERSION}"
         )
         yield {
             "event_type": "deployment.applied",
@@ -302,8 +313,6 @@ def iter_deployment_events(
                 "verified_actual_deployment": True,
                 "target": "db-server",
                 "git_sha": git_sha,
-                "commit_subject": subject,
-                "prs": prs,
                 "reflog_message": message,
             },
         }

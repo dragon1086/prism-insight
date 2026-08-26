@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
-import subprocess
+import urllib.parse
+import urllib.request
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -21,6 +23,19 @@ EVENT_TYPES = {
     "trade.outcome",
     "trigger.performance_feedback",
 }
+_CLICKHOUSE_EVENTS_QUERY = """
+    SELECT Body
+    FROM otel_logs
+    WHERE TimestampTime >= now() - INTERVAL {days:UInt16} DAY
+      AND LogAttributes['event.name'] IN (
+        'candidate.outcome',
+        'deployment.applied',
+        'market.regime_snapshot',
+        'trade.outcome',
+        'trigger.performance_feedback'
+      )
+    FORMAT JSONEachRow
+"""
 
 
 def _parse_time(value: Any, *, default_timezone=KST) -> datetime | None:
@@ -338,30 +353,32 @@ def build_snapshot(
     }
 
 
-def load_clickhouse_events(container: str, *, days: int) -> list[dict[str, Any]]:
-    event_list = ", ".join(f"'{value}'" for value in sorted(EVENT_TYPES))
-    query = f"""
-        SELECT Body
-        FROM otel_logs
-        WHERE TimestampTime >= now() - INTERVAL {max(1, days)} DAY
-          AND LogAttributes['event.name'] IN ({event_list})
-        FORMAT JSONEachRow
-    """
-    result = subprocess.run(
-        [
-            "docker",
-            "exec",
-            container,
-            "clickhouse-client",
-            "--query",
-            query,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
+def load_clickhouse_events(
+    endpoint: str,
+    *,
+    user: str,
+    password: str,
+    days: int,
+) -> list[dict[str, Any]]:
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ValueError("ClickHouse dashboard endpoint must be local HTTP")
+    query = urllib.parse.urlencode({"param_days": max(1, days)})
+    url = endpoint.rstrip("/") + "/?" + query
+    request = urllib.request.Request(
+        url,
+        data=_CLICKHOUSE_EVENTS_QUERY.encode("utf-8"),
+        headers={
+            "Content-Type": "text/plain; charset=utf-8",
+            "X-ClickHouse-User": user,
+            "X-ClickHouse-Key": password,
+        },
+        method="POST",
     )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        output = response.read().decode("utf-8")
     events = []
-    for line in result.stdout.splitlines():
+    for line in output.splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
@@ -384,7 +401,10 @@ def write_snapshot(path: Path, snapshot: Mapping[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--container", default="prism-clickstack")
+    parser.add_argument(
+        "--endpoint",
+        default=os.getenv("CLICKHOUSE_HTTP_ENDPOINT", "http://127.0.0.1:18123"),
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -395,7 +415,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--days", type=int, default=180)
     args = parser.parse_args(argv)
 
-    events = load_clickhouse_events(args.container, days=args.days)
+    events = load_clickhouse_events(
+        args.endpoint,
+        user=os.getenv("CLICKHOUSE_USER", "prism_otel"),
+        password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+        days=args.days,
+    )
     snapshot = build_snapshot(events, retention_days=max(1, args.days))
     write_snapshot(args.output, snapshot)
     print(
