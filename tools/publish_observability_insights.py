@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import re
-import subprocess
+import subprocess  # nosec B404 - fixed absolute binaries with validated arguments
 from pathlib import Path
 
 if __package__:
@@ -25,6 +25,8 @@ else:
 _SAFE_REMOTE_PATH = re.compile(r"^/[A-Za-z0-9_./-]+$")
 _SAFE_HOST = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _SAFE_USER = re.compile(r"^[A-Za-z0-9_-]+$")
+_SCP = "/usr/bin/scp"
+_SSH = "/usr/bin/ssh"
 
 
 def _required_env(name: str) -> str:
@@ -36,7 +38,7 @@ def _required_env(name: str) -> str:
 
 def publish(
     *,
-    container: str,
+    endpoint: str,
     local_output: Path,
     days: int,
     host: str,
@@ -56,7 +58,12 @@ def publish(
     if identity_file and not Path(identity_file).is_absolute():
         raise ValueError("dashboard identity file must be absolute")
 
-    events = load_clickhouse_events(container, days=days)
+    events = load_clickhouse_events(
+        endpoint,
+        user=_required_env("CLICKHOUSE_USER"),
+        password=_required_env("CLICKHOUSE_PASSWORD"),
+        days=days,
+    )
     snapshot = build_snapshot(events, retention_days=days)
     write_snapshot(local_output, snapshot)
 
@@ -72,9 +79,9 @@ def publish(
         common_options.extend(["-i", identity_file])
     scp_options = [*common_options, "-P", str(port)]
     ssh_options = [*common_options, "-p", str(port)]
-    subprocess.run(
+    subprocess.run(  # nosec B603 - all inputs are validated and shell=False
         [
-            "scp",
+            _SCP,
             *scp_options,
             str(local_output),
             f"{remote}:{remote_temporary}",
@@ -82,9 +89,9 @@ def publish(
         check=True,
         timeout=30,
     )
-    subprocess.run(
+    subprocess.run(  # nosec B603 - all inputs are validated and shell=False
         [
-            "ssh",
+            _SSH,
             *ssh_options,
             remote,
             "/usr/bin/install",
@@ -97,8 +104,8 @@ def publish(
         check=True,
         timeout=30,
     )
-    subprocess.run(
-        ["ssh", *ssh_options, remote, "/usr/bin/rm", "-f", "--", remote_temporary],
+    subprocess.run(  # nosec B603 - all inputs are validated and shell=False
+        [_SSH, *ssh_options, remote, "/usr/bin/rm", "-f", "--", remote_temporary],
         check=True,
         timeout=30,
     )
@@ -111,7 +118,10 @@ def publish(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--container", default="prism-clickstack")
+    parser.add_argument(
+        "--endpoint",
+        default=os.getenv("CLICKHOUSE_HTTP_ENDPOINT", "http://127.0.0.1:18123"),
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -123,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     result = publish(
-        container=args.container,
+        endpoint=args.endpoint,
         local_output=args.output,
         days=max(1, args.days),
         host=_required_env("PRISM_DASHBOARD_HOST"),
