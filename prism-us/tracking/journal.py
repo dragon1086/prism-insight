@@ -53,6 +53,21 @@ def _import_from_main_cores(module_name: str, relative_path: str):
 _utils_module = _import_from_main_cores("cores_utils", "cores/utils.py")
 parse_llm_json = _utils_module.parse_llm_json
 
+_feedback_module = _import_from_main_cores(
+    "prism_root_performance_feedback",
+    "tracking/performance_feedback.py",
+)
+feedback_log_payload = _feedback_module.feedback_log_payload
+format_trigger_feedback = _feedback_module.format_trigger_feedback
+get_trigger_feedback = _feedback_module.get_trigger_feedback
+resolve_actual_adjustment = _feedback_module.resolve_actual_adjustment
+
+_events_module = _import_from_main_cores(
+    "prism_observability_events",
+    "observability/events.py",
+)
+emit_event = _events_module.emit_event
+
 
 class USJournalManager:
     """Manages trading journal operations for US stocks."""
@@ -372,35 +387,20 @@ Please review the following completed US stock trade:
             if not self.cursor.fetchone():
                 return stats
 
-            # 1. Stats for the current trigger type (if provided)
+            # 1. Candidate and actual stats for the current trigger type.
             if trigger_type:
-                self.cursor.execute("""
-                    SELECT
-                        COUNT(*) as total,
-                        SUM(CASE WHEN return_30d > 0 THEN 1 ELSE 0 END) as wins,
-                        AVG(return_7d) as avg_7d,
-                        AVG(return_14d) as avg_14d,
-                        AVG(return_30d) as avg_30d
-                    FROM us_analysis_performance_tracker
-                    WHERE trigger_type = ? AND tracking_status = 'completed'
-                """, (trigger_type,))
-                row = self.cursor.fetchone()
-                if row and row[0] > 0:
-                    stats['current_trigger'] = {
-                        'trigger_type': trigger_type,
-                        'total': row[0],
-                        'win_rate': row[1] / row[0] if row[0] > 0 else 0,
-                        'avg_7d': row[2],
-                        'avg_14d': row[3],
-                        'avg_30d': row[4],
-                    }
+                feedback = get_trigger_feedback(self.cursor, "US", trigger_type)
+                if feedback.get("candidate_trigger"):
+                    stats["candidate_trigger"] = feedback["candidate_trigger"]
+                if feedback.get("actual_trigger"):
+                    stats["actual_trigger"] = feedback["actual_trigger"]
 
             # 2. Missed opportunities: stocks we skipped but went up
             self.cursor.execute("""
                 SELECT
                     COUNT(*) as total_skipped,
-                    SUM(CASE WHEN return_30d > 5 THEN 1 ELSE 0 END) as missed_gains,
-                    AVG(CASE WHEN return_30d > 5 THEN return_30d END) as avg_missed_gain
+                    SUM(CASE WHEN return_30d > 0.05 THEN 1 ELSE 0 END) as missed_gains,
+                    AVG(CASE WHEN return_30d > 0.05 THEN return_30d END) as avg_missed_gain
                 FROM us_analysis_performance_tracker
                 WHERE was_traded = 0 AND tracking_status = 'completed'
                     AND return_30d IS NOT NULL
@@ -413,27 +413,7 @@ Please review the following completed US stock trade:
                     'avg_missed_gain': row[2],
                 }
 
-            # 3. Traded vs watched comparison
-            self.cursor.execute("""
-                SELECT
-                    was_traded,
-                    COUNT(*) as count,
-                    AVG(return_30d) as avg_30d
-                FROM us_analysis_performance_tracker
-                WHERE tracking_status = 'completed' AND return_30d IS NOT NULL
-                GROUP BY was_traded
-            """)
-            traded_vs_watched = {}
-            for row in self.cursor.fetchall():
-                key = 'traded' if row[0] else 'watched'
-                traded_vs_watched[key] = {
-                    'count': row[1],
-                    'avg_30d': row[2],
-                }
-            if traded_vs_watched:
-                stats['traded_vs_watched'] = traded_vs_watched
-
-            # 4. All trigger types performance ranking
+            # 3. Candidate-only trigger ranking.
             self.cursor.execute("""
                 SELECT
                     trigger_type,
@@ -442,6 +422,7 @@ Please review the following completed US stock trade:
                     AVG(return_30d) as avg_30d
                 FROM us_analysis_performance_tracker
                 WHERE tracking_status = 'completed' AND return_30d IS NOT NULL
+                    AND COALESCE(was_traded, 0) = 0
                     AND trigger_type IS NOT NULL
                 GROUP BY trigger_type
                 HAVING total >= 3
@@ -456,7 +437,7 @@ Please review the following completed US stock trade:
                     'avg_30d': row[3],
                 })
             if trigger_ranking:
-                stats['trigger_ranking'] = trigger_ranking
+                stats['candidate_trigger_ranking'] = trigger_ranking
 
         except Exception as e:
             logger.warning(f"Failed to get US performance tracker stats: {e}")
@@ -469,24 +450,18 @@ Please review the following completed US stock trade:
         if not stats:
             return parts
 
-        parts.append("#### 📈 Analysis Performance Tracker (Actual Results)")
+        parts.append("#### 📈 Trigger Performance Feedback")
 
-        # Current trigger type stats
-        if 'current_trigger' in stats:
-            t = stats['current_trigger']
-            win_pct = t['win_rate'] * 100
-            avg_30d = t['avg_30d']
-            avg_30d_str = f"{avg_30d * 100:+.1f}%" if avg_30d is not None else "N/A"
-            parts.append(
-                f"- **This trigger ({t['trigger_type']})**: "
-                f"Win rate {win_pct:.0f}% (n={t['total']}), "
-                f"30d avg return {avg_30d_str}"
-            )
+        feedback = {
+            "actual_trigger": stats.get("actual_trigger"),
+            "candidate_trigger": stats.get("candidate_trigger"),
+        }
+        for line in format_trigger_feedback(feedback, language=self.language):
+            parts.append(f"- {line}")
 
-        # Trigger ranking
-        if 'trigger_ranking' in stats:
-            parts.append("- **Trigger Performance Ranking (30d, n>=3):**")
-            for rank, t in enumerate(stats['trigger_ranking'][:5], 1):
+        if 'candidate_trigger_ranking' in stats:
+            parts.append("- **Watched Candidate Ranking (30d, n>=3):**")
+            for rank, t in enumerate(stats['candidate_trigger_ranking'][:5], 1):
                 avg_30d_str = f"{t['avg_30d'] * 100:+.1f}%" if t['avg_30d'] is not None else "N/A"
                 win_pct = t['win_rate'] * 100
                 parts.append(
@@ -658,24 +633,41 @@ Please review the following completed US stock trade:
                         adjustment += 1
                         reasons.append(f"{sector} sector average profit {sector_stats[0]:.1f}%")
 
-            # Trigger type performance (from performance_tracker - ground truth)
+            # Trigger type performance: actual executed trades only.
             if trigger_type:
-                perf_stats = self.get_performance_tracker_stats(trigger_type)
-                if 'current_trigger' in perf_stats:
-                    t = perf_stats['current_trigger']
-                    if t['total'] >= 5:  # Require minimum sample size
-                        if t['win_rate'] < 0.35:
-                            adjustment -= 1
-                            reasons.append(
-                                f"Trigger '{trigger_type}' low win rate "
-                                f"{t['win_rate']*100:.0f}% (n={t['total']}, actual 30d data)"
-                            )
-                        elif t['win_rate'] > 0.65:
-                            adjustment += 1
-                            reasons.append(
-                                f"Trigger '{trigger_type}' high win rate "
-                                f"{t['win_rate']*100:.0f}% (n={t['total']}, actual 30d data)"
-                            )
+                feedback = get_trigger_feedback(self.cursor, "US", trigger_type)
+                trigger_adjustment = resolve_actual_adjustment(feedback)
+                event_payload = feedback_log_payload(
+                    feedback,
+                    trigger_adjustment,
+                    ticker=ticker,
+                    sector=sector,
+                )
+                logger.info(
+                    "[TRIGGER_FEEDBACK] %s",
+                    json.dumps(
+                        event_payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                )
+                emit_event(
+                    "trigger.performance_feedback",
+                    service="prism-us-trading",
+                    market="US",
+                    ticker=ticker,
+                    attributes=event_payload,
+                )
+                applied = int(trigger_adjustment["applied_adjust"])
+                if applied:
+                    adjustment += applied
+                    actual = feedback.get("actual_trigger") or {}
+                    direction = "low" if applied < 0 else "high"
+                    reasons.append(
+                        f"Trigger '{trigger_type}' actual trade win rate {direction} "
+                        f"{float(actual.get('win_rate') or 0)*100:.0f}% "
+                        f"(n={int(actual.get('n') or 0)})"
+                    )
 
             # Recent stop-out churn guard (US market)
             # Must come last so it can cancel any net-positive bonus from above.
