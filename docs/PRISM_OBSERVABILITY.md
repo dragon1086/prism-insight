@@ -27,12 +27,21 @@ authorization are replaced with `[REDACTED]` before the local append.
 ## Deployment topology
 
 - `db-server`: PRISM pipeline, JSONL spool, shipper, SSH local-forward tunnel.
-- `prism-backend`: resource-limited ClickStack container.
+- `prism-backend`: resource-limited ClickStack container and an independent,
+  token-authenticated ClickStack OTel Collector.
 - ClickStack UI: backend localhost `18080`, proxied by authenticated Nginx `8443`.
 - OTLP/HTTP: backend localhost `14318`, reachable from db-server only through SSH.
 
 The tunnel target is supplied outside Git through
 `/etc/prism-observability/tunnel.env` as `PRISM_BACKEND_HOST=...`.
+The ingestion token is supplied outside Git through
+`/etc/prism-observability/clickstack.env` as `OTLP_AUTH_TOKEN=...` and is also
+configured on db-server as `PRISM_OBSERVABILITY_OTLP_TOKEN`.
+The shipper sends this exact value in the `Authorization` header, matching the
+ClickStack static bearer-token extension contract.
+The same environment file holds the dedicated `prism_otel` ClickHouse password;
+only its SHA-256 hash is written to the mounted ClickHouse user configuration.
+The XML user is restricted to the `default` observability database.
 
 ## Initial events
 

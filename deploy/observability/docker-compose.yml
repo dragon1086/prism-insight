@@ -7,16 +7,38 @@ services:
     restart: unless-stopped
     cpus: 0.85
     mem_limit: 1800m
-    pids_limit: 512
+    # ClickHouse initializes a 512-thread background pool. Keep headroom for
+    # the bundled collector/UI while CPU and memory remain strictly capped.
+    pids_limit: 2048
     ports:
       - "127.0.0.1:18080:8080"
-      - "127.0.0.1:14318:4318"
     environment:
       USAGE_STATS_ENABLED: "false"
     volumes:
       - /var/lib/prism-observability/clickhouse:/var/lib/clickhouse
       - /var/lib/prism-observability/mongodb:/data/db
       - /var/log/prism-observability/clickhouse:/var/log/clickhouse-server
+      - /etc/prism-observability/clickhouse-otel-user.xml:/etc/clickhouse-server/users.d/prism-otel.xml:ro
     stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+
+  otel-ingest:
+    image: docker.clickhouse.com/clickhouse/clickstack-otel-collector:2@sha256:e859e89e548d7f26fa8b165da6970fa5e6af0bf9fdf93577cc13bfece8eb4994
+    container_name: prism-clickstack-otel
+    restart: unless-stopped
+    cpus: 0.15
+    mem_limit: 256m
+    pids_limit: 256
+    ports:
+      - "127.0.0.1:14318:4318"
+    env_file:
+      - /etc/prism-observability/clickstack.env
+    environment:
+      CLICKHOUSE_ENDPOINT: "tcp://clickstack:9000?dial_timeout=10s"
+      OPAMP_SERVER_URL: ""
+    depends_on:
+      clickstack:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
