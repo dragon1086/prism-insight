@@ -74,6 +74,8 @@ TRIGGER_CRITERIA = {
 
 # Trading value filter: $100M USD
 MIN_TRADING_VALUE = 100_000_000
+EMERGING_LIQUIDITY_MIN_TRADING_VALUE = 50_000_000
+EMERGING_LIQUIDITY_MAX_CANDIDATES = 1
 
 # --- #289 KR 다주 상대강도 스크리닝 US 이식 ---
 # Multi-week relative-strength lookback (trading days, ~3 months).
@@ -574,8 +576,12 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame,
     if cap_df is not None and not cap_df.empty:
         snap = snap.merge(cap_df[["MarketCap"]], left_index=True, right_index=True, how="inner")
 
-    # Absolute filters
-    snap = apply_absolute_filters(snap.copy(), min_value=MIN_TRADING_VALUE)
+    # Preserve the existing >=$100M lane and separately rank one $50M~$100M
+    # candidate. Lowering the shared floor alone leaves this cohort outside
+    # the top-N because Amount is normalized against mega-cap turnover.
+    snap = apply_absolute_filters(
+        snap.copy(), min_value=EMERGING_LIQUIDITY_MIN_TRADING_VALUE
+    )
 
     # Change rate calculations
     snap["IntradayChange"] = (snap["Close"] / snap["Open"] - 1) * 100
@@ -593,12 +599,50 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame,
         logger.debug("trigger_afternoon_daily_rise_top: No qualifying stocks")
         return pd.DataFrame()
 
-    # Composite score
-    scored = normalize_and_score(snap, "IntradayChange", "Amount", 0.6, 0.4)
-    result = scored.head(top_n).copy()
+    standard = snap[snap["Amount"] >= MIN_TRADING_VALUE].copy()
+    emerging = snap[
+        (snap["Amount"] >= EMERGING_LIQUIDITY_MIN_TRADING_VALUE)
+        & (snap["Amount"] < MIN_TRADING_VALUE)
+    ].copy()
+    emerging_eligible = len(emerging)
 
-    logger.debug(f"Intraday rise top detected: {len(result)} stocks")
-    return enhance_dataframe(result.head(10))
+    if not standard.empty:
+        standard = normalize_and_score(
+            standard, "IntradayChange", "Amount", 0.6, 0.4
+        ).head(top_n).head(10).copy()
+        standard["LiquidityLane"] = "standard"
+        standard["LiquidityLaneRank"] = range(1, len(standard) + 1)
+
+    if not emerging.empty:
+        emerging = normalize_and_score(
+            emerging, "IntradayChange", "Amount", 0.6, 0.4
+        ).head(EMERGING_LIQUIDITY_MAX_CANDIDATES).copy()
+        emerging["CompositeScore"] = 1.0
+        emerging["LiquidityLane"] = "emerging"
+        emerging["LiquidityLaneRank"] = range(1, len(emerging) + 1)
+
+    result = pd.concat([standard, emerging])
+    if result.empty:
+        logger.debug("trigger_afternoon_daily_rise_top: No stocks in either liquidity lane")
+        return pd.DataFrame()
+
+    result["LiquidityFloor"] = result["LiquidityLane"].map(
+        {
+            "standard": MIN_TRADING_VALUE,
+            "emerging": EMERGING_LIQUIDITY_MIN_TRADING_VALUE,
+        }
+    )
+    result["LiquidityCeiling"] = result["LiquidityLane"].map(
+        {"standard": None, "emerging": MIN_TRADING_VALUE}
+    )
+    logger.info(
+        "[LIQUIDITY-LANE] market=US trigger=afternoon_daily_rise "
+        "standard=%d emerging_eligible=%d emerging_added=%d",
+        len(standard),
+        emerging_eligible,
+        len(emerging),
+    )
+    return enhance_dataframe(result)
 
 
 def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame,
@@ -1537,6 +1581,13 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                     if "SelectionChannel" in stocks_df.columns:
                         stock_info["selection_channel"] = str(stocks_df.loc[ticker, "SelectionChannel"])
 
+                    if "LiquidityLane" in stocks_df.columns:
+                        stock_info["liquidity_lane"] = str(stocks_df.loc[ticker, "LiquidityLane"])
+                        stock_info["liquidity_lane_rank"] = int(stocks_df.loc[ticker, "LiquidityLaneRank"])
+                        stock_info["liquidity_floor"] = float(stocks_df.loc[ticker, "LiquidityFloor"])
+                        _ceiling = stocks_df.loc[ticker, "LiquidityCeiling"]
+                        stock_info["liquidity_ceiling"] = None if pd.isna(_ceiling) else float(_ceiling)
+
                     output_data[trigger_type].append(stock_info)
 
         # Derive hybrid metadata from final_results
@@ -1569,6 +1620,8 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "bottomup_slots": _bottomup_slots,
             "topdown_count": _topdown_count,
             "bottomup_count": _bottomup_count,
+            "emerging_liquidity_min_trading_value_usd": EMERGING_LIQUIDITY_MIN_TRADING_VALUE,
+            "emerging_liquidity_max_candidates": EMERGING_LIQUIDITY_MAX_CANDIDATES,
         }
 
         with open(output_file, 'w', encoding='utf-8') as f:

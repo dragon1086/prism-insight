@@ -226,6 +226,7 @@ def test_trigger_batch_uses_naver_bundle_after_kis_openapi_failure(monkeypatch):
 
     fake_get = _FixtureGet()
     naver_bundle = _fetch(fake_get)
+    fallback_kwargs = {}
     monkeypatch.setattr(
         trigger_batch,
         "build_kis_openapi_snapshot_bundle",
@@ -234,13 +235,17 @@ def test_trigger_batch_uses_naver_bundle_after_kis_openapi_failure(monkeypatch):
     monkeypatch.setattr(
         trigger_batch,
         "fetch_naver_snapshot_bundle",
-        lambda _date, **_kwargs: naver_bundle,
+        lambda _date, **kwargs: fallback_kwargs.update(kwargs) or naver_bundle,
     )
 
     result = trigger_batch.load_market_snapshot_bundle(TRADE_DATE)
 
     assert result is naver_bundle
     assert result.source == "naver"
+    assert (
+        fallback_kwargs["detail_min_amount"]
+        == trigger_batch.EMERGING_LIQUIDITY_MIN_TRADE_VALUE
+    )
 
 
 def test_trigger_batch_uses_kis_openapi_as_primary(monkeypatch):
