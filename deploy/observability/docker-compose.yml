@@ -12,6 +12,7 @@ services:
     pids_limit: 2048
     ports:
       - "127.0.0.1:18080:8080"
+      - "127.0.0.1:18123:8123"
     environment:
       USAGE_STATS_ENABLED: "false"
     volumes:
