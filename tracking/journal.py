@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cores.openai_error_logging import log_openai_error
 from cores.utils import parse_llm_json
+from observability.events import emit_event
 
 _feedback_spec = importlib.util.spec_from_file_location(
     "prism_root_performance_feedback",
@@ -708,18 +709,26 @@ Please review the following completed trade:
             if trigger_type:
                 feedback = get_trigger_feedback(self.cursor, "KR", trigger_type)
                 trigger_adjustment = resolve_actual_adjustment(feedback)
+                event_payload = feedback_log_payload(
+                    feedback,
+                    trigger_adjustment,
+                    ticker=ticker,
+                    sector=sector,
+                )
                 logger.info(
                     "[TRIGGER_FEEDBACK] %s",
                     json.dumps(
-                        feedback_log_payload(
-                            feedback,
-                            trigger_adjustment,
-                            ticker=ticker,
-                            sector=sector,
-                        ),
+                        event_payload,
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                )
+                emit_event(
+                    "trigger.performance_feedback",
+                    service="prism-kr-trading",
+                    market="KR",
+                    ticker=ticker,
+                    attributes=event_payload,
                 )
                 applied = int(trigger_adjustment["applied_adjust"])
                 if applied:
