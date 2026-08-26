@@ -6,13 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/prism-observability/tunnel.env
-ExecStart=/usr/bin/ssh -NT \
-    -o BatchMode=yes \
-    -o ExitOnForwardFailure=yes \
-    -o ServerAliveInterval=30 \
-    -o ServerAliveCountMax=3 \
-    -L 127.0.0.1:14318:127.0.0.1:14318 \
-    root@${PRISM_BACKEND_HOST}
+# Rocky Linux SELinux blocks init from executing ssh_exec_t directly. Running
+# ssh through the system shell preserves enforcing mode without a custom policy.
+ExecStart=/bin/sh -c 'exec /usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 127.0.0.1:14318:127.0.0.1:14318 root@"$PRISM_BACKEND_HOST"'
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
