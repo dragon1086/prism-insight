@@ -2,7 +2,7 @@ name: prism-observability
 
 services:
   clickstack:
-    image: docker.io/clickhouse/clickstack-all-in-one:2.21.0@sha256:867195e145d0f579c332716317acc2864729706c0dd120ca7fd9758c4237997a
+    image: docker.clickhouse.com/clickhouse/clickstack-all-in-one:2@sha256:383610987863c245ec2ab1debb0eae8c66c1f5171e4aeb757a89a01c969f5935
     container_name: prism-clickstack
     restart: unless-stopped
     cpus: 0.85
