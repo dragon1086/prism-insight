@@ -39,9 +39,13 @@ The ingestion token is supplied outside Git through
 configured on db-server as `PRISM_OBSERVABILITY_OTLP_TOKEN`.
 The shipper sends this exact value in the `Authorization` header, matching the
 ClickStack static bearer-token extension contract.
+db-server loads the value from `/etc/prism-observability/shipper.env`, which
+must remain mode `0600`.
 The same environment file holds the dedicated `prism_otel` ClickHouse password;
 only its SHA-256 hash is written to the mounted ClickHouse user configuration.
 The XML user is restricted to the `default` observability database.
+The mounted XML contains no plaintext password and must be readable by the
+ClickHouse process (mode `0644`).
 
 ## Initial events
 

@@ -6,6 +6,7 @@ Wants=network-online.target prism-observability-tunnel.service
 [Service]
 Type=simple
 WorkingDirectory=/root/prism-insight
+EnvironmentFile=/etc/prism-observability/shipper.env
 Environment=PRISM_ENV=production
 Environment=PRISM_OBSERVABILITY_SPOOL=/root/prism-insight/logs/prism_events.jsonl
 Environment=PRISM_OBSERVABILITY_CHECKPOINT=/root/prism-insight/logs/prism_events.checkpoint.json
