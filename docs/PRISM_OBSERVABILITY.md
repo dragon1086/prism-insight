@@ -55,6 +55,30 @@ ClickHouse process (mode `0644`).
 Decision, gate, execution, and position-outcome events are added incrementally
 after the end-to-end transport and resource envelope are verified.
 
+## Historical baseline
+
+tools/backfill_observability.py backfills only verifiable facts:
+
+- realized KR/US rows from the production trading-history tables
+- completed watched-candidate 7/14/30-day outcomes
+- recorded regime snapshots
+- actual db-server pull timestamps from Git reflog
+
+Every row is marked ingestion_mode=backfill, includes its source table or
+reflog provenance, and receives a deterministic event ID. Historical prompts,
+gates, and decision traces are not reconstructed.
+
+## Curated dashboard snapshot
+
+tools/export_observability_insights.py aggregates ClickHouse events into a
+credential-free JSON snapshot. tools/publish_observability_insights.py
+publishes it atomically to app-server every five minutes through the systemd
+timer template.
+
+The existing dashboard reads /observability_insights.json independently from
+its portfolio JSON. Missing or delayed observability data hides only the new
+panel and never breaks the existing dashboard.
+
 ## Rollback
 
 1. Stop and disable `prism-observability-shipper` and tunnel units.

@@ -1,0 +1,17 @@
+[Unit]
+Description=Publish curated PRISM observability insights to app-server
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/prism-observability/dashboard-export.env
+WorkingDirectory=/opt/prism-observability
+ExecStart=/usr/bin/python3 /opt/prism-observability/publish_observability_insights.py --days 180
+Nice=10
+CPUQuota=30%
+MemoryMax=128M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

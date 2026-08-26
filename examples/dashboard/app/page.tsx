@@ -17,7 +17,7 @@ import { ProjectFooter } from "@/components/project-footer"
 import { useLanguage } from "@/components/language-provider"
 import { useMarket } from "@/components/market-selector"
 import { TriggerReliabilityBadge } from "@/components/trigger-reliability-badge"
-import type { DashboardData, Holding, Market } from "@/types/dashboard"
+import type { DashboardData, Holding, Market, ObservabilityInsightsSnapshot } from "@/types/dashboard"
 
 type TabType = "dashboard" | "ai-decisions" | "trading" | "watchlist" | "insights" | "stance"
 const VALID_TABS: TabType[] = ["dashboard", "ai-decisions", "trading", "watchlist", "insights", "stance"]
@@ -50,6 +50,7 @@ function DashboardContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const [data, setData] = useState<DashboardData | null>(null)
+  const [observability, setObservability] = useState<ObservabilityInsightsSnapshot | null>(null)
   const [selectedStock, setSelectedStock] = useState<Holding | null>(null)
   const [isRealTrading, setIsRealTrading] = useState(false)
   const [dataError, setDataError] = useState<string | null>(null)
@@ -97,6 +98,19 @@ function DashboardContent() {
 
         const jsonData = await response.json()
         setData(jsonData)
+        try {
+          const observabilityResponse = await fetch("/observability_insights.json", {
+            cache: "no-store",
+          })
+          if (observabilityResponse.ok) {
+            setObservability(await observabilityResponse.json())
+          } else {
+            setObservability(null)
+          }
+        } catch {
+          // Observability is an optional, independent data plane.
+          setObservability(null)
+        }
       } catch (error) {
         console.error("[v0] Failed to fetch dashboard data:", error)
         if (market === "US") {
@@ -268,7 +282,13 @@ function DashboardContent() {
 
         {activeTab === "watchlist" && <WatchlistPage watchlist={data.watchlist} market={market} />}
 
-        {activeTab === "insights" && data.trading_insights && <TradingInsightsPage data={data.trading_insights} market={market} />}
+        {activeTab === "insights" && data.trading_insights && (
+          <TradingInsightsPage
+            data={data.trading_insights}
+            market={market}
+            observability={observability}
+          />
+        )}
 
       </main>
 
