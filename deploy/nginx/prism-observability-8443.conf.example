@@ -1,0 +1,26 @@
+server {
+    listen 8443 ssl;
+    server_name prism-api.duckdns.org;
+
+    ssl_certificate /etc/letsencrypt/live/prism-api.duckdns.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/prism-api.duckdns.org/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    auth_basic "PRISM Observatory";
+    auth_basic_user_file /etc/nginx/.htpasswd-prism-observability;
+
+    client_max_body_size 10m;
+    location / {
+        proxy_pass http://127.0.0.1:18080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}

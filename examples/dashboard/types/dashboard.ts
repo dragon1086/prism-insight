@@ -471,6 +471,83 @@ export interface TradingInsightsData {
   trigger_reliability?: TriggerReliabilityData
 }
 
+export interface ObservabilityTradeMetrics {
+  count: number
+  win_rate: number | null
+  avg_return_pct: number | null
+  median_return_pct: number | null
+  avg_win_pct: number | null
+  avg_loss_pct: number | null
+  profit_factor: number | null
+  stop_rate: number | null
+  sample_sufficient: boolean
+}
+
+export interface ObservabilityCandidateMetrics {
+  count: number
+  positive_rate_30d: number | null
+  avg_7d_pct: number | null
+  median_7d_pct: number | null
+  avg_14d_pct: number | null
+  median_14d_pct: number | null
+  avg_30d_pct: number | null
+  median_30d_pct: number | null
+  sample_sufficient: boolean
+}
+
+export interface ObservabilityTriggerRow {
+  trigger_type: string
+  actual: ObservabilityTradeMetrics
+  candidate: ObservabilityCandidateMetrics
+}
+
+export interface ObservabilityMarketSnapshot {
+  actual: ObservabilityTradeMetrics
+  candidate: ObservabilityCandidateMetrics
+  triggers: ObservabilityTriggerRow[]
+  latest_regime: {
+    regime: string | null
+    confidence: number | null
+    observed_at: string
+  } | null
+  regime_distribution: Array<{ regime: string; count: number }>
+}
+
+export interface ObservabilityDeployment {
+  timestamp: string
+  git_sha: string
+  target: string
+  prs: number[]
+  subject?: string | null
+  ingestion_mode: "live" | "backfill"
+  verified_actual_deployment: boolean
+}
+
+export interface ObservabilityDeploymentImpact extends ObservabilityDeployment {
+  window_days: number
+  post_window_complete: boolean
+  markets: Record<Market, {
+    pre: ObservabilityTradeMetrics
+    post: ObservabilityTradeMetrics
+  }>
+}
+
+export interface ObservabilityInsightsSnapshot {
+  schema_version: number
+  generated_at: string
+  retention_days: number
+  data_quality: {
+    total_events: number
+    backfill_events: number
+    live_events: number
+    coverage_start: string | null
+    last_event_at: string | null
+  }
+  markets: Record<Market, ObservabilityMarketSnapshot>
+  deployments: ObservabilityDeployment[]
+  deployment_impacts: ObservabilityDeploymentImpact[]
+}
+
 // ── Stance 프로토콜 리더보드 ──────────────────────────────────────
 // 대시보드 데이터와 별도 파일(/stance_leaderboard.json)로 제공된다.
 // 원장을 재생해 만든 계산 결과이므로 언제든 다시 만들 수 있다.
