@@ -75,6 +75,9 @@ RUN pip install --no-cache-dir --upgrade pip setuptools && \
 # 로컬 워크스페이스를 이미지에 복사
 COPY . /app/prism-insight
 
+# 배포 이미지에 고지 대상이 누락되거나 새 copyleft 의존성이 생기면 빌드 중단
+RUN python tools/license_compliance.py
+
 # Playwright 브라우저 설치 (Chromium만)
 RUN playwright install --with-deps chromium
 

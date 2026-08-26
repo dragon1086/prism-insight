@@ -37,14 +37,16 @@ import {
   Globe
 } from "lucide-react"
 import { useLanguage } from "@/components/language-provider"
-import type { TradingInsightsData, TradingPrinciple, TradingJournal, TradingIntuition, SituationAnalysis, JudgmentEvaluation, Market, TriggerReliabilityData } from "@/types/dashboard"
+import type { TradingInsightsData, TradingPrinciple, TradingJournal, TradingIntuition, SituationAnalysis, JudgmentEvaluation, Market, TriggerReliabilityData, ObservabilityInsightsSnapshot } from "@/types/dashboard"
 import { TriggerReliabilityCard } from "./trigger-reliability-card"
+import { ObservabilityInsightsPanel } from "./observability-insights-panel"
 
 type MarketFilter = "all" | "KR" | "US"
 
 interface TradingInsightsPageProps {
   data: TradingInsightsData
   market?: Market
+  observability?: ObservabilityInsightsSnapshot | null
 }
 
 // Helper to safely parse JSON
@@ -57,7 +59,7 @@ function tryParseJSON<T>(str: string | T): T | null {
   }
 }
 
-export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPageProps) {
+export function TradingInsightsPage({ data, market = "KR", observability }: TradingInsightsPageProps) {
   const { t, language } = useLanguage()
   const [marketFilter, setMarketFilter] = useState<MarketFilter>("all")
 
@@ -203,6 +205,10 @@ export function TradingInsightsPage({ data, market = "KR" }: TradingInsightsPage
           </div>
         </div>
       </div>
+
+      {observability && (
+        <ObservabilityInsightsPanel data={observability} market={market} />
+      )}
 
       {/* Trigger Reliability Card */}
       {data.trigger_reliability && data.trigger_reliability.trigger_reliability.length > 0 && (
