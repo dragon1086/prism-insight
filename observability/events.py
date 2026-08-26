@@ -121,6 +121,7 @@ def build_event(
     event_type: str,
     *,
     service: str,
+    event_id: str | None = None,
     market: str | None = None,
     ticker: str | None = None,
     trace_id: str | None = None,
@@ -145,7 +146,7 @@ def build_event(
     git_sha = _git_sha()
     event = {
         "schema_version": SCHEMA_VERSION,
-        "event_id": uuid.uuid4().hex,
+        "event_id": _normalize_hex_id(event_id, 32),
         "event_type": normalized_type,
         "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
         "time_unix_nano": str(int(timestamp.timestamp() * 1_000_000_000)),
@@ -173,6 +174,7 @@ def emit_event(
     event_type: str,
     *,
     service: str,
+    event_id: str | None = None,
     market: str | None = None,
     ticker: str | None = None,
     trace_id: str | None = None,
@@ -194,6 +196,7 @@ def emit_event(
         event = build_event(
             event_type,
             service=service,
+            event_id=event_id,
             market=market,
             ticker=ticker,
             trace_id=trace_id,
