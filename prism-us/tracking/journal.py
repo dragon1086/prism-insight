@@ -62,6 +62,12 @@ format_trigger_feedback = _feedback_module.format_trigger_feedback
 get_trigger_feedback = _feedback_module.get_trigger_feedback
 resolve_actual_adjustment = _feedback_module.resolve_actual_adjustment
 
+_events_module = _import_from_main_cores(
+    "prism_observability_events",
+    "observability/events.py",
+)
+emit_event = _events_module.emit_event
+
 
 class USJournalManager:
     """Manages trading journal operations for US stocks."""
@@ -631,18 +637,26 @@ Please review the following completed US stock trade:
             if trigger_type:
                 feedback = get_trigger_feedback(self.cursor, "US", trigger_type)
                 trigger_adjustment = resolve_actual_adjustment(feedback)
+                event_payload = feedback_log_payload(
+                    feedback,
+                    trigger_adjustment,
+                    ticker=ticker,
+                    sector=sector,
+                )
                 logger.info(
                     "[TRIGGER_FEEDBACK] %s",
                     json.dumps(
-                        feedback_log_payload(
-                            feedback,
-                            trigger_adjustment,
-                            ticker=ticker,
-                            sector=sector,
-                        ),
+                        event_payload,
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                )
+                emit_event(
+                    "trigger.performance_feedback",
+                    service="prism-us-trading",
+                    market="US",
+                    ticker=ticker,
+                    attributes=event_payload,
                 )
                 applied = int(trigger_adjustment["applied_adjust"])
                 if applied:
