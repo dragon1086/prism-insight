@@ -9,6 +9,7 @@ Uses yfinance for market data access.
 
 import datetime
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -324,7 +325,7 @@ def get_multi_day_ohlcv(ticker: str, end_date: str, days: int = 10) -> pd.DataFr
         return pd.DataFrame()
 
 
-def get_market_cap_df(tickers: List[str] = None) -> pd.DataFrame:
+def get_market_cap_df(tickers: List[str] = None, max_workers: int = 8) -> pd.DataFrame:
     """
     Get market capitalization data for all tickers.
 
@@ -337,31 +338,34 @@ def get_market_cap_df(tickers: List[str] = None) -> pd.DataFrame:
     if tickers is None:
         tickers = get_sp500_tickers()
 
+    tickers = list(dict.fromkeys(tickers))
     logger.debug(f"Getting market cap for {len(tickers)} tickers")
 
-    market_caps = {}
+    def fetch_one(ticker: str) -> tuple[str, float | None]:
+        try:
+            # ``fast_info`` is materially cheaper than the full ``info`` quote
+            # summary used by the retired 517-symbol serial path.
+            market_cap = float(yf.Ticker(ticker).fast_info["marketCap"])
+            return ticker, market_cap if market_cap > 0 else None
+        except Exception as e:
+            logger.debug(f"Error getting market cap for {ticker}: {e}")
+            return ticker, None
 
-    # Process in batches for efficiency
-    batch_size = 50
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i:i + batch_size]
-
-        for ticker in batch:
-            try:
-                stock = yf.Ticker(ticker)
-                info = stock.info
-                market_cap = info.get('marketCap', 0)
-                if market_cap and market_cap > 0:
-                    market_caps[ticker] = {'MarketCap': market_cap}
-            except Exception as e:
-                logger.debug(f"Error getting market cap for {ticker}: {e}")
-                continue
+    market_caps: dict[str, dict[str, float]] = {}
+    workers = max(1, min(int(max_workers), len(tickers))) if tickers else 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(fetch_one, ticker): ticker for ticker in tickers}
+        for future in as_completed(futures):
+            ticker, market_cap = future.result()
+            if market_cap is not None:
+                market_caps[ticker] = {"MarketCap": market_cap}
 
     if not market_caps:
         logger.error("No market cap data retrieved")
         return pd.DataFrame()
 
-    cap_df = pd.DataFrame.from_dict(market_caps, orient='index')
+    ordered = {ticker: market_caps[ticker] for ticker in tickers if ticker in market_caps}
+    cap_df = pd.DataFrame.from_dict(ordered, orient='index')
     logger.info(f"Retrieved market cap for {len(cap_df)} tickers")
 
     return cap_df
