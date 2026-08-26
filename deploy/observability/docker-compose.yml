@@ -1,0 +1,22 @@
+name: prism-observability
+
+services:
+  clickstack:
+    image: docker.io/clickhouse/clickstack-all-in-one:2.21.0@sha256:867195e145d0f579c332716317acc2864729706c0dd120ca7fd9758c4237997a
+    container_name: prism-clickstack
+    restart: unless-stopped
+    cpus: 0.85
+    mem_limit: 1800m
+    pids_limit: 512
+    ports:
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:14318:4318"
+    environment:
+      USAGE_STATS_ENABLED: "false"
+    volumes:
+      - /var/lib/prism-observability/clickhouse:/var/lib/clickhouse
+      - /var/lib/prism-observability/mongodb:/data/db
+      - /var/log/prism-observability/clickhouse:/var/log/clickhouse-server
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
