@@ -11,7 +11,9 @@ Environment=PRISM_ENV=production
 Environment=PRISM_OBSERVABILITY_SPOOL=/root/prism-insight/logs/prism_events.jsonl
 Environment=PRISM_OBSERVABILITY_CHECKPOINT=/root/prism-insight/logs/prism_events.checkpoint.json
 Environment=PRISM_OBSERVABILITY_OTLP_ENDPOINT=http://127.0.0.1:14318/v1/logs
-ExecStart=/root/.pyenv/shims/python -m observability.shipper --interval 5 --batch-size 100
+# Use a shell exec boundary for Rocky Linux SELinux compatibility with the
+# pyenv shim under /root. SELinux remains enforcing.
+ExecStart=/bin/sh -c 'exec /root/.pyenv/shims/python -m observability.shipper --interval 5 --batch-size 100'
 Restart=always
 RestartSec=10
 Nice=10
