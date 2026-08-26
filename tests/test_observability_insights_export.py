@@ -159,6 +159,7 @@ def test_publisher_validates_remote_destination_before_execution(tmp_path):
             port=22,
             user="root",
             destination="/tmp/good path.json",
+            identity_file=None,
         )
 
 
@@ -189,11 +190,16 @@ def test_publisher_generates_then_installs_atomically(tmp_path, monkeypatch):
         port=2222,
         user="root",
         destination="/srv/dashboard/observability_insights.json",
+        identity_file="/etc/prism-observability/dashboard-publisher",
     )
 
     assert result["events"] == 3
     assert calls[0][0][0] == "scp"
+    assert "-P" in calls[0][0]
+    assert "2222" in calls[0][0]
+    assert "/etc/prism-observability/dashboard-publisher" in calls[0][0]
     assert calls[0][0][-1].endswith("observability_insights.json.tmp")
     assert calls[1][0][0] == "ssh"
+    assert "-p" in calls[1][0]
     assert "/usr/bin/install" in calls[1][0]
     assert calls[2][0][0] == "ssh"
