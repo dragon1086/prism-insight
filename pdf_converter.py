@@ -6,16 +6,15 @@ Provides various conversion methods:
 1. Playwright-based HTML conversion (Recommended) - Uses Chromium browser engine
 2. pdfkit-based HTML conversion (Legacy) - Requires wkhtmltopdf, archived in 2023
 3. reportlab direct rendering - Theme not supported
-4. mdpdf simple conversion - Theme not supported
 
-Recommended order: Playwright > pdfkit > reportlab > mdpdf
+Recommended order: Playwright > pdfkit > reportlab
 """
 import os
 import logging
+import re
 import markdown
 import tempfile
 import PyPDF2
-import html2text
 import base64
 from datetime import datetime
 
@@ -1347,33 +1346,6 @@ def markdown_to_pdf_reportlab(md_file_path, pdf_file_path):
         logger.error(f"Error during ReportLab conversion: {str(e)}")
         raise
 
-def markdown_to_pdf_mdpdf(md_file_path, pdf_file_path):
-    """
-    Convert Markdown to PDF using mdpdf library
-
-    Installation: pip install mdpdf
-
-    Args:
-        md_file_path (str): Markdown file path
-        pdf_file_path (str): Output PDF file path
-    """
-    try:
-        # Import mdpdf (requires installation: pip install mdpdf)
-        from mdpdf import MarkdownPdf
-
-        # Convert markdown to PDF
-        md = MarkdownPdf()
-        md.convert(md_file_path, pdf_file_path)
-
-        logger.info(f"PDF conversion complete with mdpdf: {pdf_file_path}")
-
-    except ImportError:
-        logger.error("mdpdf library is not installed. Install with pip install mdpdf.")
-        raise
-    except Exception as e:
-        logger.error(f"Error during mdpdf conversion: {str(e)}")
-        raise
-
 def markdown_to_pdf(md_file_path, pdf_file_path, method='playwright', add_theme=False, logo_path=None, enable_watermark=False, watermark_opacity=0.02):
     """
     Convert Markdown file to PDF (default method selection)
@@ -1381,7 +1353,7 @@ def markdown_to_pdf(md_file_path, pdf_file_path, method='playwright', add_theme=
     Args:
         md_file_path (str): Markdown file path
         pdf_file_path (str): Output PDF file path
-        method (str): Conversion method ('playwright', 'pdfkit', 'reportlab', 'mdpdf')
+        method (str): Conversion method ('playwright', 'pdfkit', 'reportlab')
                      Default: 'playwright' (recommended)
         add_theme (bool): Whether to add theme and logo
         logo_path (str): Logo image path (uses default logo if None)
@@ -1398,11 +1370,8 @@ def markdown_to_pdf(md_file_path, pdf_file_path, method='playwright', add_theme=
         elif method == 'reportlab':
             # Note: reportlab method currently does not support themes
             markdown_to_pdf_reportlab(md_file_path, pdf_file_path)
-        elif method == 'mdpdf':
-            # Note: mdpdf method currently does not support themes
-            markdown_to_pdf_mdpdf(md_file_path, pdf_file_path)
         else:
-            # Default tries playwright first, then pdfkit, reportlab, and finally mdpdf
+            # Default tries playwright first, then pdfkit, then reportlab
             try:
                 markdown_to_pdf_playwright(md_file_path, pdf_file_path, add_theme, logo_path, enable_watermark, watermark_opacity)
             except Exception as e1:
@@ -1414,8 +1383,8 @@ def markdown_to_pdf(md_file_path, pdf_file_path, method='playwright', add_theme=
                     try:
                         markdown_to_pdf_reportlab(md_file_path, pdf_file_path)
                     except Exception as e3:
-                        logger.warning(f"ReportLab failed, trying mdpdf: {str(e3)}")
-                        markdown_to_pdf_mdpdf(md_file_path, pdf_file_path)
+                        logger.error(f"ReportLab failed: {str(e3)}")
+                        raise
 
     except Exception as e:
         logger.error(f"PDF conversion failed: {str(e)}")
@@ -1431,12 +1400,18 @@ def extract_text_from_pdf(pdf_path):
             text += page.extract_text()
     return text
 
+def normalize_pdf_text(text: str) -> str:
+    if not text:
+        return ""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = "\n".join(line.rstrip() for line in normalized.split("\n"))
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    return f"{normalized}\n" if normalized else ""
+
+
 # Convert text to markdown
-def convert_to_markdown(text):
-    h = html2text.HTML2Text()
-    h.ignore_links = False
-    markdown_text = h.handle(text)
-    return markdown_text
+def convert_to_markdown(text: str) -> str:
+    return normalize_pdf_text(text)
 
 # PDF to markdown_text
 def pdf_to_markdown_text(pdf_path):
