@@ -38,6 +38,7 @@ from cores.us_surge_detector import (
     get_snapshot,
     get_previous_snapshot,
     get_multi_day_ohlcv,
+    get_market_cap_df,
     get_major_tickers,
     get_nearest_business_day,
     apply_absolute_filters,
@@ -76,6 +77,9 @@ TRIGGER_CRITERIA = {
 MIN_TRADING_VALUE = 100_000_000
 EMERGING_LIQUIDITY_MIN_TRADING_VALUE = 50_000_000
 EMERGING_LIQUIDITY_MAX_CANDIDATES = 1
+MORNING_TARGET_CANDIDATES = 3
+MARKET_CAP_MIN_COVERAGE = 0.8
+MARKET_CAP_MAX_WORKERS = 8
 
 # --- #289 KR 다주 상대강도 스크리닝 US 이식 ---
 # Multi-week relative-strength lookback (trading days, ~3 months).
@@ -471,7 +475,8 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame,
 
 def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame,
                                        prev_snapshot: pd.DataFrame, cap_df: pd.DataFrame = None,
-                                       top_n: int = 10) -> pd.DataFrame:
+                                       top_n: int = 10,
+                                       exclude_tickers: set[str] | None = None) -> pd.DataFrame:
     """
     [Morning Trigger 3] Value-to-Cap Ratio Top (Concentrated Capital Inflow)
     - Absolute criteria: Min trading value $100M
@@ -512,6 +517,11 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame,
         if merged.empty:
             return pd.DataFrame()
 
+        if exclude_tickers:
+            merged = merged[~merged.index.isin(exclude_tickers)].copy()
+            if merged.empty:
+                return pd.DataFrame()
+
         # Trading value / Market cap ratio
         merged["ValueCapRatio"] = (merged["Amount"] / merged["MarketCap"]) * 100
 
@@ -536,10 +546,14 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame,
             merged["IntradayChange_norm"] * 0.2
         )
 
-        candidates = merged.sort_values("CompositeScore", ascending=False).head(top_n)
-
-        # Secondary filter: Rising stocks only
-        result = candidates[candidates["IsRising"]].copy()
+        # Capacity fill must return up to ``top_n`` usable rows, not take a
+        # mixed top-N and then discover that bearish rows consumed the quota.
+        result = (
+            merged[merged["IsRising"]]
+            .sort_values("CompositeScore", ascending=False)
+            .head(top_n)
+            .copy()
+        )
 
         if result.empty:
             return pd.DataFrame()
@@ -1473,16 +1487,71 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     prev_snapshot, prev_date = get_previous_snapshot(trade_date, tickers)
     logger.debug(f"Previous trading day: {prev_date}")
 
-    # Skip market cap filtering - S&P 500/NASDAQ-100 are already large-cap stocks
-    # S&P 500 requires ~$8.2B market cap for inclusion
+    # Market cap is not a hard universe filter. It is loaded on demand only
+    # when the morning primary triggers cannot fill the three analysis slots.
     cap_df = None
-    logger.debug("Market cap filter skipped (S&P 500/NASDAQ-100 already large-cap)")
+    cap_lookup_attempted = False
+    cap_lookup_coverage = None
+    primary_candidate_count = None
+    capacity_fill_candidate_count = 0
 
     if trigger_time == "morning":
         logger.info("=== Morning Batch Execution ===")
-        res1 = trigger_morning_volume_surge(trade_date, snapshot, prev_snapshot, cap_df)
-        res2 = trigger_morning_gap_up_momentum(trade_date, snapshot, prev_snapshot, cap_df)
-        res3 = trigger_morning_value_to_cap_ratio(trade_date, snapshot, prev_snapshot, cap_df)
+        res1 = trigger_morning_volume_surge(trade_date, snapshot, prev_snapshot, None)
+        res2 = trigger_morning_gap_up_momentum(trade_date, snapshot, prev_snapshot, None)
+        primary_tickers = set(res1.index).union(res2.index)
+        primary_candidate_count = len(primary_tickers)
+        needed = max(0, MORNING_TARGET_CANDIDATES - primary_candidate_count)
+        res3 = pd.DataFrame()
+
+        if needed:
+            cap_lookup_attempted = True
+            cap_universe = apply_absolute_filters(
+                snapshot.copy(), min_value=MIN_TRADING_VALUE
+            )
+            cap_tickers = cap_universe.index.tolist()
+            cap_df = get_market_cap_df(
+                cap_tickers, max_workers=MARKET_CAP_MAX_WORKERS
+            )
+            cap_lookup_coverage = (
+                len(cap_df) / len(cap_tickers) if cap_tickers else 0.0
+            )
+            logger.info(
+                "[CAPACITY-FILL] primary=%d target=%d needed=%d "
+                "cap_universe=%d cap_rows=%d coverage=%.1f%%",
+                primary_candidate_count,
+                MORNING_TARGET_CANDIDATES,
+                needed,
+                len(cap_tickers),
+                len(cap_df),
+                cap_lookup_coverage * 100,
+            )
+            if cap_lookup_coverage >= MARKET_CAP_MIN_COVERAGE:
+                res3 = trigger_morning_value_to_cap_ratio(
+                    trade_date,
+                    snapshot,
+                    prev_snapshot,
+                    cap_df,
+                    top_n=needed,
+                    exclude_tickers=primary_tickers,
+                )
+                if not res3.empty:
+                    res3["CapacityFill"] = True
+                    res3["CapacityFillReason"] = "primary_candidates_below_target"
+                    capacity_fill_candidate_count = len(res3)
+            else:
+                logger.warning(
+                    "[CAPACITY-FILL] skipped Value-to-Cap: cap coverage %.1f%% < %.1f%%",
+                    cap_lookup_coverage * 100,
+                    MARKET_CAP_MIN_COVERAGE * 100,
+                )
+        else:
+            logger.info(
+                "[CAPACITY-FILL] skipped: primary candidates already meet target (%d/%d)",
+                primary_candidate_count,
+                MORNING_TARGET_CANDIDATES,
+            )
+
         triggers = {
             "Volume Surge Top": res1,
             "Gap Up Momentum Top": res2,
@@ -1588,6 +1657,10 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                         _ceiling = stocks_df.loc[ticker, "LiquidityCeiling"]
                         stock_info["liquidity_ceiling"] = None if pd.isna(_ceiling) else float(_ceiling)
 
+                    if "CapacityFill" in stocks_df.columns:
+                        stock_info["capacity_fill"] = bool(stocks_df.loc[ticker, "CapacityFill"])
+                        stock_info["capacity_fill_reason"] = str(stocks_df.loc[ticker, "CapacityFillReason"])
+
                     output_data[trigger_type].append(stock_info)
 
         # Derive hybrid metadata from final_results
@@ -1622,6 +1695,11 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "bottomup_count": _bottomup_count,
             "emerging_liquidity_min_trading_value_usd": EMERGING_LIQUIDITY_MIN_TRADING_VALUE,
             "emerging_liquidity_max_candidates": EMERGING_LIQUIDITY_MAX_CANDIDATES,
+            "morning_target_candidates": MORNING_TARGET_CANDIDATES,
+            "primary_candidate_count": primary_candidate_count,
+            "capacity_fill_candidate_count": capacity_fill_candidate_count,
+            "market_cap_lookup_attempted": cap_lookup_attempted,
+            "market_cap_lookup_coverage": cap_lookup_coverage,
         }
 
         with open(output_file, 'w', encoding='utf-8') as f:
