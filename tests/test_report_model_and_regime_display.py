@@ -12,7 +12,7 @@ from regime_display import regime_label, swing_label
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_report_model_defaults_to_luna_low(monkeypatch):
+def test_report_model_defaults_to_luna_medium_with_low_auxiliary(monkeypatch):
     monkeypatch.delenv("REPORT_MODEL", raising=False)
     monkeypatch.delenv("REPORT_EFFORT", raising=False)
     monkeypatch.delenv("REPORT_AUX_MODEL", raising=False)
@@ -20,7 +20,7 @@ def test_report_model_defaults_to_luna_low(monkeypatch):
     module = importlib.reload(report_model_config)
 
     assert module.REPORT_MODEL == "gpt-5.6-luna"
-    assert module.REPORT_EFFORT == "low"
+    assert module.REPORT_EFFORT == "medium"
     assert module.REPORT_AUX_MODEL == "gpt-5.6-luna"
     assert module.REPORT_AUX_EFFORT == "low"
     assert module.report_model_slug() == "gpt-5.6-luna"
