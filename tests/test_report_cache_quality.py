@@ -123,3 +123,51 @@ def test_successful_report_remains_cacheable(monkeypatch, tmp_path):
     assert content == "# 카카오 분석 보고서\n\n정상 분석 내용"
     assert cached_markdown == markdown_path
     assert cached_pdf == pdf_path
+
+
+def test_evaluation_reuses_recent_report_without_pdf_side_effect(
+    monkeypatch, tmp_path
+):
+    reports, _pdf_reports = _configure_cache_dirs(monkeypatch, tmp_path)
+    markdown_path = reports / "009150_삼성전기_20260819_analysis.md"
+    markdown_path.write_text(
+        "# 삼성전기 분석\n\n핵심 결론\n\n"
+        "![chart](data:image/png;base64," + "A" * 10000 + ")\n\n"
+        "최종 투자 판단",
+        encoding="utf-8",
+    )
+    created_at = datetime(2026, 8, 19, 12, 0, tzinfo=KST)
+    os.utime(markdown_path, (created_at.timestamp(), created_at.timestamp()))
+    monkeypatch.setattr(
+        report_generator,
+        "_now_kst",
+        lambda: datetime(2026, 8, 27, 12, 0, tzinfo=KST),
+    )
+    monkeypatch.setattr(report_generator, "_EVALUATION_REPORT_MAX_CHARS", 4000)
+
+    cached, content, path = report_generator.get_recent_evaluation_report(
+        "009150", market="kr"
+    )
+
+    assert cached is True
+    assert path == markdown_path
+    assert "data:image" not in content
+    assert "[차트 이미지 생략]" in content
+    assert len(content) <= 4100
+
+
+def test_evaluation_report_age_is_bounded(monkeypatch, tmp_path):
+    reports, _pdf_reports = _configure_cache_dirs(monkeypatch, tmp_path)
+    markdown_path = reports / "009150_삼성전기_old.md"
+    markdown_path.write_text("# 정상 분석", encoding="utf-8")
+    created_at = datetime(2026, 8, 1, 12, 0, tzinfo=KST)
+    os.utime(markdown_path, (created_at.timestamp(), created_at.timestamp()))
+    monkeypatch.setattr(
+        report_generator,
+        "_now_kst",
+        lambda: datetime(2026, 8, 27, 12, 0, tzinfo=KST),
+    )
+
+    assert report_generator.get_recent_evaluation_report(
+        "009150", market="kr", max_age_days=14
+    ) == (False, "", None)

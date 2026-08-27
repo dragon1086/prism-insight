@@ -13,12 +13,12 @@ EXPECTED = {
     },
     "generate_evaluation_response": {
         "args": ["ticker", "ticker_name", "avg_price", "period", "tone", "background", "report_path", "memory_context"],
-        "servers": ("perplexity", "kospi_kosdaq", "time"),
+        "servers": None,
         "max_tokens": 8000,
     },
     "generate_us_evaluation_response": {
-        "args": ["ticker", "ticker_name", "avg_price", "period", "tone", "background", "memory_context"],
-        "servers": ("perplexity", "yahoo_finance", "time"),
+        "args": ["ticker", "ticker_name", "avg_price", "period", "tone", "background", "memory_context", "report_path"],
+        "servers": None,
         "max_tokens": 8000,
     },
     "generate_us_follow_up_response": {
@@ -69,7 +69,11 @@ def _contract(function: ast.AsyncFunctionDef):
     assert agent_call is not None
     if agent_call is not None:
         server_node = _keyword_node(agent_call, "server_names")
-        servers = None if isinstance(server_node, ast.Name) else tuple(ast.literal_eval(server_node))
+        servers = (
+            tuple(ast.literal_eval(server_node))
+            if isinstance(server_node, (ast.List, ast.Tuple))
+            else None
+        )
     if generation_call is not None:
         max_tokens = _literal_keyword(generation_call, "max_tokens")
     else:
