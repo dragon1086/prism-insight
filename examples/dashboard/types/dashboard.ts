@@ -511,6 +511,16 @@ export interface ObservabilityMarketSnapshot {
     observed_at: string
   } | null
   regime_distribution: Array<{ regime: string; count: number }>
+  context_ledger?: {
+    total: number
+    candidates: number
+    entries: number
+    exits: number
+    with_decision_id: number
+    with_position_id: number
+    complete_position_chains: number
+    latest_at: string | null
+  }
 }
 
 export interface ObservabilityDeployment {

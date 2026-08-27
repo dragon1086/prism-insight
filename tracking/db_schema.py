@@ -87,6 +87,7 @@ TABLE_ANALYSIS_PERFORMANCE_TRACKER = """
 CREATE TABLE IF NOT EXISTS analysis_performance_tracker (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     watchlist_id INTEGER,
+    decision_id TEXT,
     ticker TEXT NOT NULL,
     company_name TEXT,
     trigger_type TEXT,
@@ -687,6 +688,7 @@ def migrate_watchlist_history_columns(cursor, conn):
 def migrate_analysis_performance_tracker_columns(cursor, conn):
     migrations = [
         ("analysis_performance_tracker", "watchlist_id INTEGER"),
+        ("analysis_performance_tracker", "decision_id TEXT"),
         ("analysis_performance_tracker", "company_name TEXT"),
         ("analysis_performance_tracker", "trigger_type TEXT"),
         ("analysis_performance_tracker", "trigger_mode TEXT"),

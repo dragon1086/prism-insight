@@ -51,6 +51,10 @@ from prism_core.positions import (  # noqa: E402
     legacy_position_id,
     mirror_write_fail_open,
 )
+from observability.trading_context import (  # noqa: E402
+    emit_trading_context,
+    latest_regime_snapshot,
+)
 
 _openai_debug_spec = _ilu.spec_from_file_location("cores.openai_debug", PROJECT_ROOT / "cores" / "openai_debug.py")
 if _openai_debug_spec and _openai_debug_spec.loader:
@@ -1492,6 +1496,9 @@ class USStockTrackingAgent:
                 )
             )
             legacy_holding_id = self.cursor.lastrowid
+            position_id = legacy_position_id("US", legacy_holding_id)
+            scenario = dict(scenario)
+            scenario["_position_id"] = position_id
             self._mirror_position_open(
                 legacy_holding_id=legacy_holding_id,
                 account_key=account_key,
@@ -1501,6 +1508,40 @@ class USStockTrackingAgent:
                 opened_at=now,
             )
             self.conn.commit()
+            decision_context = {
+                "decision": "entry",
+                "price": current_price,
+                "buy_score": scenario.get("buy_score"),
+                "min_score": scenario.get("min_score"),
+                "rationale": scenario.get("rationale"),
+                "is_add": bool(is_add),
+            }
+            stored_decision_context = scenario.get("_decision_context")
+            if isinstance(stored_decision_context, dict):
+                decision_context.update(stored_decision_context)
+            emit_trading_context(
+                "entry.executed",
+                market="US",
+                ticker=ticker,
+                company_name=company_name,
+                decision_id=scenario.get("_decision_id"),
+                position_id=position_id,
+                trigger_type=trigger_type,
+                trigger_mode=trigger_mode,
+                scenario=scenario,
+                decision_context=decision_context,
+                portfolio_context={
+                    "slots_before": current_slots,
+                    "slots_after": current_slots + 1,
+                    "slots_max": getattr(self, "max_slots", 10),
+                },
+                execution_context={
+                    "simulator_recorded": True,
+                    "entry_price": current_price,
+                    "legacy_holding_id": legacy_holding_id,
+                },
+                source="us_batch_entry",
+            )
 
             # Build buy message (same format as KR template).
             # Pyramiding adds (#288) get a distinct header showing the entry number
@@ -1736,20 +1777,23 @@ class USStockTrackingAgent:
                     1 if was_traded else 0
                 )
             )
+            watchlist_id = int(self.cursor.lastrowid)
+            decision_id = scenario.get("_decision_id") or f"watchlist:US:{watchlist_id}"
 
             # Also save to us_analysis_performance_tracker for 7/14/30-day tracking
             # Note: US version doesn't use watchlist_id FK (independent design)
             self.cursor.execute(
                 """
                 INSERT INTO us_analysis_performance_tracker
-                (ticker, company_name, analysis_date, analysis_price,
+                (decision_id, ticker, company_name, analysis_date, analysis_price,
                  predicted_direction, target_price, stop_loss, buy_score,
                  decision, skip_reason, risk_reward_ratio,
                  trigger_type, trigger_mode, sector,
                  tracking_status, was_traded, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                 """,
                 (
+                    decision_id,
                     ticker,
                     company_name,
                     now,
@@ -1770,6 +1814,37 @@ class USStockTrackingAgent:
             )
 
             self.conn.commit()
+            try:
+                slots_used = await self._get_current_slots_count()
+                decision_context = {
+                    "decision": decision,
+                    "skip_reason": skip_reason,
+                    "was_traded": bool(was_traded),
+                    "price": current_price,
+                    "buy_score": buy_score,
+                    "min_score": min_score,
+                    "rationale": rationale,
+                    "watchlist_id": watchlist_id,
+                }
+                stored_decision_context = scenario.get("_decision_context")
+                if isinstance(stored_decision_context, dict):
+                    decision_context.update(stored_decision_context)
+                emit_trading_context(
+                    "candidate.evaluated",
+                    market="US",
+                    ticker=ticker,
+                    company_name=company_name,
+                    decision_id=decision_id,
+                    position_id=scenario.get("_position_id"),
+                    trigger_type=trigger_type,
+                    trigger_mode=trigger_mode,
+                    scenario=scenario,
+                    decision_context=decision_context,
+                    portfolio_context={"slots_used": slots_used, "slots_max": getattr(self, "max_slots", 10)},
+                    source="us_batch_watchlist",
+                )
+            except Exception as context_error:
+                logger.warning("[CONTEXT_LEDGER][US] candidate snapshot skipped: %s", context_error)
 
             # Translate market regime labels to Korean for display
             _regime_labels_ko = {
@@ -2071,10 +2146,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         저장한다(S&P500 vs 20MA, 4주 변동, VIX). 실패 시 None.
         """
         self._live_regime_summary = None
+        self._live_market_context = None
         try:
             from cores.data_prefetch import prefetch_us_macro_intelligence_data
             data = prefetch_us_macro_intelligence_data() or {}
             cr = data.get("computed_regime") or {}
+            self._live_market_context = cr
             regime = cr.get("market_regime")
             if regime:
                 logger.info(f"[sell] live US market regime: {regime}")
@@ -2172,7 +2249,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         """Use the trigger-batch regime for gates and user-facing text."""
         try:
             _rp = self._regime_policy_mod()
-            regime = getattr(self, "_pipeline_market_regime", None) or self._buy_floor_regime()
+            context = getattr(self, "_pipeline_market_context", None)
+            regime = context or getattr(self, "_pipeline_market_regime", None) or self._buy_floor_regime()
             if _rp is not None:
                 return _rp.stamp_scenario_market_regime(scenario, regime)
         except Exception as exc:  # noqa: BLE001 - visible unknown + gate fail-closed
@@ -2566,6 +2644,77 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             logger.error(f"{ticker} US holding decision delete failed: {str(e)}")
             return False
 
+    def _emit_exit_context_snapshot(
+        self,
+        *,
+        ticker: str,
+        company_name: str,
+        scenario_json: Any,
+        legacy_holding_ids: list[int] | tuple[int, ...],
+        trigger_type: str,
+        trigger_mode: str,
+        sell_reason: str,
+        exit_kind: str | None,
+        buy_price: float,
+        sell_price: float,
+        profit_rate: float,
+        holding_days: int,
+        account_key: str,
+        decision_id: str | None = None,
+        intent_id: str | None = None,
+        source: str = "us_exit",
+    ) -> None:
+        """Record a committed US exit without allowing telemetry to escape."""
+        try:
+            if isinstance(scenario_json, str):
+                entry_scenario = json.loads(scenario_json)
+            else:
+                entry_scenario = dict(scenario_json or {})
+        except (TypeError, ValueError, json.JSONDecodeError):
+            entry_scenario = {}
+        try:
+            slots_after = int(
+                self.conn.execute(
+                    "SELECT COUNT(*) FROM us_stock_holdings WHERE account_key=?",
+                    (account_key,),
+                ).fetchone()[0]
+            )
+        except Exception:
+            slots_after = None
+        for legacy_holding_id in legacy_holding_ids:
+            emit_trading_context(
+                "exit.executed",
+                market="US",
+                ticker=ticker,
+                company_name=company_name,
+                decision_id=entry_scenario.get("_decision_id") or decision_id,
+                position_id=f"legacy:US:{legacy_holding_id}",
+                trigger_type=trigger_type,
+                trigger_mode=trigger_mode,
+                scenario=entry_scenario,
+                market_context=getattr(self, "_live_market_context", None)
+                or latest_regime_snapshot("US"),
+                decision_context={
+                    "decision": "exit",
+                    "sell_reason": sell_reason,
+                    "exit_kind": exit_kind,
+                    "buy_price": buy_price,
+                    "sell_price": sell_price,
+                    "profit_rate_pct": profit_rate,
+                    "holding_days": holding_days,
+                },
+                portfolio_context={
+                    "slots_after": slots_after,
+                    "slots_max": getattr(self, "max_slots", 10),
+                },
+                execution_context={
+                    "simulator_recorded": True,
+                    "legacy_holding_id": legacy_holding_id,
+                    "intent_id": intent_id,
+                },
+                source=source,
+            )
+
     async def sell_stock(self, stock_data: Dict[str, Any], sell_reason: str,
                          exit_kind: Optional[str] = None) -> bool:
         """
@@ -2709,6 +2858,27 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     closed_at=now,
                 )
             self.conn.commit()
+            try:
+                self._emit_exit_context_snapshot(
+                    ticker=ticker,
+                    company_name=company_name,
+                    scenario_json=scenario_json,
+                    legacy_holding_ids=legacy_holding_ids,
+                    trigger_type=trigger_type,
+                    trigger_mode=trigger_mode,
+                    sell_reason=sell_reason,
+                    exit_kind=_exit_kind,
+                    buy_price=buy_price,
+                    sell_price=current_price,
+                    profit_rate=profit_rate,
+                    holding_days=holding_days,
+                    account_key=account_key,
+                )
+            except Exception as context_error:
+                logger.warning(
+                    "[CONTEXT_LEDGER][US] exit snapshot skipped: %s",
+                    context_error,
+                )
 
             # Build sell message (same format as KR template)
             arrow = "⬆️" if profit_rate > 0 else "⬇️" if profit_rate < 0 else "➖"
@@ -3300,7 +3470,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     ticker = analysis_result.get("ticker")
                     company_name = analysis_result.get("company_name")
                     current_price = analysis_result.get("current_price", 0)
-                    scenario = analysis_result.get("scenario", {})
+                    scenario = dict(analysis_result.get("scenario", {}) or {})
+                    scenario.setdefault("_decision_id", source_decision_id)
+                    analysis_result["scenario"] = scenario
                     sector = analysis_result.get("sector", "Unknown")
                     rank_change_msg = analysis_result.get("rank_change_msg", "")
 
@@ -3507,13 +3679,55 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 _cd["window_hours"], _cd["after_loss"], _cd.get("exit_kind"), _risk_only)
                             _cd_block = _enforce
 
-                    if (
+                    scenario = dict(scenario)
+                    scenario["_decision_context"] = {
+                        "decision": normalized_decision,
+                        "raw_decision": raw_decision,
+                        "buy_score": buy_score,
+                        "adjusted_score": adjusted_score,
+                        "min_score": min_score,
+                        "gate_allowed": bool(_buy_gate.get("allowed")),
+                        "gate_reason": _buy_gate.get("reason"),
+                        "gate_findings": _buy_gate.get("findings") or [],
+                        "cooldown_blocked": bool(_cd_block),
+                        "sector_diverse": bool(sector_diverse),
+                        "rebound_pilot": bool(rebound_pilot),
+                        "slots_used": current_slots,
+                        "slots_max": self.max_slots,
+                        "is_add": bool(is_add),
+                    }
+                    analysis_result["scenario"] = scenario
+
+                    entry_eligible = (
                         normalized_decision == "entry"
                         and (adjusted_score >= min_score or rebound_pilot)
                         and sector_diverse
                         and not _cd_block
                         and _buy_gate.get("allowed", False)
-                    ):
+                    )
+                    if entry_eligible:
+                        emit_trading_context(
+                            "candidate.evaluated",
+                            market="US",
+                            ticker=ticker,
+                            company_name=company_name,
+                            decision_id=source_decision_id,
+                            trigger_type=trigger_type,
+                            trigger_mode=trigger_info.get("trigger_mode"),
+                            scenario=scenario,
+                            decision_context={
+                                **scenario["_decision_context"],
+                                "selected_for_entry": True,
+                                "price": current_price,
+                            },
+                            portfolio_context={
+                                "slots_used": current_slots,
+                                "slots_max": self.max_slots,
+                            },
+                            source="us_batch_decision",
+                        )
+
+                    if entry_eligible:
                         # is_add => pyramiding additional independent row (#288)
                         buy_result = await self._buy_stock_with_position(
                             ticker,
@@ -4135,7 +4349,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
     async def run(self, pdf_report_paths: List[str], chat_id: str = None,
                   language: str = "ko", telegram_config=None, trigger_results_file: str = None,
-                  sector_names: list = None, market_regime: str = None) -> bool:
+                  sector_names: list = None, market_regime: str = None,
+                  market_context: dict | None = None) -> bool:
         """
         Main execution function for US stock tracking system.
 
@@ -4155,6 +4370,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             # Store telegram_config for use in send_telegram_message
             self.telegram_config = telegram_config
             self._pipeline_market_regime = market_regime
+            self._pipeline_market_context = market_context
 
             # Load trigger type mapping
             self.trigger_info_map = {}

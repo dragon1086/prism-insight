@@ -85,6 +85,51 @@ def test_snapshot_separates_actual_candidate_and_market():
     assert snapshot["data_quality"]["backfill_events"] == 3
 
 
+def test_snapshot_reports_linked_context_ledger_coverage():
+    events = [
+        {
+            **_event(
+                "candidate-context",
+                "candidate.evaluated",
+                "2026-08-26T00:00:00Z",
+                market="US",
+            ),
+            "decision_id": "decision-1",
+        },
+        {
+            **_event(
+                "entry-context",
+                "entry.executed",
+                "2026-08-26T00:01:00Z",
+                market="US",
+            ),
+            "decision_id": "decision-1",
+            "position_id": "position-1",
+        },
+        {
+            **_event(
+                "exit-context",
+                "exit.executed",
+                "2026-08-27T00:01:00Z",
+                market="US",
+            ),
+            "decision_id": "decision-1",
+            "position_id": "position-1",
+        },
+    ]
+
+    snapshot = build_snapshot(events)
+    ledger = snapshot["markets"]["US"]["context_ledger"]
+
+    assert ledger["total"] == 3
+    assert ledger["candidates"] == 1
+    assert ledger["entries"] == 1
+    assert ledger["exits"] == 1
+    assert ledger["with_decision_id"] == 3
+    assert ledger["with_position_id"] == 2
+    assert ledger["complete_position_chains"] == 1
+
+
 def test_clickhouse_exporter_rejects_non_local_endpoint():
     with pytest.raises(ValueError, match="local HTTP"):
         load_clickhouse_events(

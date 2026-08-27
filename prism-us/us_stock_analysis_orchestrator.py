@@ -1376,6 +1376,14 @@ class USStockAnalysisOrchestrator:
                             telegram_config=self.telegram_config,
                             trigger_results_file=trigger_results_file,
                             market_regime=(macro_context or {}).get("market_regime"),
+                            market_context={
+                                **(
+                                    (macro_context or {}).get("computed_regime")
+                                    or macro_context
+                                    or {}
+                                ),
+                                "leading_sectors": (macro_context or {}).get("leading_sectors"),
+                            },
                         )
 
                         await publish_batch_tracking_story_best_effort(

@@ -83,6 +83,7 @@ export function ObservabilityInsightsPanel({ data, market }: Props) {
     ? Math.max(0, (Date.now() - latestEvent.getTime()) / 60_000)
     : Number.POSITIVE_INFINITY
   const impacts = data.deployment_impacts.slice().reverse().slice(0, 8)
+  const contextLedger = current.context_ledger
 
   return (
     <section className="space-y-4">
@@ -118,7 +119,7 @@ export function ObservabilityInsightsPanel({ data, market }: Props) {
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <Card>
           <CardHeader className="pb-2">
             <CardDescription>
@@ -143,6 +144,36 @@ export function ObservabilityInsightsPanel({ data, market }: Props) {
               sufficient={current.actual.sample_sufficient}
               language={language}
             />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>
+              {language === "ko" ? "매매 컨텍스트 원장" : "Trade context ledger"}
+            </CardDescription>
+            <CardTitle className="text-2xl">
+              {(contextLedger?.total || 0).toLocaleString()}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-1 text-sm">
+            <div className="flex justify-between">
+              <span>{language === "ko" ? "후보/진입/청산" : "Candidate/Entry/Exit"}</span>
+              <strong>
+                {contextLedger?.candidates || 0}/{contextLedger?.entries || 0}/{contextLedger?.exits || 0}
+              </strong>
+            </div>
+            <div className="flex justify-between">
+              <span>{language === "ko" ? "완결 포지션" : "Complete chains"}</span>
+              <strong>{contextLedger?.complete_position_chains || 0}</strong>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {contextLedger?.latest_at
+                ? new Date(contextLedger.latest_at).toLocaleString(
+                    language === "ko" ? "ko-KR" : "en-US",
+                  )
+                : language === "ko" ? "수집 대기" : "Awaiting events"}
+            </div>
           </CardContent>
         </Card>
 

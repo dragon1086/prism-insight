@@ -66,6 +66,7 @@ from prism_core.positions import (
     legacy_position_id,
     mirror_write_fail_open,
 )
+from observability.trading_context import emit_trading_context, latest_regime_snapshot
 
 # O'Neil 룰베이스 매도 (2026-06-04 US quota 사고 동일 룰 결함 KR에도 적용).
 # 방어적 import: 실패 시 _ONEIL_FALLBACK_AVAILABLE=False 로 기존 레거시 룰 유지.
@@ -118,6 +119,13 @@ class _PreparedKrEntry:
     intent_store: IntentStore
     reservation: Any
     message: str
+    company_name: str
+    current_price: float
+    scenario: Dict[str, Any]
+    trigger_type: str
+    trigger_mode: str
+    is_add: bool
+    slots_before: int
 
 
 @dataclass(frozen=True)
@@ -1308,18 +1316,20 @@ class StockTrackingAgent:
                 ),
             )
             watchlist_id = self.cursor.lastrowid
+            decision_id = scenario.get("_decision_id") or f"watchlist:KR:{watchlist_id}"
 
             self.cursor.execute(
                 """
                 INSERT INTO analysis_performance_tracker
-                (watchlist_id, ticker, company_name, trigger_type, trigger_mode,
+                (watchlist_id, decision_id, ticker, company_name, trigger_type, trigger_mode,
                  analyzed_date, analyzed_price, decision, was_traded, skip_reason,
                  buy_score, min_score, target_price, stop_loss, risk_reward_ratio,
                  tracking_status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                 """,
                 (
                     watchlist_id,
+                    decision_id,
                     ticker,
                     company_name,
                     trigger_type,
@@ -1339,6 +1349,37 @@ class StockTrackingAgent:
                 ),
             )
             self.conn.commit()
+            try:
+                slots_used = await self._get_current_slots_count()
+                decision_context = {
+                    "decision": decision,
+                    "skip_reason": skip_reason,
+                    "was_traded": bool(was_traded),
+                    "price": current_price,
+                    "buy_score": buy_score,
+                    "min_score": min_score,
+                    "rationale": rationale,
+                    "watchlist_id": watchlist_id,
+                }
+                stored_decision_context = scenario.get("_decision_context")
+                if isinstance(stored_decision_context, dict):
+                    decision_context.update(stored_decision_context)
+                emit_trading_context(
+                    "candidate.evaluated",
+                    market="KR",
+                    ticker=ticker,
+                    company_name=company_name,
+                    decision_id=decision_id,
+                    position_id=scenario.get("_position_id"),
+                    trigger_type=trigger_type,
+                    trigger_mode=trigger_mode,
+                    scenario=scenario,
+                    decision_context=decision_context,
+                    portfolio_context={"slots_used": slots_used, "slots_max": getattr(self, "max_slots", 10)},
+                    source="kr_batch_watchlist",
+                )
+            except Exception as context_error:
+                logger.warning("[CONTEXT_LEDGER][KR] candidate snapshot skipped: %s", context_error)
             logger.info(
                 f"{ticker}({company_name}) watchlist save complete - "
                 f"Score: {buy_score}/{min_score}, Reason: {skip_reason}, Trigger: {trigger_type}"
@@ -1533,6 +1574,17 @@ class StockTrackingAgent:
         trigger_mode = trigger_info.get(
             "trigger_mode", getattr(self, "trigger_mode", "unknown")
         )
+        scenario = dict(scenario)
+        scenario.setdefault("_decision_id", source_decision_id)
+        try:
+            slots_before = int(
+                self.conn.execute(
+                    "SELECT COUNT(*) FROM stock_holdings WHERE account_key=?",
+                    (account_id,),
+                ).fetchone()[0]
+            )
+        except Exception:
+            slots_before = 0
 
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1570,6 +1622,8 @@ class StockTrackingAgent:
                 ),
             )
             legacy_holding_id = int(cursor.lastrowid)
+            position_id = legacy_position_id("KR", legacy_holding_id)
+            scenario["_position_id"] = position_id
             intent = OrderIntent.create(
                 market="KR",
                 account_id=account_id,
@@ -1621,6 +1675,13 @@ class StockTrackingAgent:
             intent_store=intent_store,
             reservation=reservation,
             message=message,
+            company_name=company_name,
+            current_price=current_price,
+            scenario=scenario,
+            trigger_type=trigger_type,
+            trigger_mode=trigger_mode,
+            is_add=is_add,
+            slots_before=slots_before,
         )
 
     async def _execute_pending_kr_entry(
@@ -1686,6 +1747,41 @@ class StockTrackingAgent:
             if self.conn.in_transaction:
                 self.conn.rollback()
             raise
+        decision_context = {
+            "decision": "entry",
+            "price": prepared.current_price,
+            "buy_score": prepared.scenario.get("buy_score"),
+            "min_score": prepared.scenario.get("min_score"),
+            "rationale": prepared.scenario.get("rationale"),
+            "is_add": prepared.is_add,
+        }
+        stored_decision_context = prepared.scenario.get("_decision_context")
+        if isinstance(stored_decision_context, dict):
+            decision_context.update(stored_decision_context)
+        emit_trading_context(
+            "entry.executed",
+            market="KR",
+            ticker=prepared.symbol,
+            company_name=prepared.company_name,
+            decision_id=prepared.intent.source_decision_id,
+            position_id=prepared.intent.source_position_id,
+            trigger_type=prepared.trigger_type,
+            trigger_mode=prepared.trigger_mode,
+            scenario=prepared.scenario,
+            decision_context=decision_context,
+            portfolio_context={
+                "slots_before": prepared.slots_before,
+                "slots_after": prepared.slots_before + 1,
+                "slots_max": getattr(self, "max_slots", 10),
+            },
+            execution_context={
+                "simulator_recorded": True,
+                "entry_price": prepared.current_price,
+                "legacy_holding_id": prepared.legacy_holding_id,
+                "intent_id": prepared.intent.id,
+            },
+            source="kr_pending_entry",
+        )
         self._queue_message(prepared.message, "analysis")
 
     def _fail_pending_kr_entry(self, prepared: _PreparedKrEntry) -> None:
@@ -2034,6 +2130,31 @@ class StockTrackingAgent:
                 self.conn.rollback()
             raise
 
+        try:
+            self._emit_exit_context_snapshot(
+                ticker=prepared.symbol,
+                company_name=prepared.company_name,
+                scenario_json=prepared.scenario_json,
+                legacy_holding_ids=(prepared.legacy_holding_id,),
+                trigger_type=prepared.trigger_type,
+                trigger_mode=prepared.trigger_mode,
+                sell_reason=prepared.sell_reason,
+                exit_kind=prepared.exit_kind,
+                buy_price=prepared.buy_price,
+                sell_price=prepared.sell_price,
+                profit_rate=prepared.profit_rate,
+                holding_days=prepared.holding_days,
+                account_key=prepared.account_id,
+                decision_id=prepared.intent.source_decision_id,
+                intent_id=prepared.intent.id,
+                source="kr_pending_exit",
+            )
+        except Exception as context_error:
+            logger.warning(
+                "[CONTEXT_LEDGER][KR] pending exit snapshot skipped: %s",
+                context_error,
+            )
+
         self._queue_message(
             prepared.message,
             "analysis",
@@ -2282,6 +2403,9 @@ class StockTrackingAgent:
                 )
             )
             legacy_holding_id = self.cursor.lastrowid
+            position_id = legacy_position_id("KR", legacy_holding_id)
+            scenario = dict(scenario)
+            scenario["_position_id"] = position_id
             self._mirror_position_open(
                 legacy_holding_id=legacy_holding_id,
                 account_key=account_key,
@@ -2291,6 +2415,40 @@ class StockTrackingAgent:
                 opened_at=now,
             )
             self.conn.commit()
+            decision_context = {
+                "decision": "entry",
+                "price": current_price,
+                "buy_score": scenario.get("buy_score"),
+                "min_score": scenario.get("min_score"),
+                "rationale": scenario.get("rationale"),
+                "is_add": bool(is_add),
+            }
+            stored_decision_context = scenario.get("_decision_context")
+            if isinstance(stored_decision_context, dict):
+                decision_context.update(stored_decision_context)
+            emit_trading_context(
+                "entry.executed",
+                market="KR",
+                ticker=ticker,
+                company_name=company_name,
+                decision_id=scenario.get("_decision_id"),
+                position_id=position_id,
+                trigger_type=trigger_type,
+                trigger_mode=trigger_mode,
+                scenario=scenario,
+                decision_context=decision_context,
+                portfolio_context={
+                    "slots_before": current_slots,
+                    "slots_after": current_slots + 1,
+                    "slots_max": self.max_slots,
+                },
+                execution_context={
+                    "simulator_recorded": True,
+                    "entry_price": current_price,
+                    "legacy_holding_id": legacy_holding_id,
+                },
+                source="kr_batch_entry",
+            )
 
             # Add purchase message — pyramiding adds (#288) get a distinct header
             # showing the entry number and the new aggregate average price.
@@ -2435,11 +2593,14 @@ class StockTrackingAgent:
 
     def _get_live_regime_safe(self) -> Optional[str]:
         """매도 판단용 '현재' KOSPI 레짐을 1회 계산(OpenAI 무관). 실패 시 None → stale 폴백."""
+        self._live_market_context = None
         try:
             from cores.data_prefetch import prefetch_macro_intelligence_data
             reference_date = datetime.now().strftime("%Y%m%d")
             data = prefetch_macro_intelligence_data(reference_date) or {}
-            regime = (data.get("computed_regime") or {}).get("market_regime")
+            computed = data.get("computed_regime") or {}
+            self._live_market_context = computed
+            regime = computed.get("market_regime")
             if regime:
                 logger.info(f"[sell] live KR market regime: {regime}")
             return regime or None
@@ -2514,7 +2675,8 @@ class StockTrackingAgent:
         """Use the trigger-batch regime for gates and user-facing text."""
         try:
             from cores.regime_policy import stamp_scenario_market_regime
-            regime = getattr(self, "_pipeline_market_regime", None) or self._buy_floor_regime()
+            context = getattr(self, "_pipeline_market_context", None)
+            regime = context or getattr(self, "_pipeline_market_regime", None) or self._buy_floor_regime()
             return stamp_scenario_market_regime(scenario, regime)
         except Exception as exc:  # noqa: BLE001 - visible unknown + gate fail-closed
             logger.error("[REGIME_SNAPSHOT][KR] scenario stamp failed: %s", exc)
@@ -2645,6 +2807,77 @@ class StockTrackingAgent:
         except Exception as e:
             logger.error(f"{stock_data.get('ticker', '') if 'ticker' in locals() else 'Unknown stock'} Error analyzing sell: {str(e)}")
             return False, "Analysis error"
+
+    def _emit_exit_context_snapshot(
+        self,
+        *,
+        ticker: str,
+        company_name: str,
+        scenario_json: Any,
+        legacy_holding_ids: list[int] | tuple[int, ...],
+        trigger_type: str,
+        trigger_mode: str,
+        sell_reason: str,
+        exit_kind: str | None,
+        buy_price: float,
+        sell_price: float,
+        profit_rate: float,
+        holding_days: int,
+        account_key: str,
+        decision_id: str | None = None,
+        intent_id: str | None = None,
+        source: str = "kr_exit",
+    ) -> None:
+        """Record a committed KR exit without allowing telemetry to escape."""
+        try:
+            if isinstance(scenario_json, str):
+                entry_scenario = json.loads(scenario_json)
+            else:
+                entry_scenario = dict(scenario_json or {})
+        except (TypeError, ValueError, json.JSONDecodeError):
+            entry_scenario = {}
+        try:
+            slots_after = int(
+                self.conn.execute(
+                    "SELECT COUNT(*) FROM stock_holdings WHERE account_key=?",
+                    (account_key,),
+                ).fetchone()[0]
+            )
+        except Exception:
+            slots_after = None
+        for legacy_holding_id in legacy_holding_ids:
+            emit_trading_context(
+                "exit.executed",
+                market="KR",
+                ticker=ticker,
+                company_name=company_name,
+                decision_id=entry_scenario.get("_decision_id") or decision_id,
+                position_id=f"legacy:KR:{legacy_holding_id}",
+                trigger_type=trigger_type,
+                trigger_mode=trigger_mode,
+                scenario=entry_scenario,
+                market_context=getattr(self, "_live_market_context", None)
+                or latest_regime_snapshot("KR"),
+                decision_context={
+                    "decision": "exit",
+                    "sell_reason": sell_reason,
+                    "exit_kind": exit_kind,
+                    "buy_price": buy_price,
+                    "sell_price": sell_price,
+                    "profit_rate_pct": profit_rate,
+                    "holding_days": holding_days,
+                },
+                portfolio_context={
+                    "slots_after": slots_after,
+                    "slots_max": getattr(self, "max_slots", 10),
+                },
+                execution_context={
+                    "simulator_recorded": True,
+                    "legacy_holding_id": legacy_holding_id,
+                    "intent_id": intent_id,
+                },
+                source=source,
+            )
 
     async def sell_stock(self, stock_data: Dict[str, Any], sell_reason: str,
                          exit_kind: Optional[str] = None) -> bool:
@@ -2794,6 +3027,27 @@ class StockTrackingAgent:
 
             # Save changes
             self.conn.commit()
+            try:
+                self._emit_exit_context_snapshot(
+                    ticker=ticker,
+                    company_name=company_name,
+                    scenario_json=scenario_json,
+                    legacy_holding_ids=legacy_holding_ids,
+                    trigger_type=trigger_type,
+                    trigger_mode=trigger_mode,
+                    sell_reason=sell_reason,
+                    exit_kind=_exit_kind,
+                    buy_price=buy_price,
+                    sell_price=current_price,
+                    profit_rate=profit_rate,
+                    holding_days=holding_days,
+                    account_key=account_key,
+                )
+            except Exception as context_error:
+                logger.warning(
+                    "[CONTEXT_LEDGER][KR] exit snapshot skipped: %s",
+                    context_error,
+                )
 
             # Add sell message
             arrow = "⬆️" if profit_rate > 0 else "⬇️" if profit_rate < 0 else "➖"
@@ -3653,7 +3907,9 @@ class StockTrackingAgent:
                     ticker = analysis_result.get("ticker")
                     company_name = analysis_result.get("company_name")
                     current_price = analysis_result.get("current_price", 0)
-                    scenario = analysis_result.get("scenario", {})
+                    scenario = dict(analysis_result.get("scenario", {}) or {})
+                    scenario.setdefault("_decision_id", source_decision_id)
+                    analysis_result["scenario"] = scenario
                     sector = analysis_result.get("sector", "Unknown")
                     rank_change_msg = analysis_result.get("rank_change_msg", "")
 
@@ -3796,12 +4052,50 @@ class StockTrackingAgent:
                                 company_name, ticker, _buy_gate.get("reason", "unknown"),
                             )
 
-                    if (
+                    scenario = dict(scenario)
+                    scenario["_decision_context"] = {
+                        "decision": analysis_result.get("decision"),
+                        "buy_score": buy_score,
+                        "min_score": min_score,
+                        "gate_allowed": bool(_buy_gate.get("allowed")),
+                        "gate_reason": _buy_gate.get("reason"),
+                        "gate_findings": _buy_gate.get("findings") or [],
+                        "cooldown_blocked": bool(_cd_block),
+                        "regime_floor_blocked": bool(_regime_floor_block),
+                        "slots_used": current_slots,
+                        "slots_max": self.max_slots,
+                    }
+                    analysis_result["scenario"] = scenario
+
+                    entry_eligible = (
                         analysis_result.get("decision") == "Enter"
                         and not _cd_block
                         and not _regime_floor_block
                         and _buy_gate.get("allowed", False)
-                    ):
+                    )
+                    if entry_eligible:
+                        emit_trading_context(
+                            "candidate.evaluated",
+                            market="KR",
+                            ticker=ticker,
+                            company_name=company_name,
+                            decision_id=source_decision_id,
+                            trigger_type=(getattr(self, "trigger_info_map", {}).get(ticker, {}) or {}).get("trigger_type"),
+                            trigger_mode=(getattr(self, "trigger_info_map", {}).get(ticker, {}) or {}).get("trigger_mode"),
+                            scenario=scenario,
+                            decision_context={
+                                **scenario["_decision_context"],
+                                "selected_for_entry": True,
+                                "price": current_price,
+                            },
+                            portfolio_context={
+                                "slots_used": current_slots,
+                                "slots_max": self.max_slots,
+                            },
+                            source="kr_batch_decision",
+                        )
+
+                    if entry_eligible:
                         if self._position_pending_kr_enabled():
                             prepared = None
                             try:
@@ -4416,7 +4710,7 @@ class StockTrackingAgent:
         except Exception as e:
             logger.error(f"Error in _send_to_translation_channels: {str(e)}")
 
-    async def run(self, pdf_report_paths: List[str], chat_id: str = None, language: str = "ko", telegram_config=None, trigger_results_file: str = None, sector_names: list = None, market_regime: str = None) -> bool | None:
+    async def run(self, pdf_report_paths: List[str], chat_id: str = None, language: str = "ko", telegram_config=None, trigger_results_file: str = None, sector_names: list = None, market_regime: str = None, market_context: dict | None = None) -> bool | None:
         """
         Main execution function for stock tracking system
 
@@ -4436,6 +4730,7 @@ class StockTrackingAgent:
             # Store telegram_config for use in send_telegram_message
             self.telegram_config = telegram_config
             self._pipeline_market_regime = market_regime
+            self._pipeline_market_context = market_context
 
             # Load trigger type mapping from trigger_results file
             self.trigger_info_map = {}

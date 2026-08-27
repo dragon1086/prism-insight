@@ -137,6 +137,11 @@ def build_otlp_payload(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
                         "prism.decision_id": event.get("decision_id"),
                         "prism.position_id": event.get("position_id"),
                         "prism.trigger_type": payload_attributes.get("trigger_type"),
+                        "prism.regime": payload_attributes.get("regime"),
+                        "prism.primary_trend_regime": payload_attributes.get("primary_trend_regime"),
+                        "prism.effective_entry_regime": payload_attributes.get("effective_entry_regime"),
+                        "prism.swing_state": payload_attributes.get("swing_state"),
+                        "prism.context_schema_version": payload_attributes.get("context_schema_version"),
                         "prism.feedback_mode": payload_attributes.get("mode"),
                         "prism.applied_adjust": payload_attributes.get("applied_adjust"),
                     }
