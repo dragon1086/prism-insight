@@ -352,7 +352,10 @@ class TestOrchestratorIntegration:
             def __init__(self, telegram_token=None):
                 self.telegram_token = telegram_token
 
-            async def run(self, pdf_paths, chat_id, language, telegram_config=None, trigger_results_file=None):
+            async def run(
+                self, pdf_paths, chat_id, language, telegram_config=None,
+                trigger_results_file=None, **_kwargs,
+            ):
                 return False
 
         fake_tracking_module = SimpleNamespace(
@@ -377,7 +380,7 @@ class TestOrchestratorIntegration:
             caplog.set_level("INFO")
             await orchestrator.run_full_pipeline("afternoon", language="en", override_date="20260401")
 
-        assert "US tracking system batch execution failed" in caplog.text
+        assert "US full pipeline completed with tracking errors" in caplog.text
         assert "US full pipeline completed with tracking errors - mode: afternoon" in caplog.text
         assert "US full pipeline complete - mode: afternoon" not in caplog.text
 

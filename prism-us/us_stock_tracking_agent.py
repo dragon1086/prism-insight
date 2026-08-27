@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 import os
@@ -105,7 +106,16 @@ assert _spec is not None and _spec.loader is not None
 _mod = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 OpenAIAugmentedLLM = _mod.OpenAIResponsesLLM
-del _ilu, _spec, _mod
+_codex_spec = _ilu.spec_from_file_location(
+    "codex_oauth_fast_backend",
+    Path(__file__).resolve().parent.parent / "cores" / "llm" / "codex_oauth_fast_backend.py",
+)
+assert _codex_spec is not None and _codex_spec.loader is not None
+_codex_mod = _ilu.module_from_spec(_codex_spec)
+sys.modules[_codex_spec.name] = _codex_mod
+_codex_spec.loader.exec_module(_codex_mod)  # type: ignore[union-attr]
+generate_codex_fast = _codex_mod.generate_codex_fast
+del _ilu, _spec, _mod, _codex_spec, _codex_mod
 
 # Import US-specific modules
 # Use explicit path to avoid conflicts with main project
@@ -153,6 +163,13 @@ translate_telegram_message = _translator_module.translate_telegram_message
 # (avoids prism-us/cores/ namespace collision)
 _utils_module = _import_from_main_cores("cores_utils", "cores/utils.py")
 parse_llm_json = _utils_module.parse_llm_json
+
+_feedback_module = _import_from_main_cores(
+    "prism_root_performance_feedback_agent",
+    "tracking/performance_feedback.py",
+)
+format_trigger_feedback = _feedback_module.format_trigger_feedback
+get_trigger_feedback = _feedback_module.get_trigger_feedback
 
 try:
     # First try direct import from prism-us directory
@@ -203,7 +220,53 @@ ka = _importlib_util.module_from_spec(_kis_auth_spec)
 _kis_auth_spec.loader.exec_module(ka)
 
 # Create MCPApp instance
-app = MCPApp(name="us_stock_tracking")
+class _LazyMCPApp:
+    """Construct mcp-agent only when legacy mode or fallback actually needs it."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    @asynccontextmanager
+    async def run(self):
+        instance = MCPApp(name=self.name)
+        async with instance.run():
+            yield
+
+
+app = _LazyMCPApp(name="us_stock_tracking")
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _us_codex_runtime_enabled() -> bool:
+    """Whether Codex MCP must run without an outer mcp-agent host."""
+    return _env_flag_enabled("PRISM_US_CODEX_FAST_TRADING") or _env_flag_enabled(
+        "PRISM_US_CODEX_FAST_SELL"
+    )
+
+
+def _resolve_us_trading_analysis_concurrency(environ=None) -> int:
+    """Bound concurrent US buy-scenario analyses without overloading db-server."""
+    environ = os.environ if environ is None else environ
+    raw = environ.get(
+        "US_TRADING_ANALYSIS_CONCURRENCY",
+        environ.get("TRADING_ANALYSIS_CONCURRENCY", "2"),
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 2
+    return min(value, 4) if value > 0 else 2
+
+
+US_TRADING_ANALYSIS_CONCURRENCY = _resolve_us_trading_analysis_concurrency()
 
 
 # =============================================================================
@@ -894,6 +957,22 @@ class USStockTrackingAgent:
         account_key, _ = self._account_scope()
         return get_us_holdings_count(self.cursor, account_key=account_key)
 
+    def _get_db_lock(self) -> asyncio.Lock:
+        """Serialize the shared sqlite cursor around bounded parallel pre-pass reads."""
+        lock = getattr(self, "_db_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._db_lock = lock
+        return lock
+
+    def _get_legacy_fallback_lock(self) -> asyncio.Lock:
+        """Never start multiple legacy MCPApp fallbacks in the same process."""
+        lock = getattr(self, "_legacy_fallback_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._legacy_fallback_lock = lock
+        return lock
+
     async def _check_sector_diversity(self, sector: str, is_pyramiding_add: bool = False) -> bool:
         """Check for over-concentration in same sector.
 
@@ -1105,7 +1184,8 @@ class USStockTrackingAgent:
         ticker: str = None,
         sector: str = None,
         trigger_type: str = "",
-        trigger_mode: str = ""
+        trigger_mode: str = "",
+        db_lock: "asyncio.Lock" = None,
     ) -> Dict[str, Any]:
         """
         Extract trading scenario from report.
@@ -1121,7 +1201,13 @@ class USStockTrackingAgent:
         Returns:
             Dict: Trading scenario information
         """
+        if db_lock is None:
+            db_lock = self._get_db_lock()
+        _lock_held = False
         try:
+            await db_lock.acquire()
+            _lock_held = True
+
             # Get current holdings info
             current_slots = await self._get_current_slots_count()
 
@@ -1191,8 +1277,10 @@ class USStockTrackingAgent:
                 if trend_facts:
                     logger.debug(f"[TrendFacts] US injected for {ticker} ({len(trend_facts)} chars)")
 
-            # LLM call to generate trading scenario
-            llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
+            # The prompt now contains an immutable snapshot. Release the shared
+            # sqlite cursor before Codex/mcp-agent so independent candidates overlap.
+            db_lock.release()
+            _lock_held = False
 
             # Build trigger info section
             trigger_info_section = ""
@@ -1219,40 +1307,100 @@ class USStockTrackingAgent:
             {report_content}
             """
 
+            ticker_tag = ticker or "?"
+            scenario_json = None
+            codex_enabled = os.environ.get(
+                "PRISM_US_CODEX_FAST_TRADING", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if codex_enabled:
+                try:
+                    instruction = str(
+                        getattr(self.trading_agent, "instruction", "") or ""
+                    )
+                    if not instruction:
+                        raise RuntimeError("trading agent instruction unavailable")
+                    timeout = int(os.environ.get("PRISM_CODEX_FAST_TIMEOUT", "90"))
+                    codex_result = await asyncio.to_thread(
+                        generate_codex_fast,
+                        system_prompt=instruction,
+                        user_prompt=prompt_message,
+                        model="gpt-5.6-sol",
+                        timeout=timeout,
+                        mcp_profile="us_trading",
+                        require_mcp_calls=True,
+                    )
+                    scenario_json = parse_llm_json(
+                        codex_result.text,
+                        context="US Codex Fast trading scenario",
+                    )
+                    logger.info(
+                        "[CODEX_FAST] US scenario ticker=%s latency_s=%.2f "
+                        "parse_ok=%s mcp_calls=%s",
+                        ticker_tag,
+                        codex_result.latency_s,
+                        scenario_json is not None,
+                        len(codex_result.mcp_calls),
+                    )
+                    if scenario_json is None:
+                        logger.warning(
+                            "[%s] Codex Fast parse failed; falling back to mcp-agent",
+                            ticker_tag,
+                        )
+                except Exception as codex_err:  # noqa: BLE001 — mandatory fallback
+                    logger.warning(
+                        "[%s] Codex Fast unavailable (%s); falling back to mcp-agent",
+                        ticker_tag,
+                        type(codex_err).__name__,
+                    )
+                    scenario_json = None
+
             # LLM scenario generation with retry+backoff. Transient API/parse
             # failures (rate limits, truncated responses) were silently turning
             # into default_scenario() — i.e. a misleading "Analysis failed" skip.
             # Retry a couple of times before giving up.
-            ticker_tag = ticker or "?"
-            max_attempts = 3
-            response = None
-            scenario_json = None
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    response = await llm.generate_str(
-                        message=prompt_message,
-                        request_params=RequestParams(
-                            model="gpt-5.6-sol",
-                            reasoning_effort="high",
-                            maxTokens=30000
-                        )
-                    )
-                    # JSON parsing (consolidated in cores/utils.py)
-                    scenario_json = parse_llm_json(response, context='US trading scenario')
-                    if scenario_json is not None:
-                        break
-                    logger.warning(
-                        f"[{ticker_tag}] US trading scenario parse returned None "
-                        f"(attempt {attempt}/{max_attempts})"
-                    )
-                except Exception as call_err:
-                    log_openai_error(logger, call_err, f"US trading scenario LLM call [{ticker_tag}]")
-                    logger.warning(
-                        f"[{ticker_tag}] US trading scenario LLM call failed "
-                        f"(attempt {attempt}/{max_attempts}): {call_err}"
-                    )
-                if attempt < max_attempts:
-                    await asyncio.sleep(2 * attempt)  # linear backoff: 2s, 4s
+            if scenario_json is None:
+                async def _legacy_scenario():
+                    llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
+                    max_attempts = 3
+                    legacy_scenario = None
+                    for attempt in range(1, max_attempts + 1):
+                        try:
+                            response = await llm.generate_str(
+                                message=prompt_message,
+                                request_params=RequestParams(
+                                    model="gpt-5.6-sol",
+                                    reasoning_effort="high",
+                                    maxTokens=30000
+                                )
+                            )
+                            legacy_scenario = parse_llm_json(
+                                response, context='US trading scenario'
+                            )
+                            if legacy_scenario is not None:
+                                break
+                            logger.warning(
+                                f"[{ticker_tag}] US trading scenario parse returned None "
+                                f"(attempt {attempt}/{max_attempts})"
+                            )
+                        except Exception as call_err:
+                            log_openai_error(
+                                logger, call_err,
+                                f"US trading scenario LLM call [{ticker_tag}]",
+                            )
+                            logger.warning(
+                                f"[{ticker_tag}] US trading scenario LLM call failed "
+                                f"(attempt {attempt}/{max_attempts}): {call_err}"
+                            )
+                        if attempt < max_attempts:
+                            await asyncio.sleep(2 * attempt)
+                    return legacy_scenario
+
+                if _us_codex_runtime_enabled():
+                    async with self._get_legacy_fallback_lock():
+                        async with app.run():
+                            scenario_json = await _legacy_scenario()
+                else:
+                    scenario_json = await _legacy_scenario()
 
             if scenario_json is not None:
                 scenario_json = self._stamp_scenario_market_regime(scenario_json)
@@ -1270,8 +1418,8 @@ class USStockTrackingAgent:
                 return scenario_json
 
             logger.error(
-                f"[ANALYSIS_FAILED][{ticker_tag}] US trading scenario unavailable after "
-                f"{max_attempts} attempts. Last response (truncated): {str(response)[:500]}"
+                f"[ANALYSIS_FAILED][{ticker_tag}] US trading scenario unavailable "
+                "after Codex primary and legacy fallback attempts"
             )
             return default_scenario()
 
@@ -1280,6 +1428,9 @@ class USStockTrackingAgent:
             logger.error(f"Error extracting trading scenario: {str(e)}")
             logger.error(traceback.format_exc())
             return default_scenario()
+        finally:
+            if _lock_held:
+                db_lock.release()
 
     async def _analyze_report_core(self, pdf_report_path: str) -> Dict[str, Any]:
         """Analyze a report once before per-account execution checks.
@@ -1299,7 +1450,9 @@ class USStockTrackingAgent:
                 logger.error(f"Failed to extract ticker info: {pdf_report_path}")
                 return {"success": False, "error": "Failed to extract ticker info"}
 
-            current_price = await self._get_current_stock_price(ticker)
+            db_lock = self._get_db_lock()
+            async with db_lock:
+                current_price = await self._get_current_stock_price(ticker)
             if current_price <= 0:
                 logger.error(f"{ticker} current price query failed")
                 return {"success": False, "error": "Current price query failed"}
@@ -1319,7 +1472,8 @@ class USStockTrackingAgent:
                 ticker=ticker,
                 sector=None,
                 trigger_type=trigger_type,
-                trigger_mode=trigger_mode
+                trigger_mode=trigger_mode,
+                db_lock=db_lock,
             )
 
             # Analysis/LLM failure sentinel: do NOT emit a misleading "매수 보류"
@@ -2038,9 +2192,6 @@ class USStockTrackingAgent:
             # Dynamic trailing stop threshold: min 1.5%, max 5%, scales with price appreciation
             trailing_stop_threshold_pct = max(1.5, min(5.0, (highest_price - buy_price) / buy_price * 100 * 0.3)) if buy_price > 0 else 3.0
 
-            # LLM call
-            llm = await self.sell_decision_agent.attach_llm(OpenAIAugmentedLLM)
-
             # 시스템이 사이클당 1회 계산한 LIVE 시장 레짐(S&P500/VIX 기반, OpenAI 무관).
             # 매수시점 동결값(scenario.market_condition)이 아닌 '현재' 레짐을 권위값으로 주입.
             live_regime_summary = getattr(self, "_live_regime_summary", None)
@@ -2083,10 +2234,72 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
 """
 
-            response = await llm.generate_str(
-                message=prompt_message,
-                request_params=RequestParams(model="gpt-5.6-sol", reasoning_effort="high", maxTokens=30000)
-            )
+            response = None
+            codex_sell_enabled = os.environ.get(
+                "PRISM_US_CODEX_FAST_SELL",
+                os.environ.get("PRISM_US_CODEX_FAST_TRADING", "0"),
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if codex_sell_enabled:
+                try:
+                    instruction = str(
+                        getattr(self.sell_decision_agent, "instruction", "") or ""
+                    )
+                    if not instruction:
+                        raise RuntimeError("sell agent instruction unavailable")
+                    timeout = int(os.environ.get("PRISM_CODEX_FAST_TIMEOUT", "90"))
+                    codex_result = await asyncio.to_thread(
+                        generate_codex_fast,
+                        system_prompt=instruction,
+                        user_prompt=prompt_message,
+                        model="gpt-5.6-sol",
+                        timeout=timeout,
+                        mcp_profile="us_trading",
+                        require_mcp_calls=True,
+                    )
+                    if parse_llm_json(
+                        codex_result.text,
+                        context=f"{ticker} US Codex Fast sell decision",
+                    ) is not None:
+                        response = codex_result.text
+                        logger.info(
+                            "[CODEX_FAST] US sell ticker=%s latency_s=%.2f "
+                            "mcp_calls=%s",
+                            ticker or "?",
+                            codex_result.latency_s,
+                            len(codex_result.mcp_calls),
+                        )
+                    else:
+                        logger.warning(
+                            "[%s] Codex Fast sell parse failed; falling back to mcp-agent",
+                            ticker or "?",
+                        )
+                except Exception as codex_err:  # noqa: BLE001 — mandatory fallback
+                    logger.warning(
+                        "[%s] Codex Fast sell unavailable (%s); "
+                        "falling back to mcp-agent",
+                        ticker or "?",
+                        type(codex_err).__name__,
+                    )
+
+            if response is None:
+                async def _legacy_sell_response():
+                    llm = await self.sell_decision_agent.attach_llm(
+                        OpenAIAugmentedLLM
+                    )
+                    return await llm.generate_str(
+                        message=prompt_message,
+                        request_params=RequestParams(
+                            model="gpt-5.6-sol",
+                            reasoning_effort="high",
+                            maxTokens=30000,
+                        ),
+                    )
+
+                if _us_codex_runtime_enabled():
+                    async with app.run():
+                        response = await _legacy_sell_response()
+                else:
+                    response = await _legacy_sell_response()
 
             if not response or not response.strip():
                 logger.warning(f"{ticker} Empty LLM response, falling back to rule-based decision")
@@ -3430,8 +3643,36 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             signaled_tickers: set[str] = set()
             analysis_states: list[dict[str, Any]] = []
 
+            concurrency = max(
+                1,
+                min(US_TRADING_ANALYSIS_CONCURRENCY, len(pdf_report_paths) or 1),
+            )
+            semaphore = asyncio.Semaphore(concurrency)
+
+            async def _run_core(path: str) -> tuple[str, Dict[str, Any]]:
+                async with semaphore:
+                    try:
+                        return path, await self._analyze_report_core(path)
+                    except Exception as error:  # noqa: BLE001 — isolate one candidate
+                        logger.error(
+                            "Parallel US core analysis failed: %s (%s)",
+                            path,
+                            type(error).__name__,
+                        )
+                        return path, {"success": False, "error": str(error)}
+
+            logger.info(
+                "Parallel US buy-analysis pre-pass: %s reports, concurrency=%s",
+                len(pdf_report_paths),
+                concurrency,
+            )
+            core_pairs = await asyncio.gather(
+                *(_run_core(path) for path in pdf_report_paths)
+            )
+            core_results = dict(core_pairs)
+
             for pdf_report_path in pdf_report_paths:
-                analysis_result = await self._analyze_report_core(pdf_report_path)
+                analysis_result = core_results[pdf_report_path]
                 if not analysis_result.get("success", False):
                     logger.error(
                         f"[ANALYSIS_FAILED] Report analysis skipped "
@@ -4322,28 +4563,13 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         return 0, []
 
     def _get_trigger_win_rate(self, trigger_type: str) -> str:
-        """Get trigger win rate string from us_analysis_performance_tracker.
-        Returns a formatted string like '(Trigger Win Rate: 63%)' or empty string if no data."""
+        """Return clearly separated actual-trade and Candidate trigger stats."""
         if not trigger_type or not self.conn:
             return ""
         try:
-            cursor = self.conn.cursor()
-            # Check table exists
-            table_check = cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='us_analysis_performance_tracker'"
-            ).fetchone()
-            if not table_check:
-                return ""
-            row = cursor.execute("""
-                SELECT COUNT(*) as completed,
-                       SUM(CASE WHEN return_30d > 0 THEN 1 ELSE 0 END) as wins
-                FROM us_analysis_performance_tracker
-                WHERE trigger_type = ? AND return_30d IS NOT NULL
-            """, (trigger_type,)).fetchone()
-            if row and row[0] >= 3:
-                win_rate = int(row[1] / row[0] * 100)
-                return f"📡 Trigger Win Rate: {win_rate}% ({row[0]} trades)"
-            return ""
+            feedback = get_trigger_feedback(self.conn.cursor(), "US", trigger_type)
+            lines = format_trigger_feedback(feedback, language="en")
+            return f"📡 {' / '.join(lines)}" if lines else ""
         except Exception:
             return ""
 
@@ -4473,7 +4699,12 @@ async def main():
         logger.error("Report path not specified")
         return False
 
-    async with app.run():
+    from contextlib import nullcontext
+
+    tracking_context = (
+        nullcontext() if _us_codex_runtime_enabled() else app.run()
+    )
+    async with tracking_context:
         agent = USStockTrackingAgent(
             telegram_token=args.telegram_token,
             enable_journal=args.enable_journal

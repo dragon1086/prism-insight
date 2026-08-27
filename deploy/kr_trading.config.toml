@@ -1,0 +1,56 @@
+# Codex OAuth Fast profile for KR buy/sell decisions on db-server.
+# Deploy to /root/.codex-prism/kr_trading.config.toml.
+
+[mcp_servers.time]
+command = "/root/.pyenv/shims/python"
+args = ["-m", "cores.llm.time_mcp_server"]
+cwd = "/root/prism-insight"
+env = { PYTHONPATH = "/root/prism-insight" }
+enabled_tools = ["get_current_time"]
+default_tools_approval_mode = "approve"
+required = true
+startup_timeout_sec = 15
+tool_timeout_sec = 30
+
+[mcp_servers.kospi_kosdaq]
+command = "/root/.pyenv/shims/python"
+args = ["-m", "cores.market_data.mcp_server"]
+cwd = "/root/prism-insight"
+env = { PYTHONPATH = "/root/prism-insight" }
+enabled_tools = [
+  "get_stock_ohlcv",
+  "get_stock_market_cap",
+  "get_stock_trading_volume",
+  "get_index_ohlcv",
+  "get_ticker_name",
+]
+default_tools_approval_mode = "approve"
+required = true
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+[mcp_servers.sqlite]
+command = "/root/.local/bin/uv"
+args = [
+  "--directory",
+  "/root/prism-insight/sqlite",
+  "run",
+  "mcp-server-sqlite",
+  "--db-path",
+  "/root/prism-insight/stock_tracking_db.sqlite",
+]
+enabled_tools = ["list_tables", "describe_table", "read_query"]
+default_tools_approval_mode = "approve"
+required = true
+startup_timeout_sec = 30
+tool_timeout_sec = 30
+
+[mcp_servers.perplexity]
+command = "/root/.nvm/versions/node/v22.14.0/bin/npx"
+args = ["-y", "@perplexity-ai/mcp-server@1.2.0"]
+env_vars = ["PERPLEXITY_API_KEY"]
+enabled_tools = ["perplexity_ask"]
+default_tools_approval_mode = "approve"
+required = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
