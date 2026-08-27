@@ -1,14 +1,16 @@
 # live/runner.py — 섀도우 데몬 루프 (CLI)
 #
 #   python -m live.runner --once   : 한 틱만 실행하고 종료 (테스트/cron용)
-#   python -m live.runner          : 상주 루프 (다음 30m 경계+10초까지 sleep → tick)
+#   python -m live.runner          : 상주 루프 (다음 10m 경계+10초까지 sleep → tick)
 #
 # tick 순서:
 #   1. update_all()  — market.db 증분 갱신 (실패 시 이번 틱 스킵 + 이벤트 기록)
-#   2. 새 확정 30m 봉이 있으면:
+#   2. 새 10m 보호 봉이 있으면:
+#        손절/청산 접근 보호 pass (신호/AI 없음)
+#   3. 새 확정 30m 봉이 있으면:
 #        지표/스냅샷 빌드 (backtest 헬퍼 재사용) → exits 평가/집행 → 진입 평가
 #        (4h 하드캡 + 쿨다운) → DB 기록
-#   3. btc_events 에 하트비트 기록
+#   4. btc_events 에 하트비트 기록
 #
 # 모든 네트워크 호출 실패에 내성: update.py 가 TF별 재시도/예외 흡수, 여기서는
 # 전체 update 실패 시 이번 틱을 스킵하고 에러 이벤트를 남긴다.
@@ -24,18 +26,59 @@ from collector.store import get_connection as market_connection
 from collector.update import update_all
 from backtest.engine import _load_tf_data, _get_tf_slice, ALL_TFS
 from engine.indicators import add_indicators
+from engine.config import PROTECTION_SOURCE_TF
+from collector.aggregate import aggregate_ohlcv
 
 from live import tracking
 from live.shadow import ShadowAdapter, _load_funding
 
 log = logging.getLogger("live.runner")
 
-_30M_SEC = 30 * 60
-_BOUNDARY_DELAY_SEC = 10  # 30m 경계 후 confirmed 캔들이 안정적으로 들어올 여유
+_10M_SEC = 10 * 60
+_BOUNDARY_DELAY_SEC = 10  # 경계 후 confirmed 캔들이 안정적으로 들어올 여유
 
 
 def _last_processed_30m_ns(root_conn, mode: str):
     return tracking.get_meta(root_conn, "last_processed_30m_ns", mode)
+
+
+def _load_protection_bars(market_conn, last_ns) -> "pd.DataFrame":
+    """Load new 10m bars, including the latest in-progress bar.
+
+    Protection may use the current 10m high/low because this is a risk-control
+    path, not a signal/backtest path.  Strategy data remains confirmed-only.
+    """
+    query = (
+        "SELECT open_time, open, high, low, close, volume, turnover "
+        "FROM klines WHERE timeframe=?"
+    )
+    params: list[object] = [PROTECTION_SOURCE_TF]
+    last_bucket_ms = None
+    if last_ns is not None:
+        last_bucket_ms = int(last_ns) // 1_000_000
+        # Include the last bucket's second 5m candle so aggregation remains
+        # correct if a previous tick saw only the first half.
+        query += " AND open_time >= ?"
+        params.append(last_bucket_ms)
+    query += " ORDER BY open_time ASC"
+    if last_ns is None:
+        # Cold start: enough 5m rows to form the latest complete/partial bucket,
+        # but never replay historical protection against a live position.
+        query = query.replace(" ORDER BY open_time ASC", " ORDER BY open_time DESC LIMIT 12")
+    df = pd.read_sql_query(query, market_conn, params=params)
+    if df.empty:
+        return df
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+    df = df.set_index("open_time")
+    grouped = aggregate_ohlcv(df, bucket_minutes=10)
+    if last_bucket_ms is not None:
+        grouped = grouped[grouped.index > pd.to_datetime(last_bucket_ms, unit="ms", utc=True)]
+    if last_ns is None:
+        grouped = grouped.iloc[[-1]]
+    if grouped.empty:
+        return grouped
+    grouped.index.name = "open_time"
+    return grouped
 
 
 def _confirmed_30m(tf_data) -> "pd.DataFrame":
@@ -44,8 +87,11 @@ def _confirmed_30m(tf_data) -> "pd.DataFrame":
 
 
 def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
-    """단일 틱 실행. 처리한 새 확정 30m 봉 수 + 하트비트 결과 dict 반환."""
-    result = {"updated": False, "new_bars": 0, "error": None, "ts": None}
+    """Run one 10m protection tick plus newly confirmed 30m strategy bars."""
+    result = {
+        "updated": False, "new_bars": 0, "protection_bars": 0,
+        "error": None, "ts": None,
+    }
     root_conn = tracking.get_connection(root_db_path)
     tracking.ensure_schema(root_conn)
 
@@ -89,20 +135,19 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
         root_conn.close()
         return result
 
-    # --- 2. 지표/스냅샷용 tf_data 빌드 (backtest 헬퍼 재사용 — confirmed=1 만) ---
+    # --- 2. 지표/스냅샷용 tf_data + protection bar build ---
     market_conn = market_connection(market_db_path)
     try:
         tf_data = {tf: add_indicators(_load_tf_data(market_conn, tf)) for tf in ALL_TFS}
         funding_times, funding_rates = _load_funding(market_conn)
+        last_protection_ns = tracking.get_meta(
+            root_conn, "last_processed_10m_ns", mode
+        )
+        protection_bars = _load_protection_bars(market_conn, last_protection_ns)
     finally:
         market_conn.close()
 
     bars_30m = _confirmed_30m(tf_data)
-    if bars_30m.empty:
-        tracking.log_event(root_conn, "heartbeat", "no confirmed 30m bars yet", mode=mode)
-        root_conn.close()
-        return result
-
     last_ns = _last_processed_30m_ns(root_conn, mode)
     # 처리 대상: 아직 처리 안 한 확정 30m 봉들 (오름차순).
     if last_ns is None:
@@ -118,8 +163,18 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
     if mode == "demo":
         try:
             from live.demo import DemoAdapter
-            adapter = DemoAdapter(root_conn, tf_data, funding_times,
-                                  funding_rates, mode=mode)
+            failure_guard = None
+            try:
+                from live.failure_observer import FailureObserver
+                failure_guard = FailureObserver(
+                    root_conn, tf_data, funding_times, funding_rates, mode=mode
+                )
+            except Exception:  # noqa: BLE001 — guard absence is fail-open
+                failure_guard = None
+            adapter = DemoAdapter(
+                root_conn, tf_data, funding_times, funding_rates, mode=mode,
+                failure_guard=failure_guard,
+            )
         except Exception as exc:  # noqa: BLE001 — 어댑터 생성 실패 흡수
             result["error"] = f"demo adapter init failed: {exc}"
             tracking.log_event(root_conn, "error", result["error"],
@@ -129,7 +184,41 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
             root_conn.close()
             return result
     else:
-        adapter = ShadowAdapter(root_conn, tf_data, funding_times, funding_rates, mode=mode)
+        failure_observer = None
+        if mode == "shadow":
+            try:
+                from live.failure_observer import FailureObserver
+                failure_observer = FailureObserver(
+                    root_conn, tf_data, funding_times, funding_rates, mode=mode
+                )
+            except Exception:  # noqa: BLE001 — observer absence is fail-open
+                failure_observer = None
+        adapter = ShadowAdapter(
+            root_conn, tf_data, funding_times, funding_rates, mode=mode,
+            failure_observer=failure_observer,
+        )
+
+    # --- 2a. 10m protection pass (before strategy processing) ---
+    last_protection_processed_ns = last_protection_ns
+    for bar_time, bar in protection_bars.iterrows():
+        adapter.process_protection_bar(bar_time, bar)
+        last_protection_processed_ns = int(bar_time.value)
+    if last_protection_processed_ns is not None:
+        tracking.set_meta(
+            root_conn, "last_processed_10m_ns",
+            int(last_protection_processed_ns), mode,
+        )
+    result["protection_bars"] = len(protection_bars)
+
+    if bars_30m.empty:
+        tracking.log_event(
+            root_conn, "heartbeat",
+            f"10m protection ok ({len(protection_bars)} bar(s)); "
+            "no confirmed 30m bars yet",
+            mode=mode,
+        )
+        root_conn.close()
+        return result
 
     # 4h 확정 추적 (backtest cadence gate 미러).
     last_confirmed_4h_ns = tracking.get_meta(root_conn, "last_confirmed_4h_ns", mode)
@@ -157,7 +246,48 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
 
     result["new_bars"] = processed
 
-    # --- 2b. 스윙 레인 (라운드6 Lane B — mode='swing' 자체 원장) ---
+    # --- 2b. C1 observer OI refresh (post-trading, hourly, fail-open) ---
+    # This public-data call runs only after the canonical strategy bars have
+    # been processed.  Timeout/API/DB failures therefore cannot delay an order
+    # decision or fail the tick; the observer simply remains unavailable until
+    # a later hourly refresh succeeds.
+    if mode in ("shadow", "demo"):
+        oi_hour = int(time.time() // 3600)
+        last_oi_hour = tracking.get_meta(
+            root_conn, "failure_observer_oi_hour", mode
+        )
+        if last_oi_hour != oi_hour:
+            try:
+                from collector.open_interest import update_open_interest
+                from live.failure_observer import oi_db_path
+                result["oi_updated"] = update_open_interest(oi_db_path())
+            except Exception as exc:  # noqa: BLE001 — observer data is optional
+                result["oi_updated"] = 0
+                tracking.log_event(
+                    root_conn,
+                    "c1_observer_oi",
+                    f"OI refresh unavailable (fail-open): {exc}",
+                    level="warning",
+                    mode=mode,
+                )
+            try:
+                from collector.funding import update_funding
+                result["funding_updated"] = update_funding(market_db_path)
+            except Exception as exc:  # noqa: BLE001 — observer data is optional
+                result["funding_updated"] = 0
+                tracking.log_event(
+                    root_conn,
+                    "c1_observer_funding",
+                    f"funding refresh unavailable (fail-open): {exc}",
+                    level="warning",
+                    mode=mode,
+                )
+            finally:
+                tracking.set_meta(
+                    root_conn, "failure_observer_oi_hour", oi_hour, mode
+                )
+
+    # --- 2c. 스윙 레인 (라운드6 Lane B — mode='swing' 자체 원장) ---
     # SWING_RUN_MODES 틱에서만 구동 (기본 demo 전용 — shadow/demo 크론 병행 시
     # 커서 경합 방지). 집행 백엔드는 swing 모듈이 자동 선택: 스윙 전용 키
     # (BYBIT_SWING_DEMO_API_KEY/SECRET, 메인과 별도 계정) 있으면 실주문, 없으면
@@ -198,17 +328,17 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
                                level="error", mode=mode)
 
     tracking.log_event(root_conn, "heartbeat",
-        f"tick ok: processed {processed} new 30m bar(s); "
-        f"last={result['ts']}", mode=mode)
+        f"tick ok: protection={len(protection_bars)}x10m, "
+        f"strategy={processed}x30m; last={result['ts']}", mode=mode)
     root_conn.close()
     return result
 
 
 def _sleep_to_next_boundary() -> None:
     now = time.time()
-    next_boundary = (int(now // _30M_SEC) + 1) * _30M_SEC + _BOUNDARY_DELAY_SEC
+    next_boundary = (int(now // _10M_SEC) + 1) * _10M_SEC + _BOUNDARY_DELAY_SEC
     delay = max(1.0, next_boundary - now)
-    log.info("sleeping %.0fs to next 30m boundary", delay)
+    log.info("sleeping %.0fs to next 10m boundary", delay)
     time.sleep(delay)
 
 
@@ -226,6 +356,10 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # httpx INFO includes the full Telegram request URL (and therefore the bot
+    # token).  Trading logs must never persist credentials.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     if args.once:
         res = tick(mode=args.mode, market_db_path=args.market_db, root_db_path=args.root_db)

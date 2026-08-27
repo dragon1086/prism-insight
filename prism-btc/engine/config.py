@@ -56,6 +56,37 @@ TS_MIN: float = 2.0
 # study and it collapsed trade count to ~20/4yr in attribution runs.
 TS_GATE_TFS: tuple[str, ...] = ("4h",)
 
+# --- Volatility event lane (30m research/live parity) ---
+# This lane is intentionally separate from the mature-trend lane above.  It
+# detects expansion/breakout events before the 4h alignment score catches up.
+# Historical validation uses 30m bars because the market DB does not contain a
+# 5m backfill; live 10m remains protection-only until that data exists.
+# Research-only until the event lane clears all out-of-sample gates.  The
+# current main lane is the only lane eligible for demo execution.
+EVENT_ENABLED: bool = False
+EVENT_BREAKOUT_LOOKBACK: int = 55
+EVENT_ATR_BASELINE_BARS: int = 56
+EVENT_VOLUME_BASELINE_BARS: int = 20
+EVENT_MIN_ATR_EXPANSION: float = 1.40
+EVENT_MIN_RANGE_ATR: float = 1.50
+EVENT_MIN_VOLUME_RATIO: float = 1.50
+EVENT_MIN_BODY_RATIO: float = 0.55
+EVENT_MIN_BREAKOUT_ATR: float = 0.25
+EVENT_MIN_CLOSE_LOCATION: float = 0.70
+EVENT_MIN_CONFIRMATIONS: int = 3  # breakout + at least two expansion signals
+EVENT_RISK_PER_TRADE: float = 0.0075  # 0.75% equity per event
+EVENT_STOP_ATR_MULT: float = 3.50
+EVENT_TRAIL_ATR_MULT: float = 4.00
+EVENT_MAX_HOLD_BARS: int = 144  # 72h on 30m bars
+EVENT_BE_ACTIVATE_R: float = 1.50
+EVENT_COOLDOWN_BARS: int = 48  # 24h between independent event attempts
+EVENT_ENTRY_EXPIRY_BARS: int = 2  # event bar + one confirmation bar
+EVENT_USE_TREND_FILTER: bool = True
+EVENT_TREND_STRENGTH_MIN: float = 2.0
+EVENT_REQUIRE_COMPRESSION: bool = True
+EVENT_PREV_ATR_COMPRESSION_RATIO: float = 0.95
+EVENT_MAX_CONCURRENT: int = 1
+
 # --- Bybit API ---
 BYBIT_BASE_URL: str = "https://api.bybit.com"
 BYBIT_KLINE_ENDPOINT: str = "/v5/market/kline"
@@ -71,6 +102,14 @@ TF_INTERVAL_MAP: dict[str, str] = {
     "1d": "D",
     "1w": "W",
 }
+
+# Protection-only timeframe.  Bybit does not expose a native 10m interval, so
+# the live runner fetches the supported 5m source and aggregates two candles
+# into a 10m protection bar.  Both are deliberately kept out of TF_INTERVAL_MAP
+# so historical backfill does not download years of short candles.
+PROTECTION_TF: str = "10m"
+PROTECTION_SOURCE_TF: str = "5m"
+PROTECTION_TF_INTERVAL_MAP: dict[str, str] = {PROTECTION_SOURCE_TF: "5"}
 
 # Bybit returns max 1000 candles per request
 BYBIT_MAX_LIMIT: int = 1000
@@ -102,9 +141,9 @@ SWING_ENABLED: bool = True
 # 알림(demo/live 전용)이 영원히 안 나간다 — demo 틱 전용으로 고정.
 SWING_RUN_MODES: tuple[str, ...] = ("demo",)
 SWING_STOP_ATR_MULT: float = 2.0      # 하드스탑 = 진입가 ∓ 2.0 × ATR14(4h)
-# 라운드7 G-1 (2026-07-24, Rocky 1.5x 승인): 1% → 1.5% (메인 3% 의 절반 유지).
+# 라운드7 G-1: 1% → 1.5% (메인 5%의 보수적 별도 레인).
 # 공동 시뮬에서 5x 명목 캡 바인딩 0회 확인 — 실효 리스크 그대로 스케일됨.
-SWING_RISK_PER_TRADE: float = 0.015   # equity 의 1.5% (메인 RISK_PER_TRADE 3% 의 절반)
+SWING_RISK_PER_TRADE: float = 0.015   # equity 의 1.5% (메인 5%보다 보수적)
 SWING_MAX_LEVERAGE: float = 5.0       # 명목/equity 상한 (Rocky 승인 스펙)
 SWING_INITIAL_EQUITY: float = 10_000.0  # 자체 가상 원장 시드 (shadow 와 동일)
 

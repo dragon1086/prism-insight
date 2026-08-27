@@ -38,7 +38,10 @@ from engine.indicators import atr as calc_atr
 from engine.signal import generate_signal, Signal
 
 from core.exits import PositionView, BarView, ExitContext, evaluate_exits
-from core.entries import EntryInputs, CooldownState, evaluate_entry
+from core.entries import (
+    EntryInputs, CooldownState, EntryEvaluation,
+    evaluate_entry_with_reason,
+)
 from core.actions import (
     ForceReduce,
     UpdateStop,
@@ -63,6 +66,7 @@ from backtest.engine import REENTRY_COOLDOWN_BARS, SL_REENTRY_COOLDOWN_BARS
 import engine.sizing as _sizing
 from core.risk import compute_operating_risk
 from core.leadership import leadership_multipliers
+from core.failure_guard import should_observe_pyramid_block
 
 # 거래소 상수.
 _CATEGORY = "linear"
@@ -137,12 +141,13 @@ class DemoAdapter:
     def __init__(self, root_conn: sqlite3.Connection,
                  tf_data: dict[str, pd.DataFrame],
                  funding_times: list[int], funding_rates: list[float],
-                 mode: str = "demo"):
+                 mode: str = "demo", failure_guard=None):
         self.conn = root_conn
         self.tf_data = tf_data
         self.funding_times = funding_times
         self.funding_rates = funding_rates
         self.mode = mode
+        self.failure_guard = failure_guard
         self.sess, self._sess_err = _make_session()
 
     # --- meta 헬퍼 (shadow 미러) ---
@@ -273,16 +278,44 @@ class DemoAdapter:
     def _sync_state(self, bar_time_str: str) -> dict:
         """거래소에서 잔고/포지션/미체결을 가져와 로컬에 반영. 동기화 스냅샷 반환.
 
-        반환: {"equity", "position"(dict|None), "open_orders"(list)}.
+        반환: 계좌/지갑/포지션/미체결 주문의 알림용 안전 스냅샷.
         실패 시 부분 정보로 graceful degrade (None/빈 리스트).
         """
-        snap: dict = {"equity": None, "position": None, "open_orders": []}
+        snap: dict = {
+            "captured_at": bar_time_str,
+            "equity": None,
+            "account": {},
+            "wallet": {},
+            "position": None,
+            "open_orders": [],
+        }
+
+        # --- 계좌 마진 모드 (REGULAR_MARGIN=교차, ISOLATED_MARGIN=격리) ---
+        account_info = self._call("get_account_info")
+        if isinstance(account_info, dict):
+            account_result = account_info.get("result", {})
+            if isinstance(account_result, dict):
+                snap["account"] = {
+                    "margin_mode": account_result.get("marginMode"),
+                    "unified_margin_status": account_result.get("unifiedMarginStatus"),
+                }
 
         # --- 잔고 ---
         wb = self._call("get_wallet_balance", accountType="UNIFIED")
         rows = _result_list(wb)
         if rows:
-            equity = _f(rows[0].get("totalEquity"))
+            wallet = rows[0]
+            equity = _f(wallet.get("totalEquity"))
+            snap["wallet"] = {
+                "equity": equity,
+                "wallet_balance": _f(wallet.get("totalWalletBalance")),
+                "margin_balance": _f(wallet.get("totalMarginBalance")),
+                "available_balance": _f(wallet.get("totalAvailableBalance")),
+                "initial_margin": _f(wallet.get("totalInitialMargin")),
+                "maintenance_margin": _f(wallet.get("totalMaintenanceMargin")),
+                "account_im_rate": _f(wallet.get("accountIMRate")),
+                "account_mm_rate": _f(wallet.get("accountMMRate")),
+            }
             if equity > 0:
                 snap["equity"] = equity
                 tracking.record_equity(self.conn, equity, self.mode, bar_time_str)
@@ -296,9 +329,15 @@ class DemoAdapter:
                     "side": "long" if p.get("side") == "Buy" else "short",
                     "qty": sz,
                     "entry_price": _f(p.get("avgPrice")),
+                    "mark_price": _f(p.get("markPrice")),
+                    "position_value": _f(p.get("positionValue")),
                     "leverage": _f(p.get("leverage"), 1.0),
                     "liq_price": _f(p.get("liqPrice")),
                     "unrealised_pnl": _f(p.get("unrealisedPnl")),
+                    "position_im": _f(p.get("positionIM")),
+                    "position_mm": _f(p.get("positionMM")),
+                    "position_idx": int(_f(p.get("positionIdx"), 0.0)),
+                    "position_status": p.get("positionStatus"),
                 }
             break  # 단방향·단일 심볼 → 첫 행만.
 
@@ -315,6 +354,9 @@ class DemoAdapter:
                 "trigger_price": _f(o.get("triggerPrice")),
                 "stop_order_type": o.get("stopOrderType", ""),
             })
+        # 알림 모듈은 거래 경로 밖에서 이 안전 스냅샷만 읽는다. API 원문이나
+        # 자격증명은 저장하지 않는다.
+        self._set_meta("account_snapshot", snap)
         return snap
 
     def _record_closed_trades(self, bar_time_str: str) -> None:
@@ -666,11 +708,12 @@ class DemoAdapter:
                     same_side = [p for p in local_positions if p.side == sig.side]
                     current_tranche = len(same_side)
                     intent: Optional[OpenIntent] = None
+                    decision: Optional[EntryEvaluation] = None
 
                     if current_tranche == 0:
                         # 4h 하드캡 + 재진입 쿨다운 (신규 진입, tranche 0).
                         if cur_4h_ns is not None and cur_4h_ns == last_new_entry_eval_4h_ns:
-                            intent = None
+                            decision = EntryEvaluation(None, "4h_hardcap")
                         else:
                             if cur_4h_ns is not None:
                                 last_new_entry_eval_4h_ns = cur_4h_ns
@@ -682,7 +725,7 @@ class DemoAdapter:
                             )
                             entry_price = bar_close
                             ei = self._entry_inputs(bar_time, sig.side, entry_price)
-                            intent = self._evaluate_entry_with_risk(
+                            decision = self._evaluate_entry_with_risk(
                                 sig, equity, 0, ei,
                                 cooldown=CooldownState(
                                     bars_since_close=bars_since_close,
@@ -695,10 +738,54 @@ class DemoAdapter:
                         avg_entry = sum(p.entry_price for p in same_side) / len(same_side)
                         entry_price = bar_close
                         ei = self._entry_inputs(bar_time, sig.side, entry_price)
-                        intent = self._evaluate_entry_with_risk(
+                        decision = self._evaluate_entry_with_risk(
                             sig, equity, current_tranche, ei,
                             avg_entry=avg_entry, current_price=bar_close,
                         )
+
+                    if decision is not None:
+                        intent = decision.intent
+                        if intent is None:
+                            tracking.log_event(
+                                conn, "entry_reject",
+                                f"{sig.side} entry rejected: {decision.reason} "
+                                f"tranche={current_tranche}",
+                                mode=mode, ts=bar_time_str,
+                            )
+
+                    # Round 10: Rocky approved immediate C1 blocking on the
+                    # Bybit demo account.  Initial entries remain untouched;
+                    # missing/stale classifier inputs fail open.  Shadow mode
+                    # continues to fill the same add-ons as the comparison arm.
+                    if (
+                        intent is not None
+                        and current_tranche > 0
+                        and self.failure_guard is not None
+                    ):
+                        try:
+                            classification = self.failure_guard.classify(
+                                bar_time=bar_time,
+                                side=intent.side,
+                            )
+                        except Exception:  # noqa: BLE001 — fail-open
+                            classification = None
+                        cluster = (
+                            classification.cluster
+                            if classification is not None else None
+                        )
+                        if should_observe_pyramid_block(
+                            cluster=cluster,
+                            tranche_index=intent.tranche_index,
+                        ):
+                            tracking.log_event(
+                                conn,
+                                "c1_pyramid_block",
+                                f"demo blocked C1 {intent.side} add-on "
+                                f"tranche={intent.tranche_index}",
+                                mode=mode,
+                                ts=bar_time_str,
+                            )
+                            intent = None
 
                     if intent is not None:
                         sz = intent.sizing
@@ -739,6 +826,120 @@ class DemoAdapter:
             f"pos={'yes' if has_position else 'no'} "
             f"tranches={len(local_positions)}", mode=mode, ts=bar_time_str)
 
+    def process_protection_bar(self, bar_time: pd.Timestamp, bar: pd.Series) -> None:
+        """Reconcile and repair exchange-side protection on a 10m cadence.
+
+        Bybit's native reduce-only stop remains the first line of defense.  This
+        pass does not generate signals or call an LLM.  It only (1) notices a
+        position that the exchange already closed, (2) restores a missing stop,
+        or (3) falls back to a market reduce if a stop was missing while the
+        10m bar had already crossed the local structural stop.
+        """
+        try:
+            if self.sess is None:
+                tracking.log_event(
+                    self.conn, "error",
+                    f"10m protection skipped — {self._sess_err}",
+                    level="error", mode=self.mode, ts=str(bar_time),
+                )
+                return
+
+            bar_time_str = str(bar_time)
+            bar_high = float(bar["high"])
+            bar_low = float(bar["low"])
+            bar_idx = bar_index_for(int(bar_time.value // 1_000_000))
+            snap = self._sync_state(bar_time_str)
+            self._record_closed_trades(bar_time_str)
+            ex_pos = snap["position"]
+            local_positions = tracking.load_open_positions(self.conn, self.mode)
+            sl_order_id = self._get_meta("sl_order_id", None)
+
+            # Exchange is authoritative.  Keep the local ledger from carrying
+            # a ghost position during the interval between 10m and 30m ticks.
+            if ex_pos is None:
+                if local_positions:
+                    for pos in local_positions:
+                        if pos.id is not None:
+                            tracking.remove_position(self.conn, pos.id)
+                        self._set_meta("last_close_bar", {
+                            **self._get_meta(
+                                "last_close_bar",
+                                {"long": -10_000, "short": -10_000},
+                            ),
+                            pos.side: bar_idx,
+                        })
+                    if sl_order_id:
+                        self._cancel(sl_order_id)
+                    self._set_meta("sl_order_id", None)
+                    self._set_meta("tp_order_id", None)
+                    tracking.log_event(
+                        self.conn, "protection",
+                        "10m exchange close observed — local positions cleared",
+                        mode=self.mode, ts=bar_time_str,
+                    )
+                return
+
+            if not local_positions:
+                tracking.log_event(
+                    self.conn, "protection",
+                    "10m exchange position has no local ledger row — no blind repair",
+                    level="warning", mode=self.mode, ts=bar_time_str,
+                )
+                return
+
+            side = ex_pos["side"]
+            side_positions = [p for p in local_positions if p.side == side]
+            if not side_positions:
+                return
+            if side == "long":
+                structural_stop = max(p.sl_price for p in side_positions)
+                breached = bar_low <= structural_stop
+            else:
+                structural_stop = min(p.sl_price for p in side_positions)
+                breached = bar_high >= structural_stop
+
+            open_orders = snap["open_orders"]
+            has_native_stop = any(
+                o.get("reduce_only") and o.get("trigger_price", 0.0) > 0
+                for o in open_orders
+            )
+            total_qty = float(ex_pos.get("qty", 0.0))
+            if total_qty <= 0:
+                return
+
+            if breached and not has_native_stop:
+                # A missing native stop plus a crossed structural stop is the
+                # only condition that authorizes an immediate market fallback.
+                oid = self._market_reduce(
+                    side, total_qty, "10m_protection_missing_stop",
+                )
+                if oid:
+                    tracking.log_event(
+                        self.conn, "protection",
+                        f"10m missing-stop fallback reduce {side} qty={total_qty:.6f}",
+                        mode=self.mode, ts=bar_time_str,
+                    )
+                return
+
+            if not has_native_stop:
+                oid = self._place_stop_market(side, total_qty, structural_stop)
+                if oid:
+                    self._set_meta("sl_order_id", oid)
+                    tracking.log_event(
+                        self.conn, "protection",
+                        f"10m stop repaired {side} qty={total_qty:.6f} "
+                        f"trigger={structural_stop:.2f}",
+                        mode=self.mode, ts=bar_time_str,
+                    )
+        except Exception as exc:  # noqa: BLE001 — protection must never stop the daemon
+            try:
+                tracking.log_event(
+                    self.conn, "error", f"10m protection exception: {exc}",
+                    level="error", mode=self.mode, ts=str(bar_time),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
     # --- helpers (shadow 미러) ---
 
     def _entry_inputs(self, bar_time, side, entry_price) -> EntryInputs:
@@ -766,7 +967,7 @@ class DemoAdapter:
 
     def _evaluate_entry_with_risk(self, sig, equity, current_tranche, inputs,
                                   *, cooldown=None, avg_entry=None,
-                                  current_price=None) -> Optional[OpenIntent]:
+                                  current_price=None) -> EntryEvaluation:
         """E4 오버레이 — shadow._evaluate_entry_with_risk 동일 (RISK_PER_TRADE 임시패치)."""
         peak = tracking.peak_equity(self.conn, self.mode) or equity
         op_risk = compute_operating_risk(
@@ -781,7 +982,7 @@ class DemoAdapter:
         orig = _sizing.RISK_PER_TRADE
         _sizing.RISK_PER_TRADE = op_risk
         try:
-            return evaluate_entry(
+            return evaluate_entry_with_reason(
                 sig, equity, current_tranche,
                 inputs=inputs, cooldown=cooldown,
                 avg_entry=avg_entry, current_price=current_price,

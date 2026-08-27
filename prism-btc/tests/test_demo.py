@@ -14,16 +14,12 @@
 #   7. 거래소 호출 실패(retCode!=0 / 예외) 시 process_bar 가 예외를 밖으로 안 던짐
 from __future__ import annotations
 
-import json
-
 import pandas as pd
 import pytest
 
 from live import demo, tracking
 from live.demo import DemoAdapter
-from backtest.engine import ENTRY_ORDER_EXPIRY_BARS
 from engine.signal import Signal
-from engine.sizing import TRANCHE_FRACS
 
 
 # ---------------------------------------------------------------------------
@@ -81,11 +77,26 @@ class FakeExchange:
         return {"retCode": 0, "retMsg": "OK", "result": result}
 
     # --- read 계열 ---
+    def get_account_info(self, **kwargs):
+        bad = self._record("get_account_info", kwargs)
+        if bad is not None:
+            return bad
+        return self._ok({"marginMode": "REGULAR_MARGIN", "unifiedMarginStatus": 3})
+
     def get_wallet_balance(self, **kwargs):
         bad = self._record("get_wallet_balance", kwargs)
         if bad is not None:
             return bad
-        return self._ok({"list": [{"totalEquity": str(self._equity)}]})
+        return self._ok({"list": [{
+            "totalEquity": str(self._equity),
+            "totalWalletBalance": str(self._equity - 20),
+            "totalMarginBalance": str(self._equity),
+            "totalAvailableBalance": str(self._equity - 500),
+            "totalInitialMargin": "50",
+            "totalMaintenanceMargin": "5",
+            "accountIMRate": "0.005",
+            "accountMMRate": "0.0005",
+        }]})
 
     def get_positions(self, **kwargs):
         bad = self._record("get_positions", kwargs)
@@ -181,10 +192,13 @@ def _bar_idx_for(ts: pd.Timestamp) -> int:
     return demo.bar_index_for(int(ts.value // 1_000_000))
 
 
-def _make_adapter(conn, fake, mode="demo"):
+def _make_adapter(conn, fake, mode="demo", failure_guard=None):
     """tf_data 는 빈 dict (exits 의 trailing/entry 슬라이스는 가드로 우회).
     _make_session 을 monkeypatch 한 뒤 호출해야 fake 가 주입된다."""
-    return DemoAdapter(conn, tf_data={}, funding_times=[], funding_rates=[], mode=mode)
+    return DemoAdapter(
+        conn, tf_data={}, funding_times=[], funding_rates=[], mode=mode,
+        failure_guard=failure_guard,
+    )
 
 
 def _patch_session(monkeypatch, fake):
@@ -194,7 +208,10 @@ def _patch_session(monkeypatch, fake):
 def _ex_position(side="Buy", size="0.030", avg="100.0", lev="10", liq="80.0"):
     """Bybit get_positions 형식 포지션 행."""
     return {"side": side, "size": size, "avgPrice": avg,
-            "leverage": lev, "liqPrice": liq, "unrealisedPnl": "0"}
+            "markPrice": avg, "positionValue": str(float(size) * float(avg)),
+            "leverage": lev, "liqPrice": liq, "unrealisedPnl": "0",
+            "positionIM": "50", "positionMM": "5", "positionIdx": 0,
+            "positionStatus": "Normal"}
 
 
 def _seed_pending(adapter, bar_idx, side="long", sl=90.0, tp1=110.0,
@@ -248,6 +265,25 @@ class TestKeylessSkip:
             "SELECT COUNT(*) FROM btc_equity_curve").fetchone()[0] == 0
 
 
+class TestProtectionPass:
+    def test_10m_repairs_missing_native_stop(self, monkeypatch):
+        fake = FakeExchange(
+            position=_ex_position(side="Buy", size="0.030", avg="100.0", lev="10", liq="80.0")
+        )
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_open_position(adapter, conn, side="long", entry=100.0,
+                            qty=0.03, sl=90.0, tp1=110.0, liq=80.0)
+
+        adapter.process_protection_bar(_BASE_TS, _bar(close=100.0))
+
+        stops = [kw for kw in fake.calls_to("place_order")
+                 if kw.get("reduceOnly") and kw.get("triggerPrice")]
+        assert stops
+        assert float(stops[-1]["triggerPrice"]) == pytest.approx(90.0)
+
+
 # ===========================================================================
 # Case 2 — reconcile: equity/포지션이 로컬 테이블에 반영
 # ===========================================================================
@@ -270,8 +306,12 @@ class TestSyncState:
         # 읽기 3종(잔고/포지션/미체결)이 호출됐다.
         called = fake.methods_called()
         assert "get_wallet_balance" in called
+        assert "get_account_info" in called
         assert "get_positions" in called
         assert "get_open_orders" in called
+        stored = tracking.get_meta(conn, "account_snapshot", "demo")
+        assert stored["account"]["margin_mode"] == "REGULAR_MARGIN"
+        assert stored["wallet"]["available_balance"] == pytest.approx(11_845.0)
 
     def test_sync_state_exposes_exchange_position_snapshot(self, monkeypatch):
         fake = FakeExchange(equity=10_000.0,
@@ -287,6 +327,8 @@ class TestSyncState:
         assert snap["position"]["qty"] == pytest.approx(0.05)
         assert snap["position"]["entry_price"] == pytest.approx(101.5)
         assert snap["position"]["leverage"] == pytest.approx(8.0)
+        assert snap["position"]["position_im"] == pytest.approx(50.0)
+        assert snap["position"]["position_idx"] == 0
 
     def test_process_bar_mirrors_exchange_position_into_btc_positions(self, monkeypatch):
         # 진입 주문이 직전 봉에 걸려있고, 이번 봉에서 거래소 포지션이 출현 →
@@ -438,8 +480,8 @@ class TestExitReduceOnly:
         _seed_open_position(conn=conn, adapter=adapter, side="long",
                             entry=100.0, qty=0.03, sl=70.0, tp1=140.0, liq=80.0)
 
-        # 저가 82 가 liq(80) 의 50% 버퍼 밴드를 침범 → ForceReduce (+ ClosePosition).
-        adapter.process_bar(_BASE_TS, _bar(close=83.0, high=100.0, low=82.0),
+        # 저가 80.5 가 liq(80) 의 마지막 5% 밴드를 침범 → ForceReduce (+ ClosePosition).
+        adapter.process_bar(_BASE_TS, _bar(close=81.0, high=100.0, low=80.5),
                             new_4h_confirmed=False, cur_4h_ns=None)
 
         # 모든 reduce 주문은 reduce-only 시장가여야 한다.
@@ -486,7 +528,7 @@ class TestNoFundsMovement:
             assert forbidden not in called, f"{forbidden} 가 호출됨!"
         # 호출된 메서드는 화이트리스트(읽기 + 주문/취소/수정/레버리지)에만 속한다.
         allowed = {
-            "get_wallet_balance", "get_positions", "get_open_orders",
+            "get_account_info", "get_wallet_balance", "get_positions", "get_open_orders",
             "get_executions", "place_order", "cancel_order", "amend_order",
             "set_leverage",
         }
@@ -603,6 +645,45 @@ def _seed_pending_tranche(adapter, bar_idx, tranche_index, *, side="long",
 # ---------------------------------------------------------------------------
 
 class TestPyramidAddTranche:
+    def test_c1_failure_guard_blocks_demo_addon_but_not_existing_position(
+            self, monkeypatch):
+        class C1Guard:
+            def classify(self, **_kwargs):
+                return type("Classification", (), {"cluster": 1})()
+
+        fake = FakeExchange(
+            equity=10_000.0,
+            position=_ex_position(side="Buy", size="0.030", avg="100.0"),
+            open_orders=[],
+        )
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake, failure_guard=C1Guard())
+        _seed_local_tranche(conn=conn, adapter=adapter, tranche_index=0,
+                            side="long", entry=100.0, qty=0.03)
+        _force_signal(monkeypatch, side="long", strength=80.0)
+
+        adapter.process_bar(
+            _BASE_TS, _bar(close=105.0, high=106.0, low=104.0),
+            new_4h_confirmed=True, cur_4h_ns=12345,
+        )
+
+        entries = [
+            order for order in fake.placed_orders
+            if order.get("orderType") == "Limit"
+            and order.get("timeInForce") == "PostOnly"
+            and "reduceOnly" not in order
+        ]
+        assert entries == []
+        assert adapter._get_meta("pending_order", None) is None
+        # Existing tranche remains untouched; only the new add-on is blocked.
+        assert len(tracking.load_open_positions(conn, "demo")) == 1
+        event = conn.execute(
+            "SELECT kind FROM btc_events WHERE mode='demo' "
+            "AND kind='c1_pyramid_block'"
+        ).fetchone()
+        assert event is not None
+
     def test_second_tranche_signal_places_postonly_with_tranche_index_1(
             self, monkeypatch):
         # 거래소엔 통합 long 포지션(=트랜치0 체결분)이 존재, 로컬엔 트랜치0 보유.

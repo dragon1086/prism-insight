@@ -16,7 +16,7 @@ from backtest.engine import (
     TradeLog,
     run_backtest,
 )
-from engine.sizing import approx_liq_price, _sl_passes_buffer, LIQ_BUFFER_MIN_FRAC
+from engine.sizing import approx_liq_price, _sl_passes_buffer, LIQ_TO_SL_MIN_RATIO
 
 ALL_TFS = ("30m", "1h", "4h", "12h", "1d", "1w")
 
@@ -246,30 +246,26 @@ class TestNoLookaheadRealDB:
 
 class TestLiquidationBufferRejection:
     def test_sl_below_liq_rejected_by_buffer(self):
-        """SL inside the buffer (< LIQ_BUFFER_MIN_FRAC of gap) must not pass."""
+        """Stop must remain at least 1.20x inside the liquidation distance."""
         entry = 50000.0
         lev = 30.0
         liq = approx_liq_price(entry, lev, "long")
-        gap = entry - liq
+        liq_distance = entry - liq
 
-        # SL well below threshold → fails
-        sl_fail = liq + (LIQ_BUFFER_MIN_FRAC - 0.2) * gap
+        sl_fail = entry - liq_distance / (LIQ_TO_SL_MIN_RATIO - 0.1)
         assert _sl_passes_buffer(entry, sl_fail, liq, "long") is False
-
-        # SL just above threshold → passes
-        sl_pass = liq + (LIQ_BUFFER_MIN_FRAC + 0.01) * gap
+        sl_pass = entry - liq_distance / (LIQ_TO_SL_MIN_RATIO + 0.1)
         assert _sl_passes_buffer(entry, sl_pass, liq, "long") is True
 
     def test_short_buffer_logic(self):
         entry = 50000.0
         lev = 30.0
         liq = approx_liq_price(entry, lev, "short")
-        gap = liq - entry
+        liq_distance = liq - entry
 
-        sl_fail = liq - (LIQ_BUFFER_MIN_FRAC - 0.2) * gap
+        sl_fail = entry + liq_distance / (LIQ_TO_SL_MIN_RATIO - 0.1)
         assert _sl_passes_buffer(entry, sl_fail, liq, "short") is False
-
-        sl_pass = liq - (LIQ_BUFFER_MIN_FRAC + 0.01) * gap
+        sl_pass = entry + liq_distance / (LIQ_TO_SL_MIN_RATIO + 0.1)
         assert _sl_passes_buffer(entry, sl_pass, liq, "short") is True
 
 

@@ -12,7 +12,7 @@ import pytest
 
 from live import tracking
 from live.tracking import PositionRow, TradeRow, ensure_schema
-from live.shadow import ShadowAdapter, bar_index_for, INITIAL_EQUITY, _30M_MS
+from live.shadow import ShadowAdapter, bar_index_for, INITIAL_EQUITY
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +65,48 @@ def test_ensure_schema_creates_btc_tables():
     names = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"btc_positions", "btc_trading_history", "btc_equity_curve",
-            "btc_events", "btc_meta"} <= names
+            "btc_events", "btc_meta", "btc_failure_shadow"} <= names
+
+
+def test_failure_shadow_lifecycle_records_avoided_pnl():
+    conn = _root_conn()
+    observation_id = tracking.record_failure_shadow_intent(
+        conn,
+        mode="shadow",
+        signal_ts="2025-01-01T00:00:00+00:00",
+        side="long",
+        tranche_index=1,
+        cluster=1,
+        features={"ts_4h": 2.1, "funding_z": 1.6},
+    )
+    pos = PositionRow(
+        side="long", entry_price=50000.0, qty=0.1, leverage=10.0,
+        sl_price=49000.0, tp1_price=51000.0, tp2_price=52000.0,
+        tp3_price=53000.0, liq_price=45000.0,
+        entry_time="2025-01-01T00:30:00+00:00", tranche_index=1,
+        entry_bar_idx=1, initial_risk=100.0,
+    )
+    position_id = tracking.save_position(conn, pos)
+    tracking.mark_failure_shadow_filled(
+        conn, observation_id, position_id=position_id,
+        entry_time=pos.entry_time,
+    )
+    trade = TradeRow(
+        trade_id=1, side="long", entry_time=pos.entry_time,
+        entry_price=50000.0, exit_time="2025-01-02T00:00:00+00:00",
+        exit_price=49000.0, qty=0.1, leverage=10.0, sl_price=49000.0,
+        exit_reason="sl", r_multiple=-1.0, fee_paid=1.0,
+        funding_paid=0.0, tranche_index=1, liq_price=45000.0,
+        net_pnl=-101.0,
+    )
+    tracking.close_failure_shadow_for_position(conn, position_id, trade)
+    row = conn.execute(
+        "SELECT * FROM btc_failure_shadow WHERE id=?", (observation_id,)
+    ).fetchone()
+    assert row["status"] == "closed"
+    assert row["actual_net_pnl"] == -101.0
+    assert row["avoided_net_pnl"] == 101.0
+    assert row["actual_r_multiple"] == -1.0
 
 
 def test_schema_does_not_touch_existing_tables():
@@ -230,6 +271,90 @@ def test_virtual_fill_then_sl_close():
     assert trades[0]["net_pnl"] < 0  # 손실 종결
     # 쿨다운 트래커가 SL 로 기록됐는지.
     assert tracking.get_meta(conn, "last_close_was_sl")["long"] is True
+
+
+def test_c1_shadow_observation_follows_pending_fill_and_close():
+    """Observer metadata follows the real add-on without blocking its fill."""
+    conn = _root_conn()
+    tf_data = _make_tf_data()
+    adapter = ShadowAdapter(conn, tf_data, [], [], mode="shadow")
+    tracking.record_equity(conn, INITIAL_EQUITY, "shadow", "seed")
+    observation_id = tracking.record_failure_shadow_intent(
+        conn, mode="shadow", signal_ts="signal", side="long",
+        tranche_index=1, cluster=1, features={"ts_4h": 2.1},
+    )
+
+    bar_time = tf_data["30m"].index[-1]
+    bar_idx = bar_index_for(int(bar_time.value // 1_000_000))
+    tracking.set_meta(conn, "pending_order", {
+        "side": "long", "limit_price": 50000.0, "bar_idx": bar_idx - 1,
+        "sizing_qty": 0.1, "sizing_leverage": 10.0,
+        "sizing_sl_price": 49000.0, "sizing_tp1_price": 51000.0,
+        "sizing_tp2_price": 52000.0, "sizing_tp3_price": 53000.0,
+        "sizing_liq_price": 45000.0, "initial_risk": 100.0,
+        "tranche_index": 1, "failure_observation_id": observation_id,
+    }, "shadow")
+    adapter.process_bar(
+        bar_time,
+        pd.Series({"open": 50000.0, "high": 50100.0, "low": 49900.0,
+                   "close": 50000.0, "volume": 1.0, "turnover": 1.0}),
+        new_4h_confirmed=False,
+        cur_4h_ns=None,
+    )
+    position = tracking.load_open_positions(conn, "shadow")[0]
+    observed = conn.execute(
+        "SELECT * FROM btc_failure_shadow WHERE id=?", (observation_id,)
+    ).fetchone()
+    assert observed["status"] == "filled"
+    assert observed["position_id"] == position.id
+
+    adapter.process_bar(
+        bar_time + pd.Timedelta(minutes=30),
+        pd.Series({"open": 49500.0, "high": 49600.0, "low": 48000.0,
+                   "close": 48500.0, "volume": 1.0, "turnover": 1.0}),
+        new_4h_confirmed=False,
+        cur_4h_ns=None,
+    )
+    observed = conn.execute(
+        "SELECT * FROM btc_failure_shadow WHERE id=?", (observation_id,)
+    ).fetchone()
+    assert observed["status"] == "closed"
+    assert observed["actual_net_pnl"] < 0
+    assert observed["avoided_net_pnl"] > 0
+
+
+def test_10m_protection_pass_closes_stop_without_strategy_bar():
+    """10m protection can close an SL breach without running a 30m signal pass."""
+    conn = _root_conn()
+    tf_data = _make_tf_data()
+    adapter = ShadowAdapter(conn, tf_data, [], [], mode="shadow")
+    tracking.record_equity(conn, INITIAL_EQUITY, "shadow", "seed")
+
+    bar_time = tf_data["30m"].index[-1] + pd.Timedelta(minutes=10)
+    pos = PositionRow(
+        side="long", entry_price=50000.0, qty=0.1, leverage=10.0,
+        sl_price=49000.0, tp1_price=51000.0, tp2_price=52000.0,
+        tp3_price=53000.0, liq_price=45000.0, entry_time="t0",
+        tranche_index=0, entry_bar_idx=bar_index_for(
+            int(tf_data["30m"].index[-1].value // 1_000_000)
+        ), initial_risk=100.0, initial_qty=0.1,
+    )
+    tracking.save_position(conn, pos)
+    adapter.process_protection_bar(
+        bar_time,
+        pd.Series({"open": 49500.0, "high": 49600.0, "low": 48000.0,
+                   "close": 48500.0}),
+    )
+
+    assert tracking.load_open_positions(conn, "shadow") == []
+    trade = conn.execute(
+        "SELECT exit_reason FROM btc_trading_history WHERE mode='shadow'"
+    ).fetchone()
+    assert trade["exit_reason"] == "sl"
+    event = conn.execute(
+        "SELECT kind FROM btc_events WHERE mode='shadow' AND kind='protection'"
+    ).fetchone()
+    assert event is not None
 
 
 def test_heartbeat_event_logged_on_process():
