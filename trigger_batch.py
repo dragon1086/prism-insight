@@ -1056,7 +1056,8 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame, 
     [Afternoon Trigger 2] Top closing strength stocks
     - Absolute criteria: Minimum trade value 500M KRW + volume increase vs previous day
     - Composite score: Closing strength (50%) + Volume increase rate (30%) + Trade value (20%)
-    - Secondary filtering: Select only rising stocks (close > open)
+    - Secondary filtering: Select only rising stocks that recovered the previous close
+      (close > open and close >= previous close)
     - Penny stock filter: Market cap 50B KRW or more
     """
     logger.debug("trigger_afternoon_closing_strength started")
@@ -1097,6 +1098,35 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame, 
 
     snap["volume_increased"] = (snap["Volume"] - prev["Volume"].replace(0, np.nan)) > 0
     snap["is_rising"] = snap["Close"] > snap["Open"]
+
+    # A gap-down recovery can look like a strong bullish intraday candle while
+    # still closing below the previous session.  That is not closing strength
+    # in the swing-trend sense used by this trigger.  Keep this rule local to
+    # closing-strength; reversal and capital-inflow triggers intentionally have
+    # different contracts.
+    downside_recovery = (
+        snap["volume_increased"]
+        & snap["is_rising"]
+        & (snap["prev_day_change_rate"] < 0.0)
+    )
+    rejected_count = int(downside_recovery.sum())
+    if rejected_count:
+        rejected_sample = ",".join(
+            str(ticker) for ticker in snap.index[downside_recovery][:20]
+        )
+        logger.info(
+            "[SCREENING-FILTER] market=KR trigger=afternoon_closing_strength "
+            "trade_date=%s reason=close_below_previous_close rejected=%d sample=%s",
+            trade_date,
+            rejected_count,
+            rejected_sample,
+        )
+    snap = snap[snap["prev_day_change_rate"] >= 0.0]
+    if snap.empty:
+        logger.debug(
+            "trigger_afternoon_closing_strength: No stocks after previous-close recovery filtering"
+        )
+        return pd.DataFrame()
 
     # Primary filtering: Select only stocks with volume increase
     candidates = snap[snap["volume_increased"] == True].copy()

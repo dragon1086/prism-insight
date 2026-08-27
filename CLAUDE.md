@@ -177,6 +177,11 @@ reports = await asyncio.gather(*[generate_report(a, s) for s in sections])
 
 ## Trading Constraints
 
+Before changing screening, regime, entry, exit, or position-sizing behavior,
+follow [`docs/TRADING_CHANGE_REVIEW_HARNESS.md`](docs/TRADING_CHANGE_REVIEW_HARNESS.md).
+The review must test counterexamples and prefer a single, narrow decision-layer
+change over duplicated screening, hard-gate, and prompt penalties.
+
 ```python
 MAX_SLOTS = 10              # Max stocks to hold
 MAX_SAME_SECTOR = 3         # Max per sector

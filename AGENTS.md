@@ -83,6 +83,9 @@ Avoid broad production-like runs unless the task requires them.
 - Default trading behavior should remain safe (`demo` unless explicitly required otherwise).
 - Preserve portfolio constraints and stop-loss logic unless the task explicitly changes trading rules.
 - When parsing KIS API numeric fields, prefer existing safe conversion helpers over direct casts.
+- Before changing screening, regime, entry, exit, or sizing behavior, follow
+  `docs/TRADING_CHANGE_REVIEW_HARNESS.md`. In particular, do not generalize a
+  trigger-local failure into a global hard gate without testing counterexamples.
 
 ### Report output
 
