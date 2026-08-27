@@ -1,0 +1,28 @@
+{
+  "character_id": "priso",
+  "asset_version": "v1.0",
+  "expected_reference_files": [
+    "priso_master_transparent.png",
+    "priso_identity_gray.png",
+    "priso_fullbody_white.png",
+    "priso_face_closeup.png"
+  ],
+  "files": [
+    {
+      "path": "priso_master_transparent.png",
+      "sha256": "1dfe7e104312bf2fd75566684286f3e853172b645996d8d2fee7e5c7c83e0ff8"
+    },
+    {
+      "path": "priso_identity_gray.png",
+      "sha256": "2cb61e1f1f114e4b55b675d11dde87c4324c9617219607f178ad98d1e4d920b1"
+    },
+    {
+      "path": "priso_fullbody_white.png",
+      "sha256": "441dc0639efa00f89db615056014b53d706a979e3965bbe84aaabc554202a663"
+    },
+    {
+      "path": "priso_face_closeup.png",
+      "sha256": "e4421f4dd00763975310e9b59d7f765730ce564beca333f6a7127d8b2ff4fb69"
+    }
+  ]
+}
