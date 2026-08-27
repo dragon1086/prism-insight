@@ -129,4 +129,4 @@
 
 ## 권고
 
-**KR·US 모두 RS Rating 반영 진행.** 단, house 스타일대로 env-gate + SHADOW 병행 로그로 기존 60d와 대조하며 전환. 다음 단계(Phase B): ① RS Rating 계산 공용 모듈화 → ② 스크리닝 rs_score를 60d→RS Rating 교체 → ③ PDF 보고서에 RS Rating(1~99) 섹션 → ④ 매수 프롬프트가 보고서 RS 분석을 참조하도록 유도.
+**KR·US 모두 RS Rating 반영 가치가 확인됐고, US 스크리닝은 LIVE 전환한다.** 운영 코드의 `RS_RATING_ENABLED` 기본값을 true로 두며, `false`로 긴급 롤백할 수 있다. 현재 구현 범위는 US trigger screening의 `rs_score` 대체이며, PDF 보고서의 별도 RS Rating 섹션은 후속 과제다.
