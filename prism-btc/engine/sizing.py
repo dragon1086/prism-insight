@@ -8,19 +8,22 @@ from typing import Literal
 # Constants (all tuneable here without touching logic)
 # ---------------------------------------------------------------------------
 
-# 라운드7 G-1 (2026-07-24, Rocky 1.5x 승인): 2% → 3%. 통합(메인+스윙) 공동
-# 시뮬 실측 — 결합 CAGR 24.7→37.5%, intra-trade MDD -14.8→-20.7%(각오치 이내),
-# liq_approach 0 유지. 검증: analysis/round7_g1_joint_sim.py,
-# tasks/btc_round7_results.md §G-1 본실험. 레버리지 밴드/청산버퍼는 불변.
-RISK_PER_TRADE: float = 0.03          # 3% of equity per trade
+# G-2: 메인 리스크 3%→5% 상향. 2022~2025 연속 복리 재검증 결과
+# MDD 16.2%, PF 1.924, 청산 접근 0건. 레버리지 정책은 10배 고정이다.
+# Validated G-2 sizing: 5% of equity per full position lifecycle.  The
+# tranche fractions still split this across 40/30/30 pyramid legs.
+RISK_PER_TRADE: float = 0.05
 MMR: float = 0.005                    # Bybit isolated MMR approximation (0.5%)
 
-# Leverage bands (라운드4: 12~18x 폐기, 라운드2 수준 8~12x 복원 — 라운드3 문서
-# "다음 후보 제안 E" 채택). 12~18x는 liq 거리를 좁혀 강제감축을 유발했고
-# (2024-25 강제감축 PnL -$58), 8~12x 복원 A/B에서 전 구간 liq_approach 0 +
-# 2024-25 수익 -1.1% → +8.3% 반전 확인 (analysis/round4_attribution.py 참조).
-# With fixed 2% risk sizing leverage doesn't change qty, but it governs the
-# liquidation distance and the residual-leg exposure after BE/trailing.
+# 레버리지 정책: 점수/ATR에 따라 8~12x를 흔들던 정책 대신 운영에서는 10x를
+# 고정한다. 포지션 수량은 손절거리와 RISK_PER_TRADE로 계산되므로, 고정 배율은
+# 방향/확신 점수에 따라 베팅을 몰래 키우지 않고 청산거리만 예측 가능하게 만든다.
+# 연구용 동적 정책을 되살릴 수 있도록 기존 밴드 상수는 아래에 남겨두되 기본
+# LEVERAGE_MODE는 fixed다.
+LEVERAGE_MODE: str = "fixed"
+FIXED_LEVERAGE: float = 10.0
+
+# Legacy dynamic leverage bands (used only when LEVERAGE_MODE="dynamic").
 LEV_BAND_HIGH_MIN: float = 80.0       # |score| >= 80 → upper sub-range
 LEV_HIGH_LOW: float = 11.0
 LEV_HIGH_HIGH: float = 12.0
@@ -46,13 +49,16 @@ LEV_ATR_CAP: float = 10.0
 # 더 거친 자산에서 청산거리를 좁히는 문제의 구조적 해법. 스윕 없음.
 LIQ_ATR_MULT: float = 12.0
 
-# Liquidation buffer: SL must be >= 65% inside the gap between entry and liq price.
-# 라운드3 B: raised 0.50 → 0.65 to directly block liq_approach. On entry, SL must
-# sit at least 65% of the entry→liq gap away from liq; otherwise auto-deleverage
-# until satisfied, and if the floor still fails, cancel the entry.
-LIQ_BUFFER_MIN_FRAC: float = 0.65    # 65% of entry→liq distance must remain between SL and liq
-# Deleverage floor restored to 8x to match the 8~12x band (라운드4).
-LEV_FLOOR_BUFFER: float = 8.0        # do not deleverage below 8x to satisfy buffer; reject instead
+# Liquidation safety: liquidation distance must be at least this multiple of the
+# structural stop distance. The old 65%-of-gap rule was equivalent to requiring
+# roughly 2.86x liquidation-distance/stop-distance, which rejected the recent
+# 70-score long despite a valid signal. 1.20x still leaves a positive cushion,
+# while allowing wide, volatility-aware stops to trade at fixed 10x.
+LIQ_TO_SL_MIN_RATIO: float = 1.20
+# Backward-compatible name for research/tests that imported the old constant.
+# It is no longer used by the production buffer calculation.
+LIQ_BUFFER_MIN_FRAC: float = 0.65
+LEV_FLOOR_BUFFER: float = 8.0        # legacy dynamic-mode floor
 
 # Pyramid tranches
 TRANCHE_FRACS: tuple[float, ...] = (0.40, 0.30, 0.30)  # 40% / 30% / 30%
@@ -96,6 +102,14 @@ def compute_leverage(
     Compute leverage from |alignment_score| and ATR/close ratio.
     Returns float leverage (not rounded — rounding happens at exchange layer).
     """
+    # Leverage policy is independent from the entry-quality gate, but weak
+    # signals must still be rejected defensively even in fixed mode.
+    if abs_score < LEV_BAND_LOW_MIN:
+        return 0.0
+
+    if LEVERAGE_MODE == "fixed":
+        return FIXED_LEVERAGE
+
     if abs_score >= LEV_BAND_HIGH_MIN:
         lev = _lerp(abs_score, LEV_BAND_HIGH_MIN, 100.0, LEV_HIGH_LOW, LEV_HIGH_HIGH)
     elif abs_score >= LEV_BAND_MID_MIN:
@@ -176,28 +190,25 @@ def _sl_passes_buffer(
     liq: float,
     side: Literal["long", "short"],
 ) -> bool:
-    """
-    Check: SL must be >= 30% inside the entry→liq gap (away from liq).
-    Gap = |entry - liq|. SL-to-liq distance must be >= 30% of gap.
+    """Require liquidation to remain safely beyond the structural stop.
 
-    For long: liq < sl < entry. sl_to_liq = sl - liq. gap = entry - liq.
-    Condition: (sl - liq) / (entry - liq) >= LIQ_BUFFER_MIN_FRAC
+    This is intentionally expressed as a distance ratio rather than the old
+    opaque fraction of the entry→liquidation gap:
 
-    For short: entry < sl < liq. sl_to_liq = liq - sl. gap = liq - entry.
-    Condition: (liq - sl) / (liq - entry) >= LIQ_BUFFER_MIN_FRAC
+        abs(entry - liq) / abs(entry - sl) >= LIQ_TO_SL_MIN_RATIO
+
+    The stop must also lie between entry and liquidation.  A stop above the
+    liquidation price (long) or below it (short) is always rejected.
     """
-    if side == "long":
-        gap = entry - liq
-        if gap <= 0:
-            return False
-        sl_to_liq = sl - liq
-        return (sl_to_liq / gap) >= LIQ_BUFFER_MIN_FRAC
-    else:
-        gap = liq - entry
-        if gap <= 0:
-            return False
-        sl_to_liq = liq - sl
-        return (sl_to_liq / gap) >= LIQ_BUFFER_MIN_FRAC
+    stop_distance = abs(entry - sl)
+    liq_distance = abs(entry - liq)
+    if stop_distance <= 0 or liq_distance <= 0:
+        return False
+    if side == "long" and not (liq < sl < entry):
+        return False
+    if side == "short" and not (entry < sl < liq):
+        return False
+    return (liq_distance / stop_distance) >= LIQ_TO_SL_MIN_RATIO
 
 
 # ---------------------------------------------------------------------------
@@ -251,25 +262,30 @@ def compute_sizing(
     risk_capital = equity * RISK_PER_TRADE * tranche_frac
     qty = risk_capital / (sl_dist_pct * entry)
 
-    # Compute liq price and check buffer — auto-deleverage until SL is >= 65%
-    # inside the entry→liq gap. Floor at LEV_FLOOR_BUFFER (12x); if 12x still
-    # fails, cancel the entry (라운드3 B). Never deleverage below 12x.
+    # Compute liq price and check the fixed-leverage safety ratio. Dynamic mode
+    # retains the old auto-deleveraging fallback for research only; production
+    # fixed mode never silently changes the requested 10x.
     liq = approx_liq_price(entry, lev, side)
-    max_attempts = 40
-    for _ in range(max_attempts):
-        liq = approx_liq_price(entry, lev, side)
-        if _sl_passes_buffer(entry, sl_price, liq, side):
-            break
-        if lev <= LEV_FLOOR_BUFFER:
-            break
-        lev = max(lev - 1.0, LEV_FLOOR_BUFFER)
+    if LEVERAGE_MODE != "fixed":
+        max_attempts = 40
+        for _ in range(max_attempts):
+            liq = approx_liq_price(entry, lev, side)
+            if _sl_passes_buffer(entry, sl_price, liq, side):
+                break
+            if lev <= LEV_FLOOR_BUFFER:
+                break
+            lev = max(lev - 1.0, LEV_FLOOR_BUFFER)
 
     liq = approx_liq_price(entry, lev, side)
     if not _sl_passes_buffer(entry, sl_price, liq, side):
         return SizingResult(
             leverage=lev, qty=0, sl_price=sl_price, tp1_price=0, tp2_price=0,
             tp3_price=0, liq_price=liq, tranche_index=tranche_index,
-            rejected=True, reject_reason="청산가 버퍼(65%) 불충족 @12x, 진입 취소",
+            rejected=True,
+            reject_reason=(
+                f"청산거리/손절거리 {LIQ_TO_SL_MIN_RATIO:.2f}배 미달 "
+                f"(lev={lev:.1f}x), 진입 취소"
+            ),
         )
 
     # TP levels: 1R / 2R / 3R
@@ -293,6 +309,51 @@ def compute_sizing(
         liq_price=round(liq, 2),
         tranche_index=tranche_index,
         rejected=False,
+    )
+
+
+def compute_event_sizing(
+    side: Literal["long", "short"],
+    entry: float,
+    atr_value: float,
+    equity: float,
+) -> SizingResult:
+    """Size one volatility event with a small independent risk budget."""
+    from engine.config import EVENT_RISK_PER_TRADE, EVENT_STOP_ATR_MULT
+
+    if equity <= 0 or entry <= 0 or atr_value <= 0:
+        return SizingResult(
+            leverage=0, qty=0, sl_price=0, tp1_price=0, tp2_price=0,
+            tp3_price=0, liq_price=0, tranche_index=0,
+            rejected=True, reject_reason="invalid event sizing inputs",
+        )
+    lev = FIXED_LEVERAGE if LEVERAGE_MODE == "fixed" else compute_leverage(80.0, atr_value / entry)
+    stop_distance = atr_value * EVENT_STOP_ATR_MULT
+    sl_price = entry - stop_distance if side == "long" else entry + stop_distance
+    liq = approx_liq_price(entry, lev, side)
+    if not _sl_passes_buffer(entry, sl_price, liq, side):
+        return SizingResult(
+            leverage=lev, qty=0, sl_price=round(sl_price, 2),
+            tp1_price=0, tp2_price=0, tp3_price=0, liq_price=round(liq, 2),
+            tranche_index=0, rejected=True,
+            reject_reason="event liquidation distance/stop distance too small",
+        )
+    risk_capital = equity * EVENT_RISK_PER_TRADE
+    qty = risk_capital / stop_distance
+    qty = min(qty, equity * lev / entry)
+    if qty <= 0:
+        return SizingResult(
+            leverage=lev, qty=0, sl_price=round(sl_price, 2),
+            tp1_price=0, tp2_price=0, tp3_price=0, liq_price=round(liq, 2),
+            tranche_index=0, rejected=True, reject_reason="event zero quantity",
+        )
+    tp1 = entry + stop_distance if side == "long" else entry - stop_distance
+    tp2 = entry + 2 * stop_distance if side == "long" else entry - 2 * stop_distance
+    tp3 = entry + 3 * stop_distance if side == "long" else entry - 3 * stop_distance
+    return SizingResult(
+        leverage=lev, qty=qty, sl_price=round(sl_price, 2),
+        tp1_price=round(tp1, 2), tp2_price=round(tp2, 2),
+        tp3_price=round(tp3, 2), liq_price=round(liq, 2), tranche_index=0,
     )
 
 

@@ -12,6 +12,9 @@ from engine.sizing import (
     _sl_passes_buffer,
     ATR_HIGH_THRESHOLD,
     LEV_ATR_CAP,
+    FIXED_LEVERAGE,
+    LEVERAGE_MODE,
+    LIQ_TO_SL_MIN_RATIO,
     LIQ_BUFFER_MIN_FRAC,
     TRANCHE_FRACS,
     MAX_TRANCHES,
@@ -24,59 +27,30 @@ from engine.sizing import (
 # ---------------------------------------------------------------------------
 
 class TestComputeLeverage:
-    # 라운드4: 12~18x 폐기, 라운드2 8~12x 복원 (라운드3 문서 권고 E 채택 —
-    # liq_approach 전 구간 0 + 2024-25 수익 반전 확인).
-    def test_score_80_low_atr_gives_11_to_12(self):
+    def test_fixed_policy_is_enabled(self):
+        assert LEVERAGE_MODE == "fixed"
+        assert FIXED_LEVERAGE == pytest.approx(10.0)
+
+    def test_eligible_scores_use_fixed_10x(self):
         lev = compute_leverage(80.0, atr_ratio=0.005)
-        assert 11.0 <= lev <= 12.0
+        assert lev == pytest.approx(10.0)
 
-    def test_score_100_low_atr_gives_12(self):
-        lev = compute_leverage(100.0, atr_ratio=0.005)
-        assert lev == pytest.approx(12.0)
-
-    def test_score_60_gives_10_to_11(self):
-        lev = compute_leverage(60.0, atr_ratio=0.005)
-        assert 10.0 <= lev <= 11.0
-
-    def test_score_70_interpolates(self):
-        lev = compute_leverage(70.0, atr_ratio=0.005)
-        assert 10.0 <= lev <= 11.0
-
-    def test_score_40_gives_8_to_10(self):
-        lev = compute_leverage(40.0, atr_ratio=0.005)
-        assert 8.0 <= lev <= 10.0
-
-    def test_score_50_interpolates(self):
-        lev = compute_leverage(50.0, atr_ratio=0.005)
-        assert 8.0 <= lev <= 10.0
+    def test_all_eligible_scores_keep_fixed_10x(self):
+        assert all(compute_leverage(float(s), 0.01) == pytest.approx(10.0)
+                   for s in (40, 50, 60, 70, 80, 100))
 
     def test_score_below_40_gives_zero(self):
         lev = compute_leverage(39.9, atr_ratio=0.005)
         assert lev == 0.0
 
-    def test_high_atr_caps_via_vol_ceiling(self):
-        """멀티에셋 R1: 고ATR에선 연속 천장 1/(12*atr)이 바이너리 캡(10x)보다
-        먼저 묶는다 (0.035 → 2.38x)."""
-        ratio = ATR_HIGH_THRESHOLD + 0.01
-        lev = compute_leverage(90.0, atr_ratio=ratio)
-        assert lev == pytest.approx(1.0 / (12.0 * ratio), abs=0.01)
-
-    def test_atr_at_threshold_vol_ceiling_applies(self):
-        """threshold(0.025)에서 바이너리 캡은 미적용이나 연속 천장(3.33x)은 적용."""
-        lev = compute_leverage(90.0, atr_ratio=ATR_HIGH_THRESHOLD)
-        assert lev == pytest.approx(1.0 / (12.0 * ATR_HIGH_THRESHOLD), abs=0.01)
-
-    def test_vol_liq_ceiling_binds_at_high_atr(self):
-        # 멀티에셋 R1: lev <= 1/(12*atr_ratio). atr 1% -> ceiling 8.33x
-        lev = compute_leverage(100.0, atr_ratio=0.01)
-        assert lev == pytest.approx(1.0 / (12.0 * 0.01), abs=0.01)
+    def test_high_atr_does_not_change_fixed_policy(self):
+        assert compute_leverage(90.0, atr_ratio=ATR_HIGH_THRESHOLD + 0.01) == pytest.approx(10.0)
 
     def test_leverage_monotone_with_score(self):
-        """Higher score → higher or equal leverage."""
+        """Fixed policy is monotone (equal) for eligible scores."""
         scores = [40, 50, 60, 70, 80, 90, 100]
         levs = [compute_leverage(float(s), 0.01) for s in scores]
-        for i in range(len(levs) - 1):
-            assert levs[i] <= levs[i + 1] + 0.001
+        assert levs == [pytest.approx(10.0)] * len(levs)
 
 
 # ---------------------------------------------------------------------------
@@ -145,30 +119,28 @@ class TestApproxLiqPrice:
 # ---------------------------------------------------------------------------
 
 class TestSlPassesBuffer:
-    def test_long_sl_above_threshold_passes(self):
-        """SL just above the buffer threshold of gap from liq → passes."""
+    def test_long_stop_distance_ratio_passes(self):
         entry, liq = 50000.0, 47500.0  # gap = 2500
-        sl = liq + (LIQ_BUFFER_MIN_FRAC + 0.01) * (entry - liq)
+        sl = entry - (entry - liq) / (LIQ_TO_SL_MIN_RATIO + 0.1)
         assert _sl_passes_buffer(entry, sl, liq, "long") is True
 
-    def test_long_sl_below_threshold_fails(self):
-        """SL just below the buffer threshold → fails."""
+    def test_long_stop_distance_ratio_fails(self):
         entry, liq = 50000.0, 47500.0
-        sl = liq + (LIQ_BUFFER_MIN_FRAC - 0.10) * (entry - liq)
+        sl = entry - (entry - liq) / (LIQ_TO_SL_MIN_RATIO - 0.1)
         assert _sl_passes_buffer(entry, sl, liq, "long") is False
 
     def test_long_sl_exactly_at_liq_fails(self):
         entry, liq = 50000.0, 47500.0
         assert _sl_passes_buffer(entry, liq, liq, "long") is False
 
-    def test_short_sl_above_threshold_passes(self):
+    def test_short_stop_distance_ratio_passes(self):
         entry, liq = 50000.0, 52500.0  # gap = 2500
-        sl = liq - (LIQ_BUFFER_MIN_FRAC + 0.01) * (liq - entry)
+        sl = entry + (liq - entry) / (LIQ_TO_SL_MIN_RATIO + 0.1)
         assert _sl_passes_buffer(entry, sl, liq, "short") is True
 
-    def test_short_sl_below_threshold_fails(self):
+    def test_short_stop_distance_ratio_fails(self):
         entry, liq = 50000.0, 52500.0
-        sl = liq - (LIQ_BUFFER_MIN_FRAC - 0.10) * (liq - entry)
+        sl = entry + (liq - entry) / (LIQ_TO_SL_MIN_RATIO - 0.1)
         assert _sl_passes_buffer(entry, sl, liq, "short") is False
 
 
@@ -176,26 +148,10 @@ class TestSlPassesBuffer:
 # 라운드3 B: LIQ_BUFFER_MIN_FRAC raised 0.50 → 0.65 (청산 직접 차단)
 # ---------------------------------------------------------------------------
 
-class TestRound3LiqBuffer:
-    def test_buffer_constant_is_065(self):
-        assert LIQ_BUFFER_MIN_FRAC == pytest.approx(0.65)
-
-    def test_sl_in_50_to_65_band_now_blocked_long(self):
-        """An SL at 0.58 of the gap passed at 0.50 but must FAIL at 0.65 (long)."""
-        entry, liq = 50000.0, 47500.0  # gap = 2500
-        sl = liq + 0.58 * (entry - liq)  # 58% inside gap: ok@0.50, fail@0.65
-        assert _sl_passes_buffer(entry, sl, liq, "long") is False
-
-    def test_sl_in_50_to_65_band_now_blocked_short(self):
-        """Same band check on the short side."""
-        entry, liq = 50000.0, 52500.0
-        sl = liq - 0.58 * (liq - entry)
-        assert _sl_passes_buffer(entry, sl, liq, "short") is False
-
-    def test_sl_above_65_still_passes_long(self):
-        entry, liq = 50000.0, 47500.0
-        sl = liq + 0.70 * (entry - liq)  # 70% inside gap > 0.65 → passes
-        assert _sl_passes_buffer(entry, sl, liq, "long") is True
+class TestRelaxedLiqBuffer:
+    def test_ratio_is_explicit_and_relaxed(self):
+        assert LIQ_TO_SL_MIN_RATIO == pytest.approx(1.20)
+        assert LIQ_BUFFER_MIN_FRAC == pytest.approx(0.65)  # legacy alias only
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +211,7 @@ class TestComputeSizingBufferRejection:
         assert result.qty == 0
 
     def test_valid_sizing_produces_positive_qty(self):
-        # 라운드3 B: SL을 entry 대비 ~2%로 (12x liq 갭의 65% 버퍼를 만족하도록).
-        # 4% SL 은 12x floor + 0.65 버퍼에서 구조적으로 거절됨 (의도된 동작).
+        # Fixed 10x + 1.20x distance ratio accepts a normal ~2% stop.
         result = compute_sizing(
             side="long",
             entry=50000.0,
@@ -269,7 +224,7 @@ class TestComputeSizingBufferRejection:
         )
         assert result.rejected is False
         assert result.qty > 0
-        assert result.leverage >= 8.0
+        assert result.leverage == pytest.approx(10.0)
         assert result.sl_price < 50000.0
         assert result.tp1_price > 50000.0  # long TP above entry
 
@@ -289,6 +244,21 @@ class TestComputeSizingBufferRejection:
         # TP1 should be 1R above entry
         assert result.tp2_price > result.tp1_price
         assert result.tp3_price > result.tp2_price
+
+    def test_recent_high_volatility_long_is_not_rejected_by_legacy_buffer(self):
+        result = compute_sizing(
+            side="long",
+            entry=77226.0,
+            abs_score=70.0,
+            equity=9993.63,
+            atr_1h=769.077,
+            swing_ref=72439.7,
+            ma35_1h=72022.5,
+            tranche_index=0,
+        )
+        assert result.rejected is False
+        assert result.leverage == pytest.approx(10.0)
+        assert result.qty > 0
 
     def test_tp_levels_correct_for_short(self):
         result = compute_sizing(

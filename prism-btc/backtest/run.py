@@ -24,6 +24,7 @@ THREE_PERIODS = [
     ("2023-01-01", "2023-12-31", "2023_sideways"),
     ("2024-01-01", "2025-12-31", "2024_2025_bull"),
 ]
+COMPOUND_PERIOD = ("2022-01-01", "2025-12-31", "2022_2025_compound")
 
 PASS_CRITERIA = {
     "mdd_pct": ("<", 25.0),
@@ -158,6 +159,11 @@ def main() -> None:
         action="store_true",
         help="Run 3 standard periods: 2022 bear / 2023 sideways / 2024-2025 bull",
     )
+    parser.add_argument(
+        "--compound",
+        action="store_true",
+        help="Run one continuous compounded period: 2022-01-01 ~ 2025-12-31",
+    )
     parser.add_argument("--db", dest="db_path", default=None, help="Path to market.db")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
@@ -188,6 +194,9 @@ def main() -> None:
                 f"{m['liq_approach_count']:>8}  [{ok}]"
             )
         print("=" * 62)
+
+    elif args.compound:
+        run_period(args.db_path, *COMPOUND_PERIOD)
 
     elif args.from_date and args.to_date:
         label = f"{args.from_date}_to_{args.to_date}"

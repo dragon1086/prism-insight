@@ -56,6 +56,102 @@ class CooldownState:
     cooldown_bars: int
 
 
+@dataclass(frozen=True)
+class EntryEvaluation:
+    """A pure entry result plus an audit-safe reason when it is rejected."""
+
+    intent: Optional[OpenIntent]
+    reason: str
+
+
+def evaluate_entry_with_reason(
+    sig: Signal,
+    equity: float,
+    current_tranche: int,
+    *,
+    inputs: EntryInputs,
+    cooldown: Optional[CooldownState] = None,
+    avg_entry: Optional[float] = None,
+    current_price: Optional[float] = None,
+) -> EntryEvaluation:
+    """Evaluate an entry and preserve the first deterministic rejection reason.
+
+    ``evaluate_entry`` remains the compatibility wrapper used by backtests and
+    callers that only need an intent.  Live adapters use this richer result to
+    distinguish signal rejection, cooldown, pyramid gating, and sizing/buffer
+    rejection in ``btc_events``.
+    """
+    if sig.side == "none":
+        return EntryEvaluation(None, "signal_none")
+
+    if current_tranche == 0:
+        if cooldown is not None and cooldown.bars_since_close < cooldown.cooldown_bars:
+            return EntryEvaluation(
+                None,
+                f"cooldown {cooldown.bars_since_close}/{cooldown.cooldown_bars}",
+            )
+
+        sz = compute_sizing(
+            side=sig.side,
+            entry=inputs.entry_price,
+            abs_score=sig.strength,
+            equity=equity,
+            atr_1h=inputs.atr_1h,
+            swing_ref=inputs.swing_ref,
+            ma35_1h=inputs.ma35_1h,
+            tranche_index=0,
+        )
+        if sz.rejected:
+            return EntryEvaluation(None, sz.reject_reason or "sizing_rejected")
+        if sz.qty <= 0:
+            return EntryEvaluation(None, "sizing_zero_qty")
+        risk_cap = equity * _sizing.RISK_PER_TRADE * TRANCHE_FRACS[0]
+        return EntryEvaluation(
+            OpenIntent(
+                side=sig.side,
+                limit_price=inputs.entry_price,
+                sizing=sz,
+                initial_risk=risk_cap,
+                tranche_index=0,
+            ),
+            "accepted",
+        )
+
+    if current_tranche < 3:
+        if avg_entry is None or current_price is None:
+            return EntryEvaluation(None, "pyramid_inputs_missing")
+        if not can_add_tranche(current_tranche, avg_entry, current_price, sig.side):
+            return EntryEvaluation(None, "pyramid_not_in_profit")
+
+        sz = compute_sizing(
+            side=sig.side,
+            entry=inputs.entry_price,
+            abs_score=sig.strength,
+            equity=equity,
+            atr_1h=inputs.atr_1h,
+            swing_ref=inputs.swing_ref,
+            ma35_1h=inputs.ma35_1h,
+            tranche_index=current_tranche,
+        )
+        if sz.rejected:
+            return EntryEvaluation(None, sz.reject_reason or "sizing_rejected")
+        if sz.qty <= 0:
+            return EntryEvaluation(None, "sizing_zero_qty")
+        risk_cap = equity * _sizing.RISK_PER_TRADE * TRANCHE_FRACS[current_tranche]
+        return EntryEvaluation(
+            OpenIntent(
+                side=sig.side,
+                limit_price=inputs.entry_price,
+                sizing=sz,
+                initial_risk=risk_cap,
+                tranche_index=current_tranche,
+            ),
+            "accepted",
+        )
+
+    return EntryEvaluation(None, "max_tranches")
+
+
 def evaluate_entry(
     sig: Signal,
     equity: float,
@@ -78,62 +174,8 @@ def evaluate_entry(
     responsible for the upstream 4h-cadence gate and per-4h hardcap — those are
     execution-cadence concerns, not part of the sizing decision.
     """
-    if sig.side == "none":
-        return None
-
-    if current_tranche == 0:
-        # P1-1 re-entry cooldown: same-direction re-entry needs N bars since last
-        # close of that side (16 if last close was a SL, else 8).
-        if cooldown is not None and cooldown.bars_since_close < cooldown.cooldown_bars:
-            return None
-
-        sz = compute_sizing(
-            side=sig.side,
-            entry=inputs.entry_price,
-            abs_score=sig.strength,
-            equity=equity,
-            atr_1h=inputs.atr_1h,
-            swing_ref=inputs.swing_ref,
-            ma35_1h=inputs.ma35_1h,
-            tranche_index=0,
-        )
-        if not sz.rejected and sz.qty > 0:
-            risk_cap = equity * _sizing.RISK_PER_TRADE * TRANCHE_FRACS[0]
-            return OpenIntent(
-                side=sig.side,
-                limit_price=inputs.entry_price,
-                sizing=sz,
-                initial_risk=risk_cap,
-                tranche_index=0,
-            )
-        return None
-
-    if current_tranche < 3:
-        # Pyramid: only add if can_add_tranche passes for the averaged entry.
-        if avg_entry is None or current_price is None:
-            return None
-        if not can_add_tranche(current_tranche, avg_entry, current_price, sig.side):
-            return None
-
-        sz = compute_sizing(
-            side=sig.side,
-            entry=inputs.entry_price,
-            abs_score=sig.strength,
-            equity=equity,
-            atr_1h=inputs.atr_1h,
-            swing_ref=inputs.swing_ref,
-            ma35_1h=inputs.ma35_1h,
-            tranche_index=current_tranche,
-        )
-        if not sz.rejected and sz.qty > 0:
-            risk_cap = equity * _sizing.RISK_PER_TRADE * TRANCHE_FRACS[current_tranche]
-            return OpenIntent(
-                side=sig.side,
-                limit_price=inputs.entry_price,
-                sizing=sz,
-                initial_risk=risk_cap,
-                tranche_index=current_tranche,
-            )
-        return None
-
-    return None
+    return evaluate_entry_with_reason(
+        sig, equity, current_tranche,
+        inputs=inputs, cooldown=cooldown,
+        avg_entry=avg_entry, current_price=current_price,
+    ).intent

@@ -11,6 +11,7 @@
 #   btc_events          — (ts, level, kind, message) 진입신호/주문/에러/하트비트 로그
 #   btc_meta            — (mode, key, value) 크로스-바 트래커 영속 (pending_order,
 #                         last_close_bar, last_new_entry_eval_4h_ns 등)
+#   btc_failure_shadow  — C1 would-block intent→fill→close 관찰 원장 (매매 무영향)
 from __future__ import annotations
 
 import json
@@ -215,6 +216,34 @@ _SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_btc_signal_ts ON btc_signal_log(mode, ts)",
+    # Round 10 C1 forward-shadow observer.  This table is audit-only: rows are
+    # linked to actual add-on positions so avoided PnL can be measured without
+    # suppressing any order during the observation phase.
+    """
+    CREATE TABLE IF NOT EXISTS btc_failure_shadow (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode              TEXT NOT NULL,
+        model_version     TEXT NOT NULL,
+        signal_ts         TEXT NOT NULL,
+        side              TEXT NOT NULL,
+        tranche_index     INTEGER NOT NULL,
+        cluster           INTEGER NOT NULL,
+        features          TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'intent',
+        position_id       INTEGER,
+        entry_time        TEXT,
+        exit_time         TEXT,
+        actual_net_pnl    REAL,
+        actual_r_multiple REAL,
+        avoided_net_pnl   REAL,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_btc_failure_shadow_status "
+    "ON btc_failure_shadow(mode, status)",
+    "CREATE INDEX IF NOT EXISTS idx_btc_failure_shadow_position "
+    "ON btc_failure_shadow(mode, position_id)",
 ]
 
 # btc_positions 컬럼 순서 (PositionRow 영속 필드, id/mode 제외 — INSERT 용)
@@ -362,6 +391,81 @@ def log_event(
     conn.execute(
         "INSERT INTO btc_events (ts, level, kind, message, mode) VALUES (?, ?, ?, ?, ?)",
         (ts or _utcnow(), level, kind, message, mode),
+    )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Round 10 C1 forward-shadow lifecycle (observational; never gates an order)
+# ---------------------------------------------------------------------------
+
+def record_failure_shadow_intent(
+    conn: sqlite3.Connection,
+    *,
+    mode: Mode,
+    signal_ts: str,
+    side: str,
+    tranche_index: int,
+    cluster: int,
+    features: dict,
+    model_version: str = "round10-2022_2023-k4-v1",
+) -> int:
+    now = _utcnow()
+    cur = conn.execute(
+        "INSERT INTO btc_failure_shadow "
+        "(mode, model_version, signal_ts, side, tranche_index, cluster, "
+        "features, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'intent', ?, ?)",
+        (
+            mode, model_version, signal_ts, side, int(tranche_index),
+            int(cluster), json.dumps(features, sort_keys=True), now, now,
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def mark_failure_shadow_filled(
+    conn: sqlite3.Connection,
+    observation_id: int,
+    *,
+    position_id: int,
+    entry_time: str,
+) -> None:
+    conn.execute(
+        "UPDATE btc_failure_shadow SET status='filled', position_id=?, "
+        "entry_time=?, updated_at=? WHERE id=? AND status='intent'",
+        (int(position_id), entry_time, _utcnow(), int(observation_id)),
+    )
+    conn.commit()
+
+
+def mark_failure_shadow_expired(
+    conn: sqlite3.Connection,
+    observation_id: int,
+) -> None:
+    conn.execute(
+        "UPDATE btc_failure_shadow SET status='expired', updated_at=? "
+        "WHERE id=? AND status='intent'",
+        (_utcnow(), int(observation_id)),
+    )
+    conn.commit()
+
+
+def close_failure_shadow_for_position(
+    conn: sqlite3.Connection,
+    position_id: int,
+    trade: TradeRow,
+) -> None:
+    """Attach actual add-on outcome; positive avoided PnL means block helped."""
+    conn.execute(
+        "UPDATE btc_failure_shadow SET status='closed', exit_time=?, "
+        "actual_net_pnl=?, actual_r_multiple=?, avoided_net_pnl=?, updated_at=? "
+        "WHERE mode=? AND position_id=? AND status='filled'",
+        (
+            trade.exit_time, float(trade.net_pnl), float(trade.r_multiple),
+            -float(trade.net_pnl), _utcnow(), trade.mode, int(position_id),
+        ),
     )
     conn.commit()
 

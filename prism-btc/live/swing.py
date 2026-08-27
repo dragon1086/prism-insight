@@ -57,6 +57,7 @@ _CATEGORY = "linear"
 _SYMBOL = "BTCUSDT"
 _POSITION_IDX = 0
 _RETRY_SLEEP_SEC = 0.5
+_MAX_IDLE_REPLAY_NS = 8 * 60 * 60 * 1_000_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +282,7 @@ def _notify(main_mode: str, msg: str) -> None:
         from live.telegram_reporter import _load_env, _resolve_channel, _send
         _load_env()
         token = os.environ.get("TELEGRAM_BOT_TOKEN")
-        asyncio.run(_send(token, _resolve_channel(None), msg))
+        asyncio.run(_send(token, _resolve_channel(None, mode=main_mode), msg))
     except Exception as exc:  # noqa: BLE001 — 알림 실패는 매매와 무관
         log.warning("swing notify 실패 (흡수): %s", exc)
 
@@ -296,6 +297,90 @@ def _log_signal_safe(conn, ts: str, side: str, reason: str, n_open: int) -> None
                             side=side, reason=reason, n_open=n_open, mode=MODE)
     except Exception as exc:  # noqa: BLE001 — 관측 실패는 매매와 무관
         log.warning("swing log_signal 실패 (흡수): %s", exc)
+
+
+def _hold_duration(entry_time: str, exit_time: str) -> str | None:
+    """진입부터 청산까지의 경과시간을 사람이 읽는 형식으로 반환한다."""
+    try:
+        elapsed_seconds = max(
+            0.0,
+            (pd.Timestamp(exit_time) - pd.Timestamp(entry_time)).total_seconds(),
+        )
+    except Exception:  # noqa: BLE001 — 알림용 보조 수치는 실패해도 매매를 막지 않음
+        return None
+
+    minutes = int(elapsed_seconds // 60)
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    if days:
+        return f"{days}일 {hours}시간"
+    if hours:
+        return f"{hours}시간 {minutes}분" if minutes else f"{hours}시간"
+    return f"{minutes}분"
+
+
+def _build_exit_message(
+    pos: tracking.PositionRow,
+    exit_price: float,
+    reason: str,
+    backend_name: str,
+    net: float,
+    fee_paid: float,
+    r_multiple: float,
+    equity_before: float,
+    equity_after: float,
+    exit_time: str,
+) -> str:
+    """스윙 청산 알림을 정량 지표와 함께 만든다.
+
+    ``price_return_pct`` 는 롱/숏 방향을 반영한 현물 가격 기준 수익률이고,
+    ``margin_return_pct`` 는 레버리지를 고려한 추정 증거금 기준 순수익률이다.
+    두 수치를 분리해 R 배수와 계좌 영향이 서로 다른 의미임을 명확히 한다.
+    """
+    sign = 1.0 if pos.side == "long" else -1.0
+    price_return_pct = (
+        sign * (exit_price - pos.entry_price) / pos.entry_price * 100.0
+        if pos.entry_price
+        else None
+    )
+    margin = (
+        pos.qty * pos.entry_price / pos.leverage
+        if pos.leverage > 0
+        else None
+    )
+    margin_return_pct = net / margin * 100.0 if margin else None
+    account_delta = equity_after - equity_before
+    account_return_pct = account_delta / equity_before * 100.0 if equity_before else None
+    duration = _hold_duration(pos.entry_time, exit_time)
+
+    outcome = f"✅ 이익 {r_multiple:+.1f}배" if r_multiple > 0 else f"❌ 손실 {r_multiple:+.1f}배"
+    why = "손절" if reason == "swing_sl" else "추세이탈 청산"
+    exec_tag = "실주문" if backend_name == "exchange" else "가상체결"
+    lines = [
+        f"🌀 [스윙레인·{exec_tag}] 포지션 정리 — {outcome} ({why})",
+        (
+            f"• 진입→청산: {pos.entry_price:,.0f} → {exit_price:,.0f}달러 · "
+            f"{_side_kr(pos.side)} · 가격 기준 {price_return_pct:+.2f}%"
+            if price_return_pct is not None
+            else f"• 진입→청산: {pos.entry_price:,.0f} → {exit_price:,.0f}달러 · {_side_kr(pos.side)}"
+        ),
+        (
+            f"• 실현손익: {net:+,.2f}달러 · 수수료 {fee_paid:,.2f}달러 · "
+            f"증거금 기준 {margin_return_pct:+.2f}%"
+            if margin_return_pct is not None
+            else f"• 실현손익: {net:+,.2f}달러 · 수수료 {fee_paid:,.2f}달러"
+        ),
+        (
+            f"• 계좌: {equity_before:,.2f} → {equity_after:,.2f}달러 · "
+            f"{account_delta:+,.2f}달러 ({account_return_pct:+.2f}%)"
+            if account_return_pct is not None
+            else f"• 계좌: {equity_before:,.2f} → {equity_after:,.2f}달러 · {account_delta:+,.2f}달러"
+        ),
+        f"• 포지션: {pos.qty:.4f} BTC · 레버리지 {pos.leverage:.1f}배"
+        + (f" · 보유 {duration}" if duration else ""),
+        "_데모 계정 모의투자입니다_",
+    ]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -340,19 +425,26 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
     ))
     if pos.id is not None:
         tracking.remove_position(conn, pos.id)
-    equity = backend.equity(fallback=equity + net)
-    tracking.record_equity(conn, equity, MODE, bar_time_str)
+    equity_before = equity
+    equity_after = backend.equity(fallback=equity_before + net)
+    tracking.record_equity(conn, equity_after, MODE, bar_time_str)
     tracking.log_event(conn, "trade",
                        f"swing close[{backend.name}] {pos.side} @ {exit_price:.1f} "
-                       f"({reason}) net≈{net:+.2f} eq={equity:.2f}", mode=MODE)
+                       f"({reason}) net≈{net:+.2f} eq={equity_after:.2f}", mode=MODE)
     r = net / risk
-    outcome = f"✅ 이익 {r:+.1f}배" if r > 0 else f"❌ 손실 {r:+.1f}배"
-    why = "손절" if reason == "swing_sl" else "추세이탈 청산"
-    exec_tag = "실주문" if backend.name == "exchange" else "가상체결"
-    _notify(main_mode,
-            f"🌀 [스윙레인·{exec_tag}] 포지션 정리 — {outcome} ({why})\n"
-            f"_데모 계정 모의투자입니다_")
-    return equity, trade_counter
+    _notify(main_mode, _build_exit_message(
+        pos=pos,
+        exit_price=exit_price,
+        reason=reason,
+        backend_name=backend.name,
+        net=net,
+        fee_paid=pos.entry_fee + exit_fee,
+        r_multiple=r,
+        equity_before=equity_before,
+        equity_after=equity_after,
+        exit_time=bar_time_str,
+    ))
+    return equity_after, trade_counter
 
 
 def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
@@ -470,7 +562,31 @@ def process(root_conn, tf_data: dict, main_mode: str = "shadow",
                            f"swing lane ledger seeded[{backend.name}]: {equity:.0f}",
                            mode=MODE)
 
+    positions = tracking.load_open_positions(conn, MODE)
+    pos = positions[0] if positions else None
     last_ns = tracking.get_meta(conn, "last_processed_30m_ns", MODE)
+    latest_ns = int(bars_30m.index[-1].value)
+    if (
+        last_ns is not None
+        and pos is None
+        and latest_ns - int(last_ns) > _MAX_IDLE_REPLAY_NS
+    ):
+        # A flat lane has no risk state to reconstruct. Replaying weeks of old
+        # bars would manufacture historical open/close notifications (and, with
+        # exchange keys, could place stale orders). Fast-forward safely.
+        tracking.set_meta(conn, "last_processed_30m_ns", latest_ns, MODE)
+        latest_4h = _get_tf_slice(tf_data, bars_30m.index[-1], "4h")
+        if not latest_4h.empty:
+            tracking.set_meta(
+                conn, "last_confirmed_4h_ns", int(latest_4h.index[-1].value), MODE
+            )
+        tracking.log_event(
+            conn,
+            "cursor_resync",
+            "flat swing cursor fast-forwarded; historical replay skipped",
+            mode=MODE,
+        )
+        return result
     if last_ns is None:
         new_bars = bars_30m.iloc[[-1]]
     else:
@@ -481,8 +597,6 @@ def process(root_conn, tf_data: dict, main_mode: str = "shadow",
 
     last_4h_ns = tracking.get_meta(conn, "last_confirmed_4h_ns", MODE)
     trade_counter = int(tracking.get_meta(conn, "trade_id_counter", MODE) or 0)
-    positions = tracking.load_open_positions(conn, MODE)
-    pos = positions[0] if positions else None
 
     for bar_time, bar in new_bars.iterrows():
         bar_time_str = str(bar_time)
@@ -511,10 +625,13 @@ def process(root_conn, tf_data: dict, main_mode: str = "shadow",
             row = s4.iloc[-1]
             if not pd.isna(row.get("ma35")) and rule_exit_due(
                     pos.side, float(row["close"]), float(row["ma35"])):
+                # 실주문은 청산 직전 지갑 equity를 기준으로 계좌 변화율을 계산한다.
+                # 가상 백엔드는 전달받은 원장 equity를 그대로 사용한다.
+                equity_before_close = backend.equity(fallback=equity)
                 fill = backend.close(pos, float(bar["close"]))
                 equity, trade_counter = _close_position(
                     conn, backend, pos, fill, TAKER_FEE,
-                    "swing_ma35_exit", bar_time_str, equity, trade_counter,
+                    "swing_ma35_exit", bar_time_str, equity_before_close, trade_counter,
                     main_mode)
                 pos = None
                 result["events"] += 1
