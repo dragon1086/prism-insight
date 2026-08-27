@@ -157,9 +157,13 @@ def _log_regime_snapshot(market: str, computed: dict) -> None:
             "ts": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
             "market": market,
             "regime": computed.get("market_regime"),
+            "primary_trend_regime": computed.get("primary_trend_regime"),
+            "effective_entry_regime": computed.get("effective_entry_regime"),
+            "swing_state": computed.get("swing_state"),
             "confidence": computed.get("regime_confidence"),
         }
         s = computed.get("index_summary") or {}
+        rec["index_summary"] = s
         for k in ("sp500_vs_50d_ma", "sp500_vs_200d_ma", "sp500_ma_50_200_cross",
                   "sp500_4w_change_pct", "vix_level",
                   "kospi_vs_60d_ma", "kospi_vs_120d_ma", "kospi_ma_60_120_cross",
@@ -172,6 +176,16 @@ def _log_regime_snapshot(market: str, computed: dict) -> None:
         _os.makedirs(log_dir, exist_ok=True)
         with open(_os.path.join(log_dir, "regime_history.jsonl"), "a") as f:
             f.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+        from observability.events import emit_event
+        emit_event(
+            "market.regime_snapshot",
+            service="prism-kr-regime",
+            market=market,
+            attributes={
+                "ingestion_mode": "live",
+                **{key: value for key, value in rec.items() if key not in {"ts", "market"}},
+            },
+        )
         logger.info(f"[regime] {market}: {rec['regime']} (conf {rec['confidence']})")
     except Exception as e:
         logger.warning(f"[regime] snapshot log failed: {e}")

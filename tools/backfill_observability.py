@@ -57,7 +57,7 @@ _CANDIDATE_TABLES = {
 }
 _CANDIDATE_QUERIES = {
     "KR": """
-        SELECT id, ticker, company_name, trigger_type, trigger_mode,
+        SELECT id, decision_id, ticker, company_name, trigger_type, trigger_mode,
                analyzed_date AS analysis_date, decision, was_traded,
                skip_reason, buy_score, min_score, target_price, stop_loss,
                risk_reward_ratio, tracked_7d_return AS return_7d,
@@ -70,7 +70,7 @@ _CANDIDATE_QUERIES = {
         ORDER BY id
     """,
     "US": """
-        SELECT id, ticker, company_name, trigger_type, trigger_mode,
+        SELECT id, decision_id, ticker, company_name, trigger_type, trigger_mode,
                analysis_date, decision, was_traded, skip_reason, buy_score,
                NULL AS min_score, target_price, stop_loss,
                risk_reward_ratio, return_7d, return_14d, return_30d,
@@ -80,6 +80,14 @@ _CANDIDATE_QUERIES = {
         WHERE return_30d IS NOT NULL
         ORDER BY id
     """,
+}
+_CANDIDATE_LEGACY_QUERIES = {
+    market: query.replace("id, decision_id,", "id, NULL AS decision_id,")
+    for market, query in _CANDIDATE_QUERIES.items()
+}
+_CANDIDATE_TABLE_INFO_QUERIES = {
+    "KR": "PRAGMA table_info(analysis_performance_tracker)",
+    "US": "PRAGMA table_info(us_analysis_performance_tracker)",
 }
 
 
@@ -166,7 +174,18 @@ def iter_candidate_events(
 ) -> Iterator[dict[str, Any]]:
     connection.row_factory = sqlite3.Row
     table = _CANDIDATE_TABLES[market]
-    for row in connection.execute(_CANDIDATE_QUERIES[market]):
+    columns = {
+        str(row[1])
+        for row in connection.execute(
+            _CANDIDATE_TABLE_INFO_QUERIES[market]
+        ).fetchall()
+    }
+    query = (
+        _CANDIDATE_QUERIES[market]
+        if "decision_id" in columns
+        else _CANDIDATE_LEGACY_QUERIES[market]
+    )
+    for row in connection.execute(query):
         event_time = _parse_time(row["analysis_date"])
         if event_time is None or event_time < since:
             continue
@@ -209,7 +228,8 @@ def iter_candidate_events(
             "service": f"prism-{market.lower()}-candidate-history",
             "market": market,
             "ticker": row["ticker"],
-            "decision_id": f"legacy-candidate:{market}:{row['id']}",
+            "decision_id": row["decision_id"]
+            or f"legacy-candidate:{market}:{row['id']}",
             "event_time": event_time,
             "attributes": attributes,
         }
