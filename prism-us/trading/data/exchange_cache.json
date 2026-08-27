@@ -26,7 +26,9 @@
   "MRVL": "NASD",
   "MSFT": "NASD",
   "MU": "NASD",
+  "NEM": "NYSE",
   "NFLX": "NASD",
+  "NOC": "NYSE",
   "NVDA": "NASD",
   "PANW": "NASD",
   "PEP": "NASD",
@@ -37,5 +39,6 @@
   "TSLA": "NASD",
   "TXN": "NASD",
   "VRTX": "NASD",
+  "WDC": "NASD",
   "ZS": "NASD"
 }
