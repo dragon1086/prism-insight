@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -70,6 +71,23 @@ def _batch_report_parallel_limit(job_count: int, environ=None) -> int:
         configured = 3
 
     return min(job_count, max(1, configured))
+
+
+def _translated_pdf_limits(environ=None) -> tuple[int, int, int]:
+    """Return concurrency, per-report timeout, and whole-batch deadline."""
+    environ = os.environ if environ is None else environ
+
+    def positive_int(name: str, default: int) -> int:
+        try:
+            return max(1, int(environ.get(name, str(default))))
+        except (TypeError, ValueError):
+            return default
+
+    return (
+        positive_int("PRISM_TRANSLATED_PDF_MAX_CONCURRENCY", 3),
+        positive_int("PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS", 360),
+        positive_int("PRISM_TRANSLATED_PDF_BATCH_TIMEOUT_SECONDS", 1200),
+    )
 
 
 class StockAnalysisOrchestrator:
@@ -761,82 +779,130 @@ class StockAnalysisOrchestrator:
             bot_agent: TelegramBotAgent instance
             report_paths: List of original markdown report file paths
         """
-        try:
-            from cores.agents.telegram_translator_agent import translate_telegram_message
-            from pdf_converter import PdfRenderer
+        from cores.agents.telegram_translator_agent import translate_telegram_message
+        from pdf_converter import PdfRenderer
 
-            async def _translate_pdfs_for_lang(lang, channel_id, renderer):
-                for report_path in report_paths:
-                    try:
-                        logger.info(f"Translating markdown report {report_path} to {lang}")
+        concurrency, item_timeout, batch_timeout = _translated_pdf_limits()
+        semaphore = asyncio.Semaphore(concurrency)
+        jobs = []
+        for lang in self.telegram_config.broadcast_languages:
+            channel_id = self.telegram_config.get_broadcast_channel_id(lang)
+            if not channel_id:
+                logger.warning(f"No channel ID configured for language: {lang}")
+                continue
+            jobs.extend((lang, channel_id, report_path) for report_path in report_paths)
 
-                        with open(report_path, 'r', encoding='utf-8') as f:
-                            original_report = f.read()
+        logger.info(
+            "[TRANSLATED_PDF] market=KR status=start jobs=%d concurrency=%d "
+            "item_timeout_seconds=%d batch_timeout_seconds=%d",
+            len(jobs), concurrency, item_timeout, batch_timeout,
+        )
+        if not jobs:
+            return
 
-                        text_for_translation, images = self._extract_base64_images(original_report)
-                        logger.info(f"Prepared report for translation: {len(text_for_translation)} chars (extracted {len(images)} images)")
+        async def _translate_one(lang, channel_id, report_path):
+            started = time.monotonic()
+            try:
+                with open(report_path, 'r', encoding='utf-8') as f:
+                    original_report = f.read()
+                text_for_translation, images = self._extract_base64_images(original_report)
 
-                        translated_report = await translate_telegram_message(
+                async with semaphore:
+                    translated_report = await asyncio.wait_for(
+                        translate_telegram_message(
                             text_for_translation,
-                            model="gpt-5.6-luna",
+                            model=REPORT_AUX_MODEL,
                             from_lang="ko",
-                            to_lang=lang
-                        )
+                            to_lang=lang,
+                            raise_on_error=True,
+                        ),
+                        timeout=item_timeout,
+                    )
 
-                        translated_report = self._restore_base64_images(translated_report, images)
-                        logger.info(f"Restored images to translated report: {len(translated_report)} chars")
+                translated_report = self._restore_base64_images(translated_report, images)
+                report_file = Path(report_path)
+                translated_report_path = await self._create_translated_filename(report_file, lang)
+                with open(translated_report_path, 'w', encoding='utf-8') as f:
+                    f.write(translated_report)
 
-                        report_file = Path(report_path)
-                        translated_report_path = await self._create_translated_filename(report_file, lang)
+                logger.info(
+                    "[TRANSLATED_PDF] market=KR lang=%s report=%s status=translated "
+                    "duration_seconds=%.1f",
+                    lang, report_path, time.monotonic() - started,
+                )
+                return lang, channel_id, translated_report_path
+            except asyncio.TimeoutError:
+                logger.error(
+                    "[TRANSLATED_PDF] market=KR lang=%s report=%s status=skipped "
+                    "reason=item_timeout timeout_seconds=%d",
+                    lang, report_path, item_timeout,
+                )
+            except Exception as error:
+                logger.error(
+                    "[TRANSLATED_PDF] market=KR lang=%s report=%s status=skipped "
+                    "reason=translation_failed error=%s",
+                    lang, report_path, error,
+                )
+                from telegram_config import is_openai_quota_error, send_openai_quota_alert
+                if is_openai_quota_error(error):
+                    await send_openai_quota_alert(self.telegram_config, market="KR")
+            return None
 
-                        with open(translated_report_path, 'w', encoding='utf-8') as f:
-                            f.write(translated_report)
+        tasks = [asyncio.create_task(_translate_one(*job)) for job in jobs]
 
-                        logger.info(f"Translated report saved: {translated_report_path}")
-
+        async def _deliver_completed():
+            async with PdfRenderer() as renderer:
+                for completed in asyncio.as_completed(tasks):
+                    result = await completed
+                    if result is None:
+                        continue
+                    lang, channel_id, translated_report_path = result
+                    try:
                         translated_pdf_file = PDF_REPORTS_DIR / f"{Path(translated_report_path).stem}.pdf"
                         translated_pdf_path = await renderer.render(
                             str(translated_report_path), str(translated_pdf_file)
                         )
+                        if not translated_pdf_path:
+                            logger.error(
+                                "[TRANSLATED_PDF] market=KR lang=%s report=%s "
+                                "status=skipped reason=pdf_render_failed",
+                                lang, translated_report_path,
+                            )
+                            continue
 
-                        if translated_pdf_path:
-                            logger.info(f"Sending translated PDF {translated_pdf_path} to {lang} channel")
-                            success = await bot_agent.send_document(channel_id, str(translated_pdf_path), msg_type="pdf")
+                        success = await bot_agent.send_document(
+                            channel_id, str(translated_pdf_path), msg_type="pdf"
+                        )
+                        logger.log(
+                            logging.INFO if success else logging.ERROR,
+                            "[TRANSLATED_PDF] market=KR lang=%s report=%s status=%s",
+                            lang, translated_report_path, "sent" if success else "send_failed",
+                        )
+                        await asyncio.sleep(1)
+                    except Exception as error:
+                        logger.error(
+                            "[TRANSLATED_PDF] market=KR lang=%s report=%s "
+                            "status=skipped reason=delivery_failed error=%s",
+                            lang, translated_report_path, error,
+                        )
 
-                            if success:
-                                logger.info(f"Translated PDF sent successfully to {lang} channel")
-                            else:
-                                logger.error(f"Failed to send translated PDF to {lang} channel")
-
-                            await asyncio.sleep(1)
-                        else:
-                            logger.error(f"Failed to convert translated report to PDF: {translated_report_path}")
-
-                    except Exception as e:
-                        logger.error(f"Error processing report {report_path} for {lang}: {str(e)}")
-                        from telegram_config import is_openai_quota_error, send_openai_quota_alert
-                        if is_openai_quota_error(e):
-                            await send_openai_quota_alert(self.telegram_config, market="KR")
-                            return
-
-            # Languages are still processed one page at a time (memory ceiling stays
-            # at a single Chromium), but a SHARED browser is reused across all of
-            # them so the Chromium launch cost is paid ONCE instead of once per file
-            # (previously N launches for N PDFs — the batch's main slow tail).
-            async with PdfRenderer() as renderer:
-                for lang in self.telegram_config.broadcast_languages:
-                    channel_id = self.telegram_config.get_broadcast_channel_id(lang)
-                    if not channel_id:
-                        logger.warning(f"No channel ID configured for language: {lang}")
-                        continue
-                    logger.info(f"Processing PDF translation for {lang} channel (shared browser)")
-                    try:
-                        await _translate_pdfs_for_lang(lang, channel_id, renderer)
-                    except Exception as lang_err:
-                        logger.error(f"PDF translation failed for {lang}: {lang_err}")
-
-        except Exception as e:
-            logger.error(f"Error in _send_translated_pdfs: {str(e)}")
+        try:
+            await asyncio.wait_for(_deliver_completed(), timeout=batch_timeout)
+            logger.info("[TRANSLATED_PDF] market=KR status=complete jobs=%d", len(jobs))
+        except asyncio.TimeoutError:
+            logger.error(
+                "[TRANSLATED_PDF] market=KR status=deadline_exceeded "
+                "batch_timeout_seconds=%d pending_jobs=%d",
+                batch_timeout, sum(not task.done() for task in tasks),
+            )
+        except Exception as error:
+            logger.error(f"Error in _send_translated_pdfs: {str(error)}")
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     async def send_trigger_alert(self, mode, trigger_results_file, language: str = "ko"):
         """
