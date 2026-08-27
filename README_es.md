@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="Licencia">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/OpenAI-GPT--5-green.svg" alt="OpenAI">
-  <img src="https://img.shields.io/badge/Anthropic-Claude--Sonnet--4.6-green.svg" alt="Anthropic">
+  <img src="https://img.shields.io/badge/Anthropic-Claude--Sonnet--5-green.svg" alt="Anthropic Claude Sonnet 5">
   <img src="https://img.shields.io/badge/ChatGPT_Plus-Codex_OAuth-ff6b35.svg" alt="ChatGPT Plus">
 </div>
 
@@ -261,7 +261,7 @@ PRISM-INSIGHT es un sistema de analisis bursatil impulsado por IA, **completamen
 
 ### Modelos de IA
 - **Analisis y Trading**: OpenAI GPT-5 / GPT-5.4-mini (via API o suscripcion ChatGPT Plus)
-- **Generacion de Informes**: Anthropic Claude Sonnet 4.6
+- **Flujos Opcionales de Compatibilidad**: Anthropic Claude Sonnet 5
 - **Traduccion**: OpenAI GPT-5 (soporte para EN, JA, ZH, ES)
 
 ---
