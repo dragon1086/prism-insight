@@ -130,6 +130,65 @@ def test_kr_volume_surge_flat_excludes_bearish_candle(monkeypatch):
     assert "BULL" in result.index
 
 
+def test_kr_closing_strength_excludes_gap_down_recovery_below_previous_close(caplog):
+    """장중 양봉이어도 전일 종가를 회복하지 못한 갭하락 반등은 제외한다."""
+    snapshot = _frame(
+        {
+            # 둘 다 장중 양봉이고 종가가 고가에 가깝고 거래량도 증가했다.
+            "RECOVERED": {
+                "Open": 99.0,
+                "High": 106.0,
+                "Low": 98.0,
+                "Close": 105.0,
+                "Volume": 2_000_000,
+                "Amount": KR_AMOUNT,
+            },
+            # 실리콘투 유형: 큰 갭하락 뒤 반등했지만 전일 종가 아래에서 마감했다.
+            "BELOW_PREV": {
+                "Open": 93.0,
+                "High": 97.0,
+                "Low": 92.0,
+                "Close": 96.0,
+                "Volume": 2_000_000,
+                "Amount": KR_AMOUNT,
+            },
+        }
+    )
+    prev = _frame(
+        {
+            "RECOVERED": {
+                "Open": 100.0,
+                "High": 101.0,
+                "Low": 99.0,
+                "Close": 100.0,
+                "Volume": 1_000_000,
+                "Amount": KR_AMOUNT,
+            },
+            "BELOW_PREV": {
+                "Open": 100.0,
+                "High": 101.0,
+                "Low": 99.0,
+                "Close": 100.0,
+                "Volume": 1_000_000,
+                "Amount": KR_AMOUNT,
+            },
+        }
+    )
+    cap = pd.DataFrame(
+        {"시가총액": {"RECOVERED": KR_CAP_FLOOR * 2, "BELOW_PREV": KR_CAP_FLOOR * 2}}
+    )
+
+    with caplog.at_level("INFO", logger="trigger_batch"):
+        result = trigger_batch.trigger_afternoon_closing_strength(
+            "20260827", snapshot, prev, cap
+        )
+
+    assert "BELOW_PREV" not in result.index
+    assert "RECOVERED" in result.index
+    assert "reason=close_below_previous_close" in caplog.text
+    assert "sample=BELOW_PREV" in caplog.text
+
+
 def test_kr_macro_sector_leader_excludes_bearish_candle():
     """하락장에서 상대강도가 양수여도 음봉이면 그날의 주도주가 아니다."""
     macro_context = {
