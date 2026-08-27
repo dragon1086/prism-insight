@@ -45,10 +45,18 @@ def _load_env() -> None:
         pass
 
 
-def _resolve_channel(cli_channel: str | None) -> str | None:
-    """채널 ID 해석: CLI > BTC_TELEGRAM_CHANNEL_ID > TELEGRAM_CHANNEL_ID > None."""
+def _resolve_channel(
+    cli_channel: str | None,
+    *,
+    mode: str | None = None,
+) -> str | None:
+    """Route demo/live to operations; shadow/research to the BTC test room."""
     if cli_channel:
         return cli_channel
+    if mode in ("demo", "live"):
+        return (os.environ.get("TELEGRAM_CHANNEL_ID")
+                or os.environ.get("BTC_TELEGRAM_CHANNEL_ID")
+                or None)
     return (os.environ.get("BTC_TELEGRAM_CHANNEL_ID")
             or os.environ.get("TELEGRAM_CHANNEL_ID")
             or None)
@@ -533,7 +541,7 @@ def main() -> int:
 
     _load_env()
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    channel = _resolve_channel(args.channel)
+    channel = _resolve_channel(args.channel, mode=args.mode)
 
     conn = tracking.get_connection(args.root_db)
     try:

@@ -44,7 +44,10 @@ from engine.signal import generate_signal, check_exit_signal, Signal
 import engine.sizing as _sizing
 
 from core.exits import PositionView, BarView, ExitContext, evaluate_exits
-from core.entries import EntryInputs, CooldownState, evaluate_entry
+from core.entries import (
+    EntryInputs, CooldownState, EntryEvaluation,
+    evaluate_entry_with_reason,
+)
 from core.actions import (
     ChargeFunding,
     ForceReduce,
@@ -61,16 +64,16 @@ from core.leadership import leadership_multipliers
 from live import tracking
 from live.tracking import PositionRow, TradeRow
 
-# 섀도우 위험: 고정 2% — E4 오버레이 비활성 (reduced == base 로 중립화).
+# 섀도우 위험: 고정 5% — E4 오버레이 비활성 (reduced == base 로 중립화).
 # 근거 (2026-06-13 전체 재시뮬, tasks/handoff_btc.md §3-1.5): E4 2%/1% 는
 # 고정 2% 대비 CAGR 8.3→6.0 / MDD 7.15→6.1 / PF 2.14→1.85 — 수익 2.3%p 를
 # 내고 MDD 1%p 를 사는 손해 보는 보험. 추세전략의 큰 승리가 손실 직후에
 # 오는 구조라, DD 트리거가 정확히 회복 트레이드의 사이즈를 반토막낸다.
 # compute_operating_risk 배관은 유지 (가변 리스크 재검토 시 값만 변경).
-# 라운드7 G-1 (2026-07-24, Rocky 1.5x 승인): 2% → 3% (engine/sizing.py 참조).
+# G-2: 3% → 5% (engine/sizing.py의 전체 구간 검증 참조).
 # E4 중립화(reduced == base)는 유지 — 위 재시뮬 근거 그대로.
-SHADOW_BASE_RISK: float = 0.03
-SHADOW_REDUCED_RISK: float = 0.03  # == base → E4 비활성
+SHADOW_BASE_RISK: float = 0.05
+SHADOW_REDUCED_RISK: float = 0.05  # == base → E4 비활성; backtest parity
 SHADOW_DD_THRESHOLD: float = 0.05
 
 INITIAL_EQUITY: float = 10_000.0
@@ -216,12 +219,16 @@ class ShadowAdapter:
     def __init__(self, root_conn: sqlite3.Connection,
                  tf_data: dict[str, pd.DataFrame],
                  funding_times: list[int], funding_rates: list[float],
-                 mode: str = "shadow"):
+                 mode: str = "shadow", failure_observer=None):
         self.conn = root_conn
         self.tf_data = tf_data
         self.funding_times = funding_times
         self.funding_rates = funding_rates
         self.mode = mode
+        # Round 10 observer is deliberately advisory.  Its return value is
+        # audit metadata attached to the existing pending order; it can never
+        # suppress or resize the intent during forward-shadow collection.
+        self.failure_observer = failure_observer
 
     # --- meta 헬퍼 ---
     def _get_meta(self, key, default=None):
@@ -236,7 +243,6 @@ class ShadowAdapter:
         """단일 확정 30m 봉 처리 — backtest run_backtest 의 per-bar 루프 미러."""
         mode = self.mode
         conn = self.conn
-        bar_open = float(bar["open"])
         bar_high = float(bar["high"])
         bar_low = float(bar["low"])
         bar_close = float(bar["close"])
@@ -287,13 +293,31 @@ class ShadowAdapter:
                     initial_qty=float(pending["sizing_qty"]),
                     mode=mode,
                 )
-                tracking.save_position(conn, new_pos)
+                position_id = tracking.save_position(conn, new_pos)
+                observation_id = pending.get("failure_observation_id")
+                if observation_id is not None:
+                    try:
+                        tracking.mark_failure_shadow_filled(
+                            conn, int(observation_id),
+                            position_id=position_id,
+                            entry_time=bar_time_str,
+                        )
+                    except Exception:  # noqa: BLE001 — observer cannot block fill
+                        pass
                 positions.append(new_pos)
                 pending = None
                 tracking.log_event(conn, "fill",
                     f"{new_pos.side} entry filled @ {lp:.2f} qty={new_pos.qty:.6f}",
                     mode=mode, ts=bar_time_str)
             elif bars_elapsed >= ENTRY_ORDER_EXPIRY_BARS:
+                observation_id = pending.get("failure_observation_id")
+                if observation_id is not None:
+                    try:
+                        tracking.mark_failure_shadow_expired(
+                            conn, int(observation_id)
+                        )
+                    except Exception:  # noqa: BLE001 — observer is audit-only
+                        pass
                 pending = None
                 tracking.log_event(conn, "expire", "pending entry expired",
                                    mode=mode, ts=bar_time_str)
@@ -437,11 +461,12 @@ class ShadowAdapter:
                     same_side = [p for p in positions if p.side == sig.side]
                     current_tranche = len(same_side)
                     intent: Optional[OpenIntent] = None
+                    decision: Optional[EntryEvaluation] = None
 
                     if current_tranche == 0:
                         # 4h 하드캡: 같은 4h 캔들 재평가 금지.
                         if cur_4h_ns is not None and cur_4h_ns == last_new_entry_eval_4h_ns:
-                            intent = None
+                            decision = EntryEvaluation(None, "4h_hardcap")
                         else:
                             if cur_4h_ns is not None:
                                 last_new_entry_eval_4h_ns = cur_4h_ns
@@ -454,7 +479,7 @@ class ShadowAdapter:
                             entry_price = bar_close
                             ei = self._entry_inputs(bar_time, sig.side, entry_price)
                             # E4 오버레이: drawdown 기반 operating risk 로 RISK_PER_TRADE 조정.
-                            intent = self._evaluate_entry_with_risk(
+                            decision = self._evaluate_entry_with_risk(
                                 sig, acc.equity, 0, ei,
                                 cooldown=CooldownState(
                                     bars_since_close=bars_since_close,
@@ -465,13 +490,33 @@ class ShadowAdapter:
                         avg_entry = sum(p.entry_price for p in same_side) / len(same_side)
                         entry_price = bar_close
                         ei = self._entry_inputs(bar_time, sig.side, entry_price)
-                        intent = self._evaluate_entry_with_risk(
+                        decision = self._evaluate_entry_with_risk(
                             sig, acc.equity, current_tranche, ei,
                             avg_entry=avg_entry, current_price=bar_close,
                         )
 
+                    if decision is not None:
+                        intent = decision.intent
+                        if intent is None:
+                            tracking.log_event(
+                                conn, "entry_reject",
+                                f"{sig.side} entry rejected: {decision.reason} "
+                                f"tranche={current_tranche}",
+                                mode=mode, ts=bar_time_str,
+                            )
+
                     if intent is not None:
                         sz = intent.sizing
+                        failure_observation_id = None
+                        if self.failure_observer is not None and current_tranche > 0:
+                            try:
+                                failure_observation_id = self.failure_observer.observe(
+                                    bar_time=bar_time,
+                                    side=intent.side,
+                                    tranche_index=intent.tranche_index,
+                                )
+                            except Exception:  # noqa: BLE001 — trading must continue
+                                failure_observation_id = None
                         pending = {
                             "side": intent.side,
                             "limit_price": intent.limit_price,
@@ -486,6 +531,10 @@ class ShadowAdapter:
                             "initial_risk": intent.initial_risk,
                             "tranche_index": intent.tranche_index,
                         }
+                        if failure_observation_id is not None:
+                            pending["failure_observation_id"] = int(
+                                failure_observation_id
+                            )
                         tracking.log_event(conn, "signal",
                             f"{intent.side} entry intent @ {intent.limit_price:.2f} "
                             f"tranche={intent.tranche_index} risk={intent.initial_risk:.2f}",
@@ -502,13 +551,126 @@ class ShadowAdapter:
         self._set_meta("last_new_entry_eval_4h_ns", last_new_entry_eval_4h_ns)
         self._set_meta("pending_order", pending)
 
+    def process_protection_bar(self, bar_time: pd.Timestamp, bar: pd.Series) -> None:
+        """Run the cheap 10m protection pass without changing signal cadence.
+
+        The strategy ledger is still driven by confirmed 30m candles.  This
+        pass only evaluates the existing stop/liquidation-proximity actions on
+        a newer 10m OHLC bar.  It deliberately does not run signals, pyramid,
+        funding, trailing-MA updates, or any LLM path.  A later 30m pass sees
+        the persisted position state and therefore cannot double-close it.
+        """
+        conn = self.conn
+        mode = self.mode
+        bar_high = float(bar["high"])
+        bar_low = float(bar["low"])
+        bar_close = float(bar["close"])
+        bar_time_str = str(bar_time)
+        # Cooldowns and audit metadata remain on the canonical 30m clock.
+        bar_idx = bar_index_for(int(bar_time.value // 1_000_000))
+
+        positions = tracking.load_open_positions(conn, mode)
+        if not positions:
+            return
+
+        equity = tracking.latest_equity(conn, mode)
+        if equity is None:
+            equity = INITIAL_EQUITY
+        acc = _Acc(equity=equity)
+        trade_id_counter = int(self._get_meta("trade_id_counter", 0))
+        last_close_bar = self._get_meta(
+            "last_close_bar", {"long": -10_000, "short": -10_000}
+        )
+        last_close_was_sl = self._get_meta(
+            "last_close_was_sl", {"long": False, "short": False}
+        )
+        positions_to_remove: list[PositionRow] = []
+
+        for pos in list(positions):
+            # Protection cadence must not charge funding or advance the
+            # strategy's trailing MA; those remain canonical 30m actions.
+            actions = evaluate_exits(
+                PositionView(
+                    side=pos.side, entry_price=pos.entry_price, qty=pos.qty,
+                    sl_price=pos.sl_price, tp1_price=pos.tp1_price,
+                    liq_price=pos.liq_price,
+                    trailing_active=pos.trailing_active,
+                    be_stop_set=pos.be_stop_set, tp1_hit=pos.tp1_hit,
+                    liq_breach_flagged=pos.liq_breach_flagged,
+                ),
+                BarView(
+                    idx=bar_idx, high=bar_high, low=bar_low, close=bar_close,
+                ),
+                ExitContext(
+                    funding_due=False, funding_rate=0.0,
+                    funding_sign_aware=False, trailing_ma=None,
+                    be_trail_activate_r=BE_TRAIL_ACTIVATE_R,
+                    liq_monitor_frac=LIQ_MONITOR_FRAC,
+                ),
+            )
+
+            closed = False
+            for act in actions:
+                # The 10m pass is intentionally limited to hard protection.
+                # TP/BE/trailing actions are left to the canonical 30m pass.
+                if isinstance(act, ForceReduce):
+                    pos.liq_breach_flagged = True
+                    pos.had_forced_reduce = True
+                    reduce_qty = pos.qty * act.fraction
+                    if reduce_qty > 0:
+                        _book_leg(
+                            pos, reduce_qty, act.price,
+                            TAKER_FEE + SLIPPAGE_SL, acc,
+                        )
+                        tracking.log_event(
+                            conn, "protection",
+                            f"10m liq proximity reduce {pos.side} "
+                            f"qty={reduce_qty:.6f} @ {act.price:.2f}",
+                            mode=mode, ts=bar_time_str,
+                        )
+                elif isinstance(act, ClosePosition):
+                    trade_id_counter = self._finalize_close(
+                        conn, pos, act.price, bar_time_str, "sl",
+                        acc, trade_id_counter, mode,
+                        TAKER_FEE + SLIPPAGE_SL,
+                        last_close_bar, last_close_was_sl, bar_idx,
+                    )
+                    positions_to_remove.append(pos)
+                    closed = True
+                    tracking.log_event(
+                        conn, "protection",
+                        f"10m stop hit {pos.side} @ {act.price:.2f}",
+                        mode=mode, ts=bar_time_str,
+                    )
+                    break
+
+            if not closed:
+                tracking.save_position(conn, pos)
+
+        for pos in positions_to_remove:
+            if pos.id is not None:
+                tracking.remove_position(conn, pos.id)
+        for trade in acc.closed_trades:
+            tracking.record_trade(conn, trade)
+        tracking.record_equity(conn, acc.equity, mode, bar_time_str)
+        self._set_meta("trade_id_counter", trade_id_counter)
+        self._set_meta("last_close_bar", last_close_bar)
+        self._set_meta("last_close_was_sl", last_close_was_sl)
+
     # --- helpers ---
 
     def _finalize_close(self, conn, pos, price, time_str, reason, acc,
                         trade_id_counter, mode, fee_rate,
                         last_close_bar, last_close_was_sl, bar_idx) -> int:
         """포지션 종결 + 쿨다운 트래커 갱신. 새 trade_id_counter 반환."""
-        _close_position(pos, price, time_str, reason, acc, trade_id_counter, mode, fee_rate)
+        trade = _close_position(
+            pos, price, time_str, reason, acc, trade_id_counter, mode, fee_rate
+        )
+        if pos.id is not None:
+            try:
+                tracking.close_failure_shadow_for_position(conn, pos.id, trade)
+            except Exception:  # noqa: BLE001 — observer cannot block close
+                pass
         trade_id_counter += 1
         last_close_bar[pos.side] = bar_idx
         last_close_was_sl[pos.side] = reason in ("sl",)
@@ -539,7 +701,7 @@ class ShadowAdapter:
 
     def _evaluate_entry_with_risk(self, sig, equity, current_tranche, inputs,
                                   *, cooldown=None, avg_entry=None,
-                                  current_price=None) -> Optional[OpenIntent]:
+                                  current_price=None) -> EntryEvaluation:
         """E4 오버레이: drawdown 기반 operating risk 로 RISK_PER_TRADE 를 일시 조정해
         evaluate_entry 를 호출한다. (engine.sizing.RISK_PER_TRADE 단일 소스 임시 패치.)
 
@@ -558,7 +720,7 @@ class ShadowAdapter:
         orig = _sizing.RISK_PER_TRADE
         _sizing.RISK_PER_TRADE = op_risk
         try:
-            return evaluate_entry(
+            return evaluate_entry_with_reason(
                 sig, equity, current_tranche,
                 inputs=inputs, cooldown=cooldown,
                 avg_entry=avg_entry, current_price=current_price,

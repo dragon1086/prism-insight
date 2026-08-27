@@ -9,16 +9,27 @@ import time
 
 import pytest
 
+import core.leadership as leadership
 from core.leadership import leadership_multipliers
 from engine.config import (
     L_MULT_LONG_LAGGING,
     L_MULT_LONG_LEADING,
     L_MULT_SHORT_LAGGING,
     L_MULT_SHORT_LEADING,
-    L_RS_WINDOW,
 )
 
 _DAY_MS = 86_400_000
+
+
+@pytest.fixture(autouse=True)
+def _enable_layer_under_test(monkeypatch):
+    """Exercise the feature behavior without changing its safe OFF default."""
+    monkeypatch.setattr(leadership, "L_LAYER_ENABLED", True)
+
+
+def test_layer_disabled_is_neutral(monkeypatch):
+    monkeypatch.setattr(leadership, "L_LAYER_ENABLED", False)
+    assert leadership_multipliers() == (1.0, 1.0, "disabled")
 
 
 def _make_db(tmp_path, btc_daily_ret: float, eth_daily_ret: float,
@@ -100,7 +111,8 @@ def test_rs_window_uses_confirmed_bars_only(tmp_path, monkeypatch):
     conn = sqlite3.connect(path)
     conn.execute("INSERT INTO spot_klines VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                  ("BTCUSDT", "1d", now + _DAY_MS, 1, 1, 1, 0.0001, 1, 1, 0, now))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     monkeypatch.setenv("PRISM_BTC_SPOT_DB", str(path))
     long_m, _, reason = leadership_multipliers(now_ms=now + 2 * _DAY_MS)
     # 폭락한 미완결 봉이 무시되므로 여전히 leading

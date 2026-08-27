@@ -5,7 +5,7 @@ import logging
 
 from collector.bybit_public import fetch_klines_page
 from collector.store import get_connection, upsert_rows
-from engine.config import TF_INTERVAL_MAP
+from engine.config import TF_INTERVAL_MAP, PROTECTION_TF_INTERVAL_MAP
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +34,9 @@ def update_tf(tf: str, db_path=None) -> int:
 def update_all(db_path=None) -> dict[str, int]:
     """Update all timeframes. Returns dict of tf → rows upserted."""
     results: dict[str, int] = {}
-    for tf in TF_INTERVAL_MAP:
+    # Protection timeframe is latest-page-only and intentionally not part of
+    # the historical backfill map.
+    for tf in (*TF_INTERVAL_MAP, *PROTECTION_TF_INTERVAL_MAP):
         try:
             results[tf] = update_tf(tf, db_path)
         except Exception as exc:

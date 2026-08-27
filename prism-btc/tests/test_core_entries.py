@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from engine.signal import Signal
 from engine.sizing import TRANCHE_FRACS, RISK_PER_TRADE
-from core.entries import EntryInputs, CooldownState, evaluate_entry
+from core.entries import (
+    EntryInputs, CooldownState, evaluate_entry, evaluate_entry_with_reason,
+)
 from core.actions import OpenIntent
 
 # A known non-rejected long sizing input (verified against compute_sizing):
@@ -52,11 +54,21 @@ def test_short_fresh_entry_allowed():
 
 
 def test_sizing_rejection_returns_none():
-    # abs_score below the leverage floor (40) → compute_sizing rejects → None.
+    # abs_score below the minimum quality gate still rejects in fixed-leverage mode.
     weak = Signal(side="long", strength=10.0, reason="weak")
     out = evaluate_entry(weak, 10_000.0, 0, inputs=LONG_INPUTS,
                          cooldown=CooldownState(bars_since_close=99, cooldown_bars=8))
     assert out is None
+
+
+def test_diagnostic_result_preserves_rejection_reason():
+    weak = Signal(side="long", strength=10.0, reason="weak")
+    result = evaluate_entry_with_reason(
+        weak, 10_000.0, 0, inputs=LONG_INPUTS,
+        cooldown=CooldownState(bars_since_close=99, cooldown_bars=8),
+    )
+    assert result.intent is None
+    assert result.reason == "sizing_zero_qty" or "score" in result.reason
 
 
 def test_pyramid_blocked_when_not_in_profit_long():
