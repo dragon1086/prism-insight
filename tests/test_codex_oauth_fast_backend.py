@@ -34,6 +34,13 @@ def test_resolve_codex_executable_rejects_unsafe_permissions(
         backend._resolve_codex_executable("codex")
 
 
+def test_command_rejects_unapproved_model_and_profile() -> None:
+    with pytest.raises(backend.CodexFastError, match="Unsupported Codex model"):
+        backend._command("/trusted/codex", "attacker-model", None)
+    with pytest.raises(backend.CodexFastError, match="Unsupported Codex MCP profile"):
+        backend._command("/trusted/codex", "gpt-5.6-sol", "attacker-profile")
+
+
 def test_codex_fast_backend_uses_isolated_ephemeral_command(
     monkeypatch,
     _trusted_codex,
