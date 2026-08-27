@@ -4,15 +4,12 @@ from cores.llm.agent_bridge import ensure_openai_agents_configured
 from cores.llm.backends.openai_agents_backend import OpenAIAgentsBackend
 from cores.llm.config_loader import load_report_mcp_registry
 from cores.llm.ports import AgentSpec, LLMParams
-
-import os
+from report_model_config import REPORT_EFFORT, REPORT_MODEL
 from cores.openai_error_logging import log_openai_error
 
-# Report LLM model/effort (env-overridable). gpt-5.6-terra + reasoning_effort="medium"
-# selected 2026-07-16 (report-quality eval, see tasks/eval). Requires the Responses API
-# path above: gpt-5.6 rejects function tools + reasoning_effort on chat.completions.
-REPORT_MODEL = os.environ.get("REPORT_MODEL", "gpt-5.6-terra")
-REPORT_EFFORT = os.environ.get("REPORT_EFFORT", "medium")
+# Report LLM model/effort are shared with macro, summaries and artifact names.
+# Luna with low reasoning keeps the evidence-gathering tool path while reducing
+# latency; the Responses API backend remains required for gpt-5.6 tool calls.
 
 _report_backend = None
 

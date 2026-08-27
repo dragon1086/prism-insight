@@ -13,6 +13,7 @@ import logging
 import importlib.util as _ilu
 from datetime import datetime
 from pathlib import Path
+from report_model_config import REPORT_AUX_EFFORT, REPORT_AUX_MODEL
 
 from mcp_agent.agents.agent import Agent
 from mcp_agent.app import MCPApp
@@ -88,7 +89,7 @@ class USTelegramSummaryGenerator:
         """
         Extract ticker, company name, and date from filename.
 
-        US filename format: AAPL_Apple Inc_20260118_gpt5.4-mini.pdf
+        US filename format: AAPL_Apple Inc_20260118_gpt-5.6-luna.pdf
 
         Args:
             filename: Report filename
@@ -490,8 +491,8 @@ Report Content:
         response = await evaluator_optimizer.generate_str(
             message=prompt_message,
             request_params=RequestParams(
-                model="gpt-5.4-mini",
-                reasoning_effort="none",
+                model=REPORT_AUX_MODEL,
+                reasoning_effort=REPORT_AUX_EFFORT,
                 maxTokens=6000,
                 max_iterations=2
             )

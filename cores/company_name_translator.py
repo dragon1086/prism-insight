@@ -10,6 +10,7 @@ import re
 from typing import Any, Dict
 
 from cores.openai_error_logging import log_openai_error
+from report_model_config import REPORT_AUX_EFFORT, REPORT_AUX_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ async def translate_company_name(korean_name: str) -> str:
     """
     Translate Korean company name to English.
 
-    Uses GPT-5-nano for cost-efficient translation with caching
+    Uses the shared low-reasoning report auxiliary model with caching
     to prevent duplicate API calls.
 
     Args:
@@ -128,7 +129,8 @@ Return ONLY the English company name, nothing else. No quotes, no explanation.
         english_name = await llm.generate_str(
             message=f"Translate this Korean company name to English: {korean_name}",
             request_params=RequestParams(
-                model="gpt-5.4-mini",
+                model=REPORT_AUX_MODEL,
+                reasoning_effort=REPORT_AUX_EFFORT,
                 maxTokens=1000,
                 temperature=0.1,
                 max_iterations=1

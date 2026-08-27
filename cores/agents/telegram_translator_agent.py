@@ -1,6 +1,7 @@
 from mcp_agent.agents.agent import Agent
 
 from cores.openai_error_logging import log_openai_error
+from report_model_config import REPORT_AUX_EFFORT, REPORT_AUX_MODEL
 
 
 def create_telegram_translator_agent(from_lang: str = "ko", to_lang: str = "en"):
@@ -104,7 +105,7 @@ Only return the translated text without any explanations or metadata.
 
 async def translate_telegram_message(
     message: str,
-    model: str = "gpt-5.6-luna",
+    model: str = REPORT_AUX_MODEL,
     from_lang: str = "ko",
     to_lang: str = "en"
 ) -> str:
@@ -140,6 +141,7 @@ async def translate_telegram_message(
             message=message,
             request_params=RequestParams(
                 model=model,
+                reasoning_effort=REPORT_AUX_EFFORT,
                 maxTokens=100000,
                 temperature=0.3,  # Lower temperature for more consistent translations
                 max_iterations=1  # Single pass translation, no complex reasoning needed

@@ -23,7 +23,8 @@ class TestModelRegistryDefaults:
     def test_resolve_summary(self):
         reg = ModelRegistry.defaults()
         model_id, params = reg.resolve("summary")
-        assert model_id == "gpt-5.4-mini"
+        assert model_id == "gpt-5.6-luna"
+        assert params.reasoning_effort == "low"
 
     def test_resolve_trading(self):
         reg = ModelRegistry.defaults()
