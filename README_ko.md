@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/OpenAI-GPT--5-green.svg" alt="OpenAI">
-  <img src="https://img.shields.io/badge/Anthropic-Claude--Sonnet--4.6-green.svg" alt="Anthropic">
+  <img src="https://img.shields.io/badge/Anthropic-Claude--Sonnet--5-green.svg" alt="Anthropic Claude Sonnet 5">
   <img src="https://img.shields.io/badge/ChatGPT_Plus-Codex_OAuth-ff6b35.svg" alt="ChatGPT Plus">
 </div>
 
@@ -263,7 +263,7 @@ PRISM-INSIGHT는 **한국 (코스피/코스닥)** 및 **미국 (NYSE/NASDAQ)** �
 ### AI 실행 계층
 - **보고서·상담·매매**: OpenAI Agents 백엔드 (API 또는 ChatGPT Plus/Pro OAuth)
 - **역할별 모델**: 보고서, 매매, 거시경제, 번역, 저널이 서로 다른 기본 모델·추론 강도를 사용
-- **호환 경로**: 일부 레거시/선택 워크플로우는 mcp-agent 및 Anthropic 설정을 유지
+- **호환 경로**: 일부 레거시/선택 워크플로우는 mcp-agent 및 Anthropic Claude Sonnet 5 설정을 유지
 
 정확한 기본 모델과 호출 경로는 [AI 에이전트 시스템 문서](docs/CLAUDE_AGENTS_ko.md#4-기본-모델-매트릭스)를 참조하세요.
 
