@@ -15,6 +15,7 @@ from engine.config import (
     BYBIT_MAX_LIMIT,
     BYBIT_SLEEP_BETWEEN_REQUESTS,
     TF_INTERVAL_MAP,
+    PROTECTION_TF_INTERVAL_MAP,
 )
 
 log = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ def _get_klines(
 
 def fetch_klines_page(tf: str, end_ms: int | None = None) -> list[KlineRow]:
     """Fetch one page for given timeframe label (e.g. '30m')."""
-    interval = TF_INTERVAL_MAP[tf]
+    interval = {**TF_INTERVAL_MAP, **PROTECTION_TF_INTERVAL_MAP}[tf]
     time.sleep(BYBIT_SLEEP_BETWEEN_REQUESTS)
     return _get_klines(interval, end_ms=end_ms)
 

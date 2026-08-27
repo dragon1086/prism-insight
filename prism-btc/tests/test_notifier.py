@@ -61,6 +61,45 @@ def _mk_trade(side="long", r=2.3, reason="trail", mode="demo") -> TradeRow:
     )
 
 
+def _seed_account_snapshot(conn: sqlite3.Connection, mode: str = "demo") -> None:
+    tracking.record_equity(conn, 10000.0, mode)
+    tracking.set_meta(
+        conn,
+        "account_snapshot",
+        {
+            "captured_at": "2026-06-15T00:00:00+00:00",
+            "account": {
+                "margin_mode": "REGULAR_MARGIN",
+                "unified_margin_status": 3,
+            },
+            "wallet": {
+                "equity": 10000.0,
+                "wallet_balance": 9980.0,
+                "margin_balance": 10000.0,
+                "available_balance": 9500.0,
+                "initial_margin": 50.0,
+                "maintenance_margin": 5.0,
+                "account_im_rate": 0.005,
+                "account_mm_rate": 0.0005,
+            },
+            "position": {
+                "side": "long",
+                "qty": 0.01,
+                "entry_price": 50000.0,
+                "mark_price": 50100.0,
+                "position_value": 501.0,
+                "leverage": 10.0,
+                "liq_price": 0.0,
+                "unrealised_pnl": 1.0,
+                "position_im": 50.0,
+                "position_mm": 5.0,
+                "position_idx": 0,
+            },
+        },
+        mode,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 콜드스타트 가드
 # ---------------------------------------------------------------------------
@@ -109,9 +148,46 @@ def test_new_entry_detected_and_sent(captured):
     msg = captured[0]
     assert "새 진입" in msg
     assert "📈 상승 베팅" in msg
-    assert "50,000달러" in msg
-    assert "49,000달러" in msg
+    assert "50,000.00달러" in msg
+    assert "49,000.00달러" in msg
     assert "가상자금 모의투자입니다" in msg
+
+
+def test_entry_message_contains_full_position_and_account_snapshot(captured):
+    conn = _root_conn()
+    notifier.notify_new_events(conn, mode="demo")
+    _seed_account_snapshot(conn)
+    tracking.save_position(
+        conn,
+        _mk_position(
+            tranche=0,
+            entry=50000.0,
+            sl=49000.0,
+            lev=10.0,
+        ),
+    )
+
+    notifier.notify_new_events(conn, mode="demo")
+
+    msg = captured[0]
+    assert "교차마진(Cross)" in msg
+    assert "단방향(One-way)" in msg
+    assert "이번 체결: 0.010000 BTC" in msg
+    assert "현재 총수량: 0.010000 BTC" in msg
+    assert "명목 포지션: 500.00달러 (계좌의 5.00%)" in msg
+    assert "포지션 증거금: 50.00달러 (계좌의 0.50%)" in msg
+    assert "위험예산 단계: 1/3 · 전체 위험예산의 40%" in msg
+    assert "손절 위험: 10.00달러 (계좌의 0.10%" in msg
+    assert "1차 51,000.00달러" in msg
+    assert "2차 52,000.00달러" in msg
+    assert "3차 53,000.00달러" in msg
+    assert "거래소 청산가: 미제공" in msg
+    assert "전략 추정 청산가: 45,000.00달러" in msg
+    assert "계좌 평가액: 10,000.00달러" in msg
+    assert "지갑잔고: 9,980.00달러" in msg
+    assert "사용 가능액: 9,500.00달러" in msg
+    assert "전체 초기증거금: 50.00달러" in msg
+    assert "미실현손익: +1.00달러" in msg
 
 
 def test_add_tranche_message(captured):
@@ -147,6 +223,24 @@ def test_exit_profit_message(captured):
     assert "✅ 이익 +2.3배" in msg
     assert "추세 꺾여 익절 마감" in msg  # _reason_kr("trail")
     assert "가상자금 모의투자입니다" in msg
+
+
+def test_exit_message_contains_settlement_and_account_snapshot(captured):
+    conn = _root_conn()
+    notifier.notify_new_events(conn, mode="demo")
+    _seed_account_snapshot(conn)
+    tracking.record_trade(conn, _mk_trade(r=2.3, reason="trail"))
+
+    notifier.notify_new_events(conn, mode="demo")
+
+    msg = captured[0]
+    assert "진입 50,000.00 → 청산 51,000.00달러" in msg
+    assert "정리 수량: 0.010000 BTC · 레버리지 3배" in msg
+    assert "순손익: +23.00달러" in msg
+    assert "수수료: 0.10달러" in msg
+    assert "펀딩비: 0.00달러" in msg
+    assert "청산 후 계좌 평가액: 10,000.00달러" in msg
+    assert "사용 가능액: 9,500.00달러" in msg
 
 
 def test_exit_loss_message(captured):
@@ -209,6 +303,17 @@ def test_no_token_stdout_fallback_no_crash(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "새 진입" in out  # stdout 폴백으로 메시지가 출력됨.
+
+
+def test_demo_prefers_operations_channel_and_shadow_prefers_btc_room(monkeypatch):
+    from live.telegram_reporter import _resolve_channel
+
+    monkeypatch.setenv("BTC_TELEGRAM_CHANNEL_ID", "btc-test-room")
+    monkeypatch.setenv("TELEGRAM_CHANNEL_ID", "operations-channel")
+    assert _resolve_channel(None, mode="demo") == "operations-channel"
+    assert _resolve_channel(None, mode="live") == "operations-channel"
+    assert _resolve_channel(None, mode="shadow") == "btc-test-room"
+    assert _resolve_channel("explicit", mode="demo") == "explicit"
 
 
 # ---------------------------------------------------------------------------

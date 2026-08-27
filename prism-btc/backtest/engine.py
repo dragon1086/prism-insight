@@ -40,6 +40,9 @@ FUNDING_RATE: float = -0.0001      # -0.01% per 8h (pessimistic, against positio
 
 # Candle cutoff: post-only entry valid for 2 bars
 ENTRY_ORDER_EXPIRY_BARS: int = 2
+# Research-only execution A/B.  Production baseline remains post-only; the
+# next-open variant measures how much edge is lost purely to missed limit fills.
+ENTRY_EXECUTION_MODE: str = "limit_postonly"
 
 # Trailing (라운드4, tasks/v3_edge_diagnosis.md §2 처방 2): the edge lives at the
 # 14d horizon while a 1h MA10 trail kept exiting on short-term noise (capture
@@ -57,14 +60,18 @@ TRAILING_TF = "12h"
 # TP1 partial close (1/3 at 1R) is unchanged; only BE/trailing are delayed.
 BE_TRAIL_ACTIVATE_R: float = 1.5
 
-# Liquidation buffer monitoring threshold (50% of entry→liq gap)
-LIQ_MONITOR_FRAC: float = 0.50
+# Liquidation proximity monitor: force-reduce only when the adverse mark is
+# within the final 5% of the entry→liquidation gap.  The old 50% threshold
+# could force-reduce before a deliberately wide volatility stop was reached,
+# which made the relaxed 10x sizing look unsafe in backtests.
+LIQ_MONITOR_FRAC: float = 0.05
 
 # TFs needed for indicators
 ALL_TFS = ("30m", "1h", "4h", "12h", "1d", "1w")
 
 # TF bar duration (used to enforce "only confirmed/closed candles" cutoff — no look-ahead)
 TF_DURATION: dict[str, pd.Timedelta] = {
+    "10m": pd.Timedelta(minutes=10),
     "30m": pd.Timedelta(minutes=30),
     "1h": pd.Timedelta(hours=1),
     "4h": pd.Timedelta(hours=4),
@@ -439,21 +446,27 @@ def run_backtest(
             bars_elapsed = bar_idx - po.bar_idx
             lp = po.limit_price
             filled = False
+            entry_price = lp
+            entry_fee_rate = MAKER_FEE
 
-            if po.side == "long" and bar_low <= lp <= bar_high:
+            if ENTRY_EXECUTION_MODE == "next_open_market":
+                filled = True
+                entry_price = float(bar_open)
+                entry_fee_rate = TAKER_FEE
+            elif po.side == "long" and bar_low <= lp <= bar_high:
                 filled = True
             elif po.side == "short" and bar_low <= lp <= bar_high:
                 filled = True
 
             if filled:
                 sz = po.sizing
-                nominal = sz.qty * lp
-                state.equity, entry_fee = _apply_fee(state.equity, nominal, MAKER_FEE)
+                nominal = sz.qty * entry_price
+                state.equity, entry_fee = _apply_fee(state.equity, nominal, entry_fee_rate)
                 state.total_fees += entry_fee
 
                 pos = Position(
                     side=po.side,
-                    entry_price=lp,
+                    entry_price=entry_price,
                     qty=sz.qty,
                     leverage=sz.leverage,
                     sl_price=sz.sl_price,

@@ -186,6 +186,26 @@ def conn():
 
 
 class TestSwingProcess:
+    def test_stale_cursor_without_position_fast_forwards_without_replay(self, conn):
+        from live import swing, tracking
+        tf_data = _make_tf_data()
+        stale = int((tf_data["30m"].index[0] - pd.Timedelta(days=1)).value)
+        tracking.set_meta(conn, "last_processed_30m_ns", stale, "swing")
+        tracking.set_meta(conn, "last_confirmed_4h_ns", stale, "swing")
+
+        res = swing.process(conn, tf_data, main_mode="demo")
+
+        assert res["events"] == 0
+        assert tracking.load_open_positions(conn, "swing") == []
+        assert tracking.get_meta(
+            conn, "last_processed_30m_ns", "swing"
+        ) == int(tf_data["30m"].index[-1].value)
+        event = conn.execute(
+            "SELECT kind FROM btc_events WHERE mode='swing' "
+            "AND kind='cursor_resync'"
+        ).fetchone()
+        assert event is not None
+
     def test_cold_start_entry_on_golden_cross(self, conn):
         from live import swing, tracking
         tf_data = _make_tf_data()
@@ -227,6 +247,41 @@ class TestSwingProcess:
         assert -1.2 < t["r_multiple"] < -0.95
         eq = tracking.latest_equity(conn, "swing")
         assert eq < SWING_INITIAL_EQUITY
+
+    def test_exit_notification_includes_quantitative_trade_and_account_metrics(
+            self, conn, monkeypatch):
+        from live import swing, tracking
+
+        pos = tracking.PositionRow(
+            side="long", entry_price=50_000.0, qty=0.01, leverage=3.0,
+            sl_price=49_000.0, tp1_price=0.0, tp2_price=0.0, tp3_price=0.0,
+            liq_price=0.0, entry_time="2026-01-07T00:00:00+00:00",
+            tranche_index=0, entry_bar_idx=0, initial_risk=10.0,
+            entry_fee=0.10, mode="swing",
+        )
+        tracking.save_position(conn, pos)
+        sent = []
+        monkeypatch.setattr(
+            swing, "_notify", lambda _main_mode, message: sent.append(message)
+        )
+
+        equity_after, _ = swing._close_position(
+            conn, swing.VirtualBackend(conn), pos, 51_000.0,
+            fee_rate=0.00055, reason="swing_ma35_exit",
+            bar_time_str="2026-01-07T04:00:00+00:00", equity=10_000.0,
+            trade_counter=0, main_mode="demo",
+        )
+
+        assert len(sent) == 1
+        message = sent[0]
+        assert "가격 기준 +2.00%" in message
+        assert "증거금 기준" in message
+        assert "계좌: 10,000.00 →" in message
+        assert "+0.10%" in message
+        assert "실현손익:" in message
+        assert "보유 4시간" in message
+        assert "데모 계정 모의투자입니다" in message
+        assert equity_after > 10_000.0
 
     def test_conflict_with_main_blocks_entry(self, conn):
         from live import swing, tracking
