@@ -1,0 +1,6 @@
+model = "gpt-5.6-sol"
+service_tier = "fast"
+cli_auth_credentials_store = "file"
+
+[features]
+fast_mode = true

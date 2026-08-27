@@ -15,6 +15,7 @@ load_dotenv()  # Load environment variables from .env file
 import cores.openai_debug  # noqa: F401 — OpenAI 400 error request body logging
 import argparse
 import asyncio
+from contextlib import nullcontext
 import json
 import logging
 import os
@@ -1276,7 +1277,10 @@ class StockAnalysisOrchestrator:
 
                     # Import tracking agent
                     from stock_tracking_enhanced_agent import EnhancedStockTrackingAgent as StockTrackingAgent
-                    from stock_tracking_agent import app as tracking_app
+                    from stock_tracking_agent import (
+                        _kr_codex_runtime_enabled,
+                        app as tracking_app,
+                    )
 
                     # Validate telegram configuration
                     if self.telegram_config.use_telegram:
@@ -1292,7 +1296,12 @@ class StockAnalysisOrchestrator:
                     self.telegram_config.log_status()
 
                     # Use MCPApp context manager
-                    async with tracking_app.run():
+                    tracking_context = (
+                        nullcontext()
+                        if _kr_codex_runtime_enabled()
+                        else tracking_app.run()
+                    )
+                    async with tracking_context:
                         # Pass telegram configuration to agent
                         tracking_agent = StockTrackingAgent(
                             telegram_token=self.telegram_config.bot_token if self.telegram_config.use_telegram else None

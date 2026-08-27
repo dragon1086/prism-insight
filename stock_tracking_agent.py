@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 import os
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
+from cores.llm.codex_oauth_fast_backend import generate_codex_fast
 
 # Core agent imports
 from cores.openai_error_logging import log_openai_error
@@ -104,9 +106,37 @@ from tracking import (
 )
 from trading import kis_auth as ka
 
-# Create MCPApp instance
-app = MCPApp(name="stock_tracking")
+# Delay MCPApp construction so a successful Codex+MCP path never nests two
+# MCP hosts in one process. Legacy mode still constructs the same app at run().
+class _LazyMCPApp:
+    def __init__(self, name: str):
+        self.name = name
+
+    @asynccontextmanager
+    async def run(self):
+        instance = MCPApp(name=self.name)
+        async with instance.run():
+            yield
+
+
+app = _LazyMCPApp(name="stock_tracking")
 _DEFAULT_KR_EXIT_LIMIT = object()
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _kr_codex_runtime_enabled() -> bool:
+    """Whether Codex MCP must run without an outer mcp-agent host."""
+    return _env_flag_enabled("PRISM_KR_CODEX_FAST_TRADING") or _env_flag_enabled(
+        "PRISM_KR_CODEX_FAST_SELL"
+    )
 
 
 @dataclass(frozen=True)
@@ -934,9 +964,6 @@ class StockTrackingAgent:
             db_lock.release()
             _lock_held = False
 
-            # LLM call to generate trading scenario
-            llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
-
             # Build trigger info section if available
             trigger_info_section = ""
             if trigger_type:
@@ -987,10 +1014,60 @@ class StockTrackingAgent:
                 {report_content}
                 """
 
-            scenario_json = await _generate_trading_scenario_json(
-                llm,
-                prompt_message,
-            )
+            scenario_json = None
+            codex_enabled = os.environ.get(
+                "PRISM_KR_CODEX_FAST_TRADING", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if codex_enabled:
+                try:
+                    instruction = str(
+                        getattr(self.trading_agent, "instruction", "") or ""
+                    )
+                    if not instruction:
+                        raise RuntimeError("trading agent instruction unavailable")
+                    timeout = int(os.environ.get("PRISM_CODEX_FAST_TIMEOUT", "90"))
+                    codex_result = await asyncio.to_thread(
+                        generate_codex_fast,
+                        system_prompt=instruction,
+                        user_prompt=prompt_message,
+                        model="gpt-5.6-sol",
+                        timeout=timeout,
+                        mcp_profile="kr_trading",
+                        require_mcp_calls=True,
+                    )
+                    scenario_json = parse_llm_json(
+                        codex_result.text,
+                        context="KR Codex Fast trading scenario",
+                    )
+                    logger.info(
+                        "[CODEX_FAST] KR scenario ticker=%s latency_s=%.2f "
+                        "parse_ok=%s mcp_calls=%s",
+                        ticker or "?",
+                        codex_result.latency_s,
+                        scenario_json is not None,
+                        len(codex_result.mcp_calls),
+                    )
+                except Exception as codex_err:  # noqa: BLE001 — fallback required
+                    logger.warning(
+                        "[%s] Codex Fast unavailable (%s); falling back to mcp-agent",
+                        ticker or "?",
+                        type(codex_err).__name__,
+                    )
+                    scenario_json = None
+
+            if scenario_json is None:
+                async def _legacy_scenario():
+                    llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
+                    return await _generate_trading_scenario_json(
+                        llm,
+                        prompt_message,
+                    )
+
+                if _kr_codex_runtime_enabled():
+                    async with app.run():
+                        scenario_json = await _legacy_scenario()
+                else:
+                    scenario_json = await _legacy_scenario()
             if scenario_json is not None:
                 scenario_json = self._stamp_scenario_market_regime(scenario_json)
                 # Preserve the deterministic facts used in the prompt so the
@@ -1229,22 +1306,18 @@ class StockTrackingAgent:
         return parse_price_value(value)
 
     def _get_trigger_win_rate(self, trigger_type: str) -> str:
-        """Get trigger win rate string from analysis_performance_tracker.
-        Returns a formatted string like '(이 트리거 과거 승률: 63%)' or empty string if no data."""
+        """Return clearly separated actual-trade and Candidate trigger stats."""
         if not trigger_type or not self.conn:
             return ""
         try:
-            cursor = self.conn.cursor()
-            row = cursor.execute("""
-                SELECT COUNT(*) as completed,
-                       SUM(CASE WHEN tracked_30d_return > 0 THEN 1 ELSE 0 END) as wins
-                FROM analysis_performance_tracker
-                WHERE trigger_type = ? AND tracking_status = 'completed'
-            """, (trigger_type,)).fetchone()
-            if row and row[0] >= 3:
-                win_rate = int(row[1] / row[0] * 100)
-                return f"📡 이 트리거 과거 승률: {win_rate}% ({row[0]}건)"
-            return ""
+            from tracking.performance_feedback import (
+                format_trigger_feedback,
+                get_trigger_feedback,
+            )
+
+            feedback = get_trigger_feedback(self.conn.cursor(), "KR", trigger_type)
+            lines = format_trigger_feedback(feedback, language="ko")
+            return f"📡 {' / '.join(lines)}" if lines else ""
         except Exception:
             return ""
 
@@ -4831,7 +4904,12 @@ async def main():
         local_logger.error("Report path not specified")
         return False
 
-    async with app.run():
+    from contextlib import nullcontext
+
+    tracking_context = (
+        nullcontext() if _kr_codex_runtime_enabled() else app.run()
+    )
+    async with tracking_context:
         agent = StockTrackingAgent(telegram_token=args.telegram_token)
         success = await agent.run(args.reports, args.chat_id)
 
