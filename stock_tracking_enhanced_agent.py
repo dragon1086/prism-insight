@@ -21,6 +21,7 @@ from cores.agents.trading_agents import create_sell_decision_agent
 from cores.utils import parse_llm_json
 from prism_core.execution_service import ExecutionService, OrderOutcomeUnknown
 from prism_core.order_intents import OrderIntent
+from observability.trading_context import emit_trading_context
 
 logging.basicConfig(
     level=logging.INFO,
@@ -466,7 +467,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 ticker = analysis_result.get("ticker")
                 company_name = analysis_result.get("company_name")
                 current_price = analysis_result.get("current_price", 0)
-                scenario = analysis_result.get("scenario", {})
+                source_decision_id = f"report:{os.path.basename(pdf_report_path)}"
+                scenario = dict(analysis_result.get("scenario", {}) or {})
+                scenario.setdefault("_decision_id", source_decision_id)
+                analysis_result["scenario"] = scenario
                 if scenario.get("analysis_status") == "failed":
                     failure = scenario.get("analysis_error", "trading_scenario_unavailable")
                     logger.error(
@@ -585,6 +589,26 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             "[BUY_GATE][KR][enhanced] %s(%s) blocked: %s",
                             company_name, ticker, _buy_gate.get("reason", "unknown"),
                         )
+
+                try:
+                    slots_used = await self._get_current_slots_count()
+                except Exception:
+                    slots_used = None
+                scenario = dict(scenario)
+                scenario["_decision_context"] = {
+                    "decision": decision,
+                    "buy_score": buy_score,
+                    "min_score": min_score,
+                    "gate_allowed": bool(_buy_gate.get("allowed")),
+                    "gate_reason": _buy_gate.get("reason"),
+                    "gate_findings": _buy_gate.get("findings") or [],
+                    "sector_diverse": bool(sector_diverse),
+                    "is_add": bool(is_add),
+                    "rebound_pilot": bool(rebound_pilot),
+                    "slots_used": slots_used,
+                    "slots_max": getattr(self, "max_slots", 10),
+                }
+                analysis_result["scenario"] = scenario
 
                 # Respect AI agent's decision (consistent with US logic)
                 # AI considers qualitative factors (RSI, support structure, volume, sector outlook, etc.)
@@ -733,14 +757,39 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             _cd["window_hours"], _cd["after_loss"], _cd.get("exit_kind"), _risk_only)
                         _cd_block = _enforce
 
-                # Process buy if entry decision
-                if (
+                scenario["_decision_context"]["cooldown_blocked"] = bool(_cd_block)
+                entry_eligible = (
                     decision == "Enter"
                     and (buy_score >= min_score or rebound_pilot)
                     and sector_diverse
                     and not _cd_block
                     and _buy_gate.get("allowed", False)
-                ):
+                )
+                if entry_eligible:
+                    trigger_info = getattr(self, "trigger_info_map", {}).get(ticker, {}) or {}
+                    emit_trading_context(
+                        "candidate.evaluated",
+                        market="KR",
+                        ticker=ticker,
+                        company_name=company_name,
+                        decision_id=source_decision_id,
+                        trigger_type=trigger_info.get("trigger_type"),
+                        trigger_mode=trigger_info.get("trigger_mode"),
+                        scenario=scenario,
+                        decision_context={
+                            **scenario["_decision_context"],
+                            "selected_for_entry": True,
+                            "price": current_price,
+                        },
+                        portfolio_context={
+                            "slots_used": slots_used,
+                            "slots_max": getattr(self, "max_slots", 10),
+                        },
+                        source="kr_enhanced_decision",
+                    )
+
+                # Process buy if entry decision
+                if entry_eligible:
                     if self._position_pending_kr_enabled():
                         prepared = None
                         active_account = getattr(self, "active_account", None)
@@ -1020,7 +1069,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             logger.error(traceback.format_exc())
             return LegacyPositionWriteResult(False, None)
 
-    async def _save_watchlist_item(
+    async def _save_watchlist_item_legacy(
         self,
         ticker: str,
         company_name: str,

@@ -89,6 +89,21 @@ def _core_ok(ticker: str, company: str, *, decision: str = "Skip",
 # 1. Concurrency + Semaphore cap
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
+async def test_enhanced_path_stamps_decision_and_gate_context_on_watchlist():
+    agent = _make_agent()
+    result = _core_ok("005930", "Samsung", decision="Skip")
+    agent._analyze_report_core = AsyncMock(return_value=result)
+    agent.analyze_report = AsyncMock(return_value=result)
+
+    await agent.process_reports(["reports/005930_test.pdf"])
+
+    saved = agent._save_watchlist_item.await_args.kwargs["scenario"]
+    assert saved["_decision_id"] == "report:005930_test.pdf"
+    assert saved["_decision_context"]["decision"] == "Skip"
+    assert saved["_decision_context"]["gate_allowed"] is False
+
+
+@pytest.mark.asyncio
 async def test_prepass_runs_cores_concurrently(monkeypatch):
     """With cap >= N, all cores overlap: elapsed ≈ one sleep, peak == N."""
     monkeypatch.setattr(enh_mod, "TRADING_ANALYSIS_CONCURRENCY", 8)
