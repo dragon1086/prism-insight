@@ -8,7 +8,10 @@ this module can be imported (and tests collected) even if the SDK is not install
 A clear RuntimeError is raised at *call time* rather than at import time.
 """
 
+import asyncio
 import contextlib
+import logging
+import time
 from typing import Any, Optional
 
 from cores.llm.mcp_registry import McpServerRegistry
@@ -16,7 +19,7 @@ from cores.llm.ports import AgentSpec, LLMBackend, LLMParams, LLMResult
 
 # --- SDK import guard ---------------------------------------------------
 try:
-    from agents import Agent, ModelSettings, Runner
+    from agents import Agent, ModelSettings, RunHooks, Runner
     from agents import (
         set_default_openai_api,
         set_default_openai_client,
@@ -32,6 +35,7 @@ except ImportError:
     Agent = None  # type: ignore[assignment,misc]
     ModelSettings = None  # type: ignore[assignment]
     Runner = None  # type: ignore[assignment]
+    RunHooks = None  # type: ignore[assignment]
     MCPServerStdio = None  # type: ignore[assignment]
     MCPServerStdioParams = None  # type: ignore[assignment]
     Reasoning = None  # type: ignore[assignment]
@@ -42,6 +46,55 @@ except ImportError:
     AsyncOpenAI = None  # type: ignore[assignment]
     _sdk_available = False
 # ------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+
+class _LatencyHooks(RunHooks if _sdk_available else object):
+    """Log per-model and per-tool latency without inspecting tool payloads."""
+
+    def __init__(self, agent_name: str) -> None:
+        self.agent_name = agent_name
+        self._llm_started: dict[int, float] = {}
+        self._tool_started: dict[tuple[int, int], float] = {}
+
+    @staticmethod
+    def _task_id() -> int:
+        task = asyncio.current_task()
+        return id(task) if task is not None else 0
+
+    async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
+        self._llm_started[self._task_id()] = time.monotonic()
+        logger.info("[LLM_LATENCY] agent=%s phase=llm_start", self.agent_name)
+
+    async def on_llm_end(self, context, agent, response) -> None:
+        started = self._llm_started.pop(self._task_id(), None)
+        duration = time.monotonic() - started if started is not None else -1.0
+        logger.info(
+            "[LLM_LATENCY] agent=%s phase=llm_end duration_seconds=%.3f",
+            self.agent_name,
+            duration,
+        )
+
+    async def on_tool_start(self, context, agent, tool) -> None:
+        key = (self._task_id(), id(tool))
+        self._tool_started[key] = time.monotonic()
+        logger.info(
+            "[TOOL_LATENCY] agent=%s tool=%s phase=start",
+            self.agent_name,
+            getattr(tool, "name", type(tool).__name__),
+        )
+
+    async def on_tool_end(self, context, agent, tool, result) -> None:
+        key = (self._task_id(), id(tool))
+        started = self._tool_started.pop(key, None)
+        duration = time.monotonic() - started if started is not None else -1.0
+        logger.info(
+            "[TOOL_LATENCY] agent=%s tool=%s phase=end duration_seconds=%.3f",
+            self.agent_name,
+            getattr(tool, "name", type(tool).__name__),
+            duration,
+        )
 
 
 def configure_openai_agents_for_proxy(
@@ -202,19 +255,41 @@ class OpenAIAgentsBackend(LLMBackend):
                 "LLMBackend."
             )
 
-        async with contextlib.AsyncExitStack() as stack:
-            servers = [
-                await stack.enter_async_context(build_mcp_server(srv_name, self._registry))
-                for srv_name in spec.mcp_servers
-            ]
+        started = time.monotonic()
+        logger.info(
+            "[AGENT_LATENCY] agent=%s phase=start model=%s servers=%s",
+            spec.name,
+            spec.model,
+            ",".join(spec.mcp_servers),
+        )
+        try:
+            async with contextlib.AsyncExitStack() as stack:
+                servers = [
+                    await stack.enter_async_context(build_mcp_server(srv_name, self._registry))
+                    for srv_name in spec.mcp_servers
+                ]
 
-            agent = build_agent(spec, servers)
+                agent = build_agent(spec, servers)
 
-            result = await self._runner.run(
-                agent,
-                user_input,
-                max_turns=spec.params.max_iterations,
+                result = await self._runner.run(
+                    agent,
+                    user_input,
+                    max_turns=spec.params.max_iterations,
+                    hooks=_LatencyHooks(spec.name),
+                )
+        except BaseException as error:
+            logger.warning(
+                "[AGENT_LATENCY] agent=%s phase=failed duration_seconds=%.3f error=%s",
+                spec.name,
+                time.monotonic() - started,
+                type(error).__name__,
             )
+            raise
+        logger.info(
+            "[AGENT_LATENCY] agent=%s phase=complete duration_seconds=%.3f",
+            spec.name,
+            time.monotonic() - started,
+        )
 
         text = result.final_output if isinstance(result.final_output, str) else ""
         structured = result.final_output if spec.output_schema is not None else None

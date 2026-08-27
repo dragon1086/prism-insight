@@ -41,6 +41,7 @@ servers:
       # 치환기가 중첩 ${A:-${B}} 를 못 다루므로 여기서는 그대로 넘기고,
       # 우선순위 결정은 서버가 한다.
       PRISM_REPORT_DATA_SOURCES: ${PRISM_REPORT_DATA_SOURCES:-}
+    read_timeout_seconds: 45
   perplexity:
     # Official Perplexity MCP server. Pin the package so tool schemas cannot
     # drift between cron runs or hosts.
@@ -50,6 +51,7 @@ servers:
     - '@perplexity-ai/mcp-server@1.2.0'
     env:
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY}
+    read_timeout_seconds: 75
   sqlite:
     command: uv
     args:
@@ -68,6 +70,7 @@ servers:
     - cores.llm.time_mcp_server
     env:
       PYTHONPATH: ${PRISM_REPO_ROOT:-.}
+    read_timeout_seconds: 10
   deepsearch:
     command: npx
     args:
@@ -88,4 +91,4 @@ servers:
     # yahoo-finance-mcp's FastMCP settings auto-read .env from cwd.  Running
     # outside the repo prevents an unrelated protected .env from aborting it.
     cwd: ${PRISM_MCP_WORKDIR:-/tmp}
-    read_timeout_seconds: 120
+    read_timeout_seconds: 45
