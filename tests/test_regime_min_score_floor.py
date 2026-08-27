@@ -109,7 +109,7 @@ def test_rebound_pilot_remains_narrow(
 
 
 def test_rebound_pilot_is_disabled_with_floor_flag(monkeypatch):
-    monkeypatch.delenv("REGIME_MIN_SCORE_FLOOR", raising=False)
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "false")
 
     assert not is_rebound_pilot_entry(6, 5, "sideways", "UPTREND", "Enter")
 
