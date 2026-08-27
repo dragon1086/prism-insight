@@ -714,6 +714,7 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
 
     agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
     agent.db_path = str(tmp_path / "us-rebound-pilot.sqlite")
+    _ensure_reentry_schema(agent.db_path)
     agent.account_configs = [{
         "name": "us-primary",
         "account_key": "vps:us-primary:01",
@@ -732,7 +733,15 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
             "ticker": "AAPL",
             "company_name": "Apple Inc.",
             "current_price": 180.5,
-            "scenario": {"buy_score": 6, "min_score": 5, "sector": "Technology"},
+            "scenario": {
+                "buy_score": 6,
+                "min_score": 5,
+                "sector": "Technology",
+                "target_price": 200.0,
+                "stop_loss": 170.0,
+                "risk_reward_ratio": 2.0,
+                "_deterministic_market_regime": "moderate_bull",
+            },
             "decision": "entry",
             "raw_decision": "Enter",
             "sector": "Technology",

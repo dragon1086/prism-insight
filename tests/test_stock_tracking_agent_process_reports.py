@@ -440,6 +440,7 @@ async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, t
 
     agent = StockTrackingAgent.__new__(StockTrackingAgent)
     agent.db_path = str(tmp_path / "kr-rebound-pilot.sqlite")
+    _ensure_reentry_schema(agent.db_path)
     agent.account_configs = [{
         "name": "kr-primary",
         "account_key": "vps:kr-primary:01",
@@ -455,7 +456,15 @@ async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, t
             "ticker": "005930",
             "company_name": "Samsung Electronics",
             "current_price": 70000,
-            "scenario": {"buy_score": 6, "min_score": 5, "sector": "Technology"},
+            "scenario": {
+                "buy_score": 6,
+                "min_score": 5,
+                "sector": "Technology",
+                "target_price": 77000,
+                "stop_loss": 65000,
+                "risk_reward_ratio": 1.4,
+                "_deterministic_market_regime": "moderate_bull",
+            },
             "decision": "Enter",
             "sector": "Technology",
             "rank_change_msg": "Up",
