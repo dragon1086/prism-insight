@@ -1,5 +1,11 @@
 <div align="center">
-  <img src="docs/images/prism-insight-logo.jpeg" alt="PRISM-INSIGHT ロゴ" width="300">
+  <img src="docs/images/prism-insight-logo.jpeg" alt="PRISM-INSIGHT ロゴ" width="240">
+  &nbsp;&nbsp;
+  <a href="assets/characters/priso/README.md">
+    <img src="assets/characters/priso/v1.0/priso_master_transparent.png" alt="PRISMのマスコット、プリソ" width="240">
+  </a>
+  <br>
+  <sub><strong>プリソ（Priso）</strong> · PRISM公式マスコット</sub>
   <br><br>
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
