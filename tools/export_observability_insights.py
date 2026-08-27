@@ -17,8 +17,11 @@ from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
 EVENT_TYPES = {
+    "candidate.evaluated",
     "candidate.outcome",
     "deployment.applied",
+    "entry.executed",
+    "exit.executed",
     "market.regime_snapshot",
     "trade.outcome",
     "trigger.performance_feedback",
@@ -28,8 +31,11 @@ _CLICKHOUSE_EVENTS_QUERY = """
     FROM otel_logs
     WHERE TimestampTime >= now() - INTERVAL {days:UInt16} DAY
       AND LogAttributes['event.name'] IN (
+        'candidate.evaluated',
         'candidate.outcome',
         'deployment.applied',
+        'entry.executed',
+        'exit.executed',
         'market.regime_snapshot',
         'trade.outcome',
         'trigger.performance_feedback'
@@ -200,6 +206,31 @@ def _market_snapshot(
         if event.get("event_type") == "market.regime_snapshot"
         and event.get("market") == market
     ]
+    context_events = [
+        event
+        for event in events
+        if event.get("event_type")
+        in {"candidate.evaluated", "entry.executed", "exit.executed"}
+        and event.get("market") == market
+    ]
+    context_counts = Counter(
+        str(event.get("event_type") or "unknown") for event in context_events
+    )
+    position_phases: dict[str, set[str]] = {}
+    for event in context_events:
+        position_id = str(event.get("position_id") or "")
+        if position_id:
+            position_phases.setdefault(position_id, set()).add(
+                str(event.get("event_type"))
+            )
+    complete_positions = sum(
+        {"entry.executed", "exit.executed"}.issubset(phases)
+        for phases in position_phases.values()
+    )
+    latest_context_at = max(
+        (str(event.get("timestamp") or "") for event in context_events),
+        default=None,
+    )
     triggers = sorted(
         {
             str(event.get("attributes", {}).get("trigger_type"))
@@ -255,6 +286,20 @@ def _market_snapshot(
             {"regime": regime, "count": count}
             for regime, count in regime_counts.most_common()
         ],
+        "context_ledger": {
+            "total": len(context_events),
+            "candidates": context_counts["candidate.evaluated"],
+            "entries": context_counts["entry.executed"],
+            "exits": context_counts["exit.executed"],
+            "with_decision_id": sum(
+                bool(event.get("decision_id")) for event in context_events
+            ),
+            "with_position_id": sum(
+                bool(event.get("position_id")) for event in context_events
+            ),
+            "complete_position_chains": complete_positions,
+            "latest_at": latest_context_at,
+        },
     }
 
 

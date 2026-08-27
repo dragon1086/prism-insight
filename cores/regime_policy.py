@@ -356,7 +356,8 @@ def stamp_scenario_market_regime(
 ) -> dict:
     """Make one deterministic regime authoritative in a trading scenario."""
     merged = dict(scenario or {})
-    raw = computed_regime.get("market_regime") if isinstance(computed_regime, dict) else computed_regime
+    computed = dict(computed_regime or {}) if isinstance(computed_regime, dict) else {}
+    raw = computed.get("market_regime") if computed else computed_regime
     token = str(raw or "").strip().lower().split()[0] if str(raw or "").strip() else ""
     known = token in {
         "parabolic", "strong_bull", "moderate_bull", "sideways",
@@ -369,6 +370,29 @@ def stamp_scenario_market_regime(
     merged["market_regime"] = token if known else None
     merged["_deterministic_market_regime"] = token if known else None
     merged["market_regime_source"] = source if known else "unavailable"
+    if computed:
+        snapshot = {
+            "market_regime": token if known else None,
+            "primary_trend_regime": computed.get("primary_trend_regime"),
+            "effective_entry_regime": computed.get("effective_entry_regime"),
+            "swing_state": computed.get("swing_state"),
+            "regime_confidence": computed.get("regime_confidence"),
+            "simple_ma_regime": computed.get("simple_ma_regime"),
+            "index_summary": computed.get("index_summary"),
+            "leading_sectors": computed.get("leading_sectors"),
+            "source": source,
+        }
+        merged["_deterministic_market_context"] = {
+            key: value for key, value in snapshot.items() if value is not None
+        }
+        for key in (
+            "primary_trend_regime",
+            "effective_entry_regime",
+            "swing_state",
+            "regime_confidence",
+        ):
+            if computed.get(key) is not None:
+                merged[key] = computed[key]
     return merged
 
 

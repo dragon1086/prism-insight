@@ -36,6 +36,7 @@ _feedback_module = importlib.util.module_from_spec(_feedback_spec)
 assert _feedback_spec and _feedback_spec.loader
 _feedback_spec.loader.exec_module(_feedback_module)
 get_trigger_feedback = _feedback_module.get_trigger_feedback
+from observability.trading_context import emit_candidate_outcome  # noqa: E402
 
 # Logging setup
 logging.basicConfig(
@@ -100,6 +101,7 @@ class USPerformanceTrackerBatch:
             # Check and add missing columns
             migrations = [
                 ("tracking_status", "TEXT DEFAULT 'pending'"),
+                ("decision_id", "TEXT"),
                 ("was_traded", "INTEGER DEFAULT 0"),
                 ("risk_reward_ratio", "REAL"),
                 ("skip_reason", "TEXT"),
@@ -143,6 +145,7 @@ class USPerformanceTrackerBatch:
             cursor = conn.execute("""
                 SELECT
                     id,
+                    decision_id,
                     ticker,
                     company_name,
                     trigger_type,
@@ -438,6 +441,12 @@ class USPerformanceTrackerBatch:
                 # Completed count
                 if updates.get('tracking_status') == 'completed':
                     stats['completed'] += 1
+                    if not self.dry_run:
+                        emit_candidate_outcome(
+                            market="US",
+                            record=record,
+                            updates=updates,
+                        )
             else:
                 stats['errors'] += 1
 

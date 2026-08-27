@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS us_watchlist_history (
 TABLE_US_PERFORMANCE_TRACKER = """
 CREATE TABLE IF NOT EXISTS us_analysis_performance_tracker (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id TEXT,
     ticker TEXT NOT NULL,
     company_name TEXT NOT NULL,
     analysis_date TEXT NOT NULL,
@@ -784,6 +785,7 @@ def migrate_us_performance_tracker_columns(cursor, conn):
     """
     migrations = [
         ("us_analysis_performance_tracker", "tracking_status TEXT DEFAULT 'pending'"),
+        ("us_analysis_performance_tracker", "decision_id TEXT"),
         ("us_analysis_performance_tracker", "was_traded INTEGER DEFAULT 0"),
         ("us_analysis_performance_tracker", "risk_reward_ratio REAL"),
         ("us_analysis_performance_tracker", "skip_reason TEXT"),
