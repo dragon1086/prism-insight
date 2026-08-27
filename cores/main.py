@@ -4,6 +4,7 @@ import threading
 import os
 import signal
 from datetime import datetime
+from report_model_config import REPORT_MODEL, report_model_slug
 
 from cores.analysis import analyze_stock
 
@@ -24,7 +25,11 @@ if __name__ == "__main__":
     result = asyncio.run(analyze_stock(company_code="036570", company_name="엔씨소프트", reference_date="20260209"))
 
     # Save results
-    with open(f"엔씨소프트_분석보고서_{datetime.now().strftime('%Y%m%d')}_gpt5.4-mini.md", "w", encoding="utf-8") as f:
+    with open(
+        f"엔씨소프트_분석보고서_{datetime.now().strftime('%Y%m%d')}_{report_model_slug(REPORT_MODEL)}.md",
+        "w",
+        encoding="utf-8",
+    ) as f:
         f.write(result)
 
     end = time.time()

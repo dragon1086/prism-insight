@@ -1665,6 +1665,9 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
 
         # Derive hybrid metadata from final_results
         _market_regime = macro_context.get("market_regime", "sideways") if macro_context else None
+        _primary_trend_regime = macro_context.get("primary_trend_regime") if macro_context else None
+        _effective_entry_regime = macro_context.get("effective_entry_regime") if macro_context else None
+        _swing_state = macro_context.get("swing_state") if macro_context else None
         _topdown_slots, _bottomup_slots = _get_regime_slots(_market_regime) if _market_regime else (0, 3)
         _topdown_count = sum(
             1 for _, stocks_df in final_results.items()
@@ -1689,6 +1692,9 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             "min_trading_value_usd": MIN_TRADING_VALUE,
             "selection_strategy": "hybrid_topdown_bottomup" if macro_context else "pure_bottomup",
             "market_regime": _market_regime,
+            "primary_trend_regime": _primary_trend_regime or _market_regime,
+            "effective_entry_regime": _effective_entry_regime or _market_regime,
+            "swing_state": _swing_state,
             "topdown_slots": _topdown_slots,
             "bottomup_slots": _bottomup_slots,
             "topdown_count": _topdown_count,

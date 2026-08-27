@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 
 from cores.openai_error_logging import log_openai_error
+from report_model_config import REPORT_AUX_EFFORT, REPORT_AUX_MODEL, REPORT_MODEL, report_model_slug
+from regime_display import regime_label, swing_label
 from messaging.batch_campaign_publisher import (  # noqa: E402
     COLLECTING,
     SKIPPED,
@@ -92,8 +94,8 @@ class StockAnalysisOrchestrator:
         """
         Parse report filename to extract components.
 
-        Expected format: {ticker}_{company_name}_{date}_{mode}_gpt5.4-mini
-        Example: 005930_삼성전자_20250127_morning_gpt5.4-mini
+        Expected format: {ticker}_{company_name}_{date}_{mode}_{model-slug}
+        Example: 005930_삼성전자_20250127_morning_gpt-5.6-luna
 
         Args:
             filename_stem: Filename without extension
@@ -360,8 +362,8 @@ class StockAnalysisOrchestrator:
                 result = await llm.generate_str(
                     message=f"{reference_date} 기준 한국 주식시장 거시경제 분석을 수행하고 JSON으로 출력하세요.",
                     request_params=RequestParams(
-                        model="gpt-5.4-mini",
-                        reasoning_effort="none",
+                        model=REPORT_AUX_MODEL,
+                        reasoning_effort=REPORT_AUX_EFFORT,
                         maxTokens=16000,
                         parallel_tool_calls=True,
                         use_history=True
@@ -983,14 +985,12 @@ class StockAnalysisOrchestrator:
         # Extract metadata for hybrid selection info
         metadata = results.get("metadata", {})
         market_regime = metadata.get("market_regime")
+        primary_trend_regime = metadata.get("primary_trend_regime") or market_regime
+        swing_state = metadata.get("swing_state")
         selection_strategy = metadata.get("selection_strategy", "")
         topdown_count = metadata.get("topdown_count", 0)
         bottomup_count = metadata.get("bottomup_count", 0)
 
-        REGIME_KO = {
-            "strong_bull": "강세장", "moderate_bull": "온건 강세",
-            "sideways": "횡보장", "moderate_bear": "온건 약세", "strong_bear": "약세장",
-        }
         CHANNEL_KO = {"top-down": "탑다운 (주도섹터)", "bottom-up": "바텀업 (개별종목)"}
 
         # Set title based on mode
@@ -1011,8 +1011,11 @@ class StockAnalysisOrchestrator:
 
         # Hybrid selection summary (regime + strategy)
         if market_regime and "hybrid" in selection_strategy:
-            regime_display = REGIME_KO.get(market_regime, market_regime)
-            message += f"🧭 시장국면: {regime_display} | 선정: 탑다운 {topdown_count}종목 + 바텀업 {bottomup_count}종목\n"
+            message += f"🧭 장기추세: {regime_label(primary_trend_regime)}"
+            if swing_state:
+                message += f" | 스윙: {swing_label(swing_state)}"
+            message += f" | 실행기준: {regime_label(market_regime)}"
+            message += f" | 선정: 탑다운 {topdown_count}종목 + 바텀업 {bottomup_count}종목\n"
 
         message += "\n"
 
@@ -1324,7 +1327,10 @@ class StockAnalysisOrchestrator:
 
             # Set output file path
             reference_date = datetime.now().strftime("%Y%m%d")
-            output_file = str(REPORTS_DIR / f"{ticker}_{company_name}_{reference_date}_{mode}_gpt5.4-mini.md")
+            output_file = str(
+                REPORTS_DIR
+                / f"{ticker}_{company_name}_{reference_date}_{mode}_{report_model_slug(REPORT_MODEL)}.md"
+            )
 
             try:
                 # Import function directly from main.py

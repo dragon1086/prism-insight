@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 def _parse_ticker_company(pdf_stem: str) -> tuple[str, str | None]:
     """Best-effort ticker/company extraction from a report PDF filename stem.
 
-    Expected stem format: ``{ticker}_{company}_{date}_{mode}_gpt5.4-mini``.
+    Expected stem format: ``{ticker}_{company}_{date}_{mode}_{model-slug}``.
     Returns (ticker, company_name|None). Never raises.
     """
     try:
