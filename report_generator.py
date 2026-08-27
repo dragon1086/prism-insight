@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -24,11 +25,24 @@ from cores.llm.ports import AgentSpec, LLMParams
 # Logger setup
 logger = logging.getLogger(__name__)
 
+
+def _positive_number_env(name: str, default: float) -> float:
+    try:
+        return max(1.0, float(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
 TELEGRAM_ANALYSIS_MODEL = os.environ.get(
     "TELEGRAM_ANALYSIS_MODEL", "gpt-5.6-terra"
 )
 TELEGRAM_ANALYSIS_EFFORT = os.environ.get(
     "TELEGRAM_ANALYSIS_EFFORT", "medium"
+)
+EVALUATION_AGENT_TIMEOUT_SECONDS = _positive_number_env(
+    "EVALUATION_AGENT_TIMEOUT_SECONDS", 120.0
+)
+EVALUATION_FALLBACK_TIMEOUT_SECONDS = _positive_number_env(
+    "EVALUATION_FALLBACK_TIMEOUT_SECONDS", 40.0
 )
 
 _telegram_backend = None
@@ -53,6 +67,16 @@ TELEGRAM_OPINION_STYLE_GUIDE = """
 _FAILED_REPORT_MARKERS = ("analysis failed", "분석 실패")
 _MAX_CACHEABLE_FAILURE_MARKERS = 2
 _KST = ZoneInfo("Asia/Seoul")
+_EVALUATION_REPORT_MAX_CHARS = int(
+    _positive_number_env("EVALUATION_REPORT_MAX_CHARS", 40000)
+)
+_EVALUATION_REPORT_MAX_AGE_DAYS = int(
+    _positive_number_env("EVALUATION_REPORT_MAX_AGE_DAYS", 14)
+)
+_BASE64_IMAGE_RE = re.compile(
+    r"data:image/[^;\s]+;base64,[A-Za-z0-9+/=\r\n]+",
+    re.IGNORECASE,
+)
 
 
 def _now_kst() -> datetime:
@@ -72,6 +96,49 @@ def _is_cacheable_report(content: str) -> bool:
     return bool(content.strip()) and failure_count <= _MAX_CACHEABLE_FAILURE_MARKERS
 
 
+def _evaluation_report_context(report_path: str | os.PathLike[str] | None) -> str:
+    """Load a bounded text-only report context for Telegram evaluation."""
+    if not report_path:
+        return ""
+    try:
+        content = Path(report_path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    content = _BASE64_IMAGE_RE.sub("[차트 이미지 생략]", content)
+    limit = max(4000, _EVALUATION_REPORT_MAX_CHARS)
+    if len(content) <= limit:
+        return content
+    head_size = int(limit * 0.75)
+    return (
+        content[:head_size]
+        + "\n\n[중간 상세 내용 생략]\n\n"
+        + content[-(limit - head_size):]
+    )
+
+
+def get_recent_evaluation_report(
+    ticker: str,
+    *,
+    market: str = "kr",
+    max_age_days: int | None = None,
+) -> tuple[bool, str, Path | None]:
+    """Return a recent text report without generating a PDF as a side effect."""
+    report_dir = US_REPORTS_DIR if market.lower() == "us" else REPORTS_DIR
+    files = list(report_dir.glob(f"{ticker}_*.md"))
+    if not files:
+        return False, "", None
+    latest = max(files, key=lambda path: path.stat().st_mtime)
+    modified = datetime.fromtimestamp(latest.stat().st_mtime, tz=_KST)
+    age_days = (_now_kst() - modified).total_seconds() / 86400
+    allowed_age = max_age_days if max_age_days is not None else _EVALUATION_REPORT_MAX_AGE_DAYS
+    if age_days < 0 or age_days > max(0, allowed_age):
+        return False, "", None
+    content = _evaluation_report_context(latest)
+    if not _is_cacheable_report(content):
+        return False, "", None
+    return True, content, latest
+
+
 def _get_telegram_backend():
     """Lazily configure the shared SDK backend for Telegram analysis calls."""
     global _telegram_backend
@@ -86,6 +153,7 @@ async def _generate_telegram_text(
     agent: Agent,
     message: str,
     max_tokens: int,
+    timeout_seconds: float | None = None,
 ) -> str:
     """Run one Telegram analysis request without an mcp-agent runtime."""
     spec = AgentSpec(
@@ -100,7 +168,34 @@ async def _generate_telegram_text(
             max_iterations=10,
         ),
     )
-    result = await _get_telegram_backend().run(spec, message)
+    started = time.monotonic()
+    logger.info(
+        "[TELEGRAM_LLM] agent=%s phase=start model=%s effort=%s timeout_seconds=%s",
+        agent.name,
+        TELEGRAM_ANALYSIS_MODEL,
+        TELEGRAM_ANALYSIS_EFFORT,
+        timeout_seconds,
+    )
+    try:
+        operation = _get_telegram_backend().run(spec, message)
+        result = (
+            await asyncio.wait_for(operation, timeout=timeout_seconds)
+            if timeout_seconds and timeout_seconds > 0
+            else await operation
+        )
+    except BaseException as error:
+        logger.warning(
+            "[TELEGRAM_LLM] agent=%s phase=failed duration_seconds=%.3f error=%s",
+            agent.name,
+            time.monotonic() - started,
+            type(error).__name__,
+        )
+        raise
+    logger.info(
+        "[TELEGRAM_LLM] agent=%s phase=complete duration_seconds=%.3f",
+        agent.name,
+        time.monotonic() - started,
+    )
     return result.text
 
 # Constant definitions
@@ -776,6 +871,41 @@ async def generate_follow_up_response(ticker, ticker_name, conversation_context,
         return "죄송합니다. 응답 생성 중 오류가 발생했습니다. 다시 시도해주세요."
 
 
+async def _generate_evaluation_fallback(
+    *,
+    ticker: str,
+    ticker_name: str,
+    avg_price: float,
+    period: int,
+    tone: str,
+    background: str,
+    report_content: str,
+    currency: str,
+) -> str:
+    """Produce a bounded no-tool answer from the already available report."""
+    agent = Agent(
+        name="evaluation_fallback_agent",
+        instruction=f"""당신은 텔레그램 주식 평가 전문가입니다.
+외부 도구를 호출하지 말고 제공된 보고서와 사용자 정보만 사용하세요.
+보고서 기준일이 현재보다 이전일 수 있음을 한 문장으로 알리고, 확인되지 않은 최신 수치는 만들지 마세요.
+첫 줄은 반드시 '📌 결론: 매수/보유/매도/관망' 중 하나로 시작하세요.
+판단 근거 2~3개와 구체적인 행동 기준을 제시하고 2500자 이내의 자연스러운 한국어로 답하세요.
+사용자 요청 톤: {tone}
+종목: {ticker_name}({ticker}), 평단: {avg_price}{currency}, 보유기간: {period}개월
+매매 배경: {background or '없음'}
+{TELEGRAM_OPINION_STYLE_GUIDE}
+""",
+        server_names=[],
+    )
+    response = await _generate_telegram_text(
+        agent=agent,
+        message=f"다음 보고서를 바탕으로 즉시 평가하세요.\n\n{report_content}",
+        max_tokens=4000,
+        timeout_seconds=EVALUATION_FALLBACK_TIMEOUT_SECONDS,
+    )
+    return clean_model_response(response)
+
+
 async def generate_evaluation_response(ticker, ticker_name, avg_price, period, tone, background, report_path=None, memory_context: str = ""):
     """
     종목 평가 AI 응답 생성
@@ -793,9 +923,29 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
     Returns:
         str: AI 응답
     """
+    report_content = ""
     try:
         # 현재 날짜 정보 가져오기
         current_date = datetime.now().strftime('%Y%m%d')
+        report_content = _evaluation_report_context(report_path)
+        if report_content:
+            data_collection_steps = """
+                        ## 데이터 수집 및 분석 단계
+                        1. 아래 참고 보고서는 이미 생성된 최근 종합 분석입니다. 이를 기본 근거로 사용하세요.
+                        2. 중복되는 3개월 OHLCV·수급·뉴스를 다시 전부 조회하지 마세요.
+                        3. 꼭 필요할 때만 get_current_time과 get_stock_ohlcv를 1회씩 사용해 현재가 또는 기준일을 확인하세요.
+                        4. 보고서 이후의 중대한 새 사건이 명백히 필요할 때만 perplexity_ask를 1회 사용하세요.
+                        5. 평균매수가 대비 수익률을 검산하고 보고서 기준일과 현재 시점의 차이를 명시하세요.
+            """
+        else:
+            data_collection_steps = """
+                        ## 데이터 수집 및 분석 단계
+                        1. get_current_time 툴로 현재 날짜를 확인하세요.
+                        2. get_stock_ohlcv 툴로 {ticker}의 최신 3개월 주가·거래량과 현재가를 조회하세요.
+                        3. get_stock_trading_volume 툴로 최신 투자자별 수급을 조회하세요.
+                        4. perplexity_ask 툴을 최대 1회 사용해 {ticker_name}의 최근 뉴스·실적·업종·시장 동향을 통합 검색하세요.
+                        5. 평균매수가 대비 수익률을 검산하고 수집된 정보를 종합하세요.
+            """
 
         # 배경 정보 추가 (있는 경우)
         background_text = f"\n- 매매 배경/히스토리: {background}" if background else ""
@@ -825,29 +975,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                         - 보유 기간: {period}개월
                         - 원하는 피드백 스타일: {tone} {background_text}
                         
-                        ## 데이터 수집 및 분석 단계
-                            1. get_current_time 툴을 사용하여 현재 날짜를 가져오세요.
-                            2. get_stock_ohlcv 툴을 사용하여 종목({ticker})의 현재 날짜 기준 최신 3개월치 주가 데이터 및 거래량을 조회하세요. 특히 tool call(time-get_current_time)에서 가져온 년도를 꼭 참고하세요.
-                               - fromdate, todate 포맷은 YYYYMMDD입니다. 그리고 todate가 현재날짜고, fromdate가 과거날짜입니다.
-                               - 최신 종가와 전일 대비 변동률, 거래량 추이를 반드시 파악하세요.
-                               - 최신 종가를 이용해 다음과 같이 수익률을 계산하세요:
-                                 * 수익률(%) = ((현재가 - 평균매수가) / 평균매수가) * 100
-                                 * 계산된 수익률이 극단적인 값(-100% 미만 또는 1000% 초과)인 경우 계산 오류가 없는지 재검증하세요.
-                                 * 매수평단가가 0이거나 비정상적으로 낮은 값인 경우 사용자에게 확인 요청
-                               
-                               
-                            3. get_stock_trading_volume 툴을 사용하여 현재 날짜 기준 최신 3개월치 투자자별 거래 데이터를 분석하세요. 특히 tool call(time-get_current_time)에서 가져온 년도를 꼭 참고하세요.
-                               - fromdate, todate 포맷은 YYYYMMDD입니다. 그리고 todate가 현재날짜고, fromdate가 과거날짜입니다.
-                               - 기관, 외국인, 개인 등 투자자별 매수/매도 패턴을 파악하고 해석하세요.
-                            
-                            4. perplexity_ask 툴을 사용하여 다음 정보를 검색하세요. 최대한 1개의 쿼리로 통합해서 현재 날짜를 기준으로 검색해주세요. 특히 tool call(time-get_current_time)에서 가져온 년도를 꼭 참고하세요.
-                               - "종목코드 {ticker}의 정확한 회사 {ticker_name}에 대한 최근 뉴스 및 실적 분석 (유사 이름의 다른 회사와 혼동하지 말 것. 정확히 이 종목코드 {ticker}에 해당하는 {ticker_name} 회사만 검색."
-                               - "{ticker_name}(종목코드: {ticker}) 소속 업종 동향 및 전망"
-                               - "글로벌과 국내 증시 현황 및 전망"
-                               - "최근 급등 원인(테마 등)"
-                               
-                            5. 필요에 따라 추가 데이터를 수집하세요.
-                            6. 수집된 모든 정보를 종합적으로 분석하여 종목 평가에 활용하세요.
+                        {data_collection_steps}
                         
                         ## 스타일 적응형 가이드
                         사용자가 요청한 피드백 스타일("{tone}")을 최대한 정확하게 구현하세요. 다음 프레임워크를 사용하여 어떤 스타일도 적응적으로 구현할 수 있습니다:
@@ -924,14 +1052,12 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                         {TELEGRAM_OPINION_STYLE_GUIDE}
                         {memory_section}
                         """,
-            server_names=["perplexity", "kospi_kosdaq", "time"]
+            server_names=(
+                ["kospi_kosdaq", "time"]
+                if report_content
+                else ["perplexity", "kospi_kosdaq", "time"]
+            )
         )
-
-        # 보고서 내용 확인
-        report_content = ""
-        if report_path and os.path.exists(report_path):
-            with open(report_path, 'r', encoding='utf-8') as f:
-                report_content = f.read()
 
         # 응답 생성
         response = await _generate_telegram_text(
@@ -942,16 +1068,47 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
                     {report_content if report_content else "관련 보고서가 없습니다. 시장 데이터 조회와 perplexity 검색을 통해 최신 정보를 수집하여 평가해주세요."}
                     """,
             max_tokens=8000,
+            timeout_seconds=EVALUATION_AGENT_TIMEOUT_SECONDS,
         )
         logger.info(f"응답 생성 결과: {str(response)}")
 
         return clean_model_response(response)
 
+    except asyncio.TimeoutError:
+        logger.warning("평가 생성 타임아웃: ticker=%s", ticker)
+        if report_content:
+            try:
+                return await _generate_evaluation_fallback(
+                    ticker=ticker,
+                    ticker_name=ticker_name,
+                    avg_price=avg_price,
+                    period=period,
+                    tone=tone,
+                    background=background,
+                    report_content=report_content,
+                    currency="원",
+                )
+            except Exception as fallback_error:
+                logger.error("평가 fallback 실패: %s", fallback_error)
+        raise
     except Exception as e:
         logger.error(f"응답 생성 중 오류: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-        
+        if report_content:
+            try:
+                return await _generate_evaluation_fallback(
+                    ticker=ticker,
+                    ticker_name=ticker_name,
+                    avg_price=avg_price,
+                    period=period,
+                    tone=tone,
+                    background=background,
+                    report_content=report_content,
+                    currency="원",
+                )
+            except Exception as fallback_error:
+                logger.error("평가 fallback 실패: %s", fallback_error)
         return "죄송합니다. 평가 중 오류가 발생했습니다. 다시 시도해주세요."
 
 
@@ -959,7 +1116,7 @@ async def generate_evaluation_response(ticker, ticker_name, avg_price, period, t
 # US 주식 평가 응답 생성 함수
 # =============================================================================
 
-async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period, tone, background, memory_context: str = ""):
+async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period, tone, background, memory_context: str = "", report_path=None):
     """
     US 주식 평가 AI 응답 생성
 
@@ -975,9 +1132,29 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
     Returns:
         str: AI 응답
     """
+    report_content = ""
     try:
         # 현재 날짜 정보 가져오기
         current_date = datetime.now().strftime('%Y%m%d')
+        report_content = _evaluation_report_context(report_path)
+        if report_content:
+            data_collection_steps = """
+                        ## 데이터 수집 및 분석 단계
+                        1. 아래 최근 종합 보고서를 기본 근거로 사용하세요.
+                        2. 중복되는 3개월 가격·기관·추천·뉴스 조회를 전부 반복하지 마세요.
+                        3. 꼭 필요할 때만 get_current_time과 get_historical_stock_prices를 1회씩 사용해 기준일 또는 현재가를 확인하세요.
+                        4. 보고서 이후 중대한 새 사건이 반드시 필요할 때만 perplexity_ask를 1회 사용하세요.
+                        5. 평균매수가 대비 수익률을 검산하고 보고서 기준일을 명시하세요.
+            """
+        else:
+            data_collection_steps = f"""
+                        ## 데이터 수집 및 분석 단계
+                        1. get_current_time으로 현재 날짜를 확인하세요.
+                        2. yahoo_finance로 {ticker}의 최신 3개월 가격·거래량을 조회하세요.
+                        3. 기관 보유와 애널리스트 추천을 각각 필요한 범위에서 조회하세요.
+                        4. perplexity_ask를 최대 1회 사용해 {ticker_name}의 최근 뉴스·실적·업종 전망을 통합 검색하세요.
+                        5. 평균매수가 대비 수익률을 검산하고 정보를 종합하세요.
+            """
 
         # 사용자 기억 컨텍스트 추가
         memory_section = ""
@@ -1007,30 +1184,7 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                         - 보유 기간: {period}개월
                         - 원하는 피드백 스타일: {tone} {background_text}
 
-                        ## 데이터 수집 및 분석 단계
-                            1. get_current_time 툴을 사용하여 현재 날짜를 가져오세요.
-
-                            2. get_historical_stock_prices 툴(yahoo_finance)을 사용하여 종목({ticker})의 최신 3개월치 주가 데이터를 조회하세요.
-                               - ticker="{ticker}", period="3mo", interval="1d"
-                               - 최신 종가와 전일 대비 변동률, 거래량 추이를 파악하세요.
-                               - 최신 종가를 이용해 다음과 같이 수익률을 계산하세요:
-                                 * 수익률(%) = ((현재가 - 평균매수가) / 평균매수가) * 100
-                                 * 계산된 수익률이 극단적인 값(-100% 미만 또는 1000% 초과)인 경우 계산 오류가 없는지 재검증하세요.
-
-                            3. get_holder_info 툴(yahoo_finance)을 사용하여 기관 투자자 동향을 파악하세요.
-                               - ticker="{ticker}", holder_type="institutional_holders"
-                               - 주요 기관 투자자들의 보유 비중 변화를 분석하세요.
-
-                            4. get_recommendations 툴(yahoo_finance)을 사용하여 애널리스트 추천을 확인하세요.
-                               - ticker="{ticker}"
-                               - 최근 애널리스트 평가 동향을 파악하세요.
-
-                            5. perplexity_ask 툴을 사용하여 다음 정보를 검색하세요. 최대한 1개의 쿼리로 통합해서 현재 날짜를 기준으로 검색해주세요.
-                               - "{ticker} {ticker_name} recent news earnings analysis stock forecast"
-                               - "{ticker_name} sector outlook market trends"
-
-                            6. 필요에 따라 추가 데이터를 수집하세요.
-                            7. 수집된 모든 정보를 종합적으로 분석하여 종목 평가에 활용하세요.
+                        {data_collection_steps}
 
                         ## 스타일 적응형 가이드
                         사용자가 요청한 피드백 스타일("{tone}")을 최대한 정확하게 구현하세요. 다음 프레임워크를 사용하여 어떤 스타일도 적응적으로 구현할 수 있습니다:
@@ -1109,7 +1263,11 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
                         {TELEGRAM_OPINION_STYLE_GUIDE}
                         {memory_section}
                         """,
-            server_names=["perplexity", "yahoo_finance", "time"]
+            server_names=(
+                ["yahoo_finance", "time"]
+                if report_content
+                else ["perplexity", "yahoo_finance", "time"]
+            )
         )
 
         # 응답 생성
@@ -1117,20 +1275,53 @@ async def generate_us_evaluation_response(ticker, ticker_name, avg_price, period
             agent=agent,
             message=f"""미국 주식 {ticker_name}({ticker})에 대한 종목 평가 응답을 생성해 주세요.
 
-                    먼저 yahoo_finance 도구를 사용하여 최신 주가 데이터, 기관 투자자 정보, 애널리스트 추천을 조회하고,
-                    perplexity로 최신 뉴스와 시장 동향을 검색한 후 종합적인 평가를 제공해주세요.
+                    {"아래 최근 보고서를 우선 사용하고 꼭 필요한 최신 수치만 확인하세요." if report_content else "최신 주가·기관·추천·뉴스를 필요한 범위에서 조회한 후 종합하세요."}
+
+                    ## 참고 자료
+                    {report_content if report_content else "최근 보고서 없음"}
                     """,
             max_tokens=8000,
+            timeout_seconds=EVALUATION_AGENT_TIMEOUT_SECONDS,
         )
         logger.info(f"US 응답 생성 결과: {str(response)}")
 
         return clean_model_response(response)
 
+    except asyncio.TimeoutError:
+        logger.warning("US 평가 생성 타임아웃: ticker=%s", ticker)
+        if report_content:
+            try:
+                return await _generate_evaluation_fallback(
+                    ticker=ticker,
+                    ticker_name=ticker_name,
+                    avg_price=avg_price,
+                    period=period,
+                    tone=tone,
+                    background=background,
+                    report_content=report_content,
+                    currency="$",
+                )
+            except Exception as fallback_error:
+                logger.error("US 평가 fallback 실패: %s", fallback_error)
+        raise
     except Exception as e:
         logger.error(f"US 응답 생성 중 오류: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-
+        if report_content:
+            try:
+                return await _generate_evaluation_fallback(
+                    ticker=ticker,
+                    ticker_name=ticker_name,
+                    avg_price=avg_price,
+                    period=period,
+                    tone=tone,
+                    background=background,
+                    report_content=report_content,
+                    currency="$",
+                )
+            except Exception as fallback_error:
+                logger.error("US 평가 fallback 실패: %s", fallback_error)
         return "죄송합니다. 미국 주식 평가 중 오류가 발생했습니다. 다시 시도해주세요."
 
 

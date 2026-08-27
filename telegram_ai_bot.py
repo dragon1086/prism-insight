@@ -36,7 +36,8 @@ from report_generator import (
     generate_evaluation_response, get_cached_report, generate_follow_up_response,
     generate_us_evaluation_response, generate_us_follow_up_response,
     get_cached_us_report, generate_journal_conversation_response,
-    generate_firecrawl_search_response, generate_firecrawl_followup_response
+    generate_firecrawl_search_response, generate_firecrawl_followup_response,
+    get_recent_evaluation_report,
 )
 from tracking.user_memory import UserMemoryManager
 from firecrawl_client import firecrawl_agent
@@ -98,6 +99,12 @@ INSIGHT_ENTERING_QUERY = 35
 
 # Channel ID
 CHANNEL_ID = int(os.getenv("TELEGRAM_CHANNEL_ID", "0"))
+try:
+    EVALUATION_TOTAL_TIMEOUT_SECONDS = max(
+        1.0, float(os.getenv("EVALUATION_TOTAL_TIMEOUT_SECONDS", "180"))
+    )
+except (TypeError, ValueError):
+    EVALUATION_TOTAL_TIMEOUT_SECONDS = 180.0
 
 
 def generate_triggers_message(db_path: str) -> str:
@@ -2118,6 +2125,8 @@ class TelegramAIBot:
         background = context.user_data['background']
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
+        evaluation_id = f"kr:{user_id}:{update.message.message_id}"
+        started = asyncio.get_running_loop().time()
 
         try:
             # Query user memory context
@@ -2131,10 +2140,38 @@ class TelegramAIBot:
                 if memory_context:
                     logger.info(f"User memory context loaded: {len(memory_context)} chars")
 
+            has_report, _report_content, recent_report = get_recent_evaluation_report(
+                ticker,
+                market="kr",
+            )
+            logger.info(
+                "[EVALUATE_LATENCY] id=%s phase=start ticker=%s cached_report=%s report=%s timeout_seconds=%s",
+                evaluation_id,
+                ticker,
+                has_report,
+                recent_report,
+                EVALUATION_TOTAL_TIMEOUT_SECONDS,
+            )
+
             # Generate AI response (including memory_context)
-            response = await generate_evaluation_response(
-                ticker, ticker_name, avg_price, period, tone, background,
-                memory_context=memory_context
+            response = await asyncio.wait_for(
+                generate_evaluation_response(
+                    ticker,
+                    ticker_name,
+                    avg_price,
+                    period,
+                    tone,
+                    background,
+                    report_path=str(recent_report) if recent_report else None,
+                    memory_context=memory_context,
+                ),
+                timeout=EVALUATION_TOTAL_TIMEOUT_SECONDS,
+            )
+            logger.info(
+                "[EVALUATE_LATENCY] id=%s phase=generated ticker=%s duration_seconds=%.3f",
+                evaluation_id,
+                ticker,
+                asyncio.get_running_loop().time() - started,
             )
 
             # Check if response is empty
@@ -2189,6 +2226,21 @@ class TelegramAIBot:
                 )
                 logger.info(f"Evaluation result saved to memory: user={user_id}, ticker={ticker}")
 
+        except asyncio.TimeoutError:
+            logger.error(
+                "[EVALUATE_LATENCY] id=%s phase=timeout ticker=%s duration_seconds=%.3f",
+                evaluation_id,
+                ticker,
+                asyncio.get_running_loop().time() - started,
+            )
+            try:
+                await waiting_message.delete()
+            except Exception:
+                pass
+            await update.message.reply_text(
+                "외부 시세·뉴스 조회가 제한시간 안에 끝나지 않아 평가를 중단했습니다. "
+                "잠시 후 다시 시도해주세요. 최신 보고서가 있으면 다음 요청에서는 이를 우선 활용합니다."
+            )
         except Exception as e:
             logger.error(f"Error generating or sending response: {str(e)}, {traceback.format_exc()}")
             await waiting_message.delete()
@@ -2450,6 +2502,8 @@ class TelegramAIBot:
         background = context.user_data['us_background']
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
+        evaluation_id = f"us:{user_id}:{update.message.message_id}"
+        started = asyncio.get_running_loop().time()
 
         try:
             # Query user memory context
@@ -2463,10 +2517,38 @@ class TelegramAIBot:
                 if memory_context:
                     logger.info(f"US user memory context loaded: {len(memory_context)} chars")
 
+            has_report, _report_content, recent_report = get_recent_evaluation_report(
+                ticker,
+                market="us",
+            )
+            logger.info(
+                "[EVALUATE_LATENCY] id=%s phase=start ticker=%s cached_report=%s report=%s timeout_seconds=%s",
+                evaluation_id,
+                ticker,
+                has_report,
+                recent_report,
+                EVALUATION_TOTAL_TIMEOUT_SECONDS,
+            )
+
             # Generate US AI response (including memory_context)
-            response = await generate_us_evaluation_response(
-                ticker, ticker_name, avg_price, period, tone, background,
-                memory_context=memory_context
+            response = await asyncio.wait_for(
+                generate_us_evaluation_response(
+                    ticker,
+                    ticker_name,
+                    avg_price,
+                    period,
+                    tone,
+                    background,
+                    memory_context=memory_context,
+                    report_path=str(recent_report) if recent_report else None,
+                ),
+                timeout=EVALUATION_TOTAL_TIMEOUT_SECONDS,
+            )
+            logger.info(
+                "[EVALUATE_LATENCY] id=%s phase=generated ticker=%s duration_seconds=%.3f",
+                evaluation_id,
+                ticker,
+                asyncio.get_running_loop().time() - started,
             )
 
             # Check if response is empty
@@ -2521,6 +2603,21 @@ class TelegramAIBot:
                 )
                 logger.info(f"US evaluation result saved to memory: user={user_id}, ticker={ticker}")
 
+        except asyncio.TimeoutError:
+            logger.error(
+                "[EVALUATE_LATENCY] id=%s phase=timeout ticker=%s duration_seconds=%.3f",
+                evaluation_id,
+                ticker,
+                asyncio.get_running_loop().time() - started,
+            )
+            try:
+                await waiting_message.delete()
+            except Exception:
+                pass
+            await update.message.reply_text(
+                "외부 미국 시세·뉴스 조회가 제한시간 안에 끝나지 않아 평가를 중단했습니다. "
+                "잠시 후 다시 시도해주세요. 최신 보고서가 있으면 다음 요청에서는 이를 우선 활용합니다."
+            )
         except Exception as e:
             logger.error(f"Error generating or sending US response: {str(e)}, {traceback.format_exc()}")
             await waiting_message.delete()
