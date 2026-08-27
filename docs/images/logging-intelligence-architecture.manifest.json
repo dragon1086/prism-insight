@@ -1,0 +1,16 @@
+{
+  "asset": "logging-intelligence-architecture.png",
+  "audit_date": "2026-08-28",
+  "dimensions": [1920, 1080],
+  "sha256": "00583960b5cf34fc57a3133b2b62ed101f99b37bf726416fb074a9a1737e023d",
+  "current_implementation_sources": [
+    "observability/events.py",
+    "observability/shipper.py",
+    "observability/trading_context.py",
+    "tools/backfill_observability.py",
+    "tools/export_observability_insights.py",
+    "tools/publish_observability_insights.py",
+    "deploy/observability/docker-compose.yml"
+  ],
+  "proposed_section": "AI Evidence Loop is a target architecture, not a claim of current automatic policy mutation."
+}

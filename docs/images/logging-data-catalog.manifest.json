@@ -1,0 +1,25 @@
+{
+  "asset": "logging-data-catalog.png",
+  "audit_date": "2026-08-28",
+  "dimensions": [1920, 1080],
+  "sha256": "2d6179ab06653e6a1685b9add04bcd234cec3984abd7f3ded835ff0c05fa0ed1",
+  "data_groups": [
+    "후보 기본 정보",
+    "판단과 게이트",
+    "시장 국면",
+    "종목·정책 맥락",
+    "포트폴리오·실행",
+    "진입 → 청산 생애주기",
+    "후보 지연 성과",
+    "Trigger 학습·실제 성과",
+    "배포·계보·품질"
+  ],
+  "current_implementation_sources": [
+    "observability/events.py",
+    "observability/trading_context.py",
+    "tracking/performance_feedback.py",
+    "tools/backfill_observability.py",
+    "tools/export_observability_insights.py"
+  ],
+  "caveat": "trade.outcome is currently a verified backfill baseline in this repository."
+}
