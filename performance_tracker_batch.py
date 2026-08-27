@@ -21,6 +21,7 @@ from typing import Dict, List, Any, Optional
 from pathlib import Path
 
 from tracking.performance_feedback import get_trigger_feedback
+from observability.trading_context import emit_candidate_outcome
 
 # Logging setup
 logging.basicConfig(
@@ -80,9 +81,19 @@ class PerformanceTrackerBatch:
         """
         conn = self.connect_db()
         try:
+            try:
+                conn.execute(
+                    "ALTER TABLE analysis_performance_tracker "
+                    "ADD COLUMN decision_id TEXT"
+                )
+                conn.commit()
+            except sqlite3.OperationalError as error:
+                if "duplicate column name" not in str(error).lower():
+                    raise
             cursor = conn.execute("""
                 SELECT
                     id,
+                    decision_id,
                     ticker,
                     company_name,
                     trigger_type,
@@ -362,6 +373,12 @@ class PerformanceTrackerBatch:
                 # Count completed
                 if updates.get('tracking_status') == 'completed':
                     stats['completed'] += 1
+                    if not self.dry_run:
+                        emit_candidate_outcome(
+                            market="KR",
+                            record=record,
+                            updates=updates,
+                        )
             else:
                 stats['errors'] += 1
 

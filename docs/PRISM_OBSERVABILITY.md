@@ -47,13 +47,28 @@ The XML user is restricted to the `default` observability database.
 The mounted XML contains no plaintext password and must be readable by the
 ClickHouse process (mode `0644`).
 
-## Initial events
+## Trading context ledger
 
 - `deployment.applied`
 - `trigger.performance_feedback`
+- `market.regime_snapshot` (live on every computed KR/US regime observation)
+- `candidate.evaluated`
+- `candidate.outcome` (live when 30-day tracking completes)
+- `entry.executed`
+- `exit.executed`
 
-Decision, gate, execution, and position-outcome events are added incrementally
-after the end-to-end transport and resource envelope are verified.
+`candidate.evaluated`, `entry.executed`, and `exit.executed` use context schema
+version 1. The entry scenario keeps the authoritative deterministic market
+snapshot, security trend facts, gate findings, score adjustments, and portfolio
+slot state. `decision_id` links the candidate to the entry, `position_id` links
+entry to exit, and a stable `trace_id` ties the complete lifecycle together.
+
+The exit snapshot uses the live computed market context when available and
+falls back to the latest local regime-history row without network I/O. Long
+reports and prompts are not copied into ClickHouse; the event retains the
+structured decision facts and source identifiers needed for reconstruction.
+Every append remains fail-open and happens only after the simulator database
+transaction has committed.
 
 ## Historical baseline
 
