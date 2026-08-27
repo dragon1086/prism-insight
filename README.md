@@ -1,5 +1,11 @@
 <div align="center">
-  <img src="docs/images/prism-insight-logo.jpeg" alt="PRISM-INSIGHT Logo" width="300">
+  <img src="docs/images/prism-insight-logo.jpeg" alt="PRISM-INSIGHT Logo" width="240">
+  &nbsp;&nbsp;
+  <a href="assets/characters/priso/README.md">
+    <img src="assets/characters/priso/v1.0/priso_master_transparent.png" alt="Priso, the PRISM mascot" width="240">
+  </a>
+  <br>
+  <sub><strong>Priso</strong> · Official PRISM Mascot</sub>
   <br><br>
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
@@ -27,14 +33,6 @@
   <a href="README_zh.md">中文</a> |
   <a href="README_es.md">Español</a>
 </p>
-
-### Meet Priso, the PRISM Mascot
-
-<p align="center">
-  <img src="assets/characters/priso/v1.0/priso_master_transparent.png" alt="Priso, the PRISM mascot" width="260">
-</p>
-
-**Priso** is the official mascot of PRISM-INSIGHT. See the [Priso asset guide](assets/characters/priso/README.md) for the approved reference images and version policy.
 
 ### Platinum Sponsor
 
