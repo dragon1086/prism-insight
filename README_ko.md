@@ -28,6 +28,14 @@
   <a href="README_es.md">Español</a>
 </p>
 
+### PRISM 마스코트, 프리소
+
+<p align="center">
+  <img src="assets/characters/priso/v1.0/priso_master_transparent.png" alt="PRISM 마스코트 프리소" width="260">
+</p>
+
+**프리소(Priso)**는 PRISM-INSIGHT의 공식 마스코트입니다. 검수를 마친 기준 이미지와 버전 정책은 [프리소 에셋 안내](assets/characters/priso/README.md)에서 확인할 수 있습니다.
+
 ### 플래티넘 스폰서
 
 <div align="center">

@@ -28,6 +28,14 @@
   <a href="README_es.md">Español</a>
 </p>
 
+### Meet Priso, the PRISM Mascot
+
+<p align="center">
+  <img src="assets/characters/priso/v1.0/priso_master_transparent.png" alt="Priso, the PRISM mascot" width="260">
+</p>
+
+**Priso** is the official mascot of PRISM-INSIGHT. See the [Priso asset guide](assets/characters/priso/README.md) for the approved reference images and version policy.
+
 ### Platinum Sponsor
 
 <div align="center">
