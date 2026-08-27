@@ -17,11 +17,14 @@
 from __future__ import annotations
 
 import bisect
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Optional
 
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 # 백테스트 어댑터의 레퍼런스 구현에서 상수/헬퍼를 그대로 재사용 (집행 의미론 동일).
 from backtest.engine import (
@@ -189,8 +192,8 @@ def _load_funding(market_conn: sqlite3.Connection) -> tuple[list[int], list[floa
         ):
             times.append(int(ft))
             rates.append(float(fr))
-    except Exception:
-        pass
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        log.debug("funding history unavailable; using fallback rate: %s", exc)
     return times, rates
 
 
@@ -302,8 +305,12 @@ class ShadowAdapter:
                             position_id=position_id,
                             entry_time=bar_time_str,
                         )
-                    except Exception:  # noqa: BLE001 — observer cannot block fill
-                        pass
+                    except Exception as exc:  # noqa: BLE001 - observer fails open
+                        log.warning(
+                            "failure observer fill update failed id=%s: %s",
+                            observation_id,
+                            exc,
+                        )
                 positions.append(new_pos)
                 pending = None
                 tracking.log_event(conn, "fill",
@@ -316,8 +323,12 @@ class ShadowAdapter:
                         tracking.mark_failure_shadow_expired(
                             conn, int(observation_id)
                         )
-                    except Exception:  # noqa: BLE001 — observer is audit-only
-                        pass
+                    except Exception as exc:  # noqa: BLE001 - observer fails open
+                        log.warning(
+                            "failure observer expiry update failed id=%s: %s",
+                            observation_id,
+                            exc,
+                        )
                 pending = None
                 tracking.log_event(conn, "expire", "pending entry expired",
                                    mode=mode, ts=bar_time_str)
@@ -455,8 +466,8 @@ class ShadowAdapter:
                                    if "1d" in snapshot.tf_states else None),
                             side=sig.side, reason=sig.reason,
                             n_open=len(positions), mode=mode)
-                    except Exception:  # noqa: BLE001 — 로깅이 매매를 못 막는다
-                        pass
+                    except Exception as exc:  # noqa: BLE001 - telemetry fails open
+                        log.warning("shadow signal telemetry failed: %s", exc)
                 if sig.side != "none":
                     same_side = [p for p in positions if p.side == sig.side]
                     current_tranche = len(same_side)
@@ -669,8 +680,12 @@ class ShadowAdapter:
         if pos.id is not None:
             try:
                 tracking.close_failure_shadow_for_position(conn, pos.id, trade)
-            except Exception:  # noqa: BLE001 — observer cannot block close
-                pass
+            except Exception as exc:  # noqa: BLE001 - observer fails open
+                log.warning(
+                    "failure observer close update failed position_id=%s: %s",
+                    pos.id,
+                    exc,
+                )
         trade_id_counter += 1
         last_close_bar[pos.side] = bar_idx
         last_close_was_sl[pos.side] = reason in ("sl",)
