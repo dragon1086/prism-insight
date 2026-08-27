@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/OpenAI-GPT--5-green.svg" alt="OpenAI">
-  <img src="https://img.shields.io/badge/Anthropic-Claude--Sonnet--4.6-green.svg" alt="Anthropic">
+  <img src="https://img.shields.io/badge/Anthropic-Claude--Sonnet--5-green.svg" alt="Anthropic Claude Sonnet 5">
   <img src="https://img.shields.io/badge/ChatGPT_Plus-Codex_OAuth-ff6b35.svg" alt="ChatGPT Plus">
 </div>
 
@@ -261,7 +261,7 @@ PRISM-INSIGHTは、**韓国（KOSPI/KOSDAQ）** および **米国（NYSE/NASDAQ
 
 ### AIモデル
 - **分析・売買**: OpenAI GPT-5 / GPT-5.4-mini（APIまたはChatGPT Plusサブスクリプション経由）
-- **レポート生成**: Anthropic Claude Sonnet 4.6
+- **オプションの互換ワークフロー**: Anthropic Claude Sonnet 5
 - **翻訳**: OpenAI GPT-5（EN、JA、ZH、ES対応）
 
 ---
