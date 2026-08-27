@@ -8,9 +8,15 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import shutil
+import stat
+
+# Fixed argv, no shell, and a permission-checked executable.
+import subprocess  # nosec B404
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 
@@ -36,6 +42,23 @@ class CodexFastResult:
 
 
 McpProfile = Literal["kr_trading", "us_trading"]
+
+
+def _resolve_codex_executable(candidate: str) -> str:
+    """Resolve an executable that cannot be replaced by another local user."""
+    located = candidate if os.path.isabs(candidate) else shutil.which(candidate)
+    if not located:
+        raise CodexFastError(f"Codex executable not found: {candidate}")
+    try:
+        executable = Path(located).resolve(strict=True)
+        mode = stat.S_IMODE(executable.stat().st_mode)
+    except OSError as exc:
+        raise CodexFastError(f"Codex executable is unavailable: {candidate}") from exc
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise CodexFastError(f"Codex executable is not runnable: {executable}")
+    if mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise CodexFastError(f"Codex executable has unsafe permissions: {executable}")
+    return str(executable)
 
 
 def _command(
@@ -132,26 +155,32 @@ def generate_codex_fast(
     mcp_profile: McpProfile | None = None,
     require_mcp_calls: bool = False,
 ) -> CodexFastResult:
-    executable = codex_bin or os.environ.get("PRISM_CODEX_BIN", "codex")
+    executable = _resolve_codex_executable(
+        codex_bin or os.environ.get("PRISM_CODEX_BIN", "codex")
+    )
     home = codex_home or os.environ.get("PRISM_CODEX_HOME")
     environment = os.environ.copy()
     if home:
         environment["CODEX_HOME"] = home
     started = time.monotonic()
     try:
-        process = subprocess.run(
-            _command(executable, model, mcp_profile),
-            input=_prompt(system_prompt, user_prompt, mcp_profile),
-            capture_output=True,
-            text=True,
-            cwd="/tmp",
-            env=environment,
-            timeout=timeout,
-            check=False,
-            # MCP stdio children are managed by Codex. Keep their shutdown
-            # signals out of the long-lived PRISM orchestrator process group.
-            start_new_session=True,
-        )
+        with tempfile.TemporaryDirectory(prefix="prism-codex-fast-") as run_dir:
+            # The executable is resolved, permission-checked, and invoked with a
+            # fixed argv list. No shell parsing or untrusted option expansion occurs.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args, python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            process = subprocess.run(  # nosec B603
+                _command(executable, model, mcp_profile),
+                input=_prompt(system_prompt, user_prompt, mcp_profile),
+                capture_output=True,
+                text=True,
+                cwd=run_dir,
+                env=environment,
+                timeout=timeout,
+                check=False,
+                # MCP stdio children are managed by Codex. Keep their shutdown
+                # signals out of the long-lived PRISM orchestrator process group.
+                start_new_session=True,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CodexFastError(f"Codex Fast unavailable: {exc}") from exc
     latency = time.monotonic() - started

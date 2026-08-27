@@ -9,11 +9,43 @@ import pytest
 import cores.llm.codex_oauth_fast_backend as backend
 
 
-def test_codex_fast_backend_uses_isolated_ephemeral_command(monkeypatch) -> None:
+@pytest.fixture
+def _trusted_codex(monkeypatch) -> None:
+    monkeypatch.setattr(
+        backend,
+        "_resolve_codex_executable",
+        lambda _candidate: "/trusted/codex",
+    )
+
+
+def test_resolve_codex_executable_rejects_unsafe_permissions(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    executable = tmp_path / "codex"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.setattr(backend.shutil, "which", lambda _candidate: str(executable))
+
+    assert backend._resolve_codex_executable("codex") == str(executable.resolve())
+
+    executable.chmod(0o775)
+    with pytest.raises(backend.CodexFastError, match="unsafe permissions"):
+        backend._resolve_codex_executable("codex")
+
+
+def test_codex_fast_backend_uses_isolated_ephemeral_command(
+    monkeypatch,
+    _trusted_codex,
+) -> None:
     seen = {}
 
     def fake_run(command, **kwargs):
-        seen.update(command=command, kwargs=kwargs)
+        seen.update(
+            command=command,
+            kwargs=kwargs,
+            run_dir_existed=Path(kwargs["cwd"]).is_dir(),
+        )
         stream = "\n".join([
             json.dumps({
                 "type": "item.completed",
@@ -42,11 +74,12 @@ def test_codex_fast_backend_uses_isolated_ephemeral_command(monkeypatch) -> None
         require_mcp_calls=True,
     )
     command = seen["command"]
-    assert command[:2] == ["codex", "exec"]
+    assert command[:2] == ["/trusted/codex", "exec"]
     assert "--ephemeral" in command and "read-only" in command
     assert 'service_tier="fast"' in command
     assert command[command.index("--profile") + 1] == "kr_trading"
-    assert seen["kwargs"]["cwd"] == "/tmp"
+    assert seen["run_dir_existed"] is True
+    assert not Path(seen["kwargs"]["cwd"]).exists()
     assert seen["kwargs"]["env"]["CODEX_HOME"] == "/secure/codex-home"
     assert seen["kwargs"]["start_new_session"] is True
     assert "도구를 사용하지 마세요" not in seen["kwargs"]["input"]
@@ -57,7 +90,10 @@ def test_codex_fast_backend_uses_isolated_ephemeral_command(monkeypatch) -> None
     ]
 
 
-def test_codex_fast_backend_requires_mcp_call_when_requested(monkeypatch) -> None:
+def test_codex_fast_backend_requires_mcp_call_when_requested(
+    monkeypatch,
+    _trusted_codex,
+) -> None:
     stream = "\n".join([
         json.dumps({
             "type": "item.completed",
@@ -82,7 +118,10 @@ def test_codex_fast_backend_requires_mcp_call_when_requested(monkeypatch) -> Non
         )
 
 
-def test_codex_fast_backend_raises_on_cli_failure(monkeypatch) -> None:
+def test_codex_fast_backend_raises_on_cli_failure(
+    monkeypatch,
+    _trusted_codex,
+) -> None:
     monkeypatch.setattr(
         backend.subprocess,
         "run",
