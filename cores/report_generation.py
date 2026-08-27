@@ -8,8 +8,9 @@ from report_model_config import REPORT_EFFORT, REPORT_MODEL
 from cores.openai_error_logging import log_openai_error
 
 # Report LLM model/effort are shared with macro, summaries and artifact names.
-# Luna with low reasoning keeps the evidence-gathering tool path while reducing
-# latency; the Responses API backend remains required for gpt-5.6 tool calls.
+# Long-form reports keep medium reasoning for cross-source reconciliation and
+# numeric strategy synthesis. Auxiliary report tasks use the separate low-effort
+# contract; the Responses API backend remains required for gpt-5.6 tool calls.
 
 _report_backend = None
 
