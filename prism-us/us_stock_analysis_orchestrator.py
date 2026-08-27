@@ -37,6 +37,13 @@ PRISM_US_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PRISM_US_DIR))
 
+from report_model_config import (  # noqa: E402
+    REPORT_AUX_EFFORT,
+    REPORT_AUX_MODEL,
+    REPORT_MODEL,
+    report_model_slug,
+)
+from regime_display import regime_label, swing_label  # noqa: E402
 from messaging.batch_campaign_publisher import (  # noqa: E402
     COLLECTING,
     SKIPPED,
@@ -377,8 +384,8 @@ class USStockAnalysisOrchestrator:
                 result = await llm.generate_str(
                     message=f"Execute US stock market macro analysis for {reference_date} and output JSON.",
                     request_params=RequestParams(
-                        model="gpt-5.4-mini",
-                        reasoning_effort="none",
+                        model=REPORT_AUX_MODEL,
+                        reasoning_effort=REPORT_AUX_EFFORT,
                         maxTokens=16000,
                         parallel_tool_calls=True,
                         use_history=True
@@ -570,7 +577,10 @@ class USStockAnalysisOrchestrator:
             logger.info(f"[{idx}/{len(tickers)}] Starting US stock analysis: {company_name}({ticker})")
 
             report_date = reference_date or resolve_us_trade_date()
-            output_file = str(US_REPORTS_DIR / f"{ticker}_{company_name}_{report_date}_{mode}_gpt5.4-mini.md")
+            output_file = str(
+                US_REPORTS_DIR
+                / f"{ticker}_{company_name}_{report_date}_{mode}_{report_model_slug(REPORT_MODEL)}.md"
+            )
 
             try:
                 from cores.us_analysis import analyze_us_stock
@@ -1013,19 +1023,13 @@ class USStockAnalysisOrchestrator:
         # Extract metadata for hybrid selection info
         metadata = results.get("metadata", {})
         market_regime = metadata.get("market_regime")
+        primary_trend_regime = metadata.get("primary_trend_regime") or market_regime
+        swing_state = metadata.get("swing_state")
         selection_strategy = metadata.get("selection_strategy", "")
         topdown_count = metadata.get("topdown_count", 0)
         bottomup_count = metadata.get("bottomup_count", 0)
 
         # Regime display names
-        REGIME_KO = {
-            "strong_bull": "강세장", "moderate_bull": "온건 강세",
-            "sideways": "횡보장", "moderate_bear": "온건 약세", "strong_bear": "약세장",
-        }
-        REGIME_EN = {
-            "strong_bull": "Strong Bull", "moderate_bull": "Moderate Bull",
-            "sideways": "Sideways", "moderate_bear": "Moderate Bear", "strong_bear": "Strong Bear",
-        }
         CHANNEL_KO = {"top-down": "탑다운 (주도섹터)", "bottom-up": "바텀업 (개별종목)"}
         CHANNEL_EN = {"top-down": "Top-Down (Leading Sector)", "bottom-up": "Bottom-Up (Individual)"}
 
@@ -1049,7 +1053,6 @@ class USStockAnalysisOrchestrator:
                 "※ 가상 운용 과정 공유이며 투자 리딩 또는 실제 매수 권유가 아닙니다."
             )
             channel_map = CHANNEL_KO
-            regime_map = REGIME_KO
             score_label = "점수"
             rr_label = "R/R"
             sl_label = "손절"
@@ -1072,7 +1075,6 @@ class USStockAnalysisOrchestrator:
                 "※ Virtual-operation disclosure only; not investment guidance or a buy recommendation."
             )
             channel_map = CHANNEL_EN
-            regime_map = REGIME_EN
             score_label = "Score"
             rr_label = "R/R"
             sl_label = "SL"
@@ -1081,11 +1083,18 @@ class USStockAnalysisOrchestrator:
 
         # Hybrid selection summary (regime + strategy)
         if market_regime and "hybrid" in selection_strategy:
-            regime_display = regime_map.get(market_regime, market_regime)
             if language == "ko":
-                message += f"🧭 시장국면: {regime_display} | 선정: 탑다운 {topdown_count}종목 + 바텀업 {bottomup_count}종목\n"
+                message += f"🧭 장기추세: {regime_label(primary_trend_regime)}"
+                if swing_state:
+                    message += f" | 스윙: {swing_label(swing_state)}"
+                message += f" | 실행기준: {regime_label(market_regime)}"
+                message += f" | 선정: 탑다운 {topdown_count}종목 + 바텀업 {bottomup_count}종목\n"
             else:
-                message += f"🧭 Regime: {regime_display} | Selection: Top-Down {topdown_count} + Bottom-Up {bottomup_count}\n"
+                message += f"🧭 Primary Trend: {regime_label(primary_trend_regime, 'en')}"
+                if swing_state:
+                    message += f" | Swing: {swing_label(swing_state, 'en')}"
+                message += f" | Execution: {regime_label(market_regime, 'en')}"
+                message += f" | Selection: Top-Down {topdown_count} + Bottom-Up {bottomup_count}\n"
 
         message += "\n"
 

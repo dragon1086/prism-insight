@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from report_model_config import REPORT_AUX_EFFORT, REPORT_AUX_MODEL
 
 import cores.openai_debug  # noqa: F401 — OpenAI 400/429 request metadata logging
 from mcp_agent.app import MCPApp
@@ -292,8 +293,8 @@ class TelegramSummaryGenerator:
         response = await evaluator_optimizer.generate_str(
             message=prompt_message,
             request_params=RequestParams(
-                model="gpt-5.4-mini",
-                reasoning_effort="none",
+                model=REPORT_AUX_MODEL,
+                reasoning_effort=REPORT_AUX_EFFORT,
                 maxTokens=6000,
                 max_iterations=2
             )

@@ -333,7 +333,15 @@ def enforce_computed_regime(
 
     if "market_regime" in merged:
         merged["llm_market_regime"] = merged.get("market_regime")
-    for key in ("market_regime", "regime_confidence", "simple_ma_regime", "index_summary"):
+    for key in (
+        "market_regime",
+        "primary_trend_regime",
+        "effective_entry_regime",
+        "swing_state",
+        "regime_confidence",
+        "simple_ma_regime",
+        "index_summary",
+    ):
         if key in computed:
             merged[key] = computed[key]
     merged["computed_regime"] = computed

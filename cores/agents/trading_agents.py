@@ -64,8 +64,11 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         ## Market Regime Classification (5 levels)
 
-        A) Prefer the regime from the report's 'Market Analysis' / 'Macro Intelligence Summary' if present.
-        B) Otherwise derive from KOSPI 20-day data (kospi_kosdaq-get_index_ohlcv):
+        A) The provided deterministic `market_regime` is authoritative. Copy its exact enum into
+           the scenario; do not rename or reclassify it from prose. `swing_state`, when present,
+           is descriptive context and does not replace the execution regime.
+        B) Only when the deterministic value is explicitly unavailable, derive from KOSPI 20-day data
+           (kospi_kosdaq-get_index_ohlcv):
            - **strong_bull**:    KOSPI > 20d MA AND last 2 weeks ≥ +5%
            - **moderate_bull**:  KOSPI > 20d MA AND positive trend
            - **sideways**:       KOSPI ≈ 20d MA, mixed signals
@@ -398,8 +401,11 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
         ## 시장 체제 진단 (5단계)
 
-        A) 보고서의 '시장 분석' / '거시경제 인텔리전스 요약'에 regime이 있으면 우선 사용하십시오.
-        B) 없으면 KOSPI 20일 데이터(kospi_kosdaq-get_index_ohlcv)로 직접 판단하십시오:
+        A) 제공된 결정론적 `market_regime`이 유일한 실행 기준입니다. enum을 그대로 scenario에
+           복사하고 설명 문구를 보고 다시 이름 붙이거나 재분류하지 마십시오. `swing_state`가 있으면
+           보조 설명일 뿐 실행 regime을 대체하지 않습니다.
+        B) 결정론적 값이 명시적으로 없을 때만 KOSPI 20일 데이터
+           (kospi_kosdaq-get_index_ohlcv)로 직접 판단하십시오:
            - **strong_bull**:    KOSPI > 20일선 AND 최근 2주 +5% 이상
            - **moderate_bull**:  KOSPI > 20일선 AND 양의 추세
            - **sideways**:       KOSPI ≈ 20일선, 혼재 신호

@@ -15,6 +15,9 @@ def test_computed_regime_overrides_llm_label_but_preserves_audit_value():
         },
         {
             "market_regime": "moderate_bear",
+            "primary_trend_regime": "moderate_bear",
+            "effective_entry_regime": "moderate_bear",
+            "swing_state": "pullback",
             "regime_confidence": 0.78,
             "simple_ma_regime": "bear",
             "index_summary": {"distribution_days": 6},
@@ -22,6 +25,9 @@ def test_computed_regime_overrides_llm_label_but_preserves_audit_value():
     )
 
     assert result["market_regime"] == "moderate_bear"
+    assert result["primary_trend_regime"] == "moderate_bear"
+    assert result["effective_entry_regime"] == "moderate_bear"
+    assert result["swing_state"] == "pullback"
     assert result["llm_market_regime"] == "strong_bull"
     assert result["index_summary"]["distribution_days"] == 6
     assert result["leading_sectors"] == [{"sector": "Semiconductors"}]
