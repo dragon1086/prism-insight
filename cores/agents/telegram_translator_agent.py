@@ -107,7 +107,9 @@ async def translate_telegram_message(
     message: str,
     model: str = REPORT_AUX_MODEL,
     from_lang: str = "ko",
-    to_lang: str = "en"
+    to_lang: str = "en",
+    *,
+    raise_on_error: bool = False,
 ) -> str:
     """
     Translate a telegram message from source language to target language
@@ -117,6 +119,8 @@ async def translate_telegram_message(
         model: OpenAI model to use (default: gpt-5.6-luna for cost efficiency)
         from_lang: Source language code (default: "ko" for Korean)
         to_lang: Target language code (default: "en" for English)
+        raise_on_error: Re-raise failures when callers must not send the source
+            text as if it had been translated.
 
     Returns:
         str: Translated message
@@ -151,9 +155,10 @@ async def translate_telegram_message(
         return translated.strip()
 
     except Exception as e:
-        # If translation fails, return original message with error note
         import logging
         logger = logging.getLogger(__name__)
         log_openai_error(logger, e, "telegram translation")
         logger.error(f"Translation failed: {str(e)}")
+        if raise_on_error:
+            raise
         return message  # Fallback to original message
