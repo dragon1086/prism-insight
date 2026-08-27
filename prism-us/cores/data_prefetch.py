@@ -896,6 +896,9 @@ def _log_regime_snapshot(market: str, computed: dict) -> None:
             "ts": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
             "market": market,
             "regime": computed.get("market_regime"),
+            "primary_trend_regime": computed.get("primary_trend_regime"),
+            "effective_entry_regime": computed.get("effective_entry_regime"),
+            "swing_state": computed.get("swing_state"),
             "confidence": computed.get("regime_confidence"),
         }
         s = computed.get("index_summary") or {}
@@ -1137,6 +1140,72 @@ def _inject_distribution_days(index_summary, df, close_col) -> None:
     index_summary["distribution_days"] = None if dist is None else dist["count"]
 
 
+def _compute_us_swing_state(
+    sp500_df: pd.DataFrame,
+    close_col: str,
+    nasdaq_df: pd.DataFrame | None = None,
+) -> dict:
+    """Describe the entry timeframe without changing the execution regime.
+
+    A 2018~2026 replay showed that mechanically downgrading structural bull
+    regimes during these pauses would often suppress profitable rebound days.
+    The state is therefore additive observability/prompt context only.
+    """
+    closes = sp500_df[close_col].dropna()
+    if len(closes) < 20:
+        return {"swing_state": "unknown"}
+
+    sp_current = float(closes.iloc[-1])
+    sp_ma20 = float(closes.tail(20).mean())
+    sp_return10 = (
+        (sp_current / float(closes.iloc[-11]) - 1.0) * 100
+        if len(closes) >= 11
+        else None
+    )
+    sp_confirmed = sp_current > sp_ma20 and (sp_return10 or 0.0) > 0
+
+    nasdaq_above20 = None
+    nasdaq_return10 = None
+    if nasdaq_df is not None and not nasdaq_df.empty:
+        nd_close_col = next(
+            (name for name in ("Close", "close", "Adj Close") if name in nasdaq_df.columns),
+            None,
+        )
+        if nd_close_col:
+            nd_closes = nasdaq_df.sort_index()[nd_close_col].dropna()
+            if len(nd_closes) >= 20:
+                nd_current = float(nd_closes.iloc[-1])
+                nasdaq_above20 = nd_current > float(nd_closes.tail(20).mean())
+                if len(nd_closes) >= 11:
+                    nasdaq_return10 = (
+                        nd_current / float(nd_closes.iloc[-11]) - 1.0
+                    ) * 100
+
+    nasdaq_confirmed = (
+        True
+        if nasdaq_above20 is None
+        else nasdaq_above20 and (nasdaq_return10 or 0.0) > 0
+    )
+    if sp_current < sp_ma20 and (sp_return10 or 0.0) <= -2.0:
+        state = "pullback"
+    elif sp_confirmed and nasdaq_confirmed:
+        state = "trend_up"
+    else:
+        state = "consolidation"
+
+    return {
+        "swing_state": state,
+        "sp500_return_10d_pct": round(sp_return10, 2) if sp_return10 is not None else None,
+        "sp500_vs_20d_ma_pct": round((sp_current / sp_ma20 - 1.0) * 100, 2),
+        "nasdaq_return_10d_pct": (
+            round(nasdaq_return10, 2) if nasdaq_return10 is not None else None
+        ),
+        "nasdaq_vs_20d_ma": (
+            "above" if nasdaq_above20 else "below"
+        ) if nasdaq_above20 is not None else None,
+    }
+
+
 def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, vix_df: pd.DataFrame = None) -> dict:
     """Compute US market regime programmatically from index data.
 
@@ -1298,6 +1367,8 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
         "sp500_20d_ma": round(ma_20d, 2),
         "nasdaq_20d_trend": nasdaq_trend,
     }
+    swing_context = _compute_us_swing_state(sp500_df, close_col, nasdaq_df)
+    index_summary.update(swing_context)
     # Trend MA fields (additive — present only when enough history)
     if ma_50 is not None:
         index_summary["sp500_50d_ma"] = round(ma_50, 2)
@@ -1335,8 +1406,14 @@ def _compute_us_regime(sp500_df: pd.DataFrame, nasdaq_df: pd.DataFrame = None, v
             else:
                 logger.info(f"[regime] US HIVOL override SHADOW(관찰,미적용): would {_reason}")
 
+    index_summary["primary_trend_regime"] = regime
+    index_summary["effective_entry_regime"] = regime
+
     return {
         "market_regime": regime,
+        "primary_trend_regime": regime,
+        "effective_entry_regime": regime,
+        "swing_state": swing_context["swing_state"],
         "regime_confidence": confidence,
         "simple_ma_regime": simple_ma_regime,
         "index_summary": index_summary,

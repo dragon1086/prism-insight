@@ -68,8 +68,11 @@ def create_us_trading_scenario_agent(language: str = "ko", sector_names: list = 
 
 ## 시장 체제 진단 (5단계)
 
-A) 보고서의 '시장 분석' / '거시경제 인텔리전스 요약'에 regime이 있으면 우선 사용하십시오.
-B) 없으면 S&P 500 (^GSPC) + VIX 최근 20일 데이터(yahoo_finance-get_historical_stock_prices)로 직접 판단하십시오:
+A) 제공된 결정론적 `market_regime`이 유일한 실행 기준입니다. enum을 그대로 scenario에
+   복사하고 설명 문구를 보고 다시 이름 붙이거나 재분류하지 마십시오. `swing_state`가 있으면
+   보조 설명일 뿐 실행 regime을 대체하지 않습니다.
+B) 결정론적 값이 명시적으로 없을 때만 S&P 500 (^GSPC) + VIX 최근 20일 데이터
+   (yahoo_finance-get_historical_stock_prices)로 직접 판단하십시오:
    - **strong_bull**:    S&P 500 > 20일선 AND 최근 4주 +3% 초과 AND VIX < 18
    - **moderate_bull**:  S&P 500 > 20일선 AND 양의 추세
    - **sideways**:       S&P 500 ≈ 20일선, 혼재 신호
@@ -392,8 +395,11 @@ confirm momentum via N·S·I, validate trend via L·M.
 
 ## Market Regime Classification (5 levels)
 
-A) Prefer the regime from the report's 'Market Analysis' / 'Macro Intelligence Summary' if present.
-B) Otherwise derive from S&P 500 (^GSPC) + VIX 20-day data (yahoo_finance-get_historical_stock_prices):
+A) The provided deterministic `market_regime` is authoritative. Copy its exact enum into the
+   scenario; do not rename or reclassify it from prose. `swing_state`, when present, is descriptive
+   context and does not replace the execution regime.
+B) Only when the deterministic value is explicitly unavailable, derive from S&P 500 (^GSPC) + VIX
+   20-day data (yahoo_finance-get_historical_stock_prices):
    - **strong_bull**:    S&P 500 > 20d MA AND 4-week change > +3% AND VIX < 18
    - **moderate_bull**:  S&P 500 > 20d MA AND positive trend
    - **sideways**:       S&P 500 ≈ 20d MA, mixed signals
