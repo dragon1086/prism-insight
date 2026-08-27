@@ -5,7 +5,11 @@ import numpy as np
 from scipy import stats
 from typing import List, Tuple, Dict, Any
 from datetime import datetime, timedelta
-from stock_tracking_agent import StockTrackingAgent
+from stock_tracking_agent import (
+    StockTrackingAgent,
+    _kr_codex_runtime_enabled,
+    app,
+)
 from prism_core.positions import LegacyPositionWriteResult, legacy_position_id
 import asyncio
 import logging
@@ -14,6 +18,7 @@ import os
 import traceback
 
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
+from cores.llm.codex_oauth_fast_backend import generate_codex_fast
 from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
 
 # Import core agents
@@ -1415,9 +1420,6 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             # Dynamic trailing stop threshold: min 1.5%, max 5%, scales with price appreciation
             trailing_stop_threshold_pct = max(1.5, min(5.0, (highest_price - buy_price) / buy_price * 100 * 0.3)) if buy_price > 0 else 3.0
 
-            # LLM call to generate sell decision
-            llm = await self.sell_decision_agent.attach_llm(OpenAIAugmentedLLM)
-
             # Prepare prompt based on language (Korean text preserved for language == "ko" blocks)
             if self.language == "ko":
                 prompt_message = f"""
@@ -1479,14 +1481,72 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 **Important**: If stop loss/target price adjustment is needed, return it via portfolio_adjustment JSON only. Do NOT directly UPDATE the DB.
                 """
 
-            response = await llm.generate_str(
-                message=prompt_message,
-                request_params=RequestParams(
-                    model="gpt-5.6-sol",
-                    reasoning_effort="high",
-                    maxTokens=30000
-                )
-            )
+            response = None
+            codex_sell_enabled = os.environ.get(
+                "PRISM_KR_CODEX_FAST_SELL",
+                os.environ.get("PRISM_KR_CODEX_FAST_TRADING", "0"),
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if codex_sell_enabled:
+                try:
+                    instruction = str(
+                        getattr(self.sell_decision_agent, "instruction", "") or ""
+                    )
+                    if not instruction:
+                        raise RuntimeError("sell agent instruction unavailable")
+                    timeout = int(os.environ.get("PRISM_CODEX_FAST_TIMEOUT", "90"))
+                    codex_result = await asyncio.to_thread(
+                        generate_codex_fast,
+                        system_prompt=instruction,
+                        user_prompt=prompt_message,
+                        model="gpt-5.6-sol",
+                        timeout=timeout,
+                        mcp_profile="kr_trading",
+                        require_mcp_calls=True,
+                    )
+                    if parse_llm_json(
+                        codex_result.text,
+                        context=f"{ticker} KR Codex Fast sell decision",
+                    ) is not None:
+                        response = codex_result.text
+                        logger.info(
+                            "[CODEX_FAST] KR sell ticker=%s latency_s=%.2f "
+                            "mcp_calls=%s",
+                            ticker or "?",
+                            codex_result.latency_s,
+                            len(codex_result.mcp_calls),
+                        )
+                    else:
+                        logger.warning(
+                            "[%s] Codex Fast sell parse failed; falling back to mcp-agent",
+                            ticker or "?",
+                        )
+                except Exception as codex_err:  # noqa: BLE001 — mandatory fallback
+                    logger.warning(
+                        "[%s] Codex Fast sell unavailable (%s); "
+                        "falling back to mcp-agent",
+                        ticker or "?",
+                        type(codex_err).__name__,
+                    )
+
+            if response is None:
+                async def _legacy_sell_response():
+                    llm = await self.sell_decision_agent.attach_llm(
+                        OpenAIAugmentedLLM
+                    )
+                    return await llm.generate_str(
+                        message=prompt_message,
+                        request_params=RequestParams(
+                            model="gpt-5.6-sol",
+                            reasoning_effort="high",
+                            maxTokens=30000
+                        )
+                    )
+
+                if _kr_codex_runtime_enabled():
+                    async with app.run():
+                        response = await _legacy_sell_response()
+                else:
+                    response = await _legacy_sell_response()
 
             # JSON parsing (consolidated in cores/utils.py)
             try:

@@ -21,6 +21,7 @@ load_dotenv()
 
 import argparse
 import asyncio
+from contextlib import nullcontext
 import json
 import logging
 import os
@@ -225,6 +226,19 @@ US_REPORTS_DIR.mkdir(exist_ok=True)
 US_TELEGRAM_MSGS_DIR.mkdir(exist_ok=True)
 US_PDF_REPORTS_DIR.mkdir(exist_ok=True)
 (US_TELEGRAM_MSGS_DIR / "sent").mkdir(exist_ok=True)
+
+
+def _batch_report_parallel_limit(job_count: int, environ=None) -> int:
+    """Mirror the proven KR scheduled-report concurrency contract."""
+    if job_count <= 0:
+        return 1
+    environ = os.environ if environ is None else environ
+    raw_limit = environ.get("PRISM_BATCH_REPORT_MAX_CONCURRENCY", "3")
+    try:
+        configured = int(raw_limit)
+    except (TypeError, ValueError):
+        configured = 3
+    return min(job_count, max(1, configured))
 
 
 # Trigger type translation map (English -> Korean)
@@ -570,7 +584,7 @@ class USStockAnalysisOrchestrator:
         reference_date: str | None = None,
     ) -> list:
         """
-        Generate reports serially for all US stocks.
+        Generate US reports with the same bounded parallelism as KR.
 
         Args:
             tickers: List of stocks to analyze
@@ -581,11 +595,14 @@ class USStockAnalysisOrchestrator:
         Returns:
             list: List of successful report paths
         """
-        logger.info(f"Starting US report generation for {len(tickers)} stocks (serial processing)")
+        concurrency = _batch_report_parallel_limit(len(tickers))
+        logger.info(
+            f"Starting US report generation for {len(tickers)} stocks "
+            f"(bounded parallelism={concurrency})"
+        )
+        semaphore = asyncio.Semaphore(concurrency)
 
-        successful_reports = []
-
-        for idx, ticker_info in enumerate(tickers, 1):
+        async def generate_one(idx, ticker_info):
             if isinstance(ticker_info, dict):
                 ticker = ticker_info.get('ticker')
                 company_name = ticker_info.get('name', ticker)
@@ -604,20 +621,23 @@ class USStockAnalysisOrchestrator:
             try:
                 from cores.us_analysis import analyze_us_stock
 
-                logger.info(f"[{idx}/{len(tickers)}] Starting analyze_us_stock function call")
-                report = await analyze_us_stock(
-                    ticker=ticker,
-                    company_name=company_name,
-                    reference_date=report_date,
-                    language=language,
-                    macro_context=macro_context
-                )
+                async with semaphore:
+                    logger.info(
+                        f"[{idx}/{len(tickers)}] Starting analyze_us_stock function call"
+                    )
+                    report = await analyze_us_stock(
+                        ticker=ticker,
+                        company_name=company_name,
+                        reference_date=report_date,
+                        language=language,
+                        macro_context=macro_context
+                    )
 
                 if report and len(report.strip()) > 0:
                     with open(output_file, "w", encoding="utf-8") as f:
                         f.write(report)
                     logger.info(f"[{idx}/{len(tickers)}] Report generation complete: {company_name}({ticker}) - {len(report)} characters")
-                    successful_reports.append(output_file)
+                    return output_file
                 else:
                     logger.error(f"[{idx}/{len(tickers)}] Report generation failed: {company_name}({ticker}) - empty content")
 
@@ -626,6 +646,13 @@ class USStockAnalysisOrchestrator:
                 import traceback
                 logger.error(traceback.format_exc())
 
+            return None
+
+        reports = await asyncio.gather(*(
+            generate_one(idx, ticker_info)
+            for idx, ticker_info in enumerate(tickers, 1)
+        ))
+        successful_reports = [report for report in reports if report]
         logger.info(f"US report generation complete: {len(successful_reports)}/{len(tickers)} successful")
         return successful_reports
 
@@ -1348,7 +1375,11 @@ class USStockAnalysisOrchestrator:
                 try:
                     logger.info("Starting US stock tracking system batch execution")
 
-                    from us_stock_tracking_agent import USStockTrackingAgent, app as tracking_app
+                    from us_stock_tracking_agent import (
+                        USStockTrackingAgent,
+                        _us_codex_runtime_enabled,
+                        app as tracking_app,
+                    )
 
                     if self.telegram_config.use_telegram:
                         try:
@@ -1360,7 +1391,12 @@ class USStockAnalysisOrchestrator:
 
                     self.telegram_config.log_status()
 
-                    async with tracking_app.run():
+                    tracking_context = (
+                        nullcontext()
+                        if _us_codex_runtime_enabled()
+                        else tracking_app.run()
+                    )
+                    async with tracking_context:
                         tracking_agent = USStockTrackingAgent(
                             telegram_token=self.telegram_config.bot_token if self.telegram_config.use_telegram else None
                         )

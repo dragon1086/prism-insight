@@ -1,0 +1,67 @@
+# Codex OAuth Fast profile for US buy/sell decisions on db-server.
+# Deploy to /root/.codex-prism/us_trading.config.toml.
+
+[mcp_servers.time]
+command = "/root/.pyenv/shims/python"
+args = ["-m", "cores.llm.time_mcp_server"]
+cwd = "/root/prism-insight"
+env = { PYTHONPATH = "/root/prism-insight" }
+enabled_tools = ["get_current_time"]
+default_tools_approval_mode = "approve"
+required = true
+startup_timeout_sec = 15
+tool_timeout_sec = 30
+
+[mcp_servers.yahoo_finance]
+command = "/root/.local/bin/uv"
+args = [
+  "tool",
+  "run",
+  "--from",
+  "yahoo-finance-mcp==0.1.2",
+  "--with",
+  "mcp==1.26.0",
+  "yahoo-finance-mcp",
+]
+cwd = "/tmp"
+enabled_tools = [
+  "get_historical_stock_prices",
+  "get_stock_info",
+  "get_yahoo_finance_news",
+  "get_stock_actions",
+  "get_financial_statement",
+  "get_holder_info",
+  "get_option_expiration_dates",
+  "get_option_chain",
+  "get_recommendations",
+]
+default_tools_approval_mode = "approve"
+required = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+
+[mcp_servers.sqlite]
+command = "/root/.local/bin/uv"
+args = [
+  "--directory",
+  "/root/prism-insight/sqlite",
+  "run",
+  "mcp-server-sqlite",
+  "--db-path",
+  "/root/prism-insight/stock_tracking_db.sqlite",
+]
+enabled_tools = ["list_tables", "describe_table", "read_query"]
+default_tools_approval_mode = "approve"
+required = true
+startup_timeout_sec = 30
+tool_timeout_sec = 30
+
+[mcp_servers.perplexity]
+command = "/root/.nvm/versions/node/v22.14.0/bin/npx"
+args = ["-y", "@perplexity-ai/mcp-server@1.2.0"]
+env_vars = ["PERPLEXITY_API_KEY"]
+enabled_tools = ["perplexity_ask"]
+default_tools_approval_mode = "approve"
+required = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
