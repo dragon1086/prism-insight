@@ -42,6 +42,8 @@ class CodexFastResult:
 
 
 McpProfile = Literal["kr_trading", "us_trading"]
+SUPPORTED_MODELS = frozenset({"gpt-5.6-sol"})
+SUPPORTED_MCP_PROFILES = frozenset({"kr_trading", "us_trading"})
 
 
 def _resolve_codex_executable(candidate: str) -> str:
@@ -66,6 +68,10 @@ def _command(
     model: str,
     mcp_profile: McpProfile | None,
 ) -> list[str]:
+    if model not in SUPPORTED_MODELS:
+        raise CodexFastError(f"Unsupported Codex model: {model}")
+    if mcp_profile is not None and mcp_profile not in SUPPORTED_MCP_PROFILES:
+        raise CodexFastError(f"Unsupported Codex MCP profile: {mcp_profile}")
     command = [
         codex_bin,
         "exec",
@@ -169,7 +175,7 @@ def generate_codex_fast(
             # fixed argv list. No shell parsing or untrusted option expansion occurs.
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args, python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             process = subprocess.run(  # nosec B603
-                _command(executable, model, mcp_profile),
+                _command(executable, model, mcp_profile),  # nosemgrep
                 input=_prompt(system_prompt, user_prompt, mcp_profile),
                 capture_output=True,
                 text=True,
