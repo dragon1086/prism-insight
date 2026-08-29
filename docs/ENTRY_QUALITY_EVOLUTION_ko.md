@@ -189,6 +189,8 @@ LIVE 이후에도 policy version별 성과를 분리하고 rollback 조건을 �
 - 완료: exact join·MISSING·fill·누수·다중 가설·holdout을 고정한 분석 하네스
 - 완료: 로컬 sanitized JSONL에서 결정론적 Evidence Packet을 만드는 도구와 회귀 테스트
 - 완료: 막연한 매수품질 요청도 같은 절차로 처리하는 프로젝트 분석 스킬
+- 완료: 독립 세션 forward-test에서 운영 Packet 2회가 같은
+  `packet_id=227bc93f578a524c72180182`를 만들고 `CONTINUE_CAPTURE` 판정
 - 미완료: 첫 실제 US `candidate.evaluated.entry_quality_context` 이벤트 확인
 - 미완료: 구조화된 일봉·주봉 base 품질 입력
 - 미완료: 구조화된 event risk 입력
