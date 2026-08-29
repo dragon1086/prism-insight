@@ -41,3 +41,6 @@ git status --short
 `prism-us/trading/data/exchange_cache.json`이 변경되면 안 됩니다. 기존 운영
 서버에서 seed가 이미 바뀌어 있다면 내용을 먼저 보존한 뒤 runtime 파일로
 복사하고, tracked seed는 Git 버전으로 복구합니다.
+
+운영 서버의 pull·backup·rollback 절차는
+[`SERVER_GIT_OPERATIONS_ko.md`](SERVER_GIT_OPERATIONS_ko.md)를 따릅니다.
