@@ -63,6 +63,7 @@ ClickHouse process (mode `0644`).
 - `candidate.evaluated`
 - `candidate.outcome` (live when 30-day tracking completes)
 - `entry.executed`
+- `entry.fill_reconciled` (US CAPTURE: 제출과 실제 체결을 구분하는 주문 provenance)
 - `exit.executed`
 
 `candidate.evaluated`, `entry.executed`, and `exit.executed` use context schema
@@ -77,6 +78,14 @@ reports and prompts are not copied into ClickHouse; the event retains the
 structured decision facts and source identifiers needed for reconstruction.
 Every append remains fail-open and happens only after the simulator database
 transaction has committed.
+
+US `candidate.evaluated` events may include versioned `entry_quality_context`
+when `ENTRY_QUALITY_CAPTURE_ENABLED` is not explicitly disabled. The capture is
+enabled by default; setting the variable to `0`, `false`, `no`, or `off` is the
+single kill switch. It uses only the existing scenario and local trigger
+feedback tables. Missing daily/weekly base or structured event evidence remains
+`MISSING`, and broker acceptance remains `SUBMITTED_ONLY` until an authoritative
+fill source confirms it.
 
 ## Historical baseline
 

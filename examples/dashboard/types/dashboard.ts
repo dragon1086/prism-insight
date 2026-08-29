@@ -521,6 +521,18 @@ export interface ObservabilityMarketSnapshot {
     complete_position_chains: number
     latest_at: string | null
   }
+  entry_quality_capture?: {
+    coverage_start_at: string | null
+    legacy_candidate_count: number
+    candidate_count: number
+    captured_count: number
+    coverage_rate: number | null
+    status_distribution: Record<string, number>
+    component_status: Record<string, Record<string, number>>
+    fill_reconciliation_count: number
+    fill_status_distribution: Record<string, number>
+    confirmed_fill_count: number
+  }
 }
 
 export interface ObservabilityDeployment {

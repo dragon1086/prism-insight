@@ -52,6 +52,12 @@ from prism_core.positions import (  # noqa: E402
     legacy_position_id,
     mirror_write_fail_open,
 )
+from observability.entry_quality import (  # noqa: E402
+    build_entry_quality_context,
+    build_fill_provenance,
+    capture_enabled as entry_quality_capture_enabled,
+    emit_fill_reconciliation,
+)
 from observability.trading_context import (  # noqa: E402
     emit_trading_context,
     latest_regime_snapshot,
@@ -546,6 +552,31 @@ def default_scenario() -> Dict[str, Any]:
         "considerations": "Analysis failed",
         "analysis_failed": True
     }
+
+
+def _capture_entry_quality_context(
+    *,
+    cursor: Any,
+    scenario: Dict[str, Any],
+    current_price: float,
+    trigger_type: str,
+) -> Dict[str, Any] | None:
+    """Build additive US capture context without touching the decision path."""
+    if not entry_quality_capture_enabled():
+        return None
+    try:
+        return build_entry_quality_context(
+            scenario=scenario,
+            current_price=current_price,
+            cursor=cursor,
+            trigger_type=trigger_type,
+        )
+    except Exception as error:  # noqa: BLE001 - capture must remain fail-open
+        logger.warning(
+            "[ENTRY_QUALITY_CAPTURE][US] context skipped: %s",
+            type(error).__name__,
+        )
+        return None
 
 
 # =============================================================================
@@ -1673,6 +1704,13 @@ class USStockTrackingAgent:
             stored_decision_context = scenario.get("_decision_context")
             if isinstance(stored_decision_context, dict):
                 decision_context.update(stored_decision_context)
+            entry_execution_context = {
+                "simulator_recorded": True,
+                "entry_price": current_price,
+                "legacy_holding_id": legacy_holding_id,
+            }
+            if entry_quality_capture_enabled():
+                entry_execution_context["fill_provenance"] = build_fill_provenance()
             emit_trading_context(
                 "entry.executed",
                 market="US",
@@ -1689,11 +1727,7 @@ class USStockTrackingAgent:
                     "slots_after": current_slots + 1,
                     "slots_max": getattr(self, "max_slots", 10),
                 },
-                execution_context={
-                    "simulator_recorded": True,
-                    "entry_price": current_price,
-                    "legacy_holding_id": legacy_holding_id,
-                },
+                execution_context=entry_execution_context,
                 source="us_batch_entry",
             )
 
@@ -1995,6 +2029,12 @@ class USStockTrackingAgent:
                     scenario=scenario,
                     decision_context=decision_context,
                     portfolio_context={"slots_used": slots_used, "slots_max": getattr(self, "max_slots", 10)},
+                    entry_quality_context=_capture_entry_quality_context(
+                        cursor=self.cursor,
+                        scenario=scenario,
+                        current_price=current_price,
+                        trigger_type=trigger_type,
+                    ),
                     source="us_batch_watchlist",
                 )
             except Exception as context_error:
@@ -3965,6 +4005,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 "slots_used": current_slots,
                                 "slots_max": self.max_slots,
                             },
+                            entry_quality_context=_capture_entry_quality_context(
+                                cursor=self.cursor,
+                                scenario=scenario,
+                                current_price=current_price,
+                                trigger_type=trigger_type,
+                            ),
                             source="us_batch_decision",
                         )
 
@@ -4020,6 +4066,14 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                             account_key=account_key,
                                             intent_id=persisted_intent_id,
                                         )
+                                    emit_fill_reconciliation(
+                                        market="US",
+                                        ticker=ticker,
+                                        decision_id=source_decision_id,
+                                        position_id=opened_position_id,
+                                        intent_id=persisted_intent_id or order_intent.id,
+                                        result=trade_result,
+                                    )
 
                                     if trade_result['success']:
                                         logger.info(f"Actual purchase successful: {trade_result['message']}")
@@ -4030,6 +4084,19 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         legacy_holding_id=buy_result.legacy_holding_id,
                                         account_key=account_key,
                                         intent_id=trade_err.intent_id,
+                                    )
+                                    emit_fill_reconciliation(
+                                        market="US",
+                                        ticker=ticker,
+                                        decision_id=source_decision_id,
+                                        position_id=opened_position_id,
+                                        intent_id=trade_err.intent_id,
+                                        result=(
+                                            trade_err.broker_result
+                                            if isinstance(trade_err.broker_result, dict)
+                                            else None
+                                        ),
+                                        outcome_unknown=True,
                                     )
                                     logger.warning(
                                         f"Trading outcome unknown: {trade_err}"

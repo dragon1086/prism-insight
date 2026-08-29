@@ -84,6 +84,7 @@ export function ObservabilityInsightsPanel({ data, market }: Props) {
     : Number.POSITIVE_INFINITY
   const impacts = data.deployment_impacts.slice().reverse().slice(0, 8)
   const contextLedger = current.context_ledger
+  const entryQualityCapture = current.entry_quality_capture
 
   return (
     <section className="space-y-4">
@@ -166,6 +167,17 @@ export function ObservabilityInsightsPanel({ data, market }: Props) {
             <div className="flex justify-between">
               <span>{language === "ko" ? "완결 포지션" : "Complete chains"}</span>
               <strong>{contextLedger?.complete_position_chains || 0}</strong>
+            </div>
+            <div className="flex justify-between">
+              <span>{language === "ko" ? "진입품질 수집률" : "Entry-quality capture"}</span>
+              <strong>{pct(entryQualityCapture?.coverage_rate ?? null, 0)}</strong>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span>{language === "ko" ? "체결 확인/주문 관측" : "Confirmed/observed fills"}</span>
+              <strong>
+                {entryQualityCapture?.confirmed_fill_count || 0}/
+                {entryQualityCapture?.fill_reconciliation_count || 0}
+              </strong>
             </div>
             <div className="text-xs text-muted-foreground">
               {contextLedger?.latest_at
