@@ -204,7 +204,7 @@ subscriber 프로세스만 이 스크립트로 재기동하면 된다.
 |---|---|---|
 | `APBK0952 주문가능금액을 초과` | 예수금 부족. 주문 접수 자체가 거부됨 | **loop C로 해결 불가**(미체결이 아니라 거부). 예수금 충전. 수량 자동 축소는 설계상 없음(의도된 동작) |
 | `EGW00123 기간이 만료된 token` | KIS 토큰 만료/불일치 | `trading/config/KIS_*.token` 삭제 후 재실행(자동 재발급) |
-| restart 스크립트가 dirty로 중단 | 런타임 캐시(`prism-us/trading/data/exchange_cache.json`) 변경 등 | 캐시 파일이면 `git checkout -- <file>`, 아니면 stash 후 재실행 |
+| restart 스크립트가 dirty로 중단 | 배포 중 수동 수정 또는 추적 파일에 런타임 출력 발생 | `git status --short`로 원인을 확인한다. stock map과 거래소 캐시는 각각 `runtime/stock_map.json`, `runtime/us_exchange_cache.json`에 기록되므로 정상 실행만으로 tracked seed가 바뀌면 안 된다. |
 | loop 로그가 장중에 갱신 안 됨 | §5 타임존 미스매치 | `readlink /etc/localtime` 재확인 후 cron 시간 재환산 |
 
 한눈 점검: `.venv/bin/python tools/feature_status.py` — 각 장치의 OFF/SHADOW/LIVE/미스케줄 상태를 표로 출력.

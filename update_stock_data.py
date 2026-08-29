@@ -4,13 +4,17 @@ Stock information update script
 
 Run periodically to update stock information (codes, names) daily
 """
-from dotenv import load_dotenv
-load_dotenv()  # Load environment variables from .env file
-
+import argparse
 import json
 import logging
-import argparse
 from datetime import datetime
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+from prism_core.runtime_paths import resolve_stock_map_write_path
+
+load_dotenv()  # Load environment variables from .env file
 
 try:
     from krx_data_client import _get_client
@@ -29,12 +33,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def update_stock_data(output_file="stock_map.json"):
+def update_stock_data(output_file: str | Path | None = None):
     """
     Update stock information
 
     Args:
-        output_file (str): File path to save
+        output_file: Explicit file path to save. When omitted, use the
+            configured runtime path instead of the tracked seed file.
 
     Returns:
         bool: Success status
@@ -62,10 +67,12 @@ def update_stock_data(output_file="stock_map.json"):
             "updated_at": datetime.now().isoformat()
         }
 
-        with open(output_file, 'w', encoding='utf-8') as f:
+        output_path = resolve_stock_map_write_path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open('w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        logger.info(f"Stock data update complete: {len(code_to_name)} stocks, file: {output_file}")
+        logger.info(f"Stock data update complete: {len(code_to_name)} stocks, file: {output_path}")
         return True
     except Exception as e:
         logger.error(f"Stock data update failed: {e}")
@@ -75,7 +82,14 @@ def update_stock_data(output_file="stock_map.json"):
 
 def main():
     parser = argparse.ArgumentParser(description="Update stock information")
-    parser.add_argument("--output", default="stock_map.json", help="File path to save")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "File path to save (default: PRISM_STOCK_MAP_PATH, "
+            "KAKAO_STOCK_MAP_PATH, or runtime/stock_map.json)"
+        ),
+    )
 
     args = parser.parse_args()
     update_stock_data(args.output)
