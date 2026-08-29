@@ -35,8 +35,13 @@ PROJECT_ROOT = TRADING_DIR.parent.parent
 
 # Import KIS auth from parent trading directory
 import sys
+sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "trading"))
 import kis_auth as ka
+from prism_core.runtime_paths import (
+    resolve_us_exchange_cache_read_path,
+    resolve_us_exchange_cache_write_path,
+)
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -152,24 +157,25 @@ _YFINANCE_TO_KIS: Dict[str, str] = {
     "BATS": "NYSE",     # Cboe BZX (alternate yfinance code)
 }
 
-# Persistent ticker → KIS exchange cache.
-# Auto-populated on first yfinance lookup; survives process restarts.
-# Hand-editable — useful when a stock changes exchange or yfinance is wrong.
-_EXCHANGE_CACHE_FILE = TRADING_DIR / "data" / "exchange_cache.json"
+# Persistent ticker → KIS exchange cache. The tracked data file is a seed only;
+# auto-discovered mappings are written to ignored runtime data so ordinary
+# process activity cannot dirty the repository.
+_EXCHANGE_CACHE_READ_FILE = resolve_us_exchange_cache_read_path()
+_EXCHANGE_CACHE_FILE = resolve_us_exchange_cache_write_path()
 _EXCHANGE_CACHE_LOCK = threading.Lock()
 
 
 def _load_exchange_cache() -> Dict[str, str]:
     """Load persistent ticker → exchange cache from disk."""
     try:
-        if _EXCHANGE_CACHE_FILE.exists():
-            with open(_EXCHANGE_CACHE_FILE, encoding="utf-8") as f:
+        if _EXCHANGE_CACHE_READ_FILE.exists():
+            with open(_EXCHANGE_CACHE_READ_FILE, encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     return {k.upper(): v for k, v in data.items() if isinstance(v, str)}
-                logger.warning(f"[exchange] Cache file is not a dict: {_EXCHANGE_CACHE_FILE}")
+                logger.warning(f"[exchange] Cache file is not a dict: {_EXCHANGE_CACHE_READ_FILE}")
     except (json.JSONDecodeError, OSError) as e:
-        logger.warning(f"[exchange] Failed to load cache file ({_EXCHANGE_CACHE_FILE}): {e} — starting empty")
+        logger.warning(f"[exchange] Failed to load cache file ({_EXCHANGE_CACHE_READ_FILE}): {e} — starting empty")
     return {}
 
 
@@ -194,7 +200,7 @@ def get_exchange_code(ticker: str) -> str:
     Determine the KIS exchange code for a ticker.
 
     Lookup order:
-        1. Persistent cache (data/exchange_cache.json) — instant
+        1. Runtime cache, falling back to the tracked seed — instant
         2. yfinance .info["exchange"] → translated via _YFINANCE_TO_KIS
         3. Fallback to "NYSE" (NOT cached, so adding mappings retroactively works)
 
@@ -353,7 +359,7 @@ class USStockTrading:
         Resolve KIS exchange code for a ticker — KIS-authoritative.
 
         Lookup order:
-            1. Persistent cache (data/exchange_cache.json) — instant
+            1. Runtime cache, falling back to the tracked seed — instant
             2. Probe KIS price API across NAS/NYS/AMS — authoritative
             3. Fallback to "NYSE" (NOT cached, so a later success picks up retroactively)
         """

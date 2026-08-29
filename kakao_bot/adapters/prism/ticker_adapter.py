@@ -1,26 +1,26 @@
 """Resolve user input to a ticker using Prism's shared resolver.
 
 This is one of the two places Kakao code is allowed to import Prism (design
-§3.2). The KR name/code maps live in `stock_map.json`; there is no equivalent
-name map for US listings, so a US query is taken as the ticker itself.
+§3.2). The KR name/code maps prefer mutable runtime data and fall back to the
+tracked `stock_map.json` seed; there is no equivalent name map for US listings,
+so a US query is taken as the ticker itself.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 from kakao_bot.ports.analysis import (
     ResolvedTicker,
     TickerResolution,
 )
+from prism_core.runtime_paths import resolve_stock_map_read_path
 from prism_core.ticker_resolver import resolve_ticker
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_STOCK_MAP_PATH = Path("stock_map.json")
 
 _US_TICKER_MAX_LENGTH = 5
 _UNRESOLVED_US = "미국 종목은 티커로 입력해주세요. 예: 리포트 AAPL"
@@ -29,8 +29,12 @@ _UNRESOLVED_US = "미국 종목은 티커로 입력해주세요. 예: 리포트 
 class PrismTickerResolver:
     """Adapter implementing :class:`TickerResolverPort`."""
 
-    def __init__(self, stock_map_path: str | Path = DEFAULT_STOCK_MAP_PATH) -> None:
-        self._path = Path(stock_map_path)
+    def __init__(self, stock_map_path: str | Path | None = None) -> None:
+        self._path = (
+            Path(stock_map_path)
+            if stock_map_path is not None
+            else resolve_stock_map_read_path()
+        )
         self._code_to_name: Mapping[str, str] = {}
         self._name_to_code: Mapping[str, str] = {}
         self._load()

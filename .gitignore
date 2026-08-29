@@ -40,6 +40,11 @@ tasks/*
 
 # Logs
 *.log
+*.log.[0-9]*
+*.log.gz
+*.log.bz2
+*.log.xz
+*.log.zst
 
 # Jeon Ingu Trading 출력 파일 및 데이터
 events/*
@@ -88,6 +93,9 @@ examples/dashboard/node_modules/
 reports/
 pdf_reports/
 telegram_messages/
+/html_reports/
+/examples/dashboard/public/observability_insights.json
+nohup.out
 *.sqlite
 *.pdf
 *_report*.md
@@ -128,8 +136,50 @@ sqlite/stock_tracking_db
 
 # Backup files
 *.bak
+*.bak.*
+*.bak_*
 *.backup
+*.backup.*
+*.backup_*
+*.old
+*.orig
+*.rej
+*.save
+*.swp
+*.swo
 *~
+
+# Runtime-generated mutable data (tracked JSON files are immutable seeds)
+/runtime/
+
+# Deployment backup directories and archives
+/deploy-backups/
+/.deploy-backups/
+/deploy_backups/
+/deployment-backups/
+/deploy-backup-*/
+/deployment-backup-*/
+/deploy-backup-*.tar*
+/deployment-backup-*.tar*
+
+# Timestamped database backups that do not end in a plain .bak suffix
+*.db.bak*
+*.db.backup*
+*.sqlite.bak*
+*.sqlite.backup*
+
+# Accidental virtualenv contents created directly in the repository root
+/bin/
+/etc/
+/include/
+/lib/
+/lib64/
+/share/
+/pyvenv.cfg
+
+# Root-level generated intelligence snapshots and legacy marker files
+/macro_intelligence_*.json
+/stock_tracking_db
 
 # SSH keys and certificates
 *.pem

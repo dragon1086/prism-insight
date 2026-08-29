@@ -27,6 +27,7 @@ from kakao_bot.adapters.prism.verdict import (
 )
 from kakao_bot.ports.analysis import AnalysisOutcome
 from prism_core.report_service import generate_report
+from prism_core.runtime_paths import resolve_stock_map_read_path
 
 logger = logging.getLogger(__name__)
 
@@ -673,7 +674,7 @@ def _load_kr_stock_maps(path: str) -> tuple[dict[str, str], dict[str, str]]:
 
 
 def _stock_map_path() -> str:
-    return os.getenv("KAKAO_STOCK_MAP_PATH", "stock_map.json")
+    return str(resolve_stock_map_read_path())
 
 
 @lru_cache(maxsize=256)

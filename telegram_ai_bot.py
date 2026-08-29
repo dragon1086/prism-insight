@@ -44,6 +44,7 @@ from firecrawl_client import firecrawl_agent
 from cores.search_presets import search_preset
 from cores.market_facts_cache import daily_facts
 from cores.disclaimer_utils import strip_trailing_disclaimer as _strip_trailing_disclaimer
+from prism_core.runtime_paths import resolve_stock_map_read_path
 from prism_core.ticker_resolver import resolve_ticker
 from telegram_moderation import CommunityModerator, community_notice
 from datetime import timedelta
@@ -794,13 +795,12 @@ class TelegramAIBot:
         Load dictionary mapping stock codes to names
         """
         try:
-            # Stock information file path
-            stock_map_file = "stock_map.json"
+            stock_map_file = resolve_stock_map_read_path()
 
             logger.info(f"Attempting to load stock mapping info: {stock_map_file}")
 
-            if os.path.exists(stock_map_file):
-                with open(stock_map_file, 'r', encoding='utf-8') as f:
+            if stock_map_file.exists():
+                with stock_map_file.open('r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.stock_map = data.get("code_to_name", {})
                     self.stock_name_map = data.get("name_to_code", {})

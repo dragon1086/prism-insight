@@ -138,13 +138,11 @@ def _build_message_handler(
     from kakao_bot.adapters.prism.ticker_adapter import PrismTickerResolver
     from kakao_bot.application.command_service import CommandService
 
-    resolver = PrismTickerResolver(
-        os.getenv("KAKAO_STOCK_MAP_PATH", "stock_map.json")
-    )
+    resolver = PrismTickerResolver()
     if not resolver.is_loaded:
         logger.error(
             "Stock map is empty; ticker lookups will fail. "
-            "Set KAKAO_STOCK_MAP_PATH to a readable stock_map.json."
+            "Update runtime/stock_map.json or set PRISM_STOCK_MAP_PATH."
         )
 
     return MessageCommandHandler(
