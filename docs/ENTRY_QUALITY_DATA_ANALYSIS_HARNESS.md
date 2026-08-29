@@ -1,8 +1,8 @@
 # PRISM 진입품질 데이터 분석 하네스
 
-> 상태: **v1 canonical**  
-> 분석 계약: `entry-quality-harness-v1`  
-> 적용 대상: PRISM ClickStack 관측 원장에서 파생한 진입품질 분석  
+> 상태: **v1 canonical**
+> 분석 계약: `entry-quality-harness-v1`
+> 적용 대상: PRISM ClickStack 관측 원장에서 파생한 진입품질 분석
 > 실행 도구: `tools/build_entry_quality_evidence_packet.py`
 
 이 문서는 세션과 분석자가 바뀌어도 같은 데이터에서 같은 범위의 결론을 내리도록
