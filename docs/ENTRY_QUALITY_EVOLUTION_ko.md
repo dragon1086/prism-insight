@@ -1,9 +1,9 @@
 # 진입품질 관측에서 LIVE까지의 진화 로드맵
 
-> 상태: **CAPTURE 구현 완료 — 다음 db-server 배포부터 수집**
+> 상태: **CAPTURE v1 운영 배포 완료 — 첫 실제 US 후보 대기**
 > 최종 의사결정일: 2026-08-29
-> 현재 구현 기준: `main`
-> 다음 작업: db-server 배포 후 prospective coverage와 결측률 확인
+> 현재 구현 기준: `26401a76`
+> 다음 작업: 2026-08-31 US morning 배치 후 prospective coverage와 결측률 확인
 
 ## 1. 이 문서가 우선하는 결정
 
@@ -176,7 +176,9 @@ LIVE 이후에도 policy version별 성과를 분리하고 rollback 조건을 �
 - 완료: `SUBMITTED_ONLY|REJECTED|UNKNOWN` 주문 provenance 연결 이벤트 구현
 - 완료: 과거 후보를 제외한 prospective coverage·결측·fill dashboard 집계 구현
 - 완료: CAPTURE OFF/ON의 broker call·signal·OrderIntent 불변성 테스트
-- 미완료: 운영 db-server 배포 및 첫 실제 이벤트 확인
+- 완료: db-server CAPTURE·ClickStack exporter·dashboard 운영 배포
+- 완료: 운영 DB read-only trigger prior와 namespace-shadow smoke test
+- 미완료: 첫 실제 US `candidate.evaluated.entry_quality_context` 이벤트 확인
 - 미완료: 구조화된 일봉·주봉 base 품질 입력
 - 미완료: 구조화된 event risk 입력
 - 미완료: broker-confirmed fill reconciliation
