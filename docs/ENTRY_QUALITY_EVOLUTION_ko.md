@@ -5,6 +5,11 @@
 > 현재 구현 기준: `26401a76`
 > 다음 작업: 2026-08-31 US morning 배치 후 prospective coverage와 결측률 확인
 
+반복 분석의 canonical 절차는
+`docs/ENTRY_QUALITY_DATA_ANALYSIS_HARNESS.md`이며, 세션이 바뀌어도
+`skills/prism-entry-quality-analysis/SKILL.md`와 결정론적 Evidence Packet 생성기를
+사용합니다.
+
 ## 1. 이 문서가 우선하는 결정
 
 진입품질 개선은 별도의 데이터 파이프라인이나 독립된 SHADOW 시스템으로 만들지
@@ -159,13 +164,16 @@ LIVE 이후에도 policy version별 성과를 분리하고 rollback 조건을 �
 
 다음 세션은 “진입품질 작업을 계속하자”는 요청을 받으면 다음 순서로 진행합니다.
 
-1. 이 문서와 `.omx/plans/prd-entry-quality-observability.md`를 먼저 읽습니다.
-2. 코드와 운영 지표를 확인해 현재 단계가 어디까지 실제로 완료됐는지 증거로 판정합니다.
-3. 완료되지 않은 현재 단계의 가장 작은 작업부터 수행합니다.
-4. 단계가 끝날 때 이 문서 상단의 상태·다음 작업과 검증 수치를 갱신합니다.
-5. CAPTURE 데이터를 SHADOW 성과라고 부르지 않습니다.
-6. 구체적인 규칙이 고정되기 전에 SHADOW lifecycle을 만들지 않습니다.
-7. 사용자 승인 없이 LIVE로 전환하지 않습니다.
+1. 이 문서, `docs/ENTRY_QUALITY_DATA_ANALYSIS_HARNESS.md`,
+   `.omx/plans/prd-entry-quality-observability.md`를 먼저 읽습니다.
+2. 분석 요청이면 `skills/prism-entry-quality-analysis/SKILL.md`를 적용하고
+   `tools/build_entry_quality_evidence_packet.py`로 Packet을 먼저 생성합니다.
+3. 코드와 운영 지표를 확인해 현재 단계가 어디까지 실제로 완료됐는지 증거로 판정합니다.
+4. 완료되지 않은 현재 단계의 가장 작은 작업부터 수행합니다.
+5. 단계가 끝날 때 이 문서 상단의 상태·다음 작업과 검증 수치를 갱신합니다.
+6. CAPTURE 데이터를 SHADOW 성과라고 부르지 않습니다.
+7. 구체적인 규칙이 고정되기 전에 SHADOW lifecycle을 만들지 않습니다.
+8. 사용자 승인 없이 LIVE로 전환하지 않습니다.
 
 ## 6. 현재 인수인계 상태
 
@@ -178,6 +186,9 @@ LIVE 이후에도 policy version별 성과를 분리하고 rollback 조건을 �
 - 완료: CAPTURE OFF/ON의 broker call·signal·OrderIntent 불변성 테스트
 - 완료: db-server CAPTURE·ClickStack exporter·dashboard 운영 배포
 - 완료: 운영 DB read-only trigger prior와 namespace-shadow smoke test
+- 완료: exact join·MISSING·fill·누수·다중 가설·holdout을 고정한 분석 하네스
+- 완료: 로컬 sanitized JSONL에서 결정론적 Evidence Packet을 만드는 도구와 회귀 테스트
+- 완료: 막연한 매수품질 요청도 같은 절차로 처리하는 프로젝트 분석 스킬
 - 미완료: 첫 실제 US `candidate.evaluated.entry_quality_context` 이벤트 확인
 - 미완료: 구조화된 일봉·주봉 base 품질 입력
 - 미완료: 구조화된 event risk 입력
