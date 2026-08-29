@@ -18,10 +18,12 @@ and remains correct under store=True (API-key mode).
 Drop-in replacement: swap attach_llm(OpenAIAugmentedLLM) →
                                attach_llm(OpenAIResponsesLLM)
 """
-import json
-from typing import List, Optional
 
-from openai import AsyncOpenAI
+import json
+import logging
+import os
+import time
+
 from mcp.types import (
     CallToolRequest,
     CallToolRequestParams,
@@ -29,9 +31,50 @@ from mcp.types import (
     TextContent,
     TextResourceContents,
 )
-
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
+from openai import AsyncOpenAI, BadRequestError
+
+logger = logging.getLogger(__name__)
+
+# Trading requests provide their model and effort per call.  Suppress the
+# mcp-agent default-model INFO message and emit authoritative telemetry below.
+logging.getLogger("mcp_agent.workflows.llm.augmented_llm_openai").setLevel(
+    logging.WARNING
+)
+
+_SERVICE_TIER_ALIASES = {
+    "fast": "priority",
+    "priority": "priority",
+    "default": "default",
+    "auto": "auto",
+    "flex": "flex",
+    "scale": "scale",
+}
+OPENAI_SERVICE_TIER = _SERVICE_TIER_ALIASES.get(
+    os.getenv("OPENAI_SERVICE_TIER", "default").strip().lower(),
+    "default",
+)
+
+
+def _service_tier_error(exc: Exception) -> bool:
+    """Return whether a bad request specifically rejected tier negotiation."""
+
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "service_tier",
+            "service tier",
+            "unsupported parameter",
+            "priority",
+            "fast mode",
+        )
+    )
+
+
+def _usage_value(usage, name: str):
+    return getattr(usage, name, None) if usage is not None else None
 
 
 class OpenAIResponsesLLM(OpenAIAugmentedLLM):
@@ -39,36 +82,32 @@ class OpenAIResponsesLLM(OpenAIAugmentedLLM):
     OpenAIAugmentedLLM variant that drives the agentic tool-call loop via the
     Responses API instead of Chat Completions.
 
-    Token efficiency improvement: after the first turn, only the new tool results
-    (not the entire conversation history) are sent to OpenAI on each iteration,
-    because the server tracks state via previous_response_id.
+    Conversation state remains client-side: every turn re-sends the complete
+    function-call and function-output chain because OAuth requests use store=False.
     """
 
     async def generate_str(
         self,
         message,
-        request_params: Optional[RequestParams] = None,
+        request_params: RequestParams | None = None,
     ) -> str:
         params = self.get_request_params(request_params)
         model = await self.select_model(params)
 
         # Collect MCP tools in Responses API format (flat, no "function" wrapper)
         tools_result = await self.agent.list_tools(tool_filter=params.tool_filter)
-        tools: Optional[List] = (
-            [
-                {
-                    "type": "function",
-                    "name": tool.name,
-                    "description": tool.description or "",
-                    "parameters": tool.inputSchema,
-                }
-                for tool in tools_result.tools
-            ]
-            or None
-        )
+        tools: list | None = [
+            {
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description or "",
+                "parameters": tool.inputSchema,
+            }
+            for tool in tools_result.tools
+        ] or None
 
         # Build initial input (developer system prompt + user message)
-        input_items: List = []
+        input_items: list = []
         system_prompt = self.instruction or params.systemPrompt
         if system_prompt:
             input_items.append({"role": "developer", "content": system_prompt})
@@ -86,6 +125,9 @@ class OpenAIResponsesLLM(OpenAIAugmentedLLM):
 
         # Build kwargs shared across all iterations
         base_kwargs: dict = {"model": model, "tools": tools}
+        requested_service_tier = OPENAI_SERVICE_TIER
+        if requested_service_tier not in {"auto", "default"}:
+            base_kwargs["service_tier"] = requested_service_tier
 
         if self._reasoning(model):
             effort = params.reasoning_effort or self._reasoning_effort
@@ -101,9 +143,16 @@ class OpenAIResponsesLLM(OpenAIAugmentedLLM):
 
         provider_config = self.get_provider_config(self.context)
         if provider_config is None:
-            raise RuntimeError("OpenAI provider config is missing from mcp_agent.config.yaml")
+            raise RuntimeError(
+                "OpenAI provider config is missing from mcp_agent.config.yaml"
+            )
 
         final_text = ""
+        agent_name = (
+            getattr(self, "name", None)
+            or getattr(getattr(self, "agent", None), "name", None)
+            or "unknown"
+        )
 
         async with AsyncOpenAI(
             api_key=provider_config.api_key,
@@ -118,10 +167,33 @@ class OpenAIResponsesLLM(OpenAIAugmentedLLM):
                 # function_call must accompany its function_call_output.
                 call_kwargs = {**base_kwargs, "input": input_items}
 
-                response = await client.responses.create(**call_kwargs)  # type: ignore[attr-defined]
+                started = time.monotonic()
+                tier_fallback = False
+                try:
+                    response = await client.responses.create(**call_kwargs)  # type: ignore[attr-defined]
+                except BadRequestError as exc:
+                    if "service_tier" not in call_kwargs or not _service_tier_error(
+                        exc
+                    ):
+                        raise
+                    fallback_kwargs = dict(call_kwargs)
+                    fallback_kwargs.pop("service_tier", None)
+                    # Remember the proxy capability for the remaining tool turns in
+                    # this generation; do not pay for another guaranteed 400.
+                    base_kwargs.pop("service_tier", None)
+                    tier_fallback = True
+                    logger.warning(
+                        "[LLM] service tier rejected; retrying standard request "
+                        "agent=%s model=%s requested_tier=%s error=%s",
+                        agent_name,
+                        model,
+                        requested_service_tier,
+                        str(exc)[:240],
+                    )
+                    response = await client.responses.create(**fallback_kwargs)  # type: ignore[attr-defined]
 
                 # Separate text content and function calls from output items
-                text_parts: List[str] = []
+                text_parts: list[str] = []
                 function_calls = []
                 for item in response.output:
                     if item.type == "message":
@@ -130,6 +202,32 @@ class OpenAIResponsesLLM(OpenAIAugmentedLLM):
                                 text_parts.append(part.text)
                     elif item.type == "function_call":
                         function_calls.append(item)
+
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                usage = getattr(response, "usage", None)
+                usage_details = getattr(usage, "output_tokens_details", None)
+                response_tier = getattr(response, "service_tier", None)
+                effective_tier = response_tier or (
+                    "default(fallback)" if tier_fallback else "unknown"
+                )
+                logger.info(
+                    "[LLM] agent=%s turn=%d model_requested=%s model_effective=%s "
+                    "reasoning_effort=%s max_output_tokens=%s "
+                    "service_tier_requested=%s service_tier_effective=%s "
+                    "latency_ms=%d output_tokens=%s reasoning_tokens=%s tool_calls=%d",
+                    agent_name,
+                    i,
+                    model,
+                    getattr(response, "model", None) or "unknown",
+                    base_kwargs.get("reasoning", {}).get("effort", "none"),
+                    base_kwargs.get("max_output_tokens"),
+                    requested_service_tier,
+                    effective_tier,
+                    elapsed_ms,
+                    _usage_value(usage, "output_tokens"),
+                    _usage_value(usage_details, "reasoning_tokens"),
+                    len(function_calls),
+                )
 
                 if not function_calls:
                     final_text = "\n".join(text_parts)
