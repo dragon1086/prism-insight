@@ -7,6 +7,9 @@
 > 진입품질은 별도 SHADOW 시스템이 아니라 기존 관측 원장을 먼저 확장합니다. CAPTURE에서
 > 구체 규칙 SHADOW와 LIVE까지의 단계 계약은
 > [Entry Quality Evolution](ENTRY_QUALITY_EVOLUTION_ko.md)을 참고하세요.
+> 반복 가능한 분석 절차, exact join, 결측·체결·표본·holdout 기준은
+> [Entry Quality Data Analysis Harness](ENTRY_QUALITY_DATA_ANALYSIS_HARNESS.md)를
+> 따릅니다.
 
 ## Contract
 
@@ -86,6 +89,15 @@ single kill switch. It uses only the existing scenario and local trigger
 feedback tables. Missing daily/weekly base or structured event evidence remains
 `MISSING`, and broker acceptance remains `SUBMITTED_ONLY` until an authoritative
 fill source confirms it.
+
+Entry-quality analysis must be derived with
+`tools/build_entry_quality_evidence_packet.py` from a local sanitized JSONL
+export. The tool performs no network or database access, excludes legacy and
+backfill candidates from prospective evidence, deduplicates event and decision
+identities, enforces exact `decision_id`/`position_id` joins, and emits explicit
+coverage, missingness, fill, linkage, leakage, cohort, and insufficiency facts.
+Future sessions should use `skills/prism-entry-quality-analysis/SKILL.md` rather
+than ad-hoc SQL. The packet never enables SHADOW or LIVE behavior.
 
 ## Historical baseline
 

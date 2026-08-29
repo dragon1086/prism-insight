@@ -1,0 +1,7 @@
+interface:
+  display_name: "PRISM Entry Quality Analysis"
+  short_description: "Reproducible PRISM entry-quality evidence analysis"
+  default_prompt: "Use $prism-entry-quality-analysis to analyze PRISM buy quality from a deterministic Evidence Packet."
+
+policy:
+  allow_implicit_invocation: true

@@ -87,6 +87,20 @@ Avoid broad production-like runs unless the task requires them.
   `docs/TRADING_CHANGE_REVIEW_HARNESS.md`. In particular, do not generalize a
   trigger-local failure into a global hard gate without testing counterexamples.
 
+### Entry-quality analysis
+
+- Route requests such as “매수품질 데이터 분석해줘”, entry-quality validation,
+  trigger comparison/replacement, replay, or entry-rule promotion review through
+  `skills/prism-entry-quality-analysis/SKILL.md`.
+- Read `docs/ENTRY_QUALITY_EVOLUTION_ko.md` and
+  `docs/ENTRY_QUALITY_DATA_ANALYSIS_HARNESS.md` before interpreting the data.
+- Generate a deterministic Evidence Packet with
+  `tools/build_entry_quality_evidence_packet.py`; do not substitute ad-hoc SQL,
+  fuzzy joins, or reconstructed fills.
+- Keep `MISSING` as unknown and count only `CONFIRMED` fills as realized samples.
+- Never promote a trigger or entry-quality rule to SHADOW or LIVE automatically.
+  LIVE requires the trading change harness and explicit user approval.
+
 ### Report output
 
 - Korean report text must use formal polite style.
