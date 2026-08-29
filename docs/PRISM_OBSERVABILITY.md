@@ -3,6 +3,10 @@
 > 데이터 생성부터 ClickStack 적재, 대시보드, AI 검증 루프까지 이어지는 한국어
 > 설명은 [PRISM Logging Intelligence Architecture](LOGGING_ARCHITECTURE_ko.md)를
 > 참고하세요.
+>
+> 진입품질은 별도 SHADOW 시스템이 아니라 기존 관측 원장을 먼저 확장합니다. CAPTURE에서
+> 구체 규칙 SHADOW와 LIVE까지의 단계 계약은
+> [Entry Quality Evolution](ENTRY_QUALITY_EVOLUTION_ko.md)을 참고하세요.
 
 ## Contract
 
