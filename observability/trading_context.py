@@ -134,6 +134,7 @@ def build_trading_context(
     decision_context: Mapping[str, Any] | None = None,
     portfolio_context: Mapping[str, Any] | None = None,
     execution_context: Mapping[str, Any] | None = None,
+    entry_quality_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the versioned payload shared by candidate, entry, and exit events."""
     parsed = _load_scenario(scenario)
@@ -146,7 +147,7 @@ def build_trading_context(
         market=market,
         fallback=market_context,
     )
-    return {
+    context = {
         "context_schema_version": CONTEXT_SCHEMA_VERSION,
         "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "market_context": market_snapshot,
@@ -169,6 +170,9 @@ def build_trading_context(
         "portfolio_context": dict(portfolio_context or {}),
         "execution_context": dict(execution_context or {}),
     }
+    if entry_quality_context is not None:
+        context["entry_quality_context"] = dict(entry_quality_context)
+    return context
 
 
 def emit_trading_context(
@@ -186,6 +190,7 @@ def emit_trading_context(
     decision_context: Mapping[str, Any] | None = None,
     portfolio_context: Mapping[str, Any] | None = None,
     execution_context: Mapping[str, Any] | None = None,
+    entry_quality_context: Mapping[str, Any] | None = None,
     source: str | None = None,
 ) -> dict[str, Any] | None:
     """Emit one linked snapshot; every failure is swallowed by design."""
@@ -202,6 +207,7 @@ def emit_trading_context(
             decision_context=decision_context,
             portfolio_context=portfolio_context,
             execution_context=execution_context,
+            entry_quality_context=entry_quality_context,
         )
         market_snapshot = context["market_context"]
         decision_snapshot = context["decision_context"]

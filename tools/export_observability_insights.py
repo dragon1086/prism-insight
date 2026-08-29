@@ -20,6 +20,7 @@ EVENT_TYPES = {
     "candidate.evaluated",
     "candidate.outcome",
     "deployment.applied",
+    "entry.fill_reconciled",
     "entry.executed",
     "exit.executed",
     "market.regime_snapshot",
@@ -34,6 +35,7 @@ _CLICKHOUSE_EVENTS_QUERY = """
         'candidate.evaluated',
         'candidate.outcome',
         'deployment.applied',
+        'entry.fill_reconciled',
         'entry.executed',
         'exit.executed',
         'market.regime_snapshot',
@@ -213,6 +215,86 @@ def _market_snapshot(
         in {"candidate.evaluated", "entry.executed", "exit.executed"}
         and event.get("market") == market
     ]
+    candidate_context_events = [
+        event
+        for event in context_events
+        if event.get("event_type") == "candidate.evaluated"
+    ]
+    all_captured_quality_events = [
+        event
+        for event in candidate_context_events
+        if isinstance(
+            event.get("attributes", {}).get("entry_quality_context"), Mapping
+        )
+    ]
+    capture_start = min(
+        (
+            parsed
+            for parsed in (
+                _parse_time(event.get("timestamp"))
+                for event in all_captured_quality_events
+            )
+            if parsed is not None
+        ),
+        default=None,
+    )
+    if capture_start is None:
+        prospective_candidate_events: list[dict[str, Any]] = []
+        captured_quality_events: list[dict[str, Any]] = []
+    else:
+        prospective_candidate_events = [
+            event
+            for event in candidate_context_events
+            if (event_time := _parse_time(event.get("timestamp"))) is not None
+            and event_time >= capture_start
+        ]
+        captured_quality_events = [
+            event
+            for event in prospective_candidate_events
+            if isinstance(
+                event.get("attributes", {}).get("entry_quality_context"), Mapping
+            )
+        ]
+    legacy_candidate_count = len(candidate_context_events) - len(
+        prospective_candidate_events
+    )
+    quality_statuses = Counter(
+        str(
+            event.get("attributes", {})
+            .get("entry_quality_context", {})
+            .get("status")
+            or "MISSING"
+        )
+        for event in captured_quality_events
+    )
+    quality_components = {
+        component: Counter(
+            str(
+                event.get("attributes", {})
+                .get("entry_quality_context", {})
+                .get(component, {})
+                .get("status")
+                or "MISSING"
+            )
+            for event in captured_quality_events
+        )
+        for component in ("setup_quality", "event_risk", "trigger_prior")
+    }
+    fill_events = [
+        event
+        for event in events
+        if event.get("event_type") == "entry.fill_reconciled"
+        and event.get("market") == market
+    ]
+    fill_statuses = Counter(
+        str(
+            event.get("attributes", {})
+            .get("fill_provenance", {})
+            .get("status")
+            or "UNKNOWN"
+        )
+        for event in fill_events
+    )
     context_counts = Counter(
         str(event.get("event_type") or "unknown") for event in context_events
     )
@@ -299,6 +381,29 @@ def _market_snapshot(
             ),
             "complete_position_chains": complete_positions,
             "latest_at": latest_context_at,
+        },
+        "entry_quality_capture": {
+            "coverage_start_at": (
+                capture_start.isoformat().replace("+00:00", "Z")
+                if capture_start
+                else None
+            ),
+            "legacy_candidate_count": legacy_candidate_count,
+            "candidate_count": len(prospective_candidate_events),
+            "captured_count": len(captured_quality_events),
+            "coverage_rate": _rounded(
+                len(captured_quality_events) / len(prospective_candidate_events)
+                if prospective_candidate_events
+                else None
+            ),
+            "status_distribution": dict(quality_statuses),
+            "component_status": {
+                component: dict(statuses)
+                for component, statuses in quality_components.items()
+            },
+            "fill_reconciliation_count": len(fill_events),
+            "fill_status_distribution": dict(fill_statuses),
+            "confirmed_fill_count": fill_statuses["CONFIRMED"],
         },
     }
 

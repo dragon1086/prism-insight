@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 import logging
 import sqlite3
 import sys
@@ -594,8 +595,15 @@ def _install_us_trading_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "trading.us_stock_trading", module)
 
 
+@pytest.mark.parametrize("entry_quality_capture", ["0", "1"])
 @pytest.mark.asyncio
-async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, caplog, tmp_path):
+async def test_process_reports_analyzes_once_and_dedupes_signals(
+    monkeypatch, caplog, tmp_path, entry_quality_capture
+):
+    monkeypatch.setenv("ENTRY_QUALITY_CAPTURE_ENABLED", entry_quality_capture)
+    monkeypatch.setenv(
+        "PRISM_OBSERVABILITY_SPOOL", str(tmp_path / "observability.jsonl")
+    )
     agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
     agent.db_path = str(tmp_path / "us_stock_tracking.sqlite")
     _ensure_reentry_schema(agent.db_path)
@@ -704,6 +712,35 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     assert len(gcp_calls) == 1
     assert watchlist_calls == []
     assert "partial success" in caplog.text.lower()
+    observed = [
+        json.loads(line)
+        for line in (tmp_path / "observability.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    candidates = [
+        event for event in observed if event["event_type"] == "candidate.evaluated"
+    ]
+    reconciliations = [
+        event for event in observed if event["event_type"] == "entry.fill_reconciled"
+    ]
+    assert len(candidates) == 2
+    if entry_quality_capture == "1":
+        assert all(
+            "entry_quality_context" in event["attributes"] for event in candidates
+        )
+        assert len(reconciliations) == 2
+        assert all(
+            event["attributes"]["fill_provenance"]["status"]
+            == "SUBMITTED_ONLY"
+            for event in reconciliations
+        )
+    else:
+        assert all(
+            "entry_quality_context" not in event["attributes"]
+            for event in candidates
+        )
+        assert reconciliations == []
 
 
 @pytest.mark.asyncio

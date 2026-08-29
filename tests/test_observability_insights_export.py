@@ -130,6 +130,76 @@ def test_snapshot_reports_linked_context_ledger_coverage():
     assert ledger["complete_position_chains"] == 1
 
 
+def test_snapshot_reports_entry_quality_capture_without_changing_context_kpis():
+    events = [
+        {
+            **_event(
+                "candidate-legacy",
+                "candidate.evaluated",
+                "2026-08-25T23:59:59Z",
+                market="US",
+            ),
+            "decision_id": "decision-legacy",
+        },
+        {
+            **_event(
+                "candidate-captured",
+                "candidate.evaluated",
+                "2026-08-26T00:00:00Z",
+                market="US",
+                attributes={
+                    "entry_quality_context": {
+                        "status": "OK",
+                        "setup_quality": {"status": "OK"},
+                        "event_risk": {"status": "MISSING"},
+                        "trigger_prior": {"status": "OK"},
+                    }
+                },
+            ),
+            "decision_id": "decision-1",
+        },
+        {
+            **_event(
+                "candidate-not-captured",
+                "candidate.evaluated",
+                "2026-08-26T00:01:00Z",
+                market="US",
+            ),
+            "decision_id": "decision-2",
+        },
+        {
+            **_event(
+                "fill-submitted",
+                "entry.fill_reconciled",
+                "2026-08-26T00:02:00Z",
+                market="US",
+                attributes={
+                    "fill_provenance": {"status": "SUBMITTED_ONLY"}
+                },
+            ),
+            "decision_id": "decision-1",
+            "position_id": "position-1",
+        },
+    ]
+
+    snapshot = build_snapshot(events)
+    market = snapshot["markets"]["US"]
+    capture = market["entry_quality_capture"]
+
+    assert market["context_ledger"]["total"] == 3
+    assert market["context_ledger"]["candidates"] == 3
+    assert capture["coverage_start_at"] == "2026-08-26T00:00:00Z"
+    assert capture["legacy_candidate_count"] == 1
+    assert capture["candidate_count"] == 2
+    assert capture["captured_count"] == 1
+    assert capture["coverage_rate"] == 0.5
+    assert capture["status_distribution"] == {"OK": 1}
+    assert capture["component_status"]["event_risk"] == {"MISSING": 1}
+    assert capture["fill_reconciliation_count"] == 1
+    assert capture["fill_status_distribution"] == {"SUBMITTED_ONLY": 1}
+    assert capture["confirmed_fill_count"] == 0
+
+
 def test_clickhouse_exporter_rejects_non_local_endpoint():
     with pytest.raises(ValueError, match="local HTTP"):
         load_clickhouse_events(

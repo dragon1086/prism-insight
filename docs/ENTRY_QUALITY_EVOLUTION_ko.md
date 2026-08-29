@@ -1,9 +1,9 @@
 # 진입품질 관측에서 LIVE까지의 진화 로드맵
 
-> 상태: **CAPTURE 구현 전**
+> 상태: **CAPTURE 구현 완료 — 다음 db-server 배포부터 수집**
 > 최종 의사결정일: 2026-08-29
 > 현재 구현 기준: `main`
-> 다음 작업: 기존 ClickStack 관측 원장에 진입품질 필드를 최소 확장으로 추가
+> 다음 작업: db-server 배포 후 prospective coverage와 결측률 확인
 
 ## 1. 이 문서가 우선하는 결정
 
@@ -54,6 +54,13 @@
 이미 존재하는 market, regime, trend, RR, score, gate 값은 복사하지 않고 기존 context를
 참조합니다. 긴 보고서, 원본 prompt, 기사 전문은 ClickStack에 넣지 않습니다.
 
+현재 CAPTURE v1은 이미 구조화된 US scenario의 key level, entry checklist,
+momentum/confirmation count와 로컬 trigger 성과만 기록합니다. 별도 vision·웹 호출을
+추가하지 않았기 때문에 일봉·주봉 base 판정과 구조화된 event risk는 현재
+`MISSING`으로 기록합니다. `entry_quality_context.status`는 완결성 상태이며 하나라도
+필수 component가 없으면 `MISSING`입니다. 실제로 context가 생성됐는지는 dashboard의
+`captured_count`와 별도로 확인합니다.
+
 ### 3.2 실제 체결 provenance
 
 현재 simulator holding 생성 또는 주문 제출을 broker-confirmed fill로 간주하지 않습니다.
@@ -70,6 +77,9 @@
 결과만 추가합니다. 기존 이벤트의 의미와 idempotency를 안전하게 확장할 수 없을 때만
 checkpoint event를 한 종류 추가합니다. 10·20일 결과는 기존 7·14·30일과 중복되므로
 초기 CAPTURE 범위에서 제외합니다.
+
+현재 구현은 1·3·5 거래일 가격을 추가로 가져오지 않습니다. 기존 tracker를 거래일
+기준으로 안전하게 확장하는 작업은 후속 CAPTURE 작업으로 남아 있습니다.
 
 ## 4. 단계별 진행 계약
 
@@ -162,7 +172,15 @@ LIVE 이후에도 policy version별 성과를 분리하고 rollback 조건을 �
 - 완료: ClickStack 공통 관측 원장과 dashboard 운영
 - 완료: 진입품질 저하 징후 및 PYPL fill provenance 문제 확인
 - 완료: 관측과 SHADOW를 분리하는 설계 결정
-- 미완료: CAPTURE 코드 구현
+- 완료: `candidate.evaluated.entry_quality_context` CAPTURE v1 구현
+- 완료: `SUBMITTED_ONLY|REJECTED|UNKNOWN` 주문 provenance 연결 이벤트 구현
+- 완료: 과거 후보를 제외한 prospective coverage·결측·fill dashboard 집계 구현
+- 완료: CAPTURE OFF/ON의 broker call·signal·OrderIntent 불변성 테스트
+- 미완료: 운영 db-server 배포 및 첫 실제 이벤트 확인
+- 미완료: 구조화된 일봉·주봉 base 품질 입력
+- 미완료: 구조화된 event risk 입력
+- 미완료: broker-confirmed fill reconciliation
+- 미완료: 1·3·5 거래일 outcome checkpoint
 - 미완료: 운영 coverage 축적
 - 미완료: offline replay로 candidate rule 선택
 - 미완료: 구체 규칙 SHADOW
