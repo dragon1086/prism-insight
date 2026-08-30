@@ -1,9 +1,9 @@
 # 진입품질 관측에서 LIVE까지의 진화 로드맵
 
-> 상태: **CAPTURE v1 운영 배포 완료 — 첫 실제 US 후보 대기**
-> 최종 의사결정일: 2026-08-29
-> 현재 구현 기준: `26401a76`
-> 다음 작업: 2026-08-31 US morning 배치 후 prospective coverage와 결측률 확인
+> 상태: **CAPTURE v1 + Journal influence v1 운영 배포 완료 — 첫 신규 US 후보 대기**
+> 최종 의사결정일: 2026-08-31
+> 현재 기능 구현 기준: `a3596bd0`
+> 다음 작업: 다음 US 배치 후 journal influence coverage와 기존 진입품질 결측률 확인
 
 반복 분석의 canonical 절차는
 `docs/ENTRY_QUALITY_DATA_ANALYSIS_HARNESS.md`이며, 세션이 바뀌어도
@@ -206,7 +206,13 @@ LIVE 이후에도 policy version별 성과를 분리하고 rollback 조건을 �
 - 완료: 막연한 매수품질 요청도 같은 절차로 처리하는 프로젝트 분석 스킬
 - 완료: 독립 세션 forward-test에서 운영 Packet 2회가 같은
   `packet_id=227bc93f578a524c72180182`를 만들고 `CONTINUE_CAPTURE` 판정
+- 완료: journal prompt 입력 hash·구성요소 수·LLM 자기보고·KR/US 점수 적용 경로를
+  `candidate.evaluated.policy_context.journal_influence_context`로 CAPTURE
+- 완료: Evidence Packet v2와 dashboard snapshot·UI에 journal influence coverage 추가
+- 완료: db-server·app-server `a3596bd0` 배포, prism-backend exporter checksum 일치,
+  shipper·tunnel·dashboard·5분 exporter timer 정상 확인
 - 미완료: 첫 실제 US `candidate.evaluated.entry_quality_context` 이벤트 확인
+- 미완료: 배포 이후 첫 journal influence CAPTURE 이벤트 확인
 - 미완료: 구조화된 일봉·주봉 base 품질 입력
 - 미완료: 구조화된 event risk 입력
 - 미완료: broker-confirmed fill reconciliation
