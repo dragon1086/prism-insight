@@ -57,6 +57,23 @@
 - Packet의 `packet_schema_version`, `analysis_contract_version`, `packet_id`를 보고서에
   기록합니다. 도구나 하네스 버전이 달라지면 같은 trial로 합치지 않습니다.
 
+### 2.4 Journal influence 계보
+
+매수 프롬프트에 주입된 매매일지는 결과 시나리오의 자기보고만으로 효과를 판정하지
+않습니다. `candidate.evaluated.policy_context.journal_influence_context`는 다음 메타데이터만
+기록합니다.
+
+- journal 활성화·완결성 상태, `as_of`, schema/extractor version
+- 원문을 복사하지 않은 `input_hash`, 글자 수, 구성요소별 항목 수
+- 프롬프트에 제시된 점수 조정과 reason code
+- 실제 최종 점수에 적용된 조정, 조정 전후 점수, threshold crossing
+- LLM의 `journal_reflection`은 `referenced`와 필드 존재 여부만 파생합니다.
+
+원문 journal, 교훈 문장, prompt, 계좌·token은 Packet에 복사하지 않습니다.
+`journal_reflection.referenced=true`는 LLM의 자기보고이며 인과 증거가 아닙니다.
+journal이 있는 후보는 최근 손절·재진입처럼 원래 어려운 사례일 수 있으므로, journal
+노출 cohort의 단순 수익률 차이를 journal 효과라고 부르지 않습니다.
+
 ## 3. 결정론적 Evidence Packet
 
 직접 SQL이나 임의 Python notebook으로 지표를 먼저 만들지 않습니다. 다음 명령으로
@@ -197,6 +214,21 @@ CAPTURE 완료 판단의 최소값:
 4. 효과 크기, 표본 수, winner removal, 비용·슬리피지 민감도를 함께 봅니다.
 5. threshold나 feature를 바꾸면 새 `profile_version`과 새 trial입니다.
 6. 결과를 본 뒤 cohort 정의, 시작 시각, primary metric을 바꾸지 않습니다.
+7. 같은 과거 손실이 journal prompt, 점수 감점, re-entry cooldown에 중복 반영됐는지
+   별도로 기록합니다. 세 경로를 하나의 journal 효과로 합산하지 않습니다.
+
+## 10.1 Journal 영향의 인과 검증
+
+CAPTURE 단계에서 답할 수 있는 것은 journal 입력이 있었는지, LLM이 참고했다고
+보고했는지, 기계적 점수 조정이 threshold를 바꿨는지뿐입니다. 텍스트 주입이 판단을
+바꿨는지는 같은 시점의 고정 입력으로 다음 쌍을 실행하는 사전등록 SHADOW가 필요합니다.
+
+- 실제 경로: journal 포함
+- 비교 경로: journal만 제거, 주문·점수·메시지 연결 금지
+
+모델·prompt version을 고정하고 `Enter|Watch|Skip`, 점수, 손익비, stop·target 차이를
+기록합니다. 모델 seed를 고정할 수 없으면 반복 일치율을 함께 보고합니다. 이 SHADOW는
+CAPTURE 표본과 분석 규칙이 고정된 뒤 별도 승인을 거쳐야 하며 자동으로 켜지지 않습니다.
 
 ## 11. Holdout 계약
 

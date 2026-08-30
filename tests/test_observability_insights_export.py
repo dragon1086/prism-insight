@@ -200,6 +200,63 @@ def test_snapshot_reports_entry_quality_capture_without_changing_context_kpis():
     assert capture["confirmed_fill_count"] == 0
 
 
+def test_snapshot_reports_journal_influence_capture_coverage() -> None:
+    events = [
+        {
+            **_event(
+                "candidate-journal",
+                "candidate.evaluated",
+                "2026-08-31T00:00:00Z",
+                market="US",
+                attributes={
+                    "policy_context": {
+                        "journal_influence_context": {
+                            "status": "OK",
+                            "enabled": True,
+                            "input_hash": "c" * 24,
+                            "component_counts": {
+                                "trigger_feedback": 1,
+                                "same_ticker_history": 2,
+                            },
+                            "deterministic_effect": {
+                                "applied_adjustment": -2,
+                                "threshold_crossing": "ALLOW_TO_BLOCK",
+                            },
+                        },
+                        "journal_reflection": {"referenced": True},
+                    }
+                },
+            ),
+            "decision_id": "decision-1",
+        },
+        {
+            **_event(
+                "candidate-without-journal",
+                "candidate.evaluated",
+                "2026-08-31T00:01:00Z",
+                market="US",
+            ),
+            "decision_id": "decision-2",
+        },
+    ]
+
+    snapshot = build_snapshot(events)
+    capture = snapshot["markets"]["US"]["journal_influence_capture"]
+
+    assert capture["candidate_count"] == 2
+    assert capture["captured_count"] == 1
+    assert capture["coverage_rate"] == 0.5
+    assert capture["enabled_count"] == 1
+    assert capture["input_present_count"] == 1
+    assert capture["llm_referenced_count"] == 1
+    assert capture["deterministic_adjustment_count"] == 1
+    assert capture["threshold_crossing_distribution"] == {"ALLOW_TO_BLOCK": 1}
+    assert capture["component_item_counts"] == {
+        "same_ticker_history": 2,
+        "trigger_feedback": 1,
+    }
+
+
 def test_clickhouse_exporter_rejects_non_local_endpoint():
     with pytest.raises(ValueError, match="local HTTP"):
         load_clickhouse_events(

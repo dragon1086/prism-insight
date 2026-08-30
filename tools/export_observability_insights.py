@@ -280,6 +280,46 @@ def _market_snapshot(
         )
         for component in ("setup_quality", "event_risk", "trigger_prior")
     }
+    captured_journal_events = [
+        event
+        for event in candidate_context_events
+        if isinstance(
+            event.get("attributes", {})
+            .get("policy_context", {})
+            .get("journal_influence_context"),
+            Mapping,
+        )
+    ]
+    journal_statuses = Counter()
+    journal_crossings = Counter()
+    journal_component_items = Counter()
+    journal_enabled_count = 0
+    journal_input_present_count = 0
+    journal_referenced_count = 0
+    journal_adjustment_count = 0
+    for event in captured_journal_events:
+        policy = event.get("attributes", {}).get("policy_context", {})
+        journal = policy.get("journal_influence_context", {})
+        reflection = policy.get("journal_reflection", {})
+        status = str(journal.get("status") or "MISSING").upper()
+        journal_statuses[status] += 1
+        journal_enabled_count += bool(journal.get("enabled"))
+        journal_input_present_count += bool(journal.get("input_hash"))
+        journal_referenced_count += bool(reflection.get("referenced"))
+        effect = journal.get("deterministic_effect", {})
+        journal_adjustment_count += bool(effect.get("applied_adjustment"))
+        crossing = str(effect.get("threshold_crossing") or "").upper()
+        if crossing:
+            journal_crossings[crossing] += 1
+        component_counts = journal.get("component_counts", {})
+        if isinstance(component_counts, Mapping):
+            journal_component_items.update(
+                {
+                    str(key): int(value)
+                    for key, value in component_counts.items()
+                    if isinstance(value, (int, float)) and value >= 0
+                }
+            )
     fill_events = [
         event
         for event in events
@@ -404,6 +444,25 @@ def _market_snapshot(
             "fill_reconciliation_count": len(fill_events),
             "fill_status_distribution": dict(fill_statuses),
             "confirmed_fill_count": fill_statuses["CONFIRMED"],
+        },
+        "journal_influence_capture": {
+            "candidate_count": len(candidate_context_events),
+            "captured_count": len(captured_journal_events),
+            "coverage_rate": _rounded(
+                len(captured_journal_events) / len(candidate_context_events)
+                if candidate_context_events
+                else None
+            ),
+            "enabled_count": journal_enabled_count,
+            "input_present_count": journal_input_present_count,
+            "llm_referenced_count": journal_referenced_count,
+            "deterministic_adjustment_count": journal_adjustment_count,
+            "status_distribution": dict(journal_statuses),
+            "threshold_crossing_distribution": dict(journal_crossings),
+            "component_item_counts": dict(sorted(journal_component_items.items())),
+            "causal_interpretation": (
+                "observational only; paired no-journal shadow is required"
+            ),
         },
     }
 

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-PACKET_SCHEMA_VERSION = 1
+PACKET_SCHEMA_VERSION = 2
 ANALYSIS_CONTRACT_VERSION = "entry-quality-harness-v1"
 MIN_PROSPECTIVE_DATES = 20
 MIN_PROSPECTIVE_CANDIDATES = 100
@@ -54,6 +54,30 @@ _INPUT_DIAGNOSTIC_KEYS = {
     "input_line_count",
     "invalid_json_line_count",
     "non_object_line_count",
+}
+_JOURNAL_COMPONENT_KEYS = {
+    "trigger_feedback",
+    "universal_principles",
+    "same_ticker_history",
+    "accumulated_intuitions",
+}
+_JOURNAL_REASON_CODES = {
+    "RECENT_RISK_EXIT",
+    "SAME_TICKER_HISTORY",
+    "TRIGGER_ACTUAL_PERFORMANCE",
+    "SECTOR_HISTORY",
+    "OTHER",
+}
+_JOURNAL_APPLICATION_MODES = {
+    "PROMPT_ONLY",
+    "PROMPT_AND_DETERMINISTIC_SCORE",
+}
+_THRESHOLD_CROSSINGS = {
+    "ALLOW_TO_BLOCK",
+    "BLOCK_TO_ALLOW",
+    "UNCHANGED_ALLOW",
+    "UNCHANGED_BLOCK",
+    "UNKNOWN",
 }
 
 
@@ -217,6 +241,92 @@ def _quality_features(context: Mapping[str, Any]) -> dict[str, Any]:
         "additional_confirmation_count": _number(
             checks.get("additional_confirmation_count")
         ),
+    }
+
+
+def _safe_codes(value: Any, allowed: set[str]) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted(
+        {
+            normalized
+            for item in value
+            if (normalized := str(item or "").strip().upper()) in allowed
+        }
+    )
+
+
+def _journal_influence(attributes: Mapping[str, Any]) -> dict[str, Any]:
+    policy = _mapping(attributes.get("policy_context"))
+    raw_value = policy.get("journal_influence_context")
+    captured = isinstance(raw_value, Mapping)
+    raw = _mapping(raw_value)
+    reflection = _mapping(policy.get("journal_reflection"))
+    status = str(raw.get("status") or "MISSING").upper()
+    if status not in {"OK", "MISSING", "ERROR"}:
+        status = "ERROR"
+    components = _mapping(raw.get("component_counts"))
+    suggestion = _mapping(raw.get("score_adjustment_suggestion"))
+    effect = _mapping(raw.get("deterministic_effect"))
+    application_mode = str(effect.get("application_mode") or "").upper()
+    crossing = str(effect.get("threshold_crossing") or "").upper()
+    return {
+        "captured": captured,
+        "context_schema_version": _number(raw.get("context_schema_version")),
+        "status": status,
+        "enabled": bool(raw.get("enabled")),
+        "as_of": _text(raw.get("as_of")),
+        "input_hash": _text(raw.get("input_hash")),
+        "context_chars": _number(raw.get("context_chars")),
+        "component_counts": {
+            key: int(count)
+            for key, raw_count in components.items()
+            if key in _JOURNAL_COMPONENT_KEYS
+            and (count := _number(raw_count)) is not None
+            and count >= 0
+        },
+        "score_adjustment_suggestion": {
+            "value": _number(suggestion.get("value")),
+            "reason_count": _number(suggestion.get("reason_count")),
+            "reason_codes": _safe_codes(
+                suggestion.get("reason_codes"), _JOURNAL_REASON_CODES
+            ),
+        },
+        "deterministic_effect": {
+            "application_mode": (
+                application_mode
+                if application_mode in _JOURNAL_APPLICATION_MODES
+                else None
+            ),
+            "applied_adjustment": _number(effect.get("applied_adjustment")),
+            "reason_count": _number(effect.get("reason_count")),
+            "reason_codes": _safe_codes(
+                effect.get("reason_codes"), _JOURNAL_REASON_CODES
+            ),
+            "score_before": _number(effect.get("score_before")),
+            "score_after": _number(effect.get("score_after")),
+            "min_score": _number(effect.get("min_score")),
+            "threshold_before": (
+                effect.get("threshold_before")
+                if isinstance(effect.get("threshold_before"), bool)
+                else None
+            ),
+            "threshold_after": (
+                effect.get("threshold_after")
+                if isinstance(effect.get("threshold_after"), bool)
+                else None
+            ),
+            "threshold_crossing": (
+                crossing if crossing in _THRESHOLD_CROSSINGS else None
+            ),
+        },
+        "llm_reflection": {
+            "referenced": bool(reflection.get("referenced")),
+            "recent_exit_caution_present": bool(
+                reflection.get("recent_exit_caution")
+            ),
+            "applied_lessons_present": bool(reflection.get("applied_lessons")),
+        },
     }
 
 
@@ -445,6 +555,14 @@ def build_evidence_packet(
     confirmed_fills = 0
     linked_candidate_outcomes = 0
     confirmed_actual_outcomes = 0
+    journal_captured = 0
+    journal_enabled = 0
+    journal_input_present = 0
+    journal_referenced = 0
+    journal_adjustment_applied = 0
+    journal_statuses = Counter()
+    journal_crossings = Counter()
+    journal_component_items = Counter()
 
     for candidate in candidates:
         attributes = _mapping(candidate.get("attributes"))
@@ -567,6 +685,22 @@ def build_evidence_packet(
 
         decision_context = _mapping(attributes.get("decision_context"))
         security_context = _mapping(attributes.get("security_context"))
+        journal = _journal_influence(attributes)
+        if journal["captured"]:
+            journal_captured += 1
+            journal_statuses[journal["status"]] += 1
+            journal_enabled += journal["enabled"]
+            journal_input_present += journal["input_hash"] is not None
+            journal_referenced += journal["llm_reflection"]["referenced"]
+            effect = journal["deterministic_effect"]
+            journal_adjustment_applied += bool(effect["applied_adjustment"])
+            if effect["threshold_crossing"]:
+                journal_crossings[effect["threshold_crossing"]] += 1
+            journal_component_items.update(journal["component_counts"])
+        journal_as_of = _parse_time(journal.get("as_of"))
+        if journal_as_of and candidate_at and journal_as_of > candidate_at:
+            leakage["future_journal_context_as_of"] += 1
+            analysis_exclusions.append("FUTURE_JOURNAL_CONTEXT_AS_OF")
         candidate_result = _candidate_outcome(outcome_event)
         rows.append(
             {
@@ -589,12 +723,16 @@ def build_evidence_packet(
                     "gate_allowed": attributes.get("gate_allowed"),
                     "selected_for_entry": attributes.get("selected_for_entry"),
                     "buy_score": _number(decision_context.get("buy_score")),
+                    "adjusted_score": _number(
+                        decision_context.get("adjusted_score")
+                    ),
                     "min_score": _number(decision_context.get("min_score")),
                     "risk_reward_ratio": _number(
                         security_context.get("risk_reward_ratio")
                     ),
                 },
                 "quality_features": features,
+                "journal_influence": journal,
                 "entry": {
                     "observed": entry_event is not None,
                     "position_ref": _ref(position_id),
@@ -728,6 +866,24 @@ def build_evidence_packet(
                     "rate": _rate(feature_non_null[key], len(candidates)),
                 }
                 for key in sorted(_quality_features({}))
+            },
+            "journal_influence": {
+                "captured_count": journal_captured,
+                "capture_rate": _rate(journal_captured, len(candidates)),
+                "enabled_count": journal_enabled,
+                "input_present_count": journal_input_present,
+                "llm_referenced_count": journal_referenced,
+                "deterministic_adjustment_count": journal_adjustment_applied,
+                "status_distribution": dict(sorted(journal_statuses.items())),
+                "threshold_crossing_distribution": dict(
+                    sorted(journal_crossings.items())
+                ),
+                "component_item_counts": dict(
+                    sorted(journal_component_items.items())
+                ),
+                "causal_interpretation": (
+                    "observational only; causal impact requires paired no-journal shadow"
+                ),
             },
         },
         "missingness": {
