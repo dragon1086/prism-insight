@@ -86,6 +86,21 @@ checkpoint event를 한 종류 추가합니다. 10·20일 결과는 기존 7·14
 현재 구현은 1·3·5 거래일 가격을 추가로 가져오지 않습니다. 기존 tracker를 거래일
 기준으로 안전하게 확장하는 작업은 후속 CAPTURE 작업으로 남아 있습니다.
 
+### 3.4 매매일지 영향 CAPTURE
+
+매매일지·원칙·직관이 매수 프롬프트와 점수에 미치는 영향을 기존
+`candidate.evaluated.policy_context` 안에서 함께 기록합니다.
+
+- 원문 대신 versioned `journal_influence_context`와 `input_hash`만 기록
+- trigger feedback, 범용 원칙, 동일 종목 이력, 직관의 항목 수를 분리
+- KR의 prompt-only 경로와 US의 prompt+deterministic-score 경로를 구분
+- 원점수·조정점수·최소점수와 threshold crossing을 기록
+- `journal_reflection`은 자기보고로만 보존하고 인과 효과로 해석하지 않음
+- 같은 최근 손절 정보가 prompt·점수·re-entry cooldown에 중복 작용하는지 분석 가능하게 함
+
+CAPTURE는 판단이나 주문을 바꾸지 않습니다. journal 포함·제거 쌍대 SHADOW는 별도
+사전등록 전에는 실행하지 않습니다.
+
 ## 4. 단계별 진행 계약
 
 ### 단계 A — CAPTURE

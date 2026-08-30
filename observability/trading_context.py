@@ -165,6 +165,7 @@ def build_trading_context(
             "score_adjustment": parsed.get("score_adjustment"),
             "macro_adjustment": parsed.get("macro_adjustment"),
             "journal_reflection": parsed.get("journal_reflection"),
+            "journal_influence_context": parsed.get("_journal_influence_context"),
         },
         "decision_context": dict(decision_context or {}),
         "portfolio_context": dict(portfolio_context or {}),

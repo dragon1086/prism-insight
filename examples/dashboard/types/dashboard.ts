@@ -533,6 +533,19 @@ export interface ObservabilityMarketSnapshot {
     fill_status_distribution: Record<string, number>
     confirmed_fill_count: number
   }
+  journal_influence_capture?: {
+    candidate_count: number
+    captured_count: number
+    coverage_rate: number | null
+    enabled_count: number
+    input_present_count: number
+    llm_referenced_count: number
+    deterministic_adjustment_count: number
+    status_distribution: Record<string, number>
+    threshold_crossing_distribution: Record<string, number>
+    component_item_counts: Record<string, number>
+    causal_interpretation: string
+  }
 }
 
 export interface ObservabilityDeployment {

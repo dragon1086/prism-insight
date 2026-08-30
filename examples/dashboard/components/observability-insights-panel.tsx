@@ -85,6 +85,7 @@ export function ObservabilityInsightsPanel({ data, market }: Props) {
   const impacts = data.deployment_impacts.slice().reverse().slice(0, 8)
   const contextLedger = current.context_ledger
   const entryQualityCapture = current.entry_quality_capture
+  const journalCapture = current.journal_influence_capture
 
   return (
     <section className="space-y-4">
@@ -171,6 +172,25 @@ export function ObservabilityInsightsPanel({ data, market }: Props) {
             <div className="flex justify-between">
               <span>{language === "ko" ? "진입품질 수집률" : "Entry-quality capture"}</span>
               <strong>{pct(entryQualityCapture?.coverage_rate ?? null, 0)}</strong>
+            </div>
+            <div className="flex justify-between">
+              <span>{language === "ko" ? "매매일지 영향 수집률" : "Journal influence capture"}</span>
+              <strong>{pct(journalCapture?.coverage_rate ?? null, 0)}</strong>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span>{language === "ko" ? "LLM 참고/입력 있음" : "LLM referenced/input present"}</span>
+              <strong>
+                {journalCapture?.llm_referenced_count || 0}/
+                {journalCapture?.input_present_count || 0}
+              </strong>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span>{language === "ko" ? "점수조정/threshold 변경" : "Score adjust/threshold flip"}</span>
+              <strong>
+                {journalCapture?.deterministic_adjustment_count || 0}/
+                {(journalCapture?.threshold_crossing_distribution?.ALLOW_TO_BLOCK || 0) +
+                  (journalCapture?.threshold_crossing_distribution?.BLOCK_TO_ALLOW || 0)}
+              </strong>
             </div>
             <div className="flex justify-between text-xs">
               <span>{language === "ko" ? "체결 확인/주문 관측" : "Confirmed/observed fills"}</span>

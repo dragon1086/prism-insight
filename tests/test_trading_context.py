@@ -120,6 +120,25 @@ def test_build_context_keeps_gate_and_portfolio_facts() -> None:
     assert context["portfolio_context"] == {"slots_used": 9, "slots_max": 10}
 
 
+def test_build_context_keeps_versioned_journal_influence_snapshot() -> None:
+    journal = {
+        "context_schema_version": 1,
+        "status": "OK",
+        "enabled": True,
+        "input_hash": "a" * 24,
+    }
+    context = build_trading_context(
+        market="US",
+        scenario={
+            "_journal_influence_context": journal,
+            "journal_reflection": {"referenced": True},
+        },
+    )
+
+    assert context["policy_context"]["journal_influence_context"] == journal
+    assert context["policy_context"]["journal_reflection"] == {"referenced": True}
+
+
 def test_candidate_outcome_keeps_zero_returns_and_decision_link(monkeypatch, tmp_path) -> None:
     spool = tmp_path / "outcomes.jsonl"
     monkeypatch.setenv("PRISM_OBSERVABILITY_SPOOL", str(spool))

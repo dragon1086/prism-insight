@@ -50,7 +50,14 @@ def _quality(*, status: str = "MISSING", as_of: str = "2026-08-29T00:00:00Z"):
     }
 
 
-def _candidate(event_id: str, timestamp: str, decision_id: str, *, captured=True):
+def _candidate(
+    event_id: str,
+    timestamp: str,
+    decision_id: str,
+    *,
+    captured=True,
+    journal: dict | None = None,
+):
     attributes = {
         "trigger_type": "Volume Surge",
         "effective_entry_regime": "strong_bull",
@@ -59,6 +66,15 @@ def _candidate(event_id: str, timestamp: str, decision_id: str, *, captured=True
     }
     if captured:
         attributes["entry_quality_context"] = _quality(as_of=timestamp)
+    if journal is not None:
+        attributes["policy_context"] = {
+            "journal_influence_context": journal,
+            "journal_reflection": {
+                "referenced": True,
+                "recent_exit_caution": "raw caution must not be copied",
+                "applied_lessons": "raw lesson must not be copied",
+            },
+        }
     return _event(
         event_id,
         "candidate.evaluated",
@@ -225,6 +241,65 @@ def test_packet_whitelist_does_not_copy_secrets_or_raw_attributes() -> None:
     assert "Bearer do-not-copy" not in serialized
     assert "do-not-copy-either" not in serialized
     assert "account_number" not in serialized
+
+
+def test_packet_exposes_only_normalized_journal_influence_fields() -> None:
+    packet = build_evidence_packet(
+        [
+            _candidate(
+                "candidate",
+                "2026-08-29T00:00:00Z",
+                "decision-1",
+                journal={
+                    "context_schema_version": 1,
+                    "status": "OK",
+                    "enabled": True,
+                    "as_of": "2026-08-29T00:00:00Z",
+                    "input_hash": "b" * 24,
+                    "context_chars": 321,
+                    "component_counts": {
+                        "trigger_feedback": 1,
+                        "same_ticker_history": 2,
+                    },
+                    "score_adjustment_suggestion": {
+                        "value": -2,
+                        "reason_count": 1,
+                        "reason_codes": ["RECENT_RISK_EXIT"],
+                    },
+                    "deterministic_effect": {
+                        "application_mode": "PROMPT_AND_DETERMINISTIC_SCORE",
+                        "applied_adjustment": -2,
+                        "reason_count": 1,
+                        "reason_codes": ["RECENT_RISK_EXIT"],
+                        "score_before": 6,
+                        "score_after": 4,
+                        "min_score": 5,
+                        "threshold_before": True,
+                        "threshold_after": False,
+                        "threshold_crossing": "ALLOW_TO_BLOCK",
+                    },
+                },
+            )
+        ]
+    )
+
+    journal = packet["analysis_rows"][0]["journal_influence"]
+    assert packet["packet_schema_version"] == 2
+    assert packet["coverage"]["journal_influence"]["captured_count"] == 1
+    assert packet["coverage"]["journal_influence"]["llm_referenced_count"] == 1
+    assert packet["coverage"]["journal_influence"]["threshold_crossing_distribution"] == {
+        "ALLOW_TO_BLOCK": 1
+    }
+    assert journal["input_hash"] == "b" * 24
+    assert journal["component_counts"]["same_ticker_history"] == 2
+    assert journal["llm_reflection"] == {
+        "referenced": True,
+        "recent_exit_caution_present": True,
+        "applied_lessons_present": True,
+    }
+    serialized = json.dumps(packet, ensure_ascii=False, sort_keys=True)
+    assert "raw caution must not be copied" not in serialized
+    assert "raw lesson must not be copied" not in serialized
 
 
 def test_future_as_of_is_excluded_from_analysis() -> None:

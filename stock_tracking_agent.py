@@ -68,6 +68,10 @@ from prism_core.positions import (
     legacy_position_id,
     mirror_write_fail_open,
 )
+from observability.journal_influence import (
+    attach_deterministic_score_effect,
+    build_journal_influence_context,
+)
 from observability.trading_context import emit_trading_context, latest_regime_snapshot
 
 # O'Neil 룰베이스 매도 (2026-06-04 US quota 사고 동일 룰 결함 KR에도 적용).
@@ -951,6 +955,7 @@ class StockTrackingAgent:
                 - Reason: {', '.join(reasons) if reasons else 'N/A'}
                 - ⚠️ This adjustment is a reference based on past experience.
                 """
+
                     else:
                         score_adjustment_info = f"""
                 ### 📊 Score Adjustment Suggestion (Experience-Based)
@@ -958,6 +963,13 @@ class StockTrackingAgent:
                 - Reason: {', '.join(reasons) if reasons else 'N/A'}
                 - ⚠️ This adjustment is a reference based on past experience.
                 """
+
+            journal_influence_context = build_journal_influence_context(
+                enabled=bool(self.enable_journal),
+                journal_context=journal_context,
+                score_adjustment=adjustment,
+                adjustment_reasons=reasons,
+            )
 
             # Release the DB lock before the LLM call so concurrent analyses
             # actually run in parallel (the LLM step touches no shared sqlite state).
@@ -1080,6 +1092,7 @@ class StockTrackingAgent:
                 # giving the weekly influence report a journal-impact signal for free (#280).
                 if adjustment != 0 or reasons:
                     scenario_json["score_adjustment"] = {"value": adjustment, "reasons": reasons}
+                scenario_json["_journal_influence_context"] = journal_influence_context
                 logger.info(f"Scenario parsed: {json.dumps(scenario_json, ensure_ascii=False)[:200]}")
                 return scenario_json
 
@@ -4126,6 +4139,15 @@ class StockTrackingAgent:
                             )
 
                     scenario = dict(scenario)
+                    scenario["_journal_influence_context"] = attach_deterministic_score_effect(
+                        scenario.get("_journal_influence_context"),
+                        score_before=buy_score,
+                        score_after=buy_score,
+                        min_score=min_score,
+                        applied_adjustment=0,
+                        adjustment_reasons=(),
+                        application_mode="PROMPT_ONLY",
+                    )
                     scenario["_decision_context"] = {
                         "decision": analysis_result.get("decision"),
                         "buy_score": buy_score,

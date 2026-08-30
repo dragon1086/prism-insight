@@ -58,6 +58,10 @@ from observability.entry_quality import (  # noqa: E402
     capture_enabled as entry_quality_capture_enabled,
     emit_fill_reconciliation,
 )
+from observability.journal_influence import (  # noqa: E402
+    attach_deterministic_score_effect,
+    build_journal_influence_context,
+)
 from observability.trading_context import (  # noqa: E402
     emit_trading_context,
     latest_regime_snapshot,
@@ -1300,6 +1304,13 @@ class USStockTrackingAgent:
                 - ⚠️ This adjustment is a reference based on past experience.
                 """
 
+            journal_influence_context = build_journal_influence_context(
+                enabled=bool(self.enable_journal),
+                journal_context=journal_context,
+                score_adjustment=adjustment,
+                adjustment_reasons=reasons,
+            )
+
             # Individual-stock trend facts for the mandatory Step 1.5 trend gate (fail-open).
             # Never raises into the buy path; returns "" on any error.
             trend_facts = ""
@@ -1445,6 +1456,7 @@ class USStockTrackingAgent:
                 # report a journal-impact signal for free (#280).
                 if adjustment != 0 or reasons:
                     scenario_json["score_adjustment"] = {"value": adjustment, "reasons": reasons}
+                scenario_json["_journal_influence_context"] = journal_influence_context
                 logger.info(f"Scenario parsed: {json.dumps(scenario_json, ensure_ascii=False)[:200]}")
                 return scenario_json
 
@@ -3961,6 +3973,15 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             _cd_block = _enforce
 
                     scenario = dict(scenario)
+                    scenario["_journal_influence_context"] = attach_deterministic_score_effect(
+                        scenario.get("_journal_influence_context"),
+                        score_before=buy_score,
+                        score_after=adjusted_score,
+                        min_score=min_score,
+                        applied_adjustment=score_adjustment,
+                        adjustment_reasons=adjustment_reasons,
+                        application_mode="PROMPT_AND_DETERMINISTIC_SCORE",
+                    )
                     scenario["_decision_context"] = {
                         "decision": normalized_decision,
                         "raw_decision": raw_decision,
