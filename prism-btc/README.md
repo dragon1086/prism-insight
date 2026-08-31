@@ -55,6 +55,8 @@ cd prism-btc
 Bybit demo/live 주문의 send→ACK와 ACK→reconcile 지연은 `btc_execution_samples`에
 원문 order ID 없이 기록합니다. p50~p99 Evidence Packet과 해석 계약은
 [`docs/BTC_EXECUTION_LATENCY_ko.md`](../docs/BTC_EXECUTION_LATENCY_ko.md)를 참고하십시오.
+자연 주문 표본이 부족할 때 쓰는 3일 demo-only ACK/cancel probe도 같은 문서에 있으며,
+포지션·미체결 주문이 없는 경우에만 5% 떨어진 PostOnly 주문을 즉시 취소합니다.
 
 ## Backfill (all 6 timeframes, from 2022-01-01)
 
