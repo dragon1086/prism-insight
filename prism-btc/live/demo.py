@@ -51,7 +51,7 @@ from core.actions import (
     OpenIntent,
 )
 
-from live import tracking
+from live import decision_capture, tracking
 
 # shadow 와 동일 위험/쿨다운/게이트 상수를 그대로 재사용 (바이트 불변 — import 만).
 from live.shadow import (
@@ -688,6 +688,7 @@ class DemoAdapter:
                 sig = generate_signal(snapshot) if new_4h_confirmed else Signal(
                     side="none", strength=0.0, reason="4h 미확정 — 진입평가 보류"
                 )
+                decision_capture_id = None
                 if new_4h_confirmed:
                     try:
                         from engine.signal import trend_strength as _ts
@@ -700,6 +701,20 @@ class DemoAdapter:
                                    if "1d" in snapshot.tf_states else None),
                             side=sig.side, reason=sig.reason,
                             n_open=len(local_positions), mode=mode)
+                        decision_capture_id = decision_capture.capture_signal_decision(
+                            conn,
+                            ts=str(bar_time),
+                            mode=mode,
+                            strategy_id=decision_capture.DEFAULT_STRATEGY_ID,
+                            snapshot=snapshot,
+                            signal=sig,
+                            bar_close=bar_close,
+                            positions=local_positions,
+                            equity=equity,
+                            peak_equity=tracking.peak_equity(conn, mode),
+                            pending=False,
+                            code_version=tracking.get_meta(conn, "code_version", mode),
+                        )
                     except Exception:  # noqa: BLE001 — 로깅이 매매를 못 막는다
                         pass
 
@@ -709,6 +724,7 @@ class DemoAdapter:
                     current_tranche = len(same_side)
                     intent: Optional[OpenIntent] = None
                     decision: Optional[EntryEvaluation] = None
+                    forced_rejection_reason = None
 
                     if current_tranche == 0:
                         # 4h 하드캡 + 재진입 쿨다운 (신규 진입, tranche 0).
@@ -786,6 +802,22 @@ class DemoAdapter:
                                 ts=bar_time_str,
                             )
                             intent = None
+                            forced_rejection_reason = "failure_guard_c1"
+
+                    if decision_capture_id is not None:
+                        try:
+                            decision_capture.finalize_entry_decision(
+                                conn,
+                                decision_capture_id,
+                                decision,
+                                current_tranche=current_tranche,
+                                forced_reason=(
+                                    forced_rejection_reason
+                                    or (None if decision is not None else "max_tranches")
+                                ),
+                            )
+                        except Exception:  # noqa: BLE001 — telemetry fails open
+                            pass
 
                     if intent is not None:
                         sz = intent.sizing

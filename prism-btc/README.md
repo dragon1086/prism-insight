@@ -31,6 +31,16 @@ cd /path/to/prism-insight
 .venv/bin/python -m pytest prism-btc/tests -x -q
 ```
 
+## Strategy decision evidence
+
+shadow/demo의 4시간 확정 판단은 기존 `btc_signal_log`와 함께 versioned
+`btc_decision_log`에 기록됩니다. 다중 TF snapshot, code/config/input hash, 포지션 상태,
+최종 hardcap·cooldown·pyramid·sizing 결과를 보존하되 자격증명과 주문 원문은 저장하지
+않습니다.
+
+forward return·MFE·MAE Evidence Packet 생성과 전략 실험 계약은
+[`docs/BTC_STRATEGY_EVIDENCE_ko.md`](../docs/BTC_STRATEGY_EVIDENCE_ko.md)를 참고하십시오.
+
 ## Backfill (all 6 timeframes, from 2022-01-01)
 
 ```bash
