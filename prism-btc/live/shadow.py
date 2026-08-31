@@ -64,7 +64,7 @@ from core.actions import (
 from core.risk import compute_operating_risk
 from core.leadership import leadership_multipliers
 
-from live import tracking
+from live import decision_capture, tracking
 from live.tracking import PositionRow, TradeRow
 
 # 섀도우 위험: 고정 5% — E4 오버레이 비활성 (reduced == base 로 중립화).
@@ -452,6 +452,7 @@ class ShadowAdapter:
                 sig = generate_signal(snapshot) if new_4h_confirmed else Signal(
                     side="none", strength=0.0, reason="4h 미확정 — 진입평가 보류"
                 )
+                decision_capture_id = None
                 if new_4h_confirmed:
                     # 신호 평가 전수 기록 (기각 포함) — 관측 전용, 실패 비전파.
                     # "진입 안 한 순간"의 데이터가 없으면 사후 연구마다 재시뮬이 필요하다.
@@ -466,6 +467,20 @@ class ShadowAdapter:
                                    if "1d" in snapshot.tf_states else None),
                             side=sig.side, reason=sig.reason,
                             n_open=len(positions), mode=mode)
+                        decision_capture_id = decision_capture.capture_signal_decision(
+                            conn,
+                            ts=str(bar_time),
+                            mode=mode,
+                            strategy_id=decision_capture.DEFAULT_STRATEGY_ID,
+                            snapshot=snapshot,
+                            signal=sig,
+                            bar_close=bar_close,
+                            positions=positions,
+                            equity=acc.equity,
+                            peak_equity=tracking.peak_equity(conn, mode),
+                            pending=False,
+                            code_version=tracking.get_meta(conn, "code_version", mode),
+                        )
                     except Exception as exc:  # noqa: BLE001 - telemetry fails open
                         log.warning("shadow signal telemetry failed: %s", exc)
                 if sig.side != "none":
@@ -515,6 +530,20 @@ class ShadowAdapter:
                                 f"tranche={current_tranche}",
                                 mode=mode, ts=bar_time_str,
                             )
+
+                    if decision_capture_id is not None:
+                        try:
+                            decision_capture.finalize_entry_decision(
+                                conn,
+                                decision_capture_id,
+                                decision,
+                                current_tranche=current_tranche,
+                                forced_reason=(
+                                    None if decision is not None else "max_tranches"
+                                ),
+                            )
+                        except Exception as exc:  # noqa: BLE001 — telemetry fails open
+                            log.warning("shadow decision finalization failed: %s", exc)
 
                     if intent is not None:
                         sz = intent.sizing

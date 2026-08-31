@@ -12,6 +12,7 @@
 #   btc_meta            — (mode, key, value) 크로스-바 트래커 영속 (pending_order,
 #                         last_close_bar, last_new_entry_eval_4h_ns 등)
 #   btc_failure_shadow  — C1 would-block intent→fill→close 관찰 원장 (매매 무영향)
+#   btc_decision_log    — versioned strategy decision snapshots (매매 무영향)
 from __future__ import annotations
 
 import json
@@ -216,6 +217,35 @@ _SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_btc_signal_ts ON btc_signal_log(mode, ts)",
+    # 재현 가능한 전략 판단 원장. JSON 컬럼은 안전한 허용 필드 snapshot만 저장한다.
+    """
+    CREATE TABLE IF NOT EXISTS btc_decision_log (
+        decision_id          TEXT PRIMARY KEY,
+        ts                   TEXT NOT NULL,
+        mode                 TEXT NOT NULL,
+        schema_version       INTEGER NOT NULL,
+        strategy_id          TEXT NOT NULL,
+        code_version         TEXT,
+        config_hash          TEXT NOT NULL,
+        input_hash           TEXT NOT NULL,
+        signal_side          TEXT NOT NULL,
+        signal_strength      REAL,
+        signal_reason_code   TEXT NOT NULL,
+        signal_reason        TEXT NOT NULL,
+        entry_status         TEXT NOT NULL,
+        entry_rejection_code TEXT,
+        entry_reason         TEXT,
+        market_snapshot      TEXT NOT NULL,
+        position_context     TEXT NOT NULL,
+        entry_context        TEXT,
+        created_at           TEXT NOT NULL,
+        updated_at           TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_btc_decision_mode_ts "
+    "ON btc_decision_log(mode, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_btc_decision_strategy "
+    "ON btc_decision_log(strategy_id, ts)",
     # Round 10 C1 forward-shadow observer.  This table is audit-only: rows are
     # linked to actual add-on positions so avoided PnL can be measured without
     # suppressing any order during the observation phase.
@@ -290,6 +320,58 @@ def log_signal(conn: sqlite3.Connection, ts: str, *, score, ts_4h, ts_1d,
         "INSERT INTO btc_signal_log (ts, mode, score, ts_4h, ts_1d, side, reason, "
         "n_open, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (ts, mode, score, ts_4h, ts_1d, side, reason[:200], n_open, _utcnow()))
+    conn.commit()
+
+
+def upsert_decision_log(conn: sqlite3.Connection, row: dict) -> None:
+    """Insert or refresh one deterministic decision snapshot."""
+    fields = (
+        "decision_id", "ts", "mode", "schema_version", "strategy_id",
+        "code_version", "config_hash", "input_hash", "signal_side",
+        "signal_strength", "signal_reason_code", "signal_reason",
+        "entry_status", "entry_rejection_code", "entry_reason",
+        "market_snapshot", "position_context", "entry_context",
+        "created_at", "updated_at",
+    )
+    values = [row.get(field) for field in fields]
+    placeholders = ", ".join("?" for _ in fields)
+    updates = ", ".join(
+        f"{field}=excluded.{field}"
+        for field in fields
+        if field not in {"decision_id", "created_at"}
+    )
+    conn.execute(
+        f"INSERT INTO btc_decision_log ({', '.join(fields)}) "
+        f"VALUES ({placeholders}) ON CONFLICT(decision_id) DO UPDATE SET {updates}",
+        values,
+    )
+    conn.commit()
+
+
+def update_decision_entry(
+    conn: sqlite3.Connection,
+    decision_id: str,
+    *,
+    entry_status: str,
+    rejection_code: str | None,
+    reason: str | None,
+    entry_context: dict | None,
+) -> None:
+    """Finalize the entry stage for an existing decision snapshot."""
+    conn.execute(
+        "UPDATE btc_decision_log SET entry_status=?, entry_rejection_code=?, "
+        "entry_reason=?, entry_context=?, updated_at=? WHERE decision_id=?",
+        (
+            entry_status,
+            rejection_code,
+            (reason or "")[:200] or None,
+            json.dumps(entry_context, ensure_ascii=True, sort_keys=True)
+            if entry_context is not None
+            else None,
+            _utcnow(),
+            decision_id,
+        ),
+    )
     conn.commit()
 
 
