@@ -479,34 +479,6 @@ def _effective_buy_score(
     }
 
 
-def _whole_share_affordability(
-    account: Dict[str, Any] | None,
-    *,
-    current_price: float,
-    cash_amount_override: float | None = None,
-) -> Dict[str, Any]:
-    """Fail open only when configured cash is unknown; otherwise require one share."""
-    configured = cash_amount_override
-    if configured is None and account:
-        configured = account.get("buy_amount_usd")
-    cash_amount = _safe_number(configured, default=0.0)
-    price = _safe_number(current_price, default=0.0)
-    if cash_amount <= 0:
-        return {
-            "known": False,
-            "allowed": True,
-            "cash_amount": None,
-            "whole_share_quantity": None,
-        }
-    quantity = int(cash_amount / price) if price > 0 else 0
-    return {
-        "known": True,
-        "allowed": quantity >= 1,
-        "cash_amount": cash_amount,
-        "whole_share_quantity": quantity,
-    }
-
-
 def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentration_ratio: float, account_key: str | None = None) -> bool:
     """
     Check for over-concentration in same sector.
@@ -1722,18 +1694,6 @@ class USStockTrackingAgent:
             slot_limit = _scenario_slot_limit(scenario, hard_max=self.max_slots)
             if current_slots >= slot_limit:
                 logger.warning(f"Holdings already at scenario maximum ({slot_limit})")
-                return LegacyPositionWriteResult(False, None)
-
-            affordability = _whole_share_affordability(
-                getattr(self, "active_account", None),
-                current_price=current_price,
-            )
-            if affordability["known"] and not affordability["allowed"]:
-                logger.warning(
-                    "%s entry blocked before simulator: configured amount cannot buy "
-                    "one whole share",
-                    ticker,
-                )
                 return LegacyPositionWriteResult(False, None)
 
             # Current time
@@ -4010,19 +3970,6 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     entry_cash_amount,
                                 )
 
-                    affordability = _whole_share_affordability(
-                        account,
-                        current_price=current_price,
-                        cash_amount_override=entry_cash_amount,
-                    )
-                    if affordability["known"] and not affordability["allowed"]:
-                        logger.warning(
-                            "[BUY_GATE][US] %s(%s) blocked: configured amount "
-                            "cannot buy one whole share",
-                            company_name,
-                            ticker,
-                        )
-
                     rationale = scenario.get("rationale", "") or ""
                     logger.info(
                         f"Scenario decision: {company_name} ({ticker}) - "
@@ -4049,11 +3996,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     # re-entry — longer cooldown after a loss). Fresh entries only;
                     # pyramiding adds (is_add) are exempt.
                     _cd_block = False
-                    if (
-                        normalized_decision == "entry"
-                        and not is_add
-                        and affordability["allowed"]
-                    ):
+                    if normalized_decision == "entry" and not is_add:
                         try:
                             from reentry_cooldown import reentry_block, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE
                             _account_key, _ = self._account_scope()
@@ -4111,10 +4054,6 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         "slots_used": current_slots,
                         "slots_max": scenario_slot_limit,
                         "is_add": bool(is_add),
-                        "affordability_known": bool(affordability["known"]),
-                        "whole_share_quantity": affordability[
-                            "whole_share_quantity"
-                        ],
                     }
                     analysis_result["scenario"] = scenario
 
@@ -4124,7 +4063,6 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         and sector_diverse
                         and not _cd_block
                         and _buy_gate.get("allowed", False)
-                        and affordability["allowed"]
                     )
                     if entry_eligible:
                         emit_trading_context(
@@ -4324,11 +4262,6 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             )
                         if _cd_block:
                             reason_parts.append("Recent risk-exit re-entry cooldown")
-                        if affordability["known"] and not affordability["allowed"]:
-                            reason_parts.append(
-                                "whole-share affordability: configured amount "
-                                "cannot buy 1 share"
-                            )
                         reason = " / ".join(reason_parts) if reason_parts else "Other"
                         logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
                         state["should_save_watchlist"] = True
