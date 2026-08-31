@@ -13,8 +13,10 @@
 #                         last_close_bar, last_new_entry_eval_4h_ns 등)
 #   btc_failure_shadow  — C1 would-block intent→fill→close 관찰 원장 (매매 무영향)
 #   btc_decision_log    — versioned strategy decision snapshots (매매 무영향)
+#   btc_execution_samples — demo 주문 ACK·reconcile 지연 표본 (매매 무영향)
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass, asdict
@@ -246,6 +248,25 @@ _SCHEMA = [
     "ON btc_decision_log(mode, ts)",
     "CREATE INDEX IF NOT EXISTS idx_btc_decision_strategy "
     "ON btc_decision_log(strategy_id, ts)",
+    """
+    CREATE TABLE IF NOT EXISTS btc_execution_samples (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode          TEXT NOT NULL,
+        operation     TEXT NOT NULL,
+        phase         TEXT NOT NULL,
+        order_ref     TEXT,
+        request_at    TEXT NOT NULL,
+        completed_at  TEXT NOT NULL,
+        latency_ms    REAL NOT NULL,
+        success       INTEGER NOT NULL,
+        retry_count   INTEGER NOT NULL DEFAULT 0,
+        ret_code      INTEGER,
+        details       TEXT NOT NULL DEFAULT '{}',
+        created_at    TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_btc_execution_mode_phase "
+    "ON btc_execution_samples(mode, phase, operation, completed_at)",
     # Round 10 C1 forward-shadow observer.  This table is audit-only: rows are
     # linked to actual add-on positions so avoided PnL can be measured without
     # suppressing any order during the observation phase.
@@ -373,6 +394,73 @@ def update_decision_entry(
         ),
     )
     conn.commit()
+
+
+_EXECUTION_DETAIL_KEYS = {
+    "side",
+    "order_type",
+    "time_in_force",
+    "reduce_only",
+    "qty",
+    "price",
+    "trigger_price",
+    "reason_code",
+    "confirmation_source",
+}
+
+
+def execution_order_ref(order_id: str | None) -> str | None:
+    """Return a short hash reference for an exchange order ID."""
+    value = str(order_id or "").strip()
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+
+
+def record_execution_sample(
+    conn: sqlite3.Connection,
+    *,
+    mode: str,
+    operation: str,
+    phase: str,
+    order_ref: str | None,
+    request_at: str,
+    completed_at: str,
+    latency_ms: float,
+    success: bool,
+    retry_count: int,
+    ret_code: int | None,
+    details: dict[str, object] | None = None,
+) -> int:
+    """Append one secret-minimized exchange latency observation."""
+    safe_details = {
+        key: value
+        for key, value in (details or {}).items()
+        if key in _EXECUTION_DETAIL_KEYS
+        and isinstance(value, (str, int, float, bool, type(None)))
+    }
+    cursor = conn.execute(
+        "INSERT INTO btc_execution_samples "
+        "(mode, operation, phase, order_ref, request_at, completed_at, latency_ms, "
+        "success, retry_count, ret_code, details, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            str(mode),
+            str(operation),
+            str(phase),
+            order_ref,
+            str(request_at),
+            str(completed_at),
+            max(0.0, float(latency_ms)),
+            int(bool(success)),
+            max(0, int(retry_count)),
+            int(ret_code) if ret_code is not None else None,
+            json.dumps(safe_details, ensure_ascii=True, sort_keys=True),
+            _utcnow(),
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
 
 
 # ---------------------------------------------------------------------------

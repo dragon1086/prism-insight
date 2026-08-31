@@ -71,6 +71,9 @@ PYTHONPATH= python -m analysis.bias_audit \
 오픈소스 참고 대상과 라이선스 결정은
 [`BTC_OPEN_SOURCE_RESEARCH_ko.md`](BTC_OPEN_SOURCE_RESEARCH_ko.md)를 따릅니다.
 
+실측 주문 지연 원장과 execution Evidence Packet은
+[`BTC_EXECUTION_LATENCY_ko.md`](BTC_EXECUTION_LATENCY_ko.md)를 따릅니다.
+
 파라미터나 규칙을 바꾸면 새로운 strategy version과 새로운 trial입니다. 실패한 실험도
 시도 횟수에서 삭제하지 않습니다.
 
