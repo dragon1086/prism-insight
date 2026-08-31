@@ -55,3 +55,35 @@ ACK와 fill-confirm 표본이 각각 최소 30건 이상이고 여러 주간 p95
 backtest latency/slippage 모델을 바꾸지 않습니다. 그 이후에도 기존 비용 모델과 새 모델을
 같은 기간에 replay하고, 실제 demo position path와 backtest position path의 차이가 줄어드는지
 확인해야 합니다. 사용자 승인 없이 LIVE 체결 모델을 변경하지 않습니다.
+
+## 3일 데모 ACK probe
+
+자연 주문만으로 ACK 표본을 모으는 데 오래 걸릴 때는 `live.ack_probe`를 별도로
+활성화할 수 있습니다. 이 probe는 Bybit demo에서만 동작하며 전략 주문과 구분되는
+`probe_submit`, `probe_cancel` operation으로 기록합니다.
+
+```bash
+cd /root/prism-insight/prism-btc
+PYTHONPATH= /root/.pyenv/shims/python -m live.ack_probe start \
+  --target-cycles 36 --duration-hours 72
+PYTHONPATH= /root/.pyenv/shims/python -m live.ack_probe run
+PYTHONPATH= /root/.pyenv/shims/python -m live.ack_probe status
+```
+
+권장 cron은 2시간 간격입니다. 한 번의 clean cycle은 주문 제출 ACK 1건과 취소 ACK
+1건을 만드므로 목표 36회가 끝나면 총 72개 ACK 표본이 생깁니다.
+
+안전 계약은 다음과 같습니다.
+
+- 수량은 BTCUSDT 최소 단위인 0.001 BTC로 고정합니다.
+- 매수는 최우선 매수호가/현재가 중 낮은 값보다 5% 아래, 매도는 최우선
+  매도호가/현재가 중 높은 값보다 5% 위에 `Limit + PostOnly`로 냅니다.
+- 주문 직후 취소하고 포지션과 미체결 주문이 모두 비었는지 재확인합니다.
+- 기존 BTC 포지션이나 미체결 주문이 하나라도 있으면 그 회차를 건너뜁니다.
+- 계좌 상태 조회가 실패하면 주문을 내지 않습니다.
+- 취소 뒤 상태를 확인할 수 없거나 포지션/주문이 남으면 즉시 `halted`로 전환합니다.
+- 36 clean cycle 또는 72시간에 도달하면 자동 종료됩니다. cron이 남아 있어도 종료
+  상태에서는 주문하지 않습니다.
+
+이 방식은 REST 주문 접수와 취소 왕복 지연만 빠르게 검증합니다. 실제 체결, 수수료,
+슬리피지, ACK→fill 지연을 검증하지 않으며 그 표본을 대신할 수 없습니다.
