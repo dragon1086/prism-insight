@@ -41,6 +41,17 @@ shadow/demo의 4시간 확정 판단은 기존 `btc_signal_log`와 함께 versio
 forward return·MFE·MAE Evidence Packet 생성과 전략 실험 계약은
 [`docs/BTC_STRATEGY_EVIDENCE_ko.md`](../docs/BTC_STRATEGY_EVIDENCE_ko.md)를 참고하십시오.
 
+신규 전략의 미래참조와 indicator startup drift는 배포 전에 다음 audit으로 검사합니다.
+
+```bash
+cd prism-btc
+../.venv-bt/bin/python -m analysis.bias_audit \
+  --market-db state/btc_market.db --samples 12
+```
+
+검토한 오픈소스 프레임워크와 채택·보류 근거는
+[`docs/BTC_OPEN_SOURCE_RESEARCH_ko.md`](../docs/BTC_OPEN_SOURCE_RESEARCH_ko.md)에 기록합니다.
+
 ## Backfill (all 6 timeframes, from 2022-01-01)
 
 ```bash
