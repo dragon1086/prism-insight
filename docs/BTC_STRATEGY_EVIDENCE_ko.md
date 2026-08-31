@@ -57,6 +57,20 @@ Packet은 원장과 시장 DB를 수정하지 않습니다. 같은 입력에서�
 7. prospective SHADOW와 데모 검토 후에도 사용자의 명시적 승인 없이는 LIVE로 승격하지
    않습니다.
 
+모든 신규 전략은 replay 전에 lookahead·recursive audit을 통과해야 합니다.
+
+```bash
+cd /root/prism-insight/prism-btc
+PYTHONPATH= python -m analysis.bias_audit \
+  --market-db state/btc_market.db \
+  --samples 12 \
+  --startup-sizes 40,80,150,300,1000 \
+  --required-startup-size 300
+```
+
+오픈소스 참고 대상과 라이선스 결정은
+[`BTC_OPEN_SOURCE_RESEARCH_ko.md`](BTC_OPEN_SOURCE_RESEARCH_ko.md)를 따릅니다.
+
 파라미터나 규칙을 바꾸면 새로운 strategy version과 새로운 trial입니다. 실패한 실험도
 시도 횟수에서 삭제하지 않습니다.
 
