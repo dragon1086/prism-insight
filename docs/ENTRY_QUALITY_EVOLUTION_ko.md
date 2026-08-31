@@ -1,9 +1,9 @@
 # 진입품질 관측에서 LIVE까지의 진화 로드맵
 
-> 상태: **CAPTURE v1 + Journal influence v1 운영 배포 완료 — 첫 신규 US 후보 대기**
-> 최종 의사결정일: 2026-08-31
+> 상태: **CAPTURE v1 + Journal influence v1 운영 배포 완료 — 첫 prospective US 후보 1건 관측, 표본 축적 중**
+> 최종 의사결정일: 2026-09-01
 > 현재 기능 구현 기준: `a3596bd0`
-> 다음 작업: 2026-09-01 00:30 KST US morning 종료 후 첫 prospective CAPTURE 재검증
+> 다음 작업: 2026-08-31 10:15 ET US morning trigger batch 오류를 별도로 해소하고 prospective CAPTURE를 계속 축적
 
 반복 분석의 canonical 절차는
 `docs/ENTRY_QUALITY_DATA_ANALYSIS_HARNESS.md`이며, 세션이 바뀌어도
@@ -215,9 +215,18 @@ LIVE 이후에도 policy version별 성과를 분리하고 rollback 조건을 �
   `packet_id=271eddc40f7eed8edb169ecc`와 같은 SHA-256을 생성
 - 확인: US morning cron은 `America/New_York 10:15` 기준이므로 14:10 KST에는 아직
   배치 전이었고, `capture_start=null`, prospective candidate 0건이 정상 기준선
-- 예약: 2026-09-01 00:30 KST 실제 US morning 종료 후 동일 하네스 재검증
-- 미완료: 첫 실제 US `candidate.evaluated.entry_quality_context` 이벤트 확인
-- 미완료: 배포 이후 첫 journal influence CAPTURE 이벤트 확인
+- 확인: 2026-08-31 10:15 ET US morning은 10:19 ET 후보 선택 중
+  `Can only compare identically-labeled Series objects` 오류로 종료되어 정상 완료되지 않음
+- 완료: 종료 후 서버의 sanitized JSONL로 운영 Packet 2회를 생성해 같은
+  `packet_id=d148e903780291c82beb221d`, 같은
+  `SHA-256=7f4655dc02e194d270a88cf84a335740c4beb3e709f91d086a2ad803a033e809`를 확인
+- 완료: 첫 실제 US `candidate.evaluated.entry_quality_context`와 journal influence
+  CAPTURE 이벤트 확인. `capture_start=2026-08-31T15:42:40.255417Z`, prospective 후보
+  1건, capture·decision ID coverage 100%, entry·outcome·confirmed fill 0건, 누수 0건이며
+  모든 진입품질 component와 journal 상태는 `MISSING`
+- 판정: `CONTINUE_CAPTURE`. prospective 거래일 1/20, 후보 1/100, actual entry 0/30,
+  matured outcome 0/30이고 confirmed fill coverage를 계산할 표본이 없음
+- 미완료: 2026-08-31 10:15 ET US morning trigger batch 정상 완료
 - 미완료: 구조화된 일봉·주봉 base 품질 입력
 - 미완료: 구조화된 event risk 입력
 - 미완료: broker-confirmed fill reconciliation
