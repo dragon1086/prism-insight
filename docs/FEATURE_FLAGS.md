@@ -63,7 +63,7 @@ SHADOW→LIVE **자동 승격**은 아래를 **모두** 충족할 때만:
 
 ## 변경 이력
 - 2026-09-01: **US trigger fail-open 경계 복구** — yfinance가 일부 ticker의 OHLCV 셀을 중첩 Series로 반환하거나 현재·전일 라벨이 어긋나도 해당 ticker를 제거하고, 개별 trigger 예외는 빈 결과로 격리해 나머지 trigger와 전체 배치를 계속 실행한다. snapshot 자체를 가져오지 못한 경우의 배치 중단 계약은 유지한다.
-- 2026-09-01: **US 신규매수 위험 계약 정렬** — 레짐 slot tuple의 합계를 최종 후보 수 hard cap으로 적용해 post-FTD 1종목·약세/횡보 2종목 제한이 bottom-up refill로 무효화되지 않게 수정. US `max_portfolio_size`를 실제 신규매수·피라미딩 슬롯 한도에 연결하고, 최종 점수를 `buy_score + macro_adjustment + journal_adjustment`로 통일. 계정별 USD 주문예산으로 정수 1주를 살 수 없는 종목은 실주문·시뮬레이터 보유 생성 전에 watchlist로 전환한다.
+- 2026-09-01: **US 신규매수 위험 계약 정렬** — 레짐 slot tuple의 합계를 최종 후보 수 hard cap으로 적용해 post-FTD 1종목·약세/횡보 2종목 제한이 bottom-up refill로 무효화되지 않게 수정. US `max_portfolio_size`를 실제 신규매수·피라미딩 슬롯 한도에 연결하고, 최종 점수를 `buy_score + macro_adjustment + journal_adjustment`로 통일. 내부 원장·시뮬레이터는 KIS 실주문 가능 수량·성공 여부와 독립된 기존 계약을 유지한다.
 - 2026-07-19: **KR PENDING EXIT 배선 추가, gate OFF 유지** — batch/hardstop/trend에 broker-first lifecycle을 연결하고 `feature_status.py`에 `.env`와 모든 active cron inline gate 상태를 노출. 피라미딩 accepted-but-unfilled 재시작 방어 및 post-CLOSED 외부효과 복구 절차를 포함한 운영 reconciliation 완료 전 활성화 금지.
 - 2026-06-23: 레지스트리 신설. 현황 기록(Loop A LIVE / B·C SHADOW미스케줄 / 비전 SHADOW관측).
 - 2026-06-24: S6 발행 게이트 갱신 — 배선 구현 완료 반영. 게이트 `PRISM_FEATURE_INSIGHT_IMAGE=on` + `vision_available()`(이전 "발행 배선 미구현" 기재 정정). `feature_status.py`도 동일 로직으로 LIVE/OFF 보고.
