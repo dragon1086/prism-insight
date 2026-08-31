@@ -80,3 +80,48 @@ def test_final_selection_does_not_refill_past_regime_total(monkeypatch):
     )
 
     assert sum(len(frame) for frame in result.values()) == 1
+
+
+def test_gap_trigger_drops_nested_series_cell_instead_of_raising():
+    nested_open = us_trigger_batch.pd.Series([100.0], index=["Open"])
+    nested_close = us_trigger_batch.pd.Series([102.0], index=["Close"])
+    snapshot = us_trigger_batch.pd.DataFrame(
+        {
+            "Open": [nested_open],
+            "High": [103.0],
+            "Low": [99.0],
+            "Close": [nested_close],
+            "Volume": [2_000_000],
+            "Amount": [204_000_000.0],
+        },
+        index=["BROKEN"],
+    )
+    previous = us_trigger_batch.pd.DataFrame(
+        {
+            "Open": [98.0],
+            "High": [100.0],
+            "Low": [97.0],
+            "Close": [99.0],
+            "Volume": [1_000_000],
+            "Amount": [99_000_000.0],
+        },
+        index=["BROKEN"],
+    )
+
+    result = us_trigger_batch.trigger_morning_gap_up_momentum(
+        "20260831", snapshot, previous
+    )
+
+    assert result.empty
+
+
+def test_trigger_boundary_fails_open_for_one_broken_trigger(caplog):
+    def broken_trigger():
+        raise ValueError("bad candidate labels")
+
+    result = us_trigger_batch._run_trigger_fail_open(
+        "Gap Up Momentum Top", broken_trigger
+    )
+
+    assert result.empty
+    assert "TRIGGER-FAIL-OPEN" in caplog.text
