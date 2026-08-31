@@ -97,6 +97,8 @@ telegram_messages/
 /examples/dashboard/public/observability_insights.json
 nohup.out
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.pdf
 *_report*.md
 *_full_report*
