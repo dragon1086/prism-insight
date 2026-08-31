@@ -38,3 +38,45 @@ def test_on_does_not_touch_bull_or_strong_bear():
     assert _slots("moderate_bull", "true") == (1, 2)
     assert _slots("strong_bull", "true") == (2, 1)
     assert _slots("strong_bear", "true") == (0, 3)  # 이미 top-down 0
+
+
+def test_selection_plan_uses_slot_sum_as_hard_total(monkeypatch):
+    monkeypatch.setattr(
+        us_trigger_batch, "_get_regime_slots", lambda _regime: (1, 0)
+    )
+
+    assert us_trigger_batch._get_regime_selection_plan("moderate_bull") == (
+        1,
+        0,
+        1,
+    )
+
+
+def test_final_selection_does_not_refill_past_regime_total(monkeypatch):
+    monkeypatch.setattr(
+        us_trigger_batch, "_get_regime_slots", lambda _regime: (1, 0)
+    )
+    monkeypatch.setattr(
+        us_trigger_batch,
+        "get_us_sector_map",
+        lambda tickers: {ticker: "Technology" for ticker in tickers},
+    )
+    triggers = {
+        "Trigger A": us_trigger_batch.pd.DataFrame(
+            {"CompositeScore": [3.0], "CompanyName": ["A"]}, index=["AAA"]
+        ),
+        "Trigger B": us_trigger_batch.pd.DataFrame(
+            {"CompositeScore": [2.0], "CompanyName": ["B"]}, index=["BBB"]
+        ),
+        "Trigger C": us_trigger_batch.pd.DataFrame(
+            {"CompositeScore": [1.0], "CompanyName": ["C"]}, index=["CCC"]
+        ),
+    }
+
+    result = us_trigger_batch.select_final_tickers(
+        triggers,
+        use_hybrid=False,
+        macro_context={"market_regime": "moderate_bull", "leading_sectors": []},
+    )
+
+    assert sum(len(frame) for frame in result.values()) == 1

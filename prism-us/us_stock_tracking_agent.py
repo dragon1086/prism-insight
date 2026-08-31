@@ -442,6 +442,71 @@ async def get_trading_value_rank_change(ticker: str) -> Tuple[float, str]:
 MIN_HOLDINGS_FOR_RATIO_CHECK = 4
 
 
+def _safe_number(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or isinstance(value, bool):
+            return default
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _scenario_slot_limit(scenario: Dict[str, Any], *, hard_max: int) -> int:
+    """Resolve the report's portfolio cap without allowing it to exceed hard max."""
+    hard_limit = max(1, int(hard_max))
+    raw = (scenario or {}).get("max_portfolio_size")
+    try:
+        requested = int(float(raw))
+    except (TypeError, ValueError):
+        return hard_limit
+    if requested <= 0:
+        return hard_limit
+    return min(requested, hard_limit)
+
+
+def _effective_buy_score(
+    scenario: Dict[str, Any], *, journal_adjustment: float = 0.0
+) -> Dict[str, float]:
+    """Recompute the score contract used by both the prompt and final gate."""
+    buy_score = _safe_number((scenario or {}).get("buy_score"))
+    macro_adjustment = _safe_number((scenario or {}).get("macro_adjustment"))
+    journal_value = _safe_number(journal_adjustment)
+    return {
+        "buy_score": buy_score,
+        "macro_adjustment": macro_adjustment,
+        "journal_adjustment": journal_value,
+        "effective_score": buy_score + macro_adjustment + journal_value,
+    }
+
+
+def _whole_share_affordability(
+    account: Dict[str, Any] | None,
+    *,
+    current_price: float,
+    cash_amount_override: float | None = None,
+) -> Dict[str, Any]:
+    """Fail open only when configured cash is unknown; otherwise require one share."""
+    configured = cash_amount_override
+    if configured is None and account:
+        configured = account.get("buy_amount_usd")
+    cash_amount = _safe_number(configured, default=0.0)
+    price = _safe_number(current_price, default=0.0)
+    if cash_amount <= 0:
+        return {
+            "known": False,
+            "allowed": True,
+            "cash_amount": None,
+            "whole_share_quantity": None,
+        }
+    quantity = int(cash_amount / price) if price > 0 else 0
+    return {
+        "known": True,
+        "allowed": quantity >= 1,
+        "cash_amount": cash_amount,
+        "whole_share_quantity": quantity,
+    }
+
+
 def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentration_ratio: float, account_key: str | None = None) -> bool:
     """
     Check for over-concentration in same sector.
@@ -1654,8 +1719,21 @@ class USStockTrackingAgent:
 
             # Check available slots
             current_slots = await self._get_current_slots_count()
-            if current_slots >= self.max_slots:
-                logger.warning(f"Holdings already at maximum ({self.max_slots})")
+            slot_limit = _scenario_slot_limit(scenario, hard_max=self.max_slots)
+            if current_slots >= slot_limit:
+                logger.warning(f"Holdings already at scenario maximum ({slot_limit})")
+                return LegacyPositionWriteResult(False, None)
+
+            affordability = _whole_share_affordability(
+                getattr(self, "active_account", None),
+                current_price=current_price,
+            )
+            if affordability["known"] and not affordability["allowed"]:
+                logger.warning(
+                    "%s entry blocked before simulator: configured amount cannot buy "
+                    "one whole share",
+                    ticker,
+                )
                 return LegacyPositionWriteResult(False, None)
 
             # Current time
@@ -1737,7 +1815,7 @@ class USStockTrackingAgent:
                 portfolio_context={
                     "slots_before": current_slots,
                     "slots_after": current_slots + 1,
-                    "slots_max": getattr(self, "max_slots", 10),
+                    "slots_max": slot_limit,
                 },
                 execution_context=entry_execution_context,
                 source="us_batch_entry",
@@ -3807,11 +3885,20 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         is_add = True
 
                     current_slots = await self._get_current_slots_count()
-                    if current_slots >= self.max_slots:
+                    scenario_slot_limit = _scenario_slot_limit(
+                        scenario, hard_max=self.max_slots
+                    )
+                    if current_slots >= scenario_slot_limit:
                         # User-facing reason must NOT include the account label (leaks
                         # masked account number to broadcast channels). Keep detail in logs only.
-                        reason = "Max slots reached (portfolio full)"
-                        logger.info(f"Purchase deferred: {company_name} ({ticker}) - Max slots reached for {label}")
+                        reason = (
+                            "Scenario max portfolio size reached "
+                            f"({current_slots}/{scenario_slot_limit})"
+                        )
+                        logger.info(
+                            f"Purchase deferred: {company_name} ({ticker}) - "
+                            f"scenario slots {current_slots}/{scenario_slot_limit} for {label}"
+                        )
                         state["should_save_watchlist"] = True
                         state["skip_reason"] = state["skip_reason"] or reason
                         continue
@@ -3822,7 +3909,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     sector_diverse = await self._check_sector_diversity(sector, is_pyramiding_add=is_add)
 
                     buy_score = scenario.get("buy_score", 0)
-                    min_score = scenario.get("min_score", 0)
+                    min_score = _safe_number(scenario.get("min_score", 0))
                     llm_min_score = min_score
                     floor_regime = None
                     pulse_state = None
@@ -3865,10 +3952,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 f"(reasons: {', '.join(adjustment_reasons)})"
                             )
 
-                    adjusted_score = buy_score + score_adjustment
+                    score_parts = _effective_buy_score(
+                        scenario, journal_adjustment=score_adjustment
+                    )
+                    macro_adjustment = score_parts["macro_adjustment"]
+                    score_before_journal = (
+                        score_parts["buy_score"] + macro_adjustment
+                    )
+                    adjusted_score = score_parts["effective_score"]
                     logger.info(
                         f"Buy score: {company_name} ({ticker}) - Original: {buy_score}, "
-                        f"Adjusted: {adjusted_score}, Min: {min_score}"
+                        f"Macro: {macro_adjustment:+g}, Journal: {score_adjustment:+d}, "
+                        f"Effective: {adjusted_score:g}, Min: {min_score:g}"
                     )
 
                     raw_decision = analysis_result.get("raw_decision", "")
@@ -3915,6 +4010,19 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     entry_cash_amount,
                                 )
 
+                    affordability = _whole_share_affordability(
+                        account,
+                        current_price=current_price,
+                        cash_amount_override=entry_cash_amount,
+                    )
+                    if affordability["known"] and not affordability["allowed"]:
+                        logger.warning(
+                            "[BUY_GATE][US] %s(%s) blocked: configured amount "
+                            "cannot buy one whole share",
+                            company_name,
+                            ticker,
+                        )
+
                     rationale = scenario.get("rationale", "") or ""
                     logger.info(
                         f"Scenario decision: {company_name} ({ticker}) - "
@@ -3941,7 +4049,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     # re-entry — longer cooldown after a loss). Fresh entries only;
                     # pyramiding adds (is_add) are exempt.
                     _cd_block = False
-                    if normalized_decision == "entry" and not is_add:
+                    if (
+                        normalized_decision == "entry"
+                        and not is_add
+                        and affordability["allowed"]
+                    ):
                         try:
                             from reentry_cooldown import reentry_block, COOLDOWN_LIVE, COOLDOWN_RISK_EXIT_LIVE
                             _account_key, _ = self._account_scope()
@@ -3975,7 +4087,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     scenario = dict(scenario)
                     scenario["_journal_influence_context"] = attach_deterministic_score_effect(
                         scenario.get("_journal_influence_context"),
-                        score_before=buy_score,
+                        score_before=score_before_journal,
                         score_after=adjusted_score,
                         min_score=min_score,
                         applied_adjustment=score_adjustment,
@@ -3986,6 +4098,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         "decision": normalized_decision,
                         "raw_decision": raw_decision,
                         "buy_score": buy_score,
+                        "macro_adjustment": macro_adjustment,
+                        "journal_adjustment": score_adjustment,
                         "adjusted_score": adjusted_score,
                         "min_score": min_score,
                         "gate_allowed": bool(_buy_gate.get("allowed")),
@@ -3995,8 +4109,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         "sector_diverse": bool(sector_diverse),
                         "rebound_pilot": bool(rebound_pilot),
                         "slots_used": current_slots,
-                        "slots_max": self.max_slots,
+                        "slots_max": scenario_slot_limit,
                         "is_add": bool(is_add),
+                        "affordability_known": bool(affordability["known"]),
+                        "whole_share_quantity": affordability[
+                            "whole_share_quantity"
+                        ],
                     }
                     analysis_result["scenario"] = scenario
 
@@ -4006,6 +4124,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         and sector_diverse
                         and not _cd_block
                         and _buy_gate.get("allowed", False)
+                        and affordability["allowed"]
                     )
                     if entry_eligible:
                         emit_trading_context(
@@ -4024,7 +4143,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             },
                             portfolio_context={
                                 "slots_used": current_slots,
-                                "slots_max": self.max_slots,
+                                "slots_max": scenario_slot_limit,
                             },
                             entry_quality_context=_capture_entry_quality_context(
                                 cursor=self.cursor,
@@ -4194,7 +4313,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         if normalized_decision != "entry":
                             reason_parts.append(f"AI judgment: {normalized_decision}")
                         if adjusted_score < min_score and not rebound_pilot:
-                            reason_parts.append(f"Insufficient score ({adjusted_score}/{min_score})")
+                            reason_parts.append(
+                                f"Insufficient score ({adjusted_score:g}/{min_score:g})"
+                            )
                         if not sector_diverse:
                             reason_parts.append(f"Sector concentration ({sector})")
                         if normalized_decision == "entry" and not _buy_gate.get("allowed", False):
@@ -4203,6 +4324,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             )
                         if _cd_block:
                             reason_parts.append("Recent risk-exit re-entry cooldown")
+                        if affordability["known"] and not affordability["allowed"]:
+                            reason_parts.append(
+                                "whole-share affordability: configured amount "
+                                "cannot buy 1 share"
+                            )
                         reason = " / ".join(reason_parts) if reason_parts else "Other"
                         logger.info(f"Purchase deferred: {company_name} ({ticker}) - {reason}")
                         state["should_save_watchlist"] = True
