@@ -3,7 +3,7 @@
 > 상태: **CAPTURE v1 + Journal influence v1 운영 배포 완료 — 첫 신규 US 후보 대기**
 > 최종 의사결정일: 2026-08-31
 > 현재 기능 구현 기준: `a3596bd0`
-> 다음 작업: 다음 US 배치 후 journal influence coverage와 기존 진입품질 결측률 확인
+> 다음 작업: 2026-09-01 00:30 KST US morning 종료 후 첫 prospective CAPTURE 재검증
 
 반복 분석의 canonical 절차는
 `docs/ENTRY_QUALITY_DATA_ANALYSIS_HARNESS.md`이며, 세션이 바뀌어도
@@ -211,6 +211,11 @@ LIVE 이후에도 policy version별 성과를 분리하고 rollback 조건을 �
 - 완료: Evidence Packet v2와 dashboard snapshot·UI에 journal influence coverage 추가
 - 완료: db-server·app-server `a3596bd0` 배포, prism-backend exporter checksum 일치,
   shipper·tunnel·dashboard·5분 exporter timer 정상 확인
+- 완료: 2026-08-31 14:10 KST 배치 전 운영 Packet 2회가 같은
+  `packet_id=271eddc40f7eed8edb169ecc`와 같은 SHA-256을 생성
+- 확인: US morning cron은 `America/New_York 10:15` 기준이므로 14:10 KST에는 아직
+  배치 전이었고, `capture_start=null`, prospective candidate 0건이 정상 기준선
+- 예약: 2026-09-01 00:30 KST 실제 US morning 종료 후 동일 하네스 재검증
 - 미완료: 첫 실제 US `candidate.evaluated.entry_quality_context` 이벤트 확인
 - 미완료: 배포 이후 첫 journal influence CAPTURE 이벤트 확인
 - 미완료: 구조화된 일봉·주봉 base 품질 입력
