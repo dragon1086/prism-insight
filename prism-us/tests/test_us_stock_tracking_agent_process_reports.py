@@ -131,6 +131,39 @@ USStockTrackingAgent = us_agent_module.USStockTrackingAgent
 from prism_core.positions import LegacyPositionWriteResult
 
 
+def test_us_entry_risk_contract_helpers() -> None:
+    assert us_agent_module._scenario_slot_limit(
+        {"max_portfolio_size": "6"}, hard_max=10
+    ) == 6
+    assert us_agent_module._scenario_slot_limit(
+        {"max_portfolio_size": 99}, hard_max=10
+    ) == 10
+    assert us_agent_module._scenario_slot_limit({}, hard_max=10) == 10
+
+    score = us_agent_module._effective_buy_score(
+        {"buy_score": 6, "macro_adjustment": -1},
+        journal_adjustment=1,
+    )
+    assert score == {
+        "buy_score": 6.0,
+        "macro_adjustment": -1.0,
+        "journal_adjustment": 1.0,
+        "effective_score": 6.0,
+    }
+
+    assert us_agent_module._whole_share_affordability(
+        {"buy_amount_usd": 1100.0}, current_price=1200.0
+    ) == {
+        "known": True,
+        "allowed": False,
+        "cash_amount": 1100.0,
+        "whole_share_quantity": 0,
+    }
+    assert us_agent_module._whole_share_affordability(
+        {"buy_amount_usd": 1100.0}, current_price=500.0
+    )["whole_share_quantity"] == 2
+
+
 class _FakeAsyncUSTradingContext:
     def __init__(self, account_name=None, **kwargs):
         self.account_name = account_name
@@ -829,6 +862,156 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
         "SELECT cash_amount FROM order_intents"
     ).fetchone()[0]
     assert float(cash_amount) == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_process_reports_blocks_unaffordable_entry_before_simulator(
+    monkeypatch, tmp_path
+):
+    agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+    agent.db_path = str(tmp_path / "unaffordable.sqlite")
+    _ensure_reentry_schema(agent.db_path)
+    agent.account_configs = [{
+        "name": "us-primary",
+        "account_key": "prod:us-primary:01",
+        "product": "01",
+        "buy_amount_usd": 1100.0,
+    }]
+    agent.active_account = None
+    agent.max_slots = 10
+    agent.enable_journal = False
+    agent.conn = sqlite3.connect(":memory:")
+    agent.cursor = agent.conn.cursor()
+
+    async def fake_core(_report_path):
+        return {
+            "success": True,
+            "ticker": "EXPENSIVE",
+            "company_name": "Expensive Inc.",
+            "current_price": 1200.0,
+            "scenario": {
+                "buy_score": 8,
+                "macro_adjustment": 0,
+                "min_score": 7,
+                "sector": "Technology",
+                "target_price": 1400.0,
+                "stop_loss": 1140.0,
+                "risk_reward_ratio": 3.3,
+                "max_portfolio_size": 6,
+            },
+            "decision": "entry",
+            "raw_decision": "Enter",
+            "sector": "Technology",
+            "rank_change_msg": "Up",
+        }
+
+    watchlist_calls = []
+
+    async def fake_save_watchlist_item(**kwargs):
+        watchlist_calls.append(kwargs)
+        return True
+
+    agent._analyze_report_core = fake_core
+    agent.update_holdings = AsyncMock(return_value=[])
+    agent._is_ticker_in_holdings = AsyncMock(return_value=False)
+    agent._get_current_slots_count = AsyncMock(return_value=0)
+    agent._check_sector_diversity = AsyncMock(return_value=True)
+    agent._buy_floor_regime = lambda: "strong_bull"
+    agent._regime_policy_mod = lambda: None
+    agent._evaluate_production_buy_gate = lambda *args, **kwargs: {
+        "allowed": True,
+        "reason": "",
+        "findings": [],
+    }
+    agent._buy_stock_with_position = AsyncMock(
+        side_effect=AssertionError("unaffordable entry must not reach simulator")
+    )
+    agent._save_watchlist_item = fake_save_watchlist_item
+
+    buy_count, sell_count = await USStockTrackingAgent.process_reports(
+        agent, ["report-a.pdf"]
+    )
+
+    assert (buy_count, sell_count) == (0, 0)
+    agent._buy_stock_with_position.assert_not_awaited()
+    assert len(watchlist_calls) == 1
+    assert "whole-share affordability" in watchlist_calls[0]["skip_reason"]
+
+
+@pytest.mark.asyncio
+async def test_process_reports_applies_macro_adjustment_to_final_score(
+    monkeypatch, tmp_path
+):
+    agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+    agent.db_path = str(tmp_path / "macro-score.sqlite")
+    _ensure_reentry_schema(agent.db_path)
+    agent.account_configs = [{
+        "name": "us-primary",
+        "account_key": "prod:us-primary:01",
+        "product": "01",
+        "buy_amount_usd": 1100.0,
+    }]
+    agent.active_account = None
+    agent.max_slots = 10
+    agent.enable_journal = False
+    agent.conn = sqlite3.connect(":memory:")
+    agent.cursor = agent.conn.cursor()
+
+    async def fake_core(_report_path):
+        return {
+            "success": True,
+            "ticker": "LAGGING",
+            "company_name": "Lagging Inc.",
+            "current_price": 100.0,
+            "scenario": {
+                "buy_score": 5,
+                "macro_adjustment": -1,
+                "effective_score": 4,
+                "min_score": 5,
+                "sector": "Utilities",
+                "target_price": 115.0,
+                "stop_loss": 95.0,
+                "risk_reward_ratio": 3.0,
+                "max_portfolio_size": 6,
+            },
+            "decision": "entry",
+            "raw_decision": "Enter",
+            "sector": "Utilities",
+            "rank_change_msg": "Flat",
+        }
+
+    gate_scores = []
+    watchlist_calls = []
+
+    def fake_gate(*args, **kwargs):
+        gate_scores.append(kwargs["score_override"])
+        return {"allowed": True, "reason": "", "findings": []}
+
+    async def fake_save_watchlist_item(**kwargs):
+        watchlist_calls.append(kwargs)
+        return True
+
+    agent._analyze_report_core = fake_core
+    agent.update_holdings = AsyncMock(return_value=[])
+    agent._is_ticker_in_holdings = AsyncMock(return_value=False)
+    agent._get_current_slots_count = AsyncMock(return_value=0)
+    agent._check_sector_diversity = AsyncMock(return_value=True)
+    agent._buy_floor_regime = lambda: "strong_bull"
+    agent._regime_policy_mod = lambda: None
+    agent._evaluate_production_buy_gate = fake_gate
+    agent._buy_stock_with_position = AsyncMock(
+        side_effect=AssertionError("macro-adjusted score must block simulator")
+    )
+    agent._save_watchlist_item = fake_save_watchlist_item
+
+    buy_count, sell_count = await USStockTrackingAgent.process_reports(
+        agent, ["report-a.pdf"]
+    )
+
+    assert (buy_count, sell_count) == (0, 0)
+    assert gate_scores == [4.0]
+    agent._buy_stock_with_position.assert_not_awaited()
+    assert "Insufficient score (4/5)" in watchlist_calls[0]["skip_reason"]
 
 
 @pytest.mark.asyncio
