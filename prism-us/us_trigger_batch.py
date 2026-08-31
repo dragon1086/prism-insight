@@ -81,6 +81,77 @@ MORNING_TARGET_CANDIDATES = 3
 MARKET_CAP_MIN_COVERAGE = 0.8
 MARKET_CAP_MAX_WORKERS = 8
 
+_SNAPSHOT_NUMERIC_COLUMNS = ("Open", "High", "Low", "Close", "Volume", "Amount")
+
+
+def _sanitize_numeric_snapshot(frame: pd.DataFrame, *, source: str) -> pd.DataFrame:
+    """Drop malformed ticker rows instead of letting nested yfinance cells abort a batch."""
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return pd.DataFrame()
+    missing = [column for column in _SNAPSHOT_NUMERIC_COLUMNS if column not in frame]
+    if missing:
+        logger.warning(
+            "[SNAPSHOT-SANITIZE] source=%s missing_columns=%s",
+            source,
+            ",".join(missing),
+        )
+        return pd.DataFrame()
+
+    clean = frame.loc[~frame.index.duplicated(keep="last")].copy()
+    invalid = pd.Series(False, index=clean.index)
+    nested_types = (pd.Series, pd.DataFrame, np.ndarray, list, tuple, dict, set)
+    for column in _SNAPSHOT_NUMERIC_COLUMNS:
+        values = clean[column]
+        if not isinstance(values, pd.Series):
+            logger.warning(
+                "[SNAPSHOT-SANITIZE] source=%s duplicate_column=%s",
+                source,
+                column,
+            )
+            return pd.DataFrame()
+        scalar_values = values.map(
+            lambda value: np.nan if isinstance(value, nested_types) else value
+        )
+        numeric = pd.to_numeric(scalar_values, errors="coerce")
+        invalid |= numeric.isna() | ~np.isfinite(numeric)
+        clean.loc[:, column] = numeric
+
+    if invalid.any():
+        logger.warning(
+            "[SNAPSHOT-SANITIZE] source=%s dropped_rows=%d total_rows=%d",
+            source,
+            int(invalid.sum()),
+            len(clean),
+        )
+    return clean.loc[~invalid].copy()
+
+
+def _aligned_trigger_inputs(
+    snapshot: pd.DataFrame, prev_snapshot: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    current = _sanitize_numeric_snapshot(snapshot, source="current")
+    previous = _sanitize_numeric_snapshot(prev_snapshot, source="previous")
+    if current.empty or previous.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    common = current.index.intersection(previous.index)
+    if common.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    return current.loc[common].copy(), previous.loc[common].copy()
+
+
+def _run_trigger_fail_open(name: str, trigger, *args, **kwargs) -> pd.DataFrame:
+    """Isolate one trigger failure so other triggers and the batch keep running."""
+    try:
+        result = trigger(*args, **kwargs)
+        return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+    except Exception as error:  # noqa: BLE001 - explicit batch fail-open boundary
+        logger.exception(
+            "[TRIGGER-FAIL-OPEN] trigger=%s error=%s",
+            name,
+            type(error).__name__,
+        )
+        return pd.DataFrame()
+
 # --- #289 KR 다주 상대강도 스크리닝 US 이식 ---
 # Multi-week relative-strength lookback (trading days, ~3 months).
 SCREENING_SIGNAL_LOOKBACK_DAYS = 60
@@ -361,9 +432,9 @@ def trigger_morning_volume_surge(trade_date: str, snapshot: pd.DataFrame,
     """
     logger.debug("trigger_morning_volume_surge started")
 
-    common = snapshot.index.intersection(prev_snapshot.index)
-    snap = snapshot.loc[common].copy()
-    prev = prev_snapshot.loc[common].copy()
+    snap, prev = _aligned_trigger_inputs(snapshot, prev_snapshot)
+    if snap.empty:
+        return pd.DataFrame()
 
     # Market cap merge (for scoring, no minimum filter)
     if cap_df is not None and not cap_df.empty:
@@ -420,9 +491,9 @@ def trigger_morning_gap_up_momentum(trade_date: str, snapshot: pd.DataFrame,
     """
     logger.debug("trigger_morning_gap_up_momentum started")
 
-    common = snapshot.index.intersection(prev_snapshot.index)
-    snap = snapshot.loc[common].copy()
-    prev = prev_snapshot.loc[common].copy()
+    snap, prev = _aligned_trigger_inputs(snapshot, prev_snapshot)
+    if snap.empty:
+        return pd.DataFrame()
 
     # Market cap merge (for scoring, no minimum filter)
     if cap_df is not None and not cap_df.empty:
@@ -499,18 +570,24 @@ def trigger_morning_value_to_cap_ratio(trade_date: str, snapshot: pd.DataFrame,
         return pd.DataFrame()
 
     try:
+        clean_snapshot, clean_previous = _aligned_trigger_inputs(
+            snapshot, prev_snapshot
+        )
+        if clean_snapshot.empty:
+            return pd.DataFrame()
+
         # Merge market cap data
-        merged = snapshot.merge(cap_df[["MarketCap"]], left_index=True, right_index=True, how="inner").copy()
+        merged = clean_snapshot.merge(cap_df[["MarketCap"]], left_index=True, right_index=True, how="inner").copy()
         logger.info(f"Merged data: {len(merged)} stocks")
 
         # Common stocks with previous day
-        common = merged.index.intersection(prev_snapshot.index)
+        common = merged.index.intersection(clean_previous.index)
         if len(common) == 0:
             logger.error("No common stocks")
             return pd.DataFrame()
 
         merged = merged.loc[common].copy()
-        prev = prev_snapshot.loc[common].copy()
+        prev = clean_previous.loc[common].copy()
 
         # Absolute filters
         merged = apply_absolute_filters(merged, min_value=MIN_TRADING_VALUE)
@@ -582,9 +659,9 @@ def trigger_afternoon_daily_rise_top(trade_date: str, snapshot: pd.DataFrame,
     """
     logger.debug("trigger_afternoon_daily_rise_top started")
 
-    common = snapshot.index.intersection(prev_snapshot.index)
-    snap = snapshot.loc[common].copy()
-    prev = prev_snapshot.loc[common].copy()
+    snap, prev = _aligned_trigger_inputs(snapshot, prev_snapshot)
+    if snap.empty:
+        return pd.DataFrame()
 
     # Market cap filter
     if cap_df is not None and not cap_df.empty:
@@ -671,9 +748,9 @@ def trigger_afternoon_closing_strength(trade_date: str, snapshot: pd.DataFrame,
     """
     logger.debug("trigger_afternoon_closing_strength started")
 
-    common = snapshot.index.intersection(prev_snapshot.index)
-    snap = snapshot.loc[common].copy()
-    prev = prev_snapshot.loc[common].copy()
+    snap, prev = _aligned_trigger_inputs(snapshot, prev_snapshot)
+    if snap.empty:
+        return pd.DataFrame()
 
     # Market cap filter
     if cap_df is not None and not cap_df.empty:
@@ -764,9 +841,9 @@ def trigger_afternoon_volume_surge_flat(trade_date: str, snapshot: pd.DataFrame,
     """
     logger.debug("trigger_afternoon_volume_surge_flat started")
 
-    common = snapshot.index.intersection(prev_snapshot.index)
-    snap = snapshot.loc[common].copy()
-    prev = prev_snapshot.loc[common].copy()
+    snap, prev = _aligned_trigger_inputs(snapshot, prev_snapshot)
+    if snap.empty:
+        return pd.DataFrame()
 
     # Market cap filter
     if cap_df is not None and not cap_df.empty:
@@ -1511,8 +1588,22 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
 
     if trigger_time == "morning":
         logger.info("=== Morning Batch Execution ===")
-        res1 = trigger_morning_volume_surge(trade_date, snapshot, prev_snapshot, None)
-        res2 = trigger_morning_gap_up_momentum(trade_date, snapshot, prev_snapshot, None)
+        res1 = _run_trigger_fail_open(
+            "Volume Surge Top",
+            trigger_morning_volume_surge,
+            trade_date,
+            snapshot,
+            prev_snapshot,
+            None,
+        )
+        res2 = _run_trigger_fail_open(
+            "Gap Up Momentum Top",
+            trigger_morning_gap_up_momentum,
+            trade_date,
+            snapshot,
+            prev_snapshot,
+            None,
+        )
         primary_tickers = set(res1.index).union(res2.index)
         primary_candidate_count = len(primary_tickers)
         needed = max(0, MORNING_TARGET_CANDIDATES - primary_candidate_count)
@@ -1520,12 +1611,20 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
 
         if needed:
             cap_lookup_attempted = True
-            cap_universe = apply_absolute_filters(
-                snapshot.copy(), min_value=MIN_TRADING_VALUE
+            cap_source = _sanitize_numeric_snapshot(
+                snapshot, source="capacity_fill_current"
+            )
+            cap_universe = (
+                apply_absolute_filters(cap_source, min_value=MIN_TRADING_VALUE)
+                if not cap_source.empty
+                else pd.DataFrame()
             )
             cap_tickers = cap_universe.index.tolist()
-            cap_df = get_market_cap_df(
-                cap_tickers, max_workers=MARKET_CAP_MAX_WORKERS
+            cap_df = _run_trigger_fail_open(
+                "Market Cap Lookup",
+                get_market_cap_df,
+                cap_tickers,
+                max_workers=MARKET_CAP_MAX_WORKERS,
             )
             cap_lookup_coverage = (
                 len(cap_df) / len(cap_tickers) if cap_tickers else 0.0
@@ -1541,7 +1640,9 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                 cap_lookup_coverage * 100,
             )
             if cap_lookup_coverage >= MARKET_CAP_MIN_COVERAGE:
-                res3 = trigger_morning_value_to_cap_ratio(
+                res3 = _run_trigger_fail_open(
+                    "Value-to-Cap Ratio Top",
+                    trigger_morning_value_to_cap_ratio,
                     trade_date,
                     snapshot,
                     prev_snapshot,
@@ -1573,9 +1674,30 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         }
     elif trigger_time == "afternoon":
         logger.info("=== Afternoon Batch Execution ===")
-        res1 = trigger_afternoon_daily_rise_top(trade_date, snapshot, prev_snapshot, cap_df)
-        res2 = trigger_afternoon_closing_strength(trade_date, snapshot, prev_snapshot, cap_df)
-        res3 = trigger_afternoon_volume_surge_flat(trade_date, snapshot, prev_snapshot, cap_df)
+        res1 = _run_trigger_fail_open(
+            "Intraday Rise Top",
+            trigger_afternoon_daily_rise_top,
+            trade_date,
+            snapshot,
+            prev_snapshot,
+            cap_df,
+        )
+        res2 = _run_trigger_fail_open(
+            "Closing Strength Top",
+            trigger_afternoon_closing_strength,
+            trade_date,
+            snapshot,
+            prev_snapshot,
+            cap_df,
+        )
+        res3 = _run_trigger_fail_open(
+            "Volume Surge Sideways",
+            trigger_afternoon_volume_surge_flat,
+            trade_date,
+            snapshot,
+            prev_snapshot,
+            cap_df,
+        )
         triggers = {
             "Intraday Rise Top": res1,
             "Closing Strength Top": res2,
@@ -1591,14 +1713,29 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         market_regime = macro_context.get("market_regime", "sideways")
         # Macro sector trigger: active in all regimes except strong_bull (momentum is primary there)
         if market_regime not in ("strong_bull",):
-            res_macro = trigger_macro_sector_leader(trade_date, snapshot, prev_snapshot, cap_df, macro_context)
+            res_macro = _run_trigger_fail_open(
+                "Macro Sector Leader",
+                trigger_macro_sector_leader,
+                trade_date,
+                snapshot,
+                prev_snapshot,
+                cap_df,
+                macro_context,
+            )
             if not res_macro.empty:
                 triggers["Macro Sector Leader"] = res_macro
                 logger.info(f"Macro Sector Leader: {len(res_macro)} candidates")
 
         # Contrarian value: active in sideways, moderate_bear, strong_bear
         if market_regime in ("sideways", "moderate_bear", "strong_bear"):
-            res_value = trigger_contrarian_value(trade_date, snapshot, prev_snapshot, cap_df)
+            res_value = _run_trigger_fail_open(
+                "Contrarian Value Pick",
+                trigger_contrarian_value,
+                trade_date,
+                snapshot,
+                prev_snapshot,
+                cap_df,
+            )
             if not res_value.empty:
                 triggers["Contrarian Value Pick"] = res_value
                 logger.info(f"Contrarian Value Pick: {len(res_value)} candidates")
