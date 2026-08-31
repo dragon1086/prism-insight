@@ -52,6 +52,10 @@ cd prism-btc
 검토한 오픈소스 프레임워크와 채택·보류 근거는
 [`docs/BTC_OPEN_SOURCE_RESEARCH_ko.md`](../docs/BTC_OPEN_SOURCE_RESEARCH_ko.md)에 기록합니다.
 
+Bybit demo/live 주문의 send→ACK와 ACK→reconcile 지연은 `btc_execution_samples`에
+원문 order ID 없이 기록합니다. p50~p99 Evidence Packet과 해석 계약은
+[`docs/BTC_EXECUTION_LATENCY_ko.md`](../docs/BTC_EXECUTION_LATENCY_ko.md)를 참고하십시오.
+
 ## Backfill (all 6 timeframes, from 2022-01-01)
 
 ```bash

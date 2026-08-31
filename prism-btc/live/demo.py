@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import time
 import sqlite3
+from datetime import datetime, timezone
 from typing import Optional, Any
 
 import pandas as pd
@@ -149,6 +150,7 @@ class DemoAdapter:
         self.mode = mode
         self.failure_guard = failure_guard
         self.sess, self._sess_err = _make_session()
+        self._last_execution_capture: dict[str, dict[str, Any]] = {}
 
     # --- meta 헬퍼 (shadow 미러) ---
     def _get_meta(self, key, default=None):
@@ -162,7 +164,67 @@ class DemoAdapter:
     # 거래소 호출 헬퍼 — 모두 실패 흡수 + 재시도 1회. 예외 절대 전파 안 함.
     # ------------------------------------------------------------------
 
-    def _call(self, fn_name: str, **kwargs) -> Optional[dict]:
+    def _capture_exchange_call(
+        self,
+        telemetry: dict[str, Any] | None,
+        *,
+        started_wall_ns: int,
+        started_perf_ns: int,
+        completed_wall_ns: int,
+        completed_perf_ns: int,
+        response: Any,
+        success: bool,
+        retry_count: int,
+        fallback_order_id: str | None = None,
+    ) -> None:
+        if not telemetry:
+            return
+        try:
+            operation = str(telemetry.get("operation") or "unknown")
+            raw_order_id = _order_id(response) or fallback_order_id
+            order_ref = tracking.execution_order_ref(raw_order_id)
+            ret_code = None
+            if isinstance(response, dict) and response.get("retCode") is not None:
+                ret_code = int(response["retCode"])
+            request_at = datetime.fromtimestamp(
+                started_wall_ns / 1_000_000_000, timezone.utc
+            ).isoformat()
+            completed_at = datetime.fromtimestamp(
+                completed_wall_ns / 1_000_000_000, timezone.utc
+            ).isoformat()
+            latency_ms = max(
+                0.0, (completed_perf_ns - started_perf_ns) / 1_000_000
+            )
+            tracking.record_execution_sample(
+                self.conn,
+                mode=self.mode,
+                operation=operation,
+                phase="SUBMIT_TO_ACK",
+                order_ref=order_ref,
+                request_at=request_at,
+                completed_at=completed_at,
+                latency_ms=latency_ms,
+                success=success,
+                retry_count=retry_count,
+                ret_code=ret_code,
+                details=dict(telemetry.get("details") or {}),
+            )
+            self._last_execution_capture[operation] = {
+                "order_ref": order_ref,
+                "ack_wall_ns": completed_wall_ns,
+                "ack_at": completed_at,
+                "success": success,
+            }
+        except Exception:  # noqa: BLE001 — telemetry must never affect exchange calls
+            pass
+
+    def _call(
+        self,
+        fn_name: str,
+        *,
+        _telemetry: dict[str, Any] | None = None,
+        **kwargs,
+    ) -> Optional[dict]:
         """sess.<fn_name>(**kwargs) 를 재시도 1회로 호출. 성공 시 응답, 실패 시 None."""
         if self.sess is None:
             return None
@@ -171,11 +233,28 @@ class DemoAdapter:
             tracking.log_event(self.conn, "error", f"pybit 메서드 없음: {fn_name}",
                                level="error", mode=self.mode)
             return None
+        started_wall_ns = time.time_ns()
+        started_perf_ns = time.perf_counter_ns()
         last_exc = None
+        last_response = None
         for attempt in range(2):  # 최초 + 재시도 1회.
             try:
                 resp = fn(**kwargs)
+                last_response = resp
                 if _ok(resp):
+                    completed_wall_ns = time.time_ns()
+                    completed_perf_ns = time.perf_counter_ns()
+                    self._capture_exchange_call(
+                        _telemetry,
+                        started_wall_ns=started_wall_ns,
+                        started_perf_ns=started_perf_ns,
+                        completed_wall_ns=completed_wall_ns,
+                        completed_perf_ns=completed_perf_ns,
+                        response=resp,
+                        success=True,
+                        retry_count=attempt,
+                        fallback_order_id=str(kwargs.get("orderId") or "") or None,
+                    )
                     return resp
                 last_exc = f"retCode={resp.get('retCode') if isinstance(resp, dict) else '?'} " \
                            f"retMsg={resp.get('retMsg') if isinstance(resp, dict) else resp}"
@@ -183,6 +262,19 @@ class DemoAdapter:
                 last_exc = str(exc)
             if attempt == 0:
                 time.sleep(_RETRY_SLEEP_SEC)
+        completed_wall_ns = time.time_ns()
+        completed_perf_ns = time.perf_counter_ns()
+        self._capture_exchange_call(
+            _telemetry,
+            started_wall_ns=started_wall_ns,
+            started_perf_ns=started_perf_ns,
+            completed_wall_ns=completed_wall_ns,
+            completed_perf_ns=completed_perf_ns,
+            response=last_response,
+            success=False,
+            retry_count=1,
+            fallback_order_id=str(kwargs.get("orderId") or "") or None,
+        )
         tracking.log_event(self.conn, "error",
                            f"{fn_name} 실패: {last_exc}", level="error", mode=self.mode)
         return None
@@ -196,6 +288,17 @@ class DemoAdapter:
         """진입 = post-only 지정가 (maker). orderId 반환 (실패 None)."""
         resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
+            _telemetry={
+                "operation": "entry_submit",
+                "details": {
+                    "side": side,
+                    "order_type": "Limit",
+                    "time_in_force": "PostOnly",
+                    "reduce_only": False,
+                    "qty": float(qty),
+                    "price": float(price),
+                },
+            },
             side="Buy" if side == "long" else "Sell",
             orderType="Limit", qty=_qstr(qty), price=_pstr(price),
             timeInForce="PostOnly", positionIdx=_POSITION_IDX,
@@ -213,6 +316,17 @@ class DemoAdapter:
         trigger_dir = 2 if side == "long" else 1
         resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
+            _telemetry={
+                "operation": "stop_submit",
+                "details": {
+                    "side": side,
+                    "order_type": "Market",
+                    "time_in_force": "GTC",
+                    "reduce_only": True,
+                    "qty": float(qty),
+                    "trigger_price": float(trigger),
+                },
+            },
             side=close_side, orderType="Market", qty=_qstr(qty),
             triggerPrice=_pstr(trigger), triggerDirection=trigger_dir,
             triggerBy="LastPrice", reduceOnly=True,
@@ -229,6 +343,17 @@ class DemoAdapter:
         close_side = "Sell" if side == "long" else "Buy"
         resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
+            _telemetry={
+                "operation": "take_profit_submit",
+                "details": {
+                    "side": side,
+                    "order_type": "Limit",
+                    "time_in_force": "PostOnly",
+                    "reduce_only": True,
+                    "qty": float(qty),
+                    "price": float(price),
+                },
+            },
             side=close_side, orderType="Limit", qty=_qstr(qty), price=_pstr(price),
             timeInForce="PostOnly", reduceOnly=True, positionIdx=_POSITION_IDX,
         )
@@ -245,6 +370,17 @@ class DemoAdapter:
         close_side = "Sell" if side == "long" else "Buy"
         resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
+            _telemetry={
+                "operation": "market_reduce",
+                "details": {
+                    "side": side,
+                    "order_type": "Market",
+                    "time_in_force": "IOC",
+                    "reduce_only": True,
+                    "qty": float(qty),
+                    "reason_code": str(reason)[:80],
+                },
+            },
             side=close_side, orderType="Market", qty=_qstr(qty),
             reduceOnly=True, timeInForce="IOC", positionIdx=_POSITION_IDX,
         )
@@ -260,6 +396,10 @@ class DemoAdapter:
             return
         resp = self._call(
             "amend_order", category=_CATEGORY, symbol=_SYMBOL,
+            _telemetry={
+                "operation": "stop_amend",
+                "details": {"trigger_price": float(trigger)},
+            },
             orderId=order_id, triggerPrice=_pstr(trigger),
         )
         if resp is not None:
@@ -269,7 +409,53 @@ class DemoAdapter:
     def _cancel(self, order_id: str) -> None:
         if not order_id:
             return
-        self._call("cancel_order", category=_CATEGORY, symbol=_SYMBOL, orderId=order_id)
+        self._call(
+            "cancel_order",
+            category=_CATEGORY,
+            symbol=_SYMBOL,
+            orderId=order_id,
+            _telemetry={"operation": "order_cancel", "details": {}},
+        )
+
+    def _capture_fill_confirmation(
+        self,
+        pending: dict[str, Any],
+        *,
+        completed_wall_ns: int | None = None,
+    ) -> None:
+        """Record ACK-to-reconcile duration without claiming exchange fill time."""
+        try:
+            ack_wall_ns = int(pending.get("latency_ack_wall_ns") or 0)
+            order_ref = str(pending.get("latency_order_ref") or "") or None
+            if ack_wall_ns <= 0 or order_ref is None:
+                return
+            completed_ns = completed_wall_ns or time.time_ns()
+            request_at = datetime.fromtimestamp(
+                ack_wall_ns / 1_000_000_000, timezone.utc
+            ).isoformat()
+            completed_at = datetime.fromtimestamp(
+                completed_ns / 1_000_000_000, timezone.utc
+            ).isoformat()
+            tracking.record_execution_sample(
+                self.conn,
+                mode=self.mode,
+                operation="entry_fill",
+                phase="ACK_TO_RECONCILE",
+                order_ref=order_ref,
+                request_at=request_at,
+                completed_at=completed_at,
+                latency_ms=max(0.0, (completed_ns - ack_wall_ns) / 1_000_000),
+                success=True,
+                retry_count=0,
+                ret_code=0,
+                details={
+                    "side": str(pending.get("side") or ""),
+                    "qty": float(pending.get("sizing_qty") or 0.0),
+                    "confirmation_source": "position_and_open_order_reconcile",
+                },
+            )
+        except Exception:  # noqa: BLE001 — telemetry must not affect fill handling
+            pass
 
     # ------------------------------------------------------------------
     # reconcile — 거래소가 진실. equity/포지션을 btc_* 테이블에 반영.
@@ -504,6 +690,7 @@ class DemoAdapter:
                     filled = (ex_pos["side"] == pending["side"]
                               and ex_pos["qty"] > prev_local_qty + 1e-9)
             if filled:
+                self._capture_fill_confirmation(pending)
                 side = ex_pos["side"]
                 total_qty = ex_pos["qty"]                 # 거래소 누적 총수량.
                 avg_entry = ex_pos["entry_price"]          # 거래소 평균단가.
@@ -825,8 +1012,14 @@ class DemoAdapter:
                         order_id = self._place_limit_postonly(
                             intent.side, sz.qty, intent.limit_price)
                         if order_id:
+                            latency_capture = self._last_execution_capture.get(
+                                "entry_submit", {}
+                            )
                             pending = {
                                 "order_id": order_id,
+                                "latency_order_ref": latency_capture.get("order_ref"),
+                                "latency_ack_wall_ns": latency_capture.get("ack_wall_ns"),
+                                "latency_ack_at": latency_capture.get("ack_at"),
                                 "side": intent.side,
                                 "limit_price": intent.limit_price,
                                 "bar_idx": bar_idx,

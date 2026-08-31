@@ -92,7 +92,7 @@
 ## 다음 후보
 
 1. Nautilus식 backtest/live action trace parity audit
-2. 실측 주문 send/ack/fill latency CAPTURE
+2. 실측 주문 send/ack/fill-confirm latency CAPTURE — v1 구현 완료
 3. 5분봉이 충분히 쌓인 구간의 detail-timeframe fill sensitivity
 4. strategy experiment manifest와 trial registry
 
