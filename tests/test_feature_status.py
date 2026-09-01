@@ -189,6 +189,15 @@ def test_micro_split_shadow_enabled_is_never_live():
     assert "거래영향 0" in r["micro_split_shadow"]["evidence"]
 
 
+def test_micro_split_shadow_reads_us_cron_inline_gate():
+    cron = """
+15 10 * * 1-5 cd /opt/prism && MICRO_SPLIT_SHADOW_ENABLED=true python prism-us/us_stock_analysis_orchestrator.py --mode morning
+"""
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=cron))
+    assert r["micro_split_shadow"]["state"] == "SHADOW"
+    assert "crontab inline" in r["micro_split_shadow"]["evidence"]
+
+
 # ── Vision pipeline (S1/S2) ───────────────────────────────────────────────────
 
 def test_vision_pipeline_live_on_no_shadow():
