@@ -15,16 +15,18 @@ from stock_analysis_orchestrator import (
 
 
 def test_translated_pdf_limits_are_bounded_and_configurable() -> None:
-    assert _translated_pdf_limits({}) == (3, 360, 1200)
+    assert _translated_pdf_limits({}) == (3, 360, 1800, 2)
     assert _translated_pdf_limits({
         "PRISM_TRANSLATED_PDF_MAX_CONCURRENCY": "2",
         "PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS": "90",
         "PRISM_TRANSLATED_PDF_BATCH_TIMEOUT_SECONDS": "600",
-    }) == (2, 90, 600)
+        "PRISM_TRANSLATED_PDF_MAX_ATTEMPTS": "3",
+    }) == (2, 90, 600, 3)
     assert _translated_pdf_limits({
         "PRISM_TRANSLATED_PDF_MAX_CONCURRENCY": "invalid",
         "PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS": "0",
-    }) == (3, 1, 1200)
+        "PRISM_TRANSLATED_PDF_MAX_ATTEMPTS": "0",
+    }) == (3, 1, 1800, 1)
 
 
 def test_translator_strict_mode_does_not_return_source_on_failure(monkeypatch) -> None:
@@ -52,6 +54,37 @@ def test_translator_strict_mode_does_not_return_source_on_failure(monkeypatch) -
         )
 
 
+def test_translator_uses_caller_reasoning_effort(monkeypatch) -> None:
+    captured = []
+
+    class CapturingLLM:
+        async def generate_str(self, **kwargs):
+            captured.append(kwargs["request_params"].reasoning_effort)
+            return "翻訳済み"
+
+    class CapturingAgent:
+        async def attach_llm(self, _llm_type):
+            return CapturingLLM()
+
+    monkeypatch.setattr(
+        telegram_translator_agent,
+        "create_telegram_translator_agent",
+        lambda **_kwargs: CapturingAgent(),
+    )
+
+    result = asyncio.run(
+        telegram_translator_agent.translate_telegram_message(
+            "원문",
+            to_lang="ja",
+            reasoning_effort="low",
+            raise_on_error=True,
+        )
+    )
+
+    assert result == "翻訳済み"
+    assert captured == ["low"]
+
+
 def test_kr_translated_pdfs_use_bounded_parallelism_and_skip_failures(
     monkeypatch, tmp_path
 ) -> None:
@@ -68,6 +101,7 @@ def test_kr_translated_pdfs_use_bounded_parallelism_and_skip_failures(
     async def fake_translate(message, *, to_lang, raise_on_error, **_kwargs):
         nonlocal active, max_active
         assert raise_on_error is True
+        assert _kwargs["reasoning_effort"] == "low"
         active += 1
         max_active = max(max_active, active)
         await real_sleep(0.02)
@@ -158,7 +192,11 @@ def test_kr_translated_pdf_batch_deadline_cancels_late_work(
 
     monkeypatch.setattr(telegram_translator_agent, "translate_telegram_message", slow_translate)
     monkeypatch.setattr(pdf_converter, "PdfRenderer", FakeRenderer)
-    monkeypatch.setattr(orchestrator_module, "_translated_pdf_limits", lambda: (1, 1, 0.03))
+    monkeypatch.setattr(
+        orchestrator_module,
+        "_translated_pdf_limits",
+        lambda: (1, 1, 0.03, 2),
+    )
 
     orchestrator = StockAnalysisOrchestrator.__new__(StockAnalysisOrchestrator)
     orchestrator.telegram_config = FakeConfig()
@@ -168,3 +206,69 @@ def test_kr_translated_pdf_batch_deadline_cancels_late_work(
 
     assert time.monotonic() - started < 0.5
     assert sent == []
+
+
+def test_kr_translated_pdf_retries_one_timeout_and_sends_once(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    report = tmp_path / "001_회사_20260901_afternoon_gpt-5.6-luna.md"
+    report.write_text("flaky", encoding="utf-8")
+    real_sleep = asyncio.sleep
+    attempts = 0
+    sent = []
+
+    async def flaky_translate(message, *, reasoning_effort, **_kwargs):
+        nonlocal attempts
+        assert message == "flaky"
+        assert reasoning_effort == "low"
+        attempts += 1
+        if attempts == 1:
+            await real_sleep(0.03)
+        return "translated"
+
+    class FakeRenderer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def render(self, _source, output):
+            return output
+
+    class FakeConfig:
+        broadcast_languages = ["ja"]
+
+        @staticmethod
+        def get_broadcast_channel_id(_lang):
+            return "channel-ja"
+
+    class FakeBot:
+        async def send_document(self, channel_id, path, **_kwargs):
+            sent.append((channel_id, path))
+            return True
+
+    async def fake_filename(report_file, lang):
+        return tmp_path / f"{report_file.stem}_{lang}.md"
+
+    monkeypatch.setattr(telegram_translator_agent, "translate_telegram_message", flaky_translate)
+    monkeypatch.setattr(pdf_converter, "PdfRenderer", FakeRenderer)
+    monkeypatch.setattr(orchestrator_module, "PDF_REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(
+        orchestrator_module,
+        "_translated_pdf_limits",
+        lambda: (1, 0.01, 1, 2),
+    )
+    monkeypatch.setattr(orchestrator_module.asyncio, "sleep", lambda _delay: _no_wait())
+
+    orchestrator = StockAnalysisOrchestrator.__new__(StockAnalysisOrchestrator)
+    orchestrator.telegram_config = FakeConfig()
+    orchestrator._create_translated_filename = fake_filename
+
+    with caplog.at_level("INFO"):
+        asyncio.run(orchestrator._send_translated_pdfs(FakeBot(), [str(report)]))
+
+    assert attempts == 2
+    assert len(sent) == 1
+    assert "status=retry" in caplog.text
+    assert "attempt=1 next_attempt=2" in caplog.text
