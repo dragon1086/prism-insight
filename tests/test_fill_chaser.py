@@ -215,6 +215,27 @@ def test_sell_chase_amends_live(tmp_db, monkeypatch):
     assert len(trader.calls) == 1 and trader.calls[0].startswith("amend:005930:O1:")
 
 
+def test_live_amend_rejection_does_not_consume_chase_budget(tmp_db, monkeypatch):
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
+    trader = FakeTrader(
+        [_row("O1", "005930", "01", 10, 70000)],
+        {"005930": 69000},
+        amend_result={"success": False, "message": "broker rejected"},
+    )
+    _patch_ctx(monkeypatch, trader)
+    _seed_seen(tmp_db, "O1")
+
+    summary = _run()
+
+    assert summary["amended"] == 0
+    assert summary["skipped"] == 1
+    assert _logs(tmp_db, "AMEND") == []
+    assert len(_logs(tmp_db, "SKIP")) == 1
+    conn = sqlite3.connect(tmp_db)
+    assert lc.chase_count_for(conn, "O1", "KR", mode="LIVE") == 0
+    conn.close()
+
+
 def test_buy_within_ceiling_chases(tmp_db, monkeypatch):
     """BUY: market just under the 2% ceiling => chase UP (no cancel)."""
     monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
@@ -241,6 +262,46 @@ def test_buy_ceiling_hit_cancels_instead_of_overpaying(tmp_db, monkeypatch):
     assert not any(c.startswith("amend") for c in trader.calls)
     reason = _logs(tmp_db, "CANCEL")[0]
     assert reason[3] == "CANCEL"
+
+
+def test_live_cancel_rejection_is_not_recorded_as_cancel(tmp_db, monkeypatch):
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
+    trader = FakeTrader(
+        [_row("O1", "005930", "02", 5, 10000)],
+        {"005930": 11000},
+        cancel_result={"success": False, "message": "broker rejected"},
+    )
+    _patch_ctx(monkeypatch, trader)
+    _seed_seen(tmp_db, "O1", ticker="005930", side="BUY")
+
+    summary = _run()
+
+    assert summary["cancelled"] == 0
+    assert summary["skipped"] == 1
+    assert _logs(tmp_db, "CANCEL") == []
+    assert len(_logs(tmp_db, "SKIP")) == 1
+
+
+def test_chase_count_isolated_by_runtime_mode(tmp_db):
+    conn = sqlite3.connect(tmp_db)
+    lc._ensure_schema(conn)
+    for mode in ("SHADOW", "LIVE"):
+        conn.execute(
+            "INSERT INTO loop_c_chase_log "
+            "(ticker,market,side,order_no,action,mode,old_price,new_price,"
+            "unfilled_qty,chase_count,reason,loop_run_id,logged_ts) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "005930", "KR", "BUY", "O1", "AMEND", mode, 10000, 10100,
+                1, 1, "test", f"run-{mode}", "2000-01-01T00:00:00+00:00",
+            ),
+        )
+    conn.commit()
+
+    assert lc.chase_count_for(conn, "O1", "KR", mode="SHADOW") == 1
+    assert lc.chase_count_for(conn, "O1", "KR", mode="LIVE") == 1
+    assert lc.chase_count_for(conn, "O1", "KR") == 2
+    conn.close()
 
 
 def test_buy_ceiling_shadow_no_real_call(tmp_db, monkeypatch):
