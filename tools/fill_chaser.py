@@ -30,10 +30,9 @@ SAFETY (read before enabling):
     what it WOULD amend/cancel and places NO real TR. The trading context is only
     opened for price/inquiry reads in SHADOW; no amend/cancel TR is ever sent.
   - FILL_CHASER_ENABLED=false disables the loop entirely (kill switch).
-  - ⚠️ The KIS amend/cancel/unfilled-inquiry TR wrappers this loop depends on were
-    mirrored from existing order wrappers + the KIS sample repo but were NOT
-    validated against a live KIS account. DO NOT set FILL_CHASER_LIVE=true until the
-    live-validation checklist in tasks/loop_c_design_notes.md is signed off.
+  - KIS amend/unfilled-inquiry wrappers were live-validated on US orders before
+    promotion.  LIVE still requires BOTH FILL_CHASER_LIVE=true and an explicit
+    fill_chaser lifecycle state of live; either gate can roll the feature back.
   - Separate process → no in-process asyncio locks apply. Concurrency guarded by
     a SQLite owner_lock (BEGIN IMMEDIATE) per ticker, reusing Hardstop's
     loop_a_position_state table so all loops serialise on the SAME lock.
@@ -44,7 +43,7 @@ SAFETY (read before enabling):
 Usage:
     python tools/fill_chaser.py [--market kr|us|both] [--once]
 
-Intended cron (SHADOW until reviewed; NOT installed) — KR and US as SEPARATE
+Intended cron — KR and US as SEPARATE
 processes (cores-shadowing isolation; --market both fans out automatically):
     */2 9-15 * * 1-5      cd /root/prism-insight && python tools/fill_chaser.py --market kr
     */2 22-23,0-5 * * 1-5 cd /root/prism-insight && python tools/fill_chaser.py --market us
@@ -269,14 +268,27 @@ def record_chase(conn: sqlite3.Connection, ticker: str, market: str, side: str,
         logger.warning("chase log failed %s/%s: %s", ticker, market, e)
 
 
-def chase_count_for(conn: sqlite3.Connection, order_no: str, market: str) -> int:
-    """How many AMENDs Fill-chaser has already logged for this order_no."""
+def chase_count_for(
+    conn: sqlite3.Connection,
+    order_no: str,
+    market: str,
+    *,
+    mode: str | None = None,
+) -> int:
+    """Count AMENDs for this order, optionally isolated by runtime mode."""
     try:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM loop_c_chase_log "
-            "WHERE order_no=? AND market=? AND action='AMEND'",
-            (order_no, market),
-        ).fetchone()
+        if mode is None:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM loop_c_chase_log "
+                "WHERE order_no=? AND market=? AND action='AMEND'",
+                (order_no, market),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM loop_c_chase_log "
+                "WHERE order_no=? AND market=? AND action='AMEND' AND mode=?",
+                (order_no, market, mode),
+            ).fetchone()
         return int(row[0]) if row else 0
     except sqlite3.Error:
         return 0
@@ -539,7 +551,7 @@ async def _act_on_order(conn, trader, market: str, order: Dict[str, Any],
         if market_price <= 0:
             return
 
-        already = chase_count_for(conn, order_no, market)
+        already = chase_count_for(conn, order_no, market, mode=mode)
         ceiling_price = order_price * (1.0 + BUY_MAX_PREMIUM_PCT)
 
         # ── BUY ceiling enforcement ──────────────────────────────────────────
@@ -645,13 +657,26 @@ async def _do_amend(conn, trader, market, order, run_id, summary, mode,
                 unfilled_qty, order.get("exchange"),
             )
         ok = bool(result and result.get("success"))
-        summary["amended"] += 1 if ok else 0
-        record_chase(conn, ticker, market, side, order_no, "AMEND", mode,
-                     old_price, new_price, unfilled_qty, already + 1,
-                     (result or {}).get("message", ""), run_id)
-        logger.warning("[LIVE][%s] %s amend success=%s msg=%s",
-                       market, ticker, ok, (result or {}).get("message"))
+        message = (result or {}).get("message", "")
+        if ok:
+            summary["amended"] += 1
+            record_chase(conn, ticker, market, side, order_no, "AMEND", mode,
+                         old_price, new_price, unfilled_qty, already + 1,
+                         message, run_id)
+            logger.warning("[LIVE][%s] %s amend success=True msg=%s",
+                           market, ticker, message)
+        else:
+            summary["skipped"] += 1
+            record_chase(conn, ticker, market, side, order_no, "SKIP", mode,
+                         old_price, old_price, unfilled_qty, already,
+                         f"amend rejected: {message}", run_id)
+            logger.error("[LIVE][%s] %s amend success=False msg=%s",
+                         market, ticker, message)
     except Exception as e:
+        summary["skipped"] += 1
+        record_chase(conn, ticker, market, side, order_no, "SKIP", mode,
+                     old_price, old_price, unfilled_qty, already,
+                     f"amend exception: {type(e).__name__}", run_id)
         logger.error("[%s] %s amend failed: %s", market, ticker, e)
 
 
@@ -673,7 +698,7 @@ async def _do_cancel(conn, trader, market, order, run_id, summary, mode,
         )
         record_chase(conn, ticker, market, side, order_no, "CANCEL", mode,
                      old_price, old_price, unfilled_qty,
-                     chase_count_for(conn, order_no, market),
+                     chase_count_for(conn, order_no, market, mode=mode),
                      f"{reason} payload={payload.get('params')}", run_id)
         return
 
@@ -691,13 +716,29 @@ async def _do_cancel(conn, trader, market, order, run_id, summary, mode,
                 order.get("exchange"),
             )
         ok = bool(result and result.get("success"))
-        summary["cancelled"] += 1 if ok else 0
-        record_chase(conn, ticker, market, side, order_no, "CANCEL", mode,
-                     old_price, old_price, unfilled_qty,
-                     chase_count_for(conn, order_no, market), reason, run_id)
-        logger.warning("[LIVE][%s] %s cancel success=%s msg=%s",
-                       market, ticker, ok, (result or {}).get("message"))
+        message = (result or {}).get("message", "")
+        already = chase_count_for(conn, order_no, market, mode=mode)
+        if ok:
+            summary["cancelled"] += 1
+            record_chase(conn, ticker, market, side, order_no, "CANCEL", mode,
+                         old_price, old_price, unfilled_qty, already, reason, run_id)
+            logger.warning("[LIVE][%s] %s cancel success=True msg=%s",
+                           market, ticker, message)
+        else:
+            summary["skipped"] += 1
+            record_chase(conn, ticker, market, side, order_no, "SKIP", mode,
+                         old_price, old_price, unfilled_qty, already,
+                         f"cancel rejected: {message}", run_id)
+            logger.error("[LIVE][%s] %s cancel success=False msg=%s",
+                         market, ticker, message)
     except Exception as e:
+        summary["skipped"] += 1
+        record_chase(
+            conn, ticker, market, side, order_no, "SKIP", mode,
+            old_price, old_price, unfilled_qty,
+            chase_count_for(conn, order_no, market, mode=mode),
+            f"cancel exception: {type(e).__name__}", run_id,
+        )
         logger.error("[%s] %s cancel failed: %s", market, ticker, e)
 
 

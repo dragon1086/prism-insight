@@ -150,7 +150,9 @@ env -i date                    # 셸 TZ 오염 없이 시스템 시간 확인
 기본값은 SHADOW(관측만, 주문 없음)다. 운영 순서:
 
 1. SHADOW로 최소 하루 이상 장중 구동. 로그에서 `mode=SHADOW` 와 `Fill-chaser done` 요약 확인.
-2. 사용자 승인 후 `.env`에 `FILL_CHASER_LIVE=true` 추가.
+2. 사용자 승인 후 `.env`에 `FILL_CHASER_LIVE=true`를 추가하고
+   `python tools/shadow_lifecycle.py --set-mode fill_chaser live --reason "검증 근거"`로
+   lifecycle을 명시적으로 승격한다. 두 게이트 중 하나라도 빠지면 SHADOW다.
 3. 수동 1회 실행으로 LIVE 확인:
    ```bash
    .venv/bin/python tools/fill_chaser.py --market us --once

@@ -158,10 +158,27 @@ def test_loop_c_misscheduled_no_cron():
     assert r["loop_c"]["state"] == "미스케줄"
 
 
-def test_loop_c_live_when_env_and_cron():
+def test_loop_c_live_when_env_and_cron(monkeypatch):
+    monkeypatch.setattr(fs, "_fill_chaser_lifecycle_mode", lambda: "live")
     env = {"LOOP_C_LIVE": "true"}
     r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_WITH_ALL))
     assert r["loop_c"]["state"] == "LIVE"
+
+
+def test_loop_c_shadow_when_env_live_but_lifecycle_shadow(monkeypatch):
+    monkeypatch.setattr(fs, "_fill_chaser_lifecycle_mode", lambda: "shadow")
+    env = {"FILL_CHASER_LIVE": "true"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_WITH_ALL))
+    assert r["loop_c"]["state"] == "SHADOW"
+    assert "lifecycle=shadow" in r["loop_c"]["evidence"]
+
+
+def test_loop_c_off_when_lifecycle_off(monkeypatch):
+    monkeypatch.setattr(fs, "_fill_chaser_lifecycle_mode", lambda: "off")
+    env = {"FILL_CHASER_LIVE": "true"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_WITH_ALL))
+    assert r["loop_c"]["state"] == "OFF"
+    assert "lifecycle=off" in r["loop_c"]["evidence"]
 
 
 def test_loop_c_shadow_cron_no_live_flag():
@@ -363,9 +380,10 @@ def test_cron_active_line_counted():
 
 # ── Rename compat: new descriptive script names must also count as scheduled ────
 
-def test_loops_detected_with_new_script_names():
+def test_loops_detected_with_new_script_names(monkeypatch):
     """A crontab using the renamed scripts (hardstop_seller / trend_exit_seller /
     fill_chaser) must resolve LIVE exactly like the old loop_* names."""
+    monkeypatch.setattr(fs, "_fill_chaser_lifecycle_mode", lambda: "live")
     env = {"HARDSTOP_LIVE": "true", "TREND_EXIT_LIVE": "true", "FILL_CHASER_LIVE": "true"}
     r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_WITH_NEW_NAMES))
     assert r["loop_a"]["state"] == "LIVE"
