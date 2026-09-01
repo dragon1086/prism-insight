@@ -74,8 +74,8 @@ def _batch_report_parallel_limit(job_count: int, environ=None) -> int:
     return min(job_count, max(1, configured))
 
 
-def _translated_pdf_limits(environ=None) -> tuple[int, int, int]:
-    """Return concurrency, per-report timeout, and whole-batch deadline."""
+def _translated_pdf_limits(environ=None) -> tuple[int, int, int, int]:
+    """Return concurrency, per-attempt timeout, batch deadline, and attempts."""
     environ = os.environ if environ is None else environ
 
     def positive_int(name: str, default: int) -> int:
@@ -87,7 +87,8 @@ def _translated_pdf_limits(environ=None) -> tuple[int, int, int]:
     return (
         positive_int("PRISM_TRANSLATED_PDF_MAX_CONCURRENCY", 3),
         positive_int("PRISM_TRANSLATED_PDF_ITEM_TIMEOUT_SECONDS", 360),
-        positive_int("PRISM_TRANSLATED_PDF_BATCH_TIMEOUT_SECONDS", 1200),
+        positive_int("PRISM_TRANSLATED_PDF_BATCH_TIMEOUT_SECONDS", 1800),
+        positive_int("PRISM_TRANSLATED_PDF_MAX_ATTEMPTS", 2),
     )
 
 
@@ -783,7 +784,9 @@ class StockAnalysisOrchestrator:
         from cores.agents.telegram_translator_agent import translate_telegram_message
         from pdf_converter import PdfRenderer
 
-        concurrency, item_timeout, batch_timeout = _translated_pdf_limits()
+        concurrency, item_timeout, batch_timeout, max_attempts = (
+            _translated_pdf_limits()
+        )
         semaphore = asyncio.Semaphore(concurrency)
         jobs = []
         for lang in self.telegram_config.broadcast_languages:
@@ -795,8 +798,9 @@ class StockAnalysisOrchestrator:
 
         logger.info(
             "[TRANSLATED_PDF] market=KR status=start jobs=%d concurrency=%d "
-            "item_timeout_seconds=%d batch_timeout_seconds=%d",
-            len(jobs), concurrency, item_timeout, batch_timeout,
+            "item_timeout_seconds=%d batch_timeout_seconds=%d max_attempts=%d "
+            "reasoning_effort=low",
+            len(jobs), concurrency, item_timeout, batch_timeout, max_attempts,
         )
         if not jobs:
             return
@@ -808,17 +812,47 @@ class StockAnalysisOrchestrator:
                     original_report = f.read()
                 text_for_translation, images = self._extract_base64_images(original_report)
 
-                async with semaphore:
-                    translated_report = await asyncio.wait_for(
-                        translate_telegram_message(
-                            text_for_translation,
-                            model=REPORT_AUX_MODEL,
-                            from_lang="ko",
-                            to_lang=lang,
-                            raise_on_error=True,
-                        ),
-                        timeout=item_timeout,
-                    )
+                translated_report = None
+                queue_seconds = 0.0
+                request_seconds = 0.0
+                attempts_used = 0
+                for attempt in range(1, max_attempts + 1):
+                    attempts_used = attempt
+                    queued_at = time.monotonic()
+                    try:
+                        async with semaphore:
+                            request_started = time.monotonic()
+                            queue_seconds += request_started - queued_at
+                            translated_report = await asyncio.wait_for(
+                                translate_telegram_message(
+                                    text_for_translation,
+                                    model=REPORT_AUX_MODEL,
+                                    from_lang="ko",
+                                    to_lang=lang,
+                                    raise_on_error=True,
+                                    reasoning_effort="low",
+                                ),
+                                timeout=item_timeout,
+                            )
+                            request_seconds += time.monotonic() - request_started
+                        break
+                    except asyncio.TimeoutError:
+                        request_seconds += time.monotonic() - request_started
+                        if attempt < max_attempts:
+                            logger.warning(
+                                "[TRANSLATED_PDF] market=KR lang=%s report=%s "
+                                "status=retry reason=item_timeout attempt=%d "
+                                "next_attempt=%d timeout_seconds=%d",
+                                lang, report_path, attempt, attempt + 1, item_timeout,
+                            )
+                            continue
+                        logger.error(
+                            "[TRANSLATED_PDF] market=KR lang=%s report=%s "
+                            "status=skipped reason=item_timeout timeout_seconds=%d "
+                            "attempts=%d",
+                            lang, report_path, item_timeout, max_attempts,
+                        )
+                        return None
 
                 translated_report = self._restore_base64_images(translated_report, images)
                 report_file = Path(report_path)
@@ -828,16 +862,12 @@ class StockAnalysisOrchestrator:
 
                 logger.info(
                     "[TRANSLATED_PDF] market=KR lang=%s report=%s status=translated "
-                    "duration_seconds=%.1f",
+                    "duration_seconds=%.1f queue_seconds=%.1f request_seconds=%.1f "
+                    "attempts=%d",
                     lang, report_path, time.monotonic() - started,
+                    queue_seconds, request_seconds, attempts_used,
                 )
                 return lang, channel_id, translated_report_path
-            except asyncio.TimeoutError:
-                logger.error(
-                    "[TRANSLATED_PDF] market=KR lang=%s report=%s status=skipped "
-                    "reason=item_timeout timeout_seconds=%d",
-                    lang, report_path, item_timeout,
-                )
             except Exception as error:
                 logger.error(
                     "[TRANSLATED_PDF] market=KR lang=%s report=%s status=skipped "
