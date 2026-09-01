@@ -29,6 +29,7 @@
 | Market Pulse 배치 정책 | **LIVE** | `.env MARKET_PULSE_MODE=live` | 정책 단위테스트 + 정규장 관측 | KR/US 모두 오전·오후 2회. `UNDER_PRESSURE`는 두 배치 유지, `CORRECTION`은 오후만 실행. 10분 hardstop/trend-exit 및 2분 fill-chaser는 모든 상태에서 유지 |
 | 레짐 최소점수 + 상승전환 파일럿 | **LIVE** | `.env REGIME_MIN_SCORE_FLOOR=true` | 순증 차단·차단 후 1/3/5/10일 성과 지속 관측 | 기본 `strong_bear=9`, `moderate_bear=8`, `sideways=8`. 단 `sideways + MARKET_PULSE=UPTREND`는 7점, AI가 `Enter`한 정확히 6점(원래 문턱 ≤6)은 설정 주문액의 50%로만 진입. 로그 `[REGIME_REBOUND_PILOT]` |
 | 결정론적 신규매수 최종 게이트 | **LIVE** | 코드 상시 (`cores/buy_gate.py`) | KR/US process_reports 회귀 + 순수 게이트 테스트 | 계산 레짐·분산일 보수화·점수·목표/손절·R/R·개별 T1/T2를 LLM 결정 뒤 최종 재검증. 데이터/게이트 오류 시 신규매수 차단. 기존 보유·매도에는 영향 없음 |
+| 초분할 0→10% 신규진입 projection | **SHADOW** | `.env MICRO_SPLIT_SHADOW_ENABLED=true` | 20 US 거래세션·신규 적격진입 30건·order diff 0·중복/누수 0 | 신규 US `entry_eligible`에만 계정별 정수주식 예상 수량을 secret-minimized event로 기록. target/주문/holdings/score/message 변화 0. 기존 보유·피라미딩 stage는 아직 미구현 |
 | US O'Neil RS Rating | **LIVE** | `RS_RATING_ENABLED=true` (기본값) | KR/US 2022~2026 백테스트, 49회 리밸런스 | 기존 60일 수익률 RS를 O'Neil 1~99 백분위로 대체. US 스크리닝에만 적용. 긴급 롤백은 `false` |
 | 손절폭 변동성 shadow | **SHADOW** | `cores/buy_gate.py` ATR20/ADR20 팩트 | 균형 표본에서 손실 포착·승자 제거율 확인 후 판단 | `손절폭 < 0.5×max(ATR20, ADR20)`만 로그. 현재 매수 veto 아님 |
 | TIER0 이벤트 강제청산(뉴스 자율매도 + KIS 51 관리종목) | **LIVE** | 코드 상시 | 더존 등 실증 | KR+US 매도 프롬프트 핵심-0 |

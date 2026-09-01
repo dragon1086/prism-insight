@@ -62,6 +62,7 @@ from observability.journal_influence import (  # noqa: E402
     attach_deterministic_score_effect,
     build_journal_influence_context,
 )
+from observability.micro_split import emit_initial_shadow as emit_micro_split_shadow  # noqa: E402
 from observability.trading_context import (  # noqa: E402
     emit_trading_context,
     latest_regime_snapshot,
@@ -4064,6 +4065,22 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         and not _cd_block
                         and _buy_gate.get("allowed", False)
                     )
+                    if entry_eligible and not is_add:
+                        emit_micro_split_shadow(
+                            market="US",
+                            ticker=ticker,
+                            decision_id=source_decision_id,
+                            account_id=str(account.get("account_key") or "default"),
+                            unit_amount=account.get("buy_amount_usd"),
+                            current_price=current_price,
+                            regime=(
+                                _buy_gate.get("effective_regime")
+                                or floor_regime
+                                or scenario.get("_deterministic_market_regime")
+                                or scenario.get("market_condition")
+                                or "unknown"
+                            ),
+                        )
                     if entry_eligible:
                         emit_trading_context(
                             "candidate.evaluated",

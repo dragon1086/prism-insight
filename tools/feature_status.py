@@ -180,6 +180,16 @@ def _decide_loop_c(env: dict, crontab: str):
     return "SHADOW", f"FILL_CHASER_LIVE={live or '(unset)'}, cron=있음"
 
 
+def _decide_micro_split_shadow(env: dict, crontab: str):
+    enabled = str(env.get("MICRO_SPLIT_SHADOW_ENABLED", "")).strip().lower()
+    if enabled in {"1", "true", "yes", "on"}:
+        return (
+            "SHADOW",
+            "MICRO_SPLIT_SHADOW_ENABLED=true, 신규 US 적격진입 0→10% projection만 기록, 거래영향 0",
+        )
+    return "OFF", f"MICRO_SPLIT_SHADOW_ENABLED={enabled or '(unset)'}"
+
+
 def _decide_vision_pipeline(env: dict, crontab: str):
     vision = env.get("PRISM_FEATURE_VISION", "").lower()
     shadow = env.get("PRISM_VISION_SHADOW", "").lower()
@@ -271,6 +281,7 @@ FEATURES = [
     ("loop_a",           "Hardstop — 고빈도 손절 (구 Loop A)",                  _decide_loop_a),
     ("loop_b",           "Trend-exit — 50MA 추세이탈 매도 (구 Loop B)",                   _decide_loop_b),
     ("loop_c",           "Fill-chaser — 미체결 추격 (구 Loop C)",                     _decide_loop_c),
+    ("micro_split_shadow", "초분할 0→10% 신규진입 projection", _decide_micro_split_shadow),
     ("position_pending_kr", "KR 주문 선기록(PENDING ENTRY/EXIT)", _decide_position_pending_kr),
     ("vision_pipeline",  "비전 배관·렌더QA (S1/S2)",                  _decide_vision_pipeline),
     ("vision_buy_qa",    "비전 매수 품질검사 (S3/S3.5)",               _decide_vision_buy_qa),
