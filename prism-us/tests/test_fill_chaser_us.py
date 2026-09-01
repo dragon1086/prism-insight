@@ -203,6 +203,29 @@ def test_sell_chase_amends_live(tmp_db, monkeypatch):
     assert trader.calls[0].endswith(":NASD")
 
 
+def test_us_live_amend_rejection_does_not_consume_chase_budget(
+    tmp_db, monkeypatch
+):
+    monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
+    trader = FakeTrader(
+        [_row("O1", "AAPL", "01", 10, 190.00)],
+        {"AAPL": 189.00},
+        amend_result={"success": False, "message": "broker rejected"},
+    )
+    _patch_ctx(monkeypatch, trader)
+    _seed_seen(tmp_db, "O1")
+
+    summary = _run()
+
+    assert summary["amended"] == 0
+    assert summary["skipped"] == 1
+    assert _logs(tmp_db, "AMEND") == []
+    assert len(_logs(tmp_db, "SKIP")) == 1
+    conn = sqlite3.connect(tmp_db)
+    assert lc.chase_count_for(conn, "O1", "US", mode="LIVE") == 0
+    conn.close()
+
+
 def test_buy_within_ceiling_chases(tmp_db, monkeypatch):
     monkeypatch.setattr(lc, "FILL_CHASER_LIVE", True)
     # ceiling = 100 * 1.02 = 102; market 101 < ceiling => chase up.
