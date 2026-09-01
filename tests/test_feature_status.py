@@ -175,6 +175,20 @@ def test_loop_c_off_disabled():
     assert r["loop_c"]["state"] == "OFF"
 
 
+# ── Micro-split SHADOW ───────────────────────────────────────────────────────
+
+def test_micro_split_shadow_off_by_default():
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
+    assert r["micro_split_shadow"]["state"] == "OFF"
+
+
+def test_micro_split_shadow_enabled_is_never_live():
+    env = {"MICRO_SPLIT_SHADOW_ENABLED": "true"}
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+    assert r["micro_split_shadow"]["state"] == "SHADOW"
+    assert "거래영향 0" in r["micro_split_shadow"]["evidence"]
+
+
 # ── Vision pipeline (S1/S2) ───────────────────────────────────────────────────
 
 def test_vision_pipeline_live_on_no_shadow():
@@ -256,7 +270,7 @@ def test_json_output_contains_all_features(capsys):
     out = {r["id"]: {"state": r["state"], "evidence": r["evidence"]} for r in results}
     data = json.loads(json.dumps(out, ensure_ascii=False))
 
-    expected_ids = {"oauth_llm", "loop_a", "loop_b", "loop_c", "position_pending_kr",
+    expected_ids = {"oauth_llm", "loop_a", "loop_b", "loop_c", "micro_split_shadow", "position_pending_kr",
                     "vision_pipeline", "vision_buy_qa", "vision_publish"}
     assert expected_ids == set(data.keys())
     assert data["oauth_llm"]["state"] == "LIVE"
@@ -269,7 +283,7 @@ def test_json_output_contains_all_features(capsys):
 def test_empty_env_and_crontab_does_not_raise():
     """evaluate_all must never raise even with completely empty inputs."""
     results = fs.evaluate_all(env={}, crontab="")
-    assert len(results) == 8  # one entry per feature
+    assert len(results) == 9  # one entry per feature
 
 
 def test_position_pending_kr_reports_off_by_default_and_live_when_enabled():

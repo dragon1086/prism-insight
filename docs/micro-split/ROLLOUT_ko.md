@@ -36,6 +36,9 @@
 
 ## Phase 2 — CAPTURE/SHADOW 계산
 
+현재 세부 단계는 **2a: 신규 US 적격진입 0→10% projection**입니다. 지속 campaign,
+10% 이후 stage advance, 기존 보유·피라미딩 계산은 아직 하지 않습니다.
+
 기존 결정마다 현행 결과와 초분할 후보 결과를 나란히 기록합니다.
 
 - 주문, holdings, message, score, sell 변화 0
@@ -106,4 +109,3 @@
 - Phase 3: campaign shadow 쓰기 OFF, 기존 holdings 무접촉
 - Phase 4: projection OFF, 주문 영향 없음
 - Phase 5~6: execution gate OFF 후 기존 all-in 경로 복귀
-

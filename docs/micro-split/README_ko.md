@@ -1,6 +1,6 @@
 # PRISM 초분할 설계 문서
 
-> 상태: **Phase 1 — 순수 도메인 코어만 구현, 운영 경로 미연결**  
+> 상태: **Phase 2a — US 신규 적격진입 0→10% SHADOW projection**
 > 정책 초안: `micro-split-v1-draft`  
 > 거래 영향: **0**
 
@@ -29,9 +29,11 @@
 1. 레짐별 허용 단계와 단조 증가 목표비중을 검증합니다.
 2. 목표비중이 올라간 순간에만 정수 주식 예상 수량을 계산합니다.
 
-DB, 네트워크, 환경 변수, KIS, 에이전트, 주문 모듈을 import하지 않습니다. 기존
-`stock_tracking_agent`, `us_stock_tracking_agent`, `ExecutionService`, 피라미딩과 매도
-루프에는 연결되지 않았습니다.
+순수 코어는 DB, 네트워크, 환경 변수, KIS, 에이전트, 주문 모듈을 import하지 않습니다.
+Phase 2a에서는 US 최종 `entry_eligible` 경계가 `observability.micro_split`을 fail-open으로
+호출해 신규 캠페인의 0→10% 목표와 계정별 정수주식 예상 수량만 JSONL에 기록합니다.
+반환값은 사용하지 않으며 `ExecutionService`, holdings, 피라미딩, 매도 루프에는 연결하지
+않습니다. `.env MICRO_SPLIT_SHADOW_ENABLED=false`가 기본 OFF입니다.
 
 ## 기본 초안 단계
 
@@ -48,4 +50,3 @@ DB, 네트워크, 환경 변수, KIS, 에이전트, 주문 모듈을 import하�
 - 가격이 하락했다는 이유로 수량을 늘리지 않습니다.
 - 초분할을 물타기나 손절 회피 수단으로 사용하지 않습니다.
 - 사용자 승인 없이 SHADOW·데모·LIVE로 자동 승격하지 않습니다.
-
