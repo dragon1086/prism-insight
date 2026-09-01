@@ -110,6 +110,7 @@ async def translate_telegram_message(
     to_lang: str = "en",
     *,
     raise_on_error: bool = False,
+    reasoning_effort: str = REPORT_AUX_EFFORT,
 ) -> str:
     """
     Translate a telegram message from source language to target language
@@ -121,6 +122,8 @@ async def translate_telegram_message(
         to_lang: Target language code (default: "en" for English)
         raise_on_error: Re-raise failures when callers must not send the source
             text as if it had been translated.
+        reasoning_effort: Reasoning effort for the translation request. PDF
+            translation callers use ``low`` because the task is single-pass.
 
     Returns:
         str: Translated message
@@ -145,7 +148,7 @@ async def translate_telegram_message(
             message=message,
             request_params=RequestParams(
                 model=model,
-                reasoning_effort=REPORT_AUX_EFFORT,
+                reasoning_effort=reasoning_effort,
                 maxTokens=100000,
                 temperature=0.3,  # Lower temperature for more consistent translations
                 max_iterations=1  # Single pass translation, no complex reasoning needed
