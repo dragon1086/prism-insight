@@ -181,11 +181,15 @@ def _decide_loop_c(env: dict, crontab: str):
 
 
 def _decide_micro_split_shadow(env: dict, crontab: str):
-    enabled = str(env.get("MICRO_SPLIT_SHADOW_ENABLED", "")).strip().lower()
+    env_value = str(env.get("MICRO_SPLIT_SHADOW_ENABLED", "")).strip().lower()
+    cron_value = _cron_get_inline_env(crontab, "MICRO_SPLIT_SHADOW_ENABLED").lower()
+    enabled = env_value or cron_value
     if enabled in {"1", "true", "yes", "on"}:
+        source = "env" if env_value else "crontab inline"
         return (
             "SHADOW",
-            "MICRO_SPLIT_SHADOW_ENABLED=true, 신규 US 적격진입 0→10% projection만 기록, 거래영향 0",
+            "MICRO_SPLIT_SHADOW_ENABLED=true "
+            f"({source}), 신규 US 적격진입 0→10% projection만 기록, 거래영향 0",
         )
     return "OFF", f"MICRO_SPLIT_SHADOW_ENABLED={enabled or '(unset)'}"
 
