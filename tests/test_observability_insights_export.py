@@ -257,6 +257,58 @@ def test_snapshot_reports_journal_influence_capture_coverage() -> None:
     }
 
 
+def test_snapshot_reports_micro_split_shadow_capture() -> None:
+    events = [
+        {
+            **_event(
+                "micro-shadow-1",
+                "micro_split.shadow_evaluated",
+                "2026-09-01T00:00:00Z",
+                market="US",
+                attributes={
+                    "mode": "SHADOW",
+                    "policy_version": "micro-split-v1-draft",
+                    "reason_code": "ENTRY_ELIGIBLE_SCOUT",
+                    "execution_profile_ref": "a" * 16,
+                    "target_pct": 10,
+                    "projection_status": "PROJECTED",
+                    "projected_whole_share_quantity": 0,
+                },
+            ),
+            "decision_id": "decision-1",
+        },
+        {
+            **_event(
+                "micro-shadow-2",
+                "micro_split.shadow_evaluated",
+                "2026-09-01T00:01:00Z",
+                market="US",
+                attributes={
+                    "mode": "SHADOW",
+                    "policy_version": "micro-split-v1-draft",
+                    "reason_code": "ENTRY_ELIGIBLE_SCOUT",
+                    "execution_profile_ref": "b" * 16,
+                    "target_pct": 10,
+                    "projection_status": "PROJECTED",
+                    "projected_whole_share_quantity": 1,
+                },
+            ),
+            "decision_id": "decision-1",
+        },
+    ]
+
+    capture = build_snapshot(events)["markets"]["US"]["micro_split_shadow"]
+
+    assert capture["event_count"] == 2
+    assert capture["decision_count"] == 1
+    assert capture["execution_profile_count"] == 2
+    assert capture["policy_version_distribution"] == {"micro-split-v1-draft": 2}
+    assert capture["target_pct_distribution"] == {"10": 2}
+    assert capture["projection_status_distribution"] == {"PROJECTED": 2}
+    assert capture["zero_whole_share_projection_count"] == 1
+    assert capture["latest_at"] == "2026-09-01T00:01:00Z"
+
+
 def test_clickhouse_exporter_rejects_non_local_endpoint():
     with pytest.raises(ValueError, match="local HTTP"):
         load_clickhouse_events(

@@ -24,6 +24,7 @@ EVENT_TYPES = {
     "entry.executed",
     "exit.executed",
     "market.regime_snapshot",
+    "micro_split.shadow_evaluated",
     "trade.outcome",
     "trigger.performance_feedback",
 }
@@ -39,6 +40,7 @@ _CLICKHOUSE_EVENTS_QUERY = """
         'entry.executed',
         'exit.executed',
         'market.regime_snapshot',
+        'micro_split.shadow_evaluated',
         'trade.outcome',
         'trigger.performance_feedback'
       )
@@ -206,6 +208,12 @@ def _market_snapshot(
         event
         for event in events
         if event.get("event_type") == "market.regime_snapshot"
+        and event.get("market") == market
+    ]
+    micro_split_events = [
+        event
+        for event in events
+        if event.get("event_type") == "micro_split.shadow_evaluated"
         and event.get("market") == market
     ]
     context_events = [
@@ -399,6 +407,19 @@ def _market_snapshot(
             "observed_at": latest.get("timestamp"),
         }
 
+    micro_policy_versions = Counter(
+        str(event.get("attributes", {}).get("policy_version") or "unknown")
+        for event in micro_split_events
+    )
+    micro_targets = Counter(
+        str(event.get("attributes", {}).get("target_pct") or "unknown")
+        for event in micro_split_events
+    )
+    micro_projection_statuses = Counter(
+        str(event.get("attributes", {}).get("projection_status") or "unknown")
+        for event in micro_split_events
+    )
+
     return {
         "actual": _trade_metrics(actual),
         "candidate": _candidate_metrics(candidates),
@@ -463,6 +484,36 @@ def _market_snapshot(
             "causal_interpretation": (
                 "observational only; paired no-journal shadow is required"
             ),
+        },
+        "micro_split_shadow": {
+            "event_count": len(micro_split_events),
+            "decision_count": len(
+                {
+                    str(event.get("decision_id"))
+                    for event in micro_split_events
+                    if event.get("decision_id")
+                }
+            ),
+            "execution_profile_count": len(
+                {
+                    str(event.get("attributes", {}).get("execution_profile_ref"))
+                    for event in micro_split_events
+                    if event.get("attributes", {}).get("execution_profile_ref")
+                }
+            ),
+            "policy_version_distribution": dict(micro_policy_versions),
+            "target_pct_distribution": dict(micro_targets),
+            "projection_status_distribution": dict(micro_projection_statuses),
+            "zero_whole_share_projection_count": sum(
+                event.get("attributes", {}).get("projected_whole_share_quantity")
+                == 0
+                for event in micro_split_events
+            ),
+            "latest_at": max(
+                (str(event.get("timestamp") or "") for event in micro_split_events),
+                default=None,
+            ),
+            "trading_impact": "none",
         },
     }
 

@@ -616,11 +616,13 @@ def _install_us_trading_module(monkeypatch):
 
 
 @pytest.mark.parametrize("entry_quality_capture", ["0", "1"])
+@pytest.mark.parametrize("micro_split_shadow", ["0", "1"])
 @pytest.mark.asyncio
 async def test_process_reports_analyzes_once_and_dedupes_signals(
-    monkeypatch, caplog, tmp_path, entry_quality_capture
+    monkeypatch, caplog, tmp_path, entry_quality_capture, micro_split_shadow
 ):
     monkeypatch.setenv("ENTRY_QUALITY_CAPTURE_ENABLED", entry_quality_capture)
+    monkeypatch.setenv("MICRO_SPLIT_SHADOW_ENABLED", micro_split_shadow)
     monkeypatch.setenv(
         "PRISM_OBSERVABILITY_SPOOL", str(tmp_path / "observability.jsonl")
     )
@@ -628,8 +630,18 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(
     agent.db_path = str(tmp_path / "us_stock_tracking.sqlite")
     _ensure_reentry_schema(agent.db_path)
     agent.account_configs = [
-        {"name": "us-primary", "account_key": "vps:us-primary:01", "product": "01"},
-        {"name": "us-secondary", "account_key": "vps:us-secondary:01", "product": "01"},
+        {
+            "name": "us-primary",
+            "account_key": "vps:us-primary:01",
+            "product": "01",
+            "buy_amount_usd": 1000.0,
+        },
+        {
+            "name": "us-secondary",
+            "account_key": "vps:us-secondary:01",
+            "product": "01",
+            "buy_amount_usd": 2000.0,
+        },
     ]
     agent.active_account = None
     agent.max_slots = 10
@@ -744,6 +756,11 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(
     reconciliations = [
         event for event in observed if event["event_type"] == "entry.fill_reconciled"
     ]
+    micro_split_events = [
+        event
+        for event in observed
+        if event["event_type"] == "micro_split.shadow_evaluated"
+    ]
     assert len(candidates) == 2
     if entry_quality_capture == "1":
         assert all(
@@ -761,6 +778,25 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(
             for event in candidates
         )
         assert reconciliations == []
+
+    if micro_split_shadow == "1":
+        assert len(micro_split_events) == 2
+        assert len(
+            {
+                event["attributes"]["execution_profile_ref"]
+                for event in micro_split_events
+            }
+        ) == 2
+        assert all(
+            event["attributes"]["target_pct"] == 10
+            for event in micro_split_events
+        )
+        assert sorted(
+            event["attributes"]["projected_whole_share_quantity"]
+            for event in micro_split_events
+        ) == [0, 1]
+    else:
+        assert micro_split_events == []
 
 
 @pytest.mark.asyncio
