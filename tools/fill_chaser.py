@@ -277,15 +277,18 @@ def chase_count_for(
 ) -> int:
     """Count AMENDs for this order, optionally isolated by runtime mode."""
     try:
-        sql = (
-            "SELECT COUNT(*) FROM loop_c_chase_log "
-            "WHERE order_no=? AND market=? AND action='AMEND'"
-        )
-        params: tuple[Any, ...] = (order_no, market)
-        if mode is not None:
-            sql += " AND mode=?"
-            params += (mode,)
-        row = conn.execute(sql, params).fetchone()
+        if mode is None:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM loop_c_chase_log "
+                "WHERE order_no=? AND market=? AND action='AMEND'",
+                (order_no, market),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM loop_c_chase_log "
+                "WHERE order_no=? AND market=? AND action='AMEND' AND mode=?",
+                (order_no, market, mode),
+            ).fetchone()
         return int(row[0]) if row else 0
     except sqlite3.Error:
         return 0
