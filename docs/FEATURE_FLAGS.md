@@ -35,7 +35,7 @@
 | TIER0 이벤트 강제청산(뉴스 자율매도 + KIS 51 관리종목) | **LIVE** | 코드 상시 | 더존 등 실증 | KR+US 매도 프롬프트 핵심-0 |
 | Loop A — 고빈도 하드스톱(−7%/시나리오손절) | **LIVE** | `.env HARDSTOP_LIVE=true` (구 `LOOP_A_LIVE`, alias 유효) + cron 10분 | SHADOW 관측 후 승격(06-20) | KR 9–15 / US 9–16. 킬: `HARDSTOP_ENABLED=false` |
 | Loop B — 50MA 종가확인 추세이탈 | **LIVE** | `.env TREND_EXIT_LIVE=true` (구 `LOOP_B_LIVE`) + cron(KR 9–15 / US 9–16) | 백테스트 KR/US 순효과(휩쏘0·추가DD0) + 사용자 승인(06-24) | 코드: `tools/trend_exit_seller.py` (구 `tools/loop_b_trend_exit.py` shim 유효). 킬: `TREND_EXIT_ENABLED=false` |
-| Loop C — 미체결 추격 + KIS TR 래퍼 | **SHADOW** | cron(KR/US */2분, `FILL_CHASER_LIVE` 미설정; 구 `LOOP_C_LIVE` alias) | **신규 KIS 정정/취소 TR 실 KIS 수락 검증**(dry-run/`--selftest`로 페이로드 필드는 검증됨) | 코드: `tools/fill_chaser.py` (구 `tools/loop_c_fill_chaser.py` shim 유효). 매수=체결우선 cross(예산 `FILL_CHASER_BUY_MAX_PREMIUM_PCT`=3%, `FILL_CHASER_BUY_CROSS`=on). 상세로깅 `[LOOP_C][SHADOW]` |
+| Loop C — 미체결 추격 + KIS TR 래퍼 | **LIVE** | cron(KR/US */2분) + `.env FILL_CHASER_LIVE=true` + lifecycle `fill_chaser=live` | US 실제 정정 성공 27개 고유 주문·SHADOW 579액션·payload/중복 오류 0 확인 후 2026-09-02 수동 승격 | 코드: `tools/fill_chaser.py` (구 `tools/loop_c_fill_chaser.py` shim 유효). 매수=체결우선 cross(예산 `FILL_CHASER_BUY_MAX_PREMIUM_PCT`=3%, `FILL_CHASER_BUY_CROSS`=on). 두 게이트 중 하나라도 내려가면 SHADOW/OFF |
 | KR 주문 선기록(PENDING ENTRY/EXIT) | **OFF** | `.env` 또는 cron inline `POSITION_PENDING_KR_ENABLED=true` (기본 off) | 피라미딩 fill reconciliation + post-CLOSED 외부효과 복구 검증/사용자 승인 | gate OFF 배포만 허용. gate=true에서 피라미딩은 주문 전 차단. 활성화 전 `failed_exit_linked_open_positions`, PENDING/EXIT_UNKNOWN 0 확인 필수 |
 | 재진입 쿨다운 게이트(매수측) | **LIVE** | `REENTRY_COOLDOWN_LIVE=true` (기본값) | SHADOW 관측 및 prod 이력검증 완료 | 코드: `reentry_cooldown.py` (KR/US 매수 caller 훅). 손실·stop/trend-exit 후 24h 재매수 차단(승리후 0h). 계좌별 DB 경로·account_key로 조회 |
 | 고변동·급락 레짐 강등 | **LIVE** | `REGIME_HIVOL_OVERRIDE=active` (기본값) | KR/US 합성데이터 회귀 완료 | 장기 이평 위에 남은 급락형 휩쏘를 sideways로 강등. `shadow/off`는 긴급 롤백용 |
@@ -59,10 +59,11 @@ SHADOW→LIVE **자동 승격**은 아래를 **모두** 충족할 때만:
 
 ## 승격 대기열 (다음 LIVE 후보)
 - ✅ **Loop B**: LIVE 승격 완료(06-24, 백테스트 KR/US 통과 + 사용자 승인).
-- **Loop C**: 실 KIS 수락 검증(소액 왕복 1회) → 통과 시 후보. (SHADOW 상세로깅·`--selftest`로 페이로드는 검증됨.)
+- ✅ **Loop C**: LIVE 승격 완료(09-02, US 실제 정정 성공 27건 + SHADOW 579액션 + 오류 0). `.env`와 lifecycle 이중 게이트를 모두 확인한다.
 - **비전 매수게이트(S3)**: A/B 측정 설계 확정·데이터 축적 후 — **수익영향이라 사용자 확인 후**.
 
 ## 변경 이력
+- 2026-09-02: **Fill-chaser lifecycle LIVE 복구** — 08-19 lifecycle 도입 때 기존 `.env FILL_CHASER_LIVE=true`가 유지됐지만 명시적 lifecycle 승격이 없어 실제 cron이 SHADOW로 강등됐다. `feature_status.py`가 lifecycle을 보지 않아 LIVE로 오보한 결함도 함께 수정했다. 영향 전수조회에서 US 매수 COP/OXY/LITE/RJF는 자연 체결, HOOD/WDAY는 체결 0·장종료 취소, 관련 US 매도 5건은 전량 체결이었다. 과거 US 실제 정정 성공 27개 고유 주문, 이후 SHADOW 579액션·payload/중복 오류 0을 근거로 lifecycle을 수동 LIVE 승격했다. SHADOW와 LIVE chase 예산을 분리하고 브로커 거절을 성공 액션으로 기록하지 않도록 보강했다.
 - 2026-09-01: **US trigger fail-open 경계 복구** — yfinance가 일부 ticker의 OHLCV 셀을 중첩 Series로 반환하거나 현재·전일 라벨이 어긋나도 해당 ticker를 제거하고, 개별 trigger 예외는 빈 결과로 격리해 나머지 trigger와 전체 배치를 계속 실행한다. snapshot 자체를 가져오지 못한 경우의 배치 중단 계약은 유지한다.
 - 2026-09-01: **US 신규매수 위험 계약 정렬** — 레짐 slot tuple의 합계를 최종 후보 수 hard cap으로 적용해 post-FTD 1종목·약세/횡보 2종목 제한이 bottom-up refill로 무효화되지 않게 수정. US `max_portfolio_size`를 실제 신규매수·피라미딩 슬롯 한도에 연결하고, 최종 점수를 `buy_score + macro_adjustment + journal_adjustment`로 통일. 내부 원장·시뮬레이터는 KIS 실주문 가능 수량·성공 여부와 독립된 기존 계약을 유지한다.
 - 2026-07-19: **KR PENDING EXIT 배선 추가, gate OFF 유지** — batch/hardstop/trend에 broker-first lifecycle을 연결하고 `feature_status.py`에 `.env`와 모든 active cron inline gate 상태를 노출. 피라미딩 accepted-but-unfilled 재시작 방어 및 post-CLOSED 외부효과 복구 절차를 포함한 운영 reconciliation 완료 전 활성화 금지.

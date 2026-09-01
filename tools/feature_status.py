@@ -163,21 +163,40 @@ def _decide_loop_b(env: dict, crontab: str):
     return "SHADOW", f"TREND_EXIT_LIVE={live or '(unset)'}, cron=있음"
 
 
+def _fill_chaser_lifecycle_mode() -> str:
+    """Return the effective lifecycle gate; fail closed to SHADOW."""
+    try:
+        from cores.shadow_lifecycle import feature_mode
+
+        mode = str(feature_mode("fill_chaser") or "").strip().lower()
+        return mode if mode in {"live", "shadow", "off"} else "shadow"
+    except Exception:
+        return "shadow"
+
+
 def _decide_loop_c(env: dict, crontab: str):
     # Canonical FILL_CHASER_* with deprecated LOOP_C_* alias fallback.
     live = (env.get("FILL_CHASER_LIVE") or env.get("LOOP_C_LIVE") or "").lower()
     enabled = (env.get("FILL_CHASER_ENABLED") or env.get("LOOP_C_ENABLED") or "").lower()
     has_cron = (_cron_has_script(crontab, "loop_c_fill_chaser.py") or _cron_has_script(crontab, "fill_chaser.py"))
+    lifecycle = _fill_chaser_lifecycle_mode()
 
     if enabled == "false":
         return "OFF", "FILL_CHASER_ENABLED=false"
-    if live == "true" and has_cron:
-        return "LIVE", "FILL_CHASER_LIVE=true, cron=있음"
-    if live == "true" and not has_cron:
-        return "미스케줄", "FILL_CHASER_LIVE=true but cron=없음"
+    if lifecycle == "off":
+        return "OFF", f"FILL_CHASER_LIVE={live or '(unset)'}, lifecycle=off"
     if not has_cron:
-        return "미스케줄", f"cron=없음, FILL_CHASER_LIVE={live or '(unset)'}"
-    return "SHADOW", f"FILL_CHASER_LIVE={live or '(unset)'}, cron=있음"
+        return (
+            "미스케줄",
+            f"cron=없음, FILL_CHASER_LIVE={live or '(unset)'}, "
+            f"lifecycle={lifecycle}",
+        )
+    if live == "true" and lifecycle == "live":
+        return "LIVE", "FILL_CHASER_LIVE=true, lifecycle=live, cron=있음"
+    return (
+        "SHADOW",
+        f"FILL_CHASER_LIVE={live or '(unset)'}, lifecycle={lifecycle}, cron=있음",
+    )
 
 
 def _decide_micro_split_shadow(env: dict, crontab: str):
