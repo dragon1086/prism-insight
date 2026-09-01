@@ -122,11 +122,27 @@ def _env_flag(suffix: str, default: bool) -> bool:
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
-try:
-    from cores.shadow_lifecycle import feature_mode as _shadow_feature_mode
-    _FILL_CHASER_LIFECYCLE_MODE = _shadow_feature_mode("fill_chaser")
-except Exception:
-    _FILL_CHASER_LIFECYCLE_MODE = "shadow"
+def _load_fill_chaser_lifecycle_mode() -> str:
+    """Load the root lifecycle module without importing a market `cores` package."""
+    try:
+        import importlib.util
+
+        path = PROJECT_ROOT / "cores" / "shadow_lifecycle.py"
+        spec = importlib.util.spec_from_file_location(
+            "prism_fill_chaser_shadow_lifecycle",
+            path,
+        )
+        if spec is None or spec.loader is None:
+            return "shadow"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        mode = str(module.feature_mode("fill_chaser") or "").strip().lower()
+        return mode if mode in {"live", "shadow", "off"} else "shadow"
+    except Exception:
+        return "shadow"
+
+
+_FILL_CHASER_LIFECYCLE_MODE = _load_fill_chaser_lifecycle_mode()
 
 FILL_CHASER_ENABLED = _env_flag("ENABLED", True) and _FILL_CHASER_LIFECYCLE_MODE != "off"
 # LIVE requires both the explicit broker flag and a manually promoted lifecycle
