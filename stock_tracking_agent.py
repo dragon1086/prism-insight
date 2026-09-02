@@ -51,6 +51,7 @@ from cores.llm.codex_oauth_fast_backend import generate_codex_fast
 from cores.openai_error_logging import log_openai_error
 from cores.agents.trading_agents import create_trading_scenario_agent
 from cores.utils import parse_llm_json
+from report_model_config import REPORT_AUX_EFFORT, REPORT_AUX_MODEL
 from prism_core.execution_service import (
     ExecutionService,
     OrderOutcomeUnknown,
@@ -197,26 +198,29 @@ async def _generate_trading_scenario_json(
     llm,
     prompt_message: str,
     *,
-    attempts: int = 2,
+    attempts: int = 3,
     retry_delay_seconds: float = 1.0,
 ) -> Optional[Dict[str, Any]]:
     """Generate and parse a trading scenario without silently accepting empties.
 
     The ChatGPT OAuth proxy occasionally returns an empty completion after a
     transient MCP/tool failure. Treating that as a valid ``No Entry`` scenario
-    produces misleading score-0 Telegram messages. A single bounded retry is
-    enough to recover common transient failures while keeping batch latency
-    bounded; callers still receive an explicitly failed fallback if both calls
-    are unusable.
+    produces misleading score-0 Telegram messages. Two primary-model attempts
+    are followed by one bounded auxiliary-model attempt. Callers still receive
+    an explicitly failed fallback if all three responses are unusable.
     """
     last_response = ""
-    for attempt in range(1, max(1, attempts) + 1):
+    bounded_attempts = max(1, attempts)
+    for attempt in range(1, bounded_attempts + 1):
+        final_auxiliary_attempt = attempt == bounded_attempts and bounded_attempts >= 3
+        model = REPORT_AUX_MODEL if final_auxiliary_attempt else "gpt-5.6-sol"
+        effort = REPORT_AUX_EFFORT if final_auxiliary_attempt else "high"
         try:
             last_response = await llm.generate_str(
                 message=prompt_message,
                 request_params=RequestParams(
-                    model="gpt-5.6-sol",
-                    reasoning_effort="high",
+                    model=model,
+                    reasoning_effort=effort,
                     maxTokens=30000,
                 ),
             ) or ""
@@ -224,7 +228,7 @@ async def _generate_trading_scenario_json(
             logger.warning(
                 "Trading scenario LLM call failed (attempt %s/%s): %s",
                 attempt,
-                max(1, attempts),
+                bounded_attempts,
                 type(exc).__name__,
             )
             last_response = ""
@@ -234,17 +238,20 @@ async def _generate_trading_scenario_json(
             return scenario_json
 
         logger.warning(
-            "Trading scenario response empty or invalid (attempt %s/%s, chars=%s)",
+            "Trading scenario response empty or invalid "
+            "(attempt %s/%s, model=%s, effort=%s, chars=%s)",
             attempt,
-            max(1, attempts),
+            bounded_attempts,
+            model,
+            effort,
             len(last_response),
         )
-        if attempt < max(1, attempts):
+        if attempt < bounded_attempts:
             await asyncio.sleep(retry_delay_seconds)
 
     logger.error(
         "Trading scenario parse failed after %s attempt(s); using explicit failure fallback",
-        max(1, attempts),
+        bounded_attempts,
     )
     return None
 
@@ -4601,8 +4608,10 @@ class StockTrackingAgent:
                 msg_type = self._msg_types[idx] if idx < len(self._msg_types) else None
                 effect_id = self._message_effect_id(idx)
                 logger.info(f"Sending Telegram message: {chat_id}")
+                sent_message_id = None
 
                 async def send_primary_message(payload=None):
+                    nonlocal sent_message_id
                     # Telegram message length limit (4096 characters)
                     MAX_MESSAGE_LENGTH = 4096
                     outbound_message = message
@@ -4646,7 +4655,8 @@ class StockTrackingAgent:
                         # Notify with full original message, link to first part
                         firebase_tasks.append(self._schedule_firebase(message, chat_id, first_msg_id, msg_type=msg_type))
 
-                    return str(first_msg_id)
+                    sent_message_id = str(first_msg_id)
+                    return sent_message_id
 
                 try:
                     if effect_id:
@@ -4677,7 +4687,12 @@ class StockTrackingAgent:
                         "delivered",
                         "already_delivered",
                     }:
-                        logger.info(f"Telegram message sent: {chat_id}")
+                        logger.info(
+                            "Telegram message sent: %s type=%s message_id=%s",
+                            chat_id,
+                            msg_type or "unknown",
+                            sent_message_id or "already-delivered",
+                        )
                 except TelegramError as e:
                     logger.error(f"Telegram message send failed: {e}")
                     success = False
