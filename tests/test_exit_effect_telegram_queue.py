@@ -132,3 +132,29 @@ async def test_telegram_error_reschedules_only_telegram_effect(monkeypatch, tmp_
     assert rows[1]["status"] == "PENDING"
     assert rows[1]["last_error"] == "TelegramError"
     assert all(row["status"] == "PENDING" for row in (rows[0], rows[2], rows[3]))
+
+
+@pytest.mark.asyncio
+async def test_portfolio_delivery_log_contains_type_and_message_id(
+    monkeypatch, tmp_path, caplog
+):
+    agent = _agent(tmp_path / "portfolio-log.sqlite")
+
+    async def send(chat_id, text):
+        assert chat_id == "channel-1"
+        assert text == "portfolio"
+        return SimpleNamespace(message_id=842)
+
+    agent._send_with_retry = send
+    monkeypatch.setattr(
+        "portfolio_broadcast.should_send_portfolio", lambda *_a, **_k: True
+    )
+
+    with caplog.at_level("INFO"):
+        result = await agent.send_telegram_message(
+            "channel-1", portfolio_force=True
+        )
+
+    assert result is True
+    assert "type=portfolio" in caplog.text
+    assert "message_id=842" in caplog.text

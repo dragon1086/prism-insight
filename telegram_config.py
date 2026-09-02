@@ -7,6 +7,7 @@ and minimizes redundant conditional processing.
 """
 import logging
 import os
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,49 @@ async def send_openai_quota_alert(telegram_config: "TelegramConfig", market: str
         logger.error(f"[{market}] Failed to send OpenAI quota alert: {e}")
 
 
+def _public_buy_analysis_failure_detail(detail: str) -> str:
+    """Convert internal failure text into a path-free subscriber summary."""
+    labels = []
+    for raw in re.split(r"[;\n]+", str(detail or "")):
+        item = raw.strip()
+        if not item:
+            continue
+        match = re.search(r"(?P<ticker>\d{6})_(?P<company>[^_:/\\]+)", item)
+        if match:
+            company = re.sub(r"[^0-9A-Za-z가-힣& .()-]", "", match.group("company"))
+            label = f"{company}({match.group('ticker')})" if company else match.group("ticker")
+        else:
+            label = "후보 종목"
+
+        lowered = item.lower()
+        if "scenario_llm" in lowered or "trading_scenario" in lowered:
+            reason = "매매 시나리오 생성 실패"
+        elif "ticker" in lowered:
+            reason = "종목 식별 실패"
+        elif "price" in lowered or "가격" in item:
+            reason = "가격 데이터 확인 실패"
+        else:
+            reason = "분석 처리 실패"
+        public = f"{label}: {reason}"
+        if public not in labels:
+            labels.append(public)
+    return " / ".join(labels[:3])
+
+
+def build_buy_analysis_failure_alert(
+    *, failed: int, total: int, market: str = "KR", detail: str = ""
+) -> str:
+    """Build the subscriber alert without paths, filenames, or internal codes."""
+    public_detail = _public_buy_analysis_failure_detail(detail)
+    return (
+        f"⚠️ [{market}] 매수 후보 분석 실패\n\n"
+        f"이번 배치의 매수 후보 {total}종목 중 {failed}종목의 분석이 실패해 "
+        f"해당 종목의 매수 판단이 이루어지지 않았습니다.\n"
+        + (f"\n• 대상: {public_detail}\n" if public_detail else "")
+        + "• 조치: 운영 시스템에서 자동 확인 중입니다."
+    )
+
+
 async def send_buy_analysis_failure_alert(telegram_config: "TelegramConfig", failed: int, total: int,
                                           market: str = "KR", detail: str = ""):
     """Alert the main channel when buy-candidate report analyses failed.
@@ -223,7 +267,7 @@ async def send_buy_analysis_failure_alert(telegram_config: "TelegramConfig", fai
     the operator only notices by absence.
     """
     if not telegram_config or not telegram_config.use_telegram:
-        return
+        return None
 
     try:
         from telegram import Bot
@@ -232,21 +276,28 @@ async def send_buy_analysis_failure_alert(telegram_config: "TelegramConfig", fai
         request = HTTPXRequest(connect_timeout=10.0, read_timeout=10.0)
         bot = Bot(token=telegram_config.bot_token, request=request)
 
-        alert_message = (
-            f"⚠️ [{market}] 매수 후보 분석 실패\n\n"
-            f"이번 배치의 매수 후보 {total}종목 중 {failed}종목의 분석이 실패해 "
-            f"해당 종목의 매수 판단이 이루어지지 않았습니다.\n"
-            + (f"\n• 사유: {detail}\n" if detail else "")
-            + "• 조치: 서버 로그(stock_analysis_*.log)에서 원인 확인"
+        alert_message = build_buy_analysis_failure_alert(
+            failed=failed,
+            total=total,
+            market=market,
+            detail=detail,
         )
 
-        await bot.send_message(
+        result = await bot.send_message(
             chat_id=telegram_config.channel_id,
             text=alert_message
         )
-        logger.info(f"[{market}] Buy-analysis failure alert sent ({failed}/{total})")
+        logger.info(
+            "[%s] Buy-analysis failure alert sent (%s/%s) message_id=%s",
+            market,
+            failed,
+            total,
+            result.message_id,
+        )
+        return result.message_id
     except Exception as e:
         logger.error(f"[{market}] Failed to send buy-analysis failure alert: {e}")
+        return None
 
 
 async def send_market_data_failure_alert(
