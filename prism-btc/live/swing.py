@@ -35,6 +35,7 @@ from typing import Optional
 import pandas as pd
 
 from backtest.engine import SLIPPAGE_SL, TAKER_FEE, _get_tf_slice
+from core.leadership import leadership_multipliers
 from core.swing import (
     compute_swing_sizing,
     conflicts_with_main,
@@ -43,7 +44,6 @@ from core.swing import (
     rule_exit_due,
     stop_price,
 )
-from core.leadership import leadership_multipliers
 from engine.config import SWING_ENABLED, SWING_INITIAL_EQUITY, SWING_MAX_LEVERAGE
 from live import tracking
 from live.demo import _f, _order_id, _pstr, _qstr, _result_list
@@ -100,6 +100,8 @@ class VirtualBackend:
 
     def __init__(self, conn):
         self.conn = conn
+        self.last_open_snapshot: dict[str, float] = {}
+        self.last_wallet_snapshot: dict[str, float] = {}
 
     def equity(self, fallback: float) -> float:
         return fallback
@@ -128,6 +130,8 @@ class ExchangeBackend:
     def __init__(self, conn, sess):
         self.conn = conn
         self.sess = sess
+        self.last_open_snapshot: dict[str, float] = {}
+        self.last_wallet_snapshot: dict[str, float] = {}
 
     # --- 호출 헬퍼 (demo.DemoAdapter._call 미러 — 재시도 1회, 실패 흡수) ---
     def _call(self, fn_name: str, **kwargs) -> Optional[dict]:
@@ -153,7 +157,15 @@ class ExchangeBackend:
         wb = self._call("get_wallet_balance", accountType="UNIFIED")
         rows = _result_list(wb)
         if rows:
-            eq = _f(rows[0].get("totalEquity"))
+            wallet = rows[0]
+            self.last_wallet_snapshot = {
+                "equity": _f(wallet.get("totalEquity")),
+                "wallet_balance": _f(wallet.get("totalWalletBalance")),
+                "available_balance": _f(wallet.get("totalAvailableBalance")),
+                "initial_margin": _f(wallet.get("totalInitialMargin")),
+                "maintenance_margin": _f(wallet.get("totalMaintenanceMargin")),
+            }
+            eq = self.last_wallet_snapshot["equity"]
             if eq > 0:
                 return eq
         return fallback
@@ -188,6 +200,16 @@ class ExchangeBackend:
             for p in _result_list(pr or {}):
                 if _f(p.get("size")) > 0:
                     fill = _f(p.get("avgPrice"), hint_price)
+                    self.last_open_snapshot = {
+                        "qty": _f(p.get("size")),
+                        "entry_price": fill,
+                        "leverage": _f(p.get("leverage")),
+                        "position_value": _f(p.get("positionValue")),
+                        "position_im": _f(p.get("positionIM")),
+                        "liq_price": _f(p.get("liqPrice")),
+                        "mark_price": _f(p.get("markPrice")),
+                        "unrealised_pnl": _f(p.get("unrealisedPnl")),
+                    }
                     break
             else:
                 time.sleep(_RETRY_SLEEP_SEC)
@@ -272,19 +294,24 @@ def _make_backend(conn, main_mode: str):
 # 텔레그램 알림 — notifier 와 동일한 재사용 패턴, [스윙레인] 태그로 구분.
 # ---------------------------------------------------------------------------
 
-def _notify(main_mode: str, msg: str) -> None:
+def _notify(main_mode: str, msg: str) -> bool | None:
     """메인이 demo/live 로 돌 때만 발송 (shadow 로컬 테스트 스팸 방지). 실패 흡수."""
     if main_mode not in ("demo", "live"):
-        return
+        return None
     try:
         import asyncio
 
         from live.telegram_reporter import _load_env, _resolve_channel, _send
         _load_env()
         token = os.environ.get("TELEGRAM_BOT_TOKEN")
-        asyncio.run(_send(token, _resolve_channel(None, mode=main_mode), msg))
+        channel = _resolve_channel(None, mode=main_mode)
+        if not channel:
+            log.error("swing public channel missing; private fallback forbidden")
+            return False
+        return bool(asyncio.run(_send(token, channel, msg)))
     except Exception as exc:  # noqa: BLE001 — 알림 실패는 매매와 무관
         log.warning("swing notify 실패 (흡수): %s", exc)
+        return False
 
 
 def _side_kr(side: str) -> str:
@@ -317,6 +344,165 @@ def _hold_duration(entry_time: str, exit_time: str) -> str | None:
     if hours:
         return f"{hours}시간 {minutes}분" if minutes else f"{hours}시간"
     return f"{minutes}분"
+
+
+def _entry_time_kst(entry_time: str) -> str:
+    try:
+        ts = pd.Timestamp(entry_time)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        return ts.tz_convert("Asia/Seoul").strftime("%Y-%m-%d %H:%M KST")
+    except Exception:  # noqa: BLE001 — 알림 표시용 값
+        return str(entry_time)
+
+
+def _pct_text(amount: float, equity: float) -> str:
+    if equity <= 0:
+        return "계좌 대비 계산 불가"
+    return f"계좌 평가액의 {amount / equity * 100:.2f}%"
+
+
+def _build_entry_message(
+    pos: tracking.PositionRow,
+    backend_name: str,
+    equity: float,
+    signal_context: dict[str, float],
+    execution_context: dict[str, float] | None = None,
+    wallet_context: dict[str, float] | None = None,
+    native_sl_attached: bool = False,
+) -> str:
+    """Build a complete, auditable swing-entry notification.
+
+    ``pos.leverage`` is the strategy's notional exposure divided by equity,
+    not the leverage configured at Bybit.  Keep those concepts separate so a
+    low-risk position is not reported as if the exchange leverage were lower.
+    """
+    execution_context = execution_context or {}
+    wallet_context = wallet_context or {}
+    qty = execution_context.get("qty") or pos.qty
+    entry = execution_context.get("entry_price") or pos.entry_price
+    notional = execution_context.get("position_value") or qty * entry
+    exchange_leverage = execution_context.get("leverage") or 0.0
+    position_margin = execution_context.get("position_im") or (
+        notional / exchange_leverage if exchange_leverage > 0 else 0.0
+    )
+    exposure = notional / equity if equity > 0 else pos.leverage
+    sl_move = (pos.sl_price - entry) / entry * 100.0 if entry > 0 else 0.0
+    risk_amount = pos.initial_risk or abs(entry - pos.sl_price) * qty
+    liq_price = execution_context.get("liq_price") or 0.0
+    exec_tag = "실주문" if backend_name == "exchange" else "가상체결"
+    order_type = "시장가(Taker)" if backend_name == "exchange" else "가상 시장가"
+    if backend_name == "exchange":
+        leverage_text = (
+            f"{exchange_leverage:g}배" if exchange_leverage > 0 else "확인 불가"
+        )
+        stop_text = (
+            "거래소 조건부 주문 부착 완료"
+            if native_sl_attached else "거래소 조건부 주문 확인 필요"
+        )
+    else:
+        leverage_text = "가상체결(거래소 설정 없음)"
+        stop_text = "가상 봉내 감시"
+
+    if pos.side == "long":
+        exit_rule = "4시간봉 종가가 MA35 아래로 이탈하면 추세청산"
+        cross_rule = (
+            "• 4시간 MA10이 MA35를 상향 돌파 "
+            f"({signal_context['prev_ma10_4h']:,.2f}≤"
+            f"{signal_context['prev_ma35_4h']:,.2f} → "
+            f"{signal_context['ma10_4h']:,.2f}>"
+            f"{signal_context['ma35_4h']:,.2f})"
+        )
+        daily_rule = (
+            "• 완결 일봉 MA10 > MA35 "
+            f"({signal_context['ma10_1d']:,.2f}>"
+            f"{signal_context['ma35_1d']:,.2f})"
+        )
+        price_rule = (
+            "• 4시간 종가 > MA35 "
+            f"({signal_context['close_4h']:,.2f}>"
+            f"{signal_context['ma35_4h']:,.2f})"
+        )
+    else:
+        exit_rule = "4시간봉 종가가 MA35 위로 이탈하면 추세청산"
+        cross_rule = (
+            "• 4시간 MA10이 MA35를 하향 돌파 "
+            f"({signal_context['prev_ma10_4h']:,.2f}≥"
+            f"{signal_context['prev_ma35_4h']:,.2f} → "
+            f"{signal_context['ma10_4h']:,.2f}<"
+            f"{signal_context['ma35_4h']:,.2f})"
+        )
+        daily_rule = (
+            "• 완결 일봉 MA10 ≤ MA35 "
+            f"({signal_context['ma10_1d']:,.2f}≤"
+            f"{signal_context['ma35_1d']:,.2f})"
+        )
+        price_rule = (
+            "• 4시간 종가 < MA35 "
+            f"({signal_context['close_4h']:,.2f}<"
+            f"{signal_context['ma35_4h']:,.2f})"
+        )
+
+    lines = [
+        f"🌀 [BTC 스윙레인·{exec_tag}] 새 진입 — {_side_kr(pos.side)}",
+        f"_{_entry_time_kst(pos.entry_time)} 신호 기준 · 가상자금 모의투자_",
+        "",
+        "📦 체결·포지션",
+        f"• 주문 방식: {order_type}",
+        f"• 평균 체결가: {entry:,.2f}달러",
+        f"• 체결수량: {qty:.6f} BTC",
+        f"• 명목 포지션: {notional:,.2f}달러 ({_pct_text(notional, equity)})",
+        f"• 전략 노출배수: 계좌 평가액 대비 {exposure:.2f}배",
+        f"• 거래소 레버리지: {leverage_text}",
+    ]
+    if position_margin > 0:
+        lines.append(
+            f"• 포지션 초기증거금: {position_margin:,.2f}달러 "
+            f"({_pct_text(position_margin, equity)})"
+        )
+    lines.extend([
+        "",
+        "🛡️ 위험·청산 계획",
+        f"• 보호 손절: {pos.sl_price:,.2f}달러 ({sl_move:+.2f}%) · {stop_text}",
+        (
+            f"• 손절 위험: {risk_amount:,.2f}달러 "
+            f"({_pct_text(risk_amount, equity)}, 수수료 전)"
+        ),
+    ])
+    if liq_price > 0:
+        liq_move = (liq_price - entry) / entry * 100.0
+        lines.append(f"• 거래소 청산가: {liq_price:,.2f}달러 ({liq_move:+.2f}%)")
+    else:
+        lines.append("• 거래소 청산가: 미제공 또는 가상체결")
+    lines.extend([
+        f"• 고정 익절가는 없음 · {exit_rule}",
+        "",
+        "🔎 진입 근거",
+        cross_rule,
+        daily_rule,
+        price_rule,
+        "",
+        "💰 계좌 스냅샷",
+        f"• 계좌 평가액: {equity:,.2f}달러",
+    ])
+    available = wallet_context.get("available_balance") or 0.0
+    if available > 0:
+        lines.append(f"• 사용 가능액: {available:,.2f}달러")
+    lines.extend(["", "_가상자금 모의투자입니다_"])
+    return "\n".join(lines)
+
+
+def _record_notification_delivery(conn, event: str, delivered: bool | None) -> None:
+    if delivered is None:
+        return
+    ok = delivered is True
+    tracking.log_event(
+        conn,
+        "notification",
+        f"{event} channel delivery {'ok' if ok else 'failed'}",
+        level="info" if ok else "error",
+        mode=MODE,
+    )
 
 
 def _build_exit_message(
@@ -432,7 +618,7 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
                        f"swing close[{backend.name}] {pos.side} @ {exit_price:.1f} "
                        f"({reason}) net≈{net:+.2f} eq={equity_after:.2f}", mode=MODE)
     r = net / risk
-    _notify(main_mode, _build_exit_message(
+    delivered = _notify(main_mode, _build_exit_message(
         pos=pos,
         exit_price=exit_price,
         reason=reason,
@@ -444,6 +630,7 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
         equity_after=equity_after,
         exit_time=bar_time_str,
     ))
+    _record_notification_delivery(conn, "swing_exit", delivered)
     return equity_after, trade_counter
 
 
@@ -523,11 +710,27 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
                        f"qty={sz.qty:.4f} sl={sl:.1f} lev={sz.leverage:.2f}",
                        mode=MODE)
     _log_signal_safe(conn, bar_time_str, side, "swing_entry", 1)
-    exec_tag = "실주문" if backend.name == "exchange" else "가상체결"
-    _notify(main_mode,
-            f"🌀 [스윙레인·{exec_tag}] 새 진입 — {_side_kr(side)}\n"
-            f"진입가 {fill:,.0f}달러 · 손절 {sl:,.0f}달러 · "
-            f"{sz.leverage:.1f}배율\n_데모 계정 모의투자입니다_")
+    signal_context = {
+        "prev_ma10_4h": float(prev["ma10"]),
+        "prev_ma35_4h": float(prev["ma35"]),
+        "ma10_4h": float(cur["ma10"]),
+        "ma35_4h": float(cur["ma35"]),
+        "close_4h": float(cur["close"]),
+        "ma10_1d": float(d1["ma10"]),
+        "ma35_1d": float(d1["ma35"]),
+    }
+    delivered = _notify(main_mode, _build_entry_message(
+        pos=pos,
+        backend_name=backend.name,
+        equity=sizing_equity,
+        signal_context=signal_context,
+        execution_context=getattr(backend, "last_open_snapshot", None),
+        wallet_context=getattr(backend, "last_wallet_snapshot", None),
+        native_sl_attached=bool(
+            tracking.get_meta(conn, "swing_sl_order_id", MODE)
+        ),
+    ))
+    _record_notification_delivery(conn, "swing_entry", delivered)
     return pos
 
 
