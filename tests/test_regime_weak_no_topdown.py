@@ -15,14 +15,18 @@ trigger_batch = pytest.importorskip("trigger_batch")
 
 
 def _slots(regime, flag):
-    if flag is None:
-        os.environ.pop("REGIME_WEAK_NO_TOPDOWN", None)
-    else:
-        os.environ["REGIME_WEAK_NO_TOPDOWN"] = flag
+    previous = os.environ.get("REGIME_WEAK_NO_TOPDOWN")
+    # Production loads .env while importing regime-policy helpers. Explicitly
+    # pin OFF for the default-path assertion so a server's live true value
+    # cannot leak back into this unit test during the function call.
+    os.environ["REGIME_WEAK_NO_TOPDOWN"] = "false" if flag is None else flag
     try:
         return trigger_batch._get_regime_slots(regime)
     finally:
-        os.environ.pop("REGIME_WEAK_NO_TOPDOWN", None)
+        if previous is None:
+            os.environ.pop("REGIME_WEAK_NO_TOPDOWN", None)
+        else:
+            os.environ["REGIME_WEAK_NO_TOPDOWN"] = previous
 
 
 def test_default_off_preserves_current():
