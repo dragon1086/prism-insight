@@ -1725,13 +1725,13 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
     # old fixed-three refill silently defeated weak-regime exposure reduction.
     market_regime = macro_context.get("market_regime", "sideways") if macro_context else "sideways"
     if macro_context:
-        topdown_slots, _bottomup_slots, max_selections = (
-            _get_regime_selection_plan(market_regime)
-        )
+        selection_plan = _get_regime_selection_plan(market_regime)
+        topdown_slots = selection_plan[0]
+        max_selections = selection_plan[2]
     else:
         # Preserve the legacy pure bottom-up fallback when macro intelligence
         # is unavailable rather than reducing opportunity on a data outage.
-        topdown_slots, _bottomup_slots, max_selections = (0, 3, 3)
+        topdown_slots, max_selections = (0, 3)
 
     # Build top-down pool
     topdown_pool = _build_topdown_pool(trigger_candidates, macro_context, score_column)
