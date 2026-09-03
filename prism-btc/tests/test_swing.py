@@ -283,6 +283,96 @@ class TestSwingProcess:
         assert "데모 계정 모의투자입니다" in message
         assert equity_after > 10_000.0
 
+    def test_entry_notification_separates_exchange_leverage_from_exposure(
+            self, conn, monkeypatch):
+        from live import swing
+
+        sent = []
+        monkeypatch.setattr(
+            swing, "_notify",
+            lambda _main_mode, message: sent.append(message) or True,
+        )
+        backend = swing.VirtualBackend(conn)
+
+        res = swing.process(
+            conn,
+            _make_tf_data(),
+            main_mode="demo",
+            backend=backend,
+        )
+
+        assert res["events"] == 1
+        assert len(sent) == 1
+        message = sent[0]
+        assert "체결수량:" in message
+        assert "명목 포지션:" in message
+        assert "전략 노출배수:" in message
+        assert "거래소 레버리지: 가상체결" in message
+        assert "보호 손절:" in message
+        assert "손절 위험:" in message
+        assert "고정 익절가는 없음" in message
+        assert "4시간 MA10이 MA35를 상향 돌파" in message
+        assert "완결 일봉 MA10 > MA35" in message
+        assert "4시간 종가 > MA35" in message
+        assert "가상자금 모의투자입니다" in message
+        event = conn.execute(
+            "SELECT level, kind, message FROM btc_events "
+            "WHERE mode='swing' AND kind='notification' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert event["level"] == "info"
+        assert "channel delivery ok" in event["message"]
+
+    def test_entry_notification_records_channel_delivery_failure(
+            self, conn, monkeypatch):
+        from live import swing
+
+        monkeypatch.setattr(swing, "_notify", lambda *_args: False)
+        swing.process(
+            conn,
+            _make_tf_data(),
+            main_mode="demo",
+            backend=swing.VirtualBackend(conn),
+        )
+
+        event = conn.execute(
+            "SELECT level, kind, message FROM btc_events "
+            "WHERE mode='swing' AND kind='notification' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert event["level"] == "error"
+        assert "channel delivery failed" in event["message"]
+
+    def test_short_entry_notification_uses_bearish_rules(self):
+        from live import swing, tracking
+
+        pos = tracking.PositionRow(
+            side="short", entry_price=50_000.0, qty=0.1, leverage=0.5,
+            sl_price=51_000.0, tp1_price=0.0, tp2_price=0.0, tp3_price=0.0,
+            liq_price=0.0, entry_time="2026-01-07 16:00:00+00:00",
+            tranche_index=0, entry_bar_idx=0, initial_risk=100.0,
+            mode="swing",
+        )
+        message = swing._build_entry_message(
+            pos=pos,
+            backend_name="virtual",
+            equity=10_000.0,
+            signal_context={
+                "prev_ma10_4h": 50_100.0,
+                "prev_ma35_4h": 50_000.0,
+                "ma10_4h": 49_900.0,
+                "ma35_4h": 50_000.0,
+                "close_4h": 49_500.0,
+                "ma10_1d": 49_000.0,
+                "ma35_1d": 50_000.0,
+            },
+        )
+
+        assert "MA35를 하향 돌파" in message
+        assert "완결 일봉 MA10 ≤ MA35" in message
+        assert "4시간 종가 < MA35" in message
+        assert "MA35 위로 이탈하면 추세청산" in message
+
     def test_conflict_with_main_blocks_entry(self, conn):
         from live import swing, tracking
         # 메인(demo) 레인이 숏 보유 중 → 스윙 롱 진입 금지.
@@ -409,6 +499,17 @@ class TestExchangeBackend:
         assert sl["triggerDirection"] == 2 and sl["side"] == "Sell"
         assert tracking.get_meta(conn, "swing_sl_order_id", "swing")
 
+    def test_open_captures_exchange_position_context_for_notification(self, conn):
+        from live import swing
+
+        sess = FakeSession()
+        sess.avg_price = 50_050.0
+        be = swing.ExchangeBackend(conn, sess)
+
+        assert be.open("long", 0.1, 49_000.0, 50_000.0) == pytest.approx(50_050.0)
+        assert be.last_open_snapshot["leverage"] == pytest.approx(5.0)
+        assert be.last_open_snapshot["qty"] == pytest.approx(0.1)
+
     def test_check_stop_detects_position_gone(self, conn):
         from live import swing, tracking
         sess = FakeSession()
@@ -448,7 +549,11 @@ class TestExchangeBackend:
 
     def test_process_e2e_with_exchange_backend(self, conn, monkeypatch):
         from live import swing, tracking
-        monkeypatch.setattr(swing, "_notify", lambda *a, **k: None)  # 실발송 차단
+        sent = []
+        monkeypatch.setattr(
+            swing, "_notify",
+            lambda _main_mode, message: sent.append(message) or True,
+        )
         sess = FakeSession()
         sess.avg_price = 50_020.0
         be = swing.ExchangeBackend(conn, sess)
@@ -459,6 +564,10 @@ class TestExchangeBackend:
         assert pos[0].entry_price == pytest.approx(50_020.0)
         # 지갑 equity 가 원장 시드의 진실.
         assert tracking.latest_equity(conn, "swing") == pytest.approx(10_000.0)
+        assert len(sent) == 1
+        assert "거래소 레버리지: 5배" in sent[0]
+        assert "전략 노출배수: 계좌 평가액 대비" in sent[0]
+        assert "거래소 조건부 주문 부착 완료" in sent[0]
 
     def test_same_key_guard_forces_virtual(self, conn, monkeypatch):
         from live import swing

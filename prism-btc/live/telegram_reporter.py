@@ -50,13 +50,16 @@ def _resolve_channel(
     *,
     mode: str | None = None,
 ) -> str | None:
-    """Route demo/live to operations; shadow/research to the BTC test room."""
+    """Route public trading messages separately from private research alerts.
+
+    Demo/live messages are public trading events and must never silently fall
+    back to the private BTC room.  A missing public channel is a delivery
+    failure that callers can observe and repair, not permission to reroute.
+    """
     if cli_channel:
         return cli_channel
     if mode in ("demo", "live"):
-        return (os.environ.get("TELEGRAM_CHANNEL_ID")
-                or os.environ.get("BTC_TELEGRAM_CHANNEL_ID")
-                or None)
+        return os.environ.get("TELEGRAM_CHANNEL_ID") or None
     return (os.environ.get("BTC_TELEGRAM_CHANNEL_ID")
             or os.environ.get("TELEGRAM_CHANNEL_ID")
             or None)
