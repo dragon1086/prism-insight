@@ -1531,6 +1531,16 @@ def _get_regime_slots(market_regime: str) -> tuple:
     return (td, bu)
 
 
+def _get_regime_selection_plan(market_regime: str) -> tuple[int, int, int]:
+    """Return top-down, bottom-up, and their hard total selection limit."""
+    topdown_slots, bottomup_slots = _get_regime_slots(market_regime)
+    return (
+        topdown_slots,
+        bottomup_slots,
+        max(0, int(topdown_slots) + int(bottomup_slots)),
+    )
+
+
 def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_column: str) -> list:
     """Build top-down candidate pool from leading sectors.
 
@@ -1710,11 +1720,18 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
     # 3. Final stock selection (hybrid top-down + bottom-up)
     selected_tickers = set()
     score_column = "final_score" if use_hybrid and trade_date else "composite_score"
-    max_selections = 3
-
-    # Determine regime and slot allocation
+    # Determine regime and slot allocation.  When macro context is available,
+    # the configured top-down + bottom-up plan is also the final hard cap.  The
+    # old fixed-three refill silently defeated weak-regime exposure reduction.
     market_regime = macro_context.get("market_regime", "sideways") if macro_context else "sideways"
-    topdown_slots, bottomup_slots = _get_regime_slots(market_regime)
+    if macro_context:
+        selection_plan = _get_regime_selection_plan(market_regime)
+        topdown_slots = selection_plan[0]
+        max_selections = selection_plan[2]
+    else:
+        # Preserve the legacy pure bottom-up fallback when macro intelligence
+        # is unavailable rather than reducing opportunity on a data outage.
+        topdown_slots, max_selections = (0, 3)
 
     # Build top-down pool
     topdown_pool = _build_topdown_pool(trigger_candidates, macro_context, score_column)

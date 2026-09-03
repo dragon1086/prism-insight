@@ -59,3 +59,23 @@
 - 조치: 비정상 ticker 제거와 trigger별 fail-open 경계를 추가했습니다(PR #634).
 - 교훈: 초분할 stage 계산도 종목 단위 오류를 격리하고 전체 배치를 계속해야 합니다.
 
+## F-010 — KR 약세 레짐 슬롯 제한의 고정 3종목 refill
+
+- 사건: `REGIME_WEAK_NO_TOPDOWN=true`가 `moderate_bear|sideways`의 슬롯 계획을
+  `(top-down=0, bottom-up=2)`로 낮췄지만, KR 최종 선택기는 별도의
+  `max_selections=3`을 사용해 세 번째 bottom-up 후보를 다시 채웠습니다.
+- 영향: 보존된 2026-08-26~09-03 KR 결과에서 초과 세 번째 후보 13건이 발생했습니다.
+  그중 실제 매수로 이어져 청산된 2건은 와이씨 -6.84%, 삼화콘덴서 -5.22%였습니다.
+  성과 표본은 작지만 정책 상한 위반 자체는 결정론적 배선 오류입니다.
+- 삼화콘덴서 경로: 2026-09-02 `moderate_bear` 오후 배치에서 세 번째 후보로
+  추가됐습니다. BUY_QUALITY SHADOW는 `faulty`, 28/100, `would_buy=false`였으나
+  관측 전용이었고, 매매 에이전트가 ATR20 8.8%보다 좁은 약 4.7% stop을 반환해
+  최종 산술 gate를 통과했습니다. 다음 날 -5.22% risk exit로 종료됐습니다.
+- 조치: US와 같은 `_get_regime_selection_plan()`을 KR에 적용해
+  `topdown_slots + bottomup_slots`를 최종 hard cap으로 사용합니다. macro context가
+  없을 때의 기존 3종목 pure-bottom-up fallback은 그대로 유지합니다.
+- 교훈: 레짐별 슬롯을 계산하는 것만으로는 정책이 적용된 것이 아닙니다. 최종 refill과
+  side effect 직전까지 같은 상한을 사용하고, KR/US 대칭 통합 테스트를 둬야 합니다.
+- 비조치: 이 사례만으로 ATR 기반 global veto나 손절 확대를 LIVE로 승격하지 않습니다.
+  과거 replay에서 고변동 종목의 승자 반례가 많았고, 손절 확대는 포지션 점유와 MDD를
+  악화시킬 수 있으므로 별도 risk-normalized SHADOW에서 검증합니다.
