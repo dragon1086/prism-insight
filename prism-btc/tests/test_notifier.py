@@ -316,6 +316,17 @@ def test_demo_prefers_operations_channel_and_shadow_prefers_btc_room(monkeypatch
     assert _resolve_channel("explicit", mode="demo") == "explicit"
 
 
+def test_demo_trade_messages_never_fall_back_to_btc_private_room(monkeypatch):
+    from live.telegram_reporter import _resolve_channel
+
+    monkeypatch.delenv("TELEGRAM_CHANNEL_ID", raising=False)
+    monkeypatch.setenv("BTC_TELEGRAM_CHANNEL_ID", "btc-private-room")
+
+    assert _resolve_channel(None, mode="demo") is None
+    assert _resolve_channel(None, mode="live") is None
+    assert _resolve_channel(None, mode="shadow") == "btc-private-room"
+
+
 # ---------------------------------------------------------------------------
 # shadow 격리 — notifier 는 mode 인자대로만 동작 (runner 가 shadow 를 안 부름)
 # ---------------------------------------------------------------------------
