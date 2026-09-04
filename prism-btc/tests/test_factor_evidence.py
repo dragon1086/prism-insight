@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import numpy as np
 import pandas as pd
 
-from analysis.factor_evidence import build_evidence_packet
+from analysis.factor_evidence import _load_decisions, build_evidence_packet
 
 
 def _decisions(count: int) -> list[dict]:
@@ -79,3 +80,21 @@ def test_factor_evidence_refuses_to_claim_on_insufficient_sample() -> None:
     assert packet["status"] == "insufficient"
     assert packet["splits"] == []
     assert packet["promotion_allowed"] is False
+
+
+def test_decision_loader_never_mixes_shadow_and_demo_duplicates() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        "CREATE TABLE btc_decision_log "
+        "(decision_id TEXT, ts TEXT, mode TEXT, schema_version INTEGER, "
+        "signal_side TEXT, market_snapshot TEXT)"
+    )
+    for mode in ("shadow", "demo"):
+        connection.execute(
+            "INSERT INTO btc_decision_log VALUES (?,?,?,?,?,?)",
+            (f"{mode}-id", "2026-01-01", mode, 2, "none", "{}"),
+        )
+
+    rows = _load_decisions(connection, "demo")
+
+    assert [row["decision_id"] for row in rows] == ["demo-id"]
