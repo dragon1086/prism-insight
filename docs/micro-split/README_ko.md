@@ -31,9 +31,25 @@
 
 순수 코어는 DB, 네트워크, 환경 변수, KIS, 에이전트, 주문 모듈을 import하지 않습니다.
 Phase 2a에서는 US 최종 `entry_eligible` 경계가 `observability.micro_split`을 fail-open으로
-호출해 신규 캠페인의 0→10% 목표와 계정별 정수주식 예상 수량만 JSONL에 기록합니다.
+호출해 신규 캠페인의 0→10% 목표와 계정별 정수주식 예상 수량을 JSONL에 기록합니다.
+schema v2는 원 단위금액을 노출하지 않고 10·30·60·100%별 예상 수량, 최초 1주 가능
+단계, 단위금액 snapshot reference를 함께 기록합니다.
 반환값은 사용하지 않으며 `ExecutionService`, holdings, 피라미딩, 매도 루프에는 연결하지
 않습니다. `.env MICRO_SPLIT_SHADOW_ENABLED=false`가 기본 OFF입니다.
+
+`tools/build_micro_split_evidence_packet.py`는 sanitized JSONL의 실제 SHADOW 이벤트와
+과거 candidate의 정수주 counterfactual projection을 분리한 결정론적 Packet을 만듭니다.
+네트워크·DB·브로커·주문 접근은 없습니다.
+
+## D1~D3 판정
+
+- 실제 관측: 3 US 거래일, 후보 19건, 적격 진입·초분할 이벤트 2건
+- 이벤트 계약: 기대 대비 100%, 중복·민감정보 노출·거래 영향 0
+- 실행·성과: `SUBMITTED_ONLY` 2건, confirmed fill 0건, matured outcome 0건
+- 판정: **HOLD / CONTINUE_CAPTURE**
+
+schema v1은 삭제하거나 덮어쓰지 않습니다. v2 coverage와 replay 표본을 별도로 축적하며
+Phase 3 campaign ledger SHADOW로 아직 승격하지 않습니다.
 
 ## 기본 초안 단계
 

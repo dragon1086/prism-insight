@@ -266,6 +266,7 @@ def test_snapshot_reports_micro_split_shadow_capture() -> None:
                 "2026-09-01T00:00:00Z",
                 market="US",
                 attributes={
+                    "shadow_schema_version": 2,
                     "mode": "SHADOW",
                     "policy_version": "micro-split-v1-draft",
                     "reason_code": "ENTRY_ELIGIBLE_SCOUT",
@@ -273,6 +274,13 @@ def test_snapshot_reports_micro_split_shadow_capture() -> None:
                     "target_pct": 10,
                     "projection_status": "PROJECTED",
                     "projected_whole_share_quantity": 0,
+                    "base_stage_projection_quantities": {
+                        "10": 0,
+                        "30": 0,
+                        "60": 1,
+                        "100": 1,
+                    },
+                    "first_executable_target_pct": 60,
                 },
             ),
             "decision_id": "decision-1",
@@ -305,6 +313,15 @@ def test_snapshot_reports_micro_split_shadow_capture() -> None:
     assert capture["policy_version_distribution"] == {"micro-split-v1-draft": 2}
     assert capture["target_pct_distribution"] == {"10": 2}
     assert capture["projection_status_distribution"] == {"PROJECTED": 2}
+    assert capture["schema_version_distribution"] == {"1": 1, "2": 1}
+    assert capture["schema_v2_coverage_rate"] == 0.5
+    assert capture["first_executable_target_pct_distribution"] == {"60": 1}
+    assert capture["zero_whole_share_projection_by_stage"] == {
+        "10": 1,
+        "30": 1,
+        "60": 0,
+        "100": 0,
+    }
     assert capture["zero_whole_share_projection_count"] == 1
     assert capture["latest_at"] == "2026-09-01T00:01:00Z"
 

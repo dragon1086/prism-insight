@@ -21,6 +21,24 @@ Baseline과 Micro Split을 서로 다른 종목·기간·레짐에서 비교하�
 - execution provenance: `NOT_REQUESTED|QUEUED|SUBMITTED|CONFIRMED|CANCELLED|REJECTED|UNKNOWN`
 - forward return, MFE, MAE, 손절·trend-exit·target 결과
 
+## 결정론적 Packet
+
+```bash
+python tools/build_micro_split_evidence_packet.py \
+  --input logs/prism_events.jsonl \
+  --replay-config trading/config/kis_devlp.yaml \
+  --market US \
+  --output /tmp/micro-split-evidence.json
+```
+
+- 원시 JSONL과 KIS 설정은 서버 밖으로 복사하지 않습니다.
+- config에서는 USD 단위금액만 읽고 Packet에는 원값·계좌·API 정보를 출력하지 않습니다.
+- 같은 입력의 순서가 달라도 `packet_id`가 같아야 합니다.
+- 같은 `event_id`는 최신 한 건만 남기고 중복 수를 별도 보고합니다.
+- `observed_shadow`와 `candidate_replay`를 절대 합산하지 않습니다.
+- replay는 정수주 실행 가능성 projection이며 실제 진입·체결·성과가 아닙니다.
+- schema v1과 v2를 섞어 coverage 100%로 간주하지 않습니다.
+
 ## 주요 지표
 
 Primary:
@@ -67,4 +85,3 @@ Secondary:
 - `LIMITED_DEMO_REVIEW`
 - `LIMITED_LIVE_REVIEW`
 - `RETIRE`
-
