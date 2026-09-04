@@ -224,14 +224,30 @@ def _decide_vision_pipeline(env: dict, crontab: str):
     return "OFF", f"PRISM_FEATURE_VISION={val}"
 
 
+def _vision_buy_quality_lifecycle_mode() -> str:
+    try:
+        from cores.shadow_lifecycle import feature_mode
+
+        return str(feature_mode("vision_buy_quality") or "off").strip().lower()
+    except Exception:
+        return "off"
+
+
 def _decide_vision_buy_qa(env: dict, crontab: str):
     vision = env.get("PRISM_FEATURE_VISION", "").lower()
     shadow = env.get("PRISM_VISION_SHADOW", "").lower()
-    if vision == "on" and shadow == "true":
-        return "SHADOW", "PRISM_FEATURE_VISION=on + PRISM_VISION_SHADOW=true"
-    if vision == "on" and shadow != "true":
-        return "LIVE", "PRISM_FEATURE_VISION=on, PRISM_VISION_SHADOW!=true"
-    return "OFF", f"PRISM_FEATURE_VISION={vision or '(unset)'}"
+    if vision != "on":
+        return "OFF", f"PRISM_FEATURE_VISION={vision or '(unset)'}"
+    lifecycle_mode = _vision_buy_quality_lifecycle_mode()
+    if lifecycle_mode == "off":
+        return "OFF", "vision_buy_quality lifecycle=off"
+    if shadow == "true" or lifecycle_mode == "shadow":
+        return (
+            "SHADOW",
+            "PRISM_FEATURE_VISION=on + PRISM_VISION_SHADOW=true + "
+            f"lifecycle={lifecycle_mode}",
+        )
+    return "LIVE", f"PRISM_FEATURE_VISION=on, lifecycle={lifecycle_mode}"
 
 
 def _vision_available(env: dict) -> bool:

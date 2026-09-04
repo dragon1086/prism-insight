@@ -126,6 +126,22 @@ def vision_available() -> bool:
     return vision_enabled() and has_api_key()
 
 
+def vision_buy_quality_active() -> bool:
+    """Return False when the buy-quality SHADOW lifecycle is OFF.
+
+    This gate is intentionally narrower than :func:`vision_available` so
+    disabling S3/S3.5 does not disable chart generation or the separately
+    approved insight-image broadcast.  Lifecycle lookup failures fail closed
+    because this is an optional, cost-bearing observation path.
+    """
+    try:
+        from cores.shadow_lifecycle import feature_mode
+
+        return feature_mode("vision_buy_quality") != "off"
+    except Exception:  # noqa: BLE001 — optional observation must not break reports
+        return False
+
+
 def insight_image_enabled() -> bool:
     """Return True only when PRISM_FEATURE_INSIGHT_IMAGE=on (default: off).
 

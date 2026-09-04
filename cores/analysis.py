@@ -273,13 +273,12 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             fundamentals_chart_html = None
 
         # 10b. Render QA (Phase 6 S2) — OFF by default, non-blocking
-        from cores.llm.capabilities import vision_available
-        try:
-            from cores.shadow_lifecycle import feature_mode as _shadow_feature_mode
-            _vision_buy_quality_mode = _shadow_feature_mode("vision_buy_quality")
-        except Exception:
-            _vision_buy_quality_mode = "shadow"
-        if vision_available() and _vision_buy_quality_mode != "off":
+        from cores.llm.capabilities import (
+            vision_available,
+            vision_buy_quality_active,
+        )
+        _vision_buy_quality_active = vision_buy_quality_active()
+        if vision_available() and _vision_buy_quality_active:
             try:
                 import base64
                 import re
@@ -306,7 +305,7 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
         # ALSO surfaced as a markdown subsection in the technical section below —
         # a SOFT input the buy agent reads, never a buy gate (that stays S5/TODO).
         vision_pattern_md = ""
-        if vision_available():
+        if vision_available() and _vision_buy_quality_active:
             try:
                 import base64 as _bq_base64
                 import re as _bq_re
