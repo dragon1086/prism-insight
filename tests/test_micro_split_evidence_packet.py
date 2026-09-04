@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 from tools.build_micro_split_evidence_packet import (
     build_micro_split_evidence_packet,
     load_replay_profiles,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _event(
@@ -184,3 +189,32 @@ def test_candidate_duplicate_is_reported_separately_from_micro_duplicates() -> N
     assert "DUPLICATE_EVENT_IDS_PRESENT" not in {
         reason["code"] for reason in packet["readiness"]["reasons"]
     }
+
+
+def test_cli_runs_directly_without_repo_root_on_python_path(tmp_path) -> None:
+    source = tmp_path / "events.jsonl"
+    source.write_text("", encoding="utf-8")
+    config = tmp_path / "kis_devlp.yaml"
+    config.write_text("default_unit_amount_usd: 1000\n", encoding="utf-8")
+    output = tmp_path / "packet.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "build_micro_split_evidence_packet.py"),
+            "--input",
+            str(source),
+            "--replay-config",
+            str(config),
+            "--output",
+            str(output),
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(output.read_text(encoding="utf-8"))["packet_id"]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
@@ -18,7 +19,14 @@ from typing import Any
 
 import yaml
 
-from prism_core.micro_split import DEFAULT_POLICY, project_execution_on_advance
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from prism_core.micro_split import (
+    DEFAULT_POLICY,
+    project_execution_on_advance,
+)
 
 PACKET_SCHEMA_VERSION = 1
 ANALYSIS_CONTRACT_VERSION = "micro-split-evidence-v1"
