@@ -14,7 +14,7 @@ from engine.regime import RegimeSnapshot
 from engine.signal import Signal, trend_strength
 from live import tracking
 
-DECISION_SCHEMA_VERSION = 1
+DECISION_SCHEMA_VERSION = 2
 DEFAULT_STRATEGY_ID = "main_trend_v1"
 _EFFECTIVE_QTY_EPS = 1e-8
 
@@ -84,7 +84,11 @@ def _entry_reason_code(reason: str | None) -> str | None:
     return "ENTRY_REJECTED_OTHER"
 
 
-def _market_snapshot(snapshot: RegimeSnapshot, bar_close: float) -> dict[str, Any]:
+def _market_snapshot(
+    snapshot: RegimeSnapshot,
+    bar_close: float,
+    factor_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
     states = {}
     for timeframe, state in sorted(snapshot.tf_states.items()):
         states[timeframe] = {
@@ -101,6 +105,11 @@ def _market_snapshot(snapshot: RegimeSnapshot, bar_close: float) -> dict[str, An
         "bar_close": float(bar_close),
         "alignment_score": round(float(snapshot.alignment_score), 4),
         "tf_states": states,
+        "ohlcv_factors": factor_snapshot or {
+            "schema_version": 1,
+            "status": "unavailable",
+            "timeframes": {},
+        },
     }
 
 
@@ -148,10 +157,11 @@ def capture_signal_decision(
     peak_equity: float | None,
     pending: bool,
     code_version: str | None,
+    factor_snapshot: dict[str, Any] | None = None,
 ) -> str:
     """Upsert the signal stage and return its stable decision ID."""
     config_snapshot = _config_snapshot()
-    market = _market_snapshot(snapshot, bar_close)
+    market = _market_snapshot(snapshot, bar_close, factor_snapshot)
     position = _position_context(
         positions, equity=equity, peak_equity=peak_equity, pending=pending
     )

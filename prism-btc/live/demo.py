@@ -68,6 +68,7 @@ import engine.sizing as _sizing
 from core.risk import compute_operating_risk
 from core.leadership import leadership_multipliers
 from core.failure_guard import should_observe_pyramid_block
+from research.market_factors import build_factor_snapshot
 
 # 거래소 상수.
 _CATEGORY = "linear"
@@ -901,6 +902,9 @@ class DemoAdapter:
                             peak_equity=tracking.peak_equity(conn, mode),
                             pending=False,
                             code_version=tracking.get_meta(conn, "code_version", mode),
+                            factor_snapshot=build_factor_snapshot(
+                                self.tf_data, bar_time
+                            ),
                         )
                     except Exception:  # noqa: BLE001 — 로깅이 매매를 못 막는다
                         pass
