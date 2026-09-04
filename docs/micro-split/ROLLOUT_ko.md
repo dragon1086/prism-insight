@@ -45,6 +45,12 @@
 - `target_pct`, transition reason, projected qty만 secret-minimized event로 기록
 - 같은 `decision_id`와 `policy_version`으로 exact join
 - 계정별 unit amount 원값 대신 필요 시 비율·hash·구간만 내보냄
+- schema v2에서 10·30·60·100% 정수주 projection과 최초 실행 가능 단계를 함께 기록
+- `build_micro_split_evidence_packet.py`로 실제 SHADOW와 candidate replay를 분리
+
+2026-09-04 D1~D3 점검 결과는 3거래일·적격 2건이라 **HOLD**입니다. 두 이벤트의 계약과
+무영향은 정상이지만 schema v1에는 전 단계 projection이 없고 confirmed fill·성과 표본도
+없습니다. v2 배포 뒤 기존 SHADOW를 유지하며 표본을 더 모읍니다.
 
 완료 기준:
 

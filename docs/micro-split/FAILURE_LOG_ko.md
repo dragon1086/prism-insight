@@ -79,3 +79,15 @@
 - 비조치: 이 사례만으로 ATR 기반 global veto나 손절 확대를 LIVE로 승격하지 않습니다.
   과거 replay에서 고변동 종목의 승자 반례가 많았고, 손절 확대는 포지션 점유와 MDD를
   악화시킬 수 있으므로 별도 risk-normalized SHADOW에서 검증합니다.
+
+## F-011 — D1~D3 정상만으로 campaign SHADOW를 앞당길 위험
+
+- 사건: 3거래일 동안 기대 이벤트와 실제 이벤트가 일치하고 거래 영향도 0이었습니다.
+- 부족한 증거: 적격 진입은 SPGI·NVDA 2건뿐이고 모두 `SUBMITTED_ONLY`였습니다.
+  confirmed fill과 matured outcome은 0건이며, schema v1은 10% projection만 보존했습니다.
+- 잘못된 접근: hard anomaly가 없다는 이유만으로 10→30→60→100 campaign ledger로 승격.
+- 조치: 판정을 HOLD로 유지하고 schema v2에 전 단계 정수주 projection·최초 실행 가능
+  단계·unit snapshot reference를 추가했습니다. 실제 SHADOW와 candidate replay를 분리하는
+  결정론적 Packet 도구도 추가했습니다.
+- 교훈: 운영 안전성 통과는 데이터 충분성을 뜻하지 않습니다. 기존 SHADOW는 유지할 수
+  있지만 다음 상태 모델은 표본·coverage·성과 계약을 충족한 뒤 별도 승격해야 합니다.
