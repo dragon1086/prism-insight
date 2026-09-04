@@ -139,6 +139,38 @@ class TestCapabilities:
         from cores.llm import capabilities
         assert capabilities.vision_available() is True
 
+    def test_vision_buy_quality_inactive_when_lifecycle_is_off(self, monkeypatch):
+        from cores.llm import capabilities
+
+        monkeypatch.setattr(
+            "cores.shadow_lifecycle.feature_mode",
+            lambda feature: "off" if feature == "vision_buy_quality" else "shadow",
+        )
+
+        assert capabilities.vision_buy_quality_active() is False
+
+    def test_vision_buy_quality_active_while_lifecycle_is_shadow(self, monkeypatch):
+        from cores.llm import capabilities
+
+        monkeypatch.setattr(
+            "cores.shadow_lifecycle.feature_mode",
+            lambda feature: "shadow",
+        )
+
+        assert capabilities.vision_buy_quality_active() is True
+
+    def test_vision_buy_quality_fails_closed_when_lifecycle_lookup_fails(
+        self, monkeypatch
+    ):
+        from cores.llm import capabilities
+
+        def _fail(_feature):
+            raise OSError("state unavailable")
+
+        monkeypatch.setattr("cores.shadow_lifecycle.feature_mode", _fail)
+
+        assert capabilities.vision_buy_quality_active() is False
+
 
 # ---------------------------------------------------------------------------
 # analyze_image — OFF path (default): returns None, zero client calls
