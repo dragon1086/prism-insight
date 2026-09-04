@@ -41,7 +41,7 @@
 | 고변동·급락 레짐 강등 | **LIVE** | `REGIME_HIVOL_OVERRIDE=active` (기본값) | KR/US 합성데이터 회귀 완료 | 장기 이평 위에 남은 급락형 휩쏘를 sideways로 강등. `shadow/off`는 긴급 롤백용 |
 | Shadow lifecycle 자동 만료 | **LIVE** | `tools/shadow_lifecycle.py` + db-server 18:05 KST cron | review_by 도달 시 자동 OFF, LIVE 자동승격 금지 | ATR/ADR·Fill-chaser·Vision 품질·Position ledger에 기한·최소표본을 강제. 수동 LIVE만 허용 |
 | 비전 배관(S1) / 렌더QA(S2) | **ON(log-only)** | `PRISM_FEATURE_VISION=on` | 무손상 인프라 | 렌더QA 비차단 경고만 |
-| 비전 매수 품질검사(S3 + S3.5 오닐 일/주봉·RS) | **SHADOW** | `PRISM_FEATURE_VISION=on` + `PRISM_VISION_SHADOW=true` | **A/B 홀드아웃 측정(승률·손절률·MDD 순효과)** → 미정 | 관측 로그 `[BUY_QUALITY][SHADOW]`. 매매영향 0 |
+| 비전 매수 품질검사(S3 + S3.5 오닐 일/주봉·RS) | **OFF** | `shadow_lifecycle_state.json`의 `vision_buy_quality=off` | 재개 전 새 사전등록·사용자 승인 필요 | 2026-09-04 사용자 요청으로 종료. 차트·인사이트 이미지 발행은 유지하고 S3/S3.5 LLM 호출·판정 로그만 중단 |
 | 비전 인사이트 이미지 발행(S6) | **LIVE** | `.env PRISM_FEATURE_INSIGHT_IMAGE=on` **AND** `vision_available()`(`PRISM_FEATURE_VISION=on` + 실 API 키) | 샘플 사용자 승인 후 활성화(06-24) | KR(₩)/US($) 발송 중. 차트에 매수▲/매도▼ 마커·용어설명 포함. 끄기: `PRISM_FEATURE_INSIGHT_IMAGE=off` |
 | Post-FTD 파일럿 재진입(정찰 신규진입 스로틀) | **OFF** | `.env PULSE_PILOT_REEXPOSURE=true` (기본 off) | 파일럿 윈도우 실관측 후 | 조정(CORRECTION) 종료 후 5거래일간 **신규 진입 배치당 1종목(top-down 주도주 우선) + 중복매수(피라미딩) 동결**. **금액은 항상 100% 정상**(all-in/all-out per position 계약 유지, fractional sizing 미사용 → sim/real parity). 시뮬레이터·실주문 공통 결정 레이어에서 적용. fail-open. 구 금액 절반매수(`PULSE_PILOT_FACTOR`)는 sim/real 괴리 결함으로 **제거**. 코드: `cores/regime_policy.py`, `trigger_batch`/`us_trigger_batch._get_regime_slots`, KR/US tracking agents 중복매수 동결 |
 
@@ -63,6 +63,7 @@ SHADOW→LIVE **자동 승격**은 아래를 **모두** 충족할 때만:
 - **비전 매수게이트(S3)**: A/B 측정 설계 확정·데이터 축적 후 — **수익영향이라 사용자 확인 후**.
 
 ## 변경 이력
+- 2026-09-04: **비전 매수 품질검사 S3/S3.5 종료** — lifecycle은 09-02에 OFF로 만료됐지만 실제 분석 블록이 그 상태를 확인하지 않아 09-04까지 계속 실행된 결함을 수정했다. `vision_buy_quality=off`를 S3/S3.5 실행 조건과 `feature_status.py`에 연결했다. 기존 차트 생성과 별도 승인된 S6 인사이트 이미지 발행에는 영향이 없다.
 - 2026-09-02: **Fill-chaser lifecycle LIVE 복구** — 08-19 lifecycle 도입 때 기존 `.env FILL_CHASER_LIVE=true`가 유지됐지만 명시적 lifecycle 승격이 없어 실제 cron이 SHADOW로 강등됐다. `feature_status.py`가 lifecycle을 보지 않아 LIVE로 오보한 결함도 함께 수정했다. 영향 전수조회에서 US 매수 COP/OXY/LITE/RJF는 자연 체결, HOOD/WDAY는 체결 0·장종료 취소, 관련 US 매도 5건은 전량 체결이었다. 과거 US 실제 정정 성공 27개 고유 주문, 이후 SHADOW 579액션·payload/중복 오류 0을 근거로 lifecycle을 수동 LIVE 승격했다. SHADOW와 LIVE chase 예산을 분리하고 브로커 거절을 성공 액션으로 기록하지 않도록 보강했다.
 - 2026-09-01: **US trigger fail-open 경계 복구** — yfinance가 일부 ticker의 OHLCV 셀을 중첩 Series로 반환하거나 현재·전일 라벨이 어긋나도 해당 ticker를 제거하고, 개별 trigger 예외는 빈 결과로 격리해 나머지 trigger와 전체 배치를 계속 실행한다. snapshot 자체를 가져오지 못한 경우의 배치 중단 계약은 유지한다.
 - 2026-09-01: **US 신규매수 위험 계약 정렬** — 레짐 slot tuple의 합계를 최종 후보 수 hard cap으로 적용해 post-FTD 1종목·약세/횡보 2종목 제한이 bottom-up refill로 무효화되지 않게 수정. US `max_portfolio_size`를 실제 신규매수·피라미딩 슬롯 한도에 연결하고, 최종 점수를 `buy_score + macro_adjustment + journal_adjustment`로 통일. 내부 원장·시뮬레이터는 KIS 실주문 가능 수량·성공 여부와 독립된 기존 계약을 유지한다.
