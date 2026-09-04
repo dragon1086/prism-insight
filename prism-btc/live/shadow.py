@@ -63,6 +63,7 @@ from core.actions import (
 )
 from core.risk import compute_operating_risk
 from core.leadership import leadership_multipliers
+from research.market_factors import build_factor_snapshot  # noqa: E402
 
 from live import decision_capture, tracking
 from live.tracking import PositionRow, TradeRow
@@ -480,6 +481,9 @@ class ShadowAdapter:
                             peak_equity=tracking.peak_equity(conn, mode),
                             pending=False,
                             code_version=tracking.get_meta(conn, "code_version", mode),
+                            factor_snapshot=build_factor_snapshot(
+                                self.tf_data, bar_time
+                            ),
                         )
                     except Exception as exc:  # noqa: BLE001 - telemetry fails open
                         log.warning("shadow signal telemetry failed: %s", exc)
