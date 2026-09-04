@@ -213,6 +213,45 @@ def _decide_micro_split_shadow(env: dict, crontab: str):
     return "OFF", f"MICRO_SPLIT_SHADOW_ENABLED={enabled or '(unset)'}"
 
 
+def _decide_third_slot_shadow(env: dict, crontab: str):
+    truthy = {"1", "true", "yes", "on"}
+    env_value = str(
+        env.get("REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED", "")
+    ).strip().lower()
+    cron_value = _cron_get_inline_env(
+        crontab, "REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED"
+    ).lower()
+    cron_values = [
+        value.strip().strip('"').strip("'").lower()
+        for value in _cron_get_all_inline_env(
+            crontab, "REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED"
+        )
+    ]
+    enabled = env_value or cron_value
+    if enabled in truthy:
+        source = "env" if env_value in truthy else "crontab inline"
+        if env_value not in truthy and sum(value in truthy for value in cron_values) < 2:
+            return (
+                "미스케줄",
+                "third-slot capture flag가 KR 오전·오후 2개 cron에 모두 필요",
+            )
+        if "tools/track_third_slot_shadow.py" not in crontab:
+            return (
+                "미스케줄",
+                "third-slot capture는 활성이나 outcome tracker cron이 없음",
+            )
+        return (
+            "SHADOW",
+            "REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED=true "
+            f"({source}), 실제 2종목 + 가상 3순위 outcome만 기록, 거래영향 0",
+        )
+    return (
+        "OFF",
+        "REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED="
+        f"{enabled or '(unset)'}",
+    )
+
+
 def _decide_vision_pipeline(env: dict, crontab: str):
     vision = env.get("PRISM_FEATURE_VISION", "").lower()
     shadow = env.get("PRISM_VISION_SHADOW", "").lower()
@@ -321,6 +360,7 @@ FEATURES = [
     ("loop_b",           "Trend-exit — 50MA 추세이탈 매도 (구 Loop B)",                   _decide_loop_b),
     ("loop_c",           "Fill-chaser — 미체결 추격 (구 Loop C)",                     _decide_loop_c),
     ("micro_split_shadow", "초분할 0→10% 신규진입 projection", _decide_micro_split_shadow),
+    ("third_slot_shadow", "KR 약세·횡보장 가상 3순위", _decide_third_slot_shadow),
     ("position_pending_kr", "KR 주문 선기록(PENDING ENTRY/EXIT)", _decide_position_pending_kr),
     ("vision_pipeline",  "비전 배관·렌더QA (S1/S2)",                  _decide_vision_pipeline),
     ("vision_buy_qa",    "비전 매수 품질검사 (S3/S3.5)",               _decide_vision_buy_qa),

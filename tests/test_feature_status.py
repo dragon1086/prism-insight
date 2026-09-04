@@ -215,6 +215,35 @@ def test_micro_split_shadow_reads_us_cron_inline_gate():
     assert "crontab inline" in r["micro_split_shadow"]["evidence"]
 
 
+# ── KR weak-regime third-slot SHADOW ─────────────────────────────────────────
+
+def test_third_slot_shadow_off_by_default():
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
+    assert r["third_slot_shadow"]["state"] == "OFF"
+
+
+def test_third_slot_shadow_reads_kr_cron_inline_gate():
+    cron = """
+30 9 * * 1-5 cd /opt/prism && REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED=true python stock_analysis_orchestrator.py --mode morning
+30 14 * * 1-5 cd /opt/prism && REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED=true python stock_analysis_orchestrator.py --mode afternoon
+10 16 * * 1-5 cd /opt/prism && python tools/track_third_slot_shadow.py
+"""
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=cron))
+    assert r["third_slot_shadow"]["state"] == "SHADOW"
+    assert "거래영향 0" in r["third_slot_shadow"]["evidence"]
+
+
+def test_third_slot_shadow_requires_outcome_tracker_cron():
+    cron = """
+30 9 * * 1-5 cd /opt/prism && REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED=true python stock_analysis_orchestrator.py --mode morning
+30 14 * * 1-5 cd /opt/prism && REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED=true python stock_analysis_orchestrator.py --mode afternoon
+"""
+
+    r = _results_by_id(fs.evaluate_all(env={}, crontab=cron))
+
+    assert r["third_slot_shadow"]["state"] == "미스케줄"
+
+
 # ── Vision pipeline (S1/S2) ───────────────────────────────────────────────────
 
 def test_vision_pipeline_live_on_no_shadow():
@@ -308,7 +337,7 @@ def test_json_output_contains_all_features(capsys):
     out = {r["id"]: {"state": r["state"], "evidence": r["evidence"]} for r in results}
     data = json.loads(json.dumps(out, ensure_ascii=False))
 
-    expected_ids = {"oauth_llm", "loop_a", "loop_b", "loop_c", "micro_split_shadow", "position_pending_kr",
+    expected_ids = {"oauth_llm", "loop_a", "loop_b", "loop_c", "micro_split_shadow", "third_slot_shadow", "position_pending_kr",
                     "vision_pipeline", "vision_buy_qa", "vision_publish"}
     assert expected_ids == set(data.keys())
     assert data["oauth_llm"]["state"] == "LIVE"
@@ -321,7 +350,7 @@ def test_json_output_contains_all_features(capsys):
 def test_empty_env_and_crontab_does_not_raise():
     """evaluate_all must never raise even with completely empty inputs."""
     results = fs.evaluate_all(env={}, crontab="")
-    assert len(results) == 9  # one entry per feature
+    assert len(results) == 10  # one entry per feature
 
 
 def test_position_pending_kr_reports_off_by_default_and_live_when_enabled():
