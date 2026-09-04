@@ -419,6 +419,36 @@ def _market_snapshot(
         str(event.get("attributes", {}).get("projection_status") or "unknown")
         for event in micro_split_events
     )
+    micro_schema_versions = Counter(
+        str(event.get("attributes", {}).get("shadow_schema_version") or 1)
+        for event in micro_split_events
+    )
+    micro_v2_events = [
+        event
+        for event in micro_split_events
+        if int(event.get("attributes", {}).get("shadow_schema_version") or 1) >= 2
+        and isinstance(
+            event.get("attributes", {}).get("base_stage_projection_quantities"),
+            Mapping,
+        )
+    ]
+    micro_first_executable = Counter(
+        str(
+            event.get("attributes", {}).get("first_executable_target_pct")
+            or "NONE"
+        )
+        for event in micro_v2_events
+    )
+    micro_zero_by_stage = {
+        str(stage): sum(
+            event.get("attributes", {})
+            .get("base_stage_projection_quantities", {})
+            .get(str(stage))
+            == 0
+            for event in micro_v2_events
+        )
+        for stage in (10, 30, 60, 100)
+    }
 
     return {
         "actual": _trade_metrics(actual),
@@ -504,6 +534,16 @@ def _market_snapshot(
             "policy_version_distribution": dict(micro_policy_versions),
             "target_pct_distribution": dict(micro_targets),
             "projection_status_distribution": dict(micro_projection_statuses),
+            "schema_version_distribution": dict(micro_schema_versions),
+            "schema_v2_coverage_rate": _rounded(
+                len(micro_v2_events) / len(micro_split_events)
+                if micro_split_events
+                else None
+            ),
+            "first_executable_target_pct_distribution": dict(
+                micro_first_executable
+            ),
+            "zero_whole_share_projection_by_stage": micro_zero_by_stage,
             "zero_whole_share_projection_count": sum(
                 event.get("attributes", {}).get("projected_whole_share_quantity")
                 == 0
