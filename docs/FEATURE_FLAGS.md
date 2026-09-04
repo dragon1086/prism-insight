@@ -30,6 +30,7 @@
 | 레짐 최소점수 + 상승전환 파일럿 | **LIVE** | `.env REGIME_MIN_SCORE_FLOOR=true` | 순증 차단·차단 후 1/3/5/10일 성과 지속 관측 | 기본 `strong_bear=9`, `moderate_bear=8`, `sideways=8`. 단 `sideways + MARKET_PULSE=UPTREND`는 7점, AI가 `Enter`한 정확히 6점(원래 문턱 ≤6)은 설정 주문액의 50%로만 진입. 로그 `[REGIME_REBOUND_PILOT]` |
 | 결정론적 신규매수 최종 게이트 | **LIVE** | 코드 상시 (`cores/buy_gate.py`) | KR/US process_reports 회귀 + 순수 게이트 테스트 | 계산 레짐·분산일 보수화·점수·목표/손절·R/R·개별 T1/T2를 LLM 결정 뒤 최종 재검증. 데이터/게이트 오류 시 신규매수 차단. 기존 보유·매도에는 영향 없음 |
 | 초분할 0→10% 신규진입 projection | **SHADOW** | `.env MICRO_SPLIT_SHADOW_ENABLED=true` | 20 US 거래세션·신규 적격진입 30건·order diff 0·중복/누수 0 | 신규 US `entry_eligible`에만 계정별 정수주식 예상 수량을 secret-minimized event로 기록. target/주문/holdings/score/message 변화 0. 기존 보유·피라미딩 stage는 아직 미구현 |
+| KR 약세·횡보장 가상 3순위 | **SHADOW** | KR 오전·오후 cron `REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED=true` | prospective 20거래일·성숙 10일 outcome 30건·무영향/중복/누수 0 + 사전등록 효과 기준 | 기존 2종목은 그대로 두고 같은 bottom-up 순서의 가상 3순위와 실제 1·2순위를 함께 기록. 1·3·5·10거래일 종가·MFE·MAE만 추적하며 추가 분석·LLM·주문·메시지 없음 |
 | US O'Neil RS Rating | **LIVE** | `RS_RATING_ENABLED=true` (기본값) | KR/US 2022~2026 백테스트, 49회 리밸런스 | 기존 60일 수익률 RS를 O'Neil 1~99 백분위로 대체. US 스크리닝에만 적용. 긴급 롤백은 `false` |
 | 손절폭 변동성 shadow | **SHADOW** | `cores/buy_gate.py` ATR20/ADR20 팩트 | 균형 표본에서 손실 포착·승자 제거율 확인 후 판단 | `손절폭 < 0.5×max(ATR20, ADR20)`만 로그. 현재 매수 veto 아님 |
 | TIER0 이벤트 강제청산(뉴스 자율매도 + KIS 51 관리종목) | **LIVE** | 코드 상시 | 더존 등 실증 | KR+US 매도 프롬프트 핵심-0 |
@@ -63,6 +64,7 @@ SHADOW→LIVE **자동 승격**은 아래를 **모두** 충족할 때만:
 - **비전 매수게이트(S3)**: A/B 측정 설계 확정·데이터 축적 후 — **수익영향이라 사용자 확인 후**.
 
 ## 변경 이력
+- 2026-09-04: **KR 약세·횡보장 가상 3순위 SHADOW 승인** — `REGIME_WEAK_NO_TOPDOWN=true`의 실제 2종목 cap은 유지하고, 같은 선택 순서에서 탈락한 3순위를 실제 1·2순위와 묶어 별도 관측한다. 기존 trigger 성과 원장과 분리하며 1·3·5·10거래일 outcome이 최소 기준을 충족하기 전에는 슬롯을 변경하지 않는다.
 - 2026-09-04: **비전 매수 품질검사 S3/S3.5 종료** — lifecycle은 09-02에 OFF로 만료됐지만 실제 분석 블록이 그 상태를 확인하지 않아 09-04까지 계속 실행된 결함을 수정했다. `vision_buy_quality=off`를 S3/S3.5 실행 조건과 `feature_status.py`에 연결했다. 기존 차트 생성과 별도 승인된 S6 인사이트 이미지 발행에는 영향이 없다.
 - 2026-09-02: **Fill-chaser lifecycle LIVE 복구** — 08-19 lifecycle 도입 때 기존 `.env FILL_CHASER_LIVE=true`가 유지됐지만 명시적 lifecycle 승격이 없어 실제 cron이 SHADOW로 강등됐다. `feature_status.py`가 lifecycle을 보지 않아 LIVE로 오보한 결함도 함께 수정했다. 영향 전수조회에서 US 매수 COP/OXY/LITE/RJF는 자연 체결, HOOD/WDAY는 체결 0·장종료 취소, 관련 US 매도 5건은 전량 체결이었다. 과거 US 실제 정정 성공 27개 고유 주문, 이후 SHADOW 579액션·payload/중복 오류 0을 근거로 lifecycle을 수동 LIVE 승격했다. SHADOW와 LIVE chase 예산을 분리하고 브로커 거절을 성공 액션으로 기록하지 않도록 보강했다.
 - 2026-09-01: **US trigger fail-open 경계 복구** — yfinance가 일부 ticker의 OHLCV 셀을 중첩 Series로 반환하거나 현재·전일 라벨이 어긋나도 해당 ticker를 제거하고, 개별 trigger 예외는 빈 결과로 격리해 나머지 trigger와 전체 배치를 계속 실행한다. snapshot 자체를 가져오지 못한 경우의 배치 중단 계약은 유지한다.

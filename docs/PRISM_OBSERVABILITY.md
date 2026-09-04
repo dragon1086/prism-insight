@@ -65,6 +65,8 @@ ClickHouse process (mode `0644`).
 - `market.regime_snapshot` (live on every computed KR/US regime observation)
 - `candidate.evaluated`
 - `candidate.outcome` (live when 30-day tracking completes)
+- `screening.third_slot_shadow_evaluated` (KR weak-regime 2-vs-3 candidates)
+- `screening.third_slot_shadow_outcome` (exact 1/3/5/10 trading-day returns)
 - `entry.executed`
 - `entry.fill_reconciled` (US CAPTURE: 제출과 실제 체결을 구분하는 주문 provenance)
 - `exit.executed`
@@ -98,6 +100,13 @@ identities, enforces exact `decision_id`/`position_id` joins, and emits explicit
 coverage, missingness, fill, linkage, leakage, cohort, and insufficiency facts.
 Future sessions should use `skills/prism-entry-quality-analysis/SKILL.md` rather
 than ad-hoc SQL. The packet never enables SHADOW or LIVE behavior.
+
+KR weak-regime third-slot analysis remains outside the candidate-performance
+tables so it cannot influence trigger priors or trading prompts. The screening
+event stores the unchanged live ranks 1 and 2 beside the counterfactual rank 3.
+`tools/track_third_slot_shadow.py` later appends exact 1/3/5/10 KRX trading-day
+close, MFE, and MAE outcomes. `tools/build_third_slot_evidence_packet.py`
+deduplicates and compares these cohorts without claiming fills or account PnL.
 
 ## Historical baseline
 

@@ -1594,8 +1594,167 @@ def _build_topdown_pool(trigger_candidates: dict, macro_context: dict, score_col
     return pool
 
 
+def _shadow_candidate_value(row, *names):
+    for name in names:
+        if name in row.index and not pd.isna(row[name]):
+            return row[name]
+    return None
+
+
+def _counterfactual_bottomup_order(
+    trigger_candidates: dict,
+    score_column: str,
+    *,
+    limit: int = 3,
+) -> list[dict]:
+    """Mirror the current bottom-up ordering without changing live selection."""
+    selected = set()
+    ordered = []
+
+    def append_candidate(trigger_name, ticker, frame):
+        row = frame.loc[ticker]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+        score = _shadow_candidate_value(
+            row,
+            score_column,
+            "final_score",
+            "composite_score",
+            "CompositeScore",
+        )
+        price = _shadow_candidate_value(row, "Close", "current_price", "종가")
+        company_name = _shadow_candidate_value(
+            row, "stock_name", "Company Name", "종목명"
+        )
+        ordered.append(
+            {
+                "ticker": str(ticker),
+                "company_name": str(company_name or ""),
+                "trigger_type": str(trigger_name),
+                "screening_price": price,
+                "score": score,
+            }
+        )
+        selected.add(ticker)
+
+    # Phase 2 mirror: one unique leader from each trigger in registration order.
+    for trigger_name, frame in trigger_candidates.items():
+        if frame.empty:
+            continue
+        sorted_frame = (
+            frame.sort_values(score_column, ascending=False)
+            if score_column in frame.columns
+            else frame
+        )
+        for ticker in sorted_frame.index:
+            if ticker not in selected:
+                append_candidate(trigger_name, ticker, sorted_frame)
+                break
+        if len(ordered) >= limit:
+            return ordered
+
+    # Phase 3 mirror: fill any remaining slots by overall score.
+    remaining = []
+    for trigger_name, frame in trigger_candidates.items():
+        for ticker in frame.index:
+            if ticker in selected:
+                continue
+            row = frame.loc[ticker]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
+            score = _shadow_candidate_value(
+                row,
+                score_column,
+                "final_score",
+                "composite_score",
+                "CompositeScore",
+            )
+            remaining.append((float(score or 0.0), trigger_name, ticker, frame))
+    remaining.sort(key=lambda item: item[0], reverse=True)
+    for _, trigger_name, ticker, frame in remaining:
+        if ticker in selected:
+            continue
+        append_candidate(trigger_name, ticker, frame)
+        if len(ordered) >= limit:
+            break
+    return ordered
+
+
+def _emit_weak_regime_third_slot_shadow(
+    *,
+    trigger_candidates: dict,
+    score_column: str,
+    selected_tickers: set,
+    trade_date: str | None,
+    trigger_mode: str | None,
+    market_regime: str,
+    topdown_slots: int,
+    max_selections: int,
+) -> None:
+    """Record a 2-vs-3 counterfactual; never mutate the returned candidates."""
+    if (
+        market_regime not in {"sideways", "moderate_bear"}
+        or topdown_slots != 0
+        or max_selections != 2
+        or not trade_date
+        or trigger_mode not in {"morning", "afternoon"}
+        or os.getenv("REGIME_WEAK_NO_TOPDOWN", "false").strip().lower()
+        not in {"1", "true", "yes", "on"}
+    ):
+        return
+    try:
+        from observability.third_slot_shadow import emit_evaluation, shadow_enabled
+
+        if not shadow_enabled():
+            return
+        counterfactual = _counterfactual_bottomup_order(
+            trigger_candidates, score_column, limit=3
+        )
+        if len(counterfactual) != 3:
+            return
+        if {row["ticker"] for row in counterfactual[:2]} != {
+            str(ticker) for ticker in selected_tickers
+        }:
+            logger.warning(
+                "[THIRD_SLOT_SHADOW] live/counterfactual ordering mismatch; skipped"
+            )
+            return
+        candidates = []
+        for rank, row in enumerate(counterfactual, start=1):
+            candidates.append(
+                {
+                    **row,
+                    "rank": rank,
+                    "role": "LIVE_SELECTED" if rank <= 2 else "SHADOW_THIRD",
+                }
+            )
+        event = emit_evaluation(
+            trade_date=trade_date,
+            trigger_mode=trigger_mode,
+            regime=market_regime,
+            candidates=candidates,
+        )
+        if event is not None:
+            logger.info(
+                "[THIRD_SLOT_SHADOW] recorded %s rank3=%s",
+                trigger_mode,
+                candidates[2]["ticker"],
+            )
+    except Exception as error:
+        logger.warning(
+            "[THIRD_SLOT_SHADOW] capture failed-open: %s", type(error).__name__
+        )
+
+
 # --- Comprehensive selection function ---
-def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: bool = True, lookback_days: int = 10, macro_context: dict = None) -> dict:
+def select_final_tickers(
+    triggers: dict,
+    trade_date: str = None,
+    use_hybrid: bool = True,
+    lookback_days: int = 10,
+    macro_context: dict = None,
+    trigger_mode: str | None = None,
+) -> dict:
     """
     Consolidate stocks selected from each trigger and choose final stocks.
 
@@ -1610,6 +1769,7 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
         trade_date: Reference trading date (required in hybrid mode)
         use_hybrid: Whether to use hybrid selection (default: True)
         lookback_days: Number of past business days for agent score calculation (default: 10)
+        trigger_mode: Batch session used only for third-slot SHADOW identity
 
     Returns:
         Dictionary of finally selected stocks
@@ -1805,6 +1965,17 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
     strategy = "hybrid_topdown_bottomup" if topdown_filled > 0 else "pure_bottomup"
     logger.info(f"Selection summary: {topdown_filled} top-down + {bottomup_count} bottom-up = {len(selected_tickers)} total (regime={market_regime}, strategy={strategy})")
 
+    _emit_weak_regime_third_slot_shadow(
+        trigger_candidates=trigger_candidates,
+        score_column=score_column,
+        selected_tickers=selected_tickers,
+        trade_date=trade_date,
+        trigger_mode=trigger_mode,
+        market_regime=market_regime,
+        topdown_slots=topdown_slots,
+        max_selections=max_selections,
+    )
+
     return final_result
 
 # How far back to walk when today is not a trading session. A long weekend plus
@@ -1938,7 +2109,12 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
             logger.debug(f"Detailed information:\n{df}\n{'-'*40}")
 
     # Final selection results
-    final_results = select_final_tickers(triggers, trade_date=trade_date, macro_context=macro_context)
+    final_results = select_final_tickers(
+        triggers,
+        trade_date=trade_date,
+        macro_context=macro_context,
+        trigger_mode=trigger_time,
+    )
 
     # Save results as JSON (if requested)
     if output_file:
