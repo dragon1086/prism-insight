@@ -144,6 +144,7 @@ def build_evidence_packet(
     decisions: list[dict[str, Any]],
     closes: pd.Series,
     *,
+    mode: str = "unspecified",
     timeframe: str = DEFAULT_TIMEFRAME,
     horizon_bars: int = 6,
     execution_lag: int = 1,
@@ -172,6 +173,7 @@ def build_evidence_packet(
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "status": "ready" if splits else "insufficient",
+        "mode": mode,
         "timeframe": timeframe,
         "horizon_bars": horizon_bars,
         "execution_lag": execution_lag,
@@ -187,12 +189,15 @@ def build_evidence_packet(
     }
 
 
-def _load_decisions(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+def _load_decisions(
+    connection: sqlite3.Connection, mode: str
+) -> list[dict[str, Any]]:
     connection.row_factory = sqlite3.Row
     return [
         dict(row) for row in connection.execute(
             "SELECT decision_id, ts, signal_side, market_snapshot "
-            "FROM btc_decision_log WHERE schema_version>=2 ORDER BY ts"
+            "FROM btc_decision_log WHERE schema_version>=2 AND mode=? ORDER BY ts",
+            (mode,),
         )
     ]
 
@@ -215,6 +220,7 @@ def main() -> int:
         "--market-db", default=str(root / "prism-btc" / "state" / "btc_market.db")
     )
     parser.add_argument("--timeframe", default=DEFAULT_TIMEFRAME)
+    parser.add_argument("--mode", choices=("shadow", "demo"), default="demo")
     parser.add_argument("--horizon-bars", type=int, default=6)
     parser.add_argument("--execution-lag", type=int, default=1)
     parser.add_argument("--train-size", type=int, default=180)
@@ -227,8 +233,9 @@ def main() -> int:
     market = sqlite3.connect(f"file:{args.market_db}?mode=ro", uri=True)
     try:
         packet = build_evidence_packet(
-            _load_decisions(tracking),
+            _load_decisions(tracking, args.mode),
             _load_closes(market, args.timeframe),
+            mode=args.mode,
             timeframe=args.timeframe,
             horizon_bars=args.horizon_bars,
             execution_lag=args.execution_lag,
