@@ -5,13 +5,39 @@
 """
 import os
 import sys
-
-import pytest
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# 로컬엔 krx_data_client 미설치 → import 실패 시 스킵. CI/서버에서 실행.
-trigger_batch = pytest.importorskip("trigger_batch")
+# Selection tests do not use KRX. Keep them runnable when the optional client is
+# absent instead of silently skipping the hard-cap and SHADOW contracts. The
+# production module loads .env at import time, so restore the test process
+# environment afterward to avoid order-dependent failures in unrelated tests.
+_environment_before_import = dict(os.environ)
+try:
+    try:
+        import trigger_batch
+    except ModuleNotFoundError as error:
+        if error.name != "krx_data_client":
+            raise
+        stub = types.ModuleType("krx_data_client")
+
+        def _network_unavailable(*_args, **_kwargs):
+            raise RuntimeError("krx_data_client test stub")
+
+        for name in (
+            "_get_client",
+            "get_market_ohlcv_by_ticker",
+            "get_nearest_business_day_in_a_week",
+            "get_market_cap_by_ticker",
+            "get_market_ticker_name",
+        ):
+            setattr(stub, name, _network_unavailable)
+        sys.modules["krx_data_client"] = stub
+        import trigger_batch
+finally:
+    os.environ.clear()
+    os.environ.update(_environment_before_import)
 
 
 def _slots(regime, flag):
@@ -109,3 +135,89 @@ def test_no_macro_context_preserves_legacy_three_candidate_limit(monkeypatch):
     )
 
     assert sum(len(frame) for frame in result.values()) == 3
+
+
+def test_third_slot_shadow_records_counterfactual_without_changing_selection(
+    monkeypatch,
+):
+    monkeypatch.setenv("REGIME_WEAK_NO_TOPDOWN", "true")
+    monkeypatch.setenv("REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED", "true")
+    monkeypatch.setattr(
+        trigger_batch, "_get_regime_slots", lambda _regime: (0, 2)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "observability.third_slot_shadow.emit_evaluation",
+        lambda **kwargs: captured.append(kwargs),
+    )
+    triggers = {
+        name: trigger_batch.pd.DataFrame(
+            {
+                "CompositeScore": [score],
+                "Close": [price],
+                "종목명": [name],
+            },
+            index=[ticker],
+        )
+        for name, ticker, score, price in (
+            ("Trigger A", "AAA", 3.0, 100.0),
+            ("Trigger B", "BBB", 2.0, 200.0),
+            ("Trigger C", "CCC", 1.0, 300.0),
+        )
+    }
+
+    result = trigger_batch.select_final_tickers(
+        triggers,
+        trade_date="20260904",
+        use_hybrid=False,
+        macro_context={"market_regime": "moderate_bear", "leading_sectors": []},
+        trigger_mode="morning",
+    )
+
+    selected = [ticker for frame in result.values() for ticker in frame.index]
+    assert selected == ["AAA", "BBB"]
+    assert len(captured) == 1
+    assert [row["ticker"] for row in captured[0]["candidates"]] == [
+        "AAA",
+        "BBB",
+        "CCC",
+    ]
+    assert [row["role"] for row in captured[0]["candidates"]] == [
+        "LIVE_SELECTED",
+        "LIVE_SELECTED",
+        "SHADOW_THIRD",
+    ]
+
+
+def test_third_slot_shadow_disabled_does_not_emit(monkeypatch):
+    monkeypatch.setenv("REGIME_WEAK_NO_TOPDOWN", "true")
+    monkeypatch.delenv("REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED", raising=False)
+    monkeypatch.setattr(
+        trigger_batch, "_get_regime_slots", lambda _regime: (0, 2)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "observability.third_slot_shadow.emit_evaluation",
+        lambda **kwargs: captured.append(kwargs),
+    )
+    triggers = {
+        name: trigger_batch.pd.DataFrame(
+            {"CompositeScore": [score], "Close": [100.0]}, index=[ticker]
+        )
+        for name, ticker, score in (
+            ("A", "AAA", 3.0),
+            ("B", "BBB", 2.0),
+            ("C", "CCC", 1.0),
+        )
+    }
+
+    result = trigger_batch.select_final_tickers(
+        triggers,
+        trade_date="20260904",
+        use_hybrid=False,
+        macro_context={"market_regime": "sideways", "leading_sectors": []},
+        trigger_mode="afternoon",
+    )
+
+    assert sum(len(frame) for frame in result.values()) == 2
+    assert captured == []
