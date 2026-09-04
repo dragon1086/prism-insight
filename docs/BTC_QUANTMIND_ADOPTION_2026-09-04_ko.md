@@ -49,7 +49,7 @@ QuantMind는 AGPL-3.0 프로젝트이므로 소스 코드는 복사하지 않았
 
 ```bash
 cd /root/prism-insight/prism-btc
-python3 -m analysis.factor_evidence
+python3 -m analysis.factor_evidence --mode demo
 ```
 
 ## 의도적으로 제외한 것
