@@ -9,6 +9,14 @@ from observability.micro_split import (
 )
 
 
+def _contains_exact_value(value, forbidden) -> bool:
+    if isinstance(value, dict):
+        return any(_contains_exact_value(item, forbidden) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_exact_value(item, forbidden) for item in value)
+    return value in forbidden
+
+
 def test_shadow_flag_defaults_off_and_parses_explicit_values(monkeypatch) -> None:
     monkeypatch.delenv("MICRO_SPLIT_SHADOW_ENABLED", raising=False)
     assert shadow_enabled() is False
@@ -33,9 +41,18 @@ def test_initial_shadow_context_keeps_unit_amount_secret() -> None:
     assert context["target_pct"] == 10
     assert context["target_slot_units"] == 0.1
     assert context["reason_code"] == "ENTRY_ELIGIBLE_SCOUT"
+    assert context["shadow_schema_version"] == 2
     assert context["projection_status"] == "PROJECTED"
     assert context["projected_whole_share_quantity"] == 0
     assert context["projected_buy_delta_quantity"] == 0
+    assert context["base_stage_projection_quantities"] == {
+        "10": 0,
+        "30": 0,
+        "60": 1,
+        "100": 1,
+    }
+    assert context["first_executable_target_pct"] == 60
+    assert len(context["unit_amount_snapshot_ref"]) == 16
     assert len(context["execution_profile_ref"]) == 16
     assert "secret-account" not in encoded
     assert "1000000" not in encoded
@@ -69,6 +86,9 @@ def test_missing_unit_amount_still_records_internal_shadow_target() -> None:
     assert context["target_pct"] == 10
     assert context["projection_status"] == "INPUT_UNAVAILABLE"
     assert context["projected_whole_share_quantity"] is None
+    assert context["base_stage_projection_quantities"] == {}
+    assert context["first_executable_target_pct"] is None
+    assert context["unit_amount_snapshot_ref"] is None
 
 
 def test_emit_shadow_is_flagged_deterministic_and_secret_minimized(
@@ -95,8 +115,15 @@ def test_emit_shadow_is_flagged_deterministic_and_secret_minimized(
     assert first["event_id"] == second["event_id"]
     assert first["event_type"] == "micro_split.shadow_evaluated"
     assert first["attributes"]["target_pct"] == 10
+    assert first["attributes"]["base_stage_projection_quantities"] == {
+        "10": 0,
+        "30": 1,
+        "60": 3,
+        "100": 5,
+    }
+    assert first["attributes"]["first_executable_target_pct"] == 30
     assert "secret-account" not in json.dumps(first)
-    assert "1100" not in json.dumps(first)
+    assert not _contains_exact_value(first, {1100, "1100", "1100.0"})
 
 
 def test_emit_shadow_off_has_no_file_side_effect(monkeypatch, tmp_path) -> None:

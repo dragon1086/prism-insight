@@ -13,7 +13,7 @@ from prism_core.micro_split import (
     project_execution_on_advance,
 )
 
-SHADOW_SCHEMA_VERSION = 1
+SHADOW_SCHEMA_VERSION = 2
 
 
 def shadow_enabled(value: str | None = None) -> bool:
@@ -26,6 +26,33 @@ def shadow_enabled(value: str | None = None) -> bool:
 def _stable_ref(*parts: Any, length: int) -> str:
     raw = "|".join(str(part or "") for part in parts)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:length]
+
+
+def _base_stage_projections(
+    *, unit_amount: Any, current_price: Any
+) -> tuple[dict[str, int], int | None]:
+    quantities: dict[str, int] = {}
+    try:
+        for target_pct in DEFAULT_POLICY.base_steps_pct:
+            projection = project_execution_on_advance(
+                unit_amount=unit_amount,
+                previous_target_pct=0,
+                target_pct=target_pct,
+                execution_price=current_price,
+                confirmed_strategy_quantity=0,
+            )
+            quantities[str(target_pct)] = projection.desired_quantity
+    except (TypeError, ValueError):
+        return {}, None
+    first_executable = next(
+        (
+            target_pct
+            for target_pct in DEFAULT_POLICY.base_steps_pct
+            if quantities[str(target_pct)] > 0
+        ),
+        None,
+    )
+    return quantities, first_executable
 
 
 def build_initial_shadow_context(
@@ -42,17 +69,14 @@ def build_initial_shadow_context(
     projection_status = "PROJECTED"
     projected_quantity = None
     projected_delta = None
-    try:
-        projection = project_execution_on_advance(
-            unit_amount=unit_amount,
-            previous_target_pct=0,
-            target_pct=10,
-            execution_price=current_price,
-            confirmed_strategy_quantity=0,
-        )
-        projected_quantity = projection.desired_quantity
-        projected_delta = projection.buy_delta_quantity
-    except (TypeError, ValueError):
+    stage_quantities, first_executable = _base_stage_projections(
+        unit_amount=unit_amount,
+        current_price=current_price,
+    )
+    if stage_quantities:
+        projected_quantity = stage_quantities["10"]
+        projected_delta = projected_quantity
+    else:
         projection_status = "INPUT_UNAVAILABLE"
 
     return {
@@ -70,11 +94,24 @@ def build_initial_shadow_context(
         "execution_profile_ref": _stable_ref(
             "micro-split-execution-profile", account_id, length=16
         ),
+        "unit_amount_snapshot_ref": (
+            _stable_ref(
+                "micro-split-unit-snapshot",
+                account_id,
+                unit_amount,
+                DEFAULT_POLICY.policy_version,
+                length=16,
+            )
+            if stage_quantities
+            else None
+        ),
         "unit_amount_available": unit_amount not in (None, "", 0, 0.0),
         "execution_price_available": current_price not in (None, "", 0, 0.0),
         "projection_status": projection_status,
         "projected_whole_share_quantity": projected_quantity,
         "projected_buy_delta_quantity": projected_delta,
+        "base_stage_projection_quantities": stage_quantities,
+        "first_executable_target_pct": first_executable,
         "internal_target_independent_of_execution": True,
         "decision_ref": _stable_ref("micro-split-decision", decision_id, length=16),
     }
