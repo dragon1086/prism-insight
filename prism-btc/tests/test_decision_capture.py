@@ -75,13 +75,14 @@ def test_signal_capture_is_stable_versioned_and_secret_minimized() -> None:
     )
     market = json.loads(row["market_snapshot"])
     position = json.loads(row["position_context"])
-    assert row["schema_version"] == 1
+    assert row["schema_version"] == 2
     assert row["strategy_id"] == "main_trend_v1"
     assert row["signal_reason_code"] == "SIGNAL_ACCEPTED"
     assert row["entry_status"] == "PENDING_EVALUATION"
     assert len(row["config_hash"]) == 24
     assert len(row["input_hash"]) == 24
     assert market["tf_states"]["4h"]["trend_strength"] == 2.0
+    assert market["ohlcv_factors"]["status"] == "unavailable"
     assert position["n_open"] == 0
     assert position["effective_n_open"] == 0
     serialized = json.dumps(row, ensure_ascii=False)
@@ -178,4 +179,44 @@ def test_signal_none_is_final_without_entry_evaluation() -> None:
         (decision_id,),
     ).fetchone()
     assert tuple(row) == ("SIGNAL_REJECTED", "SCORE_BELOW_MIN")
+    connection.close()
+
+
+def test_signal_capture_persists_observational_factors_without_changing_signal() -> None:
+    connection = _conn()
+    factor_snapshot = {
+        "schema_version": 1,
+        "status": "observational_only",
+        "timeframes": {
+            "4h": {
+                "status": "ok",
+                "as_of_open_time": "2026-08-30 20:00:00+00:00",
+                "values": {"trend_r2_21": 0.75, "rsv_21": 0.8},
+            }
+        },
+    }
+    decision_id = decision_capture.capture_signal_decision(
+        connection,
+        ts="2026-08-31T00:00:00Z",
+        mode="shadow",
+        strategy_id="main_trend_v1",
+        snapshot=_snapshot(),
+        signal=Signal(side="long", strength=82.5, reason="롱신호 score=82.5"),
+        bar_close=110.0,
+        positions=[],
+        equity=10_000.0,
+        peak_equity=10_000.0,
+        pending=False,
+        code_version="abc123",
+        factor_snapshot=factor_snapshot,
+    )
+
+    row = connection.execute(
+        "SELECT signal_side, entry_status, market_snapshot "
+        "FROM btc_decision_log WHERE decision_id=?",
+        (decision_id,),
+    ).fetchone()
+    market = json.loads(row["market_snapshot"])
+    assert tuple(row[:2]) == ("long", "PENDING_EVALUATION")
+    assert market["ohlcv_factors"] == factor_snapshot
     connection.close()
