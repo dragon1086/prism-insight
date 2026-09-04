@@ -101,6 +101,7 @@ class VirtualBackend:
     def __init__(self, conn):
         self.conn = conn
         self.last_open_snapshot: dict[str, float] = {}
+        self.last_close_snapshot: dict[str, float] = {}
         self.last_wallet_snapshot: dict[str, float] = {}
 
     def equity(self, fallback: float) -> float:
@@ -131,6 +132,7 @@ class ExchangeBackend:
         self.conn = conn
         self.sess = sess
         self.last_open_snapshot: dict[str, float] = {}
+        self.last_close_snapshot: dict[str, float] = {}
         self.last_wallet_snapshot: dict[str, float] = {}
 
     # --- 호출 헬퍼 (demo.DemoAdapter._call 미러 — 재시도 1회, 실패 흡수) ---
@@ -142,8 +144,17 @@ class ExchangeBackend:
         for attempt in range(2):
             try:
                 resp = fn(**kwargs)
-                if isinstance(resp, dict) and int(resp.get("retCode", -1)) == 0:
-                    return resp
+                if isinstance(resp, dict):
+                    ret_code = int(resp.get("retCode", -1))
+                    if ret_code == 0:
+                        return resp
+                    # Bybit의 이미 적용/이미 소멸 응답은 원하는 최종 상태다.
+                    # 재시도·오류 이벤트로 부풀리지 않고 멱등 성공으로 취급한다.
+                    if (
+                        (fn_name == "set_leverage" and ret_code == 110043)
+                        or (fn_name == "cancel_order" and ret_code == 110001)
+                    ):
+                        return resp
                 last_exc = (resp.get("retMsg") if isinstance(resp, dict) else resp)
             except Exception as exc:  # noqa: BLE001
                 last_exc = str(exc)
@@ -191,7 +202,8 @@ class ExchangeBackend:
             orderType="Market", qty=_qstr(qty),
             timeInForce="IOC", positionIdx=_POSITION_IDX,
         )
-        if _order_id(resp) is None:
+        entry_oid = _order_id(resp)
+        if entry_oid is None:
             return None
         # 체결가 확인 (최대 3회 폴링, 실패 시 힌트가로 기록).
         fill = hint_price
@@ -215,12 +227,23 @@ class ExchangeBackend:
                 time.sleep(_RETRY_SLEEP_SEC)
                 continue
             break
+        entry_exec = self._execution_snapshot(entry_oid, closed_only=False)
+        if entry_exec:
+            fill = entry_exec.get("price") or fill
+            self.last_open_snapshot.update({
+                "qty": entry_exec.get("qty")
+                or self.last_open_snapshot.get("qty") or qty,
+                "entry_price": fill,
+            })
+            if "fee" in entry_exec:
+                self.last_open_snapshot["entry_fee"] = entry_exec["fee"]
         # 네이티브 SL (stop-market reduce-only).
         close_side = "Sell" if side == "long" else "Buy"
         trigger_dir = 2 if side == "long" else 1
+        protected_qty = self.last_open_snapshot.get("qty") or qty
         sl_resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
-            side=close_side, orderType="Market", qty=_qstr(qty),
+            side=close_side, orderType="Market", qty=_qstr(protected_qty),
             triggerPrice=_pstr(sl), triggerDirection=trigger_dir,
             triggerBy="LastPrice", reduceOnly=True,
             timeInForce="GTC", positionIdx=_POSITION_IDX,
@@ -232,17 +255,114 @@ class ExchangeBackend:
                                "swing SL 주문 실패 — 소프트 감시로만 보호됨",
                                level="error", mode=MODE)
         tracking.log_event(self.conn, "order",
-                           f"swing open {side} market qty={qty:.4f} fill≈{fill:.1f} "
+                           f"swing open {side} market qty={protected_qty:.4f} "
+                           f"fill≈{fill:.1f} "
                            f"sl={sl:.1f} sl_oid={sl_oid}", mode=MODE)
         return fill
 
-    def _last_close_exec_price(self) -> Optional[float]:
+    def _execution_snapshot(
+        self, order_id: str | None, *, closed_only: bool
+    ) -> dict[str, float]:
+        """한 주문의 분할 체결을 수량가중 평균으로 합친다."""
+        kwargs = {"category": _CATEGORY, "symbol": _SYMBOL, "limit": 50}
+        if order_id:
+            kwargs["orderId"] = order_id
         ex = self._call("get_executions", category=_CATEGORY, symbol=_SYMBOL,
-                        limit=10)
-        for r in _result_list(ex or {}):
-            if _f(r.get("closedSize")) > 0:
-                return _f(r.get("execPrice")) or None
-        return None
+                        **{k: v for k, v in kwargs.items()
+                           if k not in {"category", "symbol"}})
+        rows = [
+            row for row in _result_list(ex or {})
+            if (not order_id or str(row.get("orderId") or "") == order_id)
+            and (not closed_only or _f(row.get("closedSize")) > 0)
+        ]
+        weighted = 0.0
+        qty = 0.0
+        fee = 0.0
+        fee_seen = False
+        for row in rows:
+            row_qty = _f(row.get("execQty")) or _f(row.get("closedSize"))
+            row_price = _f(row.get("execPrice"))
+            if row_qty <= 0 or row_price <= 0:
+                continue
+            qty += row_qty
+            weighted += row_qty * row_price
+            if row.get("execFee") not in (None, ""):
+                fee += _f(row.get("execFee"))
+                fee_seen = True
+        if qty <= 0:
+            return {}
+        snapshot = {"qty": qty, "price": weighted / qty}
+        if fee_seen:
+            snapshot["fee"] = fee
+        return snapshot
+
+    def _capture_close_settlement(
+        self, pos: tracking.PositionRow, order_id: str | None
+    ) -> None:
+        """Bybit의 체결·closedPnl을 묶어 청산 정산의 단일 진실로 보관한다."""
+        execution = self._execution_snapshot(order_id, closed_only=True)
+        snapshot: dict[str, float] = {}
+        if execution:
+            snapshot = {
+                "qty": execution["qty"],
+                "exit_price": execution["price"],
+            }
+            if "fee" in execution:
+                snapshot["close_fee"] = execution["fee"]
+
+        closed_row = None
+        if order_id:
+            for attempt in range(3):
+                pnl_resp = self._call(
+                    "get_closed_pnl", category=_CATEGORY, symbol=_SYMBOL, limit=20
+                )
+                for row in _result_list(pnl_resp or {}):
+                    if str(row.get("orderId") or "") == order_id:
+                        closed_row = row
+                        break
+                if closed_row is not None or pnl_resp is None:
+                    break
+                if attempt < 2:
+                    time.sleep(_RETRY_SLEEP_SEC)
+
+        if closed_row is not None and closed_row.get("closedPnl") not in (None, ""):
+            qty = _f(closed_row.get("qty")) or snapshot.get("qty") or pos.qty
+            entry_price = (
+                _f(closed_row.get("avgEntryPrice")) or pos.entry_price
+            )
+            exit_price = (
+                _f(closed_row.get("avgExitPrice"))
+                or snapshot.get("exit_price") or pos.sl_price
+            )
+            open_fee = _f(closed_row.get("openFee"))
+            close_fee = (
+                _f(closed_row.get("closeFee"))
+                or snapshot.get("close_fee") or 0.0
+            )
+            closed_pnl = _f(closed_row.get("closedPnl"))
+            sign = 1.0 if pos.side == "long" else -1.0
+            gross = sign * qty * (exit_price - entry_price)
+            snapshot.update({
+                "qty": qty,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "closed_pnl": closed_pnl,
+                "open_fee": open_fee,
+                "close_fee": close_fee,
+                # Bybit closedPnl과 가격손익·매매수수료의 차이를 펀딩
+                # 정산으로 복원한다. 양수는 비용, 음수는 수취다.
+                "funding_paid": gross - open_fee - close_fee - closed_pnl,
+            })
+        exchange_leverage = tracking.get_meta(
+            self.conn, "swing_exchange_leverage", MODE
+        )
+        if exchange_leverage is not None:
+            snapshot["exchange_leverage"] = float(exchange_leverage)
+        self.last_close_snapshot = snapshot
+
+    def _last_close_exec_price(self, order_id: str | None = None) -> Optional[float]:
+        snapshot = self._execution_snapshot(order_id, closed_only=True)
+        return snapshot.get("price") or None
 
     def check_stop(self, pos: tracking.PositionRow,
                    bar: pd.Series) -> Optional[float]:
@@ -250,8 +370,9 @@ class ExchangeBackend:
         size = self._position_size()
         if size is None or size > 0:
             return None
-        price = self._last_close_exec_price() or pos.sl_price
         sl_oid = tracking.get_meta(self.conn, "swing_sl_order_id", MODE)
+        self._capture_close_settlement(pos, sl_oid)
+        price = self.last_close_snapshot.get("exit_price") or pos.sl_price
         if sl_oid:
             self._call("cancel_order", category=_CATEGORY, symbol=_SYMBOL,
                        orderId=sl_oid)
@@ -265,12 +386,14 @@ class ExchangeBackend:
                        orderId=sl_oid)
         tracking.set_meta(self.conn, "swing_sl_order_id", "", MODE)
         close_side = "Sell" if pos.side == "long" else "Buy"
-        self._call(
+        close_resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
             side=close_side, orderType="Market", qty=_qstr(pos.qty),
             reduceOnly=True, timeInForce="IOC", positionIdx=_POSITION_IDX,
         )
-        return self._last_close_exec_price() or hint_price
+        close_oid = _order_id(close_resp)
+        self._capture_close_settlement(pos, close_oid)
+        return self.last_close_snapshot.get("exit_price") or hint_price
 
 
 def _make_backend(conn, main_mode: str):
@@ -516,12 +639,17 @@ def _build_exit_message(
     equity_before: float,
     equity_after: float,
     exit_time: str,
+    gross_pnl: float | None = None,
+    funding_paid: float = 0.0,
+    entry_account_equity: float | None = None,
+    exchange_leverage: float | None = None,
+    settlement_confirmed: bool = False,
 ) -> str:
     """스윙 청산 알림을 정량 지표와 함께 만든다.
 
     ``price_return_pct`` 는 롱/숏 방향을 반영한 현물 가격 기준 수익률이고,
-    ``margin_return_pct`` 는 레버리지를 고려한 추정 증거금 기준 순수익률이다.
-    두 수치를 분리해 R 배수와 계좌 영향이 서로 다른 의미임을 명확히 한다.
+    실주문에서는 Bybit ``closedPnl``만 확정손익으로 표시한다. 교차계좌의
+    현재 평가액은 다른 자산 변동이 섞인 스냅샷이므로 거래 손익과 빼지 않는다.
     """
     sign = 1.0 if pos.side == "long" else -1.0
     price_return_pct = (
@@ -529,14 +657,6 @@ def _build_exit_message(
         if pos.entry_price
         else None
     )
-    margin = (
-        pos.qty * pos.entry_price / pos.leverage
-        if pos.leverage > 0
-        else None
-    )
-    margin_return_pct = net / margin * 100.0 if margin else None
-    account_delta = equity_after - equity_before
-    account_return_pct = account_delta / equity_before * 100.0 if equity_before else None
     duration = _hold_duration(pos.entry_time, exit_time)
 
     outcome = f"✅ 이익 {r_multiple:+.1f}배" if r_multiple > 0 else f"❌ 손실 {r_multiple:+.1f}배"
@@ -550,22 +670,57 @@ def _build_exit_message(
             if price_return_pct is not None
             else f"• 진입→청산: {pos.entry_price:,.0f} → {exit_price:,.0f}달러 · {_side_kr(pos.side)}"
         ),
-        (
-            f"• 실현손익: {net:+,.2f}달러 · 수수료 {fee_paid:,.2f}달러 · "
-            f"증거금 기준 {margin_return_pct:+.2f}%"
-            if margin_return_pct is not None
-            else f"• 실현손익: {net:+,.2f}달러 · 수수료 {fee_paid:,.2f}달러"
-        ),
-        (
-            f"• 계좌: {equity_before:,.2f} → {equity_after:,.2f}달러 · "
-            f"{account_delta:+,.2f}달러 ({account_return_pct:+.2f}%)"
-            if account_return_pct is not None
-            else f"• 계좌: {equity_before:,.2f} → {equity_after:,.2f}달러 · {account_delta:+,.2f}달러"
-        ),
-        f"• 포지션: {pos.qty:.4f} BTC · 레버리지 {pos.leverage:.1f}배"
-        + (f" · 보유 {duration}" if duration else ""),
-        "_데모 계정 모의투자입니다_",
     ]
+    if backend_name == "exchange":
+        pnl_label = "Bybit 확정 실현손익" if settlement_confirmed else "추정 실현손익"
+        pnl_parts = [f"• {pnl_label}: {net:+,.2f}달러"]
+        if gross_pnl is not None:
+            pnl_parts.append(f"가격손익 {gross_pnl:+,.2f}달러")
+        pnl_parts.append(f"매매수수료 {fee_paid:,.2f}달러")
+        if settlement_confirmed:
+            pnl_parts.append(f"펀딩비 {funding_paid:,.2f}달러")
+        lines.append(" · ".join(pnl_parts))
+        if not settlement_confirmed:
+            lines.append("• ⚠️ Bybit 확정 정산 조회 실패 · 원장 수치는 잠정값")
+        if entry_account_equity and entry_account_equity > 0:
+            contribution = net / entry_account_equity * 100.0
+            lines.append(
+                f"• 이번 거래 계좌 기여: {net:+,.2f}달러 "
+                f"(진입 당시 평가액 대비 {contribution:+.2f}%)"
+            )
+        lines.append(
+            f"• 현재 교차계좌 평가액: {equity_after:,.2f}달러 "
+            "(현재 스냅샷이며 이번 거래 수익 아님)"
+        )
+        leverage_text = (
+            f"{exchange_leverage:g}배" if exchange_leverage else "확인 불가"
+        )
+        lines.append(
+            f"• 포지션: {pos.qty:.4f} BTC · 거래소 레버리지 {leverage_text} · "
+            f"전략 노출 {pos.leverage:.1f}배"
+            + (f" · 보유 {duration}" if duration else "")
+        )
+    else:
+        account_delta = equity_after - equity_before
+        account_return_pct = (
+            account_delta / equity_before * 100.0 if equity_before else None
+        )
+        lines.append(
+            f"• 실현손익: {net:+,.2f}달러 · 수수료 {fee_paid:,.2f}달러"
+        )
+        lines.append(
+            f"• 가상 원장: {equity_before:,.2f} → {equity_after:,.2f}달러 · "
+            f"{account_delta:+,.2f}달러"
+            + (
+                f" ({account_return_pct:+.2f}%)"
+                if account_return_pct is not None else ""
+            )
+        )
+        lines.append(
+            f"• 포지션: {pos.qty:.4f} BTC · 전략 노출 {pos.leverage:.1f}배"
+            + (f" · 보유 {duration}" if duration else "")
+        )
+    lines.append("_데모 계정 모의투자입니다_")
     return "\n".join(lines)
 
 
@@ -582,25 +737,45 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
     실집행 백엔드는 지갑 equity 가 진실 — 추정 net 으로 갱신 후 지갑값으로 덮는다.
     """
     sign = 1.0 if pos.side == "long" else -1.0
-    gross = sign * pos.qty * (exit_price - pos.entry_price)
-    exit_fee = pos.qty * exit_price * fee_rate
-    net = gross - pos.entry_fee - exit_fee
+    settlement = getattr(backend, "last_close_snapshot", {}) or {}
+    settlement_confirmed = (
+        backend.name == "exchange" and "closed_pnl" in settlement
+    )
+    qty = settlement.get("qty") or pos.qty
+    entry_price = settlement.get("entry_price") or pos.entry_price
+    exit_price = settlement.get("exit_price") or exit_price
+    gross = sign * qty * (exit_price - entry_price)
+    if backend.name == "exchange":
+        # 실제 체결가에는 슬리피지가 이미 반영돼 있다. 백테스트용 SLIPPAGE_SL을
+        # 다시 비용으로 더하지 않는다.
+        open_fee = settlement.get("open_fee", pos.entry_fee)
+        exit_fee = settlement.get("close_fee", qty * exit_price * TAKER_FEE)
+    else:
+        open_fee = pos.entry_fee
+        exit_fee = qty * exit_price * fee_rate
+    fee_paid = open_fee + exit_fee
+    funding_paid = settlement.get("funding_paid", 0.0)
+    net = (
+        settlement["closed_pnl"]
+        if settlement_confirmed
+        else gross - fee_paid - funding_paid
+    )
     risk = pos.initial_risk if pos.initial_risk > 0 else 1.0
     trade_counter += 1
     tracking.record_trade(conn, tracking.TradeRow(
         trade_id=trade_counter,
         side=pos.side,
         entry_time=pos.entry_time,
-        entry_price=pos.entry_price,
+        entry_price=entry_price,
         exit_time=bar_time_str,
         exit_price=exit_price,
-        qty=pos.qty,
+        qty=qty,
         leverage=pos.leverage,
         sl_price=pos.sl_price,
         exit_reason=reason,
         r_multiple=net / risk,
-        fee_paid=pos.entry_fee + exit_fee,
-        funding_paid=0.0,
+        fee_paid=fee_paid,
+        funding_paid=funding_paid,
         tranche_index=0,
         liq_price=0.0,
         net_pnl=net,
@@ -616,21 +791,45 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
     tracking.record_equity(conn, equity_after, MODE, bar_time_str)
     tracking.log_event(conn, "trade",
                        f"swing close[{backend.name}] {pos.side} @ {exit_price:.1f} "
-                       f"({reason}) net≈{net:+.2f} eq={equity_after:.2f}", mode=MODE)
+                       f"({reason}) net={net:+.2f} "
+                       f"settlement={'confirmed' if settlement_confirmed else 'estimated'} "
+                       f"eq={equity_after:.2f}", mode=MODE)
     r = net / risk
+    entry_account_equity = tracking.get_meta(
+        conn, "swing_entry_account_equity", MODE
+    )
+    exchange_leverage = settlement.get("exchange_leverage")
+    if exchange_leverage is None:
+        exchange_leverage = tracking.get_meta(
+            conn, "swing_exchange_leverage", MODE
+        )
+    display_pos = tracking.PositionRow(
+        **{
+            **pos.__dict__,
+            "entry_price": entry_price,
+            "qty": qty,
+        }
+    )
     delivered = _notify(main_mode, _build_exit_message(
-        pos=pos,
+        pos=display_pos,
         exit_price=exit_price,
         reason=reason,
         backend_name=backend.name,
         net=net,
-        fee_paid=pos.entry_fee + exit_fee,
+        fee_paid=fee_paid,
         r_multiple=r,
         equity_before=equity_before,
         equity_after=equity_after,
         exit_time=bar_time_str,
+        gross_pnl=gross,
+        funding_paid=funding_paid,
+        entry_account_equity=entry_account_equity,
+        exchange_leverage=exchange_leverage,
+        settlement_confirmed=settlement_confirmed,
     ))
     _record_notification_delivery(conn, "swing_exit", delivered)
+    tracking.set_meta(conn, "swing_entry_account_equity", None, MODE)
+    tracking.set_meta(conn, "swing_exchange_leverage", None, MODE)
     return equity_after, trade_counter
 
 
@@ -687,11 +886,17 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
         _log_signal_safe(conn, bar_time_str, side, "swing 기각: 주문 실패", 0)
         return None
 
-    entry_fee = sz.qty * fill * TAKER_FEE
+    execution = getattr(backend, "last_open_snapshot", {}) or {}
+    actual_qty = execution.get("qty") or sz.qty
+    fill = execution.get("entry_price") or fill
+    entry_fee = execution.get("entry_fee")
+    if entry_fee is None:
+        entry_fee = actual_qty * fill * TAKER_FEE
+    actual_risk = abs(fill - sl) * actual_qty
     pos = tracking.PositionRow(
         side=side,
         entry_price=fill,
-        qty=sz.qty,
+        qty=actual_qty,
         leverage=sz.leverage,
         sl_price=sl,
         tp1_price=0.0, tp2_price=0.0, tp3_price=0.0,
@@ -699,16 +904,28 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
         entry_time=bar_time_str,
         tranche_index=0,
         entry_bar_idx=bar_index_for(int(pd.Timestamp(bar_time_str).value) // 1_000_000),
-        initial_risk=sz.risk_amount,
+        initial_risk=actual_risk,
         entry_fee=entry_fee,
-        initial_qty=sz.qty,
+        initial_qty=actual_qty,
         mode=MODE,
     )
     tracking.save_position(conn, pos)
     tracking.log_event(conn, "trade",
                        f"swing open[{backend.name}] {side} @ {fill:.1f} "
-                       f"qty={sz.qty:.4f} sl={sl:.1f} lev={sz.leverage:.2f}",
+                       f"qty={actual_qty:.4f} sl={sl:.1f} "
+                       f"exposure={sz.leverage:.2f}",
                        mode=MODE)
+    if backend.name == "exchange":
+        # 청산 시 현재 교차계좌 값과 오래된 원장값을 빼지 않도록 진입 시점의
+        # 분모만 별도 저장한다. 거래 손익 자체는 closedPnl을 사용한다.
+        tracking.record_equity(conn, sizing_equity, MODE, bar_time_str)
+        tracking.set_meta(
+            conn, "swing_entry_account_equity", sizing_equity, MODE
+        )
+        exchange_leverage = execution.get("leverage")
+        tracking.set_meta(
+            conn, "swing_exchange_leverage", exchange_leverage, MODE
+        )
     _log_signal_safe(conn, bar_time_str, side, "swing_entry", 1)
     signal_context = {
         "prev_ma10_4h": float(prev["ma10"]),

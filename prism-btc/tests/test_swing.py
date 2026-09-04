@@ -275,8 +275,8 @@ class TestSwingProcess:
         assert len(sent) == 1
         message = sent[0]
         assert "가격 기준 +2.00%" in message
-        assert "증거금 기준" in message
-        assert "계좌: 10,000.00 →" in message
+        assert "전략 노출 3.0배" in message
+        assert "가상 원장: 10,000.00 →" in message
         assert "+0.10%" in message
         assert "실현손익:" in message
         assert "보유 4시간" in message
@@ -424,6 +424,8 @@ class FakeSession:
         self.avg_price = 0.0
         self.total_equity = 10_000.0
         self.close_exec_price = 0.0
+        self.execution_rows: list[dict] = []
+        self.closed_pnl_rows: list[dict] = []
 
     def _record(self, name, kw):
         self.calls.append((name, kw))
@@ -458,10 +460,16 @@ class FakeSession:
 
     def get_executions(self, **kw):
         self._record("get_executions", kw)
-        lst = []
-        if self.close_exec_price > 0:
-            lst = [{"closedSize": "0.1", "execPrice": str(self.close_exec_price)}]
+        lst = self.execution_rows
+        if not lst and self.close_exec_price > 0:
+            lst = [{"closedSize": "0.1", "execQty": "0.1",
+                    "execPrice": str(self.close_exec_price),
+                    "orderId": kw.get("orderId", "")}]
         return {"retCode": 0, "result": {"list": lst}}
+
+    def get_closed_pnl(self, **kw):
+        self._record("get_closed_pnl", kw)
+        return {"retCode": 0, "result": {"list": self.closed_pnl_rows}}
 
     def cancel_order(self, **kw):
         self._record("cancel_order", kw)
@@ -510,6 +518,45 @@ class TestExchangeBackend:
         assert be.last_open_snapshot["leverage"] == pytest.approx(5.0)
         assert be.last_open_snapshot["qty"] == pytest.approx(0.1)
 
+    def test_open_prefers_actual_execution_qty_price_and_fee(self, conn):
+        from live import swing
+
+        sess = FakeSession()
+        sess.avg_price = 50_050.0
+        sess.execution_rows = [{
+            "orderId": "oid-1", "closedSize": "0", "execQty": "0.099",
+            "execPrice": "50040", "execFee": "2.724678",
+        }]
+        be = swing.ExchangeBackend(conn, sess)
+
+        fill = be.open("long", 0.1, 49_000.0, 50_000.0)
+
+        assert fill == pytest.approx(50_040.0)
+        assert be.last_open_snapshot["qty"] == pytest.approx(0.099)
+        assert be.last_open_snapshot["entry_fee"] == pytest.approx(2.724678)
+        assert sess._calls_named("place_order")[1]["qty"] == "0.099"
+
+    def test_idempotent_exchange_responses_do_not_emit_false_errors(self, conn):
+        from live import swing
+
+        class IdempotentSession(FakeSession):
+            def set_leverage(self, **kw):
+                self._record("set_leverage", kw)
+                return {"retCode": 110043, "retMsg": "leverage not modified"}
+
+            def cancel_order(self, **kw):
+                self._record("cancel_order", kw)
+                return {"retCode": 110001, "retMsg": "order not exists"}
+
+        be = swing.ExchangeBackend(conn, IdempotentSession())
+        assert be._call("set_leverage") is not None
+        assert be._call("cancel_order") is not None
+        errors = conn.execute(
+            "SELECT COUNT(*) AS n FROM btc_events "
+            "WHERE mode='swing' AND level='error'"
+        ).fetchone()
+        assert errors["n"] == 0
+
     def test_check_stop_detects_position_gone(self, conn):
         from live import swing, tracking
         sess = FakeSession()
@@ -521,6 +568,38 @@ class TestExchangeBackend:
         assert price == pytest.approx(48_990.0)  # 실체결가 사용
         assert sess._calls_named("cancel_order")  # 잔여 SL 정리
         assert tracking.get_meta(conn, "swing_sl_order_id", "swing") == ""
+
+    def test_check_stop_captures_bybit_closed_pnl_settlement(self, conn):
+        from live import swing, tracking
+
+        sess = FakeSession()
+        sess.execution_rows = [{
+            "orderId": "oid-7", "closedSize": "1.299", "execQty": "1.299",
+            "execPrice": "79356.3", "execFee": "56.69610854",
+        }]
+        sess.closed_pnl_rows = [{
+            "orderId": "oid-7", "qty": "1.299",
+            "avgEntryPrice": "81453.3", "avgExitPrice": "79356.3",
+            "closedPnl": "-2853.89941874", "openFee": "58.19431019",
+            "closeFee": "56.69610854",
+        }]
+        tracking.set_meta(conn, "swing_sl_order_id", "oid-7", "swing")
+        tracking.set_meta(conn, "swing_exchange_leverage", 5.0, "swing")
+        be = swing.ExchangeBackend(conn, sess)
+
+        price = be.check_stop(_pos_row(
+            entry_price=81_453.3, qty=1.299, leverage=0.57,
+            entry_fee=58.19431019,
+        ), None)
+
+        assert price == pytest.approx(79_356.3)
+        assert be.last_close_snapshot["closed_pnl"] == pytest.approx(
+            -2_853.89941874
+        )
+        assert be.last_close_snapshot["funding_paid"] == pytest.approx(
+            15.00600001
+        )
+        assert be.last_close_snapshot["exchange_leverage"] == pytest.approx(5.0)
 
     def test_check_stop_holds_when_query_fails(self, conn, monkeypatch):
         from live import swing
@@ -547,6 +626,69 @@ class TestExchangeBackend:
                    if kw.get("reduceOnly")]
         assert reduces and reduces[0]["side"] == "Sell"
 
+    def test_exchange_exit_uses_confirmed_pnl_without_stale_equity_gain(
+            self, conn, monkeypatch):
+        from live import swing, tracking
+
+        sent = []
+        monkeypatch.setattr(
+            swing, "_notify",
+            lambda _main_mode, message: sent.append(message) or True,
+        )
+        sess = FakeSession()
+        sess.total_equity = 180_272.51154821
+        be = swing.ExchangeBackend(conn, sess)
+        be.last_close_snapshot = {
+            "qty": 1.299,
+            "entry_price": 81_453.3,
+            "exit_price": 79_356.3,
+            "closed_pnl": -2_853.89941874,
+            "open_fee": 58.19431019,
+            "close_fee": 56.69610854,
+            "funding_paid": 15.00600001,
+            "exchange_leverage": 5.0,
+        }
+        tracking.set_meta(
+            conn, "swing_entry_account_equity", 180_500.0, "swing"
+        )
+        pos = _pos_row(
+            entry_price=81_453.3, qty=1.2989409015, leverage=0.57129,
+            sl_price=79_356.3, entry_time="2026-09-03T04:54:00+00:00",
+            initial_risk=2_724.0, entry_fee=58.19431019,
+        )
+        tracking.save_position(conn, pos)
+        pos = tracking.load_open_positions(conn, "swing")[0]
+
+        equity_after, _ = swing._close_position(
+            conn, be, pos, 79_356.3,
+            fee_rate=0.00055 + 0.0002, reason="swing_sl",
+            bar_time_str="2026-09-03T21:24:00+00:00", equity=166_566.0082,
+            trade_counter=0, main_mode="demo",
+        )
+
+        trade = conn.execute(
+            "SELECT * FROM btc_trading_history WHERE mode='swing'"
+        ).fetchone()
+        assert trade["net_pnl"] == pytest.approx(-2_853.89941874)
+        assert trade["fee_paid"] == pytest.approx(114.89041873)
+        assert trade["funding_paid"] == pytest.approx(15.00600001)
+        assert trade["qty"] == pytest.approx(1.299)
+        assert equity_after == pytest.approx(180_272.51154821)
+        assert len(sent) == 1
+        message = sent[0]
+        assert "Bybit 확정 실현손익: -2,853.90달러" in message
+        assert "가격손익 -2,724.00달러" in message
+        assert "매매수수료 114.89달러" in message
+        assert "펀딩비 15.01달러" in message
+        assert "현재 교차계좌 평가액: 180,272.51달러" in message
+        assert "현재 스냅샷이며 이번 거래 수익 아님" in message
+        assert "거래소 레버리지 5배 · 전략 노출 0.6배" in message
+        assert "166,566.01 →" not in message
+        assert "+13,706" not in message
+        assert "증거금 기준" not in message
+        assert tracking.get_meta(
+            conn, "swing_entry_account_equity", "swing") is None
+
     def test_process_e2e_with_exchange_backend(self, conn, monkeypatch):
         from live import swing, tracking
         sent = []
@@ -564,6 +706,12 @@ class TestExchangeBackend:
         assert pos[0].entry_price == pytest.approx(50_020.0)
         # 지갑 equity 가 원장 시드의 진실.
         assert tracking.latest_equity(conn, "swing") == pytest.approx(10_000.0)
+        assert tracking.get_meta(
+            conn, "swing_entry_account_equity", "swing") == pytest.approx(
+                10_000.0
+            )
+        assert tracking.get_meta(
+            conn, "swing_exchange_leverage", "swing") == pytest.approx(5.0)
         assert len(sent) == 1
         assert "거래소 레버리지: 5배" in sent[0]
         assert "전략 노출배수: 계좌 평가액 대비" in sent[0]
