@@ -236,13 +236,15 @@ def test_vision_pipeline_off_unset():
 
 # ── Vision buy QA (S3/S3.5) ───────────────────────────────────────────────────
 
-def test_vision_buy_qa_shadow_on_plus_shadow_true():
+def test_vision_buy_qa_shadow_on_plus_shadow_true(monkeypatch):
+    monkeypatch.setattr(fs, "_vision_buy_quality_lifecycle_mode", lambda: "shadow")
     env = {"PRISM_FEATURE_VISION": "on", "PRISM_VISION_SHADOW": "true"}
     r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
     assert r["vision_buy_qa"]["state"] == "SHADOW"
 
 
-def test_vision_buy_qa_live_on_no_shadow():
+def test_vision_buy_qa_live_on_no_shadow(monkeypatch):
+    monkeypatch.setattr(fs, "_vision_buy_quality_lifecycle_mode", lambda: "live")
     env = {"PRISM_FEATURE_VISION": "on"}
     r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
     assert r["vision_buy_qa"]["state"] == "LIVE"
@@ -251,6 +253,16 @@ def test_vision_buy_qa_live_on_no_shadow():
 def test_vision_buy_qa_off_vision_unset():
     r = _results_by_id(fs.evaluate_all(env={}, crontab=CRON_EMPTY))
     assert r["vision_buy_qa"]["state"] == "OFF"
+
+
+def test_vision_buy_qa_off_when_lifecycle_expired(monkeypatch):
+    monkeypatch.setattr(fs, "_vision_buy_quality_lifecycle_mode", lambda: "off")
+    env = {"PRISM_FEATURE_VISION": "on", "PRISM_VISION_SHADOW": "true"}
+
+    r = _results_by_id(fs.evaluate_all(env=env, crontab=CRON_EMPTY))
+
+    assert r["vision_buy_qa"]["state"] == "OFF"
+    assert "lifecycle=off" in r["vision_buy_qa"]["evidence"]
 
 
 # ── Vision publish (S6) ───────────────────────────────────────────────────────
