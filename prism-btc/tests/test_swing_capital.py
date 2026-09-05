@@ -40,8 +40,8 @@ def test_reserves_pending_entries_not_reduce_orders(monkeypatch):
     sess = session(monkeypatch)
     sess.get_positions.return_value = response([{"size": "0.1", "markPrice": "80000"}])
     sess.get_open_orders.return_value = response([
-        {"reduceOnly": False, "leavesQty": "0.2", "price": "80000"},
-        {"reduceOnly": True},
+        {"orderId": "entry", "reduceOnly": False, "leavesQty": "0.2", "price": "80000"},
+        {"orderId": "stop", "reduceOnly": True},
     ])
     assert swing._main_capital_snapshot()["gross"] == 24000
 
