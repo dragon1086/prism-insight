@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from typing import Optional
@@ -237,6 +238,8 @@ class ExchangeBackend:
             })
             if "fee" in entry_exec:
                 self.last_open_snapshot["entry_fee"] = entry_exec["fee"]
+            if "execution_time_ms" in entry_exec:
+                self.last_open_snapshot["execution_time_ms"] = entry_exec["execution_time_ms"]
         # 네이티브 SL (stop-market reduce-only).
         close_side = "Sell" if side == "long" else "Buy"
         trigger_dir = 2 if side == "long" else 1
@@ -292,6 +295,9 @@ class ExchangeBackend:
         if qty <= 0:
             return {}
         snapshot = {"qty": qty, "price": weighted / qty}
+        exec_times = [_f(row.get("execTime")) for row in rows]
+        if exec_times and min(exec_times) > 0:
+            snapshot["execution_time_ms"] = max(exec_times)
         if fee_seen:
             snapshot["fee"] = fee
         return snapshot
@@ -309,6 +315,8 @@ class ExchangeBackend:
             }
             if "fee" in execution:
                 snapshot["close_fee"] = execution["fee"]
+            if "execution_time_ms" in execution:
+                snapshot["execution_time_ms"] = execution["execution_time_ms"]
 
         closed_row = None
         if order_id:
@@ -379,12 +387,8 @@ class ExchangeBackend:
         tracking.set_meta(self.conn, "swing_sl_order_id", "", MODE)
         return price
 
-    def close(self, pos: tracking.PositionRow, hint_price: float) -> float:
+    def close(self, pos: tracking.PositionRow, hint_price: float) -> Optional[float]:
         sl_oid = tracking.get_meta(self.conn, "swing_sl_order_id", MODE)
-        if sl_oid:
-            self._call("cancel_order", category=_CATEGORY, symbol=_SYMBOL,
-                       orderId=sl_oid)
-        tracking.set_meta(self.conn, "swing_sl_order_id", "", MODE)
         close_side = "Sell" if pos.side == "long" else "Buy"
         close_resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
@@ -392,7 +396,14 @@ class ExchangeBackend:
             reduceOnly=True, timeInForce="IOC", positionIdx=_POSITION_IDX,
         )
         close_oid = _order_id(close_resp)
+        if close_oid is None or self._position_size() != 0.0:
+            # ACK is not a fill. Preserve the local position and native stop.
+            return None
         self._capture_close_settlement(pos, close_oid)
+        if sl_oid:
+            self._call("cancel_order", category=_CATEGORY, symbol=_SYMBOL,
+                       orderId=sl_oid)
+        tracking.set_meta(self.conn, "swing_sl_order_id", "", MODE)
         return self.last_close_snapshot.get("exit_price") or hint_price
 
 
@@ -738,6 +749,8 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
     """
     sign = 1.0 if pos.side == "long" else -1.0
     settlement = getattr(backend, "last_close_snapshot", {}) or {}
+    if settlement.get("execution_time_ms"):
+        bar_time_str = str(pd.to_datetime(settlement["execution_time_ms"], unit="ms", utc=True))
     settlement_confirmed = (
         backend.name == "exchange" and "closed_pnl" in settlement
     )
@@ -789,6 +802,13 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
     equity_before = equity
     equity_after = backend.equity(fallback=equity_before + net)
     tracking.record_equity(conn, equity_after, MODE, bar_time_str)
+    if settlement_confirmed:
+        nav = tracking.get_meta(conn, "swing_strategy_nav_v1", MODE)
+        if nav is not None:
+            tracking.set_meta(conn, "swing_strategy_nav_v1", float(nav) + net, MODE)
+            tracking.log_event(conn, "strategy_nav",
+                               f"swing NAV={float(nav)+net:.4f} realized={net:.4f}",
+                               mode=MODE, ts=bar_time_str)
     tracking.log_event(conn, "trade",
                        f"swing close[{backend.name}] {pos.side} @ {exit_price:.1f} "
                        f"({reason}) net={net:+.2f} "
@@ -870,7 +890,16 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
         return None
 
     hint_price = float(bar["close"])
-    sizing_equity = backend.equity(fallback=equity)
+    # Separate execution wallets must not create separate risk budgets.
+    # Never fall back to the much larger swing wallet for exchange sizing.
+    sizing_equity = equity
+    if backend.name == "exchange":
+        main_snapshot = _main_capital_snapshot()
+        if main_snapshot is None:
+            _log_signal_safe(conn, bar_time_str, side,
+                             "swing_capital_unavailable", 0)
+            return None
+        sizing_equity = main_snapshot["equity"]
     sl = stop_price(side, hint_price, float(cur["atr14"]))
     # 라운드8 L 계층: BTC/ETH 상대강도 노출 배수 (fail-open=1.0, 신규 진입만)
     l_long, l_short, _l_reason = leadership_multipliers()
@@ -880,6 +909,13 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
         _log_signal_safe(conn, bar_time_str, side,
                          f"swing 기각: sizing ({sz.reject_reason})", 0)
         return None
+
+    if backend.name == "exchange":
+        # Reserve existing main exposure, including unfilled entry orders.
+        if main_snapshot["gross"] + sz.qty * hint_price > 8 * sizing_equity:
+            _log_signal_safe(conn, bar_time_str, side,
+                             "swing_combined_gross_cap", 0)
+            return None
 
     fill = backend.open(side, sz.qty, sl, hint_price)
     if fill is None:
@@ -893,6 +929,9 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
     if entry_fee is None:
         entry_fee = actual_qty * fill * TAKER_FEE
     actual_risk = abs(fill - sl) * actual_qty
+    execution_time = bar_time_str
+    if execution.get("execution_time_ms"):
+        execution_time = str(pd.to_datetime(execution["execution_time_ms"], unit="ms", utc=True))
     pos = tracking.PositionRow(
         side=side,
         entry_price=fill,
@@ -901,7 +940,7 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
         sl_price=sl,
         tp1_price=0.0, tp2_price=0.0, tp3_price=0.0,
         liq_price=0.0,
-        entry_time=bar_time_str,
+        entry_time=execution_time,
         tranche_index=0,
         entry_bar_idx=bar_index_for(int(pd.Timestamp(bar_time_str).value) // 1_000_000),
         initial_risk=actual_risk,
@@ -918,7 +957,14 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
     if backend.name == "exchange":
         # 청산 시 현재 교차계좌 값과 오래된 원장값을 빼지 않도록 진입 시점의
         # 분모만 별도 저장한다. 거래 손익 자체는 closedPnl을 사용한다.
-        tracking.record_equity(conn, sizing_equity, MODE, bar_time_str)
+        broker_equity = backend.equity(fallback=equity)
+        tracking.record_equity(conn, broker_equity, MODE, bar_time_str)
+        tracking.set_meta(conn, "swing_entry_logical_capital", sizing_equity, MODE)
+        if tracking.get_meta(conn, "swing_strategy_nav_v1", MODE) is None:
+            # Prospective only: never splice oversized historical PnL into this NAV.
+            tracking.set_meta(conn, "swing_strategy_nav_v1", sizing_equity, MODE)
+            tracking.log_event(conn, "strategy_nav_seed",
+                               f"prospective swing NAV seeded={sizing_equity:.4f}", mode=MODE)
         tracking.set_meta(
             conn, "swing_entry_account_equity", sizing_equity, MODE
         )
@@ -951,12 +997,53 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
     return pos
 
 
+def _main_capital_snapshot() -> dict[str, float] | None:
+    """Fresh, read-only main demo capital. Any incomplete response blocks entry."""
+    try:
+        from live.demo import _make_session
+        sess, _ = _make_session()
+        if sess is None:
+            return None
+        replies = [
+            sess.get_wallet_balance(accountType="UNIFIED"),
+            sess.get_positions(category=_CATEGORY, symbol=_SYMBOL),
+            sess.get_open_orders(category=_CATEGORY, symbol=_SYMBOL, limit=50),
+        ]
+        if any(not isinstance(r, dict) or r.get("retCode") != 0 for r in replies):
+            return None
+        wallets = _result_list(replies[0])
+        if not wallets:
+            return None
+        equity = float(wallets[0]["totalEquity"])
+        if not math.isfinite(equity) or equity <= 0:
+            return None
+        gross = 0.0
+        for row in _result_list(replies[1]):
+            qty = float(row["size"])
+            if qty > 0:
+                gross += qty * float(row["markPrice"])
+        if replies[2].get("result", {}).get("nextPageCursor"):
+            return None
+        for row in _result_list(replies[2]):
+            if row.get("reduceOnly") is not True:
+                qty, price = float(row["leavesQty"]), float(row["price"])
+                if qty < 0 or price <= 0:
+                    return None
+                gross += qty * price
+        if not math.isfinite(gross) or gross < 0:
+            return None
+        return {"equity": equity, "gross": gross}
+    except Exception as exc:  # No trading on stale/missing capital data.
+        log.warning("swing main capital unavailable: %s", type(exc).__name__)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # 핵심 진입점 — runner.tick 이 SWING_RUN_MODES 틱마다 호출.
 # ---------------------------------------------------------------------------
 
 def process(root_conn, tf_data: dict, main_mode: str = "shadow",
-            backend=None) -> dict:
+            backend=None, decision_time=None, decision_price=None) -> dict:
     """새 확정 30m 봉들을 스윙 레인 관점에서 처리. {"events": n} 반환.
 
     자체 메타 커서(mode='swing' 의 last_processed_30m_ns / last_confirmed_4h_ns)
@@ -973,6 +1060,19 @@ def process(root_conn, tf_data: dict, main_mode: str = "shadow",
     conn = root_conn
     if backend is None:
         backend = _make_backend(conn, main_mode)
+    if backend.name != "exchange":
+        decision_time = None  # Preserve virtual/shadow candle replay semantics.
+    if backend.name == "exchange" and decision_time is not None:
+        # Exchange stops are native; no historical OHLC may drive a new order.
+        # Confirmed 4h signals are evaluated at the current 10m tick instead
+        # of waiting for the next completed 30m candle.
+        price = float(decision_price or 0)
+        if not math.isfinite(price) or price <= 0:
+            return result
+        bars_30m = pd.DataFrame(
+            {"open": [price], "high": [price], "low": [price], "close": [price]},
+            index=pd.DatetimeIndex([decision_time]),
+        )
 
     equity = tracking.latest_equity(conn, MODE)
     if equity is None:
@@ -1049,6 +1149,12 @@ def process(root_conn, tf_data: dict, main_mode: str = "shadow",
                 # 가상 백엔드는 전달받은 원장 equity를 그대로 사용한다.
                 equity_before_close = backend.equity(fallback=equity)
                 fill = backend.close(pos, float(bar["close"]))
+                if fill is None:
+                    last_4h_ns = tracking.get_meta(conn, "last_confirmed_4h_ns", MODE)
+                    tracking.log_event(conn, "close_unconfirmed",
+                                       "swing close not confirmed; keep position and stop",
+                                       mode=MODE, level="warning")
+                    continue
                 equity, trade_counter = _close_position(
                     conn, backend, pos, fill, TAKER_FEE,
                     "swing_ma35_exit", bar_time_str, equity_before_close, trade_counter,
@@ -1056,6 +1162,11 @@ def process(root_conn, tf_data: dict, main_mode: str = "shadow",
                 pos = None
                 result["events"] += 1
         else:
+            if decision_time is not None:
+                age = pd.Timestamp(decision_time) - (s4.index[-1] + pd.Timedelta(hours=4))
+                if age > pd.Timedelta(minutes=15):
+                    _log_signal_safe(conn, bar_time_str, "none", "swing_stale_4h_entry", 0)
+                    continue
             s1 = _get_tf_slice(tf_data, bar_time, "1d")
             pos = _try_entry(conn, backend, bar, bar_time_str, s4, s1,
                              equity, main_mode)
