@@ -55,6 +55,7 @@ from core.actions import (
 )
 
 from live import decision_capture, tracking
+from live.exchange_snapshot import read_complete
 
 # shadow 와 동일 위험/쿨다운/게이트 상수를 그대로 재사용 (바이트 불변 — import 만).
 from live.shadow import (
@@ -665,7 +666,7 @@ class DemoAdapter:
                 tracking.record_equity(self.conn, equity, self.mode, bar_time_str)
 
         # --- 포지션 (단일 BTCUSDT) ---
-        pr = self._call("get_positions", category=_CATEGORY, symbol=_SYMBOL)
+        pr = read_complete(self._call, "get_positions", category=_CATEGORY, symbol=_SYMBOL)
         if (not isinstance(pr, dict)
                 or not isinstance(pr.get("result"), dict)
                 or not isinstance(pr["result"].get("list"), list)
@@ -696,7 +697,7 @@ class DemoAdapter:
             break  # 단방향·단일 심볼 → 첫 행만.
 
         # --- 미체결 주문 ---
-        oo = self._call("get_open_orders", category=_CATEGORY, symbol=_SYMBOL)
+        oo = read_complete(self._call, "get_open_orders", category=_CATEGORY, symbol=_SYMBOL)
         if (not isinstance(oo, dict)
                 or not isinstance(oo.get("result"), dict)
                 or not isinstance(oo["result"].get("list"), list)
