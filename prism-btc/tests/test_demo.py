@@ -205,6 +205,20 @@ def _patch_session(monkeypatch, fake):
     monkeypatch.setattr(demo, "_make_session", lambda: (fake, None))
 
 
+def _fill_market_reductions(monkeypatch, fake):
+    """Explicit exchange execution evidence, not an ACK-as-fill default."""
+    original = fake.place_order
+    def submit(**kw):
+        response = original(**kw)
+        if kw.get("orderType") == "Market" and kw.get("timeInForce") == "IOC":
+            oid = response["result"]["orderId"]
+            fake._executions.append({"orderId": oid, "orderLinkId": kw["orderLinkId"],
+                "execId": oid + "-fill", "execType": "Trade", "symbol": "BTCUSDT",
+                "side": kw["side"], "execQty": kw["qty"]})
+        return response
+    monkeypatch.setattr(fake, "place_order", submit)
+
+
 def _ex_position(side="Buy", size="0.030", avg="100.0", lev="10", liq="80.0"):
     """Bybit get_positions 형식 포지션 행."""
     return {"side": side, "size": size, "avgPrice": avg,
@@ -266,6 +280,23 @@ class TestKeylessSkip:
 
 
 class TestProtectionPass:
+    @pytest.mark.parametrize("failed_method", ["get_positions", "get_open_orders"])
+    def test_failed_read_preserves_position_and_protection(self, monkeypatch, failed_method):
+        fake = FakeExchange(position=_ex_position(side="Buy", size="0.030", avg="100.0", lev="10", liq="80.0"))
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_open_position(adapter, conn, side="long", entry=100., qty=.03,
+                            sl=90., tp1=110., liq=80.)
+        adapter._set_meta("sl_order_id", "existing-protection")
+        monkeypatch.setattr(fake, failed_method,
+                            lambda **kw: {"retCode": 10001, "result": {}})
+        adapter.process_protection_bar(_BASE_TS, _bar(close=100.))
+        assert len(tracking.load_open_positions(conn, "demo")) == 1
+        assert adapter._get_meta("sl_order_id") == "existing-protection"
+        assert not fake.calls_to("cancel_order")
+        assert not fake.calls_to("place_order")
+
     def test_10m_repairs_missing_native_stop(self, monkeypatch):
         fake = FakeExchange(
             position=_ex_position(side="Buy", size="0.030", avg="100.0", lev="10", liq="80.0")
@@ -438,6 +469,85 @@ class TestEntryFillAttachesSlTp:
 # ===========================================================================
 
 class TestExitReduceOnly:
+    @pytest.mark.parametrize("force", [False, True])
+    def test_pending_fill_reconciles_once_after_restart(self, monkeypatch, force):
+        fake = FakeExchange(position=_ex_position())
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_open_position(adapter, conn, sl=70. if force else 95.)
+        adapter._set_meta("sl_order_id", "native-stop")
+        adapter.process_bar(_BASE_TS, _bar(81., 100., 80.5) if force
+                            else _bar(94., 96., 94.), False, None)
+        pending = adapter._get_meta("pending_reduce")
+        assert pending is not None
+        # Duplicate partial executions must not masquerade as full fill.
+        row = {"orderId": pending["order_id"], "execId": "one", "execType": "Trade",
+               "symbol": "BTCUSDT", "side": "Sell", "execQty": str(pending["qty"] / 2)}
+        fake._executions = [row, dict(row)]
+        runner = _make_adapter(conn, fake)
+        assert runner._resume_reduce()
+        assert tracking.load_open_positions(conn, "demo")[0].qty == .03
+        fake._executions.append({**row, "execId": "two"})
+        assert runner._resume_reduce()
+        assert not runner._resume_reduce()
+        positions = tracking.load_open_positions(conn, "demo")
+        if force:
+            assert positions[0].qty == pytest.approx(.03 - pending["qty"])
+            assert positions[0].had_forced_reduce
+        else:
+            assert positions == []
+        assert adapter._get_meta("sl_order_id") == "native-stop"
+        assert len(fake.placed_orders) == 1
+
+    @pytest.mark.parametrize("outcome", ["reject", "ack", "partial", "unknown"])
+    def test_unconfirmed_reduce_preserves_ledger_stop_and_blocks_restart(self, monkeypatch, outcome):
+        fake = FakeExchange(position=_ex_position(), open_orders=[{
+            "orderId": "native-stop", "reduceOnly": True, "triggerPrice": "95"}])
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_open_position(adapter, conn, sl=95.)
+        adapter._set_meta("sl_order_id", "native-stop")
+        original = fake.place_order
+        def submit(**kw):
+            if outcome == "reject":
+                fake.calls.append(("place_order", kw))
+                return {"retCode": 10001, "result": {}}
+            if outcome == "unknown":
+                fake.calls.append(("place_order", kw))
+                raise RuntimeError("lost ACK")
+            result = original(**kw)
+            if outcome == "partial":
+                fake._executions = [{"orderId": result["result"]["orderId"],
+                    "execId": "partial", "execQty": "0.01", "side": "Sell",
+                    "symbol": "BTCUSDT", "execType": "Trade"}]
+            return result
+        monkeypatch.setattr(fake, "place_order", submit)
+        for runner in (adapter, _make_adapter(conn, fake)):
+            runner.process_bar(_BASE_TS, _bar(94., 96., 94.), False, None)
+            runner.process_protection_bar(_BASE_TS, _bar(94., 96., 94.))
+        assert sum(m == "place_order" for m, _ in fake.calls) == 1
+        assert tracking.load_open_positions(conn, "demo")[0].qty == .03
+        assert adapter._get_meta("sl_order_id") == "native-stop"
+        assert adapter._get_meta("pending_reduce") is not None
+        assert not any(m == "cancel_order" for m, _ in fake.calls)
+
+    def test_pending_reduction_does_not_block_missing_stop_repair(self, monkeypatch):
+        fake = FakeExchange(position=_ex_position())
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_open_position(adapter, conn, sl=95.)
+        adapter.process_bar(_BASE_TS, _bar(94., 96., 94.), False, None)
+        adapter.process_protection_bar(_BASE_TS, _bar(94., 96., 94.))
+        markets = [o for o in fake.placed_orders if o.get("timeInForce") == "IOC"]
+        stops = [o for o in fake.placed_orders if o.get("triggerPrice")]
+        assert len(markets) == 1
+        assert len(stops) == 1
+        assert float(stops[0]["qty"]) == .03
+        assert tracking.load_open_positions(conn, "demo")[0].qty == .03
+
     def test_sl_cross_emits_market_reduce_only_ioc(self, monkeypatch):
         # 거래소 포지션이 존재하고, 봉 저가가 SL 을 관통 → ClosePosition → 시장가 reduce.
         fake = FakeExchange(
@@ -447,6 +557,7 @@ class TestExitReduceOnly:
             open_orders=[],
         )
         _patch_session(monkeypatch, fake)
+        _fill_market_reductions(monkeypatch, fake)
         conn = _conn()
         adapter = _make_adapter(conn, fake)
         # pending 없음 + 로컬 포지션 존재 → exits 평가 대상.
@@ -911,6 +1022,7 @@ class TestPyramidExitAllTranches:
             open_orders=[],
         )
         _patch_session(monkeypatch, fake)
+        _fill_market_reductions(monkeypatch, fake)
         conn = _conn()
         adapter = _make_adapter(conn, fake)
         for ti in range(3):
