@@ -297,7 +297,16 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
         from engine.config import SWING_RUN_MODES
         if mode in SWING_RUN_MODES:
             from live import swing as swing_lane
-            sres = swing_lane.process(root_conn, tf_data, main_mode=mode)
+            decision_time = pd.Timestamp.now(tz="UTC")
+            decision_price = None
+            if not protection_bars.empty:
+                age = decision_time - protection_bars.index[-1]
+                if pd.Timedelta(0) <= age <= pd.Timedelta(minutes=15):
+                    decision_price = float(protection_bars.iloc[-1]["close"])
+            sres = swing_lane.process(
+                root_conn, tf_data, main_mode=mode,
+                decision_time=decision_time, decision_price=decision_price,
+            )
             if sres.get("events"):
                 result["swing"] = sres
     except Exception as exc:  # noqa: BLE001 — 스윙 레인 실패는 메인과 무관

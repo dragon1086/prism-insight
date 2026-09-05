@@ -491,6 +491,40 @@ def _pos_row(**over):
 
 
 class TestExchangeBackend:
+    def test_unconfirmed_close_preserves_native_stop(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.place_order = lambda **kw: {"retCode": 0, "result": {"orderId": "pending"}}
+        sess.position_size = .1
+        tracking.set_meta(conn, "swing_sl_order_id", "protected", "swing")
+        assert swing.ExchangeBackend(conn, sess).close(_pos_row(), 50000.) is None
+        assert tracking.get_meta(conn, "swing_sl_order_id", "swing") == "protected"
+        assert not sess._calls_named("cancel_order")
+
+    def test_fast_boundary_sizes_from_main_not_swing_wallet(self, conn, monkeypatch):
+        from live import swing, tracking
+        monkeypatch.setattr(swing, "_notify", lambda *_: True)
+        monkeypatch.setattr(swing, "_main_capital_snapshot",
+                            lambda: {"equity": 10_000., "gross": 0.})
+        sess = FakeSession()
+        sess.total_equity = 180_000.
+        sess.avg_price = 50_000.
+        data = _make_tf_data()
+        data["30m"] = data["30m"].iloc[:1]  # 16:00 candle not yet completed
+        result = swing.process(conn, data, main_mode="demo",
+                               backend=swing.ExchangeBackend(conn, sess),
+                               decision_time=_dt("2026-01-07 16:02"),
+                               decision_price=50_000.)
+        assert result["events"] == 1
+        pos = tracking.load_open_positions(conn, "swing")[0]
+        assert pos.qty == pytest.approx(.15)
+        assert tracking.latest_equity(conn, "swing") == 180_000.
+        assert tracking.get_meta(conn, "swing_strategy_nav_v1", "swing") == 10_000.
+        assert swing.process(conn, data, main_mode="demo",
+                             backend=swing.ExchangeBackend(conn, sess),
+                             decision_time=_dt("2026-01-07 16:12"),
+                             decision_price=50_000.)["events"] == 0
+
     def test_open_places_market_then_native_sl(self, conn):
         from live import swing, tracking
         sess = FakeSession()
@@ -691,6 +725,8 @@ class TestExchangeBackend:
 
     def test_process_e2e_with_exchange_backend(self, conn, monkeypatch):
         from live import swing, tracking
+        monkeypatch.setattr(swing, "_main_capital_snapshot",
+                            lambda: {"equity": 10_000.0, "gross": 0.0})
         sent = []
         monkeypatch.setattr(
             swing, "_notify",
