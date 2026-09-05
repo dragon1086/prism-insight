@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
+import logging
 
 from live.exchange_snapshot import read_complete
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -118,8 +121,10 @@ def reconcile_stop(call, *, side: str, qty: float, trigger: float,
     response = None
     try:
         response = call(method, category="linear", symbol=symbol, **params)
-    except Exception:
-        pass  # lost ACK: only subsequent exchange state can settle the request
+    except Exception as exc:
+        # Only subsequent exchange state can settle a lost ACK. Do not log
+        # exception payloads, which can contain request/account details.
+        log.warning("Protection submission uncertain (%s); checking exchange state", type(exc).__name__)
     acknowledged = isinstance(response, dict) and response.get("retCode") == 0
     result = response.get("result") if acknowledged else None
     oid = (result.get("orderId") if isinstance(result, dict) else None) or (owned["orderId"] if owned else owned_order_id)
