@@ -125,6 +125,8 @@ class FakeExchange:
         self._order_seq += 1
         oid = f"oid-{self._order_seq}"
         self.placed_orders.append(kwargs)
+        if kwargs.get("triggerPrice"):
+            self._open_orders.append({**kwargs, "orderId": oid, "orderStatus": "Untriggered"})
         return self._ok({"orderId": oid})
 
     def cancel_order(self, **kwargs):
@@ -137,6 +139,9 @@ class FakeExchange:
         bad = self._record("amend_order", kwargs)
         if bad is not None:
             return bad
+        for order in self._open_orders:
+            if order["orderId"] == kwargs.get("orderId"):
+                order.update({key: kwargs[key] for key in ("qty", "triggerPrice") if key in kwargs})
         return self._ok({"orderId": kwargs.get("orderId", "")})
 
     def set_leverage(self, **kwargs):
@@ -469,6 +474,186 @@ class TestEntryFillAttachesSlTp:
 # ===========================================================================
 
 class TestExitReduceOnly:
+    def test_sufficient_unowned_coverage_never_grants_modification_rights(self, monkeypatch):
+        native = {"orderId": "manual", "symbol": "BTCUSDT", "positionIdx": 0,
+                  "side": "Sell", "orderType": "Market", "reduceOnly": True,
+                  "qty": "0.030", "triggerPrice": "90.0", "triggerDirection": 2,
+                  "triggerBy": "LastPrice", "orderStatus": "Untriggered"}
+        fake = FakeExchange(open_orders=[native])
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        assert adapter._ensure_stop("long", .03, 90.).confirmed
+        assert adapter._get_meta("sl_order_id") is None
+        assert adapter._get_meta("stop_reconcile_status")["confirmed"]
+        assert not adapter._ensure_stop("long", .04, 92.).confirmed
+        assert adapter._get_meta("sl_order_id") is None
+        assert not fake.calls_to("amend_order")
+        assert not fake.calls_to("cancel_order")
+
+    @pytest.mark.parametrize("fault", [None, "legacy_recent", "active", "partial", "old", "history_failed", "execution_failed", "wrong_side", "failed_second_page", "wrong_qty", "wrong_reduce_only"])
+    def test_terminal_zero_entry_reconciliation(self, monkeypatch, fault):
+        fake = FakeExchange()
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_pending(adapter, _bar_idx_for(_BASE_TS) - 100)
+        pending = adapter._get_meta("pending_order")
+        pending.update(cancel_requested=True, submitted_at_ms=demo.time.time_ns() // 1_000_000)
+        if fault == "old":
+            pending["submitted_at_ms"] -= 25 * 3600 * 1000
+        if fault == "legacy_recent":
+            del pending["submitted_at_ms"]
+        adapter._set_meta("pending_order", pending)
+        order = {"orderId": "entry-oid", "symbol": "BTCUSDT", "side": "Buy",
+                 "qty": ".030", "reduceOnly": False, "cumExecQty": "0", "orderStatus": "Cancelled"}
+        if fault == "active":
+            order["orderStatus"] = "New"
+        if fault == "wrong_side":
+            order["side"] = "Sell"
+        if fault == "legacy_recent":
+            order["createdTime"] = str(demo.time.time_ns() // 1_000_000)
+        if fault == "wrong_qty":
+            order["qty"] = ".04"
+        if fault == "wrong_reduce_only":
+            order["reduceOnly"] = True
+        history = {"retCode": 0, "result": {"list": [order]}}
+        if fault == "history_failed":
+            history = None
+        monkeypatch.setattr(fake, "get_order_history", lambda **kw: history, raising=False)
+        if fault == "partial":
+            fake._executions = [{"orderId": "entry-oid", "execQty": ".001"}]
+        if fault == "execution_failed":
+            monkeypatch.setattr(fake, "get_executions", lambda **kw: None)
+        if fault == "failed_second_page":
+            monkeypatch.setattr(fake, "get_executions", lambda **kw:
+                None if kw.get("cursor") else {"retCode": 0, "result": {
+                    "list": [], "nextPageCursor": "more"}})
+        adapter.process_bar(_BASE_TS, _bar(100.), False, None)
+        assert (adapter._get_meta("pending_order") is None) == (fault in (None, "legacy_recent"))
+        assert tracking.load_open_positions(conn, "demo") == []
+        assert not fake.placed_orders
+
+    def test_unowned_insufficient_stop_never_adopted_for_later_amend(self, monkeypatch):
+        native = {"orderId": "unowned", "symbol": "BTCUSDT", "positionIdx": 0,
+                  "side": "Sell", "orderType": "Market", "reduceOnly": True,
+                  "qty": "0.010", "triggerPrice": "90.0", "triggerDirection": 2,
+                  "triggerBy": "LastPrice", "orderStatus": "Untriggered"}
+        fake = FakeExchange(open_orders=[native])
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        for _ in range(2):
+            result = adapter._ensure_stop("long", .03, 90.)
+            assert result.status == "UNOWNED_STOP_INSUFFICIENT"
+            assert adapter._get_meta("sl_order_id") is None
+        assert not fake.calls_to("amend_order")
+        assert not fake.calls_to("cancel_order")
+        assert not fake.calls_to("place_order")
+
+    def test_unconfirmed_partial_protection_cancels_remainder_but_keeps_pending(self, monkeypatch):
+        fake = FakeExchange(position=_ex_position(size=".01"),
+                            open_orders=[{"orderId": "entry-oid"}])
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_pending(adapter, _bar_idx_for(_BASE_TS))
+        monkeypatch.setattr(fake, "place_order", lambda **kw: {
+            "retCode": 0, "result": {"orderId": "unconfirmed-stop"}})
+        for _ in range(2):
+            adapter.process_protection_bar(_BASE_TS, _bar(100.))
+        assert not adapter._get_meta("stop_reconcile_status")["confirmed"]
+        assert adapter._get_meta("pending_order")["cancel_requested"]
+        assert len(fake.calls_to("cancel_order")) == 1
+        assert tracking.load_open_positions(conn, "demo") == []
+
+    def test_unconfirmed_protection_blocks_additional_entry_evaluation(self, monkeypatch):
+        fake = FakeExchange(position=_ex_position())
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_open_position(adapter, conn)
+        monkeypatch.setattr(fake, "place_order", lambda **kw: {
+            "retCode": 0, "result": {"orderId": "unconfirmed-stop"}})
+        evaluated = []
+        monkeypatch.setattr(demo, "_build_snapshot_at", lambda *args: evaluated.append(True))
+        adapter.process_bar(_BASE_TS, _bar(100.), True, 100)
+        assert not adapter._get_meta("stop_reconcile_status")["confirmed"]
+        assert evaluated == []
+        assert tracking.load_open_positions(conn, "demo")[0].qty == .03
+
+    @pytest.mark.parametrize("increased", [False, True])
+    def test_addon_protection_waits_for_observed_size_increase(self, monkeypatch, increased):
+        native = {"orderId": "old-sl", "symbol": "BTCUSDT", "positionIdx": 0,
+                  "side": "Sell", "orderType": "Market", "reduceOnly": True,
+                  "qty": "0.030", "triggerPrice": "90.0", "triggerDirection": 2,
+                  "triggerBy": "LastPrice", "orderStatus": "Untriggered"}
+        fake = FakeExchange(position=_ex_position(size=".04" if increased else ".03"),
+                            open_orders=[native, {"orderId": "entry-oid"}])
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_open_position(adapter, conn, sl=90.)
+        _seed_pending(adapter, _bar_idx_for(_BASE_TS), sl=92.)
+        pending = adapter._get_meta("pending_order")
+        pending["tranche_index"] = 1
+        adapter._set_meta("pending_order", pending)
+        adapter._set_meta("sl_order_id", "old-sl")
+        adapter.process_protection_bar(_BASE_TS, _bar(100.))
+        amendments = fake.calls_to("amend_order")
+        assert len(amendments) == int(increased)
+        if increased:
+            assert amendments[0]["qty"] == "0.040"
+            assert amendments[0]["triggerPrice"] == "92.0"
+        assert adapter._get_meta("pending_order") is not None
+        assert tracking.load_open_positions(conn, "demo")[0].qty == .03
+
+    def test_unconfirmed_stop_creation_reuses_persisted_identity(self, monkeypatch):
+        fake = FakeExchange()
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        submitted = []
+        def place(**kw):
+            assert adapter._get_meta("stop_creation_link") == kw["orderLinkId"]
+            submitted.append(kw)
+            return {"retCode": 0, "result": {"orderId": "ack-stop"}}
+        monkeypatch.setattr(fake, "place_order", place)
+        assert not adapter._ensure_stop("long", .03, 90.).confirmed
+        restarted = _make_adapter(conn, fake)
+        assert not restarted._ensure_stop("long", .03, 90.).confirmed
+        assert submitted[0]["orderLinkId"] == submitted[1]["orderLinkId"]
+        assert adapter._get_meta("sl_order_id") == "ack-stop"
+
+    @pytest.mark.parametrize("tick", ["30m", "10m"])
+    def test_first_partial_entry_protected_while_remainder_open(self, monkeypatch, tick):
+        fake = FakeExchange(position=_ex_position(size="0.010"),
+                            open_orders=[{"orderId": "entry-oid", "qty": ".03"}])
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_pending(adapter, _bar_idx_for(_BASE_TS), sl=90.)
+        if tick == "30m":
+            adapter.process_bar(_BASE_TS, _bar(100.), False, None)
+        else:
+            adapter.process_protection_bar(_BASE_TS, _bar(100.))
+        stops = [o for o in fake.placed_orders if o.get("triggerPrice")]
+        assert len(stops) == 1 and float(stops[0]["qty"]) == .01
+        assert adapter._get_meta("pending_order") is not None
+        assert tracking.load_open_positions(conn, "demo") == []
+        assert adapter._get_meta("stop_reconcile_status")["status"] == "CONFIRMED"
+
+    def test_entry_expiry_cancel_ack_does_not_release_pending(self, monkeypatch):
+        fake = FakeExchange(open_orders=[{"orderId": "entry-oid", "qty": ".03"}])
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_pending(adapter, _bar_idx_for(_BASE_TS) - 100)
+        for _ in range(2):
+            adapter.process_bar(_BASE_TS, _bar(100.), False, None)
+        assert adapter._get_meta("pending_order")["cancel_requested"]
+        assert sum(m == "cancel_order" for m, _ in fake.calls) == 1
+
     @pytest.mark.parametrize("fault", ["partial", "history_missing", "history_failed",
         "active", "wrong_side", "wrong_id", "missing_cumulative", "history_cursor",
         "execution_failed", "expired", "legacy"])
@@ -1019,7 +1204,10 @@ class TestPyramidSlTpRecalcOnFullSize:
         fake = FakeExchange(
             equity=10_000.0,
             position=_ex_position(side="Buy", size="0.050", avg="101.0"),
-            open_orders=[],
+            open_orders=[{"orderId": "old-sl", "symbol": "BTCUSDT", "positionIdx": 0,
+                "side": "Sell", "orderType": "Market", "reduceOnly": True,
+                "qty": "0.030", "triggerPrice": "90.0", "triggerDirection": 2,
+                "triggerBy": "LastPrice", "orderStatus": "Untriggered"}],
         )
         _patch_session(monkeypatch, fake)
         conn = _conn()
@@ -1035,18 +1223,17 @@ class TestPyramidSlTpRecalcOnFullSize:
         adapter.process_bar(_BASE_TS, _bar(close=101.0, high=102.0, low=100.0),
                             new_4h_confirmed=False, cur_4h_ns=None)
 
-        # 기존 SL/TP 가 취소됐다 (수량을 못 바꾸므로 취소 후 재발행).
+        # SL resizes in place without a protection gap; TP stays separate.
         cancelled = [kw.get("orderId") for kw in fake.calls_to("cancel_order")]
-        assert "old-sl" in cancelled
+        assert "old-sl" not in cancelled
         assert "old-tp" in cancelled
 
-        # 재발행된 SL(stop-market) = 통합 총수량(0.05) 기준.
-        sl = [o for o in fake.placed_orders
-              if o.get("orderType") == "Market" and o.get("triggerPrice")
-              and o.get("reduceOnly")]
-        assert len(sl) >= 1
-        assert sl[-1]["qty"] == f"{0.05:.3f}"          # 전체 수량.
-        assert sl[-1]["side"] == "Sell"                # long 보호 → Sell.
+        amended = fake.calls_to("amend_order")
+        assert len(amended) == 1
+        assert amended[0]["orderId"] == "old-sl"
+        assert amended[0]["qty"] == "0.050"
+        assert float(amended[0]["triggerPrice"]) == 92.
+        assert adapter._get_meta("stop_reconcile_status")["confirmed"]
 
         # 재발행된 TP1(reduce-limit) = 통합 총수량의 1/3.
         tp = [o for o in fake.placed_orders

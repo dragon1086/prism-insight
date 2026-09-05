@@ -56,6 +56,7 @@ from core.actions import (
 
 from live import decision_capture, tracking
 from live.exchange_snapshot import read_complete
+from live.protection import reconcile_stop
 
 # shadow 와 동일 위험/쿨다운/게이트 상수를 그대로 재사용 (바이트 불변 — import 만).
 from live.shadow import (
@@ -402,9 +403,11 @@ class DemoAdapter:
         rows = []
         cursors = set()
         cursor = None
+        identity = ({"orderLinkId": pending["link_id"]} if pending.get("link_id") else
+                    {"orderId": pending["order_id"]})
         for _ in range(100):
             response = self._call(method, category=_CATEGORY, symbol=_SYMBOL,
-                                  orderLinkId=pending["link_id"],
+                                  **identity,
                                   limit=100 if method == "get_executions" else 50,
                                   **({"cursor": cursor} if cursor else {}))
             result = response.get("result") if isinstance(response, dict) else None
@@ -420,6 +423,40 @@ class DemoAdapter:
                 return None
             cursors.add(cursor)
         return None
+
+    def _entry_terminal_zero(self, pending: dict) -> bool:
+        """Release canceled entries only on complete, correlated zero-fill proof."""
+        if not pending.get("order_id"):
+            return False
+        orders = self._reduction_pages("get_order_history", pending)
+        matches = [row for row in orders or [] if row.get("orderId") == pending["order_id"]]
+        if orders is None or not matches:
+            return False
+        now_ms = time.time_ns() // 1_000_000
+        for row in matches:
+            try:
+                # Existing intents can recover from a correlated exchange
+                # creation timestamp; absence is never interpreted as recent.
+                submitted = int(pending.get("submitted_at_ms") or
+                                int(pending.get("latency_ack_wall_ns") or 0) // 1_000_000 or
+                                row.get("createdTime") or 0)
+                age = now_ms - submitted
+                qty = float(row["qty"])
+                cumulative = float(row["cumExecQty"])
+                expected = float(_qstr(pending["sizing_qty"]))
+            except (KeyError, TypeError, ValueError):
+                return False
+            if (not 0 <= age < 24 * 3600 * 1000 or not math.isfinite(qty)
+                    or not math.isfinite(expected) or expected <= 0
+                    or abs(qty - expected) > 1e-9 or cumulative != 0
+                    or row.get("orderStatus") not in ("Cancelled", "Rejected")
+                    or row.get("symbol") != _SYMBOL or row.get("reduceOnly") is not False
+                    or row.get("side") != ("Buy" if pending["side"] == "long" else "Sell")):
+                return False
+        executions = self._reduction_pages("get_executions", pending)
+        # The endpoint is filtered by exact order ID. Any nonempty response,
+        # even malformed/unrelated content, cannot prove zero executions.
+        return executions == []
 
     @staticmethod
     def _reduction_matches(row: dict, pending: dict) -> bool:
@@ -548,6 +585,54 @@ class DemoAdapter:
         # Keep intent until the caller's ledger writes are durable. Recovery
         # is idempotent (absolute remaining quantity, never subtract twice).
         return self._reduce_confirmed(pending)
+
+    def _ensure_stop(self, side: str, qty: float, trigger: float):
+        """Durable identity + verified protection; never cancel a stop to resize it."""
+        link = self._get_meta("stop_creation_link", None)
+        if not link:
+            link = "stop-" + uuid.uuid4().hex[:28]
+            self._set_meta("stop_creation_link", link)
+        old_id = self._get_meta("sl_order_id", None)
+        result = reconcile_stop(self._call, side=side, qty=qty, trigger=trigger,
+                                owned_order_id=old_id, create_order_link_id=link)
+        if result.confirmed and result.owned:
+            self._set_meta("sl_order_id", result.order_id)
+            self._set_meta("stop_creation_link", None)
+        elif (not old_id and result.order_id and result.owned
+              and result.status in ("ACK_UNCONFIRMED", "SUBMISSION_UNKNOWN")):
+            self._set_meta("sl_order_id", result.order_id)
+        self._set_meta("stop_reconcile_status", {
+            "status": result.status, "confirmed": result.confirmed,
+            "owned": result.owned,
+            "desired_qty": qty, "desired_trigger": trigger,
+            "confirmed_qty": result.qty, "confirmed_trigger": result.trigger,
+        })
+        tracking.log_event(self.conn, "protection",
+            f"Stop reconciliation status={result.status} desired_qty={qty} desired_trigger={trigger}",
+            level="info" if result.confirmed else "warning", mode=self.mode)
+        return result
+
+    def _protect_pending_entry(self, pending, ex_pos, local_positions):
+        """Protect observed partial exposure, without claiming final entry fill."""
+        if not pending or not ex_pos or ex_pos["side"] != pending["side"]:
+            return False
+        previous_qty = sum(p.qty for p in local_positions if p.side == pending["side"])
+        if ex_pos["qty"] <= previous_qty + 1e-9:
+            return False
+        stops = [float(pending["sizing_sl_price"])] + [
+            p.sl_price for p in local_positions if p.side == pending["side"]]
+        target = max(stops) if pending["side"] == "long" else min(stops)
+        result = self._ensure_stop(pending["side"], ex_pos["qty"], target)
+        if not result.confirmed and not pending.get("cancel_requested"):
+            # The unfilled entry remainder can still increase exposure. Request
+            # cancellation, but retain its identity until terminal evidence.
+            pending["cancel_requested"] = True
+            self._set_meta("pending_order", pending)
+            self._cancel(pending.get("order_id"))
+            tracking.log_event(self.conn, "protection",
+                "Partial entry protection unconfirmed; remainder cancellation requested, risk increases blocked",
+                level="error", mode=self.mode)
+        return True
 
     def _amend_stop(self, order_id: str, trigger: float) -> None:
         """트레일 = 기존 stop 주문 triggerPrice amend."""
@@ -844,6 +929,9 @@ class DemoAdapter:
         # btc_positions(demo) 를 거래소 포지션으로 미러 (열린 포지션 단일 가정).
         local_positions = tracking.load_open_positions(conn, mode)
 
+        if self._protect_pending_entry(pending, ex_pos, local_positions):
+            sl_order_id = self._get_meta("sl_order_id", sl_order_id)
+
         # --- 2. pending 진입 주문 체결 여부 확인 (포지션 출현/증가 또는 만료) ---
         # 핵심: Bybit 데모는 같은 심볼을 단일 통합 포지션(평균단가·누적 size)으로 합산한다.
         # 따라서 피라미딩 트랜치 체결은 "거래소 position size 증가분"으로 감지하고, 트랜치
@@ -866,7 +954,15 @@ class DemoAdapter:
                     # size 증가분으로 체결 확인 (부동소수 여유 1e-9).
                     filled = (ex_pos["side"] == pending["side"]
                               and ex_pos["qty"] > prev_local_qty + 1e-9)
-            if filled:
+            if not still_open and pending.get("cancel_requested") and self._entry_terminal_zero(pending):
+                self._set_meta("last_entry_resolution", {
+                    "status": "TERMINAL_ZERO_FILL", "order_id": pend_oid,
+                })
+                pending = None
+                self._set_meta("pending_order", None)
+                tracking.log_event(conn, "expire", "entry terminal zero-fill confirmed; pending released",
+                                   mode=mode, ts=bar_time_str)
+            elif filled:
                 self._capture_fill_confirmation(pending)
                 side = ex_pos["side"]
                 total_qty = ex_pos["qty"]                 # 거래소 누적 총수량.
@@ -899,12 +995,9 @@ class DemoAdapter:
                 #    (피라미딩은 직전 트랜치가 수익 중일 때만 추가되므로 최신 SL 이 더 타이트.)
                 #  - TP1: 전체 총수량의 1/3 을 최신 트랜치 tp1 가격에 reduce-limit 으로 건다.
                 same_side_local = [p for p in local_positions if p.side == side]
-                if sl_order_id:
-                    self._amend_stop(sl_order_id, sl_p)
-                    # amend 는 수량을 못 바꾼다 → 취소 후 총수량으로 재발행.
-                    self._cancel(sl_order_id)
-                    sl_order_id = None
-                sl_order_id = self._place_stop_market(side, total_qty, sl_p)
+                stops = [p.sl_price for p in same_side_local]
+                self._ensure_stop(side, total_qty, max(stops) if side == "long" else min(stops))
+                sl_order_id = self._get_meta("sl_order_id", sl_order_id)
                 if tp_order_id:
                     self._cancel(tp_order_id)
                 tp_qty = total_qty / 3.0
@@ -925,10 +1018,12 @@ class DemoAdapter:
                     f"(n_tranche={len(same_side_local)})",
                     mode=mode, ts=bar_time_str)
             elif bars_elapsed >= ENTRY_ORDER_EXPIRY_BARS:
-                self._cancel(pend_oid)
-                pending = None
-                tracking.log_event(conn, "expire", "pending entry expired (cancel)",
-                                   mode=mode, ts=bar_time_str)
+                if not pending.get("cancel_requested"):
+                    pending["cancel_requested"] = True
+                    self._set_meta("pending_order", pending)
+                    self._cancel(pend_oid)
+                tracking.log_event(conn, "expire", "entry cancellation requested; terminal confirmation pending",
+                                   level="warning", mode=mode, ts=bar_time_str)
 
         # --- 3. 보유 포지션 exits 평가/집행 (core evaluate_exits, Action 순서 동일) ---
         # 섀도우는 트랜치별 PositionRow 마다 evaluate_exits 를 돌린다 → 데모도 동일.
@@ -1028,10 +1123,8 @@ class DemoAdapter:
                 # long: 가장 높은 SL 이 타이트, short: 가장 낮은 SL 이 타이트.
                 tightest = (max(stop_triggers) if side0 == "long"
                             else min(stop_triggers))
-                if sl_order_id:
-                    self._cancel(sl_order_id)
-                    sl_order_id = None
-                sl_order_id = self._place_stop_market(side0, remaining_qty, tightest)
+                self._ensure_stop(side0, remaining_qty, tightest)
+                sl_order_id = self._get_meta("sl_order_id", sl_order_id)
             local_positions = remaining
         elif ex_pos is None and local_positions:
             # 거래소엔 포지션 없는데 로컬에 남아있음 → 거래소 체결(SL/TP)로 닫힌 것.
@@ -1053,7 +1146,20 @@ class DemoAdapter:
         # 장부(btc_positions[demo])로 관리한다. current_tranche = 같은 방향 로컬
         # 트랜치 수 → 섀도우와 동일 (len(same_side)). 거래소엔 누적 size 만 맞춘다.
         has_position = ex_pos is not None
-        if pending is None:
+        if has_position and pending is None and local_positions:
+            stops = [p.sl_price for p in local_positions if p.side == ex_pos["side"]]
+            if stops:
+                self._ensure_stop(ex_pos["side"], ex_pos["qty"],
+                                  max(stops) if ex_pos["side"] == "long" else min(stops))
+                sl_order_id = self._get_meta("sl_order_id", sl_order_id)
+        protection_state = self._get_meta("stop_reconcile_status", {})
+        protection_verified = (not has_position or
+                               (bool(local_positions) and protection_state.get("confirmed") is True))
+        if has_position and not protection_verified:
+            tracking.log_event(conn, "protection",
+                "Exposure protection unconfirmed; new entries and additions blocked",
+                level="warning", mode=mode, ts=bar_time_str)
+        if pending is None and protection_verified:
             snapshot = _build_snapshot_at(self.tf_data, bar_time)
             if snapshot is not None:
                 sig = generate_signal(snapshot) if new_4h_confirmed else Signal(
@@ -1204,6 +1310,7 @@ class DemoAdapter:
                             )
                             pending = {
                                 "order_id": order_id,
+                                "submitted_at_ms": time.time_ns() // 1_000_000,
                                 "latency_order_ref": latency_capture.get("order_ref"),
                                 "latency_ack_wall_ns": latency_capture.get("ack_wall_ns"),
                                 "latency_ack_at": latency_capture.get("ack_at"),
@@ -1274,17 +1381,18 @@ class DemoAdapter:
                     stops = [p.sl_price for p in positions if p.side == position["side"]]
                     if stops:
                         stop = max(stops) if position["side"] == "long" else min(stops)
-                        oid = self._place_stop_market(position["side"], position["qty"], stop)
-                        if oid:
-                            self._set_meta("sl_order_id", oid)
+                        protected = self._ensure_stop(position["side"], position["qty"], stop).confirmed
                         tracking.log_event(self.conn, "protection",
-                            "Pending reduction: missing-stop repair submitted" if oid else
+                            "Pending reduction: missing-stop repair confirmed" if protected else
                             "Pending reduction: missing-stop repair failed; intervention required",
                             level="warning", mode=self.mode, ts=bar_time_str)
                 return
             ex_pos = snap["position"]
             local_positions = tracking.load_open_positions(self.conn, self.mode)
             sl_order_id = self._get_meta("sl_order_id", None)
+            pending_entry = self._get_meta("pending_order", None)
+            if self._protect_pending_entry(pending_entry, ex_pos, local_positions):
+                return
 
             # Exchange is authoritative.  Keep the local ledger from carrying
             # a ghost position during the interval between 10m and 30m ticks.
@@ -1354,16 +1462,8 @@ class DemoAdapter:
                     )
                 return
 
-            if not has_native_stop:
-                oid = self._place_stop_market(side, total_qty, structural_stop)
-                if oid:
-                    self._set_meta("sl_order_id", oid)
-                    tracking.log_event(
-                        self.conn, "protection",
-                        f"10m stop repaired {side} qty={total_qty:.6f} "
-                        f"trigger={structural_stop:.2f}",
-                        mode=self.mode, ts=bar_time_str,
-                    )
+            # Verify quantity/trigger, not merely the existence of any stop.
+            self._ensure_stop(side, total_qty, structural_stop)
         except Exception as exc:  # noqa: BLE001 — protection must never stop the daemon
             try:
                 tracking.log_event(
