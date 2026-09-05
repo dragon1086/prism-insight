@@ -22,7 +22,8 @@ def read_complete(call, method, *, max_pages=20, **params):
     template = None
     fields = (("side", "size", "avgPrice", "stopLoss", "takeProfit")
               if method == "get_positions" else
-              ("side", "qty", "leavesQty", "price", "triggerPrice", "reduceOnly", "orderStatus"))
+              ("symbol", "positionIdx", "side", "qty", "leavesQty", "price", "triggerPrice",
+               "reduceOnly", "orderStatus", "orderType", "triggerDirection", "triggerBy", "stopOrderType"))
     for _ in range(max_pages):
         try:
             response = call(method, **params, **({"cursor": cursor} if cursor else {}))
