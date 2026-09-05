@@ -26,6 +26,10 @@ def evaluate(evidence):
         value = evidence.get(name)
         if isinstance(value, bool) or not isinstance(value, (int,float)) or not math.isfinite(value):
             missing.append(name)
+    for name in ("oos_closed_trades", "forward_confirmed_trades", "positive_oos_folds", "total_oos_folds"):
+        value = evidence.get(name)
+        if name not in missing and (value < 0 or int(value) != value):
+            missing.append(name)
     if missing:
         return {"status": "INSUFFICIENT", "reasons": missing, "auto_activate": False}
     if evidence["oos_closed_trades"] < 60 or evidence["forward_confirmed_trades"] < 30:

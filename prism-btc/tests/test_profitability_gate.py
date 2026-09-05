@@ -24,3 +24,7 @@ def test_no_significant_improvement_does_not_pass():
 def test_complete_valid_evidence_only_invites_review_not_activation():
     result = evaluate(evidence())
     assert result == {"status": "REVIEW_READY", "reasons": [], "auto_activate": False}
+
+
+def test_fractional_trade_count_is_invalid_evidence():
+    assert evaluate(evidence() | {"forward_confirmed_trades": 30.5})["status"] == "INSUFFICIENT"
