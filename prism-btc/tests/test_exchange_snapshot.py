@@ -6,13 +6,14 @@ def response(rows, cursor=""):
 
 
 def test_real_flat_shape_with_repeated_terminal_position():
-    row={"symbol":"BTCUSDT","positionIdx":0,"side":"","size":"0","stopLoss":""}
+    row={"symbol":"BTCUSDT","positionIdx":0,"side":"","size":"0","stopLoss":"","avgPrice":"0"}
     calls=[]
     def call(method,**kw):
         calls.append(kw)
-        return response([row], "next" if not kw.get("cursor") else "")
+        return response([row] if not kw.get("cursor") else [{**row,"avgPrice":""}],
+                        "next" if not kw.get("cursor") else "")
     result=read_complete(call,"get_positions",symbol="BTCUSDT")
-    assert result["result"]["list"] == [row]
+    assert result["result"]["list"] == [{**row,"avgPrice":""}]
     assert len(calls) == 2
     assert calls[1]["cursor"] == "next"
 

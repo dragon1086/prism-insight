@@ -6,6 +6,13 @@ stable identical risk fields; contradictions, cycles and failures stay unknown.
 from __future__ import annotations
 
 
+def _flat(row):
+    try:
+        return float(row["size"]) == 0
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def read_complete(call, method, *, max_pages=20, **params):
     if method not in ("get_positions", "get_open_orders"):
         raise ValueError("unsupported snapshot method")
@@ -36,7 +43,8 @@ def read_complete(call, method, *, max_pages=20, **params):
                 key = row.get("orderId")
                 if not key:
                     return None
-            if key in rows and any(rows[key].get(f) != row.get(f) for f in fields):
+            both_flat = method == "get_positions" and key in rows and _flat(rows[key]) and _flat(row)
+            if key in rows and not both_flat and any(rows[key].get(f) != row.get(f) for f in fields):
                 return None
             rows[key] = row
         cursor = result.get("nextPageCursor")
