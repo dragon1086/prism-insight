@@ -48,6 +48,7 @@ from core.swing import (
 )
 from engine.config import SWING_ENABLED, SWING_INITIAL_EQUITY, SWING_MAX_LEVERAGE
 from live import tracking
+from live.exchange_snapshot import read_complete
 from live.demo import _f, _order_id, _pstr, _qstr, _result_list
 from live.shadow import bar_index_for
 
@@ -201,7 +202,7 @@ class ExchangeBackend:
 
     def _position_size(self) -> Optional[float]:
         """현재 스윙 계정 BTCUSDT 포지션 크기. 조회 실패 시 None (판단 유보)."""
-        pr = self._call("get_positions", category=_CATEGORY, symbol=_SYMBOL)
+        pr = read_complete(self._call, "get_positions", category=_CATEGORY, symbol=_SYMBOL)
         if (not isinstance(pr, dict) or not isinstance(pr.get("result"), dict)
                 or not isinstance(pr["result"].get("list"), list)
                 or pr["result"].get("nextPageCursor")
@@ -236,7 +237,7 @@ class ExchangeBackend:
         # 체결가 확인 (최대 3회 폴링, 실패 시 힌트가로 기록).
         fill = hint_price
         for _ in range(3):
-            pr = self._call("get_positions", category=_CATEGORY, symbol=_SYMBOL)
+            pr = read_complete(self._call, "get_positions", category=_CATEGORY, symbol=_SYMBOL)
             for p in _result_list(pr or {}):
                 if _f(p.get("size")) > 0:
                     fill = _f(p.get("avgPrice"), hint_price)
@@ -479,7 +480,7 @@ class ExchangeBackend:
         adjusts its quantity with the position; ACK alone is not confirmation.
         Historical bar extremes must never authorize a current market close.
         """
-        snapshot = self._call("get_positions", category=_CATEGORY, symbol=_SYMBOL)
+        snapshot = read_complete(self._call, "get_positions", category=_CATEGORY, symbol=_SYMBOL)
         rows = _result_list(snapshot or {})
         if (not isinstance(snapshot, dict) or not isinstance(snapshot.get("result"), dict)
                 or snapshot["result"].get("nextPageCursor")
@@ -492,7 +493,7 @@ class ExchangeBackend:
         trigger = float(_pstr(pos.sl_price))
         if native > 0:
             trigger = max(native, trigger) if pos.side == "long" else min(native, trigger)
-        orders = self._call("get_open_orders", category=_CATEGORY, symbol=_SYMBOL, limit=50)
+        orders = read_complete(self._call, "get_open_orders", category=_CATEGORY, symbol=_SYMBOL, limit=50)
         if (not isinstance(orders, dict) or not isinstance(orders.get("result"), dict)
                 or not isinstance(orders["result"].get("list"), list)
                 or orders["result"].get("nextPageCursor")):
@@ -538,7 +539,7 @@ class ExchangeBackend:
         confirmed = False
         if reply is not None:
             # Position stopLoss alone does not identify the resulting Full SL.
-            check = self._call("get_open_orders", category=_CATEGORY, symbol=_SYMBOL, limit=50)
+            check = read_complete(self._call, "get_open_orders", category=_CATEGORY, symbol=_SYMBOL, limit=50)
             if (isinstance(check, dict) and isinstance(check.get("result"), dict)
                     and not check["result"].get("nextPageCursor")):
                 for order in _result_list(check):
@@ -1225,8 +1226,10 @@ def _main_capital_snapshot() -> dict[str, float] | None:
             return None
         replies = [
             sess.get_wallet_balance(accountType="UNIFIED"),
-            sess.get_positions(category=_CATEGORY, symbol=_SYMBOL),
-            sess.get_open_orders(category=_CATEGORY, symbol=_SYMBOL, limit=50),
+            read_complete(lambda method, **kw: getattr(sess, method)(**kw),
+                          "get_positions", category=_CATEGORY, symbol=_SYMBOL),
+            read_complete(lambda method, **kw: getattr(sess, method)(**kw),
+                          "get_open_orders", category=_CATEGORY, symbol=_SYMBOL, limit=50),
         ]
         if any(not isinstance(r, dict) or r.get("retCode") != 0 for r in replies):
             return None
