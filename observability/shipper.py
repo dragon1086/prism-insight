@@ -106,6 +106,16 @@ def _attributes(values: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def build_otlp_payload(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    events = list(events)
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for event in events:
+        identity = tuple(event.get(key) for key in ("service", "git_sha", "environment", "host"))
+        groups.setdefault(identity, []).append(event)
+    if len(groups) > 1:
+        return {"resourceLogs": [
+            resource for group in groups.values()
+            for resource in build_otlp_payload(group)["resourceLogs"]
+        ]}
     records = []
     first: dict[str, Any] | None = None
     for event in events:
