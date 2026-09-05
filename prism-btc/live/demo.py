@@ -396,25 +396,102 @@ class DemoAdapter:
                 f"market reduce {side} qty={qty} reason={reason} id={oid}", mode=self.mode)
         return oid
 
+    def _reduction_pages(self, method: str, pending: dict) -> Optional[list]:
+        """Bounded complete pagination; failures/cycles are unknown, never empty."""
+        rows = []
+        cursors = set()
+        cursor = None
+        for _ in range(100):
+            response = self._call(method, category=_CATEGORY, symbol=_SYMBOL,
+                                  orderLinkId=pending["link_id"],
+                                  limit=100 if method == "get_executions" else 50,
+                                  **({"cursor": cursor} if cursor else {}))
+            result = response.get("result") if isinstance(response, dict) else None
+            if not isinstance(result, dict) or not isinstance(result.get("list"), list):
+                return None
+            if any(not isinstance(row, dict) for row in result["list"]):
+                return None
+            rows.extend(result["list"])
+            cursor = result.get("nextPageCursor")
+            if not cursor:
+                return rows
+            if not isinstance(cursor, str) or cursor in cursors:
+                return None
+            cursors.add(cursor)
+        return None
+
+    @staticmethod
+    def _reduction_matches(row: dict, pending: dict) -> bool:
+        # If both identities are present neither may contradict our intent.
+        oid, link = row.get("orderId"), row.get("orderLinkId")
+        return bool((link == pending["link_id"] or
+                     (pending.get("order_id") and oid == pending["order_id"]))
+                    and (not link or link == pending["link_id"])
+                    and (not pending.get("order_id") or not oid or oid == pending["order_id"]))
+
     def _reduce_confirmed(self, pending: dict) -> bool:
-        """ACK is not execution. Deduplicate order-correlated trade fills."""
-        response = self._call("get_executions", category=_CATEGORY, symbol=_SYMBOL,
-                              orderLinkId=pending["link_id"], limit=100)
-        seen = set()
+        """ACK is not execution. Deduplicate complete order-correlated trade fills."""
+        rows = self._reduction_pages("get_executions", pending)
+        seen = {}
         filled = 0.0
-        for row in _result_list(response):
-            matches = (row.get("orderLinkId") == pending["link_id"] or
-                       (pending.get("order_id") and row.get("orderId") == pending["order_id"]))
+        complete = rows is not None
+        for row in rows or []:
+            if not self._reduction_matches(row, pending):
+                if (row.get("orderLinkId") == pending["link_id"] or
+                        (pending.get("order_id") and row.get("orderId") == pending["order_id"])):
+                    complete = False  # contradictory identity is not zero-fill evidence
+                continue
+            if row.get("execType") != "Trade":
+                complete = False
+                continue
             eid = row.get("execId")
-            if (not matches or not eid or eid in seen or row.get("execType") != "Trade"
+            try:
+                qty = float(row["execQty"])
+            except (KeyError, ValueError, TypeError):
+                qty = float("nan")
+            if (not eid or row.get("symbol") != _SYMBOL
+                    or row.get("side") != ("Sell" if pending["side"] == "long" else "Buy")
+                    or not math.isfinite(qty) or qty <= 0):
+                complete = False
+                continue
+            if eid in seen:
+                if seen[eid] != qty:
+                    complete = False
+            else:
+                seen[eid] = qty
+                filled += qty
+        pending.update(execution_complete=complete, observed_fill_qty=filled,
+                       reconcile_checks=int(pending.get("reconcile_checks", 0)) + 1)
+        pending["status"] = ("FULL_FILL" if complete and filled >= pending["qty"] - 1e-9 else
+                             "PARTIAL_FILL" if complete and filled > 0 else
+                             "NO_FILL_OBSERVED" if complete else "EXECUTION_UNKNOWN")
+        self._set_meta("pending_reduce", pending)
+        return pending["status"] == "FULL_FILL"
+
+    def _terminal_zero_fill(self, pending: dict) -> bool:
+        # Bybit only retains zero-fill cancelled/rejected history for 24h.
+        # Old/legacy intents and partial or incomplete observations stay fenced.
+        age_ms = time.time_ns() // 1_000_000 - int(pending.get("submitted_at_ms", 0))
+        if (not pending.get("execution_complete") or pending.get("observed_fill_qty") != 0
+                or not 0 <= age_ms < 24 * 60 * 60 * 1000):
+            return False
+        rows = self._reduction_pages("get_order_history", pending)
+        matches = [r for r in rows or [] if self._reduction_matches(r, pending)]
+        if rows is None or not matches:
+            return False
+        for row in matches:
+            try:
+                zero_fill = float(row["cumExecQty"]) == 0
+                same_qty = abs(float(row["qty"]) - pending["qty"]) < 1e-9
+            except (KeyError, ValueError, TypeError):
+                return False
+            if (row.get("orderStatus") not in ("Rejected", "Cancelled") or not zero_fill
+                    or not same_qty or row.get("reduceOnly") is not True
                     or row.get("symbol") != _SYMBOL
                     or row.get("side") != ("Sell" if pending["side"] == "long" else "Buy")):
-                continue
-            qty = _f(row.get("execQty"))
-            if math.isfinite(qty) and qty > 0:
-                seen.add(eid)
-                filled += qty
-        return filled >= pending["qty"] - 1e-9
+                return False
+        pending["terminal_order_status"] = sorted({r["orderStatus"] for r in matches})
+        return True
 
     def _resume_reduce(self) -> bool:
         """An unresolved reduction fences entries and resubmission across restart."""
@@ -439,9 +516,18 @@ class DemoAdapter:
                 **self._get_meta("last_close_was_sl", {}), pending["side"]: pending["reason"] == "sl",
             })
             self._set_meta("pending_reduce", None)
+        elif self._terminal_zero_fill(pending):
+            pending["status"] = "TERMINAL_ZERO_FILL"
+            self._set_meta("last_reduce_resolution", pending)
+            self._set_meta("pending_reduce", None)
+            tracking.log_event(self.conn, "reduction_resolved",
+                "Terminal zero-fill confirmed; ledger/protection preserved, fence released",
+                mode=self.mode)
         else:
             tracking.log_event(self.conn, "reduction_pending",
-                "Reduction unconfirmed; preserve ledger/protection and block entries",
+                f"Reduction status={pending['status']} checks={pending['reconcile_checks']} "
+                f"observed_qty={pending['observed_fill_qty']} requested_qty={pending['qty']}; "
+                "preserve ledger/protection and block entries",
                 level="warning", mode=self.mode)
         return True
 
@@ -451,6 +537,7 @@ class DemoAdapter:
         if qty <= 0:
             return False
         pending = {"link_id": "reduce-" + uuid.uuid4().hex[:28], "side": side,
+                   "submitted_at_ms": time.time_ns() // 1_000_000,
                    "qty": qty, "reason": reason, "bar_idx": bar_idx,
                    "position_ids": [p.id for p in positions],
                    "original_qty": sum(p.qty for p in positions)}
