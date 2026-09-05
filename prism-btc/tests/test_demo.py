@@ -469,6 +469,85 @@ class TestEntryFillAttachesSlTp:
 # ===========================================================================
 
 class TestExitReduceOnly:
+    @pytest.mark.parametrize("fault", ["partial", "history_missing", "history_failed",
+        "active", "wrong_side", "wrong_id", "missing_cumulative", "history_cursor",
+        "execution_failed", "expired", "legacy"])
+    def test_ambiguous_terminal_evidence_keeps_reduction_fenced(self, monkeypatch, fault):
+        fake = FakeExchange(position=_ex_position())
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_open_position(adapter, conn, sl=95.)
+        adapter.process_bar(_BASE_TS, _bar(94., 96., 94.), False, None)
+        pending = adapter._get_meta("pending_reduce")
+        order = {"orderId": pending["order_id"], "orderLinkId": pending["link_id"],
+                 "symbol": "BTCUSDT", "side": "Sell", "reduceOnly": True,
+                 "qty": "0.030", "cumExecQty": "0", "orderStatus": "Cancelled"}
+        if fault == "active":
+            order["orderStatus"] = "New"
+        elif fault == "wrong_side":
+            order["side"] = "Buy"
+        elif fault == "wrong_id":
+            order["orderId"] = "other-order"
+        elif fault == "missing_cumulative":
+            del order["cumExecQty"]
+        elif fault in ("expired", "legacy"):
+            pending["submitted_at_ms"] = 0
+            adapter._set_meta("pending_reduce", pending)
+        elif fault == "partial":
+            fake._executions = [{"orderId": pending["order_id"], "execId": "one",
+                "execQty": "0.01", "execType": "Trade", "symbol": "BTCUSDT", "side": "Sell"}]
+        if fault == "execution_failed":
+            monkeypatch.setattr(fake, "get_executions", lambda **kw: {"retCode": 1})
+        history = fake._ok({"list": [] if fault == "history_missing" else [order],
+                           "nextPageCursor": "cycle" if fault == "history_cursor" else ""})
+        if fault == "history_failed":
+            history = {"retCode": 1}
+        monkeypatch.setattr(fake, "get_order_history", lambda **kw: history, raising=False)
+        adapter._resume_reduce()
+        assert adapter._get_meta("pending_reduce") is not None
+        assert tracking.load_open_positions(conn, "demo")[0].qty == .03
+        assert len(fake.placed_orders) == 1
+
+    @pytest.mark.parametrize("status", ["Rejected", "Cancelled"])
+    def test_terminal_zero_fill_unfences_without_ledger_mutation(self, monkeypatch, status):
+        fake = FakeExchange(position=_ex_position())
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_open_position(adapter, conn, sl=95.)
+        adapter.process_bar(_BASE_TS, _bar(94., 96., 94.), False, None)
+        pending = adapter._get_meta("pending_reduce")
+        monkeypatch.setattr(fake, "get_order_history", lambda **kw: fake._ok({"list": [{
+            "orderId": pending["order_id"], "orderLinkId": pending["link_id"],
+            "symbol": "BTCUSDT", "side": "Sell", "reduceOnly": True,
+            "qty": "0.030", "cumExecQty": "0", "orderStatus": status,
+        }]}), raising=False)
+        assert adapter._resume_reduce()
+        assert adapter._get_meta("pending_reduce") is None
+        assert tracking.load_open_positions(conn, "demo")[0].qty == .03
+        assert len(fake.placed_orders) == 1
+
+    @pytest.mark.parametrize("broken", [False, True])
+    def test_reduce_execution_pagination_requires_complete_noncyclic_pages(self, monkeypatch, broken):
+        fake = FakeExchange(position=_ex_position())
+        _patch_session(monkeypatch, fake)
+        conn = _conn()
+        adapter = _make_adapter(conn, fake)
+        _seed_open_position(adapter, conn, sl=95.)
+        adapter.process_bar(_BASE_TS, _bar(94., 96., 94.), False, None)
+        pending = adapter._get_meta("pending_reduce")
+        def executions(**kw):
+            cursor = kw.get("cursor")
+            return fake._ok({"list": [{"orderId": pending["order_id"],
+                "execId": "two" if cursor else "one", "execQty": "0.015",
+                "symbol": "BTCUSDT", "side": "Sell", "execType": "Trade"}],
+                "nextPageCursor": "next" if not cursor or broken else ""})
+        monkeypatch.setattr(fake, "get_executions", executions)
+        assert adapter._resume_reduce()
+        assert bool(tracking.load_open_positions(conn, "demo")) == broken
+        assert (adapter._get_meta("pending_reduce") is not None) == broken
+
     @pytest.mark.parametrize("force", [False, True])
     def test_pending_fill_reconciles_once_after_restart(self, monkeypatch, force):
         fake = FakeExchange(position=_ex_position())
