@@ -74,6 +74,19 @@ def test_otlp_payload_exposes_queryable_prism_attributes(tmp_path):
     assert attributes["prism.applied_adjust"] == "0"
 
 
+def test_mixed_services_keep_their_own_resource_identity(tmp_path):
+    events = [emit_event("btc.exit.snapshot", service=service,
+                         spool_path=tmp_path / "events.jsonl")
+              for service in ("prism-btc", "prism-us-trading", "prism-btc")]
+    payload = build_otlp_payload(events)
+    assert len(payload["resourceLogs"]) == 2
+    for group in payload["resourceLogs"]:
+        resource = {a["key"]: next(iter(a["value"].values()))
+                    for a in group["resource"]["attributes"]}
+        for record in group["scopeLogs"][0]["logRecords"]:
+            assert json.loads(record["body"]["stringValue"])["service"] == resource["service.name"]
+
+
 def test_success_advances_checkpoint_and_does_not_resend(tmp_path, collector):
     spool = tmp_path / "events.jsonl"
     checkpoint = tmp_path / "checkpoint.json"

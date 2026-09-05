@@ -18,8 +18,10 @@
 from __future__ import annotations
 
 import os
+import math
 import time
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from typing import Optional, Any
 
@@ -238,7 +240,8 @@ class DemoAdapter:
         started_perf_ns = time.perf_counter_ns()
         last_exc = None
         last_response = None
-        for attempt in range(2):  # 최초 + 재시도 1회.
+        attempts = 1 if (_telemetry or {}).get("operation") == "market_reduce" else 2
+        for attempt in range(attempts):  # Never retry a potentially accepted reduction.
             try:
                 resp = fn(**kwargs)
                 last_response = resp
@@ -261,7 +264,7 @@ class DemoAdapter:
                            f"retMsg={resp.get('retMsg') if isinstance(resp, dict) else resp}"
             except Exception as exc:  # noqa: BLE001 — 모든 거래소 실패 흡수
                 last_exc = str(exc)
-            if attempt == 0:
+            if attempt + 1 < attempts:
                 time.sleep(_RETRY_SLEEP_SEC)
         completed_wall_ns = time.time_ns()
         completed_perf_ns = time.perf_counter_ns()
@@ -273,7 +276,7 @@ class DemoAdapter:
             completed_perf_ns=completed_perf_ns,
             response=last_response,
             success=False,
-            retry_count=1,
+            retry_count=attempts - 1,
             fallback_order_id=str(kwargs.get("orderId") or "") or None,
         )
         tracking.log_event(self.conn, "error",
@@ -364,7 +367,8 @@ class DemoAdapter:
                 f"TP1 reduce-limit {side} qty={qty} @ {price} id={oid}", mode=self.mode)
         return oid
 
-    def _market_reduce(self, side: str, qty: float, reason: str) -> Optional[str]:
+    def _market_reduce(self, side: str, qty: float, reason: str,
+                       order_link_id: Optional[str] = None) -> Optional[str]:
         """신호청산/ForceReduce = 시장가 reduce-only."""
         if qty <= 0:
             return None
@@ -384,12 +388,78 @@ class DemoAdapter:
             },
             side=close_side, orderType="Market", qty=_qstr(qty),
             reduceOnly=True, timeInForce="IOC", positionIdx=_POSITION_IDX,
+            **({"orderLinkId": order_link_id} if order_link_id else {}),
         )
         oid = _order_id(resp)
         if oid:
             tracking.log_event(self.conn, "order",
                 f"market reduce {side} qty={qty} reason={reason} id={oid}", mode=self.mode)
         return oid
+
+    def _reduce_confirmed(self, pending: dict) -> bool:
+        """ACK is not execution. Deduplicate order-correlated trade fills."""
+        response = self._call("get_executions", category=_CATEGORY, symbol=_SYMBOL,
+                              orderLinkId=pending["link_id"], limit=100)
+        seen = set()
+        filled = 0.0
+        for row in _result_list(response):
+            matches = (row.get("orderLinkId") == pending["link_id"] or
+                       (pending.get("order_id") and row.get("orderId") == pending["order_id"]))
+            eid = row.get("execId")
+            if (not matches or not eid or eid in seen or row.get("execType") != "Trade"
+                    or row.get("symbol") != _SYMBOL
+                    or row.get("side") != ("Sell" if pending["side"] == "long" else "Buy")):
+                continue
+            qty = _f(row.get("execQty"))
+            if math.isfinite(qty) and qty > 0:
+                seen.add(eid)
+                filled += qty
+        return filled >= pending["qty"] - 1e-9
+
+    def _resume_reduce(self) -> bool:
+        """An unresolved reduction fences entries and resubmission across restart."""
+        pending = self._get_meta("pending_reduce", None)
+        if pending is None:
+            return False
+        if self._reduce_confirmed(pending):
+            for pos in tracking.load_open_positions(self.conn, self.mode):
+                if pos.id not in pending["position_ids"]:
+                    continue
+                if pending["reason"] == "force_reduce":
+                    pos.qty = max(pending["original_qty"] - pending["qty"], 0.)
+                    pos.liq_breach_flagged = True
+                    pos.had_forced_reduce = True
+                    tracking.save_position(self.conn, pos)
+                elif pos.id is not None:
+                    tracking.remove_position(self.conn, pos.id)
+            self._set_meta("last_close_bar", {
+                **self._get_meta("last_close_bar", {}), pending["side"]: pending["bar_idx"],
+            })
+            self._set_meta("last_close_was_sl", {
+                **self._get_meta("last_close_was_sl", {}), pending["side"]: pending["reason"] == "sl",
+            })
+            self._set_meta("pending_reduce", None)
+        else:
+            tracking.log_event(self.conn, "reduction_pending",
+                "Reduction unconfirmed; preserve ledger/protection and block entries",
+                level="warning", mode=self.mode)
+        return True
+
+    def _confirmed_market_reduce(self, positions: list, side: str, qty: float,
+                                 reason: str, bar_idx: int) -> bool:
+        qty = float(_qstr(qty))
+        if qty <= 0:
+            return False
+        pending = {"link_id": "reduce-" + uuid.uuid4().hex[:28], "side": side,
+                   "qty": qty, "reason": reason, "bar_idx": bar_idx,
+                   "position_ids": [p.id for p in positions],
+                   "original_qty": sum(p.qty for p in positions)}
+        self._set_meta("pending_reduce", pending)  # persist BEFORE submission
+        pending["order_id"] = self._market_reduce(side, qty, reason, pending["link_id"])
+        self._set_meta("pending_reduce", pending)
+        # Keep intent until the caller's ledger writes are durable. Recovery
+        # is idempotent (absolute remaining quantity, never subtract twice).
+        return self._reduce_confirmed(pending)
 
     def _amend_stop(self, order_id: str, trigger: float) -> None:
         """트레일 = 기존 stop 주문 triggerPrice amend."""
@@ -509,8 +579,18 @@ class DemoAdapter:
 
         # --- 포지션 (단일 BTCUSDT) ---
         pr = self._call("get_positions", category=_CATEGORY, symbol=_SYMBOL)
+        if (not isinstance(pr, dict)
+                or not isinstance(pr.get("result"), dict)
+                or not isinstance(pr["result"].get("list"), list)
+                or pr["result"].get("nextPageCursor")):
+            raise RuntimeError("position snapshot unavailable; preserve ledger and protection")
         for p in _result_list(pr):
-            sz = _f(p.get("size"))
+            try:
+                sz = float(p["size"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError("invalid position size; preserve ledger and protection") from exc
+            if not math.isfinite(sz) or sz < 0:
+                raise RuntimeError("invalid position size; preserve ledger and protection")
             if sz > 0:
                 snap["position"] = {
                     "side": "long" if p.get("side") == "Buy" else "short",
@@ -530,6 +610,11 @@ class DemoAdapter:
 
         # --- 미체결 주문 ---
         oo = self._call("get_open_orders", category=_CATEGORY, symbol=_SYMBOL)
+        if (not isinstance(oo, dict)
+                or not isinstance(oo.get("result"), dict)
+                or not isinstance(oo["result"].get("list"), list)
+                or oo["result"].get("nextPageCursor")):
+            raise RuntimeError("order snapshot unavailable; preserve ledger and protection")
         for o in _result_list(oo):
             snap["open_orders"].append({
                 "order_id": o.get("orderId", ""),
@@ -655,6 +740,9 @@ class DemoAdapter:
 
         # 거래소 체결내역 기준 종결 트레이드 기록 (reduce-only 청산).
         self._record_closed_trades(bar_time_str)
+
+        if self._resume_reduce():
+            return
 
         # 크로스-바 트래커 복원 (shadow 미러).
         last_close_bar = self._get_meta("last_close_bar", {"long": -10_000, "short": -10_000})
@@ -797,10 +885,14 @@ class DemoAdapter:
                 for act in actions:
                     if isinstance(act, ForceReduce):
                         # 청산 임박 방어 — 해당 트랜치 수량을 시장가 reduce-only 로 차감.
-                        self._market_reduce(pos.side, pos.qty * act.fraction, "force_reduce")
-                        pos.qty = max(pos.qty * (1.0 - act.fraction), 0.0)
+                        if not self._confirmed_market_reduce(
+                                [pos], pos.side, pos.qty * act.fraction, "force_reduce", bar_idx):
+                            return
+                        pos.qty = max(pos.qty - float(_qstr(pos.qty * act.fraction)), 0.0)
                         pos.liq_breach_flagged = True
                         pos.had_forced_reduce = True
+                        tracking.save_position(conn, pos)
+                        self._set_meta("pending_reduce", None)
                         stop_dirty = True
                     elif isinstance(act, UpdateStop):
                         # 트레일/BE — 트랜치 SL 갱신. 통합 stop 은 아래서 재계산.
@@ -808,11 +900,14 @@ class DemoAdapter:
                         stop_dirty = True
                     elif isinstance(act, ClosePosition):
                         # SL/신호 청산 — 이 트랜치 수량만 통합 포지션에서 차감.
-                        self._market_reduce(pos.side, pos.qty, act.reason)
+                        if not self._confirmed_market_reduce(
+                                [pos], pos.side, pos.qty, act.reason, bar_idx):
+                            return
                         last_close_bar[pos.side] = bar_idx
                         last_close_was_sl[pos.side] = act.reason in ("sl",)
                         if pos.id is not None:
                             tracking.remove_position(conn, pos.id)
+                        self._set_meta("pending_reduce", None)
                         closed = True
                         stop_dirty = True
                         break
@@ -1079,6 +1174,26 @@ class DemoAdapter:
             bar_idx = bar_index_for(int(bar_time.value // 1_000_000))
             snap = self._sync_state(bar_time_str)
             self._record_closed_trades(bar_time_str)
+            if self._resume_reduce():
+                # A pending IOC must fence duplicate reductions, not protection.
+                # Use the authoritative remaining exchange quantity; never cancel
+                # a native stop, and never issue a second market fallback here.
+                position = snap["position"]
+                has_stop = any(o.get("reduce_only") and o.get("trigger_price", 0.) > 0
+                               for o in snap["open_orders"])
+                positions = tracking.load_open_positions(self.conn, self.mode)
+                if position and not has_stop:
+                    stops = [p.sl_price for p in positions if p.side == position["side"]]
+                    if stops:
+                        stop = max(stops) if position["side"] == "long" else min(stops)
+                        oid = self._place_stop_market(position["side"], position["qty"], stop)
+                        if oid:
+                            self._set_meta("sl_order_id", oid)
+                        tracking.log_event(self.conn, "protection",
+                            "Pending reduction: missing-stop repair submitted" if oid else
+                            "Pending reduction: missing-stop repair failed; intervention required",
+                            level="warning", mode=self.mode, ts=bar_time_str)
+                return
             ex_pos = snap["position"]
             local_positions = tracking.load_open_positions(self.conn, self.mode)
             sl_order_id = self._get_meta("sl_order_id", None)
@@ -1139,10 +1254,11 @@ class DemoAdapter:
             if breached and not has_native_stop:
                 # A missing native stop plus a crossed structural stop is the
                 # only condition that authorizes an immediate market fallback.
-                oid = self._market_reduce(
-                    side, total_qty, "10m_protection_missing_stop",
+                confirmed = self._confirmed_market_reduce(
+                    side_positions, side, total_qty, "10m_protection_missing_stop", bar_idx,
                 )
-                if oid:
+                if confirmed:
+                    self._resume_reduce()
                     tracking.log_event(
                         self.conn, "protection",
                         f"10m missing-stop fallback reduce {side} qty={total_qty:.6f}",
