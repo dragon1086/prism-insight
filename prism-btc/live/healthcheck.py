@@ -110,10 +110,10 @@ def _check_daemon(conn, mode: str, now: datetime) -> dict | None:
 
 
 def _check_error_burst(conn, mode: str, now: datetime) -> dict | None:
-    """2) 에러 폭주: 최근 2시간 error 이벤트 > 5건 → alert (최근 1건 첨부)."""
+    """Count primary failures only; health reports must not recursively alert."""
     try:
         rows = conn.execute(
-            "SELECT ts, message FROM btc_events WHERE mode=? AND level='error' "
+            "SELECT ts, message FROM btc_events WHERE mode=? AND level='error' AND kind!='health' "
             "ORDER BY id DESC LIMIT 200",
             (mode,),
         ).fetchall()
