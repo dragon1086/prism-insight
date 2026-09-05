@@ -31,6 +31,7 @@ import logging
 import math
 import os
 import time
+import uuid
 from typing import Optional
 
 import pandas as pd
@@ -138,17 +139,27 @@ class ExchangeBackend:
 
     # --- 호출 헬퍼 (demo.DemoAdapter._call 미러 — 재시도 1회, 실패 흡수) ---
     def _call(self, fn_name: str, **kwargs) -> Optional[dict]:
+        self._definite_close_rejection = False
         fn = getattr(self.sess, fn_name, None)
         if fn is None:
             return None
         last_exc = None
-        for attempt in range(2):
+        attempts = 1 if (fn_name == "place_order" and kwargs.get("reduceOnly")
+                         and kwargs.get("orderType") == "Market" and "triggerPrice" not in kwargs) else 2
+        for attempt in range(attempts):
             try:
                 resp = fn(**kwargs)
                 if isinstance(resp, dict):
                     ret_code = int(resp.get("retCode", -1))
                     if ret_code == 0:
                         return resp
+                    # Parameter validation / reduce-only rule rejection means
+                    # this request was not accepted. Never classify timeouts,
+                    # duplicate IDs or general server errors this way.
+                    if (fn_name == "place_order" and kwargs.get("reduceOnly")
+                            and kwargs.get("orderType") == "Market"
+                            and "triggerPrice" not in kwargs and ret_code in {10001, 110017}):
+                        self._definite_close_rejection = True
                     # Bybit의 이미 적용/이미 소멸 응답은 원하는 최종 상태다.
                     # 재시도·오류 이벤트로 부풀리지 않고 멱등 성공으로 취급한다.
                     if (
@@ -159,7 +170,13 @@ class ExchangeBackend:
                 last_exc = (resp.get("retMsg") if isinstance(resp, dict) else resp)
             except Exception as exc:  # noqa: BLE001
                 last_exc = str(exc)
-            if attempt == 0:
+                if (type(exc).__module__ == "pybit.exceptions"
+                        and type(exc).__name__ == "InvalidRequestError"
+                        and getattr(exc, "status_code", None) in {10001, 110017}
+                        and fn_name == "place_order" and kwargs.get("reduceOnly")
+                        and kwargs.get("orderType") == "Market" and "triggerPrice" not in kwargs):
+                    self._definite_close_rejection = True
+            if attempt < attempts - 1:
                 time.sleep(_RETRY_SLEEP_SEC)
         tracking.log_event(self.conn, "error", f"swing {fn_name} 실패: {last_exc}",
                            level="error", mode=MODE)
@@ -185,10 +202,20 @@ class ExchangeBackend:
     def _position_size(self) -> Optional[float]:
         """현재 스윙 계정 BTCUSDT 포지션 크기. 조회 실패 시 None (판단 유보)."""
         pr = self._call("get_positions", category=_CATEGORY, symbol=_SYMBOL)
-        if pr is None:
+        if (not isinstance(pr, dict) or not isinstance(pr.get("result"), dict)
+                or not isinstance(pr["result"].get("list"), list)
+                or pr["result"].get("nextPageCursor")
+                or len(pr["result"]["list"]) > 1):
             return None
         for p in _result_list(pr):
-            return _f(p.get("size"))
+            if (not isinstance(p, dict) or p.get("symbol", _SYMBOL) != _SYMBOL
+                    or _f(p.get("positionIdx", _POSITION_IDX), -1) != _POSITION_IDX):
+                return None
+            try:
+                size = float(p["size"])
+                return size if math.isfinite(size) and size >= 0 else None
+            except (KeyError, TypeError, ValueError):
+                return None
         return 0.0
 
     def open(self, side: str, qty: float, sl: float,
@@ -306,7 +333,9 @@ class ExchangeBackend:
         self, pos: tracking.PositionRow, order_id: str | None
     ) -> None:
         """Bybit의 체결·closedPnl을 묶어 청산 정산의 단일 진실로 보관한다."""
-        execution = self._execution_snapshot(order_id, closed_only=True)
+        # Without an exact order identity, account-wide executions cannot be
+        # attributed to this close. Keep settlement explicitly unconfirmed.
+        execution = self._execution_snapshot(order_id, closed_only=True) if order_id else {}
         snapshot: dict[str, float] = {}
         if execution:
             snapshot = {
@@ -333,7 +362,10 @@ class ExchangeBackend:
                 if attempt < 2:
                     time.sleep(_RETRY_SLEEP_SEC)
 
-        if closed_row is not None and closed_row.get("closedPnl") not in (None, ""):
+        if (closed_row is not None and closed_row.get("closedPnl") not in (None, "")
+                and math.isfinite(_f(closed_row.get("closedPnl"), float("nan")))
+                and math.isclose(_f(closed_row.get("qty")), pos.qty, rel_tol=1e-6, abs_tol=1e-9)
+                and _f(closed_row.get("avgExitPrice")) > 0):
             qty = _f(closed_row.get("qty")) or snapshot.get("qty") or pos.qty
             entry_price = (
                 _f(closed_row.get("avgEntryPrice")) or pos.entry_price
@@ -376,10 +408,22 @@ class ExchangeBackend:
                    bar: pd.Series) -> Optional[float]:
         """거래소 포지션 소멸 = 스탑(또는 외부 청산) 체결. 체결가를 반환."""
         size = self._position_size()
-        if size is None or size > 0:
+        if size is None:
             return None
-        sl_oid = tracking.get_meta(self.conn, "swing_sl_order_id", MODE)
+        self._reconcile_close_intent(pos, size)
+        if size > 0:
+            return self._repair_missing_stop(pos, size)
+        pending = tracking.get_meta(self.conn, "swing_close_pending", MODE)
+        sl_oid = (pending.get("order_id") if pending else
+                  tracking.get_meta(self.conn, "swing_sl_order_id", MODE))
+        tracking.set_meta(self.conn, "swing_close_pending",
+                          pending or {"order_id": sl_oid, "reason": "swing_sl"}, MODE)
         self._capture_close_settlement(pos, sl_oid)
+        if "closed_pnl" not in self.last_close_snapshot:
+            tracking.log_event(self.conn, "settlement_pending",
+                               "swing flat but exact close settlement unconfirmed",
+                               level="warning", mode=MODE)
+            return None
         price = self.last_close_snapshot.get("exit_price") or pos.sl_price
         if sl_oid:
             self._call("cancel_order", category=_CATEGORY, symbol=_SYMBOL,
@@ -387,19 +431,168 @@ class ExchangeBackend:
         tracking.set_meta(self.conn, "swing_sl_order_id", "", MODE)
         return price
 
+    def _reconcile_close_intent(self, pos: tracking.PositionRow, size: float) -> None:
+        """Only exact terminal-zero proof permits another close submission."""
+        pending = tracking.get_meta(self.conn, "swing_close_pending", MODE)
+        if not pending or not pending.get("link_id"):
+            return
+        response = self._call("get_order_history", category=_CATEGORY, symbol=_SYMBOL,
+                              orderLinkId=pending["link_id"], limit=50)
+        result = response.get("result") if isinstance(response, dict) else None
+        if not isinstance(result, dict) or not isinstance(result.get("list"), list) or result.get("nextPageCursor"):
+            return
+        matches = [r for r in result["list"] if r.get("orderLinkId") == pending["link_id"]]
+        if len(matches) != 1:
+            return
+        row = matches[0]
+        if (not row.get("orderId") or row.get("symbol") != _SYMBOL
+                or row.get("side") != ("Sell" if pos.side == "long" else "Buy")
+                or row.get("reduceOnly") is not True
+                or not math.isclose(_f(row.get("qty"), -1), pending["qty"], abs_tol=1e-9)
+                or (pending.get("order_id") and row["orderId"] != pending["order_id"])):
+            return
+        pending["order_id"] = row["orderId"]
+        pending["order_status"] = row.get("orderStatus")
+        tracking.set_meta(self.conn, "swing_close_pending", pending, MODE)
+        if (row.get("orderStatus") not in {"Rejected", "Cancelled"}
+                or _f(row.get("cumExecQty"), -1) != 0
+                or not math.isclose(size, pending["qty"], abs_tol=1e-9)):
+            return
+        executions = self._call("get_executions", category=_CATEGORY, symbol=_SYMBOL,
+                                orderId=row["orderId"], limit=50)
+        er = executions.get("result") if isinstance(executions, dict) else None
+        if (not isinstance(er, dict) or not isinstance(er.get("list"), list)
+                or er.get("nextPageCursor") or er["list"]):
+            return
+        # Re-read after terminal history: a concurrent position change is not
+        # evidence that this zero-fill intent can safely be retried.
+        if self._position_size() != size:
+            return
+        tracking.set_meta(self.conn, "swing_close_pending", None, MODE)
+        tracking.log_event(self.conn, "close_retry_ready", "exact terminal zero-fill close; retry permitted",
+                           level="warning", mode=MODE)
+
+    def _repair_missing_stop(self, pos: tracking.PositionRow, size: float) -> Optional[float]:
+        """Reconcile protection without cancelling any existing stop.
+
+        Position-level Full SL is an idempotent desired-state update. Bybit
+        adjusts its quantity with the position; ACK alone is not confirmation.
+        Historical bar extremes must never authorize a current market close.
+        """
+        snapshot = self._call("get_positions", category=_CATEGORY, symbol=_SYMBOL)
+        rows = _result_list(snapshot or {})
+        if (not isinstance(snapshot, dict) or not isinstance(snapshot.get("result"), dict)
+                or snapshot["result"].get("nextPageCursor")
+                or len(rows) != 1 or rows[0].get("side") != ("Buy" if pos.side == "long" else "Sell")
+                or rows[0].get("symbol", _SYMBOL) != _SYMBOL
+                or _f(rows[0].get("positionIdx", _POSITION_IDX), -1) != _POSITION_IDX
+                or not math.isclose(_f(rows[0].get("size"), -1), size, abs_tol=1e-9)):
+            return None
+        native = _f(rows[0].get("stopLoss"))
+        trigger = float(_pstr(pos.sl_price))
+        if native > 0:
+            trigger = max(native, trigger) if pos.side == "long" else min(native, trigger)
+        orders = self._call("get_open_orders", category=_CATEGORY, symbol=_SYMBOL, limit=50)
+        if (not isinstance(orders, dict) or not isinstance(orders.get("result"), dict)
+                or not isinstance(orders["result"].get("list"), list)
+                or orders["result"].get("nextPageCursor")):
+            tracking.log_event(self.conn, "protection_unknown", "swing protection order read unavailable",
+                               level="warning", mode=MODE)
+            return None
+        close_side = "Sell" if pos.side == "long" else "Buy"
+        direction = 2 if pos.side == "long" else 1
+        for order in _result_list(orders):
+            if (order.get("orderType") == "Market" and order.get("orderId")
+                    and order.get("reduceOnly") is True and order.get("side") == close_side
+                    and _f(order.get("qty")) >= size-1e-9
+                    and _f(order.get("triggerPrice")) > 0
+                    and (_f(order.get("triggerPrice")) >= trigger if pos.side == "long"
+                         else _f(order.get("triggerPrice")) <= trigger)
+                    and _f(order.get("triggerDirection")) == direction
+                    and order.get("triggerBy") == "LastPrice"
+                    and _f(order.get("positionIdx"), -1) == _POSITION_IDX):
+                tracking.set_meta(self.conn, "swing_sl_order_id", order["orderId"], MODE)
+                return None
+        ticker = self._call("get_tickers", category=_CATEGORY, symbol=_SYMBOL)
+        tickers = _result_list(ticker)
+        price = _f(tickers[0].get("lastPrice")) if tickers else 0.
+        if not math.isfinite(price) or price <= 0:
+            tracking.log_event(self.conn, "protection_unknown", "swing current price unavailable",
+                               level="error", mode=MODE)
+            return None
+        breached = price <= trigger if pos.side == "long" else price >= trigger
+        if breached:
+            if tracking.get_meta(self.conn, "swing_close_pending", MODE):
+                pending = tracking.get_meta(self.conn, "swing_close_pending", MODE)
+                pending["status"] = "HALTED_UNPROTECTED_CLOSE_UNRESOLVED"
+                tracking.set_meta(self.conn, "swing_close_pending", pending, MODE)
+                tracking.log_event(self.conn, "protection_breach", "swing close pending; no duplicate submission",
+                                   level="error", mode=MODE)
+                return None
+            tracking.log_event(self.conn, "protection_breach", "swing missing stop breached; reduce-only fallback",
+                               level="error", mode=MODE)
+            return self.close(pos, price)
+        reply = self._call("set_trading_stop", category=_CATEGORY, symbol=_SYMBOL,
+                           tpslMode="Full", positionIdx=_POSITION_IDX,
+                           stopLoss=_pstr(trigger), slTriggerBy="LastPrice", slOrderType="Market")
+        confirmed = False
+        if reply is not None:
+            # Position stopLoss alone does not identify the resulting Full SL.
+            check = self._call("get_open_orders", category=_CATEGORY, symbol=_SYMBOL, limit=50)
+            if (isinstance(check, dict) and isinstance(check.get("result"), dict)
+                    and not check["result"].get("nextPageCursor")):
+                for order in _result_list(check):
+                    if (order.get("orderType") == "Market" and order.get("orderId")
+                            and order.get("reduceOnly") is True and order.get("side") == close_side
+                            and _f(order.get("qty")) >= size-1e-9
+                            and math.isclose(_f(order.get("triggerPrice")), trigger, abs_tol=.01)
+                            and _f(order.get("triggerDirection")) == direction
+                            and order.get("triggerBy") == "LastPrice"
+                            and _f(order.get("positionIdx"), -1) == _POSITION_IDX):
+                        tracking.set_meta(self.conn, "swing_sl_order_id", order["orderId"], MODE)
+                        confirmed = True
+                        break
+        tracking.log_event(self.conn, "protection_repair",
+                           "swing Full SL " + ("CONFIRMED" if confirmed else "UNCONFIRMED"),
+                           level="info" if confirmed else "error", mode=MODE)
+        return None
+
     def close(self, pos: tracking.PositionRow, hint_price: float) -> Optional[float]:
+        if tracking.get_meta(self.conn, "swing_close_pending", MODE):
+            return self.check_stop(pos, None)
         sl_oid = tracking.get_meta(self.conn, "swing_sl_order_id", MODE)
         close_side = "Sell" if pos.side == "long" else "Buy"
+        # Persist before submission, including the uncertain/no-ACK case.
+        pending = {"order_id": None, "reason": "swing_ma35_exit",
+                   "link_id": "sw-close-" + uuid.uuid4().hex[:24],
+                   "qty": pos.qty, "submitted_at_ms": time.time_ns() // 1_000_000}
+        tracking.set_meta(self.conn, "swing_close_pending",
+                          pending, MODE)
         close_resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
             side=close_side, orderType="Market", qty=_qstr(pos.qty),
             reduceOnly=True, timeInForce="IOC", positionIdx=_POSITION_IDX,
+            orderLinkId=pending["link_id"],
         )
         close_oid = _order_id(close_resp)
+        definite_rejection = self._definite_close_rejection
+        pending["order_id"] = close_oid
+        pending["status"] = "ACK_PENDING_FILL" if close_oid else "HALTED_SUBMISSION_UNKNOWN"
+        tracking.set_meta(self.conn, "swing_close_pending", pending, MODE)
+        if definite_rejection and self._position_size() == pos.qty:
+            tracking.set_meta(self.conn, "swing_close_pending", None, MODE)
+            tracking.log_event(self.conn, "close_retry_ready", "close explicitly rejected; unchanged position; retry next tick",
+                               level="error", mode=MODE)
+            return None
+        if close_oid is None:
+            tracking.log_event(self.conn, "close_halted", "swing close ACK unknown; correlated reconciliation required",
+                               level="error", mode=MODE)
         if close_oid is None or self._position_size() != 0.0:
             # ACK is not a fill. Preserve the local position and native stop.
             return None
         self._capture_close_settlement(pos, close_oid)
+        if "closed_pnl" not in self.last_close_snapshot:
+            return None
         if sl_oid:
             self._call("cancel_order", category=_CATEGORY, symbol=_SYMBOL,
                        orderId=sl_oid)
@@ -639,6 +832,22 @@ def _record_notification_delivery(conn, event: str, delivered: bool | None) -> N
     )
 
 
+def _notify_unresolved_close(conn, main_mode: str) -> None:
+    pending = tracking.get_meta(conn, "swing_close_pending", MODE)
+    if not pending or not str(pending.get("status", "")).startswith("HALTED"):
+        return
+    key = f"{pending.get('link_id')}:{pending.get('status')}"
+    if tracking.get_meta(conn, "swing_close_halt_notified", MODE) == key:
+        return
+    delivered = _notify(main_mode,
+        "⚠️ BTC 스윙 데모 청산 상태 확인 필요\n"
+        "청산 요청의 체결 여부가 불명확해 신규 진입과 중복 청산을 보류했습니다.\n"
+        "거래소 실제 잔량과 보호주문을 즉시 확인해야 합니다. 손익은 확정하지 않았습니다.")
+    _record_notification_delivery(conn, "swing_close_halt", delivered)
+    if delivered is True:
+        tracking.set_meta(conn, "swing_close_halt_notified", key, MODE)
+
+
 def _build_exit_message(
     pos: tracking.PositionRow,
     exit_price: float,
@@ -754,6 +963,13 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
     settlement_confirmed = (
         backend.name == "exchange" and "closed_pnl" in settlement
     )
+    if backend.name == "exchange" and not settlement_confirmed:
+        tracking.log_event(conn, "settlement_pending", "unconfirmed swing PnL excluded from ledger",
+                           level="warning", mode=MODE)
+        return equity, trade_counter
+    pending = tracking.get_meta(conn, "swing_close_pending", MODE)
+    if pending:
+        reason = pending.get("reason", reason)
     qty = settlement.get("qty") or pos.qty
     entry_price = settlement.get("entry_price") or pos.entry_price
     exit_price = settlement.get("exit_price") or exit_price
@@ -799,6 +1015,7 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
     ))
     if pos.id is not None:
         tracking.remove_position(conn, pos.id)
+    tracking.set_meta(conn, "swing_close_pending", None, MODE)
     equity_before = equity
     equity_after = backend.equity(fallback=equity_before + net)
     tracking.record_equity(conn, equity_after, MODE, bar_time_str)
@@ -857,6 +1074,8 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
                s1: pd.DataFrame, equity: float,
                main_mode: str) -> Optional[tracking.PositionRow]:
     """4h 확정봉에서 진입 평가. 성공 시 저장된 PositionRow, 아니면 None."""
+    if tracking.get_meta(conn, "swing_close_pending", MODE):
+        return None
     if len(s4) < 36 or s1.empty:
         return None
     cur = s4.iloc[-1]
@@ -1173,6 +1392,7 @@ def process(root_conn, tf_data: dict, main_mode: str = "shadow",
             if pos is not None:
                 result["events"] += 1
 
+    _notify_unresolved_close(conn, main_mode)
     tracking.set_meta(conn, "last_processed_30m_ns",
                       int(new_bars.index[-1].value), MODE)
     if last_4h_ns is not None:

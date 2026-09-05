@@ -491,6 +491,233 @@ def _pos_row(**over):
 
 
 class TestExchangeBackend:
+    def test_unresolved_close_alert_once_per_state(self, conn, monkeypatch):
+        from live import swing, tracking
+        messages = []
+        monkeypatch.setattr(swing, "_notify", lambda mode,msg: messages.append(msg) or True)
+        tracking.set_meta(conn, "swing_close_pending",
+                          {"link_id":"test", "status":"HALTED_SUBMISSION_UNKNOWN"}, "swing")
+        swing._notify_unresolved_close(conn, "demo")
+        swing._notify_unresolved_close(conn, "demo")
+        assert len(messages) == 1
+        assert "보호주문" in messages[0]
+
+    def test_pybit_explicit_invalid_request_can_retry(self, conn):
+        from live import swing, tracking
+        error = type("InvalidRequestError", (Exception,), {"__module__": "pybit.exceptions", "status_code": 110017})
+        sess = FakeSession()
+        sess.position_size = .1
+        def reject(**kw):
+            raise error("reduce-only rejection")
+        sess.place_order = reject
+        assert swing.ExchangeBackend(conn, sess).close(_pos_row(), 48000) is None
+        assert tracking.get_meta(conn, "swing_close_pending", "swing") is None
+
+    def test_explicit_reject_not_permanent_pending_but_timeout_is(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.position_size = .1
+        def reject(**kw):
+            sess._record("place_order", kw)
+            return {"retCode": 110017, "retMsg": "Reduce-only rule not satisfied"}
+        sess.place_order = reject
+        be = swing.ExchangeBackend(conn, sess)
+        assert be.close(_pos_row(), 48000) is None
+        assert tracking.get_meta(conn, "swing_close_pending", "swing") is None
+        be.close(_pos_row(), 48000)
+        assert len(sess._calls_named("place_order")) == 2
+        def timeout(**kw):
+            sess._record("place_order", kw)
+            raise TimeoutError("ambiguous")
+        sess.place_order = timeout
+        be.close(_pos_row(), 48000)
+        assert tracking.get_meta(conn, "swing_close_pending", "swing")["status"] == "HALTED_SUBMISSION_UNKNOWN"
+        swing.ExchangeBackend(conn, sess).close(_pos_row(), 48000)
+        assert len(sess._calls_named("place_order")) == 3
+
+    def test_partial_close_still_repairs_remaining_protection(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.position_size = .04
+        tracking.set_meta(conn, "swing_close_pending", {"order_id": "partial", "reason": "swing_ma35_exit"}, "swing")
+        sess.get_open_orders = lambda **kw: {"retCode": 0, "result": {"list": []}}
+        sess.get_tickers = lambda **kw: {"retCode": 0, "result": {"list": [{"lastPrice": "50000"}]}}
+        sess.set_trading_stop = lambda **kw: sess._record("set_trading_stop", kw) or {"retCode": 0, "result": {}}
+        swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None)
+        assert sess._calls_named("set_trading_stop")[0]["tpslMode"] == "Full"
+        assert not sess._calls_named("place_order")
+
+    def test_rejected_fallback_retries_only_after_terminal_zero_proof(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.position_size = .1
+        sess.get_open_orders = lambda **kw: {"retCode": 0, "result": {"list": []}}
+        sess.get_tickers = lambda **kw: {"retCode": 0, "result": {"list": [{"lastPrice": "48000"}]}}
+        def rejected(**kw):
+            sess._record("place_order", kw)
+            return {"retCode": 0, "result": {"orderId": "rejected"}}
+        sess.place_order = rejected
+        be = swing.ExchangeBackend(conn, sess)
+        assert be.check_stop(_pos_row(), None) is None
+        pending = tracking.get_meta(conn, "swing_close_pending", "swing")
+        assert pending["link_id"] == sess._calls_named("place_order")[0]["orderLinkId"]
+        sess.get_order_history = lambda **kw: {"retCode": 0, "result": {"list": [{
+            "orderId": "rejected", "orderLinkId": pending["link_id"], "orderStatus": "Rejected",
+            "cumExecQty": "0", "qty": ".1", "symbol": "BTCUSDT", "side": "Sell", "reduceOnly": True}]}}
+        swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None)
+        assert len(sess._calls_named("place_order")) == 2
+        assert sess._calls_named("place_order")[1]["orderLinkId"] != pending["link_id"]
+
+    def test_close_timeout_is_not_retried_even_after_restart(self, conn):
+        from live import swing
+        sess = FakeSession()
+        sess.position_size = .1
+        attempts = []
+        def lost_ack(**kw):
+            attempts.append(kw)
+            raise TimeoutError("response lost")
+        sess.place_order = lost_ack
+        swing.ExchangeBackend(conn, sess).close(_pos_row(), 50000.)
+        swing.ExchangeBackend(conn, sess).close(_pos_row(), 50000.)
+        assert len(attempts) == 1
+
+    @pytest.mark.parametrize("second", [
+        {"retCode": 0, "result": None},
+        {"retCode": 0, "result": {"list": [{"side": "Buy", "size": ".2"}]}},
+        {"retCode": 0, "result": {"list": [{"side": "Sell", "size": ".1"}]}},
+    ])
+    def test_second_position_read_must_match_before_repair(self, conn, second):
+        from live import swing
+        sess = FakeSession()
+        snapshots = iter([{"retCode": 0, "result": {"list": [{"side": "Buy", "size": ".1"}]}}, second])
+        sess.get_positions = lambda **kw: next(snapshots)
+        sess.set_trading_stop = lambda **kw: pytest.fail("must not mutate uncertain position")
+        assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None) is None
+
+    @pytest.mark.parametrize("order_id", [None, "stale"])
+    def test_unknown_close_does_not_create_performance(self, conn, monkeypatch, order_id):
+        from live import swing, tracking
+        monkeypatch.setattr(swing, "_RETRY_SLEEP_SEC", 0.)
+        sess = FakeSession()
+        sess.closed_pnl_rows = [{"orderId": "other", "qty": ".1", "avgExitPrice": "51000", "closedPnl": "99"}]
+        tracking.set_meta(conn, "swing_sl_order_id", order_id, "swing")
+        tracking.save_position(conn, _pos_row())
+        be = swing.ExchangeBackend(conn, sess)
+        assert be.check_stop(_pos_row(), None) is None
+        assert tracking.get_meta(conn, "swing_close_pending", "swing")
+        assert swing._close_position(conn, be, _pos_row(), 51000, 0., "swing_sl", "t", 10000., 0, "demo") == (10000., 0)
+        assert conn.execute("SELECT COUNT(*) FROM btc_trading_history").fetchone()[0] == 0
+        assert tracking.load_open_positions(conn, "swing")
+
+    def test_delayed_settlement_survives_backend_restart(self, conn, monkeypatch):
+        from live import swing, tracking
+        monkeypatch.setattr(swing, "_RETRY_SLEEP_SEC", 0.)
+        monkeypatch.setattr(swing, "_notify", lambda *_: True)
+        sess = FakeSession()
+        sess.position_size = .1
+        tracking.save_position(conn, _pos_row())
+        pos = tracking.load_open_positions(conn, "swing")[0]
+        assert swing.ExchangeBackend(conn, sess).close(pos, 51000) is None
+        assert tracking.get_meta(conn, "swing_close_pending", "swing")["order_id"] == "oid-1"
+        be = swing.ExchangeBackend(conn, sess)
+        assert be.close(pos, 51000) is None
+        assert len(sess._calls_named("place_order")) == 1
+        sess.closed_pnl_rows = [{"orderId": "oid-1", "qty": ".1", "avgExitPrice": "51000", "closedPnl": "99"}]
+        assert be.check_stop(pos, None) == 51000
+        swing._close_position(conn, be, pos, 51000, 0., "swing_sl", "t", 10000., 0, "demo")
+        assert tracking.get_meta(conn, "swing_close_pending", "swing") is None
+        assert conn.execute("SELECT exit_reason FROM btc_trading_history").fetchone()[0] == "swing_ma35_exit"
+
+    def test_repaired_stop_identity_used_for_later_fill(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.position_size = .1
+        orders = []
+        sess.get_open_orders = lambda **kw: {"retCode": 0, "result": {"list": list(orders)}}
+        sess.get_tickers = lambda **kw: {"retCode": 0, "result": {"list": [{"lastPrice": "50000"}]}}
+        def restore(**kw):
+            orders.append({"orderId": "restored", "orderType": "Market", "reduceOnly": True,
+                           "side": "Sell", "qty": ".1", "triggerPrice": "49000", "triggerDirection": 2,
+                           "triggerBy": "LastPrice", "positionIdx": 0})
+            return {"retCode": 0, "result": {}}
+        sess.set_trading_stop = restore
+        be = swing.ExchangeBackend(conn, sess)
+        assert be.check_stop(_pos_row(), None) is None
+        assert tracking.get_meta(conn, "swing_sl_order_id", "swing") == "restored"
+        sess.position_size = 0
+        sess.closed_pnl_rows = [{"orderId": "restored", "qty": ".1", "avgExitPrice": "49000", "closedPnl": "-101"}]
+        assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None) == 49000
+
+    def test_conditional_limit_is_not_stop_protection(self, conn):
+        from live import swing
+        sess = FakeSession()
+        sess.position_size = .1
+        sess.get_open_orders = lambda **kw: {"retCode": 0, "result": {"list": [
+            {"orderId": "limit", "orderType": "Limit", "reduceOnly": True, "side": "Sell",
+             "qty": ".1", "triggerPrice": "49000", "triggerDirection": 2,
+             "triggerBy": "LastPrice", "positionIdx": 0}]}}
+        sess.get_tickers = lambda **kw: {"retCode": 0, "result": {"list": [{"lastPrice": "50000"}]}}
+        sess.set_trading_stop = lambda **kw: sess._record("set_trading_stop", kw) or {"retCode": 0, "result": {}}
+        swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None)
+        assert sess._calls_named("set_trading_stop")
+
+    @pytest.mark.parametrize("response", [
+        {"retCode": 0, "result": {}},
+        {"retCode": 0, "result": {"list": [{"size": "nan"}]}},
+        {"retCode": 0, "result": {"list": [{"size": "bad"}]}},
+    ])
+    def test_invalid_snapshot_is_not_a_stop_fill(self, conn, response):
+        from live import swing
+        sess = FakeSession()
+        sess.get_positions = lambda **kw: response
+        assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), pd.Series({})) is None
+        assert not sess._calls_named("cancel_order")
+
+    def test_tighter_position_stop_is_never_loosened(self, conn):
+        from live import swing
+        sess = FakeSession()
+        sess.get_positions = lambda **kw: {"retCode": 0, "result": {"list": [
+            {"side": "Buy", "size": ".1", "stopLoss": "49500"}]}}
+        assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), pd.Series({})) is None
+        assert not sess._calls_named("place_order")
+        assert not sess._calls_named("cancel_order")
+
+    def test_repair_ack_is_not_reported_as_confirmed(self, conn):
+        from live import swing
+        sess = FakeSession()
+        sess.position_size = .1
+        sess.get_open_orders = lambda **kw: {"retCode": 0, "result": {"list": []}}
+        sess.get_tickers = lambda **kw: {"retCode": 0, "result": {"list": [{"lastPrice": "50000"}]}}
+        sess.set_trading_stop = lambda **kw: {"retCode": 0, "result": {}}
+        swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), pd.Series({}))
+        event = conn.execute("SELECT message FROM btc_events WHERE kind=?", ("protection_repair",)).fetchone()
+        assert "UNCONFIRMED" in event["message"]
+
+    def test_missing_stop_is_repaired_without_removing_existing_orders(self, conn):
+        from live import swing
+        sess = FakeSession()
+        sess.position_size = .1
+        sess.get_open_orders = lambda **kw: {"retCode": 0, "result": {"list": []}}
+        sess.get_tickers = lambda **kw: {"retCode": 0, "result": {"list": [{"lastPrice": "50000"}]}}
+        sess.set_trading_stop = lambda **kw: sess._record("set_trading_stop", kw) or {"retCode": 0, "result": {}}
+        backend = swing.ExchangeBackend(conn, sess)
+        assert backend.check_stop(_pos_row(), pd.Series({"low": 1, "high": 99999})) is None
+        assert sess._calls_named("set_trading_stop")[0]["stopLoss"] == "49000.0"
+        assert not sess._calls_named("cancel_order")
+
+    def test_matching_native_stop_does_not_churn(self, conn):
+        from live import swing
+        sess = FakeSession()
+        sess.position_size = .1
+        sess.get_open_orders = lambda **kw: {"retCode": 0, "result": {"list": [
+            {"reduceOnly": True, "side": "Sell", "qty": "0.1", "triggerPrice": "49000",
+             "triggerDirection": 2, "triggerBy": "LastPrice", "positionIdx": 0}]}}
+        backend = swing.ExchangeBackend(conn, sess)
+        for _ in range(3):
+            assert backend.check_stop(_pos_row(), pd.Series({"low": 40000})) is None
+        assert not sess._calls_named("place_order")
+        assert not sess._calls_named("cancel_order")
+
     def test_unconfirmed_close_preserves_native_stop(self, conn):
         from live import swing, tracking
         sess = FakeSession()
@@ -596,6 +823,7 @@ class TestExchangeBackend:
         sess = FakeSession()
         sess.position_size = 0.0  # 스탑 체결로 포지션 소멸 상태
         sess.close_exec_price = 48_990.0
+        sess.closed_pnl_rows = [{"orderId": "oid-7", "qty": ".1", "avgExitPrice": "48990", "closedPnl": "-102"}]
         tracking.set_meta(conn, "swing_sl_order_id", "oid-7", "swing")
         be = swing.ExchangeBackend(conn, sess)
         price = be.check_stop(_pos_row(), None)
@@ -651,6 +879,7 @@ class TestExchangeBackend:
         sess = FakeSession()
         sess.position_size = 0.1
         sess.close_exec_price = 50_500.0
+        sess.closed_pnl_rows = [{"orderId": "oid-1", "qty": ".1", "avgExitPrice": "50500", "closedPnl": "49"}]
         tracking.set_meta(conn, "swing_sl_order_id", "oid-3", "swing")
         be = swing.ExchangeBackend(conn, sess)
         fill = be.close(_pos_row(), 50_400.0)
