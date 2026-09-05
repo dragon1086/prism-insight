@@ -87,6 +87,16 @@ Avoid broad production-like runs unless the task requires them.
   `docs/TRADING_CHANGE_REVIEW_HARNESS.md`. In particular, do not generalize a
   trigger-local failure into a global hard gate without testing counterexamples.
 
+### BTC roadmap governance
+
+- Before BTC strategy, execution, backtest, risk, observability, or deployment work,
+  read `docs/BTC_ROADMAP_ko.md` and identify the milestone/task ID and prerequisites.
+- Follow its evidence gates; keep execution-safety fixes separate from strategy experiments.
+- At completion, update roadmap status only with verified evidence and distinguish
+  implementation, tests, deployment, forward observation, and profitability proof.
+- Agentmemory is a pointer/reminder, not the authoritative roadmap or status ledger.
+- Roadmap review is development-time only; do not add it to the live trading loop.
+
 ### Entry-quality analysis
 
 - Route requests such as “매수품질 데이터 분석해줘”, entry-quality validation,
