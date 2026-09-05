@@ -491,6 +491,83 @@ def _pos_row(**over):
 
 
 class TestExchangeBackend:
+    def test_unresolved_close_alert_once_per_state(self, conn, monkeypatch):
+        from live import swing, tracking
+        messages = []
+        monkeypatch.setattr(swing, "_notify", lambda mode,msg: messages.append(msg) or True)
+        tracking.set_meta(conn, "swing_close_pending",
+                          {"link_id":"test", "status":"HALTED_SUBMISSION_UNKNOWN"}, "swing")
+        swing._notify_unresolved_close(conn, "demo")
+        swing._notify_unresolved_close(conn, "demo")
+        assert len(messages) == 1
+        assert "보호주문" in messages[0]
+
+    def test_pybit_explicit_invalid_request_can_retry(self, conn):
+        from live import swing, tracking
+        error = type("InvalidRequestError", (Exception,), {"__module__": "pybit.exceptions", "status_code": 110017})
+        sess = FakeSession()
+        sess.position_size = .1
+        def reject(**kw):
+            raise error("reduce-only rejection")
+        sess.place_order = reject
+        assert swing.ExchangeBackend(conn, sess).close(_pos_row(), 48000) is None
+        assert tracking.get_meta(conn, "swing_close_pending", "swing") is None
+
+    def test_explicit_reject_not_permanent_pending_but_timeout_is(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.position_size = .1
+        def reject(**kw):
+            sess._record("place_order", kw)
+            return {"retCode": 110017, "retMsg": "Reduce-only rule not satisfied"}
+        sess.place_order = reject
+        be = swing.ExchangeBackend(conn, sess)
+        assert be.close(_pos_row(), 48000) is None
+        assert tracking.get_meta(conn, "swing_close_pending", "swing") is None
+        be.close(_pos_row(), 48000)
+        assert len(sess._calls_named("place_order")) == 2
+        def timeout(**kw):
+            sess._record("place_order", kw)
+            raise TimeoutError("ambiguous")
+        sess.place_order = timeout
+        be.close(_pos_row(), 48000)
+        assert tracking.get_meta(conn, "swing_close_pending", "swing")["status"] == "HALTED_SUBMISSION_UNKNOWN"
+        swing.ExchangeBackend(conn, sess).close(_pos_row(), 48000)
+        assert len(sess._calls_named("place_order")) == 3
+
+    def test_partial_close_still_repairs_remaining_protection(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.position_size = .04
+        tracking.set_meta(conn, "swing_close_pending", {"order_id": "partial", "reason": "swing_ma35_exit"}, "swing")
+        sess.get_open_orders = lambda **kw: {"retCode": 0, "result": {"list": []}}
+        sess.get_tickers = lambda **kw: {"retCode": 0, "result": {"list": [{"lastPrice": "50000"}]}}
+        sess.set_trading_stop = lambda **kw: sess._record("set_trading_stop", kw) or {"retCode": 0, "result": {}}
+        swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None)
+        assert sess._calls_named("set_trading_stop")[0]["tpslMode"] == "Full"
+        assert not sess._calls_named("place_order")
+
+    def test_rejected_fallback_retries_only_after_terminal_zero_proof(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.position_size = .1
+        sess.get_open_orders = lambda **kw: {"retCode": 0, "result": {"list": []}}
+        sess.get_tickers = lambda **kw: {"retCode": 0, "result": {"list": [{"lastPrice": "48000"}]}}
+        def rejected(**kw):
+            sess._record("place_order", kw)
+            return {"retCode": 0, "result": {"orderId": "rejected"}}
+        sess.place_order = rejected
+        be = swing.ExchangeBackend(conn, sess)
+        assert be.check_stop(_pos_row(), None) is None
+        pending = tracking.get_meta(conn, "swing_close_pending", "swing")
+        assert pending["link_id"] == sess._calls_named("place_order")[0]["orderLinkId"]
+        sess.get_order_history = lambda **kw: {"retCode": 0, "result": {"list": [{
+            "orderId": "rejected", "orderLinkId": pending["link_id"], "orderStatus": "Rejected",
+            "cumExecQty": "0", "qty": ".1", "symbol": "BTCUSDT", "side": "Sell", "reduceOnly": True}]}}
+        swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None)
+        assert len(sess._calls_named("place_order")) == 2
+        assert sess._calls_named("place_order")[1]["orderLinkId"] != pending["link_id"]
+
     def test_close_timeout_is_not_retried_even_after_restart(self, conn):
         from live import swing
         sess = FakeSession()
