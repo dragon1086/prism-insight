@@ -199,6 +199,15 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
         )
 
     # --- 2a. 10m protection pass (before strategy processing) ---
+    from live.exit_capture import capture as capture_exit
+    capture_price = float(protection_bars.iloc[-1]["close"]) if not protection_bars.empty else None
+    capture_time = pd.Timestamp.now(tz="UTC").isoformat()
+    capture_bar_time = str(protection_bars.index[-1]) if not protection_bars.empty else None
+    capture_exit(root_conn, mode=mode, timestamp=capture_time,
+                 mark_price=capture_price, stage="before_tick", price_bar_time=capture_bar_time)
+    if mode == "demo":
+        capture_exit(root_conn, mode="swing", timestamp=capture_time,
+                     mark_price=capture_price, stage="before_tick", price_bar_time=capture_bar_time)
     last_protection_processed_ns = last_protection_ns
     for bar_time, bar in protection_bars.iterrows():
         adapter.process_protection_bar(bar_time, bar)
@@ -312,6 +321,12 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
     except Exception as exc:  # noqa: BLE001 — 스윙 레인 실패는 메인과 무관
         tracking.log_event(root_conn, "error", f"swing lane: {exc}",
                            level="error", mode="swing")
+
+    capture_exit(root_conn, mode=mode, timestamp=capture_time,
+                 mark_price=capture_price, stage="after_tick", price_bar_time=capture_bar_time)
+    if mode == "demo":
+        capture_exit(root_conn, mode="swing", timestamp=capture_time,
+                     mark_price=capture_price, stage="after_tick", price_bar_time=capture_bar_time)
 
     # --- 3. 매매일지/부검 (학습 기어 — 트레이딩 처리 완료 후에만, 실패 절대 비전파) ---
     # LLM 은 주문 경로 밖: 종결 트레이드의 facts 추출 + 부검만 수행한다.
