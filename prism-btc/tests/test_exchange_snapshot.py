@@ -40,3 +40,10 @@ def test_open_orders_merge_without_dropping_pages():
         return response([{"orderId":"b" if kw.get("cursor") else "a"}],
                         "" if kw.get("cursor") else "next")
     assert len(read_complete(call,"get_open_orders")["result"]["list"]) == 2
+
+
+def test_conflicting_protection_order_type_is_unknown():
+    def call(*a,**kw):
+        return response([{"orderId":"same","orderType":"Limit" if kw.get("cursor") else "Market"}],
+                        "" if kw.get("cursor") else "next")
+    assert read_complete(call,"get_open_orders") is None
