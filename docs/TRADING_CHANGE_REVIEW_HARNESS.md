@@ -3,6 +3,18 @@
 Use this checklist before changing screening, regime, entry, exit, or position-sizing behavior.
 It is a development review harness, not a runtime trading component.
 
+## BTC roadmap checkpoint
+
+For BTC work, first read [BTC_ROADMAP_ko.md](BTC_ROADMAP_ko.md).
+Record the milestone/task ID, dependencies, acceptance evidence, and rollback scope.
+Prioritize unresolved execution/protection defects over parameter optimization.
+Do not treat more timeframes, a passing test suite, or a higher backtest return as
+proof of live safety or profitability. Use the linked profitability contract.
+After work, update the roadmap only where evidence changed; explicitly separate
+code/test/deployment/forward-validation states and identify the next task.
+Memory stores the pointer and principles, not a competing copy of roadmap status.
+This checkpoint adds no runtime process, network query, or LLM call to trading.
+
 ## Review lenses
 
 - **William O'Neil / CAN SLIM**: market direction, leadership, accumulation versus
