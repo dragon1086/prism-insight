@@ -92,6 +92,40 @@ def test_healthy_no_issues_no_send(captured):
     assert captured == []  # 정상이면 조용.
 
 
+def test_health_alert_history_never_counts_as_primary_errors():
+    conn = _healthy_conn()
+    for _ in range(8):
+        tracking.log_event(conn, "health", "[error_burst] previous alert", level="error",
+                           mode="demo", ts=_iso(_NOW-timedelta(minutes=10)))
+    assert healthcheck._check_error_burst(conn, "demo", _NOW) is None
+
+
+def test_six_reported_events_with_only_four_primary_errors_do_not_alert():
+    conn = _healthy_conn()
+    for _ in range(4):
+        tracking.log_event(conn, "error", "position read failed", level="error",
+                           mode="demo", ts=_iso(_NOW-timedelta(minutes=30)))
+    for _ in range(2):
+        tracking.log_event(conn, "health", "[error_burst] old alert", level="error",
+                           mode="demo", ts=_iso(_NOW-timedelta(minutes=10)))
+    assert healthcheck._check_error_burst(conn, "demo", _NOW) is None
+
+
+def test_primary_errors_still_alert_and_report_real_last_event():
+    conn = _healthy_conn()
+    for _ in range(6):
+        tracking.log_event(conn, "protection", "real protection failure", level="error",
+                           mode="demo", ts=_iso(_NOW-timedelta(minutes=30)))
+    for _ in range(205):
+        tracking.log_event(conn, "health", "nested health alert", level="error",
+                           mode="demo", ts=_iso(_NOW-timedelta(minutes=5)))
+    result = healthcheck._check_error_burst(conn, "demo", _NOW)
+    assert result is not None
+    assert "6건" in result["msg"]
+    assert "real protection failure" in result["msg"]
+    assert "nested health" not in result["msg"]
+
+
 # ---------------------------------------------------------------------------
 # 1) 데몬 정지
 # ---------------------------------------------------------------------------
