@@ -514,7 +514,7 @@ def load_open_positions(conn: sqlite3.Connection, mode: Mode = "shadow") -> list
 # Trade / equity / event recording
 # ---------------------------------------------------------------------------
 
-def record_trade(conn: sqlite3.Connection, trade: TradeRow) -> None:
+def record_trade(conn: sqlite3.Connection, trade: TradeRow, *, commit: bool = True) -> None:
     d = asdict(trade)
     cols = ", ".join(["mode", *_TRADE_FIELDS])
     qs = ", ".join(["?"] * (1 + len(_TRADE_FIELDS)))
@@ -522,7 +522,8 @@ def record_trade(conn: sqlite3.Connection, trade: TradeRow) -> None:
         f"INSERT INTO btc_trading_history ({cols}) VALUES ({qs})",
         (trade.mode, *[d[f] for f in _TRADE_FIELDS]),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def record_equity(

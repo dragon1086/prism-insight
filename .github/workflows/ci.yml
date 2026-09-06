@@ -95,6 +95,22 @@ jobs:
           python -m pytest tests/test_sell_claim_concurrency.py -q
           python -m pytest tests/test_fill_chaser.py -q
           python -m pytest --noconftest prism-us/tests/test_fill_chaser_us.py -q
+          # Non-scalp execution safety: fake brokers and isolated SQLite only.
+          python tools/run_btc_safety_tests.py \
+            prism-btc/tests/test_demo.py \
+            prism-btc/tests/test_native_stop.py \
+            prism-btc/tests/test_take_profit.py \
+            prism-btc/tests/test_protection_reconcile.py \
+            prism-btc/tests/test_swing.py \
+            prism-btc/tests/test_swing_capital.py \
+            prism-btc/tests/test_live_runner.py \
+            prism-btc/tests/test_runner_recovery.py \
+            prism-btc/tests/test_broker_recovery.py \
+            prism-btc/tests/test_closed_entry_recovery.py \
+            prism-btc/tests/test_order_retirement.py \
+            prism-btc/tests/test_entry_reservations.py \
+            prism-btc/tests/test_shared_entry_coordinator.py \
+            prism-btc/tests/test_swing_entry_recovery.py
           # Pure offline scalp policy only; no exchange client, DB, or live loop.
           PYTHONPATH=prism-btc python -m pytest --noconftest \
             prism-btc/tests/test_scalp.py \

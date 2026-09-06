@@ -427,6 +427,7 @@ class FakeSession:
         self.execution_rows: list[dict] = []
         self.closed_pnl_rows: list[dict] = []
         self.entry_execution: dict | None = None
+        self.entry_parent: dict | None = None
         self.stop_rows: list[dict] = []
 
     def _record(self, name, kw):
@@ -444,7 +445,11 @@ class FakeSession:
             self.position_size = float(kw["qty"])
             self.entry_execution = dict(orderId=f"oid-{self._oid}", orderLinkId=kw.get("orderLinkId"),
                                         execId=f"exec-{self._oid}", execType="Trade", symbol="BTCUSDT",
-                                        side=kw["side"], execQty=kw["qty"], execPrice=str(self.avg_price))
+                                        side=kw["side"], execQty=kw["qty"], execPrice=str(self.avg_price),
+                                        execFee=str(float(kw["qty"]) * self.avg_price * .00055),
+                                        execTime="1767801720000")
+            self.entry_parent = dict(kw, orderId=f"oid-{self._oid}", reduceOnly=False,
+                                     cumExecQty=kw["qty"], leavesQty="0", orderStatus="Filled")
         if kw.get("reduceOnly") and kw.get("orderType") == "Market" \
                 and "triggerPrice" not in kw:
             self.position_size = 0.0
@@ -481,6 +486,13 @@ class FakeSession:
                     "execPrice": str(self.close_exec_price),
                     "orderId": kw.get("orderId", "")}]
         return {"retCode": 0, "result": {"list": lst}}
+
+    def get_order_history(self, **kw):
+        self._record("get_order_history", kw)
+        parent = self.entry_parent
+        rows = [parent] if parent and (not kw.get("orderId") or kw["orderId"] == parent["orderId"]) and (
+            not kw.get("orderLinkId") or kw["orderLinkId"] == parent["orderLinkId"]) else []
+        return {"retCode": 0, "result": {"list": rows}}
 
     def get_closed_pnl(self, **kw):
         self._record("get_closed_pnl", kw)
@@ -837,16 +849,22 @@ class TestExchangeBackend:
         assert swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.) == 50000.
         entry = tracking.get_meta(conn, "swing_native_entry", "swing")
         backup = tracking.get_meta(conn, "swing_sl_order_id", "swing")
+        # This close-settlement fixture represents an already committed entry;
+        # pending-entry crash recovery is tested separately before flat cleanup.
+        tracking.set_meta(conn, "swing_entry_pending", None, "swing")
         sess.position_size = 0
         sess.get_order_history = lambda **kw: {"retCode": 0, "result": {"list": [dict(
             orderId="native", parentOrderLinkId=entry["link_id"], symbol="BTCUSDT",
             side="Sell", positionIdx=0, reduceOnly=True, orderType="Market",
-            stopOrderType="StopLoss", orderStatus="Filled", cumExecQty=".1")]}}
+            stopOrderType="StopLoss", orderStatus="Filled", cumExecQty=".1"), *sess.stop_rows]}}
         assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None) is None
         assert not sess._calls_named("cancel_order")
         sess.closed_pnl_rows = [dict(orderId="native", qty=".1", avgExitPrice="49000", closedPnl="-101")]
         assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None) == 49000
         assert sess._calls_named("cancel_order") == [dict(category="linear", symbol="BTCUSDT", orderId=backup)]
+        # Cancellation ACK is not proof the backup has left the exchange.
+        assert tracking.get_meta(conn, "stop_retirements_v1", "swing") == [backup]
+        assert tracking.get_meta(conn, "swing_sl_order_id", "swing") == backup
 
     def test_matching_manual_stop_is_not_adopted(self, conn):
         from live import swing, tracking
@@ -1228,11 +1246,14 @@ class TestExchangeBackend:
         sess.position_size = 0.0  # 스탑 체결로 포지션 소멸 상태
         sess.close_exec_price = 48_990.0
         sess.closed_pnl_rows = [{"orderId": "oid-7", "qty": ".1", "avgExitPrice": "48990", "closedPnl": "-102"}]
+        sess.get_order_history = lambda **kw: {"retCode": 0, "result": {"list": [dict(
+            orderId="oid-7", symbol="BTCUSDT", positionIdx=0, side="Sell",
+            reduceOnly=True, orderType="Market", triggerPrice="49000", orderStatus="Filled")]}}
         tracking.set_meta(conn, "swing_sl_order_id", "oid-7", "swing")
         be = swing.ExchangeBackend(conn, sess)
         price = be.check_stop(_pos_row(), None)
         assert price == pytest.approx(48_990.0)  # 실체결가 사용
-        assert sess._calls_named("cancel_order")  # 잔여 SL 정리
+        assert not sess._calls_named("cancel_order")  # exact Filled needs no cancellation
         assert tracking.get_meta(conn, "swing_sl_order_id", "swing") == ""
 
     def test_check_stop_captures_bybit_closed_pnl_settlement(self, conn):
@@ -1284,11 +1305,16 @@ class TestExchangeBackend:
         sess.position_size = 0.1
         sess.close_exec_price = 50_500.0
         sess.closed_pnl_rows = [{"orderId": "oid-1", "qty": ".1", "avgExitPrice": "50500", "closedPnl": "49"}]
+        sess.get_order_history = lambda **kw: {"retCode": 0, "result": {"list": [dict(
+            orderId="oid-3", symbol="BTCUSDT", positionIdx=0, side="Sell",
+            reduceOnly=True, orderType="Market", triggerPrice="49000", orderStatus="Untriggered")]}}
         tracking.set_meta(conn, "swing_sl_order_id", "oid-3", "swing")
         be = swing.ExchangeBackend(conn, sess)
         fill = be.close(_pos_row(), 50_400.0)
         assert fill == pytest.approx(50_500.0)
         assert sess._calls_named("cancel_order")[0]["orderId"] == "oid-3"
+        assert tracking.get_meta(conn, "stop_retirements_v1", "swing") == ["oid-3"]
+        assert tracking.get_meta(conn, "swing_sl_order_id", "swing") == "oid-3"
         reduces = [kw for kw in sess._calls_named("place_order")
                    if kw.get("reduceOnly")]
         assert reduces and reduces[0]["side"] == "Sell"
