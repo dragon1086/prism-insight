@@ -131,3 +131,35 @@ cd prism-btc && ../.venv-bt/bin/python -m analysis.round5_gate_cross
 `analysis/round5_gate_cross.py` 에는 전-NaN 즉시-실패 가드가 있다.
 루트 `.venv` 자체의 근본 수리는 Python 3.12 재구축이 정답이나, 라이브
 subscriber(tmux)가 사용 중이므로 장 마감 유지보수 창에서만 수행할 것.
+
+## Offline adaptive retest (2026-09-06)
+
+`analysis.adaptive_retest` compares the existing pure swing decisions and a new
+closed30m breakout hypothesis with closed1h/4h context. Four exit profiles isolate
+protective trailing,50% TP1, and a further runner-management package. A separate
+paired fixed20-lot study must not be interpreted as joint-account CAGR.
+
+This is **research only**, not a live strategy or complete production-main replay.
+The specification is `docs/BTC_ADAPTIVE_RETEST_CONTRACT_2026-09-06_ko.md` in the
+repository root. It freezes146 portfolio trials, all raw signal cohorts, costs,
+delays, synthetic paths, partial liquidity, and a22-column statistical family.
+Previously observed2022–2025 data is not a fresh holdout. No candidate is activated.
+
+From the repository root, with the existing read-only historical databases:
+
+```bash
+PYTHONPATH=prism-btc .venv-bt/bin/python -m analysis.adaptive_retest \
+  --output-dir /absolute/fresh/run1 --preregister-only
+PYTHONPATH=prism-btc .venv-bt/bin/python -m analysis.adaptive_retest \
+  --output-dir /absolute/fresh/run1 --profile-only
+PYTHONPATH=prism-btc .venv-bt/bin/python -m analysis.adaptive_retest \
+  --output-dir /absolute/fresh/run1 \
+  --market-db prism-btc/state/btc_market.db \
+  --execution-db prism-btc/state/btc_research_5m.db
+```
+
+Use a second fresh directory for independent reproduction. Interrupted runs are
+retained, not overwritten or silently resumed. Do not change financial source or
+the specification after freezing; use a new version/output directory if a defect
+requires repair. Inspect `run_state.json`, `registry.json`, and `failure.json`
+before interpreting any report. A completed tool run does not prove profitability.
