@@ -65,6 +65,21 @@ Avoid broad production-like runs unless the task requires them.
 - Treat generated logs, PDFs, JSON outputs, and SQLite databases as user data unless the task explicitly targets them.
 - Keep changes narrow and consistent with existing patterns; this repo has substantial behavior encoded in prompts and orchestration order.
 
+## Authorized PR merge and deployment workflow
+
+- User instruction (2026-09-06): for PRISM-INSIGHT task-scoped, validated changes,
+  proceed with merge and deployment without waiting for a separate approval review.
+- The main branch requires zero approving reviews by explicit user request.
+  Preserve the PR requirement, CI/status checks, and all other branch protections.
+- Check the exact PR head, dependency order, relevant tests, and CI before merging.
+  Do not interpret the review waiver as permission to merge failing or unrelated work.
+- Follow docs/SERVER_GIT_OPERATIONS_ko.md: clean target, verified commit, ff-only
+  deployment, no destructive reset/stash/clean, and no credential/runtime-data edits.
+- BTC deployment remains Bybit demo unless the user separately approves real funds.
+  New risk-budget defaults, strategy promotion, and unrelated app-server deployments
+  are not authorized merely by this review-workflow preference.
+- See docs/BTC_TPSL_DEPLOYMENT_2026-09-06_ko.md for the authorization and initial rollout evidence.
+
 ## Engineering Rules
 
 ### Async and I/O
