@@ -190,3 +190,11 @@ are never silently overwritten. The experiment has no optimizer/activation path.
 Different timeframes share prices, and the confidence grade is not a calibrated
 probability. Actual order flow, broker fills, price filters and forward evidence
 remain outside this historical price-proxy study.
+
+`analysis.entry_latency_diagnostic` is a separate **post-hoc** execution-assumption
+check, not a replacement for the frozen transition study or its34-column test.
+It requires a completed original run via `--reference-dir`, first registers a
+fresh `--output-dir --preregister-only`, and then verifies16 original5m controls
+before comparing16 idealized0-delay entry cases. Other checks/SL/exit delays stay
+at5m. See `docs/BTC_MA_ENTRY_LATENCY_DIAGNOSTIC_2026-09-06_ko.md`; do not interpret
+the ideal next-open price as actual sub-five-minute execution or an upper bound.

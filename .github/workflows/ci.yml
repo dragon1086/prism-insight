@@ -109,4 +109,6 @@ jobs:
             prism-btc/tests/test_adaptive_retest.py \
             prism-btc/tests/test_transition_signals.py \
             prism-btc/tests/test_transition_replay.py \
-            prism-btc/tests/test_transition_retest.py -q
+            prism-btc/tests/test_transition_retest.py \
+            prism-btc/tests/test_entry_latency_diagnostic.py \
+            prism-btc/tests/test_entry_latency_runner.py -q
