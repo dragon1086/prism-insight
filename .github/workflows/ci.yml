@@ -100,4 +100,7 @@ jobs:
             prism-btc/tests/test_scalp.py \
             prism-btc/tests/test_execution_replay.py \
             prism-btc/tests/test_replay_data.py \
-            prism-btc/tests/test_scalp_replay_benchmark.py -q
+            prism-btc/tests/test_scalp_replay_benchmark.py \
+            prism-btc/tests/test_portfolio_replay.py \
+            prism-btc/tests/test_strategy_mixture.py \
+            prism-btc/tests/test_mixture_statistics.py -q
