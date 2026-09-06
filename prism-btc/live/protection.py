@@ -2,7 +2,8 @@
 
 The caller owns durable stop submission identity and observed position sizing.
 This does not provide immediate-at-fill protection: attach an exchange-native SL
-to the entry for that guarantee. No cancellation is performed here.
+to reduce that gap, and separately verify broker coverage. No cancellation is
+performed here.
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ class ProtectionResult:
     trigger: float | None = None
     qty: float | None = None
     owned: bool = False
+    order_link_id: str | None = None
 
     @property
     def confirmed(self) -> bool:
@@ -39,11 +41,15 @@ def _positive(value):
 def reconcile_stop(call, *, side: str, qty: float, trigger: float,
                    owned_order_id: str | None = None,
                    create_order_link_id: str | None = None,
+                   allow_owned_creation: bool = False,
                    symbol: str = "BTCUSDT", position_idx: int = 0) -> ProtectionResult:
     """Read → no-op/amend/create → readback; ACK alone never confirms coverage.
 
     Existing unowned stops are never changed. New submission requires a stable
     link ID persisted by the caller before invocation (reuse it after lost ACK).
+    allow_owned_creation permits a NEW aggregate beside unowned/native backup
+    stops only after the caller proves its active entry attachment and Trade
+    executions; it does not grant modification rights over those backup stops.
     Quantization follows BTCUSDT 0.001 quantity / 0.1 price conventions.
     """
     wanted_qty, wanted_trigger = _positive(qty), _positive(trigger)
@@ -82,7 +88,8 @@ def reconcile_stop(call, *, side: str, qty: float, trigger: float,
                                 float(row["triggerPrice"]), float(row["qty"]),
                                 owned=(row["orderId"] == owned_order_id or
                                        bool(create_order_link_id and
-                                            row.get("orderLinkId") == create_order_link_id)))
+                                            row.get("orderLinkId") == create_order_link_id)),
+                                order_link_id=row.get("orderLinkId"))
 
     rows = read()
     if rows is None:
@@ -99,7 +106,7 @@ def reconcile_stop(call, *, side: str, qty: float, trigger: float,
                   (create_order_link_id and row.get("orderLinkId") == create_order_link_id)), None)
     if owned is not None and not valid(owned):
         return ProtectionResult("OWNED_STOP_UNVERIFIABLE", owned_order_id)
-    if candidates and owned is None:
+    if candidates and owned is None and not allow_owned_creation:
         return ProtectionResult("UNOWNED_STOP_INSUFFICIENT", candidates[0]["orderId"])
 
     if owned is not None:
@@ -108,7 +115,7 @@ def reconcile_stop(call, *, side: str, qty: float, trigger: float,
                   "triggerPrice": str(target.quantize(Decimal(".1"), rounding=rounding))}
     else:
         # An ambiguous existing conditional reduce order is not proof of absence.
-        if any(row.get("reduceOnly") is True and _positive(row.get("triggerPrice")) is not None
+        if not allow_owned_creation and any(row.get("reduceOnly") is True and _positive(row.get("triggerPrice")) is not None
                and row.get("stopOrderType") not in ("TakeProfit", "PartialTakeProfit") for row in rows):
             return ProtectionResult("STOP_STATE_AMBIGUOUS", owned_order_id)
         if not create_order_link_id:

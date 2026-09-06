@@ -426,6 +426,8 @@ class FakeSession:
         self.close_exec_price = 0.0
         self.execution_rows: list[dict] = []
         self.closed_pnl_rows: list[dict] = []
+        self.entry_execution: dict | None = None
+        self.stop_rows: list[dict] = []
 
     def _record(self, name, kw):
         self.calls.append((name, kw))
@@ -440,9 +442,15 @@ class FakeSession:
         # 시장가 진입이면 포지션이 생긴 것으로 시뮬.
         if kw.get("orderType") == "Market" and not kw.get("reduceOnly"):
             self.position_size = float(kw["qty"])
+            self.entry_execution = dict(orderId=f"oid-{self._oid}", orderLinkId=kw.get("orderLinkId"),
+                                        execId=f"exec-{self._oid}", execType="Trade", symbol="BTCUSDT",
+                                        side=kw["side"], execQty=kw["qty"], execPrice=str(self.avg_price))
         if kw.get("reduceOnly") and kw.get("orderType") == "Market" \
                 and "triggerPrice" not in kw:
             self.position_size = 0.0
+        if kw.get("triggerPrice"):
+            self.stop_rows.append(dict(kw, orderId=f"oid-{self._oid}", orderStatus="Untriggered",
+                                       stopOrderType="Stop"))
         return {"retCode": 0, "result": {"orderId": f"oid-{self._oid}"}}
 
     def get_positions(self, **kw):
@@ -450,8 +458,13 @@ class FakeSession:
         lst = []
         if self.position_size > 0:
             lst = [{"size": str(self.position_size), "side": "Buy",
+                    "symbol": "BTCUSDT", "positionIdx": 0,
                     "avgPrice": str(self.avg_price), "leverage": "5"}]
         return {"retCode": 0, "result": {"list": lst}}
+
+    def get_open_orders(self, **kw):
+        self._record("get_open_orders", kw)
+        return {"retCode": 0, "result": {"list": list(self.stop_rows)}}
 
     def get_wallet_balance(self, **kw):
         self._record("get_wallet_balance", kw)
@@ -461,6 +474,8 @@ class FakeSession:
     def get_executions(self, **kw):
         self._record("get_executions", kw)
         lst = self.execution_rows
+        if not lst and self.entry_execution and kw.get("orderId") == self.entry_execution["orderId"]:
+            lst = [self.entry_execution]
         if not lst and self.close_exec_price > 0:
             lst = [{"closedSize": "0.1", "execQty": "0.1",
                     "execPrice": str(self.close_exec_price),
@@ -491,6 +506,387 @@ def _pos_row(**over):
 
 
 class TestExchangeBackend:
+    def test_backup_timeout_is_single_submit_with_durable_identity(self, conn, monkeypatch):
+        from live import swing, tracking
+        monkeypatch.setattr(swing.time, "sleep", lambda _: None)
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        original = sess.place_order
+        def submit(**kw):
+            if kw.get("triggerPrice"):
+                sess._record("place_order", kw)
+                pending = tracking.get_meta(conn, "swing_stop_intent", "swing")
+                assert pending["link_id"] == kw["orderLinkId"]
+                raise TimeoutError("accepted")
+            return original(**kw)
+        sess.place_order = submit
+        swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.)
+        assert len([kw for kw in sess._calls_named("place_order") if kw.get("triggerPrice")]) == 1
+        assert tracking.get_meta(conn, "swing_stop_intent", "swing")["status"] == "SUBMISSION_UNKNOWN"
+
+    @pytest.mark.parametrize("timeout", [True, False])
+    def test_backup_restart_exact_readback_without_resubmission(self, conn, timeout):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        original = sess.place_order
+        hidden = []
+        def submit(**kw):
+            response = original(**kw)
+            if kw.get("triggerPrice"):
+                hidden.extend(sess.stop_rows)
+                sess.stop_rows.clear()
+                if timeout:
+                    raise TimeoutError("accepted")
+            return response
+        sess.place_order = submit
+        assert swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.) == 50000.
+        swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None)
+        assert len(sess._calls_named("place_order")) == 2
+        sess.stop_rows = hidden
+        swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None)
+        assert tracking.get_meta(conn, "swing_sl_order_id", "swing") == hidden[0]["orderId"]
+        assert tracking.get_meta(conn, "swing_stop_intent", "swing")["status"] == "CONFIRMED"
+        assert len(sess._calls_named("place_order")) == 2
+
+    def test_backup_timeout_filled_before_restart_recovers_exact_history(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        original = sess.place_order
+        def submit(**kw):
+            response = original(**kw)
+            if kw.get("triggerPrice"):
+                sess.stop_rows.clear()
+                raise TimeoutError("accepted")
+            return response
+        sess.place_order = submit
+        swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.)
+        pending = tracking.get_meta(conn, "swing_stop_intent", "swing")
+        sess.position_size = 0
+        row = dict(orderId="backup-filled", orderLinkId=pending["link_id"], symbol="BTCUSDT",
+                   positionIdx=0, side="Sell", reduceOnly=True, orderType="Market",
+                   orderStatus="Filled", cumExecQty=".1", triggerPrice="49000")
+        sess.get_order_history = lambda **kw: {"retCode": 0, "result": {"list": [row]}}
+        sess.closed_pnl_rows = [dict(orderId="backup-filled", qty=".1", avgExitPrice="49000", closedPnl="-101")]
+        assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None) == 49000.
+        assert len(sess._calls_named("place_order")) == 2
+
+    def test_unknown_old_backup_blocks_next_entry_after_native_flat(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        tracking.set_meta(conn, "swing_stop_intent", dict(link_id="old-backup", submitted=True,
+                          status="SUBMISSION_UNKNOWN"), "swing")
+        assert swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.) is None
+        assert not sess._calls_named("place_order")
+
+    def test_native_coverage_does_not_resolve_unknown_backup_latch(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        original = sess.place_order
+        def submit(**kw):
+            response = original(**kw)
+            if kw.get("triggerPrice"):
+                sess.stop_rows.clear()
+                raise TimeoutError("accepted")
+            return response
+        sess.place_order = submit
+        swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.)
+        original_pending = tracking.get_meta(conn, "swing_stop_intent", "swing")
+        sess.stop_rows = [dict(orderId="native", symbol="BTCUSDT", positionIdx=0,
+                              side="Sell", reduceOnly=True, orderType="Market", orderStatus="Untriggered",
+                              stopOrderType="StopLoss", triggerDirection=2, triggerBy="LastPrice",
+                              triggerPrice="49000", qty=".1")]
+        swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None)
+        after = tracking.get_meta(conn, "swing_stop_intent", "swing")
+        assert after["status"] == "SUBMISSION_UNKNOWN"
+        assert after["coverage_confirmed"] is True
+        sess.position_size = 0
+        tracking.set_meta(conn, "swing_entry_pending", None, "swing")
+        assert swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.) is None
+        assert tracking.get_meta(conn, "swing_stop_intent", "swing")["link_id"] == original_pending["link_id"]
+        assert len(sess._calls_named("place_order")) == 2
+
+    def test_old_owned_coverage_does_not_resolve_different_backup_link(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        tracking.set_meta(conn, "swing_native_entry", dict(link_id="entry"), "swing")
+        tracking.set_meta(conn, "swing_stop_intent", dict(link_id="unknown-new", entry_link="entry",
+                          submitted=True, status="SUBMISSION_UNKNOWN"), "swing")
+        tracking.set_meta(conn, "swing_sl_order_id", "old-owned", "swing")
+        sess.stop_rows = [dict(orderId="old-owned", orderLinkId="old-link", symbol="BTCUSDT", positionIdx=0,
+                              side="Sell", reduceOnly=True, orderType="Market", orderStatus="Untriggered",
+                              stopOrderType="Stop", triggerDirection=2, triggerBy="LastPrice",
+                              triggerPrice="49000", qty=".1")]
+        result = swing.ExchangeBackend(conn, sess)._ensure_entry_stop("long", .1, 49000.)
+        assert result.confirmed and result.owned
+        pending = tracking.get_meta(conn, "swing_stop_intent", "swing")
+        assert pending["status"] == "SUBMISSION_UNKNOWN"
+        assert pending["link_id"] == "unknown-new"
+        assert pending["coverage_confirmed"] is True
+        assert swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.) is None
+        assert not sess._calls_named("place_order")
+
+    @pytest.mark.parametrize("stop_type", ["StopLoss", "Stop"])
+    def test_sufficient_native_or_manual_stop_skips_extra_backup(self, conn, stop_type):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        sess.stop_rows = [dict(orderId="unowned", symbol="BTCUSDT", positionIdx=0,
+                              side="Sell", reduceOnly=True, orderType="Market", orderStatus="Untriggered",
+                              stopOrderType=stop_type, triggerDirection=2, triggerBy="LastPrice",
+                              triggerPrice="49000", qty=".1")]
+        assert swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.) == 50000.
+        assert len(sess._calls_named("place_order")) == 1
+        assert not tracking.get_meta(conn, "swing_sl_order_id", "swing")
+        assert not sess._calls_named("cancel_order")
+
+    def test_finite_negative_fee_rebate_is_preserved(self, conn):
+        from live import swing
+        sess = FakeSession()
+        sess.closed_pnl_rows = [dict(orderId="stop", qty=".1", avgEntryPrice="50000", avgExitPrice="49000",
+                                    openFee="-1", closeFee="-2", closedPnl="-97")]
+        backend = swing.ExchangeBackend(conn, sess)
+        backend._capture_close_settlement(_pos_row(), "stop")
+        assert backend.last_close_snapshot["open_fee"] == -1.
+        assert backend.last_close_snapshot["close_fee"] == -2.
+        assert backend.last_close_snapshot["funding_paid"] == 0.
+
+    @pytest.mark.parametrize("field", ["avgExitPrice", "avgEntryPrice", "openFee", "closeFee", "qty"])
+    def test_invalid_settlement_fields_remain_unresolved(self, conn, field):
+        from live import swing, tracking
+        sess = FakeSession()
+        tracking.set_meta(conn, "swing_sl_order_id", "stop", "swing")
+        row = dict(orderId="stop", qty=".1", avgEntryPrice="50000", avgExitPrice="49000", closedPnl="-101")
+        row[field] = "inf"
+        sess.closed_pnl_rows = [row]
+        backend = swing.ExchangeBackend(conn, sess)
+        assert backend.check_stop(_pos_row(), None) is None
+        assert "closed_pnl" not in backend.last_close_snapshot
+        assert not sess._calls_named("cancel_order")
+
+    @pytest.mark.parametrize("change", [
+        {"orderId": "unrelated"}, {"orderLinkId": "unrelated"},
+        {"symbol": "ETHUSDT"}, {"side": "Sell"}, {"execType": "Funding"},
+        {"execId": ""}, {"execQty": "nan"}, {"execQty": "-.1"},
+        {"execPrice": "inf"}, {"execPrice": "-1"}, {"execFee": "nan"},
+        {"execQty": ".09"},
+    ])
+    def test_entry_execution_invalid_proof_keeps_pending(self, conn, change):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        row = dict(orderId="oid-1", execId="execution", execType="Trade", symbol="BTCUSDT",
+                   side="Buy", execQty=".1", execPrice="50000", execFee="2.75")
+        row.update(change)
+        sess.execution_rows = [row]
+        backend = swing.ExchangeBackend(conn, sess)
+        assert backend.open("long", .1, 49000., 50000.) is None
+        assert not backend.last_open_snapshot
+        assert tracking.get_meta(conn, "swing_entry_pending", "swing")
+        assert len(sess._calls_named("place_order")) == 1
+
+    @pytest.mark.parametrize("conflict", [False, True])
+    def test_entry_execution_duplicate_identity(self, conn, conflict):
+        from live import swing
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        row = dict(orderId="oid-1", execId="execution", execType="Trade", symbol="BTCUSDT",
+                   side="Buy", execQty=".1", execPrice="50000", execFee="2.75")
+        sess.execution_rows = [row, dict(row, execPrice="50001") if conflict else dict(row)]
+        backend = swing.ExchangeBackend(conn, sess)
+        assert backend.open("long", .1, 49000., 50000.) == (None if conflict else 50000.)
+        if not conflict:
+            assert backend.last_open_snapshot["entry_fee"] == 2.75
+
+    @pytest.mark.parametrize("tail", ["ok", "cycle", "failure"])
+    def test_entry_execution_pagination(self, conn, tail):
+        from live import swing
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        row = dict(orderId="oid-1", execId="first", execType="Trade", symbol="BTCUSDT",
+                   side="Buy", execQty=".05", execPrice="50000")
+        def executions(**kw):
+            if "cursor" not in kw:
+                return {"retCode": 0, "result": {"list": [row], "nextPageCursor": "next"}}
+            if tail == "failure":
+                return {"retCode": 10000}
+            return {"retCode": 0, "result": {"list": [dict(row, execId="second")],
+                    "nextPageCursor": "next" if tail == "cycle" else ""}}
+        sess.get_executions = executions
+        backend = swing.ExchangeBackend(conn, sess)
+        assert backend.open("long", .1, 49000., 50000.) == (50000. if tail == "ok" else None)
+        if tail == "ok":
+            assert backend.last_open_snapshot["qty"] == pytest.approx(.1)
+
+    def test_position_without_entry_trade_proof_is_not_adopted(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        sess.get_executions = lambda **kw: {"retCode": 0, "result": {"list": []}}
+        backend = swing.ExchangeBackend(conn, sess)
+        assert backend.open("long", .1, 49000., 50000.) is None
+        assert not backend.last_open_snapshot
+        assert tracking.get_meta(conn, "swing_entry_pending", "swing")
+
+    @pytest.mark.parametrize("tail", ["identical", "conflicting", "cycle", "failure"])
+    def test_native_child_complete_history_is_unambiguous(self, conn, tail):
+        from live import swing, tracking
+        sess = FakeSession()
+        tracking.set_meta(conn, "swing_native_entry", dict(link_id="entry", side="long"), "swing")
+        row = dict(orderId="child", parentOrderLinkId="entry", symbol="BTCUSDT", side="Sell",
+                   positionIdx=0, reduceOnly=True, orderType="Market", stopOrderType="StopLoss",
+                   orderStatus="Filled", cumExecQty=".1")
+        def history(**kw):
+            if "cursor" not in kw:
+                return {"retCode": 0, "result": {"list": [row], "nextPageCursor": "next"}}
+            if tail == "failure":
+                return {"retCode": 10000}
+            second = dict(row, orderStatus="Cancelled") if tail == "conflicting" else dict(row)
+            return {"retCode": 0, "result": {"list": [second],
+                    "nextPageCursor": "next" if tail == "cycle" else ""}}
+        sess.get_order_history = history
+        assert swing.ExchangeBackend(conn, sess)._native_close_order_id(_pos_row()) == (
+            "child" if tail == "identical" else None)
+
+    def test_unknown_entry_alert_without_bars_or_local_position(self, conn, monkeypatch):
+        from live import swing, tracking
+        messages = []
+        monkeypatch.setattr(swing, "_notify", lambda mode, message: messages.append(message) or True)
+        tracking.set_meta(conn, "swing_entry_pending", {"link_id": "private-link", "status": "SUBMISSION_UNKNOWN"}, "swing")
+        swing.process(conn, {}, main_mode="demo")
+        swing.process(conn, {}, main_mode="demo")
+        assert len(messages) == 1
+        assert "보호주문" in messages[0] and "운영자" in messages[0]
+        assert "private-link" not in messages[0]
+        assert tracking.get_meta(conn, "swing_entry_pending", "swing")
+
+    def test_unknown_entry_observation_never_releases_or_submits(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        pending = dict(link_id="pending", side="long", qty=.1, stop_price=49000., status="SUBMISSION_UNKNOWN")
+        tracking.set_meta(conn, "swing_entry_pending", pending, "swing")
+        sess.position_size = .1
+        swing.ExchangeBackend(conn, sess).observe_pending_entry()
+        observed = tracking.get_meta(conn, "swing_entry_pending", "swing")
+        assert observed["observation"] == "EXPOSURE_PRESENT_PROTECTION_UNKNOWN"
+        sess.position_size = 0
+        swing.ExchangeBackend(conn, sess).observe_pending_entry()
+        assert tracking.get_meta(conn, "swing_entry_pending", "swing")["observation"] == "FLAT_ENTRY_UNRESOLVED"
+        assert not sess._calls_named("place_order")
+
+    def test_entry_timeout_after_accept_is_never_retried(self, conn, monkeypatch):
+        from live import swing, tracking
+        monkeypatch.setattr(swing.time, "sleep", lambda _: None)
+        sess = FakeSession()
+        def timeout(**kw):
+            sess._record("place_order", kw)
+            raise TimeoutError("accepted but response lost")
+        sess.place_order = timeout
+        backend = swing.ExchangeBackend(conn, sess)
+        assert backend.open("long", .1, 49000., 50000.) is None
+        assert backend.open("long", .1, 49000., 50000.) is None
+        assert len(sess._calls_named("place_order")) == 1
+        assert tracking.get_meta(conn, "swing_entry_pending", "swing")
+
+    @pytest.mark.parametrize("change", [
+        {"symbol": "ETHUSDT"}, {"side": "Sell"}, {"positionIdx": 2},
+        {"size": ".2"}, {"avgPrice": "nan"}, {"symbol": None},
+    ])
+    def test_entry_rejects_mismatched_post_submit_position(self, conn, change):
+        from live import swing, tracking
+        sess = FakeSession()
+        row = dict(symbol="BTCUSDT", side="Buy", positionIdx=0, size=".1", avgPrice="50000")
+        row.update(change)
+        sess.get_positions = lambda **kw: {"retCode": 0, "result": {"list": [row] if sess._oid else []}}
+        backend = swing.ExchangeBackend(conn, sess)
+        assert backend.open("long", .1, 49000., 50000.) is None
+        assert len(sess._calls_named("place_order")) == 1
+        assert not backend.last_open_snapshot
+        assert tracking.get_meta(conn, "swing_entry_pending", "swing")
+
+    def test_entry_rejects_multiple_post_submit_positions(self, conn):
+        from live import swing
+        sess = FakeSession()
+        row = dict(symbol="BTCUSDT", side="Buy", positionIdx=0, size=".1", avgPrice="50000")
+        sess.get_positions = lambda **kw: {"retCode": 0, "result": {"list": [row, dict(row, positionIdx=2)] if sess._oid else []}}
+        assert swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.) is None
+        assert len(sess._calls_named("place_order")) == 1
+
+    @pytest.mark.parametrize("parent", ["entry-link", "unrelated", None])
+    def test_native_child_settlement_requires_exact_parent(self, conn, parent):
+        from live import swing, tracking
+        sess = FakeSession()
+        tracking.set_meta(conn, "swing_native_entry", {"link_id": "entry-link", "side": "long"}, "swing")
+        tracking.set_meta(conn, "swing_sl_order_id", "backup", "swing")
+        child = dict(orderId="native-child", parentOrderLinkId=parent, symbol="BTCUSDT",
+                     side="Sell", positionIdx=0, reduceOnly=True, orderType="Market",
+                     stopOrderType="StopLoss", orderStatus="Filled", cumExecQty=".1")
+        sess.get_order_history = lambda **kw: {"retCode": 0, "result": {"list": [child]}}
+        sess.closed_pnl_rows = [dict(orderId="native-child", qty=".1", avgExitPrice="49000", closedPnl="-101")]
+        backend = swing.ExchangeBackend(conn, sess)
+        assert backend.check_stop(_pos_row(), None) == (49000 if parent == "entry-link" else None)
+        assert all(call["orderId"] == "backup" for call in sess._calls_named("cancel_order"))
+
+    def test_native_child_settles_after_restart_and_delayed_pnl(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.avg_price = 50000.
+        assert swing.ExchangeBackend(conn, sess).open("long", .1, 49000., 50000.) == 50000.
+        entry = tracking.get_meta(conn, "swing_native_entry", "swing")
+        backup = tracking.get_meta(conn, "swing_sl_order_id", "swing")
+        sess.position_size = 0
+        sess.get_order_history = lambda **kw: {"retCode": 0, "result": {"list": [dict(
+            orderId="native", parentOrderLinkId=entry["link_id"], symbol="BTCUSDT",
+            side="Sell", positionIdx=0, reduceOnly=True, orderType="Market",
+            stopOrderType="StopLoss", orderStatus="Filled", cumExecQty=".1")]}}
+        assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None) is None
+        assert not sess._calls_named("cancel_order")
+        sess.closed_pnl_rows = [dict(orderId="native", qty=".1", avgExitPrice="49000", closedPnl="-101")]
+        assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None) == 49000
+        assert sess._calls_named("cancel_order") == [dict(category="linear", symbol="BTCUSDT", orderId=backup)]
+
+    def test_matching_manual_stop_is_not_adopted(self, conn):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.position_size = .1
+        sess.get_open_orders = lambda **kw: {"retCode": 0, "result": {"list": [dict(
+            orderId="manual", orderType="Market", reduceOnly=True, side="Sell", qty=".1",
+            triggerPrice="49000", triggerDirection=2, triggerBy="LastPrice", positionIdx=0)]}}
+        assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None) is None
+        assert not tracking.get_meta(conn, "swing_sl_order_id", "swing")
+        assert not sess._calls_named("cancel_order")
+        assert not sess._calls_named("place_order")
+
+    def test_native_stop_is_part_of_first_entry_request(self, conn):
+        from live import swing
+        sess=FakeSession()
+        sess.avg_price=50000.
+        swing.ExchangeBackend(conn,sess).open("long",.1,49000.,50000.)
+        entry=sess._calls_named("place_order")[0]
+        assert entry["stopLoss"] == "49000.0"
+        assert entry["tpslMode"] == "Full"
+        assert entry["slOrderType"] == "Market"
+        assert entry["slTriggerBy"] == "LastPrice"
+        assert entry["orderLinkId"].startswith("sw-entry-")
+
+    def test_entry_ack_without_fill_stays_pending_not_fabricated(self, conn):
+        from live import swing,tracking
+        sess=FakeSession()
+        sess.place_order=lambda **kw: {"retCode":0,"result":{"orderId":"accepted"}}
+        assert swing.ExchangeBackend(conn,sess).open("long",.1,49000.,50000.) is None
+        assert tracking.get_meta(conn,"swing_entry_pending","swing")["order_id"] == "accepted"
+        assert tracking.load_open_positions(conn,"swing") == []
+
+    def test_existing_exchange_position_is_not_added_to_by_fresh_swing(self, conn):
+        from live import swing
+        sess=FakeSession()
+        sess.position_size=.1
+        assert swing.ExchangeBackend(conn,sess).open("long",.1,49000.,50000.) is None
+        assert not sess._calls_named("place_order")
+
     def test_unresolved_close_alert_once_per_state(self, conn, monkeypatch):
         from live import swing, tracking
         messages = []
@@ -628,7 +1024,7 @@ class TestExchangeBackend:
         assert tracking.get_meta(conn, "swing_close_pending", "swing") is None
         assert conn.execute("SELECT exit_reason FROM btc_trading_history").fetchone()[0] == "swing_ma35_exit"
 
-    def test_repaired_stop_identity_used_for_later_fill(self, conn):
+    def test_repaired_stop_does_not_adopt_unlinked_child_identity(self, conn):
         from live import swing, tracking
         sess = FakeSession()
         sess.position_size = .1
@@ -643,10 +1039,10 @@ class TestExchangeBackend:
         sess.set_trading_stop = restore
         be = swing.ExchangeBackend(conn, sess)
         assert be.check_stop(_pos_row(), None) is None
-        assert tracking.get_meta(conn, "swing_sl_order_id", "swing") == "restored"
+        assert not tracking.get_meta(conn, "swing_sl_order_id", "swing")
         sess.position_size = 0
         sess.closed_pnl_rows = [{"orderId": "restored", "qty": ".1", "avgExitPrice": "49000", "closedPnl": "-101"}]
-        assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None) == 49000
+        assert swing.ExchangeBackend(conn, sess).check_stop(_pos_row(), None) is None
 
     def test_conditional_limit_is_not_stop_protection(self, conn):
         from live import swing
@@ -787,7 +1183,15 @@ class TestExchangeBackend:
         sess.execution_rows = [{
             "orderId": "oid-1", "closedSize": "0", "execQty": "0.099",
             "execPrice": "50040", "execFee": "2.724678",
+            "execId": "entry", "execType": "Trade", "symbol": "BTCUSDT", "side": "Buy",
         }]
+        original_positions = sess.get_positions
+        def partial_position(**kw):
+            response = original_positions(**kw)
+            if response["result"]["list"]:
+                response["result"]["list"][0].update(size=".099", avgPrice="50040")
+            return response
+        sess.get_positions = partial_position
         be = swing.ExchangeBackend(conn, sess)
 
         fill = be.open("long", 0.1, 49_000.0, 50_000.0)
