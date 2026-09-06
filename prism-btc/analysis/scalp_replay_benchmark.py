@@ -12,9 +12,11 @@ from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
+from importlib.metadata import version
 import json
-from math import fsum
+from math import fsum, isfinite, isclose
 from pathlib import Path
+import platform
 from statistics import mean
 
 import pandas as pd
@@ -62,6 +64,25 @@ def closed_frame(frames: dict, tf: str, ts: int):
     frame = frames[tf]
     cutoff = pd.Timestamp(ts - TIMEFRAME_MS[tf], unit="ms", tz="UTC")
     return frame.iloc[:int(frame.index.searchsorted(cutoff, side="right"))]
+
+
+def checked_indicators(frame):
+    """Reject numerical-kernel failures, not silently interpret them as no signal.
+
+    The repository documents pandas 2.2.3 / Python 3.14 rolling failure at
+    >=32768 rows. Use the supported backtest environment rather than rewriting
+    the production indicator formula or accepting an empty-trade result.
+    """
+    out = add_indicators(frame)
+    if len(out) < 35 or not all(isfinite(float(value))
+                                for value in out[["ma10", "ma35", "atr14"]].iloc[34:].to_numpy().flat):
+        raise ValueError("indicator_kernel_invalid: use the documented .venv-bt environment")
+    for index in {34, max(34, len(out) // 2), len(out) - 1}:
+        for window in (10, 35):
+            expected = fsum(out["close"].iloc[index-window+1:index+1]) / window
+            if not isclose(float(out.iloc[index][f"ma{window}"]), expected, rel_tol=1e-10, abs_tol=1e-8):
+                raise ValueError("indicator_kernel_mismatch")
+    return out
 
 
 def entry_context(frames: dict, ts: int) -> dict | None:
@@ -203,7 +224,7 @@ def run_benchmark(market_db, execution_db, start_ms: int, end_ms: int) -> dict:
         loaded = load_bars(market_db, tf, start, end)
         frame = pd.DataFrame(loaded.rows)
         frame.index = pd.to_datetime(frame["open_time"], unit="ms", utc=True)
-        frames[tf] = add_indicators(frame)
+        frames[tf] = checked_indicators(frame)
         manifests[tf] = loaded.manifest
 
     episodes, rows, examples = [], [], []
@@ -258,6 +279,7 @@ def run_benchmark(market_db, execution_db, start_ms: int, end_ms: int) -> dict:
                   "engine/regime.py", "engine/indicators.py", "engine/sizing.py", "engine/config.py")
     base = Path(__file__).resolve().parents[1]
     packet = dict(contract_version=VERSION, verdict="RESEARCH_ONLY_INSUFFICIENT",
+                  environment=dict(python=platform.python_version(), pandas=pd.__version__, numpy=version("numpy")),
                   auto_activate=False, actual_execution_samples=0,
                   start_ms=start_ms, end_ms_exclusive=end_ms, fixture=FIXTURE,
                   manifests=manifests,
