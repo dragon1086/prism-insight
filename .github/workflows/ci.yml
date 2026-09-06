@@ -70,7 +70,8 @@ jobs:
             mcp \
             tenacity \
             pytest \
-            pytest-asyncio
+            pytest-asyncio \
+            "pandas~=2.2.3"
 
       - name: Run tests
         run: |
