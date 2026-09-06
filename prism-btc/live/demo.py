@@ -57,6 +57,7 @@ from core.actions import (
 from live import decision_capture, tracking
 from live.exchange_snapshot import read_complete
 from live.protection import reconcile_stop
+from live.native_stop import native_stop_params
 
 # shadow 와 동일 위험/쿨다운/게이트 상수를 그대로 재사용 (바이트 불변 — import 만).
 from live.shadow import (
@@ -242,7 +243,7 @@ class DemoAdapter:
         started_perf_ns = time.perf_counter_ns()
         last_exc = None
         last_response = None
-        attempts = 1 if (_telemetry or {}).get("operation") == "market_reduce" else 2
+        attempts = 1 if fn_name == "place_order" else 2
         for attempt in range(attempts):  # Never retry a potentially accepted reduction.
             try:
                 resp = fn(**kwargs)
@@ -290,8 +291,33 @@ class DemoAdapter:
         self._call("set_leverage", category=_CATEGORY, symbol=_SYMBOL,
                    buyLeverage=str(leverage), sellLeverage=str(leverage))
 
-    def _place_limit_postonly(self, side: str, qty: float, price: float) -> Optional[str]:
-        """진입 = post-only 지정가 (maker). orderId 반환 (실패 None)."""
+    def _place_limit_postonly(self, side: str, qty: float, price: float, *,
+                             stop_price: float, native_mode: str = "Full",
+                             pending_payload: dict | None = None) -> Optional[str]:
+        """Attached SL is mandatory; never retry as a naked entry."""
+        params = native_stop_params(side, float(_pstr(price)), stop_price, mode=native_mode)
+        if not math.isfinite(qty) or float(_qstr(qty)) <= 0:
+            raise ValueError("invalid entry quantity")
+        prior = self._get_meta("pending_order", None)
+        if prior is not None:
+            tracking.log_event(self.conn, "entry_block", "Existing pending entry blocks new submission", mode=self.mode)
+            return None
+        stop_intent = self._get_meta("stop_submission_intent", {}) or {}
+        if stop_intent.get("submitted") and stop_intent.get("status") != "CONFIRMED_OWNED":
+            tracking.log_event(self.conn, "entry_block", "Prior backup submission unresolved; exact verification required",
+                               level="error", mode=self.mode)
+            return None
+        native = {"link_id": "entry-" + uuid.uuid4().hex[:28], "status": "SUBMITTING",
+                  "side": side, "qty": float(_qstr(qty)), "price": float(_pstr(price)),
+                  "stop_price": float(params["stopLoss"]), "mode": native_mode,
+                  "sl_order_type": params["slOrderType"],
+                  "submitted_at_ms": time.time_ns() // 1_000_000}
+        self._set_meta("native_entry_intent", native)
+        if pending_payload is not None:
+            pending_payload.update(link_id=native["link_id"], order_id=None,
+                                   submitted_at_ms=native["submitted_at_ms"],
+                                   sizing_sl_price=native["stop_price"])
+            self._set_meta("pending_order", pending_payload)
         resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
             _telemetry={
@@ -308,8 +334,14 @@ class DemoAdapter:
             side="Buy" if side == "long" else "Sell",
             orderType="Limit", qty=_qstr(qty), price=_pstr(price),
             timeInForce="PostOnly", positionIdx=_POSITION_IDX,
+            orderLinkId=native["link_id"], **params,
         )
         oid = _order_id(resp)
+        native.update(order_id=oid, status="ACK_UNCONFIRMED" if oid else "SUBMISSION_UNKNOWN")
+        self._set_meta("native_entry_intent", native)
+        if pending_payload is not None:
+            pending_payload["order_id"] = oid
+            self._set_meta("pending_order", pending_payload)
         if oid:
             tracking.log_event(self.conn, "order",
                 f"진입 post-only {side} qty={qty} @ {price} id={oid}", mode=self.mode)
@@ -344,7 +376,8 @@ class DemoAdapter:
                 f"SL stop-market {side} qty={qty} trig={trigger} id={oid}", mode=self.mode)
         return oid
 
-    def _place_reduce_limit(self, side: str, qty: float, price: float) -> Optional[str]:
+    def _place_reduce_limit(self, side: str, qty: float, price: float, *,
+                            order_link_id: str | None = None) -> Optional[str]:
         """TP1 = reduce-only 지정가 (maker)."""
         close_side = "Sell" if side == "long" else "Buy"
         resp = self._call(
@@ -362,6 +395,7 @@ class DemoAdapter:
             },
             side=close_side, orderType="Limit", qty=_qstr(qty), price=_pstr(price),
             timeInForce="PostOnly", reduceOnly=True, positionIdx=_POSITION_IDX,
+            **({"orderLinkId": order_link_id} if order_link_id else {}),
         )
         oid = _order_id(resp)
         if oid:
@@ -457,6 +491,256 @@ class DemoAdapter:
         # The endpoint is filtered by exact order ID. Any nonempty response,
         # even malformed/unrelated content, cannot prove zero executions.
         return executions == []
+
+    @staticmethod
+    def _entry_parent_matches(row: dict, pending: dict) -> bool:
+        """Correlate an entry, never a similarly sized/manual/conditional order."""
+        try:
+            qty = float(row["qty"])
+            expected = float(_qstr(pending["sizing_qty"]))
+            price = float(row["price"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return (bool(row.get("orderId")) and row.get("orderLinkId") == pending.get("link_id")
+                and (not pending.get("order_id") or row["orderId"] == pending["order_id"])
+                and row.get("symbol") == _SYMBOL and row.get("positionIdx") == _POSITION_IDX
+                and row.get("side") == ("Buy" if pending["side"] == "long" else "Sell")
+                and row.get("reduceOnly") is False and row.get("orderType") == "Limit"
+                and math.isfinite(qty) and expected > 0 and abs(qty - expected) <= 1e-9
+                and math.isfinite(price) and abs(price - float(_pstr(pending["limit_price"]))) <= 1e-8)
+
+    def _recover_entry_identity(self, pending, open_orders):
+        if not pending or pending.get("order_id") or not pending.get("link_id"):
+            return
+        # Open orders are available before delayed history. Preserve this link
+        # through the safe snapshot, and recover BEFORE attempting cancellation.
+        candidates = [o for o in open_orders if o.get("order_link_id") == pending["link_id"]]
+        rows = [{"orderId": o["order_id"], "orderLinkId": o["order_link_id"],
+                 "symbol": o.get("symbol"), "positionIdx": o.get("position_idx"),
+                 "side": o.get("side"), "qty": o.get("qty"), "price": o.get("price"),
+                 "reduceOnly": o.get("reduce_only"), "orderType": o.get("order_type")}
+                for o in candidates]
+        if not rows:
+            rows = self._reduction_pages("get_order_history", pending)
+        if not rows or not all(self._entry_parent_matches(row, pending) for row in rows):
+            return
+        ids = {row["orderId"] for row in rows}
+        if len(ids) != 1:
+            return
+        pending["order_id"] = next(iter(ids))
+        self._set_meta("pending_order", pending)
+        native = self._get_meta("native_entry_intent", {}) or {}
+        if native.get("link_id") == pending["link_id"]:
+            native["order_id"] = pending["order_id"]
+            self._set_meta("native_entry_intent", native)
+
+    def _entry_fill_confirmed(self, pending: dict, observed_delta: float) -> bool:
+        """Native entry finalization needs terminal parent AND exact Trade fills.
+
+        Position growth alone may trigger protection, never release a native
+        pending reservation. History lag, conflicting duplicates and missing
+        executions remain UNKNOWN. A canceled partial fill can still finalize.
+        """
+        if not pending.get("order_id") or not math.isfinite(observed_delta) or observed_delta <= 0:
+            return False
+        parents = self._reduction_pages("get_order_history", pending)
+        if not parents or not all(self._entry_parent_matches(row, pending) for row in parents):
+            return False
+        for row in parents:
+            try:
+                cumulative = float(row["cumExecQty"])
+            except (KeyError, TypeError, ValueError):
+                return False
+            if (row.get("orderStatus") not in {"Filled", "Cancelled", "PartiallyFilledCanceled"}
+                    or not math.isfinite(cumulative) or cumulative <= 0
+                    or cumulative > float(_qstr(pending["sizing_qty"])) + 1e-9
+                    or abs(cumulative - observed_delta) > 1e-9
+                    or (row.get("orderStatus") == "Filled"
+                        and abs(cumulative - float(_qstr(pending["sizing_qty"]))) > 1e-9)):
+                return False
+        executions = self._reduction_pages("get_executions", pending)
+        if not executions:
+            return False
+        seen = {}
+        for row in executions:
+            try:
+                qty, price = float(row["execQty"]), float(row["execPrice"])
+            except (KeyError, TypeError, ValueError):
+                return False
+            if (row.get("orderId") != pending["order_id"] or not row.get("execId")
+                    or row.get("execType") != "Trade" or row.get("symbol") != _SYMBOL
+                    or row.get("side") != ("Buy" if pending["side"] == "long" else "Sell")
+                    or (row.get("orderLinkId") and row["orderLinkId"] != pending["link_id"])
+                    or not math.isfinite(qty) or qty <= 0 or not math.isfinite(price) or price <= 0):
+                return False
+            value = (qty, price, row.get("execTime"))
+            if row["execId"] in seen and seen[row["execId"]] != value:
+                return False
+            seen[row["execId"]] = value
+        return abs(math.fsum(value[0] for value in seen.values()) - observed_delta) <= 1e-9
+
+    def _request_entry_cancel(self, pending):
+        if pending.get("cancel_requested"):
+            # The durable flag is an intent, not proof that the request reached
+            # Bybit. Only a fresh exact active parent authorizes a cancel retry.
+            if not pending.get("order_id") or not pending.get("link_id"):
+                return
+            response = read_complete(self._call, "get_open_orders", category=_CATEGORY,
+                                     symbol=_SYMBOL, orderId=pending["order_id"])
+            rows = _result_list(response)
+            if (not rows or not all(self._entry_parent_matches(row, pending)
+                                    and row.get("orderStatus") in {"New", "PartiallyFilled"}
+                                    for row in rows)):
+                return
+        if not pending.get("order_id"):
+            tracking.log_event(self.conn, "protection", "Entry cancellation awaits exact parent identity; pending retained",
+                               level="error", mode=self.mode)
+            return
+        pending["cancel_requested"] = True
+        self._set_meta("pending_order", pending)
+        self._cancel(pending["order_id"])
+
+    def _save_native_entry_position(self, pending, pos, total_qty):
+        """Atomically commit the fill row and exact-intent recovery receipt.
+
+        No network or logging occurs inside this short SQLite transaction.
+        Existing tracking callers retain their default immediate commit.
+        """
+        native = self._get_meta("native_entry_intent", {}) or {}
+        if native.get("link_id") != pending.get("link_id"):
+            raise RuntimeError("native fill identity changed before ledger commit")
+        with self.conn:
+            tracking.save_position(self.conn, pos, commit=False)
+            native["position_ids"] = [pos.id]
+            tracking.set_meta(self.conn, "native_entry_intent", native, self.mode, commit=False)
+            pending["fill_receipt"] = {
+                "position_id": pos.id, "order_id": pending["order_id"],
+                "link_id": pending["link_id"], "qty": pos.qty,
+                "tp_link_id": "tp1-" + uuid.uuid4().hex[:28],
+                "tp_order_id": None,
+                "prior_tp_order_id": self._get_meta("tp_order_id", None),
+                "tp_qty": float(_qstr(total_qty / 3.0)), "tp_price": pos.tp1_price,
+                "tp_state": "PREPARED",
+            }
+            for key, value in {
+                "entry_initial_risk": pos.initial_risk, "entry_time": pos.entry_time,
+                "entry_price": pos.entry_price, "entry_leverage": pos.leverage,
+                "entry_sl_price": pos.sl_price, "entry_liq_price": pos.liq_price,
+                "entry_tranche_index": pos.tranche_index,
+            }.items():
+                tracking.set_meta(self.conn, key, value, self.mode, commit=False)
+            tracking.set_meta(self.conn, "pending_order", pending, self.mode, commit=False)
+
+    def _entry_receipt_recorded(self, pending) -> bool:
+        receipt = pending.get("fill_receipt") if pending else None
+        return bool(isinstance(receipt, dict) and receipt.get("position_id")
+                    and receipt.get("link_id") and receipt["link_id"] == pending.get("link_id")
+                    and receipt.get("order_id") and receipt["order_id"] == pending.get("order_id"))
+
+    def _complete_native_postfill(self, pending) -> bool:
+        """Finish TP1 by exact durable identity; never retry an unknown create.
+
+        Preserve the existing cancel/recreate TP semantics, but require exact
+        terminal proof for the prior TP. Its past fills never count toward the
+        NEW target. Persist the new TP fence before the single request and
+        recover by link after a lost ACK. Unresolved state retains the fence.
+        """
+        receipt = pending["fill_receipt"]
+        if receipt.get("tp_qty", -1) == 0:
+            return True  # Integer BTC quantity precision leaves no executable TP.
+        if not receipt.get("tp_link_id") or receipt.get("tp_qty", 0) <= 0:
+            return False
+        prior_id = receipt.get("prior_tp_order_id")
+        if prior_id and not receipt.get("prior_tp_terminal"):
+            def prior_rows():
+                response = read_complete(self._call, "get_open_orders", category=_CATEGORY,
+                                         symbol=_SYMBOL, orderId=prior_id)
+                if response is None:
+                    return None
+                rows = [row for row in _result_list(response) if row.get("orderId") == prior_id]
+                return rows or self._reduction_pages("get_order_history", {"order_id": prior_id})
+
+            def prior_valid(rows):
+                return bool(rows and len(rows) == 1 and rows[0].get("orderId") == prior_id
+                            and rows[0].get("symbol") == _SYMBOL
+                            and rows[0].get("positionIdx") == _POSITION_IDX
+                            and rows[0].get("reduceOnly") is True and rows[0].get("orderType") == "Limit"
+                            and rows[0].get("side") == ("Sell" if pending["side"] == "long" else "Buy"))
+
+            rows = prior_rows()
+            if not prior_valid(rows):
+                return False
+            if rows[0].get("orderStatus") in {"New", "PartiallyFilled"}:
+                self._cancel(prior_id)
+                rows = prior_rows()
+            if not prior_valid(rows) or rows[0].get("orderStatus") not in {
+                    "Filled", "Cancelled", "Rejected", "PartiallyFilledCanceled"}:
+                return False
+            receipt["prior_tp_terminal"] = True
+            self._set_meta("pending_order", pending)
+        identity = ({"orderId": receipt["tp_order_id"]} if receipt.get("tp_order_id") else
+                    {"orderLinkId": receipt["tp_link_id"]})
+
+        def matches(row):
+            try:
+                qty, price = float(row["qty"]), float(row["price"])
+            except (KeyError, TypeError, ValueError):
+                return False
+            return (bool(row.get("orderId"))
+                    and row.get("orderLinkId") == receipt["tp_link_id"]
+                    and (row["orderId"] == receipt["tp_order_id"] if receipt.get("tp_order_id") else
+                         row.get("orderLinkId") == receipt["tp_link_id"])
+                    and row.get("symbol") == _SYMBOL and row.get("positionIdx") == _POSITION_IDX
+                    and row.get("reduceOnly") is True and row.get("orderType") == "Limit"
+                    and row.get("side") == ("Sell" if pending["side"] == "long" else "Buy")
+                    and math.isfinite(qty) and qty > 0 and math.isfinite(price) and price > 0
+                    and abs(qty - receipt["tp_qty"]) <= 1e-9
+                    and abs(price - float(_pstr(receipt["tp_price"]))) <= 1e-8)
+
+        def read():
+            response = read_complete(self._call, "get_open_orders", category=_CATEGORY,
+                                     symbol=_SYMBOL, **identity)
+            if response is None:
+                return None
+            # Test adapters can return other orders despite an identity filter.
+            return [row for row in _result_list(response)
+                    if (row.get("orderId") == receipt.get("tp_order_id") if receipt.get("tp_order_id") else
+                        row.get("orderLinkId") == receipt["tp_link_id"])]
+
+        def accept(rows):
+            if not rows or len(rows) != 1 or not matches(rows[0]):
+                return False
+            row = rows[0]
+            active = row.get("orderStatus") in {"New", "PartiallyFilled"}
+            completed = (row.get("orderStatus") == "Filled"
+                         and _f(row.get("cumExecQty"), -1) == receipt["tp_qty"])
+            if not (active or completed):
+                return False
+            self._set_meta("tp_order_id", row["orderId"])
+            return True
+
+        rows = read()
+        if rows is None:
+            return False
+        if accept(rows):
+            return True
+        if receipt["tp_state"] != "PREPARED":
+            history = self._reduction_pages("get_order_history", {
+                "order_id": receipt.get("tp_order_id"),
+                **({"link_id": receipt["tp_link_id"]} if not receipt.get("tp_order_id") else {}),
+            })
+            return accept(history)
+        if receipt.get("tp_order_id"):
+            return False
+        receipt["tp_state"] = "SUBMISSION_UNKNOWN"
+        self._set_meta("pending_order", pending)
+        oid = self._place_reduce_limit(pending["side"], receipt["tp_qty"], receipt["tp_price"],
+                                       order_link_id=receipt["tp_link_id"])
+        if oid:
+            receipt["tp_order_id"] = oid
+            receipt["tp_state"] = "ACK_UNCONFIRMED"
+            self._set_meta("pending_order", pending)
+        return accept(read())
 
     @staticmethod
     def _reduction_matches(row: dict, pending: dict) -> bool:
@@ -586,6 +870,80 @@ class DemoAdapter:
         # is idempotent (absolute remaining quantity, never subtract twice).
         return self._reduce_confirmed(pending)
 
+    def _native_parent(self, side: str):
+        """Exact parent attachment proof, never inferred from a child SL ID."""
+        native = self._get_meta("native_entry_intent", None)
+        if not native or native.get("side") != side:
+            return None
+        rows = self._reduction_pages("get_order_history", native)
+        matches = [r for r in rows or [] if r.get("orderLinkId") == native["link_id"]]
+        if rows is None or not matches:
+            return None
+        ids = {r.get("orderId") for r in matches}
+        if len(ids) != 1 or not next(iter(ids)):
+            return None
+        for row in matches:
+            try:
+                qty = float(row["qty"])
+                sl = float(row["stopLoss"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            if (not math.isfinite(qty) or not math.isfinite(sl)
+                    or abs(qty - native["qty"]) > 1e-9 or abs(sl - native["stop_price"]) > 1e-8
+                    or row.get("symbol") != _SYMBOL or row.get("reduceOnly") is not False
+                    or row.get("side") != ("Buy" if side == "long" else "Sell")
+                    or row.get("tpslMode") != native["mode"]
+                    or native.get("sl_order_type") != "Market" or row.get("slTriggerBy") != "LastPrice"
+                    or (native.get("order_id") and row["orderId"] != native["order_id"])):
+                return None
+        return native, matches[0]
+
+    def _native_entry_proven(self, side: str, required_qty: float | None = None) -> bool:
+        proof = self._native_parent(side)
+        if proof is None:
+            return False
+        native, parent = proof
+        pending = self._get_meta("pending_order", {}) or {}
+        local_positions = tracking.load_open_positions(self.conn, self.mode)
+        local_ids = {p.id for p in local_positions}
+        if (pending.get("link_id") != native["link_id"]
+                and not local_ids.intersection(native.get("position_ids", []))):
+            return False
+        executions = self._reduction_pages("get_executions", native)
+        if executions is None:
+            return False
+        seen = {}
+        for row in executions:
+            if row.get("orderId") != parent["orderId"]:
+                return False
+            try:
+                qty = float(row["execQty"])
+            except (KeyError, TypeError, ValueError):
+                return False
+            if (not math.isfinite(qty) or qty <= 0 or not row.get("execId")
+                    or row.get("execType") != "Trade" or row.get("symbol") != _SYMBOL
+                    or row.get("side") != parent["side"]
+                    or (row.get("orderLinkId") and row["orderLinkId"] != native["link_id"])):
+                return False
+            if row["execId"] in seen and seen[row["execId"]] != qty:
+                return False
+            seen[row["execId"]] = qty
+        filled_qty = math.fsum(seen.values())
+        if not 0 < filled_qty <= native["qty"] + 1e-9:
+            return False
+        if required_qty is not None:
+            native_ids = set(native.get("position_ids", []))
+            if pending.get("link_id") == native["link_id"]:
+                # Do not count a just-persisted native leg twice before pending
+                # cleanup. Older local legs are already strategy-owned state.
+                owned_qty = filled_qty + math.fsum(
+                    p.qty for p in local_positions if p.side == side and p.id not in native_ids)
+            else:
+                owned_qty = math.fsum(p.qty for p in local_positions if p.side == side)
+            if not math.isfinite(required_qty) or not 0 < required_qty <= owned_qty + 1e-9:
+                return False
+        return True
+
     def _ensure_stop(self, side: str, qty: float, trigger: float):
         """Durable identity + verified protection; never cancel a stop to resize it."""
         link = self._get_meta("stop_creation_link", None)
@@ -593,11 +951,34 @@ class DemoAdapter:
             link = "stop-" + uuid.uuid4().hex[:28]
             self._set_meta("stop_creation_link", link)
         old_id = self._get_meta("sl_order_id", None)
-        result = reconcile_stop(self._call, side=side, qty=qty, trigger=trigger,
-                                owned_order_id=old_id, create_order_link_id=link)
+        native_proven = self._native_entry_proven(side, required_qty=qty)
+        native = self._get_meta("native_entry_intent", {}) or {}
+        pending = self._get_meta("pending_order", {}) or {}
+        native_pending = bool(native.get("link_id") and pending.get("link_id") == native["link_id"])
+        def guarded_call(method, **kwargs):
+            if method == "place_order":
+                intent = self._get_meta("stop_submission_intent", {}) or {}
+                if intent.get("submitted") and intent.get("link_id") == kwargs.get("orderLinkId"):
+                    return None
+                self._set_meta("stop_submission_intent", {
+                    "link_id": kwargs.get("orderLinkId"), "submitted": True, "status": "SUBMISSION_UNKNOWN"})
+            return self._call(method, **kwargs)
+
+        result = reconcile_stop(guarded_call, side=side, qty=qty, trigger=trigger,
+                                owned_order_id=old_id if (not native_pending or native_proven) else None,
+                                create_order_link_id=link if (not native_pending or native_proven) else None,
+                                allow_owned_creation=native_proven)
         if result.confirmed and result.owned:
             self._set_meta("sl_order_id", result.order_id)
-            self._set_meta("stop_creation_link", None)
+            stop_intent = self._get_meta("stop_submission_intent", {}) or {}
+            outstanding = stop_intent.get("submitted") and stop_intent.get("status") != "CONFIRMED_OWNED"
+            exact_submission = bool(stop_intent.get("link_id")
+                                    and result.order_link_id == stop_intent["link_id"])
+            if exact_submission:
+                self._set_meta("stop_submission_intent", {
+                    **stop_intent, "order_id": result.order_id, "status": "CONFIRMED_OWNED"})
+            if not outstanding or exact_submission:
+                self._set_meta("stop_creation_link", None)
         elif (not old_id and result.order_id and result.owned
               and result.status in ("ACK_UNCONFIRMED", "SUBMISSION_UNKNOWN")):
             self._set_meta("sl_order_id", result.order_id)
@@ -623,14 +1004,12 @@ class DemoAdapter:
             p.sl_price for p in local_positions if p.side == pending["side"]]
         target = max(stops) if pending["side"] == "long" else min(stops)
         result = self._ensure_stop(pending["side"], ex_pos["qty"], target)
-        if not result.confirmed and not pending.get("cancel_requested"):
+        if not result.confirmed or pending.get("cancel_requested"):
             # The unfilled entry remainder can still increase exposure. Request
             # cancellation, but retain its identity until terminal evidence.
-            pending["cancel_requested"] = True
-            self._set_meta("pending_order", pending)
-            self._cancel(pending.get("order_id"))
+            self._request_entry_cancel(pending)
             tracking.log_event(self.conn, "protection",
-                "Partial entry protection unconfirmed; remainder cancellation requested, risk increases blocked",
+                "Partial entry protection unconfirmed; remainder cancellation needed, risk increases blocked",
                 level="error", mode=self.mode)
         return True
 
@@ -757,7 +1136,12 @@ class DemoAdapter:
                 or not isinstance(pr["result"].get("list"), list)
                 or pr["result"].get("nextPageCursor")):
             raise RuntimeError("position snapshot unavailable; preserve ledger and protection")
-        for p in _result_list(pr):
+        position_rows = _result_list(pr)
+        if len(position_rows) > 1:
+            raise RuntimeError("ambiguous position identity; preserve ledger and protection")
+        for p in position_rows:
+            if p.get("symbol") != _SYMBOL or p.get("positionIdx") != _POSITION_IDX:
+                raise RuntimeError("position identity mismatch; preserve ledger and protection")
             try:
                 sz = float(p["size"])
             except (KeyError, TypeError, ValueError) as exc:
@@ -765,6 +1149,9 @@ class DemoAdapter:
             if not math.isfinite(sz) or sz < 0:
                 raise RuntimeError("invalid position size; preserve ledger and protection")
             if sz > 0:
+                if (p.get("side") not in {"Buy", "Sell"}
+                        or not math.isfinite(_f(p.get("avgPrice"))) or _f(p.get("avgPrice")) <= 0):
+                    raise RuntimeError("invalid position side or entry price; preserve ledger and protection")
                 snap["position"] = {
                     "side": "long" if p.get("side") == "Buy" else "short",
                     "qty": sz,
@@ -791,8 +1178,11 @@ class DemoAdapter:
         for o in _result_list(oo):
             snap["open_orders"].append({
                 "order_id": o.get("orderId", ""),
+                "order_link_id": o.get("orderLinkId"),
+                "symbol": o.get("symbol"),
+                "position_idx": o.get("positionIdx"),
                 "side": o.get("side", ""),
-                "reduce_only": bool(o.get("reduceOnly", False)),
+                "reduce_only": o.get("reduceOnly"),
                 "order_type": o.get("orderType", ""),
                 "qty": _f(o.get("qty")),
                 "price": _f(o.get("price")),
@@ -929,6 +1319,24 @@ class DemoAdapter:
         # btc_positions(demo) 를 거래소 포지션으로 미러 (열린 포지션 단일 가정).
         local_positions = tracking.load_open_positions(conn, mode)
 
+        if self._entry_receipt_recorded(pending):
+            # The receipt was committed with the PositionRow, not inferred from
+            # today's position size. Resume normal exits without a second INSERT.
+            if ex_pos and local_positions:
+                stops = [p.sl_price for p in local_positions if p.side == ex_pos["side"]]
+                if stops:
+                    self._ensure_stop(ex_pos["side"], ex_pos["qty"],
+                                      max(stops) if ex_pos["side"] == "long" else min(stops))
+            if not self._complete_native_postfill(pending):
+                tracking.log_event(conn, "entry_postfill_pending", "Native fill recorded; exact TP1 confirmation pending, no resubmission",
+                                   level="error", mode=mode, ts=bar_time_str)
+                return
+            tp_order_id = self._get_meta("tp_order_id", tp_order_id)
+            pending = None
+            self._set_meta("pending_order", None)
+            tracking.log_event(conn, "fill_recovery", "Native entry ledger receipt recovered after restart",
+                               mode=mode, ts=bar_time_str)
+        self._recover_entry_identity(pending, open_orders)
         if self._protect_pending_entry(pending, ex_pos, local_positions):
             sl_order_id = self._get_meta("sl_order_id", sl_order_id)
 
@@ -939,7 +1347,9 @@ class DemoAdapter:
         # 체결 후 SL/TP 는 전체 포지션(평균단가·총수량) 기준으로 재계산해 amend/재발행한다.
         if pending is not None:
             pend_oid = pending.get("order_id")
-            still_open = any(o["order_id"] == pend_oid for o in open_orders)
+            still_open = any((pend_oid and o["order_id"] == pend_oid)
+                             or (pending.get("link_id") and o.get("order_link_id") == pending["link_id"])
+                             for o in open_orders)
             bars_elapsed = bar_idx - int(pending["bar_idx"])
             tranche_idx = int(pending["tranche_index"])
             # 체결 판정: tranche 0 은 포지션 출현, 피라미딩(>=1)은 size 가 직전 로컬 합계보다
@@ -954,6 +1364,8 @@ class DemoAdapter:
                     # size 증가분으로 체결 확인 (부동소수 여유 1e-9).
                     filled = (ex_pos["side"] == pending["side"]
                               and ex_pos["qty"] > prev_local_qty + 1e-9)
+            if filled and pending.get("link_id"):
+                filled = self._entry_fill_confirmed(pending, ex_pos["qty"] - prev_local_qty)
             if not still_open and pending.get("cancel_requested") and self._entry_terminal_zero(pending):
                 self._set_meta("last_entry_resolution", {
                     "status": "TERMINAL_ZERO_FILL", "order_id": pend_oid,
@@ -987,7 +1399,10 @@ class DemoAdapter:
                     entry_bar_idx=bar_idx, initial_risk=float(pending["initial_risk"]),
                     initial_qty=tranche_qty, mode=mode,
                 )
-                tracking.save_position(conn, new_pos)
+                if pending.get("link_id"):
+                    self._save_native_entry_position(pending, new_pos, total_qty)
+                else:
+                    tracking.save_position(conn, new_pos)
                 local_positions = local_positions + [new_pos]
 
                 # 전체 포지션 기준 SL/TP 재계산·재발행 (통합 포지션이라 총수량·트리거 갱신).
@@ -998,10 +1413,16 @@ class DemoAdapter:
                 stops = [p.sl_price for p in same_side_local]
                 self._ensure_stop(side, total_qty, max(stops) if side == "long" else min(stops))
                 sl_order_id = self._get_meta("sl_order_id", sl_order_id)
-                if tp_order_id:
-                    self._cancel(tp_order_id)
-                tp_qty = total_qty / 3.0
-                tp_order_id = self._place_reduce_limit(side, tp_qty, tp1_p)
+                if pending.get("link_id"):
+                    if not self._complete_native_postfill(pending):
+                        tracking.log_event(conn, "entry_postfill_pending", "Native fill recorded; exact TP1 confirmation pending, no resubmission",
+                                           level="error", mode=mode, ts=bar_time_str)
+                        return
+                    tp_order_id = self._get_meta("tp_order_id", tp_order_id)
+                else:
+                    if tp_order_id:
+                        self._cancel(tp_order_id)
+                    tp_order_id = self._place_reduce_limit(side, total_qty / 3.0, tp1_p)
 
                 # 진입 메타(r_multiple 역산용)는 최신 트랜치 기준으로 갱신.
                 self._set_meta("entry_initial_risk", float(pending["initial_risk"]))
@@ -1018,10 +1439,7 @@ class DemoAdapter:
                     f"(n_tranche={len(same_side_local)})",
                     mode=mode, ts=bar_time_str)
             elif bars_elapsed >= ENTRY_ORDER_EXPIRY_BARS:
-                if not pending.get("cancel_requested"):
-                    pending["cancel_requested"] = True
-                    self._set_meta("pending_order", pending)
-                    self._cancel(pend_oid)
+                self._request_entry_cancel(pending)
                 tracking.log_event(conn, "expire", "entry cancellation requested; terminal confirmation pending",
                                    level="warning", mode=mode, ts=bar_time_str)
 
@@ -1302,31 +1720,32 @@ class DemoAdapter:
                     if intent is not None:
                         sz = intent.sizing
                         self._set_leverage(sz.leverage)
+                        stops = [sz.sl_price] + [p.sl_price for p in local_positions if p.side == intent.side]
+                        confirmed_stop = protection_state.get("confirmed_trigger")
+                        if has_position and protection_state.get("confirmed") is True and confirmed_stop:
+                            stops.append(float(confirmed_stop))
+                        desired_stop = max(stops) if intent.side == "long" else min(stops)
+                        pending = {
+                            "side": intent.side, "limit_price": intent.limit_price,
+                            "bar_idx": bar_idx, "sizing_qty": sz.qty, "sizing_leverage": sz.leverage,
+                            "sizing_sl_price": desired_stop, "sizing_tp1_price": sz.tp1_price,
+                            "sizing_tp2_price": sz.tp2_price, "sizing_tp3_price": sz.tp3_price,
+                            "sizing_liq_price": sz.liq_price, "initial_risk": intent.initial_risk,
+                            "tranche_index": intent.tranche_index,
+                        }
                         order_id = self._place_limit_postonly(
-                            intent.side, sz.qty, intent.limit_price)
+                            intent.side, sz.qty, intent.limit_price, stop_price=desired_stop,
+                            native_mode="Full" if current_tranche == 0 else "Partial",
+                            pending_payload=pending)
                         if order_id:
                             latency_capture = self._last_execution_capture.get(
                                 "entry_submit", {}
                             )
-                            pending = {
-                                "order_id": order_id,
-                                "submitted_at_ms": time.time_ns() // 1_000_000,
+                            pending.update({
                                 "latency_order_ref": latency_capture.get("order_ref"),
                                 "latency_ack_wall_ns": latency_capture.get("ack_wall_ns"),
                                 "latency_ack_at": latency_capture.get("ack_at"),
-                                "side": intent.side,
-                                "limit_price": intent.limit_price,
-                                "bar_idx": bar_idx,
-                                "sizing_qty": sz.qty,
-                                "sizing_leverage": sz.leverage,
-                                "sizing_sl_price": sz.sl_price,
-                                "sizing_tp1_price": sz.tp1_price,
-                                "sizing_tp2_price": sz.tp2_price,
-                                "sizing_tp3_price": sz.tp3_price,
-                                "sizing_liq_price": sz.liq_price,
-                                "initial_risk": intent.initial_risk,
-                                "tranche_index": intent.tranche_index,
-                            }
+                            })
                             tracking.log_event(conn, "signal",
                                 f"{intent.side} entry intent @ {intent.limit_price:.2f} "
                                 f"tranche={intent.tranche_index} "
@@ -1391,6 +1810,7 @@ class DemoAdapter:
             local_positions = tracking.load_open_positions(self.conn, self.mode)
             sl_order_id = self._get_meta("sl_order_id", None)
             pending_entry = self._get_meta("pending_order", None)
+            self._recover_entry_identity(pending_entry, snap["open_orders"])
             if self._protect_pending_entry(pending_entry, ex_pos, local_positions):
                 return
 
