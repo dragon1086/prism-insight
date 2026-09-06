@@ -11,6 +11,12 @@ from analysis import strategy_mixture as sm
 from backtest.portfolio_replay import DailyFeatures, PortfolioSummary
 
 
+def test_registry_shape_guard_is_not_an_optimizable_assert(monkeypatch):
+    monkeypatch.setattr(sm, "POLICIES", {})
+    with pytest.raises(RuntimeError, match="240 unique"):
+        sm.planned_registry()
+
+
 def feature(**changes):
     defaults = dict(available_at=sm.TRAIN, sma20=100., sma60=100., atr14=5., std20=10.,
                     prior_high20=130., prior_low20=70., prior_high10=120., prior_low10=80., close=100.)
