@@ -39,6 +39,8 @@ class AdaptiveConfig:
     initial_cash: float = 10_000.
     path: str = "OHLC"
     resource_check: object = None
+    lane_profiles: tuple = ()
+    entry_latency_ms: int | None = None
 
     def __post_init__(self):
         if (type(self.start_ms) is not int or type(self.end_ms) is not int
@@ -46,7 +48,7 @@ class AdaptiveConfig:
                 or self.start_ms % BAR or self.end_ms % BAR):
             raise ValueError("invalid period")
         if (self.lanes not in (("S",), ("C",), ("S", "C"))
-                or self.profile not in ("F", "P", "Q", "H")
+                or self.profile not in ("F", "P", "Q", "H", "K", "U")
                 or self.allocation not in ("fixed", "flex")
                 or type(self.cost_multiple) is not int or self.cost_multiple not in (1, 2)
                 or self.timing_ms not in (BAR, 6 * BAR)
@@ -54,10 +56,25 @@ class AdaptiveConfig:
                 or (self.resource_check is not None and not callable(self.resource_check))
                 or not math.isfinite(self.initial_cash) or self.initial_cash <= 0):
             raise ValueError("invalid policy")
+        if self.entry_latency_ms is not None and (
+                type(self.entry_latency_ms) is not int or
+                self.entry_latency_ms not in (0, BAR, 6*BAR)):
+            raise ValueError("invalid entry latency")
+        if (type(self.lane_profiles) is not tuple or
+                any(type(pair) is not tuple or len(pair) != 2 or
+                    pair[0] not in self.lanes or pair[1] not in ("F", "P", "Q", "H", "K", "U")
+                    for pair in self.lane_profiles) or
+                (self.lane_profiles and
+                 (len(self.lane_profiles) != len(self.lanes) or
+                  {pair[0] for pair in self.lane_profiles} != set(self.lanes)))):
+            raise ValueError("invalid lane profiles")
         if self.fixed_lots is not None and (
                 type(self.fixed_lots) is not int or self.fixed_lots <= 0
                 or self.fixed_lots % 4):
             raise ValueError("fixed_lots must be positive multiples of four")
+
+    def profile_for(self, lane):
+        return dict(self.lane_profiles).get(lane, self.profile)
 
 
 def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=None):
@@ -74,6 +91,8 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
     this exit capacity once. Crossings never replenish it. Protective exits latch
     the whole remainder; cap reductions latch only their requested reduction.
     Entry TTL begins at first eligibility and expires before fills 30m later.
+    Optional zero entry latency is an idealized next-bar-open diagnostic, not
+    actual tick execution. It does not alter protection or exit-policy clocks.
     """
     c = config
     rows = [tuple(row) for row in bars]
@@ -115,17 +134,35 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
                 or (s["max_hold_ms"] is not None and
                     (type(s["max_hold_ms"]) is not int or s["max_hold_ms"] <= 0))):
             raise ValueError("invalid signal")
+        if "risk_share" in s and (type(s["risk_share"]) not in (int, float) or
+                not math.isfinite(s["risk_share"]) or not 0 < s["risk_share"] <= 1):
+            raise ValueError("invalid risk share")
+        if "cancel_if_context_invalid" in s and type(s["cancel_if_context_invalid"]) is not bool:
+            raise ValueError("invalid context cancellation flag")
         ids.add(s["signal_id"])
         signal_map.setdefault(s["available_at"], []).append(s)
     for t, lanes in contexts.items():
         if type(t) is not int or t % BAR:
             raise ValueError("context timestamp")
         for lane, value in lanes.items():
-            if lane not in ("S", "C") or set(value) != {
-                    "exit_long", "exit_short", "trend_long", "trend_short"}:
+            required = {"exit_long", "exit_short", "trend_long", "trend_short"}
+            optional_bool = {"allow_entry_long", "allow_entry_short", "phase_exit_long", "phase_exit_short",
+                             "phase_valid_long", "phase_valid_short"}
+            if (lane not in ("S", "C") or not required <= set(value) or
+                    set(value)-required-optional_bool-{"trail_long", "trail_short", "phase_at"}):
                 raise ValueError("context fields")
-            if any(type(v) is not bool for v in value.values()):
+            if any(type(value[k]) is not bool for k in set(value) & (required | optional_bool)):
                 raise ValueError("context boolean")
+            for key in ("trail_long", "trail_short"):
+                if key in value and (type(value[key]) not in (int, float) or
+                        not math.isfinite(value[key]) or value[key] <= 0):
+                    raise ValueError("context trail")
+            if "phase_at" in value and (type(value["phase_at"]) is not int or
+                    value["phase_at"] < 0 or value["phase_at"] % BAR or value["phase_at"] > t):
+                raise ValueError("context phase timestamp")
+            if (any(value.get(k, False) for k in ("phase_exit_long", "phase_exit_short")) or
+                    any(value.get(k) is False for k in ("phase_valid_long", "phase_valid_short"))) and "phase_at" not in value:
+                raise ValueError("phase exit requires timestamp")
 
     cash = c.initial_cash
     positions, pending = {}, {}
@@ -230,16 +267,17 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
         p["frozen"] = True
         p["initial_lots"] = p["lots"]
         p["initial_risk"] = p["lots"]*LOT*p["stop_distance"]
-        if c.profile in ("Q", "H"):
+        profile = c.profile_for(lane)
+        if profile in ("Q", "H", "K", "U"):
             d, r = p["direction"], p["stop_distance"]
-            furthest = 1.5 if c.profile == "H" else .5
+            furthest = 1.5 if profile in ("H", "K", "U") else .5
             if p["entry"]+d*furthest*r <= 0:
                 p["target_plan_suppressed"] = "nonpositive_target_after_partial_entry"
                 counters["suppressed_target_plans"] += 1
                 emit("target_plan_suppressed", t, lane=lane, reason=p["target_plan_suppressed"])
                 emit("entry_frozen", t, lane=lane, lots=p["lots"])
                 return
-            extras = (Target(p["entry"]+d*1.5*r, p["lots"]//4),) if c.profile == "H" else ()
+            extras = (Target(p["entry"]+d*1.5*r, p["lots"]//4),) if profile in ("H", "K", "U") else ()
             plan = ScalpExitPlan("long" if d == 1 else "short", p["entry"],
                                  p["lots"], 1, p["entry"]+d*.5*r, extras)
             p["targets"] = [dict(price=x.price, lots=x.lots, filled=0, retired=0) for x in plan.targets]
@@ -358,6 +396,13 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
                         target["filled"] += close(lane, target["lots"]-target["filled"]-target["retired"],
                                                   target["price"], t, f"tp{index+1}", True)
         context.update(contexts.get(t, {}))
+        for lane, order in list(pending.items()):
+            side = "long" if order["direction"] == 1 else "short"
+            if (order.get("cancel_if_context_invalid", False) and
+                    context.get(lane, {}).get("allow_entry_"+side) is False):
+                emit("entry_cancelled", t, lane=lane, signal_id=order["signal_id"],
+                     reason="context_invalid", cancelled_lots=order["remaining"])
+                freeze(lane, t)
         # Drift caps: reduce at the next bar open, with the same partial capacity.
         g, h = risk(op, False)
         if g > nav(op)+1e-8 or h > .02*nav(op)+1e-8:
@@ -385,21 +430,34 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
                 continue
             cx = context.get(lane, {})
             side = "long" if p["direction"] == 1 else "short"
+            profile = c.profile_for(lane)
             due = cx.get("exit_"+side, False) or (p["max_hold_ms"] is not None and t >= p["opened_at"]+p["max_hold_ms"])
+            phase_due = (profile == "U" and (cx.get("phase_exit_"+side, False) or
+                         cx.get("phase_valid_"+side) is False)
+                         and cx.get("phase_at", -1) > p["opened_at"])
+            due = due or phase_due
             if due:
-                p["exit_due"], p["exit_reason"] = t+c.timing_ms, "rule_or_deadline"
+                p["exit_due"], p["exit_reason"] = t+c.timing_ms, "phase_exit" if phase_due else "rule_or_deadline"
                 p["exit_remaining"] = p["lots"]
                 cancel_entry(lane, t)
                 p["targets"] = []
                 continue
-            if c.profile != "F":
+            if profile != "F":
                 distance = p["stop_distance"]
                 tp1 = bool(p["targets"] and p["targets"][0]["filled"] == p["targets"][0]["lots"])
                 tp2 = bool(len(p["targets"]) == 2 and p["targets"][1]["filled"] == p["targets"][1]["lots"])
-                if c.profile == "H" and tp1 and cx.get("trend_"+side, False):
+                if profile in ("K", "U") and not tp1:
+                    continue
+                if profile in ("H", "K") and tp1 and cx.get("trend_"+side, False):
                     distance *= 2 if tp2 else 1.5
                 desired = p["extreme"]-p["direction"]*distance
-                if p["direction"]*(p["extreme"]-p["entry"]) >= p["stop_distance"] or (c.profile == "H" and tp1):
+                if profile == "U":
+                    if "trail_"+side not in cx:
+                        counters["policy_errors"] = counters.get("policy_errors", 0)+1
+                        emit("policy_error", t, lane=lane, reason="missing_causal_trail")
+                        continue
+                    desired = cx["trail_"+side]
+                if p["direction"]*(p["extreme"]-p["entry"]) >= p["stop_distance"] or (profile in ("H", "K", "U") and tp1):
                     be = p["entry"]*(1+p["direction"]*(2*taker+slip))
                     desired = max(desired, be) if p["direction"] == 1 else min(desired, be)
                 if p["direction"]*(desired-p["stop"]) > 1e-10:
@@ -424,8 +482,12 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
                 share = 1/len(c.lanes)
                 gross_budget = min(value*share, max(0., value-g))
                 heat_budget = min(value*.02*share, max(0., value*.02-h))
+                if "risk_share" in s:
+                    gross_budget *= s["risk_share"]
+                    heat_budget *= s["risk_share"]
+                    share *= s["risk_share"]
             else:
-                share = .5 if lane == "C" and not s["strong"] else 1.
+                share = s.get("risk_share", .5 if lane == "C" and not s["strong"] else 1.)
                 gross_budget = max(0., value-g)*share
                 heat_budget = max(0., value*.02-h)*share
             per_lot_heat = LOT*(s["stop_distance"]+op*(2*taker+slip))
@@ -435,22 +497,31 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
             if not lots:
                 counters["rejected_budget"] += 1
                 continue
-            pending[lane] = dict(s, remaining=lots, requested=lots, eligible=t+c.timing_ms,
-                                 expires=t+c.timing_ms+6*BAR, allocation_share=share,
+            entry_delay = c.timing_ms if c.entry_latency_ms is None else c.entry_latency_ms
+            pending[lane] = dict(s, remaining=lots, requested=lots, eligible=t+entry_delay,
+                                 expires=t+entry_delay+6*BAR, allocation_share=share,
                                  gross_budget=gross_budget, heat_budget=heat_budget)
             counters["accepted"] += 1
             emit("entry_reserved", t, lane=lane, signal_id=s["signal_id"], lots=lots,
                  gross_budget=gross_budget, heat_budget=heat_budget, allocation_share=share)
         for lane in tuple(pending):
             order = pending[lane]
+            side = "long" if order["direction"] == 1 else "short"
+            if (order.get("cancel_if_context_invalid", False) and
+                    context.get(lane, {}).get("allow_entry_"+side) is False):
+                emit("entry_cancelled", t, lane=lane, signal_id=order["signal_id"],
+                     reason="context_invalid", cancelled_lots=order["remaining"])
+                freeze(lane, t)
+                continue
             if t < order["eligible"]:
                 continue
             d = order["direction"]
             price = op*(1+d*slip)
             if lane not in positions:
                 native_stop = price-d*order["stop_distance"]
-                furthest = 1.5 if c.profile == "H" else .5
-                invalid_target = (c.profile in ("Q", "H") and
+                profile = c.profile_for(lane)
+                furthest = 1.5 if profile in ("H", "K", "U") else .5
+                invalid_target = (profile in ("Q", "H", "K", "U") and
                                   price+d*furthest*order["stop_distance"] <= 0)
                 if native_stop <= 0 or d*(op-native_stop) <= 0 or invalid_target:
                     counters["rejected_geometry"] += 1
