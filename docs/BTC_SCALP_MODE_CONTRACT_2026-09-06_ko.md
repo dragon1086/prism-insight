@@ -158,6 +158,8 @@ Bybit 주문 변경 ACK는 비동기 접수이지 최종 변경 확인이 아닙
 
 - core/scalp.py: ScalpExitPlan, ScalpTrailPolicy, ScalpSnapshot,
   propose_scalp_exit, select_check_interval을 구현했습니다. 표준 라이브러리만 사용합니다.
+- 기존 core 패키지 초기화는 pandas를 import하므로 CI에는 프로젝트의 기존
+  pandas~=2.2.3 요구사항을 추가했습니다. 새 프로덕션 의존성은 없습니다.
 - 신규 순수 테스트: 132 passed. 같은 명령을 Python 3.10/3.11/3.12 CI에 연결했습니다.
 - 분리 worktree BTC 전체: 841 passed, 1 skipped, 29.79초, TCP 시도 0건.
   skip은 private market.db가 없는 실제 데이터 검사이며, 새 검증을 위해 운영 DB를 복사하지 않았습니다.
