@@ -204,4 +204,5 @@ prism-btc/backtest/results_*/
 !prism-btc/engine/config.py
 *.sqlite.migrate.lock
 *.sqlite.init.lock
+*.btc-execution.lock
 shadow_lifecycle_state.json
