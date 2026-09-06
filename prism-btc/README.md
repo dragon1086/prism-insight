@@ -163,3 +163,30 @@ retained, not overwritten or silently resumed. Do not change financial source or
 the specification after freezing; use a new version/output directory if a defect
 requires repair. Inspect `run_state.json`, `registry.json`, and `failure.json`
 before interpreting any report. A completed tool run does not prove profitability.
+
+## MA10/35 transition research (2026-09-06)
+
+`analysis.transition_retest` replaces neither live strategies nor the prior study.
+It tests explicitly prior MA-gap convergence, fresh crossing and first expansion,
+recent1h/4h transitions, graded initial sizing, and delayed/MA-based runner exits.
+Confirmed30m and causal developing5m snapshots are separate variants. The source
+specification is `docs/BTC_MA_TRANSITION_CONTRACT_2026-09-06_ko.md`.
+
+From a clean research worktree, use the existing Python3.12 backtest interpreter:
+
+```bash
+PYTHONPATH=prism-btc /path/to/.venv-bt/bin/python -m analysis.transition_retest \
+  --output-dir /absolute/fresh/run --preregister-only
+PYTHONPATH=prism-btc /path/to/.venv-bt/bin/python -m analysis.transition_retest \
+  --output-dir /absolute/fresh/run --profile-only
+PYTHONPATH=prism-btc /path/to/.venv-bt/bin/python -m analysis.transition_retest \
+  --output-dir /absolute/fresh/run \
+  --market-db /absolute/existing/btc_market.db \
+  --execution-db /absolute/existing/btc_research_5m.db
+```
+
+Use another fresh directory for the independent second pass. Existing attempts
+are never silently overwritten. The experiment has no optimizer/activation path.
+Different timeframes share prices, and the confidence grade is not a calibrated
+probability. Actual order flow, broker fills, price filters and forward evidence
+remain outside this historical price-proxy study.
