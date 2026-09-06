@@ -1,6 +1,7 @@
 # BTC 전략 조합: 공동 자본 연구
 작성일: 2026-09-06 KST
-상태: 사전등록된 초기 라운드 구현·검증 중. 수익 결과는 아직 보지 않았습니다.
+상태: 초기 한정 라운드 구현·전체 실행·독립 재현/검토 완료. **NO_QUALIFYING_CANDIDATE**.
+사용자가 요청한 지속적 고수익 방법은 아직 찾지 못했습니다. 연구 도구의 검증 완료와 구분합니다.
 기준 코드: 47a821ab. 운영 main/swing/scalp 및 위험 설정은 변경하지 않습니다.
 
 ## 1. 무엇을 찾는가
@@ -118,4 +119,93 @@ studentized max-T나 미래 수익 보장으로 부르지 않습니다.
 - pass당 2시간/2GiB RSS/512MiB 결과 예산. 넘으면 INCOMPLETE를 보존하고 후보를 줄여 성공으로 바꾸지 않습니다.
 
 ## 8. 결과
-아직 실제 성과를 실행하지 않았습니다. 검증 후 수치·해시·실패 이유와 구현 상태를 여기에 추가합니다.
+2022 학습에서 선택된 조합은 **M02: 추세 T50% + 횡보 회귀 R50%**입니다.
+2023년 이후 성과를 보고 선택을 바꾸지 않았습니다. 최고 단독 참조도 학습에서 R로 동결했습니다.
+
+선택 조합의 2023–2025 기준 비용/5분 지연 결과:
+- 공동 NAV: 10,000 → 10,777.6871 USDT, 누적 +7.7769%, CAGR +2.5273%.
+- MTM 최대낙폭 11.4600%, 수익이 난 달 17/36개(47.2222%).
+- 2023년 +10.7379%, 2024년 -1.1266%, 2025년 -1.5649%.
+- 종료 campaign 94개. 반복 실행이나 부분감축을 새 표본으로 세지 않습니다.
+- 상위 5개 일수익을 제거하면 누적 -9.8899%. 그 5일의 기여는 전체 net log 성장의 239.05%입니다.
+- 최고점 아래에 머문 최대 기간은 약 720일이며 미회복 구간을 포함합니다.
+- 양 경로의 daily NAV/수익률은 동일했지만, 합성 경로의 노출시간·일중 지표 차이는 별도 보존했습니다.
+
+모든 원시 혼합 후보의 CAGR(기준 비용/5분 지연/OHLC):
+- M01(T50/B50): +9.0527%, MDD17.5345%, 2025년 -3.2929%.
+- M02(T50/R50): +2.5273%, MDD11.4600%, 2025년 -1.5649%.
+- M03(B50/R50): +0.5486%, MDD9.4831%, 2025년 -3.0625%.
+- M04(균등): +4.0844%, MDD11.6229%, 2025년 -2.6243%.
+- M05(T50/B25/R25): +5.8537%, MDD13.7656%, 2025년 -2.5194%.
+- M06(T25/B50/R25): +4.9813%, MDD12.8936%, 2025년 -3.2485%.
+- M07(T25/B25/R50): +1.5991%, MDD8.7129%, 2025년 -2.4343%.
+
+M01의 사후 수익률이 더 높아도 새 선택으로 바꾸지 않습니다. 모든 혼합의 2025년 수익은 음수이고,
+어느 것도 사전 정의한 높은 성장·일관성 기준을 충족하지 않았습니다.
+
+참조와 통계:
+- M02의 train-vol matched BTC perpetual long+cash: CAGR9.2801%, MDD16.9356%.
+  stop/heat 면제·gross 강제감축 참조이므로 실제 위험이 같다는 뜻은 아닙니다.
+- 학습 최고 단독 R의 OOS CAGR은 -6.0996%입니다. 학습의 우위가 이후에도 유지된 것은 아닙니다.
+- 두 경로 각각 14개 차이 계열의 2,000회 시간 블록 검사에서 모든 보정 하단이 음수입니다.
+  q95 max-error는 0.0006036485138735795(일수익 단위)입니다.
+- M02의 보정 하단은 R 대비 -0.00035427293830548207,
+  matched BTC 참조 대비 -0.0007893858773668761입니다. 우위를 입증하지 못했습니다.
+- 기각 사유 24개는 성장률, 양수 월/연도, 집중도, 참조 우위/보정 하단,
+  8개 stress의 양수 연도 조건에 해당합니다. 실패한 조건을 제외하거나 기준을 낮추지 않았습니다.
+
+## 9. 계산·재현·원장 검증
+
+- 두 독립 pass의 240 logical trial이 모두 정상 종료했습니다.
+  동일 정책 cache alias32개를 포함해 실제 계산은 pass당208개이며 이를 240개 독립 전략으로 표현하지 않습니다.
+- 계약·자료 manifest·학습 freeze·registry·report 파일이 byte-identical입니다.
+- 240개 결과와 416개 daily CSV/압축 원장 artifact를 두 실행 사이에서 비교해 모두 일치했습니다.
+- 독립 원장 감사는 선택 M02 OOS 양 경로의 각251 fills/3,288 funding/1,096 daily NAV와
+  TRAIN41 fills/825 funding/275 daily NAV를 처음부터 재구성했습니다.
+- 수수료, signed funding, 실현손익, 감사 node NAV/gross/heat/보유량 차이는 0입니다.
+  별도 누적합의 cash 보존식 오차는 최대 3.64e-11 USDT였습니다.
+- 2024/2025 경계의 cash·포지션 연속성과 stop85건의 가격/합성 crossing을 확인했습니다.
+- 독립 검토가 학습 선택, 14개 scale, CAGR/연도 수익, top5 제거,
+  2,000회 bootstrap과 24개 기각 사유를 다시 계산해 일치시켰습니다.
+- 서버 격리 BTC 테스트 1,113개 통과/1개 skip, 네트워크 시도0건.
+  skip은 private market.db를 서버 테스트 worktree에 복사하지 않은 실제 자료 검사입니다.
+- Python 3.10/3.11/3.12 CI, Ruff, 구문 검사 통과. 실제 역사 실행은 지정한 Python3.12 환경입니다.
+
+현재 금융 소스 commit은 a6778315f19bd0e7fd4900e4c5be216774929390입니다.
+첫 f2ac297c 실행은 정적 검사의 subprocess/최적화 assert 경고를 수정하기 위해 중단했습니다.
+그때의68개 완료 결과/미완료 기록을 보존했고, 신규 소스에서 다시 계산한68개 금융 결과가 동일합니다.
+전략·비중·선택 기준은 바꾸지 않았으며 이전 소비 시간532.27초도 새 예산에 이월했습니다.
+
+자원:
+- 첫 완결 pass: 누적1,957.27초(위 이월 포함), peak RSS264.4MiB, artifact43.8MiB.
+- 독립 두 번째 pass: 1,427.15초, peak RSS296.5MiB, artifact43.8MiB.
+- 두 pass의 누적 시간 합계 약56.4분. 2시간/pass, 4시간/두 pass, RSS/디스크 기준 이내입니다.
+
+핵심 fingerprint:
+- contract ID: aab4b67411c076e306d2145ca2a8055d003596ac7ca7254e2f4e3edfae21ce5b
+- data manifest file: 88b80b11c50f76d418ae96a64d97669e61c7af3182803fd84c9a715b905381a1
+- freeze file: 4db84e2570dbf45d1e58ff31efe71bee09965a755295c25d23ae2bdf9d425ecc
+- report file: e48bc757436ce3e2d9eba83892356563b7ce5dcf55112a9d140b2c22dedadc1f
+
+재현 순서(새 output 디렉터리를 지정):
+```sh
+PYTHONPATH=prism-btc .venv-bt/bin/python -m analysis.strategy_mixture --preregister-only --output-dir RUN
+PYTHONPATH=prism-btc .venv-bt/bin/python -m analysis.strategy_mixture --profile-only --output-dir RUN
+PYTHONPATH=prism-btc .venv-bt/bin/python -m analysis.strategy_mixture \
+  --contract RUN/contract.json --output-dir RUN \
+  --market-db prism-btc/state/btc_market.db \
+  --execution-db prism-btc/state/btc_research_5m.db
+```
+
+## 10. 남은 일과 다음 가설
+
+이번 라운드는 **유효한 기각**이며, 수익성 있는 방법을 찾았다는 뜻이 아닙니다.
+같은 데이터에서 통과할 때까지 가중치를 바꾸는 방식은 쓰지 않습니다.
+후속으로는 기존 core/swing의 확정4h·1d 규칙을 공동 원장에 정확히 연결하고,
+동일한 진입에서 원래 청산과 이익 보존형 단조 SL을 별도 사전등록으로 비교하는 편이 더 직접적입니다.
+DAY만4h로 바꾸거나 기존 funding/봉전체 high-low action을 중복 적용하면 안 됩니다.
+
+이는 후속 제안이지 아직 수행한 검증이나 승자 제안이 아닙니다.
+새 사전등록도 이미 관찰한 과거를 새로운 holdout으로 만들 수 없습니다.
+실제 체결/mark/고해상도 자료 및 동결 이후 forward 검증이 필요합니다.
+사용자의 더 넓은 수익 목표는 미해결이며, 운영 main/swing/scalp·위험 예산·cron은 변경하지 않았습니다.
