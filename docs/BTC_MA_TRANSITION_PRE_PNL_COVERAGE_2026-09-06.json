@@ -1,0 +1,14 @@
+{
+  "kind": "SIGNAL_COVERAGE_ONLY_BEFORE_NEW_STRATEGY_PNL",
+  "draft_commit": "f2bc95cf6dcfb74ae1d9acbe2ebc1c9dff8c9c61",
+  "draft_specification_sha256": "10509e4a1f219e978aa60e37fc14449890d948e0b3509dc1d6e0f1e28c8af08c",
+  "signal_source_sha256": "216d21d0929518f1acc727802c65e768a813f766aaee3d71a6d24627ca1058c2",
+  "new_candidate_pnl_computed": false,
+  "source_period": "2022-01-01/2026-01-01 exclusive; first90days warmup",
+  "signal_counts": {"X0": 2288, "X1": 899, "X1A": 161, "X2": 899, "X3": 782},
+  "X3_confidence_counts": {"low": 294, "medium": 488, "high": 0},
+  "legacy_regression_only": "Previously published S_F and J_H_FLEX basebothpaths full-result hashes unchanged",
+  "decision": "Keep strict X3 as primary; add separately labelled X4 higher-TF slope/gap-turn confidence hypothesis before PnL. Do not modify thresholds until HIGH appears or choose by returns.",
+  "X4_entry_rule_changed": false,
+  "X4_only_changes_initial_risk_share_relative_to_X3": true
+}

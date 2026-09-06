@@ -168,6 +168,12 @@ def test_tapes_are_causal_json_safe_and_x2_changes_only_risk_share():
         assert a["metadata"]["squeeze_at"] < a["metadata"]["cross_at"] <= a["available_at"]
         assert a["max_hold_ms"] == 7_200_000
         assert .006 * a["reference_price"] <= a["stop_distance"] <= .015 * a["reference_price"]
+    x3, x4 = full["variants"]["X3"], full["variants"]["X4"]
+    assert x3["signals"] and len(x3["signals"]) == len(x4["signals"])
+    assert x3["contexts"] is x4["contexts"]
+    for a, b in zip(x3["signals"], x4["signals"]):
+        assert a == dict(b, risk_share=a["risk_share"])
+        assert b["risk_share"] == a["metadata"]["turn_risk_share"]
     assert all(s in x1["signals"] for s in full["variants"]["X1A"]["signals"])
     for variant in full["variants"].values():
         assert len({s["signal_id"] for s in variant["signals"]}) == len(variant["signals"])
@@ -220,6 +226,112 @@ def test_cross_requires_directional_ma10_slope():
     state = ready()
     assert state.observe(2 * t.HALF, .2, -.1, -.1, .2) is None
     assert state.state == "READY"
+
+
+@pytest.mark.parametrize("period", [t.PERIODS["1h"], t.PERIODS["4h"]])
+def test_native_baseline_changes_only_after_boundary_without_double_count(period):
+    data = bars()
+    frame = t._features(data, period)
+    snapshots = t._snapshots(data, frame, period, True)
+    native = t._native_deltas(data, frame, snapshots)
+    width = period // t.BAR
+    k = 40
+    boundary_i = (k + 1) * width - 1
+    assert native["native_baseline_at"][boundary_i] == frame.available_at.iloc[k - 1]
+    assert native["ma10_delta"][boundary_i] == frame.ma10.iloc[k] - frame.ma10.iloc[k - 1]
+    assert native["gap_delta"][boundary_i] == ((frame.ma10 - frame.ma35).iloc[k] - (frame.ma10 - frame.ma35).iloc[k - 1])
+    assert native["native_baseline_at"][boundary_i + 1] == frame.available_at.iloc[k]
+    assert native["ma10_delta"][boundary_i + 1] == snapshots["ma10"][boundary_i + 1] - frame.ma10.iloc[k]
+
+
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_native_turn_needs_completed_rearm_and_ignores_within_bar_oscillation(direction):
+    turn = t._NativeTurn()
+    turn.observe(t.BAR, direction, direction, False)
+    assert turn.started[direction] is None  # No completed nonturn observation yet.
+    turn.observe(t.PERIODS["1h"], 0., 0., True)
+    start = t.PERIODS["1h"] + t.BAR
+    turn.observe(start, direction, direction, False)
+    assert turn.started[direction] == start
+    turn.observe(start + t.BAR, -direction, -direction, False)
+    assert not turn.turning[direction]
+    turn.observe(start + 2 * t.BAR, direction, direction, False)
+    assert turn.turning[direction] and turn.started[direction] == start
+    turn.observe(2 * t.PERIODS["1h"], direction, direction, True)
+    assert turn.started[direction] == start
+    turn.observe(3 * t.PERIODS["1h"], 0., 0., True)
+    turn.observe(3 * t.PERIODS["1h"] + t.BAR, direction, direction, False)
+    assert turn.started[direction] == 3 * t.PERIODS["1h"] + t.BAR
+
+
+def test_unchanged_price_within_native_bar_cannot_refresh_turn_start():
+    data = bars()
+    begin = 10 * 288
+    data[begin:begin + 12, 1:] = np.array([105., 105.2, 104.8, 105.])
+    frame = t._features(data, t.PERIODS["1h"])
+    snapshot = t._snapshots(data, frame, t.PERIODS["1h"], True)
+    native = t._native_deltas(data, frame, snapshot)
+    # All eleven unfinished snapshots have the same completed native baseline.
+    np.testing.assert_array_equal(native["ma10_delta"][begin:begin + 11],
+                                  np.repeat(native["ma10_delta"][begin], 11))
+    np.testing.assert_array_equal(native["gap_delta"][begin:begin + 11],
+                                  np.repeat(native["gap_delta"][begin], 11))
+
+
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_native_turn_grade_requires_current_turn_and_nonrefreshed_fresh_start(direction):
+    trackers = {name: t._NativeTurn() for name in ("1h", "4h")}
+    for turn in trackers.values():
+        turn.observe(t.DAY, 0., 0., True)
+        turn.observe(t.DAY + t.BAR, direction, direction, False)
+    ts = t.DAY + t.BAR
+    assert t._turn_confidence(direction, trackers, ts) == ("high", 1.)
+    assert t._turn_confidence(direction, trackers, ts + 2 * 3_600_000) == ("high", 1.)
+    assert t._turn_confidence(direction, trackers, ts + 2 * 3_600_000 + 1) == ("medium", .5)
+    trackers["1h"].observe(ts + t.BAR, -direction, -direction, False)
+    assert t._turn_confidence(direction, trackers, ts + t.BAR) == ("medium", .5)
+    assert trackers["1h"].started[direction] == ts
+    trackers["4h"].observe(ts + t.BAR, 0., 0., False)
+    assert t._turn_confidence(direction, trackers, ts + t.BAR) == ("low", .25)
+
+
+def test_missing_native_history_cannot_arm_a_turn():
+    turn = t._NativeTurn()
+    turn.observe(t.DAY, np.nan, np.nan, True)
+    turn.observe(t.DAY + t.BAR, 1., 1., False)
+    assert turn.started[1] is None and not turn.armed[1]
+
+
+def test_phase_validity_uses_latest_closed_direction_and_never_future_close():
+    data = bars()
+    tape = t.build_transition_tapes(data, 0)
+    frame = t._features(data, t.HALF)
+    gaps = (frame.ma10 - frame.ma35).to_numpy()
+    crosses = [i for i in range(35, len(frame)) if gaps[i - 1] * gaps[i] < 0]
+    assert crosses, "synthetic fixture must have a closed direction change"
+    for index in crosses[:4]:
+        at = int(frame.available_at.iloc[index])
+        before = tape["variants"]["X3"]["contexts"][at - t.BAR]["C"]
+        closed = tape["variants"]["X3"]["contexts"][at]["C"]
+        assert before["phase_at"] == at - t.HALF
+        assert closed["phase_at"] == at
+        assert before["phase_valid_long"] == bool(gaps[index - 1] > 0)
+        assert before["phase_valid_short"] == bool(gaps[index - 1] < 0)
+        assert closed["phase_valid_long"] == bool(gaps[index] > 0)
+        assert closed["phase_valid_short"] == bool(gaps[index] < 0)
+
+
+def test_zero_closed_gap_invalidates_both_directions_but_warmup_is_unknown():
+    data = bars(2)
+    data[:, 1:] = np.array([100., 100.2, 99.8, 100.])
+    tape = t.build_transition_tapes(data, 0)
+    for variant in ("X1", "X3", "X4"):
+        contexts = tape["variants"][variant]["contexts"]
+        warmup = contexts[t.HALF]["C"]
+        assert "phase_valid_long" not in warmup and "phase_valid_short" not in warmup
+        valid = contexts[35 * t.HALF]["C"]
+        assert valid["phase_valid_long"] is False and valid["phase_valid_short"] is False
+        assert valid["phase_at"] == 35 * t.HALF
 
 
 @pytest.mark.parametrize("warmup", [-1, True, .5])

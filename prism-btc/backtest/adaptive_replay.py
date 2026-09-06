@@ -139,7 +139,8 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
             raise ValueError("context timestamp")
         for lane, value in lanes.items():
             required = {"exit_long", "exit_short", "trend_long", "trend_short"}
-            optional_bool = {"allow_entry_long", "allow_entry_short", "phase_exit_long", "phase_exit_short"}
+            optional_bool = {"allow_entry_long", "allow_entry_short", "phase_exit_long", "phase_exit_short",
+                             "phase_valid_long", "phase_valid_short"}
             if (lane not in ("S", "C") or not required <= set(value) or
                     set(value)-required-optional_bool-{"trail_long", "trail_short", "phase_at"}):
                 raise ValueError("context fields")
@@ -152,7 +153,8 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
             if "phase_at" in value and (type(value["phase_at"]) is not int or
                     value["phase_at"] < 0 or value["phase_at"] % BAR or value["phase_at"] > t):
                 raise ValueError("context phase timestamp")
-            if any(value.get(k, False) for k in ("phase_exit_long", "phase_exit_short")) and "phase_at" not in value:
+            if (any(value.get(k, False) for k in ("phase_exit_long", "phase_exit_short")) or
+                    any(value.get(k) is False for k in ("phase_valid_long", "phase_valid_short"))) and "phase_at" not in value:
                 raise ValueError("phase exit requires timestamp")
 
     cash = c.initial_cash
@@ -423,7 +425,8 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
             side = "long" if p["direction"] == 1 else "short"
             profile = c.profile_for(lane)
             due = cx.get("exit_"+side, False) or (p["max_hold_ms"] is not None and t >= p["opened_at"]+p["max_hold_ms"])
-            phase_due = (profile == "U" and cx.get("phase_exit_"+side, False)
+            phase_due = (profile == "U" and (cx.get("phase_exit_"+side, False) or
+                         cx.get("phase_valid_"+side) is False)
                          and cx.get("phase_at", -1) > p["opened_at"])
             due = due or phase_due
             if due:

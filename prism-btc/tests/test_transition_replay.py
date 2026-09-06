@@ -193,3 +193,66 @@ def test_invalid_risk_share(share):
 def test_invalid_context_extensions(extra):
     with pytest.raises(ValueError):
         run(contexts={2*BAR: {"S": cx(**extra)}})
+
+
+@pytest.mark.parametrize("direction", [-1, 1])
+@pytest.mark.parametrize("timing", [BAR, 6*BAR])
+@pytest.mark.parametrize("validity", [False, True, None])
+def test_failed_forming_confirmation_only_explicit_false(direction, timing, validity):
+    side = "long" if direction == 1 else "short"
+    observation = 2*timing
+    fields = {"phase_at": observation}
+    if validity is not None:
+        fields["phase_valid_"+side] = validity
+    _, events = run(bars(25), profile="U", timing_ms=timing,
+                    signals=[signal(direction)], contexts={observation: {"S": cx(**fields)}})
+    fills = exits(events, "phase_exit")
+    assert bool(fills) is (validity is False)
+    if fills:
+        assert fills[0]["ts"] == observation+timing
+
+
+@pytest.mark.parametrize("direction", [-1, 1])
+@pytest.mark.parametrize("timing", [BAR, 6*BAR])
+@pytest.mark.parametrize("phase_offset", [0, 1])
+def test_invalid_confirmation_stale_or_equal_is_ignored(direction, timing, phase_offset):
+    # Entry is at timing. Even a newly delivered context must retain its own
+    # original closed-observation timestamp rather than pretending it is fresh.
+    _, events = run(bars(25), profile="U", timing_ms=timing,
+                    signals=[signal(direction)], contexts={2*timing: {"S": cx(
+                        phase_at=phase_offset*timing, **{"phase_valid_long" if direction == 1 else "phase_valid_short": False})}})
+    assert not exits(events, "phase_exit")
+
+
+@pytest.mark.parametrize("profile", ["F", "H", "K"])
+def test_failed_confirmation_does_not_change_legacy_or_k(profile):
+    _, events = run(profile=profile, contexts={2*BAR: {"S": cx(
+        phase_at=2*BAR, phase_valid_long=False, phase_valid_short=False)}})
+    assert not exits(events, "phase_exit")
+
+
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_neutral_confirmation_cancels_partial_tail_without_removing_sl(direction):
+    data = bars(6)
+    # Both validity sides False represents a neutral closed phase. The native
+    # SL can still execute before the delayed failed-confirmation market exit.
+    adverse = 95. if direction == 1 else 105.
+    data[2] = [2*BAR, 100., max(100., adverse), min(100., adverse), 100.]
+    result, events = run(data, profile="U", partial=True,
+        signals=[signal(direction, cancel_if_context_invalid=True)],
+        contexts={2*BAR: {"S": cx(phase_at=2*BAR, phase_valid_long=False,
+                                  phase_valid_short=False, allow_entry_long=False,
+                                  allow_entry_short=False)}})
+    assert len(result["entry_fills"]) == 1
+    assert result["entry_fills"][0]["lots"] == 8
+    assert any(e["kind"] == "entry_cancelled" for e in events)
+    assert exits(events, "stop")
+    assert sum(e["lots"] for e in exits(events)) == 8
+
+
+@pytest.mark.parametrize("fields", [dict(phase_valid_long=0, phase_at=BAR),
+                                   dict(phase_valid_short=None, phase_at=BAR),
+                                   dict(phase_valid_long=False)])
+def test_invalid_phase_validity_schema(fields):
+    with pytest.raises(ValueError):
+        run(contexts={2*BAR: {"S": cx(**fields)}})
