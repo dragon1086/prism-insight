@@ -378,7 +378,7 @@ class DemoAdapter:
 
     def _place_reduce_limit(self, side: str, qty: float, price: float, *,
                             order_link_id: str | None = None) -> Optional[str]:
-        """TP1 = reduce-only 지정가 (maker)."""
+        """TP1 = GTC reduce-only limit; execution fee may be taker."""
         close_side = "Sell" if side == "long" else "Buy"
         resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
@@ -387,14 +387,14 @@ class DemoAdapter:
                 "details": {
                     "side": side,
                     "order_type": "Limit",
-                    "time_in_force": "PostOnly",
+                    "time_in_force": "GTC",
                     "reduce_only": True,
                     "qty": float(qty),
                     "price": float(price),
                 },
             },
             side=close_side, orderType="Limit", qty=_qstr(qty), price=_pstr(price),
-            timeInForce="PostOnly", reduceOnly=True, positionIdx=_POSITION_IDX,
+            timeInForce="GTC", reduceOnly=True, positionIdx=_POSITION_IDX,
             **({"orderLinkId": order_link_id} if order_link_id else {}),
         )
         oid = _order_id(resp)
@@ -637,7 +637,7 @@ class DemoAdapter:
                     and receipt.get("link_id") and receipt["link_id"] == pending.get("link_id")
                     and receipt.get("order_id") and receipt["order_id"] == pending.get("order_id"))
 
-    def _complete_native_postfill(self, pending) -> bool:
+    def _complete_native_postfill(self, pending, ex_pos=False) -> bool:
         """Finish TP1 by exact durable identity; never retry an unknown create.
 
         Preserve the existing cancel/recreate TP semantics, but require exact
@@ -652,6 +652,10 @@ class DemoAdapter:
             return False
         prior_id = receipt.get("prior_tp_order_id")
         if prior_id and not receipt.get("prior_tp_terminal"):
+            prior_intent = self._get_meta("tp_intent", None)
+            # An old order ID alone carries no safe tranche allocation proof.
+            if not prior_intent or prior_intent.get("order_id") != prior_id:
+                return False
             def prior_rows():
                 response = read_complete(self._call, "get_open_orders", category=_CATEGORY,
                                          symbol=_SYMBOL, orderId=prior_id)
@@ -676,6 +680,37 @@ class DemoAdapter:
             if not prior_valid(rows) or rows[0].get("orderStatus") not in {
                     "Filled", "Cancelled", "Rejected", "PartiallyFilledCanceled"}:
                 return False
+            # A final cancel can race a fill. Never overwrite its unsettled cursor.
+            prior_filled = sum(float(value[0]) for value in prior_intent.get("executions", {}).values())
+            cumulative = _f(rows[0].get("cumExecQty"), -1)
+            if not math.isfinite(cumulative) or abs(cumulative - prior_filled) > 1e-9:
+                return False
+            executions = self._reduction_pages("get_executions", prior_intent)
+            if executions is None:
+                return False
+            from live.take_profit import settlement
+            snapshot_positions = [(item["id"], item["initial_qty"])
+                                  for item in prior_intent["allocations"]]
+            from live.take_profit import consumed
+            used = consumed(prior_intent["allocations"], prior_filled)
+            prior_local = [(pid, qty - float(used[pid])) for pid, qty in snapshot_positions
+                           if qty - float(used[pid]) > 1e-9]
+            proof = settlement(prior_intent, executions, sum(qty for _, qty in prior_local), prior_local)
+            if proof is None or any(proof[0].values()):
+                return False
+            native = self._get_meta("native_entry_intent", {}) or {}
+            current = {p.id: p.qty for p in tracking.load_open_positions(self.conn, self.mode)
+                       if p.side == pending["side"]}
+            expected = {pid: qty for pid, qty in prior_local if qty > 1e-9}
+            new_id = receipt.get("position_id")
+            if (not self._entry_receipt_recorded(pending) or new_id in expected
+                    or native.get("link_id") != pending.get("link_id")
+                    or native.get("position_ids") != [new_id]):
+                return False
+            expected[new_id] = receipt["qty"]
+            if set(current) != set(expected) or any(abs(current[pid] - qty) > 1e-9 for pid, qty in expected.items()):
+                return False
+            self._set_meta("tp_generation:" + prior_intent["link_id"], prior_intent)
             receipt["prior_tp_terminal"] = True
             self._set_meta("pending_order", pending)
         identity = ({"orderId": receipt["tp_order_id"]} if receipt.get("tp_order_id") else
@@ -711,12 +746,30 @@ class DemoAdapter:
             if not rows or len(rows) != 1 or not matches(rows[0]):
                 return False
             row = rows[0]
+            from live.take_profit import order_cumulative
+            cumulative = order_cumulative(row, receipt["tp_qty"])
+            if cumulative is None:
+                return False
             active = row.get("orderStatus") in {"New", "PartiallyFilled"}
             completed = (row.get("orderStatus") == "Filled"
                          and _f(row.get("cumExecQty"), -1) == receipt["tp_qty"])
-            if not (active or completed):
+            terminal = row.get("orderStatus") in {"Cancelled", "Rejected", "PartiallyFilledCanceled"}
+            if not (active or completed or terminal):
                 return False
             self._set_meta("tp_order_id", row["orderId"])
+            intent = self._get_meta("tp_intent", None)
+            if not intent or intent.get("link_id") != receipt["tp_link_id"]:
+                return False
+            intent["order_id"] = row["orderId"]
+            self._set_meta("tp_intent", intent)
+            local_qty = sum(p.qty for p in tracking.load_open_positions(self.conn, self.mode)
+                            if p.side == pending["side"])
+            changed_exposure = (ex_pos is not False and
+                                (ex_pos is None or abs(ex_pos["qty"] - local_qty) > 1e-9))
+            if completed or terminal or cumulative > 0 or changed_exposure:
+                # Immediate TP execution must settle before same-tick exits see
+                # the position. A stale pre-submit snapshot simply retains receipt.
+                return ex_pos is not False and self._settle_tp(ex_pos)
             return True
 
         rows = read()
@@ -724,15 +777,32 @@ class DemoAdapter:
             return False
         if accept(rows):
             return True
+        durable = self._get_meta("tp_intent", None)
+        if durable and durable.get("link_id") == receipt["tp_link_id"]:
+            # Crash between durable submit fence and entry receipt update must
+            # not turn the older PREPARED receipt into permission to resend.
+            receipt["tp_state"] = "SUBMISSION_UNKNOWN"
         if receipt["tp_state"] != "PREPARED":
             history = self._reduction_pages("get_order_history", {
                 "order_id": receipt.get("tp_order_id"),
                 **({"link_id": receipt["tp_link_id"]} if not receipt.get("tp_order_id") else {}),
             })
             return accept(history)
-        if receipt.get("tp_order_id"):
+        if receipt.get("tp_order_id") or rows:
+            return False
+        from live.take_profit import allocation_snapshot
+        positions = tracking.load_open_positions(self.conn, self.mode)
+        try:
+            allocations = allocation_snapshot(
+                [(p.id, p.qty) for p in positions if p.side == pending["side"]], receipt["tp_qty"])
+        except ValueError:
             return False
         receipt["tp_state"] = "SUBMISSION_UNKNOWN"
+        self._set_meta("tp_intent", {
+            "side": pending["side"], "order_id": None, "link_id": receipt["tp_link_id"],
+            "generation": 1, "qty": receipt["tp_qty"], "price": float(_pstr(receipt["tp_price"])),
+            "allocations": allocations, "executions": {}, "state": "SUBMISSION_UNKNOWN",
+        })
         self._set_meta("pending_order", pending)
         oid = self._place_reduce_limit(pending["side"], receipt["tp_qty"], receipt["tp_price"],
                                        order_link_id=receipt["tp_link_id"])
@@ -741,6 +811,264 @@ class DemoAdapter:
             receipt["tp_state"] = "ACK_UNCONFIRMED"
             self._set_meta("pending_order", pending)
         return accept(read())
+
+    def _protect_tp_exposure(self, ex_pos, positions):
+        """A TP uncertainty fence must never suppress actual-exposure SL repair."""
+        if not ex_pos or not self._get_meta("tp_intent", None):
+            return
+        stops = [p.sl_price for p in positions if p.side == ex_pos["side"]]
+        if stops:
+            self._ensure_stop(ex_pos["side"], ex_pos["qty"],
+                              max(stops) if ex_pos["side"] == "long" else min(stops))
+
+    def _settle_tp(self, ex_pos) -> bool:
+        """Reconcile the durable aggregate TP before detecting new entry deltas.
+
+        Unknown reads and unexplained position changes retain all stop protection
+        and fence new entry/exit writes. No price/ACK/absence is a fill proof.
+        """
+        from live.take_profit import consumed, order_cumulative, settlement
+        intent = self._get_meta("tp_intent", None)
+        if not intent:
+            return True
+        if intent.get("state") in {"FULFILLED", "FLAT_TERMINAL"}:
+            return True
+        if intent.get("state") == "RETIRED":
+            if intent.get("own_reduction"):
+                return self._rebase_retired_tp(intent, ex_pos)
+            return True
+        identity = {"orderLinkId": intent["link_id"]}
+        response = read_complete(self._call, "get_open_orders", category=_CATEGORY,
+                                 symbol=_SYMBOL, **identity)
+        if response is None:
+            return False
+        orders = [row for row in _result_list(response) if row.get("orderLinkId") == intent["link_id"]]
+        if not orders:
+            orders = self._reduction_pages("get_order_history", intent)
+        if not orders or len(orders) != 1:
+            return False
+        row = orders[0]
+        try:
+            if (not row.get("orderId") or row.get("orderLinkId") != intent["link_id"]
+                    or (intent.get("order_id") and row["orderId"] != intent["order_id"])
+                    or row.get("symbol") != _SYMBOL or row.get("positionIdx") != _POSITION_IDX
+                    or row.get("side") != ("Sell" if intent["side"] == "long" else "Buy")
+                    or row.get("reduceOnly") is not True or row.get("orderType") != "Limit"
+                    or not math.isfinite(float(row["qty"])) or not math.isfinite(float(row["price"]))
+                    or abs(float(row["qty"]) - intent["qty"]) > 1e-9
+                    or abs(float(row["price"]) - intent["price"]) > 1e-8):
+                return False
+        except (KeyError, TypeError, ValueError):
+            return False
+        intent["order_id"] = row["orderId"]
+        cumulative = order_cumulative(row, intent["qty"])
+        if cumulative is None:
+            return False
+        positions = tracking.load_open_positions(self.conn, self.mode)
+        flat = ex_pos is None
+        if not flat and ex_pos["side"] != intent["side"]:
+            return False
+        if (flat or intent.get("retire_reason")) and row["orderStatus"] in {"New", "PartiallyFilled"}:
+            intent["cancel_requested"] = True
+            self._set_meta("tp_intent", intent)
+            self._cancel(intent["order_id"])
+            return False  # Exact terminal readback, not this cancel ACK, releases flat fence.
+        entry_offset = 0.0
+        pending = self._get_meta("pending_order", None)
+        if (not flat and pending and not self._entry_receipt_recorded(pending)
+                and pending.get("side") == intent["side"] and pending.get("link_id")
+                and pending.get("order_id")):
+            parents = self._reduction_pages("get_order_history", pending)
+            if parents and len(parents) == 1:
+                candidate = _f(parents[0].get("cumExecQty"), -1)
+                if self._entry_fill_confirmed(pending, candidate):
+                    entry_offset = candidate
+        expected_remainder = sum(item["initial_qty"] for item in intent["allocations"]) - cumulative
+        result = settlement(intent, self._reduction_pages("get_executions", intent),
+                            expected_remainder if flat else ex_pos["qty"] - entry_offset,
+                            [(p.id, p.qty) for p in positions if p.side == intent["side"]])
+        if result is None:
+            return False
+        deltas, executions = result
+        filled = sum(float(value[0]) for value in executions.values())
+        status = row.get("orderStatus")
+        if status not in {"New", "PartiallyFilled", "Filled", "Cancelled", "Rejected", "PartiallyFilledCanceled"}:
+            return False
+        try:
+            cumulative = float(row["cumExecQty"])
+            if not math.isfinite(cumulative) or abs(cumulative - filled) > 1e-9:
+                return False
+        except (KeyError, TypeError, ValueError):
+            return False
+        if status == "Filled" and abs(filled - intent["qty"]) > 1e-9:
+            return False
+        new_fills = [value for key, value in executions.items() if key not in intent["executions"]]
+        delta_qty = sum(float(value[0]) for value in new_fills)
+        notional = sum(float(value[0]) * float(value[1]) for value in new_fills)
+        fee = sum(float(value[2]) for value in new_fills)
+        if not all(math.isfinite(value) for value in (delta_qty, notional, fee)):
+            return False
+        applied = consumed(intent["allocations"], filled)
+        quotas = {item["id"]: item["quota"] for item in intent["allocations"]}
+        with self.conn:
+            for pos in positions:
+                delta = deltas.get(pos.id, 0)
+                if delta:
+                    price = notional / delta_qty
+                    pos.qty -= delta
+                    pos.acc_gross_pnl += delta * (price - pos.entry_price) * (1 if pos.side == "long" else -1)
+                    pos.acc_exit_fee += fee * delta / delta_qty
+                    pos.legs_closed += 1
+                    pos.last_leg_exit_price = price
+                    pos.last_leg_reason = "aggregate_tp1"
+                    if quotas[pos.id] > 0 and float(applied[pos.id]) >= quotas[pos.id] - 1e-9:
+                        pos.tp1_hit = True
+                    tracking.save_position(self.conn, pos, commit=False)
+                    if pos.qty <= 1e-9:
+                        from dataclasses import asdict
+                        tracking.set_meta(self.conn, "tp_closed_position:" + str(pos.id),
+                                          asdict(pos), self.mode, commit=False)
+                        self.conn.execute("DELETE FROM btc_positions WHERE id=? AND mode=?", (pos.id, self.mode))
+            intent["executions"] = executions
+            intent["state"] = "FULFILLED" if abs(filled - intent["qty"]) <= 1e-9 else status
+            if intent.get("retire_reason"):
+                intent["state"] = "RETIRED"
+            if flat:
+                from dataclasses import asdict
+                for pos in positions:
+                    if pos.side != intent["side"]:
+                        continue
+                    tracking.set_meta(self.conn, "flat_unpriced_position:" + str(pos.id),
+                                      {"position": asdict(pos), "reason": "exchange_flat_other_exit_unpriced"},
+                                      self.mode, commit=False)
+                    self.conn.execute("DELETE FROM btc_positions WHERE id=? AND mode=?", (pos.id, self.mode))
+                intent["state"] = "FLAT_TERMINAL"
+                intent["unpriced_external_exit_qty"] = expected_remainder
+                tracking.set_meta(self.conn, "tp_order_id", None, self.mode, commit=False)
+                if self._entry_receipt_recorded(pending) and pending["fill_receipt"].get("tp_link_id") == intent["link_id"]:
+                    tracking.set_meta(self.conn, "pending_order", None, self.mode, commit=False)
+            tracking.set_meta(self.conn, "tp_intent", intent, self.mode, commit=False)
+        if flat:
+            return True  # No residual TP may survive onto a future position.
+        if intent["state"] == "RETIRED":
+            return True
+        if intent["state"] == "FULFILLED" or status in {"New", "PartiallyFilled"} or entry_offset:
+            return True
+        # Exact terminal + complete coherent Trades permits only residual target.
+        residual = float(_qstr(intent["qty"] - filled))
+        if residual <= 0 or abs(residual - (intent["qty"] - filled)) > 1e-9:
+            return False
+        next_intent = {
+            "side": intent["side"], "order_id": None,
+            "link_id": "tp1-" + uuid.uuid4().hex[:28],
+            "generation": intent["generation"] + 1, "qty": residual,
+            "price": intent["price"], "executions": {}, "state": "SUBMISSION_UNKNOWN",
+            "allocations": [dict(id=item["id"],
+                                 initial_qty=item["initial_qty"] - float(applied[item["id"]]),
+                                 quota=item["quota"] - float(applied[item["id"]]))
+                            for item in intent["allocations"]],
+        }
+        with self.conn:
+            tracking.set_meta(self.conn, "tp_generation:" + intent["link_id"], intent, self.mode, commit=False)
+            tracking.set_meta(self.conn, "tp_intent", next_intent, self.mode, commit=False)
+            if self._entry_receipt_recorded(pending) and pending["fill_receipt"].get("tp_link_id") == intent["link_id"]:
+                pending["fill_receipt"].update(tp_link_id=next_intent["link_id"], tp_order_id=None,
+                                               tp_qty=residual, tp_state="SUBMISSION_UNKNOWN")
+                tracking.set_meta(self.conn, "pending_order", pending, self.mode, commit=False)
+        oid = self._place_reduce_limit(intent["side"], residual, intent["price"],
+                                       order_link_id=next_intent["link_id"])
+        if oid:
+            next_intent["order_id"] = oid
+            self._set_meta("tp_intent", next_intent)
+            self._set_meta("tp_order_id", oid)
+        return False  # ACK never unblocks this generation; exact next read does.
+
+    def _remember_tp_reduction(self, pending):
+        intent = self._get_meta("tp_intent", None)
+        if intent and intent.get("state") == "RETIRED":
+            intent["own_reduction"] = pending
+            self._set_meta("tp_intent", intent)
+
+    def _finish_flat_tp_bookkeeping(self, bar_idx):
+        """Record a flat observation even when TP settlement already removed rows."""
+        intent = self._get_meta("tp_intent", None)
+        if not intent or intent.get("state") != "FLAT_TERMINAL" or intent.get("flat_bookkeeping_done"):
+            return
+        # Only the durable adapter-owned SL handle has cancellation authority;
+        # native/manual stop IDs seen in a snapshot are never adopted here.
+        owned_sl = self._get_meta("sl_order_id", None)
+        if owned_sl:
+            self._cancel(owned_sl)
+        close_bars = self._get_meta("last_close_bar", {"long": -10_000, "short": -10_000})
+        close_bars[intent["side"]] = bar_idx
+        intent["flat_bookkeeping_done"] = True
+        with self.conn:
+            tracking.set_meta(self.conn, "last_close_bar", close_bars, self.mode, commit=False)
+            tracking.set_meta(self.conn, "sl_order_id", None, self.mode, commit=False)
+            tracking.set_meta(self.conn, "tp_order_id", None, self.mode, commit=False)
+            tracking.set_meta(self.conn, "tp_intent", intent, self.mode, commit=False)
+
+    def _rebase_retired_tp(self, intent, ex_pos):
+        """Rebase only exact owned reductions; never redistribute a closed leg's quota."""
+        from live.take_profit import consumed
+        proof = intent["own_reduction"]
+        if self._get_meta("pending_reduce", None) or not self._reduce_confirmed(proof, persist=False):
+            return False
+        used = consumed(intent["allocations"], sum(float(v[0]) for v in intent["executions"].values()))
+        affected = set(proof["position_ids"])
+        expected = {}
+        quotas = {}
+        if not affected or not affected <= {item["id"] for item in intent["allocations"]}:
+            return False
+        affected_qty = sum(item["initial_qty"] - float(used[item["id"]])
+                           for item in intent["allocations"] if item["id"] in affected)
+        if (abs(affected_qty - proof["original_qty"]) > 1e-9
+                or (proof["reason"] != "force_reduce" and abs(proof["qty"] - affected_qty) > 1e-9)):
+            return False
+        for item in intent["allocations"]:
+            pid = item["id"]
+            qty = item["initial_qty"] - float(used[pid])
+            if pid in affected:
+                if proof["reason"] == "force_reduce":
+                    if len(affected) != 1 or abs(qty - proof["original_qty"]) > 1e-9:
+                        return False
+                    qty -= proof["qty"]
+                else:
+                    qty = 0.
+            if qty > 1e-9:
+                expected[pid] = qty
+                quotas[pid] = min(item["quota"] - float(used[pid]), qty)
+        positions = [p for p in tracking.load_open_positions(self.conn, self.mode) if p.side == intent["side"]]
+        if {p.id for p in positions} != set(expected) or any(abs(p.qty - expected[p.id]) > 1e-9 for p in positions):
+            return False
+        actual_qty = ex_pos["qty"] if ex_pos and ex_pos["side"] == intent["side"] else 0.
+        if abs(actual_qty - sum(expected.values())) > 1e-9:
+            return False
+        qty = sum(quotas.values())
+        if abs(qty - float(_qstr(qty))) > 1e-9:
+            return False
+        next_intent = {
+            "side": intent["side"], "order_id": None, "link_id": "tp1-" + uuid.uuid4().hex[:28],
+            "generation": intent["generation"] + 1, "qty": float(_qstr(qty)), "price": intent["price"],
+            "executions": {}, "state": "SUBMISSION_UNKNOWN",
+            "allocations": [dict(id=pid, initial_qty=expected[pid], quota=quotas[pid]) for pid in sorted(expected)],
+        }
+        with self.conn:
+            tracking.set_meta(self.conn, "tp_generation:" + intent["link_id"], intent, self.mode, commit=False)
+            if qty <= 1e-9:
+                intent["state"] = "FLAT_TERMINAL" if not expected else "FULFILLED"
+                tracking.set_meta(self.conn, "tp_intent", intent, self.mode, commit=False)
+                tracking.set_meta(self.conn, "tp_order_id", None, self.mode, commit=False)
+            else:
+                tracking.set_meta(self.conn, "tp_intent", next_intent, self.mode, commit=False)
+        if qty <= 1e-9:
+            return True
+        oid = self._place_reduce_limit(intent["side"], qty, intent["price"], order_link_id=next_intent["link_id"])
+        if oid:
+            next_intent["order_id"] = oid
+            self._set_meta("tp_intent", next_intent)
+            self._set_meta("tp_order_id", oid)
+        return False
 
     @staticmethod
     def _reduction_matches(row: dict, pending: dict) -> bool:
@@ -751,7 +1079,7 @@ class DemoAdapter:
                     and (not link or link == pending["link_id"])
                     and (not pending.get("order_id") or not oid or oid == pending["order_id"]))
 
-    def _reduce_confirmed(self, pending: dict) -> bool:
+    def _reduce_confirmed(self, pending: dict, *, persist: bool = True) -> bool:
         """ACK is not execution. Deduplicate complete order-correlated trade fills."""
         rows = self._reduction_pages("get_executions", pending)
         seen = {}
@@ -782,6 +1110,10 @@ class DemoAdapter:
             else:
                 seen[eid] = qty
                 filled += qty
+        if not persist:
+            # Historical proof must never recreate a live pending operation or
+            # allow its absolute-quantity recovery to overwrite newer state.
+            return complete and abs(filled - pending["qty"]) <= 1e-9
         pending.update(execution_complete=complete, observed_fill_qty=filled,
                        reconcile_checks=int(pending.get("reconcile_checks", 0)) + 1)
         pending["status"] = ("FULL_FILL" if complete and filled >= pending["qty"] - 1e-9 else
@@ -821,6 +1153,7 @@ class DemoAdapter:
         if pending is None:
             return False
         if self._reduce_confirmed(pending):
+            self._remember_tp_reduction(pending)
             for pos in tracking.load_open_positions(self.conn, self.mode):
                 if pos.id not in pending["position_ids"]:
                     continue
@@ -828,7 +1161,10 @@ class DemoAdapter:
                     pos.qty = max(pending["original_qty"] - pending["qty"], 0.)
                     pos.liq_breach_flagged = True
                     pos.had_forced_reduce = True
-                    tracking.save_position(self.conn, pos)
+                    if pos.qty <= 1e-9:
+                        tracking.remove_position(self.conn, pos.id)
+                    else:
+                        tracking.save_position(self.conn, pos)
                 elif pos.id is not None:
                     tracking.remove_position(self.conn, pos.id)
             self._set_meta("last_close_bar", {
@@ -854,10 +1190,22 @@ class DemoAdapter:
         return True
 
     def _confirmed_market_reduce(self, positions: list, side: str, qty: float,
-                                 reason: str, bar_idx: int) -> bool:
+                                 reason: str, bar_idx: int, ex_pos=None) -> bool:
         qty = float(_qstr(qty))
         if qty <= 0:
             return False
+        tp = self._get_meta("tp_intent", None)
+        if tp and tp.get("state") not in {"FULFILLED", "FLAT_TERMINAL"}:
+            if ex_pos is None or tp.get("own_reduction"):
+                return False
+            if tp.get("state") != "RETIRED":
+                tp["retire_reason"] = reason
+                self._set_meta("tp_intent", tp)
+                if not self._settle_tp(ex_pos):
+                    return False
+                # TP cancellation may have raced a fill; re-evaluate fresh local
+                # quantities on the next tick, never submit the stale requested qty.
+                return False
         pending = {"link_id": "reduce-" + uuid.uuid4().hex[:28], "side": side,
                    "submitted_at_ms": time.time_ns() // 1_000_000,
                    "qty": qty, "reason": reason, "bar_idx": bar_idx,
@@ -868,7 +1216,10 @@ class DemoAdapter:
         self._set_meta("pending_reduce", pending)
         # Keep intent until the caller's ledger writes are durable. Recovery
         # is idempotent (absolute remaining quantity, never subtract twice).
-        return self._reduce_confirmed(pending)
+        confirmed = self._reduce_confirmed(pending)
+        if confirmed:
+            self._remember_tp_reduction(pending)
+        return confirmed
 
     def _native_parent(self, side: str):
         """Exact parent attachment proof, never inferred from a child SL ID."""
@@ -1305,6 +1656,7 @@ class DemoAdapter:
         self._record_closed_trades(bar_time_str)
 
         if self._resume_reduce():
+            self._protect_tp_exposure(ex_pos, tracking.load_open_positions(conn, mode))
             return
 
         # 크로스-바 트래커 복원 (shadow 미러).
@@ -1319,6 +1671,18 @@ class DemoAdapter:
         # btc_positions(demo) 를 거래소 포지션으로 미러 (열린 포지션 단일 가정).
         local_positions = tracking.load_open_positions(conn, mode)
 
+        self._recover_entry_identity(pending, open_orders)
+        if self._protect_pending_entry(pending, ex_pos, local_positions):
+            sl_order_id = self._get_meta("sl_order_id", sl_order_id)
+        self._protect_tp_exposure(ex_pos, local_positions)
+        if not self._entry_receipt_recorded(pending) and not self._settle_tp(ex_pos):
+            if (pending and bar_idx - int(pending["bar_idx"]) >= ENTRY_ORDER_EXPIRY_BARS):
+                self._request_entry_cancel(pending)
+            tracking.log_event(conn, "tp_settlement_pending", "Exact TP settlement unresolved; protection retained",
+                               level="error", mode=mode, ts=bar_time_str)
+            return
+        local_positions = tracking.load_open_positions(conn, mode)
+
         if self._entry_receipt_recorded(pending):
             # The receipt was committed with the PositionRow, not inferred from
             # today's position size. Resume normal exits without a second INSERT.
@@ -1327,19 +1691,23 @@ class DemoAdapter:
                 if stops:
                     self._ensure_stop(ex_pos["side"], ex_pos["qty"],
                                       max(stops) if ex_pos["side"] == "long" else min(stops))
-            if not self._complete_native_postfill(pending):
+            if not self._complete_native_postfill(pending, ex_pos):
                 tracking.log_event(conn, "entry_postfill_pending", "Native fill recorded; exact TP1 confirmation pending, no resubmission",
                                    level="error", mode=mode, ts=bar_time_str)
                 return
+            local_positions = tracking.load_open_positions(conn, mode)
             tp_order_id = self._get_meta("tp_order_id", tp_order_id)
             pending = None
             self._set_meta("pending_order", None)
             tracking.log_event(conn, "fill_recovery", "Native entry ledger receipt recovered after restart",
                                mode=mode, ts=bar_time_str)
-        self._recover_entry_identity(pending, open_orders)
-        if self._protect_pending_entry(pending, ex_pos, local_positions):
-            sl_order_id = self._get_meta("sl_order_id", sl_order_id)
-
+        if ex_pos is None:
+            self._finish_flat_tp_bookkeeping(bar_idx)
+            last_close_bar = self._get_meta("last_close_bar", last_close_bar)
+        # Settlement can retire handles even when it has already removed every
+        # position row; do not resurrect the pre-settlement IDs at heartbeat.
+        tp_order_id = self._get_meta("tp_order_id", None)
+        sl_order_id = self._get_meta("sl_order_id", None)
         # --- 2. pending 진입 주문 체결 여부 확인 (포지션 출현/증가 또는 만료) ---
         # 핵심: Bybit 데모는 같은 심볼을 단일 통합 포지션(평균단가·누적 size)으로 합산한다.
         # 따라서 피라미딩 트랜치 체결은 "거래소 position size 증가분"으로 감지하고, 트랜치
@@ -1414,10 +1782,11 @@ class DemoAdapter:
                 self._ensure_stop(side, total_qty, max(stops) if side == "long" else min(stops))
                 sl_order_id = self._get_meta("sl_order_id", sl_order_id)
                 if pending.get("link_id"):
-                    if not self._complete_native_postfill(pending):
+                    if not self._complete_native_postfill(pending, ex_pos):
                         tracking.log_event(conn, "entry_postfill_pending", "Native fill recorded; exact TP1 confirmation pending, no resubmission",
                                            level="error", mode=mode, ts=bar_time_str)
                         return
+                    local_positions = tracking.load_open_positions(conn, mode)
                     tp_order_id = self._get_meta("tp_order_id", tp_order_id)
                 else:
                     if tp_order_id:
@@ -1487,7 +1856,7 @@ class DemoAdapter:
                     if isinstance(act, ForceReduce):
                         # 청산 임박 방어 — 해당 트랜치 수량을 시장가 reduce-only 로 차감.
                         if not self._confirmed_market_reduce(
-                                [pos], pos.side, pos.qty * act.fraction, "force_reduce", bar_idx):
+                                [pos], pos.side, pos.qty * act.fraction, "force_reduce", bar_idx, ex_pos):
                             return
                         pos.qty = max(pos.qty - float(_qstr(pos.qty * act.fraction)), 0.0)
                         pos.liq_breach_flagged = True
@@ -1495,6 +1864,10 @@ class DemoAdapter:
                         tracking.save_position(conn, pos)
                         self._set_meta("pending_reduce", None)
                         stop_dirty = True
+                        if pos.qty <= 1e-9:
+                            tracking.remove_position(conn, pos.id)
+                            closed = True
+                            break
                     elif isinstance(act, UpdateStop):
                         # 트레일/BE — 트랜치 SL 갱신. 통합 stop 은 아래서 재계산.
                         pos.sl_price = act.new_stop
@@ -1502,7 +1875,7 @@ class DemoAdapter:
                     elif isinstance(act, ClosePosition):
                         # SL/신호 청산 — 이 트랜치 수량만 통합 포지션에서 차감.
                         if not self._confirmed_market_reduce(
-                                [pos], pos.side, pos.qty, act.reason, bar_idx):
+                                [pos], pos.side, pos.qty, act.reason, bar_idx, ex_pos):
                             return
                         last_close_bar[pos.side] = bar_idx
                         last_close_was_sl[pos.side] = act.reason in ("sl",)
@@ -1513,8 +1886,8 @@ class DemoAdapter:
                         stop_dirty = True
                         break
                     elif isinstance(act, BookPartial):
-                        # TP1 — 통합 reduce-limit 이 거래소에서 체결한다. 플래그만.
-                        pos.tp1_hit = True
+                        # A bar touch is not an exchange Trade execution.
+                        pass
                     elif isinstance(act, ActivateBETrail):
                         pos.be_stop_set = True
                         pos.trailing_active = True
@@ -1560,6 +1933,17 @@ class DemoAdapter:
                 "거래소 포지션 종료 감지 (SL/TP 체결) — 로컬 정리", mode=mode, ts=bar_time_str)
 
         # --- 4. 신규 진입 평가 (4h 하드캡 + 쿨다운 + 피라미딩, shadow 동일 게이트) ---
+        retired = self._get_meta("tp_intent", None)
+        if (retired and retired.get("state") == "RETIRED" and not retired.get("own_reduction")
+                and not self._get_meta("pending_reduce", None)):
+            # The exit condition can disappear while cancellation is pending.
+            # Do not latch a stale market action or abandon its TP: exact terminal
+            # cancellation plus unchanged exposure may restore only its residual.
+            retired["last_retire_reason"] = retired.pop("retire_reason", None)
+            retired["state"] = "Cancelled"
+            self._set_meta("tp_intent", retired)
+            self._settle_tp(ex_pos)
+            return
         # 데모는 거래소가 단일 통합 포지션(평균단가)으로 합산하지만, 트랜치는 로컬
         # 장부(btc_positions[demo])로 관리한다. current_tranche = 같은 방향 로컬
         # 트랜치 수 → 섀도우와 동일 (len(same_side)). 거래소엔 누적 size 만 맞춘다.
@@ -1788,6 +2172,7 @@ class DemoAdapter:
             bar_idx = bar_index_for(int(bar_time.value // 1_000_000))
             snap = self._sync_state(bar_time_str)
             self._record_closed_trades(bar_time_str)
+            self._protect_tp_exposure(snap["position"], tracking.load_open_positions(self.conn, self.mode))
             if self._resume_reduce():
                 # A pending IOC must fence duplicate reductions, not protection.
                 # Use the authoritative remaining exchange quantity; never cancel
@@ -1813,10 +2198,18 @@ class DemoAdapter:
             self._recover_entry_identity(pending_entry, snap["open_orders"])
             if self._protect_pending_entry(pending_entry, ex_pos, local_positions):
                 return
+            if not self._settle_tp(ex_pos):
+                if (pending_entry and not self._entry_receipt_recorded(pending_entry)
+                        and bar_idx - int(pending_entry["bar_idx"]) >= ENTRY_ORDER_EXPIRY_BARS):
+                    self._request_entry_cancel(pending_entry)
+                return
+            local_positions = tracking.load_open_positions(self.conn, self.mode)
 
             # Exchange is authoritative.  Keep the local ledger from carrying
             # a ghost position during the interval between 10m and 30m ticks.
             if ex_pos is None:
+                self._finish_flat_tp_bookkeeping(bar_idx)
+                sl_order_id = self._get_meta("sl_order_id", None)
                 if local_positions:
                     for pos in local_positions:
                         if pos.id is not None:
@@ -1871,7 +2264,7 @@ class DemoAdapter:
                 # A missing native stop plus a crossed structural stop is the
                 # only condition that authorizes an immediate market fallback.
                 confirmed = self._confirmed_market_reduce(
-                    side_positions, side, total_qty, "10m_protection_missing_stop", bar_idx,
+                    side_positions, side, total_qty, "10m_protection_missing_stop", bar_idx, ex_pos,
                 )
                 if confirmed:
                     self._resume_reduce()
