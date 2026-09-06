@@ -251,5 +251,6 @@ class EntryReservationStore:
                 conn.execute("INSERT OR IGNORE INTO entry_reservation_evidence "
                              "VALUES (?,?,?,?,?)", expected)
             result = self._get(conn, intent_id)
-            assert result is not None
+            if result is None:
+                raise RuntimeError("reservation_missing_after_update")
             return result

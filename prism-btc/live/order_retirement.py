@@ -7,11 +7,13 @@ Native child orders are not adopted or cancelled by symbol or price matching.
 from __future__ import annotations
 
 import math
+import logging
 
 from live import tracking
 from live.exchange_snapshot import read_complete
 
 _KEY = "stop_retirements_v1"
+log = logging.getLogger(__name__)
 _TERMINAL = {"Cancelled", "Filled", "Rejected", "Deactivated", "PartiallyFilledCanceled"}
 
 
@@ -168,15 +170,16 @@ def reconcile_stop_retirements(conn, mode, call) -> bool:
                         continue
                     try:
                         call("cancel_order", category="linear", symbol="BTCUSDT", orderId=order_id)
-                    except Exception:
+                    except Exception as exc:
                         # A lost cancel ACK can still be settled by the readback.
-                        pass
+                        log.warning("Stop cancel response unknown (%s); checking terminal history",
+                                    type(exc).__name__)
                     row = _history(call, order_id)
                 if row is not None and row.get("orderStatus") in _TERMINAL:
                     _change_queue(conn, mode, order_id, remove=True, terminal_row=row)
-            except Exception:
+            except Exception as exc:
                 # Preserve durable identity; never log raw broker error payloads.
-                continue
+                log.warning("Stop retirement remains pending (%s)", type(exc).__name__)
         return not _queue(conn, mode)
     except Exception:
         return False
