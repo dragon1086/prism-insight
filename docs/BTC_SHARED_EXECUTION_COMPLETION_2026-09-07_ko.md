@@ -1,6 +1,7 @@
 # BTC 비단타 실행 안전성·공통 위험관리 완성 작업
 
-작성일: 2026-09-07 KST. 상태: 구현·검증 진행 중, 아직 배포하지 않았습니다.
+작성일: 2026-09-07 KST. 상태: 코드·격리 검증 완료, 공통 위험 정책 비활성.
+병합·실제 배포·전진 관측은 아래 검증과 별도로 확인합니다.
 
 ## 범위와 보존
 
@@ -106,3 +107,18 @@ SL 가격도 실제 청산 가격을 보장하지 않으므로 손실 최대치 
 사용합니다. 종료 복구의 가격·수수료·정산 근거는
 [Trade History](https://bybit-exchange.github.io/docs/v5/order/execution)와
 [Closed PnL](https://bybit-exchange.github.io/docs/v5/position/close-pnl)에서 확인합니다.
+
+## 동결 코드 검증 결과
+
+- 기능 코드: `3dc2a7a500052cf39b713a7cba7eba69ed41cc87`.
+- 로컬 Python 3.12.12: **1,697 passed, 1 skipped**, 네트워크 접근 시도 0건.
+- 서버의 깨끗한 별도 worktree, Python 3.11.11: **1,697 passed, 1 skipped**,
+  네트워크 접근 시도 0건. 운영 DB·환경 파일을 복사하지 않았습니다.
+- 변경 Python 파일 전체 Ruff, AST 구문, CI YAML, diff 검사를 통과했습니다.
+  정적 분석이 지적한 운영 `assert`와 무기록 예외 무시를 수정했습니다.
+  예약 저장 회귀 20개는 Python `-O`에서도 통과했습니다.
+- 전용 Python 정적 타입 검사기는 설치돼 있지 않고 이 변경의 타입 검사 통과를
+  별도로 주장하지 않습니다. 미변경 `live/shadow.py`의 기존 E402 11건은 이번 범위 밖입니다.
+- [PR #670](https://github.com/dragon1086/prism-insight/pull/670)의 최종 head CI와
+  배포 확인 댓글에 실제 병합 커밋·서버 시각·자연 heartbeat 근거를 남깁니다.
+  새 위험 정책을 활성화하지 않은 배포라는 구분을 유지합니다.
