@@ -17,7 +17,6 @@ from pathlib import Path
 import platform
 import resource
 import sqlite3
-import subprocess
 import sys
 import time
 from types import MappingProxyType
@@ -96,7 +95,8 @@ def planned_registry():
                 trial_id = f"{phase}/{name}/c{cost}/d{delay}/{path}/{fill}"
                 rows.append(dict(id=trial_id, phase=phase, name=name, cost=cost, delay=delay,
                                  path=path, fill=fill, status="PLANNED"))
-    assert len(rows) == len({r["id"] for r in rows}) == 240
+    if len(rows) != 240 or len({r["id"] for r in rows}) != 240:
+        raise RuntimeError("registered trial matrix must contain 240 unique IDs")
     return rows
 
 
@@ -572,10 +572,13 @@ def main(argv=None):
         write_json(args.output_dir/"report.json", dict(status="INVALID_RESEARCH", reason_codes=[str(exc)], profitability_status="INSUFFICIENT", auto_activate=False))
         print(canonical(dict(status="INVALID_RESEARCH", error=str(exc))))
         return 2
-    root = Path(__file__).resolve().parents[2]
-    provenance = {name: subprocess.check_output(["git", "rev-parse", ref], cwd=root, text=True).strip()
-                  for name, ref in (("commit", "HEAD"), ("tree", "HEAD^{tree}"))}
-    provenance = dict(environment=environment, git=provenance, **source_provenance)
+    # Content hashes bind the code actually validated by verify_contract. Git
+    # commit/tree receipts belong to the external publication record; research
+    # does not start child processes or trust an executable search path.
+    provenance = dict(environment=environment,
+                      source_context=dict(pinned_base=contract["contract"]["pinned_base"],
+                                          source_hashes=contract["contract"]["source_hashes"]),
+                      **source_provenance)
     write_json(args.output_dir/"provenance.json", provenance)
     report = run_registry(args.output_dir, contract, bars, funding, manifest,
                           preparation_seconds=profile_seconds+time.monotonic()-preparation_start)
