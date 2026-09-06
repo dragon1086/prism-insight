@@ -69,8 +69,8 @@ Avoid broad production-like runs unless the task requires them.
 
 - User instruction (2026-09-06): for PRISM-INSIGHT task-scoped, validated changes,
   proceed with merge and deployment without waiting for a separate approval review.
-- The main branch's mandatory approval-review requirement was removed by explicit
-  user request. Preserve CI/status checks and all other branch protections.
+- The main branch requires zero approving reviews by explicit user request.
+  Preserve the PR requirement, CI/status checks, and all other branch protections.
 - Check the exact PR head, dependency order, relevant tests, and CI before merging.
   Do not interpret the review waiver as permission to merge failing or unrelated work.
 - Follow docs/SERVER_GIT_OPERATIONS_ko.md: clean target, verified commit, ff-only
