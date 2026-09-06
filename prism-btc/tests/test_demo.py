@@ -128,7 +128,7 @@ class FakeExchange:
         if kwargs.get("triggerPrice"):
             self._open_orders.append({**kwargs, "orderId": oid, "orderStatus": "Untriggered"})
         elif kwargs.get("reduceOnly") and str(kwargs.get("orderLinkId", "")).startswith("tp1-"):
-            self._open_orders.append({**kwargs, "orderId": oid, "orderStatus": "New"})
+            self._open_orders.append({**kwargs, "orderId": oid, "orderStatus": "New", "cumExecQty": "0"})
         return self._ok({"orderId": oid})
 
     def cancel_order(self, **kwargs):
@@ -478,7 +478,7 @@ class TestEntryFillAttachesSlTp:
               if o.get("orderType") == "Limit" and o.get("reduceOnly")]
         assert len(tp) == 1
         assert tp[0]["side"] == "Sell"
-        assert tp[0]["timeInForce"] == "PostOnly"
+        assert tp[0]["timeInForce"] == "GTC"
         assert tp[0]["qty"] == f"{0.03 / 3.0:.3f}"
 
         # SL/TP orderId 가 meta 에 영속됐다.
@@ -745,7 +745,7 @@ class TestExitReduceOnly:
         assert len(tracking.load_open_positions(conn, "demo")) == 1
         assert (restarted._get_meta("pending_order") is None) == (fault == "lost_ack")
         if fault == "ack_only":
-            fake._open_orders.append({**submitted[0], "orderId": "tp-ack", "orderStatus": "New"})
+            fake._open_orders.append({**submitted[0], "orderId": "tp-ack", "orderStatus": "New", "cumExecQty": "0"})
             restarted.process_bar(_BASE_TS, _bar(100.), False, None)
             assert restarted._get_meta("pending_order") is None
             assert restarted._get_meta("tp_order_id") == "tp-ack"
@@ -754,7 +754,7 @@ class TestExitReduceOnly:
         assert len(submitted) == 1
 
     @pytest.mark.parametrize("prior_status", ["PartiallyFilled", "Filled"])
-    def test_native_postfill_replaces_prior_tp_only_after_terminal(self, monkeypatch, prior_status):
+    def test_native_postfill_fences_prior_tp_without_allocation(self, monkeypatch, prior_status):
         old = {"orderId": "prior-tp", "symbol": "BTCUSDT", "positionIdx": 0,
                "side": "Sell", "orderType": "Limit", "reduceOnly": True,
                "qty": ".02", "price": "110", "cumExecQty": ".015",
@@ -766,16 +766,9 @@ class TestExitReduceOnly:
             "tp_qty": .02, "tp_price": 110., "tp_link_id": "tp1-new-receipt",
             "tp_order_id": None, "prior_tp_order_id": "prior-tp", "tp_state": "PREPARED"}}
         adapter._set_meta("pending_order", pending)
-        if prior_status == "PartiallyFilled":
-            assert not adapter._complete_native_postfill(pending)  # Cancel ACK is insufficient.
-            assert len(fake.calls_to("cancel_order")) == 1
-            assert not fake.placed_orders
-            old["orderStatus"] = "Cancelled"
-        assert adapter._complete_native_postfill(pending)
-        assert len(fake.placed_orders) == 1
-        assert fake.placed_orders[0]["qty"] == "0.020"
-        assert fake.placed_orders[0]["orderLinkId"] == "tp1-new-receipt"
-        assert adapter._get_meta("tp_order_id") != "prior-tp"
+        assert not adapter._complete_native_postfill(pending)
+        assert not fake.calls_to("cancel_order")
+        assert not fake.placed_orders
 
     def test_native_proof_creates_owned_aggregate_without_adopting_child(self, monkeypatch):
         child = {"orderId": "native-child", "symbol": "BTCUSDT", "positionIdx": 0,
