@@ -59,6 +59,23 @@ def test_week_grid_and_utc_conversion():
     assert bench.grid_floor(bench.utc_ms("2024-01-04"), "1w") == bench.utc_ms("2024-01-01")
 
 
+def test_long_series_indicator_kernel_regression():
+    n = 32768
+    series = pd.Series(range(n), dtype=float) + 100
+    frame = pd.DataFrame(dict(open=series, close=series, high=series+1, low=series-1))
+    out = bench.checked_indicators(frame)
+    assert out.ma10.notna().sum() == n - 9
+    assert out.ma10.iloc[-1] == pytest.approx(n - 5.5 + 100)
+
+
+def test_invalid_indicators_raise_instead_of_producing_zero_signals(monkeypatch):
+    bad = pd.DataFrame(dict(close=[100.] * 60, ma10=[float("nan")] * 60,
+                            ma35=[100.] * 60, atr14=[1.] * 60))
+    monkeypatch.setattr(bench, "add_indicators", lambda frame: bad)
+    with pytest.raises(ValueError, match="indicator_kernel_invalid"):
+        bench.checked_indicators(bad)
+
+
 @pytest.mark.parametrize("path,expected", [("OHLC", [100, 110, 90, 105]), ("OLHC", [100, 90, 110, 105])])
 def test_hypothetical_nodes_are_ordered_and_labelled(path, expected):
     rows = [dict(open_time=0, open=100, high=110, low=90, close=105)]
