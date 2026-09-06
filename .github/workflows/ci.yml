@@ -97,4 +97,7 @@ jobs:
           python -m pytest --noconftest prism-us/tests/test_fill_chaser_us.py -q
           # Pure offline scalp policy only; no exchange client, DB, or live loop.
           PYTHONPATH=prism-btc python -m pytest --noconftest \
-            prism-btc/tests/test_scalp.py -q
+            prism-btc/tests/test_scalp.py \
+            prism-btc/tests/test_execution_replay.py \
+            prism-btc/tests/test_replay_data.py \
+            prism-btc/tests/test_scalp_replay_benchmark.py -q
