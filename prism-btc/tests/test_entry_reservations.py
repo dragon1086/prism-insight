@@ -37,6 +37,21 @@ def test_duplicate_reopen_and_terminal_tombstone(store):
         reserve(reopened, lane="swing")
 
 
+def test_missing_update_readback_raises_and_rolls_back_without_assert(store, monkeypatch):
+    reserve(store)
+    original = store._get
+    count = 0
+    def disappearing(conn, intent):
+        nonlocal count
+        count += 1
+        return original(conn, intent) if count == 1 else None
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_get", disappearing)
+        with pytest.raises(RuntimeError, match="reservation_missing_after_update"):
+            update(store, "SUBMITTED_UNKNOWN")
+    assert store.get("main-1").state == "RESERVED"
+
+
 def test_unknown_ack_never_release_and_partial_is_remaining_only(store):
     reserve(store)
     assert update(store, "SUBMITTED_UNKNOWN").remaining_qty == 2.

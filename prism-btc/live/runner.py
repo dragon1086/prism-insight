@@ -99,8 +99,8 @@ def _record_code_version(root_conn, mode):
         if rev and tracking.get_meta(root_conn, "code_version", mode) != rev:
             tracking.set_meta(root_conn, "code_version", rev, mode)
             tracking.log_event(root_conn, "version", f"code version: {rev}", mode=mode)
-    except Exception:  # noqa: BLE001 — audit failure cannot block protection
-        pass
+    except Exception as exc:  # noqa: BLE001 — audit failure cannot block protection
+        log.warning("Code version capture unavailable (%s)", type(exc).__name__)
 
 
 def _broker_recovery(root_conn, mode):
