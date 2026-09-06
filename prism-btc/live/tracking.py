@@ -467,8 +467,8 @@ def record_execution_sample(
 # Position persistence
 # ---------------------------------------------------------------------------
 
-def save_position(conn: sqlite3.Connection, pos: PositionRow) -> int:
-    """포지션을 저장(INSERT)하거나 갱신(UPDATE, pos.id 있을 때). rowid 반환."""
+def save_position(conn: sqlite3.Connection, pos: PositionRow, *, commit: bool = True) -> int:
+    """Save a position; commit=False joins the caller's explicit transaction."""
     d = asdict(pos)
     vals = [int(d[f]) if f in _BOOL_POS_FIELDS else d[f] for f in _POS_FIELDS]
     if pos.id is not None:
@@ -477,7 +477,8 @@ def save_position(conn: sqlite3.Connection, pos: PositionRow) -> int:
             f"UPDATE btc_positions SET {sets} WHERE id=?",
             (*vals, pos.id),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         return pos.id
     cols = ", ".join(["mode", *_POS_FIELDS])
     qs = ", ".join(["?"] * (1 + len(_POS_FIELDS)))
@@ -485,7 +486,8 @@ def save_position(conn: sqlite3.Connection, pos: PositionRow) -> int:
         f"INSERT INTO btc_positions ({cols}) VALUES ({qs})",
         (pos.mode, *vals),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     pos.id = int(cur.lastrowid)
     return pos.id
 
@@ -653,10 +655,11 @@ def get_meta(conn: sqlite3.Connection, key: str, mode: Mode = "shadow"):
     return json.loads(r["value"])
 
 
-def set_meta(conn: sqlite3.Connection, key: str, value, mode: Mode = "shadow") -> None:
+def set_meta(conn: sqlite3.Connection, key: str, value, mode: Mode = "shadow", *, commit: bool = True) -> None:
     conn.execute(
         "INSERT INTO btc_meta (mode, key, value) VALUES (?, ?, ?) "
         "ON CONFLICT(mode, key) DO UPDATE SET value=excluded.value",
         (mode, key, json.dumps(value)),
     )
-    conn.commit()
+    if commit:
+        conn.commit()

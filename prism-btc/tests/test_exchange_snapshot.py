@@ -47,3 +47,11 @@ def test_conflicting_protection_order_type_is_unknown():
         return response([{"orderId":"same","orderType":"Limit" if kw.get("cursor") else "Market"}],
                         "" if kw.get("cursor") else "next")
     assert read_complete(call,"get_open_orders") is None
+
+
+def test_conflicting_parent_or_entry_link_is_unknown():
+    for field in ("orderLinkId", "parentOrderLinkId"):
+        def call(*args, **kwargs):
+            row = {"orderId": "same", field: "foreign" if kwargs.get("cursor") else "ours"}
+            return response([row], "" if kwargs.get("cursor") else "next")
+        assert read_complete(call, "get_open_orders") is None

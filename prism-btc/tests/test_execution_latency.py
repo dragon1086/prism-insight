@@ -138,7 +138,7 @@ def test_demo_order_submit_records_ack_without_raw_order_id(monkeypatch) -> None
     connection = _conn()
     adapter = _adapter(connection, _OrderSession())
 
-    order_id = adapter._place_limit_postonly("long", 0.1, 100_000.0)
+    order_id = adapter._place_limit_postonly("long", 0.1, 100_000.0, stop_price=95_000.0)
 
     assert order_id == "raw-exchange-order-id"
     row = dict(connection.execute("SELECT * FROM btc_execution_samples").fetchone())
@@ -151,18 +151,19 @@ def test_demo_order_submit_records_ack_without_raw_order_id(monkeypatch) -> None
     connection.close()
 
 
-def test_demo_order_submit_records_retry_count(monkeypatch) -> None:
+def test_demo_uncertain_entry_submit_is_not_retried(monkeypatch) -> None:
     connection = _conn()
     session = _OrderSession(fail_once=True)
     adapter = _adapter(connection, session)
     monkeypatch.setattr("live.demo.time.sleep", lambda _seconds: None)
 
-    adapter._place_limit_postonly("long", 0.1, 100_000.0)
+    adapter._place_limit_postonly("long", 0.1, 100_000.0, stop_price=95_000.0)
 
     row = connection.execute(
         "SELECT success, retry_count, ret_code FROM btc_execution_samples"
     ).fetchone()
-    assert tuple(row) == (1, 1, 0)
+    assert row["success"] == 0
+    assert row["retry_count"] == 0
     connection.close()
 
 
