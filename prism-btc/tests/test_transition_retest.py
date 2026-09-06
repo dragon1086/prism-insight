@@ -12,10 +12,10 @@ from analysis import transition_retest as r
 
 def test_registry_and_all_policy_mappings():
     rows = r.planned_registry()
-    assert Counter(row["phase"] for row in rows) == {"TRAIN": 26, "OOS": 104, "PARTIAL": 16}
-    assert len({row["id"] for row in rows}) == 146
-    assert len(r.POLICIES) == 13 and len(r.COMPARISONS) == 12
-    assert {row["name"] for row in rows if row["phase"] == "PARTIAL"} == {"X3_U", "J_U"}
+    assert Counter(row["phase"] for row in rows) == {"TRAIN": 32, "OOS": 128, "PARTIAL": 32}
+    assert len({row["id"] for row in rows}) == 192
+    assert len(r.POLICIES) == 16 and len(r.COMPARISONS) == 17
+    assert {row["name"] for row in rows if row["phase"] == "PARTIAL"} == {"X3_U", "J_U", "X4_U", "J4_U"}
     for row in rows:
         variant, config = r.policy_config(row)
         assert variant == row["name"].split("_")[0]
@@ -25,8 +25,8 @@ def test_registry_and_all_policy_mappings():
         assert config["cost_multiple"] == row["cost"]
         assert config["path"] == row["path"]
         assert config["partial"] == (row["phase"] == "PARTIAL")
-        assert config["allocation"] == ("flex" if variant == "J" else "fixed")
-        if variant == "J":
+        assert config["allocation"] == ("flex" if variant in ("J", "J4") else "fixed")
+        if variant in ("J", "J4"):
             assert config["lanes"] == ("S", "C")
             assert config["profile"] == "F"
             assert config["lane_profiles"] == (("S", "F"), ("C", "U"))
@@ -42,11 +42,11 @@ def test_contract_has_fixed_primary_and_never_promotes(monkeypatch):
     assert contract["selection"] == "NONE"
     assert contract["auto_activate"] is False
     assert contract["profitability_status"] == "INSUFFICIENT"
-    assert contract["bootstrap"]["columns"] == 24
+    assert contract["bootstrap"]["columns"] == 34
     assert contract["paired"]["fixed_lots"] == 20
     assert contract["paired"]["risk_share"] == 1
     monkeypatch.setattr(r, "POLICIES", ())
-    with pytest.raises(RuntimeError, match="146"):
+    with pytest.raises(RuntimeError, match="192"):
         r.planned_registry()
 
 
@@ -78,12 +78,13 @@ def signal(lane="C"):
 
 def tape_fixture():
     context = {r.TRAIN: {"C": {"trend_long": True}}}
-    variants = {name: dict(signals=[signal()], contexts=context) for name in ("X0", "X1", "X1A", "X2", "X3")}
+    variants = {name: dict(signals=[signal()], contexts=context) for name in ("X0", "X1", "X1A", "X2", "X3", "X4")}
     variants["X2"]["signals"] = [dict(signal(), risk_share=.25)]
+    variants["X4"]["signals"] = [dict(signal(), risk_share=.5)]
     return dict(variants=variants, metadata={}, episodes=[])
 
 
-@pytest.mark.parametrize("mismatch", [None, "signal", "context", "inventory"])
+@pytest.mark.parametrize("mismatch", [None, "signal", "context", "inventory", "secondary_signal", "secondary_context"])
 def test_prepare_tapes_identity_guard_and_joint_swing_priority(monkeypatch, mismatch):
     built = tape_fixture()
     if mismatch == "signal":
@@ -92,6 +93,10 @@ def test_prepare_tapes_identity_guard_and_joint_swing_priority(monkeypatch, mism
         built["variants"]["X2"]["contexts"] = {r.TRAIN: {"C": {"trend_long": False}}}
     elif mismatch == "inventory":
         built["variants"].pop("X1A")
+    elif mismatch == "secondary_signal":
+        built["variants"]["X4"]["signals"][0]["stop_distance"] = 2.
+    elif mismatch == "secondary_context":
+        built["variants"]["X4"]["contexts"] = {r.TRAIN: {"C": {"trend_long": False}}}
     monkeypatch.setattr(r, "build_transition_tapes", lambda bars: built)
     monkeypatch.setattr(r, "build_signal_tape", lambda bars: dict(signals=[signal("S"), signal()],
         contexts={r.TRAIN: {"S": {"trend_short": False}, "C": {"obsolete": True}}}))
@@ -105,6 +110,10 @@ def test_prepare_tapes_identity_guard_and_joint_swing_priority(monkeypatch, mism
     assert "obsolete" not in tapes["J"]["contexts"][r.TRAIN]["C"]
     assert tapes["S"]["signals"] == [signal("S")]
     assert metadata["variants"]["X1"]["context_hash"] == metadata["variants"]["X2"]["context_hash"]
+    assert metadata["variants"]["X3"]["context_hash"] == metadata["variants"]["X4"]["context_hash"]
+    assert [s["lane"] for s in tapes["J4"]["signals"]] == ["S", "C"]
+    assert tapes["J4"]["signals"][-1]["risk_share"] == .5
+    assert tapes["J4"]["contexts"] == tapes["J"]["contexts"]
     assert episodes == []
 
 
@@ -115,13 +124,13 @@ def bootstrap_fixture(days=1096):
             for i, name in enumerate(r.POLICIES) for j, path in enumerate(r.PATHS)}
 
 
-def test_bootstrap_recomputes_joint_24_column_family(monkeypatch):
+def test_bootstrap_recomputes_joint_34_column_family(monkeypatch):
     original = r.bootstrap_max_error
     seen = []
     def capture(matrix, times, **kwargs):
         assert matrix["OHLC"] == matrix["OLHC"]
-        assert len(matrix["OHLC"]) == 24
-        assert len([k for k in matrix["OHLC"] if k.startswith("OHLC/")]) == 12
+        assert len(matrix["OHLC"]) == 34
+        assert len([k for k in matrix["OHLC"] if k.startswith("OHLC/")]) == 17
         assert len(times) == 1096
         seen.append((matrix, times, kwargs))
         return original(matrix, times, **kwargs)
@@ -196,16 +205,21 @@ def test_full_gate_pass_and_growth_independence():
     assert outcome["high_growth_status"] == "NOT_MET"
 
 
+@pytest.mark.parametrize("candidate", ["X3_U", "X4_U"])
 @pytest.mark.parametrize("cost,delay,path", r.CELLS)
 @pytest.mark.parametrize("phase,field,value", [
     ("OOS", "total_return", 0.), ("OOS", "mtm_mdd", .251),
     ("OOS", "yearly_returns", {"2023": .1, "2024": -.1, "2025": -.1}),
     ("PARTIAL", "total_return", 0.), ("PARTIAL", "mtm_mdd", .251),
 ])
-def test_every_primary_stress_cell_is_required(cost, delay, path, phase, field, value):
+def test_every_primary_and_secondary_stress_cell_is_required(candidate, cost, delay, path, phase, field, value):
     results, bounds = gates()
-    results[f"{phase}/X3_U/c{cost}/d{delay}/{path}"]["statistics"][field] = value
-    assert r.evaluate_gates(results, bounds)["improvement_status"] == "NOT_PROVEN"
+    results[f"{phase}/{candidate}/c{cost}/d{delay}/{path}"]["statistics"][field] = value
+    outcome = r.evaluate_gates(results, bounds)
+    affected = outcome if candidate == "X3_U" else outcome["secondary"]
+    unaffected = outcome["secondary"] if candidate == "X3_U" else outcome
+    assert affected["improvement_status"] == "NOT_PROVEN"
+    assert unaffected["improvement_status"] == "HISTORICAL_IMPROVEMENT"
 
 
 @pytest.mark.parametrize("path", r.PATHS)
@@ -217,6 +231,16 @@ def test_zero_adjusted_lower_and_joint_failure_are_not_success(path):
     assert result["improvement_status"] == result["joint_status"] == "NOT_PROVEN"
 
 
+@pytest.mark.parametrize("path", r.PATHS)
+def test_secondary_zero_lower_does_not_change_primary_designation(path):
+    results, bounds = gates()
+    bounds["lower_bounds"][f"{path}/X4_U-X0_F"] = 0.
+    bounds["lower_bounds"][f"{path}/J4_U-S_F"] = 0.
+    outcome = r.evaluate_gates(results, bounds)
+    assert outcome["improvement_status"] == "HISTORICAL_IMPROVEMENT"
+    assert outcome["secondary"]["improvement_status"] == outcome["secondary"]["joint_status"] == "NOT_PROVEN"
+
+
 def fake_run_setup(tmp_path, monkeypatch, cohort=False):
     saved = r.preregister(tmp_path)
     r.write_json(tmp_path / "synthetic_profile.json", dict(kind="SYNTHETIC_NOT_MARKET", seconds=.001,
@@ -225,7 +249,7 @@ def fake_run_setup(tmp_path, monkeypatch, cohort=False):
     times = np.arange(r.TRAIN - r.BAR, r.TRAIN + 30 * r.BAR, r.BAR)
     bars = np.column_stack((times, np.ones((len(times), 4)) * 100.))
     monkeypatch.setattr(r, "load_inputs", lambda *args: (bars, np.empty((0, 2)), {}))
-    tapes = {v: dict(signals=[], contexts={}) for v in ("X0", "X1", "X1A", "X2", "X3", "S", "J")}
+    tapes = {v: dict(signals=[], contexts={}) for v in ("X0", "X1", "X1A", "X2", "X3", "X4", "S", "J", "J4")}
     if cohort:
         tapes["X1"]["signals"] = [signal()]
     monkeypatch.setattr(r, "prepare_tapes", lambda bars: (tapes, {}, []))
@@ -262,7 +286,7 @@ def test_partial_cohort_records_survive_budget_failure(tmp_path, monkeypatch):
         fees=.1, slippage=.1, funding=0.), counters={}, statistics={}, hashes={}, entry_fills=[dict(lots=20)], final_positions={})
     def backend(*args):
         calls.append(1)
-        if len(calls) == 149:
+        if len(calls) == 195:
             raise r.ResourceLimit("paired budget fixture")
         return raw
     monkeypatch.setattr(r, "run_adaptive", backend)

@@ -21,13 +21,15 @@ from backtest.adaptive_replay import AdaptiveConfig, run_adaptive
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT.parent/"docs/BTC_MA_TRANSITION_CONTRACT_2026-09-06_ko.md"
 POLICIES = ("X0_F", "X1_F", "X1A_F", "X2_F", "X3_F", "X1_H", "X1_K", "X1_U",
-            "X3_H", "X3_K", "X3_U", "S_F", "J_U")
+            "X3_H", "X3_K", "X3_U", "S_F", "J_U", "X4_F", "X4_U", "J4_U")
 PROFILES = ("F", "H", "K", "U")
 PATHS = ("OHLC", "OLHC")
 CELLS = tuple((c,d,p) for c in (1,2) for d in (5,30) for p in PATHS)
 COMPARISONS = (("X1_F","X0_F"),("X1A_F","X1_F"),("X2_F","X1_F"),("X3_F","X2_F"),
                ("X1_K","X1_H"),("X1_U","X1_K"),("X3_K","X3_H"),("X3_U","X3_K"),
-               ("X1_H","X1_F"),("X3_H","X3_F"),("X3_U","X0_F"),("J_U","S_F"))
+               ("X1_H","X1_F"),("X3_H","X3_F"),("X3_U","X0_F"),("J_U","S_F"),
+               ("X4_F","X3_F"),("X4_U","X3_U"),("J4_U","J_U"),
+               ("X4_U","X0_F"),("J4_U","S_F"))
 SOURCES = ("analysis/transition_retest.py","analysis/transition_signals.py",
            "backtest/adaptive_replay.py","analysis/adaptive_signals.py",
            "analysis/strategy_mixture.py","analysis/mixture_statistics.py",
@@ -38,23 +40,24 @@ SOURCES = ("analysis/transition_retest.py","analysis/transition_signals.py",
 def planned_registry():
     rows=[]
     for phase,names,cells in (("TRAIN",POLICIES,tuple((1,5,p) for p in PATHS)),
-                              ("OOS",POLICIES,CELLS),("PARTIAL",("X3_U","J_U"),CELLS)):
+                              ("OOS",POLICIES,CELLS),("PARTIAL",("X3_U","J_U","X4_U","J4_U"),CELLS)):
         for name in names:
             for cost,delay,path in cells:
                 rows.append(dict(id=f"{phase}/{name}/c{cost}/d{delay}/{path}",phase=phase,
                                  name=name,cost=cost,delay=delay,path=path,status="PLANNED"))
-    if len(rows)!=146 or len({r["id"] for r in rows})!=146:
-        raise RuntimeError("invalid146 trial registry")
+    if len(rows)!=192 or len({r["id"] for r in rows})!=192:
+        raise RuntimeError("invalid192 trial registry")
     return rows
 
 
 def make_contract():
-    return dict(version="ma-transition-v1",source_hashes={n:file_hash(ROOT/n) for n in SOURCES},
+    return dict(version="ma-transition-v2",source_hashes={n:file_hash(ROOT/n) for n in SOURCES},
         specification_sha256=file_hash(DOC),portfolio_registry=planned_registry(),
-        policies=POLICIES,comparisons=COMPARISONS,primary=["X3_U","X0_F"],
+        coverage_note_sha256=file_hash(ROOT.parent/"docs/BTC_MA_TRANSITION_PRE_PNL_COVERAGE_2026-09-06.json"),
+        policies=POLICIES,comparisons=COMPARISONS,primary=["X3_U","X0_F"],secondary=["X4_U","X0_F"],
         periods=dict(start=START,train=TRAIN,oos=OOS,end_exclusive=END),
         paired=dict(variants=["X1","X3"],profiles=PROFILES,paths=PATHS,fixed_lots=20,risk_share=1),
-        bootstrap=dict(columns=24,draws=2000,seed=20260906,block_days=30,method="joint centered-mean max-error"),
+        bootstrap=dict(columns=34,draws=2000,seed=20260906,block_days=30,method="joint centered-mean max-error"),
         resources=dict(seconds=7200,rss_bytes=2*1024**3,artifact_bytes=512*1024**2),
         selection="NONE",profitability_status="INSUFFICIENT",auto_activate=False)
 
@@ -84,13 +87,15 @@ def context_hash(contexts):
 def prepare_tapes(bars):
     built=build_transition_tapes(bars)
     variants=built["variants"]
-    expected={"X0","X1","X1A","X2","X3"}
+    expected={"X0","X1","X1A","X2","X3","X4"}
     if set(variants)!=expected:
         raise ValueError("variant inventory mismatch")
     def entry_identity(signals):
         return digest([{k:v for k,v in s.items() if k!="risk_share"} for s in signals])
     if entry_identity(variants["X1"]["signals"])!=entry_identity(variants["X2"]["signals"]):
         raise ValueError("X1/X2 differ beyond risk_share")
+    if entry_identity(variants["X3"]["signals"])!=entry_identity(variants["X4"]["signals"]):
+        raise ValueError("X3/X4 differ beyond risk_share")
     cache={}
     metadata={}
     for name,tape in variants.items():
@@ -100,26 +105,29 @@ def prepare_tapes(bars):
         metadata[name]=dict(signal_count=len(tape["signals"]),signal_hash=digest(tape["signals"]),context_hash=cache[key])
     if metadata["X1"]["context_hash"]!=metadata["X2"]["context_hash"]:
         raise ValueError("X1/X2 context mismatch")
+    if metadata["X3"]["context_hash"]!=metadata["X4"]["context_hash"]:
+        raise ValueError("X3/X4 context mismatch")
     older=build_signal_tape(bars)
     swing=dict(signals=[s for s in older["signals"] if s["lane"]=="S"],
                contexts={t:{"S":v["S"]} for t,v in older["contexts"].items() if "S" in v})
     joint_context={t:dict(v) for t,v in variants["X3"]["contexts"].items()}
     for ts,ctx in swing["contexts"].items():
         joint_context.setdefault(ts,{}).update(ctx)
-    joint=dict(signals=sorted(swing["signals"]+variants["X3"]["signals"],
-                             key=lambda s:(s["available_at"],s["lane"]!="S")),contexts=joint_context)
-    return {**variants,"S":swing,"J":joint},dict(**built["metadata"],variants=metadata),built["episodes"]
+    joints={name:dict(signals=sorted(swing["signals"]+variants[variant]["signals"],
+                    key=lambda s:(s["available_at"],s["lane"]!="S")),contexts=joint_context)
+            for name,variant in (("J","X3"),("J4","X4"))}
+    return {**variants,"S":swing,**joints},dict(**built["metadata"],variants=metadata),built["episodes"]
 
 
 def policy_config(row):
     variant,profile=row["name"].split("_")
     result=dict(start_ms=TRAIN if row["phase"]=="TRAIN" else OOS,
                 end_ms=OOS if row["phase"]=="TRAIN" else END,
-                lanes=("S",) if variant=="S" else ("S","C") if variant=="J" else ("C",),
-                profile=profile,allocation="flex" if variant=="J" else "fixed",
+                lanes=("S",) if variant=="S" else ("S","C") if variant in ("J","J4") else ("C",),
+                profile=profile,allocation="flex" if variant in ("J","J4") else "fixed",
                 cost_multiple=row["cost"],timing_ms=row["delay"]*60_000,path=row["path"],
                 partial=row["phase"]=="PARTIAL")
-    if variant=="J":
+    if variant in ("J","J4"):
         result.update(profile="F",lane_profiles=(("S","F"),("C","U")))
     return variant,result
 
@@ -145,38 +153,38 @@ def joint_bounds(results):
             if any([t for t,v in r["daily_nav"]]!=dates for r in (lhs,rhs)):
                 raise ValueError("exact1096-day comparison calendar required")
             columns[f"{path}/{a}-{b}"]=(np.asarray(lhs["statistics"]["daily_returns"])-np.asarray(rhs["statistics"]["daily_returns"])).tolist()
-    if len(columns)!=24:
-        raise ValueError("entire24-column family required")
+    if len(columns)!=34:
+        raise ValueError("entire34-column family required")
     ci=bootstrap_max_error({p:columns for p in PATHS},dates,require_full_period=False)
     if ci["status"]!="OK":
         raise ValueError("bootstrap failure")
     return dict(**ci["paths"]["OHLC"],columns=sorted(columns),draws=2000,seed=20260906,block_days=30,
-                method="joint24_column_centered_mean_max_error")
+                method="joint34_column_centered_mean_max_error")
 
 
-def evaluate_gates(results,bounds):
+def candidate_gates(results,bounds,candidate="X3_U",mixed="J_U"):
     checks,growth,joint={},{},{}
     for path in PATHS:
-        a,b=(results[f"OOS/{n}/c1/d5/{path}"]["statistics"] for n in ("X3_U","X0_F"))
+        a,b=(results[f"OOS/{n}/c1/d5/{path}"]["statistics"] for n in (candidate,"X0_F"))
         checks[path+":positive"]=a["total_return"]>0
         checks[path+":net_increase"]=a["total_return"]>b["total_return"]
         checks[path+":mdd_nonworse"]=a["mtm_mdd"]<=b["mtm_mdd"]
         checks[path+":campaigns60"]=a["completed_campaigns"]>=60
-        checks[path+":adjusted_lower"]=bounds["lower_bounds"][path+"/X3_U-X0_F"]>0
+        checks[path+":adjusted_lower"]=bounds["lower_bounds"][path+f"/{candidate}-X0_F"]>0
         growth[path+":cagr20"]=a["cagr"]>=.2
         growth[path+":mdd20"]=a["mtm_mdd"]<=.2
         growth[path+":months55"]=a["positive_month_fraction"]>=.55
         growth[path+":three_years"]=len(a["yearly_returns"])==3 and all(v>0 for v in a["yearly_returns"].values())
         growth[path+":top5_removed"]=a["top5_removed_return"]>0
         growth[path+":top5_share"]=a["top5_share"] is not None and a["top5_share"]<=.5
-        j,s=(results[f"OOS/{n}/c1/d5/{path}"]["statistics"] for n in ("J_U","S_F"))
+        j,s=(results[f"OOS/{n}/c1/d5/{path}"]["statistics"] for n in (mixed,"S_F"))
         joint[path+":net_increase"]=j["total_return"]>s["total_return"]
         joint[path+":mdd_nonworse"]=j["mtm_mdd"]<=s["mtm_mdd"]
-        joint[path+":adjusted_lower"]=bounds["lower_bounds"][path+"/J_U-S_F"]>0
+        joint[path+":adjusted_lower"]=bounds["lower_bounds"][path+f"/{mixed}-S_F"]>0
     for cost,delay,path in CELLS:
         cell=f"c{cost}/d{delay}/{path}"
-        full=results[f"OOS/X3_U/{cell}"]["statistics"]
-        partial=results[f"PARTIAL/X3_U/{cell}"]["statistics"]
+        full=results[f"OOS/{candidate}/{cell}"]["statistics"]
+        partial=results[f"PARTIAL/{candidate}/{cell}"]["statistics"]
         checks[cell+":full_positive"]=full["total_return"]>0
         checks[cell+":full_mdd25"]=full["mtm_mdd"]<=.25
         checks[cell+":two_positive_years"]=sum(v>0 for v in full["yearly_returns"].values())>=2
@@ -187,6 +195,11 @@ def evaluate_gates(results,bounds):
         joint_status="HISTORICAL_IMPROVEMENT" if all(joint.values()) else "NOT_PROVEN",
         improvement_checks=checks,high_growth_checks=growth,joint_checks=joint,
         failed_checks=[k for k,v in checks.items() if not v],failed_growth_checks=[k for k,v in growth.items() if not v])
+
+
+def evaluate_gates(results,bounds):
+    return {**candidate_gates(results,bounds),
+            "secondary":candidate_gates(results,bounds,"X4_U","J4_U")}
 
 
 def paired_summary(records):
