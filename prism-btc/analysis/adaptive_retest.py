@@ -268,9 +268,9 @@ def run_experiment(output, market_db, execution_db):
             directory.mkdir(parents=True, exist_ok=False)
             sink = LedgerSink(directory/"events.jsonl.gz")
             try:
-                def guard(checkpoint=None):
+                def portfolio_guard(checkpoint=None):
                     budget({**(checkpoint or {}), "trial":row["id"]})
-                config = AdaptiveConfig(**policy_config(row), resource_check=guard)
+                config = AdaptiveConfig(**policy_config(row), resource_check=portfolio_guard)
                 raw = run_adaptive(bars, funding, tape["signals"], tape["contexts"], config, sink)
                 result = summarize(raw)
             finally:
@@ -298,10 +298,10 @@ def run_experiment(output, market_db, execution_db):
                     for profile in PROFILES:
                         checkpoint = dict(cohort=signal["signal_id"], path=path, profile=profile)
                         budget(checkpoint)
-                        def guard(detail=None):
+                        def cohort_guard(detail=None):
                             budget({**(detail or {}), **checkpoint})
                         config = AdaptiveConfig(signal["available_at"], end_ms, lanes=(signal["lane"],),
-                                                profile=profile, path=path, fixed_lots=20, resource_check=guard)
+                                                profile=profile, path=path, fixed_lots=20, resource_check=cohort_guard)
                         raw = run_adaptive(bs, fs, [signal], ctx, config)
                         record = paired_record(raw, signal, profile, path)
                         paired.append(record)
