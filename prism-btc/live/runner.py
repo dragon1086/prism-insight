@@ -4,7 +4,8 @@
 #   python -m live.runner          : 상주 루프 (다음 10m 경계+10초까지 sleep → tick)
 #
 # tick 순서:
-#   1. update_all()  — market.db 증분 갱신 (실패 시 이번 틱 스킵 + 이벤트 기록)
+#   0. demo 거래소 보호·정산 조회 (시장 데이터/선택적 연구와 독립, 신규 진입 없음)
+#   1. update_all()  — market.db 증분 갱신 (실패 시 전략만 스킵 + 이벤트 기록)
 #   2. 새 10m 보호 봉이 있으면:
 #        손절/청산 접근 보호 pass (신호/AI 없음)
 #   3. 새 확정 30m 봉이 있으면:
@@ -13,7 +14,7 @@
 #   4. btc_events 에 하트비트 기록
 #
 # 모든 네트워크 호출 실패에 내성: update.py 가 TF별 재시도/예외 흡수, 여기서는
-# 전체 update 실패 시 이번 틱을 스킵하고 에러 이벤트를 남긴다.
+# 전체 update 실패 시 이미 보호 조회를 시도한 뒤 전략을 스킵하고 에러를 남긴다.
 from __future__ import annotations
 
 import argparse
@@ -86,29 +87,72 @@ def _confirmed_30m(tf_data) -> "pd.DataFrame":
     return tf_data["30m"]
 
 
+def _record_code_version(root_conn, mode):
+    """Audit the executing code even when broker recovery must fail closed."""
+    try:
+        import subprocess
+        from pathlib import Path
+        rev = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], capture_output=True,
+            text=True, timeout=5,
+            cwd=str(Path(__file__).resolve().parent.parent)).stdout.strip()
+        if rev and tracking.get_meta(root_conn, "code_version", mode) != rev:
+            tracking.set_meta(root_conn, "code_version", rev, mode)
+            tracking.log_event(root_conn, "version", f"code version: {rev}", mode=mode)
+    except Exception:  # noqa: BLE001 — audit failure cannot block protection
+        pass
+
+
+def _broker_recovery(root_conn, mode):
+    """Always attempt both owned exchange lanes before optional/data work."""
+    errors = []
+    if mode != "demo":
+        return errors
+    from live.broker_recovery import RecoveryPending, reconcile_main, reconcile_swing
+    now = pd.Timestamp.now(tz="UTC")
+    try:
+        from live.demo import DemoAdapter
+        adapter = DemoAdapter(root_conn, {}, [], [], mode=mode)
+        reconcile_main(adapter, now)
+    except Exception as exc:  # noqa: BLE001
+        reason = str(exc) if isinstance(exc, RecoveryPending) else type(exc).__name__
+        errors.append(f"demo broker recovery: {reason}")
+    try:
+        reconcile_swing(root_conn, mode, now)
+    except Exception as exc:  # noqa: BLE001
+        reason = str(exc) if isinstance(exc, RecoveryPending) else type(exc).__name__
+        errors.append(f"swing broker recovery: {reason}")
+    for error in errors:
+        tracking.log_event(root_conn, "broker_recovery", error, level="error", mode=mode)
+    return errors
+
+
 def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
-    """Run one 10m protection tick plus newly confirmed 30m strategy bars."""
+    """Broker recovery is independent of market/optional work; always close DB."""
     result = {
         "updated": False, "new_bars": 0, "protection_bars": 0,
         "error": None, "ts": None,
     }
     root_conn = tracking.get_connection(root_db_path)
-    tracking.ensure_schema(root_conn)
-
-    # --- 0a. 코드 버전 추적 (감사용: "이 트레이드는 어느 커밋의 코드였나") ---
     try:
-        import subprocess
-        from pathlib import Path as _P
-        rev = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"], capture_output=True,
-            text=True, timeout=5,
-            cwd=str(_P(__file__).resolve().parent.parent)).stdout.strip()
-        if rev and tracking.get_meta(root_conn, "code_version", mode) != rev:
-            tracking.set_meta(root_conn, "code_version", rev, mode)
-            tracking.log_event(root_conn, "version", f"code version: {rev}", mode=mode)
-    except Exception:  # noqa: BLE001 — 버전 추적 실패는 무해
-        pass
+        tracking.ensure_schema(root_conn)
+        _record_code_version(root_conn, mode)
+        errors = _broker_recovery(root_conn, mode)
+        if errors:
+            result["error"] = "; ".join(errors)
+            tracking.log_event(root_conn, "heartbeat", "broker recovery incomplete; strategy skipped", mode=mode)
+            return result
+        return _tick_inner(root_conn, mode, market_db_path, result)
+    except Exception as exc:  # noqa: BLE001 — keep recovery independent next tick
+        result["error"] = f"tick failed: {type(exc).__name__}"
+        tracking.log_event(root_conn, "error", result["error"], level="error", mode=mode)
+        tracking.log_event(root_conn, "heartbeat", "tick incomplete; strategy cursor preserved", mode=mode)
+        return result
+    finally:
+        root_conn.close()
 
+
+def _tick_inner(root_conn, mode, market_db_path, result):
     # --- 0. 챔피언 오버라이드 적용 (자가개선 루프의 라이브 반영 지점) ---
     # 연구공장이 train+OOS 게이트로 검증·활성화한 파라미터만 여기서 적용된다.
     # 실패해도 동결 기본값으로 트레이딩 계속 (보수적 폴백).
@@ -132,7 +176,6 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
         result["error"] = f"update_all failed: {exc}"
         tracking.log_event(root_conn, "error", result["error"], level="error", mode=mode)
         tracking.log_event(root_conn, "heartbeat", "tick skipped (update failed)", mode=mode)
-        root_conn.close()
         return result
 
     # --- 2. 지표/스냅샷용 tf_data + protection bar build ---
@@ -150,7 +193,7 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
     bars_30m = _confirmed_30m(tf_data)
     last_ns = _last_processed_30m_ns(root_conn, mode)
     # 처리 대상: 아직 처리 안 한 확정 30m 봉들 (오름차순).
-    if last_ns is None:
+    if last_ns is None and not bars_30m.empty:
         # 콜드 스타트: 마지막 확정봉 1개만 처리 (과거 전체 재시뮬 방지).
         new_bars = bars_30m.iloc[[-1]]
     else:
@@ -181,7 +224,6 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
                                level="error", mode=mode)
             tracking.log_event(root_conn, "heartbeat",
                                "tick skipped (demo adapter init failed)", mode=mode)
-            root_conn.close()
             return result
     else:
         failure_observer = None
@@ -199,7 +241,13 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
         )
 
     # --- 2a. 10m protection pass (before strategy processing) ---
-    from live.exit_capture import capture as capture_exit
+    def capture_exit(*args, **kwargs):
+        try:
+            from live.exit_capture import capture
+            capture(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 — observability never gates protection
+            tracking.log_event(root_conn, "exit_capture", f"capture unavailable: {type(exc).__name__}",
+                               level="warning", mode=mode)
     capture_price = float(protection_bars.iloc[-1]["close"]) if not protection_bars.empty else None
     capture_time = pd.Timestamp.now(tz="UTC").isoformat()
     capture_bar_time = str(protection_bars.index[-1]) if not protection_bars.empty else None
@@ -226,7 +274,6 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
             "no confirmed 30m bars yet",
             mode=mode,
         )
-        root_conn.close()
         return result
 
     # 4h 확정 추적 (backtest cadence gate 미러).
@@ -354,7 +401,6 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
     tracking.log_event(root_conn, "heartbeat",
         f"tick ok: protection={len(protection_bars)}x10m, "
         f"strategy={processed}x30m; last={result['ts']}", mode=mode)
-    root_conn.close()
     return result
 
 
