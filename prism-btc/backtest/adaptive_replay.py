@@ -40,6 +40,7 @@ class AdaptiveConfig:
     path: str = "OHLC"
     resource_check: object = None
     lane_profiles: tuple = ()
+    entry_latency_ms: int | None = None
 
     def __post_init__(self):
         if (type(self.start_ms) is not int or type(self.end_ms) is not int
@@ -55,6 +56,10 @@ class AdaptiveConfig:
                 or (self.resource_check is not None and not callable(self.resource_check))
                 or not math.isfinite(self.initial_cash) or self.initial_cash <= 0):
             raise ValueError("invalid policy")
+        if self.entry_latency_ms is not None and (
+                type(self.entry_latency_ms) is not int or
+                self.entry_latency_ms not in (0, BAR, 6*BAR)):
+            raise ValueError("invalid entry latency")
         if (type(self.lane_profiles) is not tuple or
                 any(type(pair) is not tuple or len(pair) != 2 or
                     pair[0] not in self.lanes or pair[1] not in ("F", "P", "Q", "H", "K", "U")
@@ -86,6 +91,8 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
     this exit capacity once. Crossings never replenish it. Protective exits latch
     the whole remainder; cap reductions latch only their requested reduction.
     Entry TTL begins at first eligibility and expires before fills 30m later.
+    Optional zero entry latency is an idealized next-bar-open diagnostic, not
+    actual tick execution. It does not alter protection or exit-policy clocks.
     """
     c = config
     rows = [tuple(row) for row in bars]
@@ -490,8 +497,9 @@ def run_adaptive(bars, funding, signals, contexts, config: AdaptiveConfig, sink=
             if not lots:
                 counters["rejected_budget"] += 1
                 continue
-            pending[lane] = dict(s, remaining=lots, requested=lots, eligible=t+c.timing_ms,
-                                 expires=t+c.timing_ms+6*BAR, allocation_share=share,
+            entry_delay = c.timing_ms if c.entry_latency_ms is None else c.entry_latency_ms
+            pending[lane] = dict(s, remaining=lots, requested=lots, eligible=t+entry_delay,
+                                 expires=t+entry_delay+6*BAR, allocation_share=share,
                                  gross_budget=gross_budget, heat_budget=heat_budget)
             counters["accepted"] += 1
             emit("entry_reserved", t, lane=lane, signal_id=s["signal_id"], lots=lots,
