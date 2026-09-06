@@ -58,6 +58,7 @@ from live import decision_capture, tracking
 from live.exchange_snapshot import read_complete
 from live.protection import reconcile_stop
 from live.native_stop import native_stop_params
+from live.shared_entry_coordinator import authorize, serialized
 
 # shadow 와 동일 위험/쿨다운/게이트 상수를 그대로 재사용 (바이트 불변 — import 만).
 from live.shadow import (
@@ -291,6 +292,7 @@ class DemoAdapter:
         self._call("set_leverage", category=_CATEGORY, symbol=_SYMBOL,
                    buyLeverage=str(leverage), sellLeverage=str(leverage))
 
+    @serialized
     def _place_limit_postonly(self, side: str, qty: float, price: float, *,
                              stop_price: float, native_mode: str = "Full",
                              pending_payload: dict | None = None) -> Optional[str]:
@@ -298,16 +300,35 @@ class DemoAdapter:
         params = native_stop_params(side, float(_pstr(price)), stop_price, mode=native_mode)
         if not math.isfinite(qty) or float(_qstr(qty)) <= 0:
             raise ValueError("invalid entry quantity")
+        from live.order_retirement import reconcile_stop_retirements
+        old_stop = self._get_meta("sl_order_id", None)
+        if old_stop and not tracking.load_open_positions(self.conn, self.mode):
+            if not self._retire_stop(old_stop):
+                return None
+            self._set_meta("sl_order_id", None)
+        if not reconcile_stop_retirements(self.conn, self.mode, self._call):
+            tracking.log_event(self.conn, "entry_block", "Backup stop cleanup not terminal",
+                               level="warning", mode=self.mode)
+            return None
         prior = self._get_meta("pending_order", None)
         if prior is not None:
             tracking.log_event(self.conn, "entry_block", "Existing pending entry blocks new submission", mode=self.mode)
             return None
         stop_intent = self._get_meta("stop_submission_intent", {}) or {}
-        if stop_intent.get("submitted") and stop_intent.get("status") != "CONFIRMED_OWNED":
+        if stop_intent.get("submitted") and stop_intent.get("status") not in {"CONFIRMED_OWNED", "SETTLED"}:
             tracking.log_event(self.conn, "entry_block", "Prior backup submission unresolved; exact verification required",
                                level="error", mode=self.mode)
             return None
-        native = {"link_id": "entry-" + uuid.uuid4().hex[:28], "status": "SUBMITTING",
+        context = None if pending_payload is None else {
+            "decision_bar": pending_payload.get("bar_idx"),
+            "tranche_index": pending_payload.get("tranche_index", 0),
+            "lifecycle": str([(p.id, p.entry_time) for p in tracking.load_open_positions(self.conn, self.mode)]),
+        }
+        allowed, reservation = authorize(self, "main", side, float(_qstr(qty)),
+                                         float(_pstr(price)), float(params["stopLoss"]), context)
+        if not allowed:
+            return None
+        native = {"link_id": reservation["link_id"] if reservation else "entry-" + uuid.uuid4().hex[:28], "status": "SUBMITTING",
                   "side": side, "qty": float(_qstr(qty)), "price": float(_pstr(price)),
                   "stop_price": float(params["stopLoss"]), "mode": native_mode,
                   "sl_order_type": params["slOrderType"],
@@ -609,6 +630,8 @@ class DemoAdapter:
         native = self._get_meta("native_entry_intent", {}) or {}
         if native.get("link_id") != pending.get("link_id"):
             raise RuntimeError("native fill identity changed before ledger commit")
+        from live.shared_entry_coordinator import entry_receipt_update, commit_entry_receipt
+        reservation_update = entry_receipt_update(self, "main", pending, pos.qty)
         with self.conn:
             tracking.save_position(self.conn, pos, commit=False)
             native["position_ids"] = [pos.id]
@@ -630,6 +653,7 @@ class DemoAdapter:
             }.items():
                 tracking.set_meta(self.conn, key, value, self.mode, commit=False)
             tracking.set_meta(self.conn, "pending_order", pending, self.mode, commit=False)
+            commit_entry_receipt(reservation_update, self.conn)
 
     def _entry_receipt_recorded(self, pending) -> bool:
         receipt = pending.get("fill_receipt") if pending else None
@@ -997,14 +1021,13 @@ class DemoAdapter:
         # Only the durable adapter-owned SL handle has cancellation authority;
         # native/manual stop IDs seen in a snapshot are never adopted here.
         owned_sl = self._get_meta("sl_order_id", None)
-        if owned_sl:
-            self._cancel(owned_sl)
+        retired = not owned_sl or self._retire_stop(owned_sl)
         close_bars = self._get_meta("last_close_bar", {"long": -10_000, "short": -10_000})
         close_bars[intent["side"]] = bar_idx
         intent["flat_bookkeeping_done"] = True
         with self.conn:
             tracking.set_meta(self.conn, "last_close_bar", close_bars, self.mode, commit=False)
-            tracking.set_meta(self.conn, "sl_order_id", None, self.mode, commit=False)
+            tracking.set_meta(self.conn, "sl_order_id", None if retired else owned_sl, self.mode, commit=False)
             tracking.set_meta(self.conn, "tp_order_id", None, self.mode, commit=False)
             tracking.set_meta(self.conn, "tp_intent", intent, self.mode, commit=False)
 
@@ -1380,6 +1403,15 @@ class DemoAdapter:
             tracking.log_event(self.conn, "order",
                 f"stop amend id={order_id} trig={trigger}", mode=self.mode)
 
+    def _retire_stop(self, order_id: str) -> bool:
+        from live.order_retirement import request_stop_retirement
+        confirmed = request_stop_retirement(self.conn, self.mode, self._call, order_id)
+        if not confirmed:
+            tracking.log_event(self.conn, "stop_cleanup_pending",
+                               "Owned backup stop retained until exact terminal readback",
+                               level="warning", mode=self.mode)
+        return confirmed
+
     def _cancel(self, order_id: str) -> None:
         if not order_id:
             return
@@ -1561,12 +1593,20 @@ class DemoAdapter:
         max_ns = last_seen
         trade_id_counter = int(self._get_meta("trade_id_counter", 0))
         initial_risk = _f(self._get_meta("entry_initial_risk", 0.0))
+        trusted_ids = self._get_meta("closed_before_adoption_execution_ids_v1", [])
+        if not isinstance(trusted_ids, list) or any(not isinstance(x, str) or not x for x in trusted_ids):
+            raise ValueError("invalid_closed_before_adoption_receipts")
+        trusted_ids = set(trusted_ids)
         new_trades = []
         for r in rows:
             ts_ns = int(_f(r.get("execTime"), 0))
             if ts_ns <= last_seen:
                 continue
             max_ns = max(max_ns, ts_ns)
+            if r.get("execId") in trusted_ids:
+                # The exact fast-SL recovery already recorded the whole trade
+                # atomically with these execution receipts; do not book it twice.
+                continue
             # 청산(reduce-only) 체결만 종결 트레이드로 기록.
             closed_pnl = _f(r.get("closedSize"))
             is_close = bool(r.get("closedSize")) and closed_pnl > 0
@@ -1626,6 +1666,7 @@ class DemoAdapter:
             except Exception:  # noqa: BLE001
                 pass
 
+    @serialized
     def _process_bar_inner(self, bar_time: pd.Timestamp, bar: pd.Series,
                            new_4h_confirmed: bool, cur_4h_ns: Optional[int]) -> None:
         mode = self.mode
@@ -1903,8 +1944,8 @@ class DemoAdapter:
             if remaining_qty <= 0 or not remaining:
                 # 모든 트랜치 청산됨 → 잔여 보호주문 정리.
                 if sl_order_id:
-                    self._cancel(sl_order_id)
-                    sl_order_id = None
+                    if self._retire_stop(sl_order_id):
+                        sl_order_id = None
                 if tp_order_id:
                     self._cancel(tp_order_id)
                     tp_order_id = None
@@ -1924,10 +1965,10 @@ class DemoAdapter:
                 if pos.id is not None:
                     tracking.remove_position(conn, pos.id)
             if sl_order_id:
-                self._cancel(sl_order_id)
+                if self._retire_stop(sl_order_id):
+                    sl_order_id = None
             if tp_order_id:
                 self._cancel(tp_order_id)
-            sl_order_id = None
             tp_order_id = None
             tracking.log_event(conn, "fill",
                 "거래소 포지션 종료 감지 (SL/TP 체결) — 로컬 정리", mode=mode, ts=bar_time_str)
@@ -2121,6 +2162,11 @@ class DemoAdapter:
                             intent.side, sz.qty, intent.limit_price, stop_price=desired_stop,
                             native_mode="Full" if current_tranche == 0 else "Partial",
                             pending_payload=pending)
+                        if not pending.get("link_id"):
+                            # Preflight denial did not submit an order. Keep the
+                            # durable state, never persist this unsent candidate.
+                            # Accepted/unknown submissions always carry a link.
+                            pending = self._get_meta("pending_order", None)
                         if order_id:
                             latency_capture = self._last_execution_capture.get(
                                 "entry_submit", {}
@@ -2148,6 +2194,7 @@ class DemoAdapter:
             f"pos={'yes' if has_position else 'no'} "
             f"tranches={len(local_positions)}", mode=mode, ts=bar_time_str)
 
+    @serialized
     def process_protection_bar(self, bar_time: pd.Timestamp, bar: pd.Series) -> None:
         """Reconcile and repair exchange-side protection on a 10m cadence.
 
@@ -2221,9 +2268,8 @@ class DemoAdapter:
                             ),
                             pos.side: bar_idx,
                         })
-                    if sl_order_id:
-                        self._cancel(sl_order_id)
-                    self._set_meta("sl_order_id", None)
+                    if sl_order_id and self._retire_stop(sl_order_id):
+                        self._set_meta("sl_order_id", None)
                     self._set_meta("tp_order_id", None)
                     tracking.log_event(
                         self.conn, "protection",

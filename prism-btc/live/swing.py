@@ -50,6 +50,7 @@ from engine.config import SWING_ENABLED, SWING_INITIAL_EQUITY, SWING_MAX_LEVERAG
 from live import tracking
 from live.exchange_snapshot import read_complete
 from live.native_stop import native_stop_params
+from live.shared_entry_coordinator import authorize, serialized, mutation_lock, LockBusy
 from live.protection import reconcile_stop
 from live.demo import _f, _order_id, _pstr, _qstr, _result_list
 from live.shadow import bar_index_for
@@ -220,6 +221,7 @@ class ExchangeBackend:
                 return None
         return 0.0
 
+    @serialized
     def open(self, side: str, qty: float, sl: float,
              hint_price: float) -> Optional[float]:
         """시장가에 SL을 동반한다. None은 무체결 확정이 아니라 진입 미확정이다."""
@@ -227,6 +229,16 @@ class ExchangeBackend:
         attached = native_stop_params(side, hint_price, sl)
         sl = float(attached["stopLoss"])
         if not math.isfinite(qty) or qty <= 0:
+            return None
+        from live.order_retirement import request_stop_retirement, reconcile_stop_retirements
+        old_stop = tracking.get_meta(self.conn, "swing_sl_order_id", MODE)
+        if old_stop and not tracking.load_open_positions(self.conn, MODE):
+            if not request_stop_retirement(self.conn, MODE, self._call, old_stop):
+                return None
+            tracking.set_meta(self.conn, "swing_sl_order_id", "", MODE)
+        if not reconcile_stop_retirements(self.conn, MODE, self._call):
+            tracking.log_event(self.conn, "entry_blocked", "swing backup cleanup not terminal",
+                               level="warning", mode=MODE)
             return None
         prior_stop = tracking.get_meta(self.conn, "swing_stop_intent", MODE)
         if (prior_stop and prior_stop.get("submitted")
@@ -238,9 +250,17 @@ class ExchangeBackend:
             tracking.log_event(self.conn, "entry_blocked", "swing entry pending or exchange not confirmed flat",
                                level="warning", mode=MODE)
             return None
-        entry_pending = {"link_id": "sw-entry-"+uuid.uuid4().hex[:24], "side": side,
+        allowed, reservation = authorize(self, "swing", side, float(_qstr(qty)), hint_price,
+                                         sl, getattr(self, "entry_context", None))
+        if not allowed:
+            return None
+        entry_pending = {"link_id": reservation["link_id"] if reservation else "sw-entry-"+uuid.uuid4().hex[:24], "side": side,
                          "qty": qty, "stop_price": sl, "native_stop_params": attached,
                          "submitted_at_ms": time.time_ns()//1_000_000, "status": "SUBMISSION_UNKNOWN"}
+        if getattr(self, "entry_context", None):
+            entry_pending["entry_context"] = dict(self.entry_context)
+        if reservation:
+            entry_pending.update(order_type="Limit", limit_price=reservation["limit_price"])
         tracking.set_meta(self.conn, "swing_entry_pending", entry_pending, MODE)
         self._call("set_leverage", category=_CATEGORY, symbol=_SYMBOL,
                    buyLeverage=str(SWING_MAX_LEVERAGE),
@@ -248,7 +268,8 @@ class ExchangeBackend:
         resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
             side="Buy" if side == "long" else "Sell",
-            orderType="Market", qty=_qstr(qty),
+            orderType="Limit" if reservation else "Market", qty=_qstr(qty),
+            **({"price": _pstr(reservation["limit_price"])} if reservation else {}),
             timeInForce="IOC", positionIdx=_POSITION_IDX,
             orderLinkId=entry_pending["link_id"], **attached,
         )
@@ -324,6 +345,22 @@ class ExchangeBackend:
             tracking.log_event(self.conn, "error",
                                "swing SL coverage unconfirmed — operator verification required",
                                level="error", mode=MODE)
+        if entry_pending.get("entry_context"):
+            # Production entry context is persisted before submit. Do not let
+            # ACK/partial execution escape the durable terminal-parent receipt.
+            if not self.recover_pending_entry():
+                return None
+            receipt = tracking.get_meta(self.conn, "swing_entry_receipt:" + entry_pending["link_id"], MODE)
+            if not receipt or not receipt.get("position_id"):
+                return None
+            recorded = next((p for p in tracking.load_open_positions(self.conn, MODE)
+                             if p.id == receipt["position_id"]), None)
+            if recorded is None:
+                return None
+            fill = recorded.entry_price
+            self.last_open_snapshot.update(position_id=recorded.id, qty=recorded.qty,
+                                           entry_price=recorded.entry_price, entry_fee=recorded.entry_fee,
+                                           execution_time_ms=int(pd.Timestamp(recorded.entry_time).value // 1_000_000))
         tracking.log_event(self.conn, "order",
                            f"swing open {side} market qty={protected_qty:.4f} "
                            f"fill≈{fill:.1f} "
@@ -363,6 +400,11 @@ class ExchangeBackend:
             pending["status"] = result.status
         tracking.set_meta(self.conn, "swing_stop_intent", pending, MODE)
         return result
+
+    @serialized
+    def recover_pending_entry(self) -> bool:
+        from live.swing_entry_recovery import recover
+        return recover(self)
 
     def observe_pending_entry(self) -> None:
         """Read-only warning context; neither flat nor native SL proves entry ownership."""
@@ -580,6 +622,7 @@ class ExchangeBackend:
     def check_stop(self, pos: tracking.PositionRow,
                    bar: pd.Series) -> Optional[float]:
         """거래소 포지션 소멸 = 스탑(또는 외부 청산) 체결. 체결가를 반환."""
+        self.last_protection_confirmed = False
         size = self._position_size()
         if size is None:
             return None
@@ -614,10 +657,10 @@ class ExchangeBackend:
                                level="warning", mode=MODE)
             return None
         price = self.last_close_snapshot.get("exit_price") or pos.sl_price
-        if backup_oid:
-            self._call("cancel_order", category=_CATEGORY, symbol=_SYMBOL,
-                       orderId=backup_oid)
-        tracking.set_meta(self.conn, "swing_sl_order_id", "", MODE)
+        self.last_protection_confirmed = True
+        from live.order_retirement import request_stop_retirement
+        if not backup_oid or request_stop_retirement(self.conn, MODE, self._call, backup_oid):
+            tracking.set_meta(self.conn, "swing_sl_order_id", "", MODE)
         return price
 
     def _filled_backup_order_id(self, pos: tracking.PositionRow) -> str | None:
@@ -714,6 +757,7 @@ class ExchangeBackend:
         if tracking.get_meta(self.conn, "swing_stop_intent", MODE):
             protection = self._ensure_entry_stop(pos.side, size, pos.sl_price)
             if protection.confirmed:
+                self.last_protection_confirmed = True
                 return None
         native = _f(rows[0].get("stopLoss"))
         trigger = float(_pstr(pos.sl_price))
@@ -739,6 +783,7 @@ class ExchangeBackend:
                     and order.get("triggerBy") == "LastPrice"
                     and _f(order.get("positionIdx"), -1) == _POSITION_IDX):
                 # Matching protection is not proof that we own this order.
+                self.last_protection_confirmed = True
                 return None
         ticker = self._call("get_tickers", category=_CATEGORY, symbol=_SYMBOL)
         tickers = _result_list(ticker)
@@ -781,6 +826,7 @@ class ExchangeBackend:
         tracking.log_event(self.conn, "protection_repair",
                            "swing Full SL " + ("CONFIRMED" if confirmed else "UNCONFIRMED"),
                            level="info" if confirmed else "error", mode=MODE)
+        self.last_protection_confirmed = confirmed
         return None
 
     def close(self, pos: tracking.PositionRow, hint_price: float) -> Optional[float]:
@@ -819,10 +865,9 @@ class ExchangeBackend:
         self._capture_close_settlement(pos, close_oid)
         if "closed_pnl" not in self.last_close_snapshot:
             return None
-        if sl_oid:
-            self._call("cancel_order", category=_CATEGORY, symbol=_SYMBOL,
-                       orderId=sl_oid)
-        tracking.set_meta(self.conn, "swing_sl_order_id", "", MODE)
+        from live.order_retirement import request_stop_retirement
+        if not sl_oid or request_stop_retirement(self.conn, MODE, self._call, sl_oid):
+            tracking.set_meta(self.conn, "swing_sl_order_id", "", MODE)
         return self.last_close_snapshot.get("exit_price") or hint_price
 
 
@@ -1379,6 +1424,12 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
                              "swing_combined_gross_cap", 0)
             return None
 
+    if backend.name == "exchange":
+        backend.entry_context = {
+            "decision_bar": str(s4.index[-1]), "leverage": sz.leverage,
+            "logical_capital": sizing_equity,
+            "entry_bar_idx": bar_index_for(int(pd.Timestamp(bar_time_str).value) // 1_000_000),
+        }
     fill = backend.open(side, sz.qty, sl, hint_price)
     if fill is None:
         _log_signal_safe(conn, bar_time_str, side, "swing 기각: 주문 실패", 0)
@@ -1410,10 +1461,17 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
         entry_fee=entry_fee,
         initial_qty=actual_qty,
         mode=MODE,
+        id=execution.get("position_id"),
     )
-    tracking.save_position(conn, pos)
-    if backend.name == "exchange":
-        tracking.set_meta(conn, "swing_entry_pending", None, MODE)
+    with conn:
+        tracking.save_position(conn, pos, commit=False)
+        if backend.name == "exchange":
+            pending_entry = tracking.get_meta(conn, "swing_entry_pending", MODE)
+            if pending_entry and pending_entry.get("link_id"):
+                tracking.set_meta(conn, "swing_entry_receipt:" + pending_entry["link_id"],
+                                  {"order_id": pending_entry.get("order_id"), "position_id": pos.id,
+                                   "qty": actual_qty}, MODE, commit=False)
+            tracking.set_meta(conn, "swing_entry_pending", None, MODE, commit=False)
     tracking.log_event(conn, "trade",
                        f"swing open[{backend.name}] {side} @ {fill:.1f} "
                        f"qty={actual_qty:.4f} sl={sl:.1f} "
@@ -1511,6 +1569,15 @@ def _main_capital_snapshot() -> dict[str, float] | None:
 
 def process(root_conn, tf_data: dict, main_mode: str = "shadow",
             backend=None, decision_time=None, decision_price=None) -> dict:
+    try:
+        with mutation_lock(root_conn):
+            return _process_locked(root_conn, tf_data, main_mode, backend, decision_time, decision_price)
+    except LockBusy:
+        return {"events": 0}
+
+
+def _process_locked(root_conn, tf_data: dict, main_mode: str = "shadow",
+                    backend=None, decision_time=None, decision_price=None) -> dict:
     """새 확정 30m 봉들을 스윙 레인 관점에서 처리. {"events": n} 반환.
 
     자체 메타 커서(mode='swing' 의 last_processed_30m_ns / last_confirmed_4h_ns)
@@ -1529,6 +1596,7 @@ def process(root_conn, tf_data: dict, main_mode: str = "shadow",
     if backend is None:
         backend = _make_backend(conn, main_mode)
     if isinstance(backend, ExchangeBackend):
+        backend.recover_pending_entry()
         backend.observe_pending_entry()
         _notify_unresolved_entry(conn, main_mode)
     if backend.name != "exchange":

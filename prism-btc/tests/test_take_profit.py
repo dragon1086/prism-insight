@@ -479,6 +479,22 @@ def test_flat_clears_handles_and_preserves_cooldown(monkeypatch, cadence):
     adapter._set_meta("tp_order_id", "tp")
     adapter._set_meta("sl_order_id", "owned-sl")
     adapter._set_meta("last_close_bar", {"long": -1, "short": -2})
+    stop = dict(orderId="owned-sl", orderLinkId="owned-stop-link", symbol="BTCUSDT",
+                positionIdx=0, side="Sell", reduceOnly=True, orderType="Market",
+                triggerPrice="90", orderStatus="Untriggered")
+    def history(**kwargs):
+        rows = [order, stop]
+        if kwargs.get("orderId"):
+            rows = [row for row in rows if row["orderId"] == kwargs["orderId"]]
+        return fake._ok({"list": rows})
+    original_cancel = fake.cancel_order
+    def cancel(**kwargs):
+        result = original_cancel(**kwargs)
+        if kwargs.get("orderId") == "owned-sl":
+            stop["orderStatus"] = "Cancelled"  # subsequent exact readback, not ACK alone
+        return result
+    monkeypatch.setattr(fake, "get_order_history", history, raising=False)
+    monkeypatch.setattr(fake, "cancel_order", cancel)
     for _ in range(2):
         if cadence == "30m":
             adapter._process_bar_inner(_BASE_TS, _bar(100.), False, None)
