@@ -8,7 +8,7 @@ from numbers import Real
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import timezone
-from typing import Callable, Literal, Optional
+from typing import TYPE_CHECKING, Callable, Literal, Optional
 import pandas as pd
 
 from engine.indicators import add_indicators
@@ -32,6 +32,9 @@ from core.actions import (
 )
 
 log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from backtest.split_entry import SplitConfig
 
 # ---------------------------------------------------------------------------
 # Fee / cost constants
@@ -487,6 +490,8 @@ def run_backtest(
     *,
     entry_hook: EntryResearchHook | None = None,
     observer_hook: ObserverResearchHook | None = None,
+    execution_config: SplitConfig | None = None,
+    execution_event_hook: Callable[[dict], None] | None = None,
 ) -> BacktestState:
     """
     Event-driven backtest over 30m bars in [start_ts, end_ts).
@@ -505,7 +510,21 @@ def run_backtest(
     processed bar, including early-continue paths. The final observation is
     before synthetic end-of-period liquidation; no post-liquidation sample is
     emitted. These hooks do not repair legacy funding or exit-gate semantics.
+
+    execution_config separately opts into a research-only parent/child schedule.
+    All its modes evaluate flow exits even while pending or holding three outer
+    tranches; None retains the legacy gate. Child touch events and trade linkage
+    are emitted as JSON-native dictionaries to execution_event_hook. They are
+    synthetic OHLC events, not exchange-confirmed fills or intrabar timestamps.
     """
+    from backtest.split_entry import SplitExecution
+    execution = None if execution_config is None else SplitExecution(
+        execution_config, execution_event_hook
+    )
+    if execution_config is None and execution_event_hook is not None:
+        raise ValueError("execution_event_hook requires execution_config")
+    if execution is not None and ENTRY_EXECUTION_MODE != "limit_postonly":
+        raise ValueError("split research requires fixed-price limit execution")
     # Load all data once and precompute indicators per TF (O(n) once instead of
     # O(n^2) per-bar recomputation). Safe: SMA/ATR are causal, and _get_tf_slice
     # always returns a prefix of these frames, so per-row values are identical.
@@ -557,7 +576,13 @@ def run_backtest(
         bar_time_str = str(bar_time)
 
         # --- 1. Check pending order fill ---
-        if state.pending_order is not None:
+        if execution is not None:
+            prior = sim_bars.iloc[bar_idx-1] if bar_idx else None
+            execution.before_bar(
+                state, bar_time, bar_idx, bar, _build_snapshot_at(tf_data, bar_time),
+                None if prior is None else float(prior["close"]), check_exit_signal,
+            )
+        if execution is None and state.pending_order is not None:
             po = state.pending_order
             bars_elapsed = bar_idx - po.bar_idx
             lp = po.limit_price
@@ -714,6 +739,8 @@ def run_backtest(
         for pos in positions_to_remove:
             if pos in state.positions:
                 state.positions.remove(pos)
+        if execution is not None:
+            execution.reconcile(state, bar_time)
 
         # --- 3a. Detect 4h candle confirmation (라운드2 #3 cadence gate) ---
         # Update every bar regardless of position state so the tracker never lags.
@@ -731,7 +758,7 @@ def run_backtest(
 
         # --- 3. Generate new signal ---
         # Only enter new position if no pending order and <= 1 open position (simple mode)
-        if state.pending_order is None and len(state.positions) < 3:
+        if execution is not None or (state.pending_order is None and len(state.positions) < 3):
             snapshot = _build_snapshot_at(tf_data, bar_time)
             if snapshot is not None:
                 # Check exit signals for existing positions
@@ -760,7 +787,10 @@ def run_backtest(
                 # New entry signal — evaluated ONLY on a freshly confirmed 4h
                 # candle (라운드2 #3). 30m/1h cadence does not open new entries.
                 # ENTRY_EVAL_EVERY_BAR 는 연구 전용 훅 (기본 False = 기존과 바이트 동일).
-                _eval_entry = new_4h_confirmed or ENTRY_EVAL_EVERY_BAR
+                _eval_entry = (new_4h_confirmed or ENTRY_EVAL_EVERY_BAR)
+                if execution is not None:
+                    execution.reconcile(state, bar_time)
+                    _eval_entry = _eval_entry and state.pending_order is None and len(state.positions) < 3
                 sig = generate_signal(snapshot) if _eval_entry else Signal(
                     side="none", strength=0.0, reason="4h 미확정 — 진입평가 보류"
                 )
@@ -885,6 +915,8 @@ def run_backtest(
                                 tranche_index=intent.tranche_index,
                             )
 
+        if execution is not None:
+            execution.accept(state, bar_time)
         # Record equity curve every 48 bars (~24h)
         if bar_idx % 48 == 0:
             state.equity_curve.append((bar_time_str, round(state.equity, 2)))
@@ -902,6 +934,9 @@ def run_backtest(
                 fee_rate=TAKER_FEE, bar_idx=len(sim_bars) - 1,
             )
         state.positions.clear()
+        if execution is not None:
+            execution.finish(state, last_time, "end_of_period")
+            execution.reconcile(state, last_time)
 
     state.equity_curve.append((str(end_ts), round(state.equity, 2)))
     return state
