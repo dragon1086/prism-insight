@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import sqlite3
 import logging
+import math
+from numbers import Real
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import timezone
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 import pandas as pd
 
 from engine.indicators import add_indicators
@@ -18,6 +21,7 @@ from engine.sizing import (
 from core.exits import PositionView, BarView, ExitContext, evaluate_exits
 from core.entries import EntryInputs, CooldownState, evaluate_entry
 from core.actions import (
+    OpenIntent,
     ChargeFunding,
     ForceReduce,
     ClearBreachFlag,
@@ -381,11 +385,108 @@ def _close_position(
 # Main backtester
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class ResearchPositionView:
+    side: str
+    qty: float
+    entry_price: float
+    sl_price: float
+    tranche_index: int
+    leverage: float
+    entry_time: str
+    initial_qty: float
+    initial_risk: float
+
+
+@dataclass(frozen=True)
+class ResearchPendingView:
+    side: str
+    qty: float
+    limit_price: float
+    sl_price: float
+    leverage: float
+    tranche_index: int
+    bar_idx: int
+
+
+@dataclass(frozen=True)
+class ResearchStateView:
+    equity: float
+    positions: tuple[ResearchPositionView, ...]
+    pending_order: ResearchPendingView | None
+    total_fees: float
+    total_funding: float
+    realized_net_pnl: float
+    trade_count: int
+
+
+def _research_state(state: BacktestState) -> ResearchStateView:
+    pending = state.pending_order
+    return ResearchStateView(
+        equity=state.equity,
+        positions=tuple(ResearchPositionView(
+            p.side, p.qty, p.entry_price, p.sl_price, p.tranche_index, p.leverage,
+            p.entry_time, p.initial_qty, p.initial_risk,
+        ) for p in state.positions),
+        pending_order=None if pending is None else ResearchPendingView(
+            pending.side, pending.sizing.qty, pending.limit_price,
+            pending.sizing.sl_price, pending.sizing.leverage, pending.tranche_index,
+            pending.bar_idx,
+        ),
+        total_fees=state.total_fees,
+        total_funding=state.total_funding,
+        realized_net_pnl=sum(t.net_pnl for t in state.trade_logs),
+        trade_count=len(state.trade_logs),
+    )
+
+
+EntryResearchHook = Callable[
+    [OpenIntent, RegimeSnapshot, ResearchStateView, pd.Timestamp], OpenIntent | None
+]
+ObserverResearchHook = Callable[[ResearchStateView, pd.Timestamp, float], None]
+
+
+def _research_entry(
+    hook: EntryResearchHook, intent: OpenIntent, snapshot: RegimeSnapshot,
+    state: BacktestState, bar_time: pd.Timestamp,
+) -> OpenIntent | None:
+    """Research may only veto/downsize an already accepted core decision."""
+    offered = deepcopy(intent)  # SizingResult is mutable despite frozen OpenIntent.
+    result = hook(offered, deepcopy(snapshot), _research_state(state), bar_time)
+    if result is None:
+        return None
+    if not isinstance(result, OpenIntent):
+        raise ValueError("research entry hook must return OpenIntent or None")
+    for name in ("side", "limit_price", "tranche_index"):
+        if getattr(result, name) != getattr(intent, name):
+            raise ValueError("research entry hook changed entry geometry")
+    for name in ("leverage", "sl_price", "tp1_price", "tp2_price", "tp3_price",
+                 "liq_price", "tranche_index", "rejected", "reject_reason"):
+        if getattr(result.sizing, name) != getattr(intent.sizing, name):
+            raise ValueError("research entry hook changed sizing geometry")
+    qty = result.sizing.qty
+    if (isinstance(qty, bool) or not isinstance(qty, Real)
+            or not math.isfinite(qty) or qty <= 0 or qty > intent.sizing.qty):
+        raise ValueError("research entry hook quantity must be positive and non-increasing")
+    # A true identity retains legacy risk-capital R semantics byte-for-byte.
+    if result is offered and result == intent:
+        return intent
+    risk = qty * abs(result.limit_price - result.sizing.sl_price)
+    if (isinstance(result.initial_risk, bool) or not isinstance(result.initial_risk, Real)
+            or not math.isfinite(result.initial_risk) or result.initial_risk <= 0
+            or not math.isclose(result.initial_risk, risk, rel_tol=1e-12, abs_tol=0.0)):
+        raise ValueError("research entry hook initial_risk must match stop distance")
+    return deepcopy(result)
+
+
 def run_backtest(
     conn: sqlite3.Connection,
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
     initial_equity: float = 10_000.0,
+    *,
+    entry_hook: EntryResearchHook | None = None,
+    observer_hook: ObserverResearchHook | None = None,
 ) -> BacktestState:
     """
     Event-driven backtest over 30m bars in [start_ts, end_ts).
@@ -394,6 +495,16 @@ def run_backtest(
     1. Check pending entry order fill (next bar after signal)
     2. For each open position: SL/TP/trailing/funding
     3. Build snapshot, generate signal, create pending order
+
+    Optional hooks are research-only; None preserves legacy artifacts. Entry
+    hooks see copied decisions/snapshots and immutable account views, only after
+    core acceptance. bar_time is the bar OPEN: snapshot candles are closed by
+    that time, but the limit uses this bar's close (decision availability is
+    bar_time + 30m). Hooks must not introduce later information.
+    Observers receive immutable post-bar views at CLOSE timestamps, once per
+    processed bar, including early-continue paths. The final observation is
+    before synthetic end-of-period liquidation; no post-liquidation sample is
+    emitted. These hooks do not repair legacy funding or exit-gate semantics.
     """
     # Load all data once and precompute indicators per TF (O(n) once instead of
     # O(n^2) per-bar recomputation). Safe: SMA/ATR are causal, and _get_tf_slice
@@ -433,7 +544,12 @@ def run_backtest(
     # 미체결 만료 후에도 신규 진입 재평가를 금지한다. (피라미딩 트랜치 추가는 별개 — 미적용)
     last_new_entry_eval_4h_ns: int | None = None
 
+    previous_observation: tuple[pd.Timestamp, float] | None = None
     for bar_idx, (bar_time, bar) in enumerate(sim_bars.iterrows()):
+        if observer_hook is not None:
+            if previous_observation is not None:
+                observer_hook(_research_state(state), *previous_observation)
+            previous_observation = (bar_time + TF_DURATION["30m"], float(bar["close"]))
         bar_open = bar["open"]
         bar_high = bar["high"]
         bar_low = bar["low"]
@@ -713,6 +829,8 @@ def run_backtest(
                                 cooldown_bars=cooldown_bars,
                             ),
                         )
+                        if intent is not None and entry_hook is not None:
+                            intent = _research_entry(entry_hook, intent, snapshot, state, bar_time)
                         if intent is not None:
                             state.pending_order = PendingOrder(
                                 side=intent.side,
@@ -755,6 +873,8 @@ def run_backtest(
                             avg_entry=avg_entry,
                             current_price=bar_close,
                         )
+                        if intent is not None and entry_hook is not None:
+                            intent = _research_entry(entry_hook, intent, snapshot, state, bar_time)
                         if intent is not None:
                             state.pending_order = PendingOrder(
                                 side=intent.side,
@@ -768,6 +888,9 @@ def run_backtest(
         # Record equity curve every 48 bars (~24h)
         if bar_idx % 48 == 0:
             state.equity_curve.append((bar_time_str, round(state.equity, 2)))
+
+    if observer_hook is not None and previous_observation is not None:
+        observer_hook(_research_state(state), *previous_observation)
 
     # Close any remaining positions at last bar close
     if not sim_bars.empty:
