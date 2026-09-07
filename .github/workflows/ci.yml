@@ -112,6 +112,9 @@ jobs:
             prism-btc/tests/test_shared_entry_coordinator.py \
             prism-btc/tests/test_shared_entry_policy.py \
             prism-btc/tests/test_policy_observation.py \
+            prism-btc/tests/test_confidence_allocation.py \
+            prism-btc/tests/test_allocation_hooks.py \
+            prism-btc/tests/test_confidence_allocation_study.py \
             prism-btc/tests/test_swing_entry_recovery.py
           # Pure offline scalp policy only; no exchange client, DB, or live loop.
           PYTHONPATH=prism-btc python -m pytest --noconftest \
