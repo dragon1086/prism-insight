@@ -15,6 +15,8 @@ def reply(rows):
 
 
 class Session:
+    endpoint = 'https://api-demo.bybit.com'
+
     def __init__(self, uid):
         self.uid = uid
         self.parents = []

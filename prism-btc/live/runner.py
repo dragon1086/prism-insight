@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import time
 
@@ -103,6 +104,30 @@ def _record_code_version(root_conn, mode):
         log.warning("Code version capture unavailable (%s)", type(exc).__name__)
 
 
+def _observe_shared_entry_policy(root_conn, mode):
+    """Record effective policy without private bindings or blocking protection."""
+    if mode != "demo":
+        return None
+    try:
+        from live.shared_entry_policy import policy_status
+        status = policy_status(root_conn)
+        allowed = ("state", "source", "reason", "policy_id", "heat", "slippage")
+        status = {key: status[key] for key in allowed if key in status}
+    except Exception as exc:  # noqa: BLE001 — never expose raw configuration data
+        status = {"state": "error", "source": "unknown", "reason": type(exc).__name__}
+    try:
+        previous = tracking.get_meta(root_conn, "shared_entry_policy_observed_v1", mode) or {}
+        snapshot = {**status, "code_version": tracking.get_meta(root_conn, "code_version", mode),
+                    "observed_at": pd.Timestamp.now(tz="UTC").isoformat()}
+        tracking.set_meta(root_conn, "shared_entry_policy_observed_v1", snapshot, mode)
+        if {key: value for key, value in previous.items() if key not in ("observed_at", "code_version")} != status:
+            tracking.log_event(root_conn, "shared_policy", json.dumps(status, sort_keys=True),
+                               level="warning" if status.get("state") == "error" else "info", mode=mode)
+    except Exception as exc:  # noqa: BLE001 — metadata failure must not skip protection
+        log.warning("Shared policy observation unavailable (%s)", type(exc).__name__)
+    return status
+
+
 def _broker_recovery(root_conn, mode):
     """Always attempt both owned exchange lanes before optional/data work."""
     errors = []
@@ -137,6 +162,8 @@ def tick(mode: str = "shadow", market_db_path=None, root_db_path=None) -> dict:
     try:
         tracking.ensure_schema(root_conn)
         _record_code_version(root_conn, mode)
+        if mode == "demo":
+            result["shared_entry_policy"] = _observe_shared_entry_policy(root_conn, mode)
         errors = _broker_recovery(root_conn, mode)
         if errors:
             result["error"] = "; ".join(errors)

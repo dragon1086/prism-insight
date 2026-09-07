@@ -23,11 +23,26 @@ from live.entry_reservations import EntryReservationStore, LockBusy, execution_m
 from live.exchange_snapshot import read_complete
 
 PREFIX = "BTC_SHARED_ENTRY_"
+ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 _held = threading.local()
 
 
-def requested():
-    return os.environ.get(PREFIX + "ENABLED", "false").lower() not in ("false", "0")
+def configuration_environment():
+    """Private effective settings without load_dotenv's global mutation."""
+    try:
+        if ENV_PATH.is_file():
+            from dotenv import dotenv_values
+            values = dict(dotenv_values(ENV_PATH))
+        else:
+            values = {}
+    except (OSError, UnicodeError):
+        raise ValueError("shared_entry_configuration_unreadable") from None
+    return values | dict(os.environ)
+
+
+def requested(values=None):
+    values = configuration_environment() if values is None else values
+    return str(values.get(PREFIX + "ENABLED", "false")).lower() not in ("false", "0")
 
 
 @dataclass(frozen=True)
@@ -38,18 +53,24 @@ class Config:
     swing_uid: str
 
 
-def configuration():
-    if not requested():
+def configuration(conn=None, *, values=None):
+    values = configuration_environment() if values is None else values
+    if conn is not None:
+        from live.shared_entry_policy import runtime_configuration
+        present, config = runtime_configuration(conn, values=values)
+        if present:
+            return config
+    if not requested(values):
         return None
-    if os.environ.get(PREFIX + "ENABLED", "").lower() not in ("true", "1"):
+    if str(values.get(PREFIX + "ENABLED", "")).lower() not in ("true", "1"):
         raise ValueError("invalid_shared_entry_enabled")
-    values = [float(os.environ[PREFIX + key]) for key in ("COMBINED_HEAT", "SLIPPAGE")]
-    if not all(math.isfinite(v) and 0 < v < 1 for v in values):
+    limits = [float(values[PREFIX + key]) for key in ("COMBINED_HEAT", "SLIPPAGE")]
+    if not all(math.isfinite(v) and 0 < v < 1 for v in limits):
         raise ValueError("invalid_shared_entry_limits")
-    uids = [os.environ[PREFIX + lane + "_UID"] for lane in ("MAIN", "SWING")]
-    if any(not uid.isdigit() or int(uid) <= 0 for uid in uids) or uids[0] == uids[1]:
+    uids = [values[PREFIX + lane + "_UID"] for lane in ("MAIN", "SWING")]
+    if any(not isinstance(uid, str) or not uid.isdigit() or int(uid) <= 0 for uid in uids) or uids[0] == uids[1]:
         raise ValueError("distinct_account_uid_required")
-    return Config(*values, *uids)
+    return Config(*limits, *uids)
 
 
 def database_path(conn):
@@ -142,8 +163,23 @@ class LaneSnapshot:
     orders: tuple
 
 
-def snapshot(adapter, lane, config, store):
-    sessions = _sessions(adapter, lane)
+def require_demo_sessions(sessions):
+    if set(sessions) != {"main", "swing"} or any(
+            getattr(session, "endpoint", None) != "https://api-demo.bybit.com"
+            for session in sessions.values()):
+        raise ValueError("shared_entry_demo_endpoint_required")
+
+
+def snapshot(adapter, lane, config, store, *, sessions=None, check_policy=True):
+    sessions = _sessions(adapter, lane) if sessions is None else sessions
+    require_demo_sessions(sessions)
+    # Legacy factories may lazily load .env. Re-check its source conflict
+    # before the first GET rather than admitting one order under mixed policy.
+    if check_policy:
+        from live.shared_entry_policy import runtime_configuration
+        present, current = runtime_configuration(adapter.conn)
+        if present and current != config:
+            raise ValueError("shared_entry_policy_changed")
     started = time.monotonic()
     for name in ("main", "swing"):
         identity = _call(sessions[name], "get_api_key_information")["result"].get("userID")
@@ -389,7 +425,7 @@ def prepare(adapter, lane, side, qty, price, stop, context):
     Existing unresolved reservations fail closed, including absence from open
     orders. They are not released by age or guessed from a flat position.
     """
-    config = configuration()
+    config = configuration(adapter.conn)
     if config is None:
         return None
     if getattr(adapter, "mode", "demo") not in ("demo",):
@@ -491,6 +527,26 @@ def authorize(adapter, lane, side, qty, price, stop, context):
     try:
         return True, prepare(adapter, lane, side, qty, price, stop, context)
     except Exception as exc:
-        tracking.log_event(adapter.conn, "entry_blocked", "shared_entry:" + type(exc).__name__ + ":" + str(exc),
+        # SDK failures can include authenticated request details. Preserve only
+        # fixed local gate codes, never arbitrary exception payloads or UIDs.
+        reasons = {
+            "invalid_shared_entry_enabled", "invalid_shared_entry_limits", "distinct_account_uid_required",
+            "durable_shared_database_required", "invalid_broker_number", "broker_snapshot_unavailable",
+            "dual_account_snapshot_unavailable", "shared_entry_demo_endpoint_required", "shared_entry_policy_changed",
+            "account_uid_mismatch", "capital_unknown", "snapshot_unknown", "unsupported_hedge_position",
+            "invalid_position", "invalid_position_side", "unreconciled_or_manual_position", "protection_unconfirmed",
+            "unsettled_local_position", "unreserved_legacy_entry_intent", "unresolved_lane_lifecycle",
+            "unreconciled_or_manual_entry_order", "open_order_history_incoherent", "filled_exposure_not_reconciled",
+            "fill_receipt_unconfirmed", "snapshot_too_old", "history_unknown", "history_identity_conflict",
+            "history_cursor_conflict", "history_incomplete", "reservation_parent_unknown", "reservation_parent_conflict",
+            "reservation_quantity_conflict", "reservation_execution_conflict", "reservation_execution_incomplete",
+            "reservation_terminal_conflict", "reservation_remaining_conflict", "shared_entry_demo_only",
+            "deterministic_decision_identity_required", "same_lane_reversal_not_supported", "same_lane_entry_already_pending",
+            "entry_outside_slippage_bound", "invalid_adverse_stop", "shared_risk_budget_exceeded", "duplicate_shared_intent",
+            "shared_entry_policy_malformed", "shared_entry_policy_source_conflict", "shared_entry_policy_paused",
+            "shared_entry_configuration_unreadable",
+        }
+        reason = str(exc) if type(exc) is ValueError and str(exc) in reasons else "snapshot_or_configuration_failed"
+        tracking.log_event(adapter.conn, "entry_blocked", "shared_entry:" + reason,
                            level="warning", mode=getattr(adapter, "mode", "swing"))
         return False, None

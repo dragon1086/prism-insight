@@ -560,12 +560,15 @@ def log_event(
     level: str = "info",
     mode: Mode = "shadow",
     ts: str | None = None,
+    *,
+    commit: bool = True,
 ) -> None:
     conn.execute(
         "INSERT INTO btc_events (ts, level, kind, message, mode) VALUES (?, ?, ?, ?, ?)",
         (ts or _utcnow(), level, kind, message, mode),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
