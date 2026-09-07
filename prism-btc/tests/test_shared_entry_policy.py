@@ -40,12 +40,17 @@ def enable(setup, **kwargs):
     return policy.manage(conn, "enable", heat=.065, slippage=.001, demo=True, sessions=sessions, **kwargs)
 
 
-def test_enable_idempotent_private_and_pause(setup):
+def test_enable_idempotent_private_and_pause(setup, monkeypatch):
     conn, _ = setup
+    # An opaque policy UUID may coincidentally contain a synthetic account's
+    # digits; privacy is a response-schema/value contract, not substring luck.
+    policy_id = "00000101-0000-4000-8000-000000000202"
+    monkeypatch.setattr(policy.uuid, "uuid4", lambda: policy.uuid.UUID(policy_id))
     assert coordinator.configuration(conn) is None
     first = enable(setup)
     assert first["state"] == "active"
-    assert "uid" not in json.dumps(first) and "101" not in json.dumps(first)
+    assert first == {"state": "active", "policy_id": policy_id, "heat": .065,
+                     "slippage": .001, "source": "runtime", "reason": "shared_entry_policy_active"}
     assert enable(setup) == first
     assert coordinator.configuration(conn) == coordinator.Config(.065, .001, "101", "202")
     paused = policy.manage(conn, "pause")

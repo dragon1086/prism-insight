@@ -117,6 +117,12 @@ jobs:
             prism-btc/tests/test_confidence_allocation_study.py \
             prism-btc/tests/test_split_entry.py \
             prism-btc/tests/test_split_entry_study.py \
+            prism-btc/tests/test_intrabar_broker.py \
+            prism-btc/tests/test_intrabar_inputs.py \
+            prism-btc/tests/test_market_regimes.py \
+            prism-btc/tests/test_native_intrabar_strategy.py \
+            prism-btc/tests/test_intrabar_revalidation.py \
+            prism-btc/tests/test_intrabar_evidence.py \
             prism-btc/tests/test_swing_entry_recovery.py
           # Pure offline scalp policy only; no exchange client, DB, or live loop.
           PYTHONPATH=prism-btc python -m pytest --noconftest \
