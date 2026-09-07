@@ -1,5 +1,6 @@
 """Synthetic arithmetic and attribution tests; no historical outcome selection."""
 from dataclasses import asdict, replace
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -10,6 +11,25 @@ from analysis import confidence_allocation_study as study
 from backtest import engine
 from core.actions import OpenIntent
 from engine.sizing import SizingResult
+
+
+def test_json_output_handles_numpy_count_and_boolean_without_changing_numbers(tmp_path):
+    payload = {'requests': np.int64(3), 'accepted': np.bool_(True), 'ratio': np.float64(.25)}
+    assert json.loads(study.canonical(payload)) == {'requests': 3, 'accepted': True, 'ratio': .25}
+    path = tmp_path / 'summary.json'
+    study.write_json(path, payload)
+    assert json.loads(path.read_text()) == json.loads(study.canonical(payload))
+
+
+@pytest.mark.parametrize('bad', [np.float32('nan'), np.float32('inf')])
+def test_json_output_still_rejects_nonfinite_numpy(bad):
+    with pytest.raises(ValueError):
+        study.canonical({'value': bad})
+
+
+def test_json_output_does_not_stringify_unknown_objects():
+    with pytest.raises(TypeError):
+        study.canonical({'value': object()})
 
 
 def position(**overrides):

@@ -15,7 +15,7 @@ import json
 import math
 from pathlib import Path
 import sqlite3
-import subprocess
+import subprocess  # nosec B404 - fixed absolute git binary, fixed read-only args, no shell
 import time
 
 import numpy as np
@@ -33,9 +33,15 @@ INITIAL = 10000.0
 DAY_MS = 86400000
 
 
+def _json_scalar(value):
+    if isinstance(value, (np.integer, np.floating, np.bool_)):
+        return value.item()
+    raise TypeError(f'unsupported JSON type: {type(value).__name__}')
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False,
-                      separators=(',', ':'))
+                      separators=(',', ':'), default=_json_scalar)
 
 
 def digest(value):
@@ -44,7 +50,7 @@ def digest(value):
 
 def write_json(path, value):
     Path(path).write_text(json.dumps(value, sort_keys=True, ensure_ascii=False,
-                                   allow_nan=False, indent=2) + '\n')
+                                   allow_nan=False, indent=2, default=_json_scalar) + '\n')
 
 
 def write_lines(path, rows):
@@ -355,8 +361,10 @@ def run_study(db, output):
     output = Path(output)
     if output.exists():
         raise ValueError('refuse_output_overwrite')
-    source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    if subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip():
+    source_commit = subprocess.check_output(  # nosec B603 - literal args, trusted repo, shell=False
+        ['/usr/bin/git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True, timeout=10).strip()
+    if subprocess.check_output(  # nosec B603 - literal read-only args, no user input or shell
+            ['/usr/bin/git', 'status', '--porcelain'], cwd=ROOT, text=True, timeout=10).strip():
         raise ValueError('freeze_clean_source_before_history')
     output.mkdir(parents=True)
     registry = [{'id': f'{period}_c{cost}_{arm}', 'period': period, 'cost': cost,
