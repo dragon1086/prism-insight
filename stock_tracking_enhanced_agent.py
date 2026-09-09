@@ -10,6 +10,9 @@ from stock_tracking_agent import (
     _kr_codex_runtime_enabled,
     app,
 )
+from prism_core.isolated_agent_runtime import (
+    attach_isolated_llm, require_execution_runtime,
+)
 from prism_core.positions import LegacyPositionWriteResult, legacy_position_id
 import asyncio
 import logging
@@ -61,11 +64,16 @@ TRADING_ANALYSIS_CONCURRENCY = _resolve_trading_analysis_concurrency()
 class EnhancedStockTrackingAgent(StockTrackingAgent):
     """Enhanced stock tracking and trading agent"""
 
-    def __init__(self, db_path: str = "stock_tracking_db.sqlite", telegram_token: str = None):
+    def __init__(self, db_path: str = "stock_tracking_db.sqlite", telegram_token: str = None,
+                 *, enable_journal: bool = None, virtual_accounts=None, isolated_db_root=None, mcp_settings_factory=None):
         """Initialize agent"""
-        super().__init__(db_path, telegram_token)
+        super().__init__(
+            db_path, telegram_token, enable_journal=enable_journal,
+            virtual_accounts=virtual_accounts, isolated_db_root=isolated_db_root,
+            mcp_settings_factory=mcp_settings_factory,
+        )
         # Market condition storage variable (1: bull market, 0: neutral, -1: bear market)
-        self.simple_market_condition = 0
+        self.simple_market_condition = None if self._isolated_runtime is not None else 0
         # Volatility table (store volatility per stock)
         self.volatility_table = {}
 
@@ -160,7 +168,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
         self.conn.commit()
 
         # Run market condition analysis
-        await self._analyze_simple_market_condition()
+        if getattr(self, "_isolated_runtime", None) is not None:
+            self.initialization_deviations = ["ISOLATED_INDEX_PREFETCH_UNAVAILABLE"]
+        else:
+            await self._analyze_simple_market_condition()
 
         # Clean up old watchlist data (older than 1 month)
         await self._cleanup_old_watchlist()
@@ -395,6 +406,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
         Returns:
             Tuple[int, int]: Buy count, Sell count
         """
+        require_execution_runtime(self)
         try:
             logger.info(f"Starting processing of {len(pdf_report_paths)} reports")
 
@@ -1568,9 +1580,11 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
             if response is None:
                 async def _legacy_sell_response():
-                    llm = await self.sell_decision_agent.attach_llm(
-                        OpenAIAugmentedLLM
-                    )
+                    isolated_app = getattr(self, "_instance_mcp_app", None)
+                    if isolated_app is not None:
+                        llm = await attach_isolated_llm(self.sell_decision_agent, OpenAIAugmentedLLM, isolated_app.context)
+                    else:
+                        llm = await self.sell_decision_agent.attach_llm(OpenAIAugmentedLLM)
                     return await llm.generate_str(
                         message=prompt_message,
                         request_params=RequestParams(
@@ -1580,9 +1594,10 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         )
                     )
 
-                if _kr_codex_runtime_enabled():
+                legacy_app = getattr(self, "_instance_mcp_app", None) or app
+                if _kr_codex_runtime_enabled() or getattr(self, "_instance_mcp_app", None) is not None:
                     async with self._get_legacy_fallback_lock():
-                        async with app.run():
+                        async with legacy_app.run():
                             response = await _legacy_sell_response()
                 else:
                     response = await _legacy_sell_response()

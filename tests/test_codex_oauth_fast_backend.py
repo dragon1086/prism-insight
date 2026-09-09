@@ -238,7 +238,7 @@ def test_us_trading_wires_codex_primary_before_legacy_fallback() -> None:
     assert 'mcp_profile="us_trading"' in method
     assert "require_mcp_calls=True" in method
     assert "falling back to mcp-agent" in method
-    assert "async with app.run()" in method
+    assert "async with legacy_app.run()" in method  # Per-instance override; default remains module app.
     assert method.index("generate_codex_fast") < method.index("attach_llm(")
 
 
@@ -254,7 +254,7 @@ def test_kr_trading_wires_same_codex_primary_and_legacy_fallback() -> None:
     assert 'mcp_profile="kr_trading"' in method
     assert "require_mcp_calls=True" in method
     assert "falling back to mcp-agent" in method
-    assert "async with app.run()" in method
+    assert "async with legacy_app.run()" in method  # Per-instance override; default remains module app.
     assert method.index("generate_codex_fast") < method.index("attach_llm(")
 
 
@@ -354,7 +354,7 @@ def test_us_sell_wires_codex_mcp_before_legacy_fallback() -> None:
     assert 'mcp_profile="us_trading"' in method
     assert "require_mcp_calls=True" in method
     assert "falling back to mcp-agent" in method
-    assert "async with app.run()" in method
+    assert "async with legacy_app.run()" in method  # Per-instance override; default remains module app.
     assert method.index("generate_codex_fast") < method.index("attach_llm(")
 
 
@@ -370,7 +370,7 @@ def test_kr_sell_wires_codex_mcp_before_legacy_fallback() -> None:
     assert 'mcp_profile="kr_trading"' in method
     assert "require_mcp_calls=True" in method
     assert "falling back to mcp-agent" in method
-    assert "async with app.run()" in method
+    assert "async with legacy_app.run()" in method  # Per-instance override; default remains module app.
     assert method.index("generate_codex_fast") < method.index("attach_llm(")
 
 
