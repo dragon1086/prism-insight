@@ -142,6 +142,25 @@ def _ref(value: Any) -> str | None:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
+def _entry_price_evidence(event: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Original strategy prices only, never inferred from return or broker fills."""
+    attrs = _mapping(event.get("attributes")) if event else {}
+    execution = _mapping(attrs.get("execution_context"))
+    security = _mapping(attrs.get("security_context"))
+    recorded = execution.get("simulator_recorded") is True
+    price = _number(execution.get("entry_price")) if recorded else None
+    stop = _number(security.get("stop_loss")) if recorded else None
+    price = price if price is not None and price > 0 else None
+    stop = stop if stop is not None and stop > 0 else None
+    return {
+        "schema_version": 1, "basis": "ORIGINAL_STRATEGY_EVENT_NOT_BROKER_FILL",
+        "source_event_ref": _ref(event.get("event_id")) if event else None,
+        "reference_price": price, "stop_loss_at_entry": stop,
+        "status": "OK" if price is not None and stop is not None else "MISSING",
+        "stop_history_reconstructed": False,
+    }
+
+
 def _rounded(value: float | None, digits: int = 4) -> float | None:
     return round(value, digits) if value is not None else None
 
@@ -785,6 +804,7 @@ def build_evidence_packet(
                     "observed": entry_event is not None,
                     "position_ref": _ref(position_id),
                     "fill_status": fill_status if entry_event else None,
+                    "price_evidence": _entry_price_evidence(entry_event),
                 },
                 "outcomes": {
                     "candidate": candidate_result,

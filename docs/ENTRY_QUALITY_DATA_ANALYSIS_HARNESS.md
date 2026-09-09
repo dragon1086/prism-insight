@@ -52,6 +52,13 @@
 
 ### 2.3 원본과 파생물
 
+`analysis_rows[].entry.price_evidence`는 별도 schema 1의 추가 허용 필드입니다.
+정확히 연결된 `entry.executed`의 `simulator_recorded=true`일 때만 원래의
+`execution_context.entry_price`와 `security_context.stop_loss`를 전달합니다.
+이는 전략 참조 가격과 진입 시점 손절값이며 체결가·이후 손절 변경 이력이 아닙니다.
+없는 값은 수익률·보고서·브로커 가격으로 역산하지 않습니다. 기존 Packet 파일은
+덮어쓰지 않고, 새 Packet ID와 이 추가 필드의 출처를 함께 기록합니다.
+
 - 원본 JSONL은 이미 관측 계층에서 민감정보가 제거된 파일만 입력으로 허용합니다.
 - Packet은 허용 목록 필드만 출력합니다. 원문 prompt, 기사 전문, account, broker order
   ID, token, cookie, authorization, secret payload는 복사하지 않습니다.

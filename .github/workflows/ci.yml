@@ -45,6 +45,10 @@ jobs:
             tests/test_pilot_lifecycle.py tests/test_strategy_ledger_outbox.py \
             tests/test_strategy_ledger_projection.py tests/test_strategy_ledger_messages.py \
             tests/test_trading_context.py tests/test_entry_quality_evidence_packet.py -q
+          python -m pytest tests/test_historical_closed_record_evidence.py \
+            tests/test_historical_trend_noise_replay.py tests/test_trend_replay_data_collection.py \
+            tests/test_kr_legacy_adx_research.py tests/test_kr_legacy_adx_identity_v2.py \
+            tests/test_kr_legacy_adx_calendar_v3.py -q
           # Existing bootstrap creates only a fake example.com KIS config, removes it at exit.
           python -m pytest tests/test_multi_account_domestic.py \
             tests/test_astra_kr_safety.py tests/test_kr_buy_quote_validation.py \
