@@ -169,6 +169,10 @@ def _import_from_main_cores(module_name: str, relative_path: str):
 
 
 from prism_core.codex_config import resolve_buy_codex_settings, resolve_sell_codex_settings
+from prism_core.isolated_agent_runtime import (
+    prepare_isolated_runtime, configured_mcp_app, attach_isolated_llm,
+    virtual_account_label, require_execution_runtime,
+)
 from prism_core.trading_scenario_contract import apply_buy_scenario_contract
 
 # Pre-load telegram_translator_agent from main project (used in multiple methods)
@@ -256,14 +260,32 @@ def _get_kis_auth():
 class _LazyMCPApp:
     """Construct mcp-agent only when legacy mode or fallback actually needs it."""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, settings_factory=None):
         self.name = name
+        self.settings_factory = settings_factory
+        self.context = None
+        self._run_reserved = False
 
     @asynccontextmanager
     async def run(self):
-        instance = MCPApp(name=self.name)
-        async with instance.run():
-            yield
+        if self.settings_factory is None:
+            instance = MCPApp(name=self.name)
+            async with instance.run():
+                yield
+            return
+        if self._run_reserved or self.context is not None:
+            raise RuntimeError("Isolated MCP context is already active")
+        self._run_reserved = True  # Reserve before the first startup await.
+        try:
+            instance = configured_mcp_app(MCPApp, self.name, self.settings_factory)
+            async with instance.run():
+                if instance.context is None:
+                    raise RuntimeError("Isolated MCP context unavailable")
+                self.context = instance.context
+                yield
+        finally:
+            self.context = None
+            self._run_reserved = False
 
 
 app = _LazyMCPApp(name="us_stock_tracking")
@@ -669,7 +691,8 @@ class USStockTrackingAgent:
         self,
         db_path: str = "stock_tracking_db.sqlite",
         telegram_token: str = None,
-        enable_journal: bool = None
+        enable_journal: bool = None,
+        *, virtual_accounts=None, isolated_db_root=None, mcp_settings_factory=None,
     ):
         """
         Initialize US Stock Tracking Agent.
@@ -680,7 +703,19 @@ class USStockTrackingAgent:
             enable_journal: Enable trading journal feature.
                 Priority: parameter > ENABLE_TRADING_JOURNAL env > default(False).
                 (KR 에이전트와 동일 토글 — 기존엔 US가 env 무시하고 False 하드코딩이라 일지 미동작)
+            virtual_accounts: Explicit SHADOW identities; requires a private marked DB root.
+            isolated_db_root: Opt-in private root, never an existing unmarked DB.
+            mcp_settings_factory: Lazy explicit openai+mcp mapping; profile capabilities require separate audit.
         """
+        self._isolated_runtime = prepare_isolated_runtime(
+            db_path, virtual_accounts, isolated_db_root, mcp_settings_factory, "US",
+        )
+        if self._isolated_runtime is not None and telegram_token is not None:
+            raise ValueError("Virtual runtime forbids direct Telegram credentials")
+        self._instance_mcp_app = (
+            _LazyMCPApp("us_stock_tracking_isolated", mcp_settings_factory)
+            if mcp_settings_factory is not None else None
+        )
         self.max_slots = self.MAX_SLOTS
         self.message_queue = []
         self._msg_types = []  # msg_type for each message in queue
@@ -688,7 +723,7 @@ class USStockTrackingAgent:
         self._broadcast_task = None  # Track broadcast translation task
         self.trading_agent = None
         self.sell_decision_agent = None
-        self.db_path = db_path
+        self.db_path = self._isolated_runtime.db_path if self._isolated_runtime is not None else db_path
         self.conn = None
         self.cursor = None
         self.language = "en"  # Default to English for US
@@ -718,7 +753,7 @@ class USStockTrackingAgent:
         self.compression_manager = None
 
         # Set Telegram bot token
-        self.telegram_token = telegram_token or os.environ.get("TELEGRAM_BOT_TOKEN")
+        self.telegram_token = None if self._isolated_runtime is not None else (telegram_token or os.environ.get("TELEGRAM_BOT_TOKEN"))
         self.telegram_bot = None
         if self.telegram_token:
             self.telegram_bot = Bot(token=self.telegram_token)
@@ -742,7 +777,8 @@ class USStockTrackingAgent:
         self.language = language
 
         # Initialize SQLite connection
-        self.conn = sqlite3.connect(self.db_path)
+        isolated = getattr(self, "_isolated_runtime", None)
+        self.conn = isolated.connect() if isolated is not None else sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
 
@@ -988,6 +1024,9 @@ class USStockTrackingAgent:
             return False
 
     def _get_trading_accounts(self) -> List[Dict[str, Any]]:
+        isolated = getattr(self, "_isolated_runtime", None)
+        if isolated is not None:
+            return isolated.accounts()
         ka = _get_kis_auth()
 
         default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
@@ -1009,6 +1048,8 @@ class USStockTrackingAgent:
     @staticmethod
     def _safe_account_log_label(account: Dict[str, Any]) -> str:
         """Format account identity for logs without exposing raw account numbers."""
+        if account.get("virtual") is True:
+            return virtual_account_label(account)
         account_name = account.get("name", "unknown")
         account_key = str(account.get("account_key", "") or "")
         if not account_key:
@@ -1474,7 +1515,11 @@ class USStockTrackingAgent:
             # Retry a couple of times before giving up.
             if scenario_json is None:
                 async def _legacy_scenario():
-                    llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
+                    isolated_app = getattr(self, "_instance_mcp_app", None)
+                    if isolated_app is not None:
+                        llm = await attach_isolated_llm(self.trading_agent, OpenAIAugmentedLLM, isolated_app.context)
+                    else:
+                        llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
                     max_attempts = 3
                     legacy_scenario = None
                     for attempt in range(1, max_attempts + 1):
@@ -1509,9 +1554,10 @@ class USStockTrackingAgent:
                             await asyncio.sleep(2 * attempt)
                     return legacy_scenario
 
-                if _us_codex_runtime_enabled():
+                legacy_app = getattr(self, "_instance_mcp_app", None) or app
+                if _us_codex_runtime_enabled() or getattr(self, "_instance_mcp_app", None) is not None:
                     async with self._get_legacy_fallback_lock():
-                        async with app.run():
+                        async with legacy_app.run():
                             scenario_json = await _legacy_scenario()
                 else:
                     scenario_json = await _legacy_scenario()
@@ -1720,6 +1766,7 @@ class USStockTrackingAgent:
                         scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
         """Preserve the public bool contract while exposing an internal typed result."""
 
+        require_execution_runtime(self)
         result = await self._buy_stock_with_position(
             ticker,
             company_name,
@@ -2446,9 +2493,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             if response is None:
                 async def _legacy_sell_response():
-                    llm = await self.sell_decision_agent.attach_llm(
-                        OpenAIAugmentedLLM
-                    )
+                    isolated_app = getattr(self, "_instance_mcp_app", None)
+                    if isolated_app is not None:
+                        llm = await attach_isolated_llm(self.sell_decision_agent, OpenAIAugmentedLLM, isolated_app.context)
+                    else:
+                        llm = await self.sell_decision_agent.attach_llm(OpenAIAugmentedLLM)
                     return await llm.generate_str(
                         message=prompt_message,
                         request_params=RequestParams(
@@ -2458,8 +2507,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         ),
                     )
 
-                if _us_codex_runtime_enabled():
-                    async with app.run():
+                legacy_app = getattr(self, "_instance_mcp_app", None) or app
+                if _us_codex_runtime_enabled() or getattr(self, "_instance_mcp_app", None) is not None:
+                    async with legacy_app.run():
                         response = await _legacy_sell_response()
                 else:
                     response = await _legacy_sell_response()
@@ -3174,6 +3224,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         Returns:
             bool: Sell success status
         """
+        require_execution_runtime(self)
         try:
             ticker = stock_data.get('ticker', '')
             company_name = stock_data.get('company_name', '')
@@ -3384,6 +3435,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         Returns:
             List[Dict]: List of sold stock information
         """
+        require_execution_runtime(self)
         try:
             logger.info("Starting US holdings update")
 
@@ -3872,6 +3924,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         Returns:
             Tuple[int, int]: Buy count, sell count
         """
+        require_execution_runtime(self)
         try:
             logger.info(f"Processing {len(pdf_report_paths)} US reports")
 
