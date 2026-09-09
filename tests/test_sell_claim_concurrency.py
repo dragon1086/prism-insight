@@ -69,7 +69,13 @@ def _load_real_sell_method(market):
 
     method = copy.deepcopy(method)
     method.decorator_list = []
-    module = ast.Module(body=[method], type_ignores=[])
+    # The new guard is itself pure. Compile its real definition alongside the
+    # real method rather than substituting a no-op or importing the heavy SDK.
+    guard_path = PROJECT_ROOT / "prism_core" / "isolated_agent_runtime.py"
+    guard_tree = ast.parse(guard_path.read_text(encoding="utf-8"), filename=str(guard_path))
+    guard = next(node for node in guard_tree.body
+                 if isinstance(node, ast.FunctionDef) and node.name == "require_execution_runtime")
+    module = ast.Module(body=[copy.deepcopy(guard), method], type_ignores=[])
     ast.fix_missing_locations(module)
     namespace = {
         "Any": Any,
@@ -82,6 +88,13 @@ def _load_real_sell_method(market):
     }
     exec(compile(module, str(path), "exec"), namespace)
     return namespace["sell_stock"]
+
+
+@pytest.mark.parametrize("market", ["KR", "US"])
+def test_real_sell_guard_blocks_virtual_execution_before_sql(market):
+    agent = type("VirtualAgent", (), {"_isolated_runtime": object()})()
+    with pytest.raises(RuntimeError, match="reviewed no-order adapter"):
+        asyncio.run(_load_real_sell_method(market)(agent, {}, "guard regression"))
 
 
 def _create_schema(conn, market):
