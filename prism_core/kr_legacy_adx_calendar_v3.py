@@ -43,7 +43,7 @@ def interval12(rows, trial, cost=0):
         blocks[row["entry_session_date"]].append(0 if v2.v1.passes(trial, row["feature"]) else -value)
     if len(rows) < 30 or len(blocks) < 20:
         return None
-    rng = random.Random(20260910)
+    rng = random.Random(20260910)  # nosec B311 - reproducible statistical bootstrap, not secrets
     keys = sorted(blocks)
     draws = sorted(statistics.mean(v for key in rng.choices(keys, k=len(keys)) for v in blocks[key]) for _ in range(1000))
     return [draws[2], draws[997]]

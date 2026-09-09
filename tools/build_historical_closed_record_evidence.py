@@ -34,6 +34,10 @@ EXIT_KINDS = frozenset({"stop", "hard_stop", "trend_exit", "target", "ai", "manu
 MODES = frozenset({"morning", "afternoon", "topdown", "bottomup"})
 READ_COLUMNS = frozenset({"id", "account_key", "ticker", "buy_price", "buy_date", "sell_price",
                          "sell_date", "profit_rate", "holding_days", "trigger_type", "trigger_mode", "exit_kind"})
+_TABLE_INFO_QUERIES = {
+    "KR": "PRAGMA table_info(trading_history)",
+    "US": "PRAGMA table_info(us_trading_history)",
+}
 
 
 def canonical(value):
@@ -166,8 +170,7 @@ def build(db, markets, namespace, key, source_timezone, *, now=None):
     try:
         connection.execute("BEGIN")
         for market in sorted(set(markets)):
-            table = _ACTUAL_TABLES[market]
-            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            columns = {row[1] for row in connection.execute(_TABLE_INFO_QUERIES[market])}
             if not columns:
                 unavailable.append({"market": market, "reason": "SOURCE_TABLE_MISSING"})
                 continue
