@@ -615,6 +615,9 @@ class _Session:
         category = "closed"
         started = last_io = time.monotonic()
         try:
+            if self.bridge.parent_alive is not None and not self.bridge.parent_alive():
+                self.bridge.stopping.set()
+                raise BridgeError("parent_lease_lost")
             # Only trusted host registrations provide argv; model RPC cannot
             # select it. _host_command enforces the owned namespace/runtime.
             process = subprocess.Popen(  # nosec B603  # nosemgrep
@@ -622,6 +625,9 @@ class _Session:
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=False, close_fds=True,
             )
+            if self.bridge.parent_alive is not None and not self.bridge.parent_alive():
+                self.bridge.stopping.set()
+                raise BridgeError("parent_lease_lost")
             for pipe in (process.stdin, process.stdout, process.stderr):
                 os.set_blocking(pipe.fileno(), False)
             self.connection.setblocking(False)
@@ -686,7 +692,13 @@ class _Session:
             category = "io_error"
         finally:
             if process is not None:
-                _stop_child(process)
+                try:
+                    _stop_child(process)
+                except BaseException:
+                    # ThreadingServer swallows handler exceptions. Preserve
+                    # this evidence until wrapper ExitStack can fail closed.
+                    self.bridge.cleanup_failed.set()
+                    raise
             logger.info("[READ_MCP_BRIDGE] category=%s requests=%d rejected=%d dropped=%d stderr_bytes=%d elapsed_ms=%d rc=%s",
                         category, self.requests, self.rejected, self.dropped, self.stderr_bytes,
                         int((time.monotonic() - started) * 1000), process.returncode if process is not None else None)
@@ -712,9 +724,12 @@ class _Server(socketserver.ThreadingUnixStreamServer):
 
 class ReadMcpBridge:
     def __init__(self, socket_path, *, server_name, argv, env, cwd,
-                 request_timeout=120, idle_timeout=120, session_timeout=600, max_connections=2, source_profile=None):
+                 request_timeout=120, idle_timeout=120, session_timeout=600, max_connections=2, source_profile=None, parent_alive=None):
         if server_name not in TOOLS:
             raise BridgeError("server_denied")
+        if parent_alive is not None and not callable(parent_alive):
+            raise BridgeError("invalid_parent_guard")
+        self.parent_alive = parent_alive
         if source_profile not in {None, KR_PUBLIC_DIAGNOSTIC} or (source_profile is not None and server_name != "kospi_kosdaq"):
             raise BridgeError("invalid_source_profile")
         if source_profile == KR_PUBLIC_DIAGNOSTIC and (not isinstance(env, dict) or any(env.get(key) != "fdr,naver" for key in ("PRISM_MARKET_DATA_SOURCES", "PRISM_REPORT_DATA_SOURCES"))):
@@ -734,6 +749,7 @@ class ReadMcpBridge:
         self.source_profile = source_profile
         self.request_timeout, self.idle_timeout, self.session_timeout = request_timeout, idle_timeout, session_timeout
         self.stopping = threading.Event()
+        self.cleanup_failed = threading.Event()
         self.slots = threading.BoundedSemaphore(max_connections)
         self.server = self.thread = None
 
@@ -762,6 +778,8 @@ class ReadMcpBridge:
                     self.socket_path.unlink()
             except FileNotFoundError:
                 pass
+        if self.cleanup_failed.is_set():
+            raise BridgeError("provider_cleanup_unconfirmed")
 
     def __exit__(self, *_):
         self.close()
