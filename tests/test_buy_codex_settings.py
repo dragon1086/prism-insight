@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from prism_core.codex_config import resolve_buy_codex_settings
+from prism_core.codex_config import BuyCodexSettings, resolve_buy_codex_settings, resolve_sell_codex_settings
 from cores.llm.codex_oauth_fast_backend import CodexFastError, _command
 
 
@@ -15,6 +15,39 @@ def test_defaults_are_unchanged_and_frozen():
     with pytest.raises(FrozenInstanceError):
         settings.model = "gpt-6-astra"
     assert not any("model_reasoning_effort" in arg for arg in _command("codex", settings.model, None))
+
+
+def test_sell_defaults_frozen_and_buy_import_compatible():
+    settings = resolve_sell_codex_settings({})
+    assert isinstance(resolve_buy_codex_settings({}), BuyCodexSettings)
+    assert (settings.model, settings.reasoning_effort, settings.timeout) == ("gpt-5.6-sol", None, 90)
+    with pytest.raises(FrozenInstanceError):
+        settings.timeout = 120
+    assert resolve_sell_codex_settings({"PRISM_CODEX_FAST_TIMEOUT": "120"}).timeout == 120
+
+
+def test_buy_sell_overrides_are_independent():
+    env = {"PRISM_BUY_CODEX_MODEL": "gpt-6-astra", "PRISM_BUY_CODEX_EFFORT": "high",
+           "PRISM_BUY_CODEX_TIMEOUT": "240", "PRISM_SELL_CODEX_MODEL": "gpt-5.6-sol",
+           "PRISM_SELL_CODEX_EFFORT": "medium", "PRISM_SELL_CODEX_TIMEOUT": "120",
+           "PRISM_CODEX_FAST_TIMEOUT": "55"}
+    assert resolve_buy_codex_settings(env) == BuyCodexSettings("gpt-6-astra", "high", 240)
+    assert resolve_sell_codex_settings(env) == BuyCodexSettings("gpt-5.6-sol", "medium", 120)
+    assert resolve_sell_codex_settings({k: v for k, v in env.items() if "SELL" not in k}) == BuyCodexSettings("gpt-5.6-sol", None, 55)
+    assert resolve_buy_codex_settings({k: v for k, v in env.items() if "BUY" not in k}) == BuyCodexSettings("gpt-5.6-sol", None, 55)
+
+
+@pytest.mark.parametrize("key,value", [("MODEL", "arbitrary"), ("EFFORT", ""), ("EFFORT", "invalid"), *[("TIMEOUT", value) for value in ["", "nan", "inf", "-1", "0", "601", "abc"]]])
+def test_invalid_sell_settings_fail_closed(key, value):
+    with pytest.raises(CodexFastError):
+        resolve_sell_codex_settings({f"PRISM_SELL_CODEX_{key}": value})
+
+
+def test_sell_environment_resolution(monkeypatch):
+    monkeypatch.setenv("PRISM_SELL_CODEX_MODEL", "gpt-6-astra")
+    monkeypatch.setenv("PRISM_SELL_CODEX_EFFORT", "high")
+    monkeypatch.setenv("PRISM_SELL_CODEX_TIMEOUT", "120")
+    assert resolve_sell_codex_settings() == BuyCodexSettings("gpt-6-astra", "high", 120)
 
 
 def test_explicit_astra_effort_and_timeout_precedence():
