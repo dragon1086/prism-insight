@@ -230,7 +230,7 @@ class StrategyLedger:
         with self._transaction() as db:
             return self._apply_target_in_transaction(db, event_id, payload)
 
-    def _apply_target_in_transaction(self, db, event_id, payload, *, owner=None):
+    def _apply_target_in_transaction(self, db, event_id, payload, *, owner=None, notify=True):
         book_id, campaign_id, symbol = (payload[k] for k in ("book_id", "campaign_id", "symbol"))
         target, price = Decimal(payload["target_pct"]), Decimal(payload["price"])
         timestamp = payload["occurred_at"]
@@ -342,6 +342,8 @@ class StrategyLedger:
         )
         self._save(db, "campaigns", campaign_id, campaign)
         self._save(db, "books", book_id, book)
+        if notify:
+            self._notice(db, event_id, campaign_id, "BUY")
         return {**self._snapshot(db, book_id), "event_applied": True}
 
     def open_pilot(
@@ -370,10 +372,11 @@ class StrategyLedger:
                       "occurred_at": timestamp, "policy_version": owner,
                       "reason": "INITIAL_ELIGIBLE_50", "regime": "shadow_pilot",
                       "source_hash": None, "fee_rate": "0", "slippage_rate": "0"}
-            self._apply_target_in_transaction(db, event_id + ":target", target, owner=owner)
+            self._apply_target_in_transaction(db, event_id + ":target", target, owner=owner, notify=False)
             campaign = self._get(db, "campaigns", campaign_id)
             campaign["pilot"] = pilot
             self._save(db, "campaigns", campaign_id, campaign)
+            self._notice(db, event_id, campaign_id, "BUY")
             return {**self._snapshot(db, book_id), "event_applied": True}
 
     def advance_pilot(self, event_id, campaign_id, *, expected_revision, evidence, occurred_at):
@@ -416,7 +419,7 @@ class StrategyLedger:
                           "occurred_at": timestamp, "policy_version": OWNER,
                           "reason": decision["reason"], "regime": "shadow_pilot",
                           "source_hash": None, "fee_rate": "0", "slippage_rate": "0"}
-                self._apply_target_in_transaction(db, event_id + ":target", target, owner=OWNER)
+                self._apply_target_in_transaction(db, event_id + ":target", target, owner=OWNER, notify=False)
                 campaign = self._get(db, "campaigns", campaign_id)
             campaign["pilot"] = {**pilot, "state": decision["state"], "reason": decision["reason"],
                                  "revision": expected_revision + 1, "last_evaluated_at": timestamp}
@@ -424,6 +427,8 @@ class StrategyLedger:
                 campaign["add_permission"] = decision["state"]
             campaign["last_event_at"] = timestamp
             self._save(db, "campaigns", campaign_id, campaign)
+            if decision["state"] != pilot["state"]:
+                self._notice(db, event_id, campaign_id, "PILOT_STATE")
             return {**self._snapshot(db, book["book_id"]), "event_applied": True}
 
     def sell(
@@ -509,6 +514,7 @@ class StrategyLedger:
                                      "revision": pilot["revision"] + 1, "last_evaluated_at": timestamp}
             self._save(db, "campaigns", campaign_id, campaign)
             self._save(db, "books", book_id, book)
+            self._notice(db, event_id, campaign_id, "SELL")
             return {**self._snapshot(db, book_id), "event_applied": True}
 
     def mark(self, event_id, campaign_id, price, occurred_at, source_hash=None):
@@ -597,11 +603,19 @@ class StrategyLedger:
             campaign = self._get(db, "campaigns", campaign_id)
             applied = self._event(db, event_id, payload)
             if applied:
+                from prism_core.strategy_ledger_outbox import execution_change, previous_execution
+                previous = previous_execution(db, campaign_id, execution_profile_ref, intent_ref)
                 db.execute(
                     "INSERT INTO executions VALUES (?,?,?)",
                     (event_id, campaign_id, _dump({"event_id": event_id, **payload})),
                 )
+                if execution_change(previous, payload):
+                    self._notice(db, event_id, campaign_id, "EXECUTION")
             return {**self._snapshot(db, campaign["book_id"]), "event_applied": applied}
+
+    def _notice(self, db, source_event_id, campaign_id, category):
+        from prism_core.strategy_ledger_outbox import freeze_notice
+        freeze_notice(self, db, source_event_id, campaign_id, category)
 
     def snapshot(self, book_id):
         with self._transaction() as db:
