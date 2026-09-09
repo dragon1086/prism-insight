@@ -113,6 +113,13 @@ async def test_invalid_final_quote_prevents_both_entry_routes(monkeypatch, pendi
     agent._execute_pending_kr_entry.assert_not_awaited()
     saved = agent._save_watchlist_item.await_args.kwargs
     assert saved["scenario"]["_decision_context"]["gate_allowed"] is False
+    assert saved["decision"] == "Watch"
+    assert saved["was_traded"] is False
+    assert agent._msg_types == ["analysis"]
+    assert len(agent.message_queue) == 1
+    assert "매수 보류: test(005930)" in agent.message_queue[0]
+    assert "주문하지 않았습니다" in agent.message_queue[0]
+    assert "quote unavailable" not in agent.message_queue[0]
 
 
 def _ensure_reentry_schema(path):
