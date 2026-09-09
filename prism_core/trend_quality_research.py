@@ -126,10 +126,26 @@ def compute_features(snapshot):
         return {"status": "MISSING", "reasons": sorted(set(reasons))}
     if len(values) < 30:
         return {"status": "MISSING", "reasons": ["WARMUP_REQUIRES_30_COMPLETED_BARS"]}
+    indicators = compute_wilder_values(values)
+    return {"status": "OK", "reasons": [], **indicators,
+            "source_hash": snapshot["source_hash"],
+            "input_hash": digest({k: snapshot.get(k) for k in (
+                "decision_ref", "decided_at", "bar_interval", "source_hash",
+                "adjustment_policy", "gaps_checked", "data_quality_flags")}),
+            "bar_count": len(values), "last_close_at": bars[-1]["close_at"]}
+
+
+def compute_wilder_values(values):
+    """Pure numeric core; callers separately enforce observed/reconstructed lineage."""
+    if len(values) < 30:
+        raise ValueError("WARMUP_REQUIRES_30_COMPLETED_BARS")
+    values = [tuple(number(v) for v in bar) for bar in values]
+    if any(len(bar) != 3 or not 0 < bar[1] <= bar[2] <= bar[0] for bar in values):
+        raise ValueError("INVALID_OHLC")
     tr, plus, minus = [], [], []
-    for (h0, l0, c0), (h, l, _) in pairwise(values):
-        up, down = h - h0, l0 - l
-        tr.append(max(h - l, abs(h - c0), abs(l - c0)))
+    for (h0, l0, c0), (high, low, _) in pairwise(values):
+        up, down = high - h0, l0 - low
+        tr.append(max(high - low, abs(high - c0), abs(low - c0)))
         plus.append(up if up > down and up > 0 else 0.0)
         minus.append(down if down > up and down > 0 else 0.0)
     smooth = [sum(series[:14]) for series in (tr, plus, minus)]
@@ -148,16 +164,10 @@ def compute_features(snapshot):
     closes = [v[2] for v in values[-21:]]
     net = closes[-1] - closes[0]
     path = sum(abs(b - a) for a, b in pairwise(closes))
-    return {"status": "OK", "reasons": [], "adx14": adxs[-1],
+    return {"adx14": adxs[-1],
             "plus_di14": pdi, "minus_di14": mdi,
             "adx_rising_3": adxs[-3] < adxs[-2] < adxs[-1],
-            "er20": abs(net) / path if path else 0.0, "net20": net,
-            "source_hash": snapshot["source_hash"],
-            "input_hash": digest({k: snapshot.get(k) for k in (
-                "decision_ref", "decided_at", "bar_interval", "source_hash",
-                "adjustment_policy", "gaps_checked", "data_quality_flags")}),
-            "bar_count": len(values),
-            "last_close_at": bars[-1]["close_at"]}
+            "er20": abs(net) / path if path else 0.0, "net20": net}
 
 
 def passes(trial, feature):
