@@ -15,7 +15,7 @@ T2 = "2026-09-10T02:00:00+00:00"
 @pytest.fixture
 def ledger(tmp_path):
     result = StrategyLedger(tmp_path / "strategy.sqlite")
-    result.create_book("kr", "KR", "KRW", "1000", "100")
+    result.create_book("kr", "KR")
     return result
 
 
@@ -30,47 +30,40 @@ def buy(
 def test_half_budget_price_return_not_portfolio_return(ledger):
     buy(ledger)
     state = ledger.mark("mark", "sdi", 11, T1)
-    assert D(state["unrealized_pnl"]) == 5
-    assert D(state["portfolio_return_pct"]) == D("0.5")
-    assert D(state["free_cash"]) == 950
-    assert D(state["campaigns"][0]["quantity"]) == 5
+    assert D(state["unrealized_contribution"]) == D(".05")
+    assert D(state["capacity_normalized_contribution"]) == D(".005")
+    assert D(state["remaining_allocation"]) == D(".5")
+    assert D(state["campaigns"][0]["normalized_units"]) == D(".05")
     assert state["campaigns"][0]["mark_basis"] == "explicit_mark"
     json.dumps(state)
 
-
 def test_staged_budget_weighted_cost_and_identity(ledger):
     for index, (target, price) in enumerate([(10, 10), (30, 20), (60, 30), (100, 40)]):
-        state = buy(
-            ledger, target, price, str(index), timestamp=f"2026-09-10T0{index}:00:00Z"
-        )
+        state = buy(ledger, target, price, str(index), timestamp=f"2026-09-10T0{index}:00:00Z")
     campaign = state["campaigns"][0]
-    assert D(campaign["quantity"]) == 4
+    assert D(campaign["normalized_units"]) == D(".04")
     assert D(campaign["average_cost"]) == 25
-    assert [D(leg["amount"]) for leg in campaign["legs"]] == [10, 20, 30, 40]
-    assert D(state["free_cash"]) == 900
-    assert D(state["equity"]) == D(state["initial_capital"]) + D(
-        state["realized_pnl"]
-    ) + D(state["unrealized_pnl"])
-
+    assert [D(leg["allocation"]) for leg in campaign["legs"]] == [D(".1"), D(".2"), D(".3"), D(".4")]
+    assert D(campaign["cumulative_deployed_allocation"]) == 1
+    assert D(state["total_slot_contribution"]) == D(state["realized_contribution"]) + D(state["unrealized_contribution"])
 
 def test_partial_exit_does_not_reset_cumulative_budget(ledger):
     buy(ledger)
-    state = ledger.sell("sell", "sdi", 12, T1, quantity=2, fee=1)
-    assert D(state["realized_pnl"]) == 3
-    assert D(state["campaigns"][0]["cost_basis"]) == 30
-    assert D(state["free_cash"]) == 973
+    state = ledger.sell("sell", "sdi", 12, T1, quantity=".02", fee_rate=".01")
+    assert D(state["realized_contribution"]) == D(".0376")
+    assert D(state["campaigns"][0]["remaining_allocation"]) == D(".3")
     state = buy(ledger, event="same-target", timestamp=T2)
     assert len(state["campaigns"][0]["legs"]) == 2
-    state = buy(ledger, target=100, event="raise", timestamp=T2)
-    assert D(state["campaigns"][0]["invested_budget"]) == 100
-    assert D(state["campaigns"][0]["quantity"]) == 8
-
+    with pytest.raises(LedgerError, match="reduction"):
+        buy(ledger, target=100, event="raise", timestamp=T2)
+    assert D(state["campaigns"][0]["cumulative_deployed_allocation"]) == D(".5")
+    assert D(state["campaigns"][0]["normalized_units"]) == D(".03")
 
 def test_full_exit_closed_campaign_and_cash(ledger):
     buy(ledger)
     state = ledger.sell("exit", "sdi", 11, T1)
-    assert D(state["equity"]) == 1005
-    assert D(state["campaigns"][0]["cost_basis"]) == 0
+    assert D(state["total_slot_contribution"]) == D(".05")
+    assert D(state["campaigns"][0]["remaining_allocation"]) == 0
     with pytest.raises(LedgerError, match="cannot reopen"):
         buy(ledger, 100, 11, event="reopen", timestamp=T2)
     assert len(ledger.snapshot("kr")["campaigns"][0]["legs"]) == 2
@@ -109,10 +102,11 @@ def test_future_cash_cannot_fund_past_other_campaign(ledger):
     assert buy(ledger, 100)["event_applied"] is False  # old exact retry remains safe
 
 
-def test_book_rejects_wrong_quote_currency(ledger):
-    with pytest.raises(LedgerError, match="market/currency"):
-        ledger.create_book("wrong", "KR", "USD", 1000, 100)
-
+def test_book_rejects_unsupported_market(ledger):
+    with pytest.raises(LedgerError, match="market"):
+        ledger.create_book("wrong", "EU")
+    with pytest.raises(TypeError):
+        ledger.create_book("wrong", "KR", currency="USD")
 
 def test_confirmed_fill_evidence_and_independence(ledger):
     buy(ledger)
@@ -141,7 +135,7 @@ def test_confirmed_fill_evidence_and_independence(ledger):
         confirmed_price=10,
         evidence_source="broker_fill_query",
     )
-    assert D(state["campaigns"][0]["quantity"]) == 5
+    assert D(state["campaigns"][0]["normalized_units"]) == D(".05")
     assert state["executions"][0]["confirmed_quantity"] == "1"
 
 
@@ -165,13 +159,13 @@ def test_two_connections_duplicate_concurrency(ledger):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(attempt, range(2)))
     assert sorted(results) == [False, True]
-    assert D(ledger.snapshot("kr")["free_cash"]) == 950
+    assert D(ledger.snapshot("kr")["remaining_allocation"]) == D(".5")
 
 
 def test_cash_race_is_atomic(tmp_path):
     path = tmp_path / "race.sqlite"
     ledger = StrategyLedger(path)
-    ledger.create_book("kr", "KR", "KRW", 100, 100)
+    ledger.create_book("kr", "KR", max_slots=1)
 
     def attempt(index):
         try:
@@ -182,20 +176,21 @@ def test_cash_race_is_atomic(tmp_path):
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(attempt, range(2))) == [False, True]
-    assert D(ledger.snapshot("kr")["free_cash"]) == 0
+    assert ledger.snapshot("kr")["occupied_slots"] == 1
     assert len(ledger.snapshot("kr")["campaigns"]) == 1
 
 
 def test_policy_caps_names_and_total_units(ledger):
-    with pytest.raises(LedgerError, match="regime cap"):
-        buy(ledger, 101)
-    for index in range(3):
-        buy(ledger, 300, campaign=str(index), event=str(index), regime="strong_bull")
-    with pytest.raises(LedgerError, match="units"):
-        buy(ledger, 200, campaign="four", event="four", regime="parabolic")
-    buy(ledger, 100, campaign="four", event="four")
-    assert D(ledger.snapshot("kr")["free_cash"]) == 0
-
+    for regime in ("moderate_bull", "strong_bull", "parabolic"):
+        with pytest.raises(LedgerError, match="100 percent cap"):
+            buy(ledger, 101, regime=regime)
+    for index in range(10):
+        buy(ledger, 100, campaign=str(index), event=str(index))
+    state = ledger.snapshot("kr")
+    assert D(state["remaining_allocation"]) == 10
+    assert state["occupied_slots"] == 10
+    with pytest.raises(LedgerError, match="slot"):
+        buy(ledger, 100, campaign="eleven", event="eleven")
 
 def test_slot_limit(ledger):
     for i in range(10):
@@ -227,7 +222,7 @@ def test_oversell_and_decrease_rollback(ledger):
         ledger.sell("bad", "sdi", 10, T1, quantity=6)
     with pytest.raises(LedgerError, match="decrease"):
         buy(ledger, 10, event="decrease")
-    assert D(ledger.snapshot("kr")["free_cash"]) == 950
+    assert D(ledger.snapshot("kr")["remaining_allocation"]) == D(".5")
 
 
 def test_unknown_database_refused(tmp_path):
@@ -242,25 +237,24 @@ def test_unknown_database_refused(tmp_path):
         ).fetchall() == [("holdings",)]
 
 
-def test_explicit_book_config_no_fx_merge(ledger):
-    ledger.create_book("us", "US", "USD", 2000, 200)
-    assert ledger.snapshot("us")["currency"] == "USD"
-    assert ledger.snapshot("kr")["initial_capital"] == "1000"
+def test_explicit_book_config_no_cross_market_merge(ledger):
+    ledger.create_book("us", "US")
+    assert ledger.snapshot("us")["market"] == "US"
+    assert ledger.snapshot("kr")["market"] == "KR"
     with pytest.raises(LedgerError, match="configuration conflict"):
-        ledger.create_book("kr", "KR", "KRW", 999, 100)
+        ledger.create_book("kr", "KR", max_slots=9)
     with pytest.raises(LedgerError):
         buy(ledger, timestamp="2026-09-10T00:00:00")
-
 
 def test_sell_mark_and_execution_source_conflict(ledger):
     buy(ledger)
     ledger.mark("m", "sdi", 11, T1, source_hash="one")
     with pytest.raises(LedgerError, match="conflict"):
         ledger.mark("m", "sdi", 11, T1, source_hash="two")
-    ledger.sell("s", "sdi", 11, T2, quantity=1, source_hash="one")
-    assert not ledger.sell("s", "sdi", 11, T2, quantity=1, source_hash="one")["event_applied"]
+    ledger.sell("s", "sdi", 11, T2, quantity=".01", source_hash="one")
+    assert not ledger.sell("s", "sdi", 11, T2, quantity=".01", source_hash="one")["event_applied"]
     with pytest.raises(LedgerError, match="conflict"):
-        ledger.sell("s", "sdi", 11, T2, quantity=1, source_hash="two")
+        ledger.sell("s", "sdi", 11, T2, quantity=".01", source_hash="two")
     ledger.observe_execution("x", "sdi", "alias", "UNKNOWN", T2, source_hash="one")
     with pytest.raises(LedgerError, match="conflict"):
         ledger.observe_execution("x", "sdi", "alias", "UNKNOWN", T2, source_hash="two")
@@ -284,36 +278,34 @@ def test_partial_metadata_is_not_permission_to_migrate(tmp_path):
         StrategyLedger(path)
 
 
-def test_buy_fee_cash_cost_and_realized_identity(ledger):
-    state = buy(ledger, price=100, fee=1)
+def test_buy_fee_rate_cost_and_realized_identity(ledger):
+    state = buy(ledger, price=100, fee_rate=".01")
     campaign = state["campaigns"][0]
-    assert D(campaign["quantity"]) == D("0.5")
-    assert D(campaign["cost_basis"]) == 51
-    assert D(campaign["average_cost"]) == 102
-    assert D(campaign["invested_budget"]) == 50
-    assert D(campaign["legs"][0]["fee"]) == 1
-    assert D(state["free_cash"]) == 949
-    assert D(state["equity"]) == 999
-    assert not buy(ledger, price=100, fee=1)["event_applied"]
+    assert D(campaign["normalized_units"]) == D(".005")
+    assert D(campaign["remaining_allocation"]) == D(".5")
+    assert D(campaign["average_cost"]) == 100
+    assert D(campaign["remaining_entry_cost"]) == D(".005")
+    assert D(campaign["legs"][0]["fee_rate"]) == D(".01")
+    assert D(state["total_slot_contribution"]) == D("-.005")
+    assert not buy(ledger, price=100, fee_rate=".01")["event_applied"]
     with pytest.raises(LedgerError, match="conflict"):
-        buy(ledger, price=100, fee=2)
-    state = ledger.sell("exit", "sdi", 110, T1, fee=1)
-    assert D(state["realized_pnl"]) == 3
-    assert D(state["equity"]) == 1003
-
+        buy(ledger, price=100, fee_rate=".02")
+    state = ledger.sell("exit", "sdi", 110, T1, fee_rate=".01")
+    assert D(state["realized_contribution"]) == D(".0395")
+    assert D(state["total_slot_contribution"]) == D(".0395")
 
 @pytest.mark.parametrize("fee", [-1, "NaN", "Infinity", True])
 def test_buy_fee_invalid_rollback(ledger, fee):
     with pytest.raises(LedgerError):
-        buy(ledger, fee=fee)
+        buy(ledger, fee_rate=fee)
     assert ledger.snapshot("kr")["campaigns"] == []
 
 
-def test_buy_fee_cash_limit_and_unchanged_target(ledger):
-    with pytest.raises(LedgerError, match="insufficient strategy cash"):
-        buy(ledger, fee=951)
+def test_buy_fee_rate_limit_and_unchanged_target(ledger):
+    with pytest.raises(LedgerError, match="rate"):
+        buy(ledger, fee_rate=1)
     assert ledger.snapshot("kr")["campaigns"] == []
     buy(ledger)
     with pytest.raises(LedgerError, match="unchanged target"):
-        buy(ledger, event="same", fee=1, timestamp=T1)
-    assert D(ledger.snapshot("kr")["free_cash"]) == 950
+        buy(ledger, event="same", fee_rate=".01", timestamp=T1)
+    assert D(ledger.snapshot("kr")["remaining_allocation"]) == D(".5")

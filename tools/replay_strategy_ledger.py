@@ -13,13 +13,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", action="append", required=True)
     parser.add_argument("--ledger", required=True)
-    parser.add_argument("--capital-profile", required=True,
-                        help="Explicit KR/US profiles: currency, initial_capital, unit_budget")
+    parser.add_argument("--slot-profile",
+                        help="Optional KR/US profiles: max_slots, explicit strategy cohort and mode")
     parser.add_argument("--message-preview", action="store_true",
                         help="Return notification-only previews; never sends messages")
     args = parser.parse_args(argv)
     try:
-        report = replay_files(args.input, args.ledger, args.capital_profile)
+        report = replay_files(args.input, args.ledger, args.slot_profile)
         if args.message_preview:
             from prism_core.strategy_ledger_messages import format_campaign
             report["message_previews"] = [

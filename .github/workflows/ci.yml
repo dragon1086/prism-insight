@@ -40,7 +40,7 @@ jobs:
             tests/test_regime_min_score_floor.py tests/test_buy_gate.py \
             tests/test_order_budget.py -q
           python -m pytest tests/test_trend_quality_research.py \
-            tests/test_trend_research_capture.py tests/test_strategy_ledger.py \
+            tests/test_trend_research_capture.py tests/test_strategy_ledger.py tests/test_strategy_ledger_slots.py \
             tests/test_strategy_ledger_projection.py tests/test_strategy_ledger_messages.py \
             tests/test_trading_context.py tests/test_entry_quality_evidence_packet.py -q
           # Existing bootstrap creates only a fake example.com KIS config, removes it at exit.
