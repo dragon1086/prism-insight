@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from tools.build_entry_quality_evidence_packet import build_evidence_packet
 
@@ -203,6 +205,7 @@ def test_joins_candidate_outcome_by_decision_and_actual_by_position() -> None:
     assert packet["outcome_linkage"] == {
         "candidate_outcomes_linked": 1,
         "confirmed_actual_outcomes_linked": 1,
+        "strategy_outcomes_linked": 1,
         "join_keys": {"decision": "decision_id", "position": "position_id"},
     }
     row = packet["analysis_rows"][0]
@@ -220,8 +223,8 @@ def test_small_sample_emits_explicit_insufficiency_reasons() -> None:
 
     assert packet["readiness"]["data_sufficient"] is False
     assert "PROSPECTIVE_CANDIDATES_LT_100" in reason_codes
-    assert "ACTUAL_ENTRIES_LT_30" in reason_codes
-    assert "MATURED_OUTCOMES_LT_30" in reason_codes
+    assert "STRATEGY_CLOSED_TRADES_LT_30" in reason_codes
+    assert "CONFIRMED_FILL_COVERAGE_LT_95_PCT" not in reason_codes
     assert packet["readiness"]["automatic_live_forbidden"] is True
 
 
@@ -284,12 +287,13 @@ def test_packet_exposes_only_normalized_journal_influence_fields() -> None:
     )
 
     journal = packet["analysis_rows"][0]["journal_influence"]
-    assert packet["packet_schema_version"] == 2
+    assert packet["packet_schema_version"] == 3
+    assert packet["analysis_contract_version"] == "entry-quality-harness-v2"
     assert packet["coverage"]["journal_influence"]["captured_count"] == 1
     assert packet["coverage"]["journal_influence"]["llm_referenced_count"] == 1
-    assert packet["coverage"]["journal_influence"]["threshold_crossing_distribution"] == {
-        "ALLOW_TO_BLOCK": 1
-    }
+    assert packet["coverage"]["journal_influence"][
+        "threshold_crossing_distribution"
+    ] == {"ALLOW_TO_BLOCK": 1}
     assert journal["input_hash"] == "b" * 24
     assert journal["component_counts"]["same_ticker_history"] == 2
     assert journal["llm_reflection"] == {
@@ -327,3 +331,150 @@ def test_future_as_of_is_excluded_from_analysis() -> None:
     }
     assert packet["cohorts"] == []
     assert packet["robustness_inputs"]["candidate_30d_ranked"] == []
+
+
+def _closed_trade(status="REJECTED", index=0, profit=-3.51):
+    start = datetime(2026, 7, 1, tzinfo=timezone.utc) + timedelta(days=index % 20)
+    decision, position = f"decision-{index}", f"position-{index}"
+    return [
+        _candidate(f"candidate-{index}", start.isoformat(), decision),
+        _event(
+            f"entry-{index}",
+            "entry.executed",
+            (start + timedelta(minutes=1)).isoformat(),
+            decision_id=decision,
+            position_id=position,
+        ),
+        _event(
+            f"fill-{index}",
+            "entry.fill_reconciled",
+            (start + timedelta(minutes=2)).isoformat(),
+            decision_id=decision,
+            position_id=position,
+            attributes={"fill_provenance": {"status": status}},
+        ),
+        _event(
+            f"outcome-{index}",
+            "trade.outcome",
+            (start + timedelta(hours=18, minutes=7)).isoformat(),
+            position_id=position,
+            attributes={"profit_rate_pct": profit, "exit_kind": "stop_loss"},
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "status", ["REJECTED", "PARTIAL", "UNKNOWN", "SUBMITTED_ONLY", "CANCELLED"]
+)
+def test_ledger_closed_trade_is_independent_of_broker_status(status):
+    packet = build_evidence_packet(_closed_trade(status))
+    outcome = packet["analysis_rows"][0]["outcomes"]
+    assert outcome["strategy_return_pct"] == -3.51
+    assert outcome["strategy_exit_kind"] == "stop_loss"
+    assert outcome["strategy_holding_seconds"] == 18 * 3600 + 6 * 60
+    assert outcome["confirmed_actual_return_pct"] is None
+    assert packet["cohorts"][0]["strategy_outcomes"]["n"] == 1
+    assert packet["coverage"]["strategy_closed_trade_count"] == 1
+    assert len(packet["robustness_inputs"]["strategy_ranked"]) == 1
+
+
+def test_strategy_metrics_and_sufficiency_invariant_under_fill_status():
+    packets = [
+        build_evidence_packet(
+            [event for index in range(100) for event in _closed_trade(status, index)]
+        )
+        for status in ("REJECTED", "CONFIRMED", "PARTIAL", "UNKNOWN")
+    ]
+    for packet in packets:
+        assert packet["readiness"] == packet["strategy_readiness"]
+        assert packet["strategy_readiness"]["data_sufficient"] is True
+        assert packet["strategy_readiness"] == packets[0]["strategy_readiness"]
+        assert (
+            packet["cohorts"][0]["strategy_outcomes"]
+            == packets[0]["cohorts"][0]["strategy_outcomes"]
+        )
+        assert (
+            packet["robustness_inputs"]["strategy_ranked"]
+            == packets[0]["robustness_inputs"]["strategy_ranked"]
+        )
+        assert packet["source_contract"]["broker_realized_pnl_verified"] is False
+    assert packets[0]["fill_provenance"]["confirmed_count"] == 0
+    assert packets[1]["coverage"]["confirmed_actual_outcome_count"] == 100
+    assert (
+        "not broker realized PnL"
+        in packets[1]["source_contract"]["confirmed_actual_compatibility"]
+    )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "orphan",
+        "ticker",
+        "market",
+        "before_entry",
+        "invalid_time",
+        "nan",
+        "inf",
+        "missing_entry",
+    ],
+)
+def test_invalid_ledger_link_or_return_does_not_count(damage):
+    events = _closed_trade()
+    outcome = events[-1]
+    if damage == "orphan":
+        outcome["position_id"] = "unrelated"
+    elif damage == "ticker":
+        outcome["ticker"] = "OTHER"
+    elif damage == "market":
+        outcome["market"] = "KR"
+    elif damage == "before_entry":
+        outcome["timestamp"] = "2026-06-30T00:00:00Z"
+    elif damage == "invalid_time":
+        outcome["timestamp"] = "not-a-time"
+    elif damage in {"nan", "inf"}:
+        outcome["attributes"]["profit_rate_pct"] = float(damage)
+    elif damage == "missing_entry":
+        del events[1]
+    packet = build_evidence_packet(events)
+    assert packet["coverage"]["strategy_closed_trade_count"] == 0
+    assert packet["analysis_rows"][0]["outcomes"]["strategy_return_pct"] is None
+    assert packet["robustness_inputs"]["strategy_ranked"] == []
+    json.dumps(packet, allow_nan=False)
+
+
+def test_fill_before_entry_is_execution_diagnostic_not_strategy_leakage():
+    events = _closed_trade("CONFIRMED")
+    baseline = build_evidence_packet(events)
+    events[2]["timestamp"] = "2026-06-30T00:00:00Z"
+    packet = build_evidence_packet(events)
+    assert packet["strategy_readiness"] == baseline["strategy_readiness"]
+    assert packet["data_quality"]["anti_leakage_exclusion_count"] == 0
+    assert packet["data_quality"]["broker_execution_diagnostics"] == {
+        "fill_before_entry": 1
+    }
+    assert packet["analysis_rows"][0]["outcomes"]["strategy_return_pct"] == -3.51
+    assert packet["analysis_rows"][0]["outcomes"]["confirmed_actual_return_pct"] is None
+
+
+def test_strategy_deduplication_winner_removal_and_future_context_exclusion():
+    events = _closed_trade(index=0, profit=99) + _closed_trade(index=1, profit=-3)
+    packet = build_evidence_packet(events + [events[-1]])
+    assert packet["coverage"]["strategy_closed_trade_count"] == 2
+    ranked = packet["robustness_inputs"]["strategy_ranked"]
+    assert [row["return_pct"] for row in ranked] == [99, -3]
+    assert [row["return_pct"] for row in ranked[1:]] == [-3]
+    events[0]["attributes"]["entry_quality_context"]["as_of"] = "2027-01-01T00:00:00Z"
+    leaked = build_evidence_packet(events)
+    assert leaked["coverage"]["strategy_closed_trade_count"] == 1
+    assert [
+        row["return_pct"] for row in leaked["robustness_inputs"]["strategy_ranked"]
+    ] == [-3]
+
+
+def test_exit_event_and_trade_outcome_are_one_ledger_close():
+    events = _closed_trade()
+    exit_event = dict(events[-1], event_id="exit", event_type="exit.executed")
+    packet = build_evidence_packet(events + [exit_event])
+    assert packet["coverage"]["strategy_closed_trade_count"] == 1
+    assert packet["cohorts"][0]["strategy_outcomes"]["n"] == 1

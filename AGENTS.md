@@ -122,7 +122,9 @@ Avoid broad production-like runs unless the task requires them.
 - Generate a deterministic Evidence Packet with
   `tools/build_entry_quality_evidence_packet.py`; do not substitute ad-hoc SQL,
   fuzzy joins, or reconstructed fills.
-- Keep `MISSING` as unknown and count only `CONFIRMED` fills as realized samples.
+- Keep `MISSING` as unknown. Strategy-ledger entries/exits are independent of broker
+  funding and fills; do not exclude valid strategy outcomes because a broker order
+  was rejected. Broker-realized PnL requires separate confirmed entry/exit evidence.
 - Never promote a trigger or entry-quality rule to SHADOW or LIVE automatically.
   LIVE requires the trading change harness and explicit user approval.
 
