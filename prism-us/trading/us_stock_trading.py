@@ -1425,7 +1425,7 @@ class USStockTrading:
     async def _execute_buy_stock(self, ticker: str, buy_amount: float = None,
                                  exchange: str = None, limit_price: float = None, *, quote_validator=None, strict_budget: bool = False) -> Dict[str, Any]:
         """Execute buy stock logic"""
-        amount = resolve_order_budget(buy_amount, self.buy_amount)
+        amount = resolve_order_budget(buy_amount, 0 if strict_budget else self.buy_amount)
 
         result = {
             'success': False,
@@ -1440,6 +1440,8 @@ class USStockTrading:
 
         if not amount:
             result['message'] = 'Buy budget must be finite and positive'
+            if strict_budget:
+                result['status'] = 'blocked_budget'
             return result
         if strict_budget and not resolve_order_budget(limit_price, 0):
             result['message'] = 'Strict budget requires a positive limit price'

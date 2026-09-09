@@ -2589,6 +2589,23 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 raise ValueError(f"broker quote gate: {gate.get('reason', 'blocked')}")
         return validate
 
+    @staticmethod
+    def _pilot_broker_budget_block(scenario, amount, price):
+        """Keep account funding failures outside strategy eligibility."""
+        from prism_core.order_budget import whole_share_quantity
+
+        if (scenario.get("regime_entry_policy") or {}).get("mode") != "rebound_pilot":
+            return None
+        if whole_share_quantity(amount, price) > 0:
+            return None
+        return {
+            "success": False,
+            "status": "blocked_budget",
+            "reason_code": "pilot_budget_unavailable_or_below_one_share",
+            "message": "Pilot broker budget unavailable or below one share; strategy entry preserved",
+            "quantity": 0,
+        }
+
     def _evaluate_production_buy_gate(
         self,
         scenario: Dict[str, Any],
@@ -2609,16 +2626,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 if regime_policy is not None and _gate.normalize_regime(computed_regime) == "sideways" else None
             )
             policy = scenario.get("regime_entry_policy") or {}
-            configured_cap = (
-                regime_policy.configured_entry_amount(getattr(self, "active_account", None), "us", 0.5)
-                if regime_policy is not None else None
-            )
+            # Historical gate argument names strategy half-slot permission;
+            # account cash is checked only at the broker boundary below.
             pilot_budget_available = (
                 isinstance(policy, dict)
                 and policy.get("mode") == "rebound_pilot"
                 and policy.get("position_fraction") == 0.5
-                and configured_cap is not None
-                and policy.get("cash_budget") == configured_cap
             )
             result = _gate.evaluate_production_buy_gate(
                 {**scenario, "decision": self._normalize_decision(scenario.get("decision", "no_entry"))},
@@ -4097,34 +4110,25 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             entry_cash_amount = _rp.configured_entry_amount(
                                 account, "us", 0.5
                             )
-                            if entry_cash_amount is None:
-                                rebound_pilot = False
-                                logger.error(
-                                    "[REGIME_REBOUND_PILOT] %s(%s) blocked: "
-                                    "configured US buy amount unavailable",
-                                    company_name,
-                                    ticker,
-                                )
-                            else:
-                                scenario = dict(scenario)
-                                scenario["regime_entry_policy"] = {
-                                    "mode": "rebound_pilot",
-                                    "position_fraction": 0.5,
-                                    "cash_budget": entry_cash_amount,
-                                    "budget_semantics": "maximum_order_notional",
-                                    "regime": floor_regime,
-                                    "market_pulse": pulse_state,
-                                }
-                                analysis_result["scenario"] = scenario
-                                logger.warning(
-                                    "[REGIME_REBOUND_PILOT] %s(%s) score=%s "
-                                    "min=%s position=50%% cash_amount=%s",
-                                    company_name,
-                                    ticker,
-                                    adjusted_score,
-                                    min_score,
-                                    entry_cash_amount,
-                                )
+                            scenario = dict(scenario)
+                            scenario["regime_entry_policy"] = {
+                                "mode": "rebound_pilot",
+                                "position_fraction": 0.5,
+                                "cash_budget": entry_cash_amount,
+                                "budget_semantics": "maximum_order_notional",
+                                "regime": floor_regime,
+                                "market_pulse": pulse_state,
+                            }
+                            analysis_result["scenario"] = scenario
+                            logger.warning(
+                                "[REGIME_REBOUND_PILOT] %s(%s) score=%s "
+                                "min=%s position=50%% cash_amount=%s",
+                                company_name,
+                                ticker,
+                                adjusted_score,
+                                min_score,
+                                entry_cash_amount,
+                            )
 
                     rationale = scenario.get("rationale", "") or ""
                     logger.info(
@@ -4286,50 +4290,62 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     opened_position_id = legacy_position_id(
                                         "US", buy_result.legacy_holding_id
                                     )
-                                    async with ExecutionService.us(
-                                        account_name=account["name"],
-                                        db_path=self.db_path,
-                                    ) as trading:
-                                        quote = await asyncio.to_thread(trading.get_current_price, ticker, strict=True)
-                                        broker_price = self._validated_buy_quote(
-                                            quote.get("current_price") if isinstance(quote, dict) else None
-                                        )
-                                        apply_buy_scenario_contract(
-                                            scenario, market="US", entry_price=broker_price
-                                        )
-                                        broker_gate = self._evaluate_production_buy_gate(
-                                            scenario,
-                                            broker_price,
-                                            score_override=adjusted_score,
-                                            is_add=is_add,
-                                        )
-                                        if not broker_gate.get("allowed", False):
-                                            raise ValueError(
-                                                "Fresh broker BUY gate rejected: "
-                                                + str(broker_gate.get("reason", "blocked"))
-                                            )
-                                        logger.info("[BUY_QUOTE][US] broker ticker=%s price=%s exchange_quote_age=unknown", ticker, broker_price)
+                                    blocked = self._pilot_broker_budget_block(scenario, entry_cash_amount, current_price)
+                                    if blocked is not None:
                                         order_intent = OrderIntent.create(
-                                            market="US",
-                                            account_id=account_key,
-                                            symbol=ticker,
-                                            side="buy",
-                                            order_style="smart",
-                                            source="us_batch",
+                                            market="US", account_id=account_key, symbol=ticker,
+                                            side="buy", order_style="smart", source="us_batch",
                                             source_decision_id=source_decision_id,
                                             source_position_id=opened_position_id,
-                                            cash_amount=entry_cash_amount,
-                                            limit_price=broker_price,
+                                            cash_amount=entry_cash_amount, limit_price=current_price,
                                             reason="AI analysis entry",
                                         )
-                                        trade_result = await trading.execute_buy(
-                                            ticker=ticker,
-                                            buy_amount=entry_cash_amount,
-                                            limit_price=broker_price,
-                                            intent=order_intent,
-                                            quote_validator=self._buy_quote_validator(scenario, score_override=adjusted_score, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
-                                            **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
-                                        )
+                                        trade_result = blocked
+                                    else:
+                                        async with ExecutionService.us(
+                                            account_name=account["name"],
+                                            db_path=self.db_path,
+                                        ) as trading:
+                                            quote = await asyncio.to_thread(trading.get_current_price, ticker, strict=True)
+                                            broker_price = self._validated_buy_quote(
+                                                quote.get("current_price") if isinstance(quote, dict) else None
+                                            )
+                                            apply_buy_scenario_contract(
+                                                scenario, market="US", entry_price=broker_price
+                                            )
+                                            broker_gate = self._evaluate_production_buy_gate(
+                                                scenario,
+                                                broker_price,
+                                                score_override=adjusted_score,
+                                                is_add=is_add,
+                                            )
+                                            if not broker_gate.get("allowed", False):
+                                                raise ValueError(
+                                                    "Fresh broker BUY gate rejected: "
+                                                    + str(broker_gate.get("reason", "blocked"))
+                                                )
+                                            logger.info("[BUY_QUOTE][US] broker ticker=%s price=%s exchange_quote_age=unknown", ticker, broker_price)
+                                            order_intent = OrderIntent.create(
+                                                market="US",
+                                                account_id=account_key,
+                                                symbol=ticker,
+                                                side="buy",
+                                                order_style="smart",
+                                                source="us_batch",
+                                                source_decision_id=source_decision_id,
+                                                source_position_id=opened_position_id,
+                                                cash_amount=entry_cash_amount,
+                                                limit_price=broker_price,
+                                                reason="AI analysis entry",
+                                            )
+                                            trade_result = await trading.execute_buy(
+                                                ticker=ticker,
+                                                buy_amount=entry_cash_amount,
+                                                limit_price=broker_price,
+                                                intent=order_intent,
+                                                quote_validator=self._buy_quote_validator(scenario, score_override=adjusted_score, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
+                                                **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
+                                            )
 
                                     persisted_intent_id = trade_result.get("intent_id")
                                     if persisted_intent_id:
