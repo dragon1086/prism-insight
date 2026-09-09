@@ -101,8 +101,12 @@ Packet을 생성한 뒤 이 Packet만 분석합니다.
 
 ## 4. Prospective cohort와 legacy 분리
 
-기본 시작점은 `entry_quality_context`가 들어 있는 첫 번째 **live**
+기본 시작점은 `entry_quality_context` 또는 `research_context`가 들어 있는 첫 번째 **live**
 `candidate.evaluated` 시각입니다.
+
+Packet의 `capture_sources`와 두 종류의 개별 captured count를 함께 확인합니다.
+연구 봉 입력이 수집됐다고 setup 품질이 OK가 되는 것은 아니며, 없는 구성요소는
+계속 MISSING입니다. 이 구분은 KR 연구 관측을 후보 목록에서 누락하지 않기 위해 필요합니다.
 
 - 그 시각 이전 후보는 `legacy_excluded_count`로만 보고 분석 표본에서 제외합니다.
 - 그 시각 이후 context 없는 후보도 coverage의 분모에 포함합니다.

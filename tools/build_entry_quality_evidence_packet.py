@@ -86,6 +86,13 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _capture_sources(event: Mapping[str, Any]) -> list[str]:
+    attributes = _mapping(event.get("attributes"))
+    return [name for key, name in (
+        ("entry_quality_context", "ENTRY_QUALITY"), ("research_context", "TREND_RESEARCH")
+    ) if isinstance(attributes.get(key), Mapping)]
+
+
 def _text(value: Any, default: str | None = None) -> str | None:
     if value is None:
         return default
@@ -491,9 +498,7 @@ def build_evidence_packet(
     inferred_starts = [
         _parse_time(event.get("timestamp"))
         for event in live_candidates
-        if isinstance(
-            _mapping(event.get("attributes")).get("entry_quality_context"), Mapping
-        )
+        if _capture_sources(event)
     ]
     inferred_starts = [value for value in inferred_starts if value is not None]
     if isinstance(prospective_start, datetime):
@@ -759,6 +764,7 @@ def build_evidence_packet(
                 ),
                 "policy_version": _text(candidate.get("policy_version"), "UNKNOWN"),
                 "quality_status": quality_status,
+                "capture_sources": _capture_sources(candidate),
                 "missing_components": missing,
                 "eligible_for_analysis": not analysis_exclusions,
                 "analysis_exclusions": analysis_exclusions,
@@ -782,6 +788,11 @@ def build_evidence_packet(
                 },
                 "outcomes": {
                     "candidate": candidate_result,
+                    "strategy_entry_at": _iso(entry_at),
+                    "strategy_closed_at": (
+                        _iso(_parse_time(actual_event.get("timestamp")))
+                        if actual_event and strategy_return is not None else None
+                    ),
                     "strategy_return_pct": strategy_return,
                     "strategy_exit_kind": strategy_exit_kind,
                     "strategy_holding_seconds": strategy_holding_seconds,
@@ -798,9 +809,7 @@ def build_evidence_packet(
         if timestamp is not None
     }
     captured_count = sum(
-        isinstance(
-            _mapping(event.get("attributes")).get("entry_quality_context"), Mapping
-        )
+        bool(_capture_sources(event))
         for event in candidates
     )
     candidate_decision_count = sum(
@@ -945,6 +954,8 @@ def build_evidence_packet(
         },
         "coverage": {
             "captured_count": captured_count,
+            "entry_quality_captured_count": sum("ENTRY_QUALITY" in _capture_sources(e) for e in candidates),
+            "trend_research_captured_count": sum("TREND_RESEARCH" in _capture_sources(e) for e in candidates),
             "capture_rate": _rate(captured_count, len(candidates)),
             "decision_id_rate": _rate(candidate_decision_count, len(candidates)),
             "entry_link_count": linked_entries,

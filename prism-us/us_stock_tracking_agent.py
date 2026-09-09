@@ -67,6 +67,7 @@ from observability.journal_influence import (  # noqa: E402
 from observability.micro_split import emit_initial_shadow as emit_micro_split_shadow  # noqa: E402
 from observability.trading_context import (  # noqa: E402
     emit_trading_context,
+    execution_profile_ref,
     latest_regime_snapshot,
 )
 
@@ -1159,6 +1160,10 @@ class USStockTrackingAgent:
                 if stock_ret is not None and idx_ret is not None:
                     rs = stock_ret - idx_ret
 
+            # Observe existing inputs only, without inserting research into prompts.
+            from observability.trend_research import cache_snapshot
+            cache_snapshot(self, ticker, df, locals().get("idf"), market="US", source="existing_adjusted_us_trend_frames")
+
             # 게이트 판정 (deterministic)
             # T1: 종가가 50일선(오닐 10주선) 아래 = 핵심 라인 이탈. 기울기 무관 —
             #     라인 아래면 정당한 눌림이 아니라 추세 훼손으로 본다.
@@ -1795,6 +1800,7 @@ class USStockTrackingAgent:
                 decision_context.update(stored_decision_context)
             entry_execution_context = {
                 "simulator_recorded": True,
+                "execution_profile_ref": execution_profile_ref(account_key),
                 "entry_price": current_price,
                 "legacy_holding_id": legacy_holding_id,
             }
@@ -2125,6 +2131,7 @@ class USStockTrackingAgent:
                         trigger_type=trigger_type,
                     ),
                     source="us_batch_watchlist",
+                    research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker),
                 )
             except Exception as context_error:
                 logger.warning("[CONTEXT_LEDGER][US] candidate snapshot skipped: %s", context_error)
@@ -3087,6 +3094,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 execution_context={
                     "simulator_recorded": True,
                     "legacy_holding_id": legacy_holding_id,
+                    "execution_profile_ref": execution_profile_ref(account_key),
                     "intent_id": intent_id,
                 },
                 source=source,
@@ -4228,6 +4236,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 trigger_type=trigger_type,
                             ),
                             source="us_batch_decision",
+                            research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker),
                         )
 
                     if entry_eligible:
@@ -4305,6 +4314,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                         )
                                     emit_fill_reconciliation(
                                         market="US",
+                                        execution_profile_ref=execution_profile_ref(account_key),
                                         ticker=ticker,
                                         decision_id=source_decision_id,
                                         position_id=opened_position_id,
@@ -4324,6 +4334,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     )
                                     emit_fill_reconciliation(
                                         market="US",
+                                        execution_profile_ref=execution_profile_ref(account_key),
                                         ticker=ticker,
                                         decision_id=source_decision_id,
                                         position_id=opened_position_id,
