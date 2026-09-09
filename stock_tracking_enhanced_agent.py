@@ -999,7 +999,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                     buy_amount=entry_cash_amount,
                                     limit_price=current_price,
                                     intent=order_intent,
-                                    quote_validator=self._buy_quote_validator(scenario, is_add=is_add),
+                                    quote_validator=self._buy_quote_validator(scenario, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
                                     **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
                                 )
                         except OrderOutcomeUnknown as error:
