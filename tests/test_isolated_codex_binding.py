@@ -49,10 +49,14 @@ def test_fixed_binding_does_not_mutate_global_environment(fixture, monkeypatch):
         state.phase, state.returncode = "REAPED", 0
         assert kwargs["_diagnostic_environment"]["PRISM_PROBE_SNAPSHOT_SHA256"] == invocation.snapshot.sha256
         assert kwargs["_diagnostic_environment"]["PERPLEXITY_API_KEY"] == "HOST_CANARY"
-        return backend.CodexFastResult("{}", .1, None)
+        return backend.CodexFastResult("{}", .1, {"input_tokens": 17},
+                                      (backend.CodexMcpCall("time", "get_current_time", {"timezone": "Asia/Seoul"}, "completed", None),))
     monkeypatch.setattr(backend, "generate_codex_fast_async", fake)
     result = asyncio.run(binding.FixedCodexBinding(config)(invocation))
-    assert result == rpc.BackendCompletion("{}")
+    assert json.loads(result.result_json) == {
+        "text": "{}", "latency_s": .1, "usage": {"input_tokens": 17},
+        "mcp_calls": [{"server": "time", "tool": "get_current_time", "arguments": {"timezone": "Asia/Seoul"}, "status": "completed", "error": None}],
+    }
     assert dict(os.environ) == before
     assert seen[0]["timeout"] == 240 and seen[0]["codex_bin"] == str(config.model_root / "wrapper.py")
 
