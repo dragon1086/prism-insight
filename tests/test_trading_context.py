@@ -169,3 +169,24 @@ def test_candidate_outcome_keeps_zero_returns_and_decision_link(monkeypatch, tmp
     assert event["attributes"]["return_7d_pct"] == 0.0
     assert event["attributes"]["return_14d_pct"] == 1.0
     assert event["attributes"]["return_30d_pct"] == -2.0
+def test_research_snapshot_and_execution_alias_are_separate_from_model(monkeypatch, tmp_path):
+    from observability.entry_quality import emit_fill_reconciliation
+    from observability.trading_context import execution_profile_ref
+    monkeypatch.setenv("PRISM_OBSERVABILITY_SPOOL", str(tmp_path / "research.jsonl"))
+    monkeypatch.setenv("ENTRY_QUALITY_CAPTURE_ENABLED", "true")
+    snapshot = {"observed_at": "2026-09-01T00:00:00Z", "source_hash": "hash",
+                "bars": [{"close_at": "2026-08-31T20:00:00Z", "high": 11,
+                          "low": 9, "close": 10, "completed": True}]}
+    row = emit_trading_context("candidate.evaluated", market="US", ticker="TEST",
+                               decision_id="research", trigger_mode="morning",
+                               scenario={"research_context": {"forged": True}},
+                               research_context=snapshot)
+    assert row["attributes"]["research_context"] == snapshot
+    assert "forged" not in str(row)
+    profile = execution_profile_ref("private-account")
+    execution = emit_fill_reconciliation(market="US", ticker="TEST", decision_id="research",
+                                         position_id="position", intent_id="private-intent",
+                                         result={"success": False}, execution_profile_ref=profile)
+    assert execution["attributes"]["execution_profile_ref"] == profile
+    assert execution["attributes"]["fill_provenance"]["status"] == "REJECTED"
+    assert "private-account" not in str(execution) and "private-intent" not in str(execution)

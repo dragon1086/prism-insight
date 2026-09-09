@@ -795,6 +795,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             "slots_max": getattr(self, "max_slots", 10),
                         },
                         source="kr_enhanced_decision",
+                        research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker),
                     )
 
                 # Process buy if entry decision
@@ -887,6 +888,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                 )
                                 continue
                             self._complete_pending_kr_entry(prepared)
+                            self._record_broker_entry_observation(ticker, source_decision_id, getattr(prepared.intent, "source_position_id", None), prepared.intent.id, trade_result)
                         except asyncio.CancelledError:
                             logger.critical(
                                 "[POSITION-PENDING][KR] enhanced entry cancelled "
@@ -1016,6 +1018,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                 intent_id=persisted_intent_id,
                             )
 
+                        self._record_broker_entry_observation(ticker, source_decision_id, opened_position_id, trade_result.get("intent_id") or order_intent.id, trade_result)
                         if trade_result['success']:
                             logger.info(f"Actual purchase successful: {trade_result['message']}")
                         else:
