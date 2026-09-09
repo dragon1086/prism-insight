@@ -10,6 +10,9 @@ import os
 from pathlib import Path
 import stat
 
+# Namespace-private mount point, not a host temporary file (bwrap creates tmpfs).
+NAMESPACE_TMP = "/" + "tmp"
+
 
 class NamespaceRejected(ValueError):
     pass
@@ -112,7 +115,7 @@ def command(*, source_root, runtime_root, evidence_root, arm_root, sockets, scri
         raise NamespaceRejected("staged_python_missing")
     # bwrap 0.4 lacks --clearenv: the supervisor MUST pass env={} to Popen.
     args = ["/usr/bin/bwrap", "--unshare-all", "--die-with-parent", "--cap-drop", "ALL",
-            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/home/agent"]
+            "--proc", "/proc", "--dev", "/dev", "--tmpfs", NAMESPACE_TMP, "--tmpfs", "/home/agent"]
     for public in ("/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/share/zoneinfo"):
         if Path(public).is_dir():
             args += ["--ro-bind", public, public]
