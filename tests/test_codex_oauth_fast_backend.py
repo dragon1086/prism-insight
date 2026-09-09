@@ -9,6 +9,10 @@ import pytest
 import cores.llm.codex_oauth_fast_backend as backend
 
 
+def fake_process(returncode=0, stdout="", stderr=""):
+    return SimpleNamespace(returncode=returncode, communicate=lambda **kwargs: (stdout, stderr))
+
+
 @pytest.fixture
 def _trusted_codex(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -70,9 +74,12 @@ def test_codex_fast_backend_uses_isolated_ephemeral_command(
             }),
             json.dumps({"type": "turn.completed", "usage": {"output_tokens": 10}}),
         ])
-        return SimpleNamespace(returncode=0, stdout=stream, stderr="")
+        def communicate(**communication):
+            seen["kwargs"].update(communication)
+            return stream, ""
+        return SimpleNamespace(returncode=0, communicate=communicate)
 
-    monkeypatch.setattr(backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(backend.subprocess, "Popen", fake_run)
     result = backend.generate_codex_fast(
         system_prompt="system",
         user_prompt="user",
@@ -110,8 +117,8 @@ def test_codex_fast_backend_requires_mcp_call_when_requested(
     ])
     monkeypatch.setattr(
         backend.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
+        "Popen",
+        lambda *_args, **_kwargs: fake_process(
             returncode=0, stdout=stream, stderr=""
         ),
     )
@@ -131,8 +138,8 @@ def test_codex_fast_backend_raises_on_cli_failure(
 ) -> None:
     monkeypatch.setattr(
         backend.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
+        "Popen",
+        lambda *_args, **_kwargs: fake_process(
             returncode=1, stdout="", stderr="auth failed"
         ),
     )
@@ -148,7 +155,7 @@ def test_us_trading_wires_codex_primary_before_legacy_fallback() -> None:
     method = source[source.index("    async def _extract_trading_scenario("):]
     method = method[:method.index("    async def ", 20_000)]
     assert "PRISM_US_CODEX_FAST_TRADING" in method
-    assert "await asyncio.to_thread(" in method
+    assert "await generate_codex_fast_async(" in method
     assert "generate_codex_fast" in method
     assert 'mcp_profile="us_trading"' in method
     assert "require_mcp_calls=True" in method
@@ -164,7 +171,7 @@ def test_kr_trading_wires_same_codex_primary_and_legacy_fallback() -> None:
     method = source[source.index("    async def _extract_trading_scenario("):]
     method = method[:method.index("    def _default_scenario")]
     assert "PRISM_KR_CODEX_FAST_TRADING" in method
-    assert "await asyncio.to_thread(" in method
+    assert "await generate_codex_fast_async(" in method
     assert "generate_codex_fast" in method
     assert 'mcp_profile="kr_trading"' in method
     assert "require_mcp_calls=True" in method
@@ -214,7 +221,10 @@ def test_trading_mcp_profiles_allow_only_read_only_sqlite_tools(
     profile_name: str,
     market_server: str,
 ) -> None:
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10: pytest already depends on this backport.
+        import tomli as tomllib
 
     profile_path = Path(__file__).resolve().parents[1] / "deploy" / profile_name
     config = tomllib.loads(profile_path.read_text("utf-8"))

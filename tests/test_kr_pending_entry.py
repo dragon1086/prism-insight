@@ -67,6 +67,10 @@ def _pending_entry_agent(db_path: Path):
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     connection.execute(TABLE_STOCK_HOLDINGS)
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS trading_history "
+        "(ticker TEXT, account_key TEXT, sell_date TEXT, profit_rate REAL, exit_kind TEXT)"
+    )
     PositionStore(connection).ensure_schema()
     connection.commit()
     IntentStore(db_path)
@@ -97,6 +101,11 @@ def _pending_entry_agent(db_path: Path):
             "company_name": "Samsung Electronics",
             "current_price": 70000,
             "scenario": {
+                "decision": "Enter",
+                "entry_price": 70000,
+                "risk_reward_ratio": 2,
+                "expected_return_pct": 14,
+                "expected_loss_pct": 7,
                 "buy_score": 8,
                 "min_score": 7,
                 "sector": "Technology",
@@ -109,6 +118,9 @@ def _pending_entry_agent(db_path: Path):
         }
 
     agent._analyze_report_core = analyze_report
+    # This fixture isolates pending-order lifecycle; quote/contract revalidation
+    # is exercised separately in test_astra_kr_safety with fake market data.
+    agent._refresh_buy_boundary = AsyncMock(return_value=70000)
     agent.update_holdings = AsyncMock(return_value=[])
     agent._is_ticker_in_holdings = AsyncMock(return_value=False)
     agent._get_current_slots_count = AsyncMock(return_value=0)
@@ -126,11 +138,15 @@ def _install_pending_entry_runtime(
     broker_error: BaseException | None = None,
     broker_started: asyncio.Event | None = None,
     broker_release: asyncio.Event | None = None,
+    broker_quote: float | None = None,
 ):
     broker_calls = []
     publish_states = []
     redis_calls = []
     gcp_calls = []
+    # Use a deterministic market snapshot without invoking external providers;
+    # leave the real cooldown and regime-floor checks enabled.
+    monkeypatch.setattr("cores.regime_policy.get_market_pulse_state", lambda *_a, **_kw: "UPTREND")
 
     class BrokerContext:
         def __init__(self, account_name=None, **_kwargs):
@@ -143,8 +159,13 @@ def _install_pending_entry_runtime(
             return False
 
         async def async_buy_stock(
-            self, stock_code, limit_price=None, buy_amount=None
+            self, stock_code, limit_price=None, buy_amount=None, quote_validator=None
         ):
+            if broker_quote is not None:
+                try:
+                    quote_validator(broker_quote)
+                except ValueError as exc:
+                    return {"success": False, "message": str(exc)}
             broker_calls.append(
                 {
                     "stock_code": stock_code,
@@ -187,6 +208,22 @@ def _install_pending_entry_runtime(
     monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
     monkeypatch.setenv("POSITION_LEDGER_SHADOW_ENABLED", "true")
     return broker_calls, publish_states, redis_calls, gcp_calls
+
+
+@pytest.mark.asyncio
+async def test_pending_final_broker_quote_rejection_is_failed_not_unknown(monkeypatch, tmp_path):
+    path = tmp_path / "quote-rejected.sqlite"
+    agent, connection = _pending_entry_agent(path)
+    broker_calls, publish, redis, gcp = _install_pending_entry_runtime(
+        monkeypatch, agent=agent, db_path=path, broker_quote=85000,
+    )
+    try:
+        assert await agent.process_reports(["quote-rejected.pdf"]) == (0, 0)
+        assert connection.execute("SELECT status FROM order_intents").fetchone()[0] == "FAILED"
+        assert connection.execute("SELECT COUNT(*) FROM stock_holdings").fetchone()[0] == 0
+        assert not broker_calls and not publish and not redis and not gcp
+    finally:
+        connection.close()
 
 
 @pytest.mark.asyncio

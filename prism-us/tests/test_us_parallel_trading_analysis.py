@@ -50,13 +50,14 @@ def test_us_trading_analysis_concurrency_defaults_to_two() -> None:
 async def test_us_buy_analysis_prepass_is_bounded_and_preserves_input_order(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(agent_module, "US_TRADING_ANALYSIS_CONCURRENCY", 2)
+    monkeypatch.setattr(agent_module, "US_TRADING_ANALYSIS_CONCURRENCY", 3)
     agent = _make_agent()
-    paths = ["report-a.pdf", "report-b.pdf", "report-c.pdf"]
+    paths = ["report-a.pdf", "report-b.pdf", "report-c.pdf", "report-d.pdf"]
     delays = {
         "report-a.pdf": 0.04,
         "report-b.pdf": 0.03,
         "report-c.pdf": 0.01,
+        "report-d.pdf": 0.01,
     }
     active = 0
     peak = 0
@@ -87,5 +88,54 @@ async def test_us_buy_analysis_prepass_is_bounded_and_preserves_input_order(
     monkeypatch.setattr(agent_module.logger, "error", capture_error)
 
     assert await agent.process_reports(paths) == (0, 0)
-    assert peak == 2
+    assert peak == 3
     assert failure_order == paths
+
+
+@pytest.mark.asyncio
+async def test_all_account_sells_finish_before_slow_buy_and_primary_context(monkeypatch):
+    agent = _make_agent()
+    agent.account_configs.append({"name": "secondary", "account_key": "vps:secondary:01", "product": "01"})
+    events = []
+    release = asyncio.Event()
+
+    async def sell(**kwargs):
+        events.append(("sell", agent.active_account["name"]))
+        return [{}]
+
+    async def core(path):
+        events.append(("buy_analysis", agent.active_account["name"]))
+        await release.wait()
+        raise ValueError("isolated candidate failure")
+
+    agent.update_holdings = sell
+    agent._analyze_report_core = core
+    task = asyncio.create_task(agent.process_reports(["slow.pdf"]))
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if len(events) == 3:
+            break
+    try:
+        assert events == [("sell", "us-primary"), ("sell", "secondary"), ("buy_analysis", "us-primary")]
+        assert not task.done()
+    finally:
+        release.set()
+    assert await task == (0, 2)
+
+
+@pytest.mark.asyncio
+async def test_failed_sell_review_does_not_skip_other_accounts():
+    agent = _make_agent()
+    agent.account_configs.append({"name": "secondary", "account_key": "vps:secondary:01", "product": "01"})
+    names = []
+
+    async def sell(**kwargs):
+        names.append(agent.active_account["name"])
+        if len(names) == 1:
+            raise RuntimeError("sell review unavailable")
+        return [{}]
+
+    agent.update_holdings = sell
+    agent._analyze_report_core = AsyncMock(return_value={"success": False})
+    assert await agent.process_reports(["report.pdf"]) == (0, 1)
+    assert names == ["us-primary", "secondary"]
