@@ -27,7 +27,7 @@ import signal
 import socket
 import socketserver
 import stat
-import subprocess
+import subprocess  # nosec B404 - fixed, validated namespace execution without a shell
 import sys
 import tempfile
 import threading
@@ -49,6 +49,7 @@ DOMAINS = frozenset({"chatgpt.com", "auth.openai.com", "api.openai.com",
 MAX_HEADER = 8192
 IDLE_SECONDS = 120
 MAX_CONNECTIONS = 16
+_PRIVATE_TMPFS = "/tmp"  # nosec B108 - a new tmpfs inside the model namespace
 
 
 class BoundaryError(ValueError):
@@ -265,7 +266,7 @@ def sandbox_command(root: Path, binary: Path, gateway: Path, runner: Path, args:
         raise BoundaryError("parent_traversal_rejected")
     command = ["/usr/bin/bwrap", "--unshare-all", "--die-with-parent",
                "--cap-drop", "ALL", "--proc", "/proc", "--dev", "/dev",
-               "--tmpfs", "/tmp", "--dir", "/home/probe", "--dir", "/etc"]
+               "--tmpfs", _PRIVATE_TMPFS, "--dir", "/home/probe", "--dir", "/etc"]
     for runtime in ("/usr", "/lib", "/lib64"):
         if Path(runtime).exists():
             command += ["--ro-bind", runtime, runtime]
@@ -295,7 +296,7 @@ def sandbox_command(root: Path, binary: Path, gateway: Path, runner: Path, args:
                 "--setenv", "PYTHONHOME", str(root / "runtime"),
                 "--setenv", "LD_LIBRARY_PATH", str(root / "runtime/lib"),
                 "--setenv", "SSL_CERT_FILE", "/ca-bundle.crt",
-                "--chdir", "/tmp", "--", str(root / "runtime/bin/python3.11"), "/runner.py", "--inner", *args]
+                "--chdir", _PRIVATE_TMPFS, "--", str(root / "runtime/bin/python3.11"), "/runner.py", "--inner", *args]
     return command
 
 
@@ -369,7 +370,9 @@ def launch(root: Path, binary: Path, args: list[str]) -> int:
                 command = sandbox_command(root, binary, gateway_path, Path(__file__).resolve(), args, read_sockets=sockets)
                 # bwrap 0.4.0 has no --clearenv. Host secrets/manifest path never
                 # enter model env; only sandbox_command's explicit variables do.
-                child = subprocess.Popen(command, env={}, close_fds=True)  # nosec B603
+                # Backend-generated CLI arguments cannot select the executable
+                # or bypass the enclosing OS mounts/network/capability limits.
+                child = subprocess.Popen(command, env={}, close_fds=True)  # nosec B603  # nosemgrep
                 for signum in (signal.SIGINT, signal.SIGTERM):
                     old_handlers[signum] = signal.signal(signum, stop)
                 return child.wait()

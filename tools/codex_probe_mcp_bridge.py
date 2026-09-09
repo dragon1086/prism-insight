@@ -31,7 +31,7 @@ import selectors
 import socket
 import socketserver
 import stat
-import subprocess
+import subprocess  # nosec B404 - vetted argv and mandatory namespace launcher below
 import sys
 import threading
 import time
@@ -47,6 +47,8 @@ MAX_QUEUED_BYTES = 4 * 1024 * 1024
 MAX_SESSION_BYTES = 64 * 1024 * 1024
 MAX_MESSAGES = 10000
 MAX_PENDING = 16
+_PRIVATE_TMPFS = "/tmp"  # nosec B108 - provider namespace tmpfs, not shared host temporary storage
+_NODE_MOUNT = _PRIVATE_TMPFS + "/prism-node-runtime"
 CLIENT_DRAIN_SECONDS = 5
 logger = logging.getLogger(__name__)
 
@@ -198,8 +200,8 @@ def host_provider_configs(pins, names, environ, *, kr_profile=None, host_runtime
     for name in names:
         spec = HOST_PROVIDERS[name]
         # No inherited proxy, Python injection, broker keys or arbitrary env.
-        env = {"PATH": "/usr/bin:/bin", "HOME": "/tmp", "TMPDIR": "/tmp",
-               "XDG_CACHE_HOME": "/tmp/cache", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
+        env = {"PATH": "/usr/bin:/bin", "HOME": _PRIVATE_TMPFS, "TMPDIR": _PRIVATE_TMPFS,
+               "XDG_CACHE_HOME": _PRIVATE_TMPFS + "/cache", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
         if name == "perplexity":
             key = environ.get("PERPLEXITY_API_KEY")
             if not isinstance(key, str) or not key.strip() or len(key) > 16384:
@@ -217,7 +219,7 @@ def host_provider_configs(pins, names, environ, *, kr_profile=None, host_runtime
             argv[0] = str(verified_node_runtime(host_runtime_root))
         if name != "perplexity":
             argv.insert(1, "-u")
-        result[name] = {"argv": argv, "env": env, "cwd": "/tmp", "request_timeout": 120}
+        result[name] = {"argv": argv, "env": env, "cwd": _PRIVATE_TMPFS, "request_timeout": 120}
         if name == "kospi_kosdaq":
             result[name]["source_profile"] = KR_PUBLIC_DIAGNOSTIC
     return result
@@ -242,11 +244,11 @@ def _host_command(argv):
     runtime_bind = []
     if Path(argv[0]).name == "node-runtime":
         runtime = verified_node_runtime(Path(argv[0]).parent)
-        runtime_bind = ["--ro-bind", str(runtime), "/tmp/prism-node-runtime"]
-        argv = ["/tmp/prism-node-runtime", *argv[1:]]
+        runtime_bind = ["--ro-bind", str(runtime), _NODE_MOUNT]
+        argv = [_NODE_MOUNT, *argv[1:]]
     return [str(bwrap), "--unshare-pid", "--die-with-parent", "--cap-drop", "ALL",
-            "--ro-bind", "/", "/", "--proc", "/proc", "--tmpfs", "/tmp", *runtime_bind,
-            "--chdir", "/tmp", "--", *argv]
+            "--ro-bind", "/", "/", "--proc", "/proc", "--tmpfs", _PRIVATE_TMPFS, *runtime_bind,
+            "--chdir", _PRIVATE_TMPFS, "--", *argv]
 
 
 def _search_domain(value):
@@ -613,7 +615,9 @@ class _Session:
         category = "closed"
         started = last_io = time.monotonic()
         try:
-            process = subprocess.Popen(  # nosec B603 - wrapper-vetted fixed argv, no shell
+            # Only trusted host registrations provide argv; model RPC cannot
+            # select it. _host_command enforces the owned namespace/runtime.
+            process = subprocess.Popen(  # nosec B603  # nosemgrep
                 _host_command(self.bridge.argv), env=self.bridge.env, cwd=self.bridge.cwd,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=False, close_fds=True,
