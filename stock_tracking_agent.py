@@ -77,7 +77,7 @@ from observability.journal_influence import (
     attach_deterministic_score_effect,
     build_journal_influence_context,
 )
-from observability.trading_context import emit_trading_context, latest_regime_snapshot
+from observability.trading_context import emit_trading_context, latest_regime_snapshot, execution_profile_ref
 
 # O'Neil 룰베이스 매도 (2026-06-04 US quota 사고 동일 룰 결함 KR에도 적용).
 # 방어적 import: 실패 시 _ONEIL_FALLBACK_AVAILABLE=False 로 기존 레거시 룰 유지.
@@ -703,6 +703,19 @@ class StockTrackingAgent:
         return {"price": price, "source": "krx_same_day_close", "provider_date": provider_day,
                 "retrieved_at_monotonic": time.monotonic()}
 
+    def _record_broker_entry_observation(self, ticker, decision_id, position_id, intent_id, result=None, *, outcome_unknown=False):
+        """Link observed execution to strategy evidence without changing either."""
+        try:
+            from observability.entry_quality import emit_fill_reconciliation
+            emit_fill_reconciliation(
+                market="KR", ticker=ticker, decision_id=decision_id,
+                position_id=position_id, intent_id=intent_id, result=result,
+                outcome_unknown=outcome_unknown,
+                execution_profile_ref=execution_profile_ref(self._account_scope()[0]),
+            )
+        except Exception:  # noqa: BLE001 - observation cannot change order handling
+            logger.debug("Broker observation unavailable")
+
     def _buy_quote_validator(self, scenario, *, is_add=False):
         """Revalidate the broker's final sizing quote without changing ledger state."""
         def validate(price):
@@ -843,6 +856,10 @@ class StockTrackingAgent:
                     logger.warning(f"[TrendFacts] {ticker} index return failed: {_ie}")
                 if stock_ret is not None and idx_ret is not None:
                     rs = stock_ret - idx_ret
+
+            # Observe existing inputs only, without inserting research into prompts.
+            from observability.trend_research import cache_snapshot
+            cache_snapshot(self, ticker, df, locals().get("idf"), market="KR", source="existing_adjusted_kr_trend_frames")
 
             # 게이트 판정 (deterministic)
             # T1: 종가가 50일선(오닐 10주선) 아래 = 핵심 라인 이탈. 기울기 무관 —
@@ -1559,6 +1576,7 @@ class StockTrackingAgent:
                     decision_context=decision_context,
                     portfolio_context={"slots_used": slots_used, "slots_max": getattr(self, "max_slots", 10)},
                     source="kr_batch_watchlist",
+                    research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker),
                 )
             except Exception as context_error:
                 logger.warning("[CONTEXT_LEDGER][KR] candidate snapshot skipped: %s", context_error)
@@ -1961,6 +1979,7 @@ class StockTrackingAgent:
             execution_context={
                 "simulator_recorded": True,
                 "entry_price": prepared.current_price,
+                "execution_profile_ref": execution_profile_ref(prepared.account_id),
                 "legacy_holding_id": prepared.legacy_holding_id,
                 "intent_id": prepared.intent.id,
             },
@@ -2629,6 +2648,7 @@ class StockTrackingAgent:
                 execution_context={
                     "simulator_recorded": True,
                     "entry_price": current_price,
+                    "execution_profile_ref": execution_profile_ref(account_key),
                     "legacy_holding_id": legacy_holding_id,
                 },
                 source="kr_batch_entry",
@@ -3072,6 +3092,7 @@ class StockTrackingAgent:
                 execution_context={
                     "simulator_recorded": True,
                     "legacy_holding_id": legacy_holding_id,
+                    "execution_profile_ref": execution_profile_ref(account_key),
                     "intent_id": intent_id,
                 },
                 source=source,
@@ -4304,6 +4325,7 @@ class StockTrackingAgent:
                                 "slots_max": self.max_slots,
                             },
                             source="kr_batch_decision",
+                            research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker),
                         )
 
                     if entry_eligible:
@@ -4357,6 +4379,7 @@ class StockTrackingAgent:
                                     )
                                     continue
                                 self._complete_pending_kr_entry(prepared)
+                                self._record_broker_entry_observation(ticker, source_decision_id, getattr(prepared.intent, "source_position_id", None), prepared.intent.id, trade_result)
                             except asyncio.CancelledError:
                                 logger.critical(
                                     "[POSITION-PENDING][KR] entry cancelled "
@@ -4498,6 +4521,7 @@ class StockTrackingAgent:
                                 raise
 
                             persisted_intent_id = trade_result.get("intent_id")
+                            self._record_broker_entry_observation(ticker, source_decision_id, opened_position_id, persisted_intent_id or order_intent.id, trade_result)
                             if persisted_intent_id:
                                 self._link_position_entry_intent(
                                     legacy_holding_id=buy_result.legacy_holding_id,

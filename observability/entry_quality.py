@@ -357,6 +357,7 @@ def emit_fill_reconciliation(
     intent_id: str | None,
     result: Mapping[str, Any] | None = None,
     outcome_unknown: bool = False,
+    execution_profile_ref: str | None = None,
 ) -> dict[str, Any] | None:
     """Append one deterministic fill-provenance observation when capture is on."""
 
@@ -371,7 +372,8 @@ def emit_fill_reconciliation(
         trace_key = f"trade-trace|{str(market).upper()}|{trace_identity}"
         trace_id = hashlib.sha256(trace_key.encode()).hexdigest()[:32]
         attributes = {
-            "source": "us_order_intent_result",
+            "source": f"{str(market).lower()}_order_intent_result",
+            "execution_profile_ref": execution_profile_ref,
             "fill_provenance": provenance,
             "intent_ref": (
                 hashlib.sha256(str(intent_id).encode("utf-8")).hexdigest()[:16]
