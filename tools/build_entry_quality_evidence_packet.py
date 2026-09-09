@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import statistics
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -17,8 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-PACKET_SCHEMA_VERSION = 2
-ANALYSIS_CONTRACT_VERSION = "entry-quality-harness-v1"
+PACKET_SCHEMA_VERSION = 3
+ANALYSIS_CONTRACT_VERSION = "entry-quality-harness-v2"
 MIN_PROSPECTIVE_DATES = 20
 MIN_PROSPECTIVE_CANDIDATES = 100
 MIN_ACTUAL_ENTRIES = 30
@@ -96,9 +97,10 @@ def _number(value: Any) -> float | int | None:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return value
+        return value if math.isfinite(value) else None
     try:
-        return float(str(value).strip())
+        number = float(str(value).strip())
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 
@@ -322,9 +324,7 @@ def _journal_influence(attributes: Mapping[str, Any]) -> dict[str, Any]:
         },
         "llm_reflection": {
             "referenced": bool(reflection.get("referenced")),
-            "recent_exit_caution_present": bool(
-                reflection.get("recent_exit_caution")
-            ),
+            "recent_exit_caution_present": bool(reflection.get("recent_exit_caution")),
             "applied_lessons_present": bool(reflection.get("applied_lessons")),
         },
     }
@@ -372,6 +372,9 @@ def _group_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     member["entry"]["fill_status"] == "CONFIRMED" for member in members
                 ),
                 "candidate_outcomes": candidate_metrics,
+                "strategy_outcomes": _metrics(
+                    member["outcomes"]["strategy_return_pct"] for member in members
+                ),
                 "confirmed_actual_outcomes": _metrics(actual_values),
             }
         )
@@ -545,6 +548,7 @@ def build_evidence_packet(
             outcomes_by_position.setdefault(position_id, []).append(event)
 
     leakage = Counter()
+    broker_diagnostics = Counter()
     missing_components = Counter()
     quality_statuses = Counter()
     component_statuses = {name: Counter() for name in _COMPONENT_PATHS}
@@ -602,8 +606,21 @@ def build_evidence_packet(
             analysis_exclusions.append("FUTURE_CONTEXT_AS_OF")
 
         decision_id = _text(candidate.get("decision_id"))
+
+        def same_security(event: Mapping[str, Any]) -> bool:
+            return (
+                _text(event.get("ticker")) == _text(candidate.get("ticker"))
+                and _text(candidate.get("ticker")) is not None
+            )
+
         outcome_event = (
-            _latest(candidate_outcomes.get(decision_id, ())) if decision_id else None
+            _latest(
+                event
+                for event in candidate_outcomes.get(decision_id, ())
+                if same_security(event)
+            )
+            if decision_id
+            else None
         )
         if outcome_event and (
             candidate_at is not None
@@ -616,11 +633,19 @@ def build_evidence_packet(
             linked_candidate_outcomes += 1
 
         entry_event = (
-            _latest(entries_by_decision.get(decision_id, ())) if decision_id else None
+            _latest(
+                event
+                for event in entries_by_decision.get(decision_id, ())
+                if same_security(event)
+            )
+            if decision_id
+            else None
         )
         position_id = _text(entry_event.get("position_id")) if entry_event else None
         entry_at = _parse_time(entry_event.get("timestamp")) if entry_event else None
-        if entry_event and candidate_at and entry_at and entry_at < candidate_at:
+        if entry_event and (
+            entry_at is None or candidate_at is None or entry_at < candidate_at
+        ):
             leakage["entry_before_decision"] += 1
             entry_event = None
             position_id = None
@@ -640,13 +665,15 @@ def build_evidence_packet(
                 )
             else:
                 matches = bool(decision_id and fill_decision == decision_id)
-            if matches:
+            if matches and same_security(fill):
                 matching_fills.append(fill)
         valid_fills = []
         for fill in matching_fills:
             fill_at = _parse_time(fill.get("timestamp"))
-            if entry_at and fill_at and fill_at < entry_at:
-                leakage["fill_before_entry"] += 1
+            if fill_at is None:
+                broker_diagnostics["invalid_fill_timestamp"] += 1
+            elif entry_at and fill_at < entry_at:
+                broker_diagnostics["fill_before_entry"] += 1
             else:
                 valid_fills.append(fill)
         fill_event = _latest(valid_fills)
@@ -661,24 +688,41 @@ def build_evidence_packet(
             confirmed_fills += fill_status == "CONFIRMED"
 
         actual_event = (
-            _latest(outcomes_by_position.get(position_id, ())) if position_id else None
+            _latest(
+                event
+                for event in outcomes_by_position.get(position_id, ())
+                if same_security(event)
+            )
+            if position_id
+            else None
         )
         if (
             actual_event
             and entry_at
-            and (actual_at := _parse_time(actual_event.get("timestamp")))
-            and actual_at < entry_at
+            and (
+                (actual_at := _parse_time(actual_event.get("timestamp"))) is None
+                or actual_at < entry_at
+            )
         ):
             leakage["actual_outcome_before_entry"] += 1
             actual_event = None
         actual_return = None
         actual_exit_kind = None
         actual_exclusion = None
+        strategy_return = None
+        strategy_exit_kind = None
+        strategy_holding_seconds = None
         if actual_event:
             actual_attributes = _mapping(actual_event.get("attributes"))
+            strategy_return = _number(actual_attributes.get("profit_rate_pct"))
+            if strategy_return is not None:
+                strategy_exit_kind = _text(actual_attributes.get("exit_kind"))
+                strategy_holding_seconds = (
+                    _parse_time(actual_event.get("timestamp")) - entry_at
+                ).total_seconds()
             if fill_status == "CONFIRMED":
-                actual_return = _number(actual_attributes.get("profit_rate_pct"))
-                actual_exit_kind = _text(actual_attributes.get("exit_kind"))
+                actual_return = strategy_return
+                actual_exit_kind = strategy_exit_kind
                 confirmed_actual_outcomes += actual_return is not None
             else:
                 actual_exclusion = "FILL_NOT_CONFIRMED"
@@ -723,9 +767,7 @@ def build_evidence_packet(
                     "gate_allowed": attributes.get("gate_allowed"),
                     "selected_for_entry": attributes.get("selected_for_entry"),
                     "buy_score": _number(decision_context.get("buy_score")),
-                    "adjusted_score": _number(
-                        decision_context.get("adjusted_score")
-                    ),
+                    "adjusted_score": _number(decision_context.get("adjusted_score")),
                     "min_score": _number(decision_context.get("min_score")),
                     "risk_reward_ratio": _number(
                         security_context.get("risk_reward_ratio")
@@ -740,6 +782,9 @@ def build_evidence_packet(
                 },
                 "outcomes": {
                     "candidate": candidate_result,
+                    "strategy_return_pct": strategy_return,
+                    "strategy_exit_kind": strategy_exit_kind,
+                    "strategy_holding_seconds": strategy_holding_seconds,
                     "confirmed_actual_return_pct": actual_return,
                     "actual_exit_kind": actual_exit_kind,
                     "actual_exclusion_reason": actual_exclusion,
@@ -774,9 +819,48 @@ def build_evidence_packet(
         entries=linked_entries,
         confirmed_fills=confirmed_fills,
         matured_outcomes=matured_outcomes,
-        leakage_events=leakage_count,
+        leakage_events=leakage_count + sum(broker_diagnostics.values()),
         invalid_timestamps=dedupe_diagnostics.get("invalid_timestamp_count", 0),
     )
+    strategy_closed_count = sum(
+        row["eligible_for_analysis"]
+        and row["outcomes"]["strategy_return_pct"] is not None
+        for row in rows
+    )
+    strategy_insufficiency = _insufficiency_reasons(
+        capture_start=capture_start,
+        decision_dates=len(dates),
+        candidates=len(candidates),
+        captured_candidates=captured_count,
+        candidates_with_decision=candidate_decision_count,
+        entries=linked_entries,
+        confirmed_fills=confirmed_fills,
+        matured_outcomes=matured_outcomes,
+        leakage_events=leakage_count,
+        invalid_timestamps=sum(
+            _parse_time(event.get("timestamp")) is None
+            for event in market_events
+            if event.get("event_type") != "entry.fill_reconciled"
+        ),
+    )
+    strategy_insufficiency = [
+        reason
+        for reason in strategy_insufficiency
+        if reason["code"]
+        not in {
+            "ACTUAL_ENTRIES_LT_30",
+            "CONFIRMED_FILL_COVERAGE_LT_95_PCT",
+            "MATURED_OUTCOMES_LT_30",
+        }
+    ]
+    if strategy_closed_count < MIN_MATURED_OUTCOMES:
+        strategy_insufficiency.append(
+            {
+                "code": "STRATEGY_CLOSED_TRADES_LT_30",
+                "observed": strategy_closed_count,
+                "minimum": MIN_MATURED_OUTCOMES,
+            }
+        )
 
     def robustness_rows(kind: str) -> list[dict[str, Any]]:
         extracted = []
@@ -784,7 +868,11 @@ def build_evidence_packet(
             value = (
                 row["outcomes"]["candidate"]["return_30d_pct"]
                 if kind == "candidate_30d"
-                else row["outcomes"]["confirmed_actual_return_pct"]
+                else row["outcomes"][
+                    "strategy_return_pct"
+                    if kind == "strategy"
+                    else "confirmed_actual_return_pct"
+                ]
             )
             if value is None or not row["eligible_for_analysis"]:
                 continue
@@ -822,6 +910,12 @@ def build_evidence_packet(
             "kind": "local_sanitized_observability_jsonl",
             "network_access": False,
             "raw_attributes_copied": False,
+            "strategy_outcomes": "position-linked ledger returns independent of broker fills",
+            "confirmed_actual_compatibility": (
+                "legacy entry-confirmed subset of strategy returns; not broker realized PnL"
+            ),
+            "broker_realized_pnl_verified": False,
+            "strategy_holding_time_basis": "elapsed seconds between linked ledger entry and exit event timestamps, not broker fill times",
         },
         "data_quality": {
             **dedupe_diagnostics,
@@ -830,6 +924,7 @@ def build_evidence_packet(
             "duplicate_candidate_decision_count": duplicate_decisions,
             "anti_leakage_exclusion_count": leakage_count,
             "anti_leakage_distribution": dict(sorted(leakage.items())),
+            "broker_execution_diagnostics": dict(sorted(broker_diagnostics.items())),
         },
         "prospective_cohort": {
             "capture_start_at": _iso(capture_start),
@@ -860,6 +955,8 @@ def build_evidence_packet(
             ),
             "matured_30d_candidate_count": matured_outcomes,
             "confirmed_actual_outcome_count": confirmed_actual_outcomes,
+            "strategy_closed_trade_count": strategy_closed_count,
+            "strategy_closed_trade_rate": _rate(strategy_closed_count, linked_entries),
             "feature_non_null": {
                 key: {
                     "count": feature_non_null[key],
@@ -878,9 +975,7 @@ def build_evidence_packet(
                 "threshold_crossing_distribution": dict(
                     sorted(journal_crossings.items())
                 ),
-                "component_item_counts": dict(
-                    sorted(journal_component_items.items())
-                ),
+                "component_item_counts": dict(sorted(journal_component_items.items())),
                 "causal_interpretation": (
                     "observational only; causal impact requires paired no-journal shadow"
                 ),
@@ -900,11 +995,12 @@ def build_evidence_packet(
             "status_distribution": dict(sorted(fill_statuses.items())),
             "confirmed_count": confirmed_fills,
             "confirmed_coverage": _rate(confirmed_fills, linked_entries),
-            "realized_sample_rule": "CONFIRMED only",
+            "realized_sample_rule": "legacy entry-confirmed strategy subset only; not broker realized PnL",
         },
         "outcome_linkage": {
             "candidate_outcomes_linked": linked_candidate_outcomes,
             "confirmed_actual_outcomes_linked": confirmed_actual_outcomes,
+            "strategy_outcomes_linked": strategy_closed_count,
             "join_keys": {
                 "decision": "decision_id",
                 "position": "position_id",
@@ -915,14 +1011,24 @@ def build_evidence_packet(
         "robustness_inputs": {
             "candidate_30d_ranked": robustness_rows("candidate_30d"),
             "confirmed_actual_ranked": robustness_rows("confirmed_actual"),
+            "strategy_ranked": robustness_rows("strategy"),
             "winner_removal_method": "recompute after removing the highest return",
             "counterexample_method": (
                 "inspect blocked winners and allowed losers per preregistered rule"
             ),
         },
-        "readiness": {
+        "broker_execution_readiness": {
             "data_sufficient": not insufficiency,
             "insufficiency_reasons": insufficiency,
+            "interpretation": "legacy entry-fill coverage checks; not broker realized PnL verification",
+            "broker_realized_pnl_verified": False,
+        },
+        "readiness": {
+            "analysis_basis": "strategy_ledger",
+            "data_sufficient": not strategy_insufficiency,
+            "insufficiency_reasons": strategy_insufficiency,
+            "closed_trade_count": strategy_closed_count,
+            "broker_fill_coverage_required": False,
             "automatic_shadow_forbidden": True,
             "automatic_live_forbidden": True,
             "promotion_requires": (
@@ -930,6 +1036,7 @@ def build_evidence_packet(
             ),
         },
     }
+    packet["strategy_readiness"] = dict(packet["readiness"])
     encoded = json.dumps(
         packet, ensure_ascii=True, sort_keys=True, separators=(",", ":")
     )
