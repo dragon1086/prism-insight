@@ -36,16 +36,20 @@ jobs:
           python -m pytest tests/test_trading_scenario_contract.py \
             tests/test_trading_agents_prompt_rules.py \
             tests/test_codex_oauth_fast_backend.py tests/test_buy_codex_settings.py \
-            tests/test_codex_fast_process_cleanup.py -q
+            tests/test_codex_fast_process_cleanup.py tests/test_entry_score_policy_contract.py \
+            tests/test_regime_min_score_floor.py tests/test_buy_gate.py \
+            tests/test_order_budget.py -q
           # Existing bootstrap creates only a fake example.com KIS config, removes it at exit.
           python -m pytest tests/test_multi_account_domestic.py \
             tests/test_astra_kr_safety.py tests/test_kr_buy_quote_validation.py \
             tests/test_parallel_trading_batch.py tests/test_trading_scenario_retry.py \
-            tests/test_stock_tracking_agent_process_reports.py tests/test_kr_pending_entry.py -q
+            tests/test_stock_tracking_agent_process_reports.py tests/test_kr_pending_entry.py \
+            tests/test_kr_order_budget.py -q
           python -m pytest prism-us/tests/test_us_buy_runtime_safety.py \
             prism-us/tests/test_us_parallel_trading_analysis.py \
             prism-us/tests/test_us_stock_tracking_agent_process_reports.py \
-            prism-us/tests/test_trading_agents_prompt_rules.py -q
+            prism-us/tests/test_trading_agents_prompt_rules.py \
+            prism-us/tests/test_us_order_budget.py -q
 
   dashboard:
     name: Dashboard production build

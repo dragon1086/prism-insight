@@ -500,6 +500,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 buy_score = scenario.get("buy_score", 0)
                 min_score = scenario.get("min_score", 0)
                 llm_min_score = min_score
+                scenario.pop("regime_entry_policy", None)
                 decision = analysis_result.get("decision")
                 entry_cash_amount = None
                 rebound_pilot = False
@@ -560,6 +561,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                 scenario["regime_entry_policy"] = {
                                     "mode": "rebound_pilot",
                                     "position_fraction": 0.5,
+                                    "cash_budget": entry_cash_amount,
+                                    "budget_semantics": "maximum_order_notional",
                                     "regime": _fr,
                                     "market_pulse": _pulse,
                                 }
@@ -995,6 +998,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                     limit_price=current_price,
                                     intent=order_intent,
                                     quote_validator=self._buy_quote_validator(scenario, is_add=is_add),
+                                    **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
                                 )
                         except OrderOutcomeUnknown as error:
                             self._link_position_entry_intent(
