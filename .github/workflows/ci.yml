@@ -36,6 +36,9 @@ jobs:
           python -m pytest tests/test_agent_lazy_broker_imports.py -q
           python -m pytest tests/test_agent_virtual_initialization.py \
             tests/test_agent_instance_mcp_fallback.py tests/test_isolated_agent_runtime.py -q
+          python -m pytest tests/test_codex_full_stage.py tests/test_codex_probe_stage.py \
+            tests/test_codex_probe_sandbox.py tests/test_codex_trading_runtime_probe.py \
+            tests/test_codex_probe_mcp_bridge.py tests/test_isolated_responses_proxy.py -q
           python -m pytest tests/test_trading_scenario_contract.py \
             tests/test_trading_agents_prompt_rules.py \
             tests/test_codex_oauth_fast_backend.py tests/test_buy_codex_settings.py \
