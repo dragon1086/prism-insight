@@ -10,7 +10,9 @@ are used with 'market' column to distinguish between KR and US.
 
 import importlib.util
 import logging
+import json
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional
 
@@ -998,10 +1000,52 @@ US_PYRAMID_MIN_PROFIT_PCT = 5.0
 US_PYRAMID_MAX_ROWS = 3
 
 
+def _stored_pyramid_ownership(raw):
+    """Classify stored evidence only; never adopt an unowned legacy campaign."""
+    if raw is None or raw == "":
+        return "LEGACY_OR_UNOWNED"
+    try:
+        if isinstance(raw, str):
+            if len(raw) > 1024 * 1024:
+                return "UNKNOWN"
+            raw = json.loads(raw)
+        if not isinstance(raw, dict):
+            return "UNKNOWN"
+        policy = raw.get("regime_entry_policy")
+        pilot = raw.get("pilot")
+        policy = {} if policy is None else policy
+        pilot = {} if pilot is None else pilot
+        if not isinstance(policy, dict) or not isinstance(pilot, dict):
+            return "UNKNOWN"
+        owners = [container[key] for container, key in (
+            (raw, "split_owner"), (raw, "_split_owner"), (raw, "campaign_owner"),
+            (policy, "owner"), (pilot, "owner")) if key in container]
+        if any(owner == "split-pilot-v1" for owner in owners) or policy.get("mode") == "rebound_pilot":
+            return "SPLIT_PILOT"
+        if owners or pilot or ("mode" in policy and policy["mode"] != "normal"):
+            return "UNKNOWN"
+        if "position_fraction" in policy:
+            fraction = policy["position_fraction"]
+            if isinstance(fraction, bool):
+                return "UNKNOWN"
+            number = Decimal(str(fraction))
+            if not number.is_finite():
+                return "UNKNOWN"
+            if number == Decimal(".5"):
+                return "SPLIT_PILOT"
+            if number != 1:
+                return "UNKNOWN"
+        if policy and not (policy.get("mode") == "normal" and "position_fraction" in policy):
+            return "UNKNOWN"
+        return "LEGACY_OR_UNOWNED"
+    except (ValueError, TypeError, InvalidOperation, RecursionError):
+        return "UNKNOWN"
+
+
 def get_us_existing_position_for_ticker(cursor, ticker: str, account_key: Optional[str] = None) -> dict:
     """Aggregate the existing US holding for a ticker/account.
 
-    Returns {row_count, avg_buy_price}. Used by the pyramiding add-gate.
+    Returns {row_count, avg_buy_price, pyramid_ownership}. Never adopts ownership.
 
     NOTE (#288, intentional): ``avg_buy_price`` is a SIMPLE MEAN of per-row entry
     prices, NOT a share-weighted average. The independent-row model deliberately
@@ -1012,21 +1056,24 @@ def get_us_existing_position_for_ticker(cursor, ticker: str, account_key: Option
     try:
         if account_key:
             cursor.execute(
-                "SELECT buy_price FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
+                "SELECT buy_price, scenario FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
                 (ticker, account_key),
             )
         else:
             cursor.execute(
-                "SELECT buy_price FROM us_stock_holdings WHERE ticker = ?",
+                "SELECT buy_price, scenario FROM us_stock_holdings WHERE ticker = ?",
                 (ticker,),
             )
-        prices = [float(r[0]) for r in cursor.fetchall() if r[0] is not None]
+        rows = cursor.fetchall()
+        ownership = {_stored_pyramid_ownership(row[1] if len(row) > 1 else None) for row in rows}
+        summary = "SPLIT_PILOT" if "SPLIT_PILOT" in ownership else ("UNKNOWN" if "UNKNOWN" in ownership else "LEGACY_OR_UNOWNED")
+        prices = [float(r[0]) for r in rows if r[0] is not None]
         row_count = len(prices)
         avg_buy_price = (sum(prices) / row_count) if row_count else 0.0
-        return {"row_count": row_count, "avg_buy_price": avg_buy_price}
+        return {"row_count": row_count, "avg_buy_price": avg_buy_price, "pyramid_ownership": summary}
     except Exception as e:
         logger.error(f"Error querying existing US position for {ticker}: {e}")
-        return {"row_count": 0, "avg_buy_price": 0.0}
+        return {"row_count": 0, "avg_buy_price": 0.0, "pyramid_ownership": "UNKNOWN"}
 
 
 def _us_regime_label(market_condition) -> str:
@@ -1050,6 +1097,7 @@ def evaluate_us_pyramid_add_gate(
     existing_row_count: int,
     min_profit_pct: float = US_PYRAMID_MIN_PROFIT_PCT,
     max_rows: int = US_PYRAMID_MAX_ROWS,
+    *, ownership: str | None = None,
 ):
     """Pure add-gate for US pyramiding (#288). Returns (allowed, reason).
 
@@ -1057,6 +1105,10 @@ def evaluate_us_pyramid_add_gate(
     existing_row_count < max_rows. Buy-agent Enter/score/sector checks apply
     independently in the normal buy path.
     """
+    if ownership == "SPLIT_PILOT":
+        return False, "LEGACY_PYRAMID_BLOCKED_SPLIT_PILOT"
+    if ownership == "UNKNOWN":
+        return False, "LEGACY_PYRAMID_OWNERSHIP_UNKNOWN"
     regime = _us_regime_label(market_condition)
     if regime not in US_PYRAMID_ALLOWED_REGIMES:
         return False, f"regime '{regime or 'unknown'}' not in {US_PYRAMID_ALLOWED_REGIMES}"

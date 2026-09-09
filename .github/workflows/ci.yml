@@ -38,7 +38,7 @@ jobs:
             tests/test_codex_oauth_fast_backend.py tests/test_buy_codex_settings.py \
             tests/test_codex_fast_process_cleanup.py tests/test_entry_score_policy_contract.py \
             tests/test_regime_min_score_floor.py tests/test_buy_gate.py \
-            tests/test_order_budget.py -q
+            tests/test_order_budget.py tests/test_pyramid_pilot_exclusion.py -q
           python -m pytest tests/test_trend_quality_research.py \
             tests/test_trend_research_capture.py tests/test_strategy_ledger.py tests/test_strategy_ledger_slots.py \
             tests/test_pilot_lifecycle.py \
