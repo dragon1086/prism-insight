@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "KR_RESEARCH_CALENDAR_FACTS_V3",
+  "compiled_at": "2026-09-09T19:01:48Z",
+  "facts": [
+    {
+      "session_date": "2026-06-03",
+      "url": "https://www.samsungpop.com/ux/kor/customer/notice/notice/noticeViewContent.do?MenuSeqNo=23996",
+      "publisher": "Samsung Securities",
+      "notice_title": "지방선거일(6.3) 증권·파생·일반상품시장 휴장 안내",
+      "short_fact": "2026-06-03 지방선거일에 주식시장을 포함한 증권시장 휴장",
+      "scope": "KR stock market regular session",
+      "cited_basis": "유가증권시장업무규정 제5조, 코스닥시장업무규정 제5조, 코넥스시장업무규정 제5조"
+    },
+    {
+      "session_date": "2026-07-17",
+      "url": "https://www.samsungpop.com/ux/kor/customer/notice/notice/noticeViewContent.do?MenuSeqNo=24145",
+      "publisher": "Samsung Securities",
+      "notice_title": "제헌절(7.17) 증권·파생·일반상품시장 휴장 안내",
+      "short_fact": "2026-07-17 제헌절에 주식시장을 포함한 증권시장 휴장",
+      "scope": "KR stock market regular session",
+      "cited_basis": "유가증권시장업무규정 제5조, 코스닥시장업무규정 제5조, 코넥스시장업무규정 제5조"
+    }
+  ],
+  "hash_basis": "Canonical short fact projection, not a hash of source HTTP bodies",
+  "verification": "Full notice bodies read via web tool, then parent explicitly approved exact two-date research overlay"
+}
