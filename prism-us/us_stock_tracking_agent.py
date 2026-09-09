@@ -31,6 +31,7 @@ import re
 import sqlite3
 import sys
 import time
+import threading
 import traceback
 import importlib.util as _ilu
 from datetime import datetime
@@ -231,11 +232,25 @@ except ImportError as e:
     )
     from tracking.journal import USJournalManager
     from tracking.compression import USCompressionManager
-# Load kis_auth from main project trading/ (prism-us/trading/ has no kis_auth)
+# Keep the explicit main-project path, but read broker configuration only when
+# an account operation needs it. Isolated agent import must need no credentials.
 import importlib.util as _importlib_util
-_kis_auth_spec = _importlib_util.spec_from_file_location("kis_auth", PROJECT_ROOT / "trading/kis_auth.py")
-ka = _importlib_util.module_from_spec(_kis_auth_spec)
-_kis_auth_spec.loader.exec_module(ka)
+ka = None
+_kis_auth_lock = threading.Lock()
+
+
+def _get_kis_auth():
+    global ka
+    if ka is None:
+        with _kis_auth_lock:
+            if ka is None:
+                spec = _importlib_util.spec_from_file_location("kis_auth", PROJECT_ROOT / "trading/kis_auth.py")
+                if spec is None or spec.loader is None:
+                    raise ImportError("Main-project KIS auth loader unavailable")
+                module = _importlib_util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                ka = module
+    return ka
 
 # Create MCPApp instance
 class _LazyMCPApp:
@@ -973,6 +988,8 @@ class USStockTrackingAgent:
             return False
 
     def _get_trading_accounts(self) -> List[Dict[str, Any]]:
+        ka = _get_kis_auth()
+
         default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"
         return ka.get_configured_accounts(svr=svr, market="us")
@@ -996,6 +1013,8 @@ class USStockTrackingAgent:
         account_key = str(account.get("account_key", "") or "")
         if not account_key:
             return account_name
+
+        ka = _get_kis_auth()
 
         parts = account_key.split(":")
         if len(parts) == 3:
