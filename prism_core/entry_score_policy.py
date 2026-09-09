@@ -1,7 +1,10 @@
 """Shared KR/US entry-score contract; no market-data or broker imports.
 
-Pulse and pilot budget permission must come from runtime callers, never model
-scenario annotations. Distribution caution is resolved by the final buy gate.
+Pulse and pilot half-slot support must come from runtime callers, never model
+scenario annotations. The legacy ``pilot_budget_available`` parameter describes
+strategy allocation support; it is not proof of broker cash or an order cap.
+Distribution caution is resolved by the final buy gate. Execution caps remain
+mandatory at the independent broker boundary.
 """
 from __future__ import annotations
 

@@ -623,6 +623,10 @@ class DomesticStockTrading:
         order_window = _domestic_order_window(now)
 
         if strict_budget:
+            if not resolve_order_budget(buy_amount, 0):
+                return {'success': False, 'order_no': None, 'stock_code': stock_code,
+                        'quantity': 0, 'status': 'blocked_budget',
+                        'message': 'Strict budget requires an explicit positive buy amount'}
             # Pilot allocation is a notional cap, so market-price execution is
             # not acceptable. No fallback may silently remove the limit.
             if not resolve_order_budget(limit_price, 0) or int(limit_price) <= 0:
@@ -1329,8 +1333,8 @@ class DomesticStockTrading:
             }
 
     async def _execute_buy_stock(self, stock_code: str, buy_amount: int = None, limit_price: int = None, *, quote_validator=None, strict_budget: bool = False) -> Dict[str, Any]:
-        # Use class default if buy_amount is None
-        amount = resolve_order_budget(buy_amount, self.buy_amount)
+        # Only normal orders may default an omitted amount to the full budget.
+        amount = resolve_order_budget(buy_amount, 0 if strict_budget else self.buy_amount)
 
         result = {
             'success': False,
@@ -1345,6 +1349,8 @@ class DomesticStockTrading:
 
         if not amount:
             result['message'] = 'Buy budget must be finite and positive'
+            if strict_budget:
+                result['status'] = 'blocked_budget'
             return result
         if strict_budget and not resolve_order_budget(limit_price, 0):
             result['message'] = 'Strict budget requires a positive limit price'

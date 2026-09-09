@@ -20,10 +20,27 @@ mod = base.us_agent_module
 Agent = base.USStockTrackingAgent
 
 
+@pytest.mark.parametrize("budget", [None, 0, 1, 1000])
+@pytest.mark.parametrize("risk_valid", [False, True])
+def test_pilot_strategy_gate_is_cash_independent_not_risk_independent(monkeypatch, budget, risk_valid):
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
+    agent = Agent.__new__(Agent)
+    agent.active_account = {"buy_amount_usd": budget}
+    agent._buy_floor_regime = lambda: "sideways"
+    rp = agent._regime_policy_mod()
+    monkeypatch.setattr(rp, "get_market_pulse_state", lambda _market: "UPTREND")
+    scenario = {"decision": "Enter", "buy_score": 6, "min_score": 5,
+                "target_price": 115 if risk_valid else 99, "stop_loss": 95,
+                "risk_reward_ratio": 3,
+                "regime_entry_policy": {"mode": "rebound_pilot", "position_fraction": 0.5,
+                                        "cash_budget": None}}
+    assert agent._evaluate_production_buy_gate(scenario, 100)["allowed"] is risk_valid
+
+
 @pytest.mark.parametrize("score,pulse,cap,allowed", [
     (7, "UPTREND", None, True), (7, None, None, False),
     (7, "CORRECTION", None, False), (6, "UPTREND", 500, True),
-    (6, "UPTREND", None, False), (6, "UPTREND", 1000, False),
+    (6, "UPTREND", None, False), (6, "UPTREND", 1000, True),
 ])
 @pytest.mark.parametrize("decision", ["entry", "진입", "매수"])
 def test_runtime_policy_reaches_us_gate_and_broker_boundary(monkeypatch, score, pulse, cap, allowed, decision):
