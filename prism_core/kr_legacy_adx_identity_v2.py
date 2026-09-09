@@ -79,7 +79,7 @@ def metrics(rows, trial, cost=0):
             value = row["recorded_return_pct"] if not cost else (
                 (1 + row["recorded_return_pct"] / 100) * (1 - cost / 10000) / (1 + cost / 10000) - 1) * 100
             blocks[row["entry_session_date"]].append(0 if v1.passes(trial, row["feature"]) else -value)
-        rng = random.Random(20260910)
+        rng = random.Random(20260910)  # nosec B311 - reproducible statistical bootstrap, not secrets
         keys = sorted(blocks)
         draws = sorted(statistics.mean(v for key in rng.choices(keys, k=len(keys)) for v in blocks[key]) for _ in range(1000))
         result["bonferroni_date_cluster_interval_pp"] = [draws[3], draws[996]]

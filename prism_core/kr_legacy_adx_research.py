@@ -109,7 +109,7 @@ def metrics(rows, trial, cost=0):
     enough = len(rows) >= 30 and len(blocks) >= 20
     interval = None
     if enough:
-        rng = random.Random(20260910)
+        rng = random.Random(20260910)  # nosec B311 - reproducible statistical bootstrap, not secrets
         keys = sorted(blocks)
         draws = sorted(statistics.mean(v for key in rng.choices(keys, k=len(keys)) for v in blocks[key])
                        for _ in range(1000))
