@@ -1,4 +1,4 @@
-"""BUY-only Codex settings; SELL callers deliberately do not use these."""
+"""Independent BUY and SELL Codex settings with shared pure validation."""
 from __future__ import annotations
 
 import math
@@ -28,22 +28,35 @@ def validate_timeout(value: object) -> float:
 
 
 @dataclass(frozen=True)
-class BuyCodexSettings:
+class CodexSettings:
     model: str
     reasoning_effort: str | None
     timeout: float
 
 
-def resolve_buy_codex_settings(environ: Mapping[str, str] | None = None) -> BuyCodexSettings:
-    """Resolve explicit BUY overrides; timeouts are finite and at most 600s."""
+# Preserve the public BUY settings import and immutable value semantics.
+BuyCodexSettings = CodexSettings
+
+
+def _resolve_codex_settings(side: str, environ: Mapping[str, str] | None) -> CodexSettings:
     env = os.environ if environ is None else environ
-    model = env.get("PRISM_BUY_CODEX_MODEL", "gpt-5.6-sol")
-    effort = env.get("PRISM_BUY_CODEX_EFFORT")
+    model = env.get(f"PRISM_{side}_CODEX_MODEL", "gpt-5.6-sol")
+    effort = env.get(f"PRISM_{side}_CODEX_EFFORT")
     if model not in SUPPORTED_MODELS:
         raise CodexFastError(f"Unsupported Codex model: {model}")
     if effort is not None and effort not in SUPPORTED_REASONING_EFFORTS:
         raise CodexFastError(f"Unsupported Codex reasoning effort: {effort}")
     timeout = validate_timeout(env.get(
-        "PRISM_BUY_CODEX_TIMEOUT", env.get("PRISM_CODEX_FAST_TIMEOUT", "90"),
+        f"PRISM_{side}_CODEX_TIMEOUT", env.get("PRISM_CODEX_FAST_TIMEOUT", "90"),
     ))
-    return BuyCodexSettings(model, effort, timeout)
+    return CodexSettings(model, effort, timeout)
+
+
+def resolve_buy_codex_settings(environ: Mapping[str, str] | None = None) -> BuyCodexSettings:
+    """Resolve explicit BUY overrides; timeouts are finite and at most 600s."""
+    return _resolve_codex_settings("BUY", environ)
+
+
+def resolve_sell_codex_settings(environ: Mapping[str, str] | None = None) -> CodexSettings:
+    """Resolve SELL overrides independently of BUY, preserving unset defaults."""
+    return _resolve_codex_settings("SELL", environ)
