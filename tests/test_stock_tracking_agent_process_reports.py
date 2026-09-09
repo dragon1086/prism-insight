@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import sqlite3
 import sys
@@ -440,19 +441,25 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
     assert "partial success" in caplog.text.lower()
 
 
+@pytest.mark.parametrize("configured_budget", [None, 0, 1000, 1_000_000])
+@pytest.mark.parametrize("broker_success", [False, True])
+@pytest.mark.parametrize("enhanced", [False, True])
 @pytest.mark.asyncio
-async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, tmp_path):
+async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, tmp_path, configured_budget, broker_success, enhanced, caplog):
     from cores import regime_policy
+    from stock_tracking_enhanced_agent import EnhancedStockTrackingAgent
+    caplog.set_level(logging.INFO)
 
-    agent = StockTrackingAgent.__new__(StockTrackingAgent)
+    agent_class = EnhancedStockTrackingAgent if enhanced else StockTrackingAgent
+    agent = agent_class.__new__(agent_class)
     agent.db_path = str(tmp_path / "kr-rebound-pilot.sqlite")
     _ensure_reentry_schema(agent.db_path)
     agent.account_configs = [{
         "name": "kr-primary",
         "account_key": "vps:kr-primary:01",
-        "buy_amount_krw": 1_000_000,
+        "buy_amount_krw": configured_budget,
     }]
-    agent.active_account = None
+    agent.active_account = agent.account_configs[0] if enhanced else None
     agent.max_slots = 10
     agent._position_pending_kr_ready = False
 
@@ -484,8 +491,19 @@ async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, t
     agent._get_current_slots_count = AsyncMock(return_value=0)
     agent._check_sector_diversity = AsyncMock(return_value=True)
     agent._buy_floor_regime = lambda: "sideways"
+    agent.conn = sqlite3.connect(":memory:")
+    agent.cursor = agent.conn.cursor()
+    from tracking.db_schema import TABLE_STOCK_HOLDINGS
+    agent.cursor.execute(TABLE_STOCK_HOLDINGS)
+    agent.message_queue = []
+    agent._msg_types = []
+    agent._mirror_position_open = MagicMock()
+    agent._get_trigger_win_rate = lambda *_a: None
+    entry_events = []
+    monkeypatch.setattr(sys.modules[StockTrackingAgent.__module__], "emit_trading_context",
+                        lambda kind, **kwargs: entry_events.append((kind, kwargs)))
     agent._buy_stock_with_position = AsyncMock(
-        return_value=LegacyPositionWriteResult(True, 1)
+        wraps=agent_class._buy_stock_with_position.__get__(agent)
     )
     agent._link_position_entry_intent = lambda **_kwargs: True
 
@@ -495,7 +513,7 @@ async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, t
         async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None, quote_validator=None, strict_budget=False):
             assert strict_budget is True
             buy_amounts.append(buy_amount)
-            return await super().async_buy_stock(stock_code, limit_price, buy_amount)
+            return {"success": broker_success, "message": "fake accepted" if broker_success else "fake rejected"}
 
     redis_calls, gcp_calls = [], []
     _install_signal_modules(monkeypatch, redis_calls, gcp_calls)
@@ -504,11 +522,29 @@ async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, t
     monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
     monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "false")
 
-    buy_count, sell_count = await StockTrackingAgent.process_reports(
+    buy_count, sell_count = await agent_class.process_reports(
         agent, ["report-a.pdf"]
     )
 
     assert (buy_count, sell_count) == (1, 0)
+    policy = agent._buy_stock_with_position.call_args.args[3]["regime_entry_policy"]
+    assert policy["mode"] == "rebound_pilot"
+    assert policy["position_fraction"] == 0.5
+    stored = agent.cursor.execute("SELECT scenario FROM stock_holdings").fetchall()
+    assert len(stored) == 1
+    assert json.loads(stored[0][0])["regime_entry_policy"] == policy
+    entries = [payload for kind, payload in entry_events if kind == "entry.executed"]
+    assert len(entries) == 1
+    assert entries[0]["scenario"]["regime_entry_policy"] == policy
+    assert "Strategy entry recorded:" in caplog.text
+    assert "Strategy entries: 1" in caplog.text
+    assert "purchase complete" not in caplog.text.lower()
+    assert "Purchased:" not in caplog.text
+    if configured_budget != 1_000_000:
+        assert buy_amounts == []
+        assert "Actual purchase failed: Pilot broker budget unavailable" in caplog.text
+        assert policy["cash_budget"] == (None if not configured_budget else configured_budget * 0.5)
+        return
     assert buy_amounts == [500_000]
     assert redis_calls[0]["scenario"]["regime_entry_policy"] == {
         "mode": "rebound_pilot",

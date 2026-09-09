@@ -898,8 +898,10 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(
         assert micro_split_events == []
 
 
+@pytest.mark.parametrize("configured_budget", [None, 0, 1, 2000.0])
+@pytest.mark.parametrize("broker_success", [False, True])
 @pytest.mark.asyncio
-async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, tmp_path):
+async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, tmp_path, configured_budget, broker_success):
     regime_policy = _load_module(
         "root_regime_policy_rebound_test", PROJECT_ROOT / "cores" / "regime_policy.py"
     )
@@ -911,7 +913,7 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
         "name": "us-primary",
         "account_key": "vps:us-primary:01",
         "product": "01",
-        "buy_amount_usd": 2000.0,
+        "buy_amount_usd": configured_budget,
     }]
     agent.active_account = None
     agent.max_slots = 10
@@ -949,8 +951,19 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
     agent._check_sector_diversity = AsyncMock(return_value=True)
     agent._buy_floor_regime = lambda: "sideways"
     agent._regime_policy_mod = lambda: regime_policy
+    agent.conn = sqlite3.connect(":memory:")
+    agent.cursor = agent.conn.cursor()
+    schema = _load_module("root_schema_pilot_test", PROJECT_ROOT / "tracking" / "db_schema.py")
+    agent.cursor.execute(schema.TABLE_STOCK_HOLDINGS.replace("stock_holdings", "us_stock_holdings"))
+    agent.message_queue = []
+    agent._msg_types = []
+    agent._mirror_position_open = MagicMock()
+    agent._get_trigger_win_rate = lambda *_a: None
+    entry_events = []
+    monkeypatch.setitem(USStockTrackingAgent._buy_stock_with_position.__globals__, "emit_trading_context",
+                        lambda kind, **kwargs: entry_events.append((kind, kwargs)))
     agent._buy_stock_with_position = AsyncMock(
-        return_value=LegacyPositionWriteResult(True, 1)
+        wraps=USStockTrackingAgent._buy_stock_with_position.__get__(agent)
     )
     agent._link_position_entry_intent = lambda **_kwargs: True
     agent._save_watchlist_item = AsyncMock(return_value=True)
@@ -961,7 +974,7 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
         async def async_buy_stock(self, ticker, limit_price=None, buy_amount=None, quote_validator=None, strict_budget=False):
             assert strict_budget is True
             buy_amounts.append(buy_amount)
-            return await super().async_buy_stock(ticker, limit_price, buy_amount)
+            return {"success": broker_success, "message": "fake accepted" if broker_success else "fake rejected"}
 
     module = types.ModuleType("trading.us_stock_trading")
     module.AsyncUSTradingContext = PilotTradingContext
@@ -976,8 +989,21 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
     )
 
     assert (buy_count, sell_count) == (1, 0)
+    policy = agent._buy_stock_with_position.call_args.args[3]["regime_entry_policy"]
+    assert policy["mode"] == "rebound_pilot"
+    assert policy["position_fraction"] == 0.5
+    stored = agent.cursor.execute("SELECT scenario FROM us_stock_holdings").fetchall()
+    assert len(stored) == 1
+    assert json.loads(stored[0][0])["regime_entry_policy"] == policy
+    entries = [payload for kind, payload in entry_events if kind == "entry.executed"]
+    assert len(entries) == 1
+    assert entries[0]["scenario"]["regime_entry_policy"] == policy
+    if configured_budget != 2000.0:
+        assert buy_amounts == []
+        assert policy["cash_budget"] == (None if not configured_budget else configured_budget * 0.5)
+        return
     assert buy_amounts == [1000.0]
-    assert redis_calls[0]["scenario"]["regime_entry_policy"] == {
+    assert policy == {
         "mode": "rebound_pilot",
         "position_fraction": 0.5,
         "cash_budget": 1000.0,

@@ -1912,6 +1912,13 @@ class StockTrackingAgent:
     async def _execute_pending_kr_entry(
         self, prepared: _PreparedKrEntry, *, current_price: float
     ) -> Dict[str, Any]:
+        blocked = self._pilot_broker_budget_block(
+            prepared.scenario,
+            float(prepared.intent.cash_amount) if prepared.intent.cash_amount is not None else None,
+            current_price,
+        )
+        if blocked is not None:
+            return blocked
         async with ExecutionService.domestic(
             account_name=prepared.account_name,
             intent_store=prepared.intent_store,
@@ -2813,7 +2820,7 @@ class StockTrackingAgent:
                     message += f"💼 포트폴리오 관점:\n  {portfolio_context}\n"
 
             self._queue_message(message, "analysis")
-            logger.info(f"{ticker}({company_name}) purchase complete")
+            logger.info(f"{ticker}({company_name}) strategy entry recorded")
 
             return LegacyPositionWriteResult(True, int(legacy_holding_id))
 
@@ -2848,6 +2855,23 @@ class StockTrackingAgent:
             self._buy_floor_regime_cache = _c
         return _c
 
+    @staticmethod
+    def _pilot_broker_budget_block(scenario, amount, price):
+        """Keep account funding failures outside strategy eligibility."""
+        from prism_core.order_budget import whole_share_quantity
+
+        if (scenario.get("regime_entry_policy") or {}).get("mode") != "rebound_pilot":
+            return None
+        if whole_share_quantity(amount, price) > 0:
+            return None
+        return {
+            "success": False,
+            "status": "blocked_budget",
+            "reason_code": "pilot_budget_unavailable_or_below_one_share",
+            "message": "Pilot broker budget unavailable or below one share; strategy entry preserved",
+            "quantity": 0,
+        }
+
     def _evaluate_production_buy_gate(
         self,
         scenario: Dict[str, Any],
@@ -2865,18 +2889,17 @@ class StockTrackingAgent:
         """
         try:
             from cores.buy_gate import evaluate_production_buy_gate, normalize_regime
-            from cores.regime_policy import configured_entry_amount, get_market_pulse_state
+            from cores.regime_policy import get_market_pulse_state
 
             computed_regime = scenario.get("_deterministic_market_regime") or self._buy_floor_regime()
             pulse = get_market_pulse_state("kr") if normalize_regime(computed_regime) == "sideways" else None
             policy = scenario.get("regime_entry_policy") or {}
-            configured_cap = configured_entry_amount(getattr(self, "active_account", None), "kr", 0.5)
+            # Historical gate argument names strategy half-slot permission;
+            # account cash is checked only at the broker boundary below.
             pilot_budget_available = (
                 isinstance(policy, dict)
                 and policy.get("mode") == "rebound_pilot"
                 and policy.get("position_fraction") == 0.5
-                and configured_cap is not None
-                and policy.get("cash_budget") == configured_cap
             )
 
             result = evaluate_production_buy_gate(
@@ -4224,34 +4247,25 @@ class StockTrackingAgent:
                                 entry_cash_amount = configured_entry_amount(
                                     account, "kr", 0.5
                                 )
-                                if entry_cash_amount is None:
-                                    _regime_floor_block = True
-                                    logger.error(
-                                        "[REGIME_REBOUND_PILOT] %s(%s) blocked: "
-                                        "configured KR buy amount unavailable",
-                                        company_name,
-                                        ticker,
-                                    )
-                                else:
-                                    scenario = dict(scenario)
-                                    scenario["regime_entry_policy"] = {
-                                        "mode": "rebound_pilot",
-                                        "position_fraction": 0.5,
-                                        "cash_budget": entry_cash_amount,
-                                        "budget_semantics": "maximum_order_notional",
-                                        "regime": _fr,
-                                        "market_pulse": _pulse,
-                                    }
-                                    analysis_result["scenario"] = scenario
-                                    logger.warning(
-                                        "[REGIME_REBOUND_PILOT] %s(%s) score=%s "
-                                        "min=%s position=50%% cash_amount=%s",
-                                        company_name,
-                                        ticker,
-                                        buy_score,
-                                        min_score,
-                                        entry_cash_amount,
-                                    )
+                                scenario = dict(scenario)
+                                scenario["regime_entry_policy"] = {
+                                    "mode": "rebound_pilot",
+                                    "position_fraction": 0.5,
+                                    "cash_budget": entry_cash_amount,
+                                    "budget_semantics": "maximum_order_notional",
+                                    "regime": _fr,
+                                    "market_pulse": _pulse,
+                                }
+                                analysis_result["scenario"] = scenario
+                                logger.warning(
+                                    "[REGIME_REBOUND_PILOT] %s(%s) score=%s "
+                                    "min=%s position=50%% cash_amount=%s",
+                                    company_name,
+                                    ticker,
+                                    buy_score,
+                                    min_score,
+                                    entry_cash_amount,
+                                )
                             elif buy_score < min_score:
                                 _regime_floor_block = True
                     except Exception as _fe:
@@ -4494,7 +4508,7 @@ class StockTrackingAgent:
                             buy_count += 1
                             state["traded"] = True
                             logger.info(
-                                f"Purchase complete: {company_name}({ticker}) @ "
+                                f"Strategy entry recorded: {company_name}({ticker}) @ "
                                 f"{current_price:,.0f} KRW"
                             )
                             continue
@@ -4527,18 +4541,20 @@ class StockTrackingAgent:
                                 reason="AI analysis entry",
                             )
                             try:
-                                async with ExecutionService.domestic(
-                                    account_name=account["name"],
-                                    db_path=self.db_path,
-                                ) as trading:
-                                    trade_result = await trading.execute_buy(
-                                        stock_code=ticker,
-                                        buy_amount=entry_cash_amount,
-                                        limit_price=current_price,
-                                        intent=order_intent,
-                                        quote_validator=self._buy_quote_validator(scenario, ticker=ticker, account_key=order_intent.account_id),
-                                        **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
-                                    )
+                                trade_result = self._pilot_broker_budget_block(scenario, entry_cash_amount, current_price)
+                                if trade_result is None:
+                                    async with ExecutionService.domestic(
+                                        account_name=account["name"],
+                                        db_path=self.db_path,
+                                    ) as trading:
+                                        trade_result = await trading.execute_buy(
+                                            stock_code=ticker,
+                                            buy_amount=entry_cash_amount,
+                                            limit_price=current_price,
+                                            intent=order_intent,
+                                            quote_validator=self._buy_quote_validator(scenario, ticker=ticker, account_key=order_intent.account_id),
+                                            **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
+                                        )
                             except OrderOutcomeUnknown as error:
                                 self._link_position_entry_intent(
                                     legacy_holding_id=buy_result.legacy_holding_id,
@@ -4602,7 +4618,7 @@ class StockTrackingAgent:
                         if buy_success:
                             buy_count += 1
                             state["traded"] = True
-                            logger.info(f"Purchase complete: {company_name}({ticker}) @ {current_price:,.0f} KRW")
+                            logger.info(f"Strategy entry recorded: {company_name}({ticker}) @ {current_price:,.0f} KRW")
                         else:
                             state["should_save_watchlist"] = True
                             state["skip_reason"] = state["skip_reason"] or "Purchase failed"
@@ -4653,7 +4669,7 @@ class StockTrackingAgent:
                     was_traded=False,
                 )
 
-            logger.info(f"Report processing complete - Purchased: {buy_count} stocks, Sold: {sell_count} stocks")
+            logger.info(f"Report processing complete - Strategy entries: {buy_count} stocks, Sold: {sell_count} stocks")
             return buy_count, sell_count
 
         except Exception as e:

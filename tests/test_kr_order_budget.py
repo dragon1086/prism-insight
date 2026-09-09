@@ -22,6 +22,26 @@ def broker(price=300_000):
     return trader
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget", [None, 0, -1, False, float("nan"), float("inf"), "bad"])
+async def test_strict_budget_never_uses_default_before_quote(budget):
+    trader = broker()
+    result = await trader._execute_buy_stock("006400", budget, 300_000, strict_budget=True)
+    assert not result["success"]
+    assert result["quantity"] == 0
+    trader.get_current_price.assert_not_called()
+    trader._request.assert_not_called()
+
+
+@pytest.mark.parametrize("budget", [None, 0, -1, False, float("nan"), float("inf"), "bad"])
+def test_smart_strict_budget_never_uses_default(budget):
+    trader = broker()
+    result = trader.smart_buy("006400", budget, 300_000, strict_budget=True)
+    assert not result["success"]
+    assert result["status"] == "blocked_budget"
+    trader._request.assert_not_called()
+
+
 @pytest.mark.parametrize('budget', [0, -1, float('nan'), float('inf'), False, 500_000])
 @pytest.mark.parametrize('route', ['buy_market_price', 'buy_limit_price', 'buy_reserved_order', 'buy_closing_price'])
 def test_invalid_or_unaffordable_budget_never_orders(budget, route):
