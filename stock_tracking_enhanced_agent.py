@@ -506,11 +506,11 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 # Resolve the legacy dynamic-risk fallback before the final
                 # deterministic gate so missing prices are validated rather
                 # than silently filled only after the buy decision.
-                if scenario.get("target_price", 0) <= 0:
+                if decision == "Enter" and (scenario.get("target_price") or 0) <= 0:
                     scenario["target_price"] = await self._dynamic_target_price(
                         ticker, current_price
                     )
-                if scenario.get("stop_loss", 0) <= 0:
+                if decision == "Enter" and (scenario.get("stop_loss") or 0) <= 0:
                     scenario["stop_loss"] = await self._dynamic_stop_loss(
                         ticker, current_price
                     )
@@ -795,6 +795,25 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                 # Process buy if entry decision
                 if entry_eligible:
+                    try:
+                        current_price = await self._refresh_buy_boundary(
+                            ticker, scenario, analysis_result,
+                            buy_score=buy_score, is_add=is_add,
+                        )
+                    except Exception as quote_error:
+                        logger.warning("[BUY_QUOTE][KR][enhanced] %s entry blocked: %s", ticker, quote_error)
+                        scenario["_decision_context"].update(
+                            gate_allowed=False,
+                            gate_reason="fresh_quote_revalidation_failed",
+                        )
+                        await self._save_watchlist_item(
+                            ticker=ticker, company_name=company_name,
+                            current_price=current_price, buy_score=buy_score,
+                            min_score=min_score, decision="Watch",
+                            skip_reason="Fresh quote unavailable or scenario invalid at refreshed price",
+                            scenario=scenario, sector=sector, was_traded=False,
+                        )
+                        continue
                     if self._position_pending_kr_enabled():
                         prepared = None
                         active_account = getattr(self, "active_account", None)
@@ -962,6 +981,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                                     buy_amount=entry_cash_amount,
                                     limit_price=current_price,
                                     intent=order_intent,
+                                    quote_validator=self._buy_quote_validator(scenario, is_add=is_add),
                                 )
                         except OrderOutcomeUnknown as error:
                             self._link_position_entry_intent(
@@ -1543,8 +1563,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                     )
 
                 if _kr_codex_runtime_enabled():
-                    async with app.run():
-                        response = await _legacy_sell_response()
+                    async with self._get_legacy_fallback_lock():
+                        async with app.run():
+                            response = await _legacy_sell_response()
                 else:
                     response = await _legacy_sell_response()
 

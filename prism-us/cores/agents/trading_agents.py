@@ -8,6 +8,10 @@ Note: These agents will be integrated in Phase 6 (Trading System).
 """
 
 from mcp_agent.agents.agent import Agent
+from prism_core.trading_scenario_contract import (
+    buy_scenario_prompt_contract,
+    sell_scenario_authority_contract,
+)
 
 # Fallback sector names when dynamic data is not available
 GICS_SECTORS = [
@@ -710,6 +714,7 @@ Prohibited: `"$170"`, `"about $170"`, `"minimum 170"`.
 """
 
     instruction = instruction.replace("{sector_constraint}", sector_constraint)
+    instruction += buy_scenario_prompt_contract(language)
 
     return Agent(
         name="us_trading_scenario_agent",
@@ -1105,7 +1110,7 @@ Trailing Stop %: Bull peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
 
     return Agent(
         name="us_sell_decision_agent",
-        instruction=instruction,
+        instruction=instruction + sell_scenario_authority_contract(language),
         # perplexity: 핵심-0 법인 이벤트(상폐/공개매수/파산 등) 뉴스 자율 점검에 필요
         server_names=["yahoo_finance", "sqlite", "time", "perplexity"]
     )

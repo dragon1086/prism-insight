@@ -1,4 +1,8 @@
 from mcp_agent.agents.agent import Agent
+from prism_core.trading_scenario_contract import (
+    buy_scenario_prompt_contract,
+    sell_scenario_authority_contract,
+)
 
 # Fallback sector names when dynamic data is not available
 KRX_STANDARD_SECTORS = [
@@ -694,6 +698,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         """
 
     instruction = instruction.replace("{sector_constraint}", sector_constraint)
+    instruction += buy_scenario_prompt_contract(language)
 
     return Agent(
         name="trading_scenario_agent",
@@ -1152,7 +1157,7 @@ def create_sell_decision_agent(language: str = "ko"):
 
     return Agent(
         name="sell_decision_agent",
-        instruction=instruction,
+        instruction=instruction + sell_scenario_authority_contract(language),
         # perplexity: 핵심-0 법인 이벤트(상폐/공개매수 등) 뉴스 자율 점검에 필요
         server_names=["kospi_kosdaq", "sqlite", "time", "perplexity"]
     )

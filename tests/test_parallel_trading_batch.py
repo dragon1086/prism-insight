@@ -39,6 +39,11 @@ from prism_core.positions import LegacyPositionWriteResult
 from stock_tracking_enhanced_agent import EnhancedStockTrackingAgent
 
 
+@pytest.fixture(autouse=True)
+def _offline_market_pulse(monkeypatch):
+    monkeypatch.setattr("cores.regime_policy.get_market_pulse_state", lambda *_a, **_kw: "UPTREND")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -57,7 +62,57 @@ def _make_agent() -> EnhancedStockTrackingAgent:
     agent._dynamic_target_price = AsyncMock(return_value=81000)
     agent._dynamic_stop_loss = AsyncMock(return_value=65000)
     agent._buy_floor_regime = MagicMock(return_value="strong_bull")
+    agent._refresh_buy_boundary = AsyncMock(return_value=70000)
     return agent
+
+
+@pytest.mark.asyncio
+async def test_env_cap_three_preserves_default_four(monkeypatch):
+    monkeypatch.delenv("TRADING_ANALYSIS_CONCURRENCY", raising=False)
+    assert enh_mod._resolve_trading_analysis_concurrency() == 4
+    monkeypatch.setenv("TRADING_ANALYSIS_CONCURRENCY", "3")
+    monkeypatch.setattr(enh_mod, "TRADING_ANALYSIS_CONCURRENCY", enh_mod._resolve_trading_analysis_concurrency())
+    agent = _make_agent()
+    state = {"active": 0, "peak": 0}
+
+    async def core(path):
+        state["active"] += 1
+        state["peak"] = max(state["peak"], state["active"])
+        await asyncio.sleep(0.01)
+        state["active"] -= 1
+        return _core_ok(path, path)
+
+    agent._analyze_report_core = core
+    agent.analyze_report = AsyncMock(side_effect=lambda path, **kw: kw["precomputed_core"])
+    await agent.process_reports([f"{n}.pdf" for n in range(7)])
+    assert state == {"active": 0, "peak": 3}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", ["true", "false"])
+async def test_invalid_final_quote_prevents_both_entry_routes(monkeypatch, pending):
+    monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", pending)
+    agent = _make_agent()
+    agent.db_path = ":memory:"
+    result = _core_ok("005930", "test", decision="Enter")
+    agent._analyze_report_core = AsyncMock(return_value=result)
+    agent.analyze_report = AsyncMock(return_value=result)
+    agent._refresh_buy_boundary = AsyncMock(side_effect=ValueError("quote unavailable"))
+    agent._buy_stock_with_position = AsyncMock()
+    agent._prepare_pending_kr_entry = MagicMock()
+    agent._execute_pending_kr_entry = AsyncMock()
+    cooldown = types.ModuleType("reentry_cooldown")
+    cooldown.reentry_block = lambda *a, **kw: None
+    cooldown.COOLDOWN_LIVE = False
+    cooldown.COOLDOWN_RISK_EXIT_LIVE = False
+    monkeypatch.setitem(sys.modules, "reentry_cooldown", cooldown)
+    assert await agent.process_reports(["005930_test.pdf"]) == (0, 0)
+    agent._refresh_buy_boundary.assert_awaited_once()
+    agent._buy_stock_with_position.assert_not_awaited()
+    agent._prepare_pending_kr_entry.assert_not_called()
+    agent._execute_pending_kr_entry.assert_not_awaited()
+    saved = agent._save_watchlist_item.await_args.kwargs
+    assert saved["scenario"]["_decision_context"]["gate_allowed"] is False
 
 
 def _ensure_reentry_schema(path):
@@ -221,7 +276,7 @@ async def test_gates_run_sequentially_after_parallel_phase(monkeypatch, tmp_path
         async def __aexit__(self, *a):
             return False
 
-        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None):
+        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None, quote_validator=None):
             return {"success": True, "message": "ok"}
 
     monkeypatch.setattr(domestic_trading, "AsyncTradingContext", _FakeTradingCtx)
@@ -348,7 +403,7 @@ async def test_enhanced_pending_gate_false_preserves_legacy_message_broker_publi
         async def __aexit__(self, *_args):
             return False
 
-        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None):
+        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None, quote_validator=None):
             events.append("broker")
             return {"success": True, "message": "ok"}
 
