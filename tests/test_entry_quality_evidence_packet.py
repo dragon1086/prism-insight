@@ -103,6 +103,18 @@ def test_excludes_legacy_candidates_before_first_captured_event() -> None:
     assert packet["coverage"]["captured_count"] == 1
 
 
+def test_research_only_capture_is_included_without_inventing_setup_quality():
+    candidate = _candidate("research", "2026-09-10T00:00:00Z", "decision", captured=False)
+    candidate["market"] = "KR"
+    candidate["attributes"]["research_context"] = {"status": "MISSING", "bars": []}
+    packet = build_evidence_packet([candidate], market="KR")
+    assert packet["prospective_cohort"]["candidate_count"] == 1
+    assert packet["coverage"]["trend_research_captured_count"] == 1
+    assert packet["coverage"]["entry_quality_captured_count"] == 0
+    assert packet["analysis_rows"][0]["quality_status"] == "MISSING"
+    assert packet["analysis_rows"][0]["capture_sources"] == ["TREND_RESEARCH"]
+
+
 def test_deduplicates_event_and_decision_ids_deterministically() -> None:
     first = _candidate("same-event", "2026-08-29T00:00:00Z", "decision-1")
     duplicate = json.loads(json.dumps(first))

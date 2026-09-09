@@ -1,5 +1,9 @@
 # PRISM 초분할 설계 문서
 
+> 2026-09-10: 독립 분할 회계 코어와 검증용 재생·계좌 상태 overlay·메시지 미리보기를
+> 추가했습니다. [분할 원장 v1](../STRATEGY_SPLIT_LEDGER_ko.md)을 참고하세요. 아래 Phase2a
+> 운영은 그대로이며, 새 코어를 기존 운영 원장의 교체나 초분할 LIVE 완료로 해석하지 않습니다.
+
 > 상태: **Phase 2a — US 신규 적격진입 0→10% SHADOW projection**
 > 정책 초안: `micro-split-v1-draft`  
 > 거래 영향: **0**

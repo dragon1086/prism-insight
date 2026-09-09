@@ -34,6 +34,11 @@ def _stable_hex(*parts: Any, length: int) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:length]
 
 
+def execution_profile_ref(account_key: str) -> str:
+    """Irreversible execution identity, never a strategy capital source."""
+    return _stable_hex("execution-profile", account_key, length=16)
+
+
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
@@ -193,6 +198,7 @@ def emit_trading_context(
     execution_context: Mapping[str, Any] | None = None,
     entry_quality_context: Mapping[str, Any] | None = None,
     source: str | None = None,
+    research_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Emit one linked snapshot; every failure is swallowed by design."""
     try:
@@ -233,6 +239,8 @@ def emit_trading_context(
             "holding_days": decision_snapshot.get("holding_days"),
             **context,
         }
+        if event_type == "candidate.evaluated" and research_context is not None:
+            attributes["research_context"] = dict(research_context)
         return emit_event(
             event_type,
             event_id=_stable_hex(
