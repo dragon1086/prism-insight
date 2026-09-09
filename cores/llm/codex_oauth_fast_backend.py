@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 _MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 _MAX_TELEMETRY_LINE = 64 * 1024
 _MAX_STAGE_EVENTS = 256
+_STDIN_WRITE_BUDGET = 64 * 1024
 _SAFE_SERVERS = frozenset({"time", "sqlite", "perplexity", "kospi_kosdaq", "yahoo_finance"})
 _SAFE_TOOLS = frozenset({
     "get_current_time", "list_tables", "describe_table", "read_query", "perplexity_ask",
@@ -72,6 +73,42 @@ _SAFE_TOOLS = frozenset({
 })
 
 
+class _StdinPump:
+    """Own a detached POSIX stdin pipe; never retry/resend accepted bytes.
+
+    communicate(input=None) drains stdout/stderr only. Retrying communicate with
+    None cannot reliably finish partially written input on CPython POSIX, so the
+    public stdin stream is detached before the first communicate call.
+    """
+
+    def __init__(self, stream, payload):
+        self.stream = stream
+        self.data = memoryview(payload)
+        self.total = len(payload)
+        self.sent = 0
+        self.closed = False
+        os.set_blocking(stream.fileno(), False)
+
+    def advance(self):
+        budget = _STDIN_WRITE_BUDGET
+        while not self.closed and self.sent < self.total and budget:
+            try:
+                count = os.write(self.stream.fileno(), self.data[self.sent:self.sent + budget])
+            except (BlockingIOError, InterruptedError):
+                return
+            if count <= 0:
+                raise OSError("stdin write made no progress")
+            self.sent += count
+            budget -= count
+        if self.sent == self.total:
+            self.close()  # The child receives EOF only after the entire payload.
+
+    def close(self):
+        if not self.closed:
+            self.stream.close()
+            self.closed = True
+
+
 class _StreamTelemetry:
     """Incremental cursor over communicate's cumulative snapshots; bounded state."""
 
@@ -81,6 +118,7 @@ class _StreamTelemetry:
         self.pending = b""
         self.dropping = False
         self.first_seen = False
+        self.agent_message_seen = self.model_final_seen = False
         self.last_stage = "start"
         self.mcp_started = self.mcp_completed = self.mcp_errors = 0
         self.active = {}
@@ -156,8 +194,12 @@ class _StreamTelemetry:
                 self._stage("mcp_error" if failed else "mcp_completed",
                             tool_s=-1 if began is None else time.monotonic() - began, **metadata)
         elif kind == "item.completed" and isinstance(item, dict) and item.get("type") == "agent_message":
-            self._stage("model_final")
+            self.agent_message_seen = True
+            self._stage("agent_message")
         elif kind == "turn.completed":
+            if self.agent_message_seen and not self.model_final_seen:
+                self.model_final_seen = True
+                self._stage("model_final")
             self._stage("turn_completed")
         elif kind in ("turn.failed", "error"):
             self._stage("turn_error")
@@ -335,17 +377,18 @@ def generate_codex_fast(
         raise CodexFastError("Codex timeout must be a finite number in (0, 600]") from None
     telemetry_started = time.monotonic()
     request_id = uuid.uuid4().hex
+    pump = None
 
     def log_event(category: str, returncode: int | None = None, *,
                   server="none", tool="none", tool_s=-1) -> None:
         # Only allowlisted configuration and numeric process metadata. Never
         # include exception text, prompts, streams, paths, or MCP payloads.
         logger.log(
-            logging.WARNING if category in {"timeout", "cancelled", "launch_error", "process_io_error", "nonzero_exit", "missing_final", "missing_successful_mcp", "output_limit", "cleanup_unconfirmed"} else logging.INFO,
+            logging.WARNING if category in {"timeout", "cancelled", "launch_error", "process_io_error", "nonzero_exit", "missing_final", "missing_successful_mcp", "output_limit", "cleanup_unconfirmed", "unsupported_platform", "incomplete_stdin"} else logging.INFO,
             "[CODEX_FAST] category=%s model=%s effort=%s profile=%s "
             "timeout_s=%g elapsed_s=%.3f rc=%s request_id=%s last_stage=%s "
             "mcp_started=%d mcp_completed=%d mcp_errors=%d mcp_pending=%d "
-            "server=%s tool=%s tool_s=%.3f",
+            "server=%s tool=%s tool_s=%.3f stdin_total_bytes=%d stdin_sent_bytes=%d stdin_closed=%d",
             category,
             model if model in SUPPORTED_MODELS else "invalid",
             reasoning_effort if reasoning_effort in SUPPORTED_REASONING_EFFORTS else (
@@ -358,6 +401,9 @@ def generate_codex_fast(
             request_id, telemetry.last_stage, telemetry.mcp_started,
             telemetry.mcp_completed, telemetry.mcp_errors, len(telemetry.active),
             server, tool, tool_s,
+            pump.total if pump is not None else 0,
+            pump.sent if pump is not None else 0,
+            int(pump.closed) if pump is not None else 0,
         )
 
     telemetry = _StreamTelemetry(log_event)
@@ -371,6 +417,9 @@ def generate_codex_fast(
             raise CodexFastError("Codex Fast output limit exceeded")
 
     log_event("start")
+    if os.name != "posix":
+        log_event("unsupported_platform")
+        raise CodexFastError("Codex Fast requires POSIX nonblocking pipes; use fallback")
     try:
         executable = _resolve_codex_executable(
             codex_bin or os.environ.get("PRISM_CODEX_BIN", "codex")
@@ -401,8 +450,11 @@ def generate_codex_fast(
                 # signals out of the long-lived PRISM orchestrator process group.
                 start_new_session=os.name == "posix",
             )
+            stdin_stream = process.stdin
+            process.stdin = None  # Public pipe ownership transfers to our pump.
             try:
                 prompt = _prompt(system_prompt, user_prompt, mcp_profile).encode("utf-8")
+                pump = _StdinPump(stdin_stream, prompt)
                 while True:
                     if _cancel_event is not None and _cancel_event.is_set():
                         log_event("cancelled")
@@ -411,17 +463,34 @@ def generate_codex_fast(
                     if remaining <= 0:
                         log_event("timeout")
                         raise CodexFastError(f"Codex Fast timed out after {timeout:g}s")
+                    pump.advance()
+                    remaining = timeout - (time.monotonic() - started)
+                    if remaining <= 0:
+                        continue
                     try:
-                        stdout, stderr = process.communicate(input=prompt, timeout=min(0.1, remaining))
+                        # A short drain poll while input remains prevents pipe-size
+                        # dependent throttling; completed input retains 100ms polls.
+                        poll = .01 if not pump.closed else .1
+                        stdout, stderr = process.communicate(input=None, timeout=min(poll, remaining))
                         break
                     except subprocess.TimeoutExpired as exc:
-                        prompt = None
                         check_output(exc.output, exc.stderr)
                         telemetry.consume(exc.output)
             except BaseException:
-                group_confirmed = _terminate_owned_process(process)
-                log_event("cleanup_unconfirmed" if group_confirmed is False else "cleanup_completed")
+                try:
+                    if pump is not None:
+                        pump.close()
+                    elif stdin_stream is not None:
+                        stdin_stream.close()
+                finally:
+                    group_confirmed = _terminate_owned_process(process)
+                    log_event("cleanup_unconfirmed" if group_confirmed is False else "cleanup_completed")
                 raise
+            finally:
+                if pump is not None:
+                    pump.close()
+                elif stdin_stream is not None:
+                    stdin_stream.close()
             # communicate has reaped the leader. Do not signal its now-reusable
             # PID/group if completed-output validation fails.
             check_output(stdout, stderr)
@@ -435,6 +504,9 @@ def generate_codex_fast(
         raise CodexFastError(
             f"Codex Fast rc={process.returncode}"
         )
+    if pump.sent != pump.total:
+        log_event("incomplete_stdin", process.returncode)
+        raise CodexFastError("Codex Fast exited before full prompt transmission")
     try:
         stream = stdout.decode("utf-8") if isinstance(stdout, bytes) else stdout
     except UnicodeError:

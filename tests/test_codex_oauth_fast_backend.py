@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +12,8 @@ import cores.llm.codex_oauth_fast_backend as backend
 
 
 def fake_process(returncode=0, stdout="", stderr=""):
-    return SimpleNamespace(returncode=returncode, communicate=lambda **kwargs: (stdout, stderr))
+    return SimpleNamespace(stdin=open(os.devnull, "wb"), returncode=returncode,
+                           communicate=lambda **kwargs: (stdout, stderr))
 
 
 @pytest.fixture
@@ -49,6 +51,7 @@ def test_command_rejects_unapproved_model_and_profile() -> None:
 def test_codex_fast_backend_uses_isolated_ephemeral_command(
     monkeypatch,
     _trusted_codex,
+    tmp_path,
 ) -> None:
     seen = {}
 
@@ -77,8 +80,9 @@ def test_codex_fast_backend_uses_isolated_ephemeral_command(
         ])
         def communicate(**communication):
             seen["kwargs"].update(communication)
+            seen["prompt"] = (tmp_path / "stdin.bin").read_bytes()
             return stream, ""
-        return SimpleNamespace(returncode=0, communicate=communicate)
+        return SimpleNamespace(stdin=(tmp_path / "stdin.bin").open("wb"), returncode=0, communicate=communicate)
 
     monkeypatch.setattr(backend.subprocess, "Popen", fake_run)
     result = backend.generate_codex_fast(
@@ -98,7 +102,8 @@ def test_codex_fast_backend_uses_isolated_ephemeral_command(
     assert seen["kwargs"]["env"]["CODEX_HOME"] == "/secure/codex-home"
     assert seen["kwargs"]["start_new_session"] is True
     assert seen["kwargs"]["text"] is False
-    assert "도구를 사용하지 마세요" not in seen["kwargs"]["input"].decode("utf-8")
+    assert seen["kwargs"]["input"] is None
+    assert "도구를 사용하지 마세요" not in seen["prompt"].decode("utf-8")
     assert result.text == '{"decision":"미진입"}'
     assert result.usage == {"output_tokens": 10}
     assert [(call.server, call.tool) for call in result.mcp_calls] == [

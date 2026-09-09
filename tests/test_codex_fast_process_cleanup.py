@@ -55,7 +55,7 @@ def test_timeout_terminates_child_and_grandchild(child_tree, monkeypatch, caplog
     monkeypatch.setattr(os, "killpg", record_killpg)
     started = time.monotonic()
     with pytest.raises(backend.CodexFastError, match="timed out"):
-        backend.generate_codex_fast(system_prompt="PRIVATE_PROMPT", user_prompt="PRIVATE_PROMPT", timeout=0.5)
+        backend.generate_codex_fast(system_prompt="PRIVATE_PROMPT", user_prompt="PRIVATE_PROMPT" * 200000, timeout=0.5)
     assert time.monotonic() - started < 3
     assert_tree_stopped(child_tree)
     leader = int(child_tree.read_text().split()[0])
@@ -67,7 +67,7 @@ def test_timeout_terminates_child_and_grandchild(child_tree, monkeypatch, caplog
 
 def test_async_cancellation_waits_for_process_tree_cleanup(child_tree):
     async def run():
-        task = asyncio.create_task(backend.generate_codex_fast_async(system_prompt="s", user_prompt="u", timeout=30))
+        task = asyncio.create_task(backend.generate_codex_fast_async(system_prompt="s", user_prompt="u" * 2000000, timeout=30))
         deadline = time.monotonic() + 3
         while not child_tree.exists():
             assert time.monotonic() < deadline
