@@ -36,7 +36,8 @@ jobs:
           python -m pytest tests/test_trading_scenario_contract.py \
             tests/test_trading_agents_prompt_rules.py \
             tests/test_codex_oauth_fast_backend.py tests/test_buy_codex_settings.py \
-            tests/test_codex_fast_process_cleanup.py tests/test_entry_score_policy_contract.py \
+            tests/test_codex_fast_process_cleanup.py tests/test_codex_fast_large_stdin.py \
+            tests/test_codex_fast_stage_telemetry.py tests/test_entry_score_policy_contract.py \
             tests/test_regime_min_score_floor.py tests/test_buy_gate.py \
             tests/test_order_budget.py tests/test_pyramid_pilot_exclusion.py -q
           python -m pytest tests/test_trend_quality_research.py \
