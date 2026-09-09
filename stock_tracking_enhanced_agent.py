@@ -807,6 +807,18 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             gate_allowed=False,
                             gate_reason="fresh_quote_revalidation_failed",
                         )
+                        # A completed analysis is still reportable when the final
+                        # safety gate blocks entry. Never classify this as a buy.
+                        skip_message = (
+                            f"⚠️ 매수 보류: {company_name}({ticker})\n\n"
+                            f"매수 Score: {buy_score}점 (최소 기준: {min_score}점)\n"
+                            "최종 결과: 매수 보류 — 주문하지 않았습니다.\n\n"
+                            "분석 후 최신 가격을 확인하는 과정에서 가격 조회 또는 "
+                            "매수 조건 재검증을 통과하지 못했습니다. "
+                            "분석 의견과 별개로 안전 검증에 따라 진입을 차단했습니다."
+                        )
+                        self._msg_types.append("analysis")
+                        self.message_queue.append(skip_message)
                         await self._save_watchlist_item(
                             ticker=ticker, company_name=company_name,
                             current_price=current_price, buy_score=buy_score,
