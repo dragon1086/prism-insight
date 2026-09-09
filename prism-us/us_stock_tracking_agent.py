@@ -3143,7 +3143,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             # Calculate holding period
             buy_datetime = datetime.strptime(buy_date, "%Y-%m-%d %H:%M:%S")
-            holding_days = (datetime.now() - buy_datetime).days
+            holding_period = datetime.now() - buy_datetime
+            holding_days = holding_period.days
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             # Classify the exit (stop/trend_exit/target/ai) for the churn guard.
@@ -3227,13 +3228,22 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     context_error,
                 )
 
-            # Build sell message (same format as KR template)
+            # Keep stored whole days unchanged; show sub-day elapsed time in notices.
+            if holding_days == 0:
+                holding_minutes = int(holding_period.total_seconds() // 60)
+                hours, minutes = divmod(holding_minutes, 60)
+                holding_period_text = f"{hours}h {minutes}m" if holding_minutes else "<1 minute"
+            else:
+                holding_period_text = f"{holding_days} {'day' if holding_days == 1 else 'days'}"
+
+            # This simulator record does not confirm broker fills or realized P&L.
             arrow = "⬆️" if profit_rate > 0 else "⬇️" if profit_rate < 0 else "➖"
             message = f"📉 Sell: {company_name}({ticker})\n" \
                       f"Buy Price: ${buy_price:,.2f}\n" \
                       f"Sell Price: ${current_price:,.2f}\n" \
-                      f"Return: {arrow} {abs(profit_rate):.2f}%\n" \
-                      f"Holding Period: {holding_days} days\n" \
+                      f"Strategy/Reference Return: {arrow} {abs(profit_rate):.2f}%\n" \
+                      "Simulator prices; not broker-confirmed realized P&L\n" \
+                      f"Holding Period: {holding_period_text}\n" \
                       f"Sell Reason: {sell_reason}"
 
             # Add trigger win rate
