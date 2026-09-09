@@ -1,7 +1,7 @@
 # PRISM 진입품질 데이터 분석 하네스
 
-> 상태: **v1 canonical**
-> 분석 계약: `entry-quality-harness-v1`
+> 상태: **v2 canonical — 전략 원장과 브로커 집행 성과 분리**
+> 분석 계약: `entry-quality-harness-v2`, Packet schema 3
 > 적용 대상: PRISM ClickStack 관측 원장에서 파생한 진입품질 분석
 > 실행 도구: `tools/build_entry_quality_evidence_packet.py`
 
@@ -14,8 +14,9 @@
 1. ClickStack의 versioned event ledger가 관측 사실의 원장입니다.
 2. Evidence Packet은 원장을 재현 가능하게 요약한 **파생물**이며 원장을 수정하지 않습니다.
 3. `MISSING`은 나쁜 진입이나 통과를 뜻하지 않습니다. 단지 알 수 없다는 뜻입니다.
-4. 주문 제출과 실제 체결을 분리합니다. `CONFIRMED` 이외의 주문은 실현 성과에서
-   제외합니다.
+4. 전략 원장과 실계좌는 독립입니다. 원장의 유효한 진입·청산은 실계좌 잔고나
+   주문 거절 여부와 무관하게 전략 성과·진입품질 평가에 포함합니다. 실제 계좌
+   실현손익을 주장할 때는 별도로 진입·청산 체결과 가격·비용의 증거가 필요합니다.
 5. 후보 성과와 실제 거래 성과를 합치지 않습니다.
 6. backfill은 탐색과 반례 발견에만 사용하며 prospective holdout으로 인정하지 않습니다.
 7. 분석 도구와 스킬은 거래 코드, 점수, 주문, 손절 규칙을 변경하지 않습니다.
@@ -32,7 +33,7 @@
 - `entry.executed`: simulator 기록 또는 진입 실행 context
 - `entry.fill_reconciled`: broker 체결 provenance
 - `exit.executed`: 연결된 포지션의 청산 context
-- `trade.outcome`: 검증된 실현 성과
+- `trade.outcome`: 전략 원장의 청산 결과. 이 이벤트만으로 브로커 실현손익을 뜻하지 않음
 
 분석에 필요한 값은 이벤트에 기록된 판단 당시 snapshot을 사용합니다. 현재 DB나 최신
 뉴스를 다시 조회해 과거 후보의 빈 필드를 채우지 않습니다.
@@ -117,7 +118,8 @@ Packet을 생성한 뒤 이 Packet만 분석합니다.
 | 후보 → 후보 결과 | 정확히 같은 `decision_id` | 결과 이벤트 시각이 판단 시각 이후 |
 | 후보 → 진입 | 정확히 같은 `decision_id` | 진입 이벤트 시각이 판단 시각 이후 |
 | 진입 → 체결 | 같은 `position_id`, 없을 때 같은 `decision_id` | 체결 이벤트 시각이 진입 이후 |
-| 진입 → 실제 결과 | 정확히 같은 `position_id` | 결과 시각이 진입 이후이고 fill이 `CONFIRMED` |
+| 원장 진입 → 원장 청산 결과 | 정확히 같은 `position_id` | 같은 시장·종목, 결과 시각이 진입 이후, 유효한 수익률. broker fill 불필요 |
+| 원장 결과 → 진입 체결 확인 부분집합 | 위 원장 연결과 fill provenance | 진입 fill이 `CONFIRMED`. 청산 체결·실계좌 PnL을 증명하지는 않음 |
 
 금지되는 join:
 
@@ -150,16 +152,26 @@ Packet은 내부 ID 원문 대신 hash reference를 출력하지만 join 자체�
 - `ERROR`는 시스템 품질 문제로 분리하고 종목 품질로 해석하지 않습니다.
 - component가 새로 추가된 전후의 표본을 동일 분포로 가정하지 않습니다.
 
-## 7. Fill과 실제 성과의 기준
+## 7. 전략 원장과 실제 계좌 성과의 기준
 
-- `CONFIRMED`: 실제 거래 성과 표본에 포함 가능
-- `PARTIAL`: 초기 v1 실제 성과 표본에서 제외
-- `SUBMITTED_ONLY`: broker가 주문을 받았을 뿐이므로 제외
-- `REJECTED`, `CANCELLED`, `UNKNOWN`: 제외
+### 전략 성과
+원장의 진입과 청산이 정확히 연결되면 `strategy_return_pct`로 집계합니다.
+`REJECTED`, `PARTIAL`, `SUBMITTED_ONLY`, `CANCELLED`, `UNKNOWN`이어도 원장 거래를
+제외하지 않습니다. 실계좌가 돈이 없어 사지 못했어도 원장의 손절·수익은 전략 평가
+대상입니다. 원장 기록을 삭제하거나 매매일지의 전략 학습을 중단하지 않습니다.
 
-simulator holding, 주문 번호, 성공 응답만으로 `CONFIRMED`를 추정하지 않습니다.
-confirmed fill coverage가 95% 미만이면 실제 거래 PF·승률을 승격 근거로 사용하지
-않습니다. 후보 결과 분석은 계속할 수 있지만 명확히 별도 표본으로 표시합니다.
+### 브로커 집행
+주문 접수와 체결, 원장 가격과 실제 체결 가격을 구분합니다. simulator holding,
+주문 번호, 성공 응답만으로 `CONFIRMED`를 추정하지 않습니다. 진입 체결만 확인됐다고
+실계좌 청산 손익까지 확정하지 않습니다.
+
+하위 호환용 `confirmed_actual_*` 필드는 **진입 체결이 확인된 전략 원장 수익률
+부분집합**입니다. 이름과 달리 실제 계좌 실현 PnL의 증거가 아닙니다. 실제 체결
+가격·수량·비용 및 청산 체결 계보가 갖춰지기 전에는 브로커 실현손익으로 표현하지 않습니다.
+
+Packet은 후보 가격 경로, 전략 원장 성과, 브로커 집행 증거를 분리합니다.
+기본 `readiness`와 `strategy_readiness`는 전략 분석 기준이며,
+`broker_execution_readiness`의 체결 부족을 전략 평가 불가로 일반화하지 않습니다.
 
 ## 8. 최소 표본과 통계 해석
 
@@ -167,13 +179,16 @@ CAPTURE 완료 판단의 최소값:
 
 - prospective decision date `n >= 20`
 - candidate `n >= 100`
-- linked actual entry `n >= 30`
+- 연결된 전략 원장 진입 `n >= 30`
 - `decision_id` coverage 100%
-- confirmed fill coverage 95% 이상
 - 미래정보 누수 0
 
-규칙 비교에 사용하는 matured outcome은 최소 30건입니다. 이보다 작으면 모든 수치는
+전략 규칙 비교에는 연결된 원장 청산 결과가 최소 30건 필요합니다. 후보 고정 horizon
+비교에는 해당 horizon의 성숙한 후보 결과 최소 30건이 필요합니다. 이보다 작으면 모든 수치는
 **기술 통계**이고 차단 규칙이나 승격 근거가 아닙니다.
+
+브로커 집행 품질을 별도로 평가할 때는 confirmed coverage 등 별도 조건을 적용합니다.
+이 조건을 충족하지 못해도 유효한 전략 원장 손절 사례는 그대로 평가합니다.
 
 항상 함께 보고할 값:
 
@@ -194,13 +209,15 @@ CAPTURE 완료 판단의 최소값:
 - `entry_quality_context.as_of > candidate.timestamp`
 - 후보 결과 시각이 판단 시각보다 빠름
 - 진입 시각이 판단 시각보다 빠름
-- 체결 시각이 진입 시각보다 빠름
-- 실제 결과 시각이 진입 시각보다 빠름
+- 원장 청산 결과 시각이 진입 시각보다 빠름
 - 판단 뒤 생성된 최신 지표로 과거 snapshot을 덮어씀
 - 현재 trigger 성과를 과거 판단 당시 prior처럼 사용
 
 결과 컬럼으로 threshold를 선택한 뒤 같은 표본의 성과를 검증 결과라고 부르지
 않습니다.
+
+체결 시각이 원장 진입보다 빠른 등 브로커 증거 오류는 별도 진단합니다. 이 오류만으로
+정상적인 원장 진입·청산 결과를 없애지 않습니다.
 
 ## 10. 다중 가설과 과적합 방지
 
