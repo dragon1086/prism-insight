@@ -18,6 +18,16 @@ def load(path):
     return module
 
 
+def test_kr_table_identifier_cannot_enter_query():
+    module = load("tracking/helpers.py")
+    class DenyCursor:
+        def execute(self, *args):
+            pytest.fail("unapproved table must not execute")
+    result = module.get_existing_position_for_ticker(
+        DenyCursor(), "TEST", table_name="stock_holdings; DROP TABLE stock_holdings")
+    assert result["pyramid_ownership"] == "UNKNOWN"
+
+
 @pytest.fixture(params=["KR", "US"])
 def context(request):
     market = request.param
