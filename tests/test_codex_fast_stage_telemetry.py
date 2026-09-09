@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -111,7 +112,7 @@ def test_parallel_calls_have_distinct_safe_correlation_ids(monkeypatch, caplog):
     monkeypatch.setattr(backend, "_resolve_codex_executable", lambda _: sys.executable)
     output = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "PRIVATE"}})
     monkeypatch.setattr(backend.subprocess, "Popen", lambda *a, **k: SimpleNamespace(
-        returncode=0, communicate=lambda **kw: (output, "PRIVATE")))
+        stdin=open(os.devnull, "wb"), returncode=0, communicate=lambda **kw: (output, "PRIVATE")))
     caplog.set_level(logging.INFO)
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: backend.generate_codex_fast(system_prompt="PRIVATE", user_prompt="PRIVATE"), range(2)))
@@ -134,7 +135,7 @@ def test_output_budget_fails_closed_and_only_cleans_active_child(monkeypatch, ca
         raise subprocess.TimeoutExpired("PRIVATE", .1, output=b"PRIVATE" * 10)
 
     monkeypatch.setattr(backend.subprocess, "Popen", lambda *a, **k: SimpleNamespace(
-        returncode=0 if completed else None, communicate=communicate))
+        stdin=open(os.devnull, "wb"), returncode=0 if completed else None, communicate=communicate))
     with pytest.raises(backend.CodexFastError, match="output limit"):
         backend.generate_codex_fast(system_prompt="s", user_prompt="u")
     assert len(cleaned) == (0 if completed else 1)
@@ -158,7 +159,18 @@ def test_binary_partial_and_final_newlines_preserve_stages(monkeypatch, caplog, 
     caplog.set_level(logging.INFO)
     result = backend.generate_codex_fast(system_prompt="한국어", user_prompt="한국어", timeout=3)
     assert result.text == "완료"
-    for category in ("first_event", "mcp_started", "mcp_completed", "model_final", "turn_completed"):
+    for category in ("first_event", "mcp_started", "mcp_completed", "agent_message", "model_final", "turn_completed"):
         assert caplog.text.count(f"category={category} ") == 1
     assert "mcp_started=1 mcp_completed=1 mcp_errors=0 mcp_pending=0" in caplog.text
     assert "한국어" not in caplog.text
+
+
+def test_commentary_agent_message_is_not_model_final_before_turn_completion():
+    categories = []
+    telemetry = backend._StreamTelemetry(lambda category, **kw: categories.append(category))
+    telemetry._line(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "PRIVATE_COMMENTARY"}}))
+    telemetry._line(json.dumps({"type": "item.started", "item": {"type": "mcp_tool_call", "id": "PRIVATE"}}))
+    assert categories == ["first_event", "agent_message", "mcp_started"]
+    telemetry._line(json.dumps({"type": "turn.completed"}))
+    assert categories[-2:] == ["model_final", "turn_completed"]
+    assert "PRIVATE" not in repr(categories)
