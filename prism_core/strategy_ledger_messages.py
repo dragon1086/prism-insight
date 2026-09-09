@@ -36,7 +36,7 @@ def format_campaign(snapshot, campaign_id, *, unresolved_execution_overlays=()):
     invested_return = _number(campaign.get("invested_price_return_pct"))
     lines = [
         "📒 슬롯·비중 전략 원장 · 검증용",
-        f"**{_label(campaign['symbol'])} · {status}**",
+        f"{_label(campaign['symbol'])} · {status}",
         "",
         f"점유 슬롯: {1 if units else 0}개",
         f"잔여 배분: {percent(campaign['remaining_allocation'])}",

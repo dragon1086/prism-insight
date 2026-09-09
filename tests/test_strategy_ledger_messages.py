@@ -23,6 +23,7 @@ def test_half_position_is_readable_and_not_a_trade_signal(tmp_path):
     assert not any(word in text for word in ("가상 수량", "가상 현금", "평가자산", "미투입 예산"))
     assert "실제 주문 신호가 아닙니다" in text
     assert "0주로 단정하지 않음" in text
+    assert "TEST · 보유" in text and "**" not in text
     assert len(text) < 3500
 
 
