@@ -10,6 +10,7 @@ import logging
 import re
 import traceback
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -276,6 +277,48 @@ PYRAMID_MAX_ROWS = 3
 _HOLDINGS_TABLE = "stock_holdings"
 
 
+def _stored_pyramid_ownership(raw):
+    """Classify stored evidence only; never adopt an unowned legacy campaign."""
+    if raw is None or raw == "":
+        return "LEGACY_OR_UNOWNED"
+    try:
+        if isinstance(raw, str):
+            if len(raw) > 1024 * 1024:
+                return "UNKNOWN"
+            raw = json.loads(raw)
+        if not isinstance(raw, dict):
+            return "UNKNOWN"
+        policy = raw.get("regime_entry_policy")
+        pilot = raw.get("pilot")
+        policy = {} if policy is None else policy
+        pilot = {} if pilot is None else pilot
+        if not isinstance(policy, dict) or not isinstance(pilot, dict):
+            return "UNKNOWN"
+        owners = [container[key] for container, key in (
+            (raw, "split_owner"), (raw, "_split_owner"), (raw, "campaign_owner"),
+            (policy, "owner"), (pilot, "owner")) if key in container]
+        if any(owner == "split-pilot-v1" for owner in owners) or policy.get("mode") == "rebound_pilot":
+            return "SPLIT_PILOT"
+        if owners or pilot or ("mode" in policy and policy["mode"] != "normal"):
+            return "UNKNOWN"
+        if "position_fraction" in policy:
+            fraction = policy["position_fraction"]
+            if isinstance(fraction, bool):
+                return "UNKNOWN"
+            number = Decimal(str(fraction))
+            if not number.is_finite():
+                return "UNKNOWN"
+            if number == Decimal(".5"):
+                return "SPLIT_PILOT"
+            if number != 1:
+                return "UNKNOWN"
+        if policy and not (policy.get("mode") == "normal" and "position_fraction" in policy):
+            return "UNKNOWN"
+        return "LEGACY_OR_UNOWNED"
+    except (ValueError, TypeError, InvalidOperation, RecursionError):
+        return "UNKNOWN"
+
+
 def get_existing_position_for_ticker(
     cursor,
     ticker: str,
@@ -287,6 +330,7 @@ def get_existing_position_for_ticker(
     Returns a dict with:
         row_count: number of existing rows for (ticker, account)
         avg_buy_price: simple average buy_price across those rows (0 if none)
+        pyramid_ownership: safe stored-metadata classification, never ownership adoption
     Used by the pyramiding add-gate.
 
     NOTE (#288, intentional): ``avg_buy_price`` is a SIMPLE MEAN of per-row entry
@@ -296,23 +340,32 @@ def get_existing_position_for_ticker(
     the Telegram "누적 평단" display.
     """
     try:
-        if account_key:
-            cursor.execute(
-                f"SELECT buy_price FROM {table_name} WHERE ticker = ? AND account_key = ?",
-                (ticker, account_key),
-            )
-        else:
-            cursor.execute(
-                f"SELECT buy_price FROM {table_name} WHERE ticker = ?",
-                (ticker,),
-            )
-        prices = [float(r[0]) for r in cursor.fetchall() if r[0] is not None]
+        # Identifiers cannot be bound as SQL values. Only the two documented
+        # holdings tables are supported; no caller string enters SQL text.
+        queries = {
+            "stock_holdings": (
+                "SELECT buy_price, scenario FROM stock_holdings WHERE ticker = ?",
+                "SELECT buy_price, scenario FROM stock_holdings WHERE ticker = ? AND account_key = ?",
+            ),
+            "us_stock_holdings": (
+                "SELECT buy_price, scenario FROM us_stock_holdings WHERE ticker = ?",
+                "SELECT buy_price, scenario FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
+            ),
+        }
+        if table_name not in queries:
+            raise ValueError("unsupported holdings table")
+        query = queries[table_name][1 if account_key else 0]
+        cursor.execute(query, (ticker, account_key) if account_key else (ticker,))
+        rows = cursor.fetchall()
+        ownership = {_stored_pyramid_ownership(row[1] if len(row) > 1 else None) for row in rows}
+        summary = "SPLIT_PILOT" if "SPLIT_PILOT" in ownership else ("UNKNOWN" if "UNKNOWN" in ownership else "LEGACY_OR_UNOWNED")
+        prices = [float(r[0]) for r in rows if r[0] is not None]
         row_count = len(prices)
         avg_buy_price = (sum(prices) / row_count) if row_count else 0.0
-        return {"row_count": row_count, "avg_buy_price": avg_buy_price}
+        return {"row_count": row_count, "avg_buy_price": avg_buy_price, "pyramid_ownership": summary}
     except Exception as e:
         logger.error(f"Error querying existing position for {ticker}: {str(e)}")
-        return {"row_count": 0, "avg_buy_price": 0.0}
+        return {"row_count": 0, "avg_buy_price": 0.0, "pyramid_ownership": "UNKNOWN"}
 
 
 def _regime_label(market_condition: str | None) -> str:
@@ -339,6 +392,7 @@ def pyramid_add_possible_ignoring_regime(
     existing_row_count: int,
     min_profit_pct: float = PYRAMID_MIN_PROFIT_PCT,
     max_rows: int = PYRAMID_MAX_ROWS,
+    *, ownership: str | None = None,
 ) -> Tuple[bool, str]:
     """Regime-independent necessary conditions for a pyramiding add (#288).
 
@@ -349,6 +403,10 @@ def pyramid_add_possible_ignoring_regime(
     skipped BEFORE its per-stock scenario LLM runs, with the same end result.
     Single source of truth: ``evaluate_pyramid_add_gate`` delegates here.
     """
+    if ownership == "SPLIT_PILOT":
+        return False, "LEGACY_PYRAMID_BLOCKED_SPLIT_PILOT"
+    if ownership == "UNKNOWN":
+        return False, "LEGACY_PYRAMID_OWNERSHIP_UNKNOWN"
     if existing_row_count >= max_rows:
         return False, f"row count {existing_row_count} >= max {max_rows}"
 
@@ -369,6 +427,7 @@ def evaluate_pyramid_add_gate(
     existing_row_count: int,
     min_profit_pct: float = PYRAMID_MIN_PROFIT_PCT,
     max_rows: int = PYRAMID_MAX_ROWS,
+    *, ownership: str | None = None,
 ) -> Tuple[bool, str]:
     """Pure add-gate for pyramiding (#288).
 
@@ -380,6 +439,10 @@ def evaluate_pyramid_add_gate(
     Does NOT include the buy-agent Enter/score/sector checks — those are applied
     independently by the normal buy path.
     """
+    if ownership == "SPLIT_PILOT":
+        return False, "LEGACY_PYRAMID_BLOCKED_SPLIT_PILOT"
+    if ownership == "UNKNOWN":
+        return False, "LEGACY_PYRAMID_OWNERSHIP_UNKNOWN"
     regime = _regime_label(market_condition)
     if regime not in PYRAMID_ALLOWED_REGIMES:
         return False, f"regime '{regime or 'unknown'}' not in {PYRAMID_ALLOWED_REGIMES}"
@@ -387,7 +450,8 @@ def evaluate_pyramid_add_gate(
     # Conditions (2) and (3) are regime-independent — delegate so the cheap
     # pre-gate that skips the scenario LLM stays in lock-step with this gate.
     ok, reason = pyramid_add_possible_ignoring_regime(
-        existing_avg_buy_price, current_price, existing_row_count, min_profit_pct, max_rows
+        existing_avg_buy_price, current_price, existing_row_count, min_profit_pct, max_rows,
+        ownership=ownership,
     )
     if not ok:
         return False, reason

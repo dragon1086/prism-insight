@@ -716,9 +716,31 @@ class StockTrackingAgent:
         except Exception:  # noqa: BLE001 - observation cannot change order handling
             logger.debug("Broker observation unavailable")
 
-    def _buy_quote_validator(self, scenario, *, is_add=False):
+    def _assert_legacy_pyramid_allowed(self, ticker, *, is_add=False, account_key=None):
+        """Fresh account-scoped read; not a cross-process order ownership claim."""
+        if not is_add:
+            return
+        if not ticker:
+            raise ValueError("LEGACY_PYRAMID_OWNERSHIP_UNKNOWN")
+        if not account_key:
+            raise ValueError("LEGACY_PYRAMID_OWNERSHIP_UNKNOWN")
+        cursor = self.conn.cursor()
+        try:
+            existing = get_existing_position_for_ticker(cursor, ticker, account_key=account_key)
+        finally:
+            cursor.close()
+        ownership = existing.get("pyramid_ownership", "UNKNOWN")
+        if ownership == "SPLIT_PILOT":
+            raise ValueError("LEGACY_PYRAMID_BLOCKED_SPLIT_PILOT")
+        if ownership == "UNKNOWN":
+            raise ValueError("LEGACY_PYRAMID_OWNERSHIP_UNKNOWN")
+
+    def _buy_quote_validator(self, scenario, *, is_add=False, ticker=None, account_key=None):
         """Revalidate the broker's final sizing quote without changing ledger state."""
+        # Callers bind the immutable prepared/intent account before broker awaits.
+        pyramid_account_key = account_key
         def validate(price):
+            self._assert_legacy_pyramid_allowed(ticker, is_add=is_add, account_key=pyramid_account_key)
             normalized = apply_buy_scenario_contract(scenario, market="KR", entry_price=price)
             gate = self._evaluate_production_buy_gate(
                 normalized, price, score_override=scenario.get("buy_score"), is_add=is_add
@@ -1334,6 +1356,7 @@ class StockTrackingAgent:
                     existing_avg_buy_price=existing.get("avg_buy_price", 0.0),
                     current_price=pre_price,
                     existing_row_count=existing.get("row_count", 0),
+                    ownership=existing.get("pyramid_ownership"),
                 )
             except Exception as e:
                 logger.warning(
@@ -1395,6 +1418,7 @@ class StockTrackingAgent:
                 existing_avg_buy_price=existing.get("avg_buy_price", 0.0),
                 current_price=current_price,
                 existing_row_count=existing.get("row_count", 0),
+                ownership=existing.get("pyramid_ownership"),
             )
             if not allowed:
                 logger.info(f"{ticker}({company_name}) already in holdings — add gate blocked: {reason}")
@@ -1788,6 +1812,7 @@ class StockTrackingAgent:
 
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            self._assert_legacy_pyramid_allowed(ticker, is_add=is_add, account_key=account_id)
             position_store = PositionStore(self.conn)
             position_store.assert_entry_attempt_allowed(
                 market="KR",
@@ -1897,7 +1922,7 @@ class StockTrackingAgent:
                 limit_price=current_price,
                 intent=prepared.intent,
                 reservation=prepared.reservation,
-                quote_validator=self._buy_quote_validator(prepared.scenario, is_add=prepared.is_add),
+                quote_validator=self._buy_quote_validator(prepared.scenario, is_add=prepared.is_add, ticker=prepared.symbol, account_key=prepared.account_id),
                 **({"strict_budget": True} if (prepared.scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
             )
 
@@ -2581,43 +2606,45 @@ class StockTrackingAgent:
             trigger_type = trigger_info.get('trigger_type', 'AI Analysis')
             trigger_mode = trigger_info.get('trigger_mode', getattr(self, 'trigger_mode', 'unknown'))
 
-            # Add to holdings table
-            self.cursor.execute(
-                """
-                INSERT INTO stock_holdings
-                (account_key, account_name, ticker, company_name, buy_price, buy_date, current_price, last_updated, scenario, target_price, stop_loss, trigger_type, trigger_mode, sector)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    account_key,
-                    account_name,
-                    ticker,
-                    company_name,
-                    current_price,
-                    now,
-                    current_price,
-                    now,
-                    json.dumps(scenario, ensure_ascii=False),
-                    scenario.get('target_price', 0),
-                    scenario.get('stop_loss', 0),
-                    trigger_type,
-                    trigger_mode,
-                    scenario.get('sector', '알 수 없음'),
+            async with self._get_db_lock():
+                self._assert_legacy_pyramid_allowed(ticker, is_add=is_add, account_key=account_key)
+                # Add to holdings table
+                self.cursor.execute(
+                    """
+                    INSERT INTO stock_holdings
+                    (account_key, account_name, ticker, company_name, buy_price, buy_date, current_price, last_updated, scenario, target_price, stop_loss, trigger_type, trigger_mode, sector)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        account_key,
+                        account_name,
+                        ticker,
+                        company_name,
+                        current_price,
+                        now,
+                        current_price,
+                        now,
+                        json.dumps(scenario, ensure_ascii=False),
+                        scenario.get('target_price', 0),
+                        scenario.get('stop_loss', 0),
+                        trigger_type,
+                        trigger_mode,
+                        scenario.get('sector', '알 수 없음'),
+                    )
                 )
-            )
-            legacy_holding_id = self.cursor.lastrowid
-            position_id = legacy_position_id("KR", legacy_holding_id)
-            scenario = dict(scenario)
-            scenario["_position_id"] = position_id
-            self._mirror_position_open(
-                legacy_holding_id=legacy_holding_id,
-                account_key=account_key,
-                account_name=account_name,
-                ticker=ticker,
-                entry_price=current_price,
-                opened_at=now,
-            )
-            self.conn.commit()
+                legacy_holding_id = self.cursor.lastrowid
+                position_id = legacy_position_id("KR", legacy_holding_id)
+                scenario = dict(scenario)
+                scenario["_position_id"] = position_id
+                self._mirror_position_open(
+                    legacy_holding_id=legacy_holding_id,
+                    account_key=account_key,
+                    account_name=account_name,
+                    ticker=ticker,
+                    entry_price=current_price,
+                    opened_at=now,
+                )
+                self.conn.commit()
             decision_context = {
                 "decision": "entry",
                 "price": current_price,
@@ -4509,7 +4536,7 @@ class StockTrackingAgent:
                                         buy_amount=entry_cash_amount,
                                         limit_price=current_price,
                                         intent=order_intent,
-                                        quote_validator=self._buy_quote_validator(scenario),
+                                        quote_validator=self._buy_quote_validator(scenario, ticker=ticker, account_key=order_intent.account_id),
                                         **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
                                     )
                             except OrderOutcomeUnknown as error:
