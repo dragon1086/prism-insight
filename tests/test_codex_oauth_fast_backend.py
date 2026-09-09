@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -145,6 +146,75 @@ def test_codex_fast_backend_raises_on_cli_failure(
     )
     with pytest.raises(backend.CodexFastError, match="auth failed"):
         backend.generate_codex_fast(system_prompt="s", user_prompt="u")
+
+
+@pytest.mark.parametrize(
+    ("returncode", "has_final", "mcp_status", "category"),
+    [
+        (7, True, "completed", "nonzero_exit"),
+        (0, False, "completed", "missing_final"),
+        (0, True, "failed", "missing_successful_mcp"),
+    ],
+)
+def test_failure_telemetry_has_safe_metadata_only(
+    monkeypatch, _trusted_codex, caplog, returncode, has_final, mcp_status, category,
+):
+    secret = "DO_NOT_LOG_TOKEN_OR_ACCOUNT_DATA"
+    events = [{
+        "type": "item.completed",
+        "item": {
+            "type": "mcp_tool_call", "server": secret, "tool": secret,
+            "arguments": {"token": secret}, "status": mcp_status,
+            "error": None if mcp_status == "completed" else secret,
+        },
+    }]
+    if has_final:
+        events.append({
+            "type": "item.completed", "item": {"type": "agent_message", "text": secret},
+        })
+    monkeypatch.setattr(
+        backend.subprocess, "Popen",
+        lambda *_args, **_kwargs: fake_process(
+            returncode=returncode, stdout="\n".join(map(json.dumps, events)), stderr=secret,
+        ),
+    )
+    caplog.set_level(logging.INFO, logger=backend.__name__)
+    with pytest.raises(backend.CodexFastError):
+        backend.generate_codex_fast(
+            system_prompt=secret, user_prompt=secret, codex_home=secret,
+            model="gpt-6-astra", reasoning_effort="high", timeout=240,
+            mcp_profile="kr_trading", require_mcp_calls=True,
+        )
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 2
+    assert "category=start" in messages[0]
+    assert f"category={category}" in messages[1]
+    assert "model=gpt-6-astra effort=high profile=kr_trading timeout_s=240" in messages[1]
+    assert f"rc={returncode}" in messages[1]
+    assert "elapsed_s=" in messages[1]
+    assert secret not in caplog.text
+
+
+@pytest.mark.parametrize("failure_stage", ["resolve", "popen"])
+def test_launch_error_telemetry_does_not_log_exception(
+    monkeypatch, _trusted_codex, caplog, failure_stage,
+):
+    secret = "PRIVATE_EXECUTABLE_OR_ENV_TOKEN"
+
+    def fail(*args, **kwargs):
+        if failure_stage == "resolve":
+            raise backend.CodexFastError(secret)
+        raise OSError(secret)
+
+    if failure_stage == "resolve":
+        monkeypatch.setattr(backend, "_resolve_codex_executable", fail)
+    else:
+        monkeypatch.setattr(backend.subprocess, "Popen", fail)
+    caplog.set_level(logging.INFO, logger=backend.__name__)
+    with pytest.raises(backend.CodexFastError, match=secret):
+        backend.generate_codex_fast(system_prompt=secret, user_prompt=secret)
+    assert "category=launch_error" in caplog.text
+    assert secret not in caplog.text
 
 
 def test_us_trading_wires_codex_primary_before_legacy_fallback() -> None:

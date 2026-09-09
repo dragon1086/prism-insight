@@ -43,7 +43,7 @@ def assert_tree_stopped(pid_path):
         os.waitpid(pids[0], os.WNOHANG)
 
 
-def test_timeout_terminates_child_and_grandchild(child_tree, monkeypatch):
+def test_timeout_terminates_child_and_grandchild(child_tree, monkeypatch, caplog):
     signaled_groups = []
     real_killpg = os.killpg
 
@@ -55,11 +55,14 @@ def test_timeout_terminates_child_and_grandchild(child_tree, monkeypatch):
     monkeypatch.setattr(os, "killpg", record_killpg)
     started = time.monotonic()
     with pytest.raises(backend.CodexFastError, match="timed out"):
-        backend.generate_codex_fast(system_prompt="s", user_prompt="u", timeout=0.5)
+        backend.generate_codex_fast(system_prompt="PRIVATE_PROMPT", user_prompt="PRIVATE_PROMPT", timeout=0.5)
     assert time.monotonic() - started < 3
     assert_tree_stopped(child_tree)
     leader = int(child_tree.read_text().split()[0])
     assert signaled_groups == [leader, leader]
+    assert "category=timeout" in caplog.text
+    assert "timeout_s=0.5" in caplog.text
+    assert "PRIVATE_PROMPT" not in caplog.text
 
 
 def test_async_cancellation_waits_for_process_tree_cleanup(child_tree):
