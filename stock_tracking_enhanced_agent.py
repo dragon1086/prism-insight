@@ -548,34 +548,25 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                             entry_cash_amount = configured_entry_amount(
                                 getattr(self, "active_account", None), "kr", 0.5
                             )
-                            if entry_cash_amount is None:
-                                rebound_pilot = False
-                                logger.error(
-                                    "[REGIME_REBOUND_PILOT] %s(%s) blocked: "
-                                    "configured KR buy amount unavailable",
-                                    company_name,
-                                    ticker,
-                                )
-                            else:
-                                scenario = dict(scenario)
-                                scenario["regime_entry_policy"] = {
-                                    "mode": "rebound_pilot",
-                                    "position_fraction": 0.5,
-                                    "cash_budget": entry_cash_amount,
-                                    "budget_semantics": "maximum_order_notional",
-                                    "regime": _fr,
-                                    "market_pulse": _pulse,
-                                }
-                                analysis_result["scenario"] = scenario
-                                logger.warning(
-                                    "[REGIME_REBOUND_PILOT] %s(%s) score=%s "
-                                    "min=%s position=50%% cash_amount=%s",
-                                    company_name,
-                                    ticker,
-                                    buy_score,
-                                    min_score,
-                                    entry_cash_amount,
-                                )
+                            scenario = dict(scenario)
+                            scenario["regime_entry_policy"] = {
+                                "mode": "rebound_pilot",
+                                "position_fraction": 0.5,
+                                "cash_budget": entry_cash_amount,
+                                "budget_semantics": "maximum_order_notional",
+                                "regime": _fr,
+                                "market_pulse": _pulse,
+                            }
+                            analysis_result["scenario"] = scenario
+                            logger.warning(
+                                "[REGIME_REBOUND_PILOT] %s(%s) score=%s "
+                                "min=%s position=50%% cash_amount=%s",
+                                company_name,
+                                ticker,
+                                buy_score,
+                                min_score,
+                                entry_cash_amount,
+                            )
                 except Exception as _fe:
                     logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {_fe}")
 
@@ -953,7 +944,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                         buy_count += 1
                         logger.info(
-                            f"Purchase complete: {company_name}({ticker}) @ "
+                            f"Strategy entry recorded: {company_name}({ticker}) @ "
                             f"{current_price:,.0f} KRW"
                         )
                         continue
@@ -989,19 +980,21 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                         )
                         # Call actual account trading function (async)
                         try:
-                            async with ExecutionService.domestic(
-                                account_name=account_name,
-                                db_path=self.db_path,
-                            ) as trading:
-                                # Execute async buy with limit price for reserved orders
-                                trade_result = await trading.execute_buy(
-                                    stock_code=ticker,
-                                    buy_amount=entry_cash_amount,
-                                    limit_price=current_price,
-                                    intent=order_intent,
-                                    quote_validator=self._buy_quote_validator(scenario, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
-                                    **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
-                                )
+                            trade_result = self._pilot_broker_budget_block(scenario, entry_cash_amount, current_price)
+                            if trade_result is None:
+                                async with ExecutionService.domestic(
+                                    account_name=account_name,
+                                    db_path=self.db_path,
+                                ) as trading:
+                                    # Execute async buy with limit price for reserved orders
+                                    trade_result = await trading.execute_buy(
+                                        stock_code=ticker,
+                                        buy_amount=entry_cash_amount,
+                                        limit_price=current_price,
+                                        intent=order_intent,
+                                        quote_validator=self._buy_quote_validator(scenario, is_add=is_add, ticker=ticker, account_key=order_intent.account_id),
+                                        **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
+                                    )
                         except OrderOutcomeUnknown as error:
                             self._link_position_entry_intent(
                                 legacy_holding_id=buy_result.legacy_holding_id,
@@ -1056,7 +1049,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
 
                     if buy_success:
                         buy_count += 1
-                        logger.info(f"Purchase complete: {company_name}({ticker}) @ {current_price:,.0f} KRW")
+                        logger.info(f"Strategy entry recorded: {company_name}({ticker}) @ {current_price:,.0f} KRW")
                     else:
                         logger.warning(f"Purchase failed: {company_name}({ticker})")
 
@@ -1074,7 +1067,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 except Exception as alert_err:
                     logger.error(f"Buy-analysis failure alert send failed: {alert_err}")
 
-            logger.info(f"Report processing complete - Purchased: {buy_count} items, Sold: {sell_count} items")
+            logger.info(f"Report processing complete - Strategy entries: {buy_count} items, Sold: {sell_count} items")
             return buy_count, sell_count
 
         except Exception as e:

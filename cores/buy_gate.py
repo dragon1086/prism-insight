@@ -120,8 +120,10 @@ def evaluate_production_buy_gate(
     but must not silently remove the market-risk filter.
 
     ``market_pulse`` and ``pilot_budget_available`` are runtime-authoritative
-    inputs. Never derive them from LLM scenario policy annotations. Pilot budget
-    permission means the caller has a usable half-budget cap for a NEW entry.
+    inputs. Never derive them solely from LLM scenario policy annotations.
+    ``pilot_budget_available`` retains its historical API name, but now means
+    the runtime can record a NEW half-slot strategy entry, not that an account
+    has cash. Broker caps are separately enforced before physical submission.
     """
     data = dict(scenario or {})
     facts = trend_facts or str(data.get("_deterministic_trend_facts") or "")
