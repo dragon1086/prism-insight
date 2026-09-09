@@ -97,7 +97,8 @@ def test_codex_fast_backend_uses_isolated_ephemeral_command(
     assert not Path(seen["kwargs"]["cwd"]).exists()
     assert seen["kwargs"]["env"]["CODEX_HOME"] == "/secure/codex-home"
     assert seen["kwargs"]["start_new_session"] is True
-    assert "도구를 사용하지 마세요" not in seen["kwargs"]["input"]
+    assert seen["kwargs"]["text"] is False
+    assert "도구를 사용하지 마세요" not in seen["kwargs"]["input"].decode("utf-8")
     assert result.text == '{"decision":"미진입"}'
     assert result.usage == {"output_tokens": 10}
     assert [(call.server, call.tool) for call in result.mcp_calls] == [
@@ -144,8 +145,9 @@ def test_codex_fast_backend_raises_on_cli_failure(
             returncode=1, stdout="", stderr="auth failed"
         ),
     )
-    with pytest.raises(backend.CodexFastError, match="auth failed"):
+    with pytest.raises(backend.CodexFastError, match="rc=1") as error:
         backend.generate_codex_fast(system_prompt="s", user_prompt="u")
+    assert "auth failed" not in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -179,20 +181,20 @@ def test_failure_telemetry_has_safe_metadata_only(
         ),
     )
     caplog.set_level(logging.INFO, logger=backend.__name__)
-    with pytest.raises(backend.CodexFastError):
+    with pytest.raises(backend.CodexFastError) as error:
         backend.generate_codex_fast(
             system_prompt=secret, user_prompt=secret, codex_home=secret,
             model="gpt-6-astra", reasoning_effort="high", timeout=240,
             mcp_profile="kr_trading", require_mcp_calls=True,
         )
     messages = [record.getMessage() for record in caplog.records]
-    assert len(messages) == 2
     assert "category=start" in messages[0]
-    assert f"category={category}" in messages[1]
-    assert "model=gpt-6-astra effort=high profile=kr_trading timeout_s=240" in messages[1]
-    assert f"rc={returncode}" in messages[1]
-    assert "elapsed_s=" in messages[1]
+    assert f"category={category}" in messages[-1]
+    assert "model=gpt-6-astra effort=high profile=kr_trading timeout_s=240" in messages[-1]
+    assert f"rc={returncode}" in messages[-1]
+    assert "elapsed_s=" in messages[-1]
     assert secret not in caplog.text
+    assert secret not in str(error.value)
 
 
 @pytest.mark.parametrize("failure_stage", ["resolve", "popen"])
@@ -211,10 +213,11 @@ def test_launch_error_telemetry_does_not_log_exception(
     else:
         monkeypatch.setattr(backend.subprocess, "Popen", fail)
     caplog.set_level(logging.INFO, logger=backend.__name__)
-    with pytest.raises(backend.CodexFastError, match=secret):
+    with pytest.raises(backend.CodexFastError) as error:
         backend.generate_codex_fast(system_prompt=secret, user_prompt=secret)
     assert "category=launch_error" in caplog.text
     assert secret not in caplog.text
+    assert secret not in str(error.value)
 
 
 def test_us_trading_wires_codex_primary_before_legacy_fallback() -> None:
