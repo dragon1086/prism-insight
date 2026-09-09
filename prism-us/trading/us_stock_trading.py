@@ -42,6 +42,7 @@ from prism_core.runtime_paths import (
     resolve_us_exchange_cache_read_path,
     resolve_us_exchange_cache_write_path,
 )
+from prism_core.order_budget import resolve_order_budget, whole_share_quantity, order_budget_evidence
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -473,7 +474,9 @@ class USStockTrading:
         Returns:
             Buyable quantity (0 if cannot buy)
         """
-        amount = buy_amount if buy_amount else self.buy_amount
+        amount = resolve_order_budget(buy_amount, self.buy_amount)
+        if not amount:
+            return 0
 
         # Get current price
         price_info = self.get_current_price(ticker, exchange)
@@ -488,7 +491,7 @@ class USStockTrading:
             return 0
 
         # Calculate quantity (floor)
-        quantity = math.floor(amount / current_price)
+        quantity = whole_share_quantity(amount, current_price)
 
         if quantity == 0:
             logger.warning(f"[{ticker}] Price ${current_price:.2f} > Amount ${amount:.2f} - Cannot buy")
@@ -631,10 +634,11 @@ class USStockTrading:
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
-        amount = buy_amount if buy_amount else self.buy_amount
+        amount = resolve_order_budget(buy_amount, self.buy_amount)
 
         # Calculate quantity based on limit price
-        buy_quantity = math.floor(amount / limit_price)
+        limit_price = float(f'{limit_price:.2f}')
+        buy_quantity = whole_share_quantity(amount, limit_price)
 
         if buy_quantity == 0:
             return {
@@ -998,7 +1002,7 @@ class USStockTrading:
             }
 
     def buy_reserved_order(self, ticker: str, limit_price: float, buy_amount: float = None,
-                           exchange: str = None) -> Dict[str, Any]:
+                           exchange: str = None, *, allow_local_queue: bool = True) -> Dict[str, Any]:
         """
         Reserved order buy for US stock (executed at next market open)
         Reserved buy order - automatically executed at next market open
@@ -1039,27 +1043,27 @@ class USStockTrading:
         else:
             exchange = EXCHANGE_CODES.get(exchange.upper(), exchange)
 
-        amount = buy_amount if buy_amount else self.buy_amount
+        amount = resolve_order_budget(buy_amount, self.buy_amount)
+
+        # Reject an unaffordable/invalid order before persisting a pending order.
+        limit_price = float(f'{limit_price:.2f}')
+        buy_quantity = whole_share_quantity(amount, limit_price)
+        if buy_quantity == 0:
+            return {'success': False, 'order_no': None, 'ticker': ticker,
+                    'quantity': 0, 'message': 'Buy budget or price invalid, or budget below one share'}
 
         if not self.is_reserved_order_available():
+            if not allow_local_queue:
+                # A Python validation callback cannot be persisted in the
+                # legacy queue. Defer instead of submitting stale policy later.
+                return {'success': False, 'order_no': None, 'ticker': ticker,
+                        'quantity': 0, 'limit_price': limit_price,
+                        'message': 'Validated BUY deferred: reserved submission window unavailable; local queue disabled'}
             # Queue the order for later batch execution (us_pending_order_batch.py at 10:05 KST)
             return self._queue_pending_order(
                 ticker=ticker, order_type='buy', limit_price=limit_price,
                 buy_amount=amount, exchange=exchange
             )
-
-        # Calculate quantity based on limit price
-        buy_quantity = math.floor(amount / limit_price)
-
-        if buy_quantity == 0:
-            return {
-                'success': False,
-                'order_no': None,
-                'ticker': ticker,
-                'quantity': 0,
-                'limit_price': limit_price,
-                'message': f'Buy quantity is 0 (limit ${limit_price:.2f} > amount ${amount:.2f})'
-            }
 
         # Reserved order API
         api_url = "/uapi/overseas-stock/v1/trading/order-resv"
@@ -1267,7 +1271,7 @@ class USStockTrading:
             }
 
     def smart_buy(self, ticker: str, buy_amount: float = None,
-                  exchange: str = None, limit_price: float = None) -> Dict[str, Any]:
+                  exchange: str = None, limit_price: float = None, *, allow_local_queue: bool = True) -> Dict[str, Any]:
         """
         Smart buy - automatically choose best method based on market hours
 
@@ -1314,7 +1318,8 @@ class USStockTrading:
             # Market is closed - use reserved order if limit_price provided
             if limit_price and limit_price > 0:
                 logger.info(f"[{ticker}] Market is closed - placing reserved order (limit: ${limit_price:.2f})")
-                return self.buy_reserved_order(ticker, limit_price, buy_amount, exchange)
+                return self.buy_reserved_order(ticker, limit_price, buy_amount, exchange,
+                    **({'allow_local_queue': False} if not allow_local_queue else {}))
             else:
                 logger.warning(f"[{ticker}] Market is closed and no limit_price provided - cannot place reserved order")
                 return {
@@ -1383,7 +1388,7 @@ class USStockTrading:
 
     async def async_buy_stock(self, ticker: str, buy_amount: Optional[float] = None,
                               exchange: str = None, timeout: float = 30.0,
-                              limit_price: Optional[float] = None) -> Dict[str, Any]:
+                              limit_price: Optional[float] = None, *, quote_validator=None, strict_budget: bool = False) -> Dict[str, Any]:
         """
         Async buy API with timeout
 
@@ -1399,7 +1404,9 @@ class USStockTrading:
         """
         try:
             return await asyncio.wait_for(
-                self._execute_buy_stock(ticker, buy_amount, exchange, limit_price),
+                self._execute_buy_stock(ticker, buy_amount, exchange, limit_price,
+                    **({'quote_validator': quote_validator} if quote_validator is not None else {}),
+                    **({'strict_budget': True} if strict_budget else {})),
                 timeout=timeout
             )
         except asyncio.TimeoutError:
@@ -1416,9 +1423,9 @@ class USStockTrading:
             }
 
     async def _execute_buy_stock(self, ticker: str, buy_amount: float = None,
-                                 exchange: str = None, limit_price: float = None) -> Dict[str, Any]:
+                                 exchange: str = None, limit_price: float = None, *, quote_validator=None, strict_budget: bool = False) -> Dict[str, Any]:
         """Execute buy stock logic"""
-        amount = buy_amount if buy_amount else self.buy_amount
+        amount = resolve_order_budget(buy_amount, self.buy_amount)
 
         result = {
             'success': False,
@@ -1430,6 +1437,13 @@ class USStockTrading:
             'message': '',
             'timestamp': datetime.datetime.now().isoformat()
         }
+
+        if not amount:
+            result['message'] = 'Buy budget must be finite and positive'
+            return result
+        if strict_budget and not resolve_order_budget(limit_price, 0):
+            result['message'] = 'Strict budget requires a positive limit price'
+            return result
 
         stock_lock = await self._get_stock_lock(ticker)
 
@@ -1466,7 +1480,20 @@ class USStockTrading:
 
                         # Calculate buy quantity
                         current_price = price_info['current_price']
-                        buy_quantity = math.floor(amount / current_price)
+                        effective_limit_price = limit_price if (limit_price and limit_price > 0) else current_price
+                        effective_limit_price = float(f'{effective_limit_price:.2f}')
+                        if quote_validator is not None:
+                            try:
+                                if not resolve_order_budget(current_price, 0) or not resolve_order_budget(effective_limit_price, 0):
+                                    raise ValueError('invalid broker quote or final limit')
+                                quote_validator(float(current_price))
+                                quote_validator(effective_limit_price)
+                            except Exception:
+                                result['message'] = 'BUY quote validation rejected before submission'
+                                return result
+                        buy_quantity = whole_share_quantity(amount, effective_limit_price)
+                        if resolve_order_budget(effective_limit_price, 0):
+                            result.update(order_budget_evidence(amount, effective_limit_price))
 
                         if buy_quantity == 0:
                             result['message'] = f'Buy quantity is 0 (amount: ${amount:.2f})'
@@ -1480,17 +1507,32 @@ class USStockTrading:
 
                         # Use current_price as limit_price if not provided or invalid
                         # This is important for reserved orders when market is closed
-                        effective_limit_price = limit_price if (limit_price and limit_price > 0) else current_price
                         logger.info(f"[Async Buy] {ticker} limit_price: ${effective_limit_price:.2f} (provided: {limit_price})")
 
                         buy_result = await asyncio.to_thread(
-                            self.smart_buy, ticker, amount, exchange, effective_limit_price
+                            self.smart_buy, ticker, amount, exchange, effective_limit_price,
+                            **({'allow_local_queue': False} if quote_validator is not None or strict_budget else {}),
                         )
+
+                        result['quantity'] = buy_result.get('quantity', buy_quantity)
+                        sizing_price = buy_result.get('limit_price') or float(f'{effective_limit_price:.2f}')
+                        result.update(order_budget_evidence(amount, sizing_price, result['quantity']))
+                        result['total_amount'] = result['proposed_order_notional']
+                        if buy_result.get('order_type') == 'queued_buy':
+                            result.update(order_budget_evidence(amount, sizing_price))
+                            result['budget_evidence_basis'] = 'queued_order_plan_not_fill'
+                            result['order_type'] = 'queued_buy'
+                            # No broker order has been submitted yet.
+                            result['total_amount'] = 0
+                        logger.info('[ORDER_BUDGET] %s proposed_notional=%s unallocated=%s basis=proposed_order_not_fill',
+                                    ticker, result['proposed_order_notional'], result['unallocated_order_budget'])
 
                         if buy_result['success']:
                             result['success'] = True
                             result['order_no'] = buy_result['order_no']
-                            result['message'] = f"Buy completed: {buy_quantity} shares x ${current_price:.2f} = ${result['total_amount']:.2f}"
+                            result['message'] = f"Buy order accepted: {result['quantity']} shares; proposed notional ${result['total_amount']:.2f} (not confirmed fill)"
+                            if result.get('order_type') == 'queued_buy':
+                                result['message'] = buy_result['message']
                         else:
                             if buy_result.get('outcome_unknown'):
                                 result['outcome_unknown'] = True
@@ -2069,7 +2111,7 @@ class MultiAccountUSStockTrading:
         return self._get_trader(self.primary_account)
 
     async def async_buy_stock(self, ticker: str, buy_amount: Optional[float] = None,
-                              exchange: str = None, timeout: float = 30.0, limit_price: Optional[float] = None) -> Dict[str, Any]:
+                              exchange: str = None, timeout: float = 30.0, limit_price: Optional[float] = None, *, quote_validator=None, strict_budget: bool = False) -> Dict[str, Any]:
         if not self.account_configs:
             return self._aggregate_results(ticker, [], action="buy")
         results = []
@@ -2081,6 +2123,8 @@ class MultiAccountUSStockTrading:
                 exchange=exchange,
                 timeout=timeout,
                 limit_price=limit_price,
+                **({'quote_validator': quote_validator} if quote_validator is not None else {}),
+                **({'strict_budget': True} if strict_budget else {}),
             )
             result["account_name"] = account["name"]
             result["account_key"] = account["account_key"]

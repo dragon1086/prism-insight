@@ -1624,7 +1624,7 @@ class StockTrackingAgent:
         )
         entry_policy = scenario.get("regime_entry_policy") or {}
         if entry_policy.get("mode") == "rebound_pilot":
-            message += "진입비중: 50% (상승 전환 파일럿)\n"
+            message += "주문 예산 상한: 정상 예산의 50% (상승 전환 파일럿)\n정수 수량 내림으로 미사용 예산이 남을 수 있으며, 체결 비중 50%를 보장하지 않습니다.\n"
 
         trigger_win_rate = self._get_trigger_win_rate(trigger_type)
         if trigger_win_rate:
@@ -1875,11 +1875,12 @@ class StockTrackingAgent:
         ) as trading:
             return await trading.execute_pre_reserved_buy(
                 stock_code=prepared.symbol,
-                buy_amount=prepared.intent.cash_amount,
+                buy_amount=(float(prepared.intent.cash_amount) if prepared.intent.cash_amount is not None else None),
                 limit_price=current_price,
                 intent=prepared.intent,
                 reservation=prepared.reservation,
                 quote_validator=self._buy_quote_validator(prepared.scenario, is_add=prepared.is_add),
+                **({"strict_budget": True} if (prepared.scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
             )
 
     def _queue_message(
@@ -2657,7 +2658,7 @@ class StockTrackingAgent:
 
             entry_policy = scenario.get("regime_entry_policy") or {}
             if entry_policy.get("mode") == "rebound_pilot":
-                message += "진입비중: 50% (상승 전환 파일럿)\n"
+                message += "주문 예산 상한: 정상 예산의 50% (상승 전환 파일럿)\n정수 수량 내림으로 미사용 예산이 남을 수 있으며, 체결 비중 50%를 보장하지 않습니다.\n"
 
             # Add trigger win rate
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)
@@ -2816,19 +2817,33 @@ class StockTrackingAgent:
         during a macro-data failure.
         """
         try:
-            from cores.buy_gate import evaluate_production_buy_gate
+            from cores.buy_gate import evaluate_production_buy_gate, normalize_regime
+            from cores.regime_policy import configured_entry_amount, get_market_pulse_state
+
+            computed_regime = scenario.get("_deterministic_market_regime") or self._buy_floor_regime()
+            pulse = get_market_pulse_state("kr") if normalize_regime(computed_regime) == "sideways" else None
+            policy = scenario.get("regime_entry_policy") or {}
+            configured_cap = configured_entry_amount(getattr(self, "active_account", None), "kr", 0.5)
+            pilot_budget_available = (
+                isinstance(policy, dict)
+                and policy.get("mode") == "rebound_pilot"
+                and policy.get("position_fraction") == 0.5
+                and configured_cap is not None
+                and policy.get("cash_budget") == configured_cap
+            )
 
             result = evaluate_production_buy_gate(
-                scenario,
+                {**scenario, "decision": self._normalize_decision(scenario.get("decision", "Skip"))},
                 current_price=current_price,
-                market_regime=(
-                    scenario.get("_deterministic_market_regime")
-                    or self._buy_floor_regime()
-                ),
+                market_regime=computed_regime,
+                market_pulse=pulse,
+                pilot_budget_available=pilot_budget_available,
                 score_override=score_override,
                 trend_facts=str(scenario.get("_deterministic_trend_facts") or ""),
                 is_add=is_add,
             )
+            if result.get("score_policy"):
+                logger.info("[ENTRY_SCORE_POLICY][KR] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])
             if result.get("shadow_findings"):
                 logger.info(
                     "[BUY_GATE][KR][SHADOW] %s",
@@ -4120,6 +4135,8 @@ class StockTrackingAgent:
                     buy_score = scenario.get("buy_score", 0)
                     min_score = scenario.get("min_score", 0)
                     llm_min_score = min_score
+                    # Only runtime eligibility may grant the half-budget exception.
+                    scenario.pop("regime_entry_policy", None)
                     entry_cash_amount = None
                     logger.info(f"Buy score check: {company_name}({ticker}) - Score: {buy_score}")
 
@@ -4172,6 +4189,8 @@ class StockTrackingAgent:
                                     scenario["regime_entry_policy"] = {
                                         "mode": "rebound_pilot",
                                         "position_fraction": 0.5,
+                                        "cash_budget": entry_cash_amount,
+                                        "budget_semantics": "maximum_order_notional",
                                         "regime": _fr,
                                         "market_pulse": _pulse,
                                     }
@@ -4468,6 +4487,7 @@ class StockTrackingAgent:
                                         limit_price=current_price,
                                         intent=order_intent,
                                         quote_validator=self._buy_quote_validator(scenario),
+                                        **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
                                     )
                             except OrderOutcomeUnknown as error:
                                 self._link_position_entry_intent(

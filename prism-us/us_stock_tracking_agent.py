@@ -1848,7 +1848,7 @@ class USStockTrackingAgent:
 
             entry_policy = scenario.get("regime_entry_policy") or {}
             if entry_policy.get("mode") == "rebound_pilot":
-                message += "Position Size: 50% (rebound pilot)\n"
+                message += "Order budget cap: 50% of normal budget (rebound pilot)\nWhole shares are rounded down; unused budget may remain. This is not a guaranteed 50% fill allocation.\n"
 
             # Add trigger win rate
             trigger_win_rate = self._get_trigger_win_rate(trigger_type)
@@ -2546,6 +2546,17 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             self._regime_policy_mod_cache = _m
         return _m
 
+    def _buy_quote_validator(self, scenario, *, score_override=None, is_add=False):
+        """Apply the same entry policy to the broker's final sizing price."""
+        def validate(price):
+            normalized = apply_buy_scenario_contract(scenario, market="US", entry_price=price)
+            gate = self._evaluate_production_buy_gate(
+                normalized, price, score_override=score_override, is_add=is_add,
+            )
+            if not gate.get("allowed"):
+                raise ValueError(f"broker quote gate: {gate.get('reason', 'blocked')}")
+        return validate
+
     def _evaluate_production_buy_gate(
         self,
         scenario: Dict[str, Any],
@@ -2559,17 +2570,36 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             _gate = _import_from_main_cores(
                 "prism_root_buy_gate", "cores/buy_gate.py"
             )
+            computed_regime = scenario.get("_deterministic_market_regime") or self._buy_floor_regime()
+            regime_policy = self._regime_policy_mod()
+            pulse = (
+                regime_policy.get_market_pulse_state("us")
+                if regime_policy is not None and _gate.normalize_regime(computed_regime) == "sideways" else None
+            )
+            policy = scenario.get("regime_entry_policy") or {}
+            configured_cap = (
+                regime_policy.configured_entry_amount(getattr(self, "active_account", None), "us", 0.5)
+                if regime_policy is not None else None
+            )
+            pilot_budget_available = (
+                isinstance(policy, dict)
+                and policy.get("mode") == "rebound_pilot"
+                and policy.get("position_fraction") == 0.5
+                and configured_cap is not None
+                and policy.get("cash_budget") == configured_cap
+            )
             result = _gate.evaluate_production_buy_gate(
-                scenario,
+                {**scenario, "decision": self._normalize_decision(scenario.get("decision", "no_entry"))},
                 current_price=current_price,
-                market_regime=(
-                    scenario.get("_deterministic_market_regime")
-                    or self._buy_floor_regime()
-                ),
+                market_regime=computed_regime,
+                market_pulse=pulse,
+                pilot_budget_available=pilot_budget_available,
                 score_override=score_override,
                 trend_facts=str(scenario.get("_deterministic_trend_facts") or ""),
                 is_add=is_add,
             )
+            if result.get("score_policy"):
+                logger.info("[ENTRY_SCORE_POLICY][US] regime=%s pulse=%s policy=%s", computed_regime, pulse, result["score_policy"])
             if result.get("shadow_findings"):
                 logger.info(
                     "[BUY_GATE][US][SHADOW] %s",
@@ -3960,6 +3990,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     buy_score = scenario.get("buy_score", 0)
                     min_score = _safe_number(scenario.get("min_score", 0))
                     llm_min_score = min_score
+                    scenario.pop("regime_entry_policy", None)
                     floor_regime = None
                     pulse_state = None
                     rebound_pilot = False
@@ -4045,6 +4076,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 scenario["regime_entry_policy"] = {
                                     "mode": "rebound_pilot",
                                     "position_fraction": 0.5,
+                                    "cash_budget": entry_cash_amount,
+                                    "budget_semantics": "maximum_order_notional",
                                     "regime": floor_regime,
                                     "market_pulse": pulse_state,
                                 }
@@ -4259,6 +4292,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                             buy_amount=entry_cash_amount,
                                             limit_price=broker_price,
                                             intent=order_intent,
+                                            quote_validator=self._buy_quote_validator(scenario, score_override=adjusted_score, is_add=is_add),
+                                            **({"strict_budget": True} if (scenario.get("regime_entry_policy") or {}).get("mode") == "rebound_pilot" else {}),
                                         )
 
                                     persisted_intent_id = trade_result.get("intent_id")
