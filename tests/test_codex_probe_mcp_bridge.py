@@ -43,6 +43,25 @@ def fake_namespace_command(monkeypatch):
     monkeypatch.setattr(bridge_module, "_host_command", lambda argv: list(argv))
 
 
+def test_handler_cleanup_failure_is_sticky_and_raised_on_context_exit(tmp_path, monkeypatch, caplog):
+    real_stop = bridge_module._stop_child
+    failed = threading.Event()
+    def fail_after_fixture_reap(process):
+        real_stop(process)  # never leave a real fixture child behind
+        failed.set()
+        raise subprocess.TimeoutExpired("PRIVATE_CLEANUP_CANARY", 2)
+    monkeypatch.setattr(bridge_module, "_stop_child", fail_after_fixture_reap)
+    with pytest.raises(bridge_module.BridgeError, match="provider_cleanup_unconfirmed"):
+        with start(tmp_path) as bridge:
+            with socket.socket(socket.AF_UNIX) as connection:
+                connection.connect(str(bridge.socket_path))
+                with connection.makefile("rwb") as stream:
+                    initialize(stream)
+            assert failed.wait(3)
+    assert not bridge.socket_path.exists()
+    assert "PRIVATE_CLEANUP_CANARY" not in caplog.text
+
+
 FAKE = r'''
 import json,sys
 seen=[]
