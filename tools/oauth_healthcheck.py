@@ -71,9 +71,9 @@ ALERT_CHAT_ID = os.getenv("OAUTH_ALERT_CHAT_ID") or os.getenv("TELEGRAM_CHANNEL_
 BOT_TOKEN = os.getenv("OAUTH_ALERT_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
 
 # --- Quota config ----------------------------------------------------------
-# Probe uses the lightest Codex-compatible model (api_translator._MODEL_MAP
-# target) so it burns almost nothing of the quota it is measuring.
-QUOTA_PROBE_MODEL = os.getenv("OAUTH_QUOTA_PROBE_MODEL", "gpt-5.4-mini")
+# Use a verified ChatGPT OAuth-compatible model with a tiny input/output.
+# Generic API model availability does not imply ChatGPT backend support.
+QUOTA_PROBE_MODEL = os.getenv("OAUTH_QUOTA_PROBE_MODEL", "gpt-5.6-sol")
 # "Remaining < this %" on EITHER window triggers the ⚠️ warning highlight.
 QUOTA_WARN_REMAINING_PCT = int(os.getenv("OAUTH_QUOTA_WARN_REMAINING_PCT", "20"))
 
@@ -247,6 +247,20 @@ def _available_quota_windows(q: dict) -> list[dict]:
     return windows
 
 
+def _quota_http_failure(status: int, body: bytes) -> str | None:
+    """Classify rejected probes without exposing the backend response body."""
+    if 200 <= status < 300 or status == 429:
+        return None
+    if status == 400:
+        text = body[:8192].decode("utf-8", errors="replace").lower()
+        if "model" in text and ("not supported" in text or "unsupported" in text):
+            return "조회 모델 미지원 (status=400). 쿼터 잔량은 확인되지 않았습니다."
+        return "쿼터 조회 요청 거절 (status=400). 쿼터 잔량은 확인되지 않았습니다."
+    if status in (401, 403):
+        return f"쿼터 조회 인증/권한 오류 (status={status})."
+    return f"쿼터 조회 백엔드 오류 (status={status}). 쿼터 잔량은 확인되지 않았습니다."
+
+
 async def _probe_quota() -> tuple[dict | None, str]:
     """Fire ONE cheap Codex call and read x-codex-* rate-limit headers.
 
@@ -301,12 +315,17 @@ async def _probe_quota() -> tuple[dict | None, str]:
                 h = resp.headers
                 status = resp.status
                 # Drain the stream so the connection closes cleanly (cheap call).
+                response_body = b""
                 try:
-                    await resp.read()
+                    response_body = await resp.read()
                 except Exception:  # noqa: BLE001
                     pass
     except Exception as e:  # noqa: BLE001
         return None, f"프록시/백엔드 호출 실패: {e!r}"
+
+    failure = _quota_http_failure(status, response_body)
+    if failure:
+        return None, failure
 
     if not any(k.lower().startswith("x-codex-") for k in h):
         return None, f"쿼터 헤더 없음 (status={status}). 백엔드 응답에 x-codex-* 미포함."
