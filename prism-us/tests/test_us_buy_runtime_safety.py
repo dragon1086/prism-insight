@@ -20,6 +20,38 @@ mod = base.us_agent_module
 Agent = base.USStockTrackingAgent
 
 
+@pytest.mark.parametrize("score,pulse,cap,allowed", [
+    (7, "UPTREND", None, True), (7, None, None, False),
+    (7, "CORRECTION", None, False), (6, "UPTREND", 500, True),
+    (6, "UPTREND", None, False), (6, "UPTREND", 1000, False),
+])
+@pytest.mark.parametrize("decision", ["entry", "진입", "매수"])
+def test_runtime_policy_reaches_us_gate_and_broker_boundary(monkeypatch, score, pulse, cap, allowed, decision):
+    # US historically recognizes "진입", not "매수". Do not broaden entry permission.
+    if score == 6 and decision == "매수":
+        allowed = False
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
+    agent = Agent.__new__(Agent)
+    agent.active_account = {"buy_amount_usd": 1000}
+    agent._buy_floor_regime = lambda: "sideways"
+    rp = agent._regime_policy_mod()
+    monkeypatch.setattr(rp, "get_market_pulse_state", lambda market: pulse)
+    scenario = {"decision": decision, "buy_score": score, "min_score": 5,
+                "entry_price": 100, "target_price": 115, "stop_loss": 95,
+                "risk_reward_ratio": 3, "expected_return_pct": 15, "expected_loss_pct": 5,
+                "market_condition": "sideways"}
+    if cap is not None:
+        scenario["regime_entry_policy"] = {"mode": "rebound_pilot", "position_fraction": 0.5, "cash_budget": cap}
+    result = agent._evaluate_production_buy_gate(scenario, 100, score_override=score)
+    assert result["allowed"] is allowed
+    validator = agent._buy_quote_validator(scenario, score_override=score)
+    if allowed:
+        validator(100)
+    else:
+        with pytest.raises(ValueError, match="broker quote gate"):
+            validator(100)
+
+
 @pytest.fixture(autouse=True)
 def offline_transitive_market_data(monkeypatch):
     import pandas as pd

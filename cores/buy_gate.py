@@ -12,9 +12,10 @@ scenarios impossible to replay.
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any, Mapping
+
+from prism_core.entry_score_policy import evaluate_entry_score_policy
 
 
 REGIME_RULES: dict[str, dict[str, float | int]] = {
@@ -45,20 +46,6 @@ _REGIME_STEP_DOWN = {
     "moderate_bear": "strong_bear",
     "strong_bear": "strong_bear",
 }
-_STRICT_SCORE_FLOORS = {
-    "sideways": 8,
-    "moderate_bear": 8,
-    "strong_bear": 9,
-}
-
-
-def _strict_score_floor_enabled() -> bool:
-    """Legacy rollback flag; the final gate is ON unless explicitly disabled."""
-    return os.getenv("REGIME_MIN_SCORE_FLOOR", "true").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
-
-
 def _number(value: Any) -> float | None:
     try:
         if value is None or isinstance(value, bool):
@@ -123,12 +110,18 @@ def evaluate_production_buy_gate(
     trend_facts: str = "",
     distribution_days: int | None = None,
     is_add: bool = False,
+    market_pulse: str | None = None,
+    pilot_budget_available: bool = False,
 ) -> dict[str, Any]:
     """Evaluate one candidate immediately before the simulator buy call.
 
     ``market_regime`` must be the programmatically computed regime.  A missing
     regime is a hard stop for a new buy: a data outage may reduce opportunity,
     but must not silently remove the market-risk filter.
+
+    ``market_pulse`` and ``pilot_budget_available`` are runtime-authoritative
+    inputs. Never derive them from LLM scenario policy annotations. Pilot budget
+    permission means the caller has a usable half-budget cap for a NEW entry.
     """
     data = dict(scenario or {})
     facts = trend_facts or str(data.get("_deterministic_trend_facts") or "")
@@ -154,16 +147,19 @@ def evaluate_production_buy_gate(
         buy_score = _number(data.get("buy_score"))
         macro = _number(data.get("macro_adjustment")) or 0.0
         score = (buy_score + macro) if buy_score is not None else None
+    score_policy = None
     if score is None:
         findings.append(_finding("missing_score", "effective buy score is unavailable"))
     elif rule is not None:
         scenario_min = _number(data.get("min_score")) or 0.0
-        required_score = max(float(rule["min_score"]), scenario_min)
-        if _strict_score_floor_enabled():
-            required_score = max(
-                required_score,
-                float(_STRICT_SCORE_FLOORS.get(effective_regime or "", 0)),
-            )
+        score_policy = evaluate_entry_score_policy(
+            score, data.get("min_score"), computed_regime, market_pulse,
+            data.get("decision"), effective_regime=effective_regime,
+            distribution_caution=distribution_caution,
+            pilot_budget_available=pilot_budget_available, is_add=is_add,
+            rule_min_score=float(rule["min_score"]),
+        )
+        required_score = max(scenario_min, score_policy["required_score"])
         if score < required_score:
             findings.append(_finding(
                 "score_below_floor",
@@ -263,6 +259,7 @@ def evaluate_production_buy_gate(
         "effective_regime": effective_regime,
         "distribution_days": distribution_days,
         "distribution_caution": distribution_caution,
+        "score_policy": score_policy,
         "recomputed_rr": recomputed_rr,
         "findings": findings,
         "hard_findings": hard_findings,

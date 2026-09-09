@@ -257,7 +257,7 @@ class _FakeAsyncUSTradingContext:
     def get_current_price(self, ticker, **kwargs):
         return {"current_price": 180.5}
 
-    async def async_buy_stock(self, ticker, limit_price=None, buy_amount=None):
+    async def async_buy_stock(self, ticker, limit_price=None, buy_amount=None, quote_validator=None, strict_budget=False):
         # buy_amount mirrors the real USStockTrading.async_buy_stock signature
         # (None = full size; set only under PULSE_PILOT_REEXPOSURE pilot sizing).
         return {
@@ -926,7 +926,7 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
             "company_name": "Apple Inc.",
             "current_price": 180.5,
             "scenario": {
-                "decision": "entry", "expected_return_pct": (200 - 180.5) / 180.5 * 100,
+                "decision": "진입", "expected_return_pct": (200 - 180.5) / 180.5 * 100,
                 "expected_loss_pct": (180.5 - 170) / 180.5 * 100,
                 "buy_score": 6,
                 "min_score": 5,
@@ -934,7 +934,7 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
                 "target_price": 200.0,
                 "stop_loss": 170.0,
                 "risk_reward_ratio": 2.0,
-                "_deterministic_market_regime": "moderate_bull",
+                "_deterministic_market_regime": "sideways",
             },
             "decision": "entry",
             "raw_decision": "Enter",
@@ -958,7 +958,8 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
     buy_amounts = []
 
     class PilotTradingContext(_FakeAsyncUSTradingContext):
-        async def async_buy_stock(self, ticker, limit_price=None, buy_amount=None):
+        async def async_buy_stock(self, ticker, limit_price=None, buy_amount=None, quote_validator=None, strict_budget=False):
+            assert strict_budget is True
             buy_amounts.append(buy_amount)
             return await super().async_buy_stock(ticker, limit_price, buy_amount)
 
@@ -979,6 +980,8 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
     assert redis_calls[0]["scenario"]["regime_entry_policy"] == {
         "mode": "rebound_pilot",
         "position_fraction": 0.5,
+        "cash_budget": 1000.0,
+        "budget_semantics": "maximum_order_notional",
         "regime": "sideways",
         "market_pulse": "UPTREND",
     }

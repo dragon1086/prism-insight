@@ -15,6 +15,7 @@ from typing import Optional, Dict, List, Any
 from zoneinfo import ZoneInfo
 
 import yaml
+from prism_core.order_budget import resolve_order_budget, whole_share_quantity, order_budget_evidence
 
 # Path to directory where current file is located
 TRADING_DIR = Path(__file__).parent
@@ -319,7 +320,9 @@ class DomesticStockTrading:
         Returns:
             Buyable quantity (0 if cannot buy)
         """
-        amount = buy_amount if buy_amount else self.buy_amount
+        amount = resolve_order_budget(buy_amount, self.buy_amount)
+        if not amount:
+            return 0
 
         # Get current price
         current_price_info = ({"current_price": quote_price} if quote_price is not None
@@ -338,7 +341,7 @@ class DomesticStockTrading:
             return 0
 
         # Calculate buyable quantity (floor division)
-        current_quantity = math.floor(amount / current_price)
+        current_quantity = whole_share_quantity(amount, current_price)
 
         if current_quantity == 0:
             logger.warning(f"[{stock_code}] Current price {current_price:,} KRW > Buy amount {amount:,} KRW - Cannot buy")
@@ -499,7 +502,7 @@ class DomesticStockTrading:
                 'message': 'Auto trading is disabled. Cannot execute buy order. (AUTO_TRADING=False)'
             }
 
-        amount = buy_amount if buy_amount else self.buy_amount
+        amount = resolve_order_budget(buy_amount, self.buy_amount)
 
         # Defensive guard: a missing/zero limit price would raise
         # ZeroDivisionError, and we must never buy at an unknown price.
@@ -515,7 +518,7 @@ class DomesticStockTrading:
             }
 
         # Calculate buyable quantity (based on limit price)
-        buy_quantity = math.floor(amount / limit_price)
+        buy_quantity = whole_share_quantity(amount, limit_price)
 
         if buy_quantity == 0:
             return {
@@ -590,7 +593,7 @@ class DomesticStockTrading:
                 'message': f'Error during buy order: {str(e)}'
             }
 
-    def smart_buy(self, stock_code: str, buy_amount: int = None, limit_price: int = None, *, quote_price: float = None) -> Dict[str, Any]:
+    def smart_buy(self, stock_code: str, buy_amount: int = None, limit_price: int = None, *, quote_price: float = None, strict_budget: bool = False) -> Dict[str, Any]:
         """
         Automatically buy using the optimal method based on time (excluding after-hours single price trading due to high unfilled probability)
 
@@ -618,6 +621,19 @@ class DomesticStockTrading:
 
         now = _now_kst()
         order_window = _domestic_order_window(now)
+
+        if strict_budget:
+            # Pilot allocation is a notional cap, so market-price execution is
+            # not acceptable. No fallback may silently remove the limit.
+            if not resolve_order_budget(limit_price, 0) or int(limit_price) <= 0:
+                return {'success': False, 'order_no': None, 'stock_code': stock_code,
+                        'quantity': 0, 'message': 'Strict budget requires a positive limit price'}
+            limit_price = int(limit_price)
+            if order_window == 'regular':
+                return self.buy_limit_price(stock_code, limit_price, buy_amount)
+            if order_window != 'reserved':
+                return {'success': False, 'order_no': None, 'stock_code': stock_code,
+                        'quantity': 0, 'message': 'Strict budget limit order unavailable in this window'}
 
         # Branch by Korean market time (KST), regardless of server/local timezone.
         if order_window == "regular":
@@ -764,14 +780,14 @@ class DomesticStockTrading:
                 'message': 'Auto trading is disabled. Cannot execute buy order. (AUTO_TRADING=False)'
             }
 
-        amount = buy_amount if buy_amount else self.buy_amount
+        amount = resolve_order_budget(buy_amount, self.buy_amount)
 
         # Set order type and unit price
         if limit_price and limit_price > 0:
             ord_dvsn_cd = "00"  # Limit price
             ord_unpr = str(int(limit_price))
             # Calculate quantity based on limit price (must be int for API)
-            buy_quantity = int(amount // limit_price)
+            buy_quantity = whole_share_quantity(amount, limit_price)
             logger.info(f"[{stock_code}] Reserved order limit price: {int(limit_price):,} KRW, quantity: {buy_quantity} shares")
         else:
             ord_dvsn_cd = "01"  # Market price
@@ -836,6 +852,7 @@ class DomesticStockTrading:
                     'quantity': buy_quantity,
                     'order_type': order_type_str,
                     'period_type': period_str,
+                    'limit_price': int(limit_price) if ord_dvsn_cd == '00' else None,
                     'message': f'Reserved buy order completed ({buy_quantity} shares, {order_type_str}, {period_str})'
                 }
             else:
@@ -848,7 +865,8 @@ class DomesticStockTrading:
                     'order_no': None,
                     'stock_code': stock_code,
                     'quantity': buy_quantity,
-                    'message': f"Reserved order failed: {error_msg}"
+                    'message': f"Reserved order failed: {error_msg}",
+                    'limit_price': int(limit_price) if ord_dvsn_cd == '00' else None,
                 }
 
         except Exception as e:
@@ -859,7 +877,8 @@ class DomesticStockTrading:
                 'order_no': None,
                 'stock_code': stock_code,
                 'quantity': buy_quantity,
-                'message': f"Error during reserved buy order: {str(e)}"
+                'message': f"Error during reserved buy order: {str(e)}",
+                'limit_price': int(limit_price) if ord_dvsn_cd == '00' else None,
             }
 
     def sell_all_market_price(self, stock_code: str, quantity: int = None) -> Dict[str, Any]:
@@ -1264,7 +1283,7 @@ class DomesticStockTrading:
             self._stock_locks[stock_code] = asyncio.Lock()
         return self._stock_locks[stock_code]
 
-    async def async_buy_stock(self, stock_code: str, buy_amount: Optional[int] = None, timeout: float = 30.0, limit_price: Optional[int] = None, *, quote_validator=None) -> Dict[str, Any]:
+    async def async_buy_stock(self, stock_code: str, buy_amount: Optional[int] = None, timeout: float = 30.0, limit_price: Optional[int] = None, *, quote_validator=None, strict_budget: bool = False) -> Dict[str, Any]:
         """
         Async buy API (with timeout)
         Get current price → Calculate buyable quantity → Market buy
@@ -1292,6 +1311,7 @@ class DomesticStockTrading:
                 self._execute_buy_stock(
                     stock_code, buy_amount, limit_price,
                     **({"quote_validator": quote_validator} if quote_validator is not None else {}),
+                    **({"strict_budget": True} if strict_budget else {}),
                 ),
                 timeout=timeout
             )
@@ -1308,9 +1328,9 @@ class DomesticStockTrading:
                 'timestamp': _now_kst().isoformat()
             }
 
-    async def _execute_buy_stock(self, stock_code: str, buy_amount: int = None, limit_price: int = None, *, quote_validator=None) -> Dict[str, Any]:
+    async def _execute_buy_stock(self, stock_code: str, buy_amount: int = None, limit_price: int = None, *, quote_validator=None, strict_budget: bool = False) -> Dict[str, Any]:
         # Use class default if buy_amount is None
-        amount = buy_amount if buy_amount else self.buy_amount
+        amount = resolve_order_budget(buy_amount, self.buy_amount)
 
         result = {
             'success': False,
@@ -1322,6 +1342,13 @@ class DomesticStockTrading:
             'message': '',
             'timestamp': _now_kst().isoformat()
         }
+
+        if not amount:
+            result['message'] = 'Buy budget must be finite and positive'
+            return result
+        if strict_budget and not resolve_order_budget(limit_price, 0):
+            result['message'] = 'Strict budget requires a positive limit price'
+            return result
 
         # 3-level protection: per-stock lock + semaphore + global lock
         stock_lock = await self._get_stock_lock(stock_code)
@@ -1363,7 +1390,10 @@ class DomesticStockTrading:
 
                         # Step 2: Calculate buyable quantity (use amount)
                         current_price = current_price_info['current_price']
-                        buy_quantity = math.floor(amount / current_price)
+                        sizing_price = int(limit_price) if strict_budget else current_price
+                        buy_quantity = whole_share_quantity(amount, sizing_price)
+                        if resolve_order_budget(sizing_price, 0):
+                            result.update(order_budget_evidence(amount, sizing_price))
 
                         if buy_quantity == 0:
                             result['message'] = f'Buyable quantity is 0 (buy amount: {amount:,} KRW)'
@@ -1386,13 +1416,23 @@ class DomesticStockTrading:
                             logger.info(f"[Async Buy API] {stock_code} executing with effective limit price: {buy_quantity} shares x {effective_limit_price:,} KRW")
                         buy_result = await asyncio.to_thread(
                             self.smart_buy, stock_code, amount, effective_limit_price,
-                            **({"quote_price": current_price} if quote_validator is not None else {})
+                            **({"quote_price": current_price} if quote_validator is not None else {}),
+                            **({"strict_budget": True} if strict_budget else {}),
                         )
+
+                        # The final route can size at a different reserved limit.
+                        # These are proposed order amounts, never confirmed fills.
+                        sizing_price = buy_result.get('limit_price') or (effective_limit_price if strict_budget else current_price)
+                        result['quantity'] = buy_result.get('quantity', buy_quantity)
+                        result.update(order_budget_evidence(amount, sizing_price, result['quantity']))
+                        result['total_amount'] = result['proposed_order_notional']
+                        logger.info('[ORDER_BUDGET] %s proposed_notional=%s unallocated=%s basis=proposed_order_not_fill',
+                                    stock_code, result['proposed_order_notional'], result['unallocated_order_budget'])
 
                         if buy_result['success']:
                             result['success'] = True
                             result['order_no'] = buy_result['order_no']
-                            result['message'] = f"Buy completed: {buy_quantity} shares x {current_price_info['current_price']:,} KRW = {result['total_amount']:,} KRW"
+                            result['message'] = f"Buy order accepted: {result['quantity']} shares; proposed notional {result['total_amount']:,} KRW (not confirmed fill)"
                             logger.info(f"[Async Buy API] {stock_code} buy successful")
                         else:
                             if buy_result.get('outcome_unknown'):
@@ -2138,7 +2178,7 @@ class MultiAccountDomesticStockTrading:
             raise RuntimeError("No primary domestic account configured")
         return self._get_trader(self.primary_account)
 
-    async def async_buy_stock(self, stock_code: str, buy_amount: Optional[int] = None, timeout: float = 30.0, limit_price: Optional[int] = None, *, quote_validator=None) -> Dict[str, Any]:
+    async def async_buy_stock(self, stock_code: str, buy_amount: Optional[int] = None, timeout: float = 30.0, limit_price: Optional[int] = None, *, quote_validator=None, strict_budget: bool = False) -> Dict[str, Any]:
         if not self.account_configs:
             return self._aggregate_results(stock_code, [], action="buy")
         results = []
@@ -2150,6 +2190,7 @@ class MultiAccountDomesticStockTrading:
                 timeout=timeout,
                 limit_price=limit_price,
                 **({"quote_validator": quote_validator} if quote_validator is not None else {}),
+                **({"strict_budget": True} if strict_budget else {}),
             )
             result["account_name"] = account["name"]
             result["account_key"] = account["account_key"]

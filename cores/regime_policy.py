@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -194,126 +195,42 @@ def market_pulse_mode() -> str:
     return raw if raw in _VALID_MODES else _DEFAULT_MODE
 
 
-# --------------------------------------------------------------------------- #
-# Regime-adaptive hard min_score floor (env-gated, default OFF)               #
-# --------------------------------------------------------------------------- #
-# 7월 -42%p 손실 재발 방지책의 하나: 매수 임계(min_score)는 지금 LLM이 시나리오마다
-# 자유롭게 정한다(약세장에서 낮아질 수 있음). 아래 표는 시장 레짐별 "절대 하한선"을
-# 강제해, 약세장에서는 LLM이 무슨 값을 주더라도 그 밑으로는 못 사게 한다(안전 게이트).
-# 기본 ON. 환경변수 false/off는 긴급 롤백용이다.
-_REGIME_MIN_SCORE_FLOORS = {
-    "strong_bear": 9,
-    "moderate_bear": 8,
-    "sideways": 8,
-    "moderate_bull": 0,
-    "strong_bull": 0,
-    "unknown": 0,
-}
-
-
-def regime_min_score_floor_enabled() -> bool:
-    """Return True when REGIME_MIN_SCORE_FLOOR is truthy. Default ON.
-
-    Same truthy parsing as trigger_batch's REGIME_WEAK_NO_TOPDOWN gate.
-    """
-    return os.getenv("REGIME_MIN_SCORE_FLOOR", "true").strip().lower() in (
-        "1", "true", "yes", "on"
-    )
-
-
-def min_score_floor(
-    market_regime: Optional[str], pulse_state: Optional[str] = None
-) -> int:
-    """Hard buy-score floor for ``market_regime`` (0 for bullish / unknown regimes).
-
-    Tolerant of decorated labels (e.g. ``"strong_bear (하락)"`` -> ``strong_bear``):
-    only the leading whitespace-delimited token is matched. Unmapped -> 0.
-
-    A sideways regime can lag a fresh broad-market recovery.  When the independent
-    Market Pulse state is already UPTREND, ease only that floor from 8 to 7.  A
-    missing/stale pulse keeps the defensive floor of 8.
-    """
-    raw = (market_regime or "").strip().lower()
-    key = raw.split()[0] if raw else "unknown"
-    if key == "sideways" and (pulse_state or "").strip().upper() == UPTREND:
-        return 7
-    return _REGIME_MIN_SCORE_FLOORS.get(key, 0)
-
-
-def effective_min_score(
-    llm_min_score,
-    market_regime: Optional[str],
-    pulse_state: Optional[str] = None,
-) -> int:
-    """Return ``max(llm_min_score, regime_floor)`` when the flag is ON; else the
-    LLM value unchanged.
-
-    NEVER lowers the LLM threshold (floor is a one-way raise). Pure, no I/O beyond
-    the single env read. ``llm_min_score`` non-int/None is treated as 0.
-    """
-    try:
-        base = int(llm_min_score or 0)
-    except (TypeError, ValueError):
-        base = 0
-    if not regime_min_score_floor_enabled():
-        return base
-    return max(base, min_score_floor(market_regime, pulse_state))
-
-
-def is_rebound_pilot_entry(
-    buy_score,
-    llm_min_score,
-    market_regime: Optional[str],
-    pulse_state: Optional[str],
-    decision: Optional[str],
-) -> bool:
-    """Allow one narrowly-scoped half-size entry during a rebound transition.
-
-    The exception applies only when all independent safeguards agree: the floor
-    feature is enabled, the deterministic regime is sideways, Market Pulse is
-    UPTREND, the AI explicitly chose entry, the score is exactly 6, and the AI's
-    own minimum did not require 7+.  Other gates (sector, slots, cooldown) remain
-    authoritative at their existing call sites.
-    """
-    if not regime_min_score_floor_enabled():
-        return False
-    try:
-        score = int(buy_score)
-        base = int(llm_min_score or 0)
-    except (TypeError, ValueError):
-        return False
-    raw_regime = (market_regime or "").strip().lower()
-    regime = raw_regime.split()[0] if raw_regime else "unknown"
-    normalized_decision = (decision or "").strip().lower()
-    return (
-        regime == "sideways"
-        and (pulse_state or "").strip().upper() == UPTREND
-        and normalized_decision in {"enter", "entry"}
-        and score == 6
-        and base <= 6
-    )
-
+# Entry-score helpers are re-exported for existing root/US file-path callers.
+# Their implementation is shared with the final gate without cores shadowing.
+from prism_core.entry_score_policy import (  # noqa: E402,F401
+    effective_min_score,
+    is_rebound_pilot_entry,
+    min_score_floor,
+    regime_min_score_floor_enabled,
+)
 
 def configured_entry_amount(
     account: Optional[dict], market: str, position_fraction: float
 ):
     """Return a scaled configured order amount, or ``None`` for normal/default size.
 
-    Returning ``None`` preserves the broker adapter's existing default.  Invalid
-    account data also returns ``None`` so configuration parsing never blocks an
-    otherwise valid entry.
+    Invalid inputs return ``None``. Pilot callers must treat that as unavailable
+    budget permission, not as permission to fall back to a full-size order.
     """
-    if position_fraction >= 1.0 or position_fraction <= 0.0 or not account:
+    if not account or isinstance(position_fraction, bool):
         return None
     key = "buy_amount_krw" if (market or "").strip().lower() == "kr" else "buy_amount_usd"
     try:
-        configured = float(account.get(key) or 0)
-    except (TypeError, ValueError):
+        raw = account.get(key)
+        if isinstance(raw, bool):
+            return None
+        fraction = Decimal(str(position_fraction))
+        configured = Decimal(str(raw))
+        if (not fraction.is_finite() or not configured.is_finite()
+                or not 0 < fraction < 1 or configured <= 0):
+            return None
+        quantum = Decimal("1") if key == "buy_amount_krw" else Decimal("0.01")
+        scaled = (configured * fraction).quantize(quantum, rounding=ROUND_DOWN)
+    except (TypeError, ValueError, InvalidOperation):
         return None
-    if configured <= 0:
+    if scaled <= 0:
         return None
-    scaled = configured * position_fraction
-    return int(scaled) if key == "buy_amount_krw" else scaled
+    return int(scaled) if key == "buy_amount_krw" else float(scaled)
 
 
 def enforce_computed_regime(
