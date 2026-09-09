@@ -383,13 +383,14 @@ class USStockTrading:
         )
         return "NYSE"
 
-    def get_current_price(self, ticker: str, exchange: str = None) -> Optional[Dict[str, Any]]:
+    def get_current_price(self, ticker: str, exchange: str = None, *, strict: bool = False) -> Optional[Dict[str, Any]]:
         """
         Get current market price for US stock
 
         Args:
             ticker: Stock ticker symbol (e.g., "AAPL", "MSFT")
             exchange: Exchange code (NASD, NYSE, AMEX) - auto-detected if not provided
+            strict: Require a finite positive last quote, without previous-close fallback.
 
         Returns:
             {
@@ -428,6 +429,9 @@ class USStockTrading:
                 current_price = _safe_float(data.get('last'))
 
                 # When market is closed, 'last' is empty; fall back to 'base' (previous day close)
+                if strict and (not math.isfinite(current_price) or current_price <= 0):
+                    logger.warning(f"[{ticker}] Fresh BUY quote unavailable; rejecting base-price fallback")
+                    return None
                 if current_price <= 0:
                     base_price = _safe_float(data.get('base'))
                     if base_price > 0:

@@ -24,6 +24,29 @@ jobs:
       - name: Check third-party copyleft licenses
         run: python tools/license_compliance.py
 
+      # Reuse the production dependency environment for runtime import parity.
+      # KR/US packages intentionally shadow one another: separate pytest processes.
+      - name: Install existing test runners
+        run: python -m pip install pytest pytest-asyncio
+
+      - name: Offline BUY runtime safety regression
+        env:
+          PRISM_DISABLE_SIGNAL_PUBLISH: "1"
+        run: |
+          python -m pytest tests/test_trading_scenario_contract.py \
+            tests/test_trading_agents_prompt_rules.py \
+            tests/test_codex_oauth_fast_backend.py tests/test_buy_codex_settings.py \
+            tests/test_codex_fast_process_cleanup.py -q
+          # Existing bootstrap creates only a fake example.com KIS config, removes it at exit.
+          python -m pytest tests/test_multi_account_domestic.py \
+            tests/test_astra_kr_safety.py tests/test_kr_buy_quote_validation.py \
+            tests/test_parallel_trading_batch.py tests/test_trading_scenario_retry.py \
+            tests/test_stock_tracking_agent_process_reports.py tests/test_kr_pending_entry.py -q
+          python -m pytest prism-us/tests/test_us_buy_runtime_safety.py \
+            prism-us/tests/test_us_parallel_trading_analysis.py \
+            prism-us/tests/test_us_stock_tracking_agent_process_reports.py \
+            prism-us/tests/test_trading_agents_prompt_rules.py -q
+
   dashboard:
     name: Dashboard production build
     runs-on: ubuntu-latest
@@ -76,6 +99,9 @@ jobs:
       - name: Run tests
         run: |
           python -m pytest cores/llm/tests/ -q
+          python -m pytest --noconftest tests/test_buy_codex_settings.py \
+            tests/test_trading_scenario_contract.py tests/test_codex_oauth_fast_backend.py \
+            tests/test_codex_fast_process_cleanup.py -q
           # Lightweight real-order boundary gates. Keep KR/US fill-chaser in
           # separate processes because their runtime packages intentionally
           # shadow one another.
