@@ -463,13 +463,14 @@ async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, t
             "company_name": "Samsung Electronics",
             "current_price": 70000,
             "scenario": {
+                "decision": "진입",
                 "buy_score": 6,
                 "min_score": 5,
                 "sector": "Technology",
                 "target_price": 77000,
-                "stop_loss": 65000,
-                "risk_reward_ratio": 1.4,
-                "_deterministic_market_regime": "moderate_bull",
+                "stop_loss": 66500,
+                "risk_reward_ratio": 2.0,
+                "_deterministic_market_regime": "sideways",
             },
             "decision": "Enter",
             "sector": "Technology",
@@ -491,7 +492,8 @@ async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, t
     buy_amounts = []
 
     class PilotTradingContext(_FakeAsyncTradingContext):
-        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None, quote_validator=None):
+        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None, quote_validator=None, strict_budget=False):
+            assert strict_budget is True
             buy_amounts.append(buy_amount)
             return await super().async_buy_stock(stock_code, limit_price, buy_amount)
 
@@ -511,6 +513,8 @@ async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, t
     assert redis_calls[0]["scenario"]["regime_entry_policy"] == {
         "mode": "rebound_pilot",
         "position_fraction": 0.5,
+        "cash_budget": 500_000,
+        "budget_semantics": "maximum_order_notional",
         "regime": "sideways",
         "market_pulse": "UPTREND",
     }

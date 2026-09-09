@@ -159,8 +159,11 @@ def _install_pending_entry_runtime(
             return False
 
         async def async_buy_stock(
-            self, stock_code, limit_price=None, buy_amount=None, quote_validator=None
+            self, stock_code, limit_price=None, buy_amount=None, quote_validator=None, strict_budget=False
         ):
+            if strict_budget:
+                assert buy_amount == 500_000
+                assert quote_validator is not None
             if broker_quote is not None:
                 try:
                     quote_validator(broker_quote)
@@ -171,6 +174,7 @@ def _install_pending_entry_runtime(
                     "stock_code": stock_code,
                     "limit_price": limit_price,
                     "buy_amount": buy_amount,
+                    "strict_budget": strict_budget,
                     "state": _entry_state(db_path),
                     "message_count": len(agent.message_queue),
                 }
@@ -208,6 +212,38 @@ def _install_pending_entry_runtime(
     monkeypatch.setenv("POSITION_PENDING_KR_ENABLED", "true")
     monkeypatch.setenv("POSITION_LEDGER_SHADOW_ENABLED", "true")
     return broker_calls, publish_states, redis_calls, gcp_calls
+
+
+@pytest.mark.asyncio
+async def test_pending_six_point_pilot_reaches_strict_broker_with_same_policy(monkeypatch, tmp_path):
+    path = tmp_path / "pilot-boundary.sqlite"
+    agent, connection = _pending_entry_agent(path)
+    agent.account_configs[0]["buy_amount_krw"] = 1_000_000
+    agent._buy_floor_regime = lambda: "sideways"
+    original_core = agent._analyze_report_core
+
+    async def pilot_core(report):
+        result = await original_core(report)
+        result["scenario"].update(decision="진입", buy_score=6, min_score=5,
+                                  stop_loss=66500, target_price=77000,
+                                  risk_reward_ratio=2, expected_return_pct=10,
+                                  expected_loss_pct=5, _deterministic_market_regime="sideways")
+        return result
+
+    agent._analyze_report_core = pilot_core
+    calls, _, redis, _ = _install_pending_entry_runtime(
+        monkeypatch, agent=agent, db_path=path, broker_quote=70000,
+    )
+    monkeypatch.setenv("REGIME_MIN_SCORE_FLOOR", "true")
+    try:
+        assert await agent.process_reports(["pilot.pdf"]) == (1, 0)
+        assert len(calls) == 1
+        assert calls[0]["strict_budget"] is True
+        assert connection.execute("SELECT cash_amount FROM order_intents").fetchone()[0] == "500000"
+        assert redis[0]["scenario"]["regime_entry_policy"]["cash_budget"] == 500_000
+        assert "주문 예산 상한" in agent.message_queue[0]
+    finally:
+        connection.close()
 
 
 @pytest.mark.asyncio
