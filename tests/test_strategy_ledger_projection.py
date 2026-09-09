@@ -217,7 +217,7 @@ def test_missing_capital_never_defaults_to_actual_account(tmp_path):
 def plan(**updates):
     args = {"execution_profile_ref": "profile-A", "account_unit_budget": 1000000,
             "target_pct": 50, "limit_price": 300000, "confirmed_buy_notional": 0,
-            "reserved_buy_notional": 0}
+            "reserved_buy_notional": 0, "previously_submitted_target_pct": 0}
     args.update(updates)
     return project_account_target(**args)
 
@@ -230,6 +230,7 @@ def test_account_cap_rounding_and_unknown_reservation():
     assert plan(unknown_execution=True)["quantity"] == 0
     assert plan(reserved_buy_notional=None)["quantity"] == 0
     assert plan(execution_profile_ref=None)["quantity"] == 0
+    assert plan(previously_submitted_target_pct=None)["reason"] == "PREVIOUS_TARGET_REQUIRED"
 
 
 def test_cumulative_pending_and_same_target_lower_price_no_add():

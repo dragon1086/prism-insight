@@ -29,6 +29,8 @@ def project_account_target(*, execution_profile_ref, account_unit_budget,
         return dict(result, reason="MISSING_EXECUTION_PROFILE")
     if unknown_execution or reserved_buy_notional is None or confirmed_buy_notional is None:
         return dict(result, reason="UNKNOWN_EXECUTION_RESERVATION")
+    if previously_submitted_target_pct is None:
+        return dict(result, reason="PREVIOUS_TARGET_REQUIRED")
     unit, target, price, confirmed, reserved = map(_amount, (
         account_unit_budget, target_pct, limit_price,
         confirmed_buy_notional, reserved_buy_notional))
