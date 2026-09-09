@@ -166,7 +166,7 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     return module
 
 
-from prism_core.codex_config import resolve_buy_codex_settings
+from prism_core.codex_config import resolve_buy_codex_settings, resolve_sell_codex_settings
 from prism_core.trading_scenario_contract import apply_buy_scenario_contract
 
 # Pre-load telegram_translator_agent from main project (used in multiple methods)
@@ -2375,13 +2375,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     )
                     if not instruction:
                         raise RuntimeError("sell agent instruction unavailable")
-                    timeout = int(os.environ.get("PRISM_CODEX_FAST_TIMEOUT", "90"))
-                    codex_result = await asyncio.to_thread(
-                        generate_codex_fast,
+                    settings = resolve_sell_codex_settings()
+                    logger.info(
+                        "[CODEX_FAST] US sell requested_model=%s requested_effort=%s "
+                        "requested_tier=fast timeout_s=%s ticker=%s",
+                        settings.model, settings.reasoning_effort, settings.timeout, ticker or "?",
+                    )
+                    codex_result = await generate_codex_fast_async(
                         system_prompt=instruction,
                         user_prompt=prompt_message,
-                        model="gpt-5.6-sol",
-                        timeout=timeout,
+                        model=settings.model,
+                        reasoning_effort=settings.reasoning_effort,
+                        timeout=settings.timeout,
                         mcp_profile="us_trading",
                         require_mcp_calls=True,
                     )
