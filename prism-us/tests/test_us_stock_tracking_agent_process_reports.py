@@ -115,6 +115,7 @@ def _load_us_agent_module():
         kis_auth_module = types.ModuleType("trading.kis_auth")
         kis_auth_module.getEnv = lambda: {"default_mode": "demo"}
         kis_auth_module.get_configured_accounts = lambda **kwargs: []
+        kis_auth_module.mask_account_number = lambda value: str(value)[:2] + "****" + str(value)[-2:]
         sys.modules["trading.kis_auth"] = kis_auth_module
 
         original_exec = SourceFileLoader.exec_module
@@ -126,7 +127,11 @@ def _load_us_agent_module():
                 return
             original_exec(loader, module)
         with patch.object(SourceFileLoader, "exec_module", isolated_exec):
-            return _load_module("prism_us_stock_tracking_agent_process_tests", PRISM_US_DIR / "us_stock_tracking_agent.py")
+            module = _load_module("prism_us_stock_tracking_agent_process_tests", PRISM_US_DIR / "us_stock_tracking_agent.py")
+            # The broker module is now lazy; retain this fixture's explicit
+            # account stub after the temporary import interception ends.
+            module.ka = kis_auth_module
+            return module
     finally:
         sys.path[:] = original_sys_path
         for key, original in original_modules.items():

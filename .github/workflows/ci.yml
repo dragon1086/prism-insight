@@ -33,6 +33,7 @@ jobs:
         env:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
         run: |
+          python -m pytest tests/test_agent_lazy_broker_imports.py -q
           python -m pytest tests/test_trading_scenario_contract.py \
             tests/test_trading_agents_prompt_rules.py \
             tests/test_codex_oauth_fast_backend.py tests/test_buy_codex_settings.py \
