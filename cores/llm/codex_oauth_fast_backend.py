@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import signal
@@ -50,6 +51,7 @@ class CodexFastResult:
 
 McpProfile = Literal["kr_trading", "us_trading"]
 SUPPORTED_MCP_PROFILES = frozenset({"kr_trading", "us_trading"})
+logger = logging.getLogger(__name__)
 
 
 def _resolve_codex_executable(candidate: str) -> str:
@@ -206,14 +208,40 @@ def generate_codex_fast(
     _cancel_event: threading.Event | None = None,
 ) -> CodexFastResult:
     timeout = validate_timeout(timeout)
-    executable = _resolve_codex_executable(
-        codex_bin or os.environ.get("PRISM_CODEX_BIN", "codex")
-    )
+    telemetry_started = time.monotonic()
+
+    def log_event(category: str, returncode: int | None = None) -> None:
+        # Only allowlisted configuration and numeric process metadata. Never
+        # include exception text, prompts, streams, paths, or MCP payloads.
+        logger.log(
+            logging.INFO if category == "start" else logging.WARNING,
+            "[CODEX_FAST] category=%s model=%s effort=%s profile=%s "
+            "timeout_s=%g elapsed_s=%.3f rc=%s",
+            category,
+            model if model in SUPPORTED_MODELS else "invalid",
+            reasoning_effort if reasoning_effort in SUPPORTED_REASONING_EFFORTS else (
+                "default" if reasoning_effort is None else "invalid"
+            ),
+            mcp_profile if mcp_profile in SUPPORTED_MCP_PROFILES else (
+                "none" if mcp_profile is None else "invalid"
+            ),
+            timeout, time.monotonic() - telemetry_started, returncode,
+        )
+
+    log_event("start")
+    try:
+        executable = _resolve_codex_executable(
+            codex_bin or os.environ.get("PRISM_CODEX_BIN", "codex")
+        )
+    except CodexFastError:
+        log_event("launch_error")
+        raise
     home = codex_home or os.environ.get("PRISM_CODEX_HOME")
     environment = os.environ.copy()
     if home:
         environment["CODEX_HOME"] = home
     started = time.monotonic()
+    process = None
     try:
         with tempfile.TemporaryDirectory(prefix="prism-codex-fast-") as run_dir:
             # The executable is resolved, permission-checked, and invoked with a
@@ -235,9 +263,11 @@ def generate_codex_fast(
                 prompt = _prompt(system_prompt, user_prompt, mcp_profile)
                 while True:
                     if _cancel_event is not None and _cancel_event.is_set():
+                        log_event("cancelled")
                         raise CodexFastError("Codex Fast cancelled")
                     remaining = timeout - (time.monotonic() - started)
                     if remaining <= 0:
+                        log_event("timeout")
                         raise CodexFastError(f"Codex Fast timed out after {timeout:g}s")
                     try:
                         stdout, stderr = process.communicate(input=prompt, timeout=min(0.1, remaining))
@@ -248,18 +278,22 @@ def generate_codex_fast(
                 _terminate_owned_process(process)
                 raise
     except (OSError, subprocess.TimeoutExpired) as exc:
+        log_event("launch_error" if process is None else "process_io_error")
         raise CodexFastError(f"Codex Fast unavailable: {exc}") from exc
     latency = time.monotonic() - started
     if process.returncode != 0:
+        log_event("nonzero_exit", process.returncode)
         raise CodexFastError(
             f"Codex Fast rc={process.returncode}: {stderr[-300:]}"
         )
     text, usage, mcp_calls = _parse_stream(stdout)
     if not text:
+        log_event("missing_final", process.returncode)
         raise CodexFastError("Codex Fast returned no final agent message")
     if require_mcp_calls and not any(
         call.status == "completed" and not call.error for call in mcp_calls
     ):
+        log_event("missing_successful_mcp", process.returncode)
         raise CodexFastError("Codex Fast returned no MCP tool calls")
     return CodexFastResult(
         text=text,
