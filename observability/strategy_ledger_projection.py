@@ -10,6 +10,7 @@ import json
 import sqlite3
 from collections import Counter
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from prism_core.strategy_ledger import StrategyLedger
@@ -95,15 +96,19 @@ def _apply_tail(ledger, event_id, row, digest, campaign, counts, unresolved):
     counts["execution_events_accepted"] += 1
 
 
-def project_events(events, ledger, capital_profiles):
+def project_events(events, ledger, slot_profiles=None):
     """Apply exact-entry evidence, reporting omissions instead of inventing fills.
 
-    capital_profiles is keyed by market (KR/US), each value explicitly supplies
-    currency, initial_capital, unit_budget. Without a stable execution profile,
-    each legacy position gets an isolated book: never sum these into a portfolio.
+    Optional market-keyed slot profiles supply capacity and an explicit strategy
+    cohort/mode mapping. Account profiles never establish strategy identity.
+    Without an explicit cohort each legacy campaign remains isolated.
     """
-    if not isinstance(capital_profiles, dict):
-        raise TypeError("capital profiles must be a market-keyed object")
+    slot_profiles = {} if slot_profiles is None else slot_profiles
+    if not isinstance(slot_profiles, dict):
+        raise TypeError("slot profiles must be a market-keyed object")
+    for market, config in slot_profiles.items():
+        if market not in {"KR", "US"} or not isinstance(config, dict) or set(config) - {"max_slots", "cohort", "mode"}:
+            raise ValueError("invalid slot profile; monetary configuration is not supported")
     counts = Counter()
     issues = []
     unresolved = []
@@ -164,28 +169,37 @@ def project_events(events, ledger, capital_profiles):
                 if execution.get("simulator_recorded") is not True:
                     counts["entry_without_simulator_recorded"] += 1
                     continue
-                capital = capital_profiles.get(market)
-                if not capital:
-                    counts["missing_capital_profile"] += 1
-                    continue
+                config = slot_profiles.get(market, {})
                 policy = (attrs.get("policy_context") or {}).get("regime_entry_policy") or {}
-                if not isinstance(policy, dict) or not isinstance(capital, dict):
-                    raise ValueError("invalid policy or capital profile")
-                pilot = policy.get("mode") == "rebound_pilot"
-                fraction = policy.get("position_fraction", 1)
-                if pilot and float(fraction) != .5:
+                if not isinstance(policy, dict):
+                    raise ValueError("invalid policy")
+                if policy.get("mode") not in {"normal", "rebound_pilot"}:
+                    counts["unsupported_legacy_policy_mode"] += 1
+                    continue
+                pilot = policy["mode"] == "rebound_pilot"
+                raw_fraction = policy.get("position_fraction")
+                try:
+                    fraction = Decimal(str(raw_fraction))
+                except (InvalidOperation, ValueError):
+                    fraction = Decimal("NaN")
+                if isinstance(raw_fraction, bool) or not fraction.is_finite():
+                    counts["ambiguous_legacy_fraction"] += 1
+                    continue
+                if pilot and fraction != Decimal(".5"):
                     counts["invalid_pilot_fraction"] += 1
                     continue
-                if not pilot and float(fraction) != 1:
+                if not pilot and fraction != 1:
                     counts["unsupported_legacy_fraction"] += 1
                     continue
-                book = "profile:" + _digest([market, profile]) if profile else "isolated:" + campaign
+                cohort = _ref(config.get("cohort"))
+                mode = config.get("mode", "VALIDATION") if cohort else "VALIDATION_ONLY"
+                book = "strategy:" + _digest([market, cohort, mode]) if cohort else "isolated:" + campaign
                 if not profile:
                     counts["entries_missing_execution_profile"] += 1
-                ledger.create_book(book_id=book, market=market, currency=capital["currency"],
-                                   initial_capital=capital["initial_capital"],
-                                   unit_budget=capital["unit_budget"],
-                                   max_slots=capital.get("max_slots", 10))
+                if not cohort:
+                    counts["isolated_legacy_entries"] += 1
+                ledger.create_book(book_id=book, market=market,
+                                   max_slots=config.get("max_slots", 10), cohort=cohort, mode=mode)
                 ledger.apply_target(event_id=event_id, book_id=book, campaign_id=campaign,
                                     symbol=row["ticker"], target_pct=50 if pilot else 100,
                                     price=execution["entry_price"], occurred_at=timestamp,
@@ -208,17 +222,17 @@ def project_events(events, ledger, capital_profiles):
         except (ValueError, KeyError, TypeError) as error:
             counts["deferred_or_rejected_events"] += 1
             issues.append({"event_ref": _digest(event_id), "error_type": type(error).__name__})
-    return {"schema_version": 1, "mode": "NO_ORDER_REPLAY", "authoritative": False,
+    return {"schema_version": 2, "mode": "NO_ORDER_REPLAY", "authoritative": False,
             "coverage_status": "INCOMPLETE_FAIL_OPEN_SOURCE",
-            "portfolio_aggregation": "PROFILE_SCOPED_ONLY; ISOLATED_BOOKS_MUST_NOT_BE_SUMMED",
+            "portfolio_aggregation": "EXPLICIT_STRATEGY_COHORT_ONLY; ISOLATED_BOOKS_MUST_NOT_BE_SUMMED",
             "counts": dict(counts), "issues": issues,
             "unresolved_execution_overlays": unresolved,
             "conflicting_event_refs": sorted(_digest(i) for i in conflicts)}
 
 
-def replay_files(input_paths, destination, capital_profile_path):
-    path = validate_destination(destination, [*input_paths, capital_profile_path])
-    profiles = json.loads(Path(capital_profile_path).read_text())
+def replay_files(input_paths, destination, slot_profile_path=None):
+    path = validate_destination(destination, [*input_paths, *([slot_profile_path] if slot_profile_path else [])])
+    profiles = json.loads(Path(slot_profile_path).read_text()) if slot_profile_path else {}
     events = []
     malformed = 0
     for source in input_paths:
