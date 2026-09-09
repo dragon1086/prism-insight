@@ -517,6 +517,13 @@ class StrategyLedger:
     def _snapshot(self, db, book_id):
         book = self._get(db, "books", book_id)
         campaigns, executions = [], []
+        # Read each append-only history once, rather than two full scans for
+        # every campaign. SQL is constant; campaign identity is grouped in Python.
+        legs_by_campaign, executions_by_campaign = {}, {}
+        for campaign_id, data in db.execute("SELECT campaign_id, data FROM legs ORDER BY rowid"):
+            legs_by_campaign.setdefault(campaign_id, []).append(json.loads(data))
+        for campaign_id, data in db.execute("SELECT campaign_id, data FROM executions ORDER BY rowid"):
+            executions_by_campaign.setdefault(campaign_id, []).append(json.loads(data))
         marked_exposure, unrealized, remaining = Decimal(0), Decimal(0), Decimal(0)
         for row in db.execute("SELECT data FROM campaigns ORDER BY id"):
             campaign = json.loads(row[0])
@@ -538,17 +545,8 @@ class StrategyLedger:
                 mark_freshness="historical_observation_not_live",
                 status="OPEN" if units else "CLOSED",
             )
-            leg_rows = db.execute(
-                "SELECT data FROM legs WHERE campaign_id=? ORDER BY rowid",
-                (campaign["campaign_id"],),
-            ).fetchall()
-            campaign["legs"] = [json.loads(row[0]) for row in leg_rows]
-            executions.extend(
-                json.loads(r[0]) for r in db.execute(
-                    "SELECT data FROM executions WHERE campaign_id=? ORDER BY rowid",
-                    (campaign["campaign_id"],),
-                )
-            )
+            campaign["legs"] = legs_by_campaign.get(campaign["campaign_id"], [])
+            executions.extend(executions_by_campaign.get(campaign["campaign_id"], []))
             campaigns.append(campaign)
             marked_exposure += value
             remaining += allocation
