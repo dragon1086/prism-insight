@@ -49,6 +49,10 @@ from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
 from cores.llm.codex_oauth_fast_backend import generate_codex_fast_async
 from prism_core.codex_config import resolve_buy_codex_settings
+from prism_core.isolated_agent_runtime import (
+    prepare_isolated_runtime, configured_mcp_app, attach_isolated_llm,
+    virtual_account_label, require_execution_runtime,
+)
 from prism_core.trading_scenario_contract import apply_buy_scenario_contract
 
 # Core agent imports
@@ -117,14 +121,32 @@ from tracking import (
 # Delay MCPApp construction so a successful Codex+MCP path never nests two
 # MCP hosts in one process. Legacy mode still constructs the same app at run().
 class _LazyMCPApp:
-    def __init__(self, name: str):
+    def __init__(self, name: str, settings_factory=None):
         self.name = name
+        self.settings_factory = settings_factory
+        self.context = None
+        self._run_reserved = False
 
     @asynccontextmanager
     async def run(self):
-        instance = MCPApp(name=self.name)
-        async with instance.run():
-            yield
+        if self.settings_factory is None:
+            instance = MCPApp(name=self.name)
+            async with instance.run():
+                yield
+            return
+        if self._run_reserved or self.context is not None:
+            raise RuntimeError("Isolated MCP context is already active")
+        self._run_reserved = True  # Reserve before the first startup await.
+        try:
+            instance = configured_mcp_app(MCPApp, self.name, self.settings_factory)
+            async with instance.run():
+                if instance.context is None:
+                    raise RuntimeError("Isolated MCP context unavailable")
+                self.context = instance.context
+                yield
+        finally:
+            self.context = None
+            self._run_reserved = False
 
 
 app = _LazyMCPApp(name="stock_tracking")
@@ -277,7 +299,8 @@ class StockTrackingAgent:
     SCORE_CONSIDER = 7  # Consider buying
     SCORE_UNSUITABLE = 6  # Unsuitable for buying
 
-    def __init__(self, db_path: str = "stock_tracking_db.sqlite", telegram_token: str = None, enable_journal: bool = None):
+    def __init__(self, db_path: str = "stock_tracking_db.sqlite", telegram_token: str = None, enable_journal: bool = None,
+                 *, virtual_accounts=None, isolated_db_root=None, mcp_settings_factory=None):
         """
         Initialize agent
 
@@ -285,7 +308,19 @@ class StockTrackingAgent:
             db_path: SQLite database file path
             telegram_token: Telegram bot token
             enable_journal: Enable trading journal feature (default: False, reads from ENABLE_TRADING_JOURNAL env)
+            virtual_accounts: Explicit SHADOW identities; requires a private marked DB root.
+            isolated_db_root: Opt-in private root, never an existing unmarked DB.
+            mcp_settings_factory: Lazy explicit openai+mcp mapping, not a capability-safety guarantee.
         """
+        self._isolated_runtime = prepare_isolated_runtime(
+            db_path, virtual_accounts, isolated_db_root, mcp_settings_factory, "KR",
+        )
+        if self._isolated_runtime is not None and telegram_token is not None:
+            raise ValueError("Virtual runtime forbids direct Telegram credentials")
+        self._instance_mcp_app = (
+            _LazyMCPApp("stock_tracking_isolated", mcp_settings_factory)
+            if mcp_settings_factory is not None else None
+        )
         self.max_slots = self.MAX_SLOTS
         self.message_queue = []  # For storing Telegram messages
         self._msg_types = []  # msg_type for each message in queue
@@ -293,7 +328,7 @@ class StockTrackingAgent:
         self.last_batch_messages: list[tuple[str | None, str]] = []
         self._broadcast_task = None  # Track broadcast translation task
         self.trading_agent = None
-        self.db_path = db_path
+        self.db_path = self._isolated_runtime.db_path if self._isolated_runtime is not None else db_path
         self.conn = None
         self.cursor = None
         self.account_configs: list[dict[str, Any]] = []
@@ -320,7 +355,7 @@ class StockTrackingAgent:
             self.enable_journal = env_value in ("true", "1", "yes")
 
         # Set Telegram bot token
-        self.telegram_token = telegram_token or os.environ.get("TELEGRAM_BOT_TOKEN")
+        self.telegram_token = None if self._isolated_runtime is not None else (telegram_token or os.environ.get("TELEGRAM_BOT_TOKEN"))
         self.telegram_bot = None
         if self.telegram_token:
             self.telegram_bot = Bot(token=self.telegram_token)
@@ -347,7 +382,8 @@ class StockTrackingAgent:
         self.language = language
 
         # Initialize SQLite connection
-        self.conn = sqlite3.connect(self.db_path)
+        isolated = getattr(self, "_isolated_runtime", None)
+        self.conn = isolated.connect() if isolated is not None else sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row  # Return results as dictionary
         self.cursor = self.conn.cursor()
 
@@ -586,6 +622,9 @@ class StockTrackingAgent:
             return False
 
     def _get_trading_accounts(self) -> List[Dict[str, Any]]:
+        isolated = getattr(self, "_isolated_runtime", None)
+        if isolated is not None:
+            return isolated.accounts()
         from trading import kis_auth as ka
 
         default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
@@ -607,6 +646,8 @@ class StockTrackingAgent:
     @staticmethod
     def _safe_account_log_label(account: Dict[str, Any]) -> str:
         """Format account identity for logs without exposing raw account numbers."""
+        if account.get("virtual") is True:
+            return virtual_account_label(account)
         account_name = account.get("name", "unknown")
         account_key = str(account.get("account_key", "") or "")
         if not account_key:
@@ -1201,15 +1242,20 @@ class StockTrackingAgent:
 
             if scenario_json is None:
                 async def _legacy_scenario():
-                    llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
+                    isolated_app = getattr(self, "_instance_mcp_app", None)
+                    if isolated_app is not None:
+                        llm = await attach_isolated_llm(self.trading_agent, OpenAIAugmentedLLM, isolated_app.context)
+                    else:
+                        llm = await self.trading_agent.attach_llm(OpenAIAugmentedLLM)
                     return await _generate_trading_scenario_json(
                         llm,
                         prompt_message,
                     )
 
-                if _kr_codex_runtime_enabled():
+                legacy_app = getattr(self, "_instance_mcp_app", None) or app
+                if _kr_codex_runtime_enabled() or getattr(self, "_instance_mcp_app", None) is not None:
                     async with self._get_legacy_fallback_lock():
-                        async with app.run():
+                        async with legacy_app.run():
                             scenario_json = await _legacy_scenario()
                 else:
                     scenario_json = await _legacy_scenario()
@@ -2557,6 +2603,7 @@ class StockTrackingAgent:
     async def buy_stock(self, ticker: str, company_name: str, current_price: float, scenario: Dict[str, Any], rank_change_msg: str = "", is_add: bool = False) -> bool:
         """Preserve the public bool contract while exposing an internal typed result."""
 
+        require_execution_runtime(self)
         result = await self._buy_stock_with_position(
             ticker,
             company_name,
@@ -3168,6 +3215,7 @@ class StockTrackingAgent:
         Returns:
             bool: Sell success status
         """
+        require_execution_runtime(self)
         try:
             ticker = stock_data.get('ticker', '')
             company_name = stock_data.get('company_name', '')
@@ -3699,6 +3747,7 @@ class StockTrackingAgent:
         Returns:
             List[Dict]: List of sold stock information
         """
+        require_execution_runtime(self)
         try:
             logger.info("Starting holdings info update")
 
@@ -4127,6 +4176,7 @@ class StockTrackingAgent:
         Returns:
             Tuple[int, int]: Buy count, sell count
         """
+        require_execution_runtime(self)
         try:
             logger.info(f"Starting processing of {len(pdf_report_paths)} reports")
 
