@@ -31,6 +31,28 @@ def scenario_agent():
 
 
 @pytest.mark.asyncio
+async def test_quote_uses_execution_service_for_read_only_access(monkeypatch):
+    agent = scenario_agent()
+    agent.active_account = {'name': 'fake-account'}
+    service = SimpleNamespace(get_current_price=MagicMock(return_value={'current_price': 72000}),
+                              execute_buy=AsyncMock(), pre_reserved_buy=AsyncMock(), sell=AsyncMock())
+
+    @asynccontextmanager
+    async def read_context():
+        yield service
+
+    factory = MagicMock(side_effect=lambda **kwargs: read_context())
+    monkeypatch.setattr(mod.ExecutionService, 'domestic', factory)
+    quote = await agent._get_fresh_buy_quote('005930')
+    assert quote['price'] == 72000
+    factory.assert_called_once_with(account_name='fake-account')
+    service.get_current_price.assert_called_once_with('005930')
+    service.execute_buy.assert_not_called()
+    service.pre_reserved_buy.assert_not_called()
+    service.sell.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_three_fast_failures_serialize_entire_legacy_host(monkeypatch):
     monkeypatch.setenv("PRISM_KR_CODEX_FAST_TRADING", "1")
     agent = scenario_agent()

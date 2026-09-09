@@ -677,9 +677,8 @@ class StockTrackingAgent:
     async def _get_fresh_buy_quote(self, ticker: str) -> Dict[str, Any]:
         """Read-only quote retrieval; never use a persisted holding/analysis price."""
         try:
-            from trading.domestic_stock_trading import AsyncTradingContext
             account = getattr(self, "active_account", None) or {}
-            async with AsyncTradingContext(account_name=account.get("name")) as trading:
+            async with ExecutionService.domestic(account_name=account.get("name")) as trading:
                 info = await asyncio.to_thread(trading.get_current_price, ticker)
             price = float((info or {}).get("current_price") or 0)
             if math.isfinite(price) and price > 0:

@@ -25,7 +25,6 @@ from typing import Literal
 
 from prism_core.codex_config import (
     CodexFastError as CodexFastError,
-    MAX_TIMEOUT_SECONDS as MAX_TIMEOUT_SECONDS,
     SUPPORTED_MODELS as SUPPORTED_MODELS,
     SUPPORTED_REASONING_EFFORTS as SUPPORTED_REASONING_EFFORTS,
     validate_timeout as validate_timeout,
@@ -109,7 +108,10 @@ def _terminate_owned_process(process: subprocess.Popen) -> None:
             if os.name == "posix":
                 os.killpg(process.pid, sig)
             elif process.poll() is None:
-                process.terminate() if sig == signal.SIGTERM else process.kill()
+                if sig == signal.SIGTERM:
+                    process.terminate()
+                else:
+                    process.kill()
         except ProcessLookupError:
             pass
 
@@ -236,7 +238,7 @@ def generate_codex_fast(
                         raise CodexFastError("Codex Fast cancelled")
                     remaining = timeout - (time.monotonic() - started)
                     if remaining <= 0:
-                        raise subprocess.TimeoutExpired(process.args, timeout)
+                        raise CodexFastError(f"Codex Fast timed out after {timeout:g}s")
                     try:
                         stdout, stderr = process.communicate(input=prompt, timeout=min(0.1, remaining))
                         break
