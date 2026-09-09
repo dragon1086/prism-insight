@@ -8,6 +8,32 @@ import pytest
 from tools.build_entry_quality_evidence_packet import build_evidence_packet
 
 
+@pytest.mark.parametrize("bad", [None, True, 0, -1, float("nan"), float("inf"), "PRIVATE_CANARY"])
+def test_entry_price_evidence_rejects_invalid_prices(bad):
+    from tools.build_entry_quality_evidence_packet import _entry_price_evidence
+    result = _entry_price_evidence({"event_id": "PRIVATE_CANARY", "attributes": {
+        "execution_context": {"simulator_recorded": True, "entry_price": bad},
+        "security_context": {"stop_loss": bad, "secret": "PRIVATE_CANARY"},
+    }})
+    assert result["reference_price"] is None and result["stop_loss_at_entry"] is None
+    assert result["status"] == "MISSING"
+    assert "PRIVATE_CANARY" not in json.dumps(result)
+
+
+def test_entry_price_evidence_requires_strategy_record_not_broker_fill():
+    from tools.build_entry_quality_evidence_packet import _entry_price_evidence
+    event = {"event_id": "entry-1", "attributes": {
+        "execution_context": {"simulator_recorded": True, "entry_price": 1794.17},
+        "security_context": {"stop_loss": 1740}, "fill_provenance": {"status": "REJECTED"},
+    }}
+    result = _entry_price_evidence(event)
+    assert result["reference_price"] == 1794.17 and result["stop_loss_at_entry"] == 1740
+    assert result["status"] == "OK"
+    event["attributes"]["execution_context"]["simulator_recorded"] = False
+    event["attributes"]["fill_provenance"]["status"] = "CONFIRMED"
+    assert _entry_price_evidence(event)["status"] == "MISSING"
+
+
 def _event(
     event_id: str,
     event_type: str,
