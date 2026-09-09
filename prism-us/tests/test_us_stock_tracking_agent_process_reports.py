@@ -8,7 +8,8 @@ import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+from importlib.machinery import SourceFileLoader
 
 import pytest
 
@@ -115,7 +116,16 @@ def _load_us_agent_module():
         kis_auth_module.get_configured_accounts = lambda **kwargs: []
         sys.modules["trading.kis_auth"] = kis_auth_module
 
-        return _load_module("prism_us_stock_tracking_agent_process_tests", PRISM_US_DIR / "us_stock_tracking_agent.py")
+        original_exec = SourceFileLoader.exec_module
+        def isolated_exec(loader, module):
+            if Path(loader.path).resolve() == (PROJECT_ROOT / "trading/kis_auth.py").resolve():
+                module.getEnv = kis_auth_module.getEnv
+                module.get_configured_accounts = kis_auth_module.get_configured_accounts
+                module.mask_account_number = lambda value: str(value)[:2] + "****" + str(value)[-2:]
+                return
+            original_exec(loader, module)
+        with patch.object(SourceFileLoader, "exec_module", isolated_exec):
+            return _load_module("prism_us_stock_tracking_agent_process_tests", PRISM_US_DIR / "us_stock_tracking_agent.py")
     finally:
         sys.path[:] = original_sys_path
         for key, original in original_modules.items():
@@ -127,6 +137,23 @@ def _load_us_agent_module():
 
 us_agent_module = _load_us_agent_module()
 USStockTrackingAgent = us_agent_module.USStockTrackingAgent
+
+@pytest.fixture(autouse=True)
+def isolated_fresh_quotes(monkeypatch):
+    import pandas as pd
+    import yfinance as yf
+
+    class OfflineTicker:
+        info = {"regularMarketPrice": 180.5}
+
+        def history(self, *args, **kwargs):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(yf, "Ticker", lambda *args, **kwargs: OfflineTicker())
+    monkeypatch.setattr(yf, "download", lambda *args, **kwargs: pd.DataFrame())
+    async def quote(self, ticker):
+        return 180.5 if ticker == "AAPL" else 100.0
+    monkeypatch.setattr(USStockTrackingAgent, "_refresh_buy_quote", quote)
 
 from prism_core.positions import LegacyPositionWriteResult
 
@@ -160,6 +187,9 @@ class _FakeAsyncUSTradingContext:
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
+
+    def get_current_price(self, ticker, **kwargs):
+        return {"current_price": 180.5}
 
     async def async_buy_stock(self, ticker, limit_price=None, buy_amount=None):
         # buy_amount mirrors the real USStockTrading.async_buy_stock signature
@@ -610,6 +640,7 @@ def _install_signal_modules(monkeypatch, redis_calls, gcp_calls):
 
 
 def _install_us_trading_module(monkeypatch):
+    monkeypatch.setattr(USStockTrackingAgent, "_refresh_buy_quote", AsyncMock(return_value=180.5))
     module = types.ModuleType("trading.us_stock_trading")
     module.AsyncUSTradingContext = _FakeAsyncUSTradingContext
     monkeypatch.setitem(sys.modules, "trading.us_stock_trading", module)
@@ -667,6 +698,8 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(
             "company_name": "Apple Inc.",
             "current_price": 180.5,
             "scenario": {
+                "decision": "entry", "expected_return_pct": (198 - 180.5) / 180.5 * 100,
+                "expected_loss_pct": (180.5 - 170) / 180.5 * 100,
                 "buy_score": 8, "min_score": 7, "sector": "Technology",
                 "target_price": 198.0, "stop_loss": 170.0,
                 "risk_reward_ratio": 1.75,
@@ -678,7 +711,7 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(
             "rank_change_percentage": 9.0,
         }
 
-    async def fake_update_holdings():
+    async def fake_update_holdings(**kwargs):
         return []
 
     async def fake_is_ticker_in_holdings(ticker):
@@ -827,6 +860,8 @@ async def test_sideways_uptrend_score_six_uses_half_size_us_order(monkeypatch, t
             "company_name": "Apple Inc.",
             "current_price": 180.5,
             "scenario": {
+                "decision": "entry", "expected_return_pct": (200 - 180.5) / 180.5 * 100,
+                "expected_loss_pct": (180.5 - 170) / 180.5 * 100,
                 "buy_score": 6,
                 "min_score": 5,
                 "sector": "Technology",
@@ -913,6 +948,7 @@ async def test_process_reports_applies_macro_adjustment_to_final_score(
             "company_name": "Lagging Inc.",
             "current_price": 100.0,
             "scenario": {
+                "decision": "entry", "expected_return_pct": 15, "expected_loss_pct": 5,
                 "buy_score": 5,
                 "macro_adjustment": -1,
                 "effective_score": 4,
@@ -992,7 +1028,7 @@ async def test_process_reports_saves_watchlist_once_when_not_traded(monkeypatch)
             "rank_change_percentage": 1.0,
         }
 
-    async def fake_update_holdings():
+    async def fake_update_holdings(**kwargs):
         return []
 
     async def fake_is_ticker_in_holdings(ticker):

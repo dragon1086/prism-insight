@@ -308,7 +308,7 @@ class DomesticStockTrading:
             logger.error(f"Error getting current price: {str(e)}")
             return None
 
-    def calculate_buy_quantity(self, stock_code: str, buy_amount: int = None) -> int:
+    def calculate_buy_quantity(self, stock_code: str, buy_amount: int = None, *, quote_price: float = None) -> int:
         """
         Calculate buyable quantity
 
@@ -322,7 +322,8 @@ class DomesticStockTrading:
         amount = buy_amount if buy_amount else self.buy_amount
 
         # Get current price
-        current_price_info = self.get_current_price(stock_code)
+        current_price_info = ({"current_price": quote_price} if quote_price is not None
+                              else self.get_current_price(stock_code))
         if not current_price_info:
             return 0
 
@@ -347,7 +348,7 @@ class DomesticStockTrading:
 
         return current_quantity
 
-    def buy_market_price(self, stock_code: str, buy_amount: int = None) -> Dict[str, Any]:
+    def buy_market_price(self, stock_code: str, buy_amount: int = None, *, quote_price: float = None) -> Dict[str, Any]:
         """
         Buy at market price
 
@@ -376,7 +377,8 @@ class DomesticStockTrading:
 
 
         # Calculate buyable quantity
-        buy_quantity = self.calculate_buy_quantity(stock_code, buy_amount)
+        buy_quantity = (self.calculate_buy_quantity(stock_code, buy_amount, quote_price=quote_price)
+                        if quote_price is not None else self.calculate_buy_quantity(stock_code, buy_amount))
 
         if buy_quantity == 0:
             return {
@@ -588,7 +590,7 @@ class DomesticStockTrading:
                 'message': f'Error during buy order: {str(e)}'
             }
 
-    def smart_buy(self, stock_code: str, buy_amount: int = None, limit_price: int = None) -> Dict[str, Any]:
+    def smart_buy(self, stock_code: str, buy_amount: int = None, limit_price: int = None, *, quote_price: float = None) -> Dict[str, Any]:
         """
         Automatically buy using the optimal method based on time (excluding after-hours single price trading due to high unfilled probability)
 
@@ -620,18 +622,18 @@ class DomesticStockTrading:
         # Branch by Korean market time (KST), regardless of server/local timezone.
         if order_window == "regular":
             logger.info(f"[{stock_code}] Regular trading hours (KST) - executing market buy")
-            return self.buy_market_price(stock_code, buy_amount)
+            return self.buy_market_price(stock_code, buy_amount, **({"quote_price": quote_price} if quote_price is not None else {}))
 
         if order_window == "closing":
             logger.info(f"[{stock_code}] After-hours closing price time (KST) - executing closing price buy")
-            return self.buy_closing_price(stock_code, buy_amount)
+            return self.buy_closing_price(stock_code, buy_amount, **({"quote_price": quote_price} if quote_price is not None else {}))
 
         if order_window == "reserved":
             if limit_price:
                 logger.info(f"[{stock_code}] Reserved order window (KST) - executing reserved order (limit: {limit_price:,} KRW)")
             else:
                 logger.info(f"[{stock_code}] Reserved order window (KST) - executing reserved order (market)")
-            return self.buy_reserved_order(stock_code, buy_amount, limit_price=limit_price)
+            return self.buy_reserved_order(stock_code, buy_amount, limit_price=limit_price, **({"quote_price": quote_price} if quote_price is not None else {}))
 
         message = "Order window unavailable in KST (reserved orders are accepted 16:00~23:40 and 00:10~07:30)"
         logger.warning(f"[{stock_code}] {message}")
@@ -643,7 +645,7 @@ class DomesticStockTrading:
             'message': message
         }
 
-    def buy_closing_price(self, stock_code: str, buy_amount: int = None) -> Dict[str, Any]:
+    def buy_closing_price(self, stock_code: str, buy_amount: int = None, *, quote_price: float = None) -> Dict[str, Any]:
         """
         Buy at after-hours closing price (15:40~16:00)
         Buy at closing price of the day
@@ -666,7 +668,8 @@ class DomesticStockTrading:
             }
 
         # Calculate buyable quantity
-        buy_quantity = self.calculate_buy_quantity(stock_code, buy_amount)
+        buy_quantity = (self.calculate_buy_quantity(stock_code, buy_amount, quote_price=quote_price)
+                        if quote_price is not None else self.calculate_buy_quantity(stock_code, buy_amount))
 
         if buy_quantity == 0:
             return {
@@ -737,7 +740,7 @@ class DomesticStockTrading:
                 'message': f'Error during buy order: {str(e)}'
             }
 
-    def buy_reserved_order(self, stock_code: str, buy_amount: int = None, end_date: str = None, limit_price: int = None) -> Dict[str, Any]:
+    def buy_reserved_order(self, stock_code: str, buy_amount: int = None, end_date: str = None, limit_price: int = None, *, quote_price: float = None) -> Dict[str, Any]:
         """
         Buy with reserved order (auto-execute on next trading day)
         Reserved order available: 15:40~next business day 07:30 (excluding 23:40~00:10)
@@ -774,7 +777,8 @@ class DomesticStockTrading:
             ord_dvsn_cd = "01"  # Market price
             ord_unpr = "0"
             # For market price, calculate quantity based on current price
-            buy_quantity = self.calculate_buy_quantity(stock_code, amount)
+            buy_quantity = (self.calculate_buy_quantity(stock_code, amount, quote_price=quote_price)
+                            if quote_price is not None else self.calculate_buy_quantity(stock_code, amount))
 
         if buy_quantity == 0:
             return {
@@ -1260,7 +1264,7 @@ class DomesticStockTrading:
             self._stock_locks[stock_code] = asyncio.Lock()
         return self._stock_locks[stock_code]
 
-    async def async_buy_stock(self, stock_code: str, buy_amount: Optional[int] = None, timeout: float = 30.0, limit_price: Optional[int] = None) -> Dict[str, Any]:
+    async def async_buy_stock(self, stock_code: str, buy_amount: Optional[int] = None, timeout: float = 30.0, limit_price: Optional[int] = None, *, quote_validator=None) -> Dict[str, Any]:
         """
         Async buy API (with timeout)
         Get current price → Calculate buyable quantity → Market buy
@@ -1285,7 +1289,10 @@ class DomesticStockTrading:
         """
         try:
             return await asyncio.wait_for(
-                self._execute_buy_stock(stock_code, buy_amount, limit_price),
+                self._execute_buy_stock(
+                    stock_code, buy_amount, limit_price,
+                    **({"quote_validator": quote_validator} if quote_validator is not None else {}),
+                ),
                 timeout=timeout
             )
         except asyncio.TimeoutError:
@@ -1301,7 +1308,7 @@ class DomesticStockTrading:
                 'timestamp': _now_kst().isoformat()
             }
 
-    async def _execute_buy_stock(self, stock_code: str, buy_amount: int = None, limit_price: int = None) -> Dict[str, Any]:
+    async def _execute_buy_stock(self, stock_code: str, buy_amount: int = None, limit_price: int = None, *, quote_validator=None) -> Dict[str, Any]:
         # Use class default if buy_amount is None
         amount = buy_amount if buy_amount else self.buy_amount
 
@@ -1337,6 +1344,21 @@ class DomesticStockTrading:
                             logger.error(f"[Async Buy API] {stock_code} failed to get current price")
                             return result
 
+                        if quote_validator is not None:
+                            try:
+                                price = float(current_price_info['current_price'])
+                                if not math.isfinite(price) or price <= 0:
+                                    raise ValueError("invalid broker quote")
+                                quote_validator(price)
+                                if limit_price and limit_price > 0:
+                                    quote_validator(float(int(limit_price)))
+                            except Exception as exc:
+                                # No order has been submitted: this is a known
+                                # rejection, not an UNKNOWN broker outcome.
+                                logger.warning("[%s] BUY quote validation rejected: %s", stock_code, exc)
+                                result['message'] = 'BUY quote validation rejected before submission'
+                                return result
+
                         result['current_price'] = current_price_info['current_price']
 
                         # Step 2: Calculate buyable quantity (use amount)
@@ -1363,7 +1385,8 @@ class DomesticStockTrading:
                         else:
                             logger.info(f"[Async Buy API] {stock_code} executing with effective limit price: {buy_quantity} shares x {effective_limit_price:,} KRW")
                         buy_result = await asyncio.to_thread(
-                            self.smart_buy, stock_code, amount, effective_limit_price
+                            self.smart_buy, stock_code, amount, effective_limit_price,
+                            **({"quote_price": current_price} if quote_validator is not None else {})
                         )
 
                         if buy_result['success']:
@@ -2115,7 +2138,7 @@ class MultiAccountDomesticStockTrading:
             raise RuntimeError("No primary domestic account configured")
         return self._get_trader(self.primary_account)
 
-    async def async_buy_stock(self, stock_code: str, buy_amount: Optional[int] = None, timeout: float = 30.0, limit_price: Optional[int] = None) -> Dict[str, Any]:
+    async def async_buy_stock(self, stock_code: str, buy_amount: Optional[int] = None, timeout: float = 30.0, limit_price: Optional[int] = None, *, quote_validator=None) -> Dict[str, Any]:
         if not self.account_configs:
             return self._aggregate_results(stock_code, [], action="buy")
         results = []
@@ -2126,6 +2149,7 @@ class MultiAccountDomesticStockTrading:
                 buy_amount=buy_amount,
                 timeout=timeout,
                 limit_price=limit_price,
+                **({"quote_validator": quote_validator} if quote_validator is not None else {}),
             )
             result["account_name"] = account["name"]
             result["account_key"] = account["account_key"]

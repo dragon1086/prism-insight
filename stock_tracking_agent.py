@@ -18,6 +18,8 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import logging
+import math
+import time
 import os
 import sqlite3
 import sys
@@ -45,7 +47,9 @@ logger = logging.getLogger(__name__)
 from mcp_agent.app import MCPApp
 from mcp_agent.workflows.llm.augmented_llm import RequestParams
 from cores.llm.openai_responses_llm import OpenAIResponsesLLM as OpenAIAugmentedLLM
-from cores.llm.codex_oauth_fast_backend import generate_codex_fast
+from cores.llm.codex_oauth_fast_backend import generate_codex_fast_async
+from prism_core.codex_config import resolve_buy_codex_settings
+from prism_core.trading_scenario_contract import apply_buy_scenario_contract
 
 # Core agent imports
 from cores.openai_error_logging import log_openai_error
@@ -662,6 +666,82 @@ class StockTrackingAgent:
             self._db_lock = lock
         return lock
 
+    def _get_legacy_fallback_lock(self) -> asyncio.Lock:
+        """Serialize the complete legacy MCP host lifecycle, not database reads."""
+        lock = getattr(self, "_legacy_fallback_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._legacy_fallback_lock = lock
+        return lock
+
+    async def _get_fresh_buy_quote(self, ticker: str) -> Dict[str, Any]:
+        """Read-only quote retrieval; never use a persisted holding/analysis price."""
+        try:
+            from trading.domestic_stock_trading import AsyncTradingContext
+            account = getattr(self, "active_account", None) or {}
+            async with AsyncTradingContext(account_name=account.get("name")) as trading:
+                info = await asyncio.to_thread(trading.get_current_price, ticker)
+            price = float((info or {}).get("current_price") or 0)
+            if math.isfinite(price) and price > 0:
+                return {"price": price, "source": "kis_quote", "provider_date": None,
+                        "retrieved_at_monotonic": time.monotonic()}
+        except Exception as exc:
+            logger.warning("[BUY_QUOTE][KR] %s KIS unavailable: %s", ticker, type(exc).__name__)
+
+        # Independent market data keeps simulator BUYs independent of broker
+        # initialization/order success. Only today's row is accepted, not the
+        # nearest prior session or the database fallback used during analysis.
+        from zoneinfo import ZoneInfo
+        from krx_data_client import get_market_ohlcv_by_date
+        day = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+        frame = await asyncio.to_thread(get_market_ohlcv_by_date, day, day, ticker)
+        if frame.empty or frame.index[-1].strftime("%Y%m%d") != day:
+            raise ValueError("fresh BUY quote provider date is not today")
+        provider_day = frame.index[-1].strftime("%Y%m%d")
+        price = float(frame.iloc[-1]["Close"])
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError("fresh BUY quote invalid")
+        return {"price": price, "source": "krx_same_day_close", "provider_date": provider_day,
+                "retrieved_at_monotonic": time.monotonic()}
+
+    def _buy_quote_validator(self, scenario, *, is_add=False):
+        """Revalidate the broker's final sizing quote without changing ledger state."""
+        def validate(price):
+            normalized = apply_buy_scenario_contract(scenario, market="KR", entry_price=price)
+            gate = self._evaluate_production_buy_gate(
+                normalized, price, score_override=scenario.get("buy_score"), is_add=is_add
+            )
+            if not gate.get("allowed"):
+                raise ValueError(f"broker quote gate: {gate.get('reason', 'blocked')}")
+        return validate
+
+    async def _refresh_buy_boundary(self, ticker, scenario, analysis_result, *, buy_score, is_add=False):
+        """Refresh price and rerun existing checks immediately before entry effects."""
+        quote = await self._get_fresh_buy_quote(ticker)
+        price = float(quote["price"])
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError("fresh BUY quote invalid")
+        now = time.monotonic()
+        captured = analysis_result.get("quote_captured_at_monotonic")
+        logger.info(
+            "[BUY_QUOTE][KR] ticker=%s source=%s provider_date=%s "
+            "analysis_context_age_s=%s retrieval_age_s=%.3f exchange_age_s=unknown",
+            ticker, quote["source"], quote.get("provider_date"),
+            round(now - captured, 3) if captured is not None else "unknown",
+            now - quote["retrieved_at_monotonic"],
+        )
+        # Validate the same scenario levels against the refreshed entry price;
+        # do not move stops/targets or introduce a slippage threshold.
+        normalized = apply_buy_scenario_contract(scenario, market="KR", entry_price=price)
+        gate = self._evaluate_production_buy_gate(
+            normalized, price, score_override=buy_score, is_add=is_add
+        )
+        if not gate.get("allowed"):
+            raise ValueError(f"fresh BUY quote gate: {gate.get('reason', 'blocked')}")
+        scenario.update(normalized)
+        analysis_result["current_price"] = price
+        return price
+
     def _get_trend_facts(self, ticker: str) -> str:
         """Compute deterministic individual-stock trend facts for the buy prompt's trend gate.
 
@@ -1044,13 +1124,13 @@ class StockTrackingAgent:
                     )
                     if not instruction:
                         raise RuntimeError("trading agent instruction unavailable")
-                    timeout = int(os.environ.get("PRISM_CODEX_FAST_TIMEOUT", "90"))
-                    codex_result = await asyncio.to_thread(
-                        generate_codex_fast,
+                    settings = resolve_buy_codex_settings()
+                    codex_result = await generate_codex_fast_async(
                         system_prompt=instruction,
                         user_prompt=prompt_message,
-                        model="gpt-5.6-sol",
-                        timeout=timeout,
+                        model=settings.model,
+                        reasoning_effort=settings.reasoning_effort,
+                        timeout=settings.timeout,
                         mcp_profile="kr_trading",
                         require_mcp_calls=True,
                     )
@@ -1059,9 +1139,13 @@ class StockTrackingAgent:
                         context="KR Codex Fast trading scenario",
                     )
                     logger.info(
-                        "[CODEX_FAST] KR scenario ticker=%s latency_s=%.2f "
+                        "[CODEX_FAST] KR scenario ticker=%s model=%s effort=%s "
+                        "service_tier=fast timeout=%s latency_s=%.2f "
                         "parse_ok=%s mcp_calls=%s",
                         ticker or "?",
+                        settings.model,
+                        settings.reasoning_effort or "model_default",
+                        settings.timeout,
                         codex_result.latency_s,
                         scenario_json is not None,
                         len(codex_result.mcp_calls),
@@ -1083,8 +1167,9 @@ class StockTrackingAgent:
                     )
 
                 if _kr_codex_runtime_enabled():
-                    async with app.run():
-                        scenario_json = await _legacy_scenario()
+                    async with self._get_legacy_fallback_lock():
+                        async with app.run():
+                            scenario_json = await _legacy_scenario()
                 else:
                     scenario_json = await _legacy_scenario()
             if scenario_json is not None:
@@ -1143,7 +1228,8 @@ class StockTrackingAgent:
             # Shared-sqlite read: serialize against concurrent pre-pass tasks.
             async with db_lock:
                 current_price = await self._get_current_stock_price(ticker)
-            if current_price <= 0:
+            quote_captured_at = time.monotonic()
+            if not math.isfinite(current_price) or current_price <= 0:
                 logger.error(f"{ticker} current price query failed")
                 return {"success": False, "error": "Current price query failed"}
 
@@ -1167,6 +1253,9 @@ class StockTrackingAgent:
                 db_lock=db_lock
             )
 
+            scenario = apply_buy_scenario_contract(
+                scenario, market="KR", entry_price=current_price
+            )
             raw_decision = scenario.get("decision", "No entry")
             sector = scenario.get("sector", "Unknown")
 
@@ -1175,6 +1264,7 @@ class StockTrackingAgent:
                 "ticker": ticker,
                 "company_name": company_name,
                 "current_price": current_price,
+                "quote_captured_at_monotonic": quote_captured_at,
                 "scenario": scenario,
                 "decision": self._normalize_decision(raw_decision),
                 "raw_decision": raw_decision,
@@ -1790,6 +1880,7 @@ class StockTrackingAgent:
                 limit_price=current_price,
                 intent=prepared.intent,
                 reservation=prepared.reservation,
+                quote_validator=self._buy_quote_validator(prepared.scenario, is_add=prepared.is_add),
             )
 
     def _queue_message(
@@ -4198,6 +4289,19 @@ class StockTrackingAgent:
                         )
 
                     if entry_eligible:
+                        try:
+                            current_price = await self._refresh_buy_boundary(
+                                ticker, scenario, analysis_result, buy_score=buy_score
+                            )
+                        except Exception as quote_error:
+                            logger.warning("[BUY_QUOTE][KR] %s entry blocked: %s", ticker, quote_error)
+                            scenario["_decision_context"].update(
+                                gate_allowed=False,
+                                gate_reason="fresh_quote_revalidation_failed",
+                            )
+                            state["should_save_watchlist"] = True
+                            state["skip_reason"] = "Fresh quote unavailable or scenario invalid at refreshed price"
+                            continue
                         if self._position_pending_kr_enabled():
                             prepared = None
                             try:
@@ -4364,6 +4468,7 @@ class StockTrackingAgent:
                                         buy_amount=entry_cash_amount,
                                         limit_price=current_price,
                                         intent=order_intent,
+                                        quote_validator=self._buy_quote_validator(scenario),
                                     )
                             except OrderOutcomeUnknown as error:
                                 self._link_position_entry_intent(

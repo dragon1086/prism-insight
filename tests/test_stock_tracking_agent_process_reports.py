@@ -19,6 +19,11 @@ from prism_core.positions import LegacyPositionWriteResult
 from tracking.db_schema import TABLE_STOCK_HOLDINGS, TABLE_TRADING_HISTORY
 
 
+@pytest.fixture(autouse=True)
+def _offline_market_pulse(monkeypatch):
+    monkeypatch.setattr("cores.regime_policy.get_market_pulse_state", lambda *_a, **_kw: "UPTREND")
+
+
 def _ensure_reentry_schema(path):
     with sqlite3.connect(path) as connection:
         connection.execute(
@@ -37,7 +42,7 @@ class _FakeAsyncTradingContext:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None):
+    async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None, quote_validator=None):
         # buy_amount mirrors the real DomesticStockTrading.async_buy_stock signature
         # (None = full size; set only under PULSE_PILOT_REEXPOSURE pilot sizing).
         return {
@@ -398,6 +403,7 @@ async def test_process_reports_analyzes_once_and_dedupes_signals(monkeypatch, ca
         return True
 
     agent._analyze_report_core = fake_core
+    agent._refresh_buy_boundary = AsyncMock(return_value=70000)
     agent.update_holdings = fake_update_holdings
     agent._is_ticker_in_holdings = fake_is_ticker_in_holdings
     agent._get_current_slots_count = fake_get_current_slots_count
@@ -471,6 +477,7 @@ async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, t
         }
 
     agent._analyze_report_core = fake_core
+    agent._refresh_buy_boundary = AsyncMock(return_value=70000)
     agent.update_holdings = AsyncMock(return_value=[])
     agent._is_ticker_in_holdings = AsyncMock(return_value=False)
     agent._get_current_slots_count = AsyncMock(return_value=0)
@@ -484,7 +491,7 @@ async def test_sideways_uptrend_score_six_uses_half_size_kr_order(monkeypatch, t
     buy_amounts = []
 
     class PilotTradingContext(_FakeAsyncTradingContext):
-        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None):
+        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None, quote_validator=None):
             buy_amounts.append(buy_amount)
             return await super().async_buy_stock(stock_code, limit_price, buy_amount)
 
@@ -555,7 +562,7 @@ async def test_kr_pending_gate_false_preserves_legacy_message_broker_publish_ord
         return LegacyPositionWriteResult(True, 1)
 
     class OrderedTradingContext(_FakeAsyncTradingContext):
-        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None):
+        async def async_buy_stock(self, stock_code, limit_price=None, buy_amount=None, quote_validator=None):
             events.append("broker")
             return await super().async_buy_stock(
                 stock_code, limit_price=limit_price, buy_amount=buy_amount
@@ -571,6 +578,7 @@ async def test_kr_pending_gate_false_preserves_legacy_message_broker_publish_ord
             super().append(value)
 
     agent._analyze_report_core = fake_core
+    agent._refresh_buy_boundary = AsyncMock(return_value=70000)
     agent.update_holdings = AsyncMock(return_value=[])
     agent._is_ticker_in_holdings = AsyncMock(return_value=False)
     agent._get_current_slots_count = AsyncMock(return_value=0)
@@ -674,6 +682,7 @@ async def test_process_reports_saves_watchlist_once_when_not_traded(monkeypatch)
         return True
 
     agent._analyze_report_core = fake_core
+    agent._refresh_buy_boundary = AsyncMock(return_value=70000)
     agent.update_holdings = fake_update_holdings
     agent._is_ticker_in_holdings = fake_is_ticker_in_holdings
     agent._get_current_slots_count = fake_get_current_slots_count

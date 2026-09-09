@@ -25,10 +25,12 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
 import sys
+import time
 import traceback
 import importlib.util as _ilu
 from datetime import datetime
@@ -126,6 +128,7 @@ _codex_mod = _ilu.module_from_spec(_codex_spec)
 sys.modules[_codex_spec.name] = _codex_mod
 _codex_spec.loader.exec_module(_codex_mod)  # type: ignore[union-attr]
 generate_codex_fast = _codex_mod.generate_codex_fast
+generate_codex_fast_async = _codex_mod.generate_codex_fast_async
 del _ilu, _spec, _mod, _codex_spec, _codex_mod
 
 # Import US-specific modules
@@ -162,6 +165,9 @@ def _import_from_main_cores(module_name: str, relative_path: str):
     spec.loader.exec_module(module)
     return module
 
+
+from prism_core.codex_config import resolve_buy_codex_settings
+from prism_core.trading_scenario_contract import apply_buy_scenario_contract
 
 # Pre-load telegram_translator_agent from main project (used in multiple methods)
 _translator_module = _import_from_main_cores(
@@ -1399,13 +1405,13 @@ class USStockTrackingAgent:
                     )
                     if not instruction:
                         raise RuntimeError("trading agent instruction unavailable")
-                    timeout = int(os.environ.get("PRISM_CODEX_FAST_TIMEOUT", "90"))
-                    codex_result = await asyncio.to_thread(
-                        generate_codex_fast,
+                    settings = resolve_buy_codex_settings()
+                    codex_result = await generate_codex_fast_async(
                         system_prompt=instruction,
                         user_prompt=prompt_message,
-                        model="gpt-5.6-sol",
-                        timeout=timeout,
+                        model=settings.model,
+                        reasoning_effort=settings.reasoning_effort,
+                        timeout=settings.timeout,
                         mcp_profile="us_trading",
                         require_mcp_calls=True,
                     )
@@ -1415,11 +1421,15 @@ class USStockTrackingAgent:
                     )
                     logger.info(
                         "[CODEX_FAST] US scenario ticker=%s latency_s=%.2f "
-                        "parse_ok=%s mcp_calls=%s",
+                        "parse_ok=%s mcp_calls=%s requested_model=%s "
+                        "requested_effort=%s fast=true timeout_s=%s",
                         ticker_tag,
                         codex_result.latency_s,
                         scenario_json is not None,
                         len(codex_result.mcp_calls),
+                        settings.model,
+                        settings.reasoning_effort or "model_default",
+                        settings.timeout,
                     )
                     if scenario_json is None:
                         logger.warning(
@@ -1525,6 +1535,7 @@ class USStockTrackingAgent:
         """
         try:
             logger.info(f"Starting report analysis: {pdf_report_path}")
+            context_started_at = time.monotonic()
 
             ticker, company_name = await self._extract_ticker_info(pdf_report_path)
             if not ticker or not company_name:
@@ -1534,6 +1545,7 @@ class USStockTrackingAgent:
             db_lock = self._get_db_lock()
             async with db_lock:
                 current_price = await self._get_current_stock_price(ticker)
+            analysis_quote_at = time.monotonic()
             if current_price <= 0:
                 logger.error(f"{ticker} current price query failed")
                 return {"success": False, "error": "Current price query failed"}
@@ -1568,6 +1580,9 @@ class USStockTrackingAgent:
                 return {"success": False, "error": "analysis_failed",
                         "ticker": ticker, "company_name": company_name}
 
+            scenario = apply_buy_scenario_contract(
+                scenario, market="US", entry_price=current_price
+            )
             raw_decision = scenario.get("decision", "no_entry")
             sector = scenario.get("sector", "Unknown")
 
@@ -1576,6 +1591,8 @@ class USStockTrackingAgent:
                 "ticker": ticker,
                 "company_name": company_name,
                 "current_price": current_price,
+                "context_started_at": context_started_at,
+                "analysis_quote_at": analysis_quote_at,
                 "scenario": scenario,
                 "decision": self._normalize_decision(raw_decision),
                 "raw_decision": raw_decision,
@@ -1588,6 +1605,27 @@ class USStockTrackingAgent:
             logger.error(f"[ANALYSIS_FAILED] Error analyzing report ({pdf_report_path}): {str(e)}")
             logger.error(traceback.format_exc())
             return {"success": False, "error": str(e)}
+
+    async def _refresh_buy_quote(self, ticker: str) -> float:
+        """Fetch independent market data, never a saved/previous-close fallback."""
+        def fetch() -> float:
+            import yfinance as yf
+            value = yf.Ticker(ticker).info.get("regularMarketPrice")
+            return self._validated_buy_quote(value)
+
+        return await asyncio.to_thread(fetch)
+
+    @staticmethod
+    def _validated_buy_quote(value: Any) -> float:
+        if isinstance(value, bool):
+            raise ValueError("Invalid fresh BUY quote")
+        try:
+            price = float(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Invalid fresh BUY quote") from error
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError("Invalid fresh BUY quote")
+        return price
 
     async def analyze_report(self, pdf_report_path: str) -> Dict[str, Any]:
         """
@@ -2037,7 +2075,7 @@ class USStockTrackingAgent:
                     company_name,
                     now,
                     current_price,
-                    'UP' if target_price > current_price else 'DOWN' if target_price < current_price else 'NEUTRAL',
+                    'UP' if target_price is not None and target_price > current_price else 'DOWN' if target_price is not None and target_price < current_price else 'NEUTRAL',
                     target_price,
                     stop_loss,
                     buy_score,
@@ -3226,9 +3264,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             logger.error(traceback.format_exc())
             return False
 
-    async def update_holdings(self) -> List[Dict[str, Any]]:
+    async def update_holdings(self, *, raise_on_error: bool = False) -> List[Dict[str, Any]]:
         """
         Update holdings information and make sell decisions.
+
+        Args:
+            raise_on_error: Propagate incomplete reviews to batch BUY admission.
 
         Returns:
             List[Dict]: List of sold stock information
@@ -3561,6 +3602,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         except Exception as e:
             logger.error(f"Error updating holdings: {str(e)}")
             logger.error(traceback.format_exc())
+            if raise_on_error:
+                raise
             return []
 
     async def generate_report_summary(self) -> str:
@@ -3733,6 +3776,23 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             sell_count = 0
             signaled_tickers: set[str] = set()
             analysis_states: list[dict[str, Any]] = []
+            reviewed_accounts = []
+
+            # Complete every account's risk exits before starting costly BUY LLMs.
+            for account in self.account_configs:
+                self._set_active_account(account)
+                try:
+                    sold_stocks = await self.update_holdings(raise_on_error=True)
+                except Exception:
+                    logger.exception("US sell review failed account=%s; skipping its buys",
+                                     self._safe_account_log_label(account))
+                    continue
+                reviewed_accounts.append(account)
+                sell_count += len(sold_stocks)
+                logger.info("US sell review complete account=%s sold=%s",
+                            self._safe_account_log_label(account), len(sold_stocks))
+            # Shared BUY context always belongs to the primary account.
+            self._set_active_account(self.account_configs[0])
 
             concurrency = max(
                 1,
@@ -3782,19 +3842,10 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     }
                 )
 
-            for account in self.account_configs:
+            for account in reviewed_accounts:
                 self._set_active_account(account)
                 label = self._safe_account_log_label(account)
                 logger.info(f"Processing US reports for account {label}")
-
-                # Update existing holdings and make sell decisions
-                sold_stocks = await self.update_holdings()
-                sell_count += len(sold_stocks)
-
-                if sold_stocks:
-                    logger.info(f"{len(sold_stocks)} stocks sold for {label}")
-                else:
-                    logger.info(f"No stocks sold for {label}")
 
                 for state in analysis_states:
                     analysis_result = state["analysis"]
@@ -3807,6 +3858,28 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     analysis_result["scenario"] = scenario
                     sector = analysis_result.get("sector", "Unknown")
                     rank_change_msg = analysis_result.get("rank_change_msg", "")
+
+                    if analysis_result.get("decision") == "entry":
+                        # Independent of KIS; never use saved analysis prices for
+                        # account-specific gates or the simulator entry ledger.
+                        try:
+                            current_price = await self._refresh_buy_quote(ticker)
+                            scenario = apply_buy_scenario_contract(
+                                scenario, market="US", entry_price=current_price
+                            )
+                            now = time.monotonic()
+                            logger.info(
+                                "[BUY_QUOTE][US] ticker=%s context_age_s=%s "
+                                "analysis_quote_retrieval_age_s=%s fresh_price=%s "
+                                "exchange_quote_age=unknown",
+                                ticker,
+                                now - analysis_result["context_started_at"] if "context_started_at" in analysis_result else None,
+                                now - analysis_result["analysis_quote_at"] if "analysis_quote_at" in analysis_result else None,
+                                current_price,
+                            )
+                        except Exception as quote_error:
+                            logger.warning("[BUY_QUOTE][US] skipping %s: %s", ticker, quote_error)
+                            continue
 
                     # Pyramiding (#288): allow an additional independent entry for a
                     # held ticker only when the strong-bull add-gate passes. Otherwise
@@ -4130,27 +4203,46 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     opened_position_id = legacy_position_id(
                                         "US", buy_result.legacy_holding_id
                                     )
-                                    order_intent = OrderIntent.create(
-                                        market="US",
-                                        account_id=account_key,
-                                        symbol=ticker,
-                                        side="buy",
-                                        order_style="smart",
-                                        source="us_batch",
-                                        source_decision_id=source_decision_id,
-                                        source_position_id=opened_position_id,
-                                        cash_amount=entry_cash_amount,
-                                        limit_price=current_price,
-                                        reason="AI analysis entry",
-                                    )
                                     async with ExecutionService.us(
                                         account_name=account["name"],
                                         db_path=self.db_path,
                                     ) as trading:
+                                        quote = await asyncio.to_thread(trading.get_current_price, ticker, strict=True)
+                                        broker_price = self._validated_buy_quote(
+                                            quote.get("current_price") if isinstance(quote, dict) else None
+                                        )
+                                        apply_buy_scenario_contract(
+                                            scenario, market="US", entry_price=broker_price
+                                        )
+                                        broker_gate = self._evaluate_production_buy_gate(
+                                            scenario,
+                                            broker_price,
+                                            score_override=adjusted_score,
+                                            is_add=is_add,
+                                        )
+                                        if not broker_gate.get("allowed", False):
+                                            raise ValueError(
+                                                "Fresh broker BUY gate rejected: "
+                                                + str(broker_gate.get("reason", "blocked"))
+                                            )
+                                        logger.info("[BUY_QUOTE][US] broker ticker=%s price=%s exchange_quote_age=unknown", ticker, broker_price)
+                                        order_intent = OrderIntent.create(
+                                            market="US",
+                                            account_id=account_key,
+                                            symbol=ticker,
+                                            side="buy",
+                                            order_style="smart",
+                                            source="us_batch",
+                                            source_decision_id=source_decision_id,
+                                            source_position_id=opened_position_id,
+                                            cash_amount=entry_cash_amount,
+                                            limit_price=broker_price,
+                                            reason="AI analysis entry",
+                                        )
                                         trade_result = await trading.execute_buy(
                                             ticker=ticker,
                                             buy_amount=entry_cash_amount,
-                                            limit_price=current_price,
+                                            limit_price=broker_price,
                                             intent=order_intent,
                                         )
 

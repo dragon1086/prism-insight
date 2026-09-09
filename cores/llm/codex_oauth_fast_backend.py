@@ -6,10 +6,13 @@ rules.  Trading callers must retain an existing backend as fallback.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
+import signal
 import stat
+import threading
 
 # Fixed argv, no shell, and a permission-checked executable.
 import subprocess  # nosec B404
@@ -20,8 +23,13 @@ from pathlib import Path
 from typing import Literal
 
 
-class CodexFastError(RuntimeError):
-    pass
+from prism_core.codex_config import (
+    CodexFastError as CodexFastError,
+    MAX_TIMEOUT_SECONDS as MAX_TIMEOUT_SECONDS,
+    SUPPORTED_MODELS as SUPPORTED_MODELS,
+    SUPPORTED_REASONING_EFFORTS as SUPPORTED_REASONING_EFFORTS,
+    validate_timeout as validate_timeout,
+)
 
 
 @dataclass(frozen=True)
@@ -42,7 +50,6 @@ class CodexFastResult:
 
 
 McpProfile = Literal["kr_trading", "us_trading"]
-SUPPORTED_MODELS = frozenset({"gpt-5.6-sol"})
 SUPPORTED_MCP_PROFILES = frozenset({"kr_trading", "us_trading"})
 
 
@@ -67,11 +74,14 @@ def _command(
     codex_bin: str,
     model: str,
     mcp_profile: McpProfile | None,
+    reasoning_effort: str | None = None,
 ) -> list[str]:
     if model not in SUPPORTED_MODELS:
         raise CodexFastError(f"Unsupported Codex model: {model}")
     if mcp_profile is not None and mcp_profile not in SUPPORTED_MCP_PROFILES:
         raise CodexFastError(f"Unsupported Codex MCP profile: {mcp_profile}")
+    if reasoning_effort is not None and reasoning_effort not in SUPPORTED_REASONING_EFFORTS:
+        raise CodexFastError(f"Unsupported Codex reasoning effort: {reasoning_effort}")
     command = [
         codex_bin,
         "exec",
@@ -87,7 +97,37 @@ def _command(
     ]
     if mcp_profile:
         command[2:2] = ["--profile", mcp_profile]
+    if reasoning_effort is not None:
+        command[2:2] = ["-c", f'model_reasoning_effort="{reasoning_effort}"']
     return command
+
+
+def _terminate_owned_process(process: subprocess.Popen) -> None:
+    """Terminate only our new session, including MCP descendants, then reap."""
+    def send(sig: int) -> None:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, sig)
+            elif process.poll() is None:
+                process.terminate() if sig == signal.SIGTERM else process.kill()
+        except ProcessLookupError:
+            pass
+
+    send(signal.SIGTERM)
+    # Do not reap the leader until the final group signal: its PID cannot be
+    # reused while it remains our unreaped child. Descendants may ignore TERM.
+    time.sleep(0.2)
+    send(signal.SIGKILL if os.name == "posix" else signal.SIGTERM)
+    if os.name != "posix" and process.poll() is None:
+        process.kill()
+    try:
+        process.communicate(timeout=1)
+    except subprocess.TimeoutExpired:
+        # A detached descendant might retain pipes; never wait on those forever.
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
+        process.wait(timeout=1)
 
 
 def _parse_stream(
@@ -155,12 +195,15 @@ def generate_codex_fast(
     system_prompt: str,
     user_prompt: str,
     model: str = "gpt-5.6-sol",
-    timeout: int = 90,
+    timeout: float = 90,
     codex_bin: str | None = None,
     codex_home: str | None = None,
     mcp_profile: McpProfile | None = None,
     require_mcp_calls: bool = False,
+    reasoning_effort: str | None = None,
+    _cancel_event: threading.Event | None = None,
 ) -> CodexFastResult:
+    timeout = validate_timeout(timeout)
     executable = _resolve_codex_executable(
         codex_bin or os.environ.get("PRISM_CODEX_BIN", "codex")
     )
@@ -174,27 +217,42 @@ def generate_codex_fast(
             # The executable is resolved, permission-checked, and invoked with a
             # fixed argv list. No shell parsing or untrusted option expansion occurs.
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args, python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            process = subprocess.run(  # nosec B603
-                _command(executable, model, mcp_profile),  # nosemgrep
-                input=_prompt(system_prompt, user_prompt, mcp_profile),
-                capture_output=True,
+            process = subprocess.Popen(  # nosec B603
+                _command(executable, model, mcp_profile, reasoning_effort),  # nosemgrep
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 cwd=run_dir,
                 env=environment,
-                timeout=timeout,
-                check=False,
                 # MCP stdio children are managed by Codex. Keep their shutdown
                 # signals out of the long-lived PRISM orchestrator process group.
-                start_new_session=True,
+                start_new_session=os.name == "posix",
             )
+            try:
+                prompt = _prompt(system_prompt, user_prompt, mcp_profile)
+                while True:
+                    if _cancel_event is not None and _cancel_event.is_set():
+                        raise CodexFastError("Codex Fast cancelled")
+                    remaining = timeout - (time.monotonic() - started)
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(process.args, timeout)
+                    try:
+                        stdout, stderr = process.communicate(input=prompt, timeout=min(0.1, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        prompt = None
+            except BaseException:
+                _terminate_owned_process(process)
+                raise
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CodexFastError(f"Codex Fast unavailable: {exc}") from exc
     latency = time.monotonic() - started
     if process.returncode != 0:
         raise CodexFastError(
-            f"Codex Fast rc={process.returncode}: {process.stderr[-300:]}"
+            f"Codex Fast rc={process.returncode}: {stderr[-300:]}"
         )
-    text, usage, mcp_calls = _parse_stream(process.stdout)
+    text, usage, mcp_calls = _parse_stream(stdout)
     if not text:
         raise CodexFastError("Codex Fast returned no final agent message")
     if require_mcp_calls and not any(
@@ -207,3 +265,25 @@ def generate_codex_fast(
         usage=usage,
         mcp_calls=mcp_calls,
     )
+
+
+async def generate_codex_fast_async(**kwargs) -> CodexFastResult:
+    """Keep the loop responsive and finish child cleanup before cancellation."""
+    cancel_event = threading.Event()
+    worker = asyncio.create_task(asyncio.to_thread(
+        generate_codex_fast, **kwargs, _cancel_event=cancel_event,
+    ))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancel_event.set()
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if worker.done() and not worker.cancelled():
+            worker.exception()
+        raise
