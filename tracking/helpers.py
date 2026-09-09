@@ -340,16 +340,22 @@ def get_existing_position_for_ticker(
     the Telegram "누적 평단" display.
     """
     try:
-        if account_key:
-            cursor.execute(
-                f"SELECT buy_price, scenario FROM {table_name} WHERE ticker = ? AND account_key = ?",
-                (ticker, account_key),
-            )
-        else:
-            cursor.execute(
-                f"SELECT buy_price, scenario FROM {table_name} WHERE ticker = ?",
-                (ticker,),
-            )
+        # Identifiers cannot be bound as SQL values. Only the two documented
+        # holdings tables are supported; no caller string enters SQL text.
+        queries = {
+            "stock_holdings": (
+                "SELECT buy_price, scenario FROM stock_holdings WHERE ticker = ?",
+                "SELECT buy_price, scenario FROM stock_holdings WHERE ticker = ? AND account_key = ?",
+            ),
+            "us_stock_holdings": (
+                "SELECT buy_price, scenario FROM us_stock_holdings WHERE ticker = ?",
+                "SELECT buy_price, scenario FROM us_stock_holdings WHERE ticker = ? AND account_key = ?",
+            ),
+        }
+        if table_name not in queries:
+            raise ValueError("unsupported holdings table")
+        query = queries[table_name][1 if account_key else 0]
+        cursor.execute(query, (ticker, account_key) if account_key else (ticker,))
         rows = cursor.fetchall()
         ownership = {_stored_pyramid_ownership(row[1] if len(row) > 1 else None) for row in rows}
         summary = "SPLIT_PILOT" if "SPLIT_PILOT" in ownership else ("UNKNOWN" if "UNKNOWN" in ownership else "LEGACY_OR_UNOWNED")
