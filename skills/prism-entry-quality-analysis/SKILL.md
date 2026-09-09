@@ -51,7 +51,8 @@ dashboard screenshots, current database rows, report prose, or reconstructed his
 1. Report Packet ID, schema/contract version, as-of, prospective boundary.
 2. Check duplicates, linkage, leakage, capture coverage, component missingness, and fill status.
 3. List every `readiness.insufficiency_reasons` code before performance claims.
-4. Keep candidate outcomes separate from `CONFIRMED` actual outcomes.
+4. Keep candidate outcomes, strategy-ledger outcomes, and broker execution evidence
+   separate. Evaluate strategy outcomes regardless of broker fill status.
 5. Compare only explicit trigger × regime × policy-version cohorts.
 6. Inspect ranked robustness inputs; report highest-winner removal and counterexamples.
 7. Apply preregistered rules only. If no preregistration exists, propose one instead of tuning a
@@ -60,7 +61,10 @@ dashboard screenshots, current database rows, report prose, or reconstructed his
    `START_RULE_SHADOW_REVIEW`, `LIMITED_LIVE_REVIEW`, or `RETIRE`.
 
 `MISSING` means unknown, not fail or pass. `SUBMITTED_ONLY`, `PARTIAL`, `UNKNOWN`,
-`REJECTED`, and `CANCELLED` are never confirmed realized samples.
+`REJECTED`, and `CANCELLED` do not establish broker-realized PnL, but must not exclude
+valid linked strategy-ledger exits. Default Packet readiness is strategy readiness;
+broker execution readiness is separate. Legacy `confirmed_actual_*` is only the
+entry-confirmed subset of strategy returns, not proof of broker exit PnL.
 
 ## Experiment discipline
 
