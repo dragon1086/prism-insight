@@ -1,9 +1,8 @@
-"""Independent, fractional-quantity strategy accounting (never submits orders).
+"""Schema-2 fixed-slot strategy accounting; never submits orders.
 
-Targets are cumulative purchases as a percentage of a fixed book unit budget,
-not mark-to-market weights. Explicit buy/sell fees default to zero. Target
-budgets exclude fees; cash and cost basis include them.
-Marks are historical observations, not a promise of current market prices.
+Allocation / execution price gives normalized units, NOT actual shares.
+Fees and slippage are dimensionless rates. Gains never replenish allocation
+or finance larger campaigns. Re-entry requires a new campaign after closure.
 """
 
 import hashlib
@@ -30,6 +29,13 @@ def _number(value, *, positive=False):
         raise LedgerError(
             "decimal must be finite and nonnegative (positive when required)"
         )
+    return result
+
+
+def _rate(value):
+    result = _number(value)
+    if result >= 1:
+        raise LedgerError("cost rate must be less than 1")
     return result
 
 
@@ -74,10 +80,10 @@ class StrategyLedger:
             version = db.execute(
                 "SELECT version FROM strategy_ledger_metadata"
             ).fetchall()
-            if version and version != [(1,)]:
+            if (names or version) and version != [(2,)]:
                 raise LedgerError("unsupported ledger schema")
             if not version:
-                db.execute("INSERT INTO strategy_ledger_metadata VALUES (1)")
+                db.execute("INSERT INTO strategy_ledger_metadata VALUES (2)")
             for table in ("books", "campaigns"):
                 db.execute(
                     f"CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)"
@@ -153,37 +159,35 @@ class StrategyLedger:
         self._save(db, "books", book["book_id"], book)
 
     def create_book(
-        self, book_id, market, currency, initial_capital, unit_budget, max_slots=10
+        self, book_id, market, max_slots=10, *, cohort="baseline-v1", mode="VALIDATION"
     ):
-        if {"KR": "KRW", "US": "USD"}.get(market) != currency:
-            raise LedgerError("market/currency mismatch; cross-currency accounting is unsupported")
-        capital, unit = (
-            _number(initial_capital, positive=True),
-            _number(unit_budget, positive=True),
-        )
+        if market not in {"KR", "US"}:
+            raise LedgerError("unsupported market")
         if type(max_slots) is not int or not 1 <= max_slots <= 10:
             raise LedgerError("max_slots must be an integer from 1 to 10")
+        if mode not in {"VALIDATION", "SHADOW", "VALIDATION_ONLY"}:
+            raise LedgerError("unsupported strategy mode")
+        if cohort is None and mode != "VALIDATION_ONLY":
+            raise LedgerError("explicit strategy cohort required")
+        identity = [market, None if cohort is None else _text(cohort), mode]
+        key = None if cohort is None else hashlib.sha256(_dump(identity).encode()).hexdigest()
         config = {
-            "book_id": _text(book_id),
-            "market": _text(market),
-            "currency": _text(currency),
-            "initial_capital": str(capital),
-            "unit_budget": str(unit),
-            "max_slots": max_slots,
+            "book_id": _text(book_id), "market": market, "max_slots": max_slots,
+            "cohort": cohort, "mode": mode, "strategy_book_key": key,
+            "validation_only": mode == "VALIDATION_ONLY",
         }
         with self._transaction() as db:
+            for row in db.execute("SELECT data FROM books"):
+                existing = json.loads(row[0])
+                if key is not None and existing["strategy_book_key"] == key and existing["book_id"] != book_id:
+                    raise LedgerError("strategy identity already provisioned under another book ID")
             row = db.execute("SELECT data FROM books WHERE id=?", (book_id,)).fetchone()
             if row:
                 existing = json.loads(row[0])
                 if any(existing[k] != v for k, v in config.items()):
                     raise LedgerError("book configuration conflict")
             else:
-                self._save(
-                    db,
-                    "books",
-                    book_id,
-                    {**config, "free_cash": str(capital), "realized_pnl": "0"},
-                )
+                self._save(db, "books", book_id, {**config, "realized_contribution": "0"})
             return self._snapshot(db, book_id)
 
     def apply_target(
@@ -199,14 +203,15 @@ class StrategyLedger:
         reason="target entry",
         regime="moderate_bull",
         source_hash=None,
-        fee=0,
+        fee_rate=0,
+        slippage_rate=0,
     ):
         target, price = (
             _number(target_pct, positive=True),
             _number(price, positive=True),
         )
         timestamp = _time(occurred_at)
-        fee = _number(fee)
+        fee_rate, slippage_rate = _rate(fee_rate), _rate(slippage_rate)
         payload = {
             "kind": "target",
             "book_id": _text(book_id),
@@ -219,17 +224,16 @@ class StrategyLedger:
             "reason": _text(reason),
             "regime": _text(regime),
             "source_hash": source_hash,
-            "fee": str(fee),
+            "fee_rate": str(fee_rate),
+            "slippage_rate": str(slippage_rate),
         }
         with self._transaction() as db:
             book = self._get(db, "books", book_id)
             if not self._event(db, event_id, payload):
                 return {**self._snapshot(db, book_id), "event_applied": False}
             self._book_chronology(db, book, timestamp)
-            if target > 300 or (
-                target > 100 and regime not in {"strong_bull", "parabolic"}
-            ):
-                raise LedgerError("target exceeds regime cap")
+            if target > 100:
+                raise LedgerError("target exceeds 100 percent cap")
             row = db.execute(
                 "SELECT data FROM campaigns WHERE id=?", (campaign_id,)
             ).fetchone()
@@ -241,10 +245,12 @@ class StrategyLedger:
                     "book_id": book_id,
                     "symbol": symbol,
                     "target_pct": "0",
-                    "quantity": "0",
-                    "cost_basis": "0",
-                    "invested_budget": "0",
-                    "realized_pnl": "0",
+                    "normalized_units": "0",
+                    "remaining_allocation": "0",
+                    "cumulative_deployed_allocation": "0",
+                    "realized_contribution": "0",
+                    "remaining_entry_cost": "0",
+                    "add_permission": "AVAILABLE",
                     "last_event_at": timestamp,
                     "mark_price": str(price),
                     "mark_at": timestamp,
@@ -256,19 +262,21 @@ class StrategyLedger:
             self._chronology(campaign, timestamp)
             old_target = Decimal(campaign["target_pct"])
             quantity, cost = (
-                Decimal(campaign["quantity"]),
-                Decimal(campaign["cost_basis"]),
+                Decimal(campaign["normalized_units"]),
+                Decimal(campaign["remaining_allocation"]),
             )
             if row and quantity == 0:
                 raise LedgerError("closed campaign cannot reopen")
             if target < old_target:
                 raise LedgerError("cumulative target cannot decrease; use sell")
             if target == old_target:
-                if fee:
-                    raise LedgerError("unchanged target cannot incur a buy fee")
+                if fee_rate or slippage_rate:
+                    raise LedgerError("unchanged target cannot incur costs")
                 campaign["last_event_at"] = timestamp
                 self._save(db, "campaigns", campaign_id, campaign)
                 return {**self._snapshot(db, book_id), "event_applied": True}
+            if campaign["add_permission"] != "AVAILABLE":
+                raise LedgerError("strategy reduction cancels further adds")
             if quantity and price < cost / quantity:
                 raise LedgerError(
                     "policy guard: adding below average cost is forbidden"
@@ -280,28 +288,28 @@ class StrategyLedger:
                 c
                 for c in active
                 if c["book_id"] == book_id
-                and Decimal(c["quantity"]) > 0
+                and Decimal(c["normalized_units"]) > 0
                 and c["campaign_id"] != campaign_id
             ]
             if any(c["symbol"] == symbol for c in active):
                 raise LedgerError("symbol already has an active campaign")
             if len(active) + 1 > book["max_slots"]:
                 raise LedgerError("name slot limit exceeded")
-            if sum((Decimal(c["target_pct"]) for c in active), target) > 1000:
-                raise LedgerError("book target units exceed 10")
-            budget = Decimal(book["unit_budget"]) * (target - old_target) / 100
-            cash = Decimal(book["free_cash"])
-            if budget + fee > cash:
-                raise LedgerError("insufficient strategy cash")
-            bought = budget / price
+            allocation = (target - old_target) / 100
+            execution_price = price * (1 + slippage_rate)
+            bought = allocation / execution_price
+            entry_cost = allocation * fee_rate
             leg = {
                 "event_id": event_id,
                 "campaign_id": campaign_id,
                 "side": "BUY",
-                "quantity": str(bought),
+                "normalized_units": str(bought),
                 "price": str(price),
-                "amount": str(budget),
-                "fee": str(fee),
+                "allocation": str(allocation),
+                "execution_price": str(execution_price),
+                "fee_rate": str(fee_rate),
+                "slippage_rate": str(slippage_rate),
+                "cost_contribution": str(entry_cost),
                 "occurred_at": timestamp,
                 "target_pct": str(target),
                 "policy_version": policy_version,
@@ -312,15 +320,15 @@ class StrategyLedger:
             )
             campaign.update(
                 target_pct=str(target),
-                quantity=str(quantity + bought),
-                cost_basis=str(cost + budget + fee),
-                invested_budget=str(Decimal(campaign["invested_budget"]) + budget),
+                normalized_units=str(quantity + bought),
+                remaining_allocation=str(cost + allocation),
+                remaining_entry_cost=str(Decimal(campaign["remaining_entry_cost"]) + entry_cost),
+                cumulative_deployed_allocation=str(Decimal(campaign["cumulative_deployed_allocation"]) + allocation),
                 last_event_at=timestamp,
                 mark_price=str(price),
                 mark_at=timestamp,
                 mark_basis="last_trade",
             )
-            book["free_cash"] = str(cash - budget - fee)
             self._save(db, "campaigns", campaign_id, campaign)
             self._save(db, "books", book_id, book)
             return {**self._snapshot(db, book_id), "event_applied": True}
@@ -332,10 +340,13 @@ class StrategyLedger:
         price,
         occurred_at,
         quantity=None,
-        fee=0,
+        fee_rate=0,
+        slippage_rate=0,
         source_hash=None,
     ):
-        price, fee = _number(price, positive=True), _number(fee)
+        """Reduce normalized units (quantity is NOT a broker share quantity)."""
+        price = _number(price, positive=True)
+        fee_rate, slippage_rate = _rate(fee_rate), _rate(slippage_rate)
         timestamp = _time(occurred_at)
         requested = None if quantity is None else str(_number(quantity, positive=True))
         payload = {
@@ -343,8 +354,9 @@ class StrategyLedger:
             "campaign_id": _text(campaign_id),
             "price": str(price),
             "occurred_at": timestamp,
-            "quantity": requested,
-            "fee": str(fee),
+            "normalized_units": requested,
+            "fee_rate": str(fee_rate),
+            "slippage_rate": str(slippage_rate),
             "source_hash": source_hash,
         }
         with self._transaction() as db:
@@ -355,40 +367,44 @@ class StrategyLedger:
             book = self._get(db, "books", book_id)
             self._book_chronology(db, book, timestamp)
             self._chronology(campaign, timestamp)
-            held, cost = Decimal(campaign["quantity"]), Decimal(campaign["cost_basis"])
+            held, cost = Decimal(campaign["normalized_units"]), Decimal(campaign["remaining_allocation"])
             sold = held if requested is None else Decimal(requested)
             if sold <= 0 or sold > held:
                 raise LedgerError("sell quantity exceeds holding or is zero")
             allocated = cost if sold == held else cost * sold / held
-            proceeds = sold * price - fee
-            book = self._get(db, "books", book_id)
-            if Decimal(book["free_cash"]) + proceeds < 0:
-                raise LedgerError("fee would create negative cash")
-            pnl = proceeds - allocated
+            entry_cost = Decimal(campaign["remaining_entry_cost"])
+            allocated_entry_cost = entry_cost if sold == held else entry_cost * sold / held
+            execution_price = price * (1 - slippage_rate)
+            gross_proceeds = sold * execution_price
+            exit_cost = gross_proceeds * fee_rate
+            pnl = gross_proceeds - exit_cost - allocated - allocated_entry_cost
             campaign.update(
-                quantity=str(held - sold),
-                cost_basis=str(cost - allocated),
-                realized_pnl=str(Decimal(campaign["realized_pnl"]) + pnl),
+                normalized_units=str(held - sold),
+                remaining_allocation=str(cost - allocated),
+                remaining_entry_cost=str(Decimal(campaign["remaining_entry_cost"]) - allocated_entry_cost),
+                add_permission="CANCELLED_BY_REDUCTION",
+                realized_contribution=str(Decimal(campaign["realized_contribution"]) + pnl),
                 last_event_at=timestamp,
                 mark_price=str(price),
                 mark_at=timestamp,
                 mark_basis="last_trade",
             )
             book.update(
-                free_cash=str(Decimal(book["free_cash"]) + proceeds),
-                realized_pnl=str(Decimal(book["realized_pnl"]) + pnl),
+                realized_contribution=str(Decimal(book["realized_contribution"]) + pnl),
             )
             leg = {
                 "event_id": event_id,
                 "campaign_id": campaign_id,
                 "side": "SELL",
-                "quantity": str(sold),
+                "normalized_units": str(sold),
                 "price": str(price),
-                "amount": str(sold * price),
-                "fee": str(fee),
+                "released_allocation": str(allocated),
+                "execution_price": str(execution_price),
+                "fee_rate": str(fee_rate),
+                "slippage_rate": str(slippage_rate),
+                "cost_contribution": str(exit_cost + allocated_entry_cost),
                 "occurred_at": timestamp,
-                "allocated_cost": str(allocated),
-                "realized_pnl": str(pnl),
+                "realized_contribution": str(pnl),
             }
             db.execute(
                 "INSERT INTO legs VALUES (?,?,?)", (event_id, campaign_id, _dump(leg))
@@ -501,51 +517,52 @@ class StrategyLedger:
     def _snapshot(self, db, book_id):
         book = self._get(db, "books", book_id)
         campaigns, executions = [], []
-        market_value, unrealized = Decimal(0), Decimal(0)
+        # Read each append-only history once, rather than two full scans for
+        # every campaign. SQL is constant; campaign identity is grouped in Python.
+        legs_by_campaign, executions_by_campaign = {}, {}
+        for campaign_id, data in db.execute("SELECT campaign_id, data FROM legs ORDER BY rowid"):
+            legs_by_campaign.setdefault(campaign_id, []).append(json.loads(data))
+        for campaign_id, data in db.execute("SELECT campaign_id, data FROM executions ORDER BY rowid"):
+            executions_by_campaign.setdefault(campaign_id, []).append(json.loads(data))
+        marked_exposure, unrealized, remaining = Decimal(0), Decimal(0), Decimal(0)
         for row in db.execute("SELECT data FROM campaigns ORDER BY id"):
             campaign = json.loads(row[0])
             if campaign["book_id"] != book_id:
                 continue
-            quantity, cost = (
-                Decimal(campaign["quantity"]),
-                Decimal(campaign["cost_basis"]),
-            )
-            value = quantity * Decimal(campaign["mark_price"])
-            pnl = value - cost
+            units = Decimal(campaign["normalized_units"])
+            allocation = Decimal(campaign["remaining_allocation"])
+            value = units * Decimal(campaign["mark_price"])
+            pnl = value - allocation - Decimal(campaign["remaining_entry_cost"])
+            average = allocation / units if units else None
             campaign.update(
-                average_cost=str(cost / quantity) if quantity else None,
-                market_value=str(value),
-                unrealized_pnl=str(pnl),
+                average_cost=str(average) if average is not None else None,
+                invested_price_return_pct=str((Decimal(campaign["mark_price"]) / average - 1) * 100) if average else None,
+                marked_exposure=str(value),
+                unrealized_contribution=str(pnl),
+                one_slot_contribution=str(Decimal(campaign["realized_contribution"]) + pnl),
+                conditional_remaining_allocation=str(1 - Decimal(campaign["cumulative_deployed_allocation"]))
+                    if units and campaign["add_permission"] == "AVAILABLE" else "0",
                 mark_freshness="historical_observation_not_live",
-                status="OPEN" if quantity else "CLOSED",
+                status="OPEN" if units else "CLOSED",
             )
-            campaign["legs"] = [
-                json.loads(r[0])
-                for r in db.execute(
-                    "SELECT data FROM legs WHERE campaign_id=? ORDER BY rowid",
-                    (campaign["campaign_id"],),
-                )
-            ]
-            executions.extend(
-                json.loads(r[0])
-                for r in db.execute(
-                    "SELECT data FROM executions WHERE campaign_id=? ORDER BY rowid",
-                    (campaign["campaign_id"],),
-                )
-            )
+            campaign["legs"] = legs_by_campaign.get(campaign["campaign_id"], [])
+            executions.extend(executions_by_campaign.get(campaign["campaign_id"], []))
             campaigns.append(campaign)
-            market_value += value
+            marked_exposure += value
+            remaining += allocation
             unrealized += pnl
-        equity = Decimal(book["free_cash"]) + market_value
+        contribution = Decimal(book["realized_contribution"]) + unrealized
+        isolated = book["validation_only"]
         return {
-            **book,
-            "market_value": str(market_value),
-            "unrealized_pnl": str(unrealized),
-            "equity": str(equity),
-            "portfolio_return_pct": str(
-                (equity / Decimal(book["initial_capital"]) - 1) * 100
-            ),
-            "campaigns": campaigns,
-            "executions": executions,
-            "accounting_basis": "fractional_strategy_quantity; buy_fee_explicit; sell_fee_explicit; target_budget_excludes_fees; no_fx_aggregation",
+            **book, "schema_version": 2,
+            "occupied_slots": sum(c["status"] == "OPEN" for c in campaigns),
+            "remaining_allocation": str(remaining),
+            "marked_exposure": str(marked_exposure),
+            "unrealized_contribution": str(unrealized),
+            "total_slot_contribution": str(contribution),
+            "capacity_normalized_contribution": None if isolated else str(contribution / book["max_slots"]),
+            "contribution_denominator_slots": None if isolated else book["max_slots"],
+            "campaigns": campaigns, "executions": executions,
+            "accounting_basis": "normalized_units_not_shares; fixed_slot_principal; dimensionless_cost_rates; no_gain_reinvestment",
+            "portfolio_aggregation": "FORBIDDEN_ISOLATED_VALIDATION" if isolated else "EXPLICIT_FIXED_CAPACITY_ONLY",
         }

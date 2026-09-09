@@ -16,44 +16,53 @@ def _label(value):
 
 
 def format_campaign(snapshot, campaign_id, *, unresolved_execution_overlays=()):
-    """Keep strategy accounting, cash, and broker evidence visibly separate."""
+    """Slot-weight accounting and broker evidence remain visibly separate."""
     campaign = next(c for c in snapshot["campaigns"] if c["campaign_id"] == campaign_id)
-    currency = snapshot["currency"]
 
-    def money(value):
+    def percent(value, *, signed=False):
         number = _number(value)
         if number is None:
             return "미확인"
-        return f"{number:,.0f}원" if currency == "KRW" else f"${number:,.2f}"
+        return f"{number * 100:+.2f}%" if signed else f"{(number * 100).normalize():f}%"
 
-    quantity = _number(campaign["quantity"])
-    target = _number(campaign["target_pct"])
-    unit = _number(snapshot["unit_budget"])
-    invested = _number(campaign["invested_budget"])
-    unused_base = max(Decimal(0), unit - invested)
-    status = "보유" if quantity else "청산 완료"
+    def price(value):
+        number = _number(value)
+        if number is None:
+            return "미확인"
+        return f"{number:,.2f}" + ("원" if snapshot["market"] == "KR" else " USD")
+
+    units = _number(campaign["normalized_units"])
+    status = "보유" if units else "청산 완료"
+    invested_return = _number(campaign.get("invested_price_return_pct"))
     lines = [
-        "📒 분할진입 전략 원장 · 검증용",
+        "📒 슬롯·비중 전략 원장 · 검증용",
         f"**{_label(campaign['symbol'])} · {status}**",
         "",
-        f"누적 투입 목표: 기준 1단위의 {target:g}%",
-        f"누적 투입원금: {money(invested)}",
-        f"가상 수량: {quantity:,.6f}주",
-        f"잔여 가중평단: {money(campaign.get('average_cost')) if quantity else '청산 완료'}",
-        f"기본 100%까지 미투입 예산: {money(unused_base)}",
-        "※ 미투입 예산은 확보된 계좌 현금이 아닙니다.",
+        f"점유 슬롯: {1 if units else 0}개",
+        f"잔여 배분: {percent(campaign['remaining_allocation'])}",
+        f"누적 투입 배분: {percent(campaign['cumulative_deployed_allocation'])}",
+        f"잔여 가중평단: {price(campaign.get('average_cost')) if units else '청산 완료'}",
+        f"마지막 원장 가격: {price(campaign['mark_price'])}",
+        f"추가 가능 잔여 배분: {percent(campaign['conditional_remaining_allocation'])} · 조건 충족 시에만 가능",
+        "※ 잔여 배분은 추가 매수 일정이나 계좌 현금 확보를 뜻하지 않습니다.",
         "",
-        f"원장 실현손익: {money(campaign['realized_pnl'])}",
-        f"원장 평가손익: {money(campaign['unrealized_pnl'])}",
-        f"장부 가상 현금: {money(snapshot['free_cash'])}",
-        f"장부 평가자산: {money(snapshot['equity'])}",
-        f"장부 수익률: {_number(snapshot['portfolio_return_pct']):+.2f}%",
-        "평가는 마지막 원장 가격 기준이며 최신 시세를 보장하지 않습니다.",
-        "",
-        "🏦 실계좌 집행 증거",
+        f"투입분 가격수익률: {invested_return:+.2f}%" if invested_return is not None else "투입분 가격수익률: 잔여 보유 없음",
+        f"실현 1슬롯 기여: {percent(campaign['realized_contribution'], signed=True)}",
+        f"미실현 1슬롯 기여: {percent(campaign['unrealized_contribution'], signed=True)}",
+        f"합계 1슬롯 기여: {percent(campaign['one_slot_contribution'], signed=True)}",
     ]
-    if str(snapshot.get("book_id", "")).startswith("isolated:"):
-        lines.insert(2, "개별 과거 포지션 검증 장부 · 전체 포트폴리오 합산 금지")
+    if snapshot.get("validation_only"):
+        lines.append("개별 과거 포지션 검증 장부 · 전체 포트폴리오 합산 금지")
+    else:
+        lines.append(f"고정 {snapshot['contribution_denominator_slots']}슬롯 기준 기여: "
+                     f"{percent(snapshot['capacity_normalized_contribution'], signed=True)}")
+    if campaign["add_permission"] == "CANCELLED_BY_REDUCTION":
+        lines.append("전략 비중 축소로 추가 배분 권한이 취소되었습니다.")
+    lines.extend([
+        "기여도는 비용을 반영하며 가격수익률과 다릅니다.",
+        "평가는 마지막 원장 가격 기준이며 최신 시세를 보장하지 않습니다.",
+        "", "🏦 실계좌 집행 증거",
+    ])
     status_labels = {
         "UNKNOWN": "결과 미확인", "SUBMITTED": "접수 · 체결 미확인",
         "ACCEPTED": "접수 · 체결 미확인", "REJECTED": "주문 거절",
@@ -68,7 +77,8 @@ def format_campaign(snapshot, campaign_id, *, unresolved_execution_overlays=()):
     for index, (_, record) in enumerate(sorted(latest.items(), key=lambda item: str(item[0]))[:3], 1):
         line = f"집행 기록 {index}: {status_labels.get(record.get('status'), '상태 미확인')}"
         if record.get("confirmed_quantity") is not None:
-            line += f" · 확인 수량 {_number(record['confirmed_quantity']):g}주"
+            quantity = _number(record["confirmed_quantity"])
+            line += f" · 확인 수량 {quantity:g}주" if quantity is not None else " · 확인 수량 미확인"
         lines.append(line)
     if len(latest) > 3:
         lines.append(f"외 집행 기록 {len(latest) - 3}건 생략")
