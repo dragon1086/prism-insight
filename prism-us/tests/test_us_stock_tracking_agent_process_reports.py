@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import threading
 import types
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -137,6 +138,71 @@ def _load_us_agent_module():
 
 us_agent_module = _load_us_agent_module()
 USStockTrackingAgent = us_agent_module.USStockTrackingAgent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "elapsed, expected_period, stored_days",
+    [
+        (timedelta(seconds=30), "<1 minute", 0),
+        (timedelta(hours=18, minutes=6), "18h 6m", 0),
+        (timedelta(hours=24), "1 day", 1),
+        (timedelta(days=2, hours=3), "2 days", 2),
+    ],
+)
+async def test_sell_notice_distinguishes_reference_return_and_elapsed_time(
+    monkeypatch, elapsed, expected_period, stored_days
+):
+    sold_at = datetime(2026, 9, 10, 9, 0)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return sold_at
+
+    monkeypatch.setattr(us_agent_module, "datetime", FrozenDatetime)
+    agent = USStockTrackingAgent.__new__(USStockTrackingAgent)
+    agent.conn = sqlite3.connect(":memory:")
+    agent.cursor = agent.conn.cursor()
+    agent.conn.executescript("""
+        CREATE TABLE us_stock_holdings (
+            id INTEGER PRIMARY KEY, ticker TEXT, account_key TEXT, buy_price REAL
+        );
+        INSERT INTO us_stock_holdings VALUES (1, 'SNDK', 'TEST', 100);
+        CREATE TABLE us_trading_history (
+            account_key TEXT, account_name TEXT, ticker TEXT, company_name TEXT,
+            buy_price REAL, buy_date TEXT, sell_price REAL, sell_date TEXT,
+            profit_rate REAL, holding_days INTEGER, scenario TEXT,
+            trigger_type TEXT, trigger_mode TEXT, sector TEXT, exit_kind TEXT
+        );
+    """)
+    agent._account_scope = lambda: ("TEST", "test")
+    agent._mirror_position_closed = MagicMock()
+    agent._emit_exit_context_snapshot = MagicMock()
+    agent._get_trigger_win_rate = lambda _: ""
+    agent.enable_journal = False
+    agent.message_queue = []
+    agent._msg_types = []
+    try:
+        assert await agent.sell_stock({
+            "id": 1, "ticker": "SNDK", "company_name": "SanDisk",
+            "buy_price": 100, "current_price": 95,
+            "buy_date": (sold_at - elapsed).strftime("%Y-%m-%d %H:%M:%S"),
+        }, "stop loss", exit_kind="stop")
+        assert len(agent.message_queue) == 1
+        message = agent.message_queue[0]
+        assert f"Holding Period: {expected_period}\n" in message
+        assert "Strategy/Reference Return: ⬇️ 5.00%" in message
+        assert "not broker-confirmed realized P&L" in message
+        assert "Holding Period: 0 days" not in message
+        assert agent._msg_types == ["analysis"]
+        assert agent.conn.execute(
+            "SELECT holding_days, profit_rate FROM us_trading_history"
+        ).fetchone() == (stored_days, -5.0)
+        assert agent.conn.execute("SELECT COUNT(*) FROM us_stock_holdings").fetchone() == (0,)
+    finally:
+        agent.conn.close()
+
 
 @pytest.fixture(autouse=True)
 def isolated_fresh_quotes(monkeypatch):
