@@ -221,7 +221,10 @@ def test_trading_mcp_profiles_allow_only_read_only_sqlite_tools(
     profile_name: str,
     market_server: str,
 ) -> None:
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10: pytest already depends on this backport.
+        import tomli as tomllib
 
     profile_path = Path(__file__).resolve().parents[1] / "deploy" / profile_name
     config = tomllib.loads(profile_path.read_text("utf-8"))
