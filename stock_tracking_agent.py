@@ -113,7 +113,6 @@ from tracking import (
     CompressionManager,
     TelegramSender,
 )
-from trading import kis_auth as ka
 
 # Delay MCPApp construction so a successful Codex+MCP path never nests two
 # MCP hosts in one process. Legacy mode still constructs the same app at run().
@@ -587,6 +586,8 @@ class StockTrackingAgent:
             return False
 
     def _get_trading_accounts(self) -> List[Dict[str, Any]]:
+        from trading import kis_auth as ka
+
         default_mode = str(ka.getEnv().get("default_mode", "demo")).strip().lower()
         svr = "vps" if default_mode == "demo" else "prod"
         return ka.get_configured_accounts(svr=svr, market="kr")
@@ -610,6 +611,8 @@ class StockTrackingAgent:
         account_key = str(account.get("account_key", "") or "")
         if not account_key:
             return account_name
+
+        from trading import kis_auth as ka
 
         parts = account_key.split(":")
         if len(parts) == 3:
