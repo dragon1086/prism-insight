@@ -56,6 +56,69 @@ class BoundaryError(ValueError):
     pass
 
 
+class ParentLease:
+    """Read-only inherited pipe; sole writer stays in the host supervisor."""
+    def __init__(self, fd, parent_pid):
+        import fcntl
+        if (type(fd) is not int or fd < 3 or type(parent_pid) is not int or parent_pid <= 1
+                or not stat.S_ISFIFO(os.fstat(fd).st_mode)
+                or fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDONLY):
+            raise BoundaryError("invalid_parent_lease")
+        self.fd, self.parent_pid = fd, parent_pid
+        self.check()
+
+    def alive(self):
+        # No writes are allowed by the protocol; readable means EOF or invalid
+        # data, both fail closed. A pipe lease avoids PID-reuse assumptions.
+        return os.getppid() == self.parent_pid and not select.select([self.fd], [], [], 0)[0]
+
+    def check(self):
+        if not self.alive():
+            raise BoundaryError("parent_lease_lost")
+
+
+def wait_owned_child(child, lease, stopped):
+    """Only direct still-owned Popen handles; never signal arbitrary groups."""
+    while True:
+        if stopped.is_set() or not lease.alive():
+            if child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=.5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=2)
+            return 2
+        try:
+            return child.wait(timeout=.1)
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def validate_snapshot(path, expected_sha256, model_root, agent_root, host_root):
+    path, model_root, agent_root, host_root = map(Path, (path, model_root, agent_root, host_root))
+    if (any(".." in p.parts or not p.is_absolute() or p.resolve() != p for p in (path, model_root, agent_root, host_root))
+            or path.parent != host_root or host_root.is_relative_to(agent_root) or host_root.is_relative_to(model_root)
+            or agent_root.is_relative_to(host_root) or model_root.is_relative_to(host_root)):
+        raise BoundaryError("unsafe_snapshot")
+    path = _private_host_file(path, model_root)
+    if (stat.S_IMODE(path.stat().st_mode) != 0o400 or not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64 or path.stat().st_size > 256 * 1024 * 1024
+            or any(Path(str(path) + suffix).exists() for suffix in ("-wal", "-shm", "-journal"))):
+        raise BoundaryError("unsafe_snapshot")
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        first = stream.read(1024 * 1024)
+        if not first.startswith(b"SQLite format 3\0"):
+            raise BoundaryError("unsafe_snapshot")
+        digest.update(first)
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != expected_sha256:
+        raise BoundaryError("snapshot_hash_mismatch")
+    return path
+
+
 def _private_host_file(path: Path, root: Path) -> Path:
     if any(".." in Path(candidate).parts for candidate in (path, root)):
         raise BoundaryError("parent_traversal_rejected")
@@ -260,7 +323,7 @@ def validate_stage(root: Path) -> Path:
     return root
 
 
-def sandbox_command(root: Path, binary: Path, gateway: Path, runner: Path, args: list[str], *, read_sockets=None):
+def sandbox_command(root: Path, binary: Path, gateway: Path, runner: Path, args: list[str], *, read_sockets=None, snapshot=None):
     """Only specific runtime mounts; never mount /, /root, /etc or /run."""
     if ".." in root.parts:
         raise BoundaryError("parent_traversal_rejected")
@@ -285,7 +348,13 @@ def sandbox_command(root: Path, binary: Path, gateway: Path, runner: Path, args:
         if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise BoundaryError("unsafe_read_socket")
         command += ["--ro-bind", str(source), f"/mcp-{name}.sock"]
-    command += ["--ro-bind", str(root), str(root),
+    command += ["--ro-bind", str(root), str(root)]
+    if snapshot is not None:
+        target = root / "portfolio.sqlite"
+        if not target.is_file() or target.is_symlink():
+            raise BoundaryError("snapshot_target_missing")
+        command += ["--ro-bind", str(snapshot), str(target)]
+    command += [
                 "--ro-bind", str(binary), "/codex",
                 "--ro-bind", str(binary.with_name("codex-code-mode-host")), "/codex-code-mode-host",
                 "--ro-bind", str(runner), "/runner.py",
@@ -324,6 +393,25 @@ def inner(args):
 
 
 def launch(root: Path, binary: Path, args: list[str]) -> int:
+    fields = ("PRISM_PROBE_PARENT_FD", "PRISM_PROBE_PARENT_PID", "PRISM_PROBE_SNAPSHOT",
+              "PRISM_PROBE_SNAPSHOT_SHA256", "PRISM_PROBE_AGENT_ROOT", "PRISM_PROBE_SNAPSHOT_ROOT")
+    if any(key in os.environ for key in fields):
+        if not all(key in os.environ for key in fields):
+            raise BoundaryError("incomplete_diagnostic_binding")
+        try:
+            lease = ParentLease(int(os.environ[fields[0]]), int(os.environ[fields[1]]))
+        except (ValueError, OSError):
+            raise BoundaryError("invalid_parent_lease") from None
+        snapshot = validate_snapshot(os.environ[fields[2]], os.environ[fields[3]], root,
+                                     os.environ[fields[4]], os.environ[fields[5]])
+        try:
+            return _launch(root, binary, args, lease=lease, snapshot=snapshot)
+        finally:
+            os.close(lease.fd)
+    return _launch(root, binary, args)
+
+
+def _launch(root: Path, binary: Path, args: list[str], *, lease=None, snapshot=None) -> int:
     root = validate_stage(root)
     if str(binary) != TRUSTED_CODEX_BINARY:
         raise BoundaryError("untrusted_binary_path")
@@ -357,24 +445,33 @@ def launch(root: Path, binary: Path, args: list[str]) -> int:
             sockets = {}
             for name, config in (host_configs or {}).items():
                 bridge = bridges.enter_context(host_module.ReadMcpBridge(
-                    Path(directory) / f"mcp-{name}.sock", server_name=name, **config))
+                    Path(directory) / f"mcp-{name}.sock", server_name=name, **config,
+                    **({"parent_alive": lease.alive} if lease is not None else {})))
                 sockets[name] = bridge.socket_path
             thread = threading.Thread(target=gateway.serve_forever, daemon=True)
             thread.start()
             child = None
+            stopped = threading.Event()
             old_handlers = {}
             def stop(signum, _frame):
+                stopped.set()
                 if child is not None:
                     child.terminate()
             try:
-                command = sandbox_command(root, binary, gateway_path, Path(__file__).resolve(), args, read_sockets=sockets)
+                command = sandbox_command(root, binary, gateway_path, Path(__file__).resolve(), args, read_sockets=sockets,
+                                          **({"snapshot": snapshot} if snapshot is not None else {}))
                 # bwrap 0.4.0 has no --clearenv. Host secrets/manifest path never
                 # enter model env; only sandbox_command's explicit variables do.
                 # Backend-generated CLI arguments cannot select the executable
                 # or bypass the enclosing OS mounts/network/capability limits.
-                child = subprocess.Popen(command, env={}, close_fds=True)  # nosec B603  # nosemgrep
                 for signum in (signal.SIGINT, signal.SIGTERM):
                     old_handlers[signum] = signal.signal(signum, stop)
+                if lease is not None:
+                    lease.check()
+                child = subprocess.Popen(command, env={}, close_fds=True)  # nosec B603  # nosemgrep
+                if lease is not None:
+                    lease.check()  # parent may have died during Popen/assignment
+                    return wait_owned_child(child, lease, stopped)
                 return child.wait()
             finally:
                 if child is not None and child.poll() is None:
@@ -392,7 +489,7 @@ def main(args=None):
             return inner(args[1:])
         return launch(Path(os.environ["PRISM_PROBE_ROOT"]),
                       Path(os.environ["PRISM_PROBE_CODEX_BINARY"]), args)
-    except (BoundaryError, OSError, KeyError):
+    except (ValueError, OSError, KeyError):
         print("probe_sandbox_boundary_failed", file=sys.stderr)
         return 2
 

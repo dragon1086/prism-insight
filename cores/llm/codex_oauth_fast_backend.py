@@ -51,6 +51,14 @@ class CodexFastResult:
     mcp_calls: tuple[CodexMcpCall, ...] = ()
 
 
+@dataclass
+class CodexDiagnosticState:
+    """Per-call host evidence; never infer cleanup from an exception message."""
+    phase: str = "NO_PROCESS"
+    returncode: int | None = None
+    group_cleanup_confirmed: bool = False
+
+
 McpProfile = Literal["kr_trading", "us_trading"]
 SUPPORTED_MCP_PROFILES = frozenset({"kr_trading", "us_trading"})
 logger = logging.getLogger(__name__)
@@ -370,6 +378,9 @@ def generate_codex_fast(
     require_mcp_calls: bool = False,
     reasoning_effort: str | None = None,
     _cancel_event: threading.Event | None = None,
+    _diagnostic_environment: dict[str, str] | None = None,
+    _diagnostic_parent_fd: int | None = None,
+    _diagnostic_state: CodexDiagnosticState | None = None,
 ) -> CodexFastResult:
     try:
         timeout = validate_timeout(timeout)
@@ -428,7 +439,15 @@ def generate_codex_fast(
         log_event("launch_error")
         raise CodexFastError("Codex Fast executable unavailable") from None
     home = codex_home or os.environ.get("PRISM_CODEX_HOME")
-    environment = os.environ.copy()
+    environment = os.environ.copy() if _diagnostic_environment is None else dict(_diagnostic_environment)
+    if any(not isinstance(key, str) or not isinstance(value, str) or "\0" in key + value for key, value in environment.items()):
+        raise CodexFastError("Invalid diagnostic environment")
+    if _diagnostic_parent_fd is not None:
+        import fcntl
+        if (type(_diagnostic_parent_fd) is not int or _diagnostic_parent_fd < 3
+                or not stat.S_ISFIFO(os.fstat(_diagnostic_parent_fd).st_mode)
+                or fcntl.fcntl(_diagnostic_parent_fd, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDONLY):
+            raise CodexFastError("Invalid diagnostic parent lease")
     if home:
         environment["CODEX_HOME"] = home
     started = time.monotonic()
@@ -438,6 +457,8 @@ def generate_codex_fast(
             # The executable is resolved, permission-checked, and invoked with a
             # fixed argv list. No shell parsing or untrusted option expansion occurs.
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args, python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            if _diagnostic_state is not None:
+                _diagnostic_state.phase = "LAUNCH_ATTEMPTED_UNKNOWN"
             process = subprocess.Popen(  # nosec B603
                 _command(executable, model, mcp_profile, reasoning_effort),  # nosemgrep
                 stdin=subprocess.PIPE,
@@ -449,7 +470,10 @@ def generate_codex_fast(
                 # MCP stdio children are managed by Codex. Keep their shutdown
                 # signals out of the long-lived PRISM orchestrator process group.
                 start_new_session=os.name == "posix",
+                **({"pass_fds": (_diagnostic_parent_fd,)} if _diagnostic_parent_fd is not None else {}),
             )
+            if _diagnostic_state is not None:
+                _diagnostic_state.phase = "SPAWNED"
             stdin_stream = process.stdin
             process.stdin = None  # Public pipe ownership transfers to our pump.
             try:
@@ -484,6 +508,10 @@ def generate_codex_fast(
                         stdin_stream.close()
                 finally:
                     group_confirmed = _terminate_owned_process(process)
+                    if _diagnostic_state is not None:
+                        _diagnostic_state.phase = "TERMINATED"
+                        _diagnostic_state.returncode = process.returncode
+                        _diagnostic_state.group_cleanup_confirmed = group_confirmed is True and process.returncode is not None
                     log_event("cleanup_unconfirmed" if group_confirmed is False else "cleanup_completed")
                 raise
             finally:
@@ -493,6 +521,9 @@ def generate_codex_fast(
                     stdin_stream.close()
             # communicate has reaped the leader. Do not signal its now-reusable
             # PID/group if completed-output validation fails.
+            if _diagnostic_state is not None:
+                _diagnostic_state.phase = "REAPED"
+                _diagnostic_state.returncode = process.returncode
             check_output(stdout, stderr)
             telemetry.consume(stdout, final=True)
     except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError):
