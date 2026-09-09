@@ -74,7 +74,8 @@ def prepare(root, host_root, repo, auth, *, as_of_date, kr_public_diagnostic=Fal
         market_read = (f"get_stock_ohlcv for ticker 005930 from {(anchor - timedelta(days=30)).strftime('%Y%m%d')} to {anchor.strftime('%Y%m%d')}"
                        if market == "KR" else "get_historical_stock_prices for AAPL, period 1mo, interval 1d")
         zone, domain, company = ("Asia/Seoul", "samsung.com", "Samsung Electronics") if market == "KR" else ("America/New_York", "sec.gov", "Apple")
-        user = (f"Call get_current_time for {zone}. List isolated SQLite tables and SELECT mode FROM fixture_metadata. "
+        # This is model-facing diagnostic prose, never a constructed SQL query.
+        user = (f"Call get_current_time for {zone}. List isolated SQLite tables and SELECT mode FROM fixture_metadata. "  # nosec B608  # nosemgrep
                 f"Call {market_read}. Call perplexity_ask with a bounded user message locating the latest official financial filing for {company}, "
                 f"search_domain_filter=[\"{domain}\"], search_recency_filter=year. State which reads are unavailable, never invent observations.")
         cases.append({"market": market, "action": "BUY", "system_prompt": system, "user_prompt": user, "schema": schema,
