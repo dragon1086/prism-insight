@@ -228,110 +228,203 @@ class StrategyLedger:
             "slippage_rate": str(slippage_rate),
         }
         with self._transaction() as db:
+            return self._apply_target_in_transaction(db, event_id, payload)
+
+    def _apply_target_in_transaction(self, db, event_id, payload, *, owner=None):
+        book_id, campaign_id, symbol = (payload[k] for k in ("book_id", "campaign_id", "symbol"))
+        target, price = Decimal(payload["target_pct"]), Decimal(payload["price"])
+        timestamp = payload["occurred_at"]
+        fee_rate, slippage_rate = Decimal(payload["fee_rate"]), Decimal(payload["slippage_rate"])
+        policy_version, reason = payload["policy_version"], payload["reason"]
+        book = self._get(db, "books", book_id)
+        if not self._event(db, event_id, payload):
+            return {**self._snapshot(db, book_id), "event_applied": False}
+        self._book_chronology(db, book, timestamp)
+        if target > 100:
+            raise LedgerError("target exceeds 100 percent cap")
+        row = db.execute(
+            "SELECT data FROM campaigns WHERE id=?", (campaign_id,)
+        ).fetchone()
+        campaign = (
+            json.loads(row[0])
+            if row
+            else {
+                "campaign_id": campaign_id,
+                "book_id": book_id,
+                "symbol": symbol,
+                "target_pct": "0",
+                "normalized_units": "0",
+                "remaining_allocation": "0",
+                "cumulative_deployed_allocation": "0",
+                "realized_contribution": "0",
+                "remaining_entry_cost": "0",
+                "add_permission": "AVAILABLE",
+                "last_event_at": timestamp,
+                "mark_price": str(price),
+                "mark_at": timestamp,
+                "mark_basis": "last_trade",
+            }
+        )
+        if campaign["book_id"] != book_id or campaign["symbol"] != symbol:
+            raise LedgerError("campaign identity conflict")
+        pilot = campaign.get("pilot")
+        if pilot is not None and (owner != "split-pilot-v1" or book["mode"] != "SHADOW"):
+            raise LedgerError("split-owned campaign rejects legacy/direct target")
+        self._chronology(campaign, timestamp)
+        old_target = Decimal(campaign["target_pct"])
+        quantity, cost = (
+            Decimal(campaign["normalized_units"]),
+            Decimal(campaign["remaining_allocation"]),
+        )
+        if row and quantity == 0:
+            raise LedgerError("closed campaign cannot reopen")
+        if target < old_target:
+            raise LedgerError("cumulative target cannot decrease; use sell")
+        if target == old_target:
+            if fee_rate or slippage_rate:
+                raise LedgerError("unchanged target cannot incur costs")
+            campaign["last_event_at"] = timestamp
+            self._save(db, "campaigns", campaign_id, campaign)
+            return {**self._snapshot(db, book_id), "event_applied": True}
+        if campaign["add_permission"] != "AVAILABLE":
+            raise LedgerError("strategy reduction cancels further adds")
+        if quantity and price < cost / quantity:
+            raise LedgerError(
+                "policy guard: adding below average cost is forbidden"
+            )
+        active = [
+            json.loads(r[0]) for r in db.execute("SELECT data FROM campaigns")
+        ]
+        active = [
+            c
+            for c in active
+            if c["book_id"] == book_id
+            and Decimal(c["normalized_units"]) > 0
+            and c["campaign_id"] != campaign_id
+        ]
+        if any(c["symbol"] == symbol for c in active):
+            raise LedgerError("symbol already has an active campaign")
+        if len(active) + 1 > book["max_slots"]:
+            raise LedgerError("name slot limit exceeded")
+        allocation = (target - old_target) / 100
+        execution_price = price * (1 + slippage_rate)
+        bought = allocation / execution_price
+        entry_cost = allocation * fee_rate
+        leg = {
+            "event_id": event_id,
+            "campaign_id": campaign_id,
+            "side": "BUY",
+            "normalized_units": str(bought),
+            "price": str(price),
+            "allocation": str(allocation),
+            "execution_price": str(execution_price),
+            "fee_rate": str(fee_rate),
+            "slippage_rate": str(slippage_rate),
+            "cost_contribution": str(entry_cost),
+            "occurred_at": timestamp,
+            "target_pct": str(target),
+            "policy_version": policy_version,
+            "reason": reason,
+        }
+        db.execute(
+            "INSERT INTO legs VALUES (?,?,?)", (event_id, campaign_id, _dump(leg))
+        )
+        campaign.update(
+            target_pct=str(target),
+            normalized_units=str(quantity + bought),
+            remaining_allocation=str(cost + allocation),
+            remaining_entry_cost=str(Decimal(campaign["remaining_entry_cost"]) + entry_cost),
+            cumulative_deployed_allocation=str(Decimal(campaign["cumulative_deployed_allocation"]) + allocation),
+            last_event_at=timestamp,
+            mark_price=str(price),
+            mark_at=timestamp,
+            mark_basis="last_trade",
+        )
+        self._save(db, "campaigns", campaign_id, campaign)
+        self._save(db, "books", book_id, book)
+        return {**self._snapshot(db, book_id), "event_applied": True}
+
+    def open_pilot(
+        self, event_id, book_id, campaign_id, symbol, price, occurred_at, *,
+        owner, signal_bar, calendar, entry_eligible,
+    ):
+        """Create a NEW explicit SHADOW pilot and initial leg in one transaction."""
+        from prism_core.pilot_lifecycle import create_pilot
+
+        timestamp, price = _time(occurred_at), _number(price, positive=True)
+        with self._transaction() as db:
             book = self._get(db, "books", book_id)
+            if book["cohort"] != "split-pilot-v1":
+                raise LedgerError("dedicated split-pilot-v1 SHADOW cohort required")
+            pilot = create_pilot(market=book["market"], mode=book["mode"], owner=owner,
+                                 entry_at=timestamp, entry_price=price, signal_bar=signal_bar,
+                                 calendar=calendar, entry_eligible=entry_eligible)
+            payload = {"kind": "pilot_open", "book_id": book_id, "campaign_id": campaign_id,
+                       "symbol": _text(symbol), "pilot": pilot, "signal_bar": signal_bar}
             if not self._event(db, event_id, payload):
                 return {**self._snapshot(db, book_id), "event_applied": False}
-            self._book_chronology(db, book, timestamp)
-            if target > 100:
-                raise LedgerError("target exceeds 100 percent cap")
-            row = db.execute(
-                "SELECT data FROM campaigns WHERE id=?", (campaign_id,)
-            ).fetchone()
-            campaign = (
-                json.loads(row[0])
-                if row
-                else {
-                    "campaign_id": campaign_id,
-                    "book_id": book_id,
-                    "symbol": symbol,
-                    "target_pct": "0",
-                    "normalized_units": "0",
-                    "remaining_allocation": "0",
-                    "cumulative_deployed_allocation": "0",
-                    "realized_contribution": "0",
-                    "remaining_entry_cost": "0",
-                    "add_permission": "AVAILABLE",
-                    "last_event_at": timestamp,
-                    "mark_price": str(price),
-                    "mark_at": timestamp,
-                    "mark_basis": "last_trade",
-                }
-            )
-            if campaign["book_id"] != book_id or campaign["symbol"] != symbol:
-                raise LedgerError("campaign identity conflict")
-            self._chronology(campaign, timestamp)
-            old_target = Decimal(campaign["target_pct"])
-            quantity, cost = (
-                Decimal(campaign["normalized_units"]),
-                Decimal(campaign["remaining_allocation"]),
-            )
-            if row and quantity == 0:
-                raise LedgerError("closed campaign cannot reopen")
-            if target < old_target:
-                raise LedgerError("cumulative target cannot decrease; use sell")
-            if target == old_target:
-                if fee_rate or slippage_rate:
-                    raise LedgerError("unchanged target cannot incur costs")
-                campaign["last_event_at"] = timestamp
-                self._save(db, "campaigns", campaign_id, campaign)
-                return {**self._snapshot(db, book_id), "event_applied": True}
-            if campaign["add_permission"] != "AVAILABLE":
-                raise LedgerError("strategy reduction cancels further adds")
-            if quantity and price < cost / quantity:
-                raise LedgerError(
-                    "policy guard: adding below average cost is forbidden"
-                )
-            active = [
-                json.loads(r[0]) for r in db.execute("SELECT data FROM campaigns")
-            ]
-            active = [
-                c
-                for c in active
-                if c["book_id"] == book_id
-                and Decimal(c["normalized_units"]) > 0
-                and c["campaign_id"] != campaign_id
-            ]
-            if any(c["symbol"] == symbol for c in active):
-                raise LedgerError("symbol already has an active campaign")
-            if len(active) + 1 > book["max_slots"]:
-                raise LedgerError("name slot limit exceeded")
-            allocation = (target - old_target) / 100
-            execution_price = price * (1 + slippage_rate)
-            bought = allocation / execution_price
-            entry_cost = allocation * fee_rate
-            leg = {
-                "event_id": event_id,
-                "campaign_id": campaign_id,
-                "side": "BUY",
-                "normalized_units": str(bought),
-                "price": str(price),
-                "allocation": str(allocation),
-                "execution_price": str(execution_price),
-                "fee_rate": str(fee_rate),
-                "slippage_rate": str(slippage_rate),
-                "cost_contribution": str(entry_cost),
-                "occurred_at": timestamp,
-                "target_pct": str(target),
-                "policy_version": policy_version,
-                "reason": reason,
-            }
-            db.execute(
-                "INSERT INTO legs VALUES (?,?,?)", (event_id, campaign_id, _dump(leg))
-            )
-            campaign.update(
-                target_pct=str(target),
-                normalized_units=str(quantity + bought),
-                remaining_allocation=str(cost + allocation),
-                remaining_entry_cost=str(Decimal(campaign["remaining_entry_cost"]) + entry_cost),
-                cumulative_deployed_allocation=str(Decimal(campaign["cumulative_deployed_allocation"]) + allocation),
-                last_event_at=timestamp,
-                mark_price=str(price),
-                mark_at=timestamp,
-                mark_basis="last_trade",
-            )
+            if db.execute("SELECT 1 FROM campaigns WHERE id=?", (campaign_id,)).fetchone():
+                raise LedgerError("existing or historical campaign cannot be adopted")
+            target = {"kind": "target", "book_id": book_id, "campaign_id": _text(campaign_id),
+                      "symbol": symbol, "target_pct": "50", "price": str(price),
+                      "occurred_at": timestamp, "policy_version": owner,
+                      "reason": "INITIAL_ELIGIBLE_50", "regime": "shadow_pilot",
+                      "source_hash": None, "fee_rate": "0", "slippage_rate": "0"}
+            self._apply_target_in_transaction(db, event_id + ":target", target, owner=owner)
+            campaign = self._get(db, "campaigns", campaign_id)
+            campaign["pilot"] = pilot
             self._save(db, "campaigns", campaign_id, campaign)
-            self._save(db, "books", book_id, book)
             return {**self._snapshot(db, book_id), "event_applied": True}
+
+    def advance_pilot(self, event_id, campaign_id, *, expected_revision, evidence, occurred_at):
+        """CAS, lifecycle decision and optional target leg commit atomically."""
+        from prism_core.pilot_lifecycle import OWNER, TERMINAL, evaluate_pilot
+
+        timestamp = _time(occurred_at)
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise LedgerError("nonnegative integer pilot revision required")
+        with self._transaction() as db:
+            campaign = self._get(db, "campaigns", campaign_id)
+            book = self._get(db, "books", campaign["book_id"])
+            pilot = campaign.get("pilot")
+            if book["mode"] != "SHADOW" or book["cohort"] != OWNER or not pilot or pilot["owner"] != OWNER:
+                raise LedgerError("unowned or non-SHADOW campaign cannot advance")
+            payload = {"kind": "pilot_advance", "campaign_id": campaign_id,
+                       "expected_revision": expected_revision, "evidence": evidence,
+                       "occurred_at": timestamp}
+            if not self._event(db, event_id, payload):
+                return {**self._snapshot(db, book["book_id"]), "event_applied": False}
+            if pilot["revision"] != expected_revision:
+                raise LedgerError("pilot revision conflict")
+            self._chronology(campaign, timestamp)
+            decision = evaluate_pilot(pilot, evidence, now=timestamp,
+                                      cumulative_allocation=campaign["cumulative_deployed_allocation"],
+                                      remaining_allocation=campaign["remaining_allocation"],
+                                      normalized_units=campaign["normalized_units"])
+            self._event(db, event_id + ":transition", {
+                "kind": "pilot_transition", "campaign_id": campaign_id,
+                "from_state": pilot["state"], "from_revision": expected_revision,
+                **decision,
+            })
+            if pilot["state"] in TERMINAL:
+                # Record the attempted event but never restage terminal campaigns.
+                return {**self._snapshot(db, book["book_id"]), "event_applied": True}
+            if Decimal(decision["delta_allocation"]):
+                target = {"kind": "target", "book_id": book["book_id"], "campaign_id": campaign_id,
+                          "symbol": campaign["symbol"], "target_pct": "100",
+                          "price": str(_number(evidence["quote"]["price"], positive=True)),
+                          "occurred_at": timestamp, "policy_version": OWNER,
+                          "reason": decision["reason"], "regime": "shadow_pilot",
+                          "source_hash": None, "fee_rate": "0", "slippage_rate": "0"}
+                self._apply_target_in_transaction(db, event_id + ":target", target, owner=OWNER)
+                campaign = self._get(db, "campaigns", campaign_id)
+            campaign["pilot"] = {**pilot, "state": decision["state"], "reason": decision["reason"],
+                                 "revision": expected_revision + 1, "last_evaluated_at": timestamp}
+            if decision["state"] in {"ADD_CANCELLED", "ADD_EXPIRED"}:
+                campaign["add_permission"] = decision["state"]
+            campaign["last_event_at"] = timestamp
+            self._save(db, "campaigns", campaign_id, campaign)
+            return {**self._snapshot(db, book["book_id"]), "event_applied": True}
 
     def sell(
         self,
@@ -409,6 +502,11 @@ class StrategyLedger:
             db.execute(
                 "INSERT INTO legs VALUES (?,?,?)", (event_id, campaign_id, _dump(leg))
             )
+            if campaign.get("pilot"):
+                pilot = campaign["pilot"]
+                campaign["pilot"] = {**pilot, "state": "EXITED" if sold == held else "ADD_CANCELLED",
+                                     "reason": "STRATEGY_EXITED" if sold == held else "STRATEGY_REDUCED",
+                                     "revision": pilot["revision"] + 1, "last_evaluated_at": timestamp}
             self._save(db, "campaigns", campaign_id, campaign)
             self._save(db, "books", book_id, book)
             return {**self._snapshot(db, book_id), "event_applied": True}
