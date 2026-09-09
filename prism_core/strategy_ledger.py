@@ -538,12 +538,11 @@ class StrategyLedger:
                 mark_freshness="historical_observation_not_live",
                 status="OPEN" if units else "CLOSED",
             )
-            campaign["legs"] = [
-                json.loads(r[0]) for r in db.execute(
-                    "SELECT data FROM legs WHERE campaign_id=? ORDER BY rowid",
-                    (campaign["campaign_id"],),
-                )
-            ]
+            leg_rows = db.execute(
+                "SELECT data FROM legs WHERE campaign_id=? ORDER BY rowid",
+                (campaign["campaign_id"],),
+            ).fetchall()
+            campaign["legs"] = [json.loads(row[0]) for row in leg_rows]
             executions.extend(
                 json.loads(r[0]) for r in db.execute(
                     "SELECT data FROM executions WHERE campaign_id=? ORDER BY rowid",
