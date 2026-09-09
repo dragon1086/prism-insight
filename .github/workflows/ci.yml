@@ -109,7 +109,8 @@ jobs:
           python -m pytest cores/llm/tests/ -q
           python -m pytest --noconftest tests/test_buy_codex_settings.py \
             tests/test_trading_scenario_contract.py tests/test_codex_oauth_fast_backend.py \
-            tests/test_codex_fast_process_cleanup.py tests/test_entry_quality_evidence_packet.py -q
+            tests/test_codex_fast_process_cleanup.py tests/test_codex_fast_stage_telemetry.py \
+            tests/test_entry_quality_evidence_packet.py -q
           # Lightweight real-order boundary gates. Keep KR/US fill-chaser in
           # separate processes because their runtime packages intentionally
           # shadow one another.

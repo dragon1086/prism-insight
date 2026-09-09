@@ -13,12 +13,14 @@ import os
 import shutil
 import signal
 import stat
+import sys
 import threading
 
 # Fixed argv, no shell, and a permission-checked executable.
 import subprocess  # nosec B404
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -53,21 +55,128 @@ McpProfile = Literal["kr_trading", "us_trading"]
 SUPPORTED_MCP_PROFILES = frozenset({"kr_trading", "us_trading"})
 logger = logging.getLogger(__name__)
 
+# communicate() must continue draining both pipes. Check its cumulative buffers
+# at each 100ms poll; this is a fail-fast budget, not a hard OS memory ceiling
+# (a fast child may overshoot between polls). Telemetry retains no full stream.
+_MAX_OUTPUT_BYTES = 32 * 1024 * 1024
+_MAX_TELEMETRY_LINE = 64 * 1024
+_MAX_STAGE_EVENTS = 256
+_SAFE_SERVERS = frozenset({"time", "sqlite", "perplexity", "kospi_kosdaq", "yahoo_finance"})
+_SAFE_TOOLS = frozenset({
+    "get_current_time", "list_tables", "describe_table", "read_query", "perplexity_ask",
+    "get_stock_ohlcv", "get_stock_market_cap", "get_stock_trading_volume",
+    "get_index_ohlcv", "get_ticker_name", "get_historical_stock_prices",
+    "get_stock_info", "get_yahoo_finance_news", "get_stock_actions",
+    "get_financial_statement", "get_holder_info", "get_option_expiration_dates",
+    "get_option_chain", "get_recommendations",
+})
+
+
+class _StreamTelemetry:
+    """Incremental cursor over communicate's cumulative snapshots; bounded state."""
+
+    def __init__(self, emit):
+        self.emit = emit
+        self.offset = 0
+        self.pending = b""
+        self.dropping = False
+        self.first_seen = False
+        self.last_stage = "start"
+        self.mcp_started = self.mcp_completed = self.mcp_errors = 0
+        self.active = {}
+        self.emitted = 0
+
+    def consume(self, cumulative, *, final=False):
+        if cumulative is None:
+            return
+        raw = cumulative.encode("utf-8") if isinstance(cumulative, str) else cumulative
+        # Pipes remain binary through completion: no universal-newline offset
+        # mismatch. Only scan the new suffix; CR and CRLF are line boundaries.
+        data = raw[self.offset:].replace(b"\r", b"\n")
+        self.offset = len(raw)
+        start = 0
+        while start < len(data):
+            end = data.find(b"\n", start)
+            stop = len(data) if end < 0 else end
+            if not self.dropping:
+                if len(self.pending) + stop - start <= _MAX_TELEMETRY_LINE:
+                    self.pending += data[start:stop]
+                else:
+                    self.pending = b""
+                    self.dropping = True
+            if end < 0:
+                break
+            if not self.dropping:
+                self._line(self.pending)
+            self.pending = b""
+            self.dropping = False
+            start = end + 1
+        if final and self.pending:
+            self._line(self.pending)
+            self.pending = b""
+
+    def _stage(self, category, **metadata):
+        self.last_stage = category
+        if self.emitted < _MAX_STAGE_EVENTS:
+            self.emit(category, **metadata)
+            self.emitted += 1
+
+    def _line(self, line):
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeError, RecursionError):
+            return
+        if not isinstance(event, dict):
+            return
+        if not self.first_seen:
+            self.first_seen = True
+            self._stage("first_event")
+        kind = event.get("type")
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "mcp_tool_call":
+            # Raw IDs are internal only, length/count capped, never emitted.
+            key = item.get("id")
+            key = key if isinstance(key, str) and len(key) <= 256 else None
+            server = item.get("server")
+            tool = item.get("tool")
+            metadata = dict(
+                server=server if isinstance(server, str) and server in _SAFE_SERVERS else "other",
+                tool=tool if isinstance(tool, str) and tool in _SAFE_TOOLS else "other",
+            )
+            if kind == "item.started":
+                self.mcp_started += 1
+                if key is not None and len(self.active) < _MAX_STAGE_EVENTS:
+                    self.active.setdefault(key, time.monotonic())
+                self._stage("mcp_started", **metadata)
+            elif kind == "item.completed":
+                self.mcp_completed += 1
+                failed = bool(item.get("error")) or item.get("status") == "failed"
+                self.mcp_errors += int(failed)
+                began = self.active.pop(key, None)
+                self._stage("mcp_error" if failed else "mcp_completed",
+                            tool_s=-1 if began is None else time.monotonic() - began, **metadata)
+        elif kind == "item.completed" and isinstance(item, dict) and item.get("type") == "agent_message":
+            self._stage("model_final")
+        elif kind == "turn.completed":
+            self._stage("turn_completed")
+        elif kind in ("turn.failed", "error"):
+            self._stage("turn_error")
+
 
 def _resolve_codex_executable(candidate: str) -> str:
     """Resolve an executable that cannot be replaced by another local user."""
     located = candidate if os.path.isabs(candidate) else shutil.which(candidate)
     if not located:
-        raise CodexFastError(f"Codex executable not found: {candidate}")
+        raise CodexFastError("Codex executable not found")
     try:
         executable = Path(located).resolve(strict=True)
         mode = stat.S_IMODE(executable.stat().st_mode)
-    except OSError as exc:
-        raise CodexFastError(f"Codex executable is unavailable: {candidate}") from exc
+    except (OSError, ValueError):
+        raise CodexFastError("Codex executable is unavailable") from None
     if not executable.is_file() or not os.access(executable, os.X_OK):
-        raise CodexFastError(f"Codex executable is not runnable: {executable}")
+        raise CodexFastError("Codex executable is not runnable")
     if mode & (stat.S_IWGRP | stat.S_IWOTH):
-        raise CodexFastError(f"Codex executable has unsafe permissions: {executable}")
+        raise CodexFastError("Codex executable has unsafe permissions")
     return str(executable)
 
 
@@ -78,11 +187,11 @@ def _command(
     reasoning_effort: str | None = None,
 ) -> list[str]:
     if model not in SUPPORTED_MODELS:
-        raise CodexFastError(f"Unsupported Codex model: {model}")
+        raise CodexFastError("Unsupported Codex model")
     if mcp_profile is not None and mcp_profile not in SUPPORTED_MCP_PROFILES:
-        raise CodexFastError(f"Unsupported Codex MCP profile: {mcp_profile}")
+        raise CodexFastError("Unsupported Codex MCP profile")
     if reasoning_effort is not None and reasoning_effort not in SUPPORTED_REASONING_EFFORTS:
-        raise CodexFastError(f"Unsupported Codex reasoning effort: {reasoning_effort}")
+        raise CodexFastError("Unsupported Codex reasoning effort")
     command = [
         codex_bin,
         "exec",
@@ -103,9 +212,12 @@ def _command(
     return command
 
 
-def _terminate_owned_process(process: subprocess.Popen) -> None:
+def _terminate_owned_process(process: subprocess.Popen) -> bool:
     """Terminate only our new session, including MCP descendants, then reap."""
+    group_confirmed = True
+
     def send(sig: int) -> None:
+        nonlocal group_confirmed
         try:
             if os.name == "posix":
                 os.killpg(process.pid, sig)
@@ -116,6 +228,12 @@ def _terminate_owned_process(process: subprocess.Popen) -> None:
                     process.kill()
         except ProcessLookupError:
             pass
+        except PermissionError:
+            # macOS can reject signaling an already exited child group. The
+            # final signal was attempted before polling/reaping the leader.
+            if sys.platform != "darwin" or sig != signal.SIGKILL or process.poll() is None:
+                raise
+            group_confirmed = False
 
     send(signal.SIGTERM)
     # Do not reap the leader until the final group signal: its PID cannot be
@@ -132,6 +250,7 @@ def _terminate_owned_process(process: subprocess.Popen) -> None:
             if pipe is not None:
                 pipe.close()
         process.wait(timeout=1)
+    return group_confirmed
 
 
 def _parse_stream(
@@ -143,16 +262,19 @@ def _parse_stream(
     for line in stream.splitlines():
         try:
             event = json.loads(line)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             continue
+        if not isinstance(event, dict):
+            continue
+        item = event.get("item")
+        item = item if isinstance(item, dict) else {}
         if (
             event.get("type") == "item.completed"
-            and event.get("item", {}).get("type") == "agent_message"
+            and item.get("type") == "agent_message"
         ):
             final = event["item"].get("text")
         if event.get("type") == "turn.completed":
             usage = event.get("usage")
-        item = event.get("item", {})
         if (
             event.get("type") == "item.completed"
             and item.get("type") == "mcp_tool_call"
@@ -207,16 +329,23 @@ def generate_codex_fast(
     reasoning_effort: str | None = None,
     _cancel_event: threading.Event | None = None,
 ) -> CodexFastResult:
-    timeout = validate_timeout(timeout)
+    try:
+        timeout = validate_timeout(timeout)
+    except CodexFastError:
+        raise CodexFastError("Codex timeout must be a finite number in (0, 600]") from None
     telemetry_started = time.monotonic()
+    request_id = uuid.uuid4().hex
 
-    def log_event(category: str, returncode: int | None = None) -> None:
+    def log_event(category: str, returncode: int | None = None, *,
+                  server="none", tool="none", tool_s=-1) -> None:
         # Only allowlisted configuration and numeric process metadata. Never
         # include exception text, prompts, streams, paths, or MCP payloads.
         logger.log(
-            logging.INFO if category == "start" else logging.WARNING,
+            logging.WARNING if category in {"timeout", "cancelled", "launch_error", "process_io_error", "nonzero_exit", "missing_final", "missing_successful_mcp", "output_limit", "cleanup_unconfirmed"} else logging.INFO,
             "[CODEX_FAST] category=%s model=%s effort=%s profile=%s "
-            "timeout_s=%g elapsed_s=%.3f rc=%s",
+            "timeout_s=%g elapsed_s=%.3f rc=%s request_id=%s last_stage=%s "
+            "mcp_started=%d mcp_completed=%d mcp_errors=%d mcp_pending=%d "
+            "server=%s tool=%s tool_s=%.3f",
             category,
             model if model in SUPPORTED_MODELS else "invalid",
             reasoning_effort if reasoning_effort in SUPPORTED_REASONING_EFFORTS else (
@@ -226,7 +355,20 @@ def generate_codex_fast(
                 "none" if mcp_profile is None else "invalid"
             ),
             timeout, time.monotonic() - telemetry_started, returncode,
+            request_id, telemetry.last_stage, telemetry.mcp_started,
+            telemetry.mcp_completed, telemetry.mcp_errors, len(telemetry.active),
+            server, tool, tool_s,
         )
+
+    telemetry = _StreamTelemetry(log_event)
+
+    def check_output(stdout, stderr):
+        # Real pipe snapshots are bytes; tolerate text in injected test adapters.
+        size = sum(len(value.encode("utf-8") if isinstance(value, str) else value or b"")
+                   for value in (stdout, stderr))
+        if size > _MAX_OUTPUT_BYTES:
+            log_event("output_limit")
+            raise CodexFastError("Codex Fast output limit exceeded")
 
     log_event("start")
     try:
@@ -235,7 +377,7 @@ def generate_codex_fast(
         )
     except CodexFastError:
         log_event("launch_error")
-        raise
+        raise CodexFastError("Codex Fast executable unavailable") from None
     home = codex_home or os.environ.get("PRISM_CODEX_HOME")
     environment = os.environ.copy()
     if home:
@@ -252,7 +394,7 @@ def generate_codex_fast(
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                text=False,
                 cwd=run_dir,
                 env=environment,
                 # MCP stdio children are managed by Codex. Keep their shutdown
@@ -260,7 +402,7 @@ def generate_codex_fast(
                 start_new_session=os.name == "posix",
             )
             try:
-                prompt = _prompt(system_prompt, user_prompt, mcp_profile)
+                prompt = _prompt(system_prompt, user_prompt, mcp_profile).encode("utf-8")
                 while True:
                     if _cancel_event is not None and _cancel_event.is_set():
                         log_event("cancelled")
@@ -272,21 +414,33 @@ def generate_codex_fast(
                     try:
                         stdout, stderr = process.communicate(input=prompt, timeout=min(0.1, remaining))
                         break
-                    except subprocess.TimeoutExpired:
+                    except subprocess.TimeoutExpired as exc:
                         prompt = None
+                        check_output(exc.output, exc.stderr)
+                        telemetry.consume(exc.output)
             except BaseException:
-                _terminate_owned_process(process)
+                group_confirmed = _terminate_owned_process(process)
+                log_event("cleanup_unconfirmed" if group_confirmed is False else "cleanup_completed")
                 raise
-    except (OSError, subprocess.TimeoutExpired) as exc:
+            # communicate has reaped the leader. Do not signal its now-reusable
+            # PID/group if completed-output validation fails.
+            check_output(stdout, stderr)
+            telemetry.consume(stdout, final=True)
+    except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError):
         log_event("launch_error" if process is None else "process_io_error")
-        raise CodexFastError(f"Codex Fast unavailable: {exc}") from exc
+        raise CodexFastError("Codex Fast unavailable") from None
     latency = time.monotonic() - started
     if process.returncode != 0:
         log_event("nonzero_exit", process.returncode)
         raise CodexFastError(
-            f"Codex Fast rc={process.returncode}: {stderr[-300:]}"
+            f"Codex Fast rc={process.returncode}"
         )
-    text, usage, mcp_calls = _parse_stream(stdout)
+    try:
+        stream = stdout.decode("utf-8") if isinstance(stdout, bytes) else stdout
+    except UnicodeError:
+        log_event("process_io_error", process.returncode)
+        raise CodexFastError("Codex Fast invalid output encoding") from None
+    text, usage, mcp_calls = _parse_stream(stream)
     if not text:
         log_event("missing_final", process.returncode)
         raise CodexFastError("Codex Fast returned no final agent message")
@@ -295,6 +449,7 @@ def generate_codex_fast(
     ):
         log_event("missing_successful_mcp", process.returncode)
         raise CodexFastError("Codex Fast returned no MCP tool calls")
+    log_event("success", process.returncode)
     return CodexFastResult(
         text=text,
         latency_s=latency,
