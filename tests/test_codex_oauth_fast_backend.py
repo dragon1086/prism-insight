@@ -180,6 +180,88 @@ def test_kr_trading_wires_same_codex_primary_and_legacy_fallback() -> None:
     assert method.index("generate_codex_fast") < method.index("attach_llm(")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market,path", [
+    ("KR", "stock_tracking_enhanced_agent.py"),
+    ("US", "prism-us/us_stock_tracking_agent.py"),
+])
+@pytest.mark.parametrize("outcome", ["success", "error", "invalid_config", "invalid_json", "cancel", "disabled"])
+async def test_sell_dispatch_uses_isolated_settings_and_safe_fallback(monkeypatch, caplog, market, path, outcome):
+    """Execute the real dispatch statements, without importing broker/DB modules."""
+    import ast
+    import asyncio
+    import json
+    import logging
+    import os
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from prism_core.codex_config import resolve_sell_codex_settings
+
+    source = (Path(__file__).resolve().parents[1] / path).read_text("utf-8")
+    method = next(n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_analyze_sell_decision")
+    body = next(n.body for n in method.body if isinstance(n, ast.Try))
+    start = next(i for i, n in enumerate(body) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "response" for t in n.targets))
+    end = next(i for i in range(start, len(body)) if isinstance(body[i], ast.If) and ast.unparse(body[i].test) == "response is None")
+    # Keep the original await, fallback context managers, and exception handlers.
+    harness = ast.AsyncFunctionDef(name="dispatch", args=ast.arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]), body=body[start:end + 1] + [ast.Return(value=ast.Name(id="response", ctx=ast.Load()))], decorator_list=[])
+    module = ast.fix_missing_locations(ast.Module(body=[harness], type_ignores=[]))
+    monkeypatch.setenv(f"PRISM_{market}_CODEX_FAST_SELL", "0" if outcome == "disabled" else "1")
+    monkeypatch.setenv("PRISM_SELL_CODEX_MODEL", "gpt-6-astra")
+    monkeypatch.setenv("PRISM_SELL_CODEX_EFFORT", "high")
+    monkeypatch.setenv("PRISM_SELL_CODEX_TIMEOUT", "nan" if outcome == "invalid_config" else "120")
+    monkeypatch.setenv("PRISM_BUY_CODEX_TIMEOUT", "240")
+    monkeypatch.setenv("PRISM_CODEX_FAST_TIMEOUT", "90")
+    response = '{"decision":"hold"}'
+    generate = AsyncMock(return_value=SimpleNamespace(text="invalid" if outcome == "invalid_json" else response, latency_s=1, mcp_calls=[{}]))
+    if outcome in {"error", "cancel"}:
+        generate.side_effect = RuntimeError("offline") if outcome == "error" else asyncio.CancelledError()
+    legacy = AsyncMock(return_value=response)
+    attach = AsyncMock(return_value=SimpleNamespace(generate_str=legacy))
+    host_calls = []
+
+    @asynccontextmanager
+    async def host():
+        host_calls.append("entered")
+        yield
+        host_calls.append("exited")
+
+    def parse(text, **kwargs):
+        try:
+            return json.loads(text)
+        except ValueError:
+            return None
+
+    namespace = dict(os=os, logger=logging.getLogger("sell_dispatch_test"),
+                     self=SimpleNamespace(sell_decision_agent=SimpleNamespace(instruction="read-only test", attach_llm=attach), _get_legacy_fallback_lock=asyncio.Lock),
+                     generate_codex_fast_async=generate, resolve_sell_codex_settings=resolve_sell_codex_settings,
+                     parse_llm_json=parse, ticker="TEST", prompt_message="no orders",
+                     OpenAIAugmentedLLM=object(), RequestParams=SimpleNamespace,
+                     app=SimpleNamespace(run=host))
+    namespace[f"_{market.lower()}_codex_runtime_enabled"] = lambda: True
+    exec(compile(module, path, "exec"), namespace)
+    with caplog.at_level("INFO"):
+        if outcome == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await namespace["dispatch"]()
+        else:
+            assert await namespace["dispatch"]() == response
+    if outcome not in {"invalid_config", "disabled"}:
+        assert generate.await_count == 1
+        assert generate.await_args.kwargs == dict(system_prompt="read-only test", user_prompt="no orders", model="gpt-6-astra", reasoning_effort="high", timeout=120, mcp_profile=f"{market.lower()}_trading", require_mcp_calls=True)
+        assert "requested_model=gpt-6-astra requested_effort=high requested_tier=fast timeout_s=120" in caplog.text
+    else:
+        generate.assert_not_awaited()
+    if outcome in {"success", "cancel"}:
+        attach.assert_not_awaited()
+        assert host_calls == []
+    else:
+        attach.assert_awaited_once()
+        params = legacy.await_args.kwargs["request_params"]
+        assert (params.model, params.reasoning_effort, params.maxTokens) == ("gpt-5.6-sol", "high", 30000)
+        assert host_calls == ["entered", "exited"]
+
+
 def test_us_sell_wires_codex_mcp_before_legacy_fallback() -> None:
     source = (
         Path(__file__).resolve().parents[1]
@@ -189,6 +271,8 @@ def test_us_sell_wires_codex_mcp_before_legacy_fallback() -> None:
     method = source[source.index("    async def _analyze_sell_decision("):]
     method = method[:method.index("    async def ", 20_000)]
     assert "PRISM_US_CODEX_FAST_SELL" in method
+    assert "await generate_codex_fast_async(" in method
+    assert "resolve_sell_codex_settings()" in method
     assert 'mcp_profile="us_trading"' in method
     assert "require_mcp_calls=True" in method
     assert "falling back to mcp-agent" in method
@@ -203,6 +287,8 @@ def test_kr_sell_wires_codex_mcp_before_legacy_fallback() -> None:
     method = source[source.index("    async def _analyze_sell_decision("):]
     method = method[:method.index("    async def ", 20_000)]
     assert "PRISM_KR_CODEX_FAST_SELL" in method
+    assert "await generate_codex_fast_async(" in method
+    assert "resolve_sell_codex_settings()" in method
     assert 'mcp_profile="kr_trading"' in method
     assert "require_mcp_calls=True" in method
     assert "falling back to mcp-agent" in method
