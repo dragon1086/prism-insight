@@ -235,6 +235,7 @@ def test_non_model_decision_preserved_without_claiming_model_execution(root):
 
 _FAKE_HELPER = r'''
 import json,os,select,signal,socket,sys
+assert sys.dont_write_bytecode is True
 stopped=False
 def stop(*args):
  global stopped
