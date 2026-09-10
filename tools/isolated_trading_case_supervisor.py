@@ -355,6 +355,28 @@ def _joined_bridge(context, journal, component):
 
 
 _HELPER_BOOTSTRAP = "import sys;sys.path.insert(0,sys.argv[1]);from tools.isolated_trading_case_supervisor import _responses_child;_responses_child(sys.argv[2:])"
+_RESPONSES_EXIT_GRACE_SECONDS = 1.0
+
+
+async def _wait_responses_exit(process, receipt):
+    """EOF is already sent; avoid killing a child that is printing its receipt.
+
+    This adds at most one second before the existing bounded terminate/kill
+    cleanup. A grace timeout is still uncertain even if SIGTERM later exits 0.
+    """
+    receipt.update(graceful_exit=False, grace_expired=False, forced_kill=False)
+    try:
+        await asyncio.wait_for(process.wait(), timeout=_RESPONSES_EXIT_GRACE_SECONDS)
+    except asyncio.TimeoutError:
+        receipt["grace_expired"] = True
+        await _stop_process(process, receipt)
+        return False
+    except BaseException:
+        await _stop_process(process, receipt)
+        raise
+    receipt["returncode"] = process.returncode
+    receipt["graceful_exit"] = process.returncode == 0
+    return receipt["graceful_exit"]
 
 
 def _metered_app_factory(original, counter):
@@ -434,7 +456,7 @@ async def _responses_helper(reg, socket_path, read_tools, *, cleanup_receipt=Non
         if reader is not None:
             os.close(reader)
         if process is not None:
-            clean = await _stop_process(process, cleanup_receipt)
+            clean = await _wait_responses_exit(process, cleanup_receipt)
         try:
             results = await asyncio.wait_for(asyncio.gather(*drains, return_exceptions=True), timeout=1)
         except asyncio.TimeoutError:
@@ -445,7 +467,7 @@ async def _responses_helper(reg, socket_path, read_tools, *, cleanup_receipt=Non
             if len(results) > 1 and type(results[1]) is int:
                 cleanup_receipt["stderr_bytes"] = results[1]
             if not clean or any(isinstance(result, BaseException) for result in results):
-                raise CaseRejected("responses_cleanup_unknown")
+                raise CaseRejected("responses_grace_timeout" if cleanup_receipt.get("grace_expired") else "responses_cleanup_unknown")
             try:
                 receipt = json.loads(results[0])
                 if (type(receipt) is not dict or set(receipt) != {"schema_version", "requests"} or receipt["schema_version"] != 1
