@@ -431,6 +431,14 @@ class StrategyLedger:
                 self._notice(db, event_id, campaign_id, "PILOT_STATE")
             return {**self._snapshot(db, book["book_id"]), "event_applied": True}
 
+    def campaign_guard(self, campaign_id):
+        """Register a canonical strategy-unit basis, never a broker quantity."""
+        with self._transaction() as db:
+            campaign = self._get(db, "campaigns", campaign_id)
+            return {key: campaign[key] for key in ("campaign_id", "book_id", "symbol", "normalized_units")} | {
+                "campaign_hash": hashlib.sha256(_dump(campaign).encode()).hexdigest(),
+            }
+
     def sell(
         self,
         event_id,
@@ -441,6 +449,8 @@ class StrategyLedger:
         fee_rate=0,
         slippage_rate=0,
         source_hash=None,
+        expected_campaign_hash=None,
+        expected_normalized_units=None,
     ):
         """Reduce normalized units (quantity is NOT a broker share quantity)."""
         price = _number(price, positive=True)
@@ -457,11 +467,27 @@ class StrategyLedger:
             "slippage_rate": str(slippage_rate),
             "source_hash": source_hash,
         }
+        if expected_campaign_hash is not None:
+            if (not isinstance(expected_campaign_hash, str) or len(expected_campaign_hash) != 64
+                    or any(c not in "0123456789abcdef" for c in expected_campaign_hash)):
+                raise LedgerError("invalid expected campaign revision hash")
+            # Omitted on the default path: historical event hashes are stable.
+            payload["expected_campaign_hash"] = expected_campaign_hash
+        if expected_normalized_units is not None:
+            if expected_campaign_hash is None:
+                raise LedgerError("expected units require campaign revision hash")
+            payload["expected_normalized_units"] = str(_number(expected_normalized_units, positive=True))
         with self._transaction() as db:
             campaign = self._get(db, "campaigns", campaign_id)
             book_id = campaign["book_id"]
             if not self._event(db, event_id, payload):
                 return {**self._snapshot(db, book_id), "event_applied": False}
+            if (expected_campaign_hash is not None
+                    and hashlib.sha256(_dump(campaign).encode()).hexdigest() != expected_campaign_hash):
+                raise LedgerError("campaign revision conflict")
+            if (expected_normalized_units is not None
+                    and Decimal(campaign["normalized_units"]) != Decimal(payload["expected_normalized_units"])):
+                raise LedgerError("campaign normalized-unit basis conflict")
             book = self._get(db, "books", book_id)
             self._book_chronology(db, book, timestamp)
             self._chronology(campaign, timestamp)
