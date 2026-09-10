@@ -239,9 +239,12 @@ def _load_agent(market, side):
     if market == "US":
         for name in ("cores", "tracking", "trading"):
             importlib.import_module(name)
-    name = "us_stock_tracking_agent" if market == "US" else (
-        "stock_tracking_enhanced_agent" if side == "SELL" else "stock_tracking_agent")
-    module = importlib.import_module(name)
+    if market == "US":
+        module = importlib.import_module("us_stock_tracking_agent")
+    elif side == "SELL":
+        module = importlib.import_module("stock_tracking_enhanced_agent")
+    else:
+        module = importlib.import_module("stock_tracking_agent")
     cls = getattr(module, "USStockTrackingAgent" if market == "US" else (
         "EnhancedStockTrackingAgent" if side == "SELL" else "StockTrackingAgent"))
     return module, cls
@@ -293,9 +296,16 @@ def _seed_holding(agent, case, quote):
     row.update(ticker=case["ticker"], current_price=quote,
                account_key="virtual:" + case["arm_id"], account_name="SHADOW " + case["arm_id"])
     row["scenario"] = json.dumps(row["scenario"], ensure_ascii=False)
-    table = "us_stock_holdings" if case["market"] == "US" else "stock_holdings"
-    columns = ",".join(row)
-    agent.cursor.execute(f"INSERT INTO {table} ({columns}) VALUES ({','.join('?' for _ in row)})", tuple(row.values()))
+    fields = ("company_name", "buy_price", "buy_date", "target_price", "stop_loss",
+              "scenario", "ticker", "current_price", "account_key", "account_name")
+    query = (
+        "INSERT INTO us_stock_holdings (company_name,buy_price,buy_date,target_price,stop_loss,"
+        "scenario,ticker,current_price,account_key,account_name) VALUES (?,?,?,?,?,?,?,?,?,?)"
+        if case["market"] == "US" else
+        "INSERT INTO stock_holdings (company_name,buy_price,buy_date,target_price,stop_loss,"
+        "scenario,ticker,current_price,account_key,account_name) VALUES (?,?,?,?,?,?,?,?,?,?)"
+    )
+    agent.cursor.execute(query, tuple(row[key] for key in fields))
     row["id"] = agent.cursor.lastrowid
     agent.conn.commit()
     return row
