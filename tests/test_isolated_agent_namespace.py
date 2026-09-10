@@ -116,8 +116,55 @@ def test_wrong_case_hash_and_socket_alias_rejected(setup):
         ns.command(**setup)
 
 
+def registered(setup):
+    case = {"case_id": "case1", "arm_id": "arm1", "profile_id": "profile1",
+            "codex": {"request_id": "request1", "revision": "revision1", "settings_sha256": "1" * 64}}
+    path = setup["evidence_root"] / "case.json"
+    path.write_text(json.dumps(case))
+    setup["case_hash"] = digest(path)
+    setup["evidence_files"]["case.json"] = digest(path)
+    marker = setup["arm_root"].parent / "host" / "registration.json"
+    marker.write_text(json.dumps({"schema_version": 1, "case_sha256": digest(path),
+                                 **{key: case[key] for key in ("case_id", "arm_id", "profile_id")}, **case["codex"]}))
+    marker.chmod(0o600)
+    setup.update(execute_registered=True, registration_file=marker, registration_sha256=digest(marker))
+    return marker
+
+
+def test_registered_marker_is_readonly_and_fixed_flag_only(setup):
+    marker = registered(setup)
+    args = ns.command(**setup)
+    index = args.index(str(marker))
+    assert args[index - 1:index + 2] == ["--ro-bind", str(marker), "/parent-case.json"]
+    assert args[-1] == "--execute-registered"
+
+
+def test_registration_wrong_case_or_writable_arm_never_authorizes_execution(setup):
+    marker = registered(setup)
+    data = json.loads(marker.read_text())
+    data["case_id"] = "wrong"
+    marker.write_text(json.dumps(data))
+    setup["registration_sha256"] = digest(marker)
+    with pytest.raises(ns.NamespaceRejected):
+        ns.command(**setup)
+    data["case_id"] = "case1"
+    target = setup["arm_root"] / "registration.json"
+    target.write_text(json.dumps(data))
+    target.chmod(0o600)
+    setup.update(registration_file=target, registration_sha256=digest(target))
+    with pytest.raises(ns.NamespaceRejected):
+        ns.command(**setup)
+
+
+def test_partial_registration_is_rejected(setup):
+    setup["registration_sha256"] = "1" * 64
+    with pytest.raises(ns.NamespaceRejected):
+        ns.command(**setup)
+
+
 @pytest.mark.skipif(sys.platform != "linux" or sys.version_info[:2] != (3, 11), reason="Linux staged Python 3.11 namespace")
-def test_real_harmless_namespace_has_only_registered_mounts(setup):
+@pytest.mark.parametrize("registered_mode", [False, True])
+def test_real_harmless_namespace_has_only_registered_mounts(setup, registered_mode):
     from tools.prepare_codex_probe_stage import stage_runtime
 
     # Only the installed standard library, no production config/dependencies.
@@ -125,12 +172,16 @@ def test_real_harmless_namespace_has_only_registered_mounts(setup):
     script = setup["source_root"] / "tools/isolated_trading_agent_case.py"
     outside = setup["arm_root"].parent / "host-canary.txt"
     outside.write_text("synthetic-host-canary")
+    if registered_mode:
+        registered(setup)
     script.write_text('''import json, os, socket
 from pathlib import Path
 assert "CANARY_SECRET" not in os.environ
 assert not Path("/root").exists()
 assert not Path(%r).exists()
-for target in ("/evidence/case.json", "/app/src/tools/isolated_trading_agent_case.py", "/app/runtime/bin/python3.11", "/outside"):
+if %r:
+    assert json.loads(Path("/parent-case.json").read_text())["case_id"] == "case1"
+for target in ("/evidence/case.json", "/app/src/tools/isolated_trading_agent_case.py", "/app/runtime/bin/python3.11", "/parent-case.json", "/outside"):
     try:
         with open(target, "a") as output: output.write("forbidden")
     except OSError:
@@ -145,7 +196,7 @@ with socket.socket() as client:
     assert client.connect_ex(("192.0.2.1", 443)) != 0
 Path("/tmp/scratch").write_text("scratch")
 Path("/arm/result.json").write_text(json.dumps({"mount_canary": True}))
-''' % str(outside))
+''' % (str(outside), registered_mode))
     setup["script_hash"] = digest(script)
     for name in ("source", "runtime"):
         root = setup[name + "_root"]
