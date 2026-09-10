@@ -12,7 +12,6 @@ import asyncio
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 import hashlib
-import importlib
 import json
 import logging
 import math
@@ -237,14 +236,16 @@ def _load_agent(market, side):
             raise ValueError("FRESH_MARKET_PROCESS_REQUIRED")
     sys.path.insert(0, str(root))
     if market == "US":
-        for name in ("cores", "tracking", "trading"):
-            importlib.import_module(name)
+        # Pin US packages before its entry module prepends the shared root.
+        import cores  # noqa: F401
+        import tracking  # noqa: F401
+        import trading  # noqa: F401
     if market == "US":
-        module = importlib.import_module("us_stock_tracking_agent")
+        import us_stock_tracking_agent as module
     elif side == "SELL":
-        module = importlib.import_module("stock_tracking_enhanced_agent")
+        import stock_tracking_enhanced_agent as module
     else:
-        module = importlib.import_module("stock_tracking_agent")
+        import stock_tracking_agent as module
     cls = getattr(module, "USStockTrackingAgent" if market == "US" else (
         "EnhancedStockTrackingAgent" if side == "SELL" else "StockTrackingAgent"))
     return module, cls
