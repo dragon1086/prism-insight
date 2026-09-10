@@ -42,13 +42,26 @@ def _dict_to_markdown(data: dict, title: str = "") -> str:
         return ""
 
     df.index.name = "Date"
+    # Library/provider responses may arrive newest-first. Preserve every row,
+    # but use chronological order when all labels are valid dates.
+    dates = pd.to_datetime(df.index, errors="coerce")
+    if dates.notna().all():
+        df = df.iloc[np.argsort(dates, kind="stable")]
 
     result = ""
     if title:
         result += f"### {title}\n\n"
 
-    if metadata and metadata.get("note"):
-        result += f"> **데이터 상태:** {metadata['note']}\n\n"
+    if isinstance(metadata, dict):
+        if metadata.get("note"):
+            result += f"> **데이터 상태:** {metadata['note']}\n\n"
+        fields = []
+        for key in ("data_status", "as_of", "observed_at", "source", "provider", "bar_status"):
+            value = metadata.get(key)
+            if isinstance(value, (str, int, float, bool)) and value != "":
+                fields.append(f"{key}={str(value).replace(chr(10), ' ')[:256]}")
+        if fields:
+            result += "> **원천 메타데이터:** " + "; ".join(fields) + "\n\n"
 
     result += df.to_markdown(index=True) + "\n"
     return result
