@@ -3879,7 +3879,7 @@ class StockTrackingAgent:
                 if should_sell:
                     if effects is not None:
                         current_price = effects.quote(ticker)
-                        applied = effects.record_exit(ticker=ticker, price=current_price)
+                        applied = effects.record_exit(ticker=ticker, price=current_price, sell_reason=sell_reason)
                         effects.observe("strategy_exit", status="RECORDED" if applied else "REPLAYED", ticker=ticker)
                         if applied:
                             sold_stocks.append({"ticker": ticker, "company_name": company_name,
@@ -4065,6 +4065,11 @@ class StockTrackingAgent:
                         })
                 else:
                     # Update current price
+                    if effects is not None:
+                        current_price = effects.quote(ticker)
+                        applied = effects.record_mark(ticker=ticker, price=current_price)
+                        effects.observe("strategy_mark", status="RECORDED" if applied else "REPLAYED", ticker=ticker)
+                        continue
                     self.cursor.execute(
                         """UPDATE stock_holdings
                            SET current_price = ?, last_updated = ?
