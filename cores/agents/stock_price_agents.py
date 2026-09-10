@@ -163,7 +163,7 @@ def create_price_volume_analysis_agent(company_name, company_code, reference_dat
     )
 
 
-def create_investor_trading_analysis_agent(company_name, company_code, reference_date, max_years_ago, max_years, language: str = "ko", prefetched_data: str = None):
+def create_investor_trading_analysis_agent(company_name, company_code, reference_date, max_years_ago, max_years, language: str = "ko", prefetched_data: str = None, prefetched_prices: str = None):
     """Create investor trading trend analysis agent
 
     Args:
@@ -308,6 +308,17 @@ def create_investor_trading_analysis_agent(company_name, company_code, reference
             )
         instruction = instruction.replace("- 반드시 tool call을 해야 합니다", "- 사전 수집된 데이터를 기반으로 분석합니다")
         instruction = instruction.replace("- You must make a tool call", "- Analyze based on the pre-collected data provided above")
+
+    if prefetched_prices:
+        instruction += (
+            "\n\n## Pre-collected price context\nUse the existing OHLCV below; no additional price fetch is needed. "
+            "Align prices and investor flows by the SAME dates and observation scope; do not compare a partial day with a finalized session. "
+            "Distinguish correlation from causation. If overlap is insufficient, identify the missing interval rather than claiming all price data is absent.\n\n"
+            if language == "en" else
+            "\n\n## 함께 수집된 가격 자료\n아래 기존 OHLCV를 사용하세요. 가격을 추가 조회할 필요는 없습니다. "
+            "수급과 가격은 동일 날짜 및 관측 범위로 맞추고 장중 값과 확정 일간 값을 섞어 비교하지 마세요. "
+            "동행과 인과를 구분하고, 겹치는 기간이 부족하면 그 기간을 명시하세요. 제공된 가격 자료 전체가 없다고 서술하지 마세요.\n\n"
+        ) + prefetched_prices
 
     return Agent(
         name="investor_trading_analysis_agent",

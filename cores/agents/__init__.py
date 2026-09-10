@@ -32,6 +32,8 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
         create_sell_decision_agent
     )
     from cores.utils import get_wise_report_url
+    from dataclasses import replace
+    from cores.agents.report_agent import report_time_contract
 
     # Create URL mapping
     urls = {k: get_wise_report_url(k, company_code) for k in [
@@ -55,7 +57,7 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
         ),
         "investor_trading_analysis": lambda: create_investor_trading_analysis_agent(
             company_name, company_code, reference_date, max_years_ago, max_years, language,
-            prefetched_data=pf.get("trading_volume")
+            prefetched_data=pf.get("trading_volume"), prefetched_prices=pf.get("stock_ohlcv")
         ),
         "company_status": lambda: create_company_status_agent(
             company_name, company_code, reference_date, urls, language
@@ -76,6 +78,7 @@ def get_agent_directory(company_name, company_code, reference_date, base_section
     agents = {}
     for section in base_sections:
         if section in agent_creators:
-            agents[section] = agent_creators[section]()
+            agent = agent_creators[section]()
+            agents[section] = replace(agent, instruction=agent.instruction + report_time_contract(reference_date, language))
     
     return agents
