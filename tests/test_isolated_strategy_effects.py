@@ -46,6 +46,14 @@ def test_gate_closed_and_direct_helpers_never_authorized(bound, monkeypatch):
     with pytest.raises(RuntimeError, match="review"):
         effects.effects_for(agent, "process_reports")
     monkeypatch.setattr(effects, "EFFECTS_RUNTIME_ENABLED", True)
+    with pytest.raises(effects.EffectsFailure, match="context"):
+        effects.effects_for(agent, "process_reports")
+    raw = "{}"
+    digest = __import__("hashlib").sha256(raw.encode()).hexdigest()
+    adapter = effects.IsolatedStrategyEffects(agent, adapter.ledger,
+        replace(adapter.registration, context_hash=digest),
+        pipeline_context=effects.EffectsPipelineContext("case1", digest, raw))
+    agent._no_order_effects = adapter
     assert effects.effects_for(agent, "process_reports") is adapter
     with pytest.raises(RuntimeError):
         effects.effects_for(agent, "buy_stock")

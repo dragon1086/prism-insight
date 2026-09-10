@@ -174,6 +174,7 @@ from prism_core.isolated_agent_runtime import (
     virtual_account_label, require_execution_runtime,
 )
 from prism_core.trading_scenario_contract import apply_buy_scenario_contract
+from prism_core.isolated_strategy_effects import effects_for, EffectsFailure, observe_or_emit  # noqa: E402 - existing agent path bootstrap
 
 # Pre-load telegram_translator_agent from main project (used in multiple methods)
 _translator_module = _import_from_main_cores(
@@ -1794,6 +1795,7 @@ class USStockTrackingAgent:
         Returns:
             Internal success result with the inserted legacy holding id.
         """
+        require_execution_runtime(self)
         try:
             # Check if already holding (skipped for a pyramiding add)
             if not is_add and await self._is_ticker_in_holdings(ticker):
@@ -1875,7 +1877,7 @@ class USStockTrackingAgent:
             }
             if entry_quality_capture_enabled():
                 entry_execution_context["fill_provenance"] = build_fill_provenance()
-            emit_trading_context(
+            observe_or_emit(self, emit_trading_context,
                 "entry.executed",
                 market="US",
                 ticker=ticker,
@@ -2181,7 +2183,7 @@ class USStockTrackingAgent:
                 stored_decision_context = scenario.get("_decision_context")
                 if isinstance(stored_decision_context, dict):
                     decision_context.update(stored_decision_context)
-                emit_trading_context(
+                observe_or_emit(self, emit_trading_context,
                     "candidate.evaluated",
                     market="US",
                     ticker=ticker,
@@ -2202,6 +2204,8 @@ class USStockTrackingAgent:
                     source="us_batch_watchlist",
                     research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker),
                 )
+            except EffectsFailure:
+                raise
             except Exception as context_error:
                 logger.warning("[CONTEXT_LEDGER][US] candidate snapshot skipped: %s", context_error)
 
@@ -2256,6 +2260,8 @@ class USStockTrackingAgent:
 
         except Exception as e:
             logger.error(f"{ticker} Error saving watchlist: {str(e)}")
+            if getattr(self, "_no_order_effects", None) is not None:
+                raise EffectsFailure("Isolated watchlist write failed") from None
             logger.error(traceback.format_exc())
             return False
 
@@ -2560,6 +2566,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             return should_sell, sell_reason
 
+        except EffectsFailure:
+            raise
         except Exception as e:
             logger.error(f"{ticker} AI sell analysis error: {e}, falling back to rule-based decision")
             return await self._fallback_sell_decision(stock_data)
@@ -2571,6 +2579,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         부수효과: self._live_regime_summary 에 AI 매도 프롬프트 주입용 사람-읽기 요약을
         저장한다(S&P500 vs 20MA, 4주 변동, VIX). 실패 시 None.
         """
+        if getattr(self, "_no_order_effects", None) is not None:
+            return effects_for(self, "update_holdings").market_regime()
         self._live_regime_summary = None
         self._live_market_context = None
         try:
@@ -2604,6 +2614,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
     def _buy_floor_regime(self) -> Optional[str]:
         """레짐 하한선 게이트(REGIME_MIN_SCORE_FLOOR)용 '현재' 시장 레짐을 프로세스당 1회
         캐시한다. _get_live_regime_safe 재사용(OpenAI 무관, fail-open None → 하한 0)."""
+        if getattr(self, "_no_order_effects", None) is not None:
+            return effects_for(self, "process_reports").market_regime()
         _c = getattr(self, "_buy_floor_regime_cache", "__UNSET__")
         if _c == "__UNSET__":
             _c = self._get_live_regime_safe()
@@ -2689,9 +2701,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 "prism_root_buy_gate", "cores/buy_gate.py"
             )
             computed_regime = scenario.get("_deterministic_market_regime") or self._buy_floor_regime()
+            effects = effects_for(self, "process_reports") if getattr(self, "_no_order_effects", None) is not None else None
+            if effects is not None:
+                computed_regime = effects.market_regime()
             regime_policy = self._regime_policy_mod()
             pulse = (
-                regime_policy.get_market_pulse_state("us")
+                (effects.market_pulse() if effects is not None else regime_policy.get_market_pulse_state("us"))
                 if regime_policy is not None and _gate.normalize_regime(computed_regime) == "sideways" else None
             )
             policy = scenario.get("regime_entry_policy") or {}
@@ -2720,6 +2735,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     "; ".join(item["message"] for item in result["shadow_findings"]),
                 )
             return result
+        except EffectsFailure:
+            raise
         except Exception as exc:  # noqa: BLE001 - new buys fail closed on gate errors
             logger.error("[BUY_GATE][US] deterministic gate failed closed: %s", exc)
             finding = {
@@ -3020,6 +3037,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
         except Exception as e:
             logger.error(f"{ticker} Error processing portfolio adjustment: {str(e)}")
+            if getattr(self, "_no_order_effects", None) is not None:
+                raise EffectsFailure("Isolated portfolio adjustment failed") from None
             import traceback
             logger.error(traceback.format_exc())
 
@@ -3113,6 +3132,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
         except Exception as e:
             logger.error(f"{ticker} US holding decision save failed (main flow continues): {str(e)}")
+            if getattr(self, "_no_order_effects", None) is not None:
+                raise EffectsFailure("Isolated holding decision write failed") from None
             return False
 
     async def _delete_holding_decision(self, ticker: str) -> bool:
@@ -3173,7 +3194,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         except Exception:
             slots_after = None
         for legacy_holding_id in legacy_holding_ids:
-            emit_trading_context(
+            observe_or_emit(self, emit_trading_context,
                 "exit.executed",
                 market="US",
                 ticker=ticker,
@@ -3435,7 +3456,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         Returns:
             List[Dict]: List of sold stock information
         """
-        require_execution_runtime(self)
+        effects = effects_for(self, "update_holdings")
+        if effects is None:
+            require_execution_runtime(self)
         try:
             logger.info("Starting US holdings update")
 
@@ -3483,7 +3506,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     continue
 
                 # Query current stock price
-                current_price = await self._get_current_stock_price(ticker)
+                current_price = effects.quote(ticker) if effects is not None else await self._get_current_stock_price(ticker)
 
                 if current_price <= 0:
                     old_price = stock.get('current_price', 0)
@@ -3521,6 +3544,18 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         )
                         continue
                     # ── end Layer 2 guard ──
+
+                    if effects is not None:
+                        effects.observe("broker_window", status="NOT_APPLICABLE_NO_ORDER", ticker=ticker)
+                        current_price = effects.quote(ticker)
+                        applied = effects.record_exit(ticker=ticker, price=current_price)
+                        effects.observe("strategy_exit", status="RECORDED" if applied else "REPLAYED", ticker=ticker)
+                        if applied:
+                            sold_stocks.append({"ticker": ticker, "company_name": company_name,
+                                "buy_price": stock["buy_price"], "sell_price": current_price,
+                                "profit_rate": (current_price / stock["buy_price"] - 1) * 100,
+                                "reason": sell_reason, "account_execution_status": "UNKNOWN"})
+                        continue
 
                     # Pyramiding (#288): compute remaining row count N for this
                     # (ticker, account) BEFORE any DB row is deleted by sell_stock.
@@ -3761,8 +3796,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
             return sold_stocks
 
+        except EffectsFailure:
+            raise
         except Exception as e:
             logger.error(f"Error updating holdings: {str(e)}")
+            if effects is not None:
+                raise EffectsFailure("Isolated holdings review did not complete") from None
             logger.error(traceback.format_exc())
             if raise_on_error:
                 raise
@@ -3924,7 +3963,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         Returns:
             Tuple[int, int]: Buy count, sell count
         """
-        require_execution_runtime(self)
+        effects = effects_for(self, "process_reports")
+        if effects is None:
+            require_execution_runtime(self)
         try:
             logger.info(f"Processing {len(pdf_report_paths)} US reports")
 
@@ -3946,6 +3987,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                 self._set_active_account(account)
                 try:
                     sold_stocks = await self.update_holdings(raise_on_error=True)
+                except EffectsFailure:
+                    raise
                 except Exception:
                     logger.exception("US sell review failed account=%s; skipping its buys",
                                      self._safe_account_log_label(account))
@@ -3988,6 +4031,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             for pdf_report_path in pdf_report_paths:
                 analysis_result = core_results[pdf_report_path]
                 if not analysis_result.get("success", False):
+                    if effects is not None:
+                        effects.observe("analysis_failure", status="CASE_INCOMPLETE")
+                        raise EffectsFailure("Isolated BUY analysis failed")
                     logger.error(
                         f"[ANALYSIS_FAILED] Report analysis skipped "
                         f"({analysis_result.get('ticker', '?')}/{analysis_result.get('company_name', '?')}): "
@@ -4026,7 +4072,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         # Independent of KIS; never use saved analysis prices for
                         # account-specific gates or the simulator entry ledger.
                         try:
-                            current_price = await self._refresh_buy_quote(ticker)
+                            current_price = effects.quote(ticker) if effects is not None else await self._refresh_buy_quote(ticker)
                             scenario = apply_buy_scenario_contract(
                                 scenario, market="US", entry_price=current_price
                             )
@@ -4040,6 +4086,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                 now - analysis_result["analysis_quote_at"] if "analysis_quote_at" in analysis_result else None,
                                 current_price,
                             )
+                        except EffectsFailure:
+                            raise
                         except Exception as quote_error:
                             logger.warning("[BUY_QUOTE][US] skipping %s: %s", ticker, quote_error)
                             continue
@@ -4125,7 +4173,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         _rp = self._regime_policy_mod()
                         if _rp is not None and _rp.regime_min_score_floor_enabled():
                             floor_regime = self._buy_floor_regime()
-                            pulse_state = _rp.get_market_pulse_state("us")
+                            pulse_state = effects.market_pulse() if effects is not None else _rp.get_market_pulse_state("us")
                             _eff = _rp.effective_min_score(
                                 min_score, floor_regime, pulse_state
                             )
@@ -4136,6 +4184,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                                     f"(regime={floor_regime}, pulse={pulse_state})"
                                 )
                                 min_score = _eff
+                    except EffectsFailure:
+                        raise
                     except Exception as _fe:
                         logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {_fe}")
 
@@ -4297,7 +4347,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                         and _buy_gate.get("allowed", False)
                     )
                     if entry_eligible and not is_add:
-                        emit_micro_split_shadow(
+                        observe_or_emit(self, emit_micro_split_shadow,
                             market="US",
                             ticker=ticker,
                             decision_id=source_decision_id,
@@ -4313,7 +4363,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                             ),
                         )
                     if entry_eligible:
-                        emit_trading_context(
+                        observe_or_emit(self, emit_trading_context,
                             "candidate.evaluated",
                             market="US",
                             ticker=ticker,
@@ -4343,6 +4393,19 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
 
                     if entry_eligible:
                         # is_add => pyramiding additional independent row (#288)
+                        if effects is not None:
+                            if is_add or await self._is_ticker_in_holdings(ticker):
+                                raise EffectsFailure("Existing strategy campaign requires explicit lifecycle transition")
+                            if await self._get_current_slots_count() >= scenario_slot_limit:
+                                raise EffectsFailure("Strategy slot capacity changed at entry boundary")
+                            # The same existing scenario and independent gates
+                            # above have run using the registered refreshed quote.
+                            applied = effects.record_entry(ticker=ticker, company_name=company_name,
+                                price=current_price, scenario=scenario, is_add=False)
+                            effects.observe("strategy_entry", status="RECORDED" if applied else "REPLAYED", ticker=ticker)
+                            state["traded"] = bool(applied)
+                            buy_count += int(applied)
+                            continue
                         buy_result = await self._buy_stock_with_position(
                             ticker,
                             company_name,
@@ -4583,8 +4646,12 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             logger.info(f"Report processing complete - Bought: {buy_count}, Sold: {sell_count}")
             return buy_count, sell_count
 
+        except EffectsFailure:
+            raise
         except Exception as e:
             logger.error(f"Error processing reports: {str(e)}")
+            if effects is not None:
+                raise EffectsFailure("Isolated report processing did not complete") from None
             logger.error(traceback.format_exc())
             return 0, 0
 
@@ -4659,6 +4726,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         Returns:
             bool: Send success status
         """
+        require_execution_runtime(self)
         try:
             try:
                 from portfolio_broadcast import should_send_portfolio
@@ -4973,6 +5041,8 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         Returns:
             str: Context string with past trading experiences
         """
+        if getattr(self, "_no_order_effects", None) is not None:
+            return effects_for(self, "process_reports").journal(ticker)["context"]
         if self.journal_manager and self.enable_journal:
             return self.journal_manager.get_context_for_ticker(ticker, sector, trigger_type=trigger_type)
         return ""
@@ -4989,6 +5059,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         Returns:
             Tuple[int, List[str]]: Adjustment value (-3 to +3) and reasons
         """
+        if getattr(self, "_no_order_effects", None) is not None:
+            data = effects_for(self, "process_reports").journal(ticker)
+            return data["adjustment"], data["reasons"]
         if self.journal_manager and self.enable_journal:
             return self.journal_manager.get_score_adjustment(ticker, sector, trigger_type=trigger_type)
         return 0, []
