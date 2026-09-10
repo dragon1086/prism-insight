@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 import hashlib
 from prism_core import isolated_strategy_effects as effects
 from prism_core.strategy_ledger import StrategyLedger
+from dataclasses import replace
 mode = sys.argv[3]
 
 def deny(*args, **kwargs):
@@ -48,10 +49,12 @@ async def main():
         "regime": {"MARKET": envelope({"regime": "moderate_bull", "summary": "synthetic regime fixture"}, stamp)},
         "pulse": {"MARKET": envelope("UPTREND", stamp)},
         "journal": {ticker: envelope({"context": "synthetic empty-history fixture", "adjustment": 0, "reasons": []}, stamp) for ticker in (old, new)},
-        "corporate_status": {old: envelope("00", stamp)},
-        "corporate_event": {old: envelope({"should_exit": False, "reason": "synthetic no-event fixture"}, stamp)}}
+        "corporate_status": {ticker: envelope("00", stamp) for ticker in (old, new)},
+        "corporate_event": {ticker: envelope({"should_exit": False, "reason": "synthetic no-event fixture"}, stamp) for ticker in (old, new)}}
     if mode == "missing_quote":
         payload["quote"].pop(old)
+    if mode == "hold":
+        payload["quote"][old] = envelope(110, stamp)
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(raw.encode()).hexdigest()
     ledger = StrategyLedger(root / "strategy.sqlite")
@@ -81,6 +84,10 @@ async def main():
         adapter._project = projection_failure
     agent._analyze_report_core = AsyncMock(return_value=core)
     agent._analyze_sell_decision = AsyncMock(return_value=(True, "synthetic SELL decision double"))
+    if mode == "cooldown":
+        agent._analyze_sell_decision = AsyncMock(return_value=(True, "Stop-loss synthetic SELL decision double"))
+    if mode == "hold":
+        agent._analyze_sell_decision = AsyncMock(return_value=(False, "synthetic HOLD decision double"))
     if mode == "delayed_sell":
         async def delayed_sell(stock):
             effects._source_now = lambda: (datetime.fromisoformat(stamp) + timedelta(seconds=180)).isoformat()
@@ -98,7 +105,7 @@ async def main():
     policy.get_market_pulse_state = lambda *args: "UPTREND"
     # Fixed sources for policy evaluation; no real account cash is introduced.
     agent._get_trigger_win_rate = lambda *args, **kw: {}
-    if mode != "success":
+    if mode not in {"success", "hold", "cooldown"}:
         try:
             await agent.process_reports(["SYNTHETIC-report.pdf"])
         except effects.EffectsFailure:
@@ -113,15 +120,28 @@ async def main():
         agent.conn.close()
         return
     result = await agent.process_reports(["SYNTHETIC-report.pdf"])
-    assert result == (1, 1), (result, ledger.snapshot("book"), adapter.observations)
+    expected_sells = 0 if mode == "hold" else 1
+    assert result == (1, expected_sells), (result, ledger.snapshot("book"), adapter.observations)
     snapshot = ledger.snapshot("book")
-    assert snapshot["occupied_slots"] == 1 and snapshot["executions"] == []
-    assert next(c for c in snapshot["campaigns"] if c["symbol"] == old)["status"] == "CLOSED"
+    assert snapshot["occupied_slots"] == (2 if mode == "hold" else 1) and snapshot["executions"] == []
+    old_campaign = next(c for c in snapshot["campaigns"] if c["symbol"] == old)
+    assert old_campaign["status"] == ("OPEN" if mode == "hold" else "CLOSED")
+    if mode == "hold":
+        assert float(old_campaign["unrealized_contribution"]) == .1
     assert next(c for c in snapshot["campaigns"] if c["symbol"] == new)["status"] == "OPEN"
+    if mode == "cooldown":
+        registration2 = replace(registration, case_id="reentry", campaigns=((old, "reentry-campaign"), (new, "new-campaign")))
+        adapter2 = effects.IsolatedStrategyEffects(agent, ledger, registration2,
+            pipeline_context=effects.EffectsPipelineContext("reentry", digest, raw))
+        agent._no_order_effects = adapter2
+        agent._analyze_sell_decision = AsyncMock(return_value=(False, "synthetic HOLD on remaining campaign"))
+        agent._analyze_report_core = AsyncMock(return_value={**core, "ticker": old, "company_name": "SYNTHETIC attempted reentry"})
+        assert await agent.process_reports(["SYNTHETIC-reentry.pdf"]) == (0, 0)
+        assert not any(c["campaign_id"] == "reentry-campaign" for c in ledger.snapshot("book")["campaigns"])
     assert blocked == [], blocked
     assert agent.telegram_token is None and agent.telegram_bot is None
     assert calls == [], "No MCP/model should start in a synthetic decision test"
-    print(json.dumps({"real_class_pipeline": kind, "synthetic_decisions": True, "buy": 1, "sell": 1,
+    print(json.dumps({"real_class_pipeline": kind, "synthetic_decisions": True, "buy": 1, "sell": expected_sells,
         "broker_or_network_attempts": 0, "account_executions": 0}))
     agent.conn.close()
 asyncio.run(main())
@@ -129,7 +149,7 @@ asyncio.run(main())
 
 
 @pytest.mark.parametrize("kind", ["KR", "KR_ENHANCED", "US"])
-@pytest.mark.parametrize("mode", ["success", "missing_quote", "model_failure", "projection_failure", "delayed_sell"])
+@pytest.mark.parametrize("mode", ["success", "missing_quote", "model_failure", "projection_failure", "delayed_sell", "hold", "cooldown"])
 def test_real_class_no_order_pipeline_in_fresh_audited_process(tmp_path, kind, mode):
     env = {key: value for key, value in os.environ.items()
            if not any(secret in key.upper() for secret in ("KIS", "TOKEN", "SECRET", "API_KEY", "APP_KEY"))}
@@ -138,11 +158,11 @@ def test_real_class_no_order_pipeline_in_fresh_audited_process(tmp_path, kind, m
     result = subprocess.run([sys.executable, "-I", "-c", SCRIPT, str(ROOT), kind, mode],
         cwd=tmp_path, env=env, text=True, capture_output=True, timeout=90)
     assert result.returncode == 0, result.stderr[-9000:]
-    if mode != "success":
+    if mode not in {"success", "hold", "cooldown"}:
         assert json.loads(result.stdout.strip().splitlines()[-1]) == {
             "real_class_pipeline": kind, "failure": mode, "case_failed_closed": True}
         return
     assert json.loads(result.stdout.strip().splitlines()[-1]) == {
-        "real_class_pipeline": kind, "synthetic_decisions": True, "buy": 1, "sell": 1,
+        "real_class_pipeline": kind, "synthetic_decisions": True, "buy": 1, "sell": 0 if mode == "hold" else 1,
         "broker_or_network_attempts": 0, "account_executions": 0,
     }

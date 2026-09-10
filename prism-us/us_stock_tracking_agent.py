@@ -3548,7 +3548,7 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     if effects is not None:
                         effects.observe("broker_window", status="NOT_APPLICABLE_NO_ORDER", ticker=ticker)
                         current_price = effects.quote(ticker)
-                        applied = effects.record_exit(ticker=ticker, price=current_price)
+                        applied = effects.record_exit(ticker=ticker, price=current_price, sell_reason=sell_reason)
                         effects.observe("strategy_exit", status="RECORDED" if applied else "REPLAYED", ticker=ticker)
                         if applied:
                             sold_stocks.append({"ticker": ticker, "company_name": company_name,
@@ -3785,6 +3785,11 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
                     await self._save_holding_decision(ticker, current_price, should_sell, sell_reason, stock)
 
                     # Update current price
+                    if effects is not None:
+                        current_price = effects.quote(ticker)
+                        applied = effects.record_mark(ticker=ticker, price=current_price)
+                        effects.observe("strategy_mark", status="RECORDED" if applied else "REPLAYED", ticker=ticker)
+                        continue
                     self.cursor.execute(
                         """UPDATE us_stock_holdings
                            SET current_price = ?, last_updated = ?
