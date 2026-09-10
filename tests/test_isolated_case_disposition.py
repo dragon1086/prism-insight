@@ -11,6 +11,13 @@ from tools import isolated_case_disposition as disposition
 from tools import isolated_trading_case_supervisor as supervisor
 
 
+def probe_receipt(**updates):
+    return {"schema_version": 1, "observed_at": 3000, "scan_status": "COMPLETE",
+            "current_matches": 0, "matches": [], "scanned_process_count": 2, "scanned_fd_count": 1,
+            "relevant_socket_count": 0, "observer_pid": 999, "registered_roots_sha256": "e" * 64,
+            "historical_start_identity": "NOT_CAPTURED", "historical_cleanup_receipt": "NOT_CAPTURED", **updates}
+
+
 def unknown(root):
     with CaseLane(root) as lane:
         lane.claim("original", "a" * 64)
@@ -90,8 +97,7 @@ def fixture_approval(root, monkeypatch, *, probe=True):
     approval_hash = artifact("operator-disposition-approval.json", approval)
     if probe:
         # Unit-only stub. The production dependency is intentionally unavailable.
-        monkeypatch.setattr(disposition, "_host_probe", lambda *_: {
-            "observed_at": 3000, "current_matches": 0, "historical_start_identity": "NOT_CAPTURED"})
+        monkeypatch.setattr(disposition, "_host_probe", lambda *_: probe_receipt())
     return reg, approval_hash
 
 
@@ -117,10 +123,12 @@ def test_disposition_preserves_unknown_and_only_allows_distinct_scoped_case(tmp_
 
 
 def test_missing_reviewed_probe_cannot_record_disposition(tmp_path, monkeypatch):
+    from tools import isolated_host_quiescence as probe
     reg, approval_hash = fixture_approval(tmp_path, monkeypatch, probe=False)
+    monkeypatch.setattr(probe, "collect", lambda *_: (_ for _ in ()).throw(probe.QuiescenceRejected("proc_observation_incomplete")))
     with CaseLane(tmp_path) as lane:
         migrate_v1_to_v2(lane)
-        with pytest.raises(disposition.DispositionRejected, match="reviewed_host_probe_unavailable"):
+        with pytest.raises(disposition.DispositionRejected, match="host_quiescence_unavailable"):
             disposition.record_operator_disposition(lane, expected_approval_sha256=approval_hash, original_registration=reg)
         assert lane.db.execute("SELECT * FROM dispositions").fetchall() == []
 
@@ -140,9 +148,8 @@ def test_disposition_requires_all_host_evidence(tmp_path, monkeypatch, failure):
         elif failure == "reconstruction":
             monkeypatch.setattr(supervisor, "_registration", lambda *_: ({}, "b" * 64))
         elif failure in {"busy", "stale"}:
-            monkeypatch.setattr(disposition, "_host_probe", lambda *_: {
-                "observed_at": 2000 if failure == "stale" else 3000,
-                "current_matches": 1 if failure == "busy" else 0, "historical_start_identity": "NOT_CAPTURED"})
+            monkeypatch.setattr(disposition, "_host_probe", lambda *_: probe_receipt(
+                observed_at=2000 if failure == "stale" else 3000, relevant_socket_count=1 if failure == "busy" else 0))
         with pytest.raises(disposition.DispositionRejected):
             disposition.record_operator_disposition(lane, expected_approval_sha256=approval_hash, original_registration=reg)
         assert lane.db.execute("SELECT * FROM dispositions").fetchall() == []
@@ -235,3 +242,42 @@ def test_malformed_v1_never_migrated_or_adopted(tmp_path, addition):
     with pytest.raises(CaseRejected, match="unknown_claim_database"):
         with CaseLane(tmp_path):
             pass
+
+
+def test_exact_operator_bytes_archive_is_exclusive_hash_bound(tmp_path):
+    raw = b'{ "not_reserialized" : true }\n'
+    digest = hashlib.sha256(raw).hexdigest()
+    assert disposition._archive_bytes(tmp_path, raw) == digest
+    path = tmp_path / "operator-artifacts" / (digest + ".json")
+    assert path.read_bytes() == raw and path.stat().st_mode & 0o777 == 0o400
+    assert disposition._archive_bytes(tmp_path, raw) == digest
+    path.chmod(0o600)
+    path.write_bytes(b"tampered")
+    with pytest.raises(disposition.DispositionRejected):
+        disposition._archive_bytes(tmp_path, raw)
+
+
+def test_archive_failure_rolls_back_disposition(tmp_path, monkeypatch):
+    reg, approval_hash = fixture_approval(tmp_path, monkeypatch)
+    monkeypatch.setattr(disposition, "_archive_bytes", lambda *_: (_ for _ in ()).throw(disposition.DispositionRejected("archive_failed")))
+    with CaseLane(tmp_path) as lane:
+        migrate_v1_to_v2(lane)
+        with pytest.raises(disposition.DispositionRejected):
+            disposition.record_operator_disposition(lane, expected_approval_sha256=approval_hash, original_registration=reg)
+        assert lane.db.execute("SELECT * FROM dispositions").fetchall() == []
+
+
+def test_success_archives_complete_original_operator_bytes_and_probe_hash(tmp_path, monkeypatch):
+    reg, approval_hash = fixture_approval(tmp_path, monkeypatch)
+    originals = [(tmp_path / name).read_bytes() for name in (
+        "operator-disposition-approval.json", "operator-disposition-evidence.json")]
+    with CaseLane(tmp_path) as lane:
+        migrate_v1_to_v2(lane)
+        disposition.record_operator_disposition(lane, expected_approval_sha256=approval_hash, original_registration=reg)
+        receipt = json.loads(lane.db.execute("SELECT quiescence_json FROM dispositions").fetchone()[0])
+    for raw in originals:
+        path = tmp_path / "operator-artifacts" / (hashlib.sha256(raw).hexdigest() + ".json")
+        assert path.read_bytes() == raw
+    probe_path = tmp_path / "operator-artifacts" / (receipt["probe_sha256"] + ".json")
+    assert hashlib.sha256(probe_path.read_bytes()).hexdigest() == receipt["probe_sha256"]
+    assert json.loads(probe_path.read_bytes())["historical_cleanup_receipt"] == "NOT_CAPTURED"
