@@ -432,7 +432,12 @@ def fixed_mcp_settings(market, base_url):
     python = "/app/runtime/bin/python3.11"
     bridge = "/app/src/tools/codex_probe_mcp_bridge.py"
     def server(args):
-        return {"command": python, "args": args, "transport": "stdio"}
+        # MCP stdio strips nonstandard inherited variables. Keep the private
+        # interpreter/library paths explicit instead of relying on parent env.
+        return {"command": python, "args": args, "transport": "stdio", "env": {
+            "PYTHONHOME": "/app/runtime", "LD_LIBRARY_PATH": "/app/runtime/lib",
+            "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTHON_DOTENV_DISABLED": "1",
+            "TZ": "Asia/Seoul"}}
     return {"openai": {"base_url": base_url, "api_key": "isolated-parent-relay"}, "mcp": {"servers": {
         "sqlite": server(["/app/src/tools/isolated_sqlite_mcp.py", "--db-path", "/arm/state.sqlite"]),
         "perplexity": server([bridge, "--client", "/perplexity.sock"]),
