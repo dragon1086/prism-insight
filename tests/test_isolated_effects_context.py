@@ -4,6 +4,7 @@ import json
 import pytest
 
 from prism_core.isolated_strategy_effects import EffectsFailure, EffectsPipelineContext
+from cores.corporate_status import classify_kis_status
 
 
 def encoded(value):
@@ -51,6 +52,24 @@ def test_corporate_false_is_explicit_source_record_not_default():
     value = {"should_exit": False, "reason": "synthetic fixture, no event"}
     assert context({"corporate_event": {"005930": envelope(value)}}).read(
         "corporate_event", "005930", "2026-09-10T00:00:00Z") == value
+
+
+@pytest.mark.parametrize("code, expected", [("00", False), ("51", True)])
+def test_corporate_envelope_preserves_actual_status_classifier_output(code, expected):
+    should_exit, reason = classify_kis_status(code)
+    assert should_exit is expected
+    value = {"should_exit": should_exit, "reason": reason}
+    result = context({"corporate_event": {"005930": envelope(value)}}).read(
+        "corporate_event", "005930", "2026-09-10T00:00:00Z")
+    assert result == value
+    if not expected:
+        assert result["reason"] == ""
+
+
+@pytest.mark.parametrize("should_exit,reason", [(True, ""), (True, "  "), (1, "risk"), (0, ""), ("False", "")])
+def test_corporate_exit_requires_strict_boolean_and_meaningful_true_reason(should_exit, reason):
+    with pytest.raises(EffectsFailure):
+        context({"corporate_event": {"005930": envelope({"should_exit": should_exit, "reason": reason})}})
 
 
 def test_recent_retrieval_does_not_refresh_old_exchange_quote():
