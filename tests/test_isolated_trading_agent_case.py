@@ -213,6 +213,9 @@ def test_fixed_services_have_no_manifest_selected_commands():
         servers = settings["mcp"]["servers"]
         assert set(servers) == {"sqlite", "perplexity", "time", name}
         assert all(server["command"] == "/app/runtime/bin/python3.11" for server in servers.values())
+        assert all(server["env"] == {"PYTHONHOME": "/app/runtime", "LD_LIBRARY_PATH": "/app/runtime/lib",
+            "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTHON_DOTENV_DISABLED": "1",
+            "TZ": "Asia/Seoul"} for server in servers.values())
         assert servers[name]["args"] == ["/app/src/tools/codex_probe_mcp_bridge.py", "--client", "/market.sock"]
         assert servers["perplexity"]["args"][-1] == "/perplexity.sock"
         assert servers["sqlite"]["args"] == ["/app/src/tools/isolated_sqlite_mcp.py", "--db-path", "/arm/state.sqlite"]
