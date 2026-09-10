@@ -78,8 +78,10 @@ class CaseLane:
                 _private_file(path)
                 check = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
                 try:
-                    tables = {row[0] for row in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                    if tables != {"metadata", "cases"} or check.execute("SELECT version FROM metadata").fetchall() != [(1,)]:
+                    from tools.isolated_case_disposition import validate_lane_schema, DispositionRejected
+                    try:
+                        validate_lane_schema(check)
+                    except (DispositionRejected, sqlite3.Error):
                         raise CaseRejected("unknown_claim_database")
                 finally:
                     check.close()
@@ -99,12 +101,23 @@ class CaseLane:
                 raise
             raise CaseRejected("claim_store_unavailable") from None
 
-    def claim(self, case_id, payload_sha256):
+    def claim(self, case_id, payload_sha256, *, diagnostic_scope=None):
         _identity(case_id, payload_sha256)
         self.db.execute("BEGIN IMMEDIATE")
         try:
-            if self.db.execute("SELECT 1 FROM cases WHERE state IS NULL OR state!='FINISHED' LIMIT 1").fetchone():
-                raise CaseRejected("lane_uncertain")
+            unresolved = self.db.execute("SELECT case_id,payload_sha256,state FROM cases WHERE state IS NULL OR state!='FINISHED'").fetchall()
+            if unresolved:
+                from tools.isolated_case_disposition import scope_hash_for_claim, DECISION
+                version = self.db.execute("SELECT version FROM metadata").fetchone()[0]
+                scope_hash = scope_hash_for_claim(diagnostic_scope, self.root, case_id, payload_sha256)
+                for old_id, old_payload, state in unresolved:
+                    if version != 2 or state != "UNKNOWN":
+                        raise CaseRejected("lane_uncertain")
+                    disposition = self.db.execute("SELECT payload_sha256,scope_sha256,decision FROM dispositions WHERE case_id=?", (old_id,)).fetchone()
+                    if disposition is not None and old_id == case_id:
+                        raise CaseRejected("original_case_permanently_forbidden")
+                    if scope_hash is None or disposition != (old_payload, scope_hash, DECISION):
+                        raise CaseRejected("lane_uncertain")
             previous = self.db.execute("SELECT payload_sha256,summary FROM cases WHERE case_id=?", (case_id,)).fetchone()
             if previous:
                 if previous[0] != payload_sha256:
