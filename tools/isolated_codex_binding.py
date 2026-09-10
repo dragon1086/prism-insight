@@ -8,7 +8,7 @@ The global invoker callback limit alone is not a fallback concurrency gate.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import os
@@ -90,7 +90,9 @@ class FixedCodexBinding:
                 return BackendCompletion(None, error="model_error")
             if not _cleanup_confirmed(state):
                 raise CleanupUnconfirmed("cleanup_unconfirmed")
-            return BackendCompletion(result.text)
+            # Preserve the real backend envelope required by the inner source
+            # adapter; these are actual observations, never synthetic telemetry.
+            return BackendCompletion(json.dumps(asdict(result), ensure_ascii=False, allow_nan=False))
         finally:
             os.close(reader)
             os.close(writer)

@@ -5,6 +5,7 @@ under its whole-case lease. This is the agent sibling, NOT the model namespace.
 The actual inner-case script, parent lifecycle and end-to-end proof remain gates.
 """
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -74,7 +75,8 @@ def validate_python_source(root, script_hash, expected):
 
 
 def command(*, source_root, runtime_root, evidence_root, arm_root, sockets, script_hash,
-            case_filename, case_hash, controls, source_files, runtime_files, evidence_files):
+            case_filename, case_hash, controls, source_files, runtime_files, evidence_files,
+            execute_registered=False, registration_file=None, registration_sha256=None):
     """Construct one fixed command. No caller argv, arbitrary env or endpoints."""
     source = validate_python_source(source_root, script_hash, source_files)
     runtime = validate_tree(runtime_root, runtime_files)
@@ -90,6 +92,26 @@ def command(*, source_root, runtime_root, evidence_root, arm_root, sockets, scri
     case = _path(evidence / case_filename, private=True)
     if not case.is_file() or hashlib.sha256(case.read_bytes()).hexdigest() != case_hash:
         raise NamespaceRejected("case_pin_mismatch")
+    registration = None
+    if type(execute_registered) is not bool:
+        raise NamespaceRejected("invalid_execution_gate")
+    if execute_registered:
+        registration = _path(registration_file, private=True)
+        if (not registration.is_file() or any(registration.is_relative_to(root) for root in roots)
+                or registration.stat().st_size > 16384
+                or hashlib.sha256(registration.read_bytes()).hexdigest() != registration_sha256):
+            raise NamespaceRejected("unsafe_registration")
+        try:
+            value = json.loads(case.read_bytes())
+            expected = {"schema_version": 1, "case_sha256": case_hash,
+                        **{key: value[key] for key in ("case_id", "arm_id", "profile_id")},
+                        **{key: value["codex"][key] for key in ("request_id", "revision", "settings_sha256")}}
+            if json.loads(registration.read_bytes()) != expected:
+                raise ValueError()
+        except (ValueError, KeyError, TypeError):
+            raise NamespaceRejected("registration_case_mismatch") from None
+    elif registration_file is not None or registration_sha256 is not None:
+        raise NamespaceRejected("partial_execution_gate")
     required = {"codex-invoke", "responses", "perplexity", "market"}
     if not isinstance(sockets, dict) or set(sockets) != required:
         raise NamespaceRejected("fixed_socket_set_required")
@@ -121,6 +143,8 @@ def command(*, source_root, runtime_root, evidence_root, arm_root, sockets, scri
             args += ["--ro-bind", public, public]
     args += ["--ro-bind", str(source), "/app/src", "--ro-bind", str(runtime), "/app/runtime",
              "--ro-bind", str(evidence), "/evidence", "--bind", str(arm), "/arm"]
+    if registration is not None:
+        args += ["--ro-bind", str(registration), "/parent-case.json"]
     for name in sorted(socket_paths):
         args += ["--ro-bind", str(socket_paths[name]), "/" + name + ".sock"]
     env = {"PATH": "/app/runtime/bin", "HOME": "/home/agent", "TZ": "Asia/Seoul",
@@ -135,4 +159,6 @@ def command(*, source_root, runtime_root, evidence_root, arm_root, sockets, scri
         args += ["--setenv", key, value]
     args += ["--chdir", "/arm", "--remount-ro", "/", "--", "/app/runtime/bin/python3.11",
              "/app/src/tools/isolated_trading_agent_case.py", "--case", "/evidence/" + case_filename]
+    if execute_registered:
+        args += ["--execute-registered"]
     return args
