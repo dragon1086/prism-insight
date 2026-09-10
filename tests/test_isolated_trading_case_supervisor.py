@@ -88,7 +88,7 @@ def composition(root, monkeypatch, *, script=None, poison=False, cleanup_error=F
         async def wait(self):
             await asyncio.sleep(30)
     @asynccontextmanager
-    async def services(registration, connection, private):
+    async def services(registration, connection, private, journal=None):
         assert connection.execute("PRAGMA query_only").fetchone() == (1,)
         events.append("services_started")
         try:
@@ -143,6 +143,10 @@ def test_case_timeout_reaps_harmless_agent_and_poisons_lane(root, monkeypatch):
     with pytest.raises(supervisor.CaseRejected):
         asyncio.run(supervisor.run_case(reg, state))
     assert len(processes) == 1 and processes[0].returncode is not None
+    stages = [json.loads(line) for line in next(state.glob("*.stages.jsonl")).read_text().splitlines()]
+    origin = next(row for row in stages if row.get("failure_category") == "case_deadline_or_helper_failure")
+    assert origin["stage"] == "AGENT_STARTED" and origin["receipt_valid"] is False
+    assert origin["elapsed_ms"] >= 0
     with supervisor.CaseLane(state) as lane:
         with pytest.raises(supervisor.CaseRejected, match="lane_uncertain"):
             lane.claim("newcase", "a" * 64)
@@ -310,6 +314,104 @@ def test_empty_attempts_cannot_claim_analysis_complete(root):
 def test_agent_refuses_non_namespace_executable():
     with pytest.raises(supervisor.CaseRejected, match="fixed_namespace_executable_required"):
         asyncio.run(supervisor._agent([sys.executable, "-c", "raise AssertionError()"], 1, None, []))
+
+
+@pytest.mark.parametrize("code", [0, 2, -9])
+def test_process_lookup_race_awaits_owned_handle_not_blind_ack(code):
+    class Process:
+        returncode = None
+        waited = False
+        def terminate(self):
+            raise ProcessLookupError("SECRET_PROCESS_CANARY")
+        async def wait(self):
+            self.waited = True
+            self.returncode = code
+            return code
+    process, receipt = Process(), {}
+    assert asyncio.run(supervisor._stop_process(process, receipt)) is (code == 0)
+    assert process.waited and receipt["returncode"] == code
+
+
+def test_early_cleanup_failure_survives_later_masking_exception(root):
+    from contextlib import AsyncExitStack
+    journal = supervisor.CaseJournal(root, "case1", "a" * 64)
+    @asynccontextmanager
+    async def resource(category):
+        try:
+            yield None
+        finally:
+            raise supervisor.CaseRejected(category)
+    async def run():
+        with pytest.raises(supervisor.CaseRejected, match="responses_cleanup_unknown"):
+            async with AsyncExitStack() as stack:
+                await stack.enter_async_context(supervisor._joined_context(
+                    resource("responses_cleanup_unknown"), journal, "RESPONSES_JOINED", "responses", lambda: {}))
+                await stack.enter_async_context(supervisor._joined_context(
+                    resource("invoker_cleanup_unknown"), journal, "INVOKER_JOINED", "invoker", lambda: {}))
+    asyncio.run(run())
+    rows = [json.loads(row) for row in journal.path.read_text().splitlines()]
+    assert [row["failure_category"] for row in rows] == ["invoker_cleanup_unknown", "responses_cleanup_unknown"]
+    assert all(row["receipt_valid"] is False for row in rows)
+
+
+def test_journal_failure_leaves_claim_unknown_and_does_not_start_agent(root, monkeypatch):
+    reg, state, events = composition(root, monkeypatch)
+    def fail(*args, **kwargs):
+        raise supervisor.JournalRejected("SECRET_JOURNAL_CANARY")
+    monkeypatch.setattr(supervisor.CaseJournal, "record", fail)
+    with pytest.raises(supervisor.CaseRejected, match="case_or_cleanup_uncertain"):
+        asyncio.run(supervisor.run_case(reg, state))
+    assert events == []
+    with sqlite3.connect(state / "case-claims.sqlite") as db:
+        assert db.execute("SELECT state FROM cases").fetchone() == ("UNKNOWN",)
+
+
+def test_success_stage_journal_has_safe_counts_not_output(root, monkeypatch):
+    reg, state, _ = composition(root, monkeypatch)
+    asyncio.run(supervisor.run_case(reg, state))
+    path = next(state.glob("*.stages.jsonl"))
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert rows[-1]["stage"] == "FINALIZATION_READY"
+    reap = next(row for row in rows if row["stage"] == "AGENT_REAPED")
+    assert reap["returncode"] == 0 and reap["stdout_bytes"] > 0
+    assert "PENDING_PARENT_NAMESPACE" not in path.read_text()
+
+
+def test_forced_kill_lookup_race_never_clean_even_zero_final_code():
+    class Process:
+        returncode = None
+        calls = 0
+        def terminate(self):
+            pass
+        def kill(self):
+            raise ProcessLookupError()
+        async def wait(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise asyncio.TimeoutError()
+            self.returncode = 0
+            return 0
+    process, receipt = Process(), {}
+    assert asyncio.run(supervisor._stop_process(process, receipt)) is False
+    assert process.calls == 2 and receipt == {"returncode": 0, "forced_kill": True}
+
+
+def test_helper_rc_zero_without_valid_receipt_is_journaled_unknown(root, monkeypatch):
+    monkeypatch.setattr(supervisor, "TRUSTED_HOST_PYTHON", sys.executable)
+    monkeypatch.setattr(supervisor, "_HELPER_BOOTSTRAP", _FAKE_HELPER.replace("'requests':0", "'requests':'SECRET_CANARY'"))
+    reg = SimpleNamespace(helper_source_root=root, auth_snapshot=root / "unused-auth", case_deadline=5)
+    journal = supervisor.CaseJournal(root, "case1", "a" * 64)
+    receipt = {}
+    async def run():
+        with pytest.raises(supervisor.CaseRejected, match="responses_receipt_unknown"):
+            helper = supervisor._responses_helper(reg, root / "response.sock", set(), cleanup_receipt=receipt)
+            async with supervisor._joined_context(helper, journal, "RESPONSES_JOINED", "responses", lambda: receipt):
+                pass
+    asyncio.run(run())
+    row = json.loads(journal.path.read_text())
+    assert row["returncode"] == 0 and row["receipt_valid"] is False
+    assert row["failure_category"] == "responses_receipt_unknown"
+    assert row["stdout_bytes"] > 0 and "SECRET_CANARY" not in journal.path.read_text()
 
 
 @pytest.mark.parametrize("mismatch", ["absent_record", "wrong_status", "wrong_snapshot", "hidden_http"])
