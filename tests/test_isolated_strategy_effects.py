@@ -13,6 +13,14 @@ from prism_core.strategy_ledger import StrategyLedger
 from prism_core.strategy_ledger_outbox import StrategyLedgerOutbox
 
 
+def create_history_table(conn, market="KR"):
+    sql = "CREATE TABLE IF NOT EXISTS trading_history (id INTEGER PRIMARY KEY, account_key TEXT NOT NULL, account_name TEXT, ticker TEXT NOT NULL, company_name TEXT NOT NULL, buy_price REAL NOT NULL, buy_date TEXT NOT NULL, sell_price REAL NOT NULL, sell_date TEXT NOT NULL, profit_rate REAL NOT NULL, holding_days INTEGER NOT NULL, scenario TEXT, trigger_type TEXT, trigger_mode TEXT, sector TEXT, exit_kind TEXT)"
+    if market == "US":
+        sql = sql.replace("trading_history", "us_trading_history")
+    conn.execute(sql)
+    conn.commit()
+
+
 @pytest.fixture
 def bound(tmp_path):
     tmp_path.chmod(0o700)
@@ -25,6 +33,7 @@ def bound(tmp_path):
     conn.row_factory = __import__("sqlite3").Row
     conn.execute("CREATE TABLE stock_holdings (id INTEGER PRIMARY KEY, account_key TEXT, account_name TEXT, ticker TEXT, company_name TEXT, buy_price REAL, buy_date TEXT, current_price REAL, last_updated TEXT, scenario TEXT, target_price REAL, stop_loss REAL, trigger_type TEXT, trigger_mode TEXT, sector TEXT)")
     conn.commit()
+    create_history_table(conn)
     agent = SimpleNamespace(_isolated_runtime=runtime, conn=conn, cursor=conn.cursor(), db_path=runtime.db_path)
     ledger = StrategyLedger(tmp_path / "strategy.sqlite")
     ledger.create_book("book", "KR", mode="SHADOW")
@@ -231,6 +240,7 @@ def test_us_projection_uses_us_table_and_real_price(tmp_path, entry_at):
     try:
         conn.execute("CREATE TABLE us_stock_holdings (id INTEGER PRIMARY KEY, account_key TEXT, account_name TEXT, ticker TEXT, company_name TEXT, buy_price REAL, buy_date TEXT, current_price REAL, last_updated TEXT, scenario TEXT, target_price REAL, stop_loss REAL, sector TEXT)")
         conn.commit()
+        create_history_table(conn, "US")
         agent = SimpleNamespace(_isolated_runtime=runtime, conn=conn, db_path=runtime.db_path)
         ledger = StrategyLedger(tmp_path / "strategy.sqlite")
         ledger.create_book("book", "US", mode="SHADOW")

@@ -8,7 +8,7 @@ or finance larger campaigns. Re-entry requires a new campaign after closure.
 import hashlib
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
@@ -438,6 +438,38 @@ class StrategyLedger:
             return {key: campaign[key] for key in ("campaign_id", "book_id", "symbol", "normalized_units")} | {
                 "campaign_hash": hashlib.sha256(_dump(campaign).encode()).hexdigest(),
             }
+
+    def event_receipt(self, event_id):
+        """Read immutable strategy proof and its latest campaign event identity.
+
+        Pilot internal target legs belong to the enclosing pilot event. Account
+        overlays/notices are not strategy projection revisions. This method
+        performs no inserts or updates and cannot execute a trading decision.
+        """
+        with closing(sqlite3.connect(Path(self.path).as_uri() + "?mode=ro", uri=True)) as db:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            row = db.execute("SELECT digest,payload FROM events WHERE id=?", (_text(event_id),)).fetchone()
+            if row is None:
+                raise LedgerError("committed strategy event missing")
+            payload = json.loads(row[1])
+            if hashlib.sha256(_dump(payload).encode()).hexdigest() != row[0]:
+                raise LedgerError("strategy event digest conflict")
+            kinds = {"target", "sell", "mark", "pilot_open", "pilot_advance"}
+            if payload.get("kind") not in kinds:
+                raise LedgerError("not a strategy projection event")
+            campaign = self._get(db, "campaigns", payload["campaign_id"])
+            events = []
+            for identifier, raw in db.execute("SELECT id,payload FROM events ORDER BY rowid"):
+                value = json.loads(raw)
+                if value.get("campaign_id") == campaign["campaign_id"] and value.get("kind") in kinds:
+                    events.append((identifier, value["kind"]))
+            parents = {identifier for identifier, kind in events if kind in {"pilot_open", "pilot_advance"}}
+            revisions = [identifier for identifier, kind in events
+                         if not (kind == "target" and identifier.endswith(":target") and identifier[:-7] in parents)]
+            return {"event_id": event_id, "digest": row[0], "payload": payload,
+                    "book_id": campaign["book_id"], "campaign_id": campaign["campaign_id"],
+                    "symbol": campaign["symbol"], "latest_strategy_event_id": revisions[-1]}
 
     def sell(
         self,
