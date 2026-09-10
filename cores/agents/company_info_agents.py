@@ -177,24 +177,27 @@ def create_company_status_agent(company_name, company_code, reference_date, urls
                         """
 
     financial_url = urls.get("재무분석") or "URL_UNAVAILABLE"
+    eps_supplement_url = urls.get("투자지표") or financial_url
     if language == "en":
         instruction += f"""
                         ## CAN SLIM Evidence Priority and Bounded Supplement
                         - Prioritize quarterly EPS and its comparable prior-year quarter over repetitive valuation commentary. Keep the existing sections; a concise evidence table is sufficient.
-                        - Collect latest reported quarterly EPS and YoY first. Supplement only if missing (including the comparable baseline) from the status page: financial analysis URL {financial_url}. Read at most 1 supplemental page, once, for these missing facts only; no recursive searches or new providers. If supplied facts are sufficient, do not supplement.
+                        - Collect latest reported quarterly EPS and YoY first. Supplement only if missing (including the comparable baseline) from the status page. EPS_SUPPLEMENT_URL: {eps_supplement_url}. Prefer the supplied investment indicators URL for a consistent quarterly/annual EPS series; financial analysis URL {financial_url} is selected only when the indicators URL is not supplied. Read at most 1 supplemental page, once, for these missing facts only; do not try the other page after failure, use recursive searches or new providers. If supplied facts are sufficient, do not supplement.
                         - URL_UNAVAILABLE means no supplemental access: do not invent URLs. If inaccessible or still absent, mark the specific field UNKNOWN and explain the missing evidence briefly, without tool-process narration.
                         - Label each figure with fiscal quarter/year, quarterly/annual/cumulative scope, actual/estimate, consolidated/separate, units, data/publication date and source URL. Only use information available by {reference_date}; unavailable dates or accounting scope remain UNKNOWN.
-                        - Never substitute annual EPS, cumulative EPS, forward EPS or net income for quarterly EPS. Do not combine actual and estimate or different accounting bases. Without a comparable prior-year quarter, YoY is UNKNOWN; zero/negative prior EPS requires explicit turnaround/loss context, not a fabricated positive growth rate.
+                        - Never substitute annual EPS, cumulative EPS, forward EPS or net income for quarterly EPS. Do not combine actual and estimate or different accounting bases. Distinguish statutory/basic/diluted EPS from provider-adjusted-share EPS, including the share denominator; do not merge the series. SOURCE_REPORTED_YOY may be quoted as source-reported with its period/basis even when the prior value is not shown, but is not independently recomputed. COMPUTED_YOY requires comparable current/prior EPS; otherwise computed YoY is UNKNOWN. Never invent the denominator; zero/negative prior EPS requires explicit turnaround/loss context, not a fabricated positive growth rate.
+                        - HTTP 200 or HTML placeholders do not establish coverage. Confirm actual numeric table rows, period headers and accounting basis are present; if rendering supplied only a shell, the relevant fields remain UNKNOWN.
                         - Company identity must match {company_name} ({company_code}). Distinguish the parent, subsidiary and any separately listed entities: subsidiary earnings are not parent EPS. Label the reporting entity and accounting scope; use parent consolidated results only when explicitly sourced as such.
                         """
     else:
         instruction += f"""
                         ## CAN SLIM 핵심 근거 우선순위와 제한적 보완
                         - 반복적인 밸류에이션 설명보다 최근 분기 EPS(quarterly EPS)와 비교 가능한 전년 동기 근거를 우선 확보하세요. 기존 섹션 안에 간결한 근거 표로 제시하세요.
-                        - 기업현황에서 최근 확정 분기 EPS 또는 YoY 근거(비교 기준 포함)가 누락된 경우에만 재무분석 URL {financial_url}을 보완 조회하세요. 누락 항목에 한해 최대 1개 보완 페이지를 1회 조회하고 재귀 검색이나 새 제공자는 사용하지 마세요. 근거가 충분하면 추가 조회하지 마세요.
+                        - 기업현황에서 최근 확정 분기 EPS 또는 YoY 근거(비교 기준 포함)가 누락된 경우에만 보완 조회하세요. EPS_SUPPLEMENT_URL: {eps_supplement_url}. 일관된 분기·연간 EPS 시계열을 위해 제공된 투자지표 URL을 우선하고, 해당 URL이 제공되지 않은 경우에만 재무분석 URL {financial_url}을 선택하세요. 누락 항목에 한해 최대 1개 보완 페이지를 1회 조회하고 실패 후 다른 페이지 조회, 재귀 검색이나 새 제공자는 사용하지 마세요. 근거가 충분하면 추가 조회하지 마세요.
                         - URL_UNAVAILABLE이면 보완 조회를 생략하고 URL을 추측하지 마세요. 접근 실패 또는 여전히 없는 항목은 UNKNOWN으로 표기하고 부족한 근거만 짧게 설명하세요. 도구 처리 과정은 서술하지 마세요.
                         - 각 수치에 회계 분기·연도, 분기/연간/누적 구분, 실적/추정(actual/estimate), 연결/별도(consolidated/separate), 단위, 데이터 기준일·공시일, 출처 URL을 명시하세요. {reference_date}까지 알려진 자료만 사용하고 날짜나 회계 기준을 확인할 수 없으면 UNKNOWN으로 남기세요.
-                        - 연간 EPS(annual EPS), 누적 EPS, 선행 EPS 또는 순이익을 분기 EPS로 대체하지 마세요. 실적과 추정 또는 서로 다른 회계 기준을 혼합하지 마세요. 비교 가능한 전년 동기 EPS가 없으면 YoY는 UNKNOWN입니다. 전년 EPS가 0이나 음수라면 흑자전환·적자 맥락을 구분하고 임의의 양수 성장률을 만들지 마세요.
+                        - 연간 EPS(annual EPS), 누적 EPS, 선행 EPS 또는 순이익을 분기 EPS로 대체하지 마세요. 실적과 추정 또는 서로 다른 회계 기준을 혼합하지 마세요. 법정·기본·희석 EPS(statutory/basic/diluted)와 제공자 조정 주식 수 기준 EPS(provider-adjusted-share)의 분모를 구분하고 서로 다른 시계열을 합치지 마세요. SOURCE_REPORTED_YOY는 전년 값이 표에 없어도 기간·산정 기준과 함께 출처가 제시한 성장률로 인용할 수 있지만 직접 검산한 값은 아닙니다. COMPUTED_YOY는 비교 가능한 당기·전년 EPS가 있을 때만 계산하고 없으면 직접 계산한 YoY는 UNKNOWN으로 남기세요. 분모를 만들어내지 말고 전년 EPS가 0이나 음수라면 흑자전환·적자 맥락을 구분하여 임의의 양수 성장률을 만들지 마세요.
+                        - HTTP 200이나 HTML 자리표시자만으로 수집 성공을 판단하지 마세요. 실제 숫자가 있는 표의 행, 기간 헤더, 회계 기준을 확인하고 페이지 틀만 반환되면 해당 항목은 UNKNOWN으로 남기세요.
                         - 분석 대상은 {company_name} ({company_code})입니다. 모회사·자회사·별도 상장 법인을 구분하고 자회사 이익을 모회사 EPS로 사용하지 마세요. 보고 법인과 회계 범위를 명시하고 모회사 연결 실적으로 명시된 자료만 해당 기준으로 사용하세요.
                         """
 

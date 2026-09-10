@@ -21,6 +21,7 @@ URLS = {
     "기업현황": "https://example.test/status",
     "기업개요": "https://example.test/overview",
     "재무분석": "https://example.test/financial",
+    "투자지표": "https://example.test/indicators",
     "경쟁사분석": "https://example.test/peers",
     "업종분석": "https://example.test/industry",
 }
@@ -46,6 +47,17 @@ def test_status_has_bounded_conditional_financial_supplement(factories, language
         assert term in prompt
     assert ("최대 1개" if language == "ko" else "at most 1") in prompt
     assert ("누락된 경우에만" if language == "ko" else "only if missing") in prompt
+
+
+@pytest.mark.parametrize("language", ["ko", "en"])
+def test_status_prefers_one_indicator_page_and_preserves_eps_basis(factories, language):
+    prompt = factories["create_company_status_agent"]("삼성전자", "005930", "20260910", URLS, language).instruction
+    assert f"EPS_SUPPLEMENT_URL: {URLS['투자지표']}" in prompt
+    for term in ("statutory/basic/diluted", "provider-adjusted-share", "SOURCE_REPORTED_YOY", "COMPUTED_YOY", "HTML", "HTTP 200"):
+        assert term in prompt
+    without_indicators = {key: value for key, value in URLS.items() if key != "투자지표"}
+    fallback = factories["create_company_status_agent"]("삼성전자", "005930", "20260910", without_indicators, language).instruction
+    assert f"EPS_SUPPLEMENT_URL: {URLS['재무분석']}" in fallback
 
 
 @pytest.mark.parametrize("language", ["ko", "en"])
