@@ -1,5 +1,5 @@
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from cores.agents.report_agent import ReportAgent
+from cores.agents.report_agent import ReportAgent, report_time_contract
 from cores.llm.agent_bridge import ensure_openai_agents_configured
 from cores.llm.backends.openai_agents_backend import OpenAIAgentsBackend
 from cores.llm.config_loader import load_report_mcp_registry
@@ -145,7 +145,7 @@ async def generate_report(agent, section, company_name, company_code, reference_
     try:
         report = await _generate_agent_text(
             agent,
-            message,
+            message + report_time_contract(reference_date, language),
             max_tokens=32000,
             max_iterations=10,
         )
@@ -233,7 +233,7 @@ async def generate_market_report(agent, section, reference_date, logger, languag
     try:
         report = await _generate_agent_text(
             agent,
-            message,
+            message + report_time_contract(reference_date, language),
             max_tokens=32000,
             max_iterations=3,
         )
@@ -337,7 +337,7 @@ Comprehensive Analysis Report:
 
         executive_summary = await _generate_agent_text(
             summary_agent,
-            message,
+            message + report_time_contract(reference_date, language),
             max_tokens=16000,
             max_iterations=2,
         )
@@ -565,7 +565,7 @@ Please present a consistent and executable investment strategy that investors ca
 
         investment_strategy = await _generate_agent_text(
             investment_strategy_agent,
-            message,
+            message + report_time_contract(reference_date, language),
             max_tokens=32000,
             max_iterations=3,
         )

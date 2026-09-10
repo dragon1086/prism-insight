@@ -21,7 +21,7 @@ def create_company_status_agent(company_name, company_code, reference_date, urls
                         When collecting data, focus on tables rather than charts.
                         Please write as detailed, accurate, and rich as possible.
 
-                        ## Data to Collect (From Company Status Page Only)
+                        ## Data to Collect (Company Status First; Conditional Supplement Below)
                         1. From the Company Status page (Access URL: {urls['기업현황']}) :
                            - Basic Information: Company name, stock code, industry, closing month, market capitalization, 52-week high/low, stock price information
                            - Fundamental Indicators: Current values (as of current reference date: {reference_date}(YYYYMMDD format)) and past 3 years of data (example: if current year is 2025, then 2021-2024) for EPS, BPS, PER, PBR, PCR, EV/EBITDA, dividend yield, payout ratio, etc., forward consensus (Fwd 12M) data, comparison with industry average PER
@@ -101,7 +101,7 @@ def create_company_status_agent(company_name, company_code, reference_date, urls
                         데이터 수집 시 차트보다는 테이블 위주로 데이터를 수집하세요.
                         가능한한 자세하고 정확하고 풍부하게 작성해주세요.
 
-                        ## 수집해야 할 데이터 (기업현황 페이지에서만)
+                        ## 수집해야 할 데이터 (기업현황 우선, 누락 시 아래 조건부 보완)
                         1. 기업현황 페이지에서 (접속 URL: {urls['기업현황']}) :
                            - 기본 정보: 회사명, 종목코드, 업종, 결산월, 시가총액, 52주 최고/최저가, 주가 정보
                            - 펀더멘털 지표: EPS, BPS, PER, PBR, PCR, EV/EBITDA, 배당수익률, 배당성향 등의 현재값(현재 기준일 : {reference_date}(YYYYMMDD 형식)) 및 과거 3개년도(예시 : 현재가 2025년이면, 2021-2024년) 데이터, 향후 컨센서스(Fwd 12M) 데이터, 업종 평균 PER과의 비교
@@ -176,6 +176,28 @@ def create_company_status_agent(company_name, company_code, reference_date, urls
                         ##분석일: {reference_date}(YYYYMMDD 형식)
                         """
 
+    financial_url = urls.get("재무분석") or "URL_UNAVAILABLE"
+    if language == "en":
+        instruction += f"""
+                        ## CAN SLIM Evidence Priority and Bounded Supplement
+                        - Prioritize quarterly EPS and its comparable prior-year quarter over repetitive valuation commentary. Keep the existing sections; a concise evidence table is sufficient.
+                        - Collect latest reported quarterly EPS and YoY first. Supplement only if missing (including the comparable baseline) from the status page: financial analysis URL {financial_url}. Read at most 1 supplemental page, once, for these missing facts only; no recursive searches or new providers. If supplied facts are sufficient, do not supplement.
+                        - URL_UNAVAILABLE means no supplemental access: do not invent URLs. If inaccessible or still absent, mark the specific field UNKNOWN and explain the missing evidence briefly, without tool-process narration.
+                        - Label each figure with fiscal quarter/year, quarterly/annual/cumulative scope, actual/estimate, consolidated/separate, units, data/publication date and source URL. Only use information available by {reference_date}; unavailable dates or accounting scope remain UNKNOWN.
+                        - Never substitute annual EPS, cumulative EPS, forward EPS or net income for quarterly EPS. Do not combine actual and estimate or different accounting bases. Without a comparable prior-year quarter, YoY is UNKNOWN; zero/negative prior EPS requires explicit turnaround/loss context, not a fabricated positive growth rate.
+                        - Company identity must match {company_name} ({company_code}). Distinguish the parent, subsidiary and any separately listed entities: subsidiary earnings are not parent EPS. Label the reporting entity and accounting scope; use parent consolidated results only when explicitly sourced as such.
+                        """
+    else:
+        instruction += f"""
+                        ## CAN SLIM 핵심 근거 우선순위와 제한적 보완
+                        - 반복적인 밸류에이션 설명보다 최근 분기 EPS(quarterly EPS)와 비교 가능한 전년 동기 근거를 우선 확보하세요. 기존 섹션 안에 간결한 근거 표로 제시하세요.
+                        - 기업현황에서 최근 확정 분기 EPS 또는 YoY 근거(비교 기준 포함)가 누락된 경우에만 재무분석 URL {financial_url}을 보완 조회하세요. 누락 항목에 한해 최대 1개 보완 페이지를 1회 조회하고 재귀 검색이나 새 제공자는 사용하지 마세요. 근거가 충분하면 추가 조회하지 마세요.
+                        - URL_UNAVAILABLE이면 보완 조회를 생략하고 URL을 추측하지 마세요. 접근 실패 또는 여전히 없는 항목은 UNKNOWN으로 표기하고 부족한 근거만 짧게 설명하세요. 도구 처리 과정은 서술하지 마세요.
+                        - 각 수치에 회계 분기·연도, 분기/연간/누적 구분, 실적/추정(actual/estimate), 연결/별도(consolidated/separate), 단위, 데이터 기준일·공시일, 출처 URL을 명시하세요. {reference_date}까지 알려진 자료만 사용하고 날짜나 회계 기준을 확인할 수 없으면 UNKNOWN으로 남기세요.
+                        - 연간 EPS(annual EPS), 누적 EPS, 선행 EPS 또는 순이익을 분기 EPS로 대체하지 마세요. 실적과 추정 또는 서로 다른 회계 기준을 혼합하지 마세요. 비교 가능한 전년 동기 EPS가 없으면 YoY는 UNKNOWN입니다. 전년 EPS가 0이나 음수라면 흑자전환·적자 맥락을 구분하고 임의의 양수 성장률을 만들지 마세요.
+                        - 분석 대상은 {company_name} ({company_code})입니다. 모회사·자회사·별도 상장 법인을 구분하고 자회사 이익을 모회사 EPS로 사용하지 마세요. 보고 법인과 회계 범위를 명시하고 모회사 연결 실적으로 명시된 자료만 해당 기준으로 사용하세요.
+                        """
+
     return Agent(
         name="company_status_agent",
         instruction=instruction,
@@ -202,7 +224,7 @@ def create_company_overview_agent(company_name, company_code, reference_date, ur
                         When accessing URLs, use the firecrawl_scrape tool and set the formats parameter to ["markdown"] and the onlyMainContent parameter to true.
                         When collecting data, focus on tables rather than charts.
 
-                        ## Data to Collect (From Company Overview Page Only)
+                        ## Data to Collect (Company Overview First; Conditional Supplement Below)
                         1. From the Company Overview page (Access URL: {urls['기업개요']}) :
                            - Detailed Company Overview: Headquarters address, CEO, main contact, auditor, establishment date, listing date, number of issued shares (common/preferred), etc.
                            - Business Structure: Main product sales composition and proportions, market share, domestic and export composition, etc.
@@ -276,7 +298,7 @@ def create_company_overview_agent(company_name, company_code, reference_date, ur
                         URL 접속 시 firecrawl_scrape tool을 사용하고 formats 파라미터는 ["markdown"]로, onlyMainContent 파라미터는 true로 설정하세요.
                         데이터 수집 시 차트보다는 테이블 위주로 데이터를 수집하세요.
 
-                        ## 수집해야 할 데이터 (기업개요 페이지에서만)
+                        ## 수집해야 할 데이터 (기업개요 우선, 누락 시 아래 조건부 보완)
                         1. 기업개요 페이지에서 (접속 URL: {urls['기업개요']}) :
                            - 기업 세부개요: 본사 주소, 대표이사, 대표 연락처, 감사인, 설립일, 상장일, 발행주식수(보통주/우선주) 등
                            - 사업 구조: 주요제품 매출구성 및 비중, 시장점유율, 내수 및 수출구성 등
@@ -344,6 +366,31 @@ def create_company_overview_agent(company_name, company_code, reference_date, ur
 
                         기업: {company_name} ({company_code})
                         ##분석일: {reference_date}(YYYYMMDD 형식)
+                        """
+
+    competitors_url = urls.get("경쟁사분석") or "URL_UNAVAILABLE"
+    industry_url = urls.get("업종분석") or "URL_UNAVAILABLE"
+    if language == "en":
+        instruction += f"""
+                        ## CAN SLIM Leadership Evidence and Bounded Supplement
+                        - Prioritize business competitiveness and comparable peer evidence over address/contact/personnel detail; preserve existing sections.
+                        - Supplement only if missing: when the overview lacks peer comparison or leadership evidence, read the provided competitor URL {competitors_url}, then industry URL {industry_url} only if evidence is still missing. Read at most 2 supplemental pages, once each, for missing facts only. Stop when sufficient; no recursive searches or new providers.
+                        - URL_UNAVAILABLE means skip that page; do not invent URLs. If evidence remains absent or inaccessible, record UNKNOWN and the missing evidence, not a confident conclusion.
+                        - Report industry_leadership (business/earnings/market-share leadership), price_RS (relative price strength), and sector_tailwind (sector environment) separately. One does not establish another. UNKNOWN is neither a leader pass nor a non-leader fail; do not manufacture a trading verdict or score.
+                        - Before claiming a rank/leader position, state the peer universe, comparable metric and units, period, data/publication date and source URL. Small selected peer lists do not establish a whole-market rank. No comparable peer evidence means leadership UNKNOWN.
+                        - Financial comparisons must distinguish quarterly/annual/cumulative, actual/estimate and consolidated/separate. Use only evidence available by {reference_date}; missing dates or scope remain UNKNOWN.
+                        - Match evidence to {company_name} ({company_code}). Distinguish the parent, subsidiary and any separately listed entities. A subsidiary's industry leadership or returns do not establish the parent's leadership or price_RS; explicitly label the reporting entity, accounting scope and any group exposure.
+                        """
+    else:
+        instruction += f"""
+                        ## CAN SLIM 리더 근거와 제한적 보완
+                        - 주소·연락처·인원 세부 설명보다 사업 경쟁력과 비교 가능한 동종 기업 근거를 우선 확보하고 기존 섹션을 유지하세요.
+                        - 기업개요에서 비교군 또는 리더 근거가 누락된 경우에만 제공된 경쟁사분석 URL {competitors_url}을 조회하고, 여전히 근거가 부족할 때 업종분석 URL {industry_url}을 조회하세요. 누락 항목에 한해 최대 2개 보완 페이지를 각각 1회 조회하세요. 근거가 충분하면 중단하고 재귀 검색이나 새 제공자는 사용하지 마세요.
+                        - URL_UNAVAILABLE인 페이지는 건너뛰고 URL을 추측하지 마세요. 접근 실패 또는 근거가 여전히 없으면 UNKNOWN과 부족한 근거를 명시하고 단정하지 마세요.
+                        - 사업·실적·시장점유율 기준 산업 리더(industry_leadership), 주가 상대강도(price_RS), 업종 환경(sector_tailwind)을 각각 구분하세요. 하나로 다른 항목을 입증할 수 없습니다. UNKNOWN을 리더 통과나 비리더 탈락으로 해석하지 말고 매매 판정·점수를 임의로 만들지 마세요.
+                        - 순위나 리더 위치를 주장하려면 비교군, 비교 가능한 지표·단위, 기간, 데이터 기준일·공시일, 출처 URL을 명시하세요. 일부 선택된 경쟁사 목록만으로 전체 시장 순위를 주장하지 마세요. 비교 가능한 근거가 없으면 리더 여부는 UNKNOWN입니다.
+                        - 재무 비교는 분기/연간/누적, 실적/추정(actual/estimate), 연결/별도(consolidated/separate)를 구분하세요. {reference_date}까지 알려진 근거만 사용하고 날짜나 기준이 없으면 UNKNOWN으로 남기세요.
+                        - 근거의 대상은 {company_name} ({company_code})이어야 합니다. 모회사·자회사·별도 상장 법인을 구분하세요. 자회사의 산업 리더 지위나 수익률로 모회사의 리더 여부·price_RS를 입증하지 말고 보고 법인·회계 범위와 그룹 사업 노출을 구분해서 설명하세요.
                         """
 
     return Agent(
