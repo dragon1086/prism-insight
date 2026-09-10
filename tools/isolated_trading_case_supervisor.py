@@ -371,11 +371,13 @@ async def _services(reg, connection, private_root):
 
 
 async def _agent(command, deadline, helper, helper_drains):
+    if not isinstance(command, list) or not command or command[0] != "/usr/bin/bwrap":
+        raise CaseRejected("fixed_namespace_executable_required")
     process = None
     tasks = []
     completion = None
     try:
-        process = await asyncio.create_subprocess_exec(*command, env={}, close_fds=True,
+        process = await asyncio.create_subprocess_exec("/usr/bin/bwrap", *command[1:], env={}, close_fds=True,
                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout = asyncio.create_task(_drain(process.stdout, capture=True, limit=65536))
         stderr = asyncio.create_task(_drain(process.stderr))

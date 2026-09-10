@@ -99,7 +99,12 @@ def composition(root, monkeypatch, *, script=None, poison=False, cleanup_error=F
                 raise RuntimeError("PRIVATE_CLEANUP_CANARY")
     monkeypatch.setattr(supervisor, "_services", services)
     command = script or "import os,json;assert 'PRIVATE_SUPERVISOR_CANARY' not in os.environ;print(json.dumps({'status':'PENDING_PARENT_NAMESPACE'}))"
-    monkeypatch.setattr(supervisor.namespace, "command", lambda **kwargs: [sys.executable, "-c", command])
+    monkeypatch.setattr(supervisor.namespace, "command", lambda **kwargs: ["/usr/bin/bwrap", "-c", command])
+    actual_spawn = supervisor.asyncio.create_subprocess_exec
+    async def harmless_namespace_double(executable, *args, **kwargs):
+        assert executable == "/usr/bin/bwrap"
+        return await actual_spawn(sys.executable, *args, **kwargs)
+    monkeypatch.setattr(supervisor.asyncio, "create_subprocess_exec", harmless_namespace_double)
     return reg, state, events
 
 
@@ -299,6 +304,11 @@ def test_empty_attempts_cannot_claim_analysis_complete(root):
     reg, invoker = outcome_fixture(root, "ANALYSIS_COMPLETE")
     with pytest.raises(supervisor.CaseRejected, match="case_activity_uncertain"):
         supervisor._outcome(reg, 0, b"", invoker, {"cleanup_confirmed": True, "requests": 0})
+
+
+def test_agent_refuses_non_namespace_executable():
+    with pytest.raises(supervisor.CaseRejected, match="fixed_namespace_executable_required"):
+        asyncio.run(supervisor._agent([sys.executable, "-c", "raise AssertionError()"], 1, None, []))
 
 
 @pytest.mark.parametrize("mismatch", ["absent_record", "wrong_status", "wrong_snapshot", "hidden_http"])
