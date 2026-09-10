@@ -14,12 +14,13 @@ STAGES = frozenset({"CLAIMED", "SERVICES_READY", "AGENT_STARTED", "AGENT_REAPED"
 CATEGORIES = frozenset({"NONE", "INTERNAL_FAILURE", "JOURNAL_FAILURE", "CANCELLED",
     "responses_helper_not_ready", "responses_helper_socket_invalid", "responses_cleanup_unknown",
     "responses_receipt_unknown", "invoker_cleanup_unknown", "read_bridge_cleanup_unknown",
+    "responses_grace_timeout",
     "child_output_limit", "case_deadline_or_helper_failure", "case_deadline", "case_activity_uncertain",
     "case_result_invalid", "case_result_missing", "existing_case_artifact", "agent_cleanup_unknown",
     "agent_nonzero_exit", "case_result_identity_mismatch", "case_result_not_final",
     "validation_outcome_uncertain", "case_outcome_uncertain", "case_result_limit"})
 _COUNTS = {"stdout_bytes", "stderr_bytes", "helper_requests", "unjoined_count", "elapsed_ms"}
-_BOOLS = {"receipt_valid", "forced_kill", "poisoned"}
+_BOOLS = {"receipt_valid", "forced_kill", "poisoned", "graceful_exit", "grace_expired"}
 _FIELDS = _COUNTS | _BOOLS | {"returncode", "terminal_categories", "snapshot_hashes", "failure_category", "component"}
 
 
