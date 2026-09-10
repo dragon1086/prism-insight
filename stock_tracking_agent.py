@@ -54,6 +54,7 @@ from prism_core.isolated_agent_runtime import (
     virtual_account_label, require_execution_runtime,
 )
 from prism_core.trading_scenario_contract import apply_buy_scenario_contract
+from prism_core.isolated_strategy_effects import effects_for, EffectsFailure, observe_or_emit  # noqa: E402 - existing agent path bootstrap
 
 # Core agent imports
 from cores.openai_error_logging import log_openai_error
@@ -795,7 +796,10 @@ class StockTrackingAgent:
 
     async def _refresh_buy_boundary(self, ticker, scenario, analysis_result, *, buy_score, is_add=False):
         """Refresh price and rerun existing checks immediately before entry effects."""
-        quote = await self._get_fresh_buy_quote(ticker)
+        effects = effects_for(self, "process_reports") if getattr(self, "_no_order_effects", None) is not None else None
+        quote = ({"price": effects.quote(ticker), "source": "isolated_registered_source",
+                  "retrieved_at_monotonic": time.monotonic()} if effects is not None
+                 else await self._get_fresh_buy_quote(ticker))
         price = float(quote["price"])
         if not math.isfinite(price) or price <= 0:
             raise ValueError("fresh BUY quote invalid")
@@ -1636,7 +1640,7 @@ class StockTrackingAgent:
                 stored_decision_context = scenario.get("_decision_context")
                 if isinstance(stored_decision_context, dict):
                     decision_context.update(stored_decision_context)
-                emit_trading_context(
+                observe_or_emit(self, emit_trading_context,
                     "candidate.evaluated",
                     market="KR",
                     ticker=ticker,
@@ -1651,6 +1655,8 @@ class StockTrackingAgent:
                     source="kr_batch_watchlist",
                     research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker),
                 )
+            except EffectsFailure:
+                raise
             except Exception as context_error:
                 logger.warning("[CONTEXT_LEDGER][KR] candidate snapshot skipped: %s", context_error)
             logger.info(
@@ -1660,6 +1666,8 @@ class StockTrackingAgent:
             return True
         except Exception as e:
             logger.error(f"{ticker} Error saving watchlist: {str(e)}")
+            if getattr(self, "_no_order_effects", None) is not None:
+                raise EffectsFailure("Isolated watchlist write failed") from None
             logger.error(traceback.format_exc())
             return False
 
@@ -2041,7 +2049,7 @@ class StockTrackingAgent:
         stored_decision_context = prepared.scenario.get("_decision_context")
         if isinstance(stored_decision_context, dict):
             decision_context.update(stored_decision_context)
-        emit_trading_context(
+        observe_or_emit(self, emit_trading_context,
             "entry.executed",
             market="KR",
             ticker=prepared.symbol,
@@ -2630,6 +2638,7 @@ class StockTrackingAgent:
         Returns:
             Internal success result with the inserted legacy holding id.
         """
+        require_execution_runtime(self)
         try:
             # Check if already holding (skipped for a pyramiding add)
             if not is_add and await self._is_ticker_in_holdings(ticker):
@@ -2713,7 +2722,7 @@ class StockTrackingAgent:
             stored_decision_context = scenario.get("_decision_context")
             if isinstance(stored_decision_context, dict):
                 decision_context.update(stored_decision_context)
-            emit_trading_context(
+            observe_or_emit(self, emit_trading_context,
                 "entry.executed",
                 market="KR",
                 ticker=ticker,
@@ -2881,6 +2890,8 @@ class StockTrackingAgent:
 
     def _get_live_regime_safe(self) -> Optional[str]:
         """매도 판단용 '현재' KOSPI 레짐을 1회 계산(OpenAI 무관). 실패 시 None → stale 폴백."""
+        if getattr(self, "_no_order_effects", None) is not None:
+            return effects_for(self, "update_holdings").market_regime()
         self._live_market_context = None
         try:
             from cores.data_prefetch import prefetch_macro_intelligence_data
@@ -2899,6 +2910,8 @@ class StockTrackingAgent:
     def _buy_floor_regime(self) -> Optional[str]:
         """레짐 하한선 게이트(REGIME_MIN_SCORE_FLOOR)용 '현재' 시장 레짐을 프로세스당 1회
         캐시한다. _get_live_regime_safe 재사용(OpenAI 무관, fail-open None → 하한 0)."""
+        if getattr(self, "_no_order_effects", None) is not None:
+            return effects_for(self, "process_reports").market_regime()
         _c = getattr(self, "_buy_floor_regime_cache", "__UNSET__")
         if _c == "__UNSET__":
             _c = self._get_live_regime_safe()
@@ -2942,7 +2955,10 @@ class StockTrackingAgent:
             from cores.regime_policy import get_market_pulse_state
 
             computed_regime = scenario.get("_deterministic_market_regime") or self._buy_floor_regime()
-            pulse = get_market_pulse_state("kr") if normalize_regime(computed_regime) == "sideways" else None
+            effects = effects_for(self, "process_reports") if getattr(self, "_no_order_effects", None) is not None else None
+            if effects is not None:
+                computed_regime = effects.market_regime()
+            pulse = (effects.market_pulse() if effects is not None else get_market_pulse_state("kr")) if normalize_regime(computed_regime) == "sideways" else None
             policy = scenario.get("regime_entry_policy") or {}
             # Historical gate argument names strategy half-slot permission;
             # account cash is checked only at the broker boundary below.
@@ -2970,6 +2986,8 @@ class StockTrackingAgent:
                     "; ".join(item["message"] for item in result["shadow_findings"]),
                 )
             return result
+        except EffectsFailure:
+            raise
         except Exception as exc:  # noqa: BLE001 - new buys fail closed on gate errors
             logger.error("[BUY_GATE][KR] deterministic gate failed closed: %s", exc)
             return {
@@ -3164,7 +3182,7 @@ class StockTrackingAgent:
         except Exception:
             slots_after = None
         for legacy_holding_id in legacy_holding_ids:
-            emit_trading_context(
+            observe_or_emit(self, emit_trading_context,
                 "exit.executed",
                 market="KR",
                 ticker=ticker,
@@ -3447,6 +3465,8 @@ class StockTrackingAgent:
         trigger_type: str = None
     ) -> str:
         """Get journal context for buy decisions (delegates to tracking.journal.JournalManager)"""
+        if getattr(self, "_no_order_effects", None) is not None:
+            return effects_for(self, "process_reports").journal(ticker)["context"]
         return self.journal_manager.get_context_for_ticker(ticker, sector, trigger_type)
 
     def _get_universal_principles(self, limit: int = 10) -> List[str]:
@@ -3457,6 +3477,9 @@ class StockTrackingAgent:
         self, ticker: str, sector: str = None, trigger_type: str = None
     ) -> Tuple[int, List[str]]:
         """Calculate score adjustment (delegates to tracking.journal.JournalManager)"""
+        if getattr(self, "_no_order_effects", None) is not None:
+            data = effects_for(self, "process_reports").journal(ticker)
+            return data["adjustment"], data["reasons"]
         return self.journal_manager.get_score_adjustment(ticker, sector, trigger_type)
 
     async def compress_old_journal_entries(
@@ -3747,7 +3770,9 @@ class StockTrackingAgent:
         Returns:
             List[Dict]: List of sold stock information
         """
-        require_execution_runtime(self)
+        effects = effects_for(self, "update_holdings")
+        if effects is None:
+            require_execution_runtime(self)
         try:
             logger.info("Starting holdings info update")
 
@@ -3779,11 +3804,16 @@ class StockTrackingAgent:
             # 실패해도 override 경로는 독립 동작하므로 빈 dict로 안전 폴백.
             kis_status_map: Dict[str, str] = {}
             try:
-                from cores.corporate_status import fetch_status_codes
-                kis_status_map = await fetch_status_codes(
-                    [h.get("ticker") for h in holdings],
-                    account_name=holdings[0].get("account_name") if holdings else None,
-                )
+                if effects is not None:
+                    kis_status_map = {h["ticker"]: effects.corporate_status(h["ticker"]) for h in holdings}
+                else:
+                    from cores.corporate_status import fetch_status_codes
+                    kis_status_map = await fetch_status_codes(
+                        [h.get("ticker") for h in holdings],
+                        account_name=holdings[0].get("account_name") if holdings else None,
+                    )
+            except EffectsFailure:
+                raise
             except Exception as e:
                 logger.warning(f"KIS status prefetch skipped: {e}")
 
@@ -3798,7 +3828,7 @@ class StockTrackingAgent:
             pass_total_qty: Dict[str, int] = {}   # ticker -> snapshot total qty
             pass_sold_qty: Dict[str, int] = {}    # ticker -> cumulative ordered qty
             blocked_tickers: set[str] = set()
-            pending_kr_enabled = self._position_pending_kr_enabled()
+            pending_kr_enabled = False if effects is not None else self._position_pending_kr_enabled()
 
             for stock in holdings:
                 ticker = stock.get('ticker')
@@ -3812,7 +3842,7 @@ class StockTrackingAgent:
                     continue
 
                 # Query current stock price
-                current_price = await self._get_current_stock_price(ticker)
+                current_price = effects.quote(ticker) if effects is not None else await self._get_current_stock_price(ticker)
 
                 if current_price <= 0:
                     old_price = stock.get('current_price', 0)
@@ -3847,6 +3877,16 @@ class StockTrackingAgent:
                 should_sell, sell_reason = await self._analyze_sell_decision(stock)
 
                 if should_sell:
+                    if effects is not None:
+                        current_price = effects.quote(ticker)
+                        applied = effects.record_exit(ticker=ticker, price=current_price)
+                        effects.observe("strategy_exit", status="RECORDED" if applied else "REPLAYED", ticker=ticker)
+                        if applied:
+                            sold_stocks.append({"ticker": ticker, "company_name": company_name,
+                                "buy_price": stock["buy_price"], "sell_price": current_price,
+                                "profit_rate": (current_price / stock["buy_price"] - 1) * 100,
+                                "reason": sell_reason, "account_execution_status": "UNKNOWN"})
+                        continue
                     if pending_kr_enabled:
                         remaining_rows = get_existing_position_for_ticker(
                             self.cursor,
@@ -4036,8 +4076,12 @@ class StockTrackingAgent:
 
             return sold_stocks
 
+        except EffectsFailure:
+            raise
         except Exception as e:
             logger.error(f"Error updating holdings: {str(e)}")
+            if effects is not None:
+                raise EffectsFailure("Isolated holdings review did not complete") from None
             logger.error(traceback.format_exc())
             return []
 
@@ -4176,7 +4220,9 @@ class StockTrackingAgent:
         Returns:
             Tuple[int, int]: Buy count, sell count
         """
-        require_execution_runtime(self)
+        effects = effects_for(self, "process_reports")
+        if effects is None:
+            require_execution_runtime(self)
         try:
             logger.info(f"Starting processing of {len(pdf_report_paths)} reports")
 
@@ -4195,6 +4241,9 @@ class StockTrackingAgent:
             for pdf_report_path in pdf_report_paths:
                 analysis_result = await self._analyze_report_core(pdf_report_path)
                 if not analysis_result.get("success", False):
+                    if effects is not None:
+                        effects.observe("analysis_failure", status="CASE_INCOMPLETE")
+                        raise EffectsFailure("Isolated BUY analysis failed")
                     logger.error(f"Report analysis failed: {pdf_report_path} - {analysis_result.get('error', 'Unknown error')}")
                     continue
                 analysis_states.append(
@@ -4280,7 +4329,7 @@ class StockTrackingAgent:
                         )
                         if regime_min_score_floor_enabled():
                             _fr = self._buy_floor_regime()
-                            _pulse = get_market_pulse_state("kr")
+                            _pulse = effects.market_pulse() if effects is not None else get_market_pulse_state("kr")
                             _eff = effective_min_score(min_score, _fr, _pulse)
                             if _eff > min_score:
                                 logger.info(
@@ -4321,6 +4370,8 @@ class StockTrackingAgent:
                                 )
                             elif buy_score < min_score:
                                 _regime_floor_block = True
+                    except EffectsFailure:
+                        raise
                     except Exception as _fe:
                         logger.warning(f"[REGIME_MIN_SCORE_FLOOR] fail-open, LLM min_score 유지: {_fe}")
 
@@ -4400,7 +4451,7 @@ class StockTrackingAgent:
                         and _buy_gate.get("allowed", False)
                     )
                     if entry_eligible:
-                        emit_trading_context(
+                        observe_or_emit(self, emit_trading_context,
                             "candidate.evaluated",
                             market="KR",
                             ticker=ticker,
@@ -4427,6 +4478,8 @@ class StockTrackingAgent:
                             current_price = await self._refresh_buy_boundary(
                                 ticker, scenario, analysis_result, buy_score=buy_score
                             )
+                        except EffectsFailure:
+                            raise
                         except Exception as quote_error:
                             logger.warning("[BUY_QUOTE][KR] %s entry blocked: %s", ticker, quote_error)
                             scenario["_decision_context"].update(
@@ -4435,6 +4488,17 @@ class StockTrackingAgent:
                             )
                             state["should_save_watchlist"] = True
                             state["skip_reason"] = "Fresh quote unavailable or scenario invalid at refreshed price"
+                            continue
+                        if effects is not None:
+                            if await self._is_ticker_in_holdings(ticker):
+                                raise EffectsFailure("Unexpected existing strategy slot at entry boundary")
+                            if await self._get_current_slots_count() >= self.max_slots:
+                                raise EffectsFailure("Strategy slot capacity changed at entry boundary")
+                            applied = effects.record_entry(ticker=ticker, company_name=company_name,
+                                price=current_price, scenario=scenario, is_add=False)
+                            effects.observe("strategy_entry", status="RECORDED" if applied else "REPLAYED", ticker=ticker)
+                            state["traded"] = bool(applied)
+                            buy_count += int(applied)
                             continue
                         if self._position_pending_kr_enabled():
                             prepared = None
@@ -4725,8 +4789,12 @@ class StockTrackingAgent:
             logger.info(f"Report processing complete - Strategy entries: {buy_count} stocks, Sold: {sell_count} stocks")
             return buy_count, sell_count
 
+        except EffectsFailure:
+            raise
         except Exception as e:
             logger.error(f"Error processing reports: {str(e)}")
+            if effects is not None:
+                raise EffectsFailure("Isolated report processing did not complete") from None
             logger.error(traceback.format_exc())
             return 0, 0
 
@@ -4781,6 +4849,7 @@ class StockTrackingAgent:
         Returns:
             bool: Send success status
         """
+        require_execution_runtime(self)
         try:
             # Build the post-batch portfolio before checking the Telegram
             # transport. Kakao's automatic story must still be available when
