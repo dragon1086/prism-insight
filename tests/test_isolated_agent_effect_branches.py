@@ -18,7 +18,7 @@ from prism_core import isolated_strategy_effects as effects
 from prism_core.isolated_agent_runtime import require_execution_runtime
 from prism_core.isolated_agent_runtime import prepare_isolated_runtime
 from prism_core.strategy_ledger import StrategyLedger
-from test_isolated_strategy_effects import bound as _bound
+from test_isolated_strategy_effects import bound as _bound, create_history_table
 from test_isolated_effects_context import context, envelope
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,6 +127,7 @@ def bound_us(tmp_path):
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE us_stock_holdings (id INTEGER PRIMARY KEY, account_key TEXT, account_name TEXT, ticker TEXT, company_name TEXT, buy_price REAL, buy_date TEXT, current_price REAL, last_updated TEXT, scenario TEXT, target_price REAL, stop_loss REAL, trigger_type TEXT, trigger_mode TEXT, sector TEXT)")
     conn.commit()
+    create_history_table(conn, "US")
     agent = SimpleNamespace(_isolated_runtime=runtime, conn=conn, cursor=conn.cursor(), db_path=runtime.db_path)
     ledger = StrategyLedger(tmp_path / "strategy.sqlite")
     ledger.create_book("book", "US", mode="SHADOW")
