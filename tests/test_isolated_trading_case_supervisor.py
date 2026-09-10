@@ -280,6 +280,65 @@ def test_helper_kill_without_receipt_is_unknown_not_zero_requests(root, monkeypa
     asyncio.run(run())
 
 
+def test_helper_eof_finalization_is_not_killed_by_redundant_signal(root, monkeypatch):
+    """A scheduler pause can put SIGTERM after asyncio restored its default."""
+    import time
+    code = _FAKE_HELPER.replace("listener.close();os.unlink(sys.argv[4])",
+        "listener.close();os.unlink(sys.argv[4]);import time;signal.signal(signal.SIGTERM,signal.SIG_DFL);"
+        "open(sys.argv[4]+'.finalizing','w').close();time.sleep(.5)")
+    monkeypatch.setattr(supervisor, "TRUSTED_HOST_PYTHON", sys.executable)
+    monkeypatch.setattr(supervisor, "_HELPER_BOOTSTRAP", code)
+    reg = SimpleNamespace(helper_source_root=root, auth_snapshot=root / "unused-auth", case_deadline=5)
+    async def run():
+        signals = []
+        async with supervisor._responses_helper(reg, root / "response.sock", {"time-get_current_time"}) as (process, _, evidence):
+            original = process.terminate
+            def scheduled_late_signal():
+                end = time.monotonic() + 1
+                while not (root / "response.sock.finalizing").exists() and time.monotonic() < end:
+                    time.sleep(.005)
+                assert (root / "response.sock.finalizing").exists()
+                signals.append("SIGTERM")
+                original()
+            monkeypatch.setattr(process, "terminate", scheduled_late_signal)
+        assert process.returncode == 0
+        assert evidence["cleanup_confirmed"] is True and evidence["requests"] == 0
+        assert signals == []
+    asyncio.run(run())
+
+
+def test_helper_grace_timeout_stays_unknown_even_after_clean_sigterm(root, monkeypatch):
+    code = _FAKE_HELPER.replace(
+        "while not stopped and not select.select([int(sys.argv[2])],[],[],.02)[0]:pass",
+        "import time\nwhile not stopped:time.sleep(.005)")
+    monkeypatch.setattr(supervisor, "TRUSTED_HOST_PYTHON", sys.executable)
+    monkeypatch.setattr(supervisor, "_HELPER_BOOTSTRAP", code)
+    monkeypatch.setattr(supervisor, "_RESPONSES_EXIT_GRACE_SECONDS", .03)
+    reg = SimpleNamespace(helper_source_root=root, auth_snapshot=root / "unused-auth", case_deadline=5)
+    async def run():
+        receipt = {}
+        with pytest.raises(supervisor.CaseRejected, match="responses_grace_timeout"):
+            async with supervisor._responses_helper(reg, root / "response.sock", {"time-get_current_time"}, cleanup_receipt=receipt) as (process, drains, evidence):
+                pass
+        assert process.returncode == 0 and all(task.done() for task in drains)
+        assert receipt["grace_expired"] is True and receipt["graceful_exit"] is False
+        assert evidence["cleanup_confirmed"] is False
+    asyncio.run(run())
+
+
+def test_graceful_exit_with_bad_receipt_is_not_acknowledged(root, monkeypatch):
+    code = _FAKE_HELPER.replace("{'schema_version':1,'requests':0}", "{'invalid':'SYNTHETIC'}")
+    monkeypatch.setattr(supervisor, "TRUSTED_HOST_PYTHON", sys.executable)
+    monkeypatch.setattr(supervisor, "_HELPER_BOOTSTRAP", code)
+    reg = SimpleNamespace(helper_source_root=root, auth_snapshot=root / "unused-auth", case_deadline=5)
+    async def run():
+        with pytest.raises(supervisor.CaseRejected, match="responses_receipt_unknown"):
+            async with supervisor._responses_helper(reg, root / "response.sock", {"time-get_current_time"}) as (_, _, evidence):
+                pass
+        assert evidence["cleanup_confirmed"] is False
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("status", ["ok", "UNKNOWN"])
 def test_rule_fallback_is_distinct_and_only_terminal_attempts_are_cacheable(root, status):
     reg, invoker = outcome_fixture(root, status="SOURCE_RULE_FALLBACK", attempts=[
