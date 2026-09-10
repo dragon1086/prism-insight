@@ -305,7 +305,7 @@ async def _responses_helper(reg, socket_path, read_tools):
     try:
         # Fixed helper and interpreter only; no agent-configurable command/env.
         process = await asyncio.create_subprocess_exec(
-            TRUSTED_HOST_PYTHON, "-I", "-c", _HELPER_BOOTSTRAP, str(reg.helper_source_root),
+            TRUSTED_HOST_PYTHON, "-I", "-B", "-c", _HELPER_BOOTSTRAP, str(reg.helper_source_root),
             str(reader), str(os.getpid()), str(socket_path), str(reg.auth_snapshot), _json(sorted(read_tools)), str(reg.case_deadline),
             env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}, pass_fds=(reader,),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, close_fds=True)
