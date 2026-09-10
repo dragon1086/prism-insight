@@ -296,17 +296,39 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - `time-get_current_time`: call FIRST. Use the returned date as the end date for ALL kospi_kosdaq queries.
         - `kospi_kosdaq-get_stock_ohlcv` / `get_stock_trading_volume` / `get_index_ohlcv`: market and stock data.
         - DO NOT call `kospi_kosdaq-load_all_tickers`.
-        - `perplexity-ask`: only when sector PER/PBR comparison is missing from the report. When called:
-          * "[Stock name] PER PBR vs [Sector] industry average comparison"
-          * "[Stock name] vs major peer competitors valuation comparison"
-          * Include the current date in the query and verify the date returned in the response
+        - Before declaring evidence missing, inspect the whole report (not just the mapped section),
+          injected facts, and already returned MCP results. The report input is text-only; do not claim
+          to inspect chart images or infer an unseen chart's values.
+        - `perplexity-ask`: only if decision-material quarterly EPS, annual EPS, industry_leadership,
+          or peer evidence (including PER/PBR) remains missing after that inspection, use
+          at most ONE consolidated query for the remaining gaps. Do not research evidence already present, repeat
+          equivalent queries, or retry an unavailable/timed-out supplemental lookup. Stay within the
+          existing execution deadline; if no time remains, record NOT_REQUESTED instead of researching.
+          Include the current date, stock name/code, required reporting periods and peer universe;
+          include major peer competitors valuation comparison only if that is a remaining material gap. Require
+          source/date, entity (parent/subsidiary), actual/estimate, consolidated/separate, units and EPS
+          definition/share denominator. Never combine incomparable EPS bases across sources or periods,
+          synthesize quarterly EPS from annual EPS, or substitute price_RS for industry_leadership.
+        - Cite the section/source, period and basis actually used in existing fundamental_check evidence
+          and rationale fields. Preserve recognized operating profit (F1), debt ratio (F2), ROE/revenue
+          (F3), and business evidence (F4); missing quarterly EPS/leadership does not mean all fundamentals
+          are absent. Distinguish NOT_IN_INPUT (not found in supplied inputs), NOT_REQUESTED (supplement
+          not queried), SOURCE_UNAVAILABLE (queried source failed or did not supply the requested item),
+          and INCOMPARABLE (entity/period/basis mismatch); more than one may describe the provenance.
+          Unqueried evidence is not evidence that data exists nowhere. UNKNOWN is an evidence status,
+          not a new automatic pass/fail or rejection gate. Keep existing schema, F1–F4 criteria, scoring,
+          regime matrix and independent gates unchanged; do not invent evidence to complete a field.
         - `sqlite`: run `describe_table` first; filter holdings by `account_id = 'primary'` when column exists.
 
         ## Time-of-day Data Reliability
 
         - **Morning session (09:30~10:30 KST)**: today's volume/candle is in-progress. Do NOT make assertions
           like "today's volume is weak". Use prior-day confirmed data; today is reference only.
-        - **Afternoon (14:50+ KST)**: today's data is settled. All technical indicators are usable.
+        - **Afternoon (including 14:50+ KST)**: time alone does not establish finality. Use today's
+          close/volume as final only with explicit source confirmation for that trading date. Otherwise
+          label observed data intraday, or BAR_FINALITY_UNKNOWN if finality is unavailable; do not call
+          it a confirmed close. Separate confirmed prior-day indicators from provisional current-day
+          observations and cite the actual basis used, even if the report calls an intraday value a close.
 
         ## JSON Response Format
 
@@ -614,16 +636,37 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         - `time-get_current_time`: 가장 먼저 호출하십시오. 반환된 날짜를 모든 kospi_kosdaq 조회의 종료일로 사용합니다.
         - `kospi_kosdaq-get_stock_ohlcv` / `get_stock_trading_volume` / `get_index_ohlcv`: 시장/종목 데이터.
         - `kospi_kosdaq-load_all_tickers` 호출 금지.
-        - `perplexity-ask`: 보고서에 동종업계 PER/PBR 비교가 없을 때만 호출하십시오. 호출 시:
-          * "[종목명] PER PBR vs [업종명] 업계 평균 비교"
-          * "[종목명] vs 동종업계 주요 경쟁사 비교"
-          * 질문에 현재 날짜를 포함하고, 답변의 날짜를 항상 검증하십시오
+        - 근거가 없다고 판단하기 전에 지정된 절뿐 아니라 전체 보고서, 주입된 팩트, 이미 반환된 MCP
+          결과를 확인하십시오. 보고서 입력은 텍스트이므로 차트 이미지를 직접 보았다고 하거나
+          보이지 않는 차트의 수치를 추정하지 마십시오.
+        - `perplexity-ask`: 위 확인 후에도 판단에 중요한 quarterly EPS(분기 EPS), annual EPS(연간 EPS),
+          industry_leadership(업종 리더), 동종업계 비교(PER/PBR 포함) 근거가 부족한 경우에만 남은 항목을
+          묶어 통합 질의 최대 1회로 보완하십시오. 이미 있는 근거를 재검색하거나 같은 질문을 반복하거나
+          실패·타임아웃된 보완 조회를 재시도하지 마십시오. 기존 실행 제한 시간을 지키고 시간이 부족하면
+          조회 대신 NOT_REQUESTED로 남기십시오. 종목명·코드, 현재 날짜, 필요한 결산 기간과 비교군을
+          지정하고 현재 날짜를 포함하십시오. 동종업계 주요 경쟁사 비교는 판단에 중요한 누락 항목일 때만
+          함께 조회하십시오. 출처·날짜, 법인(모회사/자회사), 실적/추정, 연결/별도, 단위, EPS 정의·주식 수 분모를
+          확인하십시오. 출처·기간별 EPS 산정 기준이 다르면 혼합하지 말고 연간 EPS로 분기 EPS를 만들거나
+          price_RS(주가 상대강도)를 industry_leadership의 대체 근거로 사용하지 마십시오.
+        - 기존 fundamental_check 근거와 rationale 필드에 실제 사용한 절·출처, 기간, 산정 기준을
+          간결하게 명시하십시오. 확인한 영업이익(F1), 부채비율(F2), ROE·매출(F3), 사업 근거(F4)는
+          유지하십시오. 분기 EPS·리더 근거의 누락을 모든 펀더멘털의 부재로 확대하지 마십시오.
+          NOT_IN_INPUT(제공된 입력에서 찾지 못함), NOT_REQUESTED(보완 조회하지 않음),
+          SOURCE_UNAVAILABLE(조회했으나 실패하거나 해당 항목을 제공하지 않음),
+          INCOMPARABLE(법인·기간·산정 기준 불일치)을 구분하고 필요하면 함께 표기하십시오.
+          조회하지 않은 것을 어디에도 데이터가 없다고 표현하지 마십시오. UNKNOWN은 근거 상태이지
+          새로운 자동 통과·실패·미진입 게이트가 아닙니다. 기존 스키마, F1–F4 기준, 점수, 시장별
+          매트릭스와 독립 게이트를 유지하고 필드를 채우기 위해 근거를 만들어내지 마십시오.
         - `sqlite`: `describe_table` 먼저 실행하고, account_id 컬럼이 있으면 `account_id = 'primary'`로 필터링하십시오.
 
         ## 시간대별 데이터 신뢰도
 
         - **오전장 (09:30~10:30 KST)**: 당일 거래량/캔들은 미완성입니다. "오늘 거래량이 약하다" 같은 확정 판단은 금지하십시오. 전일 종가/거래량 기준으로 분석하고, 당일 데이터는 추세 변화 참고용으로만 사용합니다.
-        - **오후 장 (14:50+ KST)**: 당일 데이터가 확정됩니다. 모든 기술적 지표를 사용해도 됩니다.
+        - **오후 장 (14:50+ KST 포함)**: 시각만으로 데이터 확정을 판단하지 마십시오. 해당 거래일의
+          확정 여부를 출처가 명시적으로 확인한 경우에만 당일 종가·거래량을 확정값으로 사용하십시오.
+          그 외에는 장중 관측값으로, 확정 여부를 알 수 없으면 BAR_FINALITY_UNKNOWN으로 표시하고
+          확정 종가라고 부르지 마십시오. 전일 확정 지표와 당일 잠정 관측값을 구분하고 실제 사용한
+          기준을 명시하십시오. 보고서가 장중 가격을 종가라고 썼더라도 그대로 확정값으로 취급하지 마십시오.
 
         ## 매매일지·직관 활용 (주입된 경우)
         프롬프트에 "Same Stock Trade History" 또는 "Accumulated Trading Intuitions"가 주어지면 신중히 가중하십시오:
