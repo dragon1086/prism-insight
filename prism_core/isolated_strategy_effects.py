@@ -80,7 +80,8 @@ class EffectsPipelineContext:
                         raise ValueError()
                     if kind == "corporate_event" and (type(value) is not dict or set(value) != {"should_exit", "reason"}
                             or type(value["should_exit"]) is not bool or not isinstance(value["reason"], str)
-                            or not 1 <= len(value["reason"]) <= 512):
+                            or len(value["reason"]) > 512
+                            or (value["should_exit"] and not value["reason"].strip())):
                         raise ValueError()
                     if kind == "regime" and (type(value) is not dict or set(value) != {"regime", "summary"}
                             or value["regime"] not in {"parabolic", "strong_bull", "moderate_bull", "sideways", "moderate_bear", "strong_bear"}
