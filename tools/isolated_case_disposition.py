@@ -5,7 +5,7 @@ An UNKNOWN row and its original case ID remain permanently unusable.
 One original case permits exactly one immutable future source/runtime scope;
 later revisions need a separately reviewed authorization design, not a new lane.
 Operator attestations are not cryptographic authentication. No invocation has
-been approved, and the mandatory real-host probe remains unavailable.
+been approved by this module; collection never substitutes for operator consent.
 """
 from __future__ import annotations
 
@@ -120,23 +120,72 @@ def _artifact(root, filename, expected_hash):
         value = json.loads(raw)
         if type(value) is not dict:
             raise DispositionRejected("invalid_operator_artifact")
-        return value
+        return value, raw
     except (OSError, ValueError):
         raise DispositionRejected("invalid_operator_artifact") from None
     finally:
         if fd is not None:
+                os.close(fd)
+
+
+def _archive_bytes(root, raw):
+    """Store exact bounded bytes by hash, exclusive and read-only; never repair."""
+    from tools.isolated_trading_case_supervisor import _private_root
+    root = _private_root(root)
+    if not isinstance(raw, bytes) or not 1 <= len(raw) <= 65536:
+        raise DispositionRejected("invalid_archive_bytes")
+    digest = hashlib.sha256(raw).hexdigest()
+    directory = root / "operator-artifacts"
+    fd = parent = None
+    try:
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        _private_root(directory)
+        parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        path = directory / (digest + ".json")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o400 or info.st_size != len(raw)
+                    or os.read(fd, 65537) != raw):
+                raise DispositionRejected("archive_conflict")
+        else:
+            cursor = 0
+            while cursor < len(raw):
+                count = os.write(fd, raw[cursor:])
+                if count <= 0:
+                    raise OSError()
+                cursor += count
+            os.fchmod(fd, 0o400)
+        os.fsync(fd)
+        os.fsync(parent)
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(root_fd)
+        finally:
+            os.close(root_fd)
+        return digest
+    except (OSError, ValueError):
+        raise DispositionRejected("archive_failed") from None
+    finally:
+        if fd is not None:
             os.close(fd)
+        if parent is not None:
+            os.close(parent)
 
 
 def _host_probe(original_registration, state_root):
-    """INTENTIONALLY UNAVAILABLE until separately reviewed Linux probe exists.
-
-    Must observe actual current /proc identities/namespaces and registered paths,
-    never trust a caller boolean or infer historical cleanup from current absence.
-    Old PID start identities were not captured: retain that explicit limitation.
-    No runtime setter, callback parameter, CLI or RPC can replace this dependency.
-    """
-    raise DispositionRejected("reviewed_host_probe_unavailable")
+    """Mandatory fixed host collector, never a caller boolean/callback."""
+    from tools.isolated_host_quiescence import collect, QuiescenceRejected
+    try:
+        return collect(original_registration, state_root)
+    except QuiescenceRejected:
+        raise DispositionRejected("host_quiescence_unavailable") from None
 
 
 def _validated_registration(registration, root):
@@ -161,7 +210,7 @@ def _claim_hash(row):
 
 
 def record_operator_disposition(lane, *, expected_approval_sha256, original_registration):
-    """Trusted host operator API only; currently cannot succeed without probe.
+    """Trusted host operator API only; cannot succeed without fresh host probe.
 
     An expected hash/reference is NOT authentication. Authority is operator-owned
     approval/evidence files in the structurally unmounted private state root.
@@ -170,7 +219,7 @@ def record_operator_disposition(lane, *, expected_approval_sha256, original_regi
     from tools.isolated_trading_case_supervisor import CaseLane
     if not isinstance(lane, CaseLane) or lane.db is None or lane.fd is None or lane.db.in_transaction:
         raise DispositionRejected("locked_lane_required")
-    approval = _artifact(lane.root, "operator-disposition-approval.json", expected_approval_sha256)
+    approval, approval_bytes = _artifact(lane.root, "operator-disposition-approval.json", expected_approval_sha256)
     fields = {"schema_version", "case_id", "payload_sha256", "evidence_sha256", "operator_authorization_ref",
               "decision", "scope_sha256", "historical_receipt", "risk_acceptance", "scope", "original_outcome",
               "same_case_retry", "approved_at"}
@@ -185,7 +234,7 @@ def record_operator_disposition(lane, *, expected_approval_sha256, original_regi
             or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", approval["operator_authorization_ref"]) is None
             or approval["case_id"] != original_registration.case_id):
         raise DispositionRejected("invalid_operator_approval")
-    evidence = _artifact(lane.root, "operator-disposition-evidence.json", approval["evidence_sha256"])
+    evidence, evidence_bytes = _artifact(lane.root, "operator-disposition-evidence.json", approval["evidence_sha256"])
     if (set(evidence) != {"schema_version", "case_id", "payload_sha256", "historical_start_identity", "historical_cleanup_receipt",
                          "original_claim_sha256", "original_artifact_sha256", "original_deadline_seconds"}
             or type(evidence["schema_version"]) is not int or evidence["schema_version"] != 1
@@ -213,19 +262,23 @@ def record_operator_disposition(lane, *, expected_approval_sha256, original_regi
             raise DispositionRejected("original_claim_mismatch")
         if not time.time() > row[2] + original_registration.case_deadline:
             raise DispositionRejected("original_window_not_expired")
-        # A future reviewed probe must return this bounded observation, never
-        # infer missing historical identities or claim the old case completed.
+        # Current absence never reconstructs historical cleanup or completion.
         observation = _host_probe(original_registration, lane.root)
-        if (type(observation) is not dict or set(observation) != {"observed_at", "current_matches", "historical_start_identity"}
-                or type(observation["observed_at"]) not in {int, float}
+        from tools.isolated_host_quiescence import validate_receipt
+        if (not validate_receipt(observation)
                 or not 0 <= time.time() - observation["observed_at"] <= 5
-                or type(observation["current_matches"]) is not int or observation["current_matches"] != 0
-                or observation["historical_start_identity"] != "NOT_CAPTURED"):
+                or observation["current_matches"] != 0 or observation["relevant_socket_count"] != 0):
+            raise DispositionRejected("current_quiescence_unverified")
+        _archive_bytes(lane.root, approval_bytes)
+        _archive_bytes(lane.root, evidence_bytes)
+        probe_bytes = json.dumps(observation, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        probe_sha256 = _archive_bytes(lane.root, probe_bytes)
+        if not 0 <= time.time() - observation["observed_at"] <= 5:
             raise DispositionRejected("current_quiescence_unverified")
         db.execute("INSERT INTO dispositions(case_id,payload_sha256,evidence_sha256,operator_authorization_ref,approval_sha256,scope_sha256,quiescence_json,decision) VALUES(?,?,?,?,?,?,?,?)",
                    (approval["case_id"], approval["payload_sha256"], approval["evidence_sha256"],
                     approval["operator_authorization_ref"], expected_approval_sha256, approval["scope_sha256"],
-                    json.dumps(observation, sort_keys=True, separators=(",", ":"), allow_nan=False), DECISION))
+                    json.dumps({**observation, "probe_sha256": probe_sha256}, sort_keys=True, separators=(",", ":"), allow_nan=False), DECISION))
         db.execute("COMMIT")
     except BaseException:
         if db.in_transaction:
