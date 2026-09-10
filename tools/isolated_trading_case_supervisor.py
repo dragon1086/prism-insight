@@ -377,7 +377,8 @@ async def _agent(command, deadline, helper, helper_drains):
     tasks = []
     completion = None
     try:
-        process = await asyncio.create_subprocess_exec("/usr/bin/bwrap", *command[1:], env={}, close_fds=True,
+        # Remaining argv is the reviewed fixed namespace builder, never shell text.
+        process = await asyncio.create_subprocess_exec("/usr/bin/bwrap", *command[1:], env={}, close_fds=True,  # nosemgrep
                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout = asyncio.create_task(_drain(process.stdout, capture=True, limit=65536))
         stderr = asyncio.create_task(_drain(process.stderr))
