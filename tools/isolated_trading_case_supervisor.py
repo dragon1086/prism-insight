@@ -10,7 +10,7 @@ from __future__ import annotations
 import fcntl
 import asyncio
 from collections import Counter
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -20,12 +20,14 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import sys
 import time
 
 from tools import isolated_agent_namespace as namespace
 from tools.codex_probe_sandbox import ParentLease, TRUSTED_HOST_PYTHON, load_host_manifest
 from tools.isolated_codex_binding import FixedCodexBinding
 from tools.isolated_codex_invoker import CodexInvoker, InvocationScope
+from tools.isolated_case_journal import CaseJournal, JournalRejected, CATEGORIES
 
 
 class CaseRejected(ValueError):
@@ -234,18 +236,109 @@ async def _drain(stream, *, capture=False, limit=8 * 1024 * 1024):
             chunks.append(chunk)
 
 
-async def _stop_process(process):
+async def _stop_process(process, receipt=None):
     """Only an owned child handle. A forced helper kill is NOT a clean ACK."""
+    if receipt is None:
+        receipt = {}
+    receipt.update(forced_kill=False, returncode=process.returncode)
     if process.returncode is not None:
+        await asyncio.wait_for(process.wait(), timeout=2)
         return process.returncode == 0
-    process.terminate()
     try:
-        await asyncio.wait_for(process.wait(), timeout=2)
-    except asyncio.TimeoutError:
-        process.kill()
-        await asyncio.wait_for(process.wait(), timeout=2)
-        return False
-    return process.returncode == 0
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass  # Wait for the OWNED handle; a missing PID is not a cleanup ACK.
+        try:
+            await asyncio.wait_for(process.wait(), timeout=2)
+        except asyncio.TimeoutError:
+            receipt["forced_kill"] = True
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await asyncio.wait_for(process.wait(), timeout=2)
+        return not receipt["forced_kill"] and process.returncode == 0
+    finally:
+        receipt["returncode"] = process.returncode
+
+
+def _failure_category(error):
+    if isinstance(error, asyncio.CancelledError):
+        return "CANCELLED"
+    if isinstance(error, JournalRejected):
+        return "JOURNAL_FAILURE"
+    if isinstance(error, CaseRejected) and str(error) in CATEGORIES:
+        return str(error)
+    return "INTERNAL_FAILURE"
+
+
+def _invoker_receipt(invoker):
+    categories, snapshots = [], []
+    for _, task, _ in invoker.records.values():
+        try:
+            value = task.result() if task.done() and not task.cancelled() else {}
+            category, snapshot = value.get("category"), value.get("snapshot_sha256")
+            categories.append(category if category in {"ok", "model_error", "model_timeout"} else "UNKNOWN")
+            if isinstance(snapshot, str) and re.fullmatch(r"[0-9a-f]{64}", snapshot):
+                snapshots.append(snapshot)
+        except BaseException:
+            categories.append("UNKNOWN")
+    return {"terminal_categories": categories, "snapshot_hashes": snapshots,
+            "poisoned": bool(invoker.poisoned), "unjoined_count": len(invoker.unjoined_callbacks)}
+
+
+@asynccontextmanager
+async def _joined_context(context, journal, stage, component, receipt):
+    """Receipt per callback, including an early failure later exits can mask."""
+    entered, clean, failure = False, False, "NONE"
+    try:
+        value = await context.__aenter__()
+        entered = True
+        try:
+            yield value
+        finally:
+            try:
+                await context.__aexit__(*sys.exc_info())
+                clean = True
+            except BaseException as error:
+                failure = _failure_category(error)
+                raise
+    except BaseException as error:
+        if not entered:
+            failure = _failure_category(error)
+        raise
+    finally:
+        if journal is not None:
+            details = receipt()
+            if details.get("poisoned") or details.get("unjoined_count", 0):
+                clean, failure = False, "invoker_cleanup_unknown"
+            journal.record(stage, component=component, receipt_valid=clean,
+                           failure_category=failure, **details)
+
+
+@contextmanager
+def _joined_bridge(context, journal, component):
+    clean, failure = False, "NONE"
+    try:
+        try:
+            value = context.__enter__()
+        except BaseException:
+            failure = "read_bridge_cleanup_unknown"
+            raise
+        try:
+            yield value
+        finally:
+            try:
+                context.__exit__(*sys.exc_info())
+                clean = True
+            except BaseException:
+                failure = "read_bridge_cleanup_unknown"
+                raise
+    finally:
+        if journal is not None:
+            journal.record("READ_BRIDGES_JOINED", component=component,
+                           receipt_valid=clean, failure_category=failure)
 
 
 _HELPER_BOOTSTRAP = "import sys;sys.path.insert(0,sys.argv[1]);from tools.isolated_trading_case_supervisor import _responses_child;_responses_child(sys.argv[2:])"
@@ -296,12 +389,14 @@ def _responses_child(args):
 
 
 @asynccontextmanager
-async def _responses_helper(reg, socket_path, read_tools):
+async def _responses_helper(reg, socket_path, read_tools, *, cleanup_receipt=None):
     reader, writer = os.pipe()
     process = None
     drains = []
     clean = False
     evidence = {"cleanup_confirmed": False, "requests": None}
+    if cleanup_receipt is None:
+        cleanup_receipt = {}
     try:
         # Fixed helper and interpreter only; no agent-configurable command/env.
         process = await asyncio.create_subprocess_exec(
@@ -326,14 +421,18 @@ async def _responses_helper(reg, socket_path, read_tools):
         if reader is not None:
             os.close(reader)
         if process is not None:
-            clean = await _stop_process(process)
+            clean = await _stop_process(process, cleanup_receipt)
         try:
             results = await asyncio.wait_for(asyncio.gather(*drains, return_exceptions=True), timeout=1)
         except asyncio.TimeoutError:
             raise CaseRejected("responses_cleanup_unknown") from None
-        if process is not None and (not clean or any(isinstance(result, BaseException) for result in results)):
-            raise CaseRejected("responses_cleanup_unknown")
         if process is not None:
+            if results and isinstance(results[0], bytes):
+                cleanup_receipt["stdout_bytes"] = len(results[0])
+            if len(results) > 1 and type(results[1]) is int:
+                cleanup_receipt["stderr_bytes"] = results[1]
+            if not clean or any(isinstance(result, BaseException) for result in results):
+                raise CaseRejected("responses_cleanup_unknown")
             try:
                 receipt = json.loads(results[0])
                 if (type(receipt) is not dict or set(receipt) != {"schema_version", "requests"} or receipt["schema_version"] != 1
@@ -342,10 +441,11 @@ async def _responses_helper(reg, socket_path, read_tools):
             except (ValueError, TypeError, IndexError):
                 raise CaseRejected("responses_receipt_unknown") from None
             evidence.update(cleanup_confirmed=True, requests=receipt["requests"])
+            cleanup_receipt["helper_requests"] = receipt["requests"]
 
 
 @asynccontextmanager
-async def _services(reg, connection, private_root):
+async def _services(reg, connection, private_root, journal=None):
     env = json.loads(reg.binding.environment_json)
     module, manifest = load_host_manifest(Path(env["PRISM_PROBE_HOST_MANIFEST"]), reg.binding.model_root)
     market = json.loads(reg.namespace_json)["controls"]["market"]
@@ -362,24 +462,34 @@ async def _services(reg, connection, private_root):
         tools.update(f"{server}-{name}" for name in module.TOOLS[server])
     async with AsyncExitStack() as stack:
         for name, server in (("perplexity", "perplexity"), ("market", market_server)):
-            stack.enter_context(module.ReadMcpBridge(sockets[name], server_name=server, **configs[server]))
-        helper, drains, evidence = await stack.enter_async_context(_responses_helper(reg, sockets["responses"], tools))
-        await stack.enter_async_context(invoker.serve(sockets["codex-invoke"]))
+            stack.enter_context(_joined_bridge(module.ReadMcpBridge(sockets[name], server_name=server, **configs[server]), journal, name))
+        helper_receipt = {}
+        helper_context = _responses_helper(reg, sockets["responses"], tools, cleanup_receipt=helper_receipt)
+        helper, drains, evidence = await stack.enter_async_context(
+            _joined_context(helper_context, journal, "RESPONSES_JOINED", "responses", lambda: helper_receipt))
+        await stack.enter_async_context(_joined_context(invoker.serve(sockets["codex-invoke"]), journal,
+                                                       "INVOKER_JOINED", "invoker", lambda: _invoker_receipt(invoker)))
         yield sockets, invoker, helper, drains, evidence
     if invoker.poisoned or invoker.unjoined_callbacks:
         raise CaseRejected("invoker_cleanup_unknown")
 
 
-async def _agent(command, deadline, helper, helper_drains):
+async def _agent(command, deadline, helper, helper_drains, journal=None):
     if not isinstance(command, list) or not command or command[0] != "/usr/bin/bwrap":
         raise CaseRejected("fixed_namespace_executable_required")
     process = None
     tasks = []
     completion = None
+    receipt = {"forced_kill": False, "returncode": None}
+    started = time.monotonic()
     try:
+        if journal is not None:
+            journal.record("AGENT_STARTED", component="agent", receipt_valid=False)
         # Remaining argv is the reviewed fixed namespace builder, never shell text.
         process = await asyncio.create_subprocess_exec("/usr/bin/bwrap", *command[1:], env={}, close_fds=True,  # nosemgrep
                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        if journal is not None:
+            journal.record("AGENT_STARTED", component="agent", receipt_valid=True)
         stdout = asyncio.create_task(_drain(process.stdout, capture=True, limit=65536))
         stderr = asyncio.create_task(_drain(process.stderr))
         tasks = [stdout, stderr, asyncio.create_task(process.wait())]
@@ -389,20 +499,35 @@ async def _agent(command, deadline, helper, helper_drains):
             done, _ = await asyncio.wait({completion, helper_exit, *helper_drains}, timeout=deadline, return_when=asyncio.FIRST_COMPLETED)
             if completion not in done:
                 raise CaseRejected("case_deadline_or_helper_failure")
-            output, _, returncode = completion.result()
+            output, stderr_bytes, returncode = completion.result()
+            receipt.update(stdout_bytes=len(output), stderr_bytes=stderr_bytes, returncode=returncode)
             return returncode, output
         finally:
             helper_exit.cancel()
             await asyncio.gather(helper_exit, return_exceptions=True)
+    except BaseException as error:
+        if journal is not None:
+            journal.record("AGENT_STARTED", component="agent", receipt_valid=False,
+                           failure_category=_failure_category(error),
+                           elapsed_ms=max(0, int((time.monotonic() - started) * 1000)))
+        raise
     finally:
-        if process is not None and process.returncode is None:
-            await _stop_process(process)
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        if completion is not None:
-            await asyncio.gather(completion, return_exceptions=True)
+        clean = False
+        try:
+            if process is not None:
+                await _stop_process(process, receipt)
+                clean = process.returncode is not None
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if completion is not None:
+                await asyncio.gather(completion, return_exceptions=True)
+        finally:
+            if journal is not None:
+                journal.record("AGENT_REAPED", component="agent", receipt_valid=clean,
+                               failure_category="NONE" if clean else "agent_cleanup_unknown",
+                               elapsed_ms=max(0, int((time.monotonic() - started) * 1000)), **receipt)
 
 
 def _verify_activity(attempts, invoker, helper_evidence):
@@ -518,8 +643,11 @@ async def run_case(registration, state_root):
         if previous is not None:
             return previous
         connection = None
+        journal = None
         deadline = time.monotonic() + reg.case_deadline
         try:
+            journal = CaseJournal(state_root, reg.case_id, payload_hash)
+            journal.record("CLAIMED")
             writer = reg.runtime.connect()  # verifies/initializes marked owner
             writer.close()
             connection = sqlite3.connect(Path(reg.runtime.db_path).as_uri() + "?mode=ro", uri=True)
@@ -528,18 +656,31 @@ async def run_case(registration, state_root):
             private.mkdir(mode=0o700)
             if (Path(reg.runtime.root) / "case-result.json").exists():
                 raise CaseRejected("existing_case_artifact")
-            async with _services(reg, connection, private) as (sockets, invoker, helper, drains, helper_evidence):
+            journal.record("SERVICES_READY", receipt_valid=False)
+            async with _services(reg, connection, private, journal) as (sockets, invoker, helper, drains, helper_evidence):
+                journal.record("SERVICES_READY", receipt_valid=True)
                 command = namespace.command(**inputs, sockets=sockets)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise CaseRejected("case_deadline")
-                returncode, stdout = await _agent(command, remaining, helper, drains)
+                returncode, stdout = await _agent(command, remaining, helper, drains, journal)
             if invoker.poisoned or invoker.unjoined_callbacks:
                 raise CaseRejected("invoker_cleanup_unknown")
+            journal.record("OUTCOME_VALIDATED", receipt_valid=False)
             result = _outcome(reg, returncode, stdout, invoker, helper_evidence)
+            journal.record("OUTCOME_VALIDATED", receipt_valid=True)
+            # Finalization receipt precedes the authoritative DB update. Never
+            # use a journal receipt to override CLAIMED/UNKNOWN database state.
+            journal.record("FINALIZATION_READY", receipt_valid=True)
             lane.finish(reg.case_id, payload_hash, result, cleanup_confirmed=True)
             return result
         except BaseException as error:
+            if journal is not None:
+                try:
+                    journal.record(journal.stage, component="case", receipt_valid=False,
+                                   failure_category=_failure_category(error))
+                except BaseException:
+                    pass  # The durable claim below remains UNKNOWN regardless.
             lane.finish(reg.case_id, payload_hash, {"status": "UNKNOWN", "category": "CASE_OR_CLEANUP_UNCERTAIN"}, cleanup_confirmed=False)
             if isinstance(error, asyncio.CancelledError):
                 raise
