@@ -13,12 +13,19 @@ def _competitive_evidence_contract(reference_date):
     return f"""## Competitive evidence collection and reporting contract
 - Reuse already obtained input facts and source excerpts before any new search. Do not
   repeat a query or re-read a URL whose relevant evidence is already available.
-- Use perplexity_ask only if leader/trend context or material competitive evidence is
-  missing: at most 2 consolidated queries total, not two queries per company or field.
-  Query 1 combines sector leaders (2-3 peers), their trends and cited primary sources;
-  query 2 is optional and covers only unresolved material competitive-position gaps.
+- Query 1 is REQUIRED using perplexity_ask unless complete, comparable, cited competitive
+  evidence records were already supplied at invocation. Only those explicit input records
+  can waive discovery; a news listing fetched later, basic company profile, or social sentiment
+  does not waive it. Reuse qualifying input records without duplicate searches or source reads.
+  Make at most 2 consolidated queries total, not two queries per company or field.
+  Query 1 MUST cover the target business scope, appropriate peer_universe, and
+  business_competitive_position together with sector/price leaders (2-3 peers), trends,
+  metrics, and cited public primary source URLs. Merely asking which stocks are rising
+  is insufficient. For holding companies, seek comparable holding-company peers or
+  explicitly scoped subsidiary business comparisons; do not stop at an inappropriate
+  holding-company versus operating-company comparison or infer parent dominance.
+  Query 2 is optional and covers only unresolved material competitive-position gaps.
   Specify entity/ticker, market, and reference date {reference_date} in every query.
-  No blanket mandatory search if the necessary cited evidence is already supplied.
 - In addition to the cached target-news listing, use firecrawl_scrape for at most 2 additional
   cited public primary URLs, only if material competitive claims remain unverified.
   Prefer company filings/IR, regulators, exchanges, or industry statistics over marketing
@@ -47,11 +54,17 @@ def _competitive_evidence_contract(reference_date):
   field names the question being assessed; type is one of sector_tailwind,
   price_leadership, business_competitive_position. Missing values remain UNKNOWN.
 - status must be SOURCE_CHECKED, SEARCH_ONLY, NOT_FOUND, or INCOMPARABLE.
-  SOURCE_CHECKED means the relevant original source was actually read (or its original
-  excerpt supplied), not a guarantee that the claim is true, comparable, or leadership proven.
+  SOURCE_CHECKED requires the exact cited page to have been actually opened and its relevant
+  original content read, or that original excerpt with its source was supplied at invocation.
+  A Perplexity answer, citation alone, unrelated listing, or mere HTTP success never qualifies.
+  This status is a model-reported assessment, not a runtime proof and not a guarantee
+  that the claim is true, comparable, or leadership proven.
   SEARCH_ONLY means only discovery/search material supports it. NOT_FOUND means evidence
   was not found in the inspected scope, not that no public data exists; state whether
-  unqueried, access failed, parsing failed, or searched without a result. INCOMPARABLE
+  attempted searches/source reads versus unqueried, access failed, parsing failed,
+  or searched without a result. Never describe all sources as exhausted when only a
+  listing was read. If required discovery was unavailable, record NOT_FOUND and the
+  attempted/unqueried reason instead of implying successful investigation. INCOMPARABLE
   means entity/period/scope/metric mismatches prevent comparison despite available data.
   Do not fabricate quotations, peers, values, dates, URLs, or positive leadership. Preserve
   source qualifiers and unknowns in conclusions; absence of evidence is not negative proof.
