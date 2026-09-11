@@ -22,7 +22,7 @@ def _competitive_evidence_contract(reference_date):
 - In addition to the cached target-news listing, use firecrawl_scrape for at most 2 additional
   cited public primary URLs, only if material competitive claims remain unverified.
   Prefer company filings/IR, regulators, exchanges, or industry statistics over marketing
-  summaries. Select URLs actually supplied in input or discovered in search; never invent URLs.
+  summaries. Choose URLs actually supplied in input or discovered in search; never invent URLs.
   Reuse source text already read. Do not recursively scrape peer news or all articles.
   A search answer/citation or HTTP success without the relevant source content is not
   source verification. On access/parsing failure preserve that reason without retry loops.
