@@ -72,3 +72,11 @@ def test_source_status_requires_relevant_original_content_and_audit_reason(marke
     prompt = factory("Example", "TEST", "20260910", language=language).instruction
     for required in ("exact cited page", "actually opened", "Perplexity answer", "unrelated listing", "NOT_FOUND", "attempted", "unqueried", "not a runtime proof", "unresolved material"):
         assert required in prompt
+
+
+@pytest.mark.parametrize("language", ["ko", "en"])
+def test_price_leadership_is_stock_rs_and_peer_rank_requires_comparability(market_factory, language):
+    _, factory = market_factory
+    prompt = factory("Example", "TEST", "20260910", language=language).instruction
+    for required in ("share-price relative return or RS", "window and peer_universe", "not product pricing or cost leadership", "business_competitive_position", "rank or strongest", "comparable metric", "covered peers", "different fiscal periods", "company strength", "comparison INCOMPARABLE"):
+        assert required in prompt

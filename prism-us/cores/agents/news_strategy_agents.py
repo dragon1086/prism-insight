@@ -35,12 +35,17 @@ def _competitive_evidence_contract(reference_date):
   source verification. On access/parsing failure preserve that reason without retry loops.
 - Separate sector_tailwind, price_leadership, and business_competitive_position. Price
   momentum, sector membership, company size, or positive news alone proves no market dominance.
+  price_leadership means share-price relative return or RS with an explicit window and peer_universe,
+  not product pricing or cost leadership; those belong to business_competitive_position.
   Separate the listed parent entity from each subsidiary or separately listed affiliate;
   a subsidiary's advantage is not automatically the parent's leadership. Identify the
   parent's ownership/contribution if available, otherwise keep that linkage unknown.
 - Compare the same period, geography, business scope, metric definition, and unit across
   an explicit peer_universe. Disclose partial peer coverage; do not infer an industry rank
-  from a screened subset. Separate actual and forecast values. Check publication_date and
+  from a screened subset. Separate actual and forecast values.
+  Support any rank or strongest claim with a comparable metric across the covered peers;
+  partial coverage or different fiscal periods may describe company strength but cannot
+  prove a competitive ranking: mark that comparison INCOMPARABLE. Check publication_date and
   information availability against the decision timestamp, not just today's access date:
   a currently available source does not prove it was available at a historical decision.
   Older official competitive statistics may be used with their period and staleness stated;
