@@ -382,7 +382,17 @@ def enhance_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """
     if not df.empty:
         df = df.copy()  # Explicitly create copy to prevent SettingWithCopyWarning
-        name_map = _get_ticker_name_map()
+        # A snapshot may already carry names. Do not authenticate to KRX just
+        # to replace those labels; resolve only missing labels via the chain.
+        name_map = {}
+        for column in ("stock_name", "Company Name", "종목명"):
+            if column not in df.columns:
+                continue
+            for ticker, value in df[column].items():
+                if isinstance(value, str) and value.strip():
+                    name_map.setdefault(_normalize_ticker_code(ticker), value.strip())
+        if not name_map:
+            name_map = _get_ticker_name_map()
         df["stock_name"] = df.index.map(lambda ticker: _get_display_ticker_name(ticker, name_map))
     return df
 
@@ -1383,9 +1393,9 @@ def trigger_contrarian_value(trade_date: str, snapshot: pd.DataFrame,
     - Identifies quality stocks in a deep drawdown (15%-40% below 52-week high)
     - Requires positive recovery signal today (Close > Open)
     - Scores on drawdown magnitude, liquidity, low P/B ratio, and daily recovery
-    - Uses krx_data_client for 52-week high and fundamental data
+    - Uses the configured source chain for 52-week high and fundamental data
     """
-    from krx_data_client import get_market_ohlcv_by_date, get_market_fundamental_by_date
+    from cores.market_data import get_market_ohlcv_by_date, get_market_fundamental_by_date
 
     logger.debug("trigger_contrarian_value started")
 
