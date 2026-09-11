@@ -56,12 +56,15 @@ def _dict_to_markdown(data: dict, title: str = "") -> str:
         if metadata.get("note"):
             result += f"> **데이터 상태:** {metadata['note']}\n\n"
         fields = []
-        for key in ("data_status", "as_of", "observed_at", "source", "provider", "bar_status"):
+        for key in ("data_status", "as_of", "observed_at", "source", "provider", "bar_status", "latest_only", "unit", "derivation", "precision_krw"):
             value = metadata.get(key)
             if isinstance(value, (str, int, float, bool)) and value != "":
                 fields.append(f"{key}={str(value).replace(chr(10), ' ')[:256]}")
         if fields:
             result += "> **원천 메타데이터:** " + "; ".join(fields) + "\n\n"
+        derivation = metadata.get("derivation_fields")
+        if isinstance(derivation, list) and all(isinstance(item, str) for item in derivation):
+            result += "> **계산 입력:** " + ", ".join(derivation)[:256] + "\n\n"
 
     result += df.to_markdown(index=True) + "\n"
     return result
@@ -71,7 +74,7 @@ def _get_mcp_server_module():
     """Reuse the same provider chain as tools, without legacy eager KRX login.
 
     Returns:
-        The kospi_kosdaq_stock_server module, or None if import fails
+        The repository KIS adapter, or None if import fails
     """
     try:
         from cores.market_data import mcp_server as server
@@ -82,10 +85,10 @@ def _get_mcp_server_module():
 
 
 def _prefetch_sector_info(reference_date: str, market: str) -> dict:
-    """Optional KRX-only field; missing auth must not remove index/price data."""
+    """Optional KIS classification; unavailable fields cannot erase price data."""
     try:
-        from krx_data_client import _get_client
-        data = _get_client().get_market_sector_info(reference_date, market=market)
+        from cores.kis_sector_map import get_sector_info
+        data = get_sector_info(reference_date, market=market)
         return data if isinstance(data, dict) and "error" not in data else {}
     except Exception as exc:
         logger.warning("Sector classification unavailable: %s", type(exc).__name__)
@@ -443,7 +446,7 @@ def _compute_kr_regime(kospi_ohlcv: dict, kosdaq_ohlcv: dict = None) -> dict:
     Returns:
         Dict with regime classification, index summary, and confidence.
     """
-    df = pd.DataFrame.from_dict(kospi_ohlcv, orient='index')
+    df = pd.DataFrame.from_dict({key: value for key, value in kospi_ohlcv.items() if key != "__meta__"}, orient='index')
     if df.empty or len(df) < 10:
         return {"market_regime": "sideways", "regime_confidence": 0.3, "simple_ma_regime": "sideways"}
 
@@ -549,7 +552,7 @@ def _compute_kr_regime(kospi_ohlcv: dict, kosdaq_ohlcv: dict = None) -> dict:
     kosdaq_trend = "sideways"
     if kosdaq_ohlcv:
         try:
-            kd_df = pd.DataFrame.from_dict(kosdaq_ohlcv, orient='index')
+            kd_df = pd.DataFrame.from_dict({key: value for key, value in kosdaq_ohlcv.items() if key != "__meta__"}, orient='index')
             kd_df.index = pd.to_datetime(kd_df.index)
             kd_df = kd_df.sort_index().tail(20)
             kd_close = None

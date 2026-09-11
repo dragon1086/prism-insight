@@ -1,12 +1,12 @@
 """
-Jeon Ingu Trading - Real-time price fetcher using krx_data_client
+Jeon Ingu Trading - Real-time price fetcher using KIS market data
 
 Fetches current prices for KODEX Leverage and KODEX Inverse 2X
 """
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
-from krx_data_client import (
+from cores.market_data import (
     get_index_ohlcv_by_date,
     get_market_ohlcv_by_date,
 )
@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 import logging
 
 
-# pykrx compatible wrapper
+# KIS compatible wrapper
 class stock:
     @staticmethod
     def get_index_ohlcv_by_date(fromdate, todate, ticker):

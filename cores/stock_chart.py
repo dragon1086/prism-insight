@@ -687,6 +687,9 @@ def create_market_cap_chart(ticker, company_name=None, days=730, save_path=None)
     if df is None or len(df) == 0:
         logger.info(f"No market cap data available for {ticker}.")
         return None
+    if df.attrs.get("latest_only") or len(df) < 2:
+        logger.warning("Market-cap history chart omitted: latest-only snapshot for %s", ticker)
+        return None
 
     # Filter out rows with zero market cap (e.g., newly listed/delisted stocks)
     if 'MarketCap' in df.columns:
@@ -877,6 +880,9 @@ def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=Non
 
     if df is None or len(df) == 0:
         logger.info(f"No fundamental indicator data available for {ticker}.")
+        return None
+    if df.attrs.get("latest_only") or len(df) < 2:
+        logger.warning("Fundamental history chart omitted: latest-only snapshot for %s", ticker)
         return None
 
     # Filter out rows where all fundamental values are zero or NaN
@@ -1459,11 +1465,11 @@ def _detect_index_ticker(ticker: str) -> str:
     """
     global _KOSPI_TICKERS_CACHE
     try:
-        from pykrx import stock as _pykrx_stock
+        from cores.market_data import get_market_ticker_list
 
         if _KOSPI_TICKERS_CACHE is None:
             _KOSPI_TICKERS_CACHE = set(
-                _pykrx_stock.get_market_ticker_list(market="KOSPI")
+                get_market_ticker_list(market="KOSPI")
             )
         if ticker in _KOSPI_TICKERS_CACHE:
             return _KOSPI_INDEX_TICKER
@@ -1477,10 +1483,7 @@ def _detect_index_ticker(ticker: str) -> str:
 
 
 def _fetch_index_close(index_ticker: str, start_date: str, end_date: str):
-    """Fetch index daily close series via the authenticated krx_data_client.
-
-    Uses get_index_ohlcv_by_date (the project-standard authenticated wrapper)
-    instead of raw pykrx, which fails under the auth layer and returns empty.
+    """Fetch index daily close series through the KIS-only data interface.
     Returns a pandas Series indexed by DatetimeIndex (close prices), or None on
     failure. Never raises.
     """

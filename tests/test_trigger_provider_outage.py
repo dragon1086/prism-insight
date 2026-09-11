@@ -3,8 +3,34 @@ import pandas as pd
 import pytest
 
 import cores.market_data as market_data
-import krx_data_client
 import trigger_batch as trigger
+
+
+@pytest.mark.parametrize("field,bad", [(field, value) for field in ("per", "pbr")
+                                      for value in ("-1", "0", "NaN", "inf", "")]
+                                     + [("per", "10"), ("pbr", "0.8")])
+def test_contrarian_requires_actual_kis_finite_positive_ratios(monkeypatch, field, bad):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from cores.market_data.kis_source import KisSource
+    source = KisSource()
+    quote = {"per": "10", "pbr": "0.8", "eps": "100", "bps": "1000", field: bad}
+    monkeypatch.setattr(source, "_require_current_range", lambda *_: None)
+    monkeypatch.setattr(source, "_current_quote", lambda _: (
+        quote, datetime(2026, 9, 11, 10, tzinfo=ZoneInfo("Asia/Seoul"))))
+    monkeypatch.setattr(market_data, "get_market_fundamental_by_date",
+                        lambda start, end, ticker: source.fundamentals(ticker, start, end))
+    monkeypatch.setattr(market_data, "get_market_ohlcv_by_date",
+                        lambda *_: pd.DataFrame({"High": [100.0]}))
+    monkeypatch.setattr(trigger, "enhance_dataframe", lambda frame: frame)
+    current = pd.DataFrame({"Open": [75.0], "Close": [80.0], "Volume": [1000000],
+                            "Amount": [20000000000]}, index=["005930"])
+    previous = current.assign(Close=76.0)
+    result = trigger.trigger_contrarian_value("20260911", current, previous)
+    assert result.empty == (bad not in ("10", "0.8"))
+    if not result.empty:
+        assert result.loc["005930", "TrailingPE"] == 10.0
+        assert result.loc["005930", "PriceToBook"] == 0.8
 
 
 @pytest.mark.parametrize("missing", [None, "history", "fundamentals", "unprofitable", "invalid_pbr", "shallow"])
@@ -15,8 +41,6 @@ def test_contrarian_uses_chain_and_preserves_required_evidence(monkeypatch, miss
         direct_calls.append(args)
         raise RuntimeError("direct KRX authentication unavailable")
 
-    monkeypatch.setattr(krx_data_client, "get_market_ohlcv_by_date", forbidden, raising=False)
-    monkeypatch.setattr(krx_data_client, "get_market_fundamental_by_date", forbidden, raising=False)
     history = pd.DataFrame({"High": [100.0]})
     fundamentals = pd.DataFrame({"PER": [10.0], "PBR": [0.8]})
     if missing == "unprofitable":
@@ -62,7 +86,7 @@ def test_supplied_names_do_not_require_krx_authentication(monkeypatch, column):
         calls.append(True)
         raise RuntimeError("KRX authentication unavailable")
 
-    monkeypatch.setattr(trigger, "_get_client", forbidden)
+    monkeypatch.setattr(trigger, "fetch_kis_master_universe", forbidden)
     monkeypatch.setattr(trigger, "_TICKER_NAME_CACHE", None)
     monkeypatch.setattr(market_data, "get_market_ticker_name", lambda ticker: ticker)
     snapshot = pd.DataFrame({column: ["삼성전자"], "Close": [80.0]}, index=["005930"])

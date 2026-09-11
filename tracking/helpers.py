@@ -8,13 +8,49 @@ Extracted from stock_tracking_agent.py for LLM context efficiency.
 import json
 import logging
 import re
-import traceback
-from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def get_requested_session_prices(tickers) -> Dict[str, float]:
+    """Read only requested symbols at the latest verified KIS session date.
+
+    Per-symbol historical candles work on weekends, unlike current-only
+    full-market snapshots. Missing or mismatched observations are omitted.
+    """
+    import math
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from cores.market_data import get_market_ohlcv_by_date, get_nearest_business_day_in_a_week
+
+    symbols = sorted({str(ticker) for ticker in tickers if ticker})
+    if not symbols:
+        return {}
+    try:
+        day = get_nearest_business_day_in_a_week(
+            datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d"), prev=True
+        )
+    except Exception as exc:
+        logger.warning("KIS session date unavailable: %s", type(exc).__name__)
+        return {}
+    prices = {}
+    for ticker in symbols:
+        try:
+            frame = get_market_ohlcv_by_date(day, day, ticker)
+            if frame is None or frame.empty:
+                continue
+            rows = frame.loc[frame.index.strftime("%Y%m%d") == day]
+            if len(rows) != 1:
+                continue
+            price = float(rows.iloc[0]["Close"])
+            if math.isfinite(price) and price > 0:
+                prices[ticker] = price
+        except Exception as exc:
+            logger.warning("KIS session candle unavailable for %s: %s", ticker, type(exc).__name__)
+    return prices
 
 
 def extract_ticker_info(report_path: str) -> Tuple[str, str]:
@@ -60,53 +96,14 @@ async def get_current_stock_price(cursor, ticker: str, account_key: str | None =
     Returns:
         float: Current stock price
     """
-    import asyncio
-    from krx_data_client import get_nearest_business_day_in_a_week, get_market_ohlcv_by_ticker
-    import datetime
-
-    # KRX API (data.krx.co.kr) can intermittently time out. Retry the transient
-    # fetch a few times before falling back, so a momentary blip does not silently
-    # drop a fresh buy candidate (its price is not yet in the DB, so the last-price
-    # fallback returns 0 and the whole report analysis is skipped). #289-adjacent.
-    MAX_RETRIES = 3
-    for attempt in range(MAX_RETRIES):
-        try:
-            today = datetime.datetime.now().strftime("%Y%m%d")
-            trade_date = get_nearest_business_day_in_a_week(today, prev=True)
-            logger.info(f"Target date: {trade_date}")
-
-            df = get_market_ohlcv_by_ticker(trade_date)
-
-            if ticker in df.index:
-                current_price = df.loc[ticker, "Close"]
-                logger.info(f"{ticker} current price: {current_price:,.0f} KRW")
-                return float(current_price)
-            else:
-                # Data fetched OK but ticker absent — retrying won't help.
-                logger.warning(f"Cannot find ticker {ticker}")
-                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
-
-        except Exception as e:
-            logger.error(f"Error querying current price for {ticker} "
-                         f"(attempt {attempt + 1}/{MAX_RETRIES}): {str(e)}")
-            if attempt < MAX_RETRIES - 1:
-                wait = 2 * (attempt + 1)  # 2s, 4s exponential-ish backoff
-                logger.warning(f"{ticker} price query retry in {wait}s")
-                await asyncio.sleep(wait)
-            else:
-                logger.error(traceback.format_exc())
-                # KRX exhausted — try KIS before the DB fallback. A new buy
-                # candidate has no stock_holdings row, so the DB fallback
-                # returns 0 and the whole report analysis is silently skipped
-                # (2026-07-13 KRX outage dropped all 3 afternoon candidates).
-                kis_price = await _get_price_from_kis(ticker)
-                if kis_price > 0:
-                    return kis_price
-                return _get_last_price_from_db(cursor, ticker, account_key=account_key)
+    price = await _get_price_from_kis(ticker)
+    if price > 0:
+        return price
+    return _get_last_price_from_db(cursor, ticker, account_key=account_key)
 
 
 async def _get_price_from_kis(ticker: str) -> float:
-    """KIS quote fallback for when KRX (data.krx.co.kr) is down.
+    """Read-only KIS quote, independent of order eligibility or funding.
 
     KIS is an independent provider whose credentials are already configured
     wherever the tracking agents run (same creds the order path uses).
@@ -119,7 +116,7 @@ async def _get_price_from_kis(ticker: str) -> float:
             info = await asyncio.to_thread(trading.get_current_price, ticker)
         price = float((info or {}).get("current_price") or 0)
         if price > 0:
-            logger.warning(f"{ticker} current price via KIS fallback: {price:,.0f} KRW (KRX unavailable)")
+            logger.warning(f"{ticker} current price via KIS: {price:,.0f} KRW")
         return price
     except Exception as e:
         logger.error(f"{ticker} KIS price fallback failed: {e}")
@@ -149,74 +146,15 @@ def _get_last_price_from_db(cursor, ticker: str, account_key: str | None = None)
     return 0.0
 
 
-async def get_trading_value_rank_change(ticker: str) -> Tuple[float, str]:
+async def get_trading_value_rank_change(ticker: str) -> Tuple[float | None, str]:
+    """Unknown until two comparable dated full-universe KIS snapshots exist.
+
+    The current snapshot cannot establish the previous session's rank. Avoid
+    scanning every symbol only to discover the historical capability is absent.
+    This is supplemental prompt evidence, not an entry gate.
     """
-    Calculate trading value ranking change for a stock.
+    return None, "UNKNOWN: KIS 거래대금 순위 변화 비교용 과거 전체시장 스냅샷 미확보"
 
-    Args:
-        ticker: Stock code
-
-    Returns:
-        Tuple[float, str]: Ranking change percentage, analysis result message
-    """
-    try:
-        from krx_data_client import get_nearest_business_day_in_a_week, get_market_ohlcv_by_ticker
-        import datetime
-
-        today = datetime.datetime.now().strftime("%Y%m%d")
-
-        # Get recent 2 business days
-        recent_date = get_nearest_business_day_in_a_week(today, prev=True)
-        previous_date_obj = datetime.datetime.strptime(recent_date, "%Y%m%d") - timedelta(days=1)
-        previous_date = get_nearest_business_day_in_a_week(
-            previous_date_obj.strftime("%Y%m%d"),
-            prev=True
-        )
-
-        logger.info(f"Recent trading day: {recent_date}, Previous trading day: {previous_date}")
-
-        recent_df = get_market_ohlcv_by_ticker(recent_date)
-        previous_df = get_market_ohlcv_by_ticker(previous_date)
-
-        # Sort by trading value to generate rankings
-        recent_rank = recent_df.sort_values(by="Amount", ascending=False).reset_index()
-        previous_rank = previous_df.sort_values(by="Amount", ascending=False).reset_index()
-
-        # Find ranking for ticker
-        recent_ticker_rank = 0
-        previous_ticker_rank = 0
-
-        if ticker in recent_rank['Ticker'].values:
-            recent_ticker_rank = recent_rank[recent_rank['Ticker'] == ticker].index[0] + 1
-
-        if ticker in previous_rank['Ticker'].values:
-            previous_ticker_rank = previous_rank[previous_rank['Ticker'] == ticker].index[0] + 1
-
-        if recent_ticker_rank == 0 or previous_ticker_rank == 0:
-            return 0, "No trading value ranking info"
-
-        # Calculate ranking change
-        rank_change = previous_ticker_rank - recent_ticker_rank
-        rank_change_percentage = (rank_change / previous_ticker_rank) * 100
-
-        recent_value = int(recent_df.loc[ticker, "Amount"]) if ticker in recent_df.index else 0
-        previous_value = int(previous_df.loc[ticker, "Amount"]) if ticker in previous_df.index else 0
-        value_change_percentage = ((recent_value - previous_value) / previous_value * 100) if previous_value > 0 else 0
-
-        result_msg = (
-            f"Trading value rank: #{recent_ticker_rank} (prev: #{previous_ticker_rank}, "
-            f"change: {'▲' if rank_change > 0 else '▼' if rank_change < 0 else '='}{abs(rank_change)}), "
-            f"Trading value: {recent_value:,} KRW (prev: {previous_value:,} KRW, "
-            f"change: {'▲' if value_change_percentage > 0 else '▼' if value_change_percentage < 0 else '='}{abs(value_change_percentage):.1f}%)"
-        )
-
-        logger.info(f"{ticker} {result_msg}")
-        return rank_change_percentage, result_msg
-
-    except Exception as e:
-        logger.error(f"Error analyzing trading value ranking for {ticker}: {str(e)}")
-        logger.error(traceback.format_exc())
-        return 0, "Trading value ranking analysis failed"
 
 
 def is_ticker_in_holdings(cursor, ticker: str, account_key: str | None = None) -> bool:
@@ -524,7 +462,8 @@ def check_sector_diversity(cursor, sector: str, max_same_sector: int, concentrat
                 except:
                     pass
 
-        same_sector_count = sum(1 for s in sectors if s and s.lower() == sector.lower())
+        from prism_core.sector_names import sectors_overlap
+        same_sector_count = sum(1 for s in sectors if s and sectors_overlap(s, sector))
 
         if same_sector_count >= max_same_sector:
             logger.warning(

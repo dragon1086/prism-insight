@@ -193,6 +193,10 @@ def host_provider_configs(pins, names, environ, *, kr_profile=None, host_runtime
         raise BridgeError("unapproved_provider_manifest")
     if kr_profile not in {None, KR_PUBLIC_DIAGNOSTIC}:
         raise BridgeError("unapproved_kr_profile")
+    if kr_profile == KR_PUBLIC_DIAGNOSTIC:
+        # KIS-only production no longer honors the historical public source order.
+        # Never silently upgrade an uncredentialed diagnostic to broker access.
+        raise BridgeError("kr_public_diagnostic_retired_kis_only")
     if "kospi_kosdaq" in names and kr_profile != KR_PUBLIC_DIAGNOSTIC:
         raise BridgeError("kr_auth_boundary_pending")
     verified_provider_pins(names, host_runtime_root=host_runtime_root)
@@ -209,19 +213,12 @@ def host_provider_configs(pins, names, environ, *, kr_profile=None, host_runtime
             env["PERPLEXITY_API_KEY"] = key
         else:
             env["PYTHONPATH"] = "/root/prism-insight" if name == "kospi_kosdaq" else str(Path(spec["code_root"]).parent)
-        if name == "kospi_kosdaq":
-            # Both are required: MCP main copies report order over market order.
-            # dotenv override=False cannot replace these preexisting values.
-            env["PRISM_MARKET_DATA_SOURCES"] = "fdr,naver"
-            env["PRISM_REPORT_DATA_SOURCES"] = "fdr,naver"
         argv = [spec["executable"], str(Path(spec["code_root"]) / spec["entrypoint"])]
         if name == "perplexity" and host_runtime_root is not None:
             argv[0] = str(verified_node_runtime(host_runtime_root))
         if name != "perplexity":
             argv.insert(1, "-u")
         result[name] = {"argv": argv, "env": env, "cwd": _PRIVATE_TMPFS, "request_timeout": 120}
-        if name == "kospi_kosdaq":
-            result[name]["source_profile"] = KR_PUBLIC_DIAGNOSTIC
     return result
 
 
@@ -732,8 +729,8 @@ class ReadMcpBridge:
         self.parent_alive = parent_alive
         if source_profile not in {None, KR_PUBLIC_DIAGNOSTIC} or (source_profile is not None and server_name != "kospi_kosdaq"):
             raise BridgeError("invalid_source_profile")
-        if source_profile == KR_PUBLIC_DIAGNOSTIC and (not isinstance(env, dict) or any(env.get(key) != "fdr,naver" for key in ("PRISM_MARKET_DATA_SOURCES", "PRISM_REPORT_DATA_SOURCES"))):
-            raise BridgeError("invalid_public_source_order")
+        if source_profile == KR_PUBLIC_DIAGNOSTIC:
+            raise BridgeError("kr_public_diagnostic_retired_kis_only")
         if (not isinstance(argv, (list, tuple)) or not argv or len(argv) > 128
                 or any(not isinstance(arg, str) or "\0" in arg for arg in argv) or not os.path.isabs(argv[0])):
             raise BridgeError("invalid_vetted_argv")

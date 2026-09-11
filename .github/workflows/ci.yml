@@ -68,6 +68,20 @@ jobs:
             prism-us/tests/test_trading_agents_prompt_rules.py \
             prism-us/tests/test_us_order_budget.py -q
 
+      - name: KIS-only provider and consumer boundary
+        env:
+          PRISM_DISABLE_SIGNAL_PUBLISH: "1"
+        run: |
+          python -m pytest tests/test_kis_only_architecture.py \
+            tests/test_kis_snapshot_provenance.py \
+            tests/test_kis_sector_namespace.py tests/test_kis_master_volume_precision.py \
+            tests/test_kis_hindsight_prices.py \
+            tests/test_kis_consumer_boundary.py tests/test_kis_source.py \
+            tests/test_kis_current_capabilities.py tests/test_kis_market_snapshot.py \
+            tests/test_kis_previous_snapshot.py tests/test_market_data_sources.py \
+            tests/test_market_data_mcp_server.py tests/test_prefetch_auth_outage.py \
+            tests/test_trigger_provider_outage.py -q
+
   dashboard:
     name: Dashboard production build
     runs-on: ubuntu-latest

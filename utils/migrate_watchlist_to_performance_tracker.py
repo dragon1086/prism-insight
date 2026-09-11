@@ -3,7 +3,7 @@
 Migrate watchlist_history to analysis_performance_tracker
 
 Migrates existing watchlist_history data to the analysis_performance_tracker table.
-- Calculates returns by querying 7/14/30 day price data from pykrx
+- Calculates returns by querying 7/14/30 day price data from KIS
 - Sets was_traded field by comparing with trading_history
 - Uses default value if trigger_type is missing
 
@@ -18,6 +18,10 @@ import json
 import glob
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Support the documented direct-file entrypoint without PYTHONPATH.
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from typing import Dict
 import logging
 
@@ -28,13 +32,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# pykrx import (optional - for price data)
+# KIS import (optional - for price data)
 try:
-    from pykrx import stock as pykrx_stock
-    PYKRX_AVAILABLE = True
+    from cores import market_data as kis_data
+    MARKET_DATA_AVAILABLE = True
 except ImportError:
-    PYKRX_AVAILABLE = False
-    logger.warning("pykrx not available. Price tracking will be skipped.")
+    MARKET_DATA_AVAILABLE = False
+    logger.warning("KIS not available. Price tracking will be skipped.")
 
 
 # Global trigger map (loaded once)
@@ -146,21 +150,21 @@ def get_traded_tickers(conn: sqlite3.Connection) -> dict:
 
 def get_price_on_date(ticker: str, target_date: str) -> float | None:
     """
-    Query closing price for a specific date (using pykrx)
+    Query closing price for a specific date (using KIS)
     target_date: YYYY-MM-DD format
     """
-    if not PYKRX_AVAILABLE:
+    if not MARKET_DATA_AVAILABLE:
         return None
 
     try:
-        # Format date for pykrx (YYYYMMDD)
+        # Format date for KIS (YYYYMMDD)
         date_formatted = target_date.replace("-", "")
 
         # Get OHLCV data for the date range (in case of holidays)
         start_date = (datetime.strptime(target_date, "%Y-%m-%d") - timedelta(days=5)).strftime("%Y%m%d")
         end_date = (datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=5)).strftime("%Y%m%d")
 
-        df = pykrx_stock.get_market_ohlcv(start_date, end_date, ticker)
+        df = kis_data.get_market_ohlcv_by_date(start_date, end_date, ticker)
 
         if df.empty:
             return None
@@ -169,10 +173,10 @@ def get_price_on_date(ticker: str, target_date: str) -> float | None:
         target_dt = datetime.strptime(target_date, "%Y-%m-%d")
         for idx in df.index:
             if idx.date() >= target_dt.date():
-                return float(df.loc[idx, '종가'])  # 종가 = Close
+                return float(df.loc[idx, 'Close'])  # 종가 = Close
 
         # If no future date, use last available
-        return float(df.iloc[-1]['종가'])  # 종가 = Close
+        return float(df.iloc[-1]['Close'])  # 종가 = Close
 
     except Exception as e:
         logger.debug(f"Failed to get price for {ticker} on {target_date}: {e}")
@@ -190,7 +194,7 @@ def calculate_tracking_data(analyzed_date: str, analyzed_price: float, ticker: s
         'tracking_status': 'pending'
     }
 
-    if not PYKRX_AVAILABLE or not analyzed_price or analyzed_price <= 0:
+    if not MARKET_DATA_AVAILABLE or not analyzed_price or analyzed_price <= 0:
         return result
 
     try:

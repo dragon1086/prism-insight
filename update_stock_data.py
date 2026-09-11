@@ -12,15 +12,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from cores.kis_market_snapshot import fetch_kis_master_universe
 from prism_core.runtime_paths import resolve_stock_map_write_path
 
 load_dotenv()  # Load environment variables from .env file
-
-try:
-    from krx_data_client import _get_client
-except ImportError:
-    print("krx_data_client package is not installed. Install with 'pip install kospi-kosdaq-stock-server'.")
-    exit(1)
 
 # Logging configuration
 logging.basicConfig(
@@ -49,12 +44,11 @@ def update_stock_data(output_file: str | Path | None = None):
         today = datetime.now().strftime("%Y%m%d")
         logger.info(f"Starting stock data update: {today}")
 
-        # Initialize client
-        client = _get_client()
-
         # Fetch all stock code-name mappings at once (efficient!)
         logger.info("Fetching all stock information...")
-        code_to_name = client.get_market_ticker_name(market="ALL")
+        code_to_name = fetch_kis_master_universe()
+        if not code_to_name or any(not name or name == ticker for ticker, name in code_to_name.items()):
+            raise ValueError("KIS stock master missing names; existing map preserved")
         logger.info(f"Loaded {len(code_to_name)} stocks")
 
         # Create reverse mapping

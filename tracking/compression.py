@@ -5,6 +5,7 @@ Handles hierarchical compression of trading journal entries.
 Extracted from stock_tracking_agent.py for LLM context efficiency.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -132,7 +133,7 @@ class CompressionManager:
                 llm = await compressor_agent.attach_llm(OpenAIAugmentedLLM)
 
                 # Fetch current prices for hindsight context
-                hindsight_prices = self._fetch_hindsight_prices(entries)
+                hindsight_prices = await asyncio.to_thread(self._fetch_hindsight_prices, entries)
 
                 entries_text = self._format_entries_for_compression(entries, hindsight_prices)
                 prompt = self._build_layer2_prompt(entries_text, len(entries))
@@ -288,29 +289,9 @@ class CompressionManager:
             return results
 
     def _fetch_hindsight_prices(self, entries: List[Dict[str, Any]]) -> Dict[str, float]:
-        """Fetch current prices for tickers to add hindsight context during compression.
-
-        Uses pykrx batch API (single call for all KR tickers).
-        Returns empty dict on failure — compression proceeds without hindsight.
-        """
-        try:
-            from krx_data_client import get_nearest_business_day_in_a_week, get_market_ohlcv_by_ticker
-            import datetime as dt
-
-            today = dt.datetime.now().strftime("%Y%m%d")
-            trade_date = get_nearest_business_day_in_a_week(today, prev=True)
-            df = get_market_ohlcv_by_ticker(trade_date)
-
-            prices = {}
-            for entry in entries:
-                ticker = entry.get('ticker', '')
-                if ticker and ticker in df.index:
-                    prices[ticker] = float(df.loc[ticker, "Close"])
-            logger.info(f"Fetched hindsight prices for {len(prices)} tickers")
-            return prices
-        except Exception as e:
-            logger.warning(f"Failed to fetch hindsight prices: {e}")
-            return {}
+        """Get only requested KIS session closes, without a whole-market scan."""
+        from tracking.helpers import get_requested_session_prices
+        return get_requested_session_prices(entry.get("ticker") for entry in entries)
 
     def _format_entries_for_compression(self, entries: List[Dict[str, Any]], hindsight_prices: Dict[str, float] | None = None) -> str:
         """Format entries for LLM compression."""

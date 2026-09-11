@@ -235,7 +235,7 @@ def _frame_rows(frame: Any, *, after: str, through: str) -> list[dict[str, Any]]
 
 
 def _default_price_loader(ticker: str, start: str, end: str):
-    from krx_data_client import get_market_ohlcv_by_date
+    from cores.market_data import get_market_ohlcv_by_date
 
     return get_market_ohlcv_by_date(start, end, ticker)
 

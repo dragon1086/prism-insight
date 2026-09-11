@@ -11,8 +11,8 @@ Strategies compared (monthly rebalance, equal-weight top-N, long-only):
   B  60d-return top-N  current #289 proxy (return over ~63 trading days)
   C  index benchmark   KOSPI (KR) / SPY (US)
 
-Data: yfinance for US; FinanceDataReader for KR (Naver-sourced, avoids the KRX
-data.krx.co.kr endpoint that outaged 2026-07-13). Prices cached to /tmp/rsbt_cache.
+Data: yfinance for US; repository KIS provider for KR. Missing historical
+coverage is not replaced with current data. Provider-versioned local caches.
 
 Usage:
     python tools/rs_rating_backtest.py --market kr   [--years 4] [--top 20] [--universe 200]
@@ -33,6 +33,10 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+# Support the documented direct-file entrypoint without PYTHONPATH.
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 CACHE_DIR = "/tmp/rsbt_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -45,22 +49,19 @@ RS_MIN_HISTORY = W252 + 5  # need ~1y of data to rank a name
 # Data access
 # --------------------------------------------------------------------------- #
 def _cache_path(market: str) -> str:
-    return os.path.join(CACHE_DIR, f"prices_{market}.csv")
+    return os.path.join(CACHE_DIR, f"prices_{market}_kis_v1.csv" if market == "kr" else f"prices_{market}.csv")
 
 
 def get_kr_universe(n: int) -> list[str]:
     """Top-n KOSPI names by market cap (today's snapshot -> survivorship caveat)."""
-    import FinanceDataReader as fdr
-    listing = fdr.StockListing("KOSPI")
-    # Column names vary by FDR version; find market-cap + code columns defensively.
-    cap_col = next((c for c in listing.columns if c.lower() in ("marcap", "marketcap", "시가총액")), None)
-    code_col = next((c for c in listing.columns if c.lower() in ("code", "symbol", "종목코드")), None)
-    if code_col is None:
-        raise RuntimeError(f"KR listing: no code column in {list(listing.columns)}")
-    if cap_col is not None:
-        listing = listing.sort_values(cap_col, ascending=False)
-    codes = [str(c).zfill(6) for c in listing[code_col].tolist() if str(c).strip()]
-    return codes[:n]
+    from cores.market_data import get_market_cap_by_ticker, get_market_ticker_list
+    from zoneinfo import ZoneInfo
+    today = dt.datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+    caps = get_market_cap_by_ticker(today)
+    kospi = set(get_market_ticker_list(today, market="KOSPI"))
+    if caps.empty or "시가총액" not in caps:
+        raise RuntimeError("KIS current market cap universe unavailable")
+    return list(caps.loc[caps.index.isin(kospi)].dropna(subset=["시가총액"]).nlargest(n, "시가총액").index)
 
 
 def get_us_universe(n: int) -> list[str]:
@@ -105,13 +106,13 @@ def fetch_prices(market: str, tickers: list[str], start: str, end: str,
 
 
 def _fetch_kr(tickers: list[str], start: str, end: str) -> pd.DataFrame:
-    import FinanceDataReader as fdr
+    from cores.market_data import get_market_ohlcv_by_date
     out = {}
     fail = 0
     for i, t in enumerate(tickers):
         for attempt in range(3):
             try:
-                d = fdr.DataReader(t, start, end)
+                d = get_market_ohlcv_by_date(start.replace("-", ""), end.replace("-", ""), t)
                 if d is not None and not d.empty and "Close" in d.columns:
                     out[t] = d["Close"]
                 break
@@ -143,8 +144,8 @@ def fetch_benchmark(market: str, start: str, end: str) -> pd.Series:
         d = yf.download("SPY", start=start, end=end, auto_adjust=True, progress=False)
         return d["Close"].squeeze()
     else:
-        import FinanceDataReader as fdr
-        d = fdr.DataReader("KS11", start, end)  # KOSPI index
+        from cores.market_data import get_index_ohlcv_by_date
+        d = get_index_ohlcv_by_date(start.replace("-", ""), end.replace("-", ""), "1001")
         return d["Close"]
 
 
