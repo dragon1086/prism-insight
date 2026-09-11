@@ -54,3 +54,21 @@ def test_us_social_prefetch_still_does_not_trigger_duplicate_calls(market_factor
         prompt = factory("Example", "TEST", "20260910", language="en", prefetched_social_sentiment="sentiment snapshot").instruction
         assert "sentiment snapshot" in prompt
         assert "do not make extra tool calls for social sentiment" in prompt
+
+
+@pytest.mark.parametrize("language", ["ko", "en"])
+def test_required_discovery_is_not_waived_by_listing_profile_or_social(market_factory, language):
+    market, factory = market_factory
+    kwargs = {"prefetched_social_sentiment": "positive social snapshot"} if market == "us" else {}
+    prompt = factory("Holding Example", "TEST", "20260910", language=language, **kwargs).instruction
+    for required in ("Query 1 is REQUIRED", "at invocation", "complete, comparable", "news listing", "basic company profile", "social sentiment", "does not waive", "target business scope", "appropriate peer_universe", "business_competitive_position", "holding-company peers", "subsidiary business"):
+        assert required in prompt
+    assert "No blanket mandatory search" not in prompt
+
+
+@pytest.mark.parametrize("language", ["ko", "en"])
+def test_source_status_requires_relevant_original_content_and_audit_reason(market_factory, language):
+    _, factory = market_factory
+    prompt = factory("Example", "TEST", "20260910", language=language).instruction
+    for required in ("exact cited page", "actually opened", "Perplexity answer", "unrelated listing", "NOT_FOUND", "attempted", "unqueried", "not a runtime proof", "unresolved material"):
+        assert required in prompt
