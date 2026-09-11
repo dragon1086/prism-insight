@@ -1,8 +1,6 @@
 """Fixture-only full-stage integration. No providers, models or real auth."""
 import copy
-import ast
 import json
-import logging
 import os
 from pathlib import Path
 import socket
@@ -212,10 +210,9 @@ def test_provider_pins_and_minimal_host_environment(tmp_path, monkeypatch):
         bridge.host_provider_configs(specs, ("perplexity",), {})
     with pytest.raises(bridge.BridgeError, match="kr_auth_boundary_pending"):
         bridge.host_provider_configs(specs, ("kospi_kosdaq",), {})
-    public = bridge.host_provider_configs(specs, ("kospi_kosdaq",), {
-        "PRISM_MARKET_DATA_SOURCES": "kis", "PRISM_REPORT_DATA_SOURCES": "kis"}, kr_profile=bridge.KR_PUBLIC_DIAGNOSTIC)
-    assert public["kospi_kosdaq"]["source_profile"] == bridge.KR_PUBLIC_DIAGNOSTIC
-    assert all(public["kospi_kosdaq"]["env"][name] == "fdr,naver" for name in ("PRISM_MARKET_DATA_SOURCES", "PRISM_REPORT_DATA_SOURCES"))
+    with pytest.raises(bridge.BridgeError, match="kr_public_diagnostic_retired_kis_only"):
+        bridge.host_provider_configs(specs, ("kospi_kosdaq",), {
+            "PRISM_MARKET_DATA_SOURCES": "kis", "PRISM_REPORT_DATA_SOURCES": "kis"}, kr_profile=bridge.KR_PUBLIC_DIAGNOSTIC)
     (tmp_path / "yahoo_finance/server.py").write_text("# modified provider")
     with pytest.raises(bridge.BridgeError, match="pin_mismatch"):
         bridge.verified_provider_pins(("yahoo_finance",))
@@ -301,63 +298,38 @@ def test_wrapper_closes_read_bridges_after_model_exit_or_launch_error(tmp_path, 
     assert "gateway_closed" in calls
 
 
-@pytest.mark.parametrize("prepared", [True], indirect=True)
-def test_explicit_kr_public_stage_has_visible_limitations_not_vendor_parity(prepared):
-    root, host, _, _, result = prepared
-    _, manifest = sandbox.load_host_manifest(host / "host-manifest.json", root)
-    assert manifest["kr_profile"] == bridge.KR_PUBLIC_DIAGNOSTIC
-    assert result["kr_production_auth_status"] == "auth_boundary_pending"
-    assert "not_production_vendor_parity" in result["kr_public_limitations"]
-    assert "market_data_source_order_deviation_no_kis" in result["provider_deviations"]
-    cases = load_fixture(root / "read-tool-fixture.json", root)
-    assert [case["market"] for case in cases] == ["US", "KR"]
-    assert "market_data_source_order_deviation_no_kis" in cases[1]["deviations"]
+def test_retired_kr_public_stage_rejected_before_auth_read_or_staging(tmp_path, monkeypatch):
+    root, host = tmp_path / "new-model", tmp_path / "new-host"
+    monkeypatch.setattr(bridge, "verified_provider_pins", lambda **kw: pytest.fail("must not inspect providers"))
+    monkeypatch.setattr(smoke, "prepare", lambda *a: pytest.fail("must not read auth or create stage"))
+    with pytest.raises(ValueError, match="kr_public_diagnostic_retired_kis_only"):
+        full.prepare(root, host, tmp_path, tmp_path / "absent-auth", as_of_date="2026-09-10", kr_public_diagnostic=True)
+    assert not root.exists() and not host.exists()
 
 
-def test_real_public_chain_never_constructs_kis_or_krx_despite_dotenv_override(tmp_path, monkeypatch):
-    import pandas as pd
+@pytest.mark.parametrize("order", ["fdr,naver", "kis", "kis,krx", ""])
+def test_retired_public_chain_never_constructs_kis_or_starts_provider(tmp_path, monkeypatch, order):
     import cores.market_data as market
-    from cores.market_data.source import Unavailable
-
-    fake_root = tmp_path / "fake-provider-root"
-    fake_root.mkdir()
-    (fake_root / ".env").write_text("PRISM_MARKET_DATA_SOURCES=kis,krx\nPRISM_REPORT_DATA_SOURCES=kis,krx\n")
-    source = Path(__file__).resolve().parents[1] / "cores/market_data/mcp_server.py"
-    functions = [node for node in ast.parse(source.read_text()).body if isinstance(node, ast.FunctionDef) and node.name in {"_load_repo_env", "apply_report_source_order"}]
-    namespace = {"os": os, "logger": logging.getLogger("public-chain-fixture"), "_REPO_ROOT": str(fake_root)}
-    exec(compile(ast.Module(body=functions, type_ignores=[]), str(source), "exec"), namespace)
-    monkeypatch.setenv("PRISM_MARKET_DATA_SOURCES", "fdr,naver")
-    monkeypatch.setenv("PRISM_REPORT_DATA_SOURCES", "fdr,naver")
+    monkeypatch.setenv("PRISM_MARKET_DATA_SOURCES", order)
+    monkeypatch.setenv("PRISM_REPORT_DATA_SOURCES", order)
     forbidden_calls = []
 
     def forbidden(*args, **kwargs):
         forbidden_calls.append(True)
-        raise AssertionError("broker/KRX construction or authentication forbidden")
+        raise AssertionError("provider construction, authentication or launch forbidden")
 
     monkeypatch.setattr(market.KisSource, "__init__", forbidden)
     monkeypatch.setattr(market.KisSource, "_trading", forbidden)
-    monkeypatch.setattr(market.KrxSource, "__init__", forbidden)
-    monkeypatch.setattr(market, "_chain", None)
-    namespace["_load_repo_env"]()  # Reads only the fake .env above, never repo secrets.
-    assert namespace["apply_report_source_order"]() == "fdr,naver"
-    chain = market.default_chain()
-    assert chain.names == ["fdr", "naver"]
-    frame = pd.DataFrame({"Open": [100], "High": [111], "Low": [99], "Close": [110], "Volume": [1000]}, index=pd.to_datetime(["2026-09-09"]))
-    fake_fdr = SimpleNamespace(DataReader=lambda *a, **kw: frame.copy(),
-                               StockListing=lambda *a: pd.DataFrame({"Code": ["005930"], "Name": ["Fixture"], "Stocks": [100]}))
-    monkeypatch.setattr(market.FdrSource, "_fdr", staticmethod(lambda: fake_fdr))
-    chain._sources[1]._request_get = lambda *a, **kw: SimpleNamespace(
-        raise_for_status=lambda: None, json=lambda: [{"bizdate": "20260909", "organPureBuyQuant": 1, "foreignerPureBuyQuant": 2, "individualPureBuyQuant": -3}])
-    assert not market.get_market_ohlcv_by_date("20260901", "20260910", "005930").empty
-    assert not market.get_index_ohlcv_by_date("20260901", "20260910", "1001").empty
-    cap = market.get_market_cap_by_date("20260901", "20260910", "005930")
-    assert cap.attrs["approximate"] is True
-    assert market.get_market_ticker_name("005930") == "Fixture"
-    assert not market.get_market_trading_volume_by_date("20260901", "20260910", "005930").empty
-    assert chain.fetch("investor_flows", "005930", "20260901", "20260910").attrs["coverage"] == "latest_10_sessions"
-    # Exhausting public providers must NOT reactivate the default KIS/KRX chain.
-    monkeypatch.setattr(market.FdrSource, "_read", lambda *a: (_ for _ in ()).throw(Unavailable("fixture unavailable")))
-    assert market.get_market_ohlcv_by_date("20260901", "20260910", "005930").empty
+    monkeypatch.setattr(bridge, "verified_provider_pins", forbidden)
+    monkeypatch.setattr(bridge.subprocess, "Popen", forbidden)
+    monkeypatch.setattr(bridge.socket, "socket", forbidden)
+    with pytest.raises(bridge.BridgeError, match="kr_public_diagnostic_retired_kis_only"):
+        bridge.host_provider_configs(bridge.HOST_PROVIDERS, ("kospi_kosdaq",), {}, kr_profile=bridge.KR_PUBLIC_DIAGNOSTIC)
+    # A saved manifest cannot bypass config validation by constructing the bridge directly.
+    with pytest.raises(bridge.BridgeError, match="kr_public_diagnostic_retired_kis_only"):
+        bridge.ReadMcpBridge(tmp_path / "unused.sock", server_name="kospi_kosdaq", argv=["/fixed/provider"], cwd="/tmp",
+                             env={"PRISM_MARKET_DATA_SOURCES": order, "PRISM_REPORT_DATA_SOURCES": order},
+                             source_profile=bridge.KR_PUBLIC_DIAGNOSTIC)
     assert forbidden_calls == []
 
 
@@ -371,8 +343,8 @@ def test_public_kr_tool_result_cannot_omit_approximation_and_source_warning():
     assert "not_production_vendor_parity" in result["structuredContent"]["__probe_source"]["limitations"]
 
 
-def test_public_profile_cannot_be_labeled_without_both_pinned_source_orders(tmp_path):
-    with pytest.raises(bridge.BridgeError, match="invalid_public_source_order"):
+def test_public_profile_cannot_be_reenabled_with_mixed_source_orders(tmp_path):
+    with pytest.raises(bridge.BridgeError, match="kr_public_diagnostic_retired_kis_only"):
         bridge.ReadMcpBridge(tmp_path / "unused.sock", server_name="kospi_kosdaq", argv=["/fixed/provider"], cwd="/tmp",
                              env={"PRISM_MARKET_DATA_SOURCES": "fdr,naver", "PRISM_REPORT_DATA_SOURCES": "kis"},
                              source_profile=bridge.KR_PUBLIC_DIAGNOSTIC)
