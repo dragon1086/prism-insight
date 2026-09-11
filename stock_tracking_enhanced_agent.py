@@ -182,7 +182,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
     async def _analyze_simple_market_condition(self):
         """Analyze market condition (bull/bear market)"""
         try:
-            from krx_data_client import get_index_ohlcv_by_date
+            from cores.market_data import get_index_ohlcv_by_date
             import datetime as dt
 
             # Today's date
@@ -310,8 +310,8 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             start_date = (today - timedelta(days=60)).strftime("%Y%m%d")
             end_date = today.strftime("%Y%m%d")
 
-            # Fetch stock price data using krx_data_client
-            from krx_data_client import get_market_ohlcv_by_date
+            # Fetch stock price data using KIS market data
+            from cores.market_data import get_market_ohlcv_by_date
             df = get_market_ohlcv_by_date(start_date, end_date, ticker)
 
             if df.empty:
@@ -1282,7 +1282,7 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
             start_date = (today - timedelta(days=days)).strftime("%Y%m%d")
             end_date = today.strftime("%Y%m%d")
 
-            from krx_data_client import get_market_ohlcv_by_date
+            from cores.market_data import get_market_ohlcv_by_date
             df = get_market_ohlcv_by_date(start_date, end_date, ticker)
 
             if df.empty:

@@ -5,13 +5,7 @@ from prism_core.trading_scenario_contract import (
 )
 
 # Fallback sector names when dynamic data is not available
-KRX_STANDARD_SECTORS = [
-    "IT 서비스", "건설", "금속", "기계·장비", "기타금융", "기타제조",
-    "농업, 임업 및 어업", "보험", "부동산", "비금속", "섬유·의류",
-    "오락·문화", "운송·창고", "운송장비·부품", "유통", "은행",
-    "음식료·담배", "의료·정밀기기", "일반서비스", "전기·가스",
-    "전기·전자", "제약", "종이·목재", "증권", "통신", "화학",
-]
+from prism_core.sector_names import KR_SECTOR_NAMES
 
 
 def create_trading_scenario_agent(language: str = "ko", sector_names: list = None):
@@ -29,7 +23,7 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
     Returns:
         Agent: Trading scenario generation agent
     """
-    sectors = sector_names or KRX_STANDARD_SECTORS
+    sectors = sector_names or KR_SECTOR_NAMES
     sector_constraint = ", ".join(sectors)
 
     if language == "en":

@@ -1,20 +1,4 @@
-"""KRX 가 죽어도 종목명이 종목코드로 강등되지 않아야 한다.
-
-2026-08-05 오후 시그널 얼럿이 **종목코드만** 달고 사용자에게 나갔다:
-
-    🚀 일중 상승률 상위주
-    · 009150 (009150)      ← "삼성전기 (009150)" 이어야 한다
-    · 103140 (103140)      ← 풍산
-    · 003490 (003490)      ← 대한항공
-
-원인은 ``_get_ticker_name_map()`` 의 KRX 대량 조회 **한 번**이다. 실패하면 빈
-dict 를 캐시하고, 그 뒤 모든 종목이 조용히 코드로 표시된다. 예외도 안 나고
-로그 한 줄(`ticker name lookup failed`)만 남는다 — 그날 로그에 정확히 2건 있었다.
-
-수정은 ``_get_display_ticker_name`` 이 ``cores.market_data`` 체인으로 물러나게
-한 것이다. FDR 소스가 KRX 상장목록 스냅샷에서 답하는데, 차단된 Data Marketplace
-세션과 무관하다.
-"""
+"""KIS bulk master failure must preserve safe per-symbol label resolution."""
 
 from __future__ import annotations
 
@@ -26,28 +10,22 @@ import trigger_batch  # noqa: E402
 
 
 def _blocked(*args, **kwargs):
-    raise RuntimeError("KRX 접근이 차단된 상태입니다. 198분 뒤(18:04)에 다시 시도하세요.")
+    raise RuntimeError("KIS master unavailable")
 
 
 @pytest.fixture
-def krx_down(monkeypatch):
-    """KRX 대량 조회를 막는다.
-
-    ``trigger_batch`` 는 ``_get_client`` 를 모듈 최상단에서 직접 import 하므로
-    ``krx_data_client._get_client`` 를 막아도 소용없다. 이 모듈이 들고 있는
-    참조를 막아야 한다 — 처음 이 테스트를 짤 때 실제로 여기서 헛짚었다.
-    """
-    monkeypatch.setattr(trigger_batch, "_get_client", _blocked)
-    monkeypatch.setattr(trigger_batch.stock_api, "get_market_ticker_name", _blocked)
+def kis_master_down(monkeypatch):
+    """KIS bulk master failure must not erase fallback labels."""
+    monkeypatch.setattr(trigger_batch, "fetch_kis_master_universe", _blocked)
     monkeypatch.setattr(trigger_batch, "_TICKER_NAME_CACHE", None)
 
 
-def test_bulk_lookup_degrades_to_empty_map_when_krx_is_blocked(krx_down):
+def test_bulk_lookup_degrades_to_empty_map_when_krx_is_blocked(kis_master_down):
     """전제 확인 — 대량 조회는 여전히 빈 맵으로 강등된다."""
     assert trigger_batch._get_ticker_name_map() == {}
 
 
-def test_falls_back_to_the_source_chain_for_the_name(krx_down, monkeypatch):
+def test_falls_back_to_the_source_chain_for_the_name(kis_master_down, monkeypatch):
     """빈 맵이어도 체인이 이름을 준다."""
     import cores.market_data as market_data
 

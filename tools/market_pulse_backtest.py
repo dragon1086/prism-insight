@@ -60,18 +60,18 @@ C5_END = "2026-07-09"
 # Data fetch (lazy; network/auth only when actually called)                    #
 # --------------------------------------------------------------------------- #
 def fetch_kr_bars(years: int) -> List[DailyBar]:
-    """KOSPI index (1001) daily OHLCV via the authenticated KRX client.
+    """KOSPI index (1001) daily OHLCV via the repository KIS provider.
 
     market_pulse는 거래량이 필수(DD 판정)다. yfinance ^KS11은 거래량이
     결측/0인 구간이 많아(2026년 등) DD가 전혀 안 잡히는 무의미한 재생이
     나온다(regime_backtest는 종가만 써서 ^KS11로 충분했던 것과 다름).
-    → 운영과 동일한 krx_data_client 기반 ``get_index_ohlcv_by_date``('1001')를
+    → 운영과 동일한 KIS 기반 ``get_index_ohlcv_by_date``('1001')를
     쓰되, 6년 단일요청이 INVALIDPERIOD2로 실패하므로 **연 단위 청크**로 나눠
     받아 합친다.
     """
     import pandas as pd
     from datetime import datetime, timedelta
-    from cores.stock_chart import get_index_ohlcv_by_date
+    from cores.market_data import get_index_ohlcv_by_date
 
     end_dt = datetime.now()
     start_dt = end_dt - timedelta(days=int(years * 365.25) + 10)
@@ -85,7 +85,7 @@ def fetch_kr_bars(years: int) -> List[DailyBar]:
             chunks.append(cdf)
         y += 1
     if not chunks:
-        raise RuntimeError("KOSPI(1001) KRX fetch returned empty for all chunks")
+        raise RuntimeError("KOSPI(1001) KIS fetch returned empty for all chunks")
     df = pd.concat(chunks)
     df = df[~df.index.duplicated(keep="last")].sort_index()
     close_col = "종가" if "종가" in df.columns else "Close"
@@ -373,7 +373,7 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             sections.append(f"## {m.upper()} — 데이터 실패 (deferred)\n\n"
                             f"`{type(e).__name__}: {e}`\n\n"
-                            "6년 데이터 재생은 db-server(네트워크+krx auth)에서 실행. 로컬 지연.\n")
+                            "6년 데이터 재생은 db-server(네트워크+KIS 인증)에서 실행. 로컬 지연.\n")
 
     report = "\n".join(header + sections)
     out_path = Path(args.out)

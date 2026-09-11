@@ -2,7 +2,7 @@
 """
 Verify daily grounded-facts wiring for the bot commands.
 
-The weekly report has been grounded in KRX/yfinance numbers for a while; the
+The weekly report has been grounded in KIS/yfinance numbers for a while; the
 daily commands were not. Wiring them up meant teaching weekly_market_facts to
 speak about a single session, and that is where the traps are:
 
@@ -11,13 +11,13 @@ speak about a single session, and that is where the traps are:
                                            LLM will faithfully repeat
 3. movers refuses baseline == end        — close(x)/close(x) is +0.0% for every
                                            stock; silent corruption, not an error
-4. facts never block the event loop      — one KRX scan shared by N callers
+4. facts never block the event loop      — one KIS scan shared by N callers
 5. timeouts degrade to no facts          — an ungrounded answer beats a hung bot
 6. every command call site merges facts  — the failure mode is silent omission
 7. the receiving signature accepts them
 
 Usage:  python3 tools/bench/verify_grounded_facts.py [--live]
-        --live hits KRX/yfinance for real and checks the numbers are non-degenerate.
+        --live hits KIS/yfinance for real and checks the numbers are non-degenerate.
 """
 import ast
 import asyncio
@@ -47,7 +47,7 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fakes — the KRX backend is resolved through _krx_fn, so one patch covers all.
+# Fakes — the KIS backend is resolved through _market_data_fn, so one patch covers all.
 # ---------------------------------------------------------------------------
 _TICKERS = {"KOSPI": ["005930", "000660"], "KOSDAQ": ["247540"]}
 _NAMES = {"005930": "삼성전자", "000660": "SK하이닉스", "247540": "에코프로비엠"}
@@ -98,16 +98,9 @@ def _install_fakes(monkey: dict) -> None:
         "get_market_ticker_list": fake_ticker_list,
         "get_market_ticker_name": lambda tk: _NAMES.get(tk, tk),
     }
-    monkey["_krx_fn"] = wmf._krx_fn
-    wmf._krx_fn = lambda name: table.get(name)
+    monkey["_market_data_fn"] = wmf._market_data_fn
+    wmf._market_data_fn = lambda name: table.get(name)
 
-    # Investor flows come from Naver over HTTP; stub the whole fetch.
-    monkey["_naver_investor_daily"] = wmf._naver_investor_daily
-    wmf._naver_investor_daily = lambda sosok, bizdate: {
-        date(2026, 7, 27): {"외국인": 100.0, "기관계": -50.0, "개인": -50.0},
-        date(2026, 7, 28): {"외국인": 200.0, "기관계": -80.0, "개인": -120.0},
-        date(2026, 7, 31): {"외국인": -30.0, "기관계": 10.0, "개인": 20.0},
-    }
 
 
 def _restore(monkey: dict) -> None:
@@ -122,7 +115,7 @@ def test_weekly_unchanged() -> None:
     out = wmf.build_kr_facts(date(2026, 7, 27), date(2026, 7, 31))
     check("weekly keeps '주간 시가'", "주간 시가" in out)
     check("weekly keeps '금요일 종가'", "금요일 종가" in out)
-    check("weekly keeps '주간 누적 순매수'", "주간 누적 순매수" in out)
+    check("weekly marks unsupported market flows UNKNOWN", "시장 전체 투자자 수급: UNKNOWN" in out)
     check("weekly keeps '주간 상승률 상위'", "주간 상승률 상위" in out)
     check("weekly keeps '일별 종가'", "일별 종가" in out)
     check("weekly header spans the range", "2026-07-27 ~ 2026-07-31" in out)
@@ -137,7 +130,7 @@ def test_daily_labels() -> None:
     check("no '금요일 종가' in daily", "금요일 종가" not in out, out[:120])
     check("no '주간' anywhere in daily", "주간" not in out,
           next((ln for ln in out.splitlines() if "주간" in ln), ""))
-    check("uses '당일 순매수'", "당일 순매수" in out)
+    check("daily marks unsupported market flows UNKNOWN", "시장 전체 투자자 수급: UNKNOWN" in out)
     check("uses '당일 상승률 상위'", "당일 상승률 상위" in out)
     check("header shows a single date", "2026-07-31]" in out)
 
@@ -178,7 +171,7 @@ def test_movers_guard() -> None:
         kind="daily", baseline=date(2026, 7, 28), include_movers=False,
     )
     check("include_movers=False drops the movers block", "상승률 상위" not in fast)
-    check("...but keeps index and investor", "KOSPI:" in fast and "순매수" in fast)
+    check("...but keeps index and investor", "KOSPI:" in fast and "시장 전체 투자자 수급: UNKNOWN" in fast)
 
     src = inspect.getsource(mfc._build)
     check("production KR path disables movers", "include_movers=False" in src,
@@ -356,7 +349,7 @@ def test_live() -> None:
             # 실데이터 교차검증: 리포트에 실린 등락률이 정말 전일 종가 대비인가.
             # 2026-07-31 KOSPI 는 시가 대비 +16.57%, 전일 종가 대비 +17.91% 로
             # 두 기준의 차이가 큰 날이라 이 검사가 실제로 변별력을 가진다.
-            fn = wmf._krx_fn("get_index_ohlcv_by_date")
+            fn = wmf._market_data_fn("get_index_ohlcv_by_date")
             raw = fn(wmf._ymd(baseline), wmf._ymd(latest), wmf.KOSPI_INDEX)
             col = wmf._col(raw, "close")
             expected = (float(raw.iloc[-1][col]) / float(raw.iloc[-2][col]) - 1) * 100

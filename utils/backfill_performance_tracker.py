@@ -10,15 +10,19 @@ import sqlite3
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Support the documented direct-file entrypoint without PYTHONPATH.
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import time
 
-# pykrx import
+# KIS import
 try:
-    from pykrx import stock as pykrx_stock
-    PYKRX_AVAILABLE = True
+    from cores import market_data as kis_data
+    MARKET_DATA_AVAILABLE = True
 except ImportError:
-    PYKRX_AVAILABLE = False
-    print("pykrx is not installed. Run: pip install pykrx")
+    MARKET_DATA_AVAILABLE = False
+    print("KIS is not installed. Check the repository KIS provider configuration")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,7 +45,7 @@ def get_historical_price(ticker: str, target_date: str) -> float | None:
     Returns:
         Closing price or None
     """
-    if not PYKRX_AVAILABLE:
+    if not MARKET_DATA_AVAILABLE:
         return None
 
     try:
@@ -51,14 +55,14 @@ def get_historical_price(ticker: str, target_date: str) -> float | None:
         # Query from 5 days prior (to handle market holidays)
         start_date = (date_obj - timedelta(days=5)).strftime("%Y%m%d")
 
-        # Query price using pykrx
-        df = pykrx_stock.get_market_ohlcv_by_date(start_date, end_date, ticker)
+        # Query price using KIS
+        df = kis_data.get_market_ohlcv_by_date(start_date, end_date, ticker)
 
         if df.empty:
             return None
 
         # Return most recent closing price
-        return float(df['종가'].iloc[-1])
+        return float(df['Close'].iloc[-1])
 
     except Exception as e:
         logger.error(f"[{ticker}] Failed to query price for {target_date}: {e}")

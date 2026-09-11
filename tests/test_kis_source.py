@@ -289,10 +289,10 @@ def test_series_only_capabilities_are_declared_unsupported(capability):
         getattr(source, capability)("005930", "20260801", "20260803")
 
 
-def test_ticker_name_is_unsupported_rather_than_the_market_name():
+def test_ticker_name_is_unavailable_rather_than_the_market_name():
     """`get_current_price` maps stock_name to rprs_mrkt_kor_name, so 005930
     answers "KOSPI200". Charts would be labelled with a market, not a company."""
-    with pytest.raises(Unsupported, match="company name"):
+    with pytest.raises(Unavailable, match="company name"):
         _source(_FakeClient()).ticker_name("005930")
 
 
@@ -311,9 +311,8 @@ def test_module_imports_without_kis_credentials():
     import importlib
 
     module = importlib.import_module("cores.market_data")
-    assert "kis" in module._BUILDERS
-    # Registered but not default: existing behaviour is unchanged until promoted.
-    assert module._DEFAULT_ORDER == "krx,fdr"
+    assert module.KisSource().name == "kis"
+    assert module._DEFAULT_ORDER == "kis"
 
 
 def test_rejection_reports_why_even_when_the_error_body_is_broken():
