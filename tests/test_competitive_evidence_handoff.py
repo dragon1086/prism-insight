@@ -87,9 +87,11 @@ def test_generic_report_h3_variant_keeps_nested_h4_records():
 
 @pytest.mark.parametrize("heading", ["### competitive evidence", "#### COMPETITIVE EVIDENCE", "### **Competitive Evidence**"])
 def test_exact_title_format_variants_not_arbitrary_fuzzy_matches(heading):
+    from cores.utils import clean_markdown
     reports, receipt = attach_competitive_evidence({"news_analysis": heading + "\nstatus: SEARCH_ONLY"}, "US", "EXAMPLE", "20260911")
     assert receipt["status"] == "COPIED_NOT_VALIDATED"
     assert "SEARCH_ONLY" in reports["company_overview"]
+    assert heading in clean_markdown(reports["news_analysis"])
 
 
 def test_clean_markdown_preserves_exact_evidence_headings():
