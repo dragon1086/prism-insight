@@ -125,7 +125,7 @@ def _get_weekly_trades(cursor, week_start_str: str) -> str:
     return "\n".join(lines)
 
 
-def _get_sell_evaluation(cursor, week_start_str: str) -> str | None:
+async def _get_sell_evaluation(cursor, week_start_str: str) -> str | None:
     """Evaluate sells by comparing sell price to current price.
 
     Returns None if no sells this week (section should be omitted).
@@ -146,17 +146,17 @@ def _get_sell_evaluation(cursor, week_start_str: str) -> str | None:
 
     lines = []
 
-    # KR: batch lookup via pykrx (single call for all tickers)
+    # DB access remains on its owning thread; only KIS reads run off-thread.
     if kr_sells:
         try:
-            from krx_data_client import get_nearest_business_day_in_a_week, get_market_ohlcv_by_ticker
-            today_str = datetime.now().strftime("%Y%m%d")
-            trade_date = get_nearest_business_day_in_a_week(today_str, prev=True)
-            df = get_market_ohlcv_by_ticker(trade_date)
+            from tracking.helpers import get_requested_session_prices
+            prices = await asyncio.to_thread(
+                get_requested_session_prices, [row[0] for row in kr_sells]
+            )
 
             for ticker, name, sell_price in kr_sells:
-                if ticker in df.index and sell_price:
-                    current_price = float(df.loc[ticker, "Close"])
+                if ticker in prices and sell_price:
+                    current_price = prices[ticker]
                     change_pct = (current_price - sell_price) / sell_price * 100
                     verdict = _sell_verdict(change_pct)
                     lines.append(
@@ -257,7 +257,7 @@ async def generate_weekly_report(db_path: str = DB_PATH) -> str:
     trades_summary = _get_weekly_trades(cursor, week_start_str)
 
     # ========== NEW: Sell Evaluation ==========
-    sell_eval = _get_sell_evaluation(cursor, week_start_str)
+    sell_eval = await _get_sell_evaluation(cursor, week_start_str)
 
     # ========== KOREAN MARKET (trigger performance) ==========
     kr_avoided_count, kr_avoided_avg = 0, None

@@ -177,32 +177,32 @@ class TestConfiguredOrder:
         monkeypatch.setenv("PRISM_MARKET_DATA_SOURCES", "fdr,krx")
         set_default_chain(None)
 
-        assert default_chain().names == ["fdr", "krx"]
+        assert default_chain().names == ["kis"]
 
     def test_a_single_source_is_allowed(self, monkeypatch):
         # A host that cannot reach KRX at all should not need a code change.
         monkeypatch.setenv("PRISM_MARKET_DATA_SOURCES", "fdr")
         set_default_chain(None)
 
-        assert default_chain().names == ["fdr"]
+        assert default_chain().names == ["kis"]
 
     def test_naver_can_be_configured_as_an_investor_flow_fallback(self, monkeypatch):
         monkeypatch.setenv("PRISM_MARKET_DATA_SOURCES", "fdr,naver,krx")
         set_default_chain(None)
 
-        assert default_chain().names == ["fdr", "naver", "krx"]
+        assert default_chain().names == ["kis"]
 
     def test_an_unknown_name_is_ignored_rather_than_fatal(self, monkeypatch):
         monkeypatch.setenv("PRISM_MARKET_DATA_SOURCES", "nonsense,fdr")
         set_default_chain(None)
 
-        assert default_chain().names == ["fdr"]
+        assert default_chain().names == ["kis"]
 
-    def test_the_default_is_krx_first(self, monkeypatch):
+    def test_the_default_is_kis_only(self, monkeypatch):
         monkeypatch.delenv("PRISM_MARKET_DATA_SOURCES", raising=False)
         set_default_chain(None)
 
-        assert default_chain().names == ["krx", "fdr"]
+        assert default_chain().names == ["kis"]
 
 
 class TestCallerFacingApi:
@@ -299,52 +299,22 @@ class TestCallerFacingApi:
 
 
 class TestRealSources:
-    """Shape of the real adapters, without calling out to the network."""
+    """KIS adapter protocol and historical-data refusal, without network calls."""
 
-    def test_fdr_declares_what_it_cannot_do(self):
-        from cores.market_data.fdr_source import FdrSource
-
-        source = FdrSource()
+    def test_kis_refuses_unknown_index(self):
+        from cores.market_data.kis_source import KisSource
         with pytest.raises(Unsupported):
-            source.investor_flows("005930", "20260801", "20260803")
-        with pytest.raises(Unsupported):
-            source.fundamentals("005930", "20260801", "20260803")
+            KisSource().index_history("9999", "20260801", "20260803")
 
-    def test_fdr_refuses_an_index_it_has_no_mapping_for(self):
-        from cores.market_data.fdr_source import FdrSource
+    def test_kis_refuses_historical_quote_fields(self):
+        from cores.market_data.kis_source import KisSource
+        for verb in ("fundamentals", "market_cap_history"):
+            with pytest.raises(Unsupported):
+                getattr(KisSource(), verb)("005930", "20200101", "20200102")
 
-        with pytest.raises(Unsupported):
-            FdrSource().index_history("9999", "20260801", "20260803")
-
-    def test_fdr_maps_the_indices_the_reports_chart(self):
-        from cores.market_data.fdr_source import INDEX_SYMBOLS
-
-        assert INDEX_SYMBOLS["1001"] == "KS11"
-        assert INDEX_SYMBOLS["2001"] == "KQ11"
-
-    def test_krx_import_is_deferred(self):
-        # Importing krx_data_client at module scope would make every host
-        # without KRX credentials fail to load the package that exists to
-        # survive KRX being unavailable.
-        import inspect
-
-        from cores.market_data import krx_source
-
-        assert "import krx_data_client" not in inspect.getsource(krx_source).split(
-            "def _client"
-        )[0]
-
-    def test_both_sources_satisfy_the_protocol(self):
-        from cores.market_data.fdr_source import FdrSource
-        from cores.market_data.krx_source import KrxSource
-
-        for source in (KrxSource(), FdrSource()):
-            for verb in (
-                "price_history",
-                "index_history",
-                "market_cap_history",
-                "investor_flows",
-                "fundamentals",
-                "ticker_name",
-            ):
-                assert callable(getattr(source, verb)), f"{source.name}.{verb}"
+    def test_kis_satisfies_protocol(self):
+        from cores.market_data.kis_source import KisSource
+        source = KisSource()
+        for verb in ("price_history", "index_history", "market_cap_history",
+                     "investor_flows", "fundamentals", "ticker_name"):
+            assert callable(getattr(source, verb)), verb

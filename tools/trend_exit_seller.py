@@ -381,8 +381,8 @@ def _fetch_ma50(market: str, ticker: str) -> float:
             hist = yf.Ticker(ticker).history(period="4mo")
             series = hist["Close"].dropna()
             closes = [float(x) for x in series.tolist()]
-        else:  # KR via pykrx (clean close series, pykrx-compatible)
-            from pykrx import stock
+        else:  # KR via repository KIS market data
+            from cores import market_data as stock
             end = _now().date()
             start = end - timedelta(days=80)  # ~80 calendar days -> >=50 trading closes
             df = stock.get_market_ohlcv_by_date(
@@ -415,7 +415,7 @@ def _compute_live_regime(market: str) -> Optional[str]:
             sp = yf.Ticker("^GSPC").history(period="1y")
             computed = _compute_us_regime(sp)
         else:
-            from pykrx import stock
+            from cores import market_data as stock
             from cores.data_prefetch import _compute_kr_regime
             end = _now().date()
             start = end - timedelta(days=400)  # ~250 trading days for 120MA

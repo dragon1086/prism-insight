@@ -157,15 +157,18 @@ def test_stock_update_default_writes_configured_runtime_file(
 ) -> None:
     runtime_map = tmp_path / "runtime" / "stock_map.json"
 
-    class FakeClient:
-        def get_market_ticker_name(self, *, market: str) -> dict[str, str]:
-            assert market == "ALL"
-            return {"005930": "삼성전자"}
-
     monkeypatch.setenv("PRISM_STOCK_MAP_PATH", str(runtime_map))
-    monkeypatch.setattr(update_stock_data, "_get_client", lambda: FakeClient())
+    monkeypatch.setattr(update_stock_data, "fetch_kis_master_universe", lambda: {"005930": "삼성전자"})
 
     assert update_stock_data.update_stock_data()
     payload = json.loads(runtime_map.read_text(encoding="utf-8"))
     assert payload["code_to_name"] == {"005930": "삼성전자"}
     assert payload["name_to_code"] == {"삼성전자": "005930"}
+
+
+def test_stock_update_missing_master_names_preserves_existing_map(tmp_path, monkeypatch):
+    runtime_map = tmp_path / "stock_map.json"
+    runtime_map.write_text("existing", encoding="utf-8")
+    monkeypatch.setattr(update_stock_data, "fetch_kis_master_universe", lambda: {"005930": "005930"})
+    assert not update_stock_data.update_stock_data(runtime_map)
+    assert runtime_map.read_text(encoding="utf-8") == "existing"

@@ -26,9 +26,9 @@
 바뀌는 것은 데이터가 어디서 오느냐뿐이다:
 
     기존   KRX Data Marketplace 스크래핑 (카카오 로그인)
-    지금   cores.market_data 체인 (기본 kis -> fdr -> krx)
+    지금   cores.market_data (KIS 전용)
 
-`PRISM_MARKET_DATA_SOURCES` 로 순서를 바꾼다. KRX 자격증명이 필요 없다.
+과거 provider-order 설정은 제거된 제공자를 다시 활성화하지 않는다.
 
 ## 실패를 숨기지 않는다
 
@@ -87,9 +87,6 @@ def _load_repo_env() -> None:
 
 
 _load_repo_env()
-# MCP stdio may receive a filtered environment rather than the parent's guard.
-# Tool requests are noninteractive; reuse cached auth but never launch 2FA here.
-os.environ.setdefault("KRX_ALLOW_BROWSER_LOGIN", "0")
 
 from cores.market_data import (  # noqa: E402
     get_index_ohlcv_by_date,
@@ -142,13 +139,25 @@ def _answer(df, what: str) -> Dict[str, Any]:
     """
     payload = _frame_to_dated_dict(df)
     if payload:
-        note = getattr(df, "attrs", {}).get("estimate_note")
+        attrs = getattr(df, "attrs", {})
+        metadata = {
+            key: value for key in (
+                "source", "data_status", "as_of", "observed_at", "bar_status", "unit",
+                "latest_only", "derivation", "note", "precision_krw",
+            ) if isinstance((value := attrs.get(key)), (str, int, float, bool))
+        }
+        fields = attrs.get("derivation_fields")
+        if isinstance(fields, (list, tuple)) and all(isinstance(item, str) for item in fields):
+            metadata["derivation_fields"] = list(fields)
+        note = attrs.get("estimate_note")
         if note:
-            payload["__meta__"] = {
+            metadata.update({
                 "data_status": "intraday_estimate",
                 "note": note,
                 "as_of": df.attrs.get("estimate_as_of"),
-            }
+            })
+        if metadata:
+            payload["__meta__"] = metadata
         return payload
     return {
         "error": (
@@ -315,18 +324,9 @@ def get_ticker_name(ticker: Union[str, int]) -> Dict[str, Any]:
 
 
 def apply_report_source_order() -> str:
-    """리포트 전용 소스 순서가 지정돼 있으면 그것을 쓴다.
-
-    리포트에 실리는 수치는 배포되므로 스크리닝과 다른 소스를 쓰고 싶을 수 있다
-    (설계서 §3). 그래서 ``PRISM_REPORT_DATA_SOURCES`` 를 별도로 둔다. 비어 있으면
-    일반 체인 순서(``PRISM_MARKET_DATA_SOURCES``)를 그대로 따른다.
-
-    YAML 치환기가 중첩 ``${A:-${B}}`` 를 못 다뤄서 우선순위 판단을 여기서 한다.
-    """
-    override = (os.getenv("PRISM_REPORT_DATA_SOURCES") or "").strip()
-    if override:
-        os.environ["PRISM_MARKET_DATA_SOURCES"] = override
-    return os.getenv("PRISM_MARKET_DATA_SOURCES", "krx,fdr (chain default)")
+    """Keep the legacy startup hook while enforcing the single KIS provider."""
+    os.environ["PRISM_MARKET_DATA_SOURCES"] = "kis"
+    return "kis"
 
 
 def main() -> None:

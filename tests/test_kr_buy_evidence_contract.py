@@ -15,7 +15,8 @@ SOURCE = Path(__file__).resolve().parents[1] / "cores/agents/trading_agents.py"
 def prompt(request):
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     tree.body = [n for n in tree.body if not isinstance(n, (ast.Import, ast.ImportFrom))]
-    namespace = {"Agent": SimpleNamespace, "buy_scenario_prompt_contract": lambda _: ""}
+    from prism_core.sector_names import KR_SECTOR_NAMES
+    namespace = {"Agent": SimpleNamespace, "buy_scenario_prompt_contract": lambda _: "", "KR_SECTOR_NAMES": KR_SECTOR_NAMES}
     exec(compile(tree, str(SOURCE), "exec"), namespace)
     return request.param, namespace["create_trading_scenario_agent"](request.param).instruction
 

@@ -72,11 +72,11 @@ def test_contrarian_value_sets_prev_day_change_rate(monkeypatch):
     fake_hist = pd.DataFrame({"High": [high_52w, high_52w * 0.9]})
     fake_fund = pd.DataFrame({"PER": [10.0], "PBR": [1.0]})
 
-    # trigger_contrarian_value does `from krx_data_client import ...` at call time,
+    # trigger_contrarian_value does `from cores.market_data import ...` at call time,
     # so patching the module attributes is enough.
-    import krx_data_client
-    monkeypatch.setattr(krx_data_client, "get_market_ohlcv_by_date", lambda *a, **k: fake_hist)
-    monkeypatch.setattr(krx_data_client, "get_market_fundamental_by_date", lambda *a, **k: fake_fund)
+    import cores.market_data as market_data
+    monkeypatch.setattr(market_data, "get_market_ohlcv_by_date", lambda *a, **k: fake_hist)
+    monkeypatch.setattr(market_data, "get_market_fundamental_by_date", lambda *a, **k: fake_fund)
 
     result = trigger_contrarian_value("20260717", snapshot, prev_snapshot)
 

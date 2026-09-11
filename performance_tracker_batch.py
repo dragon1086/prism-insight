@@ -38,16 +38,16 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent
 DB_PATH = PROJECT_ROOT / "stock_tracking_db.sqlite"
 
-# krx_data_client import
+# KIS market data import
 try:
-    from krx_data_client import (
+    from cores.market_data import (
         get_market_ohlcv_by_date,
         get_nearest_business_day_in_a_week,
     )
-    KRX_AVAILABLE = True
+    MARKET_DATA_AVAILABLE = True
 except ImportError:
-    KRX_AVAILABLE = False
-    logger.warning("krx_data_client package is not installed.")
+    MARKET_DATA_AVAILABLE = False
+    logger.warning("KIS market data package is not installed.")
 
 
 class PerformanceTrackerBatch:
@@ -137,8 +137,8 @@ class PerformanceTrackerBatch:
         Returns:
             Current close price or None
         """
-        if not KRX_AVAILABLE:
-            logger.error("krx_data_client is not available.")
+        if not MARKET_DATA_AVAILABLE:
+            logger.error("KIS market data is not available.")
             return None
 
         try:
@@ -152,7 +152,7 @@ class PerformanceTrackerBatch:
                 logger.warning(f"[{ticker}] No price data available")
                 return None
 
-            # Return most recent close price (krx_data_client uses English column names)
+            # Return most recent close price (KIS market data uses English column names)
             close_col = 'Close' if 'Close' in df.columns else '종가'
             latest_close = df[close_col].iloc[-1]
             return float(latest_close)

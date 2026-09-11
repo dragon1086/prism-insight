@@ -1,21 +1,7 @@
-"""Per-instrument market data, from whichever provider can answer.
+"""KIS-only Korean market data with explicit unsupported/missing results.
 
-Callers ask here rather than asking a provider. What sits behind it — KRX,
-FinanceDataReader, a broker — is assembled in `default_chain()` and can be
-reordered or extended without touching a single call site.
-
-The function names match the ones `krx_data_client` exposes so existing callers
-did not have to change when this was introduced. That is a migration
-convenience, not the interface: new code should prefer the verbs on
-`MarketDataSource` (`price_history`, `investor_flows`, …), which say what is
-wanted rather than which vendor it came from.
-
-Why this exists: on 2026-08-04 KRX restricted the server's IP and
-`cores/stock_chart.py`, which called KRX directly and returned `None` on any
-failure, produced a report of 17,387 characters against a normal 351,311 — no
-charts, no prices, and no error anywhere. Screening survived the same outage
-because it already had a second source. This is that second source for the
-report path.
+Legacy provider environment variables cannot reactivate retired data sources.
+The compatibility function names are API names, not exchange-login clients.
 """
 
 from __future__ import annotations
@@ -27,10 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from cores.market_data.fdr_source import FdrSource
 from cores.market_data.kis_source import KisSource
-from cores.market_data.krx_source import KrxSource
-from cores.market_data.naver_source import NaverSource
 from cores.market_data.source import (
     MarketDataSource,
     SourceChain,
@@ -41,11 +24,8 @@ from cores.market_data.source import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "FdrSource",
     "KisSource",
-    "KrxSource",
     "MarketDataSource",
-    "NaverSource",
     "SourceChain",
     "Unavailable",
     "Unsupported",
@@ -58,19 +38,13 @@ __all__ = [
     "get_market_trading_volume_by_date",
     "get_market_trading_volume_by_investor",
     "set_default_chain",
+    "get_market_ohlcv_by_ticker",
+    "get_market_cap_by_ticker",
+    "get_market_ticker_list",
+    "get_nearest_business_day_in_a_week",
 ]
 
-_BUILDERS = {
-    "krx": KrxSource,
-    "fdr": FdrSource,
-    "kis": KisSource,
-    "naver": NaverSource,
-}
-# KIS is registered but not in the default order. It is the route we intend to
-# migrate to, and putting it first is a decision to make with measurements
-# rather than at import time — `PRISM_MARKET_DATA_SOURCES=kis,fdr,krx` promotes
-# it without a code change.
-_DEFAULT_ORDER = "krx,fdr"
+_DEFAULT_ORDER = "kis"
 
 _chain: SourceChain | None = None
 _KST = ZoneInfo("Asia/Seoul")
@@ -81,26 +55,13 @@ def _now_kst() -> datetime:
 
 
 def default_chain() -> SourceChain:
-    """The chain this process uses, built once.
-
-    `PRISM_MARKET_DATA_SOURCES` sets the order, so a host that cannot reach KRX
-    at all can run `fdr` alone without a code change, and the broker source can
-    be promoted to first the day it is ready.
-    """
+    """Build the sole production provider; ignore stale provider-order settings."""
     global _chain
     if _chain is None:
         order = os.getenv("PRISM_MARKET_DATA_SOURCES", _DEFAULT_ORDER)
-        sources: list[MarketDataSource] = []
-        for name in (part.strip().lower() for part in order.split(",")):
-            builder = _BUILDERS.get(name)
-            if builder is None:
-                logger.warning("unknown market data source %r; skipping", name)
-                continue
-            sources.append(builder())
-        if not sources:
-            logger.warning("no valid sources configured; falling back to %s", _DEFAULT_ORDER)
-            sources = [KrxSource(), FdrSource()]
-        _chain = SourceChain(sources)
+        if order.strip().lower() != "kis":
+            logger.warning("Retired market-data provider settings ignored; KIS is the only provider")
+        _chain = SourceChain([KisSource()])
         logger.info("market data sources: %s", " -> ".join(_chain.names))
     return _chain
 
@@ -240,3 +201,56 @@ def get_market_ticker_name(ticker: str) -> str:
         return default_chain().fetch("ticker_name", ticker)
     except Unavailable:
         return ticker
+
+
+def get_nearest_business_day_in_a_week(target_date: str | None = None, prev: bool = True) -> str:
+    """Local exchange calendar only; authentication is never needed for dates."""
+    from check_market_day import is_market_day
+    day = datetime.strptime(target_date, "%Y%m%d").date() if target_date else _now_kst().date()
+    for _ in range(14):
+        if is_market_day(day):
+            return day.strftime("%Y%m%d")
+        day += timedelta(days=-1 if prev else 1)
+    raise Unavailable("No trading session found within the local calendar bound")
+
+
+def _current_master(date: str | None = None):
+    from cores.kis_market_snapshot import fetch_kis_master_data
+    today = _now_kst().strftime("%Y%m%d")
+    if date is not None and str(date) != today:
+        raise Unsupported("Historical full-market universes are unavailable from today's KIS master")
+    master = fetch_kis_master_data()
+    if master.observed_date != today:
+        raise Unavailable("KIS master observation date is not today")
+    return master
+
+
+def get_market_ticker_list(date: str | None = None, market: str = "ALL") -> list[str]:
+    master = _current_master(date)
+    if market not in {"ALL", "KOSPI", "KOSDAQ"}:
+        raise Unsupported("Unsupported KIS master market")
+    return [code for code in master.names if market == "ALL" or master.markets.get(code) == market]
+
+
+def get_market_ohlcv_by_ticker(date: str, market: str = "ALL") -> pd.DataFrame:
+    from cores.kis_market_snapshot import fetch_kis_intraday_snapshot
+    master = _current_master(date)
+    if market not in {"ALL", "KOSPI", "KOSDAQ"}:
+        raise Unsupported("Unsupported KIS master market")
+    # Complete-universe validation remains at the collection boundary.
+    frame = fetch_kis_intraday_snapshot(master.names)
+    if market != "ALL":
+        frame = frame.loc[[code for code in frame.index if master.markets.get(code) == market]]
+    return frame
+
+
+def get_market_cap_by_ticker(date: str, market: str = "ALL") -> pd.DataFrame:
+    """Latest master-published prior-session cap, not today's intraday cap."""
+    master = _current_master(date)
+    if market not in {"ALL", "KOSPI", "KOSDAQ"}:
+        raise Unsupported("Unsupported KIS master market")
+    frame = master.cap_df.copy()
+    if market != "ALL":
+        frame = frame.loc[[code for code in frame.index if master.markets.get(code) == market]]
+    frame.attrs.update(source="kis_master", data_status="previous_session_snapshot", observed_date=master.observed_date)
+    return frame

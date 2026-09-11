@@ -6,7 +6,7 @@ Weekly Market Facts — 검증된 수치 근거 블록 생성
 웹 검색 결과에서 뽑으면 안 된다. 블로그·커뮤니티 글이 검색 상위에 올라오면
 LLM이 그 숫자를 그대로 인용해 사실과 다른 리포트가 나온다.
 
-이 모듈은 KRX(pykrx) / yfinance에서 직접 원천 데이터를 가져와
+이 모듈은 KIS / yfinance에서 직접 원천 데이터를 가져와
 LLM에게 "이 숫자만 써라"라고 전달할 수 있는 텍스트 블록을 만든다.
 
 모든 조회는 fail-soft: 실패하면 해당 항목만 빠지고 리포트 생성은 계속된다.
@@ -19,8 +19,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-# KRX 조회는 KRX_ID/KRX_PW 자격증명을 요구한다. 이 모듈이 단독 실행되거나
-# load_dotenv를 부르지 않은 경로에서 임포트돼도 동작하도록 여기서 로드한다.
+# Load KIS credentials for standalone read-only fact collection.
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -50,7 +49,7 @@ def resolve_recent_sessions(
     today: Optional[date] = None, lookback_days: int = 14
 ) -> Optional[tuple[date, date]]:
     """
-    (직전 거래일, 최근 거래일)을 KRX 지수 캘린더에서 직접 읽어 반환한다.
+    (직전 거래일, 최근 거래일)을 KIS 지수 관측일에서 직접 읽어 반환한다.
 
     주말·공휴일을 달력 계산으로 흉내내지 않는다. KOSPI 지수가 값을 가진 날이
     곧 거래일이므로, 그 인덱스의 마지막 두 행이 정답이다. 임시휴장·조기폐장도
@@ -63,7 +62,7 @@ def resolve_recent_sessions(
     Returns:
         (baseline, latest) 또는 조회 실패/거래일 부족 시 None.
     """
-    get_index_ohlcv_by_date = _krx_fn("get_index_ohlcv_by_date")
+    get_index_ohlcv_by_date = _market_data_fn("get_index_ohlcv_by_date")
     if get_index_ohlcv_by_date is None:
         return None
 
@@ -115,34 +114,14 @@ def _ymd(d: date) -> str:
 # ---------------------------------------------------------------------------
 # 한국 시장
 # ---------------------------------------------------------------------------
-def _krx_fn(name: str):
-    """
-    Resolve a KRX data function.
+def _market_data_fn(name: str):
+    """Resolve only the repository KIS provider; unsupported fields stay unknown."""
+    from cores import market_data
 
-    Production runs the `krx_data_client` wrapper (kospi-kosdaq-stock-server),
-    which exposes pykrx-compatible signatures and Korean column names. Bare
-    pykrx is the fallback for functions the wrapper doesn't re-export.
-    Returns None if neither is usable — callers must treat that as "skip".
-    """
-    try:
-        import krx_data_client
-
-        fn = getattr(krx_data_client, name, None)
-        if fn is not None:
-            return fn
-    except Exception:  # noqa: BLE001 - wrapper is server-only, absence is normal
-        pass
-
-    try:
-        from pykrx import stock
-
-        return getattr(stock, name, None)
-    except Exception as e:  # noqa: BLE001 - pykrx import can fail (setuptools/pkg_resources)
-        logger.warning(f"[facts] no KRX backend for {name}: {e}")
-        return None
+    return getattr(market_data, name, None)
 
 
-# krx_data_client returns English column names, bare pykrx returns Korean ones.
+# Accept the supported provider's English and Korean column variants.
 # Resolve by intent instead of hardcoding either convention.
 _COLUMN_ALIASES = {
     "open": ("시가", "Open"),
@@ -175,7 +154,7 @@ def _kr_index_block(
     어긋나 오히려 근거를 오염시킨다.
     실측 2026-07-31 KOSPI: 시가 대비 +16.57% vs 전일 종가 대비 +17.91%.
     """
-    get_index_ohlcv_by_date = _krx_fn("get_index_ohlcv_by_date")
+    get_index_ohlcv_by_date = _market_data_fn("get_index_ohlcv_by_date")
     if get_index_ohlcv_by_date is None:
         return []
 
@@ -228,111 +207,9 @@ def _kr_index_block(
     return lines
 
 
-_NAVER_INVESTOR_URL = (
-    "https://finance.naver.com/sise/investorDealTrendDay.naver?bizdate={bizdate}&sosok={sosok}"
-)
-_INVESTOR_LABELS = ("개인", "외국인", "기관계", "금융투자", "연기금등")
-
-
-def _flatten_columns(df) -> list[str]:
-    """read_html gives a 2-level header here; take the most specific label."""
-    out: list[str] = []
-    for col in df.columns:
-        if isinstance(col, tuple):
-            parts = [str(c) for c in col if str(c) and not str(c).startswith("Unnamed")]
-            out.append(parts[-1] if parts else "")
-        else:
-            out.append(str(col))
-    return out
-
-
-def _naver_investor_daily(sosok: str, bizdate: date) -> dict[date, dict[str, float]]:
-    """
-    네이버 금융 '투자자별 매매동향' 일별 순매수 (단위: 억원).
-
-    시장 전체 수급은 krx_data_client(개별종목 전용)로도, pykrx(KRX 응답 포맷
-    변경으로 파싱 실패)로도 받을 수 없어 네이버를 1차 소스로 쓴다.
-    페이지는 bizdate 기준 최근 약 15거래일을 담고 있다.
-    """
-    import io
-
-    import pandas as pd
-    import requests
-
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://finance.naver.com/",
-    })
-    url = _NAVER_INVESTOR_URL.format(bizdate=_ymd(bizdate), sosok=sosok)
-    resp = session.get(url, timeout=15)
-    resp.raise_for_status()
-
-    tables = pd.read_html(io.StringIO(resp.text))
-    table = next(
-        (t for t in tables if t.shape[0] > 2 and t.shape[1] >= 5),
-        None,
-    )
-    if table is None:
-        raise ValueError("investor table not found")
-
-    names = _flatten_columns(table)
-    idx = {label: names.index(label) for label in _INVESTOR_LABELS if label in names}
-    if "날짜" not in names or not idx:
-        raise ValueError(f"unexpected investor columns: {names}")
-    date_pos = names.index("날짜")
-
-    result: dict[date, dict[str, float]] = {}
-    for _, row in table.iterrows():
-        raw_date = str(row.iloc[date_pos]).strip()
-        # "26.07.24" 형식
-        parts = raw_date.split(".")
-        if len(parts) != 3 or not all(p.isdigit() for p in parts):
-            continue
-        try:
-            day = date(2000 + int(parts[0]), int(parts[1]), int(parts[2]))
-        except ValueError:
-            continue
-
-        values: dict[str, float] = {}
-        for label, pos in idx.items():
-            val = row.iloc[pos]
-            if pd.notna(val):
-                values[label] = float(val)
-        if values:
-            result[day] = values
-    return result
-
-
 def _kr_investor_block(start: date, end: date, labels: dict) -> list[str]:
-    lines: list[str] = []
-    for market, sosok in (("KOSPI", "01"), ("KOSDAQ", "02")):
-        try:
-            daily = _naver_investor_daily(sosok, end)
-            in_week = {d: v for d, v in daily.items() if start <= d <= end}
-            if not in_week:
-                logger.warning(f"[facts] {market} investor: no rows in {start}~{end}")
-                continue
-
-            totals: dict[str, float] = {}
-            for row in in_week.values():
-                for label, value in row.items():
-                    totals[label] = totals.get(label, 0.0) + value
-
-            order = ("외국인", "기관계", "개인", "금융투자", "연기금등")
-            parts = [
-                f"{label} {totals[label]:+,.0f}억원"
-                for label in order
-                if label in totals
-            ]
-            if parts:
-                lines.append(
-                    f"- {market} 투자자별 {labels['flow']}({len(in_week)}거래일): "
-                    + ", ".join(parts)
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[facts] {market} investor fetch failed: {e}")
-    return lines
+    """Do not replace unavailable KIS market-wide flow data with another provider."""
+    return ["- 시장 전체 투자자 수급: UNKNOWN (KIS 시장별 투자자 수급 연동 미지원)"]
 
 
 def _kr_movers_block(
@@ -341,19 +218,19 @@ def _kr_movers_block(
     """
     등락률 상위 종목.
 
-    krx_data_client에는 get_market_price_change_by_ticker가 없으므로
-    baseline/end 두 시점의 전종목 종가를 받아 직접 계산한다.
+    baseline/end 두 시점의 KIS 스냅샷이 확보된 경우만 직접 계산한다.
+    현재 스냅샷을 과거 날짜 데이터로 대체하지 않는다.
 
     ⚠️ baseline 은 end 와 **다른 거래일**이어야 한다. 같은 날을 넘기면
     close(x)/close(x)-1 이라 전 종목이 +0.0% 로 나온다 — 예외가 아니라
     조용히 틀린 값이 리포트에 실린다. 일간 팩트는 resolve_recent_sessions()
     가 돌려주는 직전 거래일을 baseline 으로 쓴다.
     """
-    get_ohlcv_by_ticker = _krx_fn("get_market_ohlcv_by_ticker")
-    get_ticker_list = _krx_fn("get_market_ticker_list")
-    get_ticker_name = _krx_fn("get_market_ticker_name")
+    get_ohlcv_by_ticker = _market_data_fn("get_market_ohlcv_by_ticker")
+    get_ticker_list = _market_data_fn("get_market_ticker_list")
+    get_ticker_name = _market_data_fn("get_market_ticker_name")
     if get_ohlcv_by_ticker is None:
-        return []
+        return ["- 종목 등락률: UNKNOWN (KIS 비교 시점 스냅샷 미확보)"]
 
     if baseline == end:
         logger.warning(
@@ -366,7 +243,7 @@ def _kr_movers_block(
         first = get_ohlcv_by_ticker(_ymd(baseline))
         last = get_ohlcv_by_ticker(_ymd(end))
         if first is None or last is None or first.empty or last.empty:
-            return []
+            return ["- 종목 등락률: UNKNOWN (KIS 비교 시점 스냅샷 미확보)"]
 
         c_close_f, c_close_l = _col(first, "close"), _col(last, "close")
         c_amount = _col(last, "amount")
@@ -385,7 +262,7 @@ def _kr_movers_block(
             return []
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[facts] movers fetch failed: {e}")
-        return []
+        return ["- 종목 등락률: UNKNOWN (KIS 비교 시점 스냅샷 미확보)"]
 
     lines: list[str] = []
     for market in ("KOSPI", "KOSDAQ"):
@@ -436,18 +313,8 @@ def build_kr_facts(
                   일간은 직전 거래일을 넘겨야 한다(같은 날이면 전부 0%).
         include_movers: 등락률 상위 블록 포함 여부.
 
-            **대화형 호출에서는 반드시 False 로 꺼라.** app-server 실측:
-
-                resolve 0.7s | index 0.1s | investor 0.2s | movers 63.0s
-
-            movers 혼자 전체의 98% 다. 전종목 스냅샷 2회 + 종목명 조회 14회를
-            krx_data_client 로 도는데, 서버 자격증명 경로는 호출마다 KRX
-            브라우저 로그인(안정화 대기 7~13초, 지터 5~15초)을 태운다.
-            주간 배치는 일회성이라 1분이 무해하지만 봇 커맨드는 못 기다린다.
-            끄면 1.0초에 끝나고, 시장 질문의 핵심 근거(지수 레벨·등락률·수급)는
-            index/investor 에 다 들어 있다.
-
-    주간 호출(build_kr_facts(mon, fri))의 출력은 이 변경 전후로 동일하다.
+            대화형 호출은 include_movers=False로 전체 시장 조회를 생략한다.
+            KIS의 과거 시점 스냅샷이 없으면 등락률은 UNKNOWN으로 유지한다.
     """
     if kind not in _PERIOD_LABELS:
         raise ValueError(f"unknown kind {kind!r}; expected 'weekly' or 'daily'")
@@ -466,7 +333,7 @@ def build_kr_facts(
     lines = index_lines + investor_lines + movers_lines
 
     if not lines:
-        logger.warning("[facts] KR facts empty — KRX 조회 전부 실패")
+        logger.warning("[facts] KR facts empty — market data unavailable")
         return ""
 
     period_text = (
@@ -474,18 +341,17 @@ def build_kr_facts(
         else f"{start:%Y-%m-%d} ~ {end:%Y-%m-%d}"
     )
     header = (
-        f"[검증된 시장 데이터 — KRX 원천 조회, {period_text}]\n"
-        "아래 수치는 한국거래소 데이터에서 직접 조회한 확정값이다.\n"
+        f"[검증된 시장 데이터 — KIS 조회, {period_text}]\n"
+        "아래 수치는 명시된 제공자에서 조회한 관측값이며, 당일 값의 종가 확정 여부는 별도 확인해야 한다.\n"
         "지수 레벨·등락률·종목 등락률은 반드시 아래 값만 사용하고, "
         "웹 검색 결과에 다른 숫자가 있어도 무시하라.\n"
     )
-    if not investor_lines:
-        # 시장 전체 수급은 krx_data_client(개별종목 전용)로는 못 받는다.
+    if not investor_lines or any("UNKNOWN" in line for line in investor_lines):
+        # 시장 전체 수급을 확보하지 못했으면 추정 숫자를 생성하지 않는다.
         # 없는 값을 지어내는 대신 서술 방식을 제한한다.
         header += (
             "단, 외국인·기관 순매수 금액은 확정 데이터를 확보하지 못했다. "
-            "수급은 1차 매체(연합뉴스·인포맥스 등) 기사에 명시된 수치만 인용하고, "
-            "그런 수치가 없으면 금액 없이 매수/매도 방향성만 서술하라.\n"
+            "이 블록의 수급을 0 또는 매수/매도 방향으로 추정하지 말고 미확인으로 유지하라.\n"
         )
     return header + "\n".join(lines)
 
@@ -608,17 +474,7 @@ def build_us_facts(
 
 
 def diagnose() -> None:
-    """
-    Print which KRX backend resolves for each function and what the fact blocks
-    look like. Run this on the server after deploy:
-
-        python weekly_market_facts.py
-
-    If the investor line is missing, `krx_data_client` doesn't re-export
-    get_market_trading_value_by_investor and bare pykrx couldn't reach KRX —
-    the flow numbers will be absent from the report (by design, rather than
-    hallucinated from a blog post).
-    """
+    """Print KIS capability resolution and fail-soft fact blocks."""
     s, e = resolve_week_range()
     print(f"week range: {s} ~ {e}\n")
 
@@ -628,7 +484,7 @@ def diagnose() -> None:
         "get_market_trading_value_by_investor",
         "get_market_price_change_by_ticker",
     ):
-        fn = _krx_fn(name)
+        fn = _market_data_fn(name)
         origin = getattr(fn, "__module__", "?") if fn else "UNRESOLVED"
         print(f"  {name}: {origin}")
     print()
