@@ -37,6 +37,7 @@ from cores.stock_chart import (
     get_chart_as_base64_html
 )
 from cores.utils import clean_markdown
+from prism_core.competitive_evidence import attach_competitive_evidence
 
 
 # Market analysis cache storage (global variable)
@@ -183,6 +184,16 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
                     except Exception as e:
                         logger.error(f"Final failure processing {section}: {e}")
                         section_reports[section] = f"Analysis failed: {section}"
+
+        # Reuse completed news evidence; do not rerun company/news agents.
+        section_reports, evidence_receipt = attach_competitive_evidence(
+            section_reports, "KR", company_code, reference_date, language
+        )
+        logger.info(
+            f"[COMPETITIVE_EVIDENCE] market=KR symbol={company_code} date={reference_date} "
+            f"status={evidence_receipt['status']} evidence_id={evidence_receipt['evidence_id']} "
+            f"record_chars={evidence_receipt['record_chars']}"
+        )
 
         # 6. Integrate content from other reports
         combined_reports = ""
