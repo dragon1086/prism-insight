@@ -487,7 +487,21 @@ class KisSource:
         return {"sector": sector.strip(), "source": "kis",
                 "as_of": observed_at.isoformat(), "latest_only": True}
 
+    @staticmethod
+    def _master_names() -> dict[str, str]:
+        # This loader shares the official KIS master's daily cache with market
+        # screening. Do not download the universe or issue a quote per ticker.
+        from cores.kis_market_snapshot import fetch_kis_master_universe
+
+        return fetch_kis_master_universe()
+
     def ticker_name(self, ticker: str) -> str:
+        try:
+            name = self._master_names().get(ticker)
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        except Exception as exc:
+            logger.warning("KIS master name unavailable (%s); trying KIS stock-info", type(exc).__name__)
         # inquire-price has a market name, not a company name. Use the official
         # stock-info endpoint (v1_국내주식-067), never get_current_price.stock_name.
         body = self._fetch(
@@ -499,7 +513,10 @@ class KisSource:
             output = output[0]
         if not isinstance(output, dict):
             raise Unavailable("KIS stock-info has no company name object")
-        if output.get("pdno") and str(output["pdno"]).strip() != ticker:
+        # CTPF1002R was observed returning internal product ID 00000A005930
+        # for request 005930. Accept only that exact prefix form, not suffix
+        # matches that could silently resolve another product class or ticker.
+        if output.get("pdno") and str(output["pdno"]).strip() not in {ticker, f"00000A{ticker}"}:
             raise Unavailable("KIS stock-info returned a different ticker")
         for field in ("prdt_abrv_name", "prdt_name", "prdt_name120"):
             value = output.get(field)

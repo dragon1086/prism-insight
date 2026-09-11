@@ -30,6 +30,7 @@ def source(monkeypatch):
         return SimpleNamespace(output=obj.output)
 
     monkeypatch.setattr(obj, "_fetch", fetch)
+    monkeypatch.setattr(obj, "_master_names", lambda: {}, raising=False)
     return obj
 
 
@@ -141,6 +142,36 @@ def test_company_name_uses_official_stock_info(source):
     assert source.calls[0][1:] == ("CTPF1002R", {"PRDT_TYPE_CD": "300", "PDNO": "012630"})
 
 
+def test_company_name_prefers_official_master_without_quote_rpc(source, monkeypatch):
+    monkeypatch.setattr(source, "_master_names", lambda: {"005930": "삼성전자", "012630": "HDC"})
+    assert source.ticker_name("005930") == "삼성전자"
+    assert source.ticker_name("012630") == "HDC"
+    assert source.calls == []
+
+
+def test_master_download_failure_falls_back_to_kis_stock_info(source, monkeypatch):
+    def unavailable():
+        raise RuntimeError("master unavailable")
+
+    monkeypatch.setattr(source, "_master_names", unavailable)
+    source.output = {"pdno": "005930", "prdt_name": "삼성전자"}
+    assert source.ticker_name("005930") == "삼성전자"
+    assert len(source.calls) == 1
+
+
+def test_master_helper_reuses_shared_daily_loader(monkeypatch):
+    import cores.kis_market_snapshot as master
+
+    monkeypatch.setattr(master, "fetch_kis_master_universe", lambda: {"005930": "삼성전자"})
+    obj = KisSource()
+
+    def forbidden(*args):
+        pytest.fail("master hit must not authenticate or request stock-info")
+
+    monkeypatch.setattr(obj, "_fetch", forbidden)
+    assert obj.ticker_name("005930") == "삼성전자"
+
+
 def test_company_name_rejects_market_and_wrong_ticker(source):
     source.output = {"rprs_mrkt_kor_name": "KOSPI200"}
     with pytest.raises(Unavailable, match="company name"):
@@ -148,3 +179,15 @@ def test_company_name_rejects_market_and_wrong_ticker(source):
     source.output = {"pdno": "005930", "prdt_name": "삼성전자"}
     with pytest.raises(Unavailable, match="different ticker"):
         source.ticker_name("012630")
+
+
+def test_company_name_accepts_observed_kis_internal_product_identifier(source):
+    source.output = {"pdno": "00000A005930", "prdt_abrv_name": "삼성전자"}
+    assert source.ticker_name("005930") == "삼성전자"
+
+
+@pytest.mark.parametrize("identifier", ["00000A000660", "00000B005930", "other005930"])
+def test_company_name_rejects_wrong_internal_identifier(source, identifier):
+    source.output = {"pdno": identifier, "prdt_name": "삼성전자"}
+    with pytest.raises(Unavailable, match="different ticker"):
+        source.ticker_name("005930")
