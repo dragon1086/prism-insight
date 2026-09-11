@@ -78,6 +78,7 @@ def _price_row(date, close=1000):
 def _source(client):
     source = KisSource()
     source._client = client
+    source._master_names = lambda: {}
     return source
 
 
