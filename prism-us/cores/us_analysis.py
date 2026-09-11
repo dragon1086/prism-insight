@@ -8,6 +8,7 @@ import os
 import asyncio
 from datetime import datetime
 from pathlib import Path
+from prism_core.competitive_evidence import attach_competitive_evidence
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -300,6 +301,16 @@ async def analyze_us_stock(
         for result in all_results[1:]:
             if result and result[1] is not None:
                 section_reports[result[0]] = result[1]
+
+        # Both hybrid branches are complete: reuse news without another model call.
+        section_reports, evidence_receipt = attach_competitive_evidence(
+            section_reports, "US", ticker, reference_date, language
+        )
+        logger.info(
+            f"[COMPETITIVE_EVIDENCE] market=US symbol={ticker} date={reference_date} "
+            f"status={evidence_receipt['status']} evidence_id={evidence_receipt['evidence_id']} "
+            f"record_chars={evidence_receipt['record_chars']}"
+        )
 
         # 6. Integrate content from other reports
         combined_reports = ""
