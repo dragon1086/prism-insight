@@ -1,11 +1,11 @@
 """
 Data Prefetch Module for Korean Stock Analysis
 
-Pre-fetches stock data by calling kospi_kosdaq MCP server's library functions directly
+Pre-fetches stock data through the repository-owned provider-chain adapter
 (not via MCP protocol), eliminating MCP tool call round-trips during analysis.
 
 Architecture:
-- Direct call: import kospi_kosdaq_stock_server module → call functions → Dict → markdown
+- Direct call: repository market_data adapter → provider chain → Dict → markdown
 - MCP fallback: if import fails, agents use MCP tool calls as before (no prefetch)
 
 This mirrors the US module's pattern (us_data_client.py direct import).
@@ -68,17 +68,28 @@ def _dict_to_markdown(data: dict, title: str = "") -> str:
 
 
 def _get_mcp_server_module():
-    """Import kospi_kosdaq_stock_server module for direct library calls.
+    """Reuse the same provider chain as tools, without legacy eager KRX login.
 
     Returns:
         The kospi_kosdaq_stock_server module, or None if import fails
     """
     try:
-        import kospi_kosdaq_stock_server as server
+        from cores.market_data import mcp_server as server
         return server
     except ImportError:
-        logger.warning("kospi_kosdaq_stock_server module not available, prefetch disabled")
+        logger.warning("Repository market-data adapter unavailable, prefetch disabled")
         return None
+
+
+def _prefetch_sector_info(reference_date: str, market: str) -> dict:
+    """Optional KRX-only field; missing auth must not remove index/price data."""
+    try:
+        from krx_data_client import _get_client
+        data = _get_client().get_market_sector_info(reference_date, market=market)
+        return data if isinstance(data, dict) and "error" not in data else {}
+    except Exception as exc:
+        logger.warning("Sector classification unavailable: %s", type(exc).__name__)
+        return {}
 
 
 def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str) -> str:
@@ -247,8 +258,8 @@ def prefetch_macro_intelligence_data(reference_date: str) -> dict:
     try:
         import json as _json
         # Fetch KOSPI + KOSDAQ sector classifications
-        kospi_sectors = server.get_sector_info("KOSPI")
-        kosdaq_sectors = server.get_sector_info("KOSDAQ")
+        kospi_sectors = _prefetch_sector_info(reference_date, "KOSPI")
+        kosdaq_sectors = _prefetch_sector_info(reference_date, "KOSDAQ")
         sector_data = {}
         for raw in [kospi_sectors, kosdaq_sectors]:
             parsed = _json.loads(raw) if isinstance(raw, str) else raw

@@ -87,6 +87,9 @@ def _load_repo_env() -> None:
 
 
 _load_repo_env()
+# MCP stdio may receive a filtered environment rather than the parent's guard.
+# Tool requests are noninteractive; reuse cached auth but never launch 2FA here.
+os.environ.setdefault("KRX_ALLOW_BROWSER_LOGIN", "0")
 
 from cores.market_data import (  # noqa: E402
     get_index_ohlcv_by_date,
