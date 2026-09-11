@@ -30,6 +30,8 @@ def prepare(root, host_root, repo, auth, *, as_of_date, kr_public_diagnostic=Fal
     anchor = date.fromisoformat(as_of_date)
     if type(kr_public_diagnostic) is not bool:
         raise ValueError("explicit_kr_diagnostic_flag_required")
+    if kr_public_diagnostic:
+        raise ValueError("kr_public_diagnostic_retired_kis_only")
     if (root.exists() or host_root.exists() or root.is_relative_to(host_root) or host_root.is_relative_to(root)
             or any(path.is_symlink() for base in (root, host_root) for path in (base, *base.parents))
             or any(host_root.is_relative_to(Path(exposed)) for exposed in ("/usr", "/lib", "/lib64"))):

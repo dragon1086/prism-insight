@@ -29,7 +29,7 @@ servers:
       # 레지스트리가 env 를 명시적으로 넘기므로 리포 루트를 직접 준다.
       # 기본값 '.' 는 자식의 cwd(오케스트레이터가 리포 루트에서 실행)를 가리킨다.
       PYTHONPATH: ${PRISM_REPO_ROOT:-.}
-      PRISM_REPORT_DATA_SOURCES: kis
+      PRISM_REPORT_DATA_SOURCES: ${PRISM_REPORT_DATA_SOURCES:-kis}
     read_timeout_seconds: 45
   perplexity:
     # Official Perplexity MCP server. Pin the package so tool schemas cannot
