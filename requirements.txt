@@ -55,7 +55,7 @@ holidays~=0.68
 
 python-telegram-bot[job-queue]>=20.0
 
-kospi_kosdaq_stock_server>=0.4.2  # 0.4.2: KRX IP 제한을 재시도 대상에서 제외 + 24h 서킷 브레이커
+kospi_kosdaq_stock_server @ git+https://github.com/dragon1086/kospi-kosdaq-stock-server.git@0e6446f7e3d61e152f165f28daca4d79193bd8dc  # 0.4.3: noninteractive auth guard and failure cooldown
 DateTime~=5.5
 matplotlib~=3.10.1
 seaborn~=0.13.2

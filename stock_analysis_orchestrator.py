@@ -356,7 +356,7 @@ class StockAnalysisOrchestrator:
         try:
             # Step 1: Prefetch index data and compute regime programmatically
             from cores.data_prefetch import prefetch_macro_intelligence_data
-            prefetched = prefetch_macro_intelligence_data(reference_date)
+            prefetched = await asyncio.to_thread(prefetch_macro_intelligence_data, reference_date)
             logger.info(f"Macro prefetch complete: {list(prefetched.keys())}")
 
             if prefetched.get("computed_regime"):
@@ -1219,6 +1219,9 @@ class StockAnalysisOrchestrator:
             mode (str): 'morning' or 'afternoon'
             language (str): Analysis language ("ko" or "en")
         """
+        # Scheduled runs can reuse a valid KRX session, but must never wait for
+        # an interactive browser/2FA login. Manual recovery can explicitly opt in.
+        os.environ.setdefault("KRX_ALLOW_BROWSER_LOGIN", "0")
         logger.info(f"Starting full pipeline - mode: {mode}")
         campaign_trade_date = datetime.now().strftime("%Y%m%d")
 
