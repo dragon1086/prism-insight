@@ -77,6 +77,21 @@ def test_real_record_after_fenced_example_gets_id_at_correct_offset():
     assert reports["news_analysis"].count(receipt["evidence_id"]) == 1
 
 
+def test_generic_report_h3_variant_keeps_nested_h4_records():
+    news = "### Competitive Evidence\n#### First claim\nstatus: SEARCH_ONLY\n### News Analysis\nnot evidence"
+    reports, receipt = attach_competitive_evidence({"news_analysis": news}, "US", "EXAMPLE", "20260911")
+    assert receipt["status"] == "COPIED_NOT_VALIDATED"
+    assert "#### First claim" in reports["company_overview"]
+    assert "not evidence" not in reports["company_overview"]
+
+
+@pytest.mark.parametrize("heading", ["### competitive evidence", "#### COMPETITIVE EVIDENCE", "### **Competitive Evidence**"])
+def test_exact_title_format_variants_not_arbitrary_fuzzy_matches(heading):
+    reports, receipt = attach_competitive_evidence({"news_analysis": heading + "\nstatus: SEARCH_ONLY"}, "US", "EXAMPLE", "20260911")
+    assert receipt["status"] == "COPIED_NOT_VALIDATED"
+    assert "SEARCH_ONLY" in reports["company_overview"]
+
+
 def test_clean_markdown_preserves_exact_evidence_headings():
     from cores.utils import clean_markdown
     reports, receipt = attach_competitive_evidence({"news_analysis": NEWS}, "US", "EXAMPLE", "20260911", "en")
