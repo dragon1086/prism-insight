@@ -184,11 +184,11 @@ class StockAnalysisOrchestrator:
         # Translate company name (only for English)
         if not parsed['company_name']:
             logger.warning(f"Empty company name in filename: {original_path.stem}")
-            # Try to get company name from pykrx
+            # Resolve names from the KIS-only interface.
             try:
-                from pykrx import stock as stock_api
-                parsed['company_name'] = stock_api.get_market_ticker_name(parsed['ticker']) or ""
-                logger.info(f"Retrieved company name from pykrx: {parsed['company_name']}")
+                from cores.market_data import get_market_ticker_name
+                parsed['company_name'] = get_market_ticker_name(parsed['ticker']) or ""
+                logger.info(f"Retrieved company name from KIS: {parsed['company_name']}")
             except Exception:
                 pass
 
@@ -533,11 +533,11 @@ class StockAnalysisOrchestrator:
 
                             if name_col:
                                 name = stocks_df.loc[ticker, name_col]
-                            # Fallback: use pykrx API if name is empty
+                            # Resolve missing names from KIS.
                             if not name:
                                 try:
-                                    from pykrx import stock as stock_api
-                                    name = stock_api.get_market_ticker_name(ticker) or ""
+                                    from cores.market_data import get_market_ticker_name
+                                    name = get_market_ticker_name(ticker) or ""
                                 except Exception:
                                     pass
 
@@ -1219,9 +1219,6 @@ class StockAnalysisOrchestrator:
             mode (str): 'morning' or 'afternoon'
             language (str): Analysis language ("ko" or "en")
         """
-        # Scheduled runs can reuse a valid KRX session, but must never wait for
-        # an interactive browser/2FA login. Manual recovery can explicitly opt in.
-        os.environ.setdefault("KRX_ALLOW_BROWSER_LOGIN", "0")
         logger.info(f"Starting full pipeline - mode: {mode}")
         campaign_trade_date = datetime.now().strftime("%Y%m%d")
 

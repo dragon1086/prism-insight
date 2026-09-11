@@ -672,7 +672,7 @@ class StockTrackingAgent:
         account_key, _ = self._account_scope()
         return await get_current_stock_price(self.cursor, ticker, account_key=account_key)
 
-    async def _get_trading_value_rank_change(self, ticker: str) -> Tuple[float, str]:
+    async def _get_trading_value_rank_change(self, ticker: str) -> Tuple[float | None, str]:
         """Calculate trading value ranking change (delegates to tracking.helpers)"""
         return await get_trading_value_rank_change(ticker)
 
@@ -736,7 +736,7 @@ class StockTrackingAgent:
         # initialization/order success. Only today's row is accepted, not the
         # nearest prior session or the database fallback used during analysis.
         from zoneinfo import ZoneInfo
-        from krx_data_client import get_market_ohlcv_by_date
+        from cores.market_data import get_market_ohlcv_by_date
         day = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
         frame = await asyncio.to_thread(get_market_ohlcv_by_date, day, day, ticker)
         if frame.empty or frame.index[-1].strftime("%Y%m%d") != day:
@@ -745,7 +745,7 @@ class StockTrackingAgent:
         price = float(frame.iloc[-1]["Close"])
         if not math.isfinite(price) or price <= 0:
             raise ValueError("fresh BUY quote invalid")
-        return {"price": price, "source": "krx_same_day_close", "provider_date": provider_day,
+        return {"price": price, "source": "kis_same_day_close", "provider_date": provider_day,
                 "retrieved_at_monotonic": time.monotonic()}
 
     def _record_broker_entry_observation(self, ticker, decision_id, position_id, intent_id, result=None, *, outcome_unknown=False):

@@ -28,8 +28,10 @@ load on a host without KIS credentials.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from datetime import datetime, time
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -41,6 +43,9 @@ logger = logging.getLogger(__name__)
 
 _MARKET_DOMESTIC = "J"
 _MARKET_INDEX = "U"
+_QUOTE = "/uapi/domestic-stock/v1/quotations/inquire-price"
+_QUOTE_TR = "FHKST01010100"
+_QUOTE_TTL_SECONDS = 30
 
 _DAILY_CHART = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
 _DAILY_CHART_TR = "FHKST03010100"
@@ -121,6 +126,8 @@ class KisSource:
     def __init__(self) -> None:
         self._client = None
         self._lock = threading.Lock()
+        self._quote_lock = threading.Lock()
+        self._quote_cache: dict[str, tuple[float, datetime, dict]] = {}
 
     # ------------------------------------------------------------------ client
 
@@ -389,20 +396,113 @@ class KisSource:
         return frame
 
     def market_cap_history(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        # The chart endpoint carries 시가총액 only in output1, as one current
-        # value — there is no series. Reconstructing it from a constant share
-        # count is what FdrSource already does, and doing it here too would just
-        # hide which source the approximation came from.
-        raise Unsupported("KIS publishes market cap as a current value, not a series")
+        self._require_current_range(start, end)
+        quote, observed_at = self._current_quote(ticker)
+        self._require_current_range(start, end)
+        # Official inquire-price maps stck_prpr to 주식 현재가 and lstn_stcn
+        # to 상장 주수. Use only this same-payload current calculation, not an
+        # unverified unit multiplier for hts_avls or constant shares in history.
+        price = self._numeric(quote.get("stck_prpr"))
+        shares = self._numeric(quote.get("lstn_stcn"))
+        if not (price > 0 and shares > 0 and math.isfinite(price * shares)):
+            raise Unavailable(f"KIS cap {ticker} lacks positive current price/shares")
+        frame = self._snapshot_frame({"MarketCap": price * shares}, observed_at)
+        frame.attrs.update({
+            "data_status": "derived_current_snapshot",
+            "derivation": "stck_prpr * lstn_stcn",
+            "derivation_fields": ["stck_prpr", "lstn_stcn"],
+            "unit": "KRW",
+            "note": "KIS 동일 현재가 응답의 주가×상장주수로 계산한 최신 시총입니다. 공식 보고 시총·과거 시계열·확정 종가가 아닙니다.",
+        })
+        return frame
 
     def fundamentals(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        # PER/PBR/EPS/BPS come from inquire-price as today's snapshot only.
-        raise Unsupported("KIS publishes PER/PBR as current values, not a series")
+        self._require_current_range(start, end)
+        quote, observed_at = self._current_quote(ticker)
+        self._require_current_range(start, end)
+        values = {
+            field.upper(): self._numeric(quote.get(field))
+            for field in ("per", "pbr", "eps", "bps")
+        }
+        # Undefined/negative valuation multiples are not evidence of cheapness.
+        for field in ("PER", "PBR"):
+            if values[field] <= 0:
+                values[field] = float("nan")
+        if all(pd.isna(value) for value in values.values()):
+            raise Unavailable(f"KIS fundamentals {ticker} has no usable fields")
+        return self._snapshot_frame(values, observed_at)
+
+    @staticmethod
+    def _numeric(value) -> float:
+        if isinstance(value, (dict, list, tuple, bool)):
+            return float("nan")
+        parsed = pd.to_numeric(value, errors="coerce")
+        return float(parsed) if parsed is not None and math.isfinite(parsed) else float("nan")
+
+    @staticmethod
+    def _require_current_range(start: str, end: str) -> None:
+        today = pd.Timestamp(datetime.now(_KST).date())
+        if not pd.Timestamp(start) <= today <= pd.Timestamp(end):
+            raise Unsupported("KIS quote is latest-only; historical fundamentals/cap unavailable")
+
+    def _current_quote(self, ticker: str) -> tuple[dict, datetime]:
+        # Keep a small bounded cache, never serve stale data on request failure.
+        with self._quote_lock:
+            now = datetime.now(_KST)
+            cached = self._quote_cache.get(ticker)
+            if cached and cached[1].date() == now.date() and monotonic() - cached[0] < _QUOTE_TTL_SECONDS:
+                return dict(cached[2]), cached[1]
+            body = self._fetch(_QUOTE, _QUOTE_TR, {
+                "FID_COND_MRKT_DIV_CODE": _MARKET_DOMESTIC,
+                "FID_INPUT_ISCD": ticker,
+            })
+            output = getattr(body, "output", None)
+            if not isinstance(output, dict) or not output:
+                raise Unavailable(f"KIS quote {ticker} has no output object")
+            returned_ticker = output.get("stck_shrn_iscd")
+            if returned_ticker and str(returned_ticker).strip() != ticker:
+                raise Unavailable("KIS quote returned a different ticker")
+            observed_at = datetime.now(_KST)
+            if len(self._quote_cache) >= 128:
+                self._quote_cache.pop(next(iter(self._quote_cache)))
+            self._quote_cache[ticker] = (monotonic(), observed_at, dict(output))
+            return dict(output), observed_at
+
+    @staticmethod
+    def _snapshot_frame(values: dict, observed_at: datetime) -> pd.DataFrame:
+        frame = pd.DataFrame([values], index=[pd.Timestamp(observed_at.date())])
+        frame.attrs.update({
+            "source": "kis", "as_of": observed_at.isoformat(),
+            "observed_at": observed_at.isoformat(), "latest_only": True,
+            "data_status": "LATEST_SNAPSHOT_ONLY", "bar_status": "UNKNOWN",
+            "note": "KIS 조회 시점의 최신 스냅샷이며 과거 시계열·확정 종가가 아닙니다. 재무 기준기간은 확인되지 않았습니다.",
+        })
+        return frame
+
+    def sector_info(self, ticker: str) -> dict:
+        quote, observed_at = self._current_quote(ticker)
+        sector = quote.get("bstp_kor_isnm")
+        if not isinstance(sector, str) or not sector.strip():
+            raise Unavailable(f"KIS quote {ticker} has no sector name")
+        return {"sector": sector.strip(), "source": "kis",
+                "as_of": observed_at.isoformat(), "latest_only": True}
 
     def ticker_name(self, ticker: str) -> str:
-        # inquire-price carries no company name. The nearest fields are the
-        # market and the sector, and `get_current_price` maps `stock_name` to
-        # `rprs_mrkt_kor_name` — so asking it for 005930 answers "KOSPI200",
-        # not "삼성전자". Returning that would label every chart with a market
-        # name, so this is declared missing and the chain falls through.
-        raise Unsupported("KIS inquire-price does not return a company name")
+        # inquire-price has a market name, not a company name. Use the official
+        # stock-info endpoint (v1_국내주식-067), never get_current_price.stock_name.
+        body = self._fetch(
+            "/uapi/domestic-stock/v1/quotations/search-stock-info", "CTPF1002R",
+            {"PRDT_TYPE_CD": "300", "PDNO": ticker},
+        )
+        output = getattr(body, "output", None)
+        if isinstance(output, list) and len(output) == 1:
+            output = output[0]
+        if not isinstance(output, dict):
+            raise Unavailable("KIS stock-info has no company name object")
+        if output.get("pdno") and str(output["pdno"]).strip() != ticker:
+            raise Unavailable("KIS stock-info returned a different ticker")
+        for field in ("prdt_abrv_name", "prdt_name", "prdt_name120"):
+            value = output.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        raise Unavailable("KIS stock-info has no company name")

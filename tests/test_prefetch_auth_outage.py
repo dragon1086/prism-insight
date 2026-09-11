@@ -13,9 +13,9 @@ def test_prefetch_uses_repository_provider_chain_not_eager_legacy_server(monkeyp
 
 
 def test_sector_auth_failure_is_optional_and_does_not_invent_data(monkeypatch):
-    def unavailable():
+    def unavailable(*args, **kwargs):
         raise RuntimeError("authentication unavailable")
-    monkeypatch.setitem(sys.modules, "krx_data_client", SimpleNamespace(_get_client=unavailable))
+    monkeypatch.setattr("cores.kis_sector_map.get_sector_info", unavailable)
     assert data_prefetch._prefetch_sector_info("20260911", "KOSPI") == {}
 
 
@@ -24,7 +24,7 @@ def test_sector_lookup_keeps_original_provider_and_reference_date(monkeypatch):
     def query(day, market):
         seen.append((day, market))
         return {"005930": "전기전자"}
-    monkeypatch.setitem(sys.modules, "krx_data_client", SimpleNamespace(_get_client=lambda: SimpleNamespace(get_market_sector_info=query)))
+    monkeypatch.setattr("cores.kis_sector_map.get_sector_info", query)
     assert data_prefetch._prefetch_sector_info("20260911", "KOSDAQ") == {"005930": "전기전자"}
     assert seen == [("20260911", "KOSDAQ")]
 
@@ -37,17 +37,13 @@ def test_macro_uses_sector_helper_not_legacy_server_attribute():
     assert "server.get_sector_info" not in text
 
 
-def test_noninteractive_batch_guard_precedes_macro_and_preserves_override():
+def test_macro_prefetch_remains_off_event_loop():
     source = (Path(__file__).resolve().parents[1] / "stock_analysis_orchestrator.py").read_text()
     tree = ast.parse(source)
-    function = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_full_pipeline")
-    text = ast.get_source_segment(source, function)
-    assert text.index('setdefault("KRX_ALLOW_BROWSER_LOGIN", "0")') < text.index("self.run_macro_intelligence")
     macro = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_macro_intelligence")
     assert "await asyncio.to_thread(prefetch_macro_intelligence_data" in ast.get_source_segment(source, macro)
 
 
-def test_filtered_stdio_child_has_its_own_noninteractive_guard():
+def test_filtered_stdio_child_has_no_legacy_browser_guard():
     source = (Path(__file__).resolve().parents[1] / "cores/market_data/mcp_server.py").read_text()
-    assert 'os.environ.setdefault("KRX_ALLOW_BROWSER_LOGIN", "0")' in source
-    assert source.index('os.environ.setdefault("KRX_ALLOW_BROWSER_LOGIN", "0")') < source.index("from cores.market_data import (")
+    assert "KRX_ALLOW_BROWSER_LOGIN" not in source

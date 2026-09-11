@@ -165,17 +165,16 @@ async def test_buy_uses_buy_only_settings(monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_simulator_quote_survives_broker_unavailable_without_db(monkeypatch):
-    import trading.domestic_stock_trading as trading
     agent = scenario_agent()
-    monkeypatch.setattr(trading, "AsyncTradingContext", MagicMock(side_effect=RuntimeError("no credentials")))
-    data = types.ModuleType("krx_data_client")
+    monkeypatch.setattr(mod.ExecutionService, "domestic", MagicMock(side_effect=RuntimeError("no credentials")))
+    data = types.ModuleType("cores.market_data")
     day = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
     frame = pd.DataFrame({"Close": [72000]}, index=pd.to_datetime([day]))
     data.get_market_ohlcv_by_date = MagicMock(return_value=frame)
-    monkeypatch.setitem(sys.modules, "krx_data_client", data)
+    monkeypatch.setitem(sys.modules, "cores.market_data", data)
     quote = await agent._get_fresh_buy_quote("005930")
     assert quote["price"] == 72000
-    assert quote["source"] == "krx_same_day_close"
+    assert quote["source"] == "kis_same_day_close"
     assert data.get_market_ohlcv_by_date.call_args.args == (day, day, "005930")
     agent.cursor.execute.assert_not_called()
 
@@ -183,27 +182,25 @@ async def test_simulator_quote_survives_broker_unavailable_without_db(monkeypatc
 @pytest.mark.asyncio
 @pytest.mark.parametrize("price", [0, -1, float("nan"), float("inf")])
 async def test_no_stale_db_price_when_fresh_sources_invalid(monkeypatch, price):
-    import trading.domestic_stock_trading as trading
     agent = scenario_agent()
     agent.cursor.fetchone.return_value = (70000,)
-    monkeypatch.setattr(trading, "AsyncTradingContext", MagicMock(side_effect=RuntimeError("offline")))
-    data = types.ModuleType("krx_data_client")
+    monkeypatch.setattr(mod.ExecutionService, "domestic", MagicMock(side_effect=RuntimeError("offline")))
+    data = types.ModuleType("cores.market_data")
     data.get_market_ohlcv_by_date = lambda day, end, ticker: pd.DataFrame({"Close": [price]}, index=pd.to_datetime([day]))
-    monkeypatch.setitem(sys.modules, "krx_data_client", data)
+    monkeypatch.setitem(sys.modules, "cores.market_data", data)
     with pytest.raises(ValueError):
         await agent._get_fresh_buy_quote("005930")
     agent.cursor.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_krx_rewound_prior_session_quote_is_rejected(monkeypatch):
-    import trading.domestic_stock_trading as trading
+async def test_kis_rewound_prior_session_quote_is_rejected(monkeypatch):
     agent = scenario_agent()
-    monkeypatch.setattr(trading, "AsyncTradingContext", MagicMock(side_effect=RuntimeError("offline")))
+    monkeypatch.setattr(mod.ExecutionService, "domestic", MagicMock(side_effect=RuntimeError("offline")))
     prior = datetime.now(ZoneInfo("Asia/Seoul")) - timedelta(days=1)
-    data = types.ModuleType("krx_data_client")
+    data = types.ModuleType("cores.market_data")
     data.get_market_ohlcv_by_date = lambda *a: pd.DataFrame({"Close": [72000]}, index=pd.to_datetime([prior.strftime("%Y%m%d")]))
-    monkeypatch.setitem(sys.modules, "krx_data_client", data)
+    monkeypatch.setitem(sys.modules, "cores.market_data", data)
     with pytest.raises(ValueError, match="provider date"):
         await agent._get_fresh_buy_quote("005930")
     agent.cursor.execute.assert_not_called()

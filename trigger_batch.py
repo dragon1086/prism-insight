@@ -1,35 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from dotenv import load_dotenv
-load_dotenv()  # Load environment variables from .env file (required before krx_data_client import)
+load_dotenv()  # Load KIS configuration before constructing clients.
 
 import datetime
 import pandas as pd
 import numpy as np
 import logging
 import os
-import time
 from typing import Optional
-from cores.naver_market_snapshot import (
-    MarketSnapshotBundle,
-    fetch_naver_snapshot_bundle,
+from cores.kis_market_snapshot import (
+    MarketSnapshotBundle, build_kis_snapshot_bundle, fetch_kis_master_universe,
 )
-from cores.kis_market_snapshot import build_kis_openapi_snapshot_bundle
 from cores.rs_rating import oneil_weighted_return, percentile_ratings
-from krx_data_client import (
-    _get_client,
-    get_market_ohlcv_by_ticker,
-    get_nearest_business_day_in_a_week,
-    get_market_cap_by_ticker,
-    get_market_ticker_name,
-)
-
-# pykrx compatibility wrapper (for existing code compatibility)
-class stock_api:
-    get_market_ohlcv_by_ticker = staticmethod(get_market_ohlcv_by_ticker)
-    get_nearest_business_day_in_a_week = staticmethod(get_nearest_business_day_in_a_week)
-    get_market_cap_by_ticker = staticmethod(get_market_cap_by_ticker)
-    get_market_ticker_name = staticmethod(get_market_ticker_name)
 
 # Logger configuration
 logger = logging.getLogger(__name__)
@@ -47,7 +30,7 @@ EMERGING_LIQUIDITY_MAX_CANDIDATES = 1
 
 
 class MarketSnapshotUnavailableError(RuntimeError):
-    """Raised when neither KRX nor the emergency Naver source is usable."""
+    """Raised when complete KIS screening inputs are unavailable."""
 
 
 def _normalize_ticker_code(ticker) -> str:
@@ -58,36 +41,19 @@ def _normalize_ticker_code(ticker) -> str:
 
 
 def _get_ticker_name_map() -> dict[str, str]:
-    """Fetch all ticker names once per process to avoid repeated KRX calls."""
+    """Official KIS master names, once per batch process."""
     global _TICKER_NAME_CACHE
     if _TICKER_NAME_CACHE is None:
         try:
-            client = _get_client()
-            names = client.get_market_ticker_name(market="ALL")
-            _TICKER_NAME_CACHE = {_normalize_ticker_code(ticker): str(name) for ticker, name in names.items()}
-        except Exception as e:
-            logger.warning(f"KRX ticker name lookup failed; using ticker codes as names: {e}")
+            _TICKER_NAME_CACHE = fetch_kis_master_universe()
+        except Exception as exc:
+            logger.warning("KIS ticker name lookup unavailable: %s", type(exc).__name__)
             _TICKER_NAME_CACHE = {}
     return _TICKER_NAME_CACHE
 
 
 def _get_display_ticker_name(ticker, name_map: dict[str, str]) -> str:
-    """Company name for display, falling back through the source chain.
-
-    The bulk lookup above is a single KRX call, so when KRX blocks the host it
-    returns an empty map and *every* name silently degrades to a bare code. That
-    reached users on 2026-08-05: the afternoon signal alert read "009150 (009150)"
-    instead of "삼성전기 (009150)".
-
-    ``cores.market_data`` resolves names through the configured chain, where the
-    FDR source answers from a KRX listing snapshot that has nothing to do with
-    the blocked Data Marketplace session. Only selected candidates are ever
-    rendered — a handful of tickers — and FDR caches the listing after the first
-    call, so this stays cheap.
-
-    Resolved names are written back into ``name_map`` (the process-wide cache),
-    so each ticker costs at most one lookup per run.
-    """
+    """Resolve names through the KIS-only market-data facade."""
     ticker_code = _normalize_ticker_code(ticker)
     name = name_map.get(ticker_code)
     if name:
@@ -110,82 +76,6 @@ def _get_display_ticker_name(ticker, name_map: dict[str, str]) -> str:
 
 # --- Data collection and caching functions ---
 
-# KRX snapshot retry: 2026-07-22 afternoon batch died on a single transient
-# data.krx.co.kr read timeout (no retry → "No stocks selected" → whole KR
-# window skipped). Transient KRX blips recover within seconds-to-minutes,
-# so retry a few times with a flat backoff before giving up.
-_SNAPSHOT_MAX_ATTEMPTS = 3
-_SNAPSHOT_RETRY_WAIT_SEC = 20
-
-
-def get_snapshot(trade_date: str) -> pd.DataFrame:
-    """
-    Return OHLCV snapshot for all stocks on specified trading date.
-    Columns: "Open", "High", "Low", "Close", "Volume", "Amount"
-    """
-    logger.debug(f"get_snapshot called: {trade_date}")
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, _SNAPSHOT_MAX_ATTEMPTS + 1):
-        try:
-            df = stock_api.get_market_ohlcv_by_ticker(trade_date)
-            break
-        except Exception as e:
-            last_exc = e
-            logger.warning(
-                f"KRX snapshot fetch failed (attempt {attempt}/{_SNAPSHOT_MAX_ATTEMPTS}): {e}"
-            )
-            if attempt < _SNAPSHOT_MAX_ATTEMPTS:
-                time.sleep(_SNAPSHOT_RETRY_WAIT_SEC)
-    else:
-        raise last_exc
-    if df.empty:
-        logger.error(f"No OHLCV data for {trade_date}.")
-        raise ValueError(f"No OHLCV data for {trade_date}.")
-
-    # Data verification
-    logger.debug(f"Snapshot data sample: {df.head()}")
-    logger.debug(f"Snapshot data columns: {df.columns}")
-
-    return df
-
-def get_previous_snapshot(trade_date: str) -> (pd.DataFrame, str):
-    """
-    Find the previous business day before specified trading date and return OHLCV snapshot with date.
-    """
-    # Convert to date object
-    date_obj = datetime.datetime.strptime(trade_date, '%Y%m%d')
-
-    # Move back one day
-    prev_date_obj = date_obj - datetime.timedelta(days=1)
-
-    # Convert to string for business day check
-    prev_date_str = prev_date_obj.strftime('%Y%m%d')
-
-    # Find previous business day
-    prev_date = stock_api.get_nearest_business_day_in_a_week(prev_date_str, prev=True)
-
-    logger.debug(f"Previous trading day check - Base date: {trade_date}, Day before: {prev_date_str}, Previous business day: {prev_date}")
-
-    df = stock_api.get_market_ohlcv_by_ticker(prev_date)
-    if df.empty:
-        logger.error(f"No OHLCV data for {prev_date}.")
-        raise ValueError(f"No OHLCV data for {prev_date}.")
-
-    # Data verification
-    logger.debug(f"Previous trading day data sample: {df.head()}")
-    logger.debug(f"Previous trading day data columns: {df.columns}")
-
-    return df, prev_date
-
-# --- KRX request throttle ---------------------------------------------------
-# 여기 있던 _krx_throttle 은 cores/market_data/krx_source.py 로 옮겼다.
-# data.krx.co.kr 는 버스트 요청·장마감 트래픽에 응답이 느려져 Read timeout 을
-# 내고, 지속되면 "비정상 대량 조회"로 IP 가 차단된다. 간격 유지는 호출자 한 곳이
-# 아니라 **소스**의 책임이다 — 이 파일에 두었을 때는 get_multi_day_ohlcv 한
-# 군데만 보호했고 체인을 타는 나머지 KRX 호출은 전부 무방비였다.
-# 조절은 그대로 KRX_MIN_GAP_SEC (기본 0.4s, 0 이면 비활성).
-
-
 def get_multi_day_ohlcv(ticker: str, end_date: str, days: int = 10) -> pd.DataFrame:
     """
     Query N-day OHLCV data for specific stock.
@@ -199,124 +89,41 @@ def get_multi_day_ohlcv(ticker: str, end_date: str, days: int = 10) -> pd.DataFr
         DataFrame with columns: Open, High, Low, Close, Volume, Amount
         Index: Date
     """
-    # Routed through the source chain (default kis -> fdr -> krx) rather than
-    # calling krx_data_client directly.
-    #
-    # This is the hottest KRX path in the batch: the 2026-08-05 outage run made
-    # 42 KRX attempts and **39 of them came from here**. Going direct meant the
-    # chain order was irrelevant — KIS could be first and this still hammered
-    # KRX, which is both what gets the host restricted and what Plan A exists to
-    # remove.
-    #
-    # The chain returns an empty frame when every source is exhausted (it does
-    # not raise), so the FDR retry below now only runs after kis/fdr/krx have all
-    # declined. It is kept because it calls FinanceDataReader differently from
-    # the chain's FDR source, so it is a genuine second chance rather than a
-    # repeat of the same request.
     from cores.market_data import get_market_ohlcv_by_date
 
-    # Calculate sufficient past date from end date (with margin for business days)
     end_dt = datetime.datetime.strptime(end_date, '%Y%m%d')
-    start_dt = end_dt - datetime.timedelta(days=days * 2)  # 2x margin for business days
-    start_date = start_dt.strftime('%Y%m%d')
-
-    chain_failed = False
+    start_date = (end_dt - datetime.timedelta(days=days * 2)).strftime('%Y%m%d')
     try:
-        df = get_market_ohlcv_by_date(start_date, end_date, ticker)
-        if df.empty:
-            logger.warning(
-                f"No {days}-day data for {ticker} from any source; "
-                f"attempting FinanceDataReader fallback."
-            )
-            chain_failed = True
-        else:
-            # Select only recent N days
-            return df.tail(days)
-    except Exception as e:
-        logger.warning(f"Market data chain failed for {ticker}: {e}; attempting FinanceDataReader fallback.")
-        chain_failed = True
-
-    if chain_failed:
-        try:
-            import FinanceDataReader as fdr
-            fdr_start = start_dt.strftime('%Y-%m-%d')
-            fdr_end = end_dt.strftime('%Y-%m-%d')
-            fdr_df = fdr.DataReader(ticker, fdr_start, fdr_end)
-            if fdr_df.empty:
-                logger.warning(f"FinanceDataReader also returned empty data for {ticker}.")
-                return pd.DataFrame()
-            # Normalize columns to KRX schema (English: Open/High/Low/Close/Volume)
-            col_map = {
-                'open': 'Open', 'high': 'High', 'low': 'Low',
-                'close': 'Close', 'volume': 'Volume',
-                '시가': 'Open', '고가': 'High', '저가': 'Low',
-                '종가': 'Close', '거래량': 'Volume',
-            }
-            fdr_df = fdr_df.rename(columns={
-                c: col_map[c.lower()] for c in fdr_df.columns
-                if c.lower() in col_map
-            })
-            logger.warning(f"[FDR-FALLBACK] {ticker}: FinanceDataReader(네이버) used (KRX unavailable).")
-            return fdr_df.tail(days)
-        except Exception as fe:
-            logger.error(f"FinanceDataReader fallback also failed for {ticker}: {fe}")
-            return pd.DataFrame()
-
-    return pd.DataFrame()
-
-
-def get_market_cap_df(trade_date: str, market: str = "ALL") -> pd.DataFrame:
-    """
-    Return market cap data for all stocks on specified trading date as DataFrame.
-    Index is stock code, includes market cap column.
-    """
-    logger.debug(f"get_market_cap_df called: {trade_date}, market={market}")
-    cap_df = stock_api.get_market_cap_by_ticker(trade_date, market=market)
-    if cap_df.empty:
-        logger.error(f"No market cap data for {trade_date}.")
-        raise ValueError(f"No market cap data for {trade_date}.")
-    return cap_df
+        frame = get_market_ohlcv_by_date(start_date, end_date, ticker)
+        return frame.tail(days)
+    except Exception as exc:
+        logger.warning("KIS history unavailable for %s: %s", ticker, type(exc).__name__)
+        return pd.DataFrame()
 
 
 def load_market_snapshot_bundle(trade_date: str) -> MarketSnapshotBundle:
-    """Load current KIS quotes plus previous OPEN API data, or Naver fallback."""
+    """Complete KIS inputs only; unavailable inputs stop screening explicitly."""
     try:
-        bundle = build_kis_openapi_snapshot_bundle(trade_date)
-        logger.info(
-            "[MARKET-DATA] source=KIS+KRX_OPENAPI stocks=%d prev_date=%s cap_rows=%d",
-            len(bundle.snapshot),
-            bundle.prev_date,
-            len(bundle.cap_df),
-        )
-        return bundle
-    except Exception as primary_exc:
-        logger.warning(
-            "[MARKET-DATA] KIS+OPENAPI bundle failed; switching to Naver fallback: %s",
-            primary_exc,
-        )
-        try:
-            bundle = fetch_naver_snapshot_bundle(
-                trade_date,
-                detail_min_amount=EMERGING_LIQUIDITY_MIN_TRADE_VALUE,
-            )
-        except Exception as naver_exc:
-            logger.error(
-                "[MARKET-DATA] both KIS+OPENAPI and Naver snapshot sources failed: "
-                "primary=%s naver=%s",
-                primary_exc,
-                naver_exc,
-            )
-            raise MarketSnapshotUnavailableError(
-                f"Market snapshot unavailable from KIS+OPENAPI and Naver: {naver_exc}"
-            ) from naver_exc
+        bundle = build_kis_snapshot_bundle(trade_date)
+    except Exception as exc:
+        raise MarketSnapshotUnavailableError(
+            f"KIS snapshot unavailable: {exc}"
+        ) from exc
+    logger.info(
+        "[MARKET-DATA] source=KIS stocks=%d prev_date=%s cap_rows=%d",
+        len(bundle.snapshot), bundle.prev_date, len(bundle.cap_df),
+    )
+    logger.info(
+        "[MARKET-DATA] requested_universe=%s eligible_coverage=%s ipo_excluded=%s nontrading_zero_cap_excluded=%s cap_precision_krw=%s master_volume_binary32_compatibility=%s",
+        bundle.snapshot.attrs.get("requested_universe"),
+        bundle.snapshot.attrs.get("eligible_coverage"),
+        bundle.snapshot.attrs.get("ipo_excluded"),
+        bundle.snapshot.attrs.get("nontrading_zero_cap_excluded"),
+        bundle.cap_df.attrs.get("precision_krw"),
+        bundle.cap_df.attrs.get("master_volume_binary32_compatibility"),
+    )
+    return bundle
 
-        logger.warning(
-            "[MARKET-DATA] source=NAVER_FALLBACK stocks=%d prev_date=%s cap_rows=%d",
-            len(bundle.snapshot),
-            bundle.prev_date,
-            len(bundle.cap_df),
-        )
-        return bundle
 
 def filter_low_liquidity(df: pd.DataFrame, threshold: float = 0.2) -> pd.DataFrame:
     """
@@ -1450,9 +1257,7 @@ def trigger_contrarian_value(trade_date: str, snapshot: pd.DataFrame,
             pbr = float(latest.get("PBR", 0) or 0)
 
             # Must be profitable (PER > 0) and have valid PBR
-            if per <= 0:
-                continue
-            if pbr <= 0:
+            if not (np.isfinite(per) and per > 0 and np.isfinite(pbr) and pbr > 0):
                 continue
 
             rows.append({
@@ -1995,54 +1800,15 @@ _TRADE_DATE_LOOKBACK_DAYS = 7
 
 
 def _resolve_trade_date(today_str: str) -> str:
-    """Resolve the batch reference trading date **without depending on KRX**.
+    """Use the local exchange calendar, without guessed fallback sessions."""
+    from check_market_day import is_market_day
 
-    This used to be a single ``stock_api.get_nearest_business_day_in_a_week()``
-    call — the batch's very first data call, with no fallback. When KRX blocked
-    the db-server IP, the 2026-08-05 afternoon batch died here 64 seconds in and
-    produced **zero KR reports**:
-
-        KRXBlockedError: KRX 접근이 차단된 상태입니다. 198분 뒤(18:04)에 ...
-        → "No stocks selected. Terminating process."
-
-    Every other KRX call in this module is already protected — the ticker-name
-    lookup degrades to bare codes, and the snapshot/market-cap calls sit behind
-    ``load_market_snapshot_bundle``'s Naver fallback. This one line was the only
-    unguarded one, and it ran first.
-
-    The orchestrator already decides whether to run at all via
-    ``check_market_day.is_market_day()``, which reads a local holiday calendar
-    and touches no network. Using that same calendar here is both consistent
-    with the gate that let the batch start and immune to KRX being unreachable.
-    KRX is kept only as a fallback for the case where the calendar is
-    unavailable, so it can no longer take the batch down on its own.
-    """
-    try:
-        from check_market_day import is_market_day
-
-        day = datetime.datetime.strptime(today_str, "%Y%m%d").date()
-        for _ in range(_TRADE_DATE_LOOKBACK_DAYS):
-            if is_market_day(day):
-                return day.strftime("%Y%m%d")
-            day -= datetime.timedelta(days=1)
-        logger.warning(
-            "No trading day found within %d days of %s; falling back to KRX",
-            _TRADE_DATE_LOOKBACK_DAYS,
-            today_str,
-        )
-    except Exception as exc:  # noqa: BLE001 - calendar must never end the batch
-        logger.warning("Local trading calendar unavailable (%s); falling back to KRX", exc)
-
-    try:
-        return stock_api.get_nearest_business_day_in_a_week(today_str, prev=True)
-    except Exception as exc:  # noqa: BLE001
-        logger.error(
-            "KRX trading-date lookup failed too (%s); using %s as-is. "
-            "Screening may run against a non-session date.",
-            exc,
-            today_str,
-        )
-        return today_str
+    day = datetime.datetime.strptime(today_str, "%Y%m%d").date()
+    for _ in range(_TRADE_DATE_LOOKBACK_DAYS):
+        if is_market_day(day):
+            return day.strftime("%Y%m%d")
+        day -= datetime.timedelta(days=1)
+    raise MarketSnapshotUnavailableError("No local-calendar trading session found")
 
 
 # --- Batch execution function ---

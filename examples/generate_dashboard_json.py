@@ -37,20 +37,20 @@ sys.path.insert(0, str(SCRIPT_DIR))  # Add examples/ folder for translation_util
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(TRADING_DIR))
 
-# krx_data_client import for market index data
+# KIS market data import for market index data
 try:
-    from krx_data_client import get_index_ohlcv_by_date
+    from cores.market_data import get_index_ohlcv_by_date
 
-    # pykrx compatibility wrapper
+    # KIS compatibility wrapper
     class stock:
         @staticmethod
         def get_index_ohlcv_by_date(fromdate, todate, ticker):
             return get_index_ohlcv_by_date(fromdate, todate, ticker)
 
-    PYKRX_AVAILABLE = True
+    MARKET_DATA_AVAILABLE = True
 except ImportError:
-    PYKRX_AVAILABLE = False
-    logger.warning("krx_data_client package not installed. Cannot fetch market index data.")
+    MARKET_DATA_AVAILABLE = False
+    logger.warning("KIS market data package not installed. Cannot fetch market index data.")
 
 # Import translation utility (after path setup)
 try:
@@ -302,19 +302,19 @@ class DashboardDataGenerator:
         return watchlist
     
     def get_market_condition(self, conn) -> List[Dict]:
-        """시장 상황 데이터 가져오기 - pykrx를 사용하여 Season2 시작(2025-09-29)부터 데이터 수집"""
+        """시장 상황 데이터 가져오기 - KIS를 사용하여 Season2 시작(2025-09-29)부터 데이터 수집"""
         # Season2 시작일
         SEASON2_START_DATE = "20250929"
 
-        if not PYKRX_AVAILABLE:
-            logger.warning("pykrx를 사용할 수 없습니다. DB에서 데이터를 가져옵니다.")
+        if not MARKET_DATA_AVAILABLE:
+            logger.warning("KIS를 사용할 수 없습니다. DB에서 데이터를 가져옵니다.")
             return self._get_market_condition_from_db(conn)
 
         try:
             # 오늘 날짜
             today = datetime.now().strftime("%Y%m%d")
 
-            logger.info(f"pykrx로 시장 지수 데이터 조회 중... ({SEASON2_START_DATE} ~ {today})")
+            logger.info(f"KIS로 시장 지수 데이터 조회 중... ({SEASON2_START_DATE} ~ {today})")
 
             # KOSPI 지수 데이터 가져오기 (ticker: 1001)
             kospi_df = stock.get_index_ohlcv_by_date(SEASON2_START_DATE, today, "1001")
@@ -323,7 +323,7 @@ class DashboardDataGenerator:
             kosdaq_df = stock.get_index_ohlcv_by_date(SEASON2_START_DATE, today, "2001")
 
             if kospi_df.empty or kosdaq_df.empty:
-                logger.warning("pykrx에서 지수 데이터를 가져오지 못했습니다. DB fallback.")
+                logger.warning("KIS에서 지수 데이터를 가져오지 못했습니다. DB fallback.")
                 return self._get_market_condition_from_db(conn)
 
             # 데이터 병합
@@ -355,7 +355,7 @@ class DashboardDataGenerator:
             return market_data
 
         except Exception as e:
-            logger.error(f"pykrx 시장 지수 데이터 조회 중 오류: {str(e)}")
+            logger.error(f"KIS 시장 지수 데이터 조회 중 오류: {str(e)}")
             return self._get_market_condition_from_db(conn)
 
     def _get_market_condition_from_db(self, conn) -> List[Dict]:

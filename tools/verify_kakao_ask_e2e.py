@@ -163,9 +163,8 @@ async def main() -> int:
         action="store_true",
         help=(
             "make daily_facts return {} (its own documented degraded mode). "
-            "Needed to run live on Python 3.14: importing krx_data_client "
-            "applies nest_asyncio, which breaks the OpenAI SDK on 3.14. "
-            "Production runs 3.12 (see Dockerfile) and is unaffected."
+            "Use only to test the ungrounded/degraded response path; "
+            "normal runs retain KIS daily market facts."
         ),
     )
     parser.add_argument("--verbose", action="store_true")

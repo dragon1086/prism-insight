@@ -745,7 +745,7 @@ def _format_stock_session_facts(
         f"전일 대비: {change_pct:+.2f}%\n"
         f"저가 대비 반등: {rebound_pct:+.2f}%\n"
         f"거래량: {int(current['Volume']):,}주\n"
-        "출처: 네이버 금융 일봉 데이터\n"
+        "출처: KIS 일봉 데이터\n"
         "주의: 당일 장중 값이며 정규장 종가가 아닙니다."
     )
 
@@ -759,25 +759,25 @@ async def _stock_session_facts(subject: str) -> str:
     ticker, company_name = resolved
 
     def fetch() -> str:
-        import requests
+        from datetime import timedelta
+        from zoneinfo import ZoneInfo
+        from cores.market_data import get_market_ohlcv_by_date
 
-        from cores.naver_market_snapshot import _fetch_daily_pair
-
-        trade_date = datetime.now().strftime("%Y%m%d")  # noqa: DTZ005
-        current, previous = _fetch_daily_pair(
-            requests.get,
-            ticker,
-            trade_date,
-            timeout=10,
-            max_attempts=2,
-            retry_wait_sec=0.2,
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+        trade_date = now.strftime("%Y%m%d")
+        frame = get_market_ohlcv_by_date(
+            (now - timedelta(days=14)).strftime("%Y%m%d"), trade_date, ticker
         )
+        frame = frame.sort_index()
+        if len(frame) < 2 or frame.index[-1].strftime("%Y%m%d") != trade_date:
+            raise ValueError("KIS current-session candle or prior close unavailable")
+        current, previous = frame.iloc[-1].to_dict(), frame.iloc[-2].to_dict()
         return _format_stock_session_facts(
             company_name,
             ticker,
             current,
             previous,
-            observed_at=datetime.now().strftime("%Y-%m-%d %H:%M KST"),  # noqa: DTZ005
+            observed_at=now.strftime("%Y-%m-%d %H:%M KST"),
         )
 
     try:
