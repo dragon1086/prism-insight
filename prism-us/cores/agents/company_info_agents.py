@@ -539,7 +539,30 @@ Profile, Holders 페이지 firecrawl 스크랩 금지. MCP 도구 호출 금지.
             if start_idx != -1 and end_idx != -1:
                 instruction = instruction[:start_idx] + prefetch_block + "\n" + instruction[end_idx:]
 
-    # When prefetched: no MCP servers needed
+    # Basic profile coverage does not establish competitive evidence. The news
+    # section owns that research; the report pipeline attaches its record later.
+    if language == "ko":
+        instruction += """
+## 경쟁 근거의 책임 범위
+COMPETITIVE_EVIDENCE_OWNER: news
+- 기본정보·주주·사업부 자료는 사업 구조 분석에 사용하지만, 그 존재 자체는 경쟁우위의 증거가 아닙니다. profile 사전 수집 성공을 경쟁 근거 수집 완료나 리더 판정으로 해석하지 마세요.
+- 경쟁사 비교와 원문 검증은 뉴스 섹션이 담당합니다. 같은 경쟁사를 다시 조사하지 마세요. 뉴스의 Competitive Evidence 기록은 보고서 통합 단계에서 이 기업 개요에 별도로 연결됩니다. 아직 전달되지 않은 기록을 읽거나 검증한 것처럼 쓰지 마세요.
+- 이 입력에서 비교 가능한 출처·기준 기간·시장 범위·법인이 확인되지 않으면 industry_leadership은 UNKNOWN으로 두고, 뉴스 경쟁 근거와의 통합 전에는 시장 지위가 미확인임을 명시하세요. UNKNOWN은 부정적인 투자 판정이 아닙니다.
+- 경쟁사나 점유율을 만들어 내지 마세요. 회사의 자기 소개, 시가총액, 기관 보유율, 사업부 매출만으로 시장 지배력을 단정하지 마세요. 자회사 경쟁력을 모회사 전체의 우위로 확대하지 마세요.
+- industry_leadership, price_RS, sector_tailwind는 별개입니다. 주가 강세나 업종 호재를 사업 경쟁우위로 대체하지 마세요. 기존 데이터에서 확인한 주주·사업부 정보는 그대로 활용하고, 빠진 항목은 숨기지 마세요.
+"""
+    else:
+        instruction += """
+## Competitive evidence ownership
+COMPETITIVE_EVIDENCE_OWNER: news
+- Use profile, holders, and segment data for business structure analysis; their presence is not evidence of competitive advantage. Successful profile prefetch does not mean competitive coverage is complete or leadership is established.
+- The news section owns peer research and primary-source verification. Do not research the same peers again. The report pipeline separately attaches the news Competitive Evidence record to this overview. Do not imply that you have read or verified a record not yet supplied.
+- If comparable sources, period, market scope, and entity are absent from this input, keep industry_leadership UNKNOWN and identify market position as unconfirmed before the news evidence is integrated. UNKNOWN is not a negative investment verdict.
+- Do not invent competitors or market shares. A company's self-description, market capitalization, institutional ownership, or segment revenue alone does not establish market dominance. Do not extrapolate a subsidiary's advantage to its parent as a whole.
+- Keep industry_leadership, price_RS, and sector_tailwind separate. Price strength or sector news is not a substitute for business advantage. Retain available holder and segment facts and disclose missing fields rather than concealing them.
+"""
+
+    # When prefetched: no MCP servers needed for this basic-profile section.
     if has_prefetch:
         servers = []
     else:

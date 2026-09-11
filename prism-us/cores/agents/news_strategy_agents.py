@@ -8,6 +8,56 @@ Uses perplexity and firecrawl for news gathering and sector analysis.
 from mcp_agent.agents.agent import Agent
 
 
+def _competitive_evidence_contract(reference_date):
+    """Shared ko/en prompt contract; query limits are instructions, not runtime quotas."""
+    return f"""## Competitive evidence collection and reporting contract
+- Reuse already obtained input facts and source excerpts before any new search. Do not
+  repeat a query or re-read a URL whose relevant evidence is already available.
+- Use perplexity_ask only if leader/trend context or material competitive evidence is
+  missing: at most 2 consolidated queries total, not two queries per company or field.
+  Query 1 combines sector leaders (2-3 peers), their trends and cited primary sources;
+  query 2 is optional and covers only unresolved material competitive-position gaps.
+  Specify entity/ticker, market, and reference date {reference_date} in every query.
+  No blanket mandatory search if the necessary cited evidence is already supplied.
+- In addition to the cached target-news listing, use firecrawl_scrape for at most 2 additional
+  cited public primary URLs, only if material competitive claims remain unverified.
+  Prefer company filings/IR, regulators, exchanges, or industry statistics over marketing
+  summaries. Choose URLs actually supplied in input or discovered in search; never invent URLs.
+  Reuse source text already read. Do not recursively scrape peer news or all articles.
+  A search answer/citation or HTTP success without the relevant source content is not
+  source verification. On access/parsing failure preserve that reason without retry loops.
+- Separate sector_tailwind, price_leadership, and business_competitive_position. Price
+  momentum, sector membership, company size, or positive news alone proves no market dominance.
+  Separate the listed parent entity from each subsidiary or separately listed affiliate;
+  a subsidiary's advantage is not automatically the parent's leadership. Identify the
+  parent's ownership/contribution if available, otherwise keep that linkage unknown.
+- Compare the same period, geography, business scope, metric definition, and unit across
+  an explicit peer_universe. Disclose partial peer coverage; do not infer an industry rank
+  from a screened subset. Separate actual and forecast values. Check publication_date and
+  information availability against the decision timestamp, not just today's access date:
+  a currently available source does not prove it was available at a historical decision.
+  Older official competitive statistics may be used with their period and staleness stated;
+  the recent-news window does not justify discarding the latest available annual statistics.
+- Include the exact standalone markdown heading below in the news output (keep the English
+  heading and field keys in both languages; write explanations in the requested language):
+#### Competitive Evidence
+- Write compact records with field, type, entity, peer_universe, metric, value, unit,
+  period, geography, source (exact URL or UNKNOWN), publication_date, status, and a short
+  supporting excerpt. Use one record per material claim, including unresolved claims.
+  field names the question being assessed; type is one of sector_tailwind,
+  price_leadership, business_competitive_position. Missing values remain UNKNOWN.
+- status must be SOURCE_CHECKED, SEARCH_ONLY, NOT_FOUND, or INCOMPARABLE.
+  SOURCE_CHECKED means the relevant original source was actually read (or its original
+  excerpt supplied), not a guarantee that the claim is true, comparable, or leadership proven.
+  SEARCH_ONLY means only discovery/search material supports it. NOT_FOUND means evidence
+  was not found in the inspected scope, not that no public data exists; state whether
+  unqueried, access failed, parsing failed, or searched without a result. INCOMPARABLE
+  means entity/period/scope/metric mismatches prevent comparison despite available data.
+  Do not fabricate quotations, peers, values, dates, URLs, or positive leadership. Preserve
+  source qualifiers and unknowns in conclusions; absence of evidence is not negative proof.
+"""
+
+
 def create_us_news_analysis_agent(
     company_name: str,
     ticker: str,
@@ -44,11 +94,6 @@ def create_us_news_analysis_agent(
                 f"{prefetched_social_sentiment}\n"
             )
 
-    # Format date for display
-    ref_year = reference_date[:4]
-    ref_month = reference_date[4:6]
-    ref_day = reference_date[6:]
-
     if language == "ko":
         instruction = f"""당신은 미국 주식 기업 뉴스 분석 전문가입니다. 주어진 기업과 관련된 최근 뉴스 및 이벤트를 분석하여 심층 뉴스 동향 분석 보고서를 작성해야 합니다.
 
@@ -61,30 +106,10 @@ def create_us_news_analysis_agent(
    - formats: ["markdown"], onlyMainContent: true, maxAge: 7200000 (2시간 캐시)
    - 대상 날짜({reference_date}) 뉴스가 없으면 지난 1주일 뉴스 수집
 
-2. 뉴스 목록 페이지의 제목과 요약만으로 분석 (개별 기사 URL 추가 스크랩 불필요 - 토큰 절약)
+2. 뉴스 목록의 제목과 요약을 우선 활용하되, 중요한 경쟁우위 주장은 아래의 제한적 원문 확인 규칙을 따릅니다.
 
-### STEP 2: 섹터 리더 식별 및 동향 분석 (필수 - Perplexity 사용)
 
-**중요: Perplexity에 질문할 때 항상 기준일({ref_year}-{ref_month}-{ref_day})을 명시하세요**
-
-**2-1. Perplexity에 섹터 리더 찾기 요청**
-- **perplexity_ask** 쿼리 구조:
-  "As of {ref_year}-{ref_month}-{ref_day}, what are the 2-3 leading stocks in the same sector as {company_name} ({ticker})?
-   Please provide ticker symbols and brief reason why they are sector leaders."
-
-**2-2. Perplexity에 섹터 동향 분석 요청**
-- **perplexity_ask**: "As of {ref_year}-{ref_month}-{ref_day}, what is the recent trend for the sector containing {company_name}?"
-- 비교: 리더와 함께 상승 → 신뢰도 높음 / 이 종목만 → 일시적 가능성
-
-## 도구 가이드
-
-**firecrawl_scrape**: 페이지 스크래핑 (개별 종목 뉴스용 주력)
-- url: Yahoo Finance 뉴스 페이지
-- formats: ["markdown"], onlyMainContent: true, maxAge: 7200000
-
-**perplexity_ask**: AI 검색 (섹터 리더 및 동향용 주력)
-- 용도: 섹터 리더 찾기, 섹터 동향 분석, 최근 실적 뉴스
-- 항상 기준일 포함: "As of {ref_year}-{ref_month}-{ref_day}, ..."
+{_competitive_evidence_contract(reference_date)}
 
 ## 뉴스 분류 및 분석
 
@@ -113,15 +138,12 @@ def create_us_news_analysis_agent(
 - 도구 사용 언급 금지
 
 ## 주의사항
-- firecrawl_scrape는 대상 종목 뉴스 페이지 1회만 사용 (개별 기사, 리더 뉴스 추가 스크랩 금지 - 토큰 절약)
-- 섹터 리더 및 동향은 Perplexity 답변만으로 분석 (firecrawl 추가 호출 불필요)
 - perplexity 환각 주의, 항상 날짜 확인
 - 당일 가격 원인 분석 우선
 - 정확한 뉴스 식별을 위해 티커 심볼 사용
-- 섹터 리더 움직임은 Perplexity 답변 기반으로 신뢰도 평가
 - 깊이 있는 분석과 인사이트 제공
 - 명확한 출처 표기: [YahooFinance:TICKER] / [Perplexity:Number, Date]
-- 최근 정보만 사용 (분석일 기준 1개월 이내)
+- 뉴스는 분석일 이전 1개월을 우선하되, 구조적 경쟁력 통계는 위 규칙에 따라 기준 기간을 명시합니다
 
 {social_context}
 
@@ -147,49 +169,10 @@ def create_us_news_analysis_agent(
    - formats: ["markdown"], onlyMainContent: true, maxAge: 7200000 (2-hour cache)
    - If no news from target date ({reference_date}), collect news from past week
 
-2. Analyze using news list page titles and summaries only (do NOT scrape individual article URLs - token optimization)
+2. Start with news list page titles and summaries; material competitive claims follow the bounded source verification contract below.
 
-### STEP 2: Identify Sector Leaders and Analyze Trends (Mandatory - Use Perplexity)
 
-**CRITICAL: Always specify the reference date ({ref_year}-{ref_month}-{ref_day}) when asking Perplexity**
-
-**2-1. Ask Perplexity to find sector leaders**
-- **perplexity_ask** with this query structure:
-  "As of {ref_year}-{ref_month}-{ref_day}, what are the 2-3 leading stocks in the same sector as {company_name} ({ticker})?
-   Please provide ticker symbols and brief reason why they are sector leaders.
-   Focus on information from {ref_year}-{ref_month}-{ref_day} or the most recent available."
-
-- Perplexity will return leaders with tickers (e.g., Apple AAPL, Microsoft MSFT)
-- **IMPORTANT**: Always verify the dates in Perplexity's response match {ref_year}-{ref_month}-{ref_day} or are recent
-
-**2-2. Ask Perplexity for sector trend analysis**
-- **perplexity_ask**: "As of {ref_year}-{ref_month}-{ref_day}, what is the recent trend for the sector containing {company_name}?
-   Are the leading stocks showing positive momentum? Provide recent news from {ref_year}-{ref_month}-{ref_day} or close to it."
-- Compare: Rising with leaders → High reliability / This stock alone → Possibly temporary
-
-## Tool Usage Principles
-
-1. **firecrawl 1 call only**: Target stock Yahoo Finance news page only (do NOT scrape individual articles or leader stocks)
-2. **perplexity for leaders & trends**: Find sector leaders and analyze trends (ALWAYS specify date: {ref_year}-{ref_month}-{ref_day})
-3. **Date verification critical**: Always check dates in Perplexity responses match analysis date or are recent
-4. **Source notation**: [YahooFinance:TickerSymbol] / [Perplexity:Number, verified date]
-5. **Token optimization**: Minimize firecrawl calls - use Perplexity responses for sector leader analysis instead of scraping
-
-## Tool Guide
-
-**firecrawl_scrape**: Page scraping (PRIMARY for individual stock news)
-- url: Yahoo Finance news page (https://finance.yahoo.com/quote/TICKER/news)
-- formats: ["markdown"]
-- onlyMainContent: true
-- maxAge: 7200000 (2-hour cache - 500% performance boost, mandatory)
-
-**perplexity_ask**: AI search (PRIMARY for sector leaders and trends)
-- Use for: Finding sector leaders, analyzing sector trends, recent earnings news
-- ALWAYS include reference date in query: "As of {ref_year}-{ref_month}-{ref_day}, ..."
-- Always verify dates in responses
-- Example queries:
-  * "As of {ref_year}-{ref_month}-{ref_day}, what are the leading stocks in the technology sector?"
-  * "As of {ref_year}-{ref_month}-{ref_day}, what is the recent trend for semiconductor stocks?"
+{_competitive_evidence_contract(reference_date)}
 
 ## News Classification and Analysis
 
@@ -217,15 +200,12 @@ def create_us_news_analysis_agent(
 - No tool usage mentions
 
 ## Precautions
-- firecrawl_scrape only 1 call for target stock news page (do NOT scrape individual articles or leader news - token optimization)
-- Sector leader trends analyzed via Perplexity responses only (no additional firecrawl calls needed)
 - Beware perplexity hallucinations, always verify dates
 - Prioritize same-day price cause analysis
 - Use ticker symbols for accurate news identification
-- Assess reliability via sector leader movements (using Perplexity data only)
 - Provide deep analysis and insights
 - Clear source notation: [YahooFinance:TICKER] / [Perplexity:Number, Date]
-- Use only recent info (within 1 month of analysis date)
+- For news, prioritize the month up to the analysis date; dated structural competitive statistics follow the contract above
 
 {social_context}
 
