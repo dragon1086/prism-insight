@@ -80,7 +80,7 @@ def clean_markdown(text: str) -> str:
     def is_valid_section_header(header_text):
         """Check if this is a valid section header"""
         header_text = header_text.strip()
-        if header_text in {"Competitive Evidence", "Competitive Evidence Handoff"}:
+        if header_text.strip("*").casefold() in {"competitive evidence", "competitive evidence handoff"}:
             return True
         # Consider it a valid header if <= 50 chars and contains keywords
         if len(header_text) <= 50:

@@ -10,8 +10,11 @@ import re
 from collections.abc import Mapping
 
 
-_HEADING = re.compile(r"^####[ \t]+Competitive Evidence[ \t]*$", re.MULTILINE)
-_NEXT_SECTION = re.compile(r"^#{1,4}(?:[ \t]|$)", re.MULTILINE)
+_HEADING = re.compile(
+    r"^(#{3,4})[ \t]+(?:Competitive Evidence|\*\*Competitive Evidence\*\*)[ \t]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_NEXT_SECTION = re.compile(r"^(#{1,4})(?:[ \t]|$)", re.MULTILINE)
 _MAX_RECORD_CHARS = 12000
 
 
@@ -55,7 +58,11 @@ def attach_competitive_evidence(
         status = "RECORD_AMBIGUOUS"
     else:
         match = matches[0]
-        next_section = _NEXT_SECTION.search(visible, match.end())
+        next_section = next(
+            (heading for heading in _NEXT_SECTION.finditer(visible, match.end())
+             if len(heading.group(1)) <= len(match.group(1))),
+            None,
+        )
         end = next_section.start() if next_section else len(news)
         body = news[match.end():end].strip()
         record = news[match.start():end].strip()
