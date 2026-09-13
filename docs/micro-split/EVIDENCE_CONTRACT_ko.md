@@ -38,6 +38,16 @@ python tools/build_micro_split_evidence_packet.py \
 - `observed_shadow`와 `candidate_replay`를 절대 합산하지 않습니다.
 - replay는 정수주 실행 가능성 projection이며 실제 진입·체결·성과가 아닙니다.
 - schema v1과 v2를 섞어 coverage 100%로 간주하지 않습니다.
+- US 정규 파이프라인은 모든 선정 종목의 보고서·PDF 생성과 tracking 성공 후에만
+  `micro_split.shadow_batch_completed`를 기록합니다. `batch_ref`가 일치하는 결정만
+  완료 배치에 연결합니다. 과거 결정의 시각으로 완료를 추정하거나 소급 생성하지 않습니다.
+- `completed_batch_count`는 실행 수, `completed_session_count`는 미국 거래일·오전/오후의
+  고유 조합 수입니다. 동일 세션 재실행은 세션 수를 늘리지 않습니다.
+- 완료 범위는 분석·tracking이며 번역 전달 성공이나 실계좌 체결 확인을 뜻하지 않습니다.
+  조기 종료·보고서/PDF 일부 누락·tracking 실패는 완료로 세지 않습니다.
+- 준비도 판정은 기존 표본 기준 외에 명시적으로 완료된 세션 20개를 요구합니다.
+  결정 발생일 수로 완료 세션을 대체하지 않습니다. 연결에는 같은 `batch_ref`뿐 아니라
+  유효한 거래일과 오전/오후 값의 일치도 필요합니다.
 
 ## 주요 지표
 
