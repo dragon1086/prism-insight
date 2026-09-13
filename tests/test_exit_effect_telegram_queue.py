@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 from telegram.error import TelegramError
+from telegram.error import TimedOut, NetworkError
+from telegram.error import BadRequest, RetryAfter
 
 from prism_core.exit_effects import ExitEffectStore
 from stock_tracking_agent import StockTrackingAgent
@@ -88,6 +90,32 @@ async def test_pending_exit_telegram_effect_completes_after_real_send(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('error', [BadRequest('rejected'), RetryAfter(1)])
+async def test_partial_exit_delivery_cannot_replay_entire_message(monkeypatch, tmp_path, error):
+    db_path = tmp_path / 'partial.sqlite'
+    _seed(db_path)
+    agent = _agent(db_path)
+    calls = []
+
+    async def send(chat_id, text):
+        calls.append(text)
+        if len(calls) == 1:
+            return SimpleNamespace(message_id=123)
+        raise error
+
+    agent._send_with_retry = send
+    monkeypatch.setattr('portfolio_broadcast.should_send_portfolio', lambda *_a, **_k: False)
+    message = 'x' * 2500 + '\n' + 'y' * 2500
+    agent._queue_message(message, 'analysis', effect_id=f'{INTENT_ID}:telegram')
+    assert await agent.send_telegram_message('chat') is False
+    assert _telegram_row(db_path)['status'] == 'DEAD'
+    assert _telegram_row(db_path)['last_error'] == 'TelegramDeliveryUnknown'
+    agent._queue_message(message, 'analysis', effect_id=f'{INTENT_ID}:telegram')
+    assert await agent.send_telegram_message('chat') is False
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_missing_chat_id_does_not_complete_telegram_effect(tmp_path):
     db_path = tmp_path / "telegram-no-chat.sqlite"
     _seed(db_path)
@@ -132,6 +160,54 @@ async def test_telegram_error_reschedules_only_telegram_effect(monkeypatch, tmp_
     assert rows[1]["status"] == "PENDING"
     assert rows[1]["last_error"] == "TelegramError"
     assert all(row["status"] == "PENDING" for row in (rows[0], rows[2], rows[3]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('error', [TimedOut('secret'), NetworkError('secret'), TimeoutError()])
+async def test_ambiguous_telegram_is_quarantined_not_replayed(tmp_path, error):
+    from prism_core.exit_effect_replay import deliver_exit_effect_once
+    from datetime import datetime, timedelta, timezone
+    db_path = tmp_path / 'unknown.sqlite'
+    _seed(db_path)
+    calls = 0
+
+    async def send(_payload):
+        nonlocal calls
+        calls += 1
+        raise error
+
+    now = datetime.now(timezone.utc)
+    first = await deliver_exit_effect_once(db_path, effect_id=f'{INTENT_ID}:telegram',
+        effect_type='TELEGRAM', handler=send, owner='first', now=lambda: now)
+    second = await deliver_exit_effect_once(db_path, effect_id=f'{INTENT_ID}:telegram',
+        effect_type='TELEGRAM', handler=send, owner='second', now=lambda: now + timedelta(days=1))
+    assert first.status == 'dead'
+    assert second.status == 'not_ready'
+    assert calls == 1
+    row = _telegram_row(db_path)
+    assert row['last_error'] == 'TelegramDeliveryUnknown'
+    assert row['remote_id'] is None
+
+
+@pytest.mark.parametrize('batch', [False, True])
+def test_expired_telegram_lease_is_not_permission_to_resend(tmp_path, batch):
+    from datetime import datetime, timedelta, timezone
+    db_path = tmp_path / 'crash.sqlite'
+    _seed(db_path)
+    now = datetime.now(timezone.utc)
+    with sqlite3.connect(db_path) as connection:
+        store = ExitEffectStore(connection)
+        connection.execute('BEGIN IMMEDIATE')
+        assert store.claim_effect(effect_id=f'{INTENT_ID}:telegram', owner='crashed', now=now)
+        connection.commit()
+        connection.execute('BEGIN IMMEDIATE')
+        if batch:
+            assert store.claim_ready_effects(owner='new', limit=1, effect_types=['TELEGRAM'], now=now + timedelta(days=1)) == []
+        else:
+            assert store.claim_effect(effect_id=f'{INTENT_ID}:telegram', owner='new', now=now + timedelta(days=1)) is None
+        connection.commit()
+    assert _telegram_row(db_path)['last_error'] == 'TelegramDeliveryUnknown'
+    assert _telegram_row(db_path)['status'] == 'DEAD'
 
 
 @pytest.mark.asyncio

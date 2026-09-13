@@ -1,10 +1,12 @@
 import asyncio
 import os
 import logging
+import uuid
 from pathlib import Path
 from telegram import Bot
-from telegram.error import TelegramError, RetryAfter, TimedOut
+from telegram.error import BadRequest, NetworkError, TelegramError, RetryAfter
 from telegram.request import HTTPXRequest
+from messaging.telegram_delivery import TelegramDeliveryUnknown, send_message_once_or_rate_retry
 
 # Logging setup
 logging.basicConfig(
@@ -40,7 +42,7 @@ class TelegramBotAgent:
 
         self.bot = Bot(token=self.token, request=request)
 
-    async def send_message(self, chat_id, message, parse_mode="Markdown", retry_count=0, max_retries=3, msg_type=None):
+    async def send_message(self, chat_id, message, parse_mode="Markdown", retry_count=0, max_retries=3, msg_type=None, *, _raise_on_unknown=False):
         """
         Send message to Telegram channel
 
@@ -56,10 +58,12 @@ class TelegramBotAgent:
         """
         try:
             # Attempt to send with specified parse_mode
-            result = await self.bot.send_message(
+            result = await send_message_once_or_rate_retry(
+                self.bot,
                 chat_id=chat_id,
                 text=message,
-                parse_mode=parse_mode
+                parse_mode=parse_mode,
+                attempts=max(1, max_retries - retry_count + 1),
             )
             logger.info(f"Message sent successfully ({parse_mode}): {chat_id}")
             # Firebase Bridge - save metadata + push notification
@@ -74,33 +78,22 @@ class TelegramBotAgent:
             except Exception as e:
                 logger.debug(f"Firebase bridge: {e}")
             return True
-        except RetryAfter as e:
-            # Rate limit hit, wait and retry
-            wait_time = e.retry_after + 1
-            logger.warning(f"Rate limit hit. Waiting {wait_time} seconds before retry...")
-            await asyncio.sleep(wait_time)
-            if retry_count < max_retries:
-                return await self.send_message(chat_id, message, parse_mode, retry_count + 1, max_retries, msg_type=msg_type)
-            else:
-                logger.error("Max retries reached after rate limit")
-                return False
-        except TimedOut:
-            # Timeout occurred, retry with exponential backoff
-            if retry_count < max_retries:
-                wait_time = 2 ** retry_count  # 1, 2, 4 seconds
-                logger.warning(f"Timeout occurred. Retrying in {wait_time} seconds... (attempt {retry_count + 1}/{max_retries})")
-                await asyncio.sleep(wait_time)
-                return await self.send_message(chat_id, message, parse_mode, retry_count + 1, max_retries, msg_type=msg_type)
-            else:
-                logger.error("Max retries reached after timeout")
-                return False
+        except RetryAfter:
+            logger.error("Max retries reached after rate limit")
+            return False
+        except TelegramDeliveryUnknown:
+            logger.error("TELEGRAM_DELIVERY_UNKNOWN: manual review required; not confirmed sent")
+            if _raise_on_unknown:
+                raise
+            return False
         except TelegramError as e:
             logger.error(f"Telegram message send failed ({parse_mode}): {e}")
             # If error occurs, retry with plain text (for parse errors)
-            if parse_mode and "parse" in str(e).lower():
+            if isinstance(e, BadRequest) and parse_mode and "parse" in str(e).lower():
                 try:
                     logger.info("Retrying with plain text.")
-                    result = await self.bot.send_message(
+                    result = await send_message_once_or_rate_retry(
+                        self.bot,
                         chat_id=chat_id,
                         text=message
                     )
@@ -118,6 +111,8 @@ class TelegramBotAgent:
                     return True
                 except TelegramError as e2:
                     logger.error(f"Plain text message send also failed: {e2}")
+                    if _raise_on_unknown and isinstance(e2, TelegramDeliveryUnknown):
+                        raise
                     return False
             return False
 
@@ -173,16 +168,12 @@ class TelegramBotAgent:
             else:
                 logger.error("Max retries reached after rate limit")
                 return False
-        except TimedOut:
-            # Timeout occurred, retry with exponential backoff
-            if retry_count < max_retries:
-                wait_time = 2 ** retry_count  # 1, 2, 4 seconds
-                logger.warning(f"Timeout occurred. Retrying in {wait_time} seconds... (attempt {retry_count + 1}/{max_retries})")
-                await asyncio.sleep(wait_time)
-                return await self.send_document(chat_id, document_path, caption, retry_count + 1, max_retries, msg_type=msg_type, market=market)
+        except NetworkError as error:
+            if isinstance(error, BadRequest):
+                logger.error("Telegram send_document rejected: BadRequest")
             else:
-                logger.error("Max retries reached after timeout")
-                return False
+                logger.error("TELEGRAM_DELIVERY_UNKNOWN: send_document automatic resend suppressed; manual review required")
+            return False
         except TelegramError as e:
             logger.error(f"Telegram file send failed: {e}")
             return False
@@ -228,13 +219,11 @@ class TelegramBotAgent:
                 return await self.send_photo_bytes(chat_id, image_bytes, caption, retry_count + 1, max_retries, market=market)
             logger.error("Max retries reached after rate limit (photo)")
             return False
-        except TimedOut:
-            if retry_count < max_retries:
-                wait_time = 2 ** retry_count
-                logger.warning(f"Timeout (photo). Retrying in {wait_time}s... (attempt {retry_count + 1}/{max_retries})")
-                await asyncio.sleep(wait_time)
-                return await self.send_photo_bytes(chat_id, image_bytes, caption, retry_count + 1, max_retries, market=market)
-            logger.error("Max retries reached after timeout (photo)")
+        except NetworkError as error:
+            if isinstance(error, BadRequest):
+                logger.error("Telegram send_photo_bytes rejected: BadRequest")
+            else:
+                logger.error("TELEGRAM_DELIVERY_UNKNOWN: send_photo_bytes automatic resend suppressed; manual review required")
             return False
         except TelegramError as e:
             logger.error(f"Telegram photo send failed: {e}")
@@ -275,14 +264,19 @@ class TelegramBotAgent:
 
         # Process each message file
         for msg_file in message_files:
+            claimed_file = None
             try:
+                # Persist a claim BEFORE network I/O. A process crash leaves a
+                # .sending file for manual review, never an automatic resend.
+                claimed_file = msg_file.with_name(f"{msg_file.name}.{uuid.uuid4().hex}.sending")
+                msg_file.rename(claimed_file)
                 # Read file
-                with open(msg_file, 'r', encoding='utf-8') as file:
+                with open(claimed_file, 'r', encoding='utf-8') as file:
                     message = file.read()
 
                 # Send message
                 logger.info(f"Sending message: {msg_file.name}")
-                success = await self.send_message(chat_id, message, msg_type=msg_type)
+                success = await self.send_message(chat_id, message, msg_type=msg_type, _raise_on_unknown=True)
 
                 if success:
                     success_count += 1
@@ -290,17 +284,23 @@ class TelegramBotAgent:
                     # Move or mark as sent after transmission
                     if sent_dir:
                         # Move sent files to sent folder
-                        msg_file.rename(Path(sent_dir) / msg_file.name)
+                        claimed_file.rename(Path(sent_dir) / msg_file.name)
                         logger.info(f"Sent and moved: {msg_file.name}")
                     else:
                         # If sent_dir not specified, mark with file name change
                         new_name = msg_file.with_name(f"{msg_file.stem}_sent{msg_file.suffix}")
-                        msg_file.rename(new_name)
+                        claimed_file.rename(new_name)
                         logger.info(f"Sent and renamed: {new_name.name}")
+                elif not msg_file.exists():
+                    # A confirmed API rejection is safe to retry on a later run.
+                    claimed_file.rename(msg_file)
 
                 # Delay to prevent Telegram API rate limits
                 await asyncio.sleep(1)
 
+            except TelegramDeliveryUnknown:
+                claimed_file.rename(claimed_file.with_suffix('.delivery_unknown'))
+                logger.error("TELEGRAM_DELIVERY_UNKNOWN: directory item quarantined; manual review required")
             except Exception as e:
                 logger.error(f"Error processing {msg_file.name}: {e}")
 

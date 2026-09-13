@@ -314,6 +314,19 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
           regime matrix and independent gates unchanged; do not invent evidence to complete a field.
         - `sqlite`: run `describe_table` first; filter holdings by `account_id = 'primary'` when column exists.
 
+        ### EVIDENCE_RECONCILIATION
+        - Before finalizing, reconcile each fundamental_check result with the whole report, injected
+          facts and returned tools. In F4_business_clarity and rationale cite the section/source and
+          concrete business-model/competitive-edge pass evidence; do not merely assert F1~F4 all pass.
+        - An INCOMPARABLE peer ranking or unproven market dominance is not the same as no identifiable
+          competitive edge. A sourced product advantage, distribution advantage or switching cost may
+          support the existing F4 criterion without proving market leadership. Do not turn missing
+          peer ranking into a new entry gate or substitute price_RS/sector tailwind for business evidence.
+        - If the report says the edge itself is unproven, acknowledge that contrary evidence. Explain
+          with identified evidence and its entity/period/basis why an apparent contradiction is resolved;
+          otherwise state the unresolved limitation rather than fabricate pass evidence. Preserve existing
+          F1–F4 criteria, schema, scoring, regime floors and independent gates.
+
         ## Time-of-day Data Reliability
 
         - **Morning session (09:30~10:30 KST)**: today's volume/candle is in-progress. Do NOT make assertions
@@ -652,6 +665,19 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
           새로운 자동 통과·실패·미진입 게이트가 아닙니다. 기존 스키마, F1–F4 기준, 점수, 시장별
           매트릭스와 독립 게이트를 유지하고 필드를 채우기 위해 근거를 만들어내지 마십시오.
         - `sqlite`: `describe_table` 먼저 실행하고, account_id 컬럼이 있으면 `account_id = 'primary'`로 필터링하십시오.
+
+        ### EVIDENCE_RECONCILIATION
+        - 최종 응답 전에 전체 보고서·주입 팩트·반환된 도구 결과와 각 fundamental_check 판정을
+          대조하십시오. F4_business_clarity와 rationale에는 절·출처와 구체적인 사업 모델·경쟁우위
+          통과 근거를 쓰고, 설명 없이 F1~F4 모두 통과라고 단정하지 마십시오.
+        - 경쟁사 순위의 INCOMPARABLE이나 시장 지배력 미입증은 식별 가능한 경쟁우위의 부재와
+          다릅니다. 출처가 있는 제품 차별성·유통 우위·전환 비용은 시장 리더 입증 없이도 기존 F4
+          기준의 근거가 될 수 있습니다. 순위 누락을 새로운 진입 게이트로 만들거나 price_RS·섹터
+          호재를 사업 경쟁우위의 대체 근거로 쓰지 마십시오.
+        - 보고서가 경쟁우위 자체를 미입증으로 판단했다면 이 반대 근거를 명시하십시오. 실제 확인한
+          근거의 법인·기간·산정 기준을 들어 모순이 해소되는 이유를 설명하고, 해소되지 않으면 통과
+          근거를 만들어내지 말고 한계를 남기십시오. 기존 F1–F4 기준·스키마·점수·시장별 하한·독립
+          게이트는 유지하십시오.
 
         ## 시간대별 데이터 신뢰도
 

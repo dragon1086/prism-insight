@@ -30,7 +30,7 @@ from typing import List, Dict, Any, Tuple, Optional
 
 import cores.openai_debug  # noqa: F401 — OpenAI 400/429 request metadata logging
 from telegram import Bot
-from telegram.error import TelegramError, TimedOut, RetryAfter
+from telegram.error import TelegramError
 
 # Logging configuration
 logging.basicConfig(
@@ -83,6 +83,10 @@ from observability.journal_influence import (
     build_journal_influence_context,
 )
 from observability.trading_context import emit_trading_context, latest_regime_snapshot, execution_profile_ref
+from observability.entry_quality import (
+    build_entry_quality_context,
+    capture_enabled as entry_quality_capture_enabled,
+)
 
 # O'Neil 룰베이스 매도 (2026-06-04 US quota 사고 동일 룰 결함 KR에도 적용).
 # 방어적 import: 실패 시 _ONEIL_FALLBACK_AVAILABLE=False 로 기존 레거시 룰 유지.
@@ -280,6 +284,20 @@ async def _generate_trading_scenario_json(
         bounded_attempts,
     )
     return None
+
+
+def _capture_entry_quality_context(*, cursor, scenario, current_price, trigger_type):
+    """Attach structured KR facts only; capture must never affect a decision."""
+    if not entry_quality_capture_enabled():
+        return None
+    try:
+        return build_entry_quality_context(
+            market="KR", cursor=cursor, scenario=scenario,
+            current_price=current_price, trigger_type=trigger_type,
+        )
+    except Exception as error:  # noqa: BLE001 - observation must remain fail-open
+        logger.warning("[ENTRY_QUALITY_CAPTURE][KR] context skipped: %s", type(error).__name__)
+        return None
 
 
 class StockTrackingAgent:
@@ -1652,6 +1670,10 @@ class StockTrackingAgent:
                     scenario=scenario,
                     decision_context=decision_context,
                     portfolio_context={"slots_used": slots_used, "slots_max": getattr(self, "max_slots", 10)},
+                    entry_quality_context=_capture_entry_quality_context(
+                        cursor=getattr(self, "cursor", None), scenario=scenario,
+                        current_price=current_price, trigger_type=trigger_type,
+                    ),
                     source="kr_batch_watchlist",
                     research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker),
                 )
@@ -4474,6 +4496,11 @@ class StockTrackingAgent:
                                 "slots_used": current_slots,
                                 "slots_max": self.max_slots,
                             },
+                            entry_quality_context=_capture_entry_quality_context(
+                                cursor=getattr(self, "cursor", None), scenario=scenario,
+                                current_price=current_price,
+                                trigger_type=(getattr(self, "trigger_info_map", {}).get(ticker, {}) or {}).get("trigger_type"),
+                            ),
                             source="kr_batch_decision",
                             research_context=getattr(self, "_trend_research_snapshots", {}).get(ticker),
                         )
@@ -4822,24 +4849,12 @@ class StockTrackingAgent:
         return asyncio.create_task(self._notify_firebase(message, chat_id, message_id, msg_type=msg_type))
 
     async def _send_with_retry(self, chat_id: str, text: str, max_retries: int = 3):
-        """Send a single Telegram message with retry on timeout and rate-limit."""
-        for attempt in range(max_retries + 1):
-            try:
-                return await self.telegram_bot.send_message(chat_id=chat_id, text=text)
-            except RetryAfter as e:
-                if attempt < max_retries:
-                    wait_time = e.retry_after + 1
-                    logger.warning(f"Rate limit hit. Waiting {wait_time}s before retry... (attempt {attempt + 1}/{max_retries})")
-                    await asyncio.sleep(wait_time)
-                else:
-                    raise
-            except TimedOut:
-                if attempt < max_retries:
-                    wait_time = 2 ** attempt  # 1, 2, 4 seconds
-                    logger.warning(f"Timeout sending to {chat_id}. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
-                    await asyncio.sleep(wait_time)
-                else:
-                    raise
+        """Retry explicit rate rejection only; ambiguous delivery requires review."""
+        from messaging.telegram_delivery import send_message_once_or_rate_retry
+
+        return await send_message_once_or_rate_retry(
+            self.telegram_bot, chat_id=chat_id, text=text, attempts=max_retries + 1
+        )
 
     async def send_telegram_message(self, chat_id: str, language: str = "ko",
                                     portfolio_force: bool = False,
@@ -4965,7 +4980,15 @@ class StockTrackingAgent:
                         # Send split messages
                         first_msg_id = None
                         for i, part in enumerate(parts, 1):
-                            result = await self._send_with_retry(chat_id=chat_id, text=f"[{i}/{len(parts)}]\n{part}")
+                            try:
+                                result = await self._send_with_retry(chat_id=chat_id, text=f"[{i}/{len(parts)}]\n{part}")
+                            except Exception:
+                                if first_msg_id is not None:
+                                    from messaging.telegram_delivery import TelegramDeliveryUnknown
+                                    # Even an explicit rejection of a later part
+                                    # cannot authorize replay of accepted parts.
+                                    raise TelegramDeliveryUnknown() from None
+                                raise
                             if i == 1:
                                 first_msg_id = result.message_id
                             await asyncio.sleep(0.5)  # Short delay between split messages

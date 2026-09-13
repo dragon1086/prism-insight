@@ -108,9 +108,9 @@ async def _process_claimed_effect(
             store.record_failure(
                 effect_id=effect["id"],
                 owner=owner,
-                error_type="CancelledError",
+                error_type="TelegramDeliveryUnknown" if effect_type == "TELEGRAM" else "CancelledError",
                 next_attempt_at=current + timedelta(seconds=delay),
-                max_attempts=max_attempts,
+                max_attempts=1 if effect_type == "TELEGRAM" else max_attempts,
                 now=current,
             )
             connection.commit()
@@ -122,6 +122,18 @@ async def _process_claimed_effect(
         delivered = False
         remote_id = None
         error_type = type(error).__name__
+        if effect_type == "TELEGRAM":
+            from telegram.error import BadRequest, NetworkError
+            from messaging.telegram_delivery import TelegramDeliveryUnknown
+            if isinstance(error, (TimeoutError, TelegramDeliveryUnknown)) or (
+                isinstance(error, NetworkError) and not isinstance(error, BadRequest)
+            ):
+                error_type = "TelegramDeliveryUnknown"
+
+    # No remote acknowledgement is not proof of non-delivery. Quarantine rather
+    # than blindly replaying a non-idempotent Telegram send.
+    if effect_type == "TELEGRAM" and error_type == "DeliveryNotConfirmed":
+        error_type = "TelegramDeliveryUnknown"
 
     current = now()
     connection.execute("BEGIN IMMEDIATE")
@@ -146,7 +158,7 @@ async def _process_claimed_effect(
             owner=owner,
             error_type=error_type or "DeliveryNotConfirmed",
             next_attempt_at=current + timedelta(seconds=delay),
-            max_attempts=max_attempts,
+            max_attempts=1 if error_type == "TelegramDeliveryUnknown" else max_attempts,
             now=current,
         )
         connection.commit()
