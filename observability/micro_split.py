@@ -40,7 +40,7 @@ def end_shadow_batch(token):
         if token is not None:
             _BATCH.reset(token)
     except Exception:  # noqa: BLE001 - capture cleanup is fail-open
-        pass
+        return None
 
 
 def complete_shadow_batch(*, tracking_success, selected_count, report_count, pdf_count):

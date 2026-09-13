@@ -1671,7 +1671,7 @@ class StockTrackingAgent:
                     decision_context=decision_context,
                     portfolio_context={"slots_used": slots_used, "slots_max": getattr(self, "max_slots", 10)},
                     entry_quality_context=_capture_entry_quality_context(
-                        cursor=self.cursor, scenario=scenario,
+                        cursor=getattr(self, "cursor", None), scenario=scenario,
                         current_price=current_price, trigger_type=trigger_type,
                     ),
                     source="kr_batch_watchlist",
@@ -4497,7 +4497,7 @@ class StockTrackingAgent:
                                 "slots_max": self.max_slots,
                             },
                             entry_quality_context=_capture_entry_quality_context(
-                                cursor=self.cursor, scenario=scenario,
+                                cursor=getattr(self, "cursor", None), scenario=scenario,
                                 current_price=current_price,
                                 trigger_type=(getattr(self, "trigger_info_map", {}).get(ticker, {}) or {}).get("trigger_type"),
                             ),
