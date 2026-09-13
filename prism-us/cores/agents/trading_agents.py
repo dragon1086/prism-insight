@@ -285,6 +285,21 @@ risk_reward_ratio  = expected_return_pct / expected_loss_pct
   * 질문에 현재 날짜를 포함하고, 답변의 날짜를 항상 검증하십시오
 - `sqlite`: `describe_table` 먼저 실행하고, account_id 컬럼이 있으면 `account_id = 'primary'`로 필터링하십시오. 미국 포트폴리오는 us_stock_holdings 테이블입니다.
 
+### EVIDENCE_RECONCILIATION
+- 최종 응답 전에 전체 보고서·주입 팩트·반환된 도구 결과와 각 fundamental_check 판정을 대조하십시오.
+  F4_business_clarity와 rationale에는 절·출처와 구체적인 사업 모델·경쟁우위 통과 근거를 쓰고,
+  설명 없이 F1~F4 모두 통과라고 단정하지 마십시오.
+- 경쟁사 순위의 INCOMPARABLE이나 시장 지배력 미입증은 식별 가능한 경쟁우위의 부재와 다릅니다.
+  출처가 있는 제품 차별성·유통 우위·전환 비용은 시장 리더 입증 없이도 기존 F4 기준의 근거가 될 수
+  있습니다. 순위 누락을 새로운 진입 게이트로 만들거나 price_RS·섹터 호재를 사업 경쟁우위의 대체
+  근거로 쓰지 마십시오.
+- 보고서가 경쟁우위 자체를 미입증으로 판단했다면 이 반대 근거를 명시하십시오. 실제 확인한 근거의
+  법인·기간·산정 기준을 들어 모순이 해소되는 이유를 설명하고, 해소되지 않으면 통과 근거를 만들어내지
+  말고 한계를 남기십시오. 기존 F1–F4 기준·스키마·점수·시장별 하한·독립 게이트는 유지하십시오.
+  NOT_IN_INPUT은 입력에 없음, NOT_REQUESTED는 미조회, SOURCE_UNAVAILABLE은 실제 조회 실패·미제공,
+  INCOMPARABLE은 법인·기간·산정 기준 불일치입니다. 이들은 근거 상태이지 새로운 자동 통과·실패 규칙이나
+  어디에도 데이터가 없다는 증명이 아닙니다.
+
 ## 시간대별 데이터 신뢰도 (US 정규장 기준)
 
 - 미국 정규장은 ET 기준 09:30~16:00이며, KST로는 23:30~06:00 (EST) 또는 22:30~05:00 (EDT)입니다.
@@ -632,6 +647,21 @@ If the resulting R/R is below the matrix floor for the current regime → No Ent
   * Include the current date in the query and verify the date returned in the response
 - `sqlite`: run `describe_table` first; filter holdings by `account_id = 'primary'` when column exists.
   US portfolio table is `us_stock_holdings`.
+
+### EVIDENCE_RECONCILIATION
+- Before finalizing, reconcile each fundamental_check result with the whole report, injected facts and
+  returned tools. In F4_business_clarity and rationale cite the section/source and concrete business-model/
+  competitive-edge pass evidence; do not merely assert F1~F4 all pass.
+- An INCOMPARABLE peer ranking or unproven market dominance is not the same as no identifiable competitive
+  edge. A sourced product advantage, distribution advantage or switching cost may support the existing F4
+  criterion without proving market leadership. Do not turn missing peer ranking into a new entry gate or
+  substitute price_RS/sector tailwind for business evidence.
+- If the report says the edge itself is unproven, acknowledge that contrary evidence. Explain with identified
+  evidence and its entity/period/basis why an apparent contradiction is resolved; otherwise state the unresolved
+  limitation rather than fabricate pass evidence. Preserve existing F1–F4 criteria, schema, scoring, regime
+  floors and independent gates. NOT_IN_INPUT means absent from supplied inputs; NOT_REQUESTED means not queried;
+  SOURCE_UNAVAILABLE requires an actual failed/unproductive query; INCOMPARABLE means incompatible entity,
+  period or basis. These describe evidence, not a new automatic pass/fail rule or proof that data exists nowhere.
 
 ## Time-of-day Data Reliability (US regular hours)
 

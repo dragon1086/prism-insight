@@ -143,7 +143,7 @@ def _load_performance_feedback_module() -> Any:
     return module
 
 
-def trigger_prior_snapshot(cursor: Any, trigger_type: str | None) -> dict[str, Any]:
+def trigger_prior_snapshot(cursor: Any, trigger_type: str | None, *, market: str = "US") -> dict[str, Any]:
     """Read the existing local feedback tables; never raise into trading."""
 
     if not trigger_type:
@@ -154,7 +154,7 @@ def trigger_prior_snapshot(cursor: Any, trigger_type: str | None) -> dict[str, A
         }
     try:
         feedback_module = _load_performance_feedback_module()
-        feedback = feedback_module.get_trigger_feedback(cursor, "US", trigger_type)
+        feedback = feedback_module.get_trigger_feedback(cursor, market, trigger_type)
         candidate = _selected_trigger_stats(
             feedback.get("candidate_trigger"), actual=False
         )
@@ -191,11 +191,15 @@ def build_entry_quality_context(
     current_price: Any,
     cursor: Any = None,
     trigger_type: str | None = None,
+    market: str = "US",
     as_of: datetime | None = None,
     captured_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Build a compact, versioned context from the existing US decision input."""
+    """Build a compact, versioned context from existing KR/US decision input."""
 
+    market = str(market).strip().upper()
+    if market not in {"KR", "US"}:
+        raise ValueError("entry-quality market must be KR or US")
     captured = _as_utc(captured_at)
     observed = _as_utc(as_of or captured)
     if observed > captured:
@@ -247,7 +251,7 @@ def build_entry_quality_context(
     if setup_status == "MISSING":
         setup_quality["reason_code"] = "KEY_LEVELS_MISSING"
 
-    trigger_prior = trigger_prior_snapshot(cursor, trigger_type)
+    trigger_prior = trigger_prior_snapshot(cursor, trigger_type, market=market)
     trigger_prior["as_of"] = _iso(observed)
 
     # The current scenario contains prose about news, not a versioned event
@@ -299,8 +303,8 @@ def build_entry_quality_context(
         "status": validate_completeness_status(overall_status),
         "missing_components": missing_components,
         "as_of": _iso(observed),
-        "source": "existing_us_scenario_and_local_feedback",
-        "extractor_version": ENTRY_QUALITY_EXTRACTOR_VERSION,
+        "source": f"existing_{market.lower()}_scenario_and_local_feedback",
+        "extractor_version": ENTRY_QUALITY_EXTRACTOR_VERSION if market == "US" else "kr-local-facts-v1",
         "input_hash": hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24],
         "setup_quality": setup_quality,
         "event_risk": event_risk,

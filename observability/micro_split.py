@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import uuid
+from contextvars import ContextVar
 from typing import Any
 
 from observability.events import emit_event
@@ -14,6 +16,57 @@ from prism_core.micro_split import (
 )
 
 SHADOW_SCHEMA_VERSION = 2
+_BATCH = ContextVar("micro_split_batch", default=None)
+
+
+def begin_shadow_batch(*, market: str, trade_date: str, trigger_mode: str):
+    """Bind a new run, never infer completion from decisions or wall-clock dates."""
+    try:
+        context = None
+        if shadow_enabled() and market == "US" and trigger_mode in {"morning", "afternoon"}:
+            context = {
+                "batch_ref": uuid.uuid4().hex,
+                "market": market,
+                "trade_date": trade_date,
+                "trigger_mode": trigger_mode,
+            }
+        return _BATCH.set(context)
+    except Exception:  # noqa: BLE001 - capture must not interrupt trading
+        return None
+
+
+def end_shadow_batch(token):
+    try:
+        if token is not None:
+            _BATCH.reset(token)
+    except Exception:  # noqa: BLE001 - capture cleanup is fail-open
+        pass
+
+
+def complete_shadow_batch(*, tracking_success, selected_count, report_count, pdf_count):
+    """Mark core analysis/tracking completion, not broker fills or translations."""
+    try:
+        context = _BATCH.get()
+        if not context or tracking_success is not True:
+            return None
+        if selected_count <= 0 or report_count != selected_count or pdf_count != selected_count:
+            return None
+        return emit_event(
+            "micro_split.shadow_batch_completed",
+            event_id=_stable_ref("micro-split-completed", context["batch_ref"], length=32),
+            service="prism-us-micro-split-shadow",
+            market=context["market"],
+            attributes={
+                **context,
+                "mode": "SHADOW",
+                "completion_scope": "analysis_and_tracking",
+                "status": "COMPLETED",
+                "selected_count": selected_count,
+                "trading_impact": "none",
+            },
+        )
+    except Exception:  # noqa: BLE001 - observability is fail-open
+        return None
 
 
 def shadow_enabled(value: str | None = None) -> bool:
@@ -140,6 +193,9 @@ def emit_initial_shadow(
             regime=regime,
         )
         profile_ref = context["execution_profile_ref"]
+        batch = _BATCH.get()
+        if batch and batch["market"] == str(market).upper():
+            context.update(batch)
         return emit_event(
             "micro_split.shadow_evaluated",
             event_id=_stable_ref(

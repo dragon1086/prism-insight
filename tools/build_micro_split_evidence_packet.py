@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from prism_core.micro_split import (
+from prism_core.micro_split import (  # noqa: E402
     DEFAULT_POLICY,
     project_execution_on_advance,
 )
@@ -32,8 +32,9 @@ PACKET_SCHEMA_VERSION = 1
 ANALYSIS_CONTRACT_VERSION = "micro-split-evidence-v1"
 MIN_OBSERVED_DATES = 20
 MIN_OBSERVED_DECISIONS = 30
+MIN_COMPLETED_SESSIONS = 20
 BASE_STAGES = DEFAULT_POLICY.base_steps_pct
-_EVENT_TYPES = {"candidate.evaluated", "micro_split.shadow_evaluated"}
+_EVENT_TYPES = {"candidate.evaluated", "micro_split.shadow_evaluated", "micro_split.shadow_batch_completed"}
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -55,6 +56,17 @@ def _number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _trade_date(value: Any) -> str | None:
+    text = _text(value)
+    if text is None or len(text) != 8 or not text.isdigit():
+        return None
+    try:
+        datetime.strptime(text, "%Y%m%d")
+    except ValueError:
+        return None
+    return text
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -194,6 +206,9 @@ def _observed_row(event: Mapping[str, Any]) -> dict[str, Any]:
         "timestamp": _text(event.get("timestamp")),
         "schema_version": int(attributes.get("shadow_schema_version") or 1),
         "mode": _text(attributes.get("mode")),
+        "batch_ref": _text(attributes.get("batch_ref")),
+        "trade_date": _trade_date(attributes.get("trade_date")),
+        "trigger_mode": _text(attributes.get("trigger_mode")),
         "policy_version": _text(attributes.get("policy_version")),
         "regime": _text(attributes.get("regime")),
         "execution_profile_ref": _text(attributes.get("execution_profile_ref")),
@@ -249,6 +264,32 @@ def build_micro_split_evidence_packet(
     )
     candidate_duplicate_count = raw_candidate_count - distinct_candidate_event_count
     observed_rows = [_observed_row(event) for event in observed_events]
+    completed = {}
+    for event in market_events:
+        attrs = _mapping(event.get("attributes"))
+        if (
+            event.get("event_type") == "micro_split.shadow_batch_completed"
+            and attrs.get("status") == "COMPLETED"
+            and attrs.get("completion_scope") == "analysis_and_tracking"
+            and attrs.get("mode") == "SHADOW"
+            and attrs.get("trigger_mode") in {"morning", "afternoon"}
+            and _trade_date(attrs.get("trade_date"))
+            and _text(attrs.get("batch_ref"))
+        ):
+            completed[attrs["batch_ref"]] = attrs
+    def linked(row):
+        attrs = completed.get(row["batch_ref"], {})
+        return bool(attrs) and (
+            row["trade_date"], row["trigger_mode"]
+        ) == (attrs.get("trade_date"), attrs.get("trigger_mode"))
+
+    completed_sessions = len({
+        (attrs["trade_date"], attrs["trigger_mode"]) for attrs in completed.values()
+    })
+    linked_decisions = {row["decision_ref"] for row in observed_rows if linked(row)}
+    unlinked_decisions = {
+        row["decision_ref"] for row in observed_rows if not linked(row)
+    }
     observed_dates = {
         timestamp.date().isoformat()
         for row in observed_rows
@@ -346,6 +387,12 @@ def build_micro_split_evidence_packet(
     reasons = []
     for code, failed, observed, minimum in (
         (
+            "COMPLETED_SESSIONS_LT_20",
+            completed_sessions < MIN_COMPLETED_SESSIONS,
+            completed_sessions,
+            MIN_COMPLETED_SESSIONS,
+        ),
+        (
             "OBSERVED_DATES_LT_20",
             len(observed_dates) < MIN_OBSERVED_DATES,
             len(observed_dates),
@@ -400,6 +447,11 @@ def build_micro_split_evidence_packet(
             "duplicate_event_id_count": micro_duplicate_count,
             "decision_count": observed_decisions,
             "decision_date_count": len(observed_dates),
+            "completed_batch_count": len(completed),
+            "completed_session_count": completed_sessions,
+            "completed_batch_decision_count": len(linked_decisions),
+            "unlinked_decision_count": len(unlinked_decisions),
+            "completion_scope": "analysis_and_tracking_not_fills_or_translation",
             "schema_v2_count": len(v2_rows),
             "schema_v2_coverage_rate": round(v2_coverage, 4),
             "first_executable_target_pct_distribution": dict(

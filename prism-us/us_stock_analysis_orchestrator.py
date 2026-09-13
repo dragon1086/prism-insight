@@ -1313,10 +1313,17 @@ class USStockAnalysisOrchestrator:
         """
         logger.info(f"Starting US full pipeline - mode: {mode}")
         tracking_success = True
+        from observability.micro_split import (
+            begin_shadow_batch, complete_shadow_batch, end_shadow_batch,
+        )
+        shadow_batch_token = None
 
         try:
             # 0. Run macro intelligence (US market regime, sector data)
             effective_date = resolve_us_trade_date(override_date)
+            shadow_batch_token = begin_shadow_batch(
+                market="US", trade_date=effective_date, trigger_mode=mode,
+            )
             macro_context = await self.run_macro_intelligence(
                 reference_date=effective_date,
                 language=language
@@ -1474,6 +1481,12 @@ class USStockAnalysisOrchestrator:
                 logger.warning("No US reports generated, not executing tracking system batch.")
 
             if tracking_success:
+                complete_shadow_batch(
+                    tracking_success=tracking_success,
+                    selected_count=len(tickers),
+                    report_count=len(report_paths),
+                    pdf_count=len(pdf_paths),
+                )
                 logger.info(f"US full pipeline complete - mode: {mode}")
             else:
                 logger.warning(f"US full pipeline completed with tracking errors - mode: {mode}")
@@ -1488,6 +1501,8 @@ class USStockAnalysisOrchestrator:
                 await send_openai_quota_alert(self.telegram_config, market="US")
 
         finally:
+            if shadow_batch_token is not None:
+                end_shadow_batch(shadow_batch_token)
             # Always wait for background broadcast tasks, even on error/early return
             if self._broadcast_tasks:
                 logger.info(f"Waiting for {len(self._broadcast_tasks)} broadcast translation task(s) to complete...")

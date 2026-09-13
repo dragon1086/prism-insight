@@ -240,6 +240,8 @@ class ExitEffectStore:
         )
         current = _utc_datetime(now)
         current_iso = _utc_iso(current)
+        if "TELEGRAM" in selected_types:
+            self._quarantine_expired_telegram(current_iso)
         lease_expires_at = _utc_iso(current + timedelta(seconds=lease_seconds))
         candidates = self._execute(
             """
@@ -323,6 +325,7 @@ class ExitEffectStore:
 
         current = _utc_datetime(now)
         current_iso = _utc_iso(current)
+        self._quarantine_expired_telegram(current_iso, effect_id=effect_id)
         lease_expires_at = _utc_iso(current + timedelta(seconds=lease_seconds))
         changed = self._execute(
             """
@@ -353,6 +356,21 @@ class ExitEffectStore:
         if changed != 1:
             raise RuntimeError("exit effect claim changed unexpectedly")
         return self.get_effect(effect_id)
+
+    def _quarantine_expired_telegram(self, current_iso: str, *, effect_id: str | None = None):
+        """A dead sender's expired lease is not proof that sendMessage failed."""
+        self._execute(
+            """
+            UPDATE exit_effect_outbox
+            SET status='DEAD', last_error='TelegramDeliveryUnknown',
+                lease_owner=NULL, lease_expires_at=NULL, next_attempt_at=NULL,
+                updated_at=?, completed_at=?
+            WHERE effect_type='TELEGRAM' AND status='IN_PROGRESS'
+              AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+              AND (? IS NULL OR id=?)
+            """,
+            (current_iso, current_iso, current_iso, effect_id, effect_id),
+        )
 
     def mark_delivered(
         self,

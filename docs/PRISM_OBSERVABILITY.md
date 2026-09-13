@@ -67,6 +67,8 @@ ClickHouse process (mode `0644`).
 - `candidate.outcome` (live when 30-day tracking completes)
 - `screening.third_slot_shadow_evaluated` (KR weak-regime 2-vs-3 candidates)
 - `screening.third_slot_shadow_outcome` (exact 1/3/5/10 trading-day returns)
+- `micro_split.shadow_batch_completed` (US analysis/tracking completion, exact batch linkage;
+  not translation delivery or confirmed fills)
 - `entry.executed`
 - `entry.fill_reconciled` (US CAPTURE: 제출과 실제 체결을 구분하는 주문 provenance)
 - `exit.executed`
