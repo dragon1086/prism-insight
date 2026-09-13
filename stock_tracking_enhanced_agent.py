@@ -1942,7 +1942,9 @@ class EnhancedStockTrackingAgent(StockTrackingAgent):
                 urgency_emoji = {"high": "🚨", "medium": "⚠️", "low": "💡"}.get(urgency, "🔄")
                 message = f"{urgency_emoji} 포트폴리오 조정: {company_name}({ticker})\n"
                 message += update_message
-                message += f"조정 근거: {adjustment_reason}\n"
+                message += "처리 상태: 프로그램이 위 변경을 전략 원장 DB에 반영했습니다.\n"
+                message += "아래 근거는 AI 제안 원문이며, AI의 ‘DB 미수정’ 표현은 프로그램의 반영 결과와 별개입니다.\n"
+                message += f"AI 제안 근거: {adjustment_reason}\n"
                 message += f"긴급도: {urgency.upper()}\n"
 
                 # Add analysis summary

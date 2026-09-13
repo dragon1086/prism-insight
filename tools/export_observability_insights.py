@@ -25,6 +25,7 @@ EVENT_TYPES = {
     "exit.executed",
     "market.regime_snapshot",
     "micro_split.shadow_evaluated",
+    "micro_split.shadow_batch_completed",
     "trade.outcome",
     "trigger.performance_feedback",
 }
@@ -41,6 +42,7 @@ _CLICKHOUSE_EVENTS_QUERY = """
         'exit.executed',
         'market.regime_snapshot',
         'micro_split.shadow_evaluated',
+        'micro_split.shadow_batch_completed',
         'trade.outcome',
         'trigger.performance_feedback'
       )

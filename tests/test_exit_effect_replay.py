@@ -115,14 +115,14 @@ async def test_replay_completes_each_effect_independently(tmp_path):
     assert summary == {
         "claimed": 4,
         "delivered": 2,
-        "rescheduled": 2,
-        "dead": 0,
+        "rescheduled": 1,
+        "dead": 1,
     }
     assert rows["JOURNAL"]["status"] == "DELIVERED"
     assert rows["REDIS"]["status"] == "DELIVERED"
     assert rows["REDIS"]["remote_id"] == "redis-message-1"
-    assert rows["TELEGRAM"]["status"] == "PENDING"
-    assert rows["TELEGRAM"]["last_error"] == "DeliveryNotConfirmed"
+    assert rows["TELEGRAM"]["status"] == "DEAD"
+    assert rows["TELEGRAM"]["last_error"] == "TelegramDeliveryUnknown"
     assert rows["GCP"]["status"] == "PENDING"
     assert rows["GCP"]["last_error"] == "RuntimeError"
     assert "secret detail" not in str(rows)

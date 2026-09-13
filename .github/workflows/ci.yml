@@ -68,6 +68,15 @@ jobs:
             prism-us/tests/test_trading_agents_prompt_rules.py \
             prism-us/tests/test_us_order_budget.py -q
 
+      - name: Evidence linkage and ambiguous notification safety
+        env:
+          PRISM_DISABLE_SIGNAL_PUBLISH: "1"
+        run: |
+          python -m pytest tests/test_evidence_capture_repairs.py \
+            tests/test_micro_split_batch_linkage.py tests/test_telegram_delivery_safety.py \
+            tests/test_exit_effect_*.py tests/test_micro_split*.py \
+            tests/test_third_slot*.py -q
+
       - name: KIS-only provider and consumer boundary
         env:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
