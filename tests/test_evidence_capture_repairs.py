@@ -130,3 +130,22 @@ def test_both_kr_candidate_paths_attach_context():
         context = next((kw.value for kw in call.keywords if kw.arg == "entry_quality_context"), None)
         assert isinstance(context, ast.Call)
         assert context.func.id == "_capture_entry_quality_context"
+
+
+@pytest.mark.parametrize("enabled", ["0", "1"])
+def test_kr_capture_callsites_allow_agent_without_cursor(monkeypatch, enabled):
+    monkeypatch.setenv("ENTRY_QUALITY_CAPTURE_ENABLED", enabled)
+    tree = ast.parse((ROOT / "stock_tracking_agent.py").read_text())
+    contexts = [kw.value for node in ast.walk(tree) if isinstance(node, ast.Call)
+                for kw in node.keywords if kw.arg == "entry_quality_context"]
+    assert len(contexts) == 2
+    namespace = _kr_capture_namespace()
+    namespace.update(self=SimpleNamespace(), scenario={}, current_price=100,
+                     trigger_type=None, ticker="012630")
+    for context in contexts:
+        result = eval(compile(ast.Expression(body=context), "capture_callsite", "eval"), namespace)
+        if enabled == "0":
+            assert result is None
+        else:
+            assert result["status"] == "MISSING"
+            assert result["trigger_prior"]["reason_code"] == "TRIGGER_TYPE_MISSING"
