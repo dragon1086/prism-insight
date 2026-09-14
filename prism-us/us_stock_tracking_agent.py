@@ -4721,6 +4721,9 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
             else:
                 logger.info("[portfolio-dedup] US portfolio summary skipped (sent within debounce window)")
 
+            from messaging.korean_trading_message import render_korean_trading_message
+            if language == "ko":
+                self.message_queue = [render_korean_trading_message(message) for message in self.message_queue]
             self.last_batch_messages = [
                 (
                     self._msg_types[index]
@@ -5030,8 +5033,14 @@ Use yahoo_finance and sqlite tools to check latest data, then decide whether to 
         """
         if getattr(self, "_no_order_effects", None) is not None:
             return effects_for(self, "process_reports").journal(ticker)["context"]
-        if self.journal_manager and self.enable_journal:
-            return self.journal_manager.get_context_for_ticker(ticker, sector, trigger_type=trigger_type)
+        if self.enable_journal:
+            from observability.recent_exit_context import append_recent_exit_context
+            try:
+                context = self.journal_manager.get_context_for_ticker(ticker, sector, trigger_type=trigger_type)
+            except Exception as error:  # noqa: BLE001 - optional lessons must not hide canonical facts
+                logger.warning("[JOURNAL][US] narrative unavailable: %s", type(error).__name__)
+                context = ""
+            return append_recent_exit_context(self, ticker, context, market="US")
         return ""
 
     def get_score_adjustment(self, ticker: str, sector: str = None, trigger_type: str = None) -> Tuple[int, List[str]]:

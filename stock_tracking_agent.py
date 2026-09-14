@@ -3489,7 +3489,13 @@ class StockTrackingAgent:
         """Get journal context for buy decisions (delegates to tracking.journal.JournalManager)"""
         if getattr(self, "_no_order_effects", None) is not None:
             return effects_for(self, "process_reports").journal(ticker)["context"]
-        return self.journal_manager.get_context_for_ticker(ticker, sector, trigger_type)
+        from observability.recent_exit_context import append_recent_exit_context
+        try:
+            context = self.journal_manager.get_context_for_ticker(ticker, sector, trigger_type)
+        except Exception as error:  # noqa: BLE001 - optional lessons must not hide canonical facts
+            logger.warning("[JOURNAL][KR] narrative unavailable: %s", type(error).__name__)
+            context = ""
+        return append_recent_exit_context(self, ticker, context, market="KR")
 
     def _get_universal_principles(self, limit: int = 10) -> List[str]:
         """Get universal principles (delegates to tracking.journal.JournalManager)"""
@@ -4885,6 +4891,9 @@ class StockTrackingAgent:
             else:
                 logger.info("[portfolio-dedup] KR portfolio summary skipped (sent within debounce window)")
 
+            from messaging.korean_trading_message import render_korean_trading_message
+            if language == "ko":
+                self.message_queue = [render_korean_trading_message(message) for message in self.message_queue]
             self.last_batch_messages = [
                 (
                     self._msg_types[index]
