@@ -25,18 +25,19 @@ async def check_mcp(ticker, start, end):
 
     spec = load_report_mcp_registry().get("kospi_kosdaq")
     params = StdioServerParameters(command=sys.executable, args=list(spec.args), env=dict(spec.env))
-    async with stdio_client(params) as (reader, writer), ClientSession(reader, writer) as session:
-        await session.initialize()
-        result = await session.call_tool("get_stock_ohlcv", {
-            "ticker": ticker, "fromdate": start, "todate": end,
-        })
-        if result.isError:
-            raise RuntimeError("MCP tool failed")
-        payload = json.loads(result.content[0].text)
-        rows = [key for key in payload if key != "__meta__"]
-        if "error" in payload or not rows:
-            raise RuntimeError("MCP data missing")
-        return len(rows)
+    async with stdio_client(params) as (reader, writer):
+        async with ClientSession(reader, writer) as session:
+            await session.initialize()
+            result = await session.call_tool("get_stock_ohlcv", {
+                "ticker": ticker, "fromdate": start, "todate": end,
+            })
+            if result.isError:
+                raise RuntimeError("MCP tool failed")
+            payload = json.loads(result.content[0].text)
+            rows = [key for key in payload if key != "__meta__"]
+            if "error" in payload or not rows:
+                raise RuntimeError("MCP data missing")
+            return len(rows)
 
 
 def main():

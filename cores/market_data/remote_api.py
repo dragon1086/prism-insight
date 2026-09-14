@@ -2,7 +2,8 @@
 
 import json
 import logging
-import subprocess  # nosec B404 - fixed read-only worker with a hard deadline
+# Fixed read-only worker with a hard deadline, not a command execution API.
+import subprocess  # nosec B404
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -105,7 +106,8 @@ def execute_market_data(request: MarketDataRequest):
 def _run_worker(request: MarketDataRequest):
     # subprocess.run kills and reaps the child on TimeoutExpired; no shell or
     # user-controlled executable/arguments. Worker stdout contains bounded JSON.
-    result = subprocess.run(  # nosec B603 - fixed argv; validated request goes only to stdin
+    # The interpreter/module argv is trusted and fixed. User data is JSON stdin only.
+    result = subprocess.run(  # nosec B603  # nosemgrep
         [sys.executable, "-m", "cores.market_data.remote_worker"],
         input=request.model_dump_json(), text=True, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, timeout=25, check=True,
