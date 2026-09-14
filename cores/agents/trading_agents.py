@@ -694,6 +694,8 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
         """
 
     instruction = instruction.replace("{sector_constraint}", sector_constraint)
+    from prism_core.kr_flow_evidence import kr_flow_interpretation_contract
+    instruction += kr_flow_interpretation_contract(language)
 
     return Agent(
         name="trading_scenario_agent",
