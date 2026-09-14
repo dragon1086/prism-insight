@@ -72,6 +72,14 @@ def test_screening_version_cohorts_do_not_mix(tmp_path):
     assert current["data_quality"]["excluded_policy_event_count"] == 1
     assert legacy["coverage"]["experiment_count"] == 1
     assert legacy["policy_version"] != current["policy_version"]
+    legacy_duplicate = build_third_slot_evidence_packet([event, old, old])
+    assert legacy_duplicate["data_quality"]["duplicate_event_id_count"] == 0
+    assert legacy_duplicate["data_quality"]["excluded_policy_event_count"] == 2
+    assert "DUPLICATE_EVENT_IDS_PRESENT" not in {
+        reason["code"] for reason in legacy_duplicate["readiness"]["reasons"]}
+    # Identity collisions across versions must not discard the selected cohort.
+    old["event_id"] = event["event_id"]
+    assert build_third_slot_evidence_packet([event, old])["coverage"]["experiment_count"] == 1
 
 
 def test_old_evaluation_outcomes_keep_original_policy(tmp_path):
