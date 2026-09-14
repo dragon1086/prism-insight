@@ -4,6 +4,18 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 _TABLES = {"KR": "trading_history", "US": "us_trading_history"}
+_SQL = {
+    "KR": {
+        "schema": "PRAGMA table_info(trading_history)",
+        "kind": "SELECT sell_date, exit_kind FROM trading_history WHERE ticker = ? AND account_key = ? ORDER BY sell_date DESC LIMIT 1001",
+        "no_kind": "SELECT sell_date, NULL FROM trading_history WHERE ticker = ? AND account_key = ? ORDER BY sell_date DESC LIMIT 1001",
+    },
+    "US": {
+        "schema": "PRAGMA table_info(us_trading_history)",
+        "kind": "SELECT sell_date, exit_kind FROM us_trading_history WHERE ticker = ? AND account_key = ? ORDER BY sell_date DESC LIMIT 1001",
+        "no_kind": "SELECT sell_date, NULL FROM us_trading_history WHERE ticker = ? AND account_key = ? ORDER BY sell_date DESC LIMIT 1001",
+    },
+}
 _KST = ZoneInfo("Asia/Seoul")
 
 
@@ -27,14 +39,13 @@ def build_recent_exit_facts(cursor, ticker, *, market, account_key=None, now=Non
         table = _TABLES[market]
         observed = _clock(now or datetime.now(_KST))
         facts["observed_at"] = observed.isoformat()
-        columns = {row[1] for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()}
+        columns = {row[1] for row in cursor.execute(_SQL[market]["schema"]).fetchall()}
         if not {"ticker", "sell_date"} <= columns:
             raise ValueError("history schema unavailable")
         if "account_key" not in columns or not account_key:
             raise ValueError("strategy scope unavailable")
-        kind = "exit_kind" if "exit_kind" in columns else "NULL"
         rows = cursor.execute(
-            f"SELECT sell_date, {kind} FROM {table} WHERE ticker = ? AND account_key = ? ORDER BY sell_date DESC LIMIT 1001",
+            _SQL[market]["kind" if "exit_kind" in columns else "no_kind"],
             (ticker, account_key),
         ).fetchall()
         if len(rows) > 1000:
