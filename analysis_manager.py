@@ -8,7 +8,7 @@ import threading
 from datetime import datetime
 from queue import Queue
 
-from prism_core.report_service import generate_report
+from prism_core.report_service import generate_report, KR_FAILURE_MESSAGE
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -87,7 +87,9 @@ def start_background_worker(bot_instance):
                     logger.error(f"Worker: Error during analysis processing - {str(e)}")
                     logger.error(traceback.format_exc())
                     request.status = "failed"
-                    request.result = f"Error occurred during analysis: {str(e)}"
+                    request.result = KR_FAILURE_MESSAGE
+                    request.report_path = None
+                    request.pdf_path = None
                     # Add to result queue even on error for processing
                     bot_instance.result_queue.put(request.id)
 

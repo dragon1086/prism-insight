@@ -20,6 +20,13 @@ from pathlib import Path
 from queue import Queue
 
 from dotenv import load_dotenv
+
+# Select the DB server's market data before importing analysis dependencies.
+# Child report processes and MCP servers inherit this environment.
+load_dotenv()
+if os.environ.get("ARCHIVE_API_URL"):
+    os.environ.setdefault("PRISM_MARKET_DATA_REMOTE_URL", os.environ["ARCHIVE_API_URL"])
+
 from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, ContextTypes,
@@ -38,6 +45,7 @@ from report_generator import (
     get_cached_us_report, generate_journal_conversation_response,
     generate_firecrawl_search_response, generate_firecrawl_followup_response,
     get_recent_evaluation_report,
+    REPORT_FAILURE_MESSAGE, _is_cacheable_report,
 )
 from tracking.user_memory import UserMemoryManager
 from firecrawl_client import firecrawl_agent
@@ -50,9 +58,6 @@ from telegram_moderation import CommunityModerator, community_notice
 from datetime import timedelta
 from dataclasses import dataclass
 from typing import Dict, Optional
-
-# Load environment variables
-load_dotenv()
 
 # Logger setup
 from logging.handlers import RotatingFileHandler
@@ -782,12 +787,8 @@ class TelegramAIBot:
         """
         if request.status == "failed":
             return True
-        if request.status == "completed" and request.result:
-            error_markers = [
-                "Error occurred during analysis",
-                "Error occurred during US stock analysis",
-            ]
-            return any(marker in request.result for marker in error_markers)
+        if request.status == "completed":
+            return not _is_cacheable_report(request.result)
         return False
 
     def load_stock_map(self):
@@ -1505,6 +1506,12 @@ class TelegramAIBot:
             self.refund_daily_limit(request.user_id, command)
 
         try:
+            if self._is_server_error(request):
+                await self.application.bot.send_message(
+                    chat_id=request.chat_id,
+                    text=f"⚠️ {REPORT_FAILURE_MESSAGE}",
+                )
+                return
             # Send PDF file
             if request.pdf_path and os.path.exists(request.pdf_path):
                 with open(request.pdf_path, 'rb') as file:

@@ -65,6 +65,15 @@ TELEGRAM_OPINION_STYLE_GUIDE = """
 """
 
 _FAILED_REPORT_MARKERS = ("analysis failed", "분석 실패")
+REPORT_FAILURE_MESSAGE = "보고서 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+_REPORT_ERROR_MARKERS = (
+    "analysis time exceeded", "error occurred during analysis",
+    "error occurred during us stock analysis", "could not find analysis result",
+    "error occurred while parsing analysis result", "보고서 생성 중 오류",
+    "us 주식 분석 결과를 찾을 수 없습니다", "us 주식 분석 결과 파싱 중 오류",
+    "us 주식 분석 시간이 초과", "traceback (most recent call last)",
+    "log file:", "로그 파일:",
+)
 _MAX_CACHEABLE_FAILURE_MARKERS = 2
 _KST = ZoneInfo("Asia/Seoul")
 _EVALUATION_REPORT_MAX_CHARS = int(
@@ -88,10 +97,18 @@ def _is_current_kst_day(path: Path) -> bool:
     return modified_at.date() == _now_kst().date()
 
 
-def _is_cacheable_report(content: str) -> bool:
+def _is_cacheable_report(content: str | None) -> bool:
     """Reject generated artifacts whose analysis mostly failed."""
 
+    if not isinstance(content, str) or not content.strip():
+        return False
     normalized = content.casefold()
+    if any(marker in normalized for marker in _REPORT_ERROR_MARKERS):
+        return False
+    # Section failures may contain exception messages, paths or credentials.
+    # Refuse diagnostic artifacts rather than send their existing PDFs.
+    if re.search(r"(?:analysis failed|분석 실패)\s*[:：]", normalized):
+        return False
     failure_count = sum(normalized.count(marker) for marker in _FAILED_REPORT_MARKERS)
     return bool(content.strip()) and failure_count <= _MAX_CACHEABLE_FAILURE_MARKERS
 
@@ -315,7 +332,7 @@ def save_us_pdf_report(ticker: str, company_name: str, md_path: Path) -> Path:
     return pdf_path
 
 
-def generate_us_report_response_sync(ticker: str, company_name: str) -> str:
+def generate_us_report_response_sync(ticker: str, company_name: str) -> str | None:
     """
     Generate US stock detailed report synchronously (called from background thread)
 
@@ -411,27 +428,27 @@ if __name__ == "__main__":
                 else:
                     error = parsed_output.get('error', 'Unknown error')
                     logger.error(f"US external process error: {error}")
-                    return f"Error occurred during US stock analysis: {error}"
+                    return None
             else:
                 # If delimiters not found - process execution itself may have issues
                 logger.error(f"Could not find result delimiters in US external process output: {output[:500]}")
                 # Check if there's error log in stderr
                 if process.stderr:
                     logger.error(f"US external process error output: {process.stderr[:500]}")
-                return "US 주식 분석 결과를 찾을 수 없습니다. 로그를 확인하세요."
+                return None
         except json.JSONDecodeError as e:
             logger.error(f"US 외부 프로세스 출력 파싱 실패: {e}")
             logger.error(f"출력 내용: {output[:1000]}")
-            return "US 주식 분석 결과 파싱 중 오류가 발생했습니다. 로그를 확인하세요."
+            return None
 
     except subprocess.TimeoutExpired:
         logger.error(f"US 외부 프로세스 타임아웃: {ticker}")
-        return "US 주식 분석 시간이 초과되었습니다. 다시 시도해주세요."
+        return None
     except Exception as e:
         logger.error(f"US 동기식 보고서 생성 중 오류: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-        return f"US 주식 보고서 생성 중 오류가 발생했습니다: {str(e)}"
+        return None
 
 
 def save_pdf_report(stock_code: str, company_name: str, md_path: Path) -> Path:
@@ -575,7 +592,7 @@ def convert_to_html(markdown_content: str) -> str:
         """
     except Exception as e:
         logger.error(f"HTML 변환 중 오류: {str(e)}")
-        return f"<p>보고서 변환 중 오류가 발생했습니다: {str(e)}</p>"
+        return "<p>보고서 변환 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.</p>"
 
 
 def save_html_report_from_content(stock_code: str, company_name: str, html_content: str) -> Path:
@@ -596,7 +613,7 @@ def save_html_report(stock_code: str, company_name: str, markdown_content: str) 
     return save_html_report_from_content(stock_code, company_name, html_content)
 
 
-def generate_report_response_sync(stock_code: str, company_name: str) -> str:
+def generate_report_response_sync(stock_code: str, company_name: str) -> str | None:
     """
     종목 상세 보고서를 동기 방식으로 생성 (백그라운드 스레드에서 호출됨)
     """
@@ -712,7 +729,7 @@ if __name__ == "__main__":
                 f.write(stderr or "(empty)")
 
                 logger.error(f"External process timeout: {stock_code}, log file: {log_file}")
-                return f"Analysis time exceeded. Check log file: {log_file}"
+                return None
 
         # Log stderr (for debugging)
         if stderr:
@@ -736,23 +753,23 @@ if __name__ == "__main__":
                 else:
                     error = parsed_output.get('error', 'Unknown error')
                     logger.error(f"External process error: {error}, log file: {log_file}")
-                    return f"Error occurred during analysis: {error}"
+                    return None
             else:
                 # If delimiters not found - process execution itself may have issues
                 logger.error(f"Could not find result delimiters in external process output. Log file: {log_file}")
                 logger.error(f"stdout excerpt: {stdout[:500] if stdout else '(empty)'}")
                 if stderr:
                     logger.error(f"stderr excerpt: {stderr[:500]}")
-                return f"Could not find analysis result. Log file: {log_file}"
+                return None
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse external process output: {e}, log file: {log_file}")
             logger.error(f"Output content: {stdout[:1000] if stdout else '(empty)'}")
-            return f"Error occurred while parsing analysis result. Log file: {log_file}"
+            return None
     except Exception as e:
         logger.error(f"동기식 보고서 생성 중 오류: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-        return f"보고서 생성 중 오류가 발생했습니다: {str(e)}"
+        return None
 
 def clean_model_response(response):
     response = str(response or "")

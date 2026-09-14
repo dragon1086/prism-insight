@@ -61,7 +61,12 @@ def default_chain() -> SourceChain:
         order = os.getenv("PRISM_MARKET_DATA_SOURCES", _DEFAULT_ORDER)
         if order.strip().lower() != "kis":
             logger.warning("Retired market-data provider settings ignored; KIS is the only provider")
-        _chain = SourceChain([KisSource()])
+        remote_url = os.getenv("PRISM_MARKET_DATA_REMOTE_URL", "").strip()
+        if remote_url:
+            from cores.market_data.remote_source import RemoteKisSource
+            _chain = SourceChain([RemoteKisSource(remote_url)])
+        else:
+            _chain = SourceChain([KisSource()])
         logger.info("market data sources: %s", " -> ".join(_chain.names))
     return _chain
 
