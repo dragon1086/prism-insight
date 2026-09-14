@@ -37,7 +37,7 @@ PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from fastapi import FastAPI, HTTPException, Security, Depends
+    from fastapi import APIRouter, FastAPI, HTTPException, Security, Depends
     from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
     from pydantic import BaseModel
 except ImportError as e:
@@ -76,6 +76,19 @@ app = FastAPI(
     docs_url=None,  # Disable Swagger UI in production
     redoc_url=None,
 )
+
+from cores.market_data.remote_api import BoundedMarketDataRoute, MarketDataRequest, fetch_market_data
+
+_market_data_router = APIRouter(route_class=BoundedMarketDataRoute)
+
+
+@_market_data_router.post("/market-data")
+def market_data(request: MarketDataRequest, _key: str = Depends(_verify_key)):
+    """Read-only KIS data, protected by the existing archive API credential."""
+    return fetch_market_data(request)
+
+
+app.include_router(_market_data_router)
 
 
 # ---------------------------------------------------------------------------

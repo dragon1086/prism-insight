@@ -89,6 +89,12 @@ def default_chain() -> SourceChain:
     """
     global _chain
     if _chain is None:
+        remote_url = os.getenv("PRISM_MARKET_DATA_REMOTE_URL", "").strip()
+        if remote_url:
+            from cores.market_data.remote_source import RemoteKisSource
+            _chain = SourceChain([RemoteKisSource(remote_url)])
+            logger.info("market data sources: %s", " -> ".join(_chain.names))
+            return _chain
         order = os.getenv("PRISM_MARKET_DATA_SOURCES", _DEFAULT_ORDER)
         sources: list[MarketDataSource] = []
         for name in (part.strip().lower() for part in order.split(",")):
