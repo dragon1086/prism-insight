@@ -127,7 +127,7 @@ def prefetch_us_holder_info(ticker: str) -> str:
         # Major holders
         major = holders.get("major_holders")
         if major is not None and not major.empty:
-            result += _df_to_markdown(major, f"Major Holders: {ticker}")
+            result += _df_to_markdown(holdings_asof_frame(major, asof_utc=fetched_at), f"Major Holders: {ticker}")
             result += "\n"
 
         # Institutional holders

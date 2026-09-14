@@ -241,3 +241,14 @@ def test_known_split_volume_units_are_unknown_not_cross_split_proxy():
     assert r["signed_volume_ratio_5"]["status"] == "computed"
     assert r["signed_volume_ratio_20"]["reason"] == "known_split_unadjusted_volume"
     assert r["cmf_20"]["value"] is None
+def test_holder_dates_use_us_civil_day_and_count_undated_major_rows():
+    holders = {
+        "major_holders": pd.DataFrame({"Value": [0.6]}),
+        "institutional_holders": pd.DataFrame({"Date Reported": ["2026-07-01"], "Shares": [100]}),
+    }
+    asof = "2026-07-01T00:30:00Z"  # Still June 30 in New York.
+    result = flow.describe_us_holdings(holders, asof_utc=asof)
+    assert result["future_report_date_rows"] == 1
+    assert result["unknown_report_date_rows"] == 1
+    assert result["report_dates"] == []
+    assert flow.holdings_asof_frame(holders["institutional_holders"], asof_utc=asof).empty
