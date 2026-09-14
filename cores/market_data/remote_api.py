@@ -44,7 +44,7 @@ class BoundedMarketDataRoute(APIRoute):
 class MarketDataRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     capability: Literal["price_history", "index_history", "market_cap_history",
-                        "investor_flows", "fundamentals", "intraday_investor_estimate", "ticker_name"]
+                        "investor_flows", "fundamentals", "intraday_investor_estimate", "ticker_name", "ticker_market"]
     ticker: str = Field(pattern=r"^[0-9]{4,6}$", max_length=6)
     start: str | None = Field(default=None, pattern=r"^[0-9]{8}$", max_length=8)
     end: str | None = Field(default=None, pattern=r"^[0-9]{8}$", max_length=8)
@@ -55,7 +55,7 @@ class MarketDataRequest(BaseModel):
     def validate_range(self):
         if self.capability != "index_history" and len(self.ticker) != 6:
             raise ValueError("Invalid stock ticker")
-        if self.capability not in {"ticker_name", "intraday_investor_estimate"}:
+        if self.capability not in {"ticker_name", "ticker_market", "intraday_investor_estimate"}:
             if self.start is None or self.end is None:
                 raise ValueError("Date range required")
             start = date.fromisoformat(f"{self.start[:4]}-{self.start[4:6]}-{self.start[6:]}")
@@ -77,6 +77,13 @@ def execute_market_data(request: MarketDataRequest):
     """Worker-only dispatch: one direct KIS instance, never the default chain."""
     global _source
     try:
+        if request.capability == "ticker_market":
+            from cores.kis_market_snapshot import fetch_kis_master_data
+
+            market = fetch_kis_master_data().markets.get(request.ticker)
+            if not isinstance(market, str) or market not in {"KOSPI", "KOSDAQ"}:
+                raise Unsupported("KIS listing market unavailable")
+            return encode_result(market)
         if _source is None:
             _source = KisSource()  # Never default_chain: remote configuration cannot recurse.
         operations = {

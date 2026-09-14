@@ -61,9 +61,12 @@ def main():
     start, end = (today - timedelta(days=180)).strftime("%Y%m%d"), today.strftime("%Y%m%d")
     stock = chain.fetch("price_history", "000660", start, end)
     index = chain.fetch("index_history", "1001", start, end)
+    market = chain.fetch("ticker_market", "000660")
     if stock.empty or index.empty:
         raise RuntimeError("Remote market data missing")
-    result = {"provider": chain.names, "stock_rows": len(stock), "index_rows": len(index)}
+    if market != "KOSPI":
+        raise RuntimeError("Unexpected listing market")
+    result = {"provider": chain.names, "stock_rows": len(stock), "index_rows": len(index), "market": market}
     if args.mcp:
         result["mcp_rows"] = asyncio.run(asyncio.wait_for(check_mcp("000660", start, end), 45))
     if "krx_data_client" in sys.modules or "kis_auth" in sys.modules:
