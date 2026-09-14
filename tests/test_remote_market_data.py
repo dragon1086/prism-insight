@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pandas as pd
@@ -154,11 +155,17 @@ def test_mcp_child_environment(monkeypatch):
     ("fundamentals", ("000660", "20260901", "20260914"), {}),
     ("intraday_investor_estimate", ("000660",), {"as_of": pd.Timestamp("2026-09-14", tz="Asia/Seoul")}),
     ("ticker_name", ("000660",), {}),
+    ("ticker_market", ("000660",), {}),
 ])
 def test_all_capabilities_roundtrip(client, monkeypatch, method, args, kwargs):
     frame = pd.DataFrame({"value": [1]}, index=pd.DatetimeIndex(["2026-09-14"]))
     frame.attrs = {"source": "kis", "latest_only": True}
     expected = "SK하이닉스" if method == "ticker_name" else frame
+    if method == "ticker_market":
+        from cores import kis_market_snapshot
+        expected = "KOSPI"
+        monkeypatch.setattr(kis_market_snapshot, "fetch_kis_master_data",
+                            lambda: SimpleNamespace(markets={"000660": expected}))
 
     class Fake:
         pass
@@ -184,6 +191,36 @@ def test_all_capabilities_roundtrip(client, monkeypatch, method, args, kwargs):
     else:
         assert_frame_equal(result, expected)
         assert result.attrs == expected.attrs
+
+
+@pytest.mark.parametrize("market", ["KOSPI", "KOSDAQ", None, "UNKNOWN"])
+def test_listing_market_validation(client, monkeypatch, market):
+    from cores import kis_market_snapshot
+    monkeypatch.setattr(kis_market_snapshot, "fetch_kis_master_data",
+                        lambda: SimpleNamespace(markets={"000660": market}))
+    monkeypatch.setattr(remote_api, "_source", None)
+    monkeypatch.setattr(remote_api, "KisSource", lambda: pytest.fail("Master lookup needs no broker instance"))
+    result = client.post("/market-data", headers={"Authorization": "Bearer test-key"},
+                         json={"capability": "ticker_market", "ticker": "000660"})
+    assert result.status_code == (200 if market in {"KOSPI", "KOSDAQ"} else 422)
+    if result.status_code == 200:
+        assert remote_source.decode_result(result.json()) == market
+
+
+@pytest.mark.parametrize("changes", [{"ticker": "1001"}, {"start": "20260901"},
+                                     {"end": "20260914"}, {"as_of": "2026-09-14T00:00:00"}])
+def test_listing_market_forbids_dates_and_index_codes(client, changes):
+    result = client.post("/market-data", headers={"Authorization": "Bearer test-key"},
+                         json={"capability": "ticker_market", "ticker": "000660", **changes})
+    assert result.status_code == 422
+
+
+@pytest.mark.parametrize("market", ["UNKNOWN", None, pd.DataFrame({"value": [1]})])
+def test_remote_listing_market_rejects_invalid_response(monkeypatch, market):
+    source = remote_source.RemoteKisSource("http://127.0.0.1:8765", api_key="test-key")
+    monkeypatch.setattr(source, "_fetch", lambda *args: market)
+    with pytest.raises(Unsupported, match="listing market unavailable"):
+        source.ticker_market("000660")
 
 
 def test_worker_timeout_kills_reaps_and_releases_lock(monkeypatch):

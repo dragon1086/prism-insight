@@ -105,3 +105,9 @@ class RemoteKisSource:
 
     def ticker_name(self, ticker):
         return self._fetch("ticker_name", ticker)
+
+    def ticker_market(self, ticker):
+        market = self._fetch("ticker_market", ticker)
+        if not isinstance(market, str) or market not in {"KOSPI", "KOSDAQ"}:
+            raise Unsupported("Remote KIS listing market unavailable")
+        return market
