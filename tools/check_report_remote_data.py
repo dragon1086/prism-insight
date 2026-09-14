@@ -25,7 +25,8 @@ async def check_mcp(ticker, start, end):
 
     spec = load_report_mcp_registry().get("kospi_kosdaq")
     params = StdioServerParameters(command=sys.executable, args=list(spec.args), env=dict(spec.env))
-    async with stdio_client(params) as (reader, writer):
+    # Keep stream creation visibly before the session that consumes the streams.
+    async with stdio_client(params) as (reader, writer):  # noqa: SIM117
         async with ClientSession(reader, writer) as session:
             await session.initialize()
             result = await session.call_tool("get_stock_ohlcv", {
