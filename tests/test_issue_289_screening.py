@@ -52,15 +52,15 @@ _expected_regimes = {"strong_bull", "moderate_bull", "sideways", "moderate_bear"
 check("all 5 regimes present", set(t.REGIME_SCORE_WEIGHTS) == _expected_regimes)
 for _r, _w in t.REGIME_SCORE_WEIGHTS.items():
     check(f"{_r} weights sum to 1.0", abs(sum(_w) - 1.0) < 1e-9)
-    check(f"{_r} has 4 components", len(_w) == 4)
+    check(f"{_r} has 3 observed components", len(_w) == 3)
 # strong_bull: RS emphasized but extension NOT zero (climax protection retained — correction 3)
 _sb = t.REGIME_SCORE_WEIGHTS["strong_bull"]
 _sw = t.REGIME_SCORE_WEIGHTS["sideways"]
-check("strong_bull extension weight > 0 (climax guard retained)", _sb[3] > 0)
-check("strong_bull RS weight > sideways RS weight", _sb[2] > _sw[2])
-check("sideways extension weight > strong_bull (heavier penalty when calm)", _sw[3] > _sb[3])
-check("agent R/R weight kept meaningful (>=0.3) in every regime",
-      all(_w[1] >= 0.3 for _w in t.REGIME_SCORE_WEIGHTS.values()))
+check("strong_bull extension weight > 0 (climax guard retained)", _sb[2] > 0)
+check("strong_bull RS weight > sideways RS weight", _sb[1] > _sw[1])
+check("sideways extension weight > strong_bull (heavier penalty when calm)", _sw[2] > _sb[2])
+check("all observed components retain positive weights",
+      all(min(_w) > 0 for _w in t.REGIME_SCORE_WEIGHTS.values()))
 
 print("\n[Test 3] RS cross-candidate normalization")
 
@@ -81,7 +81,7 @@ print("\n[Test 4] final_score blend range + kill switch")
 
 
 def _blend(comp, agent, rs, ext, w):
-    return comp * w[0] + agent * w[1] + rs * w[2] + ext * w[3]
+    return comp * w[0] + rs * w[1] + ext * w[2]
 
 
 # All components in [0,1] + weights sum 1 → final in [0,1]
@@ -90,8 +90,8 @@ for _r, _w in t.REGIME_SCORE_WEIGHTS.items():
     _lo = _blend(0, 0, 0, 0, _w)
     check(f"{_r} blend(1,1,1,1)=1.0", abs(_hi - 1.0) < 1e-9)
     check(f"{_r} blend(0,0,0,0)=0.0", abs(_lo - 0.0) < 1e-9)
-# Kill switch: w_rs=w_ext=0 → final depends only on composite+agent
-_killed = (0.3, 0.7, 0.0, 0.0)
+# Kill switch: w_rs=w_ext=0 → final depends only on composite
+_killed = (1.0, 0.0, 0.0)
 check("kill switch ignores RS/ext (high vs low RS/ext identical)",
       _blend(0.5, 0.5, 1.0, 1.0, _killed) == _blend(0.5, 0.5, 0.0, 0.0, _killed))
 # A non-extended leader should outscore a climax leader (same comp/agent/RS, different ext)

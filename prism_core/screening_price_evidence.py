@@ -24,7 +24,7 @@ def build_screening_price_evidence(reference_price, highs, assumed_stop_fraction
         width = None
     values = [_positive(value) for value in highs]
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "MISSING",
         "requested_trade_date": str(requested_date),
         "bar_finality": "UNKNOWN",
@@ -38,7 +38,7 @@ def build_screening_price_evidence(reference_price, highs, assumed_stop_fraction
         "headroom_to_assumed_risk_ratio": None,
         "scenario_risk_reward_ratio": None,
         "setup_type": "UNCLASSIFIED",
-        "legacy_score_basis": "MIN_15PCT_TARGET_FIXED_STOP_NOT_BUY_RR",
+        "screening_score_basis": "NO_SYNTHETIC_RR",
     }
     if price is None or width is None or len(values) < 3 or any(v is None for v in values):
         return result
