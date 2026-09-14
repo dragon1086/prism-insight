@@ -587,7 +587,7 @@ class PerformanceAnalyzer:
                     f"    {item['analyzed_price']:,.0f} → {item['tracked_30d_price']:,.0f} "
                     f"({self._fmt_pct(item['tracked_30d_return'])})"
                 )
-                lines.append(f"    Score: {item['buy_score']}/{item['min_score']}, RR: {item['risk_reward_ratio']:.2f}")
+                lines.append(f"    Score: {item['buy_score']}/{item['min_score']}, RR: {self._fmt_ratio(item['risk_reward_ratio'])}")
                 lines.append(f"    Reason: {item['skip_reason']}")
         else:
             lines.append("  None")
@@ -607,7 +607,7 @@ class PerformanceAnalyzer:
                     f"    {item['analyzed_price']:,.0f} → {item['tracked_30d_price']:,.0f} "
                     f"({self._fmt_pct(item['tracked_30d_return'])})"
                 )
-                lines.append(f"    Score: {item['buy_score']}/{item['min_score']}, RR: {item['risk_reward_ratio']:.2f}")
+                lines.append(f"    Score: {item['buy_score']}/{item['min_score']}, RR: {self._fmt_ratio(item['risk_reward_ratio'])}")
         else:
             lines.append("  None")
         lines.append("")
@@ -750,6 +750,10 @@ class PerformanceAnalyzer:
             return None
         winners = sum(1 for r in returns if r > 0)
         return winners / len(returns)
+
+    def _fmt_ratio(self, value: Optional[float]) -> str:
+        """An absent scenario ratio is unknown, not a zero-return opportunity."""
+        return "N/A" if value is None else f"{value:.2f}"
 
     def _fmt_pct(self, value: Optional[float]) -> str:
         """Percentage formatting"""

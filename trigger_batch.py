@@ -9,6 +9,7 @@ import numpy as np
 import logging
 import os
 from typing import Optional
+from prism_core.screening_price_evidence import build_screening_price_evidence
 from cores.kis_market_snapshot import (
     MarketSnapshotBundle, build_kis_snapshot_bundle, fetch_kis_master_universe,
 )
@@ -266,6 +267,12 @@ def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: s
 
     # Target price calculation: Maintain existing resistance level method
     multi_day_df = get_multi_day_ohlcv(ticker, trade_date, lookback_days)
+    evidence_high_col = "High" if "High" in multi_day_df.columns else "고가"
+    screening_price_evidence = build_screening_price_evidence(
+        current_price,
+        multi_day_df[evidence_high_col].tolist() if evidence_high_col in multi_day_df.columns else [],
+        sl_max, trade_date,
+    )
     if multi_day_df.empty or len(multi_day_df) < 3:
         # Default to current price + 15% when data is insufficient
         target_price = current_price * 1.15
@@ -319,6 +326,7 @@ def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: s
         "stop_loss_pct": stop_loss_pct,
         "risk_reward_ratio": risk_reward_ratio,
         "agent_fit_score": agent_fit_score,
+        "screening_price_evidence": screening_price_evidence,
     }
 
     logger.debug(f"{ticker}: Stop-loss={stop_loss_price:.0f}, Target={target_price:.0f}, "
@@ -354,6 +362,7 @@ def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: 
     result_df["stop_loss_pct"] = 0.0
     result_df["risk_reward_ratio"] = 0.0
     result_df["agent_fit_score"] = 0.0
+    result_df["screening_price_evidence"] = pd.Series(None, index=result_df.index, dtype=object)
 
     for ticker in result_df.index:
         current_price = result_df.loc[ticker, "Close"]
@@ -364,6 +373,7 @@ def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: 
         result_df.loc[ticker, "stop_loss_pct"] = metrics["stop_loss_pct"]
         result_df.loc[ticker, "risk_reward_ratio"] = metrics["risk_reward_ratio"]
         result_df.loc[ticker, "agent_fit_score"] = metrics["agent_fit_score"]
+        result_df.at[ticker, "screening_price_evidence"] = metrics.get("screening_price_evidence")
 
     return result_df
 
@@ -1927,6 +1937,9 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                         stock_info["closing_strength"] = float(stocks_df.loc[ticker, "closing_strength"])
 
                     # Add agent score information (hybrid mode)
+                    if "screening_price_evidence" in stocks_df.columns:
+                        evidence = stocks_df.at[ticker, "screening_price_evidence"]
+                        stock_info["screening_price_evidence"] = evidence if isinstance(evidence, dict) else None
                     if "agent_fit_score" in stocks_df.columns:
                         stock_info["agent_fit_score"] = float(stocks_df.loc[ticker, "agent_fit_score"])
                         stock_info["risk_reward_ratio"] = float(stocks_df.loc[ticker, "risk_reward_ratio"]) if "risk_reward_ratio" in stocks_df.columns else 0

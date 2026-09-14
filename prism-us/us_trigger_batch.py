@@ -46,6 +46,7 @@ from cores.us_surge_detector import (
     enhance_dataframe,
 )
 from cores.rs_rating import oneil_weighted_return, percentile_ratings
+from prism_core.screening_price_evidence import build_screening_price_evidence
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -305,6 +306,10 @@ def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: s
 
     # Target price: Keep resistance-based method
     multi_day_df = get_multi_day_ohlcv(ticker, trade_date, lookback_days)
+    screening_price_evidence = build_screening_price_evidence(
+        current_price, multi_day_df["High"].tolist() if "High" in multi_day_df.columns else [],
+        sl_max, trade_date,
+    )
     if multi_day_df.empty or len(multi_day_df) < 3:
         # Data insufficient: use current price + 15% default
         target_price = current_price * 1.15
@@ -363,6 +368,7 @@ def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: s
         "stop_loss_pct": stop_loss_pct,
         "risk_reward_ratio": risk_reward_ratio,
         "agent_fit_score": agent_fit_score,
+        "screening_price_evidence": screening_price_evidence,
     }
 
     logger.debug(f"{ticker}: SL=${stop_loss_price:.2f}, TP=${target_price:.2f}, "
@@ -397,6 +403,7 @@ def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: 
     result_df["StopLossPct"] = 0.0
     result_df["RiskRewardRatio"] = 0.0
     result_df["AgentFitScore"] = 0.0
+    result_df["screening_price_evidence"] = pd.Series(None, index=result_df.index, dtype=object)
 
     for ticker in result_df.index:
         current_price = result_df.loc[ticker, "Close"]
@@ -413,6 +420,7 @@ def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: 
         result_df.loc[ticker, "StopLossPct"] = metrics["stop_loss_pct"]
         result_df.loc[ticker, "RiskRewardRatio"] = metrics["risk_reward_ratio"]
         result_df.loc[ticker, "AgentFitScore"] = metrics["agent_fit_score"]
+        result_df.at[ticker, "screening_price_evidence"] = metrics.get("screening_price_evidence")
 
     return result_df
 
@@ -1788,6 +1796,9 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                         stock_info["closing_strength"] = float(stocks_df.loc[ticker, "ClosingStrength"])
 
                     # Agent score info (hybrid mode)
+                    if "screening_price_evidence" in stocks_df.columns:
+                        evidence = stocks_df.at[ticker, "screening_price_evidence"]
+                        stock_info["screening_price_evidence"] = evidence if isinstance(evidence, dict) else None
                     if "AgentFitScore" in stocks_df.columns:
                         stock_info["agent_fit_score"] = float(stocks_df.loc[ticker, "AgentFitScore"])
                         stock_info["risk_reward_ratio"] = float(stocks_df.loc[ticker, "RiskRewardRatio"])
