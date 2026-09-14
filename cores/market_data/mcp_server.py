@@ -139,13 +139,25 @@ def _answer(df, what: str) -> Dict[str, Any]:
     """
     payload = _frame_to_dated_dict(df)
     if payload:
-        note = getattr(df, "attrs", {}).get("estimate_note")
+        attrs = getattr(df, "attrs", {})
+        metadata = {
+            key: value for key in (
+                "source", "data_status", "as_of", "observed_at", "bar_status", "unit",
+                "latest_only", "derivation", "note", "precision_krw",
+            ) if isinstance((value := attrs.get(key)), (str, int, float, bool))
+        }
+        fields = attrs.get("derivation_fields")
+        if isinstance(fields, (list, tuple)) and all(isinstance(item, str) for item in fields):
+            metadata["derivation_fields"] = list(fields)
+        note = attrs.get("estimate_note")
         if note:
-            payload["__meta__"] = {
+            metadata.update({
                 "data_status": "intraday_estimate",
                 "note": note,
                 "as_of": df.attrs.get("estimate_as_of"),
-            }
+            })
+        if metadata:
+            payload["__meta__"] = metadata
         return payload
     return {
         "error": (

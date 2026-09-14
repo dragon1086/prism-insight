@@ -687,6 +687,9 @@ def create_market_cap_chart(ticker, company_name=None, days=730, save_path=None)
     if df is None or len(df) == 0:
         logger.info(f"No market cap data available for {ticker}.")
         return None
+    if df.attrs.get("latest_only") or len(df) < 2:
+        logger.warning("Market-cap history chart omitted: latest-only snapshot for %s", ticker)
+        return None
 
     # Filter out rows with zero market cap (e.g., newly listed/delisted stocks)
     if 'MarketCap' in df.columns:
@@ -877,6 +880,9 @@ def create_fundamentals_chart(ticker, company_name=None, days=730, save_path=Non
 
     if df is None or len(df) == 0:
         logger.info(f"No fundamental indicator data available for {ticker}.")
+        return None
+    if df.attrs.get("latest_only") or len(df) < 2:
+        logger.warning("Fundamental history chart omitted: latest-only snapshot for %s", ticker)
         return None
 
     # Filter out rows where all fundamental values are zero or NaN
