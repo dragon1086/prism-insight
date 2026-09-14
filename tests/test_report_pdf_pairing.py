@@ -52,7 +52,7 @@ def test_stale_diagnostic_pdf_never_accepted_after_conversion_failure(cache, mon
 
 
 def test_newer_wrong_stem_pdf_is_not_selected(cache, monkeypatch):
-    md, pdf, read, _ = cache
+    _md, pdf, read, _ = cache
     wrong = pdf.with_name("000660_Other_20260913_analysis.pdf")
     wrong.write_bytes(b"wrong report")
 
