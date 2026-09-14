@@ -61,6 +61,18 @@ def test_status_prefers_one_indicator_page_and_preserves_eps_basis(factories, la
 
 
 @pytest.mark.parametrize("language", ["ko", "en"])
+def test_eps_formula_and_numeric_denominator_are_separate_evidence(factories, language):
+    prompt = factories["create_company_status_agent"]("한국콜마", "161890", "20260914", URLS, language).instruction
+    for field in ("EPS_BASIS", "DENOMINATOR_DEFINITION", "DENOMINATOR_VALUE", "BASIS_SOURCE_URL"):
+        assert field in prompt
+    for term in (("재무계정산식", "수정평균발행주식수", "역산", "수치만 UNKNOWN", "새로운 필수 매수 조건")
+                 if language == "ko" else
+                 ("formula/help", "adjusted average issued shares", "back-solve", "only the numeric value UNKNOWN", "new mandatory buy condition")):
+        assert term in prompt
+    assert ("실제로 확인" if language == "ko" else "actually observed") in prompt
+
+
+@pytest.mark.parametrize("language", ["ko", "en"])
 def test_overview_separates_leadership_from_price_and_sector(factories, language):
     prompt = factories["create_company_overview_agent"]("HDC", "012630", "20260910", URLS, language).instruction
     assert URLS["경쟁사분석"] in prompt and URLS["업종분석"] in prompt
