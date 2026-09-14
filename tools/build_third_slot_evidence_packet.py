@@ -24,8 +24,8 @@ from observability.third_slot_shadow import (  # noqa: E402
     POLICY_VERSION,
 )
 
-PACKET_SCHEMA_VERSION = 1
-ANALYSIS_CONTRACT_VERSION = "kr-third-slot-shadow-evidence-v1"
+PACKET_SCHEMA_VERSION = 2
+ANALYSIS_CONTRACT_VERSION = "kr-third-slot-shadow-evidence-v2"
 MIN_DATES = 20
 MIN_MATURED_10D = 30
 
@@ -164,9 +164,20 @@ def _horizon_metrics(
 
 def build_third_slot_evidence_packet(
     raw_events: Iterable[Mapping[str, Any]],
+    *,
+    policy_version: str = POLICY_VERSION,
 ) -> dict[str, Any]:
     raw_list = list(raw_events)
-    events, raw_supported, duplicate_count = _deduplicate(raw_list)
+    excluded_policy_event_count = sum(
+        event.get("event_type") in {EVALUATION_EVENT, OUTCOME_EVENT}
+        and (event.get("attributes") or {}).get("policy_version") != policy_version
+        for event in raw_list
+    )
+    # Legacy duplicates must not block readiness or overwrite a current event.
+    events, raw_supported, duplicate_count = _deduplicate(
+        event for event in raw_list
+        if (event.get("attributes") or {}).get("policy_version") == policy_version
+    )
     evaluations = {}
     invalid_evaluations = 0
     regime_distribution = Counter()
@@ -278,11 +289,12 @@ def build_third_slot_evidence_packet(
         "packet_schema_version": PACKET_SCHEMA_VERSION,
         "analysis_contract_version": ANALYSIS_CONTRACT_VERSION,
         "market": "KR",
-        "policy_version": POLICY_VERSION,
+        "policy_version": policy_version,
         "as_of": max(
             (str(event.get("timestamp") or "") for event in events), default=None
         ),
         "data_quality": {
+            "excluded_policy_event_count": excluded_policy_event_count,
             "raw_supported_event_count": raw_supported,
             "deduplicated_event_count": len(events),
             "duplicate_event_id_count": duplicate_count,
@@ -333,8 +345,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", action="append", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--policy-version", default=POLICY_VERSION)
     args = parser.parse_args()
-    packet = build_third_slot_evidence_packet(_load_jsonl(args.input))
+    packet = build_third_slot_evidence_packet(
+        _load_jsonl(args.input), policy_version=args.policy_version
+    )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

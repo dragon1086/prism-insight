@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from observability.events import DEFAULT_SPOOL_PATH, emit_event
 
-POLICY_VERSION = "kr-weak-regime-third-slot-v1"
+POLICY_VERSION = "kr-weak-regime-third-slot-v1-screening-v2"
 EVALUATION_EVENT = "screening.third_slot_shadow_evaluated"
 OUTCOME_EVENT = "screening.third_slot_shadow_outcome"
 HORIZONS = (1, 3, 5, 10)
@@ -321,7 +321,9 @@ def track_matured_outcomes(
                 context = {
                     "shadow_schema_version": 1,
                     "mode": "SHADOW",
-                    "policy_version": POLICY_VERSION,
+                    # Old observations mature after new screening deployments.
+                    # Preserve their original cohort rather than relabeling history.
+                    "policy_version": attributes.get("policy_version"),
                     "experiment_ref": experiment_ref,
                     "trade_date": trade_date,
                     "trigger_mode": attributes.get("trigger_mode"),

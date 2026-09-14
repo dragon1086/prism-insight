@@ -541,11 +541,9 @@ class StockAnalysisOrchestrator:
                                 except Exception:
                                     pass
 
-                            # Get risk_reward_ratio if available
-                            rr_ratio = 0
-                            if "Risk/Reward Ratio" in stocks_df.columns or "손익비" in stocks_df.columns:
-                                col_name = "Risk/Reward Ratio" if "Risk/Reward Ratio" in stocks_df.columns else "손익비"
-                                rr_ratio = float(stocks_df.loc[ticker, col_name])
+                            # Screening has no executable target/stop scenario.
+                            # Do not revive legacy synthetic R/R through column aliases.
+                            rr_ratio = None
 
                             tickers.append({
                                 'code': ticker,
