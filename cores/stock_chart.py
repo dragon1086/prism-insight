@@ -1457,13 +1457,25 @@ _KOSDAQ_INDEX_TICKER = "2001"
 _KOSPI_TICKERS_CACHE: set | None = None
 
 
-def _detect_index_ticker(ticker: str) -> str:
+def _detect_index_ticker(ticker: str) -> str | None:
     """Return the index ticker for *ticker*'s listing market.
 
     KOSPI(1001) if the stock is KOSPI-listed, otherwise KOSDAQ(2001).
-    On any detection failure, defaults to KOSPI (1001). Never raises.
+    Remote failures skip RS rather than guessing a benchmark or using local data.
+    Without remote configuration, preserve the local KOSPI default. Never raises.
     """
     global _KOSPI_TICKERS_CACHE
+    if os.getenv("PRISM_MARKET_DATA_REMOTE_URL", "").strip():
+        try:
+            from cores.market_data import default_chain
+
+            market = default_chain().fetch("ticker_market", ticker)
+            if isinstance(market, str) and market in {"KOSPI", "KOSDAQ"}:
+                return _KOSPI_INDEX_TICKER if market == "KOSPI" else _KOSDAQ_INDEX_TICKER
+        except Exception:  # noqa: BLE001 - fail closed; no private exception text
+            market = None
+        logger.warning("[ONEIL] remote listing market unavailable; skipping RS panel")
+        return None
     try:
         from cores.market_data import get_market_ticker_list
 
@@ -1676,7 +1688,7 @@ def create_oneil_daily_chart(
         else:
             index_ticker = _detect_index_ticker(ticker)
     index_label = "KOSPI" if index_ticker == _KOSPI_INDEX_TICKER else "KOSDAQ"
-    index_close = _fetch_index_close(index_ticker, start_date, end_date)
+    index_close = _fetch_index_close(index_ticker, start_date, end_date) if index_ticker is not None else None
     rs_series = _compute_rs_line(df['Close'], index_close) if index_close is not None else None
     if rs_series is None:
         logger.warning(
@@ -1825,7 +1837,7 @@ def create_oneil_weekly_chart(
         else:
             index_ticker = _detect_index_ticker(ticker)
     index_label = "KOSPI" if index_ticker == _KOSPI_INDEX_TICKER else "KOSDAQ"
-    index_daily = _fetch_index_close(index_ticker, start_date, end_date)
+    index_daily = _fetch_index_close(index_ticker, start_date, end_date) if index_ticker is not None else None
     rs_series = None
     if index_daily is not None:
         try:

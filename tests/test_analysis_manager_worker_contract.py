@@ -129,7 +129,7 @@ def test_kr_empty_generation_result_fails_without_writing_files(
     request = run_request(AnalysisRequest("005930", "삼성전자"))
 
     assert request.status == "failed"
-    assert request.result == "Error occurred during analysis."
+    assert request.result == report_service.KR_FAILURE_MESSAGE
     assert request.report_path is None
     assert request.pdf_path is None
     assert rec["save_report"].calls == []
@@ -224,7 +224,8 @@ def test_generation_exception_is_reported_and_still_enqueued(
     request = run_request(AnalysisRequest("005930", "삼성전자"))
 
     assert request.status == "failed"
-    assert "upstream exploded" in request.result
+    assert request.result == report_service.KR_FAILURE_MESSAGE
+    assert "upstream exploded" not in request.result
 
 
 def test_analysis_request_exposes_the_fields_the_worker_contract_depends_on():
