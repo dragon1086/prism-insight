@@ -33,7 +33,7 @@ jobs:
         env:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
         run: |
-          python -m pytest tests/test_screening_price_evidence.py -q
+          python -m pytest tests/test_screening_price_evidence.py tests/test_screening_orchestrator_rr_contract.py tests/test_agent_fit_score_constant_tripwire.py -q
           python -m pytest tests/test_agent_lazy_broker_imports.py -q
           python -m pytest tests/test_agent_virtual_initialization.py \
             tests/test_agent_instance_mcp_fallback.py tests/test_isolated_agent_runtime.py -q

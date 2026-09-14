@@ -553,10 +553,9 @@ class USStockAnalysisOrchestrator:
                             if "CompanyName" in stocks_df.columns:
                                 name = stocks_df.loc[ticker, "CompanyName"]
 
-                            # Get risk_reward_ratio if available
-                            rr_ratio = 0
-                            if "risk_reward_ratio" in stocks_df.columns:
-                                rr_ratio = float(stocks_df.loc[ticker, "risk_reward_ratio"])
+                            # Screening has no executable target/stop scenario.
+                            # Only the BUY scenario may supply actual trade R/R.
+                            rr_ratio = None
 
                             tickers.append({
                                 'ticker': ticker,
