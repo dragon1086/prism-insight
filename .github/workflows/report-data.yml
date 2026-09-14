@@ -3,7 +3,7 @@ name: Report data safety
 on:
   pull_request:
   push:
-    branches: [main, fix/app-report-runtime]
+    branches: [main, fix/app-report-runtime, deploy/flow-evidence-app]
 
 jobs:
   report-data:
@@ -21,3 +21,8 @@ jobs:
           PRISM_DISABLE_SIGNAL_PUBLISH: '1'
         run: |
           python -m pytest tests/test_remote_market_data.py tests/test_report_remote_chart.py tests/test_report_failure_privacy.py tests/test_report_pdf_pairing.py tests/test_report_cache_quality.py tests/test_analysis_manager_worker_contract.py tests/test_market_data_mcp_server.py -q
+      - name: Offline US and KR flow evidence contracts
+        env:
+          PRISM_DISABLE_SIGNAL_PUBLISH: '1'
+        run: |
+          python -m pytest tests/test_us_flow_evidence.py tests/test_kr_flow_evidence.py tests/test_kis_source.py -q

@@ -27,6 +27,24 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
     factory = "create_trading_scenario_agent" if market == "KR" else "create_us_trading_scenario_agent"
     prompt = namespace[factory](language).instruction
     if market == "US":
+        # Permit only the reviewed flow-interpretation appendix and the explicit
+        # ownership-vs-price-volume wording repair; keep legacy rule/JSON hashes.
+        from prism_core.flow_evidence import us_flow_interpretation_contract
+        appendix = us_flow_interpretation_contract(language)
+        assert prompt.endswith(appendix)
+        legacy_prompt = prompt[:-len(appendix)]
+        replacements = (
+            [("이 값은 거래량 동반 가격 하락의 누적 경고이며, 기관 매도를 직접 관측한 값은 아닙니다.",
+              "이 값이 높을수록 기관 분배가 진행 중이라는 천장 경고입니다.")]
+            if language == "ko" else
+            [("Distribution days (price-volume proxies with ≥ -0.2% close on rising volume) are",
+              "Distribution days (institutional selling sessions with ≥ -0.2% close on rising volume) are"),
+             ("A higher count of distribution days warns of repeated price-volume weakness, not confirmed institutional selling.",
+              "The HIGHER this count of distribution days, the more institutional selling is underway.")]
+        )
+        for current, previous in replacements:
+            assert legacy_prompt.count(current) == 1
+            legacy_prompt = legacy_prompt.replace(current, previous)
         expected = {
             "ko": ("d4a846c76a9f3651e98c0e91c68ef883079f64729406ac0ab51697a7f2d3b750",
                    "515130759f31ca1282749d6d3b2d10bc9704c69f86fc84484dd1a26c332ee646"),
@@ -35,8 +53,8 @@ def test_buy_prompt_reconciles_evidence_without_new_gate(market, language):
         }
         tool_heading = "## 도구 사용" if language == "ko" else "## Tool Usage"
         json_heading = "## JSON 응답 형식" if language == "ko" else "## JSON Response Format"
-        assert hashlib.sha256(prompt.split(tool_heading)[0].encode()).hexdigest() == expected[language][0]
-        assert hashlib.sha256(prompt[prompt.index(json_heading):].encode()).hexdigest() == expected[language][1]
+        assert hashlib.sha256(legacy_prompt.split(tool_heading)[0].encode()).hexdigest() == expected[language][0]
+        assert hashlib.sha256(legacy_prompt[legacy_prompt.index(json_heading):].encode()).hexdigest() == expected[language][1]
     for marker in ("EVIDENCE_RECONCILIATION", "INCOMPARABLE", "F4_business_clarity", "rationale"):
         assert marker in prompt
     for marker in (("시장 지배력", "새로운 진입 게이트", "반대 근거", "통과 근거") if language == "ko" else
