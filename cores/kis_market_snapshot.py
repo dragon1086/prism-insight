@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -299,11 +300,13 @@ def fetch_kis_previous_history(
     tickers: Iterable[str], previous_date: str, *, source=None, cache_dir=None,
     request_interval_sec: float = 0.12, max_duration_sec: float = 900,
 ) -> pd.DataFrame:
-    """Complete dated OHLCV; one bounded sequential KIS call per cold ticker.
+    """Complete dated OHLCV; at most two sequential KIS calls per cold ticker.
 
     Verified per-ticker cache is shared across AM/PM, and partial successful
     rows survive a failed run. Never accept a missing date, fake bars, or a
-    previous provider's cache. Cold 2,685 symbols cost at least ~322s plus I/O.
+    previous provider's cache. Retry only failed tickers after the first pass,
+    within the original acceptance deadline and consecutive-failure breaker.
+    Cold 2,685 symbols cost at least ~322s plus I/O.
     """
     from cores.market_data.kis_source import KisSource
 
@@ -319,7 +322,11 @@ def fetch_kis_previous_history(
     rows = {}
     missing = []
     failures = 0
-    for code in codes:
+    pending = deque(codes)
+    retried = set()
+    error_types = {}
+    while pending:
+        code = pending.popleft()
         if len(code) != 6 or not code.isdigit():
             raise KisSnapshotError("Invalid history ticker")
         path = directory / f"{code}.json"
@@ -359,16 +366,26 @@ def fetch_kis_previous_history(
             failures = 0
         except KisSnapshotError:
             raise
-        except Exception:
-            missing.append(code)
+        except Exception as error:
+            error_name = type(error).__name__
+            error_types[error_name] = error_types.get(error_name, 0) + 1
             failures += 1
             if failures >= 5:
-                raise KisSnapshotError(f"KIS history repeated failure; coverage={len(rows)}/{len(codes)}") from None
+                raise KisSnapshotError(
+                    f"KIS history repeated failure; coverage={len(rows)}/{len(codes)}; error_types={error_types}"
+                ) from None
+            if code not in retried:
+                retried.add(code)
+                pending.append(code)
+            else:
+                missing.append(code)
         finally:
             if request_interval_sec:
                 time.sleep(request_interval_sec)
     if missing or set(rows) != set(codes):
-        raise KisSnapshotError(f"KIS history incomplete coverage={len(rows)}/{len(codes)}; missing={missing[:10]}")
+        raise KisSnapshotError(
+            f"KIS history incomplete coverage={len(rows)}/{len(codes)}; missing={missing[:10]}; error_types={error_types}"
+        )
     if time.monotonic() - started > max_duration_sec:
         raise KisSnapshotError(f"KIS history deadline before acceptance; coverage={len(rows)}/{len(codes)}")
     result = pd.DataFrame.from_dict(rows, orient="index").reindex(columns=list(_COLUMNS.values())).astype(float).sort_index()

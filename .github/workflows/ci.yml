@@ -82,6 +82,7 @@ jobs:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
         run: |
           python -m pytest tests/test_kis_only_architecture.py \
+            tests/test_market_data_failure_alert.py \
             tests/test_kis_snapshot_provenance.py \
             tests/test_kis_sector_namespace.py tests/test_kis_master_volume_precision.py \
             tests/test_kis_hindsight_prices.py \
