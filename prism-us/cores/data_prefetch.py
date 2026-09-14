@@ -16,6 +16,10 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+from prism_core.flow_evidence import (
+    compute_us_flow_evidence, describe_us_holdings, holdings_asof_frame, render_flow_evidence,
+    us_flow_interpretation_contract,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +85,18 @@ def prefetch_us_stock_ohlcv(ticker: str, period: str = "1y") -> str:
             logger.warning(f"No OHLCV data for {ticker}")
             return ""
 
+        # Reuse this exact fetch; no extra network/LLM call for flow context.
+        try:
+            flow_facts = render_flow_evidence(compute_us_flow_evidence(
+                df, asof_utc=pd.Timestamp.now(tz="UTC")))
+        except Exception:
+            # Optional context must not suppress the existing price input.
+            flow_facts = "\nFlow evidence: MISSING (calculation_unavailable)\n"
         # Capitalize column names for readability
         df.columns = [col.title().replace("_", " ") for col in df.columns]
         df.index.name = "Date"
 
-        return _df_to_markdown(df, f"OHLCV: {ticker} ({period})")
+        return _df_to_markdown(df, f"OHLCV: {ticker} ({period})") + flow_facts
     except Exception as e:
         logger.error(f"Error prefetching OHLCV for {ticker}: {e}")
         return ""
@@ -108,7 +119,10 @@ def prefetch_us_holder_info(ticker: str) -> str:
             logger.warning(f"No holder data for {ticker}")
             return ""
 
-        result = ""
+        fetched_at = pd.Timestamp.now(tz="UTC")
+        result = render_flow_evidence(describe_us_holdings(
+            holders, asof_utc=fetched_at))
+        result += us_flow_interpretation_contract("en")
 
         # Major holders
         major = holders.get("major_holders")
@@ -119,13 +133,13 @@ def prefetch_us_holder_info(ticker: str) -> str:
         # Institutional holders
         institutional = holders.get("institutional_holders")
         if institutional is not None and not institutional.empty:
-            result += _df_to_markdown(institutional, f"Top Institutional Holders: {ticker}")
+            result += _df_to_markdown(holdings_asof_frame(institutional, asof_utc=fetched_at), f"Top Institutional Holders: {ticker}")
             result += "\n"
 
         # Mutual fund holders
         mutualfund = holders.get("mutualfund_holders")
         if mutualfund is not None and not mutualfund.empty:
-            result += _df_to_markdown(mutualfund, f"Top Mutual Fund Holders: {ticker}")
+            result += _df_to_markdown(holdings_asof_frame(mutualfund, asof_utc=fetched_at), f"Top Mutual Fund Holders: {ticker}")
             result += "\n"
 
         return result if result else ""
