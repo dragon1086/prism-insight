@@ -1570,10 +1570,8 @@ class StockTrackingAgent:
             trigger_info = getattr(self, "trigger_info_map", {}).get(ticker, {})
             trigger_type = trigger_info.get("trigger_type", "")
             trigger_mode = trigger_info.get("trigger_mode", "")
-            risk_reward_ratio = trigger_info.get(
-                "risk_reward_ratio",
-                scenario.get("risk_reward_ratio", 0),
-            )
+            # This row stores scenario target/stop, never the screening proxy.
+            risk_reward_ratio = scenario.get("risk_reward_ratio")
 
             self.cursor.execute(
                 """
