@@ -1,0 +1,23 @@
+name: Report data safety
+
+on:
+  pull_request:
+  push:
+    branches: [main, fix/app-report-runtime]
+
+jobs:
+  report-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install existing runtime and test dependencies
+        run: python -m pip install -r requirements.txt pytest pytest-asyncio
+      - name: Offline remote transport and report privacy regression
+        env:
+          PRISM_DISABLE_SIGNAL_PUBLISH: '1'
+        run: |
+          python -m pytest tests/test_remote_market_data.py tests/test_report_failure_privacy.py tests/test_report_cache_quality.py tests/test_analysis_manager_worker_contract.py tests/test_market_data_mcp_server.py -q

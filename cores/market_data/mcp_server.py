@@ -161,7 +161,7 @@ def _guard(what: str, fn, *args, **kwargs) -> Dict[str, Any]:
         return _answer(fn(*args, **kwargs), what)
     except Exception as exc:  # noqa: BLE001 - MCP 도구는 예외를 못 넘긴다
         logger.error("%s failed: %s", what, exc)
-        return {"error": f"{what} 조회 실패: {exc}"}
+        return {"error": "시장 데이터 조회에 실패했습니다. 값을 추정하지 말고 조회 불가로 표시하십시오."}
 
 
 # --- MCP Tools ---------------------------------------------------------------
@@ -304,7 +304,8 @@ def get_ticker_name(ticker: Union[str, int]) -> Dict[str, Any]:
     try:
         name = get_market_ticker_name(code)
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"{code} 종목명 조회 실패: {exc}"}
+        logger.error("Ticker name lookup failed: %s", exc)
+        return {"error": "종목명을 조회할 수 없습니다."}
     # 체인은 답할 소스가 없으면 티커를 그대로 돌려준다. 그걸 이름으로 속이지 않는다.
     if name == code:
         return {"error": f"{code} 종목명을 어떤 소스에서도 받지 못했습니다."}

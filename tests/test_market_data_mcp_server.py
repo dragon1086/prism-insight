@@ -145,13 +145,15 @@ def test_chain_exception_is_reported_not_raised(monkeypatch):
     """MCP 도구는 예외를 밖으로 못 넘긴다 — 오류 문자열로 돌려준다."""
 
     def _boom(*args, **kwargs):
-        raise RuntimeError("chain exploded")
+        raise RuntimeError("chain exploded /private/server/config.yaml")
 
     monkeypatch.setattr(srv, "get_market_ohlcv_by_date", _boom)
 
     result = srv.get_stock_ohlcv("20260701", "20260805", "005930")
 
-    assert "error" in result and "chain exploded" in result["error"]
+    assert "error" in result
+    assert "chain exploded" not in result["error"]
+    assert "/private" not in result["error"]
 
 
 def test_ticker_name_does_not_pass_off_the_code_as_a_name(monkeypatch):
