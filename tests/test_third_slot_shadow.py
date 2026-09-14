@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 import pandas as pd
 import pytest
 
 from observability.third_slot_shadow import (
     HORIZONS,
+    POLICY_VERSION,
     emit_evaluation,
     shadow_enabled,
     track_matured_outcomes,
@@ -52,6 +54,46 @@ def test_shadow_flag_defaults_off(monkeypatch):
     monkeypatch.delenv("REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED", raising=False)
     assert shadow_enabled() is False
     assert shadow_enabled("true") is True
+
+
+def test_screening_version_cohorts_do_not_mix(tmp_path):
+    event = emit_evaluation(trade_date="20260914", trigger_mode="morning",
+                            regime="sideways", candidates=_candidates(),
+                            spool_path=tmp_path / "events.jsonl", enabled=True)
+    old = deepcopy(event)
+    old["event_id"] = "old-evaluation"
+    old["attributes"]["experiment_ref"] = "old-experiment"
+    old["attributes"]["policy_version"] = "kr-weak-regime-third-slot-v1"
+    current = build_third_slot_evidence_packet([event, old])
+    legacy = build_third_slot_evidence_packet(
+        [event, old], policy_version="kr-weak-regime-third-slot-v1")
+    assert current["policy_version"] == POLICY_VERSION
+    assert current["coverage"]["experiment_count"] == 1
+    assert current["data_quality"]["excluded_policy_event_count"] == 1
+    assert legacy["coverage"]["experiment_count"] == 1
+    assert legacy["policy_version"] != current["policy_version"]
+
+
+def test_old_evaluation_outcomes_keep_original_policy(tmp_path):
+    spool = tmp_path / "events.jsonl"
+    event = emit_evaluation(trade_date="20260901", trigger_mode="morning",
+                            regime="sideways", candidates=_candidates(),
+                            spool_path=spool, enabled=True)
+    event["attributes"]["policy_version"] = "kr-weak-regime-third-slot-v1"
+    spool.write_text(json.dumps(event) + "\n")
+
+    def prices(*_args):
+        return pd.DataFrame({"Close": [101.] * 10, "High": [102.] * 10,
+                             "Low": [99.] * 10},
+                            index=pd.bdate_range("2026-09-02", periods=10))
+
+    result = track_matured_outcomes(spool_path=spool, as_of="20260930",
+                                   price_loader=prices)
+    assert result["emitted"] > 0
+    outcomes = [json.loads(line) for line in spool.read_text().splitlines()
+                if json.loads(line)["event_type"] != "screening.third_slot_shadow_evaluated"]
+    assert all(row["attributes"]["policy_version"] == "kr-weak-regime-third-slot-v1"
+               for row in outcomes)
 
 
 def test_evaluation_event_has_three_roles_and_no_trading_effect(tmp_path):

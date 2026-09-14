@@ -67,7 +67,7 @@ def load_functions(path, names, namespace):
 
 @pytest.mark.parametrize("market", ["KR", "US"])
 @pytest.mark.parametrize("high", [101, 95, 125, None])
-def test_real_screening_functions_preserve_score_and_reuse_one_fetch(market, high):
+def test_real_screening_functions_do_not_invent_scenario_and_reuse_one_fetch(market, high):
     from unittest.mock import Mock
     path = ROOT / ("trigger_batch.py" if market == "KR" else "prism-us/us_trigger_batch.py")
     frame = pd.DataFrame({"High": [high] * 3}) if high else pd.DataFrame()
@@ -79,12 +79,80 @@ def test_real_screening_functions_preserve_score_and_reuse_one_fetch(market, hig
     })
     result = ns["score_candidates_by_agent_criteria"](
         pd.DataFrame({"Close": [100.]}, index=["TEST"]), "20260914")
-    prefix = "agent_fit_score" if market == "KR" else "AgentFitScore"
-    assert result.loc["TEST", prefix] == 1
+    columns = (["agent_fit_score", "risk_reward_ratio", "target_price", "stop_loss_price", "stop_loss_pct"]
+               if market == "KR" else
+               ["AgentFitScore", "RiskRewardRatio", "TargetPrice", "StopLossPrice", "StopLossPct"])
+    for column in columns:
+        assert result.loc["TEST", column] is None
     assert fetch.call_count == 1
     evidence = result.loc["TEST", "screening_price_evidence"]
     assert evidence["observed_window_high"] == high
-    assert evidence["legacy_score_basis"] == "MIN_15PCT_TARGET_FIXED_STOP_NOT_BUY_RR"
+    assert evidence["schema_version"] == 2
+    assert evidence["screening_score_basis"] == "NO_SYNTHETIC_RR"
+    assert "legacy_score_basis" not in evidence
+
+
+@pytest.mark.parametrize("market", ["KR", "US"])
+def test_rank_weights_remove_unearned_agent_component(market):
+    path = ROOT / ("trigger_batch.py" if market == "KR" else "prism-us/us_trigger_batch.py")
+    tree = ast.parse(path.read_text())
+    assignment = next(n for n in tree.body if isinstance(n, ast.Assign)
+                      and any(isinstance(t, ast.Name) and t.id == "REGIME_SCORE_WEIGHTS" for t in n.targets))
+    weights = eval(compile(ast.Expression(assignment.value), str(path), "eval"))
+    old = [(0.20, 0.30, 0.15), (0.25, 0.20, 0.20), (0.20, 0.15, 0.30),
+           (0.15, 0.15, 0.35), (0.15, 0.15, 0.35)]
+    from itertools import product
+    for (_, new_weights), prior in zip(weights.items(), old):
+        assert len(new_weights) == 3
+        assert sum(new_weights) == pytest.approx(1)
+        candidates = list(product([0., .5, 1.], repeat=3))
+        old_scores = [sum(x * w for x, w in zip(c, prior)) + .35 for c in candidates]
+        new_scores = [sum(x * w for x, w in zip(c, new_weights)) for c in candidates]
+        assert new_scores == pytest.approx([(s - .35) / .65 for s in old_scores])
+        for i in range(len(candidates)):
+            for j in range(i):
+                if abs(old_scores[i] - old_scores[j]) > 1e-12:
+                    assert (old_scores[i] > old_scores[j]) == (new_scores[i] > new_scores[j])
+
+
+@pytest.mark.parametrize("market", ["KR", "US"])
+def test_topdown_removes_confidence_bonus_on_fake_constant(market):
+    path = ROOT / ("trigger_batch.py" if market == "KR" else "prism-us/us_trigger_batch.py")
+    build = load_functions(path, {"_build_topdown_pool"}, {})["_build_topdown_pool"]
+    sectors = {"A": "Alpha", "B": "Beta"}
+    context = {"sector_map": sectors, "leading_sectors": [
+        {"sector": "Alpha", "confidence": .9}, {"sector": "Beta", "confidence": .5}]}
+    extra = {"sector_map": sectors} if market == "US" else {}
+    old = pd.DataFrame({"score": [.40 + .35, .46 + .35]}, index=["A", "B"])
+    new = pd.DataFrame({"score": [.40 / .65, .46 / .65]}, index=["A", "B"])
+    before = build({"trigger": old}, context, "score", **extra)
+    after = build({"trigger": new}, context, "score", **extra)
+    assert [row[0] for row in before] == ["A", "B"]
+    assert [row[0] for row in after] == ["B", "A"]
+    assert after[0][2] == pytest.approx(.46 / .65 * 1.15)
+
+
+@pytest.mark.parametrize("market", ["KR", "US"])
+@pytest.mark.parametrize("blended", [False, True])
+def test_batch_export_uses_json_null_and_truthful_score_version(market, blended):
+    import json
+    path = ROOT / ("trigger_batch.py" if market == "KR" else "prism-us/us_trigger_batch.py")
+    tree = ast.parse(path.read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_batch")
+    agent = "agent_fit_score" if market == "KR" else "AgentFitScore"
+    final = "final_score" if market == "KR" else "FinalScore"
+    export = next(n for n in ast.walk(fn) if isinstance(n, ast.If)
+                  and ast.unparse(n.test) == f"'{agent}' in stocks_df.columns")
+    version = next(n for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                   and any(ast.unparse(t) == "stock_info['screening_score_version']" for t in n.targets))
+    frame = pd.DataFrame({agent: [None], **({final: [.8]} if blended else {})}, index=["TEST"])
+    namespace = {"stocks_df": frame, "stock_info": {}}
+    exec(compile(ast.Module(body=[export, version], type_ignores=[]), str(path), "exec"), namespace)
+    data = json.loads(json.dumps(namespace["stock_info"], allow_nan=False))
+    assert data["screening_score_version"] == (
+        "momentum_rs_extension_v2" if blended else "trigger_native_unblended")
+    for field in ("target_price", "stop_loss_price", "stop_loss_pct", "risk_reward_ratio", "agent_fit_score"):
+        assert data[field] is None
 
 
 @pytest.mark.parametrize("path", ["stock_tracking_agent.py", "stock_tracking_enhanced_agent.py",

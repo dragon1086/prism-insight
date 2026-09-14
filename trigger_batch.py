@@ -205,7 +205,7 @@ def enhance_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# v1.16.6: Agent criteria by trigger type (synchronized with trading_agents.py)
+# Legacy trigger widths are descriptive proxy assumptions, not executable buy criteria.
 TRIGGER_CRITERIA = {
     "거래량 급증 상위주": {"rr_target": 1.2, "sl_max": 0.05},
     "갭 상승 모멘텀 상위주": {"rr_target": 1.2, "sl_max": 0.05},
@@ -220,125 +220,35 @@ TRIGGER_CRITERIA = {
 
 
 def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: str, lookback_days: int = 10, trigger_type: str = None) -> dict:
+    """Collect descriptive window evidence; screening does not define a trade scenario.
+
+    Compatibility scenario fields are unknown, not zero or fabricated targets.
+    The fixed-width headroom proxy is descriptive only and never enters ranking.
     """
-    Calculate metrics that fit buy/sell agent criteria.
-
-    v1.16.6: Changed to fixed stop-loss method (15% annual return system)
-    - Core change: 10-day support level based → current price based fixed stop-loss
-    - Reason: Improved to allow surge stocks to meet agent criteria
-    - Risk-reward ratio: Maintain resistance level based, guarantee minimum +15%
-
-    Criteria by trigger type (synchronized with trading_agents.py):
-    - Volume surge/Gap up/Intraday rise: Risk-reward 1.2+, Stop-loss 5%
-    - Closing strength/Fund inflow: Risk-reward 1.3+, Stop-loss 5%
-    - Sideways: Risk-reward 1.5+, Stop-loss 7%
-
-    Args:
-        ticker: Stock code
-        current_price: Current price
-        trade_date: Reference trading date
-        lookback_days: Number of past business days to query
-        trigger_type: Trigger type (used for differentiated criteria)
-
-    Returns:
-        dict with keys: stop_loss_price, target_price, stop_loss_pct, risk_reward_ratio, agent_fit_score
-    """
-    result = {
-        "stop_loss_price": 0,
-        "target_price": 0,
-        "stop_loss_pct": 1.0,  # Default: unfavorable value
-        "risk_reward_ratio": 0,
-        "agent_fit_score": 0,
-    }
-
-    if current_price <= 0:
-        return result
-
-    # v1.16.6: Query criteria by trigger type (query first)
     criteria = TRIGGER_CRITERIA.get(trigger_type, TRIGGER_CRITERIA["default"])
-    sl_max = criteria["sl_max"]
-    rr_target = criteria["rr_target"]
-
-    # v1.16.6 Core change: Apply fixed stop-loss method
-    # Before: 10-day low based → 48%+ stop-loss on surge stocks → agent rejection
-    # After: Current price based fixed ratio → always meets agent criteria
-    stop_loss_price = current_price * (1 - sl_max)
-    stop_loss_pct = sl_max  # Fixed value (5% or 7%)
-
-    # Target price calculation: Maintain existing resistance level method
-    multi_day_df = get_multi_day_ohlcv(ticker, trade_date, lookback_days)
-    evidence_high_col = "High" if "High" in multi_day_df.columns else "고가"
-    screening_price_evidence = build_screening_price_evidence(
+    empty_evidence = build_screening_price_evidence(current_price, [], criteria["sl_max"], trade_date)
+    multi_day_df = (get_multi_day_ohlcv(ticker, trade_date, lookback_days)
+                    if empty_evidence["reference_price"] is not None else pd.DataFrame())
+    high_col = "High" if "High" in multi_day_df.columns else "고가"
+    evidence = build_screening_price_evidence(
         current_price,
-        multi_day_df[evidence_high_col].tolist() if evidence_high_col in multi_day_df.columns else [],
-        sl_max, trade_date,
+        multi_day_df[high_col].tolist() if high_col in multi_day_df.columns else [],
+        criteria["sl_max"], trade_date,
     )
-    if multi_day_df.empty or len(multi_day_df) < 3:
-        # Default to current price + 15% when data is insufficient
-        target_price = current_price * 1.15
-        logger.debug(f"{ticker}: Insufficient data, applying default target price ({target_price:.0f})")
-    else:
-        # Check column name (English/Korean compatibility)
-        high_col = "High" if "High" in multi_day_df.columns else "고가"
-
-        if high_col not in multi_day_df.columns:
-            target_price = current_price * 1.15
-            logger.debug(f"{ticker}: No high column, applying default target price")
-        else:
-            # Filter out 0 values (market holidays or data errors)
-            valid_highs = multi_day_df[high_col][multi_day_df[high_col] > 0]
-            if valid_highs.empty:
-                target_price = current_price * 1.15
-            else:
-                # Resistance level (highest among recent N-day highs)
-                target_price = valid_highs.max()
-
-    # v1.16.6 Residual risk mitigation: Guarantee minimum +15% target
-    min_target = current_price * 1.15
-    if target_price <= current_price:
-        target_price = min_target
-        logger.debug(f"{ticker}: Target price below current price, applying minimum ({target_price:.0f})")
-    elif target_price < min_target:
-        # Raise to minimum if resistance is below +15%
-        logger.debug(f"{ticker}: Target price {target_price:.0f} → raised to minimum {min_target:.0f}")
-        target_price = min_target
-
-    # Calculate risk-reward ratio
-    potential_gain = target_price - current_price
-    potential_loss = current_price - stop_loss_price
-
-    if potential_loss > 0 and potential_gain > 0:
-        risk_reward_ratio = potential_gain / potential_loss
-    else:
-        risk_reward_ratio = 0
-
-    # v1.16.6: Calculate agent fit score (simplified)
-    # sl_score = 1.0 since stop-loss is always within criteria
-    rr_score = min(risk_reward_ratio / rr_target, 1.0) if risk_reward_ratio > 0 else 0
-    sl_score = 1.0  # Always perfect score since stop-loss is fixed
-
-    # Final score (risk-reward 60%, stop-loss 40%)
-    agent_fit_score = rr_score * 0.6 + sl_score * 0.4
-
-    result = {
-        "stop_loss_price": stop_loss_price,
-        "target_price": target_price,
-        "stop_loss_pct": stop_loss_pct,
-        "risk_reward_ratio": risk_reward_ratio,
-        "agent_fit_score": agent_fit_score,
-        "screening_price_evidence": screening_price_evidence,
+    logger.debug("%s: screening evidence=%s; scenario R/R=N/A", ticker, evidence["status"])
+    return {
+        "stop_loss_price": None,
+        "target_price": None,
+        "stop_loss_pct": None,
+        "risk_reward_ratio": None,
+        "agent_fit_score": None,
+        "screening_price_evidence": evidence,
     }
-
-    logger.debug(f"{ticker}: Stop-loss={stop_loss_price:.0f}, Target={target_price:.0f}, "
-                 f"Stop-loss%={stop_loss_pct*100:.1f}% (fixed), Risk-reward={risk_reward_ratio:.2f}, "
-                 f"Agent score={agent_fit_score:.3f}")
-
-    return result
 
 
 def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: str, lookback_days: int = 10, trigger_type: str = None) -> pd.DataFrame:
     """
-    Calculate agent criteria scores for candidate stocks and add to DataFrame.
+    Attach descriptive evidence and unknown scenario fields to candidates.
 
     v1.16.6: Apply differentiated criteria by trigger type
 
@@ -349,19 +259,19 @@ def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: 
         trigger_type: Trigger type (used for differentiated criteria)
 
     Returns:
-        DataFrame with agent criteria scores added
+        DataFrame with descriptive evidence and null scenario fields
     """
     if candidates_df.empty:
         return candidates_df
 
     result_df = candidates_df.copy()
 
-    # Initialize agent-related columns
-    result_df["stop_loss_price"] = 0.0
-    result_df["target_price"] = 0.0
-    result_df["stop_loss_pct"] = 0.0
-    result_df["risk_reward_ratio"] = 0.0
-    result_df["agent_fit_score"] = 0.0
+    # Compatibility fields stay unknown until the actual buy scenario exists.
+    result_df["stop_loss_price"] = pd.Series(None, index=result_df.index, dtype=object)
+    result_df["target_price"] = pd.Series(None, index=result_df.index, dtype=object)
+    result_df["stop_loss_pct"] = pd.Series(None, index=result_df.index, dtype=object)
+    result_df["risk_reward_ratio"] = pd.Series(None, index=result_df.index, dtype=object)
+    result_df["agent_fit_score"] = pd.Series(None, index=result_df.index, dtype=object)
     result_df["screening_price_evidence"] = pd.Series(None, index=result_df.index, dtype=object)
 
     for ticker in result_df.index:
@@ -379,15 +289,15 @@ def score_candidates_by_agent_criteria(candidates_df: pd.DataFrame, trade_date: 
 
 
 # === #289: KR screening signals (O'Neil-style RS + extension), regime-aware blend ===
-# Regime-aware weights for final_score: (composite/momentum, agent R/R, RS, extension).
+# Regime-aware weights for final_score: (composite/momentum, RS, extension).
 # Each component is 0~1 and weights sum to 1.0 → final_score stays in 0~1.
-# Kill switch / rollback: set RS and extension weights to 0 (then re-rank is composite+agent only).
+# The unearned constant agent-fit term is removed; remaining weights are renormalized.
 REGIME_SCORE_WEIGHTS = {
-    "strong_bull":   (0.20, 0.35, 0.30, 0.15),  # bull: emphasize RS (leaders), lighten extension (but not 0)
-    "moderate_bull": (0.25, 0.35, 0.20, 0.20),
-    "sideways":      (0.20, 0.35, 0.15, 0.30),  # calm: heavier extension penalty (chasing worst here)
-    "moderate_bear": (0.15, 0.35, 0.15, 0.35),
-    "strong_bear":   (0.15, 0.35, 0.15, 0.35),
+    "strong_bull":   (0.20 / 0.65, 0.30 / 0.65, 0.15 / 0.65),  # bull: emphasize RS (leaders), lighten extension (but not 0)
+    "moderate_bull": (0.25 / 0.65, 0.20 / 0.65, 0.20 / 0.65),
+    "sideways":      (0.20 / 0.65, 0.15 / 0.65, 0.30 / 0.65),  # calm: heavier extension penalty (chasing worst here)
+    "moderate_bear": (0.15 / 0.65, 0.15 / 0.65, 0.35 / 0.65),
+    "strong_bear":   (0.15 / 0.65, 0.15 / 0.65, 0.35 / 0.65),
 }
 _DEFAULT_SCORE_WEIGHTS = REGIME_SCORE_WEIGHTS["sideways"]
 
@@ -427,7 +337,7 @@ def calculate_screening_signals(ticker: str, current_price: float, trade_date: s
     """#289: Compute O'Neil-style screening signals from a single multi-week OHLCV fetch.
 
     Intentionally independent of calculate_agent_fit_metrics so the agent's 10-day
-    target-price (resistance) lookback — and therefore agent_fit_score — is NOT perturbed.
+    descriptive high-window lookback remains independent of RS history.
 
     Returns dict:
         - extension_in_adr: (Close - MA20)/MA20 expressed in units of ADR% (overheating proxy)
@@ -1585,15 +1495,15 @@ def select_final_tickers(
 
     Hybrid method (use_hybrid=True):
     1. Collect top 10 candidates from each trigger
-    2. Calculate agent criteria scores for all candidates (analyze 10-20 day data)
-    3. Calculate final score with composite score (40%) + agent score (60%)
+    2. Collect descriptive price evidence without inventing a trade scenario
+    3. Rank with regime-weighted momentum, RS, and extension signals
     4. Select rank 1 by final score from each trigger
 
     Args:
         triggers: Dictionary of DataFrame results by trigger
         trade_date: Reference trading date (required in hybrid mode)
         use_hybrid: Whether to use hybrid selection (default: True)
-        lookback_days: Number of past business days for agent score calculation (default: 10)
+        lookback_days: Number of past business days for descriptive price evidence (default: 10)
         trigger_mode: Batch session used only for third-slot SHADOW identity
 
     Returns:
@@ -1616,15 +1526,15 @@ def select_final_tickers(
         logger.warning("No candidates from all triggers.")
         return final_result
 
-    # 2. Hybrid mode: Calculate agent scores + #289 RS/extension signals
+    # 2. Hybrid mode: Collect screening evidence + #289 RS/extension signals
     if use_hybrid and trade_date:
-        logger.info(f"Hybrid selection mode - Calculate agent scores with {lookback_days}-day data")
+        logger.info(f"Hybrid selection mode - Collect screening evidence with {lookback_days}-day data")
 
-        # #289: regime-aware blend weights (composite, agent R/R, RS, extension)
+        # #289: regime-aware blend weights (composite, RS, extension)
         _regime = macro_context.get("market_regime", "sideways") if macro_context else "sideways"
-        w_comp, w_agent, w_rs, w_ext = REGIME_SCORE_WEIGHTS.get(_regime, _DEFAULT_SCORE_WEIGHTS)
+        w_comp, w_rs, w_ext = REGIME_SCORE_WEIGHTS.get(_regime, _DEFAULT_SCORE_WEIGHTS)
         logger.info(f"[#289] Blend weights for regime '{_regime}': "
-                    f"composite={w_comp}, agent={w_agent}, RS={w_rs}, extension={w_ext}")
+                    f"composite={w_comp}, RS={w_rs}, extension={w_ext}")
 
         # #289: pre-compute O'Neil-style signals across ALL unique candidates (cross-trigger),
         # then normalize the multi-week return into a relative-strength score (0~1).
@@ -1661,11 +1571,11 @@ def select_final_tickers(
                     rs_score_map[_ticker] = _oneil_pct_map[_ticker] / 99.0
 
         for name, candidates_df in trigger_candidates.items():
-            # v1.16.6: Calculate agent scores by trigger type (agent_fit_score unchanged)
+            # Attach descriptive evidence without granting scenario-fit credit.
             scored_df = score_candidates_by_agent_criteria(candidates_df, trade_date, lookback_days, trigger_type=name)
 
-            # #289: final score = regime-weighted blend of composite + agent + RS + extension
-            if "composite_score" in scored_df.columns and "agent_fit_score" in scored_df.columns:
+            # #289: final score = regime-weighted blend of composite + RS + extension
+            if "composite_score" in scored_df.columns:
                 # Normalize composite score (0~1) within trigger
                 cp_max = scored_df["composite_score"].max()
                 cp_min = scored_df["composite_score"].min()
@@ -1678,10 +1588,9 @@ def select_final_tickers(
                 scored_df["extension_score"] = [screening_signals.get(t, {}).get("extension_score", 1.0) for t in scored_df.index]
                 scored_df["extension_in_adr"] = [screening_signals.get(t, {}).get("extension_in_adr", 0.0) for t in scored_df.index]
 
-                # #289: regime-aware final score (was composite*0.3 + agent*0.7)
+                # Regime-aware score uses only observed signals; no invented scenario credit.
                 scored_df["final_score"] = (
                     scored_df["composite_score_norm"] * w_comp +
-                    scored_df["agent_fit_score"] * w_agent +
                     scored_df["rs_score"] * w_rs +
                     scored_df["extension_score"] * w_ext
                 )
@@ -1694,11 +1603,10 @@ def select_final_tickers(
                 for ticker in scored_df.index[:3]:
                     logger.info(f"  - {ticker} ({scored_df.loc[ticker, 'stock_name'] if 'stock_name' in scored_df.columns else ''}): "
                                f"Composite={scored_df.loc[ticker, 'composite_score']:.3f}, "
-                               f"Agent={scored_df.loc[ticker, 'agent_fit_score']:.3f}, "
                                f"RS={scored_df.loc[ticker, 'rs_score']:.3f}, "
                                f"Ext={scored_df.loc[ticker, 'extension_score']:.3f}(adr={scored_df.loc[ticker, 'extension_in_adr']:.1f}), "
                                f"Final={scored_df.loc[ticker, 'final_score']:.3f}, "
-                               f"R/R={scored_df.loc[ticker, 'risk_reward_ratio']:.2f}")
+                               "Scenario R/R=N/A")
 
             trigger_candidates[name] = scored_df
 
@@ -1936,16 +1844,18 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
                     elif "closing_strength" in stocks_df.columns:
                         stock_info["closing_strength"] = float(stocks_df.loc[ticker, "closing_strength"])
 
-                    # Add agent score information (hybrid mode)
+                    # Export descriptive evidence separately from unknown scenario fields.
                     if "screening_price_evidence" in stocks_df.columns:
                         evidence = stocks_df.at[ticker, "screening_price_evidence"]
                         stock_info["screening_price_evidence"] = evidence if isinstance(evidence, dict) else None
                     if "agent_fit_score" in stocks_df.columns:
-                        stock_info["agent_fit_score"] = float(stocks_df.loc[ticker, "agent_fit_score"])
-                        stock_info["risk_reward_ratio"] = float(stocks_df.loc[ticker, "risk_reward_ratio"]) if "risk_reward_ratio" in stocks_df.columns else 0
-                        stock_info["stop_loss_pct"] = float(stocks_df.loc[ticker, "stop_loss_pct"]) * 100 if "stop_loss_pct" in stocks_df.columns else 0
-                        stock_info["stop_loss_price"] = float(stocks_df.loc[ticker, "stop_loss_price"]) if "stop_loss_price" in stocks_df.columns else 0
-                        stock_info["target_price"] = float(stocks_df.loc[ticker, "target_price"]) if "target_price" in stocks_df.columns else 0
+                        for field in ("agent_fit_score", "risk_reward_ratio", "stop_loss_pct",
+                                      "stop_loss_price", "target_price"):
+                            stock_info[field] = None
+                    stock_info["screening_score_version"] = (
+                        "momentum_rs_extension_v2" if "final_score" in stocks_df.columns
+                        else "trigger_native_unblended"
+                    )
                     if "final_score" in stocks_df.columns:
                         stock_info["final_score"] = float(stocks_df.loc[ticker, "final_score"])
 
