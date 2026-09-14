@@ -55,16 +55,16 @@ def _dict_to_markdown(data: dict, title: str = "") -> str:
 
 
 def _get_mcp_server_module():
-    """Import kospi_kosdaq_stock_server module for direct library calls.
+    """Use the repository adapter so report prefetch honors remote-only routing.
 
     Returns:
-        The kospi_kosdaq_stock_server module, or None if import fails
+        The repository market-data adapter, or None if import fails
     """
     try:
-        import kospi_kosdaq_stock_server as server
+        from cores.market_data import mcp_server as server
         return server
     except ImportError:
-        logger.warning("kospi_kosdaq_stock_server module not available, prefetch disabled")
+        logger.warning("Repository market-data adapter unavailable, prefetch disabled")
         return None
 
 
