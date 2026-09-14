@@ -8,7 +8,6 @@ Note: These agents will be integrated in Phase 6 (Trading System).
 """
 
 from mcp_agent.agents.agent import Agent
-from prism_core.flow_evidence import us_flow_interpretation_contract
 from prism_core.trading_scenario_contract import (
     buy_scenario_prompt_contract,
     sell_scenario_authority_contract,
@@ -746,6 +745,7 @@ Prohibited: `"$170"`, `"about $170"`, `"minimum 170"`.
 
     instruction = instruction.replace("{sector_constraint}", sector_constraint)
     instruction += buy_scenario_prompt_contract(language)
+    from prism_core.flow_evidence import us_flow_interpretation_contract
     instruction += us_flow_interpretation_contract(language)
 
     return Agent(
