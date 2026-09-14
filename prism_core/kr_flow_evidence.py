@@ -77,7 +77,12 @@ def compute_kr_flow_evidence(flow_data, price_data, session_data, *, asof_utc):
             raise ValueError("invalid_asof")
         asof = asof.tz_convert("UTC")
         result["asof_utc"] = asof.isoformat()
-        flow, prices, reference = map(_dated, (flow_data, price_data, session_data))
+        flow, reference = map(_dated, (flow_data, session_data))
+        try:
+            prices = _dated(price_data)
+        except (ValueError, TypeError, KeyError):
+            # Price availability governs only volume normalization, not known net shares.
+            prices = {}
         metadata = flow_data.get("__meta__", {})
         if not isinstance(metadata, dict):
             raise TypeError("invalid_metadata")
