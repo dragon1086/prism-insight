@@ -6,6 +6,7 @@ Uses yahoo_finance MCP server for data (Alex2Yang97/yahoo-finance-mcp).
 """
 
 from mcp_agent.agents.agent import Agent
+from prism_core.flow_evidence import us_flow_interpretation_contract
 
 
 def create_us_price_volume_analysis_agent(
@@ -184,7 +185,7 @@ Company: {company_name} ({ticker})
 
     return Agent(
         name="us_price_volume_analysis_agent",
-        instruction=instruction,
+        instruction=instruction + us_flow_interpretation_contract(language),
         server_names=[] if prefetched_data else ["yahoo_finance"]
     )
 
@@ -238,7 +239,7 @@ def create_us_institutional_holdings_analysis_agent(
    - 펀드 유형 (인덱스펀드, 액티브펀드 등)
 4. 보유 추세 분석
    - 분기별 기관 보유 변화
-   - 순매수/매도 패턴
+   - 비교 가능한 보유 기준일이 여럿 있을 때만 보유 변화 (일별 순매수/매도 아님)
 5. 스마트머니 신호
    - 헤지펀드 활동
    - 내부자 지분 변화 (가능한 경우)
@@ -316,7 +317,7 @@ def create_us_institutional_holdings_analysis_agent(
    - Fund types (index funds, actively managed, etc.)
 4. Ownership Trend Analysis
    - Quarterly changes in institutional ownership
-   - Net buying/selling patterns
+   - Ownership changes only with comparable report dates (not daily net buying/selling)
 5. Smart Money Signals
    - Hedge fund activity
    - Insider ownership changes (if available)
@@ -388,6 +389,6 @@ Company: {company_name} ({ticker})
 
     return Agent(
         name="us_institutional_holdings_analysis_agent",
-        instruction=instruction,
+        instruction=instruction + us_flow_interpretation_contract(language),
         server_names=[] if prefetched_data else ["yahoo_finance"]
     )
