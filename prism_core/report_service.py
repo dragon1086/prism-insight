@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from report_generator import (
+    REPORT_FAILURE_MESSAGE,
+    _is_cacheable_report,
     generate_report_response_sync,
     generate_us_report_response_sync,
     get_cached_report,
@@ -36,8 +38,8 @@ from report_generator import (
 
 logger = logging.getLogger(__name__)
 
-KR_FAILURE_MESSAGE = "Error occurred during analysis."
-US_FAILURE_MESSAGE = "Error occurred during US stock analysis."
+KR_FAILURE_MESSAGE = REPORT_FAILURE_MESSAGE
+US_FAILURE_MESSAGE = REPORT_FAILURE_MESSAGE
 
 COMPLETED = "completed"
 FAILED = "failed"
@@ -108,7 +110,7 @@ def generate_report(
     backend = _backend(market)
 
     is_cached, cached_content, cached_file, cached_pdf = backend.get_cached(ticker)
-    if is_cached:
+    if is_cached and _is_cacheable_report(cached_content):
         logger.info("Cached report found: %s", cached_file)
         return ReportArtifact(
             status=COMPLETED,
@@ -123,7 +125,7 @@ def generate_report(
 
     logger.info("Performing new analysis: %s - %s", ticker, company_name)
     content = backend.generate(ticker, company_name)
-    if not content:
+    if not _is_cacheable_report(content):
         return ReportArtifact(status=FAILED, content=backend.failure_message)
 
     markdown_path = backend.save_markdown(ticker, company_name, content)
