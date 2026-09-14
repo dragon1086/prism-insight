@@ -1,4 +1,6 @@
 from cores.agents.report_agent import ReportAgent as Agent
+from prism_core.kr_flow_evidence import kr_flow_interpretation_contract
+
 
 def create_price_volume_analysis_agent(company_name, company_code, reference_date, max_years_ago, max_years, language: str = "ko", prefetched_data: str = None):
     """Create stock price and trading volume analysis agent
@@ -311,6 +313,6 @@ def create_investor_trading_analysis_agent(company_name, company_code, reference
 
     return Agent(
         name="investor_trading_analysis_agent",
-        instruction=instruction,
+        instruction=instruction + kr_flow_interpretation_contract(language),
         server_names=[] if prefetched_data else ["kospi_kosdaq"]
     )

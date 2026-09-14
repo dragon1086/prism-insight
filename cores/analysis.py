@@ -521,6 +521,10 @@ async def analyze_stock(company_code: str = "000660", company_name: str = "SK하
             final_report += section_reports["investment_strategy"] + "\n\n"
 
         # Add disclaimer at the end
+        # Preserve deterministic quantities even if the narrative omits them.
+        # The existing PDF-to-BUY path carries this same block without a refetch.
+        if prefetched.get("flow_evidence"):
+            final_report += prefetched["flow_evidence"] + "\n"
         final_report += "---\n\n" + disclaimer + "\n"
 
         # 12. Final markdown cleanup

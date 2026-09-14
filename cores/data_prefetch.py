@@ -68,7 +68,7 @@ def _get_mcp_server_module():
         return None
 
 
-def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str) -> str:
+def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str, *, _capture=None) -> str:
     """Prefetch stock OHLCV data via kospi_kosdaq MCP server library.
 
     Args:
@@ -85,6 +85,8 @@ def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str) -> s
             return ""
 
         data = server.get_stock_ohlcv(start_date, end_date, company_code)
+        if _capture is not None:
+            _capture["stock_ohlcv"] = data
 
         return _dict_to_markdown(data, f"Stock OHLCV: {company_code} ({start_date}~{end_date})")
     except Exception as e:
@@ -92,7 +94,7 @@ def prefetch_stock_ohlcv(company_code: str, start_date: str, end_date: str) -> s
         return ""
 
 
-def prefetch_stock_trading_volume(company_code: str, start_date: str, end_date: str) -> str:
+def prefetch_stock_trading_volume(company_code: str, start_date: str, end_date: str, *, _capture=None) -> str:
     """Prefetch investor trading volume data via kospi_kosdaq MCP server library.
 
     Args:
@@ -109,6 +111,8 @@ def prefetch_stock_trading_volume(company_code: str, start_date: str, end_date: 
             return ""
 
         data = server.get_stock_trading_volume(start_date, end_date, company_code)
+        if _capture is not None:
+            _capture["trading_volume"] = data
 
         return _dict_to_markdown(data, f"Investor Trading Volume: {company_code} ({start_date}~{end_date})")
     except Exception as e:
@@ -116,7 +120,7 @@ def prefetch_stock_trading_volume(company_code: str, start_date: str, end_date: 
         return ""
 
 
-def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str) -> str:
+def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str, *, _capture=None) -> str:
     """Prefetch market index OHLCV data via kospi_kosdaq MCP server library.
 
     Args:
@@ -135,6 +139,8 @@ def prefetch_index_ohlcv(index_ticker: str, start_date: str, end_date: str) -> s
         index_name = "KOSPI" if index_ticker == "1001" else "KOSDAQ" if index_ticker == "2001" else index_ticker
 
         data = server.get_index_ohlcv(start_date, end_date, index_ticker)
+        if _capture is not None:
+            _capture["index_" + index_ticker] = data
 
         return _dict_to_markdown(data, f"{index_name} Index ({start_date}~{end_date})")
     except Exception as e:
@@ -595,7 +601,7 @@ def _compute_kr_regime(kospi_ohlcv: dict, kosdaq_ohlcv: dict = None) -> dict:
     }
 
 
-def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_ago: str) -> dict:
+def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_ago: str, *, asof_utc=None) -> dict:
     """Prefetch all data needed for KR stock analysis agents.
 
     Calls kospi_kosdaq MCP server's library functions directly (not via MCP protocol).
@@ -616,25 +622,41 @@ def prefetch_kr_analysis_data(company_code: str, reference_date: str, max_years_
     """
     result = {}
 
+    # Retain existing responses locally; derived facts add no network calls.
+    captured = {}
     # 1. Stock OHLCV data
-    stock_ohlcv = prefetch_stock_ohlcv(company_code, max_years_ago, reference_date)
+    stock_ohlcv = prefetch_stock_ohlcv(company_code, max_years_ago, reference_date, _capture=captured)
     if stock_ohlcv:
         result["stock_ohlcv"] = stock_ohlcv
 
     # 2. Investor trading volume data
-    trading_volume = prefetch_stock_trading_volume(company_code, max_years_ago, reference_date)
+    trading_volume = prefetch_stock_trading_volume(company_code, max_years_ago, reference_date, _capture=captured)
     if trading_volume:
         result["trading_volume"] = trading_volume
 
     # 3. KOSPI index data
-    kospi_index = prefetch_index_ohlcv("1001", max_years_ago, reference_date)
+    kospi_index = prefetch_index_ohlcv("1001", max_years_ago, reference_date, _capture=captured)
     if kospi_index:
         result["kospi_index"] = kospi_index
 
     # 4. KOSDAQ index data
-    kosdaq_index = prefetch_index_ohlcv("2001", max_years_ago, reference_date)
+    kosdaq_index = prefetch_index_ohlcv("2001", max_years_ago, reference_date, _capture=captured)
     if kosdaq_index:
         result["kosdaq_index"] = kosdaq_index
+
+    if captured:
+        from prism_core.kr_flow_evidence import (
+            compute_kr_flow_evidence,
+            render_kr_flow_evidence,
+        )
+
+        evidence = compute_kr_flow_evidence(
+            captured.get("trading_volume"), captured.get("stock_ohlcv"),
+            captured.get("index_1001"),
+            asof_utc=pd.Timestamp.now(tz="UTC") if asof_utc is None else asof_utc)
+        result["flow_evidence"] = render_kr_flow_evidence(evidence)
+        if trading_volume:
+            result["trading_volume"] += result["flow_evidence"]
 
     if result:
         logger.info(f"Prefetched KR data for {company_code}: {list(result.keys())}")

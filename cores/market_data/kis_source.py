@@ -304,9 +304,12 @@ class KisSource:
 
         rows = self._walk_range(start, end, window)
         frame = self._to_frame(rows, _FLOW_COLUMNS, f"flows {ticker}")
-        return frame[
+        result = frame[
             (frame.index >= pd.Timestamp(start)) & (frame.index <= pd.Timestamp(end))
         ]
+        result.attrs.update(source="KIS", unit="shares", data_status="reported_daily",
+                            observed_at=datetime.now(_KST).isoformat())
+        return result
 
     def intraday_investor_estimate(
         self, ticker: str, *, as_of: datetime | None = None
