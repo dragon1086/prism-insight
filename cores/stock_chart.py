@@ -1473,7 +1473,7 @@ def _detect_index_ticker(ticker: str) -> str | None:
             if isinstance(market, str) and market in {"KOSPI", "KOSDAQ"}:
                 return _KOSPI_INDEX_TICKER if market == "KOSPI" else _KOSDAQ_INDEX_TICKER
         except Exception:  # noqa: BLE001 - fail closed; no private exception text
-            pass
+            market = None
         logger.warning("[ONEIL] remote listing market unavailable; skipping RS panel")
         return None
     try:
