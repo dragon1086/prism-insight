@@ -47,6 +47,7 @@ from cores.us_surge_detector import (
 )
 from cores.rs_rating import oneil_weighted_return, percentile_ratings
 from prism_core.screening_price_evidence import build_screening_price_evidence
+from prism_core.ohlcv_shape import normalize_single_ticker_ohlcv
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -272,6 +273,7 @@ def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: s
     empty_evidence = build_screening_price_evidence(current_price, [], criteria["sl_max"], trade_date)
     multi_day_df = (get_multi_day_ohlcv(ticker, trade_date, lookback_days)
                     if empty_evidence["reference_price"] is not None else pd.DataFrame())
+    multi_day_df = normalize_single_ticker_ohlcv(multi_day_df, ticker)
     high_col = "High"
     evidence = build_screening_price_evidence(
         current_price,
