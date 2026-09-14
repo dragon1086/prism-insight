@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -257,10 +258,7 @@ def get_cached_us_report(ticker: str) -> tuple:
         return False, "", None, None
 
     # Check if corresponding PDF file exists
-    pdf_file = None
-    pdf_files = list(US_PDF_REPORTS_DIR.glob(f"{ticker}_*.pdf"))
-    if pdf_files:
-        pdf_file = max(pdf_files, key=lambda p: p.stat().st_mtime)
+    pdf_file = US_PDF_REPORTS_DIR / latest_file.with_suffix(".pdf").name
 
     with open(latest_file, "r", encoding="utf-8") as f:
         content = f.read()
@@ -270,7 +268,7 @@ def get_cached_us_report(ticker: str) -> tuple:
         return False, "", None, None
 
     # Generate PDF if it doesn't exist
-    if not pdf_file:
+    if not pdf_file.is_file() or pdf_file.stat().st_mtime_ns < latest_file.stat().st_mtime_ns:
         # Extract company name (filename format: {ticker}_{name}_{date}_analysis.md)
         parts = os.path.basename(latest_file).split('_')
         company_name = parts[1] if len(parts) > 1 else ticker
@@ -303,6 +301,28 @@ def save_us_report(ticker: str, company_name: str, content: str) -> Path:
     return filepath
 
 
+def _render_pdf_atomically(md_path: Path, pdf_path: Path) -> None:
+    """Publish only completed PDFs; retain consumer permissions on replacement."""
+    from pdf_converter import markdown_to_pdf
+
+    mode = (pdf_path.stat().st_mode & 0o777) if pdf_path.exists() else 0o644
+    fd, name = tempfile.mkstemp(prefix=".report-", suffix=".pdf", dir=pdf_path.parent)
+    os.close(fd)
+    temporary = Path(name)
+    try:
+        markdown_mtime = md_path.stat().st_mtime_ns
+        markdown_to_pdf(str(md_path), str(temporary), 'playwright', add_theme=True)
+        if not temporary.is_file() or not temporary.stat().st_size:
+            raise RuntimeError("PDF conversion produced no output")
+        if (md_path.stat().st_mtime_ns != markdown_mtime
+                or temporary.stat().st_mtime_ns < markdown_mtime):
+            raise RuntimeError("Markdown changed during PDF conversion")
+        temporary.chmod(mode)
+        temporary.replace(pdf_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def save_us_pdf_report(ticker: str, company_name: str, md_path: Path) -> Path:
     """Convert US stock markdown file to PDF and save
 
@@ -314,16 +334,10 @@ def save_us_pdf_report(ticker: str, company_name: str, md_path: Path) -> Path:
     Returns:
         Path: Generated PDF file path
     """
-    from pdf_converter import markdown_to_pdf
-
-    reference_date = datetime.now().strftime("%Y%m%d")
-    # Remove spaces and special characters from filename
-    safe_company_name = company_name.replace(" ", "_").replace(".", "").replace(",", "")
-    pdf_filename = f"{ticker}_{safe_company_name}_{reference_date}_analysis.pdf"
-    pdf_path = US_PDF_REPORTS_DIR / pdf_filename
+    pdf_path = US_PDF_REPORTS_DIR / md_path.with_suffix(".pdf").name
 
     try:
-        markdown_to_pdf(str(md_path), str(pdf_path), 'playwright', add_theme=True)
+        _render_pdf_atomically(md_path, pdf_path)
         logger.info(f"US PDF report generated: {pdf_path}")
     except Exception as e:
         logger.error(f"Error converting US PDF: {e}")
@@ -462,14 +476,10 @@ def save_pdf_report(stock_code: str, company_name: str, md_path: Path) -> Path:
     Returns:
         Path: 생성된 PDF 파일 경로
     """
-    from pdf_converter import markdown_to_pdf
-
-    reference_date = datetime.now().strftime("%Y%m%d")
-    pdf_filename = f"{stock_code}_{company_name}_{reference_date}_analysis.pdf"
-    pdf_path = PDF_REPORTS_DIR / pdf_filename
+    pdf_path = PDF_REPORTS_DIR / md_path.with_suffix(".pdf").name
 
     try:
-        markdown_to_pdf(str(md_path), str(pdf_path), 'playwright', add_theme=True)
+        _render_pdf_atomically(md_path, pdf_path)
         logger.info(f"PDF 보고서 생성 완료: {pdf_path}")
     except Exception as e:
         logger.error(f"PDF 변환 중 오류: {e}")
@@ -498,10 +508,7 @@ def get_cached_report(stock_code: str) -> tuple:
         return False, "", None, None
 
     # Check if corresponding PDF file exists
-    pdf_file = None
-    pdf_files = list(PDF_REPORTS_DIR.glob(f"{stock_code}_*.pdf"))
-    if pdf_files:
-        pdf_file = max(pdf_files, key=lambda p: p.stat().st_mtime)
+    pdf_file = PDF_REPORTS_DIR / latest_file.with_suffix(".pdf").name
 
     with open(latest_file, "r", encoding="utf-8") as f:
         content = f.read()
@@ -511,7 +518,7 @@ def get_cached_report(stock_code: str) -> tuple:
         return False, "", None, None
 
     # Generate PDF if it doesn't exist
-    if not pdf_file:
+    if not pdf_file.is_file() or pdf_file.stat().st_mtime_ns < latest_file.stat().st_mtime_ns:
         # Extract company name (filename format: {code}_{name}_{date}_analysis.md)
         company_name = os.path.basename(latest_file).split('_')[1]
         pdf_file = save_pdf_report(stock_code, company_name, latest_file)
