@@ -193,7 +193,7 @@ def test_bilingual_agent_contracts(language, monkeypatch):
         max_years_ago="20240831", max_years=2, language=language)
     assert contract in agent.instruction
     assert contract in trading.create_us_trading_scenario_agent(language).instruction
-    assert contract in trading.create_us_sell_decision_agent(language).instruction
+    assert contract not in trading.create_us_sell_decision_agent(language).instruction
 
 
 def test_legacy_rule_constants_unchanged():

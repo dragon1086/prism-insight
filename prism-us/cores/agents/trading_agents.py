@@ -1142,7 +1142,7 @@ Trailing Stop %: Bull peak × 0.92 (-8%), Bear/Sideways peak × 0.95 (-5%)
 
     return Agent(
         name="us_sell_decision_agent",
-        instruction=instruction + sell_scenario_authority_contract(language) + us_flow_interpretation_contract(language),
+        instruction=instruction + sell_scenario_authority_contract(language),
         # perplexity: 핵심-0 법인 이벤트(상폐/공개매수/파산 등) 뉴스 자율 점검에 필요
         server_names=["yahoo_finance", "sqlite", "time", "perplexity"]
     )
