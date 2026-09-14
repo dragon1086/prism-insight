@@ -8,7 +8,6 @@ Note: These agents will be integrated in Phase 6 (Trading System).
 """
 
 from mcp_agent.agents.agent import Agent
-from prism_core.flow_evidence import us_flow_interpretation_contract
 
 # Fallback sector names when dynamic data is not available
 GICS_SECTORS = [
@@ -711,6 +710,7 @@ Prohibited: `"$170"`, `"about $170"`, `"minimum 170"`.
 """
 
     instruction = instruction.replace("{sector_constraint}", sector_constraint)
+    from prism_core.flow_evidence import us_flow_interpretation_contract
     instruction += us_flow_interpretation_contract(language)
 
     return Agent(
