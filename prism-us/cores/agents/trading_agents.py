@@ -152,7 +152,7 @@ B) 결정론적 값이 명시적으로 없을 때만 S&P 500 (^GSPC) + VIX 최�
 **Distribution Day Kill Switch (신규매수 방어 전용):**
 분포일(거래량 동반 -0.2%↓ 마감)은 `index_summary.distribution_days`에 **결정론적으로 집계**됩니다
 (최근 25거래일 윈도우, +5% 회복 시 만료; 거래량 결측이면 null → 보고서 최근 4주 내 분포일로 판단).
-이 값이 높을수록 기관 분배가 진행 중이라는 천장 경고입니다.
+이 값은 거래량 동반 가격 하락의 누적 경고이며, 기관 매도를 직접 관측한 값은 아닙니다.
 - 값이 높으면(통상 5~6건 이상) **신규 매수에 한해** regime을 1단계 보수적으로 적용하십시오
   (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways): 신규 진입·parabolic 사이징의 문턱만 높입니다.
 - **보유 종목의 매도·trailing 판단은 원래 regime을 그대로 사용**하며, 분산일로 조기 청산하지 않습니다.
@@ -500,10 +500,10 @@ Apply the **parabolic** row ONLY when ALL of the following hold:
 If any condition fails → fall back to the standard `strong_bull` row (R/R floor 1.0, stop -7%).
 
 **Distribution Day Kill Switch (new-buy defense only):**
-Distribution days (institutional selling sessions with ≥ -0.2% close on rising volume) are
+Distribution days (price-volume proxies with ≥ -0.2% close on rising volume) are
 counted **deterministically** in `index_summary.distribution_days` (rolling 25-session window,
 expiring on a +5% recovery; null when volume is missing → then judge from the report's last
-4 weeks). The HIGHER this count of distribution days, the more institutional selling is underway.
+4 weeks). A higher count of distribution days warns of repeated price-volume weakness, not confirmed institutional selling.
 - When it is elevated (≈5-6 or more), apply ONE step of caution to NEW BUYS ONLY
   (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways): raise the bar
   for new entries / parabolic sizing.
@@ -745,6 +745,8 @@ Prohibited: `"$170"`, `"about $170"`, `"minimum 170"`.
 
     instruction = instruction.replace("{sector_constraint}", sector_constraint)
     instruction += buy_scenario_prompt_contract(language)
+    from prism_core.flow_evidence import us_flow_interpretation_contract
+    instruction += us_flow_interpretation_contract(language)
 
     return Agent(
         name="us_trading_scenario_agent",

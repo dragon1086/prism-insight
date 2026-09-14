@@ -1315,6 +1315,16 @@ class USStockTrackingAgent:
                     )
             except Exception as _mpe:
                 logger.warning(f"[TrendFacts] market pulse inject failed, fail-open: {_mpe}")
+            # Context only: reuse the already-fetched stock bars, never add a
+            # holder/price fetch or alter T1/T2, score, stops or orders.
+            try:
+                from prism_core.flow_evidence import compute_us_flow_evidence, render_flow_evidence
+                import pandas as pd
+                lines.append(render_flow_evidence(compute_us_flow_evidence(
+                    df, asof_utc=pd.Timestamp.now(tz="UTC"))))
+            except Exception as flow_error:
+                logger.warning(f"[TrendFacts] flow context unavailable: {flow_error}")
+                lines.append("Flow evidence: MISSING (unknown; not institutional buying/selling)")
             trend_facts = "\n".join(lines)
             logger.info(f"[TrendFacts] {ticker} T1={t1_hit} T2={t2_hit}")
             return trend_facts
