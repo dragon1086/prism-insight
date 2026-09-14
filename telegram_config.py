@@ -305,7 +305,7 @@ async def send_market_data_failure_alert(
     mode: str,
     market: str = "KR",
 ):
-    """Alert operators when both primary and fallback market data fail."""
+    """Alert on unavailable market inputs without naming retired providers."""
     if not telegram_config or not telegram_config.use_telegram:
         return
 
@@ -316,12 +316,14 @@ async def send_market_data_failure_alert(
         request = HTTPXRequest(connect_timeout=10.0, read_timeout=10.0)
         bot = Bot(token=telegram_config.bot_token, request=request)
         batch_label = "오전" if mode == "morning" else "오후"
+        provider = "KIS " if market == "KR" else ""
         alert_message = (
             f"🚨 [{market}] {batch_label} 종목 선정 중단\n\n"
-            "KRX 전종목 시세 조회와 네이버 비상 폴백이 모두 실패해 "
-            "이번 배치를 안전하게 중단했습니다.\n\n"
-            "• 조치: 서버 로그의 [MARKET-DATA] 및 "
-            "[NAVER-SNAPSHOT-FALLBACK] 항목 확인"
+            f"{provider}시장 데이터 수집·검증을 완료하지 못해 "
+            "이번 배치를 중단했습니다. 누락되거나 검증되지 않은 자료로 "
+            "종목을 선정하지 않았습니다.\n\n"
+            "• 조치: 해당 배치 로그에서 시세·전일 이력의 누락, "
+            "검증 오류 또는 제한시간 초과 원인을 확인하십시오."
         )
 
         await bot.send_message(
