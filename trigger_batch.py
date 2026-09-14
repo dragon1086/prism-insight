@@ -10,6 +10,7 @@ import logging
 import os
 from typing import Optional
 from prism_core.screening_price_evidence import build_screening_price_evidence
+from prism_core.ohlcv_shape import normalize_single_ticker_ohlcv
 from cores.kis_market_snapshot import (
     MarketSnapshotBundle, build_kis_snapshot_bundle, fetch_kis_master_universe,
 )
@@ -229,6 +230,7 @@ def calculate_agent_fit_metrics(ticker: str, current_price: float, trade_date: s
     empty_evidence = build_screening_price_evidence(current_price, [], criteria["sl_max"], trade_date)
     multi_day_df = (get_multi_day_ohlcv(ticker, trade_date, lookback_days)
                     if empty_evidence["reference_price"] is not None else pd.DataFrame())
+    multi_day_df = normalize_single_ticker_ohlcv(multi_day_df, ticker)
     high_col = "High" if "High" in multi_day_df.columns else "고가"
     evidence = build_screening_price_evidence(
         current_price,

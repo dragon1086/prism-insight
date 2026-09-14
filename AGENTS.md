@@ -144,5 +144,11 @@ Avoid broad production-like runs unless the task requires them.
 ## Before Finishing
 
 - Run the smallest relevant test or command that validates the change.
+- For screening/provider changes, unit tests or AST-extracted tests alone are insufficient:
+  run real-module KR consumer and US morning/afternoon batch-to-JSON integration
+  tests with realistic flat/MultiIndex/empty/ambiguous provider fixtures. Keep
+  network, broker orders and channel sends disabled in integration tests. After
+  deployment, verify the production Python and a bounded read-only provider
+  smoke before claiming operational recovery; do not rerun live orders as a test.
 - If you could not run validation, say so explicitly and explain why.
 - In summaries, reference the files changed and note any operational risk, especially around trading, messaging, or credential handling.
