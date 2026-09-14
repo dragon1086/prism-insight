@@ -1,5 +1,6 @@
 """Remote report charts must not use local master data or invent history."""
 
+import sys
 from types import SimpleNamespace
 
 import pandas as pd
@@ -11,8 +12,11 @@ from cores import market_data, stock_chart
 @pytest.fixture
 def remote(monkeypatch):
     monkeypatch.setenv("PRISM_MARKET_DATA_REMOTE_URL", "http://127.0.0.1:8765")
+    def blocked(**kwargs):
+        pytest.fail("Local master must not be called")
     monkeypatch.setattr(market_data, "get_market_ticker_list",
-                        lambda **kwargs: pytest.fail("Local master must not be called"))
+                        blocked, raising=False)
+    monkeypatch.setitem(sys.modules, "pykrx", SimpleNamespace(stock=SimpleNamespace(get_market_ticker_list=blocked)))
 
 
 @pytest.mark.parametrize("market,expected", [("KOSPI", "1001"), ("KOSDAQ", "2001")])
@@ -42,7 +46,10 @@ def test_remote_detection_fails_closed(remote, monkeypatch, caplog, failure):
 def test_no_remote_keeps_local_market_detection(monkeypatch):
     monkeypatch.delenv("PRISM_MARKET_DATA_REMOTE_URL", raising=False)
     monkeypatch.setattr(stock_chart, "_KOSPI_TICKERS_CACHE", None)
-    monkeypatch.setattr(market_data, "get_market_ticker_list", lambda **kwargs: ["000660"])
+    def fake_master(**kwargs):
+        return ["000660"]
+    monkeypatch.setattr(market_data, "get_market_ticker_list", fake_master, raising=False)
+    monkeypatch.setitem(sys.modules, "pykrx", SimpleNamespace(stock=SimpleNamespace(get_market_ticker_list=fake_master)))
     assert stock_chart._detect_index_ticker("000660") == "1001"
     assert stock_chart._detect_index_ticker("123456") == "2001"
 
