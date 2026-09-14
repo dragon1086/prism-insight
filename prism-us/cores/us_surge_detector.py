@@ -16,6 +16,7 @@ import yfinance as yf
 import sys
 from pathlib import Path
 from typing import Tuple, List
+from prism_core.ohlcv_shape import normalize_single_ticker_ohlcv
 
 # Import check_market_day functions for US holiday handling
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -318,7 +319,10 @@ def get_multi_day_ohlcv(ticker: str, end_date: str, days: int = 10) -> pd.DataFr
             logger.warning(f"No {days}-day data for {ticker}")
             return pd.DataFrame()
 
-        return data.tail(days)
+        normalized = normalize_single_ticker_ohlcv(data, ticker)
+        if normalized.empty:
+            logger.warning("OHLCV_SHAPE_UNAVAILABLE: %s", ticker)
+        return normalized.tail(days)
 
     except Exception as e:
         logger.error(f"Error getting multi-day data for {ticker}: {e}")

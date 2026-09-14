@@ -14,6 +14,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from prism_core.screening_price_evidence import build_screening_price_evidence
+from prism_core.ohlcv_shape import normalize_single_ticker_ohlcv
 
 
 def test_synthetic_scenario_credit_is_removed():
@@ -26,7 +27,8 @@ def test_synthetic_scenario_credit_is_removed():
                     and any(isinstance(t, ast.Name) and t.id == "TRIGGER_CRITERIA" for t in n.targets))
         criteria = ast.literal_eval(node.value)
         namespace = {"pd": pd, "logger": logging.getLogger(__name__), "TRIGGER_CRITERIA": criteria,
-                     "build_screening_price_evidence": build_screening_price_evidence}
+                     "build_screening_price_evidence": build_screening_price_evidence,
+                     "normalize_single_ticker_ohlcv": normalize_single_ticker_ohlcv}
         exec(compile(ast.Module(body=[fn], type_ignores=[]), str(path), "exec"), namespace)
         for trigger in criteria:
             for high in (70, 90, 100, 102, 105, 110, 114.99, 115, 125, 150, 200, None):

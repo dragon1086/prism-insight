@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from prism_core.ohlcv_shape import normalize_single_ticker_ohlcv
 from prism_core.screening_price_evidence import build_screening_price_evidence
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +77,7 @@ def test_real_screening_functions_do_not_invent_scenario_and_reuse_one_fetch(mar
         "pd": pd, "logger": Mock(), "get_multi_day_ohlcv": fetch,
         "TRIGGER_CRITERIA": {"default": {"rr_target": 1.2, "sl_max": .05}},
         "build_screening_price_evidence": build_screening_price_evidence,
+        "normalize_single_ticker_ohlcv": normalize_single_ticker_ohlcv,
     })
     result = ns["score_candidates_by_agent_criteria"](
         pd.DataFrame({"Close": [100.]}, index=["TEST"]), "20260914")
