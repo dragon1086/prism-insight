@@ -165,7 +165,7 @@ def test_all_capabilities_roundtrip(client, monkeypatch, method, args, kwargs):
         from cores import kis_market_snapshot
         expected = "KOSPI"
         monkeypatch.setattr(kis_market_snapshot, "fetch_kis_master_data",
-                            lambda: SimpleNamespace(markets={"000660": expected}))
+                            lambda: SimpleNamespace(markets={"000660": expected}), raising=False)
 
     class Fake:
         pass
@@ -197,7 +197,7 @@ def test_all_capabilities_roundtrip(client, monkeypatch, method, args, kwargs):
 def test_listing_market_validation(client, monkeypatch, market):
     from cores import kis_market_snapshot
     monkeypatch.setattr(kis_market_snapshot, "fetch_kis_master_data",
-                        lambda: SimpleNamespace(markets={"000660": market}))
+                        lambda: SimpleNamespace(markets={"000660": market}), raising=False)
     monkeypatch.setattr(remote_api, "_source", None)
     monkeypatch.setattr(remote_api, "KisSource", lambda: pytest.fail("Master lookup needs no broker instance"))
     result = client.post("/market-data", headers={"Authorization": "Bearer test-key"},
