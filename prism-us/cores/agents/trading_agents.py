@@ -485,7 +485,7 @@ If any condition fails → fall back to the standard `strong_bull` row (R/R floo
 Distribution days (price-volume proxies with ≥ -0.2% close on rising volume) are
 counted **deterministically** in `index_summary.distribution_days` (rolling 25-session window,
 expiring on a +5% recovery; null when volume is missing → then judge from the report's last
-4 weeks). A higher count warns of repeated price-volume weakness, not confirmed institutional selling.
+4 weeks). A higher count of distribution days warns of repeated price-volume weakness, not confirmed institutional selling.
 - When it is elevated (≈5-6 or more), apply ONE step of caution to NEW BUYS ONLY
   (parabolic → strong_bull, strong_bull → moderate_bull, moderate_bull → sideways): raise the bar
   for new entries / parabolic sizing.
