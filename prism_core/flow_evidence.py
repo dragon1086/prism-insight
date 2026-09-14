@@ -154,9 +154,10 @@ def compute_us_flow_evidence(df, *, asof_utc, source="yfinance.history"):
 def describe_us_holdings(holders, *, asof_utc):
     """Date coverage only; retain original holder tables separately, unmodified."""
     asof = pd.Timestamp(asof_utc).tz_convert("UTC")
+    cutoff = asof.tz_convert("America/New_York").date()
     dates, unknown, future = set(), 0, 0
-    for name, frame in holders.items():
-        if name == "major_holders" or frame is None or frame.empty:
+    for frame in holders.values():
+        if frame is None or frame.empty:
             continue
         date_cols = [c for c in frame.columns
                      if str(c).lower().replace(" ", "_") in ("date_reported", "report_date")]
@@ -168,7 +169,7 @@ def describe_us_holdings(holders, *, asof_utc):
                 date = pd.Timestamp(value)
                 if pd.isna(date) or isinstance(value, (int, float)):
                     raise ValueError("unknown date")
-                if date.date() > asof.date():
+                if date.date() > cutoff:
                     future += 1
                 else:
                     dates.add(date.date().isoformat())
@@ -185,7 +186,7 @@ def describe_us_holdings(holders, *, asof_utc):
 
 def holdings_asof_frame(frame, *, asof_utc):
     """Quarantine future report dates from prompts; retain unknown dates labeled."""
-    cutoff = pd.Timestamp(asof_utc).tz_convert("UTC").date()
+    cutoff = pd.Timestamp(asof_utc).tz_convert("America/New_York").date()
     result = frame.copy()
     date_cols = [c for c in frame.columns
                  if str(c).lower().replace(" ", "_") in ("date_reported", "report_date")]
