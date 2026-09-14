@@ -2,7 +2,6 @@
 
 import json
 import logging
-# Fixed read-only worker with a hard deadline, not a command execution API.
 import subprocess  # nosec B404
 import sys
 from datetime import date, datetime
