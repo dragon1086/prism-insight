@@ -1,11 +1,11 @@
 from mcp_agent.agents.agent import Agent
+
+# Fallback sector names when dynamic data is not available
+from prism_core.sector_names import KR_SECTOR_NAMES
 from prism_core.trading_scenario_contract import (
     buy_scenario_prompt_contract,
     sell_scenario_authority_contract,
 )
-
-# Fallback sector names when dynamic data is not available
-from prism_core.sector_names import KR_SECTOR_NAMES
 
 
 def create_trading_scenario_agent(language: str = "ko", sector_names: list = None):
@@ -762,6 +762,8 @@ def create_trading_scenario_agent(language: str = "ko", sector_names: list = Non
 
     instruction = instruction.replace("{sector_constraint}", sector_constraint)
     instruction += buy_scenario_prompt_contract(language)
+    from prism_core.kr_flow_evidence import kr_flow_interpretation_contract
+    instruction += kr_flow_interpretation_contract(language)
 
     return Agent(
         name="trading_scenario_agent",

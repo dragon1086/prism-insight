@@ -5,7 +5,6 @@ import json
 
 import numpy as np
 import pandas as pd
-import pandas_market_calendars as mcal
 
 FLOW_EVIDENCE_VERSION = "flow-evidence-v1"
 
@@ -23,6 +22,8 @@ def completed_daily_frame(df, *, asof_utc, calendar_name="NYSE",
             "expected_sessions": [], "excluded_rows": 0, "reason": None}
     empty = pd.DataFrame()
     try:
+        import pandas_market_calendars as mcal
+
         asof = pd.Timestamp(asof_utc)
         if asof.tzinfo is None or pd.isna(asof):
             raise ValueError("asof_utc must be timezone-aware")
@@ -217,12 +218,12 @@ def us_flow_interpretation_contract(language="ko"):
 - yfinance 기관·펀드 보유 표는 지연된 보유 스냅샷입니다. 보유 기준일과 조회 시각을 구분하고 기준일 불명·미래 행은 판단 근거에서 제외하십시오. 13F는 분기말 기준이며 분기 종료 후 45일 이내 제출하므로 오늘 매수나 기관 3/5일 연속 순매수를 뜻하지 않습니다. 비교 가능한 복수 기준일이 없으면 보유 변화도 알 수 없습니다.
 - 현재 입력은 일별 기관 순매수/순매도를 제공하지 않습니다. 보고서에 문장만 있다는 이유로 확인된 수급으로 취급하지 말고 기존 기관 연속 매수/매도 조건은 검증된 일별 원천이 없으면 미확인으로 남기십시오. 결측을 0·매도·매수로 치환하지 마십시오.
 - signed_volume_ratio_5/20은 종가 방향별 거래량을 기간 거래량으로 나눈 OBV형 proxy이며, cmf_20은 일중 종가 위치 기반 proxy입니다. 확정 세션·창·단위를 그대로 인용하십시오. 갭 하락 후 상단 마감이면 CMF 양수와 signed ratio 음수가 공존할 수 있으며 기관 매집 확정이 아닙니다. H=L은 CMF 기여 0입니다.
-- 거래량 급증·분산일·CMF·signed-volume은 상관된 가격·거래량 근거입니다. 독립 확인 여러 개로 중복 가점하거나 새 점수·매수/매도 차단·손절·비중 규칙으로 사용하지 마십시오. 기존 기준은 그대로 유지합니다.
+- 새 CMF·signed-volume 창은 기존 거래량 근거와 겹치는 참고 맥락입니다. 이를 기존 거래량 신호에 더해 독립 확인 여러 개로 중복 가점하거나 새 점수·매수/매도 차단·손절·비중 규칙으로 사용하지 마십시오. 기존에 정의된 모멘텀·시장 분산일 계산과 기준은 그대로 유지합니다.
 """
     return """
 ## US flow evidence limits (override other institutional-flow wording)
 - yfinance holder/fund tables are lagged ownership snapshots. Separate report dates from fetch time; exclude unknown/future report dates from inference. 13F is quarter-end ownership filed within 45 days after quarter end, NOT today's buying or 3/5 consecutive sessions of institutional net buying. Without comparable multiple report dates, ownership change is unknown too.
 - Daily institutional net buying/selling is NOT supplied. A report assertion alone is not verified flow: leave existing consecutive institutional buying/selling conditions unconfirmed without dated daily source evidence. MISSING is unknown, not zero, selling, or buying.
 - signed_volume_ratio_5/20 is an OBV-style normalized signed-volume proxy; cmf_20 is an intraday close-location proxy. Preserve completed sessions, windows and units. A gap-down/high-close session can yield positive CMF and negative signed volume; neither proves institutional accumulation. H=L contributes zero to CMF.
-- Volume spikes, distribution days, CMF and signed volume are correlated price-volume evidence, NOT independent confirmations. No duplicate score credit, new score, autonomous BUY/SELL veto, stop, or sizing rule may be introduced. Existing criteria remain unchanged.
+- New CMF and signed-volume windows overlap existing price-volume evidence and are NOT independent additional confirmations. No duplicate score credit, new score, autonomous BUY/SELL veto, stop, or sizing rule may be introduced. Preserve the already-defined momentum and market distribution-day calculations and existing criteria.
 """
