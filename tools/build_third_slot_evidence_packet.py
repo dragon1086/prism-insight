@@ -168,13 +168,16 @@ def build_third_slot_evidence_packet(
     policy_version: str = POLICY_VERSION,
 ) -> dict[str, Any]:
     raw_list = list(raw_events)
-    events, raw_supported, duplicate_count = _deduplicate(raw_list)
     excluded_policy_event_count = sum(
-        (event.get("attributes") or {}).get("policy_version") != policy_version
-        for event in events
+        event.get("event_type") in {EVALUATION_EVENT, OUTCOME_EVENT}
+        and (event.get("attributes") or {}).get("policy_version") != policy_version
+        for event in raw_list
     )
-    events = [event for event in events
-              if (event.get("attributes") or {}).get("policy_version") == policy_version]
+    # Legacy duplicates must not block readiness or overwrite a current event.
+    events, raw_supported, duplicate_count = _deduplicate(
+        event for event in raw_list
+        if (event.get("attributes") or {}).get("policy_version") == policy_version
+    )
     evaluations = {}
     invalid_evaluations = 0
     regime_distribution = Counter()
