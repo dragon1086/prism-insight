@@ -97,6 +97,16 @@ def test_missing_price_volume_does_not_invent_ratio_or_erase_quantities():
     assert w["combined_pct_of_traded_shares"] is None
 
 
+@pytest.mark.parametrize("prices", [None, {}, {"error": "unavailable"}])
+def test_entire_price_outage_preserves_independently_known_investor_totals(prices):
+    flow, _prices, reference = fixture_rows()
+    result = compute_kr_flow_evidence(flow, prices, reference, asof_utc=ASOF)
+    for n, window in result["windows"].items():
+        assert window["status"] == "OK"
+        assert window["net_shares"]["combined"] == int(n)
+        assert window["volume_ratio_status"] == "MISSING"
+
+
 def test_naive_asof_duplicate_dates_and_wrong_unit_fail_closed():
     inputs = fixture_rows()
     assert compute_kr_flow_evidence(*inputs, asof_utc="2026-09-11")["reason"]
