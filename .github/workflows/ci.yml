@@ -207,6 +207,7 @@ jobs:
             prism-btc/tests/test_swing_entry_recovery.py \
             prism-btc/tests/test_swing_entry_notice.py \
             prism-btc/tests/test_position_snapshot.py \
+            prism-btc/tests/test_compact_trade_notices.py \
             prism-btc/tests/test_notifier.py \
             prism-btc/tests/test_exchange_snapshot.py \
             prism-btc/tests/test_ops_alerts.py \

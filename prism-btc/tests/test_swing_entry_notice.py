@@ -43,7 +43,7 @@ def test_recovery_gate_delivers_once_with_original_fill(recovered, monkeypatch, 
     gate(conn, backend, monkeypatch)
     assert len(sender) == 1 and sender[0][0] == "demo"
     message = sender[0][1]
-    for expected in ("지연", "새 진입이 아닙니다", "2023-11-15 07:13 KST", "100.00", "1.00000000", "95.00"):
+    for expected in ("지연", "새 진입이 아닙니다", "11/15 07:13:20 KST", "100.00", "1.000000", "95.00"):
         assert expected in message
     assert "exact-entry" not in message and "parent" not in message
     assert record(conn)["message_id"] == 77
