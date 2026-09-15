@@ -168,6 +168,15 @@ class SignalPublisher:
         Returns:
             str: Message ID (None on failure)
         """
+        # Fail closed at the point of egress too, not just connect(): code that
+        # injects a client directly (publisher._publisher = ...) would otherwise
+        # bypass the kill switch and publish to the live topic during tests.
+        if signal_publishing_disabled():
+            logger.warning(
+                "Signal publish REFUSED — signal publishing is disabled (%s).",
+                block_reason(),
+            )
+            return None
         if not self._is_connected():
             logger.debug(f"GCP Pub/Sub not connected, skipping signal publish: {signal_type} {ticker}")
             return None

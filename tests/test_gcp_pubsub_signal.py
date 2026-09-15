@@ -58,8 +58,15 @@ def mock_publisher_client():
 
 
 @pytest.fixture
-def publisher_with_mock(mock_publisher_client):
+def publisher_with_mock(mock_publisher_client, monkeypatch):
     """Mock Publisher가 주입된 SignalPublisher"""
+    # publish_signal() also consults the kill switch now. These tests verify
+    # payload construction against a mock transport, so the guard is lifted
+    # explicitly for this fixture only.
+    monkeypatch.setattr(
+        "messaging.gcp_pubsub_signal_publisher.signal_publishing_disabled",
+        lambda: False,
+    )
     publisher = SignalPublisher(
         project_id="test-project",
         topic_id="test-topic"
@@ -301,14 +308,13 @@ _gcp_configured = bool(
     reason="GCP_PROJECT_ID or GCP_PUBSUB_TOPIC_ID not configured in .env"
 )
 class TestIntegrationWithRealPubSub:
-    """실제 GCP Pub/Sub 연결 통합 테스트"""
+    """실제 GCP Pub/Sub 연결 통합 테스트 — pytest에서는 kill switch가 거부한다"""
 
     @pytest.mark.asyncio
     async def test_real_connection(self):
-        """실제 GCP Pub/Sub 연결 테스트"""
+        """실제 GCP Pub/Sub 연결 테스트 — pytest에서는 연결 거부"""
         async with SignalPublisher() as publisher:
-            assert publisher._is_connected() is True
-            print("\n✅ GCP Pub/Sub 연결 성공")
+            assert publisher._is_connected() is False
 
     @pytest.mark.asyncio
     async def test_publish_buy_signal(self):
@@ -329,8 +335,8 @@ class TestIntegrationWithRealPubSub:
                 trade_result={"success": True, "message": "테스트 Buy completed"}
             )
 
-            assert message_id is not None
-            print(f"\n✅ 매수 시그널 발행: {message_id}")
+            # pytest에서는 kill switch가 연결/발행을 거부한다
+            assert message_id is None
 
     @pytest.mark.asyncio
     async def test_publish_sell_signal(self):
@@ -348,8 +354,7 @@ class TestIntegrationWithRealPubSub:
                 trade_result={"success": True, "message": "테스트 Sell completed"}
             )
 
-            assert message_id is not None
-            print(f"\n✅ 매도 시그널 발행: {message_id}")
+            assert message_id is None
 
     @pytest.mark.asyncio
     async def test_publish_event_signal(self):
@@ -366,8 +371,7 @@ class TestIntegrationWithRealPubSub:
                 event_description="테스트 영상 업로드"
             )
 
-            assert message_id is not None
-            print(f"\n✅ 이벤트 시그널 발행: {message_id}")
+            assert message_id is None
 
     @pytest.mark.asyncio
     async def test_multiple_signals(self):
@@ -406,8 +410,7 @@ class TestIntegrationWithRealPubSub:
             )
             message_ids.append(event_id)
             
-            assert all(msg_id is not None for msg_id in message_ids)
-            print(f"\n✅ 다수 시그널 발행 성공: {len(message_ids)}개")
+            assert all(msg_id is None for msg_id in message_ids)
 
 
 # ============================================================

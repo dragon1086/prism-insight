@@ -24,6 +24,19 @@ log() {
 # 현재 디렉토리를 스크립트 디렉토리로 변경
 cd "$PROJECT_ROOT" || exit 1
 
+# Python 실행 파일 찾기 (우선순위: venv > pyenv > system)
+# 영업일 체크도 이 Python으로 실행되므로 반드시 먼저 결정해야 한다
+if [ -f "$PROJECT_ROOT/venv/bin/python" ]; then
+    PYTHON_BIN="$PROJECT_ROOT/venv/bin/python"
+    log "가상환경 Python 사용: $PYTHON_BIN"
+elif [ -f "$HOME/.pyenv/shims/python" ]; then
+    PYTHON_BIN="$HOME/.pyenv/shims/python"
+    log "pyenv Python 사용: $PYTHON_BIN"
+else
+    PYTHON_BIN="python3"
+    log "시스템 Python 사용: $PYTHON_BIN"
+fi
+
 # 시장 영업일 체크
 log "주식 시장 영업일 체크 시작"
 "$PYTHON_BIN" "$PROJECT_ROOT/check_market_day.py"
@@ -41,21 +54,6 @@ TODAY=$(date +%Y%m%d)
 # 로그 파일 지정 (날짜별)
 BATCH_LOG_FILE="$PROJECT_ROOT/logs/stock_analysis_${MODE}_${TODAY}.log"
 mkdir -p "$PROJECT_ROOT/logs"
-
-# 로그 출력
-log "실행 모드: $MODE, 로그 파일: $BATCH_LOG_FILE"
-
-# Python 실행 파일 찾기 (우선순위: venv > pyenv > system)
-if [ -f "$PROJECT_ROOT/venv/bin/python" ]; then
-    PYTHON_BIN="$PROJECT_ROOT/venv/bin/python"
-    log "가상환경 Python 사용: $PYTHON_BIN"
-elif [ -f "$HOME/.pyenv/shims/python" ]; then
-    PYTHON_BIN="$HOME/.pyenv/shims/python"
-    log "pyenv Python 사용: $PYTHON_BIN"
-else
-    PYTHON_BIN="python3"
-    log "시스템 Python 사용: $PYTHON_BIN"
-fi
 
 # 로그 출력
 log "실행 모드: $MODE, 로그 파일: $BATCH_LOG_FILE"
