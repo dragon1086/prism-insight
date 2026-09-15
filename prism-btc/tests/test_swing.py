@@ -766,7 +766,7 @@ class TestExchangeBackend:
     def test_unknown_entry_alert_without_bars_or_local_position(self, conn, monkeypatch):
         from live import swing, tracking
         messages = []
-        monkeypatch.setattr(swing, "_notify", lambda mode, message: messages.append(message) or True)
+        monkeypatch.setattr(swing, "_notify_ops", lambda mode, message: messages.append(message) or True)
         tracking.set_meta(conn, "swing_entry_pending", {"link_id": "private-link", "status": "SUBMISSION_UNKNOWN"}, "swing")
         swing.process(conn, {}, main_mode="demo")
         swing.process(conn, {}, main_mode="demo")
@@ -908,7 +908,7 @@ class TestExchangeBackend:
     def test_unresolved_close_alert_once_per_state(self, conn, monkeypatch):
         from live import swing, tracking
         messages = []
-        monkeypatch.setattr(swing, "_notify", lambda mode,msg: messages.append(msg) or True)
+        monkeypatch.setattr(swing, "_notify_ops", lambda mode,msg: messages.append(msg) or True)
         tracking.set_meta(conn, "swing_close_pending",
                           {"link_id":"test", "status":"HALTED_SUBMISSION_UNKNOWN"}, "swing")
         swing._notify_unresolved_close(conn, "demo")
@@ -1438,3 +1438,29 @@ class TestExchangeBackend:
         assert be.name == "exchange"
         assert tracking.get_meta(
             conn, "swing_exec_fallback_notified", "swing") == 0
+
+
+@pytest.mark.parametrize("raw,wire", [(0.08904303700823521, .089), (.0896, .090)])
+def test_open_persists_the_exact_wire_quantity(conn, monkeypatch, raw, wire):
+    from live import swing, tracking
+    monkeypatch.setenv("BTC_SHARED_ENTRY_ENABLED", "false")
+    session = FakeSession()
+    session.avg_price = 50_000.
+    backend = swing.ExchangeBackend(conn, session)
+    assert backend.open("long", raw, 49_000., 50_000.) == 50_000.
+    pending = tracking.get_meta(conn, "swing_entry_pending", "swing")
+    assert pending["qty"] == wire
+    assert pending["sizing_qty"] == raw
+    request = session._calls_named("place_order")[0]
+    assert request["qty"] == f"{wire:.3f}"
+    assert backend.last_open_snapshot["qty"] == wire
+
+
+def test_open_rejects_zero_wire_quantity_before_any_exchange_call(conn, monkeypatch):
+    from live import swing, tracking
+    monkeypatch.setenv("BTC_SHARED_ENTRY_ENABLED", "false")
+    session = FakeSession()
+    backend = swing.ExchangeBackend(conn, session)
+    assert backend.open("long", .0004, 49_000., 50_000.) is None
+    assert session.calls == []
+    assert tracking.get_meta(conn, "swing_entry_pending", "swing") is None

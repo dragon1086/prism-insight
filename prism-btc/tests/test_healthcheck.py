@@ -74,6 +74,8 @@ def captured(monkeypatch):
     # 채널/토큰 주입되어 있다고 가정 (전송 경로 타게).
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
     monkeypatch.setenv("BTC_OPS_CHANNEL_ID", "12345")
+    monkeypatch.delenv("OAUTH_ALERT_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("OAUTH_ALERT_CHAT_ID", raising=False)
     return sent
 
 
@@ -342,10 +344,12 @@ def test_health_event_recorded_ok(captured):
 
 
 # ---------------------------------------------------------------------------
-# 토큰 없음 → stdout 폴백 (실제 _send 사용, monkeypatch 없음)
+# 토큰 없음 → 전송 실패로 기록 (실제 private _send 사용)
 # ---------------------------------------------------------------------------
 
-def test_no_token_stdout_fallback_no_crash(monkeypatch, capsys):
+def test_no_token_reports_unsent_no_crash(monkeypatch, capsys):
+    monkeypatch.delenv("OAUTH_ALERT_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("OAUTH_ALERT_CHAT_ID", raising=False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("BTC_OPS_CHANNEL_ID", raising=False)
     monkeypatch.delenv("TELEGRAM_CHANNEL_ID", raising=False)
@@ -357,10 +361,10 @@ def test_no_token_stdout_fallback_no_crash(monkeypatch, capsys):
     tracking.record_equity(conn, 10000.0, mode="demo")
 
     res = healthcheck.notify_health(conn, "demo", send=True, now=_NOW)
-    assert res["sent"] is True  # _send 가 stdout 폴백 후 True.
+    assert res["sent"] is False
 
     out = capsys.readouterr().out
-    assert "이상감지" in out  # stdout 폴백으로 경보 메시지 출력.
+    assert out == ""  # 원문 경보를 공개 stdout 폴백으로 흘리지 않는다.
 
 
 # ---------------------------------------------------------------------------
