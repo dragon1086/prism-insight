@@ -29,12 +29,16 @@ jobs:
       - name: Install existing test runners
         run: python -m pip install pytest pytest-asyncio
 
+      - name: KR/US provider-shape batch integration gate
+        env:
+          PRISM_DISABLE_SIGNAL_PUBLISH: "1"
+        run: python -m pytest tests/test_ohlcv_shape.py tests/test_kr_screening_ohlcv_shape.py tests/test_us_batch_ohlcv_shape_integration.py -q
+
       - name: Offline BUY runtime safety regression
         env:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
         run: |
           python -m pytest tests/test_screening_price_evidence.py tests/test_screening_orchestrator_rr_contract.py tests/test_agent_fit_score_constant_tripwire.py -q
-          python -m pytest tests/test_ohlcv_shape.py tests/test_kr_screening_ohlcv_shape.py tests/test_us_batch_ohlcv_shape_integration.py -q
           python -m pytest tests/test_agent_lazy_broker_imports.py -q
           python -m pytest tests/test_agent_virtual_initialization.py \
             tests/test_agent_instance_mcp_fallback.py tests/test_isolated_agent_runtime.py -q
