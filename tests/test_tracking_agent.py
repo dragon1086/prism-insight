@@ -5,8 +5,17 @@ Stock tracking agent test script
 import asyncio
 import logging
 
+import pytest
+
 from stock_tracking_enhanced_agent import EnhancedStockTrackingAgent as StockTrackingAgent
 from stock_tracking_agent import app
+
+# Manual smoke script, not an automated test: it needs real report files under
+# reports/ (gitignored), a live LLM backend, and performs DB writes. Run it
+# directly with `python tests/test_tracking_agent.py`.
+pytestmark = pytest.mark.skip(
+    reason="manual script: requires production report files and LLM/DB access"
+)
 
 # Logging setup
 logging.basicConfig(

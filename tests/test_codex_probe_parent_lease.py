@@ -15,6 +15,27 @@ import pytest
 from tools import codex_probe_sandbox as sandbox
 
 
+def _bwrap_namespace_functional() -> bool:
+    """Probe whether bwrap can actually create namespaces on this host.
+
+    The binary can be present while user namespaces are unavailable
+    (restricted containers, disabled unprivileged userns), in which case the
+    real-runtime checks below would fail instead of verifying anything."""
+    bwrap = Path("/usr/bin/bwrap")
+    if sys.platform != "linux" or not bwrap.is_file():
+        return False
+    try:
+        return subprocess.run(
+            [str(bwrap), "--unshare-all", "--die-with-parent", "--cap-drop", "ALL",
+             "--ro-bind", "/", "/", "--proc", "/proc", "--", "/usr/bin/true"],
+            capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+_BWRAP_FUNCTIONAL = _bwrap_namespace_functional()
+
+
 def test_closed_parent_pipe_fails_before_spawn():
     reader, writer = os.pipe()
     os.close(writer)
@@ -76,7 +97,7 @@ with ReadMcpBridge(sys.argv[3],server_name='yahoo_finance',argv=[sys.executable,
 '''
 
 
-@pytest.mark.skipif(sys.platform != "linux" or not Path("/usr/bin/bwrap").is_file(), reason="real Linux private PID namespace required")
+@pytest.mark.skipif(not _BWRAP_FUNCTIONAL, reason="functional Linux bwrap namespace runtime required")
 def test_supervisor_sigkill_reaps_model_and_provider_namespaces_without_sentinel():
     """Real lease + bridge + namespace primitives, NOT an actual model run."""
     supervisor_code = r'''

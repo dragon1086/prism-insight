@@ -12,6 +12,27 @@ import pytest
 from tools import isolated_agent_namespace as ns
 
 
+def _bwrap_namespace_functional() -> bool:
+    """Probe whether bwrap can actually create namespaces on this host.
+
+    The binary can be present while user namespaces are unavailable
+    (restricted containers, disabled unprivileged userns), in which case the
+    real-runtime checks below would fail instead of verifying anything."""
+    bwrap = Path("/usr/bin/bwrap")
+    if sys.platform != "linux" or not bwrap.is_file():
+        return False
+    try:
+        return subprocess.run(
+            [str(bwrap), "--unshare-all", "--die-with-parent", "--cap-drop", "ALL",
+             "--ro-bind", "/", "/", "--proc", "/proc", "--", "/usr/bin/true"],
+            capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+_BWRAP_FUNCTIONAL = _bwrap_namespace_functional()
+
+
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -162,7 +183,10 @@ def test_partial_registration_is_rejected(setup):
         ns.command(**setup)
 
 
-@pytest.mark.skipif(sys.platform != "linux" or sys.version_info[:2] != (3, 11), reason="Linux staged Python 3.11 namespace")
+@pytest.mark.skipif(
+    sys.version_info[:2] != (3, 11) or not _BWRAP_FUNCTIONAL,
+    reason="functional Linux bwrap namespace runtime with staged Python 3.11 required",
+)
 @pytest.mark.parametrize("registered_mode", [False, True])
 def test_real_harmless_namespace_has_only_registered_mounts(setup, registered_mode):
     from tools.prepare_codex_probe_stage import stage_runtime

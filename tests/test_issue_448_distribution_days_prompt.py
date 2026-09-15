@@ -21,8 +21,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # ---------------------------------------------------------------------------
 # Stub unavailable modules so stock_tracking_agent can be imported in CI/local
 # (mcp_agent, Crypto/pycryptodome, etc. are not installed in dev/test environments).
+# Scoped via an autouse fixture: module-level sys.modules.setdefault() leaks the
+# stubs process-wide for the whole pytest session, so later test files (e.g.
+# test_multi_account_kis_auth) see MagicMock instead of the real modules.
 # ---------------------------------------------------------------------------
-for _n in [
+_STUB_MODULES = [
     "mcp_agent",
     "mcp_agent.app",
     "mcp_agent.workflows",
@@ -39,8 +42,44 @@ for _n in [
     "trading.kis_auth",  # reads YAML config at import time
     "seaborn",           # required by cores.stock_chart
     "cores.stock_chart", # requires seaborn; imported lazily inside _get_trend_facts
-]:
-    sys.modules.setdefault(_n, MagicMock())
+]
+
+
+_ALWAYS_STUB = {"trading.kis_auth", "cores.stock_chart"}
+
+
+@pytest.fixture(autouse=True)
+def _stub_heavy_modules(monkeypatch):
+    """Scope the dependency stubs to this module's tests only.
+
+    Two names are stubbed unconditionally: ``trading.kis_auth`` (its real
+    import is what ``StockTrackingAgent()`` uses for a live KIS auth call) and
+    ``cores.stock_chart`` (``_configure_stock_chart_mock`` drives it as a
+    MagicMock). The rest are stubbed only when the real module cannot be
+    imported — e.g. light-dep CI without mcp_agent/pycryptodome — while real
+    packages like ``cores.llm`` keep working so their submodule imports
+    (``cores.llm.codex_oauth_fast_backend``) still resolve.
+
+    monkeypatch restores every entry on teardown, so the stubs no longer leak
+    into later test files the way module-level ``sys.modules.setdefault`` did.
+    """
+    import importlib
+
+    for name in _STUB_MODULES:
+        if name in _ALWAYS_STUB:
+            monkeypatch.setitem(sys.modules, name, MagicMock(name=name))
+        elif name not in sys.modules:
+            try:
+                importlib.import_module(name)
+            except Exception:
+                monkeypatch.setitem(sys.modules, name, MagicMock(name=name))
+    # If an earlier test file already imported the real agent, drop that
+    # binding so `from stock_tracking_agent import ...` below re-imports under
+    # the stubs (monkeypatch restores the original binding on teardown).
+    monkeypatch.delitem(sys.modules, "stock_tracking_agent", raising=False)
+    yield
+    # Discard the copy imported under stubs so it cannot serve later tests.
+    sys.modules.pop("stock_tracking_agent", None)
 
 
 # ---------------------------------------------------------------------------

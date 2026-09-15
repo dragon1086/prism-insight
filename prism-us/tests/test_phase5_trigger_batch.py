@@ -42,7 +42,6 @@ from cores.us_surge_detector import (
 
 from us_trigger_batch import (
     TRIGGER_CRITERIA,
-    MIN_MARKET_CAP,
     MIN_TRADING_VALUE,
     calculate_agent_fit_metrics,
     score_candidates_by_agent_criteria,
@@ -193,11 +192,11 @@ class TestUtilityFunctions:
         assert result == "20250117"
 
     def test_get_nearest_business_day_next(self):
-        """Test next business day from weekend."""
-        # Saturday -> should return Monday
+        """Test next business day from weekend, skipping US market holidays."""
+        # Saturday Jan 18 2025 -> next trading day is Tuesday Jan 21, because
+        # Monday Jan 20 was MLK Day (NYSE calendar handles market holidays).
         result = get_nearest_business_day("20250118", prev=False)
-        # Result should be Monday (20th)
-        assert result == "20250120"
+        assert result == "20250121"
 
     def test_filter_low_liquidity(self, sample_snapshot):
         """Test filter_low_liquidity removes low volume stocks."""
@@ -266,10 +265,6 @@ class TestTriggerCriteria:
         for trigger, criteria in TRIGGER_CRITERIA.items():
             assert 'sl_max' in criteria, f"{trigger} missing sl_max"
 
-    def test_min_market_cap_value(self):
-        """Test MIN_MARKET_CAP is $20B."""
-        assert MIN_MARKET_CAP == 20_000_000_000
-
     def test_min_trading_value(self):
         """Test MIN_TRADING_VALUE is $100M."""
         assert MIN_TRADING_VALUE == 100_000_000
@@ -328,19 +323,28 @@ class TestAgentFitMetrics:
                 assert key in result, f"Missing key: {key}"
 
     def test_zero_price_returns_defaults(self, sample_ticker, sample_reference_date):
-        """Test zero price returns default values."""
+        """Test zero price returns null scenario fields plus evidence.
+
+        Scenario fields are deliberately unknown (None), not zero: screening
+        no longer fabricates trade scenarios — see calculate_agent_fit_metrics.
+        """
         result = calculate_agent_fit_metrics(
             ticker=sample_ticker,
             current_price=0,
             trade_date=sample_reference_date,
         )
 
-        assert result['stop_loss_price'] == 0
-        assert result['target_price'] == 0
-        assert result['agent_fit_score'] == 0
+        assert result['stop_loss_price'] is None
+        assert result['target_price'] is None
+        assert result['agent_fit_score'] is None
+        assert 'screening_price_evidence' in result
 
-    def test_fixed_stop_loss_method(self, sample_ticker, sample_reference_date):
-        """Test v1.16.6 fixed stop-loss method."""
+    def test_screening_fields_are_unknown_not_fabricated(self, sample_ticker, sample_reference_date):
+        """Scenario fields stay None even with valid OHLCV evidence.
+
+        The v1.16.6 fixed stop-loss computation was removed: screening only
+        emits descriptive price evidence; the buy scenario owns SL/TP.
+        """
         with patch('us_trigger_batch.get_multi_day_ohlcv') as mock_ohlcv:
             mock_ohlcv.return_value = pd.DataFrame({
                 'High': [182, 183, 184, 185, 186],
@@ -348,17 +352,17 @@ class TestAgentFitMetrics:
                 'Close': [181, 182, 183, 184, 185],
             })
 
-            current_price = 185.0
             result = calculate_agent_fit_metrics(
                 ticker=sample_ticker,
-                current_price=current_price,
+                current_price=185.0,
                 trade_date=sample_reference_date,
-                trigger_type="Volume Surge Top"  # sl_max=0.05
+                trigger_type="Volume Surge Top"
             )
 
-            # Stop loss should be fixed at 5%
-            expected_sl = current_price * 0.95  # 185 * 0.95 = 175.75
-            assert abs(result['stop_loss_price'] - expected_sl) < 0.01
+            assert result['stop_loss_price'] is None
+            assert result['target_price'] is None
+            assert result['risk_reward_ratio'] is None
+            assert result['screening_price_evidence'] is not None
 
 
 # =============================================================================

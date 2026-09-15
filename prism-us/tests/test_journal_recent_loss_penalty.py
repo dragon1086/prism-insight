@@ -37,27 +37,29 @@ def _make_us_journal_manager(cursor, conn):
         del sys.modules[mod_key]
 
     # Stub heavy deps that prism-us/tracking/journal.py loads at module level
-    # (parse_llm_json is loaded via _import_from_main_cores at import time)
+    # (parse_llm_json is loaded via _import_from_main_cores at import time).
+    # Scoped via patch.dict so the stubs cannot leak into other test modules —
+    # a bare sys.modules assignment here would persist process-wide.
     cores_stub = types.ModuleType("cores")
     cores_stub.utils = types.ModuleType("cores.utils")
     cores_stub.utils.parse_llm_json = lambda *a, **k: None
-    sys.modules.setdefault("cores", cores_stub)
-    sys.modules.setdefault("cores.utils", cores_stub.utils)
-    sys.modules.setdefault("cores_utils", cores_stub.utils)
-
-    # Patch _import_from_main_cores to return our stub (called at module level)
-    us_journal_path = Path(PRISM_US_ROOT) / "tracking" / "journal.py"
+    stub_utils = types.ModuleType("cores_utils")
+    stub_utils.parse_llm_json = lambda *a, **k: None
 
     # We need to prevent the real _import_from_main_cores from running since
     # the test environment won't have cores/utils.py accessible the same way.
     # We patch by pre-populating the cores_utils key in sys.modules.
-    stub_utils = types.ModuleType("cores_utils")
-    stub_utils.parse_llm_json = lambda *a, **k: None
-    sys.modules["cores_utils"] = stub_utils
+    stubs = {"cores_utils": stub_utils}
+    if "cores" not in sys.modules:
+        stubs["cores"] = cores_stub
+    if "cores.utils" not in sys.modules:
+        stubs["cores.utils"] = cores_stub.utils
 
+    us_journal_path = Path(PRISM_US_ROOT) / "tracking" / "journal.py"
     spec = importlib.util.spec_from_file_location(mod_key, us_journal_path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    with patch.dict(sys.modules, stubs):
+        spec.loader.exec_module(mod)
     return mod.USJournalManager(cursor=cursor, conn=conn, enable_journal=True)
 
 

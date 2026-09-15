@@ -157,78 +157,39 @@ class TestGoldenInvariant:
 
 
 # ---------------------------------------------------------------------------
-# (2) KRX fallback 테스트 (KR only — get_multi_day_ohlcv in trigger_batch)
+# (2) 소스 체인 소진 계약 (KR only — get_multi_day_ohlcv in trigger_batch)
 # ---------------------------------------------------------------------------
 
-class TestKRXFallback:
-    """KRX 빈 df 또는 예외 시 FinanceDataReader 로 fallback."""
+class TestSourceChainExhaustion:
+    """get_multi_day_ohlcv contract after the KIS-only migration.
 
-    def _fdr_df(self, ticker="005930"):
-        """FDR이 반환하는 스타일 DataFrame (컬럼명 소문자 또는 한글)."""
-        df = _make_ohlcv(30, start_close=60000.0, end_close=65000.0)
-        # FDR 실제 컬럼: Open/High/Low/Close/Volume (이미 영문 대문자인 경우도 있음)
-        return df
+    The KRX provider and the FinanceDataReader fallback were both removed:
+    ``cores.market_data`` runs KIS as the sole source. The function's remaining
+    contract is fail-soft — empty frame on exhaustion or exception, never raise.
+    """
 
-    def test_krx_empty_triggers_fdr(self, monkeypatch):
-        """get_market_ohlcv_by_date 빈 df → FDR DataReader 호출, 정규화된 df 반환."""
-        fdr_result = self._fdr_df()
-
-        import FinanceDataReader as fdr_module
-
-        with patch("trigger_batch.get_multi_day_ohlcv.__wrapped__", create=True):
-            pass  # get_multi_day_ohlcv 는 내부에서 import 함 — 직접 내부 mock
-
-        # get_market_ohlcv_by_date 를 빈 df 반환으로 패치
-        with patch("krx_data_client.get_market_ohlcv_by_date", return_value=pd.DataFrame()):
-            with patch("FinanceDataReader.DataReader", return_value=fdr_result) as mock_fdr:
-                result = get_multi_day_ohlcv("005930", "20240101", 30)
-
-        mock_fdr.assert_called_once()
-        assert not result.empty, "FDR fallback 후 결과가 비어있어서는 안 됨"
-        assert "Close" in result.columns, "Close 컬럼이 있어야 함"
-
-    def test_krx_exception_triggers_fdr(self, monkeypatch):
-        """get_market_ohlcv_by_date 예외 → FDR fallback."""
-        fdr_result = self._fdr_df()
-
-        with patch("krx_data_client.get_market_ohlcv_by_date", side_effect=RuntimeError("KRX down")):
-            with patch("FinanceDataReader.DataReader", return_value=fdr_result) as mock_fdr:
-                result = get_multi_day_ohlcv("005930", "20240101", 30)
-
-        mock_fdr.assert_called_once()
-        assert not result.empty
-
-    def test_krx_empty_fdr_also_fails(self):
-        """KRX 빈 df + FDR도 예외 → 빈 df 반환 (오류 전파 없음)."""
-        with patch("krx_data_client.get_market_ohlcv_by_date", return_value=pd.DataFrame()):
-            with patch("FinanceDataReader.DataReader", side_effect=Exception("FDR also down")):
-                result = get_multi_day_ohlcv("005930", "20240101", 10)
+    def test_chain_empty_returns_empty(self):
+        """체인이 빈 df 를 주면 그대로 빈 df 반환."""
+        with patch("cores.market_data.get_market_ohlcv_by_date", return_value=pd.DataFrame()):
+            result = get_multi_day_ohlcv("005930", "20240101", 30)
 
         assert result.empty
 
-    def test_krx_empty_fdr_empty(self):
-        """KRX 빈 df + FDR도 빈 df → 빈 df 반환."""
-        with patch("krx_data_client.get_market_ohlcv_by_date", return_value=pd.DataFrame()):
-            with patch("FinanceDataReader.DataReader", return_value=pd.DataFrame()):
-                result = get_multi_day_ohlcv("005930", "20240101", 10)
+    def test_chain_exception_returns_empty(self):
+        """체인 예외는 전파되지 않고 빈 df 로 수렴한다."""
+        with patch(
+            "cores.market_data.get_market_ohlcv_by_date",
+            side_effect=RuntimeError("chain down"),
+        ):
+            result = get_multi_day_ohlcv("005930", "20240101", 10)
 
         assert result.empty
 
-    def test_fdr_column_normalization(self):
-        """FDR 소문자 컬럼 → 영문 대문자로 정규화 확인."""
-        # FDR이 소문자 컬럼을 반환하는 경우 시뮬레이션
-        raw_fdr = pd.DataFrame({
-            "open": [100.0], "high": [102.0], "low": [99.0],
-            "close": [101.0], "volume": [500000],
-        }, index=pd.date_range("2024-01-01", periods=1))
+    def test_krx_module_removed(self):
+        """krx_data_client 는 KIS-only 마이그레이션에서 삭제됐다."""
+        import importlib.util
 
-        with patch("krx_data_client.get_market_ohlcv_by_date", return_value=pd.DataFrame()):
-            with patch("FinanceDataReader.DataReader", return_value=raw_fdr):
-                result = get_multi_day_ohlcv("005930", "20240101", 5)
-
-        assert "Close" in result.columns, f"Close 컬럼 없음, 컬럼: {list(result.columns)}"
-        assert "High" in result.columns
-        assert "Low" in result.columns
+        assert importlib.util.find_spec("krx_data_client") is None
 
 
 # ---------------------------------------------------------------------------

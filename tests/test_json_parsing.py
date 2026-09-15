@@ -85,9 +85,11 @@ class TestJSONParser:
             print(f"   - hold_conditions count: {len(parsed['trading_scenarios']['hold_conditions'])}")
         except Exception as e:
             print(f"   ❌ Parsing failed: {e}")
-            return False
+            raise
 
-        return True
+        assert parsed["buy_score"] == 6.5
+        assert parsed["decision"] == "관망"
+        assert len(parsed["trading_scenarios"]["sell_triggers"]) == 5
 
     def test_various_broken_json_patterns(self):
         """Test various JSON syntax error patterns"""
@@ -132,8 +134,6 @@ class TestJSONParser:
         ]
 
 
-        all_passed = True
-
         for i, test_case in enumerate(test_cases, 1):
             print(f"\n   Test {i}: {test_case['name']}")
 
@@ -152,18 +152,13 @@ class TestJSONParser:
 
                 # Check expected keys
                 for key in test_case['expected_keys']:
-                    if key not in parsed:
-                        print(f"      ❌ Key '{key}' missing")
-                        all_passed = False
-                        break
-                else:
-                    print(f"      ✅ Parsing successful after fix (all keys present)")
+                    assert key in parsed, f"key '{key}' missing in case {i}"
+                print(f"      ✅ Parsing successful after fix (all keys present)")
 
             except Exception as e:
-                print(f"      ❌ Parsing still failed after fix: {e}")
-                all_passed = False
-
-        return all_passed
+                raise AssertionError(
+                    f"case {i} ({test_case['name']}) still failed after fix: {e}"
+                )
 
     def test_json_repair_fallback(self):
         """Test json-repair library fallback"""
@@ -201,8 +196,6 @@ class TestJSONParser:
         except ImportError:
             print("   ⚠️ json-repair library not installed (optional)")
 
-        return True
-
 
 def main():
     """Run main test"""
@@ -213,11 +206,18 @@ def main():
     tester = TestJSONParser()
 
     # Run each test
-    results = {
-        "Actual Error JSON": tester.test_broken_json_from_error_log(),
-        "Various Error Patterns": tester.test_various_broken_json_patterns(),
-        "json-repair Fallback": tester.test_json_repair_fallback(),
+    checks = {
+        "Actual Error JSON": tester.test_broken_json_from_error_log,
+        "Various Error Patterns": tester.test_various_broken_json_patterns,
+        "json-repair Fallback": tester.test_json_repair_fallback,
     }
+    results = {}
+    for name, fn in checks.items():
+        try:
+            fn()
+            results[name] = True
+        except Exception:
+            results[name] = False
 
     # Summary
     print("\n" + "=" * 60)

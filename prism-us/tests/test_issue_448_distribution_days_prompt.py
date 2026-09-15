@@ -39,6 +39,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pandas as pd
+import pytest
 
 PRISM_US_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = PRISM_US_DIR.parent
@@ -51,7 +52,17 @@ sys.path.insert(0, str(PRISM_US_DIR))
 # exercise _get_trend_facts, which is what Part B tests assert on).
 # Mirrors the KR test's stub block.
 # ---------------------------------------------------------------------------
-for _n in [
+# mcp_agent must NOT be stubbed when the real package is installed:
+# prism_core.isolated_agent_runtime subclasses mcp_agent.config.Settings
+# types, which a MagicMock cannot provide. Only inject fakes when the package
+# is genuinely absent (lightweight CI envs).
+try:
+    import mcp_agent.config  # noqa: F401
+    _HAS_MCP_AGENT = True
+except ModuleNotFoundError:
+    _HAS_MCP_AGENT = False
+
+_MCP_AGENT_STUBS = [
     "mcp_agent",
     "mcp_agent.app",
     "mcp_agent.agents",
@@ -60,6 +71,10 @@ for _n in [
     "mcp_agent.workflows.llm",
     "mcp_agent.workflows.llm.augmented_llm",
     "mcp_agent.workflows.llm.augmented_llm_openai",  # openai_responses_llm.py loads this at exec time
+    "mcp_agent.config",
+]
+
+_OTHER_STUBS = [
     "cores.llm",
     "cores.llm.openai_responses_llm",
     "cores.agents.trading_agents",
@@ -74,8 +89,7 @@ for _n in [
     "cores.openai_error_logging",   # telegram_translator_agent.py imports this at exec time
     "telegram",                     # us_stock_tracking_agent top-level imports
     "telegram.error",
-]:
-    sys.modules.setdefault(_n, MagicMock())
+]
 
 # ---------------------------------------------------------------------------
 # Prevent trading/kis_auth.py from executing at us_stock_tracking_agent import
@@ -97,7 +111,26 @@ def _kis_auth_safe_spec(name, location=None, *args, **kwargs):
     return _real_spec_from_file_location(name, location, *args, **kwargs)
 
 
-importlib.util.spec_from_file_location = _kis_auth_safe_spec
+@pytest.fixture(autouse=True)
+def _kis_auth_safe_spec_patch(monkeypatch):
+    """Scope the spec hook AND the module stubs to this module's tests only.
+
+    A module-level ``importlib.util.spec_from_file_location = ...`` assignment
+    leaks process-wide and intercepts unrelated file loads (e.g. the
+    ``prism_root_trading_kis_auth`` load in test_multi_account_us.py, whose
+    location string also contains "kis_auth").  The ``sys.modules.setdefault``
+    stubs likewise persist after collection — e.g. a MagicMock
+    ``cores.us_data_client`` then serves ``USDataClient()`` calls in unrelated
+    test files (test_integration_pipeline.py).  monkeypatch restores both.
+    """
+    monkeypatch.setattr(
+        importlib.util, "spec_from_file_location", _kis_auth_safe_spec
+    )
+    stubs = list(_OTHER_STUBS)
+    if not _HAS_MCP_AGENT:
+        stubs += _MCP_AGENT_STUBS
+    for _n in stubs:
+        monkeypatch.setitem(sys.modules, _n, MagicMock(name=_n))
 
 
 def _load_root_regime(module_name: str = "prism_root_regime_policy_test"):

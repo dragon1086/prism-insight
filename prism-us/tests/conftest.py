@@ -188,6 +188,7 @@ def christmas_date():
 def sample_holding():
     """Sample stock holding record."""
     return {
+        'account_key': 'vps:test:01',
         'ticker': 'AAPL',
         'company_name': 'Apple Inc.',
         'buy_price': 180.50,

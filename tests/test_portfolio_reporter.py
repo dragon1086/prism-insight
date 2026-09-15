@@ -6,8 +6,17 @@ Portfolio Telegram reporter test script
 import asyncio
 import os
 import sys
+
+import pytest
 import yaml
 from pathlib import Path
+
+# Manual smoke script, not an automated test: it is interactive (input()
+# prompts) and can send real Telegram messages. Run it directly with
+# `python tests/test_portfolio_reporter.py`.
+pytestmark = pytest.mark.skip(
+    reason="manual script: interactive prompts and real Telegram sends"
+)
 
 # Set paths based on current script directory
 SCRIPT_DIR = Path(__file__).parent          # tests directory

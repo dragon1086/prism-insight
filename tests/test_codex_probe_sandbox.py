@@ -15,6 +15,27 @@ import pytest
 from tools import codex_probe_sandbox as sandbox
 
 
+def _bwrap_namespace_functional() -> bool:
+    """Probe whether bwrap can actually create namespaces on this host.
+
+    The binary can be present while user namespaces are unavailable
+    (restricted containers, disabled unprivileged userns), in which case the
+    real-runtime checks below would fail instead of verifying anything."""
+    bwrap = Path("/usr/bin/bwrap")
+    if sys.platform != "linux" or not bwrap.is_file():
+        return False
+    try:
+        return subprocess.run(
+            [str(bwrap), "--unshare-all", "--die-with-parent", "--cap-drop", "ALL",
+             "--ro-bind", "/", "/", "--proc", "/proc", "--", "/usr/bin/true"],
+            capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+_BWRAP_FUNCTIONAL = _bwrap_namespace_functional()
+
+
 @pytest.fixture
 def short_root():
     with tempfile.TemporaryDirectory(prefix="probe-", dir="/tmp") as directory:
@@ -197,8 +218,8 @@ def test_safe_failure_does_not_emit_paths_or_environment(monkeypatch, capsys):
     assert output.err.strip() == "probe_sandbox_boundary_failed"
 
 
-@pytest.mark.skipif(sys.platform != "linux" or shutil.which("bwrap") is None,
-                    reason="Linux bwrap namespace test; no model or external network")
+@pytest.mark.skipif(not _BWRAP_FUNCTIONAL,
+                    reason="functional Linux bwrap namespace runtime required")
 def test_linux_namespace_denies_host_files_network_and_reaps_on_cancel(tmp_path, monkeypatch):
     from cores.llm.codex_oauth_fast_backend import _terminate_owned_process
     secret = tmp_path / "host-only-canary"

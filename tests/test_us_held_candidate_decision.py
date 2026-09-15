@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import copy
 import logging
 import os
+import time
 import traceback
 import types
 from pathlib import Path
@@ -12,6 +14,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock
 
 import pytest
+
+from prism_core.isolated_agent_runtime import require_execution_runtime
+from prism_core.isolated_strategy_effects import EffectsFailure, effects_for
+from prism_core.trading_scenario_contract import apply_buy_scenario_contract
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -45,8 +51,15 @@ def _load_real_method(name: str):
         "Optional": Optional,
         "Tuple": Tuple,
         "logger": logging.getLogger("us-held-candidate-test"),
+        "asyncio": asyncio,
         "os": os,
+        "time": time,
         "traceback": traceback,
+        "effects_for": effects_for,
+        "EffectsFailure": EffectsFailure,
+        "require_execution_runtime": require_execution_runtime,
+        "apply_buy_scenario_contract": apply_buy_scenario_contract,
+        "US_TRADING_ANALYSIS_CONCURRENCY": 1,
     }
     exec(compile(module, str(AGENT_PATH), "exec"), namespace)
     return namespace[name]
@@ -68,9 +81,16 @@ async def test_pilot_frozen_held_candidate_still_queues_one_decision():
         "company_name": "NVIDIA Corporation",
         "current_price": 223.26,
         "scenario": {
+            "decision": "entry",
             "buy_score": 8,
             "min_score": 4,
             "market_condition": "strong_bull",
+            "entry_price": 220.0,
+            "target_price": 260.0,
+            "stop_loss": 210.0,
+            "risk_reward_ratio": 3.0,
+            "expected_return_pct": 18.0,
+            "expected_loss_pct": 4.5,
             "rationale": "기존 보유분의 추세는 유지 중입니다.",
         },
         "decision": "entry",
@@ -78,6 +98,7 @@ async def test_pilot_frozen_held_candidate_still_queues_one_decision():
     }
 
     agent._analyze_report_core = AsyncMock(return_value=analysis)
+    agent._refresh_buy_quote = AsyncMock(return_value=223.26)
     agent.update_holdings = AsyncMock(return_value=[])
     agent._is_ticker_in_holdings = AsyncMock(return_value=True)
     agent._save_watchlist_item = AsyncMock(return_value=True)

@@ -23,6 +23,54 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PRISM_US_DIR))
 
 
+def _prism_us_import(module_name: str):
+    """Import a prism-us module with the prism-us namespace winning.
+
+    Two collision sources exist in this suite:
+
+    1. ``trading.us_stock_trading`` inserts ``PROJECT_ROOT`` at ``sys.path[0]``
+       during its own import, so afterwards ``import cores`` / ``import
+       tracking`` / ``import trading`` can bind the ROOT packages.
+    2. Other test files may have already bound ``trading``/``cores``/``tracking``
+       to the ROOT copies earlier in the pytest session.
+
+    ``us_stock_tracking_agent`` needs the prism-us ones (only
+    ``prism-us/cores/agents/trading_agents.py`` exports
+    ``create_us_trading_scenario_agent``, only ``prism-us/trading`` exports
+    ``us_stock_trading``). Re-assert path order, evict package entries bound to
+    the root copies, and pre-bind the shadowed names to prism-us.
+    """
+    import importlib
+
+    for path_entry in (str(PRISM_US_DIR),):
+        while path_entry in sys.path:
+            sys.path.remove(path_entry)
+        sys.path.insert(0, path_entry)
+
+    for name in list(sys.modules):
+        if name in ("cores", "tracking", "trading") or name.startswith(
+            ("cores.", "tracking.", "trading.")
+        ):
+            mod_file = (
+                getattr(sys.modules[name], "__file__", None) or ""
+            ).replace("\\", "/")
+            if mod_file.startswith(str(PROJECT_ROOT)) and "/prism-us/" not in mod_file:
+                del sys.modules[name]
+
+    # Pre-bind the shadowed package names to the prism-us copies: the agent
+    # itself inserts PROJECT_ROOT at sys.path[0], so ``import cores`` inside it
+    # would otherwise bind the ROOT package. sys.modules stickiness is exactly
+    # how production resolves this (orchestrator imports prism-us cores first).
+    for pkg in ("cores", "tracking", "trading"):
+        importlib.import_module(pkg)
+
+    return importlib.import_module(module_name)
+
+
+def _import_us_tracking_agent():
+    return _prism_us_import("us_stock_tracking_agent")
+
+
 # =============================================================================
 # Test: Exchange Code Detection
 # =============================================================================
@@ -32,7 +80,8 @@ class TestExchangeCodeDetection:
 
     def test_nasdaq_tickers(self):
         """Test NASDAQ tickers return NASD code."""
-        from trading.us_stock_trading import get_exchange_code
+        _ust = _prism_us_import('trading.us_stock_trading')
+        get_exchange_code = _ust.get_exchange_code
 
         nasdaq_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA']
         for ticker in nasdaq_tickers:
@@ -41,7 +90,8 @@ class TestExchangeCodeDetection:
 
     def test_default_to_nyse(self):
         """Test unknown tickers default to NYSE."""
-        from trading.us_stock_trading import get_exchange_code
+        _ust = _prism_us_import('trading.us_stock_trading')
+        get_exchange_code = _ust.get_exchange_code
 
         # Unknown tickers should default to NYSE
         result = get_exchange_code('UNKNOWN_TICKER')
@@ -49,7 +99,8 @@ class TestExchangeCodeDetection:
 
     def test_case_insensitive(self):
         """Test exchange code detection is case insensitive."""
-        from trading.us_stock_trading import get_exchange_code
+        _ust = _prism_us_import('trading.us_stock_trading')
+        get_exchange_code = _ust.get_exchange_code
 
         assert get_exchange_code('aapl') == 'NASD'
         assert get_exchange_code('AAPL') == 'NASD'
@@ -65,7 +116,8 @@ class TestExchangeCodesConstant:
 
     def test_exchange_codes_defined(self):
         """Test EXCHANGE_CODES dictionary is defined."""
-        from trading.us_stock_trading import EXCHANGE_CODES
+        _ust = _prism_us_import('trading.us_stock_trading')
+        EXCHANGE_CODES = _ust.EXCHANGE_CODES
 
         assert isinstance(EXCHANGE_CODES, dict)
         assert 'NASDAQ' in EXCHANGE_CODES
@@ -74,7 +126,8 @@ class TestExchangeCodesConstant:
 
     def test_exchange_codes_values(self):
         """Test EXCHANGE_CODES have correct values."""
-        from trading.us_stock_trading import EXCHANGE_CODES
+        _ust = _prism_us_import('trading.us_stock_trading')
+        EXCHANGE_CODES = _ust.EXCHANGE_CODES
 
         assert EXCHANGE_CODES['NASDAQ'] == 'NASD'
         assert EXCHANGE_CODES['NYSE'] == 'NYSE'
@@ -86,22 +139,27 @@ class TestExchangeCodesConstant:
 # =============================================================================
 
 class TestNASDAQTickersConstant:
-    """Tests for NASDAQ_TICKERS constant."""
+    """Tests for NASDAQ exchange resolution (seed cache + yfinance mapping)."""
 
-    def test_nasdaq_tickers_defined(self):
-        """Test NASDAQ_TICKERS set is defined."""
-        from trading.us_stock_trading import NASDAQ_TICKERS
+    def test_nasdaq_seed_cache_defined(self):
+        """Test the seeded exchange cache is a non-empty dict of KIS codes."""
+        _ust = _prism_us_import('trading.us_stock_trading')
+        _EXCHANGE_CACHE = _ust._EXCHANGE_CACHE
 
-        assert isinstance(NASDAQ_TICKERS, set)
-        assert len(NASDAQ_TICKERS) > 0
+        assert isinstance(_EXCHANGE_CACHE, dict)
+        assert len(_EXCHANGE_CACHE) > 0
+        assert set(_EXCHANGE_CACHE.values()) <= {"NASD", "NYSE", "AMEX"}
 
     def test_major_tech_stocks_in_nasdaq(self):
-        """Test major tech stocks are in NASDAQ_TICKERS."""
-        from trading.us_stock_trading import NASDAQ_TICKERS
+        """Test major tech stocks resolve to NASD via the seed cache."""
+        _ust = _prism_us_import('trading.us_stock_trading')
+        get_exchange_code = _ust.get_exchange_code
 
         major_tech = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA']
         for ticker in major_tech:
-            assert ticker in NASDAQ_TICKERS, f"{ticker} should be in NASDAQ_TICKERS"
+            assert get_exchange_code(ticker) == "NASD", (
+                f"{ticker} should resolve to NASD"
+            )
 
 
 # =============================================================================
@@ -117,19 +175,21 @@ class TestUSStockTradingInit:
     )
     def test_init_demo_mode(self):
         """Test initialization in demo mode."""
-        from trading.us_stock_trading import USStockTrading
+        _ust = _prism_us_import('trading.us_stock_trading')
+        USStockTrading = _ust.USStockTrading
 
-        try:
+        # Patch auth + trenv so no real KIS token request is attempted under pytest.
+        with patch("trading.us_stock_trading.ka.auth", return_value=None), \
+             patch("trading.us_stock_trading.ka.getTREnv", return_value=MagicMock()):
             trader = USStockTrading(mode="demo")
-            assert trader is not None
-            assert trader.mode == "demo"
-            assert trader.env == "vps"
-        except RuntimeError:
-            pytest.skip("KIS API authentication failed - config may be invalid")
+        assert trader is not None
+        assert trader.mode == "demo"
+        assert trader.env == "vps"
 
     def test_class_constants_defined(self):
         """Test class constants are defined."""
-        from trading.us_stock_trading import USStockTrading
+        _ust = _prism_us_import('trading.us_stock_trading')
+        USStockTrading = _ust.USStockTrading
 
         assert hasattr(USStockTrading, 'DEFAULT_BUY_AMOUNT')
         assert hasattr(USStockTrading, 'AUTO_TRADING')
@@ -145,13 +205,15 @@ class TestAsyncUSTradingContext:
 
     def test_context_class_exists(self):
         """Test AsyncUSTradingContext class exists."""
-        from trading.us_stock_trading import AsyncUSTradingContext
+        _ust = _prism_us_import('trading.us_stock_trading')
+        AsyncUSTradingContext = _ust.AsyncUSTradingContext
 
         assert AsyncUSTradingContext is not None
 
     def test_context_has_defaults(self):
         """Test AsyncUSTradingContext has default values."""
-        from trading.us_stock_trading import AsyncUSTradingContext
+        _ust = _prism_us_import('trading.us_stock_trading')
+        AsyncUSTradingContext = _ust.AsyncUSTradingContext
 
         assert hasattr(AsyncUSTradingContext, 'DEFAULT_BUY_AMOUNT')
         assert hasattr(AsyncUSTradingContext, 'AUTO_TRADING')
@@ -159,7 +221,8 @@ class TestAsyncUSTradingContext:
 
     def test_context_init(self):
         """Test AsyncUSTradingContext initialization."""
-        from trading.us_stock_trading import AsyncUSTradingContext
+        _ust = _prism_us_import('trading.us_stock_trading')
+        AsyncUSTradingContext = _ust.AsyncUSTradingContext
 
         ctx = AsyncUSTradingContext(mode="demo", buy_amount=100)
         assert ctx.mode == "demo"
@@ -179,18 +242,19 @@ class TestMarketHoursCheck:
     )
     def test_is_market_open_returns_bool(self):
         """Test is_market_open returns boolean."""
-        from trading.us_stock_trading import USStockTrading
+        _ust = _prism_us_import('trading.us_stock_trading')
+        USStockTrading = _ust.USStockTrading
 
-        try:
+        with patch("trading.us_stock_trading.ka.auth", return_value=None), \
+             patch("trading.us_stock_trading.ka.getTREnv", return_value=MagicMock()):
             trader = USStockTrading(mode="demo")
-            result = trader.is_market_open()
-            assert isinstance(result, bool)
-        except RuntimeError:
-            pytest.skip("KIS API authentication failed")
+        result = trader.is_market_open()
+        assert isinstance(result, bool)
 
     def test_us_timezone_defined(self):
         """Test US Eastern timezone is defined."""
-        from trading.us_stock_trading import US_EASTERN
+        _ust = _prism_us_import('trading.us_stock_trading')
+        US_EASTERN = _ust.US_EASTERN
 
         assert US_EASTERN is not None
         assert US_EASTERN.zone == 'US/Eastern'
@@ -205,7 +269,8 @@ class TestTrackingAgentHelpers:
 
     def test_extract_ticker_info(self):
         """Test extract_ticker_info function."""
-        from us_stock_tracking_agent import extract_ticker_info
+        _usta = _import_us_tracking_agent()
+        extract_ticker_info = _usta.extract_ticker_info
 
         # Test with standard format
         ticker, name = extract_ticker_info("AAPL_Apple Inc_20260117.pdf")
@@ -214,7 +279,8 @@ class TestTrackingAgentHelpers:
 
     def test_extract_ticker_info_with_suffix(self):
         """Test extract_ticker_info with gpt5 suffix."""
-        from us_stock_tracking_agent import extract_ticker_info
+        _usta = _import_us_tracking_agent()
+        extract_ticker_info = _usta.extract_ticker_info
 
         ticker, name = extract_ticker_info("MSFT_Microsoft Corporation_20260117_gpt5.pdf")
         assert ticker == "MSFT"
@@ -222,35 +288,40 @@ class TestTrackingAgentHelpers:
 
     def test_parse_price_value_dollar(self):
         """Test parse_price_value with dollar sign."""
-        from us_stock_tracking_agent import parse_price_value
+        _usta = _import_us_tracking_agent()
+        parse_price_value = _usta.parse_price_value
 
         result = parse_price_value("$185.50")
         assert result == 185.50
 
     def test_parse_price_value_with_comma(self):
         """Test parse_price_value with comma separator."""
-        from us_stock_tracking_agent import parse_price_value
+        _usta = _import_us_tracking_agent()
+        parse_price_value = _usta.parse_price_value
 
         result = parse_price_value("1,234.56")
         assert result == 1234.56
 
     def test_parse_price_value_plain(self):
         """Test parse_price_value with plain number."""
-        from us_stock_tracking_agent import parse_price_value
+        _usta = _import_us_tracking_agent()
+        parse_price_value = _usta.parse_price_value
 
         result = parse_price_value("185.50")
         assert result == 185.50
 
     def test_parse_price_value_invalid(self):
         """Test parse_price_value with invalid input."""
-        from us_stock_tracking_agent import parse_price_value
+        _usta = _import_us_tracking_agent()
+        parse_price_value = _usta.parse_price_value
 
         result = parse_price_value("N/A")
         assert result == 0.0
 
     def test_default_scenario(self):
         """Test default_scenario function."""
-        from us_stock_tracking_agent import default_scenario
+        _usta = _import_us_tracking_agent()
+        default_scenario = _usta.default_scenario
 
         result = default_scenario()
         assert isinstance(result, dict)
@@ -259,7 +330,8 @@ class TestTrackingAgentHelpers:
 
     def test_default_scenario_keys(self):
         """Test default_scenario has all required keys."""
-        from us_stock_tracking_agent import default_scenario
+        _usta = _import_us_tracking_agent()
+        default_scenario = _usta.default_scenario
 
         result = default_scenario()
         # Actual keys from implementation
@@ -281,7 +353,8 @@ class TestTrackingAgentHelpers:
         """default_scenario() must flag analysis_failed so downstream code
         skips the ticker instead of broadcasting a misleading '매수 보류'
         message for a stock it could not actually analyze."""
-        from us_stock_tracking_agent import default_scenario
+        _usta = _import_us_tracking_agent()
+        default_scenario = _usta.default_scenario
 
         result = default_scenario()
         assert result.get('analysis_failed') is True
@@ -296,12 +369,14 @@ class TestSectorDiversityCheck:
 
     def test_check_sector_diversity_import(self):
         """Test check_sector_diversity function can be imported."""
-        from us_stock_tracking_agent import check_sector_diversity
+        _usta = _import_us_tracking_agent()
+        check_sector_diversity = _usta.check_sector_diversity
         assert callable(check_sector_diversity)
 
     def test_check_sector_diversity_empty_db(self, initialized_temp_database):
         """Test sector diversity with empty database."""
-        from us_stock_tracking_agent import check_sector_diversity
+        _usta = _import_us_tracking_agent()
+        check_sector_diversity = _usta.check_sector_diversity
 
         cursor, conn, _ = initialized_temp_database
         result = check_sector_diversity(cursor, "Technology", 3, 0.3)
@@ -320,19 +395,22 @@ class TestTradingConstants:
 
     def test_max_slots_defined(self):
         """Test MAX_SLOTS constant is defined."""
-        from us_stock_tracking_agent import USStockTrackingAgent
+        _usta = _import_us_tracking_agent()
+        USStockTrackingAgent = _usta.USStockTrackingAgent
 
         assert USStockTrackingAgent.MAX_SLOTS == 10
 
     def test_max_same_sector_defined(self):
         """Test MAX_SAME_SECTOR constant is defined."""
-        from us_stock_tracking_agent import USStockTrackingAgent
+        _usta = _import_us_tracking_agent()
+        USStockTrackingAgent = _usta.USStockTrackingAgent
 
         assert USStockTrackingAgent.MAX_SAME_SECTOR == 3
 
     def test_sector_concentration_defined(self):
         """Test SECTOR_CONCENTRATION_RATIO constant is defined."""
-        from us_stock_tracking_agent import USStockTrackingAgent
+        _usta = _import_us_tracking_agent()
+        USStockTrackingAgent = _usta.USStockTrackingAgent
 
         assert USStockTrackingAgent.SECTOR_CONCENTRATION_RATIO == 0.3
 
@@ -346,20 +424,23 @@ class TestUSStockTrackingAgent:
 
     def test_class_exists(self):
         """Test USStockTrackingAgent class exists."""
-        from us_stock_tracking_agent import USStockTrackingAgent
+        _usta = _import_us_tracking_agent()
+        USStockTrackingAgent = _usta.USStockTrackingAgent
 
         assert USStockTrackingAgent is not None
 
     def test_class_instantiation(self):
         """Test USStockTrackingAgent can be instantiated."""
-        from us_stock_tracking_agent import USStockTrackingAgent
+        _usta = _import_us_tracking_agent()
+        USStockTrackingAgent = _usta.USStockTrackingAgent
 
         agent = USStockTrackingAgent()
         assert agent is not None
 
     def test_has_process_reports_method(self):
         """Test agent has process_reports method."""
-        from us_stock_tracking_agent import USStockTrackingAgent
+        _usta = _import_us_tracking_agent()
+        USStockTrackingAgent = _usta.USStockTrackingAgent
 
         agent = USStockTrackingAgent()
         assert hasattr(agent, 'process_reports')
@@ -376,7 +457,8 @@ class TestTradingIntegration:
 
     def test_exchange_code_in_buy_flow(self):
         """Test exchange code is used correctly in buy flow."""
-        from trading.us_stock_trading import get_exchange_code
+        _ust = _prism_us_import('trading.us_stock_trading')
+        get_exchange_code = _ust.get_exchange_code
 
         # Simulate getting exchange for buy order
         ticker = "AAPL"
@@ -387,7 +469,9 @@ class TestTradingIntegration:
 
     def test_extract_and_parse_flow(self):
         """Test extract ticker info and parse price flow."""
-        from us_stock_tracking_agent import extract_ticker_info, parse_price_value
+        _usta = _import_us_tracking_agent()
+        extract_ticker_info = _usta.extract_ticker_info
+        parse_price_value = _usta.parse_price_value
 
         # Simulate extracting from filename
         filename = "NVDA_NVIDIA Corporation_20260117_gpt5.pdf"

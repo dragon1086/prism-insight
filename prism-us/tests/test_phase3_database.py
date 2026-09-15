@@ -234,10 +234,11 @@ class TestCRUDOperations:
 
         cursor.execute("""
             INSERT INTO us_stock_holdings
-            (ticker, company_name, buy_price, buy_date, current_price,
+            (account_key, ticker, company_name, buy_price, buy_date, current_price,
              target_price, stop_loss, trigger_type, trigger_mode, sector)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            sample_holding['account_key'],
             sample_holding['ticker'],
             sample_holding['company_name'],
             sample_holding['buy_price'],
@@ -270,9 +271,10 @@ class TestCRUDOperations:
         # Insert a holding
         cursor.execute("""
             INSERT INTO us_stock_holdings
-            (ticker, company_name, buy_price, buy_date)
-            VALUES (?, ?, ?, ?)
+            (account_key, ticker, company_name, buy_price, buy_date)
+            VALUES (?, ?, ?, ?, ?)
         """, (
+            sample_holding['account_key'],
             sample_holding['ticker'],
             sample_holding['company_name'],
             sample_holding['buy_price'],
@@ -296,9 +298,10 @@ class TestCRUDOperations:
         # Insert a holding
         cursor.execute("""
             INSERT INTO us_stock_holdings
-            (ticker, company_name, buy_price, buy_date)
-            VALUES (?, ?, ?, ?)
+            (account_key, ticker, company_name, buy_price, buy_date)
+            VALUES (?, ?, ?, ?, ?)
         """, (
+            sample_holding['account_key'],
             sample_holding['ticker'],
             sample_holding['company_name'],
             sample_holding['buy_price'],
@@ -322,9 +325,10 @@ class TestCRUDOperations:
         # Insert a holding
         cursor.execute("""
             INSERT INTO us_stock_holdings
-            (ticker, company_name, buy_price, buy_date, sector)
-            VALUES (?, ?, ?, ?, ?)
+            (account_key, ticker, company_name, buy_price, buy_date, sector)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (
+            sample_holding['account_key'],
             sample_holding['ticker'],
             sample_holding['company_name'],
             sample_holding['buy_price'],
@@ -382,9 +386,10 @@ class TestDatabaseIntegration:
         # Insert
         cursor.execute("""
             INSERT INTO us_stock_holdings
-            (ticker, company_name, buy_price, buy_date, current_price, sector)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (account_key, ticker, company_name, buy_price, buy_date, current_price, sector)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
+            sample_holding['account_key'],
             sample_holding['ticker'],
             sample_holding['company_name'],
             sample_holding['buy_price'],
@@ -422,10 +427,11 @@ class TestDatabaseIntegration:
 
         cursor.execute("""
             INSERT INTO us_trading_history
-            (ticker, company_name, buy_price, buy_date, sell_price, sell_date,
+            (account_key, ticker, company_name, buy_price, buy_date, sell_price, sell_date,
              profit_rate, holding_days, sector)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            sample_holding['account_key'],
             sample_holding['ticker'],
             sample_holding['company_name'],
             sample_holding['buy_price'],

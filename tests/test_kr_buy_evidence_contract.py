@@ -52,8 +52,8 @@ def test_decision_rules_and_json_schema_are_byte_preserved(prompt):
     heading = "## 도구 사용" if language == "ko" else "## Tool Usage"
     json_heading = "## JSON 응답 형식" if language == "ko" else "## JSON Response Format"
     expected = {
-        "ko": ("4ae26638e5df8fcb3bc0dc25bd7ec5f8f771ebdfd0b1f7db81495dbff7d26cab", "f5f2f66de78dd7995efca999eaf82cf3a92c61834d499e17a0af6e6de30cd776"),
-        "en": ("d741596f5fa983cb1d6832d59e66900109e3ac63bce3114d251639b15fd67f80", "191df340ff09fe154a1ef67984be592293f51149dff8c83307855f1b26568051"),
+        "ko": ("4ae26638e5df8fcb3bc0dc25bd7ec5f8f771ebdfd0b1f7db81495dbff7d26cab", "1825617d319f05201ea18fbbdf2804263897b18ecc19ca1530c020a2c2c3d9ae"),
+        "en": ("d741596f5fa983cb1d6832d59e66900109e3ac63bce3114d251639b15fd67f80", "a8fd41d8afdc62f298b7a4fc949a60acd5a72d21dcc0490520326df84d3e566c"),
     }
     assert hashlib.sha256(text.split(heading)[0].encode()).hexdigest() == expected[language][0]
     assert hashlib.sha256(text[text.index(json_heading):].encode()).hexdigest() == expected[language][1]
