@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from live import tracking
 from live.telegram_reporter import _load_env
@@ -69,6 +69,27 @@ def _age_minutes(ts, now: datetime) -> float | None:
     if dt is None:
         return None
     return (now - dt).total_seconds() / 60.0
+
+
+def _kst_time(dt: datetime) -> str:
+    return dt.astimezone(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S KST")
+
+
+def _completion_context(conn, mode: str, last_error: datetime, now: datetime) -> str:
+    """Corroborate a recent completed tick, not that every issue is resolved."""
+    try:
+        row = conn.execute(
+            "SELECT ts,message FROM btc_events WHERE mode=? AND kind='heartbeat' "
+            "ORDER BY id DESC LIMIT 1", (mode,),
+        ).fetchone()
+        completed = _parse_ts(row["ts"]) if row else None
+        if (row and str(row["message"]).startswith("tick ok: protection=")
+                and completed is not None and last_error < completed <= now
+                and (now-completed).total_seconds() <= _HEARTBEAT_MAX_MIN * 60):
+            return f"오류 이후 정규 실행 완료 확인: {_kst_time(completed)} (모든 이상 해소를 뜻하지 않음)"
+    except Exception:  # noqa: BLE001 - unavailable context must not hide an alert
+        return "마지막 오류 이후 최근 정규 실행 완료 미확인"
+    return "마지막 오류 이후 최근 정규 실행 완료 미확인"
 
 
 def _ns_age_minutes(ns, now: datetime) -> float | None:
@@ -123,10 +144,14 @@ def _check_error_burst(conn, mode: str, now: datetime) -> dict | None:
         if age is not None and 0 <= age <= _ERROR_WINDOW_HOURS * 60:
             recent.append(row)
     if len(recent) > _ERROR_MAX_COUNT:
-        last_msg = str(recent[0]["message"])[:120]
+        latest = max(recent, key=lambda row: _parse_ts(row["ts"]))
+        last_error = _parse_ts(latest["ts"])
+        last_msg = str(latest["message"])[:120]
+        age = (now-last_error).total_seconds() / 60
         return {"level": "alert", "code": "error_burst",
-                "msg": (f"에러 폭주 — 최근 {_ERROR_WINDOW_HOURS}시간 {len(recent)}건 "
-                        f"(최근: {last_msg})")}
+                "msg": (f"에러 폭주 — 최근 {_ERROR_WINDOW_HOURS}시간 {len(recent)}건 (누적 이력)\n"
+                        f"마지막 오류: {_kst_time(last_error)} ({age:.0f}분 전; {last_msg})\n"
+                        f"{_completion_context(conn, mode, last_error, now)}")}
     return None
 
 
@@ -144,7 +169,7 @@ def _check_price_stale(conn, mode: str, now: datetime) -> dict | None:
         return None
     if age > _PRICE_MAX_MIN:
         return {"level": "alert", "code": "price_stale",
-                "msg": f"시세/처리 정지 — 마지막 처리 {age:.0f}분 전"}
+                "msg": f"시세/처리 정지 — 마지막 처리된 30분봉 기준시각 {age:.0f}분 전"}
     return None
 
 
@@ -250,11 +275,11 @@ _CODE_TAG = {
 }
 
 
-def _build_alert_message(issues: list[dict], mode: str) -> str:
+def _build_alert_message(issues: list[dict], mode: str, now: datetime | None = None) -> str:
     """이슈 리스트 → 운영자용 경보 Markdown. alert/warn 모두 포함."""
     has_alert = any(i["level"] == "alert" for i in issues)
     head = "🚨 *BTC 자동매매 이상감지*" if has_alert else "⚠️ *BTC 자동매매 점검 경고*"
-    lines = [head, f"_모드: {mode}_", ""]
+    lines = [head, f"_모드: {mode}_", f"점검 시각: {_kst_time(_now(now))}", ""]
     for i in issues:
         mark = "🔴" if i["level"] == "alert" else "🟡"
         tag = _CODE_TAG.get(i["code"], i["code"])
@@ -300,6 +325,7 @@ def notify_health(conn, mode: str = "demo", send: bool = True,
     - 점검 결과는 btc_events(kind='health') 로도 기록 (alert→error, 아니면 info).
     - 모든 전송 실패 흡수, 예외 비전파. 반환은 {"issues", "sent", "level"} (디버그용).
     """
+    now = _now(now)
     issues = run_healthcheck(conn, mode, now=now)
     has_alert = any(i["level"] == "alert" for i in issues)
     result = {"issues": len(issues), "sent": False,
@@ -320,7 +346,7 @@ def notify_health(conn, mode: str = "demo", send: bool = True,
         return result
 
     if issues:
-        message = _build_alert_message(issues, mode)
+        message = _build_alert_message(issues, mode, now=now)
         result["sent"] = _dispatch(message)
     elif daily:
         result["sent"] = _dispatch(_build_daily_message(mode))
