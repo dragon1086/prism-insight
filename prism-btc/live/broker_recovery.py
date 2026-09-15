@@ -185,11 +185,16 @@ def _reconcile_main(adapter, now):
 
 
 def reconcile_swing(conn, main_mode, now, backend=None):
-    with mutation_lock(conn):
-        return _reconcile_swing(conn, main_mode, now, backend)
+    from live.swing import _flush_notices
+    notice_jobs = []
+    try:
+        with mutation_lock(conn):
+            return _reconcile_swing(conn, main_mode, now, backend, notice_jobs=notice_jobs)
+    finally:
+        _flush_notices(notice_jobs)
 
 
-def _reconcile_swing(conn, main_mode, now, backend=None):
+def _reconcile_swing(conn, main_mode, now, backend=None, notice_jobs=None):
     from live import swing
 
     positions = tracking.load_open_positions(conn, swing.MODE)
@@ -228,7 +233,7 @@ def _reconcile_swing(conn, main_mode, now, backend=None):
             counter = int(tracking.get_meta(conn, "trade_id_counter", swing.MODE) or 0)
             _, counter = swing._close_position(
                 conn, backend, pos, fill, swing.TAKER_FEE, "swing_sl", str(now),
-                equity, counter, main_mode,
+                equity, counter, main_mode, notice_jobs=notice_jobs,
             )
             tracking.set_meta(conn, "trade_id_counter", counter, swing.MODE)
     if not recovered:
@@ -236,4 +241,4 @@ def _reconcile_swing(conn, main_mode, now, backend=None):
     if not retired:
         raise RecoveryPending("swing stop retirement pending")
     from live.swing_entry_notice import drain
-    drain(conn, main_mode)
+    swing._schedule_notice(notice_jobs, lambda: drain(conn, main_mode, backend=backend))

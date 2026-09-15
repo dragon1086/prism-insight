@@ -69,6 +69,25 @@ def test_normal_claim_consumes_recovery_queue(recovered, sender):
     assert not notice.claim_normal(conn, 999)
 
 
+def test_recovered_capture_is_once_and_outside_execution_lock(recovered, monkeypatch, sender):
+    from live import position_snapshot
+    from live.entry_reservations import execution_mutex
+    from live.shared_entry_coordinator import database_path
+    conn, backend, _ = recovered
+    assert backend.recover_pending_entry()
+    captures = []
+    def capture_unlocked(source, pos):
+        assert source is backend
+        with execution_mutex(str(database_path(conn)) + ".btc-execution.lock"):
+            captures.append(pos.id)
+        return {}
+    monkeypatch.setattr(position_snapshot, "capture_swing_snapshot", capture_unlocked)
+    gate(conn, backend, monkeypatch)
+    gate(conn, backend, monkeypatch)
+    assert captures == [1] and len(sender) == 1
+    assert "account_snapshot" in record(conn)
+
+
 @pytest.mark.parametrize("crash", [False, True])
 def test_restart_never_retries_unknown_or_claimed(recovered, monkeypatch, tmp_path, crash):
     conn, backend, _ = recovered

@@ -22,6 +22,7 @@ import math
 import time
 import sqlite3
 import uuid
+from live.position_snapshot import number as snapshot_number, wallet_fields, position_fields
 from datetime import datetime, timezone
 from typing import Optional, Any
 
@@ -1474,7 +1475,11 @@ class DemoAdapter:
         실패 시 부분 정보로 graceful degrade (None/빈 리스트).
         """
         snap: dict = {
-            "captured_at": bar_time_str,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "strategy_bar_time": bar_time_str,
+            "account_scope": f"{self.mode}:UNIFIED",
+            "wallet_currency": "USD",
+            "position_currency": "USDT",
             "equity": None,
             "account": {},
             "wallet": {},
@@ -1511,6 +1516,7 @@ class DemoAdapter:
             if equity > 0:
                 snap["equity"] = equity
                 tracking.record_equity(self.conn, equity, self.mode, bar_time_str)
+            snap["wallet"].update(wallet_fields(wallet))
 
         # --- 포지션 (단일 BTCUSDT) ---
         pr = read_complete(self._call, "get_positions", category=_CATEGORY, symbol=_SYMBOL)
@@ -1544,11 +1550,13 @@ class DemoAdapter:
                     "leverage": _f(p.get("leverage"), 1.0),
                     "liq_price": _f(p.get("liqPrice")),
                     "unrealised_pnl": _f(p.get("unrealisedPnl")),
-                    "position_im": _f(p.get("positionIM")),
-                    "position_mm": _f(p.get("positionMM")),
+                    "position_im": snapshot_number(p.get("positionIM")),
+                    "position_mm": snapshot_number(p.get("positionMM")),
                     "position_idx": int(_f(p.get("positionIdx"), 0.0)),
                     "position_status": p.get("positionStatus"),
                 }
+                # Add notification-only metadata; do not replace execution state.
+                snap["notice_position"] = position_fields(p)
             break  # 단방향·단일 심볼 → 첫 행만.
 
         # --- 미체결 주문 ---
