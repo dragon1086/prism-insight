@@ -28,7 +28,18 @@ sys.path.insert(0, str(Path.cwd() / "prism-us"))
 import us_trigger_batch as batch
 from cores import us_surge_detector as provider
 
-mode, shape, output = sys.argv[1:]
+mode, shape, output = sys.argv[1:4]
+watch = len(sys.argv) > 4 and sys.argv[4] == "watch"
+from observability import oneil_watchlist
+oneil_watchlist.enabled = lambda: watch
+oneil_watchlist._today = lambda: "20260914"
+oneil_watchlist.STATE_PATH = Path(output).with_suffix(".watch-state.json")
+def watch_collect(symbols, trade_date):
+    days = pd.bdate_range(end="2026-09-11", periods=70)
+    return {"__expected_completed_date": "2026-09-11", **{
+        symbol: [{"date": day.date().isoformat(), "close": 100 + i,
+                  "high": 100.5 + i} for i, day in enumerate(days)] for symbol in symbols}}
+oneil_watchlist._collect = watch_collect
 tickers = ["AAA", "BBB", "CCC"]
 snapshot = pd.DataFrame({
     "Open": [101., 102., 103.], "High": [106., 108., 110.],
@@ -72,25 +83,39 @@ with patch.object(socket.socket, "connect", no_network), \
      patch.object(provider.yf, "download", side_effect=download), \
      patch.object(provider.yf, "Ticker", side_effect=lambda ticker: SimpleNamespace(
          info={"shortName": ticker, "sector": "Technology"}, fast_info={"marketCap": 1e11})):
-    result = batch.run_batch(mode, "ERROR", output, override_date="20260914")
+    result = batch.run_batch(mode, "ERROR", output, override_date="20260914", watch_batch_ref="batch1" if watch else None)
     assert result, "Fixture must exercise nonempty final selection"
     assert download_calls, "Real get_multi_day_ohlcv must reach mocked provider"
+    if watch:
+        before = json.loads(oneil_watchlist.STATE_PATH.read_text())
+        assert before["watches"]
+        with patch.object(batch, "select_final_tickers", return_value={}):
+            empty = batch.run_batch(mode, "ERROR", None, override_date="20260914", watch_batch_ref="batch2")
+        assert empty == {}
+        after = json.loads(oneil_watchlist.STATE_PATH.read_text())
+        assert {w["watch_id"] for w in before["watches"]} == {w["watch_id"] for w in after["watches"]}
+        assert all(w["batch_ref"] == "batch2" for w in after["watches"])
 '''
 
 
-def _run_batch(tmp_path, mode, shape):
-    output = tmp_path / f"{mode}-{shape}.json"
+def _run_batch(tmp_path, mode, shape, watch=False):
+    output = tmp_path / f"{mode}-{shape}-{watch}.json"
     env = dict(os.environ, PYTHONHASHSEED="0", PRISM_DISABLE_SIGNAL_PUBLISH="1",
                PRISM_OBSERVABILITY_SPOOL=str(tmp_path / "isolated-events.jsonl"),
                REGIME_WEAK_THIRD_SLOT_SHADOW_ENABLED="false")
     result = subprocess.run(
-        [sys.executable, "-c", RUN_BATCH, mode, shape, str(output)],
+        [sys.executable, "-c", RUN_BATCH, mode, shape, str(output)] + (["watch"] if watch else []),
         cwd=ROOT, env=env, text=True, capture_output=True, timeout=45, check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(output.read_text())
     payload["metadata"].pop("run_time")
     return payload
+
+
+@pytest.mark.parametrize("mode", ["morning", "afternoon"])
+def test_watch_shadow_on_off_exact_json_and_revisit_empty_selection(tmp_path, mode):
+    assert _run_batch(tmp_path, mode, "flat", watch=True) == _run_batch(tmp_path, mode, "flat")
 
 
 @pytest.mark.parametrize("mode", ["morning", "afternoon"])

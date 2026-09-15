@@ -19,6 +19,52 @@ SHADOW_SCHEMA_VERSION = 2
 _BATCH = ContextVar("micro_split_batch", default=None)
 
 
+def get_shadow_batch_context() -> dict[str, Any] | None:
+    """Copy the explicit run identity for optional observer threads."""
+    context = _BATCH.get()
+    return dict(context) if context else None
+
+
+def _emit_watchlist_link(event: dict[str, Any]) -> None:
+    """Observe an existing eligible scout; never manufacture one from READY."""
+    from observability.oneil_watchlist import read_ready_context
+
+    attrs = event["attributes"]
+    batch_ref = attrs.get("batch_ref")
+    if event.get("market") != "US" or not batch_ref:
+        return
+    ready = read_ready_context("US", event["ticker"], batch_ref)
+    if not ready or any(ready.get(k) != v for k, v in {
+        "market": "US", "ticker": event["ticker"], "batch_ref": batch_ref,
+    }.items()):
+        return
+    required = ("watch_ref", "seed_event_id", "ready_event_id",
+                "ready_observation_event_id", "policy_version", "observation_price_ref")
+    if any(not ready.get(key) for key in required):
+        return
+    emit_event(
+        "watchlist_micro_split.shadow_linked",
+        event_id=_stable_ref("watchlist-micro-link", event["event_id"],
+                             ready["ready_observation_event_id"], length=32),
+        service="prism-us-watchlist-micro-shadow", market="US", ticker=event["ticker"],
+        parent_event_id=event["event_id"],
+        attributes={
+            "mode": "SHADOW", "link_schema_version": 1,
+            "trading_impact": "none", "execution_provenance": "NOT_REQUESTED",
+            "batch_ref": batch_ref, "watch_ref": ready["watch_ref"],
+            "seed_event_id": ready["seed_event_id"],
+            "ready_event_id": ready["ready_event_id"],
+            "ready_observation_event_id": ready["ready_observation_event_id"],
+            "observation_price_ref": ready["observation_price_ref"],
+            "watch_policy_version": ready["policy_version"],
+            "micro_policy_version": attrs["policy_version"],
+            "micro_event_id": event["event_id"],
+            "source_decision_ref": attrs["decision_ref"],
+            "execution_profile_ref": attrs["execution_profile_ref"],
+        },
+    )
+
+
 def begin_shadow_batch(*, market: str, trade_date: str, trigger_mode: str):
     """Bind a new run, never infer completion from decisions or wall-clock dates."""
     try:
@@ -40,7 +86,7 @@ def end_shadow_batch(token):
         if token is not None:
             _BATCH.reset(token)
     except Exception:  # noqa: BLE001 - capture cleanup is fail-open
-        return None
+        return None  # noqa: RET501 - preserve legacy cleanup behavior
 
 
 def complete_shadow_batch(*, tracking_success, selected_count, report_count, pdf_count):
@@ -196,7 +242,7 @@ def emit_initial_shadow(
         batch = _BATCH.get()
         if batch and batch["market"] == str(market).upper():
             context.update(batch)
-        return emit_event(
+        event = emit_event(
             "micro_split.shadow_evaluated",
             event_id=_stable_ref(
                 "micro-split-shadow",
@@ -213,6 +259,12 @@ def emit_initial_shadow(
             decision_id=decision_id,
             attributes=context,
         )
+        try:
+            if event:
+                _emit_watchlist_link(event)
+        except Exception:  # noqa: BLE001 - optional observer cannot change original result
+            return event
+        return event
     except Exception:  # noqa: BLE001 - observability must never affect trading
         return None
 
@@ -221,5 +273,6 @@ __all__ = [
     "SHADOW_SCHEMA_VERSION",
     "build_initial_shadow_context",
     "emit_initial_shadow",
+    "get_shadow_batch_context",
     "shadow_enabled",
 ]

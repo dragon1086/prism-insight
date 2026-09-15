@@ -213,6 +213,21 @@ def _decide_micro_split_shadow(env: dict, crontab: str):
     return "OFF", f"MICRO_SPLIT_SHADOW_ENABLED={enabled or '(unset)'}"
 
 
+def _decide_oneil_watchlist_shadow(env: dict, crontab: str):
+    raw = (env["ONEIL_WATCHLIST_SHADOW_ENABLED"] if "ONEIL_WATCHLIST_SHADOW_ENABLED" in env else
+           _cron_get_inline_env(crontab, "ONEIL_WATCHLIST_SHADOW_ENABLED") or "true")
+    override = str(raw).strip().lower()
+    try:
+        policy = json.loads((_ROOT / "trading/config/oneil_watchlist_shadow.json").read_text())
+    except (OSError, ValueError):
+        return "OFF", "후보 감시 정책 미설정/오류"
+    if (override not in {"1", "true", "yes", "on"} or
+            policy != {"mode": "SHADOW", "market": "US", "policy_version": "oneil_watchlist_v1", "enabled": True} or
+            _decide_micro_split_shadow(env, crontab)[0] != "SHADOW"):
+        return "OFF", "후보 감시 정책 또는 micro SHADOW 비활성"
+    return "SHADOW", "US 완료 일봉 재관측 × 기존 적격진입 0→10% 교집합; 주문 무영향"
+
+
 def _decide_third_slot_shadow(env: dict, crontab: str):
     truthy = {"1", "true", "yes", "on"}
     env_value = str(
@@ -360,6 +375,7 @@ FEATURES = [
     ("loop_b",           "Trend-exit — 50MA 추세이탈 매도 (구 Loop B)",                   _decide_loop_b),
     ("loop_c",           "Fill-chaser — 미체결 추격 (구 Loop C)",                     _decide_loop_c),
     ("micro_split_shadow", "초분할 0→10% 신규진입 projection", _decide_micro_split_shadow),
+    ("oneil_watchlist_shadow", "오닐식 후보 감시 × 초분할 연계", _decide_oneil_watchlist_shadow),
     ("third_slot_shadow", "KR 약세·횡보장 가상 3순위", _decide_third_slot_shadow),
     ("position_pending_kr", "KR 주문 선기록(PENDING ENTRY/EXIT)", _decide_position_pending_kr),
     ("vision_pipeline",  "비전 배관·렌더QA (S1/S2)",                  _decide_vision_pipeline),
