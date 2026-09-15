@@ -230,6 +230,11 @@ class ExchangeBackend:
         sl = float(attached["stopLoss"])
         if not math.isfinite(qty) or qty <= 0:
             return None
+        sizing_qty = qty
+        wire_qty = _qstr(qty)
+        qty = float(wire_qty)
+        if qty <= 0:
+            return None
         from live.order_retirement import request_stop_retirement, reconcile_stop_retirements
         old_stop = tracking.get_meta(self.conn, "swing_sl_order_id", MODE)
         if old_stop and not tracking.load_open_positions(self.conn, MODE):
@@ -255,7 +260,7 @@ class ExchangeBackend:
         if not allowed:
             return None
         entry_pending = {"link_id": reservation["link_id"] if reservation else "sw-entry-"+uuid.uuid4().hex[:24], "side": side,
-                         "qty": qty, "stop_price": sl, "native_stop_params": attached,
+                         "qty": qty, "sizing_qty": sizing_qty, "stop_price": sl, "native_stop_params": attached,
                          "submitted_at_ms": time.time_ns()//1_000_000, "status": "SUBMISSION_UNKNOWN"}
         if getattr(self, "entry_context", None):
             entry_pending["entry_context"] = dict(self.entry_context)
@@ -268,7 +273,7 @@ class ExchangeBackend:
         resp = self._call(
             "place_order", category=_CATEGORY, symbol=_SYMBOL,
             side="Buy" if side == "long" else "Sell",
-            orderType="Limit" if reservation else "Market", qty=_qstr(qty),
+            orderType="Limit" if reservation else "Market", qty=wire_qty,
             **({"price": _pstr(reservation["limit_price"])} if reservation else {}),
             timeInForce="IOC", positionIdx=_POSITION_IDX,
             orderLinkId=entry_pending["link_id"], **attached,
@@ -1103,20 +1108,32 @@ def _record_notification_delivery(conn, event: str, delivered: bool | None) -> N
     )
 
 
+def _notify_ops(main_mode: str, msg: str) -> bool:
+    """Operational failures stay in the private monitoring room, not trade feeds."""
+    if main_mode not in ("demo", "live"):
+        return False
+    try:
+        from live.healthcheck import _dispatch
+        return _dispatch(msg)
+    except Exception as exc:  # noqa: BLE001 — alerts must not interrupt execution
+        log.warning("swing ops notify failed (%s)", type(exc).__name__)
+        return False
+
+
 def _notify_unresolved_close(conn, main_mode: str) -> None:
     pending = tracking.get_meta(conn, "swing_close_pending", MODE)
     if not pending or not str(pending.get("status", "")).startswith("HALTED"):
         return
     key = f"{pending.get('link_id')}:{pending.get('status')}"
-    if tracking.get_meta(conn, "swing_close_halt_notified", MODE) == key:
+    if tracking.get_meta(conn, "swing_close_halt_ops_notified", MODE) == key:
         return
-    delivered = _notify(main_mode,
+    delivered = _notify_ops(main_mode,
         "⚠️ BTC 스윙 데모 청산 상태 확인 필요\n"
         "청산 요청의 체결 여부가 불명확해 신규 진입과 중복 청산을 보류했습니다.\n"
         "거래소 실제 잔량과 보호주문을 즉시 확인해야 합니다. 손익은 확정하지 않았습니다.")
-    _record_notification_delivery(conn, "swing_close_halt", delivered)
+    _record_notification_delivery(conn, "swing_close_halt_ops", delivered)
     if delivered is True:
-        tracking.set_meta(conn, "swing_close_halt_notified", key, MODE)
+        tracking.set_meta(conn, "swing_close_halt_ops_notified", key, MODE)
 
 
 def _notify_unresolved_entry(conn, main_mode: str) -> None:
@@ -1124,16 +1141,16 @@ def _notify_unresolved_entry(conn, main_mode: str) -> None:
     if not isinstance(pending, dict) or not pending:
         return
     key = f"{pending.get('link_id')}:{pending.get('observation', 'EXPOSURE_UNKNOWN')}"
-    if tracking.get_meta(conn, "swing_entry_halt_notified", MODE) == key:
+    if tracking.get_meta(conn, "swing_entry_halt_ops_notified", MODE) == key:
         return
-    delivered = _notify(main_mode,
+    delivered = _notify_ops(main_mode,
         "⚠️ BTC 스윙 데모 진입 상태 확인 필요\n"
         "진입 체결과 원장 반영이 미확정이어서 신규 진입과 재주문을 보류했습니다.\n"
         "운영자가 거래소 실제 잔량과 보호주문을 즉시 확인해야 합니다. "
-        "자동 복구와 손익 확정은 수행하지 않았습니다.")
-    _record_notification_delivery(conn, "swing_entry_halt", delivered)
+        "근거 대조가 완료될 때까지 재주문이나 손익 확정은 하지 않습니다.")
+    _record_notification_delivery(conn, "swing_entry_halt_ops", delivered)
     if delivered is True:
-        tracking.set_meta(conn, "swing_entry_halt_notified", key, MODE)
+        tracking.set_meta(conn, "swing_entry_halt_ops_notified", key, MODE)
 
 
 def _build_exit_message(

@@ -13,18 +13,18 @@
 #   6) 섀도우-데모 괴리 — demo&shadow equity 둘 다 있고 |차이|>15% → warn
 #
 # 안전 원칙: 모든 SQL/전송 실패를 흡수한다. 어떤 예외도 밖으로 던지지 않는다.
-# 토큰/채널 미설정 시 stdout 폴백 (크래시 금지). 시간 기준은 now 인자 주입으로
+# 토큰/운영 채널 미설정 시 미전송으로 기록 (크래시 금지). 시간 기준은 now 인자 주입으로
 # 결정적 테스트가 가능하다.
 from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 
 from live import tracking
-from live.telegram_reporter import _send, _load_env
+from live.telegram_reporter import _load_env
+from live.ops_alerts import _resolve_ops_destination, _send
 
 log = logging.getLogger("live.healthcheck")
 
@@ -35,8 +35,6 @@ _ERROR_MAX_COUNT = 5          # 이 개수 초과면 폭주
 _PRICE_MAX_MIN = 90           # 시세/처리 정지 임계 (분)
 _POSITION_STALE_DAYS = 20     # 장기 미청산 포지션 임계 (일)
 _SHADOW_DIVERGENCE_PCT = 15.0 # 섀도우-데모 괴리 경보 임계 (%)
-
-_OPS_CHANNEL_KEYS = ("BTC_OPS_CHANNEL_ID", "TELEGRAM_CHANNEL_ID")
 
 
 # ---------------------------------------------------------------------------
@@ -272,33 +270,21 @@ def _build_daily_message(mode: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 채널/전송 — 운영자 DM 권장 (BTC_OPS_CHANNEL_ID > TELEGRAM_CHANNEL_ID).
+# 채널/전송 — 기존 모니터링 방/봇 우선, 공개 채널 폴백 금지.
 # ---------------------------------------------------------------------------
 
-def _resolve_ops_channel() -> str | None:
-    """운영자 채널: BTC_OPS_CHANNEL_ID > TELEGRAM_CHANNEL_ID > None.
-
-    notifier/리포터의 공개 채널과 분리 — 이상감지는 운영자 DM 으로 보내는 게 안전.
-    """
-    for key in _OPS_CHANNEL_KEYS:
-        v = os.environ.get(key)
-        if v:
-            return v
-    return None
-
-
-def _dispatch(message: str) -> None:
-    """메시지 1건 전송. 토큰/채널 없으면 _send 가 stdout 폴백한다. 실패 흡수."""
+def _dispatch(message: str) -> bool:
+    """운영 채널에만 전송하며 실제 전송 확인 여부를 반환한다."""
     try:
         _load_env()
     except Exception:  # noqa: BLE001 — env 로드 실패해도 환경에 이미 있을 수 있음
         pass
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    channel = _resolve_ops_channel()
+    token, channel = _resolve_ops_destination()
     try:
-        asyncio.run(_send(token, channel, message))
+        return bool(asyncio.run(_send(token, channel, message)))
     except Exception as exc:  # noqa: BLE001 — 전송 실패 절대 비전파
         log.warning("healthcheck 전송 실패 (흡수): %s", exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -335,11 +321,9 @@ def notify_health(conn, mode: str = "demo", send: bool = True,
 
     if issues:
         message = _build_alert_message(issues, mode)
-        _dispatch(message)
-        result["sent"] = True
+        result["sent"] = _dispatch(message)
     elif daily:
-        _dispatch(_build_daily_message(mode))
-        result["sent"] = True
+        result["sent"] = _dispatch(_build_daily_message(mode))
 
     return result
 

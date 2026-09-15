@@ -39,6 +39,36 @@ def test_accepted_unrecorded_partial_terminal_recovers_once(recovered):
     assert len(tracking.load_open_positions(conn, "swing")) == 1
 
 
+@pytest.mark.parametrize("raw,wire", [(0.08904303700823521, .089), (.0896, .090)])
+def test_legacy_non_lot_quantity_recovers_exact_wire_fill_once(recovered, raw, wire):
+    conn, backend, session = recovered
+    pending = tracking.get_meta(conn, "swing_entry_pending", "swing")
+    pending["qty"] = raw
+    tracking.set_meta(conn, "swing_entry_pending", pending, "swing")
+    session.parents[0].update(qty=str(wire), cumExecQty=str(wire), orderStatus="Filled")
+    session.executions[0]["execQty"] = str(wire)
+    session.positions[0]["size"] = str(wire)
+    assert backend.recover_pending_entry()
+    pos = tracking.load_open_positions(conn, "swing")
+    assert len(pos) == 1 and pos[0].qty == wire
+    native = tracking.get_meta(conn, "swing_native_entry", "swing")
+    assert native["sizing_qty"] == raw and native["qty"] == wire
+    assert backend.recover_pending_entry()
+    assert len(tracking.load_open_positions(conn, "swing")) == 1
+
+
+def test_legacy_rounding_does_not_accept_a_different_exchange_lot(recovered):
+    conn, backend, session = recovered
+    pending = tracking.get_meta(conn, "swing_entry_pending", "swing")
+    pending["qty"] = .08904303700823521
+    tracking.set_meta(conn, "swing_entry_pending", pending, "swing")
+    session.parents[0].update(qty=".090", cumExecQty=".090", orderStatus="Filled")
+    session.executions[0]["execQty"] = ".090"
+    session.positions[0]["size"] = ".090"
+    assert not backend.recover_pending_entry()
+    assert tracking.load_open_positions(conn, "swing") == []
+
+
 def test_live_partial_is_protected_but_not_receipted(recovered):
     conn, backend, session = recovered
     session.parents[0].update(orderStatus="PartiallyFilled", leavesQty="1")

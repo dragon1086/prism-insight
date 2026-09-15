@@ -27,13 +27,17 @@ def recover(backend) -> bool:
 
 
 def _recover(backend, pending):
+    from live.demo import _qstr
+
     query = ({"orderId": pending["order_id"]} if pending.get("order_id")
              else {"orderLinkId": pending["link_id"]})
     parents = backend._complete_identity_rows("get_order_history", "orderId", **query)
     if not parents or len(parents) != 1:
         return False
     parent = parents[0]
-    requested = float(pending["qty"])
+    # Legacy intents stored strategy precision while submission used _qstr.
+    # Reproduce that exact wire value, never widen the equality tolerance.
+    requested = float(_qstr(pending["qty"]))
     cumulative = float(parent["cumExecQty"])
     leaves = float(parent["leavesQty"])
     if (parent.get("orderLinkId") != pending["link_id"]
@@ -59,7 +63,8 @@ def _recover(backend, pending):
     elif status not in ("New", "PartiallyFilled") or not math.isclose(
             cumulative + leaves, requested, rel_tol=0, abs_tol=1e-9):
         return False
-    pending = {**pending, "order_id": parent["orderId"]}
+    pending = {**pending, "order_id": parent["orderId"], "qty": requested,
+               "sizing_qty": pending.get("sizing_qty", pending["qty"])}
     tracking.set_meta(backend.conn, "swing_entry_pending", pending, MODE)
     executions = backend._complete_identity_rows("get_executions", "execId", orderId=parent["orderId"])
     response = read_complete(backend._call, "get_positions", category="linear", symbol="BTCUSDT")
