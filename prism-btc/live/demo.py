@@ -323,6 +323,7 @@ class DemoAdapter:
         context = None if pending_payload is None else {
             "decision_bar": pending_payload.get("bar_idx"),
             "tranche_index": pending_payload.get("tranche_index", 0),
+            "planned_leverage": pending_payload.get("sizing_leverage"),
             "lifecycle": str([(p.id, p.entry_time) for p in tracking.load_open_positions(self.conn, self.mode)]),
         }
         allowed, reservation = authorize(self, "main", side, float(_qstr(qty)),

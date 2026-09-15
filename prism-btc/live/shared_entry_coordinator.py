@@ -161,6 +161,7 @@ class LaneSnapshot:
     mark: float
     stop: float
     orders: tuple
+    liquidation: dict | None = None
 
 
 def require_demo_sessions(sessions):
@@ -170,7 +171,7 @@ def require_demo_sessions(sessions):
         raise ValueError("shared_entry_demo_endpoint_required")
 
 
-def snapshot(adapter, lane, config, store, *, sessions=None, check_policy=True):
+def snapshot(adapter, lane, config, store, *, sessions=None, check_policy=True, liquidation=False):
     sessions = _sessions(adapter, lane) if sessions is None else sessions
     require_demo_sessions(sessions)
     # Legacy factories may lazily load .env. Re-check its source conflict
@@ -192,11 +193,12 @@ def snapshot(adapter, lane, config, store, *, sessions=None, check_policy=True):
         session = sessions[name]
         def call(method, **kwargs):
             return _call(session, method, **kwargs)
-        if name == "main":
+        if name == "main" or liquidation:
             wallet = call("get_wallet_balance", accountType="UNIFIED")["result"]["list"]
             if len(wallet) != 1:
                 raise ValueError("capital_unknown")
-            capital = _positive(wallet[0]["totalEquity"])
+            if name == "main":
+                capital = _positive(wallet[0]["totalEquity"])
         positions = read_complete(call, "get_positions", category="linear", symbol="BTCUSDT")
         orders = read_complete(call, "get_open_orders", category="linear", symbol="BTCUSDT")
         tickers = call("get_tickers", category="linear", symbol="BTCUSDT")["result"]["list"]
@@ -238,8 +240,12 @@ def snapshot(adapter, lane, config, store, *, sessions=None, check_policy=True):
                 stop = max(candidates) if side == "long" else min(candidates)
         if qty == 0 and tracking.load_open_positions(adapter.conn, "demo" if name == "main" else "swing"):
             raise ValueError("unsettled_local_position")
+        risk_data = None
+        if liquidation:
+            from live.liquidation_guard import capture
+            risk_data = capture(call, wallet[0], rows[0] if rows else {}, started)
         result.append(LaneSnapshot(name, qty, side, entry, mark, stop,
-                                   tuple(dict(o) for o in orders["result"]["list"])))
+                                   tuple(dict(o) for o in orders["result"]["list"]), risk_data))
     known = {old.order_link_id: (old, update, parent) for old, update, parent in confirmations}
     for item in result:
         mode = "demo" if item.lane == "main" else "swing"
@@ -433,7 +439,7 @@ def prepare(adapter, lane, side, qty, price, stop, context):
     if not isinstance(context, dict) or not context.get("decision_bar"):
         raise ValueError("deterministic_decision_identity_required")
     store = EntryReservationStore(database_path(adapter.conn))
-    capital, lanes = snapshot(adapter, lane, config, store)
+    capital, lanes = snapshot(adapter, lane, config, store, liquidation=True)
     active = store.active()
     existing = next(item for item in lanes if item.lane == lane)
     if ((existing.qty and existing.side != side)
@@ -508,6 +514,15 @@ def prepare(adapter, lane, side, qty, price, stop, context):
     existing = store.get(intent_id)
     if existing:
         raise ValueError("duplicate_shared_intent")
+    from live.liquidation_guard import validate
+    stress_usd = validate(capital, lanes, active, lane, side, qty, adverse, stop,
+                          context.get("planned_leverage"))
+    if any(time.monotonic() - item.liquidation["started"] > 10 for item in lanes):
+        raise ValueError("snapshot_too_old")
+    tracking.log_event(adapter.conn, "entry_risk_checked",
+                       f"liquidation_guard:v1 capital_usd={capital:.2f} stress_usd={stress_usd:.2f} "
+                       "margin_mode=REGULAR_MARGIN stress_multiplier=1.2",
+                       mode=getattr(adapter, "mode", "swing"))
     import uuid
     link = ("entry-" if lane == "main" else "sw-entry-") + uuid.uuid4().hex[:24]
     # Reservation price_bound is storage of snapshot gross valuation only here;
@@ -545,6 +560,10 @@ def authorize(adapter, lane, side, qty, price, stop, context):
             "entry_outside_slippage_bound", "invalid_adverse_stop", "shared_risk_budget_exceeded", "duplicate_shared_intent",
             "shared_entry_policy_malformed", "shared_entry_policy_source_conflict", "shared_entry_policy_paused",
             "shared_entry_configuration_unreadable",
+            "liquidation_data_unknown", "liquidation_margin_mode_unsupported",
+            "liquidation_account_margin_exhausted", "liquidation_risk_tier_unknown",
+            "liquidation_existing_stop_buffer", "liquidation_planned_stop_buffer",
+            "liquidation_shared_capital_exhausted",
         }
         reason = str(exc) if type(exc) is ValueError and str(exc) in reasons else "snapshot_or_configuration_failed"
         tracking.log_event(adapter.conn, "entry_blocked", "shared_entry:" + reason,

@@ -30,7 +30,17 @@ class Session:
         return {"retCode": 0, "result": {"userID": self.uid}}
 
     def get_wallet_balance(self, **_):
-        return reply([{"totalEquity": "10000"}])
+        return reply([{"totalEquity": "10000", "totalMarginBalance": "10000",
+                       "totalAvailableBalance": "9000", "totalInitialMargin": "1000", "totalMaintenanceMargin": "0",
+                       "accountIMRate": "0", "accountMMRate": "0",
+                       "coin": [{"coin": "USDT", "equity": "10000", "usdValue": "10000"}]}])
+
+    def get_account_info(self):
+        return {"retCode": 0, "result": {"marginMode": "REGULAR_MARGIN"}}
+
+    def get_risk_limit(self, **_):
+        return reply([{"symbol": "BTCUSDT", "riskLimitValue": "300000",
+                       "maintenanceMargin": ".0033", "initialMargin": ".0066", "maxLeverage": "150"}])
 
     def get_positions(self, **_):
         return reply(self.positions)
@@ -83,7 +93,7 @@ def setup(tmp_path, monkeypatch):
 
 
 def payload(bar=1):
-    return {"bar_idx": bar, "tranche_index": 0, "side": "long", "sizing_qty": 10.,
+    return {"bar_idx": bar, "tranche_index": 0, "side": "long", "sizing_qty": 10., "sizing_leverage": 10.,
             "limit_price": 100., "sizing_sl_price": 95.}
 
 
@@ -239,7 +249,8 @@ def test_partial_fill_and_remaining_reservation_are_counted_once(setup, monkeypa
 
 def test_existing_drawdown_risk_constants_are_preserved(setup):
     conn, sessions, main, _ = setup
-    sessions["main"].get_wallet_balance = lambda **_: reply([{"totalEquity": "9500"}])
+    wallet = sessions["main"].get_wallet_balance()["result"]["list"][0]
+    sessions["main"].get_wallet_balance = lambda **_: reply([{**wallet, "totalEquity": "9500"}])
     tracking.record_equity(conn, 10000., "demo")
     assert main._place_limit_postonly("long", 80., 100., stop_price=95.,
                                       pending_payload={**payload(), "sizing_qty": 80.})
