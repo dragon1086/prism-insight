@@ -29,6 +29,15 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import importlib
+
+# Forced stubs: the tests configure cores.stock_chart's mock methods, and the
+# kis_auth stub keeps StockTrackingAgent construction off the real auth path.
+for _n in ["trading.kis_auth", "cores.stock_chart"]:
+    sys.modules.setdefault(_n, MagicMock())
+
+# Everything else prefers the real module so package imports inside
+# stock_tracking_agent (e.g. cores.llm.codex_oauth_fast_backend) still work.
 for _n in [
     "mcp_agent",
     "mcp_agent.app",
@@ -43,11 +52,12 @@ for _n in [
     "Crypto.Cipher.AES",
     "Crypto.Util",
     "Crypto.Util.Padding",
-    "trading.kis_auth",
     "seaborn",
-    "cores.stock_chart",
 ]:
-    sys.modules.setdefault(_n, MagicMock())
+    try:
+        importlib.import_module(_n)
+    except ImportError:
+        sys.modules.setdefault(_n, MagicMock())
 
 
 def _bars(n: int, start: float = 100.0, step: float = 0.5) -> pd.DataFrame:
@@ -72,19 +82,32 @@ def _kr_agent(tmp_path, name):
     return StockTrackingAgent(db_path=str(tmp_path / f"{name}.sqlite"))
 
 
-def _configure_kr(frame):
+def _kr_chart_patches(frame):
+    """Patch cores.stock_chart's data functions for the duration of a call.
+
+    Works whether sys.modules['cores.stock_chart'] is the real module (bound by
+    an earlier test) or the MagicMock stub — attributes are patched on whatever
+    object is bound and restored afterwards."""
+    import contextlib
+
     sc = sys.modules["cores.stock_chart"]
-    sc.get_market_ohlcv_by_date.reset_mock()
-    sc.get_market_ohlcv_by_date.return_value = frame
-    sc.get_index_ohlcv_by_date.return_value = None
-    sc._detect_index_ticker.return_value = "^KS11"
-    return sc
+    chart = MagicMock()
+    chart.get_market_ohlcv_by_date.return_value = frame
+    chart.get_index_ohlcv_by_date.return_value = None
+    chart._detect_index_ticker.return_value = "^KS11"
+    stack = contextlib.ExitStack()
+    for attr in ("get_market_ohlcv_by_date", "get_index_ohlcv_by_date", "_detect_index_ticker"):
+        stack.enter_context(patch.object(sc, attr, getattr(chart, attr)))
+    stack.enter_context(
+        patch("cores.regime_policy.get_market_pulse_detail", return_value=None)
+    )
+    return chart, stack
 
 
 def _kr_facts(tmp_path, name, frame):
-    _configure_kr(frame)
+    _, stack = _kr_chart_patches(frame)
     agent = _kr_agent(tmp_path, name)
-    with patch("cores.regime_policy.get_market_pulse_detail", return_value=None):
+    with stack:
         return agent._get_trend_facts("005930")
 
 
@@ -114,12 +137,12 @@ def test_kr_says_so_when_the_200_day_cannot_be_computed(tmp_path):
 
 def test_kr_requests_enough_history_for_a_200_day(tmp_path):
     """120 calendar days (~82 sessions) can never yield a 200-day average."""
-    sc = _configure_kr(_bars(260))
+    chart, stack = _kr_chart_patches(_bars(260))
     agent = _kr_agent(tmp_path, "kr_window")
-    with patch("cores.regime_policy.get_market_pulse_detail", return_value=None):
+    with stack:
         agent._get_trend_facts("005930")
 
-    start, end = sc.get_market_ohlcv_by_date.call_args[0][:2]
+    start, end = chart.get_market_ohlcv_by_date.call_args[0][:2]
     span_days = (pd.Timestamp(end) - pd.Timestamp(start)).days
     assert span_days >= 400, (
         f"requested only {span_days} calendar days; a 200-session average needs ~280+"

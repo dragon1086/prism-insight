@@ -184,14 +184,17 @@ class TestFinalScoreWeightedSum:
             assert abs(sum(w) - 1.0) < 1e-9, f"Regime '{regime}' weights don't sum to 1"
 
     def test_final_score_formula(self):
-        """Verify FinalScore = w_comp*comp + w_agent*agent + w_rs*rs + w_ext*ext."""
-        w_comp, w_agent, w_rs, w_ext = REGIME_SCORE_WEIGHTS["sideways"]
-        comp_norm, agent, rs, ext = 0.8, 0.6, 0.7, 0.9
+        """Verify FinalScore = w_comp*comp + w_rs*rs + w_ext*ext.
 
-        expected = w_comp * comp_norm + w_agent * agent + w_rs * rs + w_ext * ext
+        The #289 blend uses three components (composite, RS, extension); the
+        separate agent-fit weight was removed from the formula.
+        """
+        w_comp, w_rs, w_ext = REGIME_SCORE_WEIGHTS["sideways"]
+        comp_norm, rs, ext = 0.8, 0.7, 0.9
+
+        expected = w_comp * comp_norm + w_rs * rs + w_ext * ext
         computed = (
             comp_norm * w_comp +
-            agent * w_agent +
             rs * w_rs +
             ext * w_ext
         )

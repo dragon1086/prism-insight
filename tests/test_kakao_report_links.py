@@ -14,6 +14,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from aiohttp import web
 
+# The aiohttp_client fixture comes from the pytest-aiohttp plugin, which is not
+# a hard dependency — skip the whole module when it is absent.
+pytest.importorskip("pytest_aiohttp")
+
 from kakao_bot.adapters.http.report_server import ReportLinkServer
 from kakao_bot.adapters.persistence.sqlite import SQLiteKakaoRepository
 from kakao_bot.domain.models import ApprovalStatus

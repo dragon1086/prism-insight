@@ -70,43 +70,53 @@ def _frames():
     return snap, prev, cap
 
 
-snap, prev, cap = _frames()
-print("입력: BULL 종가>시가(양봉), BEAR 종가<시가(음봉) — 둘 다 전일대비 상승")
-print(f"  BULL  시 {snap.loc['BULL','Open']} → 종 {snap.loc['BULL','Close']}  "
-      f"(전일대비 {(snap.loc['BULL','Close']/prev.loc['BULL','Close']-1)*100:+.2f}%)")
-print(f"  BEAR  시 {snap.loc['BEAR','Open']} → 종 {snap.loc['BEAR','Close']}  "
-      f"(전일대비 {(snap.loc['BEAR','Close']/prev.loc['BEAR','Close']-1)*100:+.2f}%)")
+def _run_checks():
+    snap, prev, cap = _frames()
+    print("입력: BULL 종가>시가(양봉), BEAR 종가<시가(음봉) — 둘 다 전일대비 상승")
+    print(f"  BULL  시 {snap.loc['BULL','Open']} → 종 {snap.loc['BULL','Close']}  "
+          f"(전일대비 {(snap.loc['BULL','Close']/prev.loc['BULL','Close']-1)*100:+.2f}%)")
+    print(f"  BEAR  시 {snap.loc['BEAR','Open']} → 종 {snap.loc['BEAR','Close']}  "
+          f"(전일대비 {(snap.loc['BEAR','Close']/prev.loc['BEAR','Close']-1)*100:+.2f}%)")
 
-print("\n[Test 1] afternoon_daily_rise_top — 음봉 배제")
-try:
-    res = u.trigger_afternoon_daily_rise_top("20260731", snap, prev, cap)
-    names = list(res.index) if res is not None and not res.empty else []
-    check(f"BEAR(음봉) 제외됨 (결과: {names})", "BEAR" not in names)
-    check(f"BULL(양봉) 유지됨 (결과: {names})", "BULL" in names)
-except Exception as e:
-    check(f"실행 예외 없음 ({type(e).__name__}: {e})", False)
+    print("\n[Test 1] afternoon_daily_rise_top — 음봉 배제")
+    try:
+        res = u.trigger_afternoon_daily_rise_top("20260731", snap, prev, cap)
+        names = list(res.index) if res is not None and not res.empty else []
+        check(f"BEAR(음봉) 제외됨 (결과: {names})", "BEAR" not in names)
+        check(f"BULL(양봉) 유지됨 (결과: {names})", "BULL" in names)
+    except Exception as e:
+        check(f"실행 예외 없음 ({type(e).__name__}: {e})", False)
 
-print("\n[Test 2] macro_sector_leader — 음봉 배제")
-# leading_sectors 가 비면 필터를 타기 전에 조기 return 하므로(공허한 통과),
-# 섹터 맵을 주입해 실제로 필터 구간까지 진입시킨다.
-macro = {"leading_sectors": [{"sector": "Technology", "confidence": 0.8}]}
-_orig_map = u.get_us_sector_map
-try:
-    u.get_us_sector_map = lambda tickers: {t: "Technology" for t in tickers}
-    res2 = u.trigger_macro_sector_leader("20260731", snap, prev, cap, macro_context=macro)
-    names2 = list(res2.index) if res2 is not None and not res2.empty else []
-    # 음성 대조군: BULL 이 살아남아야 "필터가 BEAR 를 걸렀다"가 증명된다.
-    check(f"BULL(양봉) 유지됨 — 조기 return 이 아님 (결과: {names2})", "BULL" in names2)
-    check(f"BEAR(음봉) 제외됨 (결과: {names2})", "BEAR" not in names2)
-except Exception as e:
-    check(f"실행 예외 없음 ({type(e).__name__}: {e})", False)
-finally:
-    u.get_us_sector_map = _orig_map
+    print("\n[Test 2] macro_sector_leader — 음봉 배제")
+    # leading_sectors 가 비면 필터를 타기 전에 조기 return 하므로(공허한 통과),
+    # 섹터 맵을 주입해 실제로 필터 구간까지 진입시킨다.
+    macro = {"leading_sectors": [{"sector": "Technology", "confidence": 0.8}]}
+    _orig_map = u.get_us_sector_map
+    try:
+        u.get_us_sector_map = lambda tickers: {t: "Technology" for t in tickers}
+        res2 = u.trigger_macro_sector_leader("20260731", snap, prev, cap, macro_context=macro)
+        names2 = list(res2.index) if res2 is not None and not res2.empty else []
+        # 음성 대조군: BULL 이 살아남아야 "필터가 BEAR 를 걸렀다"가 증명된다.
+        check(f"BULL(양봉) 유지됨 — 조기 return 이 아님 (결과: {names2})", "BULL" in names2)
+        check(f"BEAR(음봉) 제외됨 (결과: {names2})", "BEAR" not in names2)
+    except Exception as e:
+        check(f"실행 예외 없음 ({type(e).__name__}: {e})", False)
+    finally:
+        u.get_us_sector_map = _orig_map
 
-print("\n[Test 3] 의도적 제외 트리거는 건드리지 않았다")
-import inspect
-check("contrarian_value 에 양봉 필터 없음(역발상 트리거)",
-      "IsRising" not in inspect.getsource(u.trigger_contrarian_value))
+    print("\n[Test 3] 의도적 제외 트리거는 건드리지 않았다")
+    import inspect
+    check("contrarian_value 에 양봉 필터 없음(역발상 트리거)",
+          "IsRising" not in inspect.getsource(u.trigger_contrarian_value))
 
-print(f"\n===== RESULT: {passed} passed, {failed} failed =====")
-sys.exit(1 if failed else 0)
+    print(f"\n===== RESULT: {passed} passed, {failed} failed =====")
+    assert failed == 0
+
+
+def test_us_screening_bullish_candle():
+    """pytest entry point — runs the same checks as standalone execution."""
+    _run_checks()
+
+
+if __name__ == "__main__":
+    _run_checks()

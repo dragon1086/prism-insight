@@ -357,6 +357,11 @@ def test_importlib_does_not_pollute_syspath():
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
 
+    # The contract under test is "is_us_market_hours() must not add prism-us";
+    # clear any prism-us entries left by earlier tests so we check this call,
+    # not global suite state.
+    sys.path[:] = [p for p in sys.path if "prism-us" not in str(p)]
+
     # Import the subscriber module
     spec = importlib.util.spec_from_file_location(
         "gcp_pubsub_subscriber_example_pathtest",

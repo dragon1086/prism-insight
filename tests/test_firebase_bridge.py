@@ -48,13 +48,23 @@ def test_detect_type_analysis():
 
 def test_detect_type_portfolio():
     """Portfolio type detection."""
-    msg = "포트폴리오 수익률 현황: +12.5%"
+    # Real portfolio status message format (stock_tracking_agent.py)
+    msg = "🔸 보유 종목:\n- 삼성전자 +12.5%"
     assert detect_type(msg) == 'portfolio'
+
+    msg2 = "포트폴리오 현황 업데이트"
+    assert detect_type(msg2) == 'portfolio'
+
+
+def test_detect_type_portfolio_perspective_not_portfolio():
+    """'포트폴리오 관점' section inside buy messages must not classify as portfolio."""
+    msg = "삼성전자 매수 신호\n\n포트폴리오 관점: 섹터 편중 주의"
+    assert detect_type(msg) != 'portfolio'
 
 
 def test_detect_type_pdf():
     """PDF type detection."""
-    msg = "삼성전자 분석 리포트 PDF 생성 완료"
+    msg = "pdfreports/005930_삼성전자_20260315_morning.pdf"
     assert detect_type(msg) == 'pdf'
 
 

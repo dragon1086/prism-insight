@@ -118,9 +118,9 @@ def test_stance_landing_copy_is_plain_and_benefit_led():
     ).read_text(encoding="utf-8")
 
     assert "말로만 잘하는 투자 전략, 이제 기록으로 비교하세요" in page
-    assert "사기 전에 계획 남기기" in page
-    assert "그때 가격 자동 저장" in page
-    assert "결과 자동 계산" in page
+    assert "1. 등록한 날부터 새 기록" in page
+    assert "2. 결과 전에 판단 기록" in page
+    assert "3. 실력과 위험 자동 누적" in page
     assert "기록 쌓는 중" in page
     assert "계산 규칙 버전" in page
     assert "실적을 신고받지 말고" not in page

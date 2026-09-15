@@ -260,12 +260,12 @@ us._compute_ma20 = lambda *a, **k: 0.0
 
 A = {US_AMOUNT}
 snapshot = pd.DataFrame.from_dict({{
-    "BULL": {{"Open": 99.0, "Close": 102.0, "Volume": 2_000_000, "Amount": A}},
-    "BEAR": {{"Open": 104.0, "Close": 98.0, "Volume": 2_000_000, "Amount": A}},
+    "BULL": {{"Open": 99.0, "High": 103.0, "Low": 98.0, "Close": 102.0, "Volume": 2_000_000, "Amount": A}},
+    "BEAR": {{"Open": 104.0, "High": 105.0, "Low": 97.0, "Close": 98.0, "Volume": 2_000_000, "Amount": A}},
 }}, orient="index")
 prev = pd.DataFrame.from_dict({{
-    "BULL": {{"Open": 100.0, "Close": 100.0, "Volume": 1_000_000, "Amount": A}},
-    "BEAR": {{"Open": 100.0, "Close": 100.0, "Volume": 1_000_000, "Amount": A}},
+    "BULL": {{"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Volume": 1_000_000, "Amount": A}},
+    "BEAR": {{"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.0, "Volume": 1_000_000, "Amount": A}},
 }}, orient="index")
 
 result = us.trigger_afternoon_volume_surge_flat("20260804", snapshot, prev, None)

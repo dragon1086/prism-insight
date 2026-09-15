@@ -92,12 +92,20 @@ class TestDataToTriggerFlow:
 
         assert isinstance(result, pd.DataFrame)
 
-    def test_market_cap_filter_applied(self, sample_snapshot):
-        """Test market cap filter is applied in trigger."""
-        from us_trigger_batch import MIN_MARKET_CAP
+    def test_trading_value_filter_applied(self, sample_snapshot):
+        """Test trading value filter constants are defined in trigger.
 
-        # Verify constant is set correctly ($20B)
-        assert MIN_MARKET_CAP == 20_000_000_000
+        The market-cap gate (MIN_MARKET_CAP = $20B) was intentionally disabled in
+        us_trigger_batch in favor of trigger-scoring quality filtering; the
+        active liquidity gate is MIN_TRADING_VALUE.
+        """
+        from us_trigger_batch import (
+            MIN_TRADING_VALUE,
+            EMERGING_LIQUIDITY_MIN_TRADING_VALUE,
+        )
+
+        assert MIN_TRADING_VALUE == 100_000_000
+        assert EMERGING_LIQUIDITY_MIN_TRADING_VALUE == 50_000_000
 
 
 # =============================================================================
@@ -143,8 +151,8 @@ class TestTriggerToAgentsFlow:
             language="en"
         )
 
-        # Price/volume should use yfinance
-        assert 'yfinance_us' in agents['price_volume_analysis'].server_names
+        # Price/volume should use the yahoo_finance MCP server
+        assert 'yahoo_finance' in agents['price_volume_analysis'].server_names
 
         # News should use perplexity
         assert 'perplexity' in agents['news_analysis'].server_names
@@ -255,10 +263,10 @@ class TestDatabaseIntegration:
         """Test US holdings are isolated from KR holdings."""
         cursor, conn, _ = initialized_temp_database
 
-        # Insert US holding
+        # Insert US holding (account_key is NOT NULL since multi-account schema)
         cursor.execute("""
-            INSERT INTO us_stock_holdings (ticker, company_name, buy_price, buy_date)
-            VALUES ('AAPL', 'Apple Inc.', 185.50, '2026-01-18')
+            INSERT INTO us_stock_holdings (account_key, ticker, company_name, buy_price, buy_date)
+            VALUES ('vps:test:01', 'AAPL', 'Apple Inc.', 185.50, '2026-01-18')
         """)
         conn.commit()
 

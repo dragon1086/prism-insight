@@ -418,11 +418,13 @@ def test_orchestrator_publishes_screening_before_report_generation(orchestrator_
             for comparator in node.test.comparators
         )
     )
-    assert isinstance(live_branch.body[-1], ast.Return)
-    skipped_statement = live_branch.body[-2]
+    # Live rest must actually skip the batch. KR runs a single batch per
+    # process and exits via an early `return`; US runs morning+afternoon in
+    # one process, so it records into `_mp_live_skips` and gates each
+    # `run_full_pipeline` call on membership.
     skipped_calls = [
         node
-        for node in ast.walk(skipped_statement)
+        for node in ast.walk(live_branch)
         if isinstance(node, ast.Call)
         and getattr(node.func, "id", "") == "publish_batch_campaign_best_effort"
         and any(
@@ -433,3 +435,37 @@ def test_orchestrator_publishes_screening_before_report_generation(orchestrator_
         )
     ]
     assert len(skipped_calls) == 1
+    skip_adds = [
+        node
+        for node in ast.walk(live_branch)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "_mp_live_skips"
+    ]
+    if skip_adds:
+        run_pipeline_ifs = [
+            node
+            for node in ast.walk(main)
+            if isinstance(node, ast.If)
+            and any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and child.func.attr == "run_full_pipeline"
+                for child in ast.walk(node)
+            )
+        ]
+        assert run_pipeline_ifs
+        for batch_if in run_pipeline_ifs:
+            assert any(
+                isinstance(child, ast.Compare)
+                and any(
+                    isinstance(child_op, ast.Name)
+                    and child_op.id == "_mp_live_skips"
+                    for child_op in child.comparators
+                )
+                for child in ast.walk(batch_if.test)
+            )
+    else:
+        assert isinstance(live_branch.body[-1], ast.Return)
