@@ -3,6 +3,11 @@
 Use this checklist before changing screening, regime, entry, exit, or position-sizing behavior.
 It is a development review harness, not a runtime trading component.
 
+For implementation and deployment, also apply the mandatory change-scope
+verification gates in `docs/SERVER_GIT_OPERATIONS_ko.md`. A strategy review or
+passing unit tests does not replace real-module integration and safe production
+smoke. Report the first scheduled run separately from deployment verification.
+
 ## BTC roadmap checkpoint
 
 For BTC work, first read [BTC_ROADMAP_ko.md](BTC_ROADMAP_ko.md).
