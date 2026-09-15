@@ -129,6 +129,8 @@ def _recover(backend, pending):
             tracking.set_meta(backend.conn, receipt_key,
                               {"order_id": parent["orderId"], "position_id": pos.id, "qty": actual},
                               MODE, commit=False)
+            from live.swing_entry_notice import enqueue
+            enqueue(backend.conn, pos, receipt_key)
             for key in ("swing_entry_logical_capital", "swing_entry_account_equity"):
                 tracking.set_meta(backend.conn, key, context["logical_capital"], MODE, commit=False)
             if tracking.get_meta(backend.conn, "swing_strategy_nav_v1", MODE) is None:

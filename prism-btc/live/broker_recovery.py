@@ -235,3 +235,5 @@ def _reconcile_swing(conn, main_mode, now, backend=None):
         raise RecoveryPending("swing entry recovery pending")
     if not retired:
         raise RecoveryPending("swing stop retirement pending")
+    from live.swing_entry_notice import drain
+    drain(conn, main_mode)
