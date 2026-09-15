@@ -14,8 +14,6 @@ services:
 
     # 볼륨 마운트
     volumes:
-      # 데이터 영속성을 위한 볼륨
-      - prism-data:/app/prism-insight/data
       - ./reports:/app/prism-insight/reports
       - ./pdf_reports:/app/prism-insight/pdf_reports
       - ./html_reports:/app/prism-insight/html_reports
@@ -48,15 +46,6 @@ services:
     # 네트워크 모드
     network_mode: bridge
 
-    # 헬스체크
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import sys; sys.exit(0)' && service cron status"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-# 볼륨 정의
-volumes:
-  prism-data:
-    driver: local
+    # 헬스체크: Dockerfile의 HEALTHCHECK를 사용한다
+    # (DB 테이블 존재 + ENABLE_CRON 반영; 이전 compose 정의는 ENABLE_CRON=false
+    #  일 때 cron 상태 체크로 항상 unhealthy가 되는 문제가 있었다)

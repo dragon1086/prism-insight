@@ -68,7 +68,7 @@ WORKDIR /app/prism-insight
 # Python 의존성을 먼저 복사해 캐시 효율을 높임
 COPY requirements.txt /app/prism-insight/requirements.txt
 
-# Python 의존성 설치 (setuptools for pykrx compatibility)
+# Python 의존성 설치 (setuptools for legacy package compatibility)
 RUN pip install --no-cache-dir --upgrade pip setuptools && \
     pip install --no-cache-dir -r requirements.txt
 

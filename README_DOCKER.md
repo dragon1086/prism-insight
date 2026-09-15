@@ -38,7 +38,7 @@ Run Ubuntu 24.04-based AI stock analysis system easily with Docker.
 - OpenAI SDK 2.43.0 and OpenAI Agents 0.7.0
 - Anthropic API (optional compatibility workflows)
 - MCP Agent and related servers
-- pykrx (Korean stock data)
+- KIS API client (Korean stock data; pykrx was removed in the KIS-only migration)
 - matplotlib, seaborn (data visualization)
 - All packages from project requirements.txt
 
@@ -183,7 +183,6 @@ TELEGRAM_CHANNEL_ID=@your_channel_id_here
 
 #### 2. `mcp_agent.config.yaml` File
 ```yaml
-$schema: ../../schema/mcp-agent.config.schema.json
 execution_engine: asyncio
 logger:
   type: console
@@ -213,7 +212,6 @@ mcp:
 
 #### 3. `mcp_agent.secrets.yaml` File
 ```yaml
-$schema: ../../schema/mcp-agent.config.schema.json
 openai:
   api_key: your_openai_api_key_here
 anthropic:
@@ -381,18 +379,15 @@ EOF
 
 ```bash
 python3 << 'EOF'
-from pykrx import stock
-from datetime import datetime, timedelta
+from pathlib import Path
+import yaml
 
-today = datetime.now().strftime("%Y%m%d")
-week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
-
-try:
-    df = stock.get_market_ohlcv(week_ago, today, "005930")
-    print("✅ Samsung Electronics stock data query successful!")
-    print(df.tail())
-except Exception as e:
-    print(f"⚠️ Error (may be weekend/holiday): {e}")
+# Korean market data comes from the KIS API (KIS-only migration); verify the
+# credentials file exists and parses instead of querying a live API.
+cfg = Path("trading/config/kis_devlp.yaml")
+assert cfg.exists(), "trading/config/kis_devlp.yaml is missing"
+yaml.safe_load(cfg.read_text(encoding="utf-8"))
+print("✅ KIS credentials file present and valid YAML")
 EOF
 ```
 

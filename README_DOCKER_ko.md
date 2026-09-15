@@ -36,7 +36,7 @@ Ubuntu 24.04 기반 AI 주식 분석 시스템을 Docker로 간편하게 실행�
 - OpenAI SDK 2.43.0 및 OpenAI Agents 0.7.0
 - Anthropic API (선택적 호환 워크플로우)
 - MCP Agent 및 관련 서버들
-- pykrx (한국 주식 데이터)
+- KIS API 클라이언트 (한국 주식 데이터; KIS-only 전환으로 pykrx 제거됨)
 - matplotlib, seaborn (데이터 시각화)
 - 프로젝트 requirements.txt의 모든 패키지
 
@@ -181,7 +181,6 @@ TELEGRAM_CHANNEL_ID=@여기에_채널ID_입력
 
 #### 2. `mcp_agent.config.yaml` 파일
 ```yaml
-$schema: ../../schema/mcp-agent.config.schema.json
 execution_engine: asyncio
 logger:
   type: console
@@ -211,7 +210,6 @@ mcp:
 
 #### 3. `mcp_agent.secrets.yaml` 파일
 ```yaml
-$schema: ../../schema/mcp-agent.config.schema.json
 openai:
   api_key: 여기에_OpenAI_API키_입력
 anthropic:
@@ -379,18 +377,15 @@ EOF
 
 ```bash
 python3 << 'EOF'
-from pykrx import stock
-from datetime import datetime, timedelta
+from pathlib import Path
+import yaml
 
-today = datetime.now().strftime("%Y%m%d")
-week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
-
-try:
-    df = stock.get_market_ohlcv(week_ago, today, "005930")
-    print("✅ 삼성전자 주가 데이터 조회 성공!")
-    print(df.tail())
-except Exception as e:
-    print(f"⚠️ 오류 (주말/공휴일일 수 있음): {e}")
+# 한국 시세는 KIS API를 사용합니다(KIS-only 전환으로 pykrx 제거됨). 실제 API를
+# 호출하는 대신 자격증명 파일이 존재하고 파싱되는지만 확인합니다.
+cfg = Path("trading/config/kis_devlp.yaml")
+assert cfg.exists(), "trading/config/kis_devlp.yaml 파일이 없습니다"
+yaml.safe_load(cfg.read_text(encoding="utf-8"))
+print("✅ KIS 자격증명 파일 존재 및 YAML 파싱 성공")
 EOF
 ```
 

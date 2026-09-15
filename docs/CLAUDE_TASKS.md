@@ -325,7 +325,7 @@ python utils/migrate_watchlist_to_performance_tracker.py --reset
 ```
 
 **Features:**
-- Fetches 7/14/30 day prices from pykrx
+- Fetches 7/14/30 day prices via KIS (`cores.market_data`)
 - Auto-detects trigger_type (volume_surge, gap_up, etc.)
 - Period unification: aligns trading history with watchlist dates
 - Duplicate prevention (ticker + date unique constraint)
