@@ -19,9 +19,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from types import SimpleNamespace
 from typing import Any
 
 from live import tracking
+from live.position_snapshot import persist_snapshot, snapshot_lines
 from live.telegram_reporter import (
     _send,
     _load_env,
@@ -98,8 +100,10 @@ def _account_context(conn, mode: str, row=None) -> dict[str, Any]:
         if isinstance(snapshot.get("position"), dict)
         else {}
     )
+    if row is not None and exchange_position.get("side") != _row_value(row, "side"):
+        exchange_position = {}
 
-    equity = _f(wallet.get("equity")) or tracking.latest_equity(conn, mode)
+    equity = _f(wallet.get("equity"))
     equity = float(equity) if equity and equity > 0 else None
     local_positions = tracking.load_open_positions(conn, mode)
     side = str(_row_value(row, "side", "")) if row is not None else ""
@@ -109,18 +113,14 @@ def _account_context(conn, mode: str, row=None) -> dict[str, Any]:
     total_entry = _f(exchange_position.get("entry_price"))
     if total_entry <= 0 and row is not None:
         total_entry = _f(_row_value(row, "entry_price"))
-    leverage = _f(exchange_position.get("leverage"))
-    if leverage <= 0 and row is not None:
-        leverage = _f(_row_value(row, "leverage"), 1.0)
     total_notional = total_qty * total_entry
     position_margin = _f(exchange_position.get("position_im"))
-    if position_margin <= 0 and leverage > 0:
-        position_margin = total_notional / leverage
 
     return {
+        "snapshot": snapshot,
         "captured_at": snapshot.get("captured_at"),
         "margin_mode": _margin_mode_kr(account.get("margin_mode")),
-        "position_mode": _position_mode_kr(exchange_position.get("position_idx", 0)),
+        "position_mode": _position_mode_kr(exchange_position.get("position_idx")),
         "equity": equity,
         "wallet_balance": _f(wallet.get("wallet_balance")),
         "available_balance": _f(wallet.get("available_balance")),
@@ -179,11 +179,9 @@ def _build_entry_message(row, mode: str, context: dict[str, Any] | None = None) 
     lev = float(row["leverage"])
     tranche = int(row["tranche_index"])
     qty = float(row["qty"])
-    equity = context.get("equity")
     total_qty = float(context.get("total_qty") or qty)
     total_entry = float(context.get("total_entry") or entry)
     notional = total_qty * total_entry
-    margin = float(context.get("position_margin") or (notional / lev if lev > 0 else 0))
     risk_amount = float(_row_value(row, "initial_risk", 0.0))
     if risk_amount <= 0:
         risk_amount = abs(entry - sl) * qty
@@ -203,16 +201,15 @@ def _build_entry_message(row, mode: str, context: dict[str, Any] | None = None) 
         "📦 체결·포지션",
         f"• 진입가: {entry:,.2f}달러",
         f"• 이번 체결: {qty:.6f} BTC",
-        f"• 현재 총수량: {total_qty:.6f} BTC",
-        f"• 명목 포지션: {notional:,.2f}달러 ({_pct(notional, equity)})",
-        f"• 포지션 증거금: {margin:,.2f}달러 ({_pct(margin, equity)}) · "
-        f"레버리지 {lev:g}배",
+        f"• 원장/최근 저장 총수량: {total_qty:.6f} BTC",
+        f"• 체결가 기준 명목 포지션: {notional:,.2f} USDT",
+        f"• 원장 기록 배수: {lev:g}배 (현재 거래소 설정은 아래 스냅샷 참조)",
         f"• 위험예산 단계: {tranche + 1}/3 · 전체 위험예산의 "
         f"{tranche_fraction * 100:.0f}%",
         "",
         "🛡️ 위험·청산 계획",
         f"• 손절: {sl:,.2f}달러 ({sl_move:+.2f}%)",
-        f"• 손절 위험: {risk_amount:,.2f}달러 ({_pct(risk_amount, equity)}, 수수료 전)",
+        f"• 손절 위험: {risk_amount:,.2f} USDT (수수료 전)",
         f"• 목표가: 1차 {float(row['tp1_price']):,.2f}달러 · "
         f"2차 {float(row['tp2_price']):,.2f}달러 · "
         f"3차 {float(row['tp3_price']):,.2f}달러",
@@ -230,7 +227,7 @@ def _build_entry_message(row, mode: str, context: dict[str, Any] | None = None) 
     lines.append(
         f"• 전략 추정 청산가: {strategy_liq:,.2f}달러 ({liq_move:+.2f}%)"
     )
-    lines.extend(_account_lines(context))
+    lines.extend(snapshot_lines(context.get("snapshot"), SimpleNamespace(**dict(row))))
     lines.extend(["", _disclaimer()])
     return "\n".join(lines)
 
@@ -254,13 +251,14 @@ def _build_exit_message(row, mode: str, context: dict[str, Any] | None = None) -
         f"• 진입 {float(row['entry_price']):,.2f} → "
         f"청산 {float(row['exit_price']):,.2f}달러",
         f"• 정리 수량: {float(row['qty']):.6f} BTC · "
-        f"레버리지 {float(row['leverage']):g}배",
+        f"원장 기록 배수 {float(row['leverage']):g}배",
         f"• 순손익: {float(_row_value(row, 'net_pnl', 0.0)):+,.2f}달러 · "
         f"결과 {r:+.2f}R",
         f"• 수수료: {float(row['fee_paid']):,.2f}달러 · "
         f"펀딩비: {float(row['funding_paid']):,.2f}달러",
     ]
-    lines.extend(_account_lines(context, exit_message=True))
+    lines.extend(snapshot_lines(context.get("snapshot"), SimpleNamespace(**dict(row)),
+                                event_time=_row_value(row, "exit_time"), include_position=False))
     lines.extend(["", _disclaimer()])
     return "\n".join(lines)
 
@@ -323,11 +321,14 @@ def notify_new_events(conn, mode: str = "demo") -> dict:
                 msgs = []
                 for row in rows:
                     try:
+                        context = _account_context(conn, mode, row)
+                        persist_snapshot(conn, "entry_notice_snapshot:" + str(row["id"]),
+                                         context["snapshot"], mode)
                         msgs.append(
                             _build_entry_message(
                                 row,
                                 mode,
-                                _account_context(conn, mode, row),
+                                context,
                             )
                         )
                     except Exception as exc:  # noqa: BLE001 — 1건 실패가 전체를 못 막음
@@ -353,11 +354,14 @@ def notify_new_events(conn, mode: str = "demo") -> dict:
                 msgs = []
                 for row in rows:
                     try:
+                        context = _account_context(conn, mode)
+                        persist_snapshot(conn, "exit_notice_snapshot:" + str(row["id"]),
+                                         context["snapshot"], mode)
                         msgs.append(
                             _build_exit_message(
                                 row,
                                 mode,
-                                _account_context(conn, mode),
+                                context,
                             )
                         )
                     except Exception as exc:  # noqa: BLE001

@@ -134,7 +134,7 @@ def test_swing_exact_close_settlement_without_market_data(conn, monkeypatch):
     monkeypatch.setattr(tracking, "load_open_positions", lambda *a: [pos])
     tracking.record_equity(conn, 1000, "swing")
     calls = []
-    monkeypatch.setattr(swing, "_close_position", lambda *a: calls.append(a) or (1010, 1))
+    monkeypatch.setattr(swing, "_close_position", lambda *a, **kw: calls.append(a) or (1010, 1))
     backend = SimpleNamespace(name="exchange", recover_pending_entry=lambda: True,
                               _call=lambda *a, **k: pytest.fail("unexpected broker call"),
                               last_protection_confirmed=True, check_stop=lambda *a: 101)

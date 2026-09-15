@@ -145,6 +145,12 @@ Avoid broad production-like runs unless the task requires them.
 
 ### Report output
 
+- BTC trade notifications must follow `docs/BTC_POSITION_MESSAGE_CONTRACT_20260915_ko.md`:
+  preserve detailed entry/add/reduction/exit/recovery context, verified margin mode,
+  exchange leverage, position margin and same-account equity ratio with currency
+  and capture time. Never substitute strategy capital/exposure for broker figures,
+  attach another position's snapshot to an old exit, or delay protection/execution
+  for optional notification enrichment. Missing data stays explicitly unknown.
 - Korean report text must use formal polite style.
 - Preserve existing prompt and report structure unless the task explicitly requests prompt/report redesign.
 

@@ -49,6 +49,7 @@ from core.swing import (
 from engine.config import SWING_ENABLED, SWING_INITIAL_EQUITY, SWING_MAX_LEVERAGE
 from live import tracking
 from live.exchange_snapshot import read_complete
+from live.position_snapshot import capture_swing_snapshot, persist_snapshot, snapshot_lines
 from live.native_stop import native_stop_params
 from live.shared_entry_coordinator import authorize, serialized, mutation_lock, LockBusy
 from live.protection import reconcile_stop
@@ -973,6 +974,7 @@ def _build_entry_message(
     execution_context: dict[str, float] | None = None,
     wallet_context: dict[str, float] | None = None,
     native_sl_attached: bool = False,
+    account_snapshot: dict | None = None,
 ) -> str:
     """Build a complete, auditable swing-entry notification.
 
@@ -984,11 +986,8 @@ def _build_entry_message(
     wallet_context = wallet_context or {}
     qty = execution_context.get("qty") or pos.qty
     entry = execution_context.get("entry_price") or pos.entry_price
-    notional = execution_context.get("position_value") or qty * entry
+    notional = qty * entry
     exchange_leverage = execution_context.get("leverage") or 0.0
-    position_margin = execution_context.get("position_im") or (
-        notional / exchange_leverage if exchange_leverage > 0 else 0.0
-    )
     exposure = notional / equity if equity > 0 else pos.leverage
     sl_move = (pos.sl_price - entry) / entry * 100.0 if entry > 0 else 0.0
     risk_amount = pos.initial_risk or abs(entry - pos.sl_price) * qty
@@ -1054,22 +1053,17 @@ def _build_entry_message(
         f"• 주문 방식: {order_type}",
         f"• 평균 체결가: {entry:,.2f}달러",
         f"• 체결수량: {qty:.6f} BTC",
-        f"• 명목 포지션: {notional:,.2f}달러 ({_pct_text(notional, equity)})",
-        f"• 전략 노출배수: 계좌 평가액 대비 {exposure:.2f}배",
+        f"• 체결가 기준 명목 포지션: {notional:,.2f} USDT",
+        f"• 전략 노출배수: 전략 배정자본 대비 {exposure:.2f}배",
         f"• 거래소 레버리지: {leverage_text}",
     ]
-    if position_margin > 0:
-        lines.append(
-            f"• 포지션 초기증거금: {position_margin:,.2f}달러 "
-            f"({_pct_text(position_margin, equity)})"
-        )
     lines.extend([
         "",
         "🛡️ 위험·청산 계획",
         f"• 보호 손절: {pos.sl_price:,.2f}달러 ({sl_move:+.2f}%) · {stop_text}",
         (
             f"• 손절 위험: {risk_amount:,.2f}달러 "
-            f"({_pct_text(risk_amount, equity)}, 수수료 전)"
+            "(수수료 전; 전체 거래계좌 비율은 아래 스냅샷 참조)"
         ),
     ])
     if liq_price > 0:
@@ -1085,12 +1079,10 @@ def _build_entry_message(
         daily_rule,
         price_rule,
         "",
-        "💰 계좌 스냅샷",
-        f"• 계좌 평가액: {equity:,.2f}달러",
+        "💰 전략 배정자본 (거래소 전체 잔고 아님)",
+        f"• 전략 배정자본: {equity:,.2f} USD",
     ])
-    available = wallet_context.get("available_balance") or 0.0
-    if available > 0:
-        lines.append(f"• 사용 가능액: {available:,.2f}달러")
+    lines.extend(snapshot_lines(account_snapshot, pos))
     lines.extend(["", "_가상자금 모의투자입니다_"])
     return "\n".join(lines)
 
@@ -1169,6 +1161,7 @@ def _build_exit_message(
     entry_account_equity: float | None = None,
     exchange_leverage: float | None = None,
     settlement_confirmed: bool = False,
+    account_snapshot: dict | None = None,
 ) -> str:
     """스윙 청산 알림을 정량 지표와 함께 만든다.
 
@@ -1207,16 +1200,7 @@ def _build_exit_message(
         lines.append(" · ".join(pnl_parts))
         if not settlement_confirmed:
             lines.append("• ⚠️ Bybit 확정 정산 조회 실패 · 원장 수치는 잠정값")
-        if entry_account_equity and entry_account_equity > 0:
-            contribution = net / entry_account_equity * 100.0
-            lines.append(
-                f"• 이번 거래 계좌 기여: {net:+,.2f}달러 "
-                f"(진입 당시 평가액 대비 {contribution:+.2f}%)"
-            )
-        lines.append(
-            f"• 현재 교차계좌 평가액: {equity_after:,.2f}달러 "
-            "(현재 스냅샷이며 이번 거래 수익 아님)"
-        )
+        lines.append("• 진입 당시 전체 거래계좌 기여율: 확인 불가 (전략 배정자본과 구분)")
         leverage_text = (
             f"{exchange_leverage:g}배" if exchange_leverage else "확인 불가"
         )
@@ -1245,6 +1229,7 @@ def _build_exit_message(
             f"• 포지션: {pos.qty:.4f} BTC · 전략 노출 {pos.leverage:.1f}배"
             + (f" · 보유 {duration}" if duration else "")
         )
+    lines.extend(snapshot_lines(account_snapshot, pos, event_time=exit_time, include_position=False))
     lines.append("_데모 계정 모의투자입니다_")
     return "\n".join(lines)
 
@@ -1253,10 +1238,25 @@ def _build_exit_message(
 # 원장 정산 — 백엔드 공통 (체결가만 백엔드가 결정).
 # ---------------------------------------------------------------------------
 
+def _schedule_notice(jobs, callback):
+    if jobs is not None:
+        jobs.append(callback)
+    else:
+        _flush_notices([callback])
+
+
+def _flush_notices(jobs):
+    for callback in jobs:
+        try:
+            callback()
+        except Exception:
+            log.exception("optional swing notice failed; trading result preserved")
+
+
 def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
                     fee_rate: float, reason: str, bar_time_str: str,
                     equity: float, trade_counter: int,
-                    main_mode: str) -> tuple[float, int]:
+                    main_mode: str, notice_jobs=None) -> tuple[float, int]:
     """청산 정산: 트레이드 기록 → 포지션 제거 → equity 갱신 → 알림.
 
     실집행 백엔드는 지갑 equity 가 진실 — 추정 net 으로 갱신 후 지갑값으로 덮는다.
@@ -1352,24 +1352,30 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
             "qty": qty,
         }
     )
-    delivered = _notify(main_mode, _build_exit_message(
-        pos=display_pos,
-        exit_price=exit_price,
-        reason=reason,
-        backend_name=backend.name,
-        net=net,
-        fee_paid=fee_paid,
-        r_multiple=r,
-        equity_before=equity_before,
-        equity_after=equity_after,
-        exit_time=bar_time_str,
-        gross_pnl=gross,
-        funding_paid=funding_paid,
-        entry_account_equity=entry_account_equity,
-        exchange_leverage=exchange_leverage,
-        settlement_confirmed=settlement_confirmed,
-    ))
-    _record_notification_delivery(conn, "swing_exit", delivered)
+    def send_exit_notice():
+        account_snapshot = capture_swing_snapshot(backend, display_pos)
+        persist_snapshot(conn, "account_snapshot", account_snapshot, MODE)
+        persist_snapshot(conn, "swing_exit_snapshot:" + str(trade_counter), account_snapshot, MODE)
+        delivered = _notify(main_mode, _build_exit_message(
+            pos=display_pos,
+            exit_price=exit_price,
+            reason=reason,
+            backend_name=backend.name,
+            net=net,
+            fee_paid=fee_paid,
+            r_multiple=r,
+            equity_before=equity_before,
+            equity_after=equity_after,
+            exit_time=bar_time_str,
+            gross_pnl=gross,
+            funding_paid=funding_paid,
+            entry_account_equity=entry_account_equity,
+            exchange_leverage=exchange_leverage,
+            settlement_confirmed=settlement_confirmed,
+            account_snapshot=account_snapshot,
+        ))
+        _record_notification_delivery(conn, "swing_exit", delivered)
+    _schedule_notice(notice_jobs, send_exit_notice)
     tracking.set_meta(conn, "swing_entry_account_equity", None, MODE)
     tracking.set_meta(conn, "swing_exchange_leverage", None, MODE)
     return equity_after, trade_counter
@@ -1377,7 +1383,7 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
 
 def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
                s1: pd.DataFrame, equity: float,
-               main_mode: str) -> Optional[tracking.PositionRow]:
+               main_mode: str, notice_jobs=None) -> Optional[tracking.PositionRow]:
     """4h 확정봉에서 진입 평가. 성공 시 저장된 PositionRow, 아니면 None."""
     if tracking.get_meta(conn, "swing_close_pending", MODE):
         return None
@@ -1506,7 +1512,7 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
             tracking.log_event(conn, "strategy_nav_seed",
                                f"prospective swing NAV seeded={sizing_equity:.4f}", mode=MODE)
         tracking.set_meta(
-            conn, "swing_entry_account_equity", sizing_equity, MODE
+            conn, "swing_entry_account_equity", None, MODE
         )
         exchange_leverage = execution.get("leverage")
         tracking.set_meta(
@@ -1523,25 +1529,30 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
         "ma35_1d": float(d1["ma35"]),
     }
     from live.swing_entry_notice import claim_normal
-    delivered = None
     try:
         notify_claimed = main_mode in ("demo", "live") and claim_normal(conn, pos.id)
     except Exception:
         log.exception("swing entry notice claim failed; trading continues without resend")
         notify_claimed = False
-    if notify_claimed:
+    entry_execution = dict(getattr(backend, "last_open_snapshot", None) or {})
+    native_sl_attached = bool(tracking.get_meta(conn, "swing_sl_order_id", MODE))
+    def send_entry_notice():
+        account_snapshot = capture_swing_snapshot(backend, pos)
+        persist_snapshot(conn, "account_snapshot", account_snapshot, MODE)
+        persist_snapshot(conn, "swing_entry_snapshot:" + str(pos.id), account_snapshot, MODE)
         delivered = _notify(main_mode, _build_entry_message(
             pos=pos,
             backend_name=backend.name,
             equity=sizing_equity,
             signal_context=signal_context,
-            execution_context=getattr(backend, "last_open_snapshot", None),
-            wallet_context=getattr(backend, "last_wallet_snapshot", None),
-            native_sl_attached=bool(
-                tracking.get_meta(conn, "swing_sl_order_id", MODE)
-            ),
+            execution_context=entry_execution,
+            wallet_context=None,
+            native_sl_attached=native_sl_attached,
+            account_snapshot=account_snapshot,
         ))
-    _record_notification_delivery(conn, "swing_entry", delivered)
+        _record_notification_delivery(conn, "swing_entry", delivered)
+    if notify_claimed:
+        _schedule_notice(notice_jobs, send_entry_notice)
     return pos
 
 
@@ -1594,15 +1605,19 @@ def _main_capital_snapshot() -> dict[str, float] | None:
 
 def process(root_conn, tf_data: dict, main_mode: str = "shadow",
             backend=None, decision_time=None, decision_price=None) -> dict:
+    notice_jobs = []
     try:
         with mutation_lock(root_conn):
-            return _process_locked(root_conn, tf_data, main_mode, backend, decision_time, decision_price)
+            return _process_locked(root_conn, tf_data, main_mode, backend, decision_time, decision_price,
+                                   notice_jobs=notice_jobs)
     except LockBusy:
         return {"events": 0}
+    finally:
+        _flush_notices(notice_jobs)
 
 
 def _process_locked(root_conn, tf_data: dict, main_mode: str = "shadow",
-                    backend=None, decision_time=None, decision_price=None) -> dict:
+                    backend=None, decision_time=None, decision_price=None, notice_jobs=None) -> dict:
     """새 확정 30m 봉들을 스윙 레인 관점에서 처리. {"events": n} 반환.
 
     자체 메타 커서(mode='swing' 의 last_processed_30m_ns / last_confirmed_4h_ns)
@@ -1691,7 +1706,7 @@ def _process_locked(root_conn, tf_data: dict, main_mode: str = "shadow",
             if stop_fill is not None:
                 equity, trade_counter = _close_position(
                     conn, backend, pos, stop_fill, TAKER_FEE + SLIPPAGE_SL,
-                    "swing_sl", bar_time_str, equity, trade_counter, main_mode)
+                    "swing_sl", bar_time_str, equity, trade_counter, main_mode, notice_jobs=notice_jobs)
                 pos = None
                 result["events"] += 1
 
@@ -1722,7 +1737,7 @@ def _process_locked(root_conn, tf_data: dict, main_mode: str = "shadow",
                 equity, trade_counter = _close_position(
                     conn, backend, pos, fill, TAKER_FEE,
                     "swing_ma35_exit", bar_time_str, equity_before_close, trade_counter,
-                    main_mode)
+                    main_mode, notice_jobs=notice_jobs)
                 pos = None
                 result["events"] += 1
         else:
@@ -1733,7 +1748,7 @@ def _process_locked(root_conn, tf_data: dict, main_mode: str = "shadow",
                     continue
             s1 = _get_tf_slice(tf_data, bar_time, "1d")
             pos = _try_entry(conn, backend, bar, bar_time_str, s4, s1,
-                             equity, main_mode)
+                             equity, main_mode, notice_jobs=notice_jobs)
             if pos is not None:
                 result["events"] += 1
 

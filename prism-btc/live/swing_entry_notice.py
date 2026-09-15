@@ -83,13 +83,37 @@ async def _send_public(main_mode, message):
     return {"status": "delivered", "chat_id": sent.chat.id, "message_id": sent.message_id}
 
 
-def drain(conn, main_mode: str) -> None:
+def build_recovered_message(record, pos, main_mode, snapshot, logical_capital=None):
+    """Pure renderer usable for an explicitly authorized in-place correction."""
+    from live.position_snapshot import number, snapshot_lines
+    from live.swing import _entry_time_kst, _side_kr
+
+    label = "데모" if main_mode == "demo" else "실거래"
+    lines = [f"📌 BTC [{label} · 스윙레인] 진입 체결 지연 안내",
+             "이미 체결된 진입의 누락된 알림을 뒤늦게 전해 드립니다. 새 진입이 아닙니다.",
+             f"방향: {_side_kr(record['side'])}",
+             f"실제 진입 시각: {_entry_time_kst(record['entry_time'])}",
+             f"체결 가격: {record['entry_price']:,.2f} USDT",
+             f"체결 수량: {record['qty']:.8f} BTC",
+             f"최초 손절 가격: {record['initial_sl']:,.2f} USDT",
+             "현재 보호 상태를 확인한 뒤 안내합니다."]
+    capital = number(logical_capital)
+    lines.append(f"• 전략 배정자본: {capital:,.2f} USD (거래소 전체 잔고 아님)"
+                 if capital is not None else "• 전략 배정자본: 확인 불가")
+    lines.extend(snapshot_lines(snapshot, pos))
+    lines.extend(["• 진입 신호 상세: 복구 공지에 보존된 근거 없음 (현재 지표로 재구성하지 않음)",
+                  "• 고정 익절가는 없음 · 4시간봉 종가가 MA35 "
+                  + ("아래" if pos.side == "long" else "위") + "로 이탈하면 추세청산",
+                  "데모 계정의 가상자금 모의투자입니다." if main_mode == "demo"
+                  else "실거래 계정의 체결 안내입니다."])
+    return "\n".join(lines)
+
+
+def drain(conn, main_mode: str, backend=None) -> None:
     """Called only after recovery, protection and retirement checks pass."""
     if main_mode not in ("demo", "live"):
         return
     try:
-        from live.swing import _entry_time_kst, _side_kr
-
         rows = conn.execute("SELECT key,value FROM btc_meta WHERE mode=? AND key LIKE ?",
                             (MODE, PREFIX + "%")).fetchall()
         for row in rows:
@@ -104,17 +128,11 @@ def drain(conn, main_mode: str) -> None:
             if len(matches) != 1 or receipt != record["receipt"]:
                 _claim(conn, row["key"], row["value"], record, "superseded")
                 continue
-            label = "데모" if main_mode == "demo" else "실거래"
-            message = (f"📌 BTC [{label} · 스윙레인] 진입 체결 지연 안내\n"
-                       "이미 체결된 진입의 누락된 알림을 뒤늦게 전해 드립니다. 새 진입이 아닙니다.\n"
-                       f"방향: {_side_kr(record['side'])}\n"
-                       f"실제 진입 시각: {_entry_time_kst(record['entry_time'])}\n"
-                       f"체결 가격: {record['entry_price']:,.2f} USDT\n"
-                       f"체결 수량: {record['qty']:.8f} BTC\n"
-                       f"최초 손절 가격: {record['initial_sl']:,.2f} USDT\n"
-                       "현재 보호 상태를 확인한 뒤 안내합니다.\n"
-                       + ("데모 계정의 가상자금 모의투자입니다." if main_mode == "demo"
-                          else "실거래 계정의 체결 안내입니다."))
+            from live.position_snapshot import capture_swing_snapshot
+            snapshot = capture_swing_snapshot(backend, matches[0])
+            record = {**record, "account_snapshot": snapshot}
+            message = build_recovered_message(record, matches[0], main_mode, snapshot,
+                tracking.get_meta(conn, "swing_entry_logical_capital", MODE))
             if not _claim(conn, row["key"], row["value"], record):
                 continue
             try:
