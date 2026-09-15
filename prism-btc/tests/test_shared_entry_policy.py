@@ -220,7 +220,7 @@ def test_runtime_policy_controls_both_actual_entry_boundaries(setup, monkeypatch
         adapter.conn, adapter.sess, adapter.mode = conn, sessions[lane], "demo"
         adapter._last_execution_capture = {}
         adapter._place_limit_postonly("long", 1., 100., stop_price=95., pending_payload={
-            "bar_idx": 1, "tranche_index": 0, "side": "long", "sizing_qty": 1.,
+            "bar_idx": 1, "tranche_index": 0, "side": "long", "sizing_qty": 1., "sizing_leverage": 10.,
             "limit_price": 100., "sizing_sl_price": 95.})
     else:
         adapter = ExchangeBackend(conn, sessions[lane])
