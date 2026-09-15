@@ -33,7 +33,7 @@ def enabled():
         policy = json.loads(POLICY_PATH.read_text())
         return (shadow_enabled() and policy == {
             "mode": "SHADOW", "market": "US", "policy_version": POLICY_VERSION, "enabled": True,
-        } and os.getenv("ONEIL_WATCHLIST_SHADOW_ENABLED", "true").lower() not in {"0", "false", "off"})
+        } and os.getenv("ONEIL_WATCHLIST_SHADOW_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
     except (OSError, ValueError):
         return False
 

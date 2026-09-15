@@ -220,7 +220,7 @@ def _decide_oneil_watchlist_shadow(env: dict, crontab: str):
         policy = json.loads((_ROOT / "trading/config/oneil_watchlist_shadow.json").read_text())
     except (OSError, ValueError):
         return "OFF", "후보 감시 정책 미설정/오류"
-    if (override in {"0", "false", "off"} or
+    if (override not in {"1", "true", "yes", "on"} or
             policy != {"mode": "SHADOW", "market": "US", "policy_version": "oneil_watchlist_v1", "enabled": True} or
             _decide_micro_split_shadow(env, crontab)[0] != "SHADOW"):
         return "OFF", "후보 감시 정책 또는 micro SHADOW 비활성"
