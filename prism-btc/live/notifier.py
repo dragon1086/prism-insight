@@ -23,13 +23,18 @@ from types import SimpleNamespace
 from typing import Any
 
 from live import tracking
-from live.position_snapshot import persist_snapshot, snapshot_lines
+from live.position_snapshot import (
+    compact_entry_lines,
+    notice_time,
+    number,
+    persist_snapshot,
+)
 from live.telegram_reporter import (
-    _send,
     _load_env,
-    _resolve_channel,
-    _side_kr,
     _reason_kr,
+    _resolve_channel,
+    _send,
+    _side_kr,
 )
 
 log = logging.getLogger("live.notifier")
@@ -43,13 +48,13 @@ _MARK_EXIT = "last_notified_exit_id"
 # 메시지 빌드 — 한국어, 일반인 친화, 시범운용 명시.
 # ---------------------------------------------------------------------------
 
-def _disclaimer() -> str:
-    return "_가상자금 모의투자입니다_"
+def _disclaimer(mode: str = "demo") -> str:
+    return "가상자금 모의투자입니다."
 
 
 def _mode_tag(mode: str) -> str:
-    # demo = 시범운용(모의투자), live = 실전.
-    return "시범운용" if mode == "demo" else "실전"
+    # runner routes only demo to DemoAdapter; other settings use ShadowAdapter.
+    return "데모" if mode == "demo" else "가상 관측"
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -170,98 +175,48 @@ def _account_lines(context: dict[str, Any], *, exit_message: bool = False) -> li
 
 
 def _build_entry_message(row, mode: str, context: dict[str, Any] | None = None) -> str:
-    """진입/추가진입 알림 1건. tranche_index 로 신규 vs 비중 추가 구분."""
+    """Compact entry/add notice; broker details never come from strategy leverage."""
     context = context or {}
-    tag = _mode_tag(mode)
-    side = _side_kr(row["side"])
-    entry = float(row["entry_price"])
-    sl = float(row["sl_price"])
-    lev = float(row["leverage"])
+    entry, sl, qty = (float(row[key]) for key in ("entry_price", "sl_price", "qty"))
     tranche = int(row["tranche_index"])
-    qty = float(row["qty"])
-    total_qty = float(context.get("total_qty") or qty)
-    total_entry = float(context.get("total_entry") or entry)
-    notional = total_qty * total_entry
-    risk_amount = float(_row_value(row, "initial_risk", 0.0))
-    if risk_amount <= 0:
-        risk_amount = abs(entry - sl) * qty
-    sl_move = (sl - entry) / entry * 100 if entry > 0 else 0.0
-    tranche_fraction = (0.40, 0.30, 0.30)[min(max(tranche, 0), 2)]
-
-    if tranche <= 0:
-        head = f"🟢 [{tag}] 새 진입 — {side}"
-    else:
-        head = f"🟢 [{tag}] 비중 추가 ({tranche + 1}/3) — {side}"
-
+    action = "새 진입" if tranche <= 0 else f"비중 추가 ({tranche + 1}/3)"
+    risk = float(_row_value(row, "initial_risk", 0.0)) or abs(entry - sl) * qty
     lines = [
-        head,
-        f"BTCUSDT · {context.get('margin_mode', '마진 방식 확인 불가')} · "
-        f"{context.get('position_mode', '포지션 모드 확인 불가')}",
-        "",
-        "📦 체결·포지션",
-        f"• 진입가: {entry:,.2f}달러",
-        f"• 이번 체결: {qty:.6f} BTC",
-        f"• 원장/최근 저장 총수량: {total_qty:.6f} BTC",
-        f"• 체결가 기준 명목 포지션: {notional:,.2f} USDT",
-        f"• 원장 기록 배수: {lev:g}배 (현재 거래소 설정은 아래 스냅샷 참조)",
-        f"• 위험예산 단계: {tranche + 1}/3 · 전체 위험예산의 "
-        f"{tranche_fraction * 100:.0f}%",
-        "",
-        "🛡️ 위험·청산 계획",
-        f"• 손절: {sl:,.2f}달러 ({sl_move:+.2f}%)",
-        f"• 손절 위험: {risk_amount:,.2f} USDT (수수료 전)",
-        f"• 목표가: 1차 {float(row['tp1_price']):,.2f}달러 · "
-        f"2차 {float(row['tp2_price']):,.2f}달러 · "
-        f"3차 {float(row['tp3_price']):,.2f}달러",
+        f"🟢 [BTC 메인 · {_mode_tag(mode)}] {action} — {_side_kr(row['side'])}",
+        f"• 진입 기록: {notice_time(_row_value(row, 'entry_time'))}",
+        f"• 진입가: {entry:,.2f} USDT · 이번 체결: {qty:.6f} BTC",
+        f"• 원장/최근 저장 총수량: {float(context.get('total_qty') or qty):.6f} BTC",
     ]
-    exchange_liq = float(context.get("exchange_liq_price") or 0.0)
-    if exchange_liq > 0:
-        lines.append(f"• 거래소 청산가: {exchange_liq:,.2f}달러")
-    else:
-        lines.append(
-            "• 거래소 청산가: 미제공 "
-            "(교차마진 계좌 위험률·잔고에 따라 변동)"
-        )
-    strategy_liq = float(row["liq_price"])
-    liq_move = (strategy_liq - entry) / entry * 100 if entry > 0 else 0.0
-    lines.append(
-        f"• 전략 추정 청산가: {strategy_liq:,.2f}달러 ({liq_move:+.2f}%)"
-    )
-    lines.extend(snapshot_lines(context.get("snapshot"), SimpleNamespace(**dict(row)),
-                                operating_capital=context.get("equity")))
-    lines.extend(["", _disclaimer()])
+    lines.extend(compact_entry_lines(context.get("snapshot"), SimpleNamespace(**dict(row)),
+                                     operating_capital=context.get("equity")))
+    lines.extend([
+        f"• 손절: {sl:,.2f} USDT · 손절 위험: {risk:,.2f} USDT (수수료 전)",
+        (f"• 목표: 1차 {float(row['tp1_price']):,.2f} · 2차 {float(row['tp2_price']):,.2f}"
+         f" · 3차 {float(row['tp3_price']):,.2f} USDT"),
+        _disclaimer(mode),
+    ])
     return "\n".join(lines)
 
 
 def _build_exit_message(row, mode: str, context: dict[str, Any] | None = None) -> str:
-    """청산 알림 1건. r_multiple 로 이익/손실, exit_reason 한글화."""
-    context = context or {}
-    tag = _mode_tag(mode)
-    r = float(row["r_multiple"])
+    """Closed ledger event, never enriched from a newer unrelated position."""
+    net = number(_row_value(row, "net_pnl"))
+    outcome = "정산 확인 필요" if net is None else "✅ 이익" if net > 0 else "❌ 손실" if net < 0 else "본전"
+    net_text = f"{net:+,.2f} USDT" if net is not None else "확인 불가"
     reason = _reason_kr(row["exit_reason"])
-    if r > 0:
-        outcome = f"✅ 이익 {r:+.1f}배"
-    else:
-        outcome = f"❌ 손실 {r:+.1f}배"
-    head = f"🔵 [{tag}] 포지션 정리 — {outcome} ({reason})"
     lines = [
-        head,
-        f"BTCUSDT · {context.get('margin_mode', '마진 방식 확인 불가')}",
-        "",
-        "📤 청산 정산",
-        f"• 진입 {float(row['entry_price']):,.2f} → "
-        f"청산 {float(row['exit_price']):,.2f}달러",
-        f"• 정리 수량: {float(row['qty']):.6f} BTC · "
-        f"원장 기록 배수 {float(row['leverage']):g}배",
-        f"• 순손익: {float(_row_value(row, 'net_pnl', 0.0)):+,.2f}달러 · "
-        f"결과 {r:+.2f}R",
-        f"• 수수료: {float(row['fee_paid']):,.2f}달러 · "
-        f"펀딩비: {float(row['funding_paid']):,.2f}달러",
+        f"🔵 [BTC 메인 · {_mode_tag(mode)}] 포지션 정리 — {outcome} ({reason})",
+        f"• 방향: {_side_kr(row['side'])} · 정리 수량: {float(row['qty']):.6f} BTC",
+        f"• 진입 {float(row['entry_price']):,.2f} → 청산 {float(row['exit_price']):,.2f} USDT",
+        f"• 청산: {notice_time(_row_value(row, 'exit_time'))}",
+        f"• 원장 순손익: {net_text}",
+        f"• 수수료: {float(row['fee_paid']):,.2f} · 원장 펀딩비: {float(row['funding_paid']):,.2f} USDT",
     ]
-    lines.extend(snapshot_lines(context.get("snapshot"), SimpleNamespace(**dict(row)),
-                                event_time=_row_value(row, "exit_time"), include_position=False,
-                                operating_capital=context.get("equity")))
-    lines.extend(["", _disclaimer()])
+    if net is None:
+        lines.append("⚠️ 손익 자료가 없어 이익·손실을 확정할 수 없습니다.")
+    elif mode == "demo":
+        lines.append("※ 원장 집계값이며 거래소 확정 정산과 다를 수 있습니다.")
+    lines.append(_disclaimer(mode))
     return "\n".join(lines)
 
 

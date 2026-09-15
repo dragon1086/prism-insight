@@ -151,6 +151,9 @@ Avoid broad production-like runs unless the task requires them.
   and capture time. Never substitute strategy capital/exposure for broker figures,
   attach another position's snapshot to an old exit, or delay protection/execution
   for optional notification enrichment. Missing data stays explicitly unknown.
+  Public notices must be compact and event-specific: do not append raw account
+  snapshots or repeated unknown fields to exits. Keep full diagnostic data, group
+  essential missing-data warnings, and never hide unconfirmed settlement status.
 - Korean report text must use formal polite style.
 - Preserve existing prompt and report structure unless the task explicitly requests prompt/report redesign.
 

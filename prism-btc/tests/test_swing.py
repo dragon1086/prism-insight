@@ -275,12 +275,10 @@ class TestSwingProcess:
         assert len(sent) == 1
         message = sent[0]
         assert "가격 기준 +2.00%" in message
-        assert "전략 노출 3.0배" in message
-        assert "가상 원장: 10,000.00 →" in message
-        assert "+0.10%" in message
-        assert "실현손익:" in message
+        assert "전략 노출" not in message
+        assert "가상 원장 순손익:" in message
         assert "보유 4시간" in message
-        assert "데모 계정 모의투자입니다" in message
+        assert "가상자금 모의투자입니다" in message
         assert equity_after > 10_000.0
 
     def test_entry_notification_separates_exchange_leverage_from_exposure(
@@ -305,15 +303,12 @@ class TestSwingProcess:
         assert len(sent) == 1
         message = sent[0]
         assert "체결수량:" in message
-        assert "명목 포지션:" in message
-        assert "전략 노출배수:" in message
-        assert "거래소 레버리지: 가상체결" in message
+        assert "가상체결" in message and "거래소 레버리지" not in message
+        assert "운용 기준자금:" in message
         assert "보호 손절:" in message
         assert "손절 위험:" in message
-        assert "고정 익절가는 없음" in message
-        assert "4시간 MA10이 MA35를 상향 돌파" in message
-        assert "완결 일봉 MA10 > MA35" in message
-        assert "4시간 종가 > MA35" in message
+        assert "고정 익절 없음" in message
+        assert "MA35 아래로 이탈하면 추세청산" in message
         assert "가상자금 모의투자입니다" in message
         event = conn.execute(
             "SELECT level, kind, message FROM btc_events "
@@ -368,9 +363,7 @@ class TestSwingProcess:
             },
         )
 
-        assert "MA35를 하향 돌파" in message
-        assert "완결 일봉 MA10 ≤ MA35" in message
-        assert "4시간 종가 < MA35" in message
+        assert "숏 (하락 베팅)" in message
         assert "MA35 위로 이탈하면 추세청산" in message
 
     def test_conflict_with_main_blocks_entry(self, conn):
@@ -1268,10 +1261,10 @@ class TestExchangeBackend:
             "orderId": "oid-7", "qty": "1.299",
             "avgEntryPrice": "81453.3", "avgExitPrice": "79356.3",
             "closedPnl": "-2853.89941874", "openFee": "58.19431019",
-            "closeFee": "56.69610854",
+            "closeFee": "56.69610854", "leverage": "5",
         }]
         tracking.set_meta(conn, "swing_sl_order_id", "oid-7", "swing")
-        tracking.set_meta(conn, "swing_exchange_leverage", 5.0, "swing")
+        tracking.set_meta(conn, "swing_exchange_leverage", None, "swing")
         be = swing.ExchangeBackend(conn, sess)
 
         price = be.check_stop(_pos_row(
@@ -1287,6 +1280,34 @@ class TestExchangeBackend:
             15.00600001
         )
         assert be.last_close_snapshot["exchange_leverage"] == pytest.approx(5.0)
+
+    @pytest.mark.parametrize("closed_lev,legacy_lev,expected", [
+        ("5", 10, 5), (None, 10, 10), ("nan", None, None),
+        ("0", "nan", None), ("bad", -1, None),
+    ])
+    def test_optional_close_leverage_preserves_confirmed_pnl(self, conn, closed_lev, legacy_lev, expected):
+        from live import swing, tracking
+        sess = FakeSession()
+        sess.closed_pnl_rows = [{"orderId": "stop", "qty": ".1", "avgEntryPrice": "50000",
+            "avgExitPrice": "49000", "openFee": "1", "closeFee": "2", "closedPnl": "-103", "leverage": closed_lev}]
+        tracking.set_meta(conn, "swing_exchange_leverage", legacy_lev, "swing")
+        backend = swing.ExchangeBackend(conn, sess)
+        backend._capture_close_settlement(_pos_row(), "stop")
+        assert backend.last_close_snapshot["closed_pnl"] == -103
+        assert backend.last_close_snapshot.get("exchange_leverage") == expected
+
+    @pytest.mark.parametrize("bad_field,value", [("closedPnl", "nan"), ("qty", "0"), ("qty", ".2")])
+    def test_close_leverage_does_not_bypass_required_settlement_proof(self, conn, bad_field, value):
+        from live import swing
+        sess = FakeSession()
+        row = {"orderId": "stop", "qty": ".1", "avgEntryPrice": "50000", "avgExitPrice": "49000",
+               "openFee": "1", "closeFee": "2", "closedPnl": "-103", "leverage": "5"}
+        row[bad_field] = value
+        sess.closed_pnl_rows = [row]
+        backend = swing.ExchangeBackend(conn, sess)
+        backend._capture_close_settlement(_pos_row(), "stop")
+        assert "closed_pnl" not in backend.last_close_snapshot
+        assert "exchange_leverage" not in backend.last_close_snapshot
 
     def test_check_stop_holds_when_query_fails(self, conn, monkeypatch):
         from live import swing
@@ -1369,13 +1390,11 @@ class TestExchangeBackend:
         assert equity_after == pytest.approx(180_272.51154821)
         assert len(sent) == 1
         message = sent[0]
-        assert "Bybit 확정 실현손익: -2,853.90달러" in message
-        assert "가격손익 -2,724.00달러" in message
-        assert "매매수수료 114.89달러" in message
-        assert "펀딩비 15.01달러" in message
-        assert "거래계좌 평가액: 180,272.51 USD" in message
-        assert "진입 당시 값 아님" in message
-        assert "거래소 레버리지 5배 · 전략 노출 0.6배" in message
+        assert "Bybit 확정 실현손익: -2,853.90 USDT" in message
+        assert "매매수수료: 114.89 USDT" in message
+        assert "기타 비용(추정): 15.01 USDT" in message
+        assert "거래계좌 평가액" not in message
+        assert "청산 기록 거래소 레버리지: 5배" in message
         assert "166,566.01 →" not in message
         assert "+13,706" not in message
         assert "증거금 기준" not in message
@@ -1407,7 +1426,7 @@ class TestExchangeBackend:
             conn, "swing_exchange_leverage", "swing") == pytest.approx(5.0)
         assert len(sent) == 1
         assert "거래소 레버리지: 5배" in sent[0]
-        assert "전략 노출배수: 전략 배정자본 대비" in sent[0]
+        assert "운용 기준자금:" in sent[0]
         assert "거래소 조건부 주문 부착 완료" in sent[0]
 
     def test_same_key_guard_forces_virtual(self, conn, monkeypatch):

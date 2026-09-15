@@ -84,28 +84,25 @@ async def _send_public(main_mode, message):
 
 
 def build_recovered_message(record, pos, main_mode, snapshot, logical_capital=None):
-    """Pure renderer usable for an explicitly authorized in-place correction."""
-    from live.position_snapshot import number, snapshot_lines
-    from live.swing import _entry_time_kst, _side_kr
+    """Pure delayed entry summary; detailed snapshot remains in the notice record."""
+    from live.position_snapshot import compact_entry_lines, notice_time
+    from live.swing import _side_kr
 
-    label = "데모" if main_mode == "demo" else "실거래"
-    lines = [f"📌 BTC [{label} · 스윙레인] 진입 체결 지연 안내",
-             "이미 체결된 진입의 누락된 알림을 뒤늦게 전해 드립니다. 새 진입이 아닙니다.",
-             f"방향: {_side_kr(record['side'])}",
-             f"실제 진입 시각: {_entry_time_kst(record['entry_time'])}",
-             f"체결 가격: {record['entry_price']:,.2f} USDT",
-             f"체결 수량: {record['qty']:.8f} BTC",
-             f"최초 손절 가격: {record['initial_sl']:,.2f} USDT",
-             "현재 보호 상태를 확인한 뒤 안내합니다."]
-    capital = number(logical_capital)
-    lines.append(f"• 전략 배정자본: {capital:,.2f} USD (거래소 전체 잔고 아님)"
-                 if capital is not None else "• 전략 배정자본: 확인 불가")
-    lines.extend(snapshot_lines(snapshot, pos, operating_capital=capital))
-    lines.extend(["• 진입 신호 상세: 복구 공지에 보존된 근거 없음 (현재 지표로 재구성하지 않음)",
-                  "• 고정 익절가는 없음 · 4시간봉 종가가 MA35 "
-                  + ("아래" if pos.side == "long" else "위") + "로 이탈하면 추세청산",
-                  "데모 계정의 가상자금 모의투자입니다." if main_mode == "demo"
-                  else "실거래 계정의 체결 안내입니다."])
+    # The recovery backend uses the same demo=True swing session factory.
+    label = "데모" if main_mode in ("demo", "live") else "가상체결"
+    lines = [f"📌 BTC [{label} · 스윙] 진입 체결 지연 안내",
+             "이미 체결된 진입의 지연 알림입니다. 새 진입이 아닙니다.",
+             f"• {_side_kr(record['side'])} · 실제 진입: {notice_time(record['entry_time'])}",
+             f"• 체결 가격: {record['entry_price']:,.2f} USDT · 체결 수량: {record['qty']:.6f} BTC"]
+    lines.extend(compact_entry_lines(snapshot, pos, operating_capital=logical_capital))
+    risk = abs(record["entry_price"] - record["initial_sl"]) * record["qty"]
+    lines.extend([
+        f"• 최초 손절: {record['initial_sl']:,.2f} USDT · 현재 보호 상태 확인 완료",
+        f"• 진입 손절 위험: {risk:,.2f} USDT (수수료 전; 급변 시 초과 가능)",
+        "• 고정 익절 없음 · 4시간봉 종가가 MA35 "
+        + ("아래" if pos.side == "long" else "위") + "로 이탈하면 추세청산",
+        "데모·가상자금 모의투자입니다.",
+    ])
     return "\n".join(lines)
 
 
