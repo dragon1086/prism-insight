@@ -105,6 +105,12 @@ Avoid broad production-like runs unless the task requires them.
 - Before changing screening, regime, entry, exit, or sizing behavior, follow
   `docs/TRADING_CHANGE_REVIEW_HARNESS.md`. In particular, do not generalize a
   trigger-local failure into a global hard gate without testing counterexamples.
+- When a request proposes introducing, combining, replacing, or retuning a
+  strategy, trigger, factor, regime switch, exit, or sizing rule (including an
+  LLM prompt that changes economic decisions), apply the Strategy adoption and
+  fit gate in that harness before implementation. Natural-language proposals
+  count; no special command is required. Keep execution/data bug repair separate
+  and do not delay a proven safety fix under the guise of strategy research.
 
 ### BTC roadmap governance
 
