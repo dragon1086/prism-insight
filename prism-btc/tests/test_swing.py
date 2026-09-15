@@ -474,7 +474,7 @@ class FakeSession:
     def get_wallet_balance(self, **kw):
         self._record("get_wallet_balance", kw)
         return {"retCode": 0,
-                "result": {"list": [{"totalEquity": str(self.total_equity)}]}}
+                "result": {"list": [{"accountType": "UNIFIED", "totalEquity": str(self.total_equity)}]}}
 
     def get_executions(self, **kw):
         self._record("get_executions", kw)
@@ -1373,8 +1373,8 @@ class TestExchangeBackend:
         assert "가격손익 -2,724.00달러" in message
         assert "매매수수료 114.89달러" in message
         assert "펀딩비 15.01달러" in message
-        assert "현재 교차계좌 평가액: 180,272.51달러" in message
-        assert "현재 스냅샷이며 이번 거래 수익 아님" in message
+        assert "거래계좌 평가액: 180,272.51 USD" in message
+        assert "진입 당시 값 아님" in message
         assert "거래소 레버리지 5배 · 전략 노출 0.6배" in message
         assert "166,566.01 →" not in message
         assert "+13,706" not in message
@@ -1402,14 +1402,12 @@ class TestExchangeBackend:
         # 지갑 equity 가 원장 시드의 진실.
         assert tracking.latest_equity(conn, "swing") == pytest.approx(10_000.0)
         assert tracking.get_meta(
-            conn, "swing_entry_account_equity", "swing") == pytest.approx(
-                10_000.0
-            )
+            conn, "swing_entry_account_equity", "swing") is None
         assert tracking.get_meta(
             conn, "swing_exchange_leverage", "swing") == pytest.approx(5.0)
         assert len(sent) == 1
         assert "거래소 레버리지: 5배" in sent[0]
-        assert "전략 노출배수: 계좌 평가액 대비" in sent[0]
+        assert "전략 노출배수: 전략 배정자본 대비" in sent[0]
         assert "거래소 조건부 주문 부착 완료" in sent[0]
 
     def test_same_key_guard_forces_virtual(self, conn, monkeypatch):

@@ -68,12 +68,16 @@ def _seed_account_snapshot(conn: sqlite3.Connection, mode: str = "demo") -> None
         "account_snapshot",
         {
             "captured_at": "2026-06-15T00:00:00+00:00",
+            "account_scope": "demo:UNIFIED",
+            "wallet_currency": "USD",
+            "position_currency": "USDT",
             "account": {
                 "margin_mode": "REGULAR_MARGIN",
                 "unified_margin_status": 3,
             },
             "wallet": {
                 "equity": 10000.0,
+                "usdt_usd_rate": 1.0,
                 "wallet_balance": 9980.0,
                 "margin_balance": 10000.0,
                 "available_balance": 9500.0,
@@ -83,6 +87,7 @@ def _seed_account_snapshot(conn: sqlite3.Connection, mode: str = "demo") -> None
                 "account_mm_rate": 0.0005,
             },
             "position": {
+                "symbol": "BTCUSDT",
                 "side": "long",
                 "qty": 0.01,
                 "entry_price": 50000.0,
@@ -174,20 +179,20 @@ def test_entry_message_contains_full_position_and_account_snapshot(captured):
     assert "단방향(One-way)" in msg
     assert "이번 체결: 0.010000 BTC" in msg
     assert "현재 총수량: 0.010000 BTC" in msg
-    assert "명목 포지션: 500.00달러 (계좌의 5.00%)" in msg
-    assert "포지션 증거금: 50.00달러 (계좌의 0.50%)" in msg
+    assert "현재 명목 포지션: 501.00 USDT (전체 계좌의 약 5.01%" in msg
+    assert "포지션 초기증거금(positionIM): 50.00 USDT (전체 계좌의 약 0.50%" in msg
     assert "위험예산 단계: 1/3 · 전체 위험예산의 40%" in msg
-    assert "손절 위험: 10.00달러 (계좌의 0.10%" in msg
+    assert "손절 위험: 10.00 USDT (수수료 전)" in msg
     assert "1차 51,000.00달러" in msg
     assert "2차 52,000.00달러" in msg
     assert "3차 53,000.00달러" in msg
     assert "거래소 청산가: 미제공" in msg
     assert "전략 추정 청산가: 45,000.00달러" in msg
-    assert "계좌 평가액: 10,000.00달러" in msg
-    assert "지갑잔고: 9,980.00달러" in msg
-    assert "사용 가능액: 9,500.00달러" in msg
-    assert "전체 초기증거금: 50.00달러" in msg
-    assert "미실현손익: +1.00달러" in msg
+    assert "거래계좌 평가액: 10,000.00 USD" in msg
+    assert "지갑잔고: 9,980.00 USD" in msg
+    assert "사용 가능액: 9,500.00 USD" in msg
+    assert "전체 초기증거금: 50.00 USD" in msg
+    assert "미실현손익: 1.00 USDT" in msg
 
 
 def test_add_tranche_message(captured):
@@ -235,12 +240,12 @@ def test_exit_message_contains_settlement_and_account_snapshot(captured):
 
     msg = captured[0]
     assert "진입 50,000.00 → 청산 51,000.00달러" in msg
-    assert "정리 수량: 0.010000 BTC · 레버리지 3배" in msg
+    assert "정리 수량: 0.010000 BTC · 원장 기록 배수 3배" in msg
     assert "순손익: +23.00달러" in msg
     assert "수수료: 0.10달러" in msg
     assert "펀딩비: 0.00달러" in msg
-    assert "청산 후 계좌 평가액: 10,000.00달러" in msg
-    assert "사용 가능액: 9,500.00달러" in msg
+    assert "거래계좌 평가액: 10,000.00 USD" in msg
+    assert "사용 가능액: 9,500.00 USD" in msg
 
 
 def test_exit_loss_message(captured):
