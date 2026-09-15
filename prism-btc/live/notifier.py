@@ -227,7 +227,8 @@ def _build_entry_message(row, mode: str, context: dict[str, Any] | None = None) 
     lines.append(
         f"• 전략 추정 청산가: {strategy_liq:,.2f}달러 ({liq_move:+.2f}%)"
     )
-    lines.extend(snapshot_lines(context.get("snapshot"), SimpleNamespace(**dict(row))))
+    lines.extend(snapshot_lines(context.get("snapshot"), SimpleNamespace(**dict(row)),
+                                operating_capital=context.get("equity")))
     lines.extend(["", _disclaimer()])
     return "\n".join(lines)
 
@@ -258,7 +259,8 @@ def _build_exit_message(row, mode: str, context: dict[str, Any] | None = None) -
         f"펀딩비: {float(row['funding_paid']):,.2f}달러",
     ]
     lines.extend(snapshot_lines(context.get("snapshot"), SimpleNamespace(**dict(row)),
-                                event_time=_row_value(row, "exit_time"), include_position=False))
+                                event_time=_row_value(row, "exit_time"), include_position=False,
+                                operating_capital=context.get("equity")))
     lines.extend(["", _disclaimer()])
     return "\n".join(lines)
 

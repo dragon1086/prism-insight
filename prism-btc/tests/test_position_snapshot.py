@@ -64,6 +64,32 @@ def test_realistic_cross_whole_account_fx_official_margin_and_time():
     assert "거래소 청산가: 확인 불가" in text
 
 
+def test_operating_margin_ratio_precedes_broker_account_reference():
+    snap = capture()
+    snap["position"]["position_im"] = 1388
+    snap["wallet"]["usdt_usd_rate"] = 1
+    text = "\n".join(snapshot_lines(snap, position(), operating_capital=9600))
+    assert "운용자금 대비 증거금 사용 비중: 약 14.5%" in text
+    assert text.index("약 14.5%") < text.index("전체 거래계좌 평가액")
+    assert "최대 손실 비중이 아닙니다" in text
+
+
+@pytest.mark.parametrize("capital", [None, 0, -1, float("nan")])
+def test_missing_operating_capital_never_borrows_large_swing_wallet(capital):
+    text = "\n".join(snapshot_lines(capture(), position(), operating_capital=capital))
+    assert "운용자금 대비 증거금 사용 비중: 확인 불가" in text
+
+
+def test_operating_margin_ratio_requires_fx_and_owned_position():
+    snap = capture()
+    snap["wallet"].pop("usdt_usd_rate")
+    text = "\n".join(snapshot_lines(snap, position(), operating_capital=9600))
+    assert "운용자금 대비 증거금 사용 비중: 확인 불가" in text
+    text = "\n".join(snapshot_lines(capture(), position(), operating_capital=9600,
+                                   include_position=False))
+    assert "운용자금 대비 증거금 사용 비중: 확인 불가" in text
+
+
 @pytest.mark.parametrize("missing", ["", None, "NaN", "Infinity", "broken"])
 def test_missing_margin_leverage_never_zero_or_strategy_fallback(missing):
     session = Session()

@@ -100,7 +100,7 @@ def build_recovered_message(record, pos, main_mode, snapshot, logical_capital=No
     capital = number(logical_capital)
     lines.append(f"• 전략 배정자본: {capital:,.2f} USD (거래소 전체 잔고 아님)"
                  if capital is not None else "• 전략 배정자본: 확인 불가")
-    lines.extend(snapshot_lines(snapshot, pos))
+    lines.extend(snapshot_lines(snapshot, pos, operating_capital=capital))
     lines.extend(["• 진입 신호 상세: 복구 공지에 보존된 근거 없음 (현재 지표로 재구성하지 않음)",
                   "• 고정 익절가는 없음 · 4시간봉 종가가 MA35 "
                   + ("아래" if pos.side == "long" else "위") + "로 이탈하면 추세청산",
