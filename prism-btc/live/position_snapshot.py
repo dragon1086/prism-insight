@@ -110,7 +110,8 @@ def capture_swing_snapshot(backend, pos=None):
     return snap
 
 
-def snapshot_lines(snapshot=None, pos=None, *, event_time=None, include_position=True):
+def snapshot_lines(snapshot=None, pos=None, *, event_time=None, include_position=True,
+                   operating_capital=None):
     """Shared account/position block, current capture distinct from fill time."""
     snap = mapping(snapshot)
     wallet = mapping(snap.get("wallet"))
@@ -147,7 +148,22 @@ def snapshot_lines(snapshot=None, pos=None, *, event_time=None, include_position
     if margin_mode == "PORTFOLIO_MARGIN":
         im = None
         leverage_text = "해당 없음/확인 불가(포트폴리오마진)"
-    lines = ["", "💰 현재 거래소 계좌·포지션 스냅샷 (진입 당시 값 아님)",
+    capital = number(operating_capital)
+    rate = number(wallet.get("usdt_usd_rate"))
+    margin = number(im)
+    margin_usd = (margin if pc == "USD" else
+                  margin * rate if pc == "USDT" and margin is not None
+                  and rate is not None and rate > 0 else None)
+    usage = (f"약 {margin_usd / capital * 100:.1f}%"
+             if capital is not None and capital > 0 and margin_usd is not None
+             and snap.get("captured_at") and snap.get("account_scope") else "확인 불가")
+    lines = ["", "💼 운용자금 기준 증거금 사용 현황",
+             f"• 운용 기준자금: {amount(capital if capital is not None and capital > 0 else None, 'USD')}",
+             f"• 현재 포지션 증거금: {amount(im, pc)}",
+             f"• 운용자금 대비 증거금 사용 비중: {usage}",
+             "• 현재 증거금 ÷ 운용 기준자금 (USDT는 조회 환율로 USD 환산)",
+             "• 증거금 사용 비중은 최대 손실 비중이 아닙니다.",
+             "", "💰 참고: 현재 거래소 계좌·포지션 스냅샷 (진입 당시 값 아님)",
              f"• 계좌 범위: {snap.get('account_scope') or '확인 불가'}",
              f"• 조회 시각: {snap.get('captured_at') or '확인 불가'}",
              "• 계좌·포지션 API는 순차 조회하므로 비율은 조회 구간 기준입니다.",

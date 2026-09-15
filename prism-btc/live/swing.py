@@ -1082,7 +1082,7 @@ def _build_entry_message(
         "💰 전략 배정자본 (거래소 전체 잔고 아님)",
         f"• 전략 배정자본: {equity:,.2f} USD",
     ])
-    lines.extend(snapshot_lines(account_snapshot, pos))
+    lines.extend(snapshot_lines(account_snapshot, pos, operating_capital=equity))
     lines.extend(["", "_가상자금 모의투자입니다_"])
     return "\n".join(lines)
 
@@ -1162,6 +1162,7 @@ def _build_exit_message(
     exchange_leverage: float | None = None,
     settlement_confirmed: bool = False,
     account_snapshot: dict | None = None,
+    operating_capital: float | None = None,
 ) -> str:
     """스윙 청산 알림을 정량 지표와 함께 만든다.
 
@@ -1229,7 +1230,8 @@ def _build_exit_message(
             f"• 포지션: {pos.qty:.4f} BTC · 전략 노출 {pos.leverage:.1f}배"
             + (f" · 보유 {duration}" if duration else "")
         )
-    lines.extend(snapshot_lines(account_snapshot, pos, event_time=exit_time, include_position=False))
+    lines.extend(snapshot_lines(account_snapshot, pos, event_time=exit_time, include_position=False,
+                                operating_capital=operating_capital))
     lines.append("_데모 계정 모의투자입니다_")
     return "\n".join(lines)
 
@@ -1352,6 +1354,7 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
             "qty": qty,
         }
     )
+    operating_capital = tracking.get_meta(conn, "swing_entry_logical_capital", MODE)
     def send_exit_notice():
         account_snapshot = capture_swing_snapshot(backend, display_pos)
         persist_snapshot(conn, "account_snapshot", account_snapshot, MODE)
@@ -1373,6 +1376,7 @@ def _close_position(conn, backend, pos: tracking.PositionRow, exit_price: float,
             exchange_leverage=exchange_leverage,
             settlement_confirmed=settlement_confirmed,
             account_snapshot=account_snapshot,
+            operating_capital=operating_capital,
         ))
         _record_notification_delivery(conn, "swing_exit", delivered)
     _schedule_notice(notice_jobs, send_exit_notice)
