@@ -40,7 +40,12 @@ def test_build_diagrams_exposes_the_approved_fourteen_png_contract():
 @pytest.mark.parametrize("width,height", [(1920, 1080)])
 def test_render_all_creates_full_hd_png_files(tmp_path: Path, width: int, height: int):
     from PIL import Image
-    from tools.generate_pipeline_architecture_pngs import render_all
+    from tools.generate_pipeline_architecture_pngs import _font_path, render_all
+
+    try:
+        _font_path()
+    except RuntimeError:
+        pytest.skip("no Korean-capable font installed on this host")
 
     paths = render_all(tmp_path)
 

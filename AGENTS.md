@@ -51,8 +51,8 @@ python weekly_insight_report.py --dry-run
 
 ```bash
 pytest tests/test_trading_journal.py
-pytest tests/test_tracking_agent.py
-pytest tests/test_portfolio_reporter.py
+pytest tests/test_publish_guard.py
+pytest tests/test_publish_market_propagation.py
 pytest tests/test_multi_account_domestic.py
 ```
 

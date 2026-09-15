@@ -522,7 +522,7 @@ class StockAnalysisOrchestrator:
                     for ticker in stocks_df.index:
                         if ticker not in ticker_codes:
                             ticker_codes.add(ticker)
-                            # Get stock name (with fallback to pykrx API)
+                            # Get stock name (with fallback to KIS market data)
                             name = ""
                             # Support both Korean and English column names
                             name_col = None

@@ -47,6 +47,12 @@ FONT_CANDIDATES = (
     "bad9b4bf17cf1669dde54184ba4431c22dcad27b.eeba8.asset/AssetData/NanumGothic.ttc",
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     "/Library/Fonts/Arial Unicode.ttf",
+    # Linux production/CI hosts (fonts-nanum / google-nanum-fonts packages)
+    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+    "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
+    "/usr/share/fonts/nanum/NanumGothic.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
 )
 
 

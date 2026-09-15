@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for PRISM-INSIGHT
 
-> **Version**: 2.9.0 | **Updated**: 2026-03-31
+> **Version**: 2.22.0 | **Updated**: 2026-09-16
 
 ## Quick Overview
 
@@ -8,7 +8,7 @@
 
 ```yaml
 Stack: Python 3.10+, mcp-agent, GPT-5/Claude 4.6, SQLite, Telegram, KIS API
-Scale: ~75,000+ LOC, 13+ AI agents, KR/US dual market support
+Scale: ~265,000+ LOC, 13+ AI agents, KR/US dual market support, BTC (demo)
 ```
 
 ## Project Structure
@@ -199,7 +199,7 @@ TRIGGER_CRITERIA = {
 
 | Item | KR | US |
 |------|----|----|
-| Data Source | pykrx, kospi_kosdaq MCP | yfinance, sec-edgar MCP |
+| Data Source | KIS API, kospi_kosdaq MCP | yfinance, sec-edgar MCP |
 | Market Hours | 09:00-15:30 KST | 09:30-16:00 EST |
 | Market Cap Filter | 5000억 KRW | $20B USD |
 | DB Tables | `stock_holdings` | `us_stock_holdings` |

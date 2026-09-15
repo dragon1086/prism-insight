@@ -1,5 +1,3 @@
-$schema: ../../schema/mcp-agent.config.schema.json
-
 execution_engine: asyncio
 logger:
   type: console

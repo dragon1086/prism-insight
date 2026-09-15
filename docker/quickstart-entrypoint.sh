@@ -25,7 +25,6 @@ fi
 if [ ! -f "${SECRETS_PATH}" ]; then
     echo "[INIT] Creating quickstart secrets config..."
     cat > "${SECRETS_PATH}" <<EOF
-\$schema: ../../schema/mcp-agent.config.schema.json
 
 openai:
   api_key: ${OPENAI_API_KEY}
@@ -38,7 +37,6 @@ fi
 echo "[INIT] Writing quickstart MCP config..."
 {
     cat <<EOF
-\$schema: ../../schema/mcp-agent.config.schema.json
 
 execution_engine: asyncio
 logger:
