@@ -79,8 +79,8 @@ def capture_swing_snapshot(backend, pos=None):
             reply = getattr(session, method)(**kwargs)
             if isinstance(reply, dict) and reply.get("retCode") == 0:
                 return reply
-        except Exception:  # noqa: BLE001, S110 - optional GET, never log transport credentials
-            pass
+        except Exception:  # noqa: BLE001 - optional GET, never log transport credentials
+            return None
         return None
 
     def get(method, **kwargs):
