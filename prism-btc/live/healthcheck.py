@@ -88,7 +88,7 @@ def _completion_context(conn, mode: str, last_error: datetime, now: datetime) ->
                 and (now-completed).total_seconds() <= _HEARTBEAT_MAX_MIN * 60):
             return f"오류 이후 정규 실행 완료 확인: {_kst_time(completed)} (모든 이상 해소를 뜻하지 않음)"
     except Exception:  # noqa: BLE001 - unavailable context must not hide an alert
-        pass
+        return "마지막 오류 이후 최근 정규 실행 완료 미확인"
     return "마지막 오류 이후 최근 정규 실행 완료 미확인"
 
 
