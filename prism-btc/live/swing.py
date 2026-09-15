@@ -1522,17 +1522,25 @@ def _try_entry(conn, backend, bar, bar_time_str: str, s4: pd.DataFrame,
         "ma10_1d": float(d1["ma10"]),
         "ma35_1d": float(d1["ma35"]),
     }
-    delivered = _notify(main_mode, _build_entry_message(
-        pos=pos,
-        backend_name=backend.name,
-        equity=sizing_equity,
-        signal_context=signal_context,
-        execution_context=getattr(backend, "last_open_snapshot", None),
-        wallet_context=getattr(backend, "last_wallet_snapshot", None),
-        native_sl_attached=bool(
-            tracking.get_meta(conn, "swing_sl_order_id", MODE)
-        ),
-    ))
+    from live.swing_entry_notice import claim_normal
+    delivered = None
+    try:
+        notify_claimed = main_mode in ("demo", "live") and claim_normal(conn, pos.id)
+    except Exception:
+        log.exception("swing entry notice claim failed; trading continues without resend")
+        notify_claimed = False
+    if notify_claimed:
+        delivered = _notify(main_mode, _build_entry_message(
+            pos=pos,
+            backend_name=backend.name,
+            equity=sizing_equity,
+            signal_context=signal_context,
+            execution_context=getattr(backend, "last_open_snapshot", None),
+            wallet_context=getattr(backend, "last_wallet_snapshot", None),
+            native_sl_attached=bool(
+                tracking.get_meta(conn, "swing_sl_order_id", MODE)
+            ),
+        ))
     _record_notification_delivery(conn, "swing_entry", delivered)
     return pos
 
