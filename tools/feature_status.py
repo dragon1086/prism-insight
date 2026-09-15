@@ -214,8 +214,9 @@ def _decide_micro_split_shadow(env: dict, crontab: str):
 
 
 def _decide_oneil_watchlist_shadow(env: dict, crontab: str):
-    override = str(env.get("ONEIL_WATCHLIST_SHADOW_ENABLED") or
-                   _cron_get_inline_env(crontab, "ONEIL_WATCHLIST_SHADOW_ENABLED") or "true").strip().lower()
+    raw = (env["ONEIL_WATCHLIST_SHADOW_ENABLED"] if "ONEIL_WATCHLIST_SHADOW_ENABLED" in env else
+           _cron_get_inline_env(crontab, "ONEIL_WATCHLIST_SHADOW_ENABLED") or "true")
+    override = str(raw).strip().lower()
     try:
         policy = json.loads((_ROOT / "trading/config/oneil_watchlist_shadow.json").read_text())
     except (OSError, ValueError):

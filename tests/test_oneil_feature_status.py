@@ -14,6 +14,7 @@ def test_oneil_status_requires_policy_and_micro(tmp_path, monkeypatch):
     assert feature_status._decide_oneil_watchlist_shadow({}, "")[0] == "OFF"
     assert feature_status._decide_oneil_watchlist_shadow({**enabled, "ONEIL_WATCHLIST_SHADOW_ENABLED": "false"}, "")[0] == "OFF"
     assert feature_status._decide_oneil_watchlist_shadow({**enabled, "ONEIL_WATCHLIST_SHADOW_ENABLED": "garbage"}, "")[0] == "OFF"
+    assert feature_status._decide_oneil_watchlist_shadow({**enabled, "ONEIL_WATCHLIST_SHADOW_ENABLED": ""}, "")[0] == "OFF"
     path.write_text("broken")
     assert feature_status._decide_oneil_watchlist_shadow(enabled, "")[0] == "OFF"
 
@@ -21,6 +22,6 @@ def test_oneil_status_requires_policy_and_micro(tmp_path, monkeypatch):
 def test_watch_runtime_override_matches_status(monkeypatch):
     from observability import oneil_watchlist
     monkeypatch.setenv("MICRO_SPLIT_SHADOW_ENABLED", "true")
-    for value in ("false", " false ", "garbage", "0"):
+    for value in ("false", " false ", "garbage", "0", ""):
         monkeypatch.setenv("ONEIL_WATCHLIST_SHADOW_ENABLED", value)
         assert not oneil_watchlist.enabled()

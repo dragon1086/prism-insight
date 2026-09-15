@@ -4,7 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import subprocess
+import subprocess  # nosec B404 - fixed repository worker, JSON stdin, no shell
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -51,9 +51,11 @@ def _load(path):
 
 def _collect(tickers, trade_date):
     worker = ROOT / "tools/run_oneil_watchlist_shadow.py"
-    result = subprocess.run([sys.executable, str(worker)],
+    # Neither the executable nor script path comes from candidate data.
+    result = subprocess.run([sys.executable, str(worker)],  # nosec B603  # nosemgrep
                             input=json.dumps({"tickers": tickers, "trade_date": trade_date}),
-                            text=True, capture_output=True, timeout=20, check=True, cwd=ROOT)
+                            text=True, capture_output=True, timeout=20, check=True, cwd=ROOT,
+                            shell=False, close_fds=True)
     return json.loads(result.stdout)
 
 

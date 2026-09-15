@@ -10,6 +10,22 @@ from observability import oneil_watchlist as capture
 from prism_core.oneil_watchlist import advance, completed
 
 
+def test_collector_uses_fixed_argv_and_json_stdin(monkeypatch):
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen.update(argv=argv, **kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="{}")
+
+    monkeypatch.setattr(capture.subprocess, "run", run)
+    symbols = ["AAPL;not-a-command"]
+    assert capture._collect(symbols, "20260915") == {}
+    assert seen["argv"] == [capture.sys.executable, str(capture.ROOT / "tools/run_oneil_watchlist_shadow.py")]
+    assert json.loads(seen["input"])["tickers"] == symbols
+    assert seen["shell"] is False and seen["close_fds"] is True
+    assert seen["timeout"] == 20
+
+
 def frames(extra=0):
     days = pd.bdate_range("2026-01-01", periods=66 + extra)
     stock = [{"date": d.date().isoformat(), "close": 70 + i * .5,
