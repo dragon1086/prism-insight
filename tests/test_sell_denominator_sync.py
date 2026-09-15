@@ -35,6 +35,20 @@ SUB_MOD = "examples.messaging.gcp_pubsub_subscriber_example"
 _LOG = logging.getLogger("test_sell_denominator_sync")
 
 
+@pytest.fixture(autouse=True)
+def _allow_publish_with_mock_transports(monkeypatch):
+    """These tests exercise publish internals against mock transports only.
+
+    ``publish_signal`` now consults the kill switch at egress time, which would
+    no-op every call before the mock is reached — lift it explicitly here.
+    """
+    import messaging.gcp_pubsub_signal_publisher as gcp_mod
+    import messaging.redis_signal_publisher as redis_mod
+
+    monkeypatch.setattr(gcp_mod, "signal_publishing_disabled", lambda: False)
+    monkeypatch.setattr(redis_mod, "signal_publishing_disabled", lambda: False)
+
+
 # --------------------------------------------------------------------------- #
 # Publisher side: SELL payload must carry sell_denominator (default 1)
 # --------------------------------------------------------------------------- #

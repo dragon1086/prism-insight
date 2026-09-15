@@ -42,6 +42,17 @@ class _ConcurrencyRecordingRedis:
 
 
 class RedisAsyncBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        # publish_signal() now consults the kill switch at egress time. These
+        # tests verify async-boundary behavior against recording fakes only, so
+        # the guard is lifted explicitly for this class.
+        patcher = patch(
+            "messaging.redis_signal_publisher.signal_publishing_disabled",
+            return_value=False,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_publish_signal_runs_xadd_off_event_loop(self):
         redis = _ThreadRecordingRedis()
         publisher = SignalPublisher(redis_url="https://example.invalid", redis_token="token")

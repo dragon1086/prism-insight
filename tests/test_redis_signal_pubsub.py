@@ -74,8 +74,15 @@ def mock_redis():
 
 
 @pytest.fixture
-def publisher_with_mock_redis(mock_redis):
+def publisher_with_mock_redis(mock_redis, monkeypatch):
     """Mock Redis가 주입된 SignalPublisher"""
+    # publish_signal() also consults the kill switch now. These tests verify
+    # payload construction against a mock transport, so the guard is lifted
+    # explicitly for this fixture only.
+    monkeypatch.setattr(
+        "messaging.redis_signal_publisher.signal_publishing_disabled",
+        lambda: False,
+    )
     publisher = SignalPublisher(
         redis_url="https://mock.upstash.io",
         redis_token="mock-token"
@@ -363,16 +370,15 @@ class TestIntegrationWithRealRedis:
 
     @pytest.mark.asyncio
     async def test_real_connection(self):
-        """실제 Redis 연결 테스트"""
+        """실제 Redis 연결 테스트 — pytest에서는 kill switch가 연결을 거부한다"""
         async with SignalPublisher() as publisher:
-            assert publisher._is_connected() is True
-            print("\n✅ Redis 연결 성공")
+            assert publisher._is_connected() is False
 
     @pytest.mark.asyncio
     async def test_publish_buy_signal(self, real_redis, real_publisher):
-        """실제 매수 시그널 발행 테스트"""
+        """실제 매수 시그널 발행 테스트 — pytest에서는 egress에서도 거부된다"""
         test_ticker = f"BUY_TEST_{datetime.now().strftime('%H%M%S')}"
-        
+
         message_id = await real_publisher.publish_buy_signal(
             ticker=test_ticker,
             company_name="Test Stock_매수",
@@ -386,31 +392,14 @@ class TestIntegrationWithRealRedis:
             trade_result={"success": True, "message": "테스트 Buy completed"}
         )
 
-        assert message_id is not None, f"message_id is None. Check Redis connection."
-        print(f"\n✅ 매수 시그널 발행: {message_id}")
-
-        # 발행된 메시지 확인 (upstash-redis 1.5.0+ 시그니처: xrange(key, start, end, count))
-        result = real_redis.xrange(
-            "prism:trading-signals",
-            message_id,  # start
-            message_id,  # end
-            count=1
-        )
-
-        assert len(result) == 1
-        parsed_data = parse_stream_data(result[0][1])
-        signal = json.loads(parsed_data["data"])
-        
-        assert signal["type"] == "BUY"
-        assert signal["ticker"] == test_ticker
-        assert signal["target_price"] == 55000
-        print(f"✅ 매수 시그널 확인: {signal['company_name']} @ {signal['price']:,}원")
+        # 실제 Redis 클라이언트가 직접 주입되어도 pytest 하에서는 발행이 거부되어야 한다
+        assert message_id is None
 
     @pytest.mark.asyncio
     async def test_publish_sell_signal(self, real_redis, real_publisher):
-        """실제 매도 시그널 발행 테스트"""
+        """실제 매도 시그널 발행 테스트 — pytest에서는 egress에서도 거부된다"""
         test_ticker = f"SELL_TEST_{datetime.now().strftime('%H%M%S')}"
-        
+
         message_id = await real_publisher.publish_sell_signal(
             ticker=test_ticker,
             company_name="Test Stock_매도",
@@ -421,31 +410,13 @@ class TestIntegrationWithRealRedis:
             trade_result={"success": True, "message": "테스트 Sell completed"}
         )
 
-        assert message_id is not None
-        print(f"\n✅ 매도 시그널 발행: {message_id}")
-
-        # 발행된 메시지 확인 (upstash-redis 1.5.0+ 시그니처: xrange(key, start, end, count))
-        result = real_redis.xrange(
-            "prism:trading-signals",
-            message_id,  # start
-            message_id,  # end
-            count=1
-        )
-
-        assert len(result) == 1
-        parsed_data = parse_stream_data(result[0][1])
-        signal = json.loads(parsed_data["data"])
-        
-        assert signal["type"] == "SELL"
-        assert signal["ticker"] == test_ticker
-        assert signal["profit_rate"] == 10.0
-        print(f"✅ 매도 시그널 확인: {signal['company_name']} 수익률 {signal['profit_rate']}%")
+        assert message_id is None
 
     @pytest.mark.asyncio
     async def test_publish_event_signal(self, real_redis, real_publisher):
-        """실제 이벤트 시그널 발행 테스트"""
+        """실제 이벤트 시그널 발행 테스트 — pytest에서는 egress에서도 거부된다"""
         test_ticker = f"EVENT_TEST_{datetime.now().strftime('%H%M%S')}"
-        
+
         message_id = await real_publisher.publish_event_signal(
             ticker=test_ticker,
             company_name="Test Stock_이벤트",
@@ -455,24 +426,7 @@ class TestIntegrationWithRealRedis:
             event_description="테스트 영상 업로드"
         )
 
-        assert message_id is not None
-        print(f"\n✅ 이벤트 시그널 발행: {message_id}")
-
-        # 발행된 메시지 확인 (upstash-redis 1.5.0+ 시그니처: xrange(key, start, end, count))
-        result = real_redis.xrange(
-            "prism:trading-signals",
-            message_id,  # start
-            message_id,  # end
-            count=1
-        )
-
-        assert len(result) == 1
-        parsed_data = parse_stream_data(result[0][1])
-        signal = json.loads(parsed_data["data"])
-        
-        assert signal["type"] == "EVENT"
-        assert signal["event_type"] == "YOUTUBE"
-        print(f"✅ 이벤트 시그널 확인: {signal['event_type']} from {signal['source']}")
+        assert message_id is None
 
     @pytest.mark.asyncio
     async def test_full_pubsub_flow(self, real_redis, real_publisher):
@@ -484,20 +438,13 @@ class TestIntegrationWithRealRedis:
         last_id = last_entries[0][0] if last_entries else "0"
         print(f"\n📍 시작 ID: {last_id}")
 
-        # 2. 여러 시그널 발행
-        published_ids = []
-        
-        # 매수 시그널
+        # 2. 여러 시그널 발행 — pytest에서는 kill switch가 모두 거부한다
         buy_id = await real_publisher.publish_buy_signal(
             ticker="FLOW_001",
             company_name="흐름테스트_매수",
             price=10000,
             scenario={"target_price": 11000, "stop_loss": 9500}
         )
-        published_ids.append(buy_id)
-        print(f"📤 매수 시그널 발행: {buy_id}")
-
-        # 매도 시그널
         sell_id = await real_publisher.publish_sell_signal(
             ticker="FLOW_002",
             company_name="흐름테스트_매도",
@@ -506,10 +453,6 @@ class TestIntegrationWithRealRedis:
             profit_rate=20.0,
             sell_reason="Target price reached"
         )
-        published_ids.append(sell_id)
-        print(f"📤 매도 시그널 발행: {sell_id}")
-
-        # 이벤트 시그널
         event_id = await real_publisher.publish_event_signal(
             ticker="FLOW_003",
             company_name="흐름테스트_이벤트",
@@ -518,74 +461,22 @@ class TestIntegrationWithRealRedis:
             event_source="테스트뉴스",
             event_description="호재 발생"
         )
-        published_ids.append(event_id)
-        print(f"📤 이벤트 시그널 발행: {event_id}")
 
-        # 3. 구독자처럼 XREAD로 새 메시지 읽기
-        print(f"\n📥 구독자 모드로 메시지 읽기 (after {last_id})...")
-        
-        # XREAD: last_id 이후의 메시지 읽기
-        result = real_redis.xread({stream_name: last_id}, count=10)
-        
-        assert result is not None
-        assert len(result) > 0
-        
-        stream, messages = result[0]
-        received_signals = []
-        
-        for msg_id, data in messages:
-            parsed_data = parse_stream_data(data)
-            signal = json.loads(parsed_data["data"])
-            received_signals.append(signal)
-            
-            emoji = {"BUY": "📈", "SELL": "📉", "EVENT": "🔔"}.get(signal["type"], "📌")
-            print(f"   {emoji} [{signal['type']}] {signal['company_name']} @ {signal['price']:,}원")
-
-        # 4. 발행한 시그널이 모두 수신되었는지 확인
-        received_tickers = [s["ticker"] for s in received_signals]
-        assert "FLOW_001" in received_tickers
-        assert "FLOW_002" in received_tickers
-        assert "FLOW_003" in received_tickers
-        
-        print(f"\n✅ 전체 Pub/Sub 흐름 테스트 성공! ({len(received_signals)}개 시그널 수신)")
+        assert buy_id is None
+        assert sell_id is None
+        assert event_id is None
 
     @pytest.mark.asyncio
     async def test_subscriber_new_messages_only(self, real_redis, real_publisher):
-        """구독자가 새 메시지만 받는 시나리오 테스트"""
-        stream_name = "prism:trading-signals"
-        
-        # 시그널 발행
+        """구독자 시나리오 — pytest에서는 발행이 거부된다"""
         test_ticker = f"NEW_MSG_{datetime.now().strftime('%H%M%S%f')}"
         message_id = await real_publisher.publish_buy_signal(
             ticker=test_ticker,
             company_name="새메시지테스트",
             price=99999
         )
-        
-        assert message_id is not None, "message_id is None"
-        print(f"\n📤 시그널 발행: {message_id}")
 
-        # 방금 발행한 메시지 ID 직전부터 읽기
-        parts = message_id.split("-")
-        prev_id = f"{int(parts[0])-1}-0"
-        
-        result = real_redis.xread({stream_name: prev_id}, count=5)
-        
-        assert result is not None
-        stream, messages = result[0]
-        
-        # 발행한 메시지가 포함되어 있는지 확인
-        found = False
-        for msg_id, data in messages:
-            parsed_data = parse_stream_data(data)
-            signal = json.loads(parsed_data["data"])
-            if signal["ticker"] == test_ticker:
-                found = True
-                print(f"📥 수신: {signal['company_name']} @ {signal['price']:,}원")
-                break
-        
-        assert found, f"발행한 시그널을 찾지 못함: {test_ticker}"
-        print("✅ 새 메시지 수신 테스트 성공!")
+        assert message_id is None
 
     @pytest.mark.asyncio  
     async def test_read_stream_length(self, real_redis):
@@ -871,15 +762,7 @@ class TestSubscriberIntegration:
 
     @pytest.mark.asyncio
     async def test_subscriber_receives_published_signal(self, real_redis, real_publisher):
-        """발행된 시그널을 구독자가 수신하는 전체 흐름 테스트"""
-        stream_name = "prism:trading-signals"
-        
-        # 1. 현재 마지막 ID 가져오기
-        last_entries = real_redis.xrevrange(stream_name, count=1)
-        last_id = last_entries[0][0] if last_entries else "0"
-        print(f"\n📍 시작 ID: {last_id}")
-        
-        # 2. 테스트 시그널 발행
+        """구독자 수신 흐름 — pytest에서는 kill switch가 발행을 거부한다"""
         test_ticker = f"SUB_TEST_{datetime.now().strftime('%H%M%S%f')}"
         message_id = await real_publisher.publish_buy_signal(
             ticker=test_ticker,
@@ -887,30 +770,8 @@ class TestSubscriberIntegration:
             price=12345,
             scenario={"target_price": 15000, "stop_loss": 10000}
         )
-        print(f"📤 시그널 발행: {message_id}")
-        
-        # 3. 구독자처럼 xread로 읽기 (block 없이)
-        result = real_redis.xread({stream_name: last_id}, count=10)
-        
-        assert result is not None, "xread 결과가 None"
-        
-        # 4. 발행한 시그널 찾기
-        found_signal = None
-        for stream, messages in result:
-            for msg_id, data in messages:
-                parsed_data = parse_stream_data(data)
-                signal = json.loads(parsed_data["data"])
-                if signal.get("ticker") == test_ticker:
-                    found_signal = signal
-                    break
-        
-        assert found_signal is not None, f"발행한 시그널을 찾지 못함: {test_ticker}"
-        assert found_signal["type"] == "BUY"
-        assert found_signal["company_name"] == "구독자테스트"
-        assert found_signal["price"] == 12345
-        
-        print(f"📥 시그널 수신 성공: {found_signal['company_name']} @ {found_signal['price']:,}원")
-        print("✅ 구독자 통합 테스트 성공!")
+
+        assert message_id is None
 
     def test_polling_simulation(self, real_redis):
         """Polling 방식 시뮬레이션 테스트"""

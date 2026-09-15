@@ -4,7 +4,21 @@ import asyncio
 import json
 import threading
 
+import pytest
+
 from messaging.gcp_pubsub_signal_publisher import SignalPublisher
+
+
+@pytest.fixture(autouse=True)
+def _allow_publish_with_mock_transport(monkeypatch):
+    """These tests exercise publish internals against a fake transport only.
+
+    ``publish_signal`` now consults the kill switch at egress time, which would
+    no-op every call before the fake is reached — lift it explicitly here.
+    """
+    import messaging.gcp_pubsub_signal_publisher as gcp_mod
+
+    monkeypatch.setattr(gcp_mod, "signal_publishing_disabled", lambda: False)
 
 
 class _ImmediateResultFuture:

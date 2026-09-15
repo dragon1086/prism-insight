@@ -112,6 +112,64 @@ class TestPublishersRefuseToConnect:
         assert message_id is None
 
 
+class TestInjectedTransportsAreStillBlocked:
+    """Regression cover for the client-injection bypass.
+
+    The guard used to be consulted only inside ``connect()``. Tests (and the
+    deleted ``test_debug_redis.py`` script) could do ``publisher._redis =
+    Redis(real_creds)`` and ``publish_signal`` would XADD to the live stream
+    anyway. The guard is now re-checked at the point of egress.
+    """
+
+    def test_redis_publish_refused_with_injected_client(self):
+        from unittest.mock import MagicMock
+
+        from messaging.redis_signal_publisher import SignalPublisher
+
+        pub = SignalPublisher(
+            redis_url="https://real.upstash.io", redis_token="real-token"
+        )
+        injected = MagicMock()
+        injected.xadd = MagicMock(return_value="1-0")
+        pub._redis = injected
+        assert pub._is_connected() is True  # the bypass precondition holds
+
+        message_id = asyncio.run(
+            pub.publish_signal(
+                signal_type="BUY",
+                ticker="005930",
+                company_name="Samsung",
+                price=100.0,
+            )
+        )
+
+        assert message_id is None
+        injected.xadd.assert_not_called()
+
+    def test_gcp_publish_refused_with_injected_client(self):
+        from unittest.mock import MagicMock
+
+        from messaging.gcp_pubsub_signal_publisher import SignalPublisher
+
+        pub = SignalPublisher(project_id="prism-prod", topic_id="signals")
+        injected = MagicMock()
+        pub._publisher = injected
+        pub._topic_path = "projects/prism-prod/topics/signals"
+        assert pub._is_connected() is True
+
+        message_id = asyncio.run(
+            pub.publish_signal(
+                signal_type="SELL",
+                ticker="005930",
+                company_name="Samsung",
+                price=92.0,
+            )
+        )
+
+        assert message_id is None
+        injected.publish.assert_not_called()
+
+
 class TestEndToEndBroadcastIsBlocked:
     def test_publish_loop_sell_emits_nothing(self):
         """sell_broadcast.publish_loop_sell is the loops' broadcast entry point.
