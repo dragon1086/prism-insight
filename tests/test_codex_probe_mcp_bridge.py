@@ -17,7 +17,31 @@ from tools.codex_probe_mcp_bridge import ReadMcpBridge
 REAL_HOST_COMMAND = bridge_module._host_command
 
 
-@pytest.mark.skipif(sys.platform != "linux" or not Path("/usr/bin/bwrap").is_file(), reason="real Linux bwrap runtime bind verification required")
+def _bwrap_namespace_functional() -> bool:
+    """Probe whether bwrap can actually create a PID namespace on this host.
+
+    The binary can be present while user namespaces are unavailable
+    (restricted containers, disabled unprivileged userns), in which case the
+    real-runtime checks below would fail instead of verifying anything."""
+    bwrap = Path("/usr/bin/bwrap")
+    if sys.platform != "linux" or not bwrap.is_file():
+        return False
+    try:
+        return subprocess.run(
+            [str(bwrap), "--unshare-pid", "--die-with-parent", "--cap-drop", "ALL",
+             "--ro-bind", "/", "/", "--proc", "/proc", "--", "/usr/bin/true"],
+            capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+_BWRAP_REQUIRED = pytest.mark.skipif(
+    not _bwrap_namespace_functional(),
+    reason="functional Linux bwrap namespace runtime required",
+)
+
+
+@_BWRAP_REQUIRED
 def test_private_runtime_copy_remains_executable_over_hidden_tmp(tmp_path, monkeypatch):
     # Harmless ELF only, never Node/provider/model: execute a private `true` copy.
     source = Path("/usr/bin/true").resolve()
@@ -449,7 +473,7 @@ def test_mandatory_namespace_command_has_no_shared_group_kill_or_environment_inh
         REAL_HOST_COMMAND(["/fixed/trusted/provider"])
 
 
-@pytest.mark.skipif(sys.platform != "linux" or not Path("/usr/bin/bwrap").is_file(), reason="real Linux bwrap namespace verification required")
+@_BWRAP_REQUIRED
 @pytest.mark.parametrize("outcome", ["disconnect", "request_timeout", "cancel"])
 def test_real_linux_namespace_tears_down_descendants_without_touching_sentinel(tmp_path, monkeypatch, outcome):
     monkeypatch.setattr(bridge_module, "_host_command", REAL_HOST_COMMAND)
