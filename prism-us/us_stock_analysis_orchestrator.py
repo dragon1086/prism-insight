@@ -522,10 +522,14 @@ class USStockAnalysisOrchestrator:
             results_file = str(PRISM_US_DIR / f"trigger_results_us_{mode}_{effective_date}.json")
 
             # Run batch
+            from observability.micro_split import get_shadow_batch_context
+            watch_context = get_shadow_batch_context()
+            watch_batch_ref = watch_context.get("batch_ref") if watch_context else None
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None,
-                lambda: run_batch(mode, "INFO", results_file, macro_context=macro_context, override_date=override_date)
+                lambda: run_batch(mode, "INFO", results_file, macro_context=macro_context, override_date=override_date,
+                                  watch_batch_ref=watch_batch_ref)
             )
 
             if not results:

@@ -1454,7 +1454,7 @@ def select_final_tickers(triggers: dict, trade_date: str = None, use_hybrid: boo
 
 # === Batch Execution ===
 
-def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None, override_date: str = None):
+def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None, override_date: str = None, watch_batch_ref: str = None):
     """
     Execute trigger batch.
 
@@ -1675,6 +1675,14 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
 
     # Final selection
     final_results = select_final_tickers(triggers, trade_date=trade_date, macro_context=macro_context)
+
+    # Research observes a copy boundary, never modifies ranking, JSON or BUY inputs.
+    if watch_batch_ref:
+        try:
+            from observability.oneil_watchlist import observe_batch
+            observe_batch(final_results, trade_date, watch_batch_ref)
+        except Exception:
+            logger.warning("Optional watchlist SHADOW unavailable")
 
     # Save to JSON if requested
     if output_file:
