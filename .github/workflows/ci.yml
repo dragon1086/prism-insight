@@ -190,6 +190,7 @@ jobs:
             prism-btc/tests/test_order_retirement.py \
             prism-btc/tests/test_entry_reservations.py \
             prism-btc/tests/test_shared_entry_coordinator.py \
+            prism-btc/tests/test_liquidation_guard.py \
             prism-btc/tests/test_shared_entry_policy.py \
             prism-btc/tests/test_policy_observation.py \
             prism-btc/tests/test_confidence_allocation.py \
