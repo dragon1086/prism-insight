@@ -70,7 +70,7 @@ def evaluate(watch, rows, benchmark, trade_date, expected_completed_date=None):
             status = "READY"
         out.update(status=status, reason="technical_" + status.lower(), pivot=pivot,
                    seed_asof=seed_asof, asof=asof, elapsed_bars=elapsed,
-                   close=closes[-1], ma50=ma, rs60=relative,
+                   close=closes[-1], previous_close=closes[-2], ma50=ma, ma50_prior5=prior_ma, rs60=relative,
                    input_hash=ref(POLICY_VERSION, bars[-66:], bench[-66:]))
         if status == "READY" and not out.get("ready_event_id"):
             out["ready_event_id"] = ref("watch-ready", out["watch_id"], asof)

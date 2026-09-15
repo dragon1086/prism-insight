@@ -26,6 +26,17 @@ def test_collector_uses_fixed_argv_and_json_stdin(monkeypatch):
     assert seen["timeout"] == 20
 
 
+def test_ready_comparison_facts_are_preserved():
+    data = frames()
+    state, observations = advance({"watches": []}, [{"ticker": "AAA", "trigger": "Momentum"}],
+                                  data, cutoff(data), "facts")
+    row = observations[0]
+    assert row["status"] == "READY"
+    assert row["close"] > row["previous_close"]
+    assert row["ma50"] > row["ma50_prior5"]
+    assert state["watches"][0]["input_hash"] == row["input_hash"]
+
+
 def frames(extra=0):
     days = pd.bdate_range("2026-01-01", periods=66 + extra)
     stock = [{"date": d.date().isoformat(), "close": 70 + i * .5,
