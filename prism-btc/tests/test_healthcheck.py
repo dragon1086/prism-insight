@@ -102,6 +102,33 @@ def test_health_alert_history_never_counts_as_primary_errors():
     assert healthcheck._check_error_burst(conn, "demo", _NOW) is None
 
 
+@pytest.mark.parametrize("state", ["completed", "skipped", "recurred", "future", "stale"])
+def test_error_history_context_does_not_clear_alert_severity(state):
+    conn = _healthy_conn()
+    for _ in range(7):
+        tracking.log_event(conn, "broker_recovery", "swing entry recovery pending", level="error",
+                           mode="demo", ts=_iso(_NOW-timedelta(minutes=100 if state == "stale" else 40)))
+    message = "tick skipped (broker recovery pending)" if state == "skipped" else "tick ok: protection=1x10m, strategy=0x30m; last=None"
+    ago = -1 if state == "future" else (80 if state == "stale" else 5)
+    tracking.log_event(conn, "heartbeat", message, mode="demo", ts=_iso(_NOW-timedelta(minutes=ago)))
+    if state == "recurred":
+        tracking.log_event(conn, "broker_recovery", "new failure", level="error",
+                           mode="demo", ts=_iso(_NOW-timedelta(minutes=1)))
+    issue = healthcheck._check_error_burst(conn, "demo", _NOW)
+    assert issue["level"] == "alert" and issue["code"] == "error_burst"
+    assert "누적 이력" in issue["msg"]
+    assert "마지막 오류" in issue["msg"]
+    assert ("오류 이후 정규 실행 완료 확인" in issue["msg"]) == (state == "completed")
+
+
+def test_health_alert_includes_generation_time(captured):
+    conn = _healthy_conn()
+    _set_price_ns(conn, minutes_ago=105)
+    healthcheck.notify_health(conn, "demo", send=True, now=_NOW)
+    assert "2026-06-15 21:00:00 KST" in captured[0]
+    assert "30분봉 기준시각" in captured[0]
+
+
 def test_six_reported_events_with_only_four_primary_errors_do_not_alert():
     conn = _healthy_conn()
     for _ in range(4):
@@ -173,8 +200,8 @@ def test_error_burst_detected(captured):
     burst = [i for i in issues if i["code"] == "error_burst"]
     assert len(burst) == 1
     assert burst[0]["level"] == "alert"
-    # 최근 1건 메시지 첨부 (가장 최근 = 마지막 기록된 boom 5).
-    assert "boom 5" in burst[0]["msg"]
+    # Event time, not late insertion order, determines the latest failure.
+    assert "boom 0" in burst[0]["msg"]
 
 
 def test_error_burst_outside_window_ignored(captured):
