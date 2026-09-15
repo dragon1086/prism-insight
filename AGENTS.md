@@ -109,7 +109,12 @@ Avoid broad production-like runs unless the task requires them.
   strategy, trigger, factor, regime switch, exit, or sizing rule (including an
   LLM prompt that changes economic decisions), apply the Strategy adoption and
   fit gate in that harness before implementation. Natural-language proposals
-  count; no special command is required. Keep execution/data bug repair separate
+  count; no special command is required. Compatibility review must trace actual
+  screening code through report inputs, BUY/SELL prompts, deterministic gates,
+  execution and exit management; conceptual strategy fit or prompt-only review
+  is insufficient. Record intended stage differences versus contradictions,
+  source locations and same-candidate tests before claiming compatibility.
+  Keep execution/data bug repair separate
   and do not delay a proven safety fix under the guise of strategy research.
 
 ### BTC roadmap governance
