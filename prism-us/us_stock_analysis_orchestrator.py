@@ -522,7 +522,7 @@ class USStockAnalysisOrchestrator:
             results_file = str(PRISM_US_DIR / f"trigger_results_us_{mode}_{effective_date}.json")
 
             # Run batch
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             results = await loop.run_in_executor(
                 None,
                 lambda: run_batch(mode, "INFO", results_file, macro_context=macro_context, override_date=override_date)

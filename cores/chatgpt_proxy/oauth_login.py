@@ -117,7 +117,7 @@ async def login(force: bool = False) -> dict:
     auth_url = f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
 
     # Set up callback server
-    code_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+    code_future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
 
     async def handle_callback(request: web.Request) -> web.Response:
         qs = request.query
