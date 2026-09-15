@@ -72,6 +72,10 @@ Avoid broad production-like runs unless the task requires them.
 - The main branch requires zero approving reviews by explicit user request.
   Preserve the PR requirement, CI/status checks, and all other branch protections.
 - Check the exact PR head, dependency order, relevant tests, and CI before merging.
+- Any feature change, incident repair, or deployment request must first apply the
+  change-scope verification gates in docs/SERVER_GIT_OPERATIONS_ko.md. This is
+  mandatory task routing, not optional memory recall. Record pre-deploy tests,
+  post-deploy smoke, and whether the first scheduled run has actually completed.
   Do not interpret the review waiver as permission to merge failing or unrelated work.
 - Follow docs/SERVER_GIT_OPERATIONS_ko.md: clean target, verified commit, ff-only
   deployment, no destructive reset/stash/clean, and no credential/runtime-data edits.
