@@ -35,7 +35,6 @@ import uuid
 from typing import Optional
 
 import pandas as pd
-
 from backtest.engine import SLIPPAGE_SL, TAKER_FEE, _get_tf_slice
 from core.leadership import leadership_multipliers
 from core.swing import (
@@ -48,13 +47,19 @@ from core.swing import (
 )
 from engine.config import SWING_ENABLED, SWING_INITIAL_EQUITY, SWING_MAX_LEVERAGE
 from live import tracking
-from live.exchange_snapshot import read_complete
-from live.position_snapshot import capture_swing_snapshot, persist_snapshot, snapshot_lines
-from live.native_stop import native_stop_params
-from live.shared_entry_coordinator import authorize, serialized, mutation_lock, LockBusy
-from live.protection import reconcile_stop
 from live.demo import _f, _order_id, _pstr, _qstr, _result_list
+from live.exchange_snapshot import read_complete
+from live.native_stop import native_stop_params
+from live.position_snapshot import (
+    capture_swing_snapshot,
+    compact_entry_lines,
+    notice_time,
+    number,
+    persist_snapshot,
+)
+from live.protection import reconcile_stop
 from live.shadow import bar_index_for
+from live.shared_entry_coordinator import LockBusy, authorize, mutation_lock, serialized
 
 log = logging.getLogger("live.swing")
 
@@ -611,11 +616,17 @@ class ExchangeBackend:
                 # 정산으로 복원한다. 양수는 비용, 음수는 수취다.
                 "funding_paid": gross - open_fee - close_fee - closed_pnl,
             })
+            # Optional display data is accepted only from this confirmed close row.
+            closed_leverage = number(closed_row.get("leverage"))
+            if closed_leverage is not None and closed_leverage > 0:
+                snapshot["exchange_leverage"] = closed_leverage
         exchange_leverage = tracking.get_meta(
             self.conn, "swing_exchange_leverage", MODE
         )
-        if exchange_leverage is not None:
-            snapshot["exchange_leverage"] = _f(exchange_leverage, float("nan"))
+        legacy_leverage = number(exchange_leverage)
+        if ("exchange_leverage" not in snapshot and legacy_leverage is not None
+                and legacy_leverage > 0):
+            snapshot["exchange_leverage"] = legacy_leverage
         if (not all(math.isfinite(value) for value in snapshot.values())
                 or any(snapshot.get(field, 1) <= 0 for field in ("qty", "entry_price", "exit_price"))):
             snapshot = {}
@@ -976,114 +987,31 @@ def _build_entry_message(
     native_sl_attached: bool = False,
     account_snapshot: dict | None = None,
 ) -> str:
-    """Build a complete, auditable swing-entry notification.
-
-    ``pos.leverage`` is the strategy's notional exposure divided by equity,
-    not the leverage configured at Bybit.  Keep those concepts separate so a
-    low-risk position is not reported as if the exchange leverage were lower.
-    """
-    execution_context = execution_context or {}
-    wallet_context = wallet_context or {}
-    qty = execution_context.get("qty") or pos.qty
-    entry = execution_context.get("entry_price") or pos.entry_price
-    notional = qty * entry
-    exchange_leverage = execution_context.get("leverage") or 0.0
-    exposure = notional / equity if equity > 0 else pos.leverage
-    sl_move = (pos.sl_price - entry) / entry * 100.0 if entry > 0 else 0.0
-    risk_amount = pos.initial_risk or abs(entry - pos.sl_price) * qty
-    liq_price = execution_context.get("liq_price") or 0.0
-    exec_tag = "실주문" if backend_name == "exchange" else "가상체결"
-    order_type = "시장가(Taker)" if backend_name == "exchange" else "가상 시장가"
-    if backend_name == "exchange":
-        leverage_text = (
-            f"{exchange_leverage:g}배" if exchange_leverage > 0 else "확인 불가"
-        )
-        stop_text = (
-            "거래소 조건부 주문 부착 완료"
-            if native_sl_attached else "거래소 조건부 주문 확인 필요"
-        )
-    else:
-        leverage_text = "가상체결(거래소 설정 없음)"
-        stop_text = "가상 봉내 감시"
-
-    if pos.side == "long":
-        exit_rule = "4시간봉 종가가 MA35 아래로 이탈하면 추세청산"
-        cross_rule = (
-            "• 4시간 MA10이 MA35를 상향 돌파 "
-            f"({signal_context['prev_ma10_4h']:,.2f}≤"
-            f"{signal_context['prev_ma35_4h']:,.2f} → "
-            f"{signal_context['ma10_4h']:,.2f}>"
-            f"{signal_context['ma35_4h']:,.2f})"
-        )
-        daily_rule = (
-            "• 완결 일봉 MA10 > MA35 "
-            f"({signal_context['ma10_1d']:,.2f}>"
-            f"{signal_context['ma35_1d']:,.2f})"
-        )
-        price_rule = (
-            "• 4시간 종가 > MA35 "
-            f"({signal_context['close_4h']:,.2f}>"
-            f"{signal_context['ma35_4h']:,.2f})"
-        )
-    else:
-        exit_rule = "4시간봉 종가가 MA35 위로 이탈하면 추세청산"
-        cross_rule = (
-            "• 4시간 MA10이 MA35를 하향 돌파 "
-            f"({signal_context['prev_ma10_4h']:,.2f}≥"
-            f"{signal_context['prev_ma35_4h']:,.2f} → "
-            f"{signal_context['ma10_4h']:,.2f}<"
-            f"{signal_context['ma35_4h']:,.2f})"
-        )
-        daily_rule = (
-            "• 완결 일봉 MA10 ≤ MA35 "
-            f"({signal_context['ma10_1d']:,.2f}≤"
-            f"{signal_context['ma35_1d']:,.2f})"
-        )
-        price_rule = (
-            "• 4시간 종가 < MA35 "
-            f"({signal_context['close_4h']:,.2f}<"
-            f"{signal_context['ma35_4h']:,.2f})"
-        )
-
+    """Public entry essentials; full snapshots and signal inputs stay in audit data."""
+    execution = execution_context or {}
+    qty = execution.get("qty") or pos.qty
+    entry = execution.get("entry_price") or pos.entry_price
+    risk = pos.initial_risk or abs(entry - pos.sl_price) * qty
+    # _make_swing_session uses HTTP(demo=True), including main_mode='live'.
+    label = "데모" if backend_name == "exchange" else "가상체결"
+    protection = ("거래소 조건부 주문 부착 완료" if native_sl_attached else
+                  "⚠️ 보호주문 확인 필요") if backend_name == "exchange" else "가상 봉내 감시"
     lines = [
-        f"🌀 [BTC 스윙레인·{exec_tag}] 새 진입 — {_side_kr(pos.side)}",
-        f"_{_entry_time_kst(pos.entry_time)} 신호 기준 · 가상자금 모의투자_",
-        "",
-        "📦 체결·포지션",
-        f"• 주문 방식: {order_type}",
-        f"• 평균 체결가: {entry:,.2f}달러",
-        f"• 체결수량: {qty:.6f} BTC",
-        f"• 체결가 기준 명목 포지션: {notional:,.2f} USDT",
-        f"• 전략 노출배수: 전략 배정자본 대비 {exposure:.2f}배",
-        f"• 거래소 레버리지: {leverage_text}",
+        f"🌀 [BTC 스윙 · {label}] 새 진입 — {_side_kr(pos.side)}",
+        f"• 진입 기록: {notice_time(pos.entry_time)}",
+        f"• 평균 체결가: {entry:,.2f} USDT · 체결수량: {qty:.6f} BTC",
     ]
-    lines.extend([
-        "",
-        "🛡️ 위험·청산 계획",
-        f"• 보호 손절: {pos.sl_price:,.2f}달러 ({sl_move:+.2f}%) · {stop_text}",
-        (
-            f"• 손절 위험: {risk_amount:,.2f}달러 "
-            "(수수료 전; 전체 거래계좌 비율은 아래 스냅샷 참조)"
-        ),
-    ])
-    if liq_price > 0:
-        liq_move = (liq_price - entry) / entry * 100.0
-        lines.append(f"• 거래소 청산가: {liq_price:,.2f}달러 ({liq_move:+.2f}%)")
+    if backend_name == "exchange":
+        lines.extend(compact_entry_lines(account_snapshot, pos, operating_capital=equity))
     else:
-        lines.append("• 거래소 청산가: 미제공 또는 가상체결")
+        lines.append(f"• 가상 운용 기준자금: {equity:,.2f} USD")
     lines.extend([
-        f"• 고정 익절가는 없음 · {exit_rule}",
-        "",
-        "🔎 진입 근거",
-        cross_rule,
-        daily_rule,
-        price_rule,
-        "",
-        "💰 전략 배정자본 (거래소 전체 잔고 아님)",
-        f"• 전략 배정자본: {equity:,.2f} USD",
+        f"• 보호 손절: {pos.sl_price:,.2f} USDT · {protection}",
+        f"• 손절 위험: {risk:,.2f} USDT (수수료 전; 급변 시 초과 가능)",
+        "• 고정 익절 없음 · 4시간봉 종가가 MA35 "
+        + ("아래" if pos.side == "long" else "위") + "로 이탈하면 추세청산",
+        "데모·가상자금 모의투자입니다.",
     ])
-    lines.extend(snapshot_lines(account_snapshot, pos, operating_capital=equity))
-    lines.extend(["", "_가상자금 모의투자입니다_"])
     return "\n".join(lines)
 
 
@@ -1164,75 +1092,32 @@ def _build_exit_message(
     account_snapshot: dict | None = None,
     operating_capital: float | None = None,
 ) -> str:
-    """스윙 청산 알림을 정량 지표와 함께 만든다.
-
-    ``price_return_pct`` 는 롱/숏 방향을 반영한 현물 가격 기준 수익률이고,
-    실주문에서는 Bybit ``closedPnl``만 확정손익으로 표시한다. 교차계좌의
-    현재 평가액은 다른 자산 변동이 섞인 스냅샷이므로 거래 손익과 빼지 않는다.
-    """
-    sign = 1.0 if pos.side == "long" else -1.0
-    price_return_pct = (
-        sign * (exit_price - pos.entry_price) / pos.entry_price * 100.0
-        if pos.entry_price
-        else None
-    )
-    duration = _hold_duration(pos.entry_time, exit_time)
-
-    outcome = f"✅ 이익 {r_multiple:+.1f}배" if r_multiple > 0 else f"❌ 손실 {r_multiple:+.1f}배"
+    """Event-specific settlement summary; current wallet is not a trade return."""
+    label = "데모" if backend_name == "exchange" else "가상체결"
+    outcome = "✅ 이익" if net > 0 else "❌ 손실" if net < 0 else "본전"
     why = "손절" if reason == "swing_sl" else "추세이탈 청산"
-    exec_tag = "실주문" if backend_name == "exchange" else "가상체결"
+    duration = _hold_duration(pos.entry_time, exit_time)
+    sign = 1 if pos.side == "long" else -1
+    move = sign * (exit_price - pos.entry_price) / pos.entry_price * 100 if pos.entry_price else None
+    pnl_label = ("Bybit 확정 실현손익" if settlement_confirmed else "추정 실현손익") if backend_name == "exchange" else "가상 원장 순손익"
     lines = [
-        f"🌀 [스윙레인·{exec_tag}] 포지션 정리 — {outcome} ({why})",
-        (
-            f"• 진입→청산: {pos.entry_price:,.0f} → {exit_price:,.0f}달러 · "
-            f"{_side_kr(pos.side)} · 가격 기준 {price_return_pct:+.2f}%"
-            if price_return_pct is not None
-            else f"• 진입→청산: {pos.entry_price:,.0f} → {exit_price:,.0f}달러 · {_side_kr(pos.side)}"
-        ),
+        f"🌀 [BTC 스윙 · {label}] 포지션 정리 — {outcome} ({why})",
+        f"• {pnl_label}: {net:+,.2f} USDT (비용 반영)",
+        f"• 진입→청산: {pos.entry_price:,.2f} → {exit_price:,.2f} USDT"
+        + (f" · 가격 기준 {move:+.2f}%" if move is not None else ""),
+        f"• {_side_kr(pos.side)} · 정리 수량: {pos.qty:.6f} BTC"
+        + (f" · 보유 {duration}" if duration else ""),
+        f"• 청산: {notice_time(exit_time)}",
+        f"• 매매수수료: {fee_paid:,.2f} USDT"
+        + (f" · 기타 {'비용' if funding_paid >= 0 else '수취'}(추정): {abs(funding_paid):,.2f} USDT"
+           if backend_name == "exchange" and settlement_confirmed else ""),
     ]
-    if backend_name == "exchange":
-        pnl_label = "Bybit 확정 실현손익" if settlement_confirmed else "추정 실현손익"
-        pnl_parts = [f"• {pnl_label}: {net:+,.2f}달러"]
-        if gross_pnl is not None:
-            pnl_parts.append(f"가격손익 {gross_pnl:+,.2f}달러")
-        pnl_parts.append(f"매매수수료 {fee_paid:,.2f}달러")
-        if settlement_confirmed:
-            pnl_parts.append(f"펀딩비 {funding_paid:,.2f}달러")
-        lines.append(" · ".join(pnl_parts))
-        if not settlement_confirmed:
-            lines.append("• ⚠️ Bybit 확정 정산 조회 실패 · 원장 수치는 잠정값")
-        lines.append("• 진입 당시 전체 거래계좌 기여율: 확인 불가 (전략 배정자본과 구분)")
-        leverage_text = (
-            f"{exchange_leverage:g}배" if exchange_leverage else "확인 불가"
-        )
-        lines.append(
-            f"• 포지션: {pos.qty:.4f} BTC · 거래소 레버리지 {leverage_text} · "
-            f"전략 노출 {pos.leverage:.1f}배"
-            + (f" · 보유 {duration}" if duration else "")
-        )
-    else:
-        account_delta = equity_after - equity_before
-        account_return_pct = (
-            account_delta / equity_before * 100.0 if equity_before else None
-        )
-        lines.append(
-            f"• 실현손익: {net:+,.2f}달러 · 수수료 {fee_paid:,.2f}달러"
-        )
-        lines.append(
-            f"• 가상 원장: {equity_before:,.2f} → {equity_after:,.2f}달러 · "
-            f"{account_delta:+,.2f}달러"
-            + (
-                f" ({account_return_pct:+.2f}%)"
-                if account_return_pct is not None else ""
-            )
-        )
-        lines.append(
-            f"• 포지션: {pos.qty:.4f} BTC · 전략 노출 {pos.leverage:.1f}배"
-            + (f" · 보유 {duration}" if duration else "")
-        )
-    lines.extend(snapshot_lines(account_snapshot, pos, event_time=exit_time, include_position=False,
-                                operating_capital=operating_capital))
-    lines.append("_데모 계정 모의투자입니다_")
+    lev = number(exchange_leverage)
+    if lev is not None and lev > 0:
+        lines.append(f"• 청산 기록 거래소 레버리지: {lev:g}배")
+    if backend_name == "exchange" and not settlement_confirmed:
+        lines.append("⚠️ 거래소 정산 미확정. 손익·비용은 잠정값입니다.")
+    lines.append("데모·가상자금 모의투자입니다.")
     return "\n".join(lines)
 
 

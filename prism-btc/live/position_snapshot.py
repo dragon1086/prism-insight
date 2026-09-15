@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from live.exchange_snapshot import read_complete
 
@@ -108,6 +108,71 @@ def capture_swing_snapshot(backend, pos=None):
                      and math.isclose(candidate["qty"], pos.qty, abs_tol=1e-9))):
                 snap["position"] = candidate
     return snap
+
+
+def notice_time(value):
+    """Display only explicit timezone-aware timestamps; never guess a timezone."""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone(timedelta(hours=9))).strftime("%m/%d %H:%M:%S KST")
+    except (ValueError, TypeError):
+        return "시각 확인 불가"
+    return "시각 확인 불가"
+
+
+def compact_entry_lines(snapshot=None, pos=None, *, operating_capital=None):
+    """Public essentials only. Full snapshots remain available to diagnostics."""
+    snap = mapping(snapshot)
+    wallet, account = mapping(snap.get("wallet")), mapping(snap.get("account"))
+    position = mapping(snap.get("notice_position", snap.get("position")))
+    if (position.get("symbol") != "BTCUSDT"
+            or position.get("side") != getattr(pos, "side", None)):
+        position = {}
+    missing, details = [], []
+    mode = account.get("margin_mode")
+    label = {"REGULAR_MARGIN": "교차마진(Cross)", "ISOLATED_MARGIN": "격리마진(Isolated)",
+             "PORTFOLIO_MARGIN": "포트폴리오마진"}.get(mode)
+    if label:
+        details.append(label)
+    else:
+        missing.append("마진 방식")
+    lev = number(position.get("exchange_leverage", position.get("leverage")))
+    if mode == "PORTFOLIO_MARGIN":
+        details.append("포지션별 레버리지·증거금 미제공")
+    elif lev is not None and lev > 0:
+        details.append(f"거래소 레버리지: {lev:g}배")
+    else:
+        missing.append("레버리지")
+    if position.get("position_idx") == 0:
+        details.append("단방향")
+    elif position.get("position_idx") in (1, 2):
+        details.append("헤지모드")
+    lines = ["• " + " · ".join(details)] if details else []
+    capital = number(operating_capital)
+    if capital is not None and capital > 0:
+        lines.append(f"• 운용 기준자금: {capital:,.2f} USD")
+    else:
+        missing.append("운용 기준자금")
+    margin = number(position.get("position_im")) if mode != "PORTFOLIO_MARGIN" else None
+    currency = snap.get("position_currency", "USDT")
+    rate = 1.0 if currency == "USD" else number(wallet.get("usdt_usd_rate")) if currency == "USDT" else None
+    if margin is not None and margin >= 0:
+        usage = (f" · 운용자금의 약 {margin * rate / capital * 100:.1f}%"
+                 if capital is not None and capital > 0 and rate is not None and rate > 0
+                 and snap.get("captured_at") and snap.get("account_scope") else "")
+        lines.append(f"• 현재 증거금: {margin:,.2f} {currency}{usage}")
+        if not usage:
+            missing.append("증거금 비중")
+    elif mode != "PORTFOLIO_MARGIN":
+        missing.append("증거금·비중")
+    if snap.get("captured_at"):
+        lines.append(f"• 계좌정보: {notice_time(snap['captured_at'])} 조회 기준 (체결 당시 값 아님)")
+    if margin is not None:
+        lines.append("※ 증거금은 최대 손실 한도가 아닙니다. 비중은 조회 환율 기준 근사치입니다.")
+    if missing:
+        lines.append("⚠️ " + "·".join(missing) + " 확인 불가. 추정값으로 채우지 않았습니다.")
+    return lines
 
 
 def snapshot_lines(snapshot=None, pos=None, *, event_time=None, include_position=True,

@@ -160,18 +160,20 @@ def test_all_trade_builders_share_rich_block_preserve_specific_details():
     record = {**pos.__dict__, "initial_sl": pos.sl_price}
     messages.append(build_recovered_message(record, pos, "demo", snap, 9611.57))
     for index, message in enumerate(messages):
-        assert "178,829.50 USD" in message
+        assert "178,829.50 USD" not in message
         if index in (2, 3, 5):
-            assert "positionIM): 확인 불가" in message
-            assert "현재 다른 포지션을 대입하지 않습니다" in message
+            assert "현재 증거금" not in message
+            assert "5배" not in message
+            assert len(message.splitlines()) <= 12
         else:
             assert "거래소 레버리지: 5배" in message
-            assert "positionIM): 1,389.44 USDT" in message
-        assert "조회 시각:" in message and "손절 위험" in message
+            assert "현재 증거금: 1,389.44 USDT" in message
+            assert "조회 기준" in message and "손절 위험" in message
+            assert len(message.splitlines()) <= 15
         assert len(message) < 4096
-    assert "전체 위험예산" in messages[0] and "비중 추가" in messages[1]
+    assert "목표:" in messages[0] and "비중 추가" in messages[1]
     assert "순손익:" in messages[2]
-    assert "진입 근거" in messages[4] and "9,611.57 USD (거래소 전체 잔고 아님)" in messages[6]
+    assert "추세청산" in messages[4] and "9,611.57 USD" in messages[6]
     assert "새 진입이 아닙니다" in messages[6]
 
 
@@ -212,7 +214,8 @@ def test_swing_fill_notional_not_mark_value():
               "ma35_4h", "ma10_1d", "ma35_1d", "close_4h")}
     text = swing._build_entry_message(pos, "exchange", 9611, signal,
         execution_context={"position_value": 1, "qty": .089, "entry_price": 78188.2})
-    assert "체결가 기준 명목 포지션: 6,958.75 USDT" in text
+    assert "평균 체결가: 78,188.20 USDT · 체결수량: 0.089000 BTC" in text
+    assert "1.00 USDT" not in text
 
 
 def test_normal_notice_capture_runs_after_execution_lock(tmp_path, monkeypatch):
