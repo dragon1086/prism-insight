@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import uuid
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any
 
 from observability.events import emit_event
@@ -31,11 +33,12 @@ def _emit_watchlist_link(event: dict[str, Any]) -> None:
 
     attrs = event["attributes"]
     batch_ref = attrs.get("batch_ref")
-    if event.get("market") != "US" or not batch_ref:
+    market = event.get("market")
+    if market not in {"US", "KR"} or not batch_ref:
         return
-    ready = read_ready_context("US", event["ticker"], batch_ref)
+    ready = read_ready_context(market, event["ticker"], batch_ref)
     if not ready or any(ready.get(k) != v for k, v in {
-        "market": "US", "ticker": event["ticker"], "batch_ref": batch_ref,
+        "market": market, "ticker": event["ticker"], "batch_ref": batch_ref,
     }.items()):
         return
     required = ("watch_ref", "seed_event_id", "ready_event_id",
@@ -46,7 +49,7 @@ def _emit_watchlist_link(event: dict[str, Any]) -> None:
         "watchlist_micro_split.shadow_linked",
         event_id=_stable_ref("watchlist-micro-link", event["event_id"],
                              ready["ready_observation_event_id"], length=32),
-        service="prism-us-watchlist-micro-shadow", market="US", ticker=event["ticker"],
+        service=f"prism-{market.lower()}-watchlist-micro-shadow", market=market, ticker=event["ticker"],
         parent_event_id=event["event_id"],
         attributes={
             "mode": "SHADOW", "link_schema_version": 1,
@@ -61,6 +64,15 @@ def _emit_watchlist_link(event: dict[str, Any]) -> None:
             "micro_event_id": event["event_id"],
             "source_decision_ref": attrs["decision_ref"],
             "execution_profile_ref": attrs["execution_profile_ref"],
+            "entry_boundary": (
+                "LEGACY_ELIGIBLE_PRE_REFRESH" if market == "US"
+                else attrs.get("entry_boundary", "UNKNOWN")
+            ),
+            "baseline_position_fraction": attrs.get("baseline_position_fraction"),
+            "baseline_sizing_status": (
+                "CAPTURED" if attrs.get("baseline_position_fraction") is not None else "UNKNOWN"
+            ),
+            "broker_approved": False, "confirmed_fill": False,
         },
     )
 
@@ -69,7 +81,7 @@ def begin_shadow_batch(*, market: str, trade_date: str, trigger_mode: str):
     """Bind a new run, never infer completion from decisions or wall-clock dates."""
     try:
         context = None
-        if shadow_enabled() and market == "US" and trigger_mode in {"morning", "afternoon"}:
+        if shadow_enabled(market=market) and trigger_mode in {"morning", "afternoon"}:
             context = {
                 "batch_ref": uuid.uuid4().hex,
                 "market": market,
@@ -100,7 +112,7 @@ def complete_shadow_batch(*, tracking_success, selected_count, report_count, pdf
         return emit_event(
             "micro_split.shadow_batch_completed",
             event_id=_stable_ref("micro-split-completed", context["batch_ref"], length=32),
-            service="prism-us-micro-split-shadow",
+            service=f"prism-{context['market'].lower()}-micro-split-shadow",
             market=context["market"],
             attributes={
                 **context,
@@ -115,7 +127,18 @@ def complete_shadow_batch(*, tracking_success, selected_count, report_count, pdf
         return None
 
 
-def shadow_enabled(value: str | None = None) -> bool:
+def shadow_enabled(value: str | None = None, *, market: str = "US") -> bool:
+    if market == "KR":
+        try:
+            path = Path(__file__).resolve().parents[1] / "trading/config/oneil_watchlist_kr_shadow.json"
+            return json.loads(path.read_text()) == {
+                "mode": "SHADOW", "market": "KR",
+                "policy_version": "oneil_watchlist_kr_v1", "enabled": True,
+            }
+        except (OSError, ValueError):
+            return False
+    if market != "US":
+        return False
     raw = (
         value if value is not None else os.getenv("MICRO_SPLIT_SHADOW_ENABLED", "false")
     )
@@ -225,9 +248,10 @@ def emit_initial_shadow(
     unit_amount: Any,
     current_price: Any,
     regime: str,
+    baseline_position_fraction: Any = None,
 ) -> dict[str, Any] | None:
     """Append one initial-target SHADOW event; never affect the caller."""
-    if not shadow_enabled():
+    if not shadow_enabled(market=market):
         return None
     try:
         context = build_initial_shadow_context(
@@ -239,6 +263,17 @@ def emit_initial_shadow(
             regime=regime,
         )
         profile_ref = context["execution_profile_ref"]
+        if market == "KR":
+            context.update(
+                currency="KRW", entry_boundary="FRESH_QUOTE_REVALIDATED",
+                unit_amount_source="account.buy_amount_krw",
+                execution_price_source="refresh_buy_boundary",
+                baseline_position_fraction=(
+                    baseline_position_fraction
+                    if type(baseline_position_fraction) in (int, float)
+                    and 0 < baseline_position_fraction <= 1 else None
+                ),
+            )
         batch = _BATCH.get()
         if batch and batch["market"] == str(market).upper():
             context.update(batch)

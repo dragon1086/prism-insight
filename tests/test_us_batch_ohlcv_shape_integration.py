@@ -31,14 +31,19 @@ from cores import us_surge_detector as provider
 mode, shape, output = sys.argv[1:4]
 watch = len(sys.argv) > 4 and sys.argv[4] == "watch"
 from observability import oneil_watchlist
+from observability import watchlist_outcomes
+watchlist_outcomes.ROOT = Path(output).parent / (Path(output).stem + "-outcomes")
 oneil_watchlist.enabled = lambda: watch
 oneil_watchlist._today = lambda: "20260914"
 oneil_watchlist.STATE_PATH = Path(output).with_suffix(".watch-state.json")
 def watch_collect(symbols, trade_date):
     days = pd.bdate_range(end="2026-09-11", periods=70)
-    return {"__expected_completed_date": "2026-09-11", **{
-        symbol: [{"date": day.date().isoformat(), "close": 100 + i,
-                  "high": 100.5 + i} for i, day in enumerate(days)] for symbol in symbols}}
+    return {"__expected_completed_date": "2026-09-11",
+        "__market_days": [day.date().isoformat() for day in days],
+        "__benchmarks": {symbol: "SPY" for symbol in symbols}, **{
+        symbol: [{"date": day.date().isoformat(), "close": 100 + i, "open": 100 + i,
+                  "high": 100.5 + i, "low": 99.5 + i, "volume": 1000}
+                 for i, day in enumerate(days)] for symbol in symbols}}
 oneil_watchlist._collect = watch_collect
 tickers = ["AAA", "BBB", "CCC"]
 snapshot = pd.DataFrame({

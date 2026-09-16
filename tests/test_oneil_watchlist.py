@@ -52,6 +52,13 @@ def cutoff(data):
 SEEDS = [{"ticker": "AAA", "trigger": "Gap Up Momentum Top"}]
 
 
+@pytest.fixture(autouse=True)
+def isolate_optional_outcomes(monkeypatch):
+    from observability import watchlist_outcomes
+    monkeypatch.setattr(watchlist_outcomes, "pending_symbols", lambda *a, **k: [])
+    monkeypatch.setattr(watchlist_outcomes, "observe_outcomes", lambda *a, **k: None)
+
+
 def test_ready_frozen_pivot_same_bar_and_expiry():
     data = frames()
     state, events = advance({}, SEEDS, data, cutoff(data), "batch1")
@@ -70,15 +77,37 @@ def test_ready_frozen_pivot_same_bar_and_expiry():
     assert no_reseed == []
 
 
+def test_outcome_capacity_reserved_without_extra_llm_or_unbounded_symbols(tmp_path, monkeypatch):
+    from observability import watchlist_outcomes
+    monkeypatch.setattr(capture, "enabled", lambda: True)
+    monkeypatch.setattr(capture, "STATE_PATH", tmp_path / "state.json")
+    data = frames()
+    monkeypatch.setattr(capture, "_today", lambda: cutoff(data))
+    monkeypatch.setattr(capture, "emit_event", lambda *a, **k: k)
+    monkeypatch.setattr(watchlist_outcomes, "pending_symbols", lambda *a: [f"OLD{i}" for i in range(80)])
+    seen = []
+    def collect(symbols, day):
+        seen.extend(symbols)
+        return data
+    selection = {"Momentum": pd.DataFrame(index=[f"NEW{i}" for i in range(20)])}
+    observations = capture.observe_batch(selection, cutoff(data), "b", collector=collect)
+    assert len(seen) == 21 and seen[-1] == "SPY"
+    assert sum(s.startswith("OLD") for s in seen) == 6
+    assert sum(s.startswith("NEW") for s in seen) == 14
+    assert sum(r["reason"] == "collection_deferred_budget" for r in observations) == 6
+
+
 def test_prior_candidate_revisited_empty_selection_and_strength():
     data = frames()
     data["AAA"][-1]["close"] = 101.9
     state, events = advance({}, SEEDS, data, cutoff(data), "b1")
     assert events[0]["status"] == "WATCHING"
     later = frames(1)
+    later["AAA"][-2]["close"] = 101.9  # Preserve the already-observed seed bar.
     state, events = advance(state, [], later, cutoff(later), "b2")
     assert events[0]["status"] == "READY"
     falling = frames(2)
+    falling["AAA"][-3]["close"] = 101.9
     falling["AAA"][-2].update(close=106, high=107)
     falling["AAA"][-1].update(close=104, high=105)
     _, events = advance(state, [], falling, cutoff(falling), "b3")
@@ -96,17 +125,56 @@ def test_bad_data_missing(failure):
     assert events[0]["status"] == "MISSING"
 
 
-def test_missing_stock_expires_by_benchmark_and_no_reconstructed_seed_pivot():
+def test_missing_stock_setup_is_prospective_and_original_ttl_expires():
     data = frames()
     data.pop("AAA")
     state, _ = advance({}, SEEDS, data, cutoff(data), "b1")
+    seed_asof = state["watches"][0]["seed_asof"]
     later = frames(1)
     state, events = advance(state, [], later, cutoff(later), "b2")
-    assert events[0]["status"] == "MISSING"
+    assert events[0]["status"] == "READY"
+    assert events[0]["seed_asof"] == seed_asof
+    assert events[0]["elapsed_bars"] == 1
+    assert events[0]["setup_asof"] == later["AAA"][-1]["date"]
+    assert events[0]["seed_price_asof"] == later["AAA"][-1]["date"]
+    assert events[0]["pivot"] == later["AAA"][-2]["high"]
     later = frames(5)
     later.pop("AAA")
     _, events = advance(state, [], later, cutoff(later), "b3")
     assert events[0]["status"] == "EXPIRED"
+
+
+@pytest.mark.parametrize("initial_calendar", [True, False])
+@pytest.mark.parametrize("later_benchmark", [True, False])
+def test_missing_initial_benchmark_never_restarts_discovery_ttl(initial_calendar, later_benchmark):
+    data = frames()
+    discovery_date = cutoff(data)
+    original_session = data["SPY"][-1]["date"]
+    first = ({"__expected_completed_date": original_session,
+              "__market_days": [r["date"] for r in data["SPY"]]} if initial_calendar else {})
+    state, events = advance({}, SEEDS, first, discovery_date, "b1")
+    assert events[0]["status"] == "MISSING"
+    if initial_calendar:
+        assert events[0]["seed_asof"] == original_session
+    later = frames(6)
+    later_date = cutoff(later)
+    later["__market_days"] = [r["date"] for r in later["SPY"]]
+    if not later_benchmark:
+        later.pop("SPY")
+    _, events = advance(state, [], later, later_date, "b2")
+    assert events[0]["status"] == "EXPIRED"
+    assert events[0]["elapsed_bars"] == 6
+    assert events[0]["seed_asof"] == original_session
+    assert events[0].get("pivot") is None
+
+
+def test_legacy_no_calendar_uses_original_discovery_not_latest_benchmark():
+    data = frames()
+    state, _ = advance({}, SEEDS, {}, cutoff(data), "b1")
+    later = frames(6)
+    _, events = advance(state, [], later, cutoff(later), "b2")
+    assert events[0]["status"] == "EXPIRED"
+    assert events[0]["elapsed_bars"] == 6
 
 
 def test_future_bars_excluded_cap_and_contrarian():
@@ -219,7 +287,8 @@ def test_bulk_collector_multiindex_and_timeout_budget(monkeypatch):
 
     from tools.run_oneil_watchlist_shadow import collect
     days = pd.bdate_range("2026-01-01", periods=66)
-    frame = pd.DataFrame({"Close": range(100, 166), "High": range(101, 167)}, index=days)
+    frame = pd.DataFrame({"Open": range(100, 166), "Close": range(100, 166),
+                          "High": range(101, 167), "Low": range(99, 165), "Volume": 1000}, index=days)
     calls = []
     def download(symbols, **kwargs):
         calls.append((symbols, kwargs))

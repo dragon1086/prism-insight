@@ -49,14 +49,16 @@ def _attrs(event: dict) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def build_watchlist_micro_evidence_packet(events: Iterable[dict], *, input_available=True) -> dict:
+def build_watchlist_micro_evidence_packet(events: Iterable[dict], *, input_available=True, market="US") -> dict:
     """Reject conflicting duplicate IDs and orphan links, independent of input order."""
+    if market not in {"KR", "US"}:
+        raise ValueError("market must be KR or US")
     variants: dict[str, dict[str, dict]] = {}
     copies = Counter()
     malformed = 0
     for event in events:
         if (not isinstance(event, dict) or event.get("event_type") not in TYPES
-                or event.get("market") != "US"):
+                or event.get("market") != market):
             continue
         event_id = event.get("event_id")
         if not isinstance(event_id, str) or not event_id:
@@ -83,7 +85,7 @@ def build_watchlist_micro_evidence_packet(events: Iterable[dict], *, input_avail
             continue
         micro, seed, ready, observed = (index[ref] for ref in refs)
         m, s, r, o = map(_attrs, (micro, seed, ready, observed))
-        expected = {"market": "US", "ticker": link.get("ticker")}
+        expected = {"market": market, "ticker": link.get("ticker")}
         identity_ok = bool(expected["ticker"]) and all(
             all(event.get(k) == v for k, v in expected.items())
             for event in (link, micro, seed, ready, observed)
@@ -137,6 +139,9 @@ def build_watchlist_micro_evidence_packet(events: Iterable[dict], *, input_avail
             continue
         quantity = m.get("projected_whole_share_quantity")
         projected = m.get("projection_status") == "PROJECTED" and type(quantity) is int and quantity >= 0
+        baseline_fraction = m.get("baseline_position_fraction")
+        if type(baseline_fraction) not in (int, float) or not 0 < baseline_fraction <= 1:
+            baseline_fraction = None
         valid.append({
             "link_event_id": link["event_id"], "batch_ref": batch, "watch_ref": watch,
             "micro_event_id": micro["event_id"], "source_decision_ref": a["source_decision_ref"],
@@ -145,6 +150,15 @@ def build_watchlist_micro_evidence_packet(events: Iterable[dict], *, input_avail
             "watch_policy_version": a["watch_policy_version"], "micro_policy_version": a["micro_policy_version"],
             "projection_status": "PROJECTED" if projected else "INPUT_UNAVAILABLE",
             "projected_whole_share_quantity": quantity if projected else None,
+            "entry_boundary": (
+                "LEGACY_ELIGIBLE_PRE_REFRESH" if market == "US"
+                else m.get("entry_boundary", "UNKNOWN")
+            ),
+            "baseline_position_fraction": baseline_fraction,
+            "baseline_sizing_status": (
+                "CAPTURED" if baseline_fraction is not None else "UNKNOWN"
+            ),
+            "broker_approved": False, "confirmed_fill": False,
         })
     # One actual source event and one watcher batch observation per execution profile.
     unique = {}
@@ -159,7 +173,7 @@ def build_watchlist_micro_evidence_packet(events: Iterable[dict], *, input_avail
     sessions = set()
     for event in by_type[COMPLETE]:
         a = _attrs(event)
-        if (event.get("market") == "US" and (a.get("batch_ref"), _session(a)) in batches
+        if (event.get("market") == market and (a.get("batch_ref"), _session(a)) in batches
                 and a.get("status") == "COMPLETED" and a.get("completion_scope") == "analysis_and_tracking"
                 and _session(a)):
             sessions.add(_session(a))
@@ -177,7 +191,7 @@ def build_watchlist_micro_evidence_packet(events: Iterable[dict], *, input_avail
         insufficiency.append("DATA_QUALITY_FAILURE")
     packet = {
         "packet_schema_version": 1, "analysis_contract_version": CONTRACT_VERSION,
-        "scope": "US_INITIAL_0_TO_10_DIAGNOSTIC_ONLY",
+        "scope": f"{market}_INITIAL_0_TO_10_DIAGNOSTIC_ONLY",
         "input_status": "AVAILABLE" if input_available else "INPUT_UNAVAILABLE",
         "counts": {
             "watch_ready_observations": sum(_attrs(e).get("status") == "READY" for e in by_type[WATCH]),
@@ -203,6 +217,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--market", choices=("KR", "US"), default="US")
     args = parser.parse_args()
     events = []
     available = args.input.is_file()
@@ -214,7 +229,7 @@ def main() -> int:
         except (OSError, UnicodeError, json.JSONDecodeError):
             events = []
             available = False
-    packet = build_watchlist_micro_evidence_packet(events, input_available=available)
+    packet = build_watchlist_micro_evidence_packet(events, input_available=available, market=args.market)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(packet, indent=2, ensure_ascii=False) + "\n")
     print(f"packet_id={packet['packet_id']} verdict=CONTINUE_CAPTURE")

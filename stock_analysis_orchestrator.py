@@ -495,10 +495,14 @@ class StockAnalysisOrchestrator:
 
             # Run batch directly (synchronous call in async context)
             # run_batch is CPU-bound, so running it directly is acceptable
+            from observability.micro_split import get_shadow_batch_context
+            watch_context = get_shadow_batch_context()
+            watch_batch_ref = watch_context.get("batch_ref") if watch_context else None
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None,
-                lambda: run_batch(mode, "INFO", results_file, macro_context=macro_context)
+                lambda: run_batch(mode, "INFO", results_file, macro_context=macro_context,
+                                  watch_batch_ref=watch_batch_ref)
             )
 
             if not results:
@@ -1219,8 +1223,16 @@ class StockAnalysisOrchestrator:
         """
         logger.info(f"Starting full pipeline - mode: {mode}")
         campaign_trade_date = datetime.now().strftime("%Y%m%d")
+        from observability.micro_split import (
+            begin_shadow_batch, complete_shadow_batch, end_shadow_batch,
+        )
+        shadow_batch_token = None
+        tracking_success = False
 
         try:
+            shadow_batch_token = begin_shadow_batch(
+                market="KR", trade_date=campaign_trade_date, trigger_mode=mode,
+            )
             # 0. Run macro intelligence (market regime, sector data)
             macro_context = await self.run_macro_intelligence(
                 reference_date=datetime.now().strftime("%Y%m%d"),
@@ -1381,6 +1393,10 @@ class StockAnalysisOrchestrator:
             else:
                 logger.warning("No reports generated, not executing tracking system batch.")
 
+            complete_shadow_batch(
+                tracking_success=tracking_success, selected_count=len(tickers),
+                report_count=len(report_paths), pdf_count=len(pdf_paths),
+            )
             logger.info(f"Full pipeline complete - mode: {mode}")
 
         except Exception as e:
@@ -1393,6 +1409,8 @@ class StockAnalysisOrchestrator:
                 await send_openai_quota_alert(self.telegram_config, market="KR")
 
         finally:
+            if shadow_batch_token is not None:
+                end_shadow_batch(shadow_batch_token)
             # Always wait for background broadcast tasks, even on error/early return
             if self._broadcast_tasks:
                 logger.info(f"Waiting for {len(self._broadcast_tasks)} broadcast translation task(s) to complete...")

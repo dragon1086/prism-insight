@@ -1680,7 +1680,7 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
     if watch_batch_ref:
         try:
             from observability.oneil_watchlist import observe_batch
-            observe_batch(final_results, trade_date, watch_batch_ref)
+            observe_batch(final_results, trade_date, watch_batch_ref, regime_context=macro_context)
         except Exception:
             logger.warning("Optional watchlist SHADOW unavailable")
 
