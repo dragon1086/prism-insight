@@ -32,7 +32,7 @@ jobs:
       - name: KR/US provider-shape batch integration gate
         env:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
-        run: python -m pytest tests/test_ohlcv_shape.py tests/test_kr_screening_ohlcv_shape.py tests/test_us_batch_ohlcv_shape_integration.py -q
+        run: python -m pytest tests/test_ohlcv_shape.py tests/test_kr_screening_ohlcv_shape.py tests/test_us_batch_ohlcv_shape_integration.py tests/test_kis_corporate_action_snapshot.py -q
 
       - name: Offline BUY runtime safety regression
         env:
