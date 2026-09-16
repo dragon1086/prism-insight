@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections import deque
 from io import BytesIO
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_FLOOR
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -39,6 +40,8 @@ class KisMasterData:
     markets: dict[str, str]
     industry_codes: dict[str, str]
     previous_volumes: dict[str, float]
+    base_prices: dict[str, str] = field(default_factory=dict)
+    action_flags: dict[str, tuple[str, str, str]] = field(default_factory=dict)
 
 
 _MASTER_CACHE: KisMasterData | None = None
@@ -109,6 +112,8 @@ def fetch_kis_master_data(
     markets: dict[str, str] = {}
     industry_codes: dict[str, str] = {}
     previous_volumes: dict[str, float] = {}
+    base_prices: dict[str, str] = {}
+    action_flags: dict[str, tuple[str, str, str]] = {}
     try:
         for url, widths, etp_index in _MASTER_SPECS:
             response = request_get(url, timeout=timeout)
@@ -149,6 +154,9 @@ def fetch_kis_master_data(
                         "",
                     )
                     previous_volumes[code] = float(pd.to_numeric(field(47 if etp_index == 12 else 42), errors="coerce"))
+                    base_prices[code] = field(31 if etp_index == 12 else 26)
+                    action_flags[code] = tuple(field(index) for index in
+                                               ((41, 42, 43) if etp_index == 12 else (36, 37, 38)))
     except KisSnapshotError:
         raise
     except Exception as exc:
@@ -160,7 +168,7 @@ def fetch_kis_master_data(
         )
     cap_df = pd.DataFrame.from_dict(caps, orient="index", columns=["시가총액"]).sort_index()
     cap_df.attrs.update(source="kis_master", observed_date=today, basis="previous_session", unit="KRW", precision_krw=100_000_000)
-    result = KisMasterData(dict(sorted(universe.items())), cap_df, listings, today, markets, industry_codes, previous_volumes)
+    result = KisMasterData(dict(sorted(universe.items())), cap_df, listings, today, markets, industry_codes, previous_volumes, base_prices, action_flags)
     if request_get is requests.get:
         _MASTER_CACHE = result
     return result
@@ -393,9 +401,80 @@ def fetch_kis_previous_history(
     return result
 
 
+def fetch_kis_corporate_action_views(code: str, previous_date: str, *, source=None):
+    """Three bounded-by-transport GETs, never cached adjusted bars or orders."""
+    from cores.market_data.kis_source import KisSource
+
+    source = source or KisSource()
+    raw = source.price_history(code, previous_date, previous_date, adjusted=False)
+    adjusted = source.price_history(code, previous_date, previous_date, adjusted=True)
+    body = source._fetch(
+        "/uapi/domestic-stock/v1/quotations/inquire-price", "FHKST01010100",
+        {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
+    )
+    output = getattr(body, "output", None)
+    if not isinstance(output, dict):
+        raise KisSnapshotError("KIS corporate-action quote missing")
+    return raw, adjusted, output.get("stck_sdpr")
+
+
+def _bonus_action_row(code, previous_date, cached, master, fetcher):
+    """Narrow observed bonus-rights compatibility, not a general split model.
+
+    Keep the dated raw cache immutable. Only the comparison view uses official
+    adjusted OHLCV. Integer volume identities are exact, never a tolerance.
+    """
+    try:
+        raw, adjusted, quoted_base = fetcher(code, previous_date)
+        rows = []
+        for frame in (raw, adjusted):
+            exact = frame.loc[frame.index == pd.Timestamp(previous_date)]
+            if len(exact) != 1:
+                raise ValueError("exact action session missing or duplicated")
+            row = {column: float(exact.iloc[0][column]) for column in _COLUMNS.values()}
+            if not _valid_history_row(row):
+                raise ValueError("invalid action OHLCV/amount")
+            rows.append(row)
+        raw_row, adjusted_row = rows
+        if adjusted_row["Close"] <= 0:
+            raise ValueError("adjusted action close must be positive")
+        if any(raw_row[column] != cached[column] for column in _COLUMNS.values()):
+            raise ValueError("fresh raw history differs from cached session")
+
+        def integer(value):
+            if isinstance(value, bool):
+                raise TypeError("boolean action value")
+            number = Decimal(str(value))
+            if not number.is_finite() or number < 0 or number != number.to_integral_value():
+                raise ValueError("non-integer action value")
+            return number
+
+        base = integer(master.base_prices.get(code))
+        close = integer(raw_row["Close"])
+        volume = integer(raw_row["Volume"])
+        if not 0 < base < close or integer(quoted_base) != base:
+            raise ValueError("independent action reference price mismatch")
+        expected_master = (volume * base / close).to_integral_value(rounding=ROUND_FLOOR)
+        expected_adjusted = (volume * close / base).to_integral_value(rounding=ROUND_FLOOR)
+        if (integer(master.previous_volumes.get(code)) != expected_master
+                or integer(adjusted_row["Volume"]) != expected_adjusted
+                or adjusted_row["Amount"] != raw_row["Amount"]):
+            raise ValueError("action volume/amount reconciliation failed")
+        if volume > 0:
+            vwap = Decimal(str(adjusted_row["Amount"])) / expected_adjusted
+            if not Decimal(str(adjusted_row["Low"])) <= vwap <= Decimal(str(adjusted_row["High"])):
+                raise ValueError("adjusted action VWAP outside daily range")
+        elif raw_row["Amount"] != 0:
+            raise ValueError("zero-volume action has turnover")
+        return adjusted_row
+    except Exception as exc:
+        raise KisSnapshotError(f"KIS corporate-action validation failed for {code}: {type(exc).__name__}") from exc
+
+
 def build_kis_snapshot_bundle(
     trade_date: str, *, master_fetcher=fetch_kis_master_data,
     snapshot_fetcher=fetch_kis_intraday_snapshot, history_fetcher=fetch_kis_previous_history,
+    corporate_action_fetcher=fetch_kis_corporate_action_views,
 ) -> MarketSnapshotBundle:
     """All inputs from KIS. Current master cap is explicitly previous-session cap."""
     if trade_date != _today_kst():
@@ -435,6 +514,21 @@ def build_kis_snapshot_bundle(
         code: _master_volume_match_kind(master.previous_volumes.get(code), previous.at[code, "Volume"])
         for code in codes
     }
+    action_codes = [code for code in codes if master.action_flags.get(code) == ("01", "00", "02")]
+    if len(action_codes) > 10:
+        raise KisSnapshotError("KIS corporate-action validation count limit")
+    # Do not mutate the raw history object returned by a cache-aware fetcher.
+    if action_codes:
+        previous = previous.copy(deep=True)
+    started = time.monotonic()
+    for code in action_codes:
+        if time.monotonic() - started > 60:
+            raise KisSnapshotError("KIS corporate-action validation deadline")
+        row = _bonus_action_row(code, prev_date, previous.loc[code], master, corporate_action_fetcher)
+        if time.monotonic() - started > 60:
+            raise KisSnapshotError("KIS corporate-action validation deadline after response")
+        previous.loc[code, list(_COLUMNS.values())] = [row[column] for column in _COLUMNS.values()]
+        volume_matches[code] = "bonus_rights_official_adjusted_observed"
     if any(kind is None for kind in volume_matches.values()):
         raise KisSnapshotError("KIS master previous-volume/session mismatch; cap date unverified")
     rounded_volume_codes = sorted(code for code, kind in volume_matches.items()
@@ -454,6 +548,16 @@ def build_kis_snapshot_bundle(
     cap.attrs.update(source="kis_master", trade_date=prev_date, unit="KRW", precision_krw=100_000_000)
     cap.attrs.update(master_volume_validation="exact_or_observed_binary32_rendering",
                      master_volume_binary32_compatibility=rounded_volume_codes)
+    cap.attrs["master_bonus_rights_compatibility"] = action_codes
+    if action_codes:
+        cap.attrs["master_volume_validation"] = "exact_or_observed_binary32_or_verified_bonus_rights"
+    previous.attrs.update(
+        corporate_action_adjusted_codes=action_codes,
+        corporate_action_basis="official_adjusted_OHLCV_with_fresh_raw_quote_and_exact_volume_reconciliation",
+        raw_cache_preserved=True,
+    )
+    if action_codes:
+        previous.attrs.update(adjusted="mixed_raw_and_official_action_adjusted", adjusted_as_of=trade_date)
     snapshot.attrs.update(
         source="kis", observed_date=trade_date,
         requested_universe=len(master.names), eligible_coverage=len(codes),
