@@ -1732,7 +1732,8 @@ def _resolve_trade_date(today_str: str) -> str:
 
 
 # --- Batch execution function ---
-def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None):
+def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = None, macro_context: dict = None,
+              *, watch_batch_ref: str | None = None):
     """
     trigger_time: "morning" or "afternoon"
     log_level: "DEBUG", "INFO", "WARNING", etc. (INFO recommended for production)
@@ -1811,6 +1812,15 @@ def run_batch(trigger_time: str, log_level: str = "INFO", output_file: str = Non
         macro_context=macro_context,
         trigger_mode=trigger_time,
     )
+
+    # Optional research observes final selection, including an empty candidate set.
+    if watch_batch_ref:
+        try:
+            from observability.oneil_watchlist import observe_batch
+            observe_batch(final_results, trade_date, watch_batch_ref, market="KR",
+                          regime_context=macro_context)
+        except Exception:  # noqa: BLE001 - optional research cannot affect selection
+            logger.warning("Optional KR watchlist SHADOW unavailable")
 
     # Save results as JSON (if requested)
     if output_file:

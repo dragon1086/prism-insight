@@ -83,6 +83,7 @@ from observability.journal_influence import (
     build_journal_influence_context,
 )
 from observability.trading_context import emit_trading_context, latest_regime_snapshot, execution_profile_ref
+from observability.micro_split import emit_initial_shadow as emit_micro_split_shadow
 from observability.entry_quality import (
     build_entry_quality_context,
     capture_enabled as entry_quality_capture_enabled,
@@ -4525,6 +4526,20 @@ class StockTrackingAgent:
                             state["should_save_watchlist"] = True
                             state["skip_reason"] = "Fresh quote unavailable or scenario invalid at refreshed price"
                             continue
+                        observe_or_emit(self, emit_micro_split_shadow,
+                            market="KR", ticker=ticker,
+                            decision_id=source_decision_id,
+                            account_id=str(account.get("account_key") or "default"),
+                            unit_amount=account.get("buy_amount_krw"),
+                            current_price=current_price,
+                            baseline_position_fraction=(scenario.get("regime_entry_policy") or {}).get("position_fraction"),
+                            regime=(
+                                _buy_gate.get("effective_regime")
+                                or scenario.get("_deterministic_market_regime")
+                                or scenario.get("market_condition")
+                                or "unknown"
+                            ),
+                        )
                         if effects is not None:
                             if await self._is_ticker_in_holdings(ticker):
                                 raise EffectsFailure("Unexpected existing strategy slot at entry boundary")

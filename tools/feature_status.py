@@ -228,6 +228,23 @@ def _decide_oneil_watchlist_shadow(env: dict, crontab: str):
     return "SHADOW", "US 완료 일봉 재관측 × 기존 적격진입 0→10% 교집합; 주문 무영향"
 
 
+def _decide_oneil_watchlist_kr_shadow(env: dict, crontab: str):
+    """KR uses its approved policy, independently of the US micro env flag."""
+    inline = _cron_get_all_inline_env(crontab, "ONEIL_WATCHLIST_SHADOW_ENABLED")
+    raw = env.get("ONEIL_WATCHLIST_SHADOW_ENABLED", inline[-1] if inline else "true")
+    try:
+        policy = json.loads((_ROOT / "trading/config/oneil_watchlist_kr_shadow.json").read_text())
+    except (OSError, ValueError):
+        return "OFF", "KR 후보 감시 정책 미설정/오류"
+    if (str(raw).strip().lower() not in {"1", "true", "yes", "on"} or
+            policy != {"mode": "SHADOW", "market": "KR", "policy_version": "oneil_watchlist_kr_v1", "enabled": True}):
+        return "OFF", "KR 후보 감시 정책 또는 공통 감시 override 비활성"
+    return (
+        "SHADOW", "KR 승인 정책 · 완료 일봉 감시 × 신선시세 재검증 후 0→10% 교집합; "
+        "후속 성과는 가격경로 proxy, 체결/전체 비중운용 성과 아님; 추가 LLM·주문 0",
+    )
+
+
 def _decide_third_slot_shadow(env: dict, crontab: str):
     truthy = {"1", "true", "yes", "on"}
     env_value = str(
@@ -376,6 +393,7 @@ FEATURES = [
     ("loop_c",           "Fill-chaser — 미체결 추격 (구 Loop C)",                     _decide_loop_c),
     ("micro_split_shadow", "초분할 0→10% 신규진입 projection", _decide_micro_split_shadow),
     ("oneil_watchlist_shadow", "오닐식 후보 감시 × 초분할 연계", _decide_oneil_watchlist_shadow),
+    ("oneil_watchlist_kr_shadow", "KR 오닐식 후보 감시 × 초분할 연계", _decide_oneil_watchlist_kr_shadow),
     ("third_slot_shadow", "KR 약세·횡보장 가상 3순위", _decide_third_slot_shadow),
     ("position_pending_kr", "KR 주문 선기록(PENDING ENTRY/EXIT)", _decide_position_pending_kr),
     ("vision_pipeline",  "비전 배관·렌더QA (S1/S2)",                  _decide_vision_pipeline),

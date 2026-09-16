@@ -84,6 +84,8 @@ jobs:
             tests/test_micro_split_batch_linkage.py tests/test_telegram_delivery_safety.py \
             tests/test_telegram_delivery_diagnostics.py \
             tests/test_oneil_watchlist.py tests/test_watchlist_micro_evidence_packet.py tests/test_oneil_feature_status.py \
+            tests/test_oneil_watchlist_kr.py tests/test_watchlist_outcomes.py tests/test_kr_shadow_pipeline_hooks.py \
+            tests/test_kr_batch_watch_integration.py \
             tests/test_exit_effect_*.py tests/test_micro_split*.py \
             tests/test_third_slot*.py -q
 
