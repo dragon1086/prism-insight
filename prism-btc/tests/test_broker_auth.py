@@ -108,7 +108,7 @@ def test_health_expiry_action(conn):
 def test_actual_pybit_exception_is_classified_and_redacted(conn):
     exceptions = pytest.importorskip("pybit.exceptions")
     exc = exceptions.InvalidRequestError(request="api_key=SECRET_VALUE", message="SECRET_VALUE",
-                                         status_code=33004, time="00:00:00")
+                                         status_code=33004, time="00:00:00", resp_headers={})
     def expired(**kwargs):
         raise exc
     obj = adapter("demo", conn, SimpleNamespace(get_positions=expired))
