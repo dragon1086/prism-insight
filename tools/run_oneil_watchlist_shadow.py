@@ -1,6 +1,7 @@
 """Single bounded bulk data read in disposable subprocess; stdout is JSON only."""
 import contextlib
 import json
+import logging
 import sys
 import threading
 import time
@@ -163,8 +164,8 @@ def collect_kr_bounded(tickers, trade_date, *, budget=20, source=None, master=No
                         data[symbol] = _rows(frame, expected)
                         data.setdefault("__captured_at", {})[symbol] = datetime.now(timezone.utc).isoformat()
                         _atomic(cache, data)
-                    except Exception:  # noqa: BLE001, S112 - leave explicit missing input
-                        continue
+                    except Exception:  # noqa: BLE001 - leave explicit missing input
+                        logging.getLogger(__name__).debug("Optional KIS shadow history unavailable")
         except Exception:  # noqa: BLE001 - omit raw provider/auth exception from optional worker
             return
         finally:
