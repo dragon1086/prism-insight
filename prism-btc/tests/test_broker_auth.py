@@ -1,5 +1,5 @@
 """Expired credentials fail closed once per session, without broker payloads."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pandas as pd
@@ -115,3 +115,16 @@ def test_actual_pybit_exception_is_classified_and_redacted(conn):
     assert obj._call("get_positions") is None
     assert obj._auth_failure == "api_key_expired"
     assert "SECRET_VALUE" not in str([tuple(r) for r in conn.execute("SELECT * FROM btc_events")])
+
+
+def test_health_expiry_history_does_not_claim_current_failure_after_recovery(conn):
+    now = datetime.now(timezone.utc)
+    for _ in range(6):
+        tracking.log_event(conn, "broker_recovery", "demo broker recovery: api_key_expired",
+                           level="error", mode="demo", ts=(now-timedelta(minutes=5)).isoformat())
+    tracking.log_event(conn, "heartbeat", "tick ok: protection=1x10m, strategy=0x30m",
+                       mode="demo", ts=(now-timedelta(minutes=1)).isoformat())
+    issue = healthcheck._check_error_burst(conn, "demo", now)
+    assert "오류 이후 정규 실행 완료 확인" in issue["msg"]
+    assert "복구 완료 미확인 시" in issue["msg"]
+    assert "키가 만료되었습니다" not in issue["msg"]

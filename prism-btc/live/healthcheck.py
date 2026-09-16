@@ -149,8 +149,8 @@ def _check_error_burst(conn, mode: str, now: datetime) -> dict | None:
         last_msg = str(latest["message"])[:120]
         action = ""
         if "api_key_expired" in last_msg:
-            action = ("\n조치 필요: 해당 계정의 Bybit API 키가 만료되었습니다. "
-                      "키를 재발급·교체하고 복구 완료를 확인하세요. 기다려도 자동 갱신되지 않습니다. "
+            action = ("\nAPI 키 만료 이력이 있습니다. 복구 완료 미확인 시 해당 계정의 "
+                      "키를 재발급·교체하고 복구 완료를 확인하세요. 만료 키는 기다려도 자동 갱신되지 않습니다. "
                       "거래소에서 실제 포지션·보호주문을 직접 확인하세요.")
         age = (now-last_error).total_seconds() / 60
         return {"level": "alert", "code": "error_burst",
