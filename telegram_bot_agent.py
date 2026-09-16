@@ -56,6 +56,10 @@ class TelegramBotAgent:
         Returns:
             bool: Transmission success status
         """
+        # A long-running batch may have imported the older helper before a
+        # deployment. Never leak a new internal keyword to Telegram via **kwargs.
+        delivery_metadata = ({"message_kind": msg_type} if getattr(
+            send_message_once_or_rate_retry, "supports_delivery_metadata", False) is True else {})
         try:
             # Attempt to send with specified parse_mode
             result = await send_message_once_or_rate_retry(
@@ -64,7 +68,7 @@ class TelegramBotAgent:
                 text=message,
                 parse_mode=parse_mode,
                 attempts=max(1, max_retries - retry_count + 1),
-                message_kind=msg_type,
+                **delivery_metadata,
             )
             logger.info(f"Message sent successfully ({parse_mode}): {chat_id}")
             # Firebase Bridge - save metadata + push notification
@@ -97,7 +101,7 @@ class TelegramBotAgent:
                         self.bot,
                         chat_id=chat_id,
                         text=message,
-                        message_kind=msg_type,
+                        **delivery_metadata,
                     )
                     logger.info(f"Message sent successfully (plain text): {chat_id}")
                     try:

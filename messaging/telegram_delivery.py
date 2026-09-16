@@ -77,3 +77,7 @@ async def send_message_once_or_rate_retry(bot, *, chat_id, text, attempts=4, mes
             safe_error = TelegramDeliveryUnknown(category=category, message_ref=ref)
             logger.error("%s", safe_error)
             raise safe_error from None
+
+
+# Capability handshake for mixed imports in already-running batch processes.
+send_message_once_or_rate_retry.supports_delivery_metadata = True

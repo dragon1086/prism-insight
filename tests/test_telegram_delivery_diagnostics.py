@@ -68,3 +68,20 @@ async def test_telemetry_failure_preserves_ack_and_unknown(monkeypatch):
     with pytest.raises(TelegramDeliveryUnknown):
         await send_message_once_or_rate_retry(bot, chat_id=1, text="text")
     assert bot.send_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_new_caller_with_old_loaded_helper_does_not_leak_metadata(monkeypatch):
+    import sys
+
+    import telegram_bot_agent as caller
+
+    async def legacy_helper(bot, **kwargs):
+        assert "message_kind" not in kwargs
+        return SimpleNamespace(message_id=1)
+
+    monkeypatch.setattr(caller, "send_message_once_or_rate_retry", legacy_helper)
+    monkeypatch.setitem(sys.modules, "firebase_bridge", SimpleNamespace(notify=AsyncMock()))
+    agent = caller.TelegramBotAgent.__new__(caller.TelegramBotAgent)
+    agent.bot = object()
+    assert await agent.send_message("chat", "message", msg_type="analysis") is True
