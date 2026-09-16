@@ -147,11 +147,16 @@ def _check_error_burst(conn, mode: str, now: datetime) -> dict | None:
         latest = max(recent, key=lambda row: _parse_ts(row["ts"]))
         last_error = _parse_ts(latest["ts"])
         last_msg = str(latest["message"])[:120]
+        action = ""
+        if "api_key_expired" in last_msg:
+            action = ("\nAPI 키 만료 이력이 있습니다. 복구 완료 미확인 시 해당 계정의 "
+                      "키를 재발급·교체하고 복구 완료를 확인하세요. 만료 키는 기다려도 자동 갱신되지 않습니다. "
+                      "거래소에서 실제 포지션·보호주문을 직접 확인하세요.")
         age = (now-last_error).total_seconds() / 60
         return {"level": "alert", "code": "error_burst",
                 "msg": (f"에러 폭주 — 최근 {_ERROR_WINDOW_HOURS}시간 {len(recent)}건 (누적 이력)\n"
                         f"마지막 오류: {_kst_time(last_error)} ({age:.0f}분 전; {last_msg})\n"
-                        f"{_completion_context(conn, mode, last_error, now)}")}
+                        f"{_completion_context(conn, mode, last_error, now)}{action}")}
     return None
 
 

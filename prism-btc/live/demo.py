@@ -56,6 +56,7 @@ from core.actions import (
 )
 
 from live import decision_capture, tracking
+from live.broker_auth import auth_failure
 from live.exchange_snapshot import read_complete
 from live.protection import reconcile_stop
 from live.native_stop import native_stop_params
@@ -236,6 +237,8 @@ class DemoAdapter:
         """sess.<fn_name>(**kwargs) 를 재시도 1회로 호출. 성공 시 응답, 실패 시 None."""
         if self.sess is None:
             return None
+        if getattr(self, "_auth_failure", None):
+            return None
         fn = getattr(self.sess, fn_name, None)
         if fn is None:
             tracking.log_event(self.conn, "error", f"pybit 메서드 없음: {fn_name}",
@@ -250,6 +253,10 @@ class DemoAdapter:
             try:
                 resp = fn(**kwargs)
                 last_response = resp
+                if auth_failure(resp):
+                    self._auth_failure = last_exc = auth_failure(resp)
+                    last_response = None  # Do not retain a raw authentication payload.
+                    break
                 if _ok(resp):
                     completed_wall_ns = time.time_ns()
                     completed_perf_ns = time.perf_counter_ns()
@@ -268,6 +275,9 @@ class DemoAdapter:
                 last_exc = f"retCode={resp.get('retCode') if isinstance(resp, dict) else '?'} " \
                            f"retMsg={resp.get('retMsg') if isinstance(resp, dict) else resp}"
             except Exception as exc:  # noqa: BLE001 — 모든 거래소 실패 흡수
+                if auth_failure(exc):
+                    self._auth_failure = last_exc = auth_failure(exc)
+                    break
                 last_exc = str(exc)
             if attempt + 1 < attempts:
                 time.sleep(_RETRY_SLEEP_SEC)
@@ -281,7 +291,7 @@ class DemoAdapter:
             completed_perf_ns=completed_perf_ns,
             response=last_response,
             success=False,
-            retry_count=attempts - 1,
+            retry_count=attempt,
             fallback_order_id=str(kwargs.get("orderId") or "") or None,
         )
         tracking.log_event(self.conn, "error",

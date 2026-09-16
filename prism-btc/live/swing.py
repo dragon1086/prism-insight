@@ -47,6 +47,7 @@ from core.swing import (
 )
 from engine.config import SWING_ENABLED, SWING_INITIAL_EQUITY, SWING_MAX_LEVERAGE
 from live import tracking
+from live.broker_auth import auth_failure
 from live.demo import _f, _order_id, _pstr, _qstr, _result_list
 from live.exchange_snapshot import read_complete
 from live.native_stop import native_stop_params
@@ -150,6 +151,8 @@ class ExchangeBackend:
     # --- 호출 헬퍼 (demo.DemoAdapter._call 미러 — 재시도 1회, 실패 흡수) ---
     def _call(self, fn_name: str, **kwargs) -> Optional[dict]:
         self._definite_close_rejection = False
+        if getattr(self, "_auth_failure", None):
+            return None
         fn = getattr(self.sess, fn_name, None)
         if fn is None:
             return None
@@ -158,6 +161,9 @@ class ExchangeBackend:
         for attempt in range(attempts):
             try:
                 resp = fn(**kwargs)
+                if auth_failure(resp):
+                    self._auth_failure = last_exc = auth_failure(resp)
+                    break
                 if isinstance(resp, dict):
                     ret_code = int(resp.get("retCode", -1))
                     if ret_code == 0:
@@ -178,6 +184,9 @@ class ExchangeBackend:
                         return resp
                 last_exc = (resp.get("retMsg") if isinstance(resp, dict) else resp)
             except Exception as exc:  # noqa: BLE001
+                if auth_failure(exc):
+                    self._auth_failure = last_exc = auth_failure(exc)
+                    break
                 last_exc = str(exc)
                 if (type(exc).__module__ == "pybit.exceptions"
                         and type(exc).__name__ == "InvalidRequestError"
