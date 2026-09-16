@@ -290,11 +290,19 @@ class TelegramSummaryGenerator:
             prompt_message += "\n⚠️ 주의: 본 정보는 장 시작 후 10분 시점 데이터입니다. 현재 상황과 다를 수 있습니다."
 
         # Generate Telegram message using evaluation-optimization workflow
+        # Note: telegram summary optimizer uses function tools (kospi_kosdaq),
+        # which rejects reasoning_effort on /v1/chat/completions (HTTP 400).
+        summary_model = REPORT_AUX_MODEL
+        summary_effort = REPORT_AUX_EFFORT
+        if "luna" in summary_model.lower():
+            summary_model = "gpt-5.4-mini"
+            summary_effort = "none"
+
         response = await evaluator_optimizer.generate_str(
             message=prompt_message,
             request_params=RequestParams(
-                model=REPORT_AUX_MODEL,
-                reasoning_effort=REPORT_AUX_EFFORT,
+                model=summary_model,
+                reasoning_effort=summary_effort,
                 maxTokens=6000,
                 max_iterations=2
             )

@@ -11,6 +11,8 @@ services:
       - TZ=Asia/Seoul
       - PYTHONUNBUFFERED=1
       - ENABLE_CRON=true  # Set to 'false' to disable cron jobs
+      - REPORT_AUX_MODEL=gpt-5.4-mini
+      - REPORT_AUX_EFFORT=none
 
     # 볼륨 마운트
     volumes:
