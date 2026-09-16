@@ -144,7 +144,15 @@ def _recover_main_entry(adapter, pending, position, open_orders, now):
 
 def reconcile_main(adapter, now):
     with mutation_lock(adapter.conn):
-        return _reconcile_main(adapter, now)
+        try:
+            result = _reconcile_main(adapter, now)
+        except Exception:
+            if getattr(adapter, "_auth_failure", None) == "api_key_expired":
+                raise RecoveryPending("api_key_expired") from None
+            raise
+        if getattr(adapter, "_auth_failure", None) == "api_key_expired":
+            raise RecoveryPending("api_key_expired")
+        return result
 
 
 def _reconcile_main(adapter, now):
@@ -215,6 +223,20 @@ def _reconcile_swing(conn, main_mode, now, backend=None, notice_jobs=None):
         backend = swing.ExchangeBackend(conn, sess)
     if backend.name != "exchange":
         raise RecoveryPending("broker recovery requires an exchange backend")
+    try:
+        result = _reconcile_swing_backend(conn, main_mode, now, backend, notice_jobs)
+    except Exception:
+        if getattr(backend, "_auth_failure", None) == "api_key_expired":
+            raise RecoveryPending("api_key_expired") from None
+        raise
+    if getattr(backend, "_auth_failure", None) == "api_key_expired":
+        raise RecoveryPending("api_key_expired")
+    return result
+
+
+def _reconcile_swing_backend(conn, main_mode, now, backend, notice_jobs):
+    from live import swing
+
     retired = reconcile_stop_retirements(conn, swing.MODE, backend._call)
     try:
         recovered = backend.recover_pending_entry()

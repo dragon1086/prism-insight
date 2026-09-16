@@ -64,6 +64,7 @@ class TelegramBotAgent:
                 text=message,
                 parse_mode=parse_mode,
                 attempts=max(1, max_retries - retry_count + 1),
+                message_kind=msg_type,
             )
             logger.info(f"Message sent successfully ({parse_mode}): {chat_id}")
             # Firebase Bridge - save metadata + push notification
@@ -95,7 +96,8 @@ class TelegramBotAgent:
                     result = await send_message_once_or_rate_retry(
                         self.bot,
                         chat_id=chat_id,
-                        text=message
+                        text=message,
+                        message_kind=msg_type,
                     )
                     logger.info(f"Message sent successfully (plain text): {chat_id}")
                     try:
