@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from unittest.mock import Mock
 
 import pandas as pd
+import pytest
 
 from prism_core import market_intelligence as mi
 
@@ -92,3 +93,9 @@ def test_kr_participation_no_synthetic_style_or_fundflow():
     assert packet["valid_count"] == 3
     assert packet["missing_count"] == 1
     assert packet["is_cash_flow"] is False
+@pytest.mark.parametrize("bad", ["20260917;id", "--help", "２０２６０９１７", "20261399", None])
+def test_subprocess_date_boundary_rejects_non_calendar_arguments(monkeypatch, bad):
+    from prism_core import market_intelligence as module
+    monkeypatch.setattr(module, "enabled", lambda: True)
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: pytest.fail("invalid input launched collector"))
+    assert module.prefetch_us_context(bad)["status"] == "UNKNOWN"

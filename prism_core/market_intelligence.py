@@ -112,7 +112,8 @@ def prefetch_us_context(reference_date):
         if not isinstance(reference_date, str) or len(reference_date) != 8 or not reference_date.isascii() or not reference_date.isdigit():
             raise ValueError("invalid_analysis_date")
         datetime.strptime(reference_date, "%Y%m%d").replace(tzinfo=timezone.utc)
-        run = subprocess.run(  # nosec B603 B607 - fixed interpreter/script; validated YYYYMMDD, no shell
+        # Interpreter and collector are locally fixed; only YYYYMMDD crosses this boundary.
+        run = subprocess.run(  # nosec B603 B607  # nosemgrep
                              [sys.executable, str(ROOT / "tools/run_market_intelligence_prefetch.py"),
                               "--date", reference_date], capture_output=True, text=True, timeout=20, check=True)
         packet = json.loads(run.stdout)
