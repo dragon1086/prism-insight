@@ -68,6 +68,9 @@ perplexity data provides overwhelming contradictory evidence.
             if vix_md:
                 index_data_context += vix_md + "\n"
 
+    if prefetched_data and prefetched_data.get("market_intelligence_md"):
+        index_data_context += "\n" + str(prefetched_data.get("market_intelligence_md", ""))[:2500]
+
     # JSON schema values (computed once, used in both prompts)
     _default_regime = prefetched_data.get('computed_regime', {}).get('market_regime', 'sideways') if prefetched_data else 'sideways'
     _default_confidence = prefetched_data.get('computed_regime', {}).get('regime_confidence', 0.5) if prefetched_data else 0.5
@@ -106,6 +109,10 @@ Use these sector names for leading_sectors and lagging_sectors:
 Technology, Healthcare, Financial Services, Consumer Cyclical, Consumer Defensive,
 Energy, Industrials, Basic Materials, Real Estate, Utilities, Communication Services
 
+If leadership is limited to an industry, include its exact yfinance `industry` name
+alongside the parent `sector`. Never broaden Semiconductors leadership to all Technology.
+Themes are not sectors. Missing quantitative context is UNKNOWN, not neutral evidence.
+
 ---
 
 ## Output JSON Schema (output exactly this structure)
@@ -120,7 +127,7 @@ Energy, Industrials, Basic Materials, Real Estate, Utilities, Communication Serv
   "simple_ma_regime": "{_default_simple_ma}",
   "index_summary": {_index_summary_json},
   "leading_sectors": [
-    {{"sector": "Semiconductors", "reason": "AI demand surge", "confidence": 0.8}}
+    {{"sector": "Technology", "industry": "Semiconductors", "reason": "AI demand surge (industry only)", "confidence": 0.8}}
   ],
   "lagging_sectors": [
     {{"sector": "Real Estate", "reason": "Rate hike pressure", "confidence": 0.6}}
@@ -183,6 +190,9 @@ Perplexity 검색 결과와 위의 사전 계산된 지수 데이터를 기반�
 ## 섹터 분류 체계 (미국 - yfinance 표준 섹터명)
 
 leading_sectors 및 lagging_sectors에는 아래 섹터명을 사용하십시오:
+산업에 한정된 주도력은 상위 sector와 정확한 yfinance industry를 함께 기재하십시오.
+Semiconductors 강세를 Technology 전체 강세로 확대하지 마십시오. 테마는 섹터가 아닙니다.
+정량 자료 미확인은 중립 근거가 아니라 UNKNOWN입니다.
 Technology, Healthcare, Financial Services, Consumer Cyclical, Consumer Defensive,
 Energy, Industrials, Basic Materials, Real Estate, Utilities, Communication Services
 
@@ -200,7 +210,7 @@ Energy, Industrials, Basic Materials, Real Estate, Utilities, Communication Serv
   "simple_ma_regime": "{_default_simple_ma}",
   "index_summary": {_index_summary_json},
   "leading_sectors": [
-    {{"sector": "Semiconductors", "reason": "AI 수요 급증", "confidence": 0.8}}
+    {{"sector": "Technology", "industry": "Semiconductors", "reason": "AI 수요 급증 (반도체 산업에 한정)", "confidence": 0.8}}
   ],
   "lagging_sectors": [
     {{"sector": "Real Estate", "reason": "금리 인상 압박", "confidence": 0.6}}

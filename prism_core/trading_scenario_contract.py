@@ -79,6 +79,7 @@ def apply_buy_scenario_contract(scenario: dict, *, market: str, entry_price: Any
         raise ValueError('scenario invalid decision')
     entering = decision.strip().lower() in _ENTRY
     result = copy.deepcopy(scenario)
+    _validate_target_provenance(result, entering=entering)
     for field in _NUMBERS:
         result[field] = _number(result.get(field), field)
     if entering:
@@ -109,6 +110,31 @@ def apply_buy_scenario_contract(scenario: dict, *, market: str, entry_price: Any
     return result
 
 
+def _validate_target_provenance(scenario: dict, *, entering: bool) -> None:
+    """Check explicit model assertions, not their factual truth; legacy outputs remain valid."""
+    if 'target_provenance' not in scenario:
+        return
+    value = scenario['target_provenance']
+    if not isinstance(value, dict) or value.get('version') != 'target-v1':
+        raise ValueError('scenario invalid target provenance version/object')
+    status = value.get('status')
+    source = value.get('source_type')
+    if (not isinstance(status, str) or not isinstance(source, str)
+            or status not in {'supported', 'unknown'}
+            or source not in {'structural', 'report_scenario', 'unknown'}):
+        raise ValueError('scenario unsupported target provenance')
+    for field in ('source_section', 'asof', 'holding_horizon', 'exit_model', 'reason'):
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            raise ValueError(f'scenario invalid target provenance: {field}')
+    ids = value.get('evidence_ids')
+    if not isinstance(ids, list) or any(not isinstance(item, str) or not item.strip() for item in ids):
+        raise ValueError('scenario invalid target evidence IDs')
+    if status == 'supported' and source == 'unknown':
+        raise ValueError('scenario supported target requires source')
+    if entering and status != 'supported':
+        raise ValueError('scenario ENTRY requires supported target provenance')
+
+
 def buy_scenario_prompt_contract(language: str = 'ko') -> str:
     if language == 'en':
         return '''
@@ -118,8 +144,19 @@ def buy_scenario_prompt_contract(language: str = 'ko') -> str:
 - A same-basis discrepancy that cannot change an existing gate is not an independent
   rejection/score penalty. Explain material uncertainty only for the affected data
   and dependent existing gates; never choose a convenient value or invent missing facts.
-- R/R candidates use the nearest major resistance and the next resistance only.
-  Do not reach past both to a third resistance merely to pass the existing R/R floor.
+- Establish target from evidence, holding horizon and existing exit model BEFORE computing R/R.
+  Never select a farther resistance or arbitrary percentage merely to pass the R/R floor.
+  A 12-month analyst target is not automatically a short-term trading target. Unknown target
+  evidence is not evidence of a weak company and must not independently reduce its quality score.
+- Include target_provenance: {"version":"target-v1", "status":"supported|unknown",
+  "source_type":"structural|report_scenario|unknown", "source_section":"report section",
+  "evidence_ids":[], "asof":"source date or unknown", "holding_horizon":"intended horizon",
+  "exit_model":"existing exit model", "reason":"target derivation or missing evidence"}.
+  Use only supplied evidence IDs; [] if absent. Never invent IDs or dates. This is model-claimed
+  provenance, not independently verified proof. Unsupported target implies NO ENTRY, nullable
+  target and dependent risk fields, not a synthetic price. Preserve all existing entry gates.
+- Map each BUY conclusion to report section, supplied evidence ID (if any) and source asof.
+  Separate actual results from forecasts/guidance; ownership and volume proxies are not net buys.
 - sell_triggers must use the supplied policy template. Do not add highest-close 7%
   trailing, 5-day MA full exits, or convert a report's partial-exit idea into a rule.
   BUY prose cannot override the existing live SELL policy or adjustment rules.
@@ -131,8 +168,19 @@ def buy_scenario_prompt_contract(language: str = 'ko') -> str:
 - 동일 기준의 값 차이가 기존 기준의 충족 여부를 바꾸지 않는다면 독립적인 감점·미진입
   사유로 삼지 마세요. 중요한 불확실성은 충돌 지표와 그 값에 직접 의존하는 기존 기준에
   한정해 설명하세요. 유리한 값을 임의 선택하거나 결측을 사실로 만들지 마세요.
-- 손익비 후보는 가장 가까운 주요 저항과 그 다음 저항까지입니다. 기존 손익비 기준을
-  통과시키려고 두 후보를 건너뛰어 세 번째 저항까지 확장하지 마세요.
+- 목표가는 근거·보유 기간·기존 청산 방식으로 먼저 정한 뒤 손익비를 계산하세요.
+  손익비 기준을 통과시키려고 더 먼 저항이나 임의 상승률을 선택하지 마세요.
+  12개월 애널리스트 목표가를 단기 매매 목표로 자동 사용하지 마세요. 목표 근거 미확인은
+  기업이 약하다는 증거가 아니므로 기업 품질 점수를 별도로 깎지 마세요.
+- target_provenance를 포함하세요: {"version":"target-v1", "status":"supported|unknown",
+  "source_type":"structural|report_scenario|unknown", "source_section":"보고서 절",
+  "evidence_ids":[], "asof":"근거 기준일 또는 unknown", "holding_horizon":"보유 기간",
+  "exit_model":"기존 청산 방식", "reason":"목표 산정 근거 또는 결측 설명"}.
+  제공된 근거 ID만 사용하고 없으면 []로 두세요. ID·날짜를 만들지 마세요. 이는 모델의
+  출처 주장이지 독립 검증 완료를 뜻하지 않습니다. 근거가 없으면 미진입이며 목표와
+  종속 손익비 필드는 null로 두세요. 기존 진입 기준은 모두 유지합니다.
+- BUY 판단마다 보고서 절·제공된 근거 ID(있을 때)·자료 기준일을 연결하세요.
+  실제 실적과 전망·가이던스를 구분하고 기관 보유량·거래량 대용치를 순매수로 읽지 마세요.
 - sell_triggers는 제공된 정책 템플릿을 따르세요. 최고 종가 대비 7% trailing이나 5일선
   단독 전량매도 규칙을 추가하거나 보고서의 부분축소 아이디어를 전량매도 규칙으로
   바꾸지 마세요. 매수 자유서술은 기존 매도·손절 조정 규율보다 우선하지 않습니다.

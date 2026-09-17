@@ -340,18 +340,16 @@ def test_distribution_day_kill_switch_en():
 
 def test_target_price_fallback_rule_ko():
     agent = create_trading_scenario_agent(language="ko")
-    # Rule 1: report target ≥ current_price × 1.05 → use as-is
-    assert "현재가 × 1.05" in agent.instruction
-    # Rule 2: chart-based fallback when target is stale
-    assert "stale 또는 현재가 이하" in agent.instruction
-    assert "다음 주요 저항선까지 거리의 80%" in agent.instruction
+    assert "손익비 계산 전에 근거와 보유 기간" in agent.instruction
+    assert "임의 상승률로 목표를 만들거나" in agent.instruction
+    assert "15~30%" not in agent.instruction
 
 
 def test_target_price_fallback_rule_en():
     agent = create_trading_scenario_agent(language="en")
-    assert "current_price × 1.05" in agent.instruction
-    assert "report target is stale" in agent.instruction
-    assert "80% of the distance" in agent.instruction
+    assert "holding horizon and exit model BEFORE R/R" in agent.instruction
+    assert "Never invent a percentage target" in agent.instruction
+    assert "15~30%" not in agent.instruction
 
 
 def test_parabolic_position_sizing_ko():

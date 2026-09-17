@@ -38,6 +38,11 @@ jobs:
         env:
           PRISM_DISABLE_SIGNAL_PUBLISH: "1"
         run: |
+          python -m pytest tests/test_report_research_prefetch.py tests/test_report_research_context.py \
+            tests/test_market_intelligence.py tests/test_market_intelligence_wiring.py \
+            tests/test_market_report_context.py tests/test_sector_taxonomy_alignment.py \
+            tests/test_target_provenance_contract.py tests/test_competitive_evidence_handoff.py \
+            tests/test_competitive_prefetch.py tests/test_tradingview_evidence.py -q
           python -m pytest tests/test_screening_price_evidence.py tests/test_screening_orchestrator_rr_contract.py tests/test_agent_fit_score_constant_tripwire.py -q
           python -m pytest tests/test_agent_lazy_broker_imports.py -q
           python -m pytest tests/test_agent_virtual_initialization.py \

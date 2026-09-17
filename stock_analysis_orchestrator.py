@@ -455,6 +455,8 @@ class StockAnalysisOrchestrator:
                 if prefetched.get("sector_map"):
                     macro_data["sector_map"] = prefetched["sector_map"]
 
+                if isinstance(prefetched.get("market_intelligence"), dict):
+                    macro_data["market_intelligence"] = prefetched["market_intelligence"]
                 regime = macro_data.get("market_regime", "sideways")
                 macro_logger.info(f"Macro intelligence complete - regime: {regime}, "
                                  f"leading_sectors: {len(macro_data.get('leading_sectors', []))}, "
@@ -515,6 +517,14 @@ class StockAnalysisOrchestrator:
                     full_results = json.load(f)
                 # Save results
                 self.selected_tickers[mode] = full_results
+                participation = full_results.get("metadata", {}).get("market_participation")
+                if isinstance(macro_context, dict) and isinstance(participation, dict):
+                    macro_context["market_participation"] = participation
+                    packet = macro_context.get("market_intelligence")
+                    macro_context["market_intelligence"] = {
+                        **(packet if isinstance(packet, dict) else {"market": "KR", "status": "PARTICIPATION_ONLY"}),
+                        "participation": participation,
+                    }
 
             # Extract stock codes from results
             tickers = []
@@ -1370,6 +1380,8 @@ class StockAnalysisOrchestrator:
                                     or {}
                                 ),
                                 "leading_sectors": (macro_context or {}).get("leading_sectors"),
+                                **({"market_intelligence": macro_context["market_intelligence"]}
+                                   if isinstance(macro_context, dict) and isinstance(macro_context.get("market_intelligence"), dict) else {}),
                             },
                         )
 
