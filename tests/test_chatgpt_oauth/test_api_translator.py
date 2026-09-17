@@ -26,9 +26,9 @@ class TestTranslateRequest:
         result = translate_request(body)
 
         assert result["model"] == "gpt-5"
-        assert result["input"][0]["role"] == "developer"
-        assert result["input"][0]["content"] == "You are a stock analyst."
-        assert result["input"][1]["role"] == "user"
+        # Codex receives system guidance via instructions, not an extra input turn.
+        assert result["instructions"] == "You are a stock analyst."
+        assert result["input"] == [{"role": "user", "content": "Analyze AAPL"}]
         assert result["max_output_tokens"] == 4096
         assert result["temperature"] == 0.7
         assert result["store"] is False

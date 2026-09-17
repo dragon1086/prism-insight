@@ -114,7 +114,7 @@ async def run_validation(args):
     sys.path[:0] = [str(ROOT / "prism-us"), str(ROOT)]
     receipt = {"schema_version": 1, "mode": args.mode, "date": args.date,
                "deviations": DEVIATIONS, "stages": {}, "blocked_effects": [],
-               "buy_analyses": [], "usage_log": [], "degraded_logs": [], "errors": []}
+               "buy_analyses": [], "usage_log": [], "codex_calls": [], "degraded_logs": [], "errors": []}
     receipt["codex_primary_required"] = os.getenv("PRISM_US_CODEX_FAST_TRADING") == "1"
     receipt["source_hashes"] = {
         name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
@@ -145,6 +145,20 @@ async def run_validation(args):
             folder.mkdir(parents=True, mode=0o700)
             setattr(module, attribute, folder)
         tracker_module = importlib.import_module("us_stock_tracking_agent")
+        actual_codex = tracker_module.generate_codex_fast_async
+
+        async def observed_codex(**kwargs):
+            result = await actual_codex(**kwargs)
+            receipt["codex_calls"].append({
+                "model": kwargs.get("model"), "latency_seconds": result.latency_s, "usage": result.usage,
+                "tools": [{"server": call.server, "tool": call.tool, "status": call.status,
+                           "error": str(call.error)[:500] if call.server == "time" and call.error else bool(call.error),
+                           "time_arguments": call.arguments if call.server == "time" else None}
+                          for call in result.mcp_calls],
+            })
+            return result
+
+        tracker_module.generate_codex_fast_async = observed_codex
         from prism_core.isolated_agent_runtime import ROOT_MARKER
         from telegram_config import TelegramConfig
         db_root = output / "private-account"

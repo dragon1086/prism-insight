@@ -20,6 +20,31 @@ def _public_https(url):
         return False
 
 
+def _unresolved_numeric_citations(prose):
+    definitions = {
+        number for number, url in re.findall(r"(?m)^\s*\[(\d+)\]:\s*(https://\S+)", prose)
+        if _public_https(url)
+    }
+    for match in re.finditer(r"\[(\d+(?:\s*[,;-]\s*\d+)*)\]", prose):
+        inline = re.match(r"\((https://[^\s)]+)\)", prose[match.end():])
+        if inline and _public_https(inline.group(1)):
+            continue
+        if match.group(1) not in definitions:
+            return True
+    return False
+
+
+def public_market_analysis(prose, context, language="ko"):
+    """Guard market prose before strategy/summary; source data needs no invented URL."""
+    if not isinstance(context, dict) or not isinstance(context.get("market_intelligence"), dict):
+        return prose
+    if not isinstance(prose, str) or _unresolved_numeric_citations(prose):
+        return ("### 4. 시장 분석\n\n출처 번호를 확인할 수 없는 시장 서술은 제외했습니다. 아래 공통 시장 근거를 확인하십시오."
+                if language == "ko" else
+                "### 4. Market Analysis\n\nMarket narrative with unresolved citations was omitted. Consult the shared market evidence below.")
+    return prose
+
+
 def public_macro_prose(context, language="ko"):
     """Suppress visibly unlinked prose only for the opted-in evidence packet.
 
@@ -32,19 +57,7 @@ def public_macro_prose(context, language="ko"):
     prose = prose if isinstance(prose, str) else ""
     urls = re.findall(r"https://[^\s<>\]\)]+", prose)
     linked = any(_public_https(url) for url in urls)
-    definitions = {
-        number for number, url in re.findall(r"(?m)^\s*\[(\d+)\]:\s*(https://\S+)", prose)
-        if _public_https(url)
-    }
-    for match in re.finditer(r"\[(\d+(?:\s*[,;-]\s*\d+)*)\]", prose):
-        tail = prose[match.end():]
-        inline = re.match(r"\((https://[^\s)]+)\)", tail)
-        if inline and _public_https(inline.group(1)):
-            continue
-        if match.group(1) not in definitions:
-            linked = False
-            break
-    if linked:
+    if linked and not _unresolved_numeric_citations(prose):
         return prose
     return ("출처 연결이 확인되지 않은 거시 서술은 제외했습니다. 아래 공통 시장 근거의 지표를 확인하십시오."
             if language == "ko" else
