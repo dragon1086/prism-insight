@@ -74,33 +74,49 @@ def get_nasdaq100_tickers() -> List[str]:
         List of ticker symbols
     """
     import requests
+    import re
     from io import StringIO
 
-    try:
-        # Wikipedia requires User-Agent header to avoid 403 Forbidden
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
-
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-
-        # Parse HTML tables (NASDAQ-100 table is usually the 4th or 5th table)
-        tables = pd.read_html(StringIO(response.text))
-        # Find the table with 'Ticker' column
-        for table in tables:
-            if 'Ticker' in table.columns:
-                tickers = table['Ticker'].tolist()
-                tickers = [t.replace('.', '-') for t in tickers]
-                logger.info(f"Loaded {len(tickers)} NASDAQ-100 tickers from Wikipedia")
-                return tickers
-
-        logger.warning("Could not find NASDAQ-100 table with 'Ticker' column")
-        return []
-    except Exception as e:
-        logger.error(f"Failed to load NASDAQ-100 tickers: {e}")
-        return []
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    # Constituents moved to a dedicated page; keep one bounded legacy fallback.
+    urls = (
+        'https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies',
+        'https://en.wikipedia.org/wiki/Nasdaq-100',
+    )
+    for url in urls:
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            candidates = []
+            for table in pd.read_html(StringIO(response.text)):
+                if isinstance(table.columns, pd.MultiIndex) or not table.columns.is_unique:
+                    continue
+                columns = {str(column).strip() for column in table.columns}
+                if len(columns) != len(table.columns) or not {'Ticker', 'Company'} <= columns:
+                    continue
+                # Change-history tables must never masquerade as constituents.
+                if any(re.search(r'\b(added|removed|former|replaced|date|year)\b', column, re.I)
+                       for column in columns):
+                    continue
+                candidates.append(table.rename(columns=lambda column: str(column).strip()))
+            if len(candidates) != 1 or candidates[0].empty:
+                raise ValueError("Missing or ambiguous current NASDAQ-100 constituent table")
+            table = candidates[0]
+            tickers = []
+            for ticker, company in zip(table['Ticker'], table['Company']):
+                if (not isinstance(ticker, str) or not re.fullmatch(r'[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?', ticker.strip())
+                        or not isinstance(company, str) or not company.strip()):
+                    raise ValueError("Invalid NASDAQ-100 constituent row")
+                tickers.append(ticker.strip().replace('.', '-'))
+            tickers = list(dict.fromkeys(tickers))
+            logger.info(f"Loaded {len(tickers)} NASDAQ-100 tickers from Wikipedia")
+            return tickers
+        except Exception as e:
+            logger.warning(f"NASDAQ-100 constituent source unavailable ({url}): {type(e).__name__}")
+    logger.error("Failed to load validated NASDAQ-100 constituents from both sources")
+    return []
 
 
 def get_major_tickers() -> List[str]:
