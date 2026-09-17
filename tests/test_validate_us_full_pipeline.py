@@ -64,3 +64,10 @@ def test_empty_journal_schema_has_no_fabricated_history():
         harness.create_empty_shared_journal(conn.cursor(), conn)
         for table in ("trading_journal", "trading_intuitions", "trading_principles"):
             assert conn.execute("SELECT COUNT(*) FROM " + table).fetchone()[0] == 0
+
+
+def test_failed_status_with_null_error_is_not_reported_as_error_free():
+    calls = [{"tools": [{"status": "failed", "error": None},
+                         {"status": "completed", "error": False}]}]
+    assert harness.observed_tool_failure_count(calls) == 1
+    assert harness.observed_tool_failure_count([]) == 0
