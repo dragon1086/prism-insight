@@ -5,6 +5,8 @@ numpy~=2.2.3
 # Pin to commit SHA so pip detects fork updates without --force-reinstall.
 # Branch ref alone is ignored when version (0.2.6) already matches.
 mcp-agent @ git+https://github.com/dragon1086/mcp-agent.git@430b9e4dcf3fa3bed8ac7921cedc8602e01cbd7d
+# Direct SDK dependency for bounded prefetch; match the deployed MCP runtime.
+mcp==1.26.0
 requests~=2.32.3
 aiohttp~=3.11.13
 python-dateutil~=2.9.0.post0
@@ -30,7 +32,7 @@ python-dotenv>=1.0.0
 
 
 # PDF 변환 관련 패키지
-playwright>=1.40.0  # Chromium 기반 PDF 변환 (권장)
+playwright==1.58.0  # Production-verified Chromium/PDF runtime (2026-09-18)
 pdfkit>=1.0.0  # wkhtmltopdf 기반 PDF 변환 (레거시, 백업용)
 reportlab>=4.0.0  # 직접 PDF 생성 (대체 방식)
 
@@ -78,8 +80,8 @@ feedparser>=6.0.0  # RSS feed parser
 pydub>=0.25.1  # Audio file manipulation (for splitting large files)
 
 # US Stock Market (prism-us module)
-yfinance>=0.2.0  # Yahoo Finance data
-pandas-market-calendars>=4.0.0  # US market holidays
+yfinance==1.2.0  # Production-verified provider shapes (2026-09-18)
+pandas-market-calendars==5.3.1.2  # Match production session calendars
 pytz>=2024.1  # Timezone support
 lxml>=4.9.0  # HTML/XML parsing for pandas read_html
 

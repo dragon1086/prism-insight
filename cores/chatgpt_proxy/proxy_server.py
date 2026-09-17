@@ -16,6 +16,10 @@ from .token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
 
+# Full report histories can exceed aiohttp's 1 MiB default after MCP results.
+# Keep a finite ingress bound; do not truncate evidence or alter API semantics.
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+
 _token_manager: TokenManager | None = None
 
 
@@ -24,7 +28,7 @@ def create_app(token_manager: TokenManager) -> web.Application:
     global _token_manager
     _token_manager = token_manager
 
-    app = web.Application()
+    app = web.Application(client_max_size=MAX_REQUEST_BYTES)
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_post("/v1/responses", handle_responses)
     app.router.add_get("/health", handle_health)

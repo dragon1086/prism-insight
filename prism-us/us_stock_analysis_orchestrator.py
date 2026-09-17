@@ -405,7 +405,12 @@ class USStockAnalysisOrchestrator:
             from mcp_agent.workflows.llm.augmented_llm_openai import OpenAIAugmentedLLM
             from cores.agents.macro_intelligence_agent import create_us_macro_intelligence_agent
 
-            macro_app = MCPApp(name="us_macro_intelligence")
+            macro_runtime = _import_from_main_cores(
+                "prism_root_macro_mcp_app", "cores/llm/macro_mcp_app.py"
+            )
+            macro_app = macro_runtime.create_macro_mcp_app(
+                MCPApp, name="us_macro_intelligence"
+            )
 
             async with macro_app.run() as macro_run_context:
                 macro_logger = macro_run_context.logger
