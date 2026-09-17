@@ -79,6 +79,9 @@ def test_source_json_and_table_survive_injection_whole():
     assert envelope['source_material'] == source
     assert json.loads(envelope['source_material'])['sources'][0]['source_id'] == 'S1'
     assert out.server_names == agent.server_names
+    for term in ('SOURCE_METADATA_UNVERIFIED', 'rounded share total', 'table transcription',
+                 'not merely a search snippet', 'independently verifying its claims'):
+        assert term in out.instruction
 
 
 def test_market_context_off_empty_and_industry_scope_preserved():

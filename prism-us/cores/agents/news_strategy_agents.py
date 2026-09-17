@@ -82,12 +82,13 @@ def _competitive_evidence_contract(reference_date):
   Before finishing, check every record's metric against its type and ensure the narrative
   and final conclusion do not upgrade company-only facts or price observations into sector demand.
   Check every trend claim against the actual values for that same segment, metric and pair
-  of periods. When segments move in opposite directions, state the directions separately;
-  rising DRAM share and falling HBM share do not establish expanding overall AI-memory share.
+  of periods for the same entity. Calculate the direction from each segment's selected
+  start/end values; do not assume the directions are opposite. Describe each actual
+  increase, decrease or unchanged value separately before drawing a trend conclusion.
   Do not average incomparable segment shares or infer a combined market share/rank without
   an explicitly sourced common denominator. This applies to summaries and conclusions too.
   Cite exact public source URLs supplied or actually read. Never emit undefined symbolic
-  citation aliases such as [YahooFinance:TICKER]; source IDs may accompany, not replace, URLs.
+  citation aliases; source IDs may accompany, not replace, URLs.
 """
 
 
@@ -175,7 +176,7 @@ def create_us_news_analysis_agent(
 - 당일 가격 원인 분석 우선
 - 정확한 뉴스 식별을 위해 티커 심볼 사용
 - 깊이 있는 분석과 인사이트 제공
-- 명확한 출처 표기: [YahooFinance:TICKER] / [Perplexity:Number, Date]
+- 실제 공개 출처 URL을 마크다운 링크 또는 정확한 URL이 연결된 번호 참고문헌으로 표기하세요. 출처 날짜를 보존하고, URL을 만들거나 정의되지 않은 제공자 별칭을 사용하지 마세요.
 - 뉴스는 분석일 이전 1개월을 우선하되, 구조적 경쟁력 통계는 위 규칙에 따라 기준 기간을 명시합니다
 
 {social_context}
@@ -237,7 +238,7 @@ def create_us_news_analysis_agent(
 - Prioritize same-day price cause analysis
 - Use ticker symbols for accurate news identification
 - Provide deep analysis and insights
-- Clear source notation: [YahooFinance:TICKER] / [Perplexity:Number, Date]
+- Cite actual public source URLs as Markdown links, or numbered references with an exact URL mapping. Preserve source dates; do not invent URLs or use undefined provider aliases.
 - For news, prioritize the month up to the analysis date; dated structural competitive statistics follow the contract above
 
 {social_context}

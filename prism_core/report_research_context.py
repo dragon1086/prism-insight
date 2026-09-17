@@ -40,6 +40,11 @@ def apply_section_research(agent, section, prefetched, reference_date, language)
         'Reuse supplied source IDs and URLs; do not refetch an already supplied excerpt. '
         'Retrieval/text presence does not establish competitive superiority or factual correctness. '
         'Preserve unknown publication times, missing peers and incomparable periods. '
+        'Publication dates marked SOURCE_METADATA_UNVERIFIED are supplied metadata, not independently verified dates. '
+        'Preserve rounding caveats; a rounded share total need not equal 100%. '
+        'Label values transcribed from a source table as table transcription, not a verbatim prose quotation. '
+        'A supplied original excerpt is source content, not merely a search snippet; distinguish '
+        'having read the source text from independently verifying its claims. '
         'Do not overwrite existing price, financial or regime facts using inconsistent units.\n'
         + evidence
     )

@@ -58,8 +58,11 @@ def main():
     parser.add_argument("--path", type=Path, default=CONFIG_PATH)
     parser.add_argument("--timeout-seconds", type=int, default=60)
     parser.add_argument("--namespace", default="production")
-    parser.add_argument("--enable-market-context", action="store_true", default=None,
+    market = parser.add_mutually_exclusive_group()
+    market.add_argument("--enable-market-context", dest="market_context", action="store_true", default=None,
                         help="Enable market prefetch; otherwise preserve existing setting")
+    market.add_argument("--disable-market-context", dest="market_context", action="store_false",
+                        help="Explicitly disable market prefetch independently of research")
     parser.add_argument("--validated-symbol", action="append", metavar="MARKET:SYMBOL",
                         help="Limit enrichment to validated symbols, e.g. US:MU (repeatable)")
     args = parser.parse_args()
@@ -72,7 +75,7 @@ def main():
                 parser.error('--validated-symbol requires MARKET:SYMBOL')
             scope.setdefault(market, []).append(symbol)
     result = configure(args.path, args.enable, args.timeout_seconds, args.namespace,
-                       market_context_enabled=args.enable_market_context, validated_symbols=scope)
+                       market_context_enabled=args.market_context, validated_symbols=scope)
     print(json.dumps(result))
 
 

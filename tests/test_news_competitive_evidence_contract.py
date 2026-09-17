@@ -55,11 +55,14 @@ def test_company_growth_and_price_rallies_do_not_prove_sector_demand(market_fact
 def test_trend_conclusion_preserves_segment_directions_and_resolvable_citations(market_factory, language):
     _, factory = market_factory
     prompt = factory("Micron", "MU", "20260918", language=language).instruction
-    for required in ("same segment, metric and pair", "segments move in opposite directions",
-                     "rising DRAM share and falling HBM share", "common denominator",
+    for required in ("same segment, metric and pair", "for the same entity",
+                     "start/end values", "do not assume the directions are opposite", "common denominator",
                      "summaries and conclusions", "exact public source URLs",
                      "Never emit undefined symbolic", "may accompany, not replace, URLs"):
         assert required in prompt
+    for forbidden in ("[YahooFinance:", "[Perplexity:", "[NaverFinance:", "[네이버금융:",
+                      "rising DRAM share and falling HBM share"):
+        assert forbidden not in prompt
 
 
 @pytest.mark.parametrize("language", ["ko", "en"])

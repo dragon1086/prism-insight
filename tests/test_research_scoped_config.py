@@ -24,3 +24,17 @@ def test_invalid_scope_does_not_modify_config(tmp_path, scope):
     with pytest.raises(ValueError):
         configure(path, True, validated_symbols=scope)
     assert path.read_bytes() == before
+
+
+def test_cli_preserves_and_explicitly_disables_market_context(tmp_path, monkeypatch):
+    from tools.configure_report_research import main
+    path = tmp_path / 'config.json'
+    configure(path, False, market_context_enabled=True)
+    monkeypatch.setattr('sys.argv', ['configure', '--enable', '--path', str(path), '--validated-symbol', 'US:MU'])
+    main()
+    assert json.loads(path.read_text())['market_context_enabled'] is True
+    monkeypatch.setattr('sys.argv', ['configure', '--disable', '--path', str(path), '--disable-market-context'])
+    main()
+    result = json.loads(path.read_text())
+    assert result['market_context_enabled'] is False
+    assert result['validated_symbols'] == {'US': ['MU']}

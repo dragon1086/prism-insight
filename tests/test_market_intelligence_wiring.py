@@ -51,7 +51,9 @@ def test_configuration_market_context_default_off_and_explicit_on(tmp_path):
     assert configure(path, True)["market_context_enabled"] is False
     assert configure(path, True, market_context_enabled=True)["market_context_enabled"] is True
     assert json.loads(path.read_text())["market_context_enabled"] is True
-    assert configure(path, False)["market_context_enabled"] is False
+    # Turning off research must not accidentally disable independent market data.
+    assert configure(path, False)["market_context_enabled"] is True
+    assert configure(path, False, market_context_enabled=False)["market_context_enabled"] is False
 
 
 def test_compact_buy_context_preserves_rows_provenance_and_valid_json():
