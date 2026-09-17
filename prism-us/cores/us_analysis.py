@@ -239,6 +239,7 @@ async def analyze_us_stock(
                 logger.warning(f"US social sentiment prefetch failed, continuing without it: {e}")
 
         # 5. Get US-specific agents (with prefetched data)
+        prefetched["shared_macro_available"] = bool(macro_context)
         agents = get_us_agent_directory(company_name, ticker, reference_date, base_sections, language, prefetched_data=prefetched)
 
         # 6. Execute base analysis using HYBRID mode
