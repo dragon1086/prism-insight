@@ -88,6 +88,12 @@ def validate_receipt(receipt):
     return errors
 
 
+def observed_tool_failure_count(calls):
+    """A failed tool status is a failure even when the client omits error details."""
+    return sum(tool.get("status") == "failed" or bool(tool.get("error"))
+               for call in calls for tool in call.get("tools", []))
+
+
 def readonly_settings(db_path, proxy_url):
     return {"openai": {"api_key": "local-proxy-placeholder", "base_url": proxy_url},
             "mcp": {"servers": {
@@ -284,6 +290,7 @@ async def run_validation(args):
         logging.getLogger().removeHandler(console_handler)
         receipt["success"] = not receipt["errors"]
         receipt["degraded_log_count"] = len(receipt["degraded_logs"])
+        receipt["observed_tool_failures"] = observed_tool_failure_count(receipt["codex_calls"])
         receipt["standard_logging_clean"] = not receipt["degraded_logs"]
         receipt["log_capture_scope"] = "stdlib logging only; inspect process stderr separately for MCP framework errors"
         (output / "receipt.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2, default=str))
